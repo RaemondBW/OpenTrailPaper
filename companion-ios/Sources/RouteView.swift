@@ -268,6 +268,7 @@ private struct RouteSummaryCard: View {
     let canSend: Bool
     let send: () -> Void
     let clear: () -> Void
+    @AppStorage(UnitPref.key) private var useMiles = false
 
     var body: some View {
         Card {
@@ -285,7 +286,9 @@ private struct RouteSummaryCard: View {
                                     .foregroundStyle(.white)
                                     .clipShape(Capsule())
                             }
-                            Text(String(format: "%.1f km · %d min", distanceKm, minutes))
+                            Text(String(format: "%.1f %@ · %d min",
+                                        Units.distance(distanceKm, miles: useMiles),
+                                        Units.distLabel(useMiles), minutes))
                                 .font(TypeScale.body).foregroundStyle(Palette.muted)
                         }
                     }

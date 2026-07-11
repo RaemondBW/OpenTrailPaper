@@ -220,8 +220,14 @@ int main(int argc, char** argv) {
 
     // Dashboard (1a)
     clearWhite(fb.data());
-    ui_render_dashboard(s, fb.data());
+    ui_render_dashboard(s, false, fb.data());
     emit("dashboard.png");
+
+    // Dashboard while navigating: compact hero under the turn banner.
+    clearWhite(fb.data());
+    ui_render_dashboard(s, true, fb.data());
+    ui_render_nav_banner("Turn left onto Valencia St", 180, false, fb.data());
+    emit("dashboard_nav.png");
 
     // Map view (1f): real SF tiles if the .ebm exists, synthetic otherwise
     MapScreenData map = {};
@@ -364,7 +370,7 @@ int main(int argc, char** argv) {
 
     // Power sheet drawn over the dashboard (overlay behavior)
     clearWhite(fb.data());
-    ui_render_dashboard(s, fb.data());
+    ui_render_dashboard(s, false, fb.data());
     ui_render_power_sheet(true, fb.data());
     emit("power.png");
 
@@ -377,7 +383,7 @@ int main(int argc, char** argv) {
     // Turn-by-turn banner over the map
     clearWhite(fb.data());
     ui_render_map(map, s, fb.data());
-    ui_render_nav_banner("Turn left onto Valencia St", 180, fb.data());
+    ui_render_nav_banner("Turn left onto Valencia St", 180, false, fb.data());
     emit("nav_banner.png");
 
     return 0;

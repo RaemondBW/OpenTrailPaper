@@ -16,4 +16,7 @@ void begin();
 // FreeRTOS task: pushes a status notification once a second.
 void task(void* arg);
 
+// Mirror a device-side settings edit (FTP/tz/units/frontlight) to the phone.
+void pushSettingsToPhone();
+
 }

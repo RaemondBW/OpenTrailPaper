@@ -7,6 +7,7 @@ struct RideDetailView: View {
     let fileURL: URL
     let preview: RidePreview
     @Environment(\.dismiss) private var dismiss
+    @AppStorage(UnitPref.key) private var useMiles = false
     @State private var showShare = false
 
     private var polyline: MKPolyline {
@@ -33,17 +34,20 @@ struct RideDetailView: View {
 
                     HStack(spacing: 16) {
                         Stat(label: "Distance",
-                             value: String(format: "%.1f", preview.distanceKm),
-                             unit: "km", big: true)
+                             value: String(format: "%.1f",
+                                            Units.distance(preview.distanceKm, miles: useMiles)),
+                             unit: Units.distLabel(useMiles), big: true)
                         Stat(label: "Duration", value: durationText, unit: "")
                     }
                     HStack(spacing: 16) {
                         Stat(label: "Avg Speed",
-                             value: String(format: "%.1f", preview.avgSpeedKmh),
-                             unit: "km/h")
+                             value: String(format: "%.1f",
+                                            Units.speed(preview.avgSpeedKmh, miles: useMiles)),
+                             unit: Units.speedLabel(useMiles))
                         Stat(label: "Max Speed",
-                             value: String(format: "%.1f", preview.maxSpeedKmh),
-                             unit: "km/h")
+                             value: String(format: "%.1f",
+                                            Units.speed(preview.maxSpeedKmh, miles: useMiles)),
+                             unit: Units.speedLabel(useMiles))
                     }
                     HStack(spacing: 16) {
                         Stat(label: "Avg Power",
@@ -54,7 +58,9 @@ struct RideDetailView: View {
                     }
                     HStack(spacing: 16) {
                         Stat(label: "Ascent",
-                             value: String(format: "%.0f", preview.ascentM), unit: "m")
+                             value: String(format: "%.0f",
+                                            Units.elevation(preview.ascentM, miles: useMiles)),
+                             unit: Units.elevLabel(useMiles))
                         Stat(label: "Points", value: "\(preview.points.count)", unit: "")
                     }
 

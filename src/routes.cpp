@@ -28,6 +28,7 @@ struct Maneuver {
 Maneuver maneuvers[MAX_MANEUVERS];
 int nManeuvers = 0;
 int curManeuver = 0;       // next maneuver ahead of the rider
+bool reachedManeuver = false;  // rider has come within range of curManeuver
 bool pendingNav = false;
 bool activeNav = false;
 
@@ -263,12 +264,18 @@ void updateProgress(double lat, double lon) {
     }
     if (bestI > progIdx) progIdx = bestI;
 
-    // Advance the maneuver cursor: once we pass within 20 m of the next
-    // turn, the following one becomes current.
+    // Advance the maneuver cursor only after the rider has reached AND left
+    // the current turn. This keeps the first step visible when navigation
+    // starts (the departure maneuver sits right at the start point, so a
+    // plain "within 20 m" test skipped it instantly).
     if (activeNav && curManeuver < nManeuvers) {
         double d = haversineM(lat, lon, maneuvers[curManeuver].lat,
                               maneuvers[curManeuver].lon);
-        if (d < 20.0) curManeuver++;
+        if (d < 25.0) reachedManeuver = true;
+        if (reachedManeuver && d > 35.0) {
+            curManeuver++;
+            reachedManeuver = false;
+        }
     }
 }
 
@@ -303,6 +310,7 @@ void startNav() {
     if (nManeuvers > 0) {
         activeNav = true;
         curManeuver = 0;
+        reachedManeuver = false;
     }
     pendingNav = false;
 }

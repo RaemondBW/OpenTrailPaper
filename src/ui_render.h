@@ -39,8 +39,9 @@ void valueWithUnit(const EpdFont* valueFont, int x0, int x1, int baselineY,
 }  // namespace ui
 
 // Main ride screen (design 1a: power hero + grid; falls back to a speed
-// hero when no power meter is connected).
-void ui_render_dashboard(const RideState& s, uint8_t* fb);
+// hero when no power meter is connected). When navActive, the top turn
+// banner is showing, so the hero is drawn smaller and below it.
+void ui_render_dashboard(const RideState& s, bool navActive, uint8_t* fb);
 
 // Ride summary (design 1g) with SAVE RIDE / DISCARD touch targets.
 extern const EpdRect kSaveButton;
@@ -63,6 +64,7 @@ struct MenuInfo {
     bool hr = false, pwr = false, cad = false;
     uint8_t batteryPercent = 0;
     double rideDistanceM = 0;
+    bool useMiles = false;
     char routeLine[40] = "no route loaded";
 };
 void ui_render_menu(const MenuInfo& m, uint8_t* fb);
@@ -82,10 +84,13 @@ void ui_render_list(const char* title, const ListRow* rows, int count,
 constexpr int kSettingsMinusX = 220;
 constexpr int kSettingsPlusX = 440;
 constexpr int kSettingsBtn = 84;
+// The settings screen packs more rows than the menu, so it uses a shorter row.
+constexpr int kSettingsRowH = 126;
 struct SettingsInfo {
     int ftpW;
     int tzMin;
     int backlight;   // 0 off .. 3 bright
+    bool useMiles;   // false = km, true = miles
 };
 void ui_render_settings(const SettingsInfo& si, uint8_t* fb);
 
@@ -93,11 +98,12 @@ void ui_render_settings(const SettingsInfo& si, uint8_t* fb);
 extern const EpdRect kBackBar;
 void ui_render_back_bar(uint8_t* fb);
 
-// Settings sub-page row hit-testing. Rows 0-2 are +/- adjusters (FTP,
-// timezone, frontlight); rows 3-4 are navigation.
+// Settings sub-page row hit-testing. Rows 0-3 are +/- adjusters (FTP,
+// timezone, frontlight, units); rows 4-5 are navigation.
 constexpr int kSettingsBacklightRow = 2;
-constexpr int kSettingsSensorsRow = 3;
-constexpr int kSettingsGpsRow = 4;
+constexpr int kSettingsUnitsRow = 3;
+constexpr int kSettingsSensorsRow = 4;
+constexpr int kSettingsGpsRow = 5;
 
 // GPS diagnostics page (reached from Settings). Mirrors GpsDebug from
 // gps_service.h but stays host-safe for the preview harness.
@@ -112,6 +118,8 @@ struct GpsDebugView {
     double lat, lon;
     float altM, speedKmh;
     int hour, minute, second;
+    bool useMiles;
+    const char* module;   // detected chipset name
 };
 void ui_render_gps_debug(const GpsDebugView& g, uint8_t* fb);
 
@@ -133,4 +141,4 @@ void ui_render_nav_prompt(const char* routeName, int turns, uint8_t* fb);
 // Turn-by-turn banner drawn over the top of the map while navigating:
 // distance to the next turn + the instruction, with a direction arrow.
 void ui_render_nav_banner(const char* instruction, float distanceM,
-                          uint8_t* fb);
+                          bool useMiles, uint8_t* fb);

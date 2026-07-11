@@ -16,6 +16,9 @@ void setTzMinutes(int m);
 int backlight();          // 0=off .. 3=bright
 void setBacklight(int b);
 
+bool useMiles();          // false = metric (km), true = imperial (mi/ft/mph)
+void setUseMiles(bool m);
+
 // kind: 0 HR, 1 Power, 2 Cadence (matches ble_sensors). "" = none saved.
 const char* sensorAddr(int kind);
 void setSensorAddr(int kind, const char* addr);

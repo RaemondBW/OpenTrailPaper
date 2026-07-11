@@ -17,6 +17,7 @@
 #include "map_view.h"
 #include "map_tiles.h"
 #include "ble_sensors.h"
+#include "ble_server.h"
 #include "routes.h"
 #include "settings.h"
 
@@ -68,10 +69,7 @@ volatile bool boardBtnIrq = false;   // BOOT edge or expander INT (GPIO38)
 void IRAM_ATTR onTouchIrq() { touchIrq = true; }
 void IRAM_ATTR onBoardBtnIrq() { boardBtnIrq = true; }
 
-// Physical power button (BOOT or the side key): hold 1.5 s for the dialog
-uint32_t powerBtnDownAt = 0;
-bool powerBtnWasDown = false;
-bool powerBtnLongFired = false;
+// Power/shutdown dialog overlay (opened by holding BOOT 1.5 s).
 bool powerOverlay = false;
 
 // Frontlight: 4 levels cycled by the GPIO48 button.
@@ -206,6 +204,24 @@ void goBack() {
     }
 }
 
+// BOOT short-press: start a ride, or stop it (via the save/discard summary).
+void toggleRide() {
+    if (ride_recorder::isRecording()) {
+        pendingSummary = ride_recorder::summary();
+        screen = SCREEN_SUMMARY;
+    } else {
+        ride_recorder::startRide();
+        screen = SCREEN_DASH;
+    }
+}
+
+// Side-key short-press: step the frontlight Off -> Low -> Med -> Bright -> Off.
+void cycleFrontlight() {
+    int next = (settings::backlight() + 1) & 3;
+    settings::setBacklight(next);
+    applyBacklight(next);
+}
+
 void handleTap(int x, int y) {
     // The "Start navigation?" prompt owns every tap while it is up. START
     // begins navigation; any other tap dismisses it, so it can never trap
@@ -327,10 +343,10 @@ void handleTap(int x, int y) {
             screen = SCREEN_MENU;
             break;
         case SCREEN_SETTINGS: {
-            int row = (y - kMenuRowTop) / kMenuRowH;
+            int row = (y - kMenuRowTop) / kSettingsRowH;
             bool minus = x >= kSettingsMinusX && x < kSettingsMinusX + kSettingsBtn;
             bool plus = x >= kSettingsPlusX && x < kSettingsPlusX + kSettingsBtn;
-            if (y >= kMenuRowTop && row >= 0 && row < 3 && (minus || plus)) {
+            if (y >= kMenuRowTop && row >= 0 && row < 4 && (minus || plus)) {
                 int dir = plus ? 1 : -1;
                 if (row == 0) settings::setFtpWatts(settings::ftpWatts() + dir * 5);
                 if (row == 1) settings::setTzMinutes(settings::tzMinutes() + dir * 30);
@@ -338,10 +354,15 @@ void handleTap(int x, int y) {
                     settings::setBacklight(settings::backlight() + dir);
                     applyBacklight(settings::backlight());
                 }
+                if (row == kSettingsUnitsRow) {   // either button toggles
+                    settings::setUseMiles(!settings::useMiles());
+                }
                 g_state.with([](RideState& st) {
                     st.ftpW = (uint16_t)settings::ftpWatts();
                     st.tzMin = (int16_t)settings::tzMinutes();
+                    st.useMiles = settings::useMiles();
                 });
+                ble_server::pushSettingsToPhone();   // mirror the edit to the app
             } else if (y >= kMenuRowTop && row == kSettingsSensorsRow) {
                 sensorsFrom = SCREEN_SETTINGS;
                 enterSensors();
@@ -420,7 +441,7 @@ void drawNavBanner(uint8_t* fb) {
     char instr[routes::MANEUVER_TEXT];
     float dist = 0;
     if (routes::nextTurn(instr, sizeof(instr), dist)) {
-        ui_render_nav_banner(instr, dist, fb);
+        ui_render_nav_banner(instr, dist, settings::useMiles(), fb);
     }
 }
 
@@ -480,8 +501,9 @@ void renderListScreen(uint8_t* fb) {
             if (routes::active()) {
                 snprintf(rows[0].title, sizeof(rows[0].title), "Clear route");
                 snprintf(rows[0].subtitle, sizeof(rows[0].subtitle),
-                         "%s · %.1f km left", routes::activeName(),
-                         routes::remainingKm());
+                         "%s · %.1f %s left", routes::activeName(),
+                         units::dist(routes::remainingKm(), settings::useMiles()),
+                         settings::useMiles() ? "mi" : "km");
                 rows[0].inverted = true;
                 base = 1;
             }
@@ -537,6 +559,12 @@ bool begin() {
     pinMode(BOARD_BL_EN, OUTPUT);
     applyBacklight(settings::backlight());
 
+    // Deep-sleep shutdown latches the touch RST pin LOW (gpio_hold) to keep
+    // the GT911 in reset. Release that hold on boot, or after a wake the
+    // controller stays reset and touch never works (can't reach map/settings).
+    gpio_hold_dis((gpio_num_t)BOARD_TOUCH_RST);
+    gpio_deep_sleep_hold_dis();
+
     touch.setPins(BOARD_TOUCH_RST, BOARD_TOUCH_INT);
     touchOk = touch.begin(Wire, GT911_SLAVE_ADDRESS_L, BOARD_SDA, BOARD_SCL);
     if (!touchOk) Serial.println("[ui] GT911 touch not found");
@@ -580,34 +608,53 @@ void task(void*) {
     bool lastNavPrompt = false;
 
     for (;;) {
-        // Front button (BOOT / GPIO0) or the side key: a short press goes
-        // back one screen; holding 1.5 s brings up the power dialog.
-        // Interrupt-driven: the I2C expander read only runs when the INT
-        // fired, while a press is in progress (for hold timing), or on a
-        // slow fallback tick. Two consecutive LOW reads debounce noise.
+        // Apply a frontlight level changed from the phone (BLE writes NVS but
+        // not the PWM). Also covers the device's own +/- which already applied.
+        static int lastBl = -1;
+        if (settings::backlight() != lastBl) {
+            lastBl = settings::backlight();
+            applyBacklight(lastBl);
+        }
+
+        // Left-side physical buttons, each with its own debounce/hold state.
+        // BOOT (GPIO0): short press starts/stops the ride, hold 1.5 s opens the
+        // power dialog. Side key (expander PC12): short press cycles the
+        // frontlight. Interrupt-driven, with a 200 ms fallback poll; two
+        // consecutive LOW reads debounce noise.
         {
-            static int btnLow = 0;
-            static uint32_t lastBtnPoll = 0;
-            if (boardBtnIrq || btnLow > 0 || millis() - lastBtnPoll > 200) {
-                boardBtnIrq = false;
-                lastBtnPoll = millis();
-                bool raw = digitalRead(BOARD_BOOT_BTN) == LOW ||
-                           board_side_button_pressed();
-                if (raw) {
-                    if (btnLow < 200) btnLow++;
-                    if (btnLow == 2) {             // debounced press start
-                        powerBtnDownAt = millis();
-                        powerBtnLongFired = false;
-                    } else if (btnLow > 2 && !powerBtnLongFired && !powerOverlay &&
-                               millis() - powerBtnDownAt > 1500) {
-                        powerBtnLongFired = true;
-                        powerOverlay = true;
+            bool irq = boardBtnIrq;
+            boardBtnIrq = false;
+
+            static int bootLow = 0;
+            static uint32_t bootDownAt = 0, bootPoll = 0;
+            static bool bootLong = false;
+            if (irq || bootLow > 0 || millis() - bootPoll > 200) {
+                bootPoll = millis();
+                if (digitalRead(BOARD_BOOT_BTN) == LOW) {
+                    if (bootLow < 200) bootLow++;
+                    if (bootLow == 2) {            // debounced press start
+                        bootDownAt = millis();
+                        bootLong = false;
+                    } else if (bootLow > 2 && !bootLong && !powerOverlay &&
+                               millis() - bootDownAt > 1500) {
+                        bootLong = true;
+                        powerOverlay = true;       // hold -> power dialog
                     }
                 } else {
-                    if (btnLow >= 2 && !powerBtnLongFired) {
-                        goBack();  // clean short press released
-                    }
-                    btnLow = 0;
+                    if (bootLow >= 2 && !bootLong) toggleRide();  // clean short press
+                    bootLow = 0;
+                }
+            }
+
+            static int sideLow = 0;
+            static uint32_t sidePoll = 0;
+            if (irq || sideLow > 0 || millis() - sidePoll > 200) {
+                sidePoll = millis();
+                if (board_side_button_pressed()) {
+                    if (sideLow < 200) sideLow++;
+                } else {
+                    if (sideLow >= 2) cycleFrontlight();
+                    sideLow = 0;
                 }
             }
         }
@@ -668,7 +715,7 @@ void task(void*) {
             memset(fb, 0xFF, epd_width() / 2 * epd_height());
             switch (screen) {
                 case SCREEN_DASH:
-                    ui_render_dashboard(s, fb);
+                    ui_render_dashboard(s, routes::navActive(), fb);
                     drawNavBanner(fb);  // turn cue on the data page too
                     break;
                 case SCREEN_MAP: renderMapScreen(s, fb); break;
@@ -685,10 +732,12 @@ void task(void*) {
                     m.cad = s.cadenceConnected;
                     m.batteryPercent = s.batteryPercent;
                     m.rideDistanceM = s.distanceM;
+                    m.useMiles = s.useMiles;
                     if (routes::active()) {
                         snprintf(m.routeLine, sizeof(m.routeLine),
-                                 "%s · %.1f km left", routes::activeName(),
-                                 routes::remainingKm());
+                                 "%s · %.1f %s left", routes::activeName(),
+                                 units::dist(routes::remainingKm(), s.useMiles),
+                                 s.useMiles ? "mi" : "km");
                     } else {
                         snprintf(m.routeLine, sizeof(m.routeLine),
                                  "no route loaded");
@@ -703,7 +752,7 @@ void task(void*) {
                     break;
                 case SCREEN_SETTINGS: {
                     SettingsInfo si{settings::ftpWatts(), settings::tzMinutes(),
-                                    settings::backlight()};
+                                    settings::backlight(), settings::useMiles()};
                     ui_render_settings(si, fb);
                     break;
                 }
@@ -712,6 +761,7 @@ void task(void*) {
                     gps_service::getDebug(d);
                     GpsDebugView v;
                     v.moduleDetected = d.moduleDetected;
+                    v.module = gps_service::moduleName();
                     v.chars = d.chars;
                     v.passedCksum = d.passedCksum;
                     v.failedCksum = d.failedCksum;
@@ -729,6 +779,7 @@ void task(void*) {
                     v.hour = d.hour;
                     v.minute = d.minute;
                     v.second = d.second;
+                    v.useMiles = settings::useMiles();
                     ui_render_gps_debug(v, fb);
                     break;
                 }

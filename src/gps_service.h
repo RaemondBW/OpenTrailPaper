@@ -5,6 +5,7 @@
 // Feeds TinyGPSPlus and publishes fixes into g_state.
 
 #include <cstdint>
+#include <ctime>
 
 // Raw receiver diagnostics for the GPS debug page.
 struct GpsDebug {
@@ -31,6 +32,17 @@ void getDebug(GpsDebug& out);
 // Powers the GPS rail (via IO expander, done in main) must happen first.
 // Returns false if no module responded; the task is safe to start anyway.
 bool begin();
+
+// Detected chipset name for the GPS debug page ("CASIC", "u-blox", or "none").
+const char* moduleName();
+
+// AGPS warm-start seed: tell the receiver roughly where and when it is so it
+// only searches the satellites actually overhead (cold -> warm start). Pass a
+// last-known position; set haveTime only when `utc` is genuinely current (a
+// stale time hurts more than it helps). Safe to call any time — used at boot
+// with the saved NVS position and from the phone with a fresh CoreLocation fix.
+void injectAiding(double lat, double lon, time_t utc, bool haveTime,
+                  float posAccM, float timeAccS);
 
 // FreeRTOS task: pumps NMEA into the parser and updates shared state.
 void task(void* arg);

@@ -26,6 +26,8 @@ TinyGPSCustom gpgsvSnr2(gps, "GPGSV", 15);
 TinyGPSCustom gpgsvSnr3(gps, "GPGSV", 19);
 int bestSnr = 0;
 bool moduleDetected = false;
+enum GpsKind { GPS_NONE, GPS_CASIC, GPS_UBLOX };
+GpsKind moduleKind = GPS_NONE;
 
 // Smoothed heading state (EMA over the course unit vector).
 float headX = 0, headY = 0;
@@ -93,8 +95,9 @@ bool begin() {
     delay(100);
 
     if (initL76K()) {
-        Serial.println("[gps] L76K initialized @9600");
+        Serial.println("[gps] CASIC/L76K initialized @9600");
         moduleDetected = true;
+        moduleKind = GPS_CASIC;
         return true;
     }
 
@@ -104,6 +107,7 @@ bool begin() {
     if (waitForBytes(2000)) {
         Serial.println("[gps] u-blox M10Q detected @38400");
         moduleDetected = true;
+        moduleKind = GPS_UBLOX;
         return true;
     }
 
@@ -116,6 +120,109 @@ bool begin() {
 
     Serial.println("[gps] no module detected");
     return false;
+}
+
+const char* moduleName() {
+    switch (moduleKind) {
+        case GPS_CASIC: return "CASIC";
+        case GPS_UBLOX: return "u-blox";
+        default: return moduleDetected ? "NMEA" : "none";
+    }
+}
+
+namespace {
+
+// GPS epoch 1980-01-06 = unix 315964800; GPS is ahead of UTC by the leap
+// second count (18 since 2017, valid through at least 2025).
+constexpr uint32_t GPS_UNIX_EPOCH = 315964800;
+constexpr int GPS_UTC_LEAP = 18;
+
+// CASIC AID-INI (class 0x0B id 0x01): position (deg) + optional time seed.
+// Frame: BA CE | len(u16) | cls | id | payload[56] | cksum(u32). Little-endian.
+void sendCasicAidIni(double lat, double lon, double tow, uint16_t wn,
+                     float pAcc, float tAcc, uint8_t flags) {
+    uint8_t payload[56] = {0};
+    double alt = 0;
+    memcpy(payload + 0, &lat, 8);
+    memcpy(payload + 8, &lon, 8);
+    memcpy(payload + 16, &alt, 8);
+    memcpy(payload + 24, &tow, 8);
+    memcpy(payload + 36, &pAcc, 4);   // +32 freqBias left 0
+    memcpy(payload + 40, &tAcc, 4);   // +44 fAcc, +48 res left 0
+    memcpy(payload + 52, &wn, 2);
+    payload[54] = 0;                  // timeSource
+    payload[55] = flags;
+
+    uint8_t frame[66];
+    frame[0] = 0xBA; frame[1] = 0xCE;
+    uint16_t len = 56;
+    memcpy(frame + 2, &len, 2);
+    frame[4] = 0x0B; frame[5] = 0x01;
+    memcpy(frame + 6, payload, 56);
+    // Checksum: first word = len | (cls<<16) | (id<<24), then each payload word.
+    uint32_t ck = (uint32_t)len | ((uint32_t)0x0B << 16) | ((uint32_t)0x01 << 24);
+    for (int i = 0; i < 56; i += 4) {
+        ck += (uint32_t)payload[i] | ((uint32_t)payload[i + 1] << 8) |
+              ((uint32_t)payload[i + 2] << 16) | ((uint32_t)payload[i + 3] << 24);
+    }
+    memcpy(frame + 62, &ck, 4);
+    SerialGPS.write(frame, sizeof(frame));
+}
+
+// u-blox UBX frame: B5 62 | cls | id | len(u16) | payload | Fletcher CK_A CK_B.
+void sendUbx(uint8_t cls, uint8_t id, const uint8_t* payload, uint16_t len) {
+    uint8_t hdr[6] = {0xB5, 0x62, cls, id, (uint8_t)(len & 0xFF), (uint8_t)(len >> 8)};
+    SerialGPS.write(hdr, 6);
+    if (len) SerialGPS.write(payload, len);
+    uint8_t a = 0, b = 0;
+    for (int i = 2; i < 6; ++i) { a += hdr[i]; b += a; }
+    for (int i = 0; i < len; ++i) { a += payload[i]; b += a; }
+    uint8_t ck[2] = {a, b};
+    SerialGPS.write(ck, 2);
+}
+
+}  // namespace
+
+void injectAiding(double lat, double lon, time_t utc, bool haveTime,
+                  float posAccM, float timeAccS) {
+    if (moduleKind == GPS_CASIC) {
+        double tow = 0;
+        uint16_t wn = 0;
+        uint8_t flags = 0x01 | 0x20 | 0x40;   // pos valid | LLA (degrees) | alt invalid
+        if (haveTime) {
+            uint32_t gs = (uint32_t)(utc - GPS_UNIX_EPOCH) + GPS_UTC_LEAP;
+            wn = gs / 604800;
+            tow = gs % 604800;
+            flags |= 0x02;                    // time valid
+        }
+        sendCasicAidIni(lat, lon, tow, wn, posAccM, timeAccS, flags);
+        Serial.printf("[gps] CASIC AID-INI: %.5f,%.5f time=%d\n", lat, lon, haveTime);
+    } else if (moduleKind == GPS_UBLOX) {
+        if (haveTime) {                       // MGA-INI-TIME_UTC (type 0x10, len 24)
+            struct tm t;
+            time_t u = utc;
+            gmtime_r(&u, &t);
+            uint8_t p[24] = {0};
+            p[0] = 0x10; p[2] = 0x00; p[3] = (uint8_t)GPS_UTC_LEAP;
+            uint16_t yr = t.tm_year + 1900;
+            memcpy(p + 4, &yr, 2);
+            p[6] = t.tm_mon + 1; p[7] = t.tm_mday;
+            p[8] = t.tm_hour; p[9] = t.tm_min; p[10] = t.tm_sec;
+            uint16_t tAccS = (uint16_t)(timeAccS + 0.5f);
+            memcpy(p + 16, &tAccS, 2);
+            sendUbx(0x13, 0x40, p, 24);       // time before position
+        }
+        uint8_t p[20] = {0};                  // MGA-INI-POS_LLH (type 0x01, len 20)
+        p[0] = 0x01;
+        int32_t latE7 = (int32_t)llround(lat * 1e7);
+        int32_t lonE7 = (int32_t)llround(lon * 1e7);
+        uint32_t accCm = (uint32_t)(posAccM * 100.0f);
+        memcpy(p + 4, &latE7, 4);
+        memcpy(p + 8, &lonE7, 4);             // +12 alt left 0
+        memcpy(p + 16, &accCm, 4);
+        sendUbx(0x13, 0x40, p, 20);
+        Serial.printf("[gps] u-blox MGA-INI: %.5f,%.5f time=%d\n", lat, lon, haveTime);
+    }
 }
 
 void task(void*) {
@@ -193,6 +300,19 @@ void task(void*) {
         if (gps.location.isValid() && millis() - lastPosSave > 300000) {
             lastPosSave = millis();
             settings::setLastPosition(gps.location.lat(), gps.location.lng());
+        }
+
+        // Keep the ESP32 system clock in sync with GPS time. It survives deep
+        // sleep, so after a shutdown/wake we can seed the receiver with an
+        // accurate time (warm start) even before the first fix.
+        static uint32_t lastClockSet = 0;
+        if (gps.date.isValid() && gps.time.isValid() && gps.date.year() >= 2025 &&
+            millis() - lastClockSet > 60000) {
+            lastClockSet = millis();
+            struct timeval tv = {toUnix(gps.date.year(), gps.date.month(),
+                                        gps.date.day(), gps.time.hour(),
+                                        gps.time.minute(), gps.time.second()), 0};
+            settimeofday(&tv, nullptr);
         }
 
         vTaskDelay(pdMS_TO_TICKS(50));

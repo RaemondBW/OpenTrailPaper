@@ -4,6 +4,7 @@ import SwiftUI
 // over BLE. Mirrors the head unit's dashboard at a glance.
 struct RideView: View {
     @EnvironmentObject var ble: BLEManager
+    @AppStorage(UnitPref.key) private var useMiles = false
 
     var body: some View {
         NavigationStack {
@@ -13,8 +14,9 @@ struct RideView: View {
 
                     let s = ble.status
                     HStack(spacing: 16) {
-                        Stat(label: "Speed", value: String(format: "%.1f", s.speedKmh),
-                             unit: "km/h", big: true)
+                        Stat(label: "Speed",
+                             value: String(format: "%.1f", Units.speed(s.speedKmh, miles: useMiles)),
+                             unit: Units.speedLabel(useMiles), big: true)
                         Stat(label: "Battery", value: "\(s.battery)", unit: "%")
                     }
                     HStack(spacing: 16) {
@@ -39,7 +41,9 @@ struct RideView: View {
                         Card {
                             VStack(alignment: .leading, spacing: 6) {
                                 Text("Active route").trackedLabel()
-                                Text(String(format: "%.1f km remaining", s.remainingKm))
+                                Text(String(format: "%.1f %@ remaining",
+                                            Units.distance(s.remainingKm, miles: useMiles),
+                                            Units.distLabel(useMiles)))
                                     .font(TypeScale.value(28))
                                     .foregroundStyle(Palette.ink)
                             }

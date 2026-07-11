@@ -11,6 +11,7 @@ Preferences prefs;
 int ftp = FTP_WATTS;
 int tz = TIMEZONE_OFFSET_MINUTES;
 int bl = 2;  // frontlight level 0-3
+bool miles = false;  // false = km, true = miles
 char addrs[3][18] = {"", "", ""};
 double lastLat = 0, lastLon = 0;
 const char* KEYS[3] = {"sens_hr", "sens_pwr", "sens_cad"};
@@ -24,6 +25,7 @@ void begin() {
     ftp = prefs.getInt("ftp", FTP_WATTS);
     tz = prefs.getInt("tz", TIMEZONE_OFFSET_MINUTES);
     bl = prefs.getInt("bl", 2);
+    miles = prefs.getBool("miles", false);
     for (int k = 0; k < 3; ++k) {
         prefs.getString(KEYS[k], addrs[k], sizeof(addrs[k]));
     }
@@ -49,6 +51,12 @@ int backlight() { return bl; }
 void setBacklight(int b) {
     bl = constrain(b, 0, 3);
     prefs.putInt("bl", bl);
+}
+
+bool useMiles() { return miles; }
+void setUseMiles(bool m) {
+    miles = m;
+    prefs.putBool("miles", miles);
 }
 
 const char* sensorAddr(int kind) {

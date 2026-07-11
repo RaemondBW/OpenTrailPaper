@@ -88,3 +88,25 @@ extension Color {
             opacity: 1)
     }
 }
+
+// Display-unit conversions. Ride data is stored/decoded in metric; these
+// convert only at display time based on the user's preference. The shared
+// preference key is read via @AppStorage(UnitPref.key) in each view.
+enum UnitPref {
+    static let key = "useMiles"
+}
+
+enum Units {
+    static func distance(_ km: Double, miles: Bool) -> Double {
+        miles ? km * 0.621371 : km
+    }
+    static func speed(_ kmh: Double, miles: Bool) -> Double {
+        miles ? kmh * 0.621371 : kmh
+    }
+    static func elevation(_ m: Double, miles: Bool) -> Double {
+        miles ? m * 3.28084 : m
+    }
+    static func distLabel(_ miles: Bool) -> String { miles ? "mi" : "km" }
+    static func speedLabel(_ miles: Bool) -> String { miles ? "mph" : "km/h" }
+    static func elevLabel(_ miles: Bool) -> String { miles ? "ft" : "m" }
+}

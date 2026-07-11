@@ -1,6 +1,7 @@
 import Foundation
 import CoreBluetooth
 import Combine
+import CryptoKit
 
 // GATT UUIDs — must match src/ble_server.cpp on the device.
 enum BikeUUID {
@@ -9,6 +10,7 @@ enum BikeUUID {
     static let status   = CBUUID(string: "B1C50002-9E0F-4B7A-9C6D-1F2E3A4B5C6D")
     static let route    = CBUUID(string: "B1C50003-9E0F-4B7A-9C6D-1F2E3A4B5C6D")
     static let rides    = CBUUID(string: "B1C50004-9E0F-4B7A-9C6D-1F2E3A4B5C6D")
+    static let ota      = CBUUID(string: "B1C50005-9E0F-4B7A-9C6D-1F2E3A4B5C6D")
 }
 
 // A recorded ride file on the device.
@@ -39,6 +41,7 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var status = DeviceStatus()
     @Published var ftpWatts = 250
     @Published var tzMinutes = -420
+    @Published var backlight = 2        // 0 off .. 3 bright (mirrors device)
     @Published var lastUploadProgress: Double? = nil   // 0...1 while sending
     @Published var lastMessage: String? = nil
 
@@ -48,6 +51,13 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var downloadingName: String? = nil
     @Published var downloadProgress: Double = 0
     @Published var downloadedFileURL: URL? = nil       // set when a ride is ready
+
+    // Firmware / OTA
+    @Published var deviceFirmware: String = ""      // running version on the device
+    @Published var otaInProgress = false
+    @Published var otaProgress: Double = 0
+    @Published var otaMessage: String? = nil
+    static let bundledFirmwareVersion = "v0.5"      // matches src/config.h
 
     // Saved routes on the device
     @Published var deviceRoutes: [String] = []
@@ -59,11 +69,18 @@ final class BLEManager: NSObject, ObservableObject {
     private var statusChar: CBCharacteristic?
     private var routeChar: CBCharacteristic?
     private var ridesChar: CBCharacteristic?
+    private var otaChar: CBCharacteristic?
 
     private var dlBuffer = Data()
     private var dlExpected = 0
     private var dlName = ""
     private var dlNextSeq: UInt16 = 0
+
+    // OTA transfer state
+    private var otaData = Data()
+    private var otaOffset = 0
+    private var otaChunk = 180
+    private var otaCommitSent = false
 
     override init() {
         super.init()
@@ -82,13 +99,26 @@ final class BLEManager: NSObject, ObservableObject {
 
     // MARK: settings
 
+    // Auto-sync: any app-side settings edit goes to these setters, which update
+    // the mirror and immediately push to the device. Values arriving FROM the
+    // device (parseSettings) set the @Published fields directly, so they never
+    // echo back.
+    func setFtp(_ v: Int) { ftpWatts = v; pushSettings() }
+    func setTz(_ v: Int) { tzMinutes = v; pushSettings() }
+    func setBacklight(_ v: Int) { backlight = v; pushSettings() }
+    func setUseMiles(_ v: Bool) {
+        UserDefaults.standard.set(v, forKey: UnitPref.key)
+        pushSettings()
+    }
+
     func pushSettings() {
         guard let c = settingsChar, let p = peripheral else { return }
         var payload = Data()
         payload.appendLE(Int16(ftpWatts))
         payload.appendLE(Int16(tzMinutes))
+        payload.append(UserDefaults.standard.bool(forKey: UnitPref.key) ? 1 : 0)
+        payload.append(UInt8(clamping: backlight))
         p.writeValue(payload, for: c, type: .withResponse)
-        lastMessage = "Settings sent"
     }
 
     // MARK: rides (device -> phone)
@@ -101,11 +131,89 @@ final class BLEManager: NSObject, ObservableObject {
     }
 
     func deleteRide(_ name: String) {
-        guard let c = ridesChar, let p = peripheral else { return }
         rides.removeAll { $0.name == name }
         try? FileManager.default.removeItem(at: BLEManager.cachedURL(for: name))
+        // Offline: just drop the local cache. Connected: also delete on device.
+        guard let c = ridesChar, let p = peripheral else { return }
         var cmd = Data([0x03]); cmd.append(Data(name.utf8))
         p.writeValue(cmd, for: c, type: .withResponse)
+    }
+
+    // MARK: firmware / OTA
+
+    var updateAvailable: Bool {
+        !deviceFirmware.isEmpty && deviceFirmware != BLEManager.bundledFirmwareVersion
+    }
+
+    func queryDeviceFirmware() {
+        guard let c = otaChar, let p = peripheral else { return }
+        p.writeValue(Data([0x05]), for: c, type: .withResponse)
+    }
+
+    // Stream the app-bundled firmware.bin into the device's spare OTA slot.
+    func startFirmwareUpdate() {
+        guard let c = otaChar, let p = peripheral else {
+            otaMessage = "Not connected"; return
+        }
+        guard let url = Bundle.main.url(forResource: "firmware", withExtension: "bin"),
+              let data = try? Data(contentsOf: url) else {
+            otaMessage = "Bundled firmware missing"; return
+        }
+        otaData = data
+        otaOffset = 0
+        otaCommitSent = false
+        otaInProgress = true
+        otaProgress = 0
+        otaMessage = "Preparing…"
+        otaChunk = max(20, p.maximumWriteValueLength(for: .withoutResponse)) - 1
+
+        // begin: [0x01][u32 size][32-char md5 hex]
+        var cmd = Data([0x01])
+        var size = UInt32(data.count).littleEndian
+        withUnsafeBytes(of: &size) { cmd.append(contentsOf: $0) }
+        let md5 = Insecure.MD5.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        cmd.append(Data(md5.utf8))
+        p.writeValue(cmd, for: c, type: .withResponse)
+    }
+
+    // Push firmware chunks as fast as CoreBluetooth allows using
+    // write-without-response (many packets per connection interval). Pauses
+    // when the send queue is full and resumes from peripheralIsReady.
+    private func pumpOtaChunks() {
+        guard otaInProgress, let c = otaChar, let p = peripheral else { return }
+        while otaOffset < otaData.count {
+            guard p.canSendWriteWithoutResponse else { return }   // resume later
+            let end = min(otaOffset + otaChunk, otaData.count)
+            var pkt = Data([0x02])
+            pkt.append(otaData.subdata(in: otaOffset..<end))
+            otaOffset = end
+            otaProgress = Double(otaOffset) / Double(otaData.count)
+            p.writeValue(pkt, for: c, type: .withoutResponse)
+        }
+        if !otaCommitSent {                                        // all data sent
+            otaCommitSent = true
+            p.writeValue(Data([0x03]), for: c, type: .withResponse)   // commit
+            otaMessage = "Verifying…"
+        }
+    }
+
+    private func handleOtaNotify(_ d: Data) {
+        guard let op = d.first else { return }
+        switch op {
+        case 0xA3:                                   // running version
+            deviceFirmware = String(decoding: d[1...], as: UTF8.self)
+        case 0xA0: otaMessage = "Sending…"; pumpOtaChunks()   // device ready
+        case 0xA1:                                   // success (device rebooting)
+            otaInProgress = false; otaProgress = 1
+            otaMessage = "Update complete — device rebooting"
+            deviceFirmware = BLEManager.bundledFirmwareVersion
+        case 0xA2: otaInProgress = false; otaMessage = "Update canceled"
+        case 0xAF:                                   // error
+            otaInProgress = false
+            let code = d.count > 1 ? Int(d[1]) : -1
+            otaMessage = "Update failed (error \(code)) — device unchanged"
+        default: break
+        }
     }
 
     func refreshRoutes() {
@@ -203,6 +311,18 @@ final class BLEManager: NSObject, ObservableObject {
     }
     static func isCached(_ name: String) -> Bool {
         FileManager.default.fileExists(atPath: cachedURL(for: name).path)
+    }
+    // Rides already downloaded to this phone — available offline.
+    static func cachedRides() -> [RideFile] {
+        let urls = (try? FileManager.default.contentsOfDirectory(
+            at: ridesCacheDir, includingPropertiesForKeys: [.fileSizeKey])) ?? []
+        return urls
+            .filter { $0.pathExtension.lowercased() == "fit" }
+            .map { url in
+                let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+                return RideFile(name: url.lastPathComponent, size: size)
+            }
+            .sorted { $0.name > $1.name }   // newest first
     }
 
     private func finishDownload() {
@@ -319,7 +439,7 @@ extension BLEManager: CBPeripheralDelegate {
         for s in p.services ?? [] where s.uuid == BikeUUID.service {
             p.discoverCharacteristics(
                 [BikeUUID.settings, BikeUUID.status, BikeUUID.route,
-                 BikeUUID.rides], for: s)
+                 BikeUUID.rides, BikeUUID.ota], for: s)
         }
     }
 
@@ -330,18 +450,39 @@ extension BLEManager: CBPeripheralDelegate {
             for ch in s.characteristics ?? [] {
                 switch ch.uuid {
                 case BikeUUID.settings:
-                    settingsChar = ch; p.readValue(for: ch)
+                    settingsChar = ch
+                    p.readValue(for: ch)
+                    p.setNotifyValue(true, for: ch)   // live device-side edits
+
                 case BikeUUID.status:
                     statusChar = ch; p.setNotifyValue(true, for: ch)
                 case BikeUUID.route:
                     routeChar = ch; p.setNotifyValue(true, for: ch)
                 case BikeUUID.rides:
                     ridesChar = ch; p.setNotifyValue(true, for: ch)
+                case BikeUUID.ota:
+                    otaChar = ch; p.setNotifyValue(true, for: ch)
                 default: break
                 }
             }
             state = .connected
         }
+    }
+
+    // The version reply comes back as a notification, so only ask once the OTA
+    // characteristic's notifications are actually enabled (otherwise the reply
+    // is dropped and the app never learns the device firmware version).
+    nonisolated func peripheral(_ p: CBPeripheral,
+                                didUpdateNotificationStateFor ch: CBCharacteristic,
+                                error: Error?) {
+        MainActor.assumeIsolated {
+            if ch.uuid == BikeUUID.ota { queryDeviceFirmware() }
+        }
+    }
+
+    // CoreBluetooth's send queue drained — push more firmware chunks.
+    nonisolated func peripheralIsReady(toSendWriteWithoutResponse p: CBPeripheral) {
+        MainActor.assumeIsolated { pumpOtaChunks() }
     }
 
     nonisolated func peripheral(_ p: CBPeripheral,
@@ -354,6 +495,7 @@ extension BLEManager: CBPeripheralDelegate {
             case BikeUUID.settings: parseSettings(data)
             case BikeUUID.rides: handleRidesNotify(data)
             case BikeUUID.route: handleRouteNotify(data)
+            case BikeUUID.ota: handleOtaNotify(data)
             default: break
             }
         }
@@ -376,10 +518,16 @@ extension BLEManager: CBPeripheralDelegate {
         status = s
     }
 
+    // Values pushed from the device (on connect, or when edited on the unit).
+    // Set the mirror fields directly — no push back.
     private func parseSettings(_ d: Data) {
         guard d.count >= 4 else { return }
         ftpWatts = Int(Int16(bitPattern: UInt16(d[0]) | (UInt16(d[1]) << 8)))
         tzMinutes = Int(Int16(bitPattern: UInt16(d[2]) | (UInt16(d[3]) << 8)))
+        if d.count >= 6 {
+            UserDefaults.standard.set(d[4] != 0, forKey: UnitPref.key)
+            backlight = Int(d[5])
+        }
     }
 }
 

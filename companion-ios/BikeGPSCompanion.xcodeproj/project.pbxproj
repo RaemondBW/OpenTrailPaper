@@ -14,12 +14,15 @@
 		66DA8F56B10214B148939ADA /* RouteView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33F9FE9BEBAAA7755652F133 /* RouteView.swift */; };
 		68E61DE93629DD4481BB8FAE /* BikeGPSCompanionApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36D2B7A04F9D2AB7171161FA /* BikeGPSCompanionApp.swift */; };
 		7801C9A5D7DE45C654CF72D9 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17822C740E6235705595201F /* Theme.swift */; };
+		7AF8E9C4FB19879DEC2AD2A0 /* demo.fit in Resources */ = {isa = PBXBuildFile; fileRef = C3696DA5A82601A862AE2EC2 /* demo.fit */; };
+		7D41105531AE1202B2D817F1 /* firmware.bin in Resources */ = {isa = PBXBuildFile; fileRef = 14E464ED0804B19DDBEC4745 /* firmware.bin */; };
 		9176980BABF604ABA9659708 /* RideDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EDAC3AF1A02980A1CEB9145 /* RideDetailView.swift */; };
 		DD5AF628B5DC8DCC6F9D5381 /* FITDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 836E0AABD268231ABD6B03E4 /* FITDecoder.swift */; };
 		FD7612579D7DAD95AD2CFE2D /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2081EBB94E5008A25AF17D2C /* SettingsView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		14E464ED0804B19DDBEC4745 /* firmware.bin */ = {isa = PBXFileReference; lastKnownFileType = archive.macbinary; path = firmware.bin; sourceTree = "<group>"; };
 		17822C740E6235705595201F /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		2081EBB94E5008A25AF17D2C /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		33F9FE9BEBAAA7755652F133 /* RouteView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RouteView.swift; sourceTree = "<group>"; };
@@ -28,6 +31,7 @@
 		4EDAC3AF1A02980A1CEB9145 /* RideDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RideDetailView.swift; sourceTree = "<group>"; };
 		836E0AABD268231ABD6B03E4 /* FITDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FITDecoder.swift; sourceTree = "<group>"; };
 		9165B98C67EE602CB6416ECC /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		C3696DA5A82601A862AE2EC2 /* demo.fit */ = {isa = PBXFileReference; path = demo.fit; sourceTree = "<group>"; };
 		CCD8003BE2453F3EDA25ED31 /* RidesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RidesView.swift; sourceTree = "<group>"; };
 		DD543402D2E35FD58BA55A8E /* BLEManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BLEManager.swift; sourceTree = "<group>"; };
 		DDB79DC111504015EA01A183 /* GPXExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GPXExporter.swift; sourceTree = "<group>"; };
@@ -40,6 +44,8 @@
 			children = (
 				36D2B7A04F9D2AB7171161FA /* BikeGPSCompanionApp.swift */,
 				DD543402D2E35FD58BA55A8E /* BLEManager.swift */,
+				C3696DA5A82601A862AE2EC2 /* demo.fit */,
+				14E464ED0804B19DDBEC4745 /* firmware.bin */,
 				836E0AABD268231ABD6B03E4 /* FITDecoder.swift */,
 				DDB79DC111504015EA01A183 /* GPXExporter.swift */,
 				9165B98C67EE602CB6416ECC /* Info.plist */,
@@ -77,6 +83,7 @@
 			buildConfigurationList = 6038210508765517B64857BB /* Build configuration list for PBXNativeTarget "BikeGPSCompanion" */;
 			buildPhases = (
 				492D858DF48F494AA648B73A /* Sources */,
+				9838F248DEB4AB0BF7428DDC /* Resources */,
 			);
 			buildRules = (
 			);
@@ -122,6 +129,18 @@
 			);
 		};
 /* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		9838F248DEB4AB0BF7428DDC /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				7AF8E9C4FB19879DEC2AD2A0 /* demo.fit in Resources */,
+				7D41105531AE1202B2D817F1 /* firmware.bin in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		492D858DF48F494AA648B73A /* Sources */ = {

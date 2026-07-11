@@ -48,6 +48,7 @@ struct RideState {
     // Rider config (mirrored from settings so renderers stay host-safe)
     uint16_t ftpW = 250;
     int16_t  tzMin = -420;
+    bool     useMiles = false;   // display units: false = km, true = miles
 };
 
 // End-of-ride stats for the summary screen (design 1g).
@@ -63,7 +64,20 @@ struct RideSummary {
     time_t   startUtc = 0;
     time_t   endUtc = 0;
     int16_t  tzMin = -420;
+    bool     useMiles = false;
 };
+
+// Metric <-> imperial display helpers. Host-safe (used by the preview harness
+// too). Storage is always metric; these convert only at render time.
+namespace units {
+inline double dist(double km, bool miles)  { return miles ? km * 0.621371 : km; }
+inline double distM(double m, bool miles)  { return miles ? m * 0.000621371 : m / 1000.0; }
+inline double speed(double kmh, bool miles) { return miles ? kmh * 0.621371 : kmh; }
+inline double elev(double m, bool miles)   { return miles ? m * 3.28084 : m; }
+inline const char* distLabel(bool miles)  { return miles ? "MI" : "KM"; }
+inline const char* speedLabel(bool miles) { return miles ? "MPH" : "KM/H"; }
+inline const char* elevLabel(bool miles)  { return miles ? "FT" : "M"; }
+}
 
 #ifdef ARDUINO
 #include <Arduino.h>

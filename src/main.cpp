@@ -70,11 +70,23 @@ void setup() {
     g_state.with([](RideState& s) {
         s.ftpW = (uint16_t)settings::ftpWatts();
         s.tzMin = (int16_t)settings::tzMinutes();
+        s.useMiles = settings::useMiles();
     });
     if (ride_recorder::begin()) {
         routes::begin();
     }
     gps_service::begin();
+    // Warm-start seed: hand the receiver the last-known position (and time if
+    // the system clock survived deep sleep) so it doesn't cold-search the whole
+    // sky. Position alone still narrows the search; time is added when valid.
+    {
+        double alat, alon;
+        if (settings::lastPosition(alat, alon)) {
+            time_t now = time(nullptr);
+            bool haveTime = now > 1735689600;   // clock set since 2025-01-01?
+            gps_service::injectAiding(alat, alon, now, haveTime, 50000.0f, 30.0f);
+        }
+    }
     ble_sensors::begin();
     ble_server::begin();   // GATT server for the iOS companion app
     ui_dashboard::begin();

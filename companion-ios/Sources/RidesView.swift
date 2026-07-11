@@ -10,6 +10,11 @@ struct RidesView: View {
     @State private var detail: RideDetailData?
     @State private var failedURL: URL?          // parsed badly → offer to share it
 
+    // Connected: the device's ride list. Offline: whatever is cached locally.
+    private var displayedRides: [RideFile] {
+        ble.state == .connected ? ble.rides : BLEManager.cachedRides()
+    }
+
     // Show a cached ride immediately; otherwise pull it over BLE.
     private func open(_ ride: RideFile) {
         let url = BLEManager.cachedURL(for: ride.name)
@@ -30,24 +35,28 @@ struct RidesView: View {
                 VStack(spacing: 16) {
                     ConnectionBanner()
 
-                    if ble.state != .connected {
-                        Card {
-                            Text("Connect to your Bike GPS to see recorded rides.")
-                                .font(TypeScale.body).foregroundStyle(Palette.muted)
-                        }
-                    } else if ble.loadingRides {
+                    let rides = displayedRides
+                    if ble.state == .connected && ble.loadingRides {
                         ProgressView("Loading rides…").padding(.top, 30)
-                    } else if ble.rides.isEmpty {
+                    } else if rides.isEmpty {
                         Card {
                             VStack(alignment: .leading, spacing: 6) {
-                                Text("No rides found").font(TypeScale.body)
-                                    .foregroundStyle(Palette.ink)
-                                Text("Rides are saved to the SD card. If you're mid-ride, stop it first.")
+                                Text(ble.state == .connected ? "No rides found"
+                                                             : "No cached rides")
+                                    .font(TypeScale.body).foregroundStyle(Palette.ink)
+                                Text(ble.state == .connected
+                                     ? "Rides are saved to the SD card. If you're mid-ride, stop it first."
+                                     : "Connect to your Bike GPS to download rides. Downloaded rides stay here for offline viewing.")
                                     .font(.system(size: 13)).foregroundStyle(Palette.muted)
                             }
                         }
                     } else {
-                        ForEach(ble.rides) { ride in
+                        if ble.state != .connected {
+                            Text("Showing downloaded rides · connect to fetch more")
+                                .font(.system(size: 12)).foregroundStyle(Palette.muted)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        ForEach(rides) { ride in
                             RideRow(ride: ride,
                                     cached: BLEManager.isCached(ride.name),
                                     preview: previews.preview(for: ride.name),
@@ -84,6 +93,9 @@ struct RidesView: View {
                     ble.refreshRides()
                 }
             }
+            .onChange(of: ble.state) { _, s in
+                if s == .connected { ble.refreshRides() }   // fetch device list on connect
+            }
             .onChange(of: ble.downloadedFileURL) { _, url in
                 guard let url, let data = try? Data(contentsOf: url) else { return }
                 if let preview = FITDecoder.decode(data) {
@@ -117,6 +129,7 @@ private struct RideRow: View {
     let progress: Double
     let onTap: () -> Void
     let onDelete: () -> Void
+    @AppStorage(UnitPref.key) private var useMiles = false
 
     var body: some View {
         Button(action: onTap) {
@@ -179,10 +192,15 @@ private struct RideRow: View {
 
     @ViewBuilder private func stats(_ p: RidePreview) -> some View {
         HStack(spacing: 14) {
-            statItem(String(format: "%.1f km", p.distanceKm), "Distance")
+            statItem(String(format: "%.1f %@",
+                            Units.distance(p.distanceKm, miles: useMiles),
+                            Units.distLabel(useMiles)), "Distance")
             statItem(timeStr(p.duration), "Time")
-            statItem(String(format: "%.1f", p.avgSpeedKmh), "km/h avg")
-            statItem(String(format: "%.0f m", p.ascentM), "Ascent")
+            statItem(String(format: "%.1f", Units.speed(p.avgSpeedKmh, miles: useMiles)),
+                     "\(Units.speedLabel(useMiles)) avg")
+            statItem(String(format: "%.0f %@",
+                            Units.elevation(p.ascentM, miles: useMiles),
+                            Units.elevLabel(useMiles)), "Ascent")
             if let w = p.avgPower { statItem("\(w) W", "Power") }
         }
     }

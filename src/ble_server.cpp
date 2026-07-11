@@ -3,7 +3,9 @@
 #include <Arduino.h>
 #include <NimBLEDevice.h>
 #include <SD.h>
+#include <Update.h>
 #include <esp_heap_caps.h>
+#include <esp_ota_ops.h>
 
 #include "config.h"
 #include "ride_state.h"
@@ -19,16 +21,30 @@ const char* CHR_SETTINGS  = "b1c50001-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
 const char* CHR_STATUS    = "b1c50002-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
 const char* CHR_ROUTE     = "b1c50003-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
 const char* CHR_RIDES     = "b1c50004-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
+const char* CHR_OTA       = "b1c50005-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
 
 NimBLECharacteristic* statusChr = nullptr;
 NimBLECharacteristic* ridesChr = nullptr;
+NimBLECharacteristic* otaChr = nullptr;
+volatile bool otaRebootPending = false;
 
-// Settings payload: little-endian { int16 ftpW, int16 tzMin }.
+NimBLECharacteristic* settingsChr = nullptr;
+
+// Settings payload (little-endian): { int16 ftpW, int16 tzMin, u8 useMiles,
+// u8 backlight }. Mirrored both ways so the app and device stay in sync.
 void writeSettingsValue(NimBLECharacteristic* c) {
-    int16_t buf[2] = {(int16_t)settings::ftpWatts(),
-                      (int16_t)settings::tzMinutes()};
-    c->setValue((uint8_t*)buf, sizeof(buf));
+    uint8_t buf[6];
+    int16_t ftp = (int16_t)settings::ftpWatts();
+    int16_t tz = (int16_t)settings::tzMinutes();
+    memcpy(buf, &ftp, 2);
+    memcpy(buf + 2, &tz, 2);
+    buf[4] = settings::useMiles() ? 1 : 0;
+    buf[5] = (uint8_t)settings::backlight();
+    c->setValue(buf, sizeof(buf));
 }
+
+// Set when a device-side settings change should be pushed to the phone.
+volatile bool settingsDirty = false;
 
 class SettingsCb : public NimBLECharacteristicCallbacks {
     void onRead(NimBLECharacteristic* c, NimBLEConnInfo&) override {
@@ -41,12 +57,18 @@ class SettingsCb : public NimBLECharacteristicCallbacks {
             int16_t tz = (int16_t)((uint8_t)v[2] | ((uint8_t)v[3] << 8));
             settings::setFtpWatts(ftp);
             settings::setTzMinutes(tz);
+            if (v.size() >= 6) {
+                settings::setUseMiles(v[4] != 0);
+                settings::setBacklight((uint8_t)v[5]);
+            }
             g_state.with([&](RideState& s) {
                 s.ftpW = (uint16_t)settings::ftpWatts();
                 s.tzMin = (int16_t)settings::tzMinutes();
+                s.useMiles = settings::useMiles();
             });
-            Serial.printf("[srv] settings set: ftp=%d tz=%d\n",
-                          settings::ftpWatts(), settings::tzMinutes());
+            Serial.printf("[srv] settings set: ftp=%d tz=%d miles=%d bl=%d\n",
+                          settings::ftpWatts(), settings::tzMinutes(),
+                          settings::useMiles(), settings::backlight());
         }
     }
 };
@@ -336,10 +358,13 @@ void deleteRoute(const char* name) {
 namespace ble_server {
 
 class ServerCb : public NimBLEServerCallbacks {
-    void onConnect(NimBLEServer*, NimBLEConnInfo& info) override {
+    void onConnect(NimBLEServer* srv, NimBLEConnInfo& info) override {
         Serial.printf("[srv] phone connected, MTU=%u\n", info.getMTU());
         negotiatedMTU = info.getMTU();
         phoneConnected = true;
+        // Ask for a fast connection interval (15-30 ms) so large transfers
+        // (ride download, OTA) aren't throttled to one packet per ~slow tick.
+        srv->updateConnParams(info.getConnHandle(), 12, 24, 0, 400);
     }
     void onMTUChange(uint16_t mtu, NimBLEConnInfo&) override {
         Serial.printf("[srv] MTU negotiated: %u\n", mtu);
@@ -354,6 +379,126 @@ class ServerCb : public NimBLEServerCallbacks {
     }
 };
 
+void otaNotify(const uint8_t* d, size_t n) {
+    if (!otaChr) return;
+    otaChr->setValue(d, n);
+    otaChr->notify();
+}
+void otaNotify1(uint8_t b) { otaNotify(&b, 1); }
+
+// Over-the-air firmware update. CRITICAL: flash erase/write must NOT run in
+// the BLE callback — erasing the 1.5 MB OTA partition blocks the NimBLE host
+// task long enough to drop the connection. So the callback only buffers the
+// incoming firmware into PSRAM (fast memcpy); all flashing happens later in
+// the server task, off the BLE host. A/B partitions mean the running image is
+// never touched, so a failed/interrupted transfer can't brick the device.
+// Protocol on CHR_OTA (write + notify):
+//   phone -> [0x01][u32 size][opt 32-byte md5 hex]  begin
+//           [0x02]<firmware bytes>                   data (sent .withResponse)
+//           [0x03]                                   end / commit
+//           [0x04]                                   abort
+//           [0x05]                                   query running version
+//   device notifies: [0xA0] ready, [0xA1] success(rebooting), [0xA2] aborted,
+//           [0xA3]<utf8 version>, [0xA4][u32 received] progress, [0xAF][err]
+uint8_t* otaBuf = nullptr;                 // PSRAM staging buffer
+volatile uint32_t otaBufLen = 0, otaBufCap = 0;
+char otaMd5[33] = "";
+volatile bool otaCommitPending = false;    // task should flash the buffer
+
+void otaFreeBuf() {
+    if (otaBuf) { heap_caps_free(otaBuf); otaBuf = nullptr; }
+    otaBufLen = otaBufCap = 0;
+}
+
+class OtaCb : public NimBLECharacteristicCallbacks {
+    bool updating = false;
+    uint32_t lastProgress = 0;
+    void onWrite(NimBLECharacteristic* c, NimBLEConnInfo&) override {
+        std::string v = c->getValue();
+        if (v.empty()) return;
+        const uint8_t* p = (const uint8_t*)v.data();
+        size_t n = v.size();
+        switch (p[0]) {
+        case 0x05: {                          // running firmware version
+            uint8_t buf[24];
+            buf[0] = 0xA3;
+            size_t vl = strlen(FIRMWARE_VERSION);
+            if (vl > sizeof(buf) - 1) vl = sizeof(buf) - 1;
+            memcpy(buf + 1, FIRMWARE_VERSION, vl);
+            otaNotify(buf, 1 + vl);
+            break;
+        }
+        case 0x01: {                          // begin: allocate PSRAM buffer
+            if (n < 5) return;
+            uint32_t expected = (uint32_t)p[1] | ((uint32_t)p[2] << 8) |
+                                ((uint32_t)p[3] << 16) | ((uint32_t)p[4] << 24);
+            otaFreeBuf();
+            otaBuf = (uint8_t*)heap_caps_malloc(expected, MALLOC_CAP_SPIRAM);
+            if (!otaBuf) {
+                uint8_t e[2] = {0xAF, 0xF0};   // out of memory
+                otaNotify(e, 2);
+                return;
+            }
+            otaBufCap = expected;
+            otaBufLen = 0;
+            lastProgress = 0;
+            otaMd5[0] = 0;
+            if (n >= 5 + 32) { memcpy(otaMd5, p + 5, 32); otaMd5[32] = 0; }
+            updating = true;
+            otaNotify1(0xA0);
+            Serial.printf("[ota] begin, %u bytes (PSRAM staged)\n", (unsigned)expected);
+            break;
+        }
+        case 0x02: {                          // data: memcpy into PSRAM (no flash)
+            if (!updating || !otaBuf) return;
+            size_t got = n - 1;
+            if (otaBufLen + got > otaBufCap) got = otaBufCap - otaBufLen;
+            memcpy(otaBuf + otaBufLen, p + 1, got);
+            otaBufLen += got;
+            if (otaBufLen - lastProgress >= 32768) {
+                lastProgress = otaBufLen;
+                uint8_t pr[5] = {0xA4};
+                uint32_t r = otaBufLen;
+                memcpy(pr + 1, &r, 4);
+                otaNotify(pr, 5);
+            }
+            break;
+        }
+        case 0x03:                            // end: hand off to the task to flash
+            if (!updating) return;
+            updating = false;
+            otaCommitPending = true;
+            Serial.printf("[ota] received %u bytes, committing\n", (unsigned)otaBufLen);
+            break;
+        case 0x04:                            // abort
+            updating = false;
+            otaFreeBuf();
+            otaNotify1(0xA2);
+            break;
+        }
+    }
+};
+
+// Flash the PSRAM-staged firmware. Runs in the server task (NOT the BLE host),
+// so the multi-second erase+write can't drop the connection.
+void otaCommit() {
+    bool ok = false;
+    if (otaBuf && otaBufLen > 0 && Update.begin(otaBufLen)) {
+        if (otaMd5[0]) Update.setMD5(otaMd5);
+        if (Update.write(otaBuf, otaBufLen) == otaBufLen && Update.end(true)) ok = true;
+    }
+    otaFreeBuf();
+    if (ok) {
+        otaNotify1(0xA1);
+        Serial.println("[ota] verified, rebooting into new image");
+        otaRebootPending = true;
+    } else {
+        uint8_t e[2] = {0xAF, (uint8_t)Update.getError()};
+        otaNotify(e, 2);
+        Serial.printf("[ota] commit failed: %d\n", Update.getError());
+    }
+}
+
 void begin() {
     routeBuf = (char*)heap_caps_malloc(ROUTE_MAX, MALLOC_CAP_SPIRAM);
     NimBLEDevice::setMTU(247);   // ask for a large MTU for fast transfers
@@ -362,9 +507,9 @@ void begin() {
     server->setCallbacks(new ServerCb());
     NimBLEService* svc = server->createService(SVC_UUID);
 
-    NimBLECharacteristic* settingsChr = svc->createCharacteristic(
+    settingsChr = svc->createCharacteristic(
         CHR_SETTINGS,
-        NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
+        NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::NOTIFY);
     settingsChr->setCallbacks(new SettingsCb());
     writeSettingsValue(settingsChr);
 
@@ -379,6 +524,11 @@ void begin() {
         CHR_RIDES, NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::NOTIFY);
     ridesChr->setCallbacks(new RidesCb());
 
+    otaChr = svc->createCharacteristic(
+        CHR_OTA,
+        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::NOTIFY);
+    otaChr->setCallbacks(new OtaCb());
+
     svc->start();
 
     NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
@@ -390,9 +540,24 @@ void begin() {
     Serial.println("[srv] GATT server advertising as BikeGPS");
 }
 
+void pushSettingsToPhone() { settingsDirty = true; }
+
 void task(void*) {
     uint32_t lastStatus = 0;
     for (;;) {
+        if (otaCommitPending) {          // flash the staged firmware (off BLE host)
+            otaCommitPending = false;
+            otaCommit();
+        }
+        if (otaRebootPending) {          // OTA committed — reboot into new image
+            vTaskDelay(pdMS_TO_TICKS(1500));   // let the success notify flush
+            esp_restart();
+        }
+        if (settingsDirty && settingsChr) {   // device-side edit -> mirror to phone
+            settingsDirty = false;
+            writeSettingsValue(settingsChr);
+            settingsChr->notify();
+        }
         // Service a pending ride/route request promptly (streams via notify).
         if (rideReq == REQ_LIST) {
             rideReq = REQ_NONE;

@@ -109,18 +109,31 @@ void drawRider(int x, int y, float headingDeg, uint8_t* fb) {
     epd_fill_triangle(nx, ny, rx, ry, bx, by, 0x00, fb);
 }
 
-void drawScaleBar(float metersPerPixel, uint8_t* fb) {
-    const int targets[] = {50, 100, 200, 500, 1000, 2000};
-    int meters = targets[0];
-    for (int t : targets) {
-        if (t / metersPerPixel <= 160) meters = t;
-    }
-    int px = (int)(meters / metersPerPixel);
+void drawScaleBar(float metersPerPixel, bool miles, uint8_t* fb) {
     int x = 20, y = MAP_BOTTOM - 26;
-    epd_fill_rect({x, y, px, 4}, 0x00, fb);
     char buf[16];
-    if (meters >= 1000) snprintf(buf, sizeof(buf), "%d KM", meters / 1000);
-    else snprintf(buf, sizeof(buf), "%d M", meters);
+    float barM;
+    if (miles) {
+        // Round imperial rungs (metres, label): feet then miles.
+        struct Rung { float m; const char* lbl; };
+        static const Rung rungs[] = {
+            {30.48f, "100 FT"}, {76.2f, "250 FT"}, {152.4f, "500 FT"},
+            {304.8f, "1000 FT"}, {804.67f, "0.5 MI"}, {1609.34f, "1 MI"},
+            {3218.69f, "2 MI"}};
+        const Rung* pick = &rungs[0];
+        for (const Rung& r : rungs) if (r.m / metersPerPixel <= 160) pick = &r;
+        barM = pick->m;
+        snprintf(buf, sizeof(buf), "%s", pick->lbl);
+    } else {
+        const int targets[] = {50, 100, 200, 500, 1000, 2000};
+        int meters = targets[0];
+        for (int t : targets) if (t / metersPerPixel <= 160) meters = t;
+        barM = meters;
+        if (meters >= 1000) snprintf(buf, sizeof(buf), "%d KM", meters / 1000);
+        else snprintf(buf, sizeof(buf), "%d M", meters);
+    }
+    int px = (int)(barM / metersPerPixel);
+    epd_fill_rect({x, y, px, 4}, 0x00, fb);
     ui::text(&ArialBold_20, x, y - 10, buf, fb);
 }
 
@@ -178,7 +191,7 @@ void ui_render_map(const MapScreenData& map, const RideState& s, uint8_t* fb) {
     }
 
     drawRider(map.riderX, map.riderY, map.headingDeg, fb);
-    drawScaleBar(map.metersPerPixel, fb);
+    drawScaleBar(map.metersPerPixel, s.useMiles, fb);
     drawCompass(kMapCompass.cx, kMapCompass.cy, map.northDeg, map.trackUp, fb);
 
     // Zoom buttons (design 1f, right edge)
@@ -206,17 +219,22 @@ void ui_render_map(const MapScreenData& map, const RideState& s, uint8_t* fb) {
         epd_fill_rect({i * colW - 1, STRIP_TOP + 3, 3, H - STRIP_TOP - 3}, 0x00, fb);
     }
 
-    ui::label(colW / 2, STRIP_TOP + 44, "SPEED", fb);
-    snprintf(buf, sizeof(buf), "%.1f", s.speedKmh);
+    char spdLabel[12], distLabel[12], leftLabel[12];
+    snprintf(spdLabel, sizeof(spdLabel), "SPEED %s", units::speedLabel(s.useMiles));
+    snprintf(distLabel, sizeof(distLabel), "DIST %s", units::distLabel(s.useMiles));
+    snprintf(leftLabel, sizeof(leftLabel), "LEFT %s", units::distLabel(s.useMiles));
+
+    ui::label(colW / 2, STRIP_TOP + 44, spdLabel, fb);
+    snprintf(buf, sizeof(buf), "%.1f", units::speed(s.speedKmh, s.useMiles));
     ui::valueWithUnit(&Impact_40, 8, colW - 8, H - 40, buf, "", fb);
 
-    ui::label(colW + colW / 2, STRIP_TOP + 44, "DISTANCE", fb);
-    snprintf(buf, sizeof(buf), "%.1f", s.distanceM / 1000.0);
+    ui::label(colW + colW / 2, STRIP_TOP + 44, distLabel, fb);
+    snprintf(buf, sizeof(buf), "%.1f", units::distM(s.distanceM, s.useMiles));
     ui::valueWithUnit(&Impact_40, colW + 8, 2 * colW - 8, H - 40, buf, "", fb);
 
     if (map.showRemaining) {
-        ui::label(2 * colW + colW / 2, STRIP_TOP + 44, "LEFT KM", fb);
-        snprintf(buf, sizeof(buf), "%.1f", map.remainingKm);
+        ui::label(2 * colW + colW / 2, STRIP_TOP + 44, leftLabel, fb);
+        snprintf(buf, sizeof(buf), "%.1f", units::dist(map.remainingKm, s.useMiles));
     } else {
         ui::label(2 * colW + colW / 2, STRIP_TOP + 44, "TIME", fb);
         snprintf(buf, sizeof(buf), "%lu:%02lu", (unsigned long)(s.elapsedS / 3600),

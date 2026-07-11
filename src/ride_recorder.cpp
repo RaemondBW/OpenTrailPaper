@@ -215,7 +215,17 @@ void stopRide(bool save) {
         Serial.printf("[rec] ride saved: %.1f km, %lu s\n", distanceM / 1000.0,
                       (unsigned long)timerS);
     }
-    g_state.with([](RideState& st) { st.recording = false; });
+    // Ride is over — clear the trip so the dashboard reads zero, ready for the
+    // next ride (the summary was already captured before stopping).
+    resetStats();
+    g_state.with([](RideState& st) {
+        st.recording = false;
+        st.distanceM = 0;
+        st.elapsedS = 0;
+        st.movingS = 0;
+        st.climbedM = 0;
+        st.gradeValid = false;
+    });
 }
 
 bool isRecording() { return fit.isOpen(); }
@@ -234,6 +244,7 @@ RideSummary summary() {
     r.startUtc = startUtc;
     r.endUtc = endUtc ? endUtc : startUtc + timerS;
     r.tzMin = g_state.snapshot().tzMin;
+    r.useMiles = g_state.snapshot().useMiles;
     return r;
 }
 

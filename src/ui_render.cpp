@@ -178,7 +178,7 @@ void cell(int x0, int y0, int x1, int y1, const char* labelStr,
 
 }  // namespace
 
-void ui_render_dashboard(const RideState& s, uint8_t* fb) {
+void ui_render_dashboard(const RideState& s, bool navActive, uint8_t* fb) {
     const int W = epd_rotated_display_width();
     const int H = epd_rotated_display_height();
     char buf[32];
@@ -188,8 +188,25 @@ void ui_render_dashboard(const RideState& s, uint8_t* fb) {
     // --- Hero cell: 3 s power, or speed if no power meter --------------
     const int heroBottom = 448;
     bool powerHero = s.powerConnected;
-    ui::label(W / 2, ui::STATUS_H + 44, powerHero ? "POWER · 3S" : "SPEED · KM/H",
-              fb);
+    char speedHdr[16];
+    snprintf(speedHdr, sizeof(speedHdr), "SPEED · %s", units::speedLabel(s.useMiles));
+
+    if (navActive) {
+        // The turn banner owns the top 138 px (STATUS_H .. STATUS_H+138), so
+        // draw a compact hero beneath it instead of the full-size one.
+        const int top = ui::STATUS_H + 138;   // 202
+        ui::label(W / 2, top + 34, powerHero ? "POWER · 3S" : speedHdr, fb);
+        if (powerHero) {
+            if (s.power3sW != 0xFFFF) snprintf(buf, sizeof(buf), "%u", s.power3sW);
+            else snprintf(buf, sizeof(buf), "--");
+            ui::valueWithUnit(&Impact_40, 10, W - 10, top + 150, buf, "W", fb);
+        } else {
+            snprintf(buf, sizeof(buf), "%.1f", units::speed(s.speedKmh, s.useMiles));
+            ui::valueWithUnit(&Impact_40, 10, W - 10, top + 150, buf, "", fb);
+        }
+        epd_fill_rect({0, heroBottom, W, 3}, 0x00, fb);
+    } else {
+    ui::label(W / 2, ui::STATUS_H + 44, powerHero ? "POWER · 3S" : speedHdr, fb);
 
     if (powerHero) {
         if (s.power3sW != 0xFFFF) snprintf(buf, sizeof(buf), "%u", s.power3sW);
@@ -213,8 +230,9 @@ void ui_render_dashboard(const RideState& s, uint8_t* fb) {
             }
         }
     } else {
-        snprintf(buf, sizeof(buf), "%.1f", s.speedKmh);
+        snprintf(buf, sizeof(buf), "%.1f", units::speed(s.speedKmh, s.useMiles));
         ui::valueWithUnit(&Impact_128, 10, W - 10, 360, buf, "", fb);
+    }
     }
 
     epd_fill_rect({0, heroBottom, W, 3}, 0x00, fb);
@@ -232,24 +250,25 @@ void ui_render_dashboard(const RideState& s, uint8_t* fb) {
     else snprintf(buf, sizeof(buf), "--");
     cell(0, rows[0], midX, rows[1], "HEART RATE", buf, "BPM", fb);
 
-    if (powerHero) snprintf(buf, sizeof(buf), "%.1f", s.speedKmh);
+    if (powerHero) snprintf(buf, sizeof(buf), "%.1f",
+                            units::speed(s.speedKmh, s.useMiles));
     else if (s.cadenceRpm != 0xFF) snprintf(buf, sizeof(buf), "%u", s.cadenceRpm);
     else snprintf(buf, sizeof(buf), "--");
     cell(midX, rows[0], W, rows[1], powerHero ? "SPEED" : "CADENCE", buf,
-         powerHero ? "KM/H" : "RPM", fb);
+         powerHero ? units::speedLabel(s.useMiles) : "RPM", fb);
 
     formatHms(buf, sizeof(buf), s.elapsedS);
     cell(0, rows[1], midX, rows[2], "RIDE TIME", buf, "", fb);
 
-    snprintf(buf, sizeof(buf), "%.1f", s.distanceM / 1000.0);
-    cell(midX, rows[1], W, rows[2], "DISTANCE", buf, "KM", fb);
+    snprintf(buf, sizeof(buf), "%.1f", units::distM(s.distanceM, s.useMiles));
+    cell(midX, rows[1], W, rows[2], "DISTANCE", buf, units::distLabel(s.useMiles), fb);
 
     if (s.gradeValid) snprintf(buf, sizeof(buf), "%.1f", s.gradePercent);
     else snprintf(buf, sizeof(buf), "--");
     cell(0, rows[2], midX, rows[3], "GRADE", buf, "%", fb);
 
-    snprintf(buf, sizeof(buf), "%.0f", s.altitudeM);
-    cell(midX, rows[2], W, rows[3], "ELEVATION", buf, "M", fb);
+    snprintf(buf, sizeof(buf), "%.0f", units::elev(s.altitudeM, s.useMiles));
+    cell(midX, rows[2], W, rows[3], "ELEVATION", buf, units::elevLabel(s.useMiles), fb);
 }
 
 void ui_render_summary(const RideSummary& r, uint8_t* fb) {
@@ -272,8 +291,8 @@ void ui_render_summary(const RideSummary& r, uint8_t* fb) {
 
     // Distance hero
     ui::label(W / 2, 180, "DISTANCE", fb);
-    snprintf(buf, sizeof(buf), "%.1f", r.distanceM / 1000.0);
-    ui::valueWithUnit(&Impact_128, 10, W - 10, 394, buf, "KM", fb);
+    snprintf(buf, sizeof(buf), "%.1f", units::distM(r.distanceM, r.useMiles));
+    ui::valueWithUnit(&Impact_128, 10, W - 10, 394, buf, units::distLabel(r.useMiles), fb);
     epd_fill_rect({0, 408, W, 3}, 0x00, fb);
 
     // 3 x 2 stat grid
@@ -285,8 +304,8 @@ void ui_render_summary(const RideSummary& r, uint8_t* fb) {
 
     formatHms(buf, sizeof(buf), r.movingS);
     cell(0, rows[0], midX, rows[1], "MOVING TIME", buf, "", fb);
-    snprintf(buf, sizeof(buf), "%.1f", r.avgSpeedKmh);
-    cell(midX, rows[0], W, rows[1], "AVG SPEED", buf, "KM/H", fb);
+    snprintf(buf, sizeof(buf), "%.1f", units::speed(r.avgSpeedKmh, r.useMiles));
+    cell(midX, rows[0], W, rows[1], "AVG SPEED", buf, units::speedLabel(r.useMiles), fb);
 
     if (r.avgPowerW) snprintf(buf, sizeof(buf), "%u", r.avgPowerW);
     else snprintf(buf, sizeof(buf), "--");
@@ -298,8 +317,8 @@ void ui_render_summary(const RideSummary& r, uint8_t* fb) {
     if (r.avgHrBpm) snprintf(buf, sizeof(buf), "%u", r.avgHrBpm);
     else snprintf(buf, sizeof(buf), "--");
     cell(0, rows[2], midX, rows[3], "AVG HR", buf, "BPM", fb);
-    snprintf(buf, sizeof(buf), "%.0f", r.climbedM);
-    cell(midX, rows[2], W, rows[3], "CLIMBED", buf, "M", fb);
+    snprintf(buf, sizeof(buf), "%.0f", units::elev(r.climbedM, r.useMiles));
+    cell(midX, rows[2], W, rows[3], "CLIMBED", buf, units::elevLabel(r.useMiles), fb);
 
     // Footer actions: SAVE RIDE inverted, DISCARD bordered
     epd_fill_rect({kSaveButton.x, kSaveButton.y, kSaveButton.width,
@@ -334,8 +353,9 @@ void ui_render_menu(const MenuInfo& m, uint8_t* fb) {
 
     char startSub[64], sensorSub[64], historySub[64], settingsSub[64];
     if (m.recording) {
-        snprintf(startSub, sizeof(startSub), "recording · %.1f km",
-                 m.rideDistanceM / 1000.0);
+        snprintf(startSub, sizeof(startSub), "recording · %.1f %s",
+                 units::distM(m.rideDistanceM, m.useMiles),
+                 m.useMiles ? "mi" : "km");
     } else {
         int n = (m.hr ? 1 : 0) + (m.pwr ? 1 : 0) + (m.cad ? 1 : 0);
         snprintf(startSub, sizeof(startSub), "%s · %d sensor%s connected",
@@ -442,7 +462,7 @@ void ui_render_settings(const SettingsInfo& si, uint8_t* fb) {
     struct Row {
         const char* label;
         char value[16];
-    } rows[3];
+    } rows[4];
     snprintf(rows[0].value, sizeof(rows[0].value), "%d W", si.ftpW);
     rows[0].label = "FTP";
     int tzH = si.tzMin / 60, tzM = abs(si.tzMin % 60);
@@ -453,15 +473,18 @@ void ui_render_settings(const SettingsInfo& si, uint8_t* fb) {
     snprintf(rows[2].value, sizeof(rows[2].value), "%s",
              BL[si.backlight < 0 ? 0 : si.backlight > 3 ? 3 : si.backlight]);
     rows[2].label = "FRONTLIGHT";
+    snprintf(rows[3].value, sizeof(rows[3].value), "%s",
+             si.useMiles ? "Miles" : "Km");
+    rows[3].label = "UNITS";
 
-    for (int i = 0; i < 3; ++i) {
-        int y = kMenuRowTop + i * kMenuRowH;
-        ui::text(&ArialBold_14, 28, y + 84, rows[i].label, fb);
+    for (int i = 0; i < 4; ++i) {
+        int y = kMenuRowTop + i * kSettingsRowH;
+        ui::text(&ArialBold_14, 28, y + 76, rows[i].label, fb);
 
         // minus / plus buttons with the value between
         for (int b = 0; b < 2; ++b) {
             int bx = b == 0 ? kSettingsMinusX : kSettingsPlusX;
-            EpdRect r = {bx, y + (kMenuRowH - kSettingsBtn) / 2, kSettingsBtn,
+            EpdRect r = {bx, y + (kSettingsRowH - kSettingsBtn) / 2, kSettingsBtn,
                          kSettingsBtn};
             epd_draw_rect(r, 0x00, fb);
             EpdRect r2 = {r.x + 1, r.y + 1, r.width - 2, r.height - 2};
@@ -471,19 +494,19 @@ void ui_render_settings(const SettingsInfo& si, uint8_t* fb) {
             if (b == 1) epd_fill_rect({cx - 2, cy - 12, 5, 24}, 0x00, fb);
         }
         int vx = (kSettingsMinusX + kSettingsBtn + kSettingsPlusX) / 2;
-        ui::text(&ArialBold_20, vx, y + 88, rows[i].value, fb,
+        ui::text(&ArialBold_20, vx, y + 80, rows[i].value, fb,
                  EPD_DRAW_ALIGN_CENTER);
-        epd_fill_rect({0, y + kMenuRowH - 1, W, 1}, 0x80, fb);
+        epd_fill_rect({0, y + kSettingsRowH - 1, W, 1}, 0x80, fb);
     }
 
-    // Navigation rows below the two adjustable settings.
+    // Navigation rows below the adjustable settings.
     struct NavRow { const char* title; const char* sub; };
     const NavRow navs[2] = {
         {"Sensors", "pair heart rate / power / cadence"},
         {"GPS Debug", "receiver diagnostics"},
     };
     for (int i = 0; i < 2; ++i) {
-        int y = kMenuRowTop + (3 + i) * kMenuRowH;
+        int y = kMenuRowTop + (4 + i) * kSettingsRowH;
         ui::text(&ArialBold_20, 28, y + 64, navs[i].title, fb);
         ui::text(&ArialBold_14, 28, y + 106, navs[i].sub, fb,
                  EPD_DRAW_ALIGN_LEFT, 0x60);
@@ -515,7 +538,7 @@ void ui_render_gps_debug(const GpsDebugView& g, uint8_t* fb) {
         n++;                                                          \
     } while (0)
 
-    DBG_LINE("MODULE", "%s", g.moduleDetected ? "detected" : "NOT DETECTED");
+    DBG_LINE("MODULE", "%s", g.moduleDetected ? g.module : "NOT DETECTED");
     DBG_LINE("NMEA BYTES", "%lu", (unsigned long)g.chars);
     DBG_LINE("CHECKSUM OK / FAIL", "%lu / %lu", (unsigned long)g.passedCksum,
              (unsigned long)g.failedCksum);
@@ -529,7 +552,9 @@ void ui_render_gps_debug(const GpsDebugView& g, uint8_t* fb) {
     if (g.locValid) {
         DBG_LINE("FIX", "yes · age %lu ms", (unsigned long)g.locAgeMs);
         DBG_LINE("LAT / LON", "%.5f  %.5f", g.lat, g.lon);
-        DBG_LINE("ALT / SPEED", "%.0f m · %.1f km/h", g.altM, g.speedKmh);
+        DBG_LINE("ALT / SPEED", "%.0f %s · %.1f %s",
+                 units::elev(g.altM, g.useMiles), units::elevLabel(g.useMiles),
+                 units::speed(g.speedKmh, g.useMiles), units::speedLabel(g.useMiles));
     } else {
         DBG_LINE("FIX", "NO FIX");
         DBG_LINE("LAT / LON", "--");
@@ -642,7 +667,7 @@ void ui_render_nav_prompt(const char* routeName, int turns, uint8_t* fb) {
 }
 
 void ui_render_nav_banner(const char* instruction, float distanceM,
-                          uint8_t* fb) {
+                          bool useMiles, uint8_t* fb) {
     const int W = epd_rotated_display_width();
     const int top = ui::STATUS_H;
     const int h = 138;
@@ -666,8 +691,15 @@ void ui_render_nav_banner(const char* instruction, float distanceM,
     }
 
     char d[16];
-    if (distanceM >= 1000) snprintf(d, sizeof(d), "%.1f km", distanceM / 1000);
-    else snprintf(d, sizeof(d), "%d m", (int)(distanceM + 0.5f));
+    if (useMiles) {
+        float ft = distanceM * 3.28084f;
+        if (ft >= 1000) snprintf(d, sizeof(d), "%.1f mi", distanceM * 0.000621371f);
+        else snprintf(d, sizeof(d), "%d ft", (int)(ft + 0.5f));
+    } else if (distanceM >= 1000) {
+        snprintf(d, sizeof(d), "%.1f km", distanceM / 1000);
+    } else {
+        snprintf(d, sizeof(d), "%d m", (int)(distanceM + 0.5f));
+    }
     ui::text(&ArialBold_20, 108, top + 52, d, fb, EPD_DRAW_ALIGN_LEFT, 0xFF);
     ui::text(&ArialBold_14, 24, top + 112, instruction, fb,
              EPD_DRAW_ALIGN_LEFT, 0xFF);
