@@ -1,0 +1,334 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		238C28015928C2C46081BB14 /* GPXExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDB79DC111504015EA01A183 /* GPXExporter.swift */; };
+		376908A07714407243E2E4ED /* RideView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EC186E273C590D7A6345915 /* RideView.swift */; };
+		3E5CA463CB2CE0A9DC48459B /* RidesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCD8003BE2453F3EDA25ED31 /* RidesView.swift */; };
+		47C83BDADFF3D31F4E43F37E /* BLEManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD543402D2E35FD58BA55A8E /* BLEManager.swift */; };
+		66DA8F56B10214B148939ADA /* RouteView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33F9FE9BEBAAA7755652F133 /* RouteView.swift */; };
+		68E61DE93629DD4481BB8FAE /* BikeGPSCompanionApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36D2B7A04F9D2AB7171161FA /* BikeGPSCompanionApp.swift */; };
+		7801C9A5D7DE45C654CF72D9 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17822C740E6235705595201F /* Theme.swift */; };
+		9176980BABF604ABA9659708 /* RideDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EDAC3AF1A02980A1CEB9145 /* RideDetailView.swift */; };
+		DD5AF628B5DC8DCC6F9D5381 /* FITDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 836E0AABD268231ABD6B03E4 /* FITDecoder.swift */; };
+		FD7612579D7DAD95AD2CFE2D /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2081EBB94E5008A25AF17D2C /* SettingsView.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		17822C740E6235705595201F /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
+		2081EBB94E5008A25AF17D2C /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		33F9FE9BEBAAA7755652F133 /* RouteView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RouteView.swift; sourceTree = "<group>"; };
+		36D2B7A04F9D2AB7171161FA /* BikeGPSCompanionApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BikeGPSCompanionApp.swift; sourceTree = "<group>"; };
+		4EC186E273C590D7A6345915 /* RideView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RideView.swift; sourceTree = "<group>"; };
+		4EDAC3AF1A02980A1CEB9145 /* RideDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RideDetailView.swift; sourceTree = "<group>"; };
+		836E0AABD268231ABD6B03E4 /* FITDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FITDecoder.swift; sourceTree = "<group>"; };
+		9165B98C67EE602CB6416ECC /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		CCD8003BE2453F3EDA25ED31 /* RidesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RidesView.swift; sourceTree = "<group>"; };
+		DD543402D2E35FD58BA55A8E /* BLEManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BLEManager.swift; sourceTree = "<group>"; };
+		DDB79DC111504015EA01A183 /* GPXExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GPXExporter.swift; sourceTree = "<group>"; };
+		F46204EF3D9A3EB08394C288 /* BikeGPSCompanion.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = BikeGPSCompanion.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		224D042D99B06A07620BD95C /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				36D2B7A04F9D2AB7171161FA /* BikeGPSCompanionApp.swift */,
+				DD543402D2E35FD58BA55A8E /* BLEManager.swift */,
+				836E0AABD268231ABD6B03E4 /* FITDecoder.swift */,
+				DDB79DC111504015EA01A183 /* GPXExporter.swift */,
+				9165B98C67EE602CB6416ECC /* Info.plist */,
+				4EDAC3AF1A02980A1CEB9145 /* RideDetailView.swift */,
+				CCD8003BE2453F3EDA25ED31 /* RidesView.swift */,
+				4EC186E273C590D7A6345915 /* RideView.swift */,
+				33F9FE9BEBAAA7755652F133 /* RouteView.swift */,
+				2081EBB94E5008A25AF17D2C /* SettingsView.swift */,
+				17822C740E6235705595201F /* Theme.swift */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
+		792DA7BBA6E2F3CA55EBA0BF = {
+			isa = PBXGroup;
+			children = (
+				224D042D99B06A07620BD95C /* Sources */,
+				9D5C1E9F6C873648F60BADA5 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		9D5C1E9F6C873648F60BADA5 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				F46204EF3D9A3EB08394C288 /* BikeGPSCompanion.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		11EFF920F41BBA9109332778 /* BikeGPSCompanion */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 6038210508765517B64857BB /* Build configuration list for PBXNativeTarget "BikeGPSCompanion" */;
+			buildPhases = (
+				492D858DF48F494AA648B73A /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = BikeGPSCompanion;
+			packageProductDependencies = (
+			);
+			productName = BikeGPSCompanion;
+			productReference = F46204EF3D9A3EB08394C288 /* BikeGPSCompanion.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		912E755F175789950EC70D79 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					11EFF920F41BBA9109332778 = {
+						DevelopmentTeam = G5JFC849XY;
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = 484629FD3C1787F528A16CC9 /* Build configuration list for PBXProject "BikeGPSCompanion" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 792DA7BBA6E2F3CA55EBA0BF;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 9D5C1E9F6C873648F60BADA5 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				11EFF920F41BBA9109332778 /* BikeGPSCompanion */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		492D858DF48F494AA648B73A /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				47C83BDADFF3D31F4E43F37E /* BLEManager.swift in Sources */,
+				68E61DE93629DD4481BB8FAE /* BikeGPSCompanionApp.swift in Sources */,
+				DD5AF628B5DC8DCC6F9D5381 /* FITDecoder.swift in Sources */,
+				238C28015928C2C46081BB14 /* GPXExporter.swift in Sources */,
+				9176980BABF604ABA9659708 /* RideDetailView.swift in Sources */,
+				376908A07714407243E2E4ED /* RideView.swift in Sources */,
+				3E5CA463CB2CE0A9DC48459B /* RidesView.swift in Sources */,
+				66DA8F56B10214B148939ADA /* RouteView.swift in Sources */,
+				FD7612579D7DAD95AD2CFE2D /* SettingsView.swift in Sources */,
+				7801C9A5D7DE45C654CF72D9 /* Theme.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		35ECDBBF90C077B8D6F08CF3 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = G5JFC849XY;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 0.1;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		398605E3E4CA5F340F7B89AD /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				ENABLE_PREVIEWS = YES;
+				INFOPLIST_FILE = Sources/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = cc.tdisplay.bikegps;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		7DFB30AE63C54FBA8D46936D /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = G5JFC849XY;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 0.1;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		BB637C687477D45ED4FD82B1 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				ENABLE_PREVIEWS = YES;
+				INFOPLIST_FILE = Sources/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = cc.tdisplay.bikegps;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		484629FD3C1787F528A16CC9 /* Build configuration list for PBXProject "BikeGPSCompanion" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				7DFB30AE63C54FBA8D46936D /* Debug */,
+				35ECDBBF90C077B8D6F08CF3 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		6038210508765517B64857BB /* Build configuration list for PBXNativeTarget "BikeGPSCompanion" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				398605E3E4CA5F340F7B89AD /* Debug */,
+				BB637C687477D45ED4FD82B1 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 912E755F175789950EC70D79 /* Project object */;
+}

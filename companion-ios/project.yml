@@ -1,0 +1,26 @@
+name: BikeGPSCompanion
+options:
+  bundleIdPrefix: cc.tdisplay
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    MARKETING_VERSION: "0.1"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.0"
+    DEVELOPMENT_TEAM: "G5JFC849XY"
+    CODE_SIGN_STYLE: Automatic
+    GENERATE_INFOPLIST_FILE: NO
+targets:
+  BikeGPSCompanion:
+    type: application
+    platform: iOS
+    sources:
+      - Sources
+    settings:
+      base:
+        INFOPLIST_FILE: Sources/Info.plist
+        PRODUCT_BUNDLE_IDENTIFIER: cc.tdisplay.bikegps
+        TARGETED_DEVICE_FAMILY: "1"
+        ENABLE_PREVIEWS: YES

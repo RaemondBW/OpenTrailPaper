@@ -1,0 +1,23 @@
+# PlatformIO build output
+.pio/
+
+# Vendored LilyGO board support (re-clone into vendor/ — see project notes)
+vendor/
+
+# Editor / tooling
+.vscode/
+compile_commands.json
+
+# macOS
+.DS_Store
+
+# Large regenerable map cache (refetch via tools/maps/build_map.py)
+tools/maps/sf_overpass.json
+
+# Xcode user-specific state (the generated .xcodeproj itself is kept)
+**/xcuserdata/
+**/*.xcuserstate
+companion-ios/DerivedData/
+
+# Compiled preview-harness binary (rebuild via tools/preview/render_preview.sh)
+tools/preview/preview

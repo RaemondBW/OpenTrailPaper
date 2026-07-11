@@ -1,0 +1,78 @@
+#include "settings.h"
+
+#include <Arduino.h>
+#include <Preferences.h>
+
+#include "config.h"
+
+namespace {
+
+Preferences prefs;
+int ftp = FTP_WATTS;
+int tz = TIMEZONE_OFFSET_MINUTES;
+int bl = 2;  // frontlight level 0-3
+char addrs[3][18] = {"", "", ""};
+double lastLat = 0, lastLon = 0;
+const char* KEYS[3] = {"sens_hr", "sens_pwr", "sens_cad"};
+
+}  // namespace
+
+namespace settings {
+
+void begin() {
+    prefs.begin("bike", false);
+    ftp = prefs.getInt("ftp", FTP_WATTS);
+    tz = prefs.getInt("tz", TIMEZONE_OFFSET_MINUTES);
+    bl = prefs.getInt("bl", 2);
+    for (int k = 0; k < 3; ++k) {
+        prefs.getString(KEYS[k], addrs[k], sizeof(addrs[k]));
+    }
+    lastLat = prefs.getDouble("lastlat", 0);
+    lastLon = prefs.getDouble("lastlon", 0);
+    Serial.printf("[cfg] ftp=%dW tz=%dmin sensors=[%s|%s|%s]\n", ftp, tz,
+                  addrs[0], addrs[1], addrs[2]);
+}
+
+int ftpWatts() { return ftp; }
+void setFtpWatts(int w) {
+    ftp = constrain(w, 50, 500);
+    prefs.putInt("ftp", ftp);
+}
+
+int tzMinutes() { return tz; }
+void setTzMinutes(int m) {
+    tz = constrain(m, -12 * 60, 14 * 60);
+    prefs.putInt("tz", tz);
+}
+
+int backlight() { return bl; }
+void setBacklight(int b) {
+    bl = constrain(b, 0, 3);
+    prefs.putInt("bl", bl);
+}
+
+const char* sensorAddr(int kind) {
+    return (kind >= 0 && kind < 3) ? addrs[kind] : "";
+}
+
+void setSensorAddr(int kind, const char* addr) {
+    if (kind < 0 || kind >= 3) return;
+    snprintf(addrs[kind], sizeof(addrs[kind]), "%s", addr ? addr : "");
+    prefs.putString(KEYS[kind], addrs[kind]);
+}
+
+bool lastPosition(double& lat, double& lon) {
+    if (lastLat == 0 && lastLon == 0) return false;
+    lat = lastLat;
+    lon = lastLon;
+    return true;
+}
+
+void setLastPosition(double lat, double lon) {
+    lastLat = lat;
+    lastLon = lon;
+    prefs.putDouble("lastlat", lat);
+    prefs.putDouble("lastlon", lon);
+}
+
+}  // namespace settings
