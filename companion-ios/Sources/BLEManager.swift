@@ -57,7 +57,8 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var otaInProgress = false
     @Published var otaProgress: Double = 0
     @Published var otaMessage: String? = nil
-    static let bundledFirmwareVersion = "v0.5"      // matches src/config.h
+    @Published var logFileURL: URL? = nil           // device diagnostics log, ready to share
+    static let bundledFirmwareVersion = "v0.12"      // matches src/config.h
 
     // Saved routes on the device
     @Published var deviceRoutes: [String] = []
@@ -75,6 +76,7 @@ final class BLEManager: NSObject, ObservableObject {
     private var dlExpected = 0
     private var dlName = ""
     private var dlNextSeq: UInt16 = 0
+    private var downloadingLog = false
 
     // OTA transfer state
     private var otaData = Data()
@@ -137,6 +139,20 @@ final class BLEManager: NSObject, ObservableObject {
         guard let c = ridesChar, let p = peripheral else { return }
         var cmd = Data([0x03]); cmd.append(Data(name.utf8))
         p.writeValue(cmd, for: c, type: .withResponse)
+    }
+
+    // Pull /diag.log off the device (reuses the reliable ride-transfer path).
+    func downloadLog() {
+        guard let c = ridesChar, let p = peripheral else {
+            lastMessage = "Not connected"; return
+        }
+        dlBuffer = Data()
+        dlExpected = 0
+        downloadingLog = true
+        downloadingName = "diagnostics"
+        downloadProgress = 0
+        logFileURL = nil
+        p.writeValue(Data([0x05]), for: c, type: .withResponse)
     }
 
     // MARK: firmware / OTA
@@ -202,6 +218,12 @@ final class BLEManager: NSObject, ObservableObject {
         switch op {
         case 0xA3:                                   // running version
             deviceFirmware = String(decoding: d[1...], as: UTF8.self)
+            // Reconnected after an update and now on the bundled version —
+            // clear the transient "rebooting" message so the card reads "Up to
+            // date" instead of staying stuck.
+            if deviceFirmware == BLEManager.bundledFirmwareVersion {
+                otaMessage = nil
+            }
         case 0xA0: otaMessage = "Sending…"; pumpOtaChunks()   // device ready
         case 0xA1:                                   // success (device rebooting)
             otaInProgress = false; otaProgress = 1
@@ -331,6 +353,20 @@ final class BLEManager: NSObject, ObservableObject {
         if dlExpected > 0 && dlBuffer.count != dlExpected {
             lastMessage = "Transfer incomplete (\(dlBuffer.count)/\(dlExpected) bytes) — try again"
             downloadingName = nil
+            downloadingLog = false
+            return
+        }
+        if downloadingLog {                    // diagnostics log, not a ride
+            downloadingLog = false
+            downloadingName = nil
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent("bikegps-diag.log")
+            do {
+                try dlBuffer.write(to: url)
+                logFileURL = url
+            } catch {
+                lastMessage = "Log save failed: \(error.localizedDescription)"
+            }
             return
         }
         // Persist to the cache so it's available offline and never re-fetched.

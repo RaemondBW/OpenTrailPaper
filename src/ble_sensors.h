@@ -30,6 +30,7 @@ void task(void* arg);
 
 // Sensors screen support
 void setScanAlways(bool on);            // keep scanning while the UI is open
+void noteActivity();                    // user interacted — scan for a while
 int getCandidates(Candidate* out, int maxOut);
 void pairCandidate(const char* addr);   // saves for every kind it advertises
 void forgetAll();

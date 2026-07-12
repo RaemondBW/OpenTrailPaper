@@ -21,6 +21,7 @@
 #include "ride_recorder.h"
 #include "ui_dashboard.h"
 #include "board_power.h"
+#include "diag.h"
 
 SharedRideState g_state;
 
@@ -31,6 +32,8 @@ static BQ27220 fuelGauge;
 static bool fuelGaugeOk = false;
 
 static void batteryTask(void*) {
+    uint32_t lastLog = 0;
+    bool firstLog = true;
     for (;;) {
         if (fuelGaugeOk) {
             uint16_t soc = fuelGauge.getStateOfCharge();
@@ -39,6 +42,17 @@ static void batteryTask(void*) {
                 s.batteryPercent = soc > 100 ? 100 : (uint8_t)soc;
                 s.charging = chg;
             });
+            // Log the battery every 2 min so drain rate can be tracked from the
+            // diagnostics log. Current is signed: negative = discharging (mA).
+            if (firstLog || millis() - lastLog > 120000) {
+                firstLog = false;
+                lastLog = millis();
+                diag::log("battery: %u%% %umV %dmA %u/%umAh %s", soc,
+                          fuelGauge.getVoltage(), fuelGauge.getCurrent(),
+                          fuelGauge.getRemainingCapacity(),
+                          fuelGauge.getFullChargeCapacity(),
+                          chg ? "charging" : "discharging");
+            }
         }
         vTaskDelay(pdMS_TO_TICKS(30000));
     }
@@ -49,6 +63,9 @@ void setup() {
     delay(200);
     Serial.println("\n[main] e-paper bike computer booting");
 
+    diag::begin();
+    diag::log("boot firmware %s (reset reason %d)", FIRMWARE_VERSION,
+              (int)esp_reset_reason());
     g_state.begin();
     Wire.begin(BOARD_SDA, BOARD_SCL);
 
@@ -76,6 +93,7 @@ void setup() {
         routes::begin();
     }
     gps_service::begin();
+    diag::log("gps module: %s", gps_service::moduleName());
     // Warm-start seed: hand the receiver the last-known position (and time if
     // the system clock survived deep sleep) so it doesn't cold-search the whole
     // sky. Position alone still narrows the search; time is added when valid.
@@ -85,6 +103,9 @@ void setup() {
             time_t now = time(nullptr);
             bool haveTime = now > 1735689600;   // clock set since 2025-01-01?
             gps_service::injectAiding(alat, alon, now, haveTime, 50000.0f, 30.0f);
+            diag::log("gps warm-start seed: %.4f,%.4f time=%d", alat, alon, haveTime);
+        } else {
+            diag::log("gps warm-start: no saved position");
         }
     }
     ble_sensors::begin();

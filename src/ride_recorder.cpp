@@ -6,6 +6,7 @@
 
 #include "config.h"
 #include "fit_writer.h"
+#include "diag.h"
 
 namespace {
 
@@ -200,7 +201,7 @@ void startRide() {
         st.climbedM = 0;
         st.gradeValid = false;
     });
-    Serial.printf("[rec] recording to %s\n", ridePath);
+    diag::log("ride start -> %s", ridePath);
 }
 
 void stopRide(bool save) {
@@ -210,8 +211,10 @@ void stopRide(bool save) {
     fit.finish(endUtc, distanceM, timerS);
     if (!save) {
         SD.remove(ridePath);
-        Serial.println("[rec] ride discarded");
+        diag::log("ride discarded");
     } else {
+        diag::log("ride saved: %.2f km, %lu s", distanceM / 1000.0,
+                  (unsigned long)timerS);
         Serial.printf("[rec] ride saved: %.1f km, %lu s\n", distanceM / 1000.0,
                       (unsigned long)timerS);
     }

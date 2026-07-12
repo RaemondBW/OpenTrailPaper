@@ -230,7 +230,10 @@ void ui_render_dashboard(const RideState& s, bool navActive, uint8_t* fb) {
             }
         }
     } else {
-        snprintf(buf, sizeof(buf), "%.1f", units::speed(s.speedKmh, s.useMiles));
+        // The huge Impact-128 hero only fits ~3 glyphs, so keep the decimal
+        // only for single-digit speeds; double digits show as a whole number.
+        double spd = units::speed(s.speedKmh, s.useMiles);
+        snprintf(buf, sizeof(buf), spd < 10.0 ? "%.1f" : "%.0f", spd);
         ui::valueWithUnit(&Impact_128, 10, W - 10, 360, buf, "", fb);
     }
     }
@@ -628,9 +631,14 @@ void ui_render_power_sheet(bool recording, uint8_t* fb) {
 
 void ui_render_shutdown_screen(uint8_t* fb) {
     const int W = epd_rotated_display_width();
-    ui::label(W / 2, 440, "POWERED OFF", fb, 0x00, &ArialBold_20);
-    ui::text(&ArialBold_14, W / 2, 500, "press the BOOT button to wake", fb,
-             EPD_DRAW_ALIGN_CENTER, 0x60);
+    // A solid band so the text stays legible over the map backdrop behind it.
+    const int bandY = 402, bandH = 116;
+    epd_fill_rect({0, bandY, W, bandH}, 0x00, fb);
+    epd_fill_rect({0, bandY - 3, W, 3}, 0xFF, fb);
+    epd_fill_rect({0, bandY + bandH, W, 3}, 0xFF, fb);
+    ui::label(W / 2, bandY + 50, "POWERED OFF", fb, 0xFF, &ArialBold_20);
+    ui::text(&ArialBold_14, W / 2, bandY + 90, "press the BOOT button to wake", fb,
+             EPD_DRAW_ALIGN_CENTER, 0xC0);
 }
 
 void ui_render_nav_prompt(const char* routeName, int turns, uint8_t* fb) {

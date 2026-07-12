@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		238C28015928C2C46081BB14 /* GPXExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDB79DC111504015EA01A183 /* GPXExporter.swift */; };
+		252C086BF5464E66881811E2 /* DiagnosticsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6AD10CB9A0264035C3DB368E /* DiagnosticsView.swift */; };
 		376908A07714407243E2E4ED /* RideView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EC186E273C590D7A6345915 /* RideView.swift */; };
 		3E5CA463CB2CE0A9DC48459B /* RidesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCD8003BE2453F3EDA25ED31 /* RidesView.swift */; };
 		47C83BDADFF3D31F4E43F37E /* BLEManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD543402D2E35FD58BA55A8E /* BLEManager.swift */; };
@@ -29,6 +30,7 @@
 		36D2B7A04F9D2AB7171161FA /* BikeGPSCompanionApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BikeGPSCompanionApp.swift; sourceTree = "<group>"; };
 		4EC186E273C590D7A6345915 /* RideView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RideView.swift; sourceTree = "<group>"; };
 		4EDAC3AF1A02980A1CEB9145 /* RideDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RideDetailView.swift; sourceTree = "<group>"; };
+		6AD10CB9A0264035C3DB368E /* DiagnosticsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsView.swift; sourceTree = "<group>"; };
 		836E0AABD268231ABD6B03E4 /* FITDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FITDecoder.swift; sourceTree = "<group>"; };
 		9165B98C67EE602CB6416ECC /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		C3696DA5A82601A862AE2EC2 /* demo.fit */ = {isa = PBXFileReference; path = demo.fit; sourceTree = "<group>"; };
@@ -45,6 +47,7 @@
 				36D2B7A04F9D2AB7171161FA /* BikeGPSCompanionApp.swift */,
 				DD543402D2E35FD58BA55A8E /* BLEManager.swift */,
 				C3696DA5A82601A862AE2EC2 /* demo.fit */,
+				6AD10CB9A0264035C3DB368E /* DiagnosticsView.swift */,
 				14E464ED0804B19DDBEC4745 /* firmware.bin */,
 				836E0AABD268231ABD6B03E4 /* FITDecoder.swift */,
 				DDB79DC111504015EA01A183 /* GPXExporter.swift */,
@@ -149,6 +152,7 @@
 			files = (
 				47C83BDADFF3D31F4E43F37E /* BLEManager.swift in Sources */,
 				68E61DE93629DD4481BB8FAE /* BikeGPSCompanionApp.swift in Sources */,
+				252C086BF5464E66881811E2 /* DiagnosticsView.swift in Sources */,
 				DD5AF628B5DC8DCC6F9D5381 /* FITDecoder.swift in Sources */,
 				238C28015928C2C46081BB14 /* GPXExporter.swift in Sources */,
 				9176980BABF604ABA9659708 /* RideDetailView.swift in Sources */,

@@ -19,4 +19,8 @@ void task(void* arg);
 // Mirror a device-side settings edit (FTP/tz/units/frontlight) to the phone.
 void pushSettingsToPhone();
 
+// True while a phone (the companion app) is connected — used to hold off
+// auto-sleep during transfers.
+bool isPhoneConnected();
+
 }

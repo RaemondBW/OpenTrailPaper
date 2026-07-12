@@ -20,6 +20,7 @@
 #include "ble_server.h"
 #include "routes.h"
 #include "settings.h"
+#include "diag.h"
 
 // SF map embedded in flash (board_build.embed_files = data/sf.ebm)
 extern const uint8_t map_ebm_start[] asm("_binary_data_sf_ebm_start");
@@ -53,6 +54,7 @@ uint32_t navPromptShownAt = 0;
 // Turn-by-turn banner rect (top of map/dashboard); tapping it ends nav.
 const EpdRect kNavBanner = {0, ui::STATUS_H, 540, 138};
 void drawNavBanner(uint8_t* fb);
+void buildMapScreenData(const RideState& s, MapScreenData& map);
 
 // Which screen the Sensors page was opened from, so back returns there.
 Screen sensorsFrom = SCREEN_MENU;
@@ -87,7 +89,14 @@ void shutdownDevice(uint8_t* fb) {
     }
 
     // Leave a static farewell on the glass — e-paper keeps it for free.
+    // Full-screen map backdrop (last known position) with a POWERED OFF plate.
     memset(fb, 0xFF, fbSize);
+    {
+        RideState s = g_state.snapshot();
+        MapScreenData map = {};
+        buildMapScreenData(s, map);
+        ui_render_map_features(map, s, fb);
+    }
     ui_render_shutdown_screen(fb);
     if (shadowFb) memcpy(shadowFb, fb, fbSize);
     epd_poweron();
@@ -120,6 +129,15 @@ int routeFileCount = 0;
 // Long-press tracking
 uint32_t touchDownAt = 0;
 bool touchWasDown = false;
+
+// Inactivity auto-sleep: any input refreshes this; the task deep-sleeps after
+// a quiet period (unless riding / navigating / phone connected).
+uint32_t lastActivityMs = 0;
+constexpr uint32_t AUTO_SLEEP_MS = 10 * 60 * 1000;   // 10 minutes idle
+void noteActivity() {
+    lastActivityMs = millis();
+    ble_sensors::noteActivity();
+}
 
 // Hybrid refresh policy to avoid the GC16 white-flash on every page.
 //
@@ -389,8 +407,7 @@ void handlePowerTap(int x, int y) {
     }
 }
 
-void renderMapScreen(const RideState& s, uint8_t* fb) {
-    MapScreenData map = {};
+void buildMapScreenData(const RideState& s, MapScreenData& map) {
     map.riderX = 270;
     map.riderY = 430;
     // Track-up: the world rotates so travel direction is up; the rider
@@ -429,7 +446,11 @@ void renderMapScreen(const RideState& s, uint8_t* fb) {
         map.showRemaining = true;
         map.remainingKm = routes::remainingKm();
     }
+}
 
+void renderMapScreen(const RideState& s, uint8_t* fb) {
+    MapScreenData map = {};
+    buildMapScreenData(s, map);
     ui_render_map(map, s, fb);
     drawNavBanner(fb);
 }
@@ -607,7 +628,19 @@ void task(void*) {
     bool lastOverlay = false;
     bool lastNavPrompt = false;
 
+    lastActivityMs = millis();
     for (;;) {
+        // Auto-sleep after a quiet period to save battery — a bike computer
+        // left on a desk otherwise burns power on GPS + BLE + CPU. Held off
+        // while recording, navigating, or a phone is connected. Wake with BOOT.
+        if (millis() - lastActivityMs > AUTO_SLEEP_MS &&
+            !ride_recorder::isRecording() && !routes::navActive() &&
+            !ble_server::isPhoneConnected()) {
+            diag::log("auto-sleep after %lu min idle", AUTO_SLEEP_MS / 60000);
+            uint8_t* fb = epd_hl_get_framebuffer(&hl);
+            shutdownDevice(fb);   // deep sleep; does not return
+        }
+
         // Apply a frontlight level changed from the phone (BLE writes NVS but
         // not the PWM). Also covers the device's own +/- which already applied.
         static int lastBl = -1;
@@ -641,7 +674,7 @@ void task(void*) {
                         powerOverlay = true;       // hold -> power dialog
                     }
                 } else {
-                    if (bootLow >= 2 && !bootLong) toggleRide();  // clean short press
+                    if (bootLow >= 2 && !bootLong) { noteActivity(); toggleRide(); }
                     bootLow = 0;
                 }
             }
@@ -653,7 +686,7 @@ void task(void*) {
                 if (board_side_button_pressed()) {
                     if (sideLow < 200) sideLow++;
                 } else {
-                    if (sideLow >= 2) cycleFrontlight();
+                    if (sideLow >= 2) { noteActivity(); cycleFrontlight(); }
                     sideLow = 0;
                 }
             }
@@ -682,6 +715,7 @@ void task(void*) {
                     // can't fire twice and toggle the screen back.
                     if (millis() - lastTapMs > 350) {
                         lastTapMs = millis();
+                        noteActivity();
                         if (powerOverlay) handlePowerTap(lastX, lastY);
                         else handleTap(lastX, lastY);
                     }
@@ -697,6 +731,7 @@ void task(void*) {
             static uint32_t lastHome = 0;
             if (millis() - lastHome > 400) {
                 lastHome = millis();
+                noteActivity();
                 goBack();
             }
         }

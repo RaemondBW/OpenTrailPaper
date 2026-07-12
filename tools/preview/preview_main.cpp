@@ -223,6 +223,16 @@ int main(int argc, char** argv) {
     ui_render_dashboard(s, false, fb.data());
     emit("dashboard.png");
 
+    // Dashboard in imperial units, no power meter (speed hero)
+    {
+        RideState sm = s;
+        sm.useMiles = true;
+        sm.powerConnected = false;
+        clearWhite(fb.data());
+        ui_render_dashboard(sm, false, fb.data());
+        emit("dashboard_mph.png");
+    }
+
     // Dashboard while navigating: compact hero under the turn banner.
     clearWhite(fb.data());
     ui_render_dashboard(s, true, fb.data());
@@ -270,6 +280,12 @@ int main(int argc, char** argv) {
     clearWhite(fb.data());
     ui_render_map(map, s, fb.data());
     emit("map.png");
+
+    // Powered-off screen: full-screen map backdrop + plate
+    clearWhite(fb.data());
+    ui_render_map_features(map, s, fb.data());
+    ui_render_shutdown_screen(fb.data());
+    emit("powered_off.png");
 
     // Zoomed-out view of the same spot
     if (mf) {

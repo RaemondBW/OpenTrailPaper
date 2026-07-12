@@ -26,11 +26,13 @@ struct Maneuver {
     char instr[routes::MANEUVER_TEXT];
 };
 Maneuver maneuvers[MAX_MANEUVERS];
+int maneuverIdx[MAX_MANEUVERS];   // nearest route-point index for each maneuver
 int nManeuvers = 0;
 int curManeuver = 0;       // next maneuver ahead of the rider
-bool reachedManeuver = false;  // rider has come within range of curManeuver
 bool pendingNav = false;
 bool activeNav = false;
+bool navDismissed = false;        // user tapped the banner away; don't re-grab
+float offRouteM = 99999.0f;       // rider's distance to the nearest route point
 
 double haversineM(double lat1, double lon1, double lat2, double lon2) {
     const double R = 6371000.0;
@@ -40,6 +42,42 @@ double haversineM(double lat1, double lon1, double lat2, double lon2) {
                cos(radians(lat1)) * cos(radians(lat2)) *
                sin(dLon / 2) * sin(dLon / 2);
     return R * 2 * atan2(sqrt(a), sqrt(1 - a));
+}
+
+// Nearest route point to (lat,lon) within [from,to); returns its index and the
+// squared distance (m^2) via outDist2. Fast planar approximation.
+int nearestRouteIdx(double lat, double lon, int from, int to, float& outDist2) {
+    float best = 1e18f;
+    int bestI = -1;
+    float cosL = (float)cos(lat * M_PI / 180.0);
+    for (int i = from; i < to; ++i) {
+        float dy = (float)((lat - latArr[i]) * 110540.0);
+        float dx = (float)((lon - lonArr[i]) * 111320.0 * cosL);
+        float d2 = dx * dx + dy * dy;
+        if (d2 < best) { best = d2; bestI = i; }
+    }
+    outDist2 = best;
+    return bestI;
+}
+
+// Snap each maneuver to its nearest point on the loaded route so turns can be
+// tracked by along-route distance (robust) instead of GPS proximity.
+void mapManeuversToRoute() {
+    for (int i = 0; i < nManeuvers; ++i) {
+        float d2;
+        int idx = nPts > 0 ? nearestRouteIdx(maneuvers[i].lat, maneuvers[i].lon,
+                                             0, nPts, d2) : 0;
+        maneuverIdx[i] = idx < 0 ? 0 : idx;
+    }
+}
+
+// Move the cursor past any maneuver we've already ridden through (its route
+// position is behind us, with a small margin).
+void advanceManeuverCursor() {
+    while (curManeuver < nManeuvers &&
+           cumM[maneuverIdx[curManeuver]] <= cumM[progIdx] - 5.0f) {
+        curManeuver++;
+    }
 }
 
 bool ensureBuffers() {
@@ -245,38 +283,37 @@ void point(int i, double& lat, double& lon) {
 
 void updateProgress(double lat, double lon) {
     if (!active()) return;
-    // search a window ahead of the current index; advance to the nearest
-    // route point within 80 m
-    int end = progIdx + 60;
-    if (end > nPts) end = nPts;
-    float best = 80.0f * 80.0f;
-    int bestI = -1;
-    for (int i = progIdx; i < end; ++i) {
-        // fast approximate distance (meters) — fine at this scale
-        float dy = (float)((lat - latArr[i]) * 110540.0);
-        float dx = (float)((lon - lonArr[i]) * 111320.0 *
-                           cos(lat * M_PI / 180.0));
-        float d2 = dx * dx + dy * dy;
-        if (d2 < best) {
-            best = d2;
-            bestI = i;
-        }
-    }
-    if (bestI > progIdx) progIdx = bestI;
+    int prev = progIdx;
 
-    // Advance the maneuver cursor only after the rider has reached AND left
-    // the current turn. This keeps the first step visible when navigation
-    // starts (the departure maneuver sits right at the start point, so a
-    // plain "within 20 m" test skipped it instantly).
-    if (activeNav && curManeuver < nManeuvers) {
-        double d = haversineM(lat, lon, maneuvers[curManeuver].lat,
-                              maneuvers[curManeuver].lon);
-        if (d < 25.0) reachedManeuver = true;
-        if (reachedManeuver && d > 35.0) {
-            curManeuver++;
-            reachedManeuver = false;
-        }
+    // Project the rider onto the route. Look in a forward window (with a small
+    // backward allowance) for smooth tracking; if that comes up off-route,
+    // re-acquire against the whole route so we can grab it after joining
+    // mid-way or returning from a detour.
+    int from = progIdx - 8;   if (from < 0) from = 0;
+    int to   = progIdx + 120; if (to > nPts) to = nPts;
+    float d2;
+    int idx = nearestRouteIdx(lat, lon, from, to, d2);
+    if (d2 > 60.0f * 60.0f) {
+        float fd2;
+        int fidx = nearestRouteIdx(lat, lon, 0, nPts, fd2);
+        if (fidx >= 0 && fd2 < d2) { idx = fidx; d2 = fd2; }
     }
+    if (idx >= 0) progIdx = idx;
+    offRouteM = sqrtf(d2);
+
+    // Grab the route into the turn view when we're clearly on it and moving
+    // along it (projection advanced forward), unless the user dismissed it.
+    bool movingAlong = progIdx > prev;
+    if (nManeuvers > 0 && !activeNav && !navDismissed &&
+        offRouteM < 40.0f && movingAlong) {
+        activeNav = true;
+        pendingNav = false;
+        curManeuver = 0;
+    }
+
+    // The upcoming turn is simply the first maneuver still ahead of us on the
+    // route — no fragile GPS-proximity test.
+    if (activeNav) advanceManeuverCursor();
 }
 
 // --- Maneuvers / navigation ---------------------------------------------
@@ -286,6 +323,7 @@ void clearManeuvers() {
     curManeuver = 0;
     pendingNav = false;
     activeNav = false;
+    navDismissed = false;
 }
 
 void addManeuver(double lat, double lon, const char* instruction) {
@@ -297,8 +335,10 @@ void addManeuver(double lat, double lon, const char* instruction) {
 }
 
 void finishManeuvers() {
+    mapManeuversToRoute();          // route geometry is already loaded by now
     pendingNav = nManeuvers > 0;
     activeNav = false;
+    navDismissed = false;
     curManeuver = 0;
 }
 
@@ -308,9 +348,11 @@ bool navPending() { return pendingNav; }
 
 void startNav() {
     if (nManeuvers > 0) {
+        mapManeuversToRoute();
         activeNav = true;
+        navDismissed = false;
         curManeuver = 0;
-        reachedManeuver = false;
+        advanceManeuverCursor();    // skip any turns already behind us
     }
     pendingNav = false;
 }
@@ -318,16 +360,17 @@ void startNav() {
 void dismissNav() {
     pendingNav = false;
     activeNav = false;
+    navDismissed = true;            // don't auto-grab again until a new route
 }
 
 bool navActive() { return activeNav; }
 
 bool nextTurn(char* instruction, int textLen, float& distanceM) {
-    if (!activeNav || curManeuver >= nManeuvers) return false;
-    // Distance from the rider's last known route point to the next turn.
-    double rlat = latArr[progIdx], rlon = lonArr[progIdx];
-    distanceM = (float)haversineM(rlat, rlon, maneuvers[curManeuver].lat,
-                                  maneuvers[curManeuver].lon);
+    if (!activeNav || curManeuver >= nManeuvers || nPts == 0) return false;
+    // Along-route distance from the rider's projected position to the turn.
+    float along = cumM[maneuverIdx[curManeuver]] - cumM[progIdx];
+    if (along < 0) along = 0;
+    distanceM = along;
     snprintf(instruction, textLen, "%s", maneuvers[curManeuver].instr);
     return true;
 }

@@ -66,6 +66,8 @@ struct SettingsView: View {
                     }
                     .disabled(ble.state != .connected)
 
+                    if ble.state == .connected { diagnosticsCard }
+
                     Text(ble.state == .connected
                          ? "Settings sync automatically with your Bike GPS, both ways."
                          : "Connect to sync settings with your Bike GPS.")
@@ -78,6 +80,27 @@ struct SettingsView: View {
             }
             .background(Palette.paper)
             .navigationTitle("Settings")
+            .sheet(item: $ble.logFileURL) { url in DiagnosticsView(url: url) }
+        }
+    }
+
+    @ViewBuilder private var diagnosticsCard: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Diagnostics").trackedLabel()
+                Text("The device keeps a log (boot, GPS, BLE, OTA timing, errors). Download it to review or share if something goes wrong.")
+                    .font(.system(size: 12)).foregroundStyle(Palette.muted)
+                if ble.downloadingName == "diagnostics" {
+                    ProgressView(value: ble.downloadProgress) {
+                        Text("Downloading log…").font(.system(size: 12))
+                            .foregroundStyle(Palette.muted)
+                    }
+                } else {
+                    PrimaryButton(title: "Download device log",
+                                  systemImage: "doc.text.magnifyingglass",
+                                  enabled: true) { ble.downloadLog() }
+                }
+            }
         }
     }
 

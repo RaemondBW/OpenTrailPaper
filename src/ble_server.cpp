@@ -12,6 +12,7 @@
 #include "ride_recorder.h"
 #include "settings.h"
 #include "routes.h"
+#include "diag.h"
 
 namespace {
 
@@ -150,7 +151,7 @@ class RouteCb : public NimBLECharacteristicCallbacks {
 //   Device -> phone:  list:     [0x01][u32 size][name] per ride, [0x03] end
 //                     download:  [0x10][u32 total], [0x11]<bytes>…, [0x12] end
 //                     delete ack: [0x13]        error (e.g. recording): [0x1F]
-enum RideReq { REQ_NONE, REQ_LIST, REQ_DOWNLOAD, REQ_DELETE };
+enum RideReq { REQ_NONE, REQ_LIST, REQ_DOWNLOAD, REQ_DELETE, REQ_LOG };
 volatile RideReq rideReq = REQ_NONE;
 char rideReqName[48];
 
@@ -164,6 +165,8 @@ class RidesCb : public NimBLECharacteristicCallbacks {
         if (v.empty()) return;
         if (v[0] == 0x01) {
             rideReq = REQ_LIST;
+        } else if (v[0] == 0x05) {                    // download diagnostics log
+            rideReq = REQ_LOG;
         } else if (v[0] == 0x04 && v.size() >= 3) {   // window ack
             rideAckSeq = (uint8_t)v[1] | ((uint8_t)v[2] << 8);
             rideAckPending = true;
@@ -231,13 +234,9 @@ void sendRideList() {
     notifyByte(0x03);
 }
 
-void sendRide(const char* name) {
-    if (ride_recorder::isRecording() || !ride_recorder::sdMounted()) {
-        notifyByte(0x1F);
-        return;
-    }
-    char path[80];
-    snprintf(path, sizeof(path), RIDE_DIR "/%s", name);
+// Stream any SD file to the phone with the reliable windowed protocol (used
+// for both ride downloads and the diagnostics log).
+void streamFileWindowed(const char* path, const char* label) {
     File f = SD.open(path, FILE_READ);
     if (!f) { notifyByte(0x1F); return; }
 
@@ -246,8 +245,8 @@ void sendRide(const char* name) {
     int chunk = (int)negotiatedMTU - 3 - 3;    // -3 ATT overhead, -3 our header
     if (chunk < 16) chunk = 16;
     if (chunk > 180) chunk = 180;
-    Serial.printf("[srv] download %s: total=%u, MTU=%u, chunk=%d\n", name,
-                  (unsigned)total, negotiatedMTU, chunk);
+    diag::log("download %s: total=%u, MTU=%u, chunk=%d", label,
+              (unsigned)total, negotiatedMTU, chunk);
 
     uint8_t hdr[5] = {0x10};
     memcpy(hdr + 1, &total, 4);
@@ -268,12 +267,12 @@ void sendRide(const char* name) {
     int resends = 0;
     while (true) {
         if (!phoneConnected) {              // gave up / dropped mid-transfer
-            Serial.printf("[srv] download %s: disconnected at seq %u\n", name, seq);
+            diag::log("download %s: disconnected at seq %u", label, seq);
             f.close();
             return;
         }
         if (resends > 200) {                // a chunk keeps failing — bail, don't hang
-            Serial.printf("[srv] download %s: too many resends, aborting\n", name);
+            diag::log("download %s: too many resends, aborting", label);
             f.close();
             return;
         }
@@ -294,7 +293,7 @@ void sendRide(const char* name) {
         while (!rideAckPending && phoneConnected && millis() - t0 < 5000)
             vTaskDelay(pdMS_TO_TICKS(5));
         if (!rideAckPending) {
-            Serial.printf("[srv] download %s: ACK TIMEOUT at seq %u\n", name, seq);
+            diag::log("download %s: ACK TIMEOUT at seq %u", label, seq);
             f.close();
             return;
         }
@@ -309,8 +308,26 @@ void sendRide(const char* name) {
     f.close();
     uint8_t done = 0x12;
     sendChunk(ridesChr, &done, 1);
-    Serial.printf("[srv] download %s: %u bytes in %u chunks, %d resends\n",
-                  name, (unsigned)total, seq, resends);
+    diag::log("download %s: %u bytes, %d resends", label, (unsigned)total, resends);
+}
+
+void sendRide(const char* name) {
+    if (ride_recorder::isRecording() || !ride_recorder::sdMounted()) {
+        notifyByte(0x1F);
+        return;
+    }
+    char path[80];
+    snprintf(path, sizeof(path), RIDE_DIR "/%s", name);
+    streamFileWindowed(path, name);
+}
+
+void sendLog() {
+    if (ride_recorder::isRecording() || !ride_recorder::sdMounted()) {
+        notifyByte(0x1F);
+        return;
+    }
+    diag::flushToSD();                 // make sure the newest lines are on SD
+    streamFileWindowed(diag::logPath(), "diag.log");
 }
 
 void deleteRide(const char* name) {
@@ -359,19 +376,20 @@ namespace ble_server {
 
 class ServerCb : public NimBLEServerCallbacks {
     void onConnect(NimBLEServer* srv, NimBLEConnInfo& info) override {
-        Serial.printf("[srv] phone connected, MTU=%u\n", info.getMTU());
         negotiatedMTU = info.getMTU();
         phoneConnected = true;
+        diag::log("phone connected: MTU=%u interval=%.1fms", info.getMTU(),
+                  info.getConnInterval() * 1.25f);
         // Ask for a fast connection interval (15-30 ms) so large transfers
         // (ride download, OTA) aren't throttled to one packet per ~slow tick.
         srv->updateConnParams(info.getConnHandle(), 12, 24, 0, 400);
     }
     void onMTUChange(uint16_t mtu, NimBLEConnInfo&) override {
-        Serial.printf("[srv] MTU negotiated: %u\n", mtu);
+        diag::log("MTU negotiated: %u", mtu);
         negotiatedMTU = mtu;
     }
-    void onDisconnect(NimBLEServer*, NimBLEConnInfo&, int) override {
-        Serial.println("[srv] phone disconnected");
+    void onDisconnect(NimBLEServer*, NimBLEConnInfo&, int reason) override {
+        diag::log("phone disconnected (reason %d)", reason);
         phoneConnected = false;
         // Advertising stops once a central connects; restart it so the phone
         // can find and reconnect to the device after disconnecting.
@@ -404,6 +422,7 @@ uint8_t* otaBuf = nullptr;                 // PSRAM staging buffer
 volatile uint32_t otaBufLen = 0, otaBufCap = 0;
 char otaMd5[33] = "";
 volatile bool otaCommitPending = false;    // task should flash the buffer
+uint32_t otaStartMs = 0, otaCommitStartMs = 0;
 
 void otaFreeBuf() {
     if (otaBuf) { heap_caps_free(otaBuf); otaBuf = nullptr; }
@@ -445,8 +464,9 @@ class OtaCb : public NimBLECharacteristicCallbacks {
             otaMd5[0] = 0;
             if (n >= 5 + 32) { memcpy(otaMd5, p + 5, 32); otaMd5[32] = 0; }
             updating = true;
+            otaStartMs = millis();
             otaNotify1(0xA0);
-            Serial.printf("[ota] begin, %u bytes (PSRAM staged)\n", (unsigned)expected);
+            diag::log("ota begin: %u bytes, MTU=%u", (unsigned)expected, negotiatedMTU);
             break;
         }
         case 0x02: {                          // data: memcpy into PSRAM (no flash)
@@ -464,12 +484,16 @@ class OtaCb : public NimBLECharacteristicCallbacks {
             }
             break;
         }
-        case 0x03:                            // end: hand off to the task to flash
+        case 0x03: {                          // end: hand off to the task to flash
             if (!updating) return;
             updating = false;
             otaCommitPending = true;
-            Serial.printf("[ota] received %u bytes, committing\n", (unsigned)otaBufLen);
+            uint32_t dt = millis() - otaStartMs;
+            float kbps = dt ? (otaBufLen / 1024.0f) / (dt / 1000.0f) : 0;
+            diag::log("ota transfer done: %u bytes in %.1fs (%.1f KB/s)",
+                      (unsigned)otaBufLen, dt / 1000.0f, kbps);
             break;
+        }
         case 0x04:                            // abort
             updating = false;
             otaFreeBuf();
@@ -482,20 +506,23 @@ class OtaCb : public NimBLECharacteristicCallbacks {
 // Flash the PSRAM-staged firmware. Runs in the server task (NOT the BLE host),
 // so the multi-second erase+write can't drop the connection.
 void otaCommit() {
+    uint32_t t0 = millis();
     bool ok = false;
     if (otaBuf && otaBufLen > 0 && Update.begin(otaBufLen)) {
         if (otaMd5[0]) Update.setMD5(otaMd5);
         if (Update.write(otaBuf, otaBufLen) == otaBufLen && Update.end(true)) ok = true;
     }
+    int err = Update.getError();
     otaFreeBuf();
     if (ok) {
         otaNotify1(0xA1);
-        Serial.println("[ota] verified, rebooting into new image");
+        diag::log("ota flash ok in %.1fs, rebooting", (millis() - t0) / 1000.0f);
+        diag::flushToSD();               // persist the log before we reboot
         otaRebootPending = true;
     } else {
-        uint8_t e[2] = {0xAF, (uint8_t)Update.getError()};
+        uint8_t e[2] = {0xAF, (uint8_t)err};
         otaNotify(e, 2);
-        Serial.printf("[ota] commit failed: %d\n", Update.getError());
+        diag::log("ota flash FAILED, error %d", err);
     }
 }
 
@@ -542,6 +569,8 @@ void begin() {
 
 void pushSettingsToPhone() { settingsDirty = true; }
 
+bool isPhoneConnected() { return phoneConnected; }
+
 void task(void*) {
     uint32_t lastStatus = 0;
     for (;;) {
@@ -568,6 +597,9 @@ void task(void*) {
         } else if (rideReq == REQ_DELETE) {
             rideReq = REQ_NONE;
             deleteRide(rideReqName);
+        } else if (rideReq == REQ_LOG) {
+            rideReq = REQ_NONE;
+            sendLog();
         }
         if (routeReq == RREQ_LIST) {
             routeReq = RREQ_NONE;
@@ -580,6 +612,8 @@ void task(void*) {
         vTaskDelay(pdMS_TO_TICKS(100));
         if (!statusChr || millis() - lastStatus < 1000) continue;
         lastStatus = millis();
+
+        diag::flushToSD();   // persist buffered diagnostics (no-op while recording)
 
         // Safety net: make sure we're discoverable whenever no phone is
         // connected, in case a disconnect ever slips past onDisconnect.

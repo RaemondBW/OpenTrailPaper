@@ -62,3 +62,8 @@ struct MapTouchZones {
 extern const MapTouchZones kMapZoom;
 
 void ui_render_map(const MapScreenData& map, const RideState& s, uint8_t* fb);
+
+// Just the map (features + route + rider), full-screen, no chrome. Used as the
+// backdrop behind the powered-off screen.
+void ui_render_map_features(const MapScreenData& map, const RideState& s,
+                            uint8_t* fb);

@@ -161,11 +161,9 @@ void drawCompass(int cx, int cy, float northDeg, bool trackUp, uint8_t* fb) {
 const MapTouchZones kMapZoom = {540 - 78, 560, 640, 76};
 const MapCompassZone kMapCompass = {540 - 46, 64 + 48, 34};
 
-void ui_render_map(const MapScreenData& map, const RideState& s, uint8_t* fb) {
-    const int W = epd_rotated_display_width();
-    const int H = epd_rotated_display_height();
-    char buf[32];
-
+void ui_render_map_features(const MapScreenData& map, const RideState& s,
+                            uint8_t* fb) {
+    (void)s;
     // Map features: water under roads, all in grays
     const MapFeatureClass order[] = {MAP_WATER, MAP_RAIL, MAP_PATH,
                                      MAP_ROAD_MINOR, MAP_ROAD_MAJOR};
@@ -191,6 +189,14 @@ void ui_render_map(const MapScreenData& map, const RideState& s, uint8_t* fb) {
     }
 
     drawRider(map.riderX, map.riderY, map.headingDeg, fb);
+}
+
+void ui_render_map(const MapScreenData& map, const RideState& s, uint8_t* fb) {
+    const int W = epd_rotated_display_width();
+    const int H = epd_rotated_display_height();
+    char buf[32];
+
+    ui_render_map_features(map, s, fb);
     drawScaleBar(map.metersPerPixel, s.useMiles, fb);
     drawCompass(kMapCompass.cx, kMapCompass.cy, map.northDeg, map.trackUp, fb);
 

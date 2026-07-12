@@ -5,6 +5,7 @@
 
 #include "ride_state.h"
 #include "settings.h"
+#include "ride_recorder.h"
 
 namespace {
 
@@ -138,6 +139,7 @@ ble_sensors::Candidate candidates[MAX_CANDIDATES];
 int candidateCount = 0;
 SemaphoreHandle_t candMutex = nullptr;
 bool scanAlways = false;
+uint32_t lastActivityMs = 0;
 
 void noteCandidate(const NimBLEAdvertisedDevice* dev, uint8_t kindsMask) {
     xSemaphoreTake(candMutex, portMAX_DELAY);
@@ -286,8 +288,10 @@ void begin() {
     NimBLEScan* scan = NimBLEDevice::getScan();
     scan->setScanCallbacks(&scanCallbacks, false);
     scan->setActiveScan(true);
-    scan->setInterval(100);
-    scan->setWindow(60);
+    // Lower duty cycle than before (was 60/100 = 60% radio-on) to save power;
+    // still finds sensors within a few seconds.
+    scan->setInterval(160);
+    scan->setWindow(48);
 }
 
 void task(void*) {
@@ -298,8 +302,18 @@ void task(void*) {
             if (!sensor.connected) allConnected = false;
         }
 
-        if ((!allConnected || scanAlways) && !scan->isScanning()) {
+        // Only scan when it's actually useful: while recording, while the
+        // Sensors screen is open, or for a short window after the user
+        // interacts. Otherwise a paired-but-absent sensor (e.g. an HR strap
+        // you're not wearing) would keep the radio scanning forever and drain
+        // the battery while the device just sits idle.
+        bool wantScan = !allConnected &&
+                        (scanAlways || ride_recorder::isRecording() ||
+                         millis() - lastActivityMs < 30000);
+        if (wantScan && !scan->isScanning()) {
             scan->start(5000, false, true);
+        } else if (!wantScan && scan->isScanning()) {
+            scan->stop();
         }
 
         // Connecting while a scan runs is unreliable; stop it first.
@@ -315,6 +329,7 @@ void task(void*) {
 }
 
 void setScanAlways(bool on) { scanAlways = on; }
+void noteActivity() { lastActivityMs = millis(); }
 
 int getCandidates(Candidate* out, int maxOut) {
     xSemaphoreTake(candMutex, portMAX_DELAY);
