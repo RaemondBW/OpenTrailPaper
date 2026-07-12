@@ -82,11 +82,15 @@ void applyBacklight(int level) {
     analogWrite(BOARD_BL_EN, kBacklightPWM[level]);
 }
 
-void shutdownDevice(uint8_t* fb) {
-    Serial.println("[power] shutting down");
+void shutdownDevice(uint8_t* fb, const char* reason) {
+    // Log WHY we're powering off and flush it to SD before deep sleep, so the
+    // next boot's log distinguishes a user shutdown / auto-sleep from a reset
+    // or a power loss (which leave no such line).
+    diag::log("shutdown: %s", reason);
     if (ride_recorder::isRecording()) {
         ride_recorder::stopRide(true);  // never lose a ride to power-off
     }
+    diag::flushToSD();
 
     // Leave a static farewell on the glass — e-paper keeps it for free.
     // Full-screen map backdrop (last known position) with a POWERED OFF plate.
@@ -400,7 +404,7 @@ void handleTap(int x, int y) {
 void handlePowerTap(int x, int y) {
     if (inRect(kPowerShutdown, x, y)) {
         uint8_t* fb = epd_hl_get_framebuffer(&hl);
-        shutdownDevice(fb);  // does not return
+        shutdownDevice(fb, "user power-off (dialog)");  // does not return
     } else {
         // CANCEL, or a tap anywhere outside the sheet, dismisses it.
         powerOverlay = false;
@@ -630,15 +634,23 @@ void task(void*) {
 
     lastActivityMs = millis();
     for (;;) {
+        // Riding counts as activity even without touching the screen — a bike
+        // computer must NEVER auto-off while you're moving. Any real speed keeps
+        // it awake (and for the idle timeout after you stop).
+        {
+            RideState now = g_state.snapshot();
+            if (now.gpsFix && now.speedKmh > 3.0f) lastActivityMs = millis();
+        }
+
         // Auto-sleep after a quiet period to save battery — a bike computer
         // left on a desk otherwise burns power on GPS + BLE + CPU. Held off
-        // while recording, navigating, or a phone is connected. Wake with BOOT.
+        // while recording, navigating, moving, or a phone is connected. Wake
+        // with BOOT.
         if (millis() - lastActivityMs > AUTO_SLEEP_MS &&
             !ride_recorder::isRecording() && !routes::navActive() &&
             !ble_server::isPhoneConnected()) {
-            diag::log("auto-sleep after %lu min idle", AUTO_SLEEP_MS / 60000);
             uint8_t* fb = epd_hl_get_framebuffer(&hl);
-            shutdownDevice(fb);   // deep sleep; does not return
+            shutdownDevice(fb, "auto-sleep (idle timeout)");   // does not return
         }
 
         // Apply a frontlight level changed from the phone (BLE writes NVS but

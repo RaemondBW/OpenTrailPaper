@@ -58,14 +58,31 @@ static void batteryTask(void*) {
     }
 }
 
+static const char* resetReasonStr(esp_reset_reason_t r) {
+    switch (r) {
+        case ESP_RST_POWERON:   return "power-on / power-loss";
+        case ESP_RST_EXT:       return "RST button";
+        case ESP_RST_SW:        return "software (OTA / restart)";
+        case ESP_RST_PANIC:     return "crash (panic)";
+        case ESP_RST_INT_WDT:   return "interrupt watchdog";
+        case ESP_RST_TASK_WDT:  return "task watchdog";
+        case ESP_RST_WDT:       return "watchdog";
+        case ESP_RST_DEEPSLEEP: return "wake from sleep";
+        case ESP_RST_BROWNOUT:  return "brownout";
+        case ESP_RST_SDIO:      return "sdio";
+        default:                return "unknown";
+    }
+}
+
 void setup() {
     Serial.begin(115200);
     delay(200);
     Serial.println("\n[main] e-paper bike computer booting");
 
     diag::begin();
-    diag::log("boot firmware %s (reset reason %d)", FIRMWARE_VERSION,
-              (int)esp_reset_reason());
+    esp_reset_reason_t rr = esp_reset_reason();
+    diag::log("boot firmware %s (reset: %s [%d])", FIRMWARE_VERSION,
+              resetReasonStr(rr), (int)rr);
     g_state.begin();
     Wire.begin(BOARD_SDA, BOARD_SCL);
 

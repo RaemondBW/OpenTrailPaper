@@ -6,6 +6,7 @@
 #include "ride_state.h"
 #include "settings.h"
 #include "ride_recorder.h"
+#include "diag.h"
 
 namespace {
 
@@ -24,10 +25,11 @@ using SensorKind = ble_sensors::Kind;
 
 struct Sensor {
     Sensor(const char* n, NimBLEUUID s, NimBLEUUID c) : name(n), svc(s), chr(c) {}
-    const char* name;
+    const char* name;        // generic kind label ("HR"/"Power"/"Cadence")
     NimBLEUUID svc;
     NimBLEUUID chr;
     NimBLEAddress addr{};
+    char advName[24] = "";   // the device's advertised name (e.g. assioma…)
     bool found = false;      // discovered by scan, awaiting connect
     bool connected = false;
     NimBLEClient* client = nullptr;
@@ -74,28 +76,49 @@ void onHrNotify(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool) {
 }
 
 // 3 s rolling power average for the hero display (design: "POWER · 3S").
-uint16_t powerRing[8];
-uint32_t powerRingTimes[8];
+// Sized for a fast meter (~10 Hz) over the 3 s window.
+constexpr int PWR_RING = 40;
+uint16_t powerRing[PWR_RING];
+uint32_t powerRingTimes[PWR_RING];
 int powerRingHead = 0;
 
-uint16_t rollingPower3s(uint16_t watts) {
+void addPowerSample(uint16_t watts) {
     powerRing[powerRingHead] = watts;
     powerRingTimes[powerRingHead] = millis();
-    powerRingHead = (powerRingHead + 1) % 8;
+    powerRingHead = (powerRingHead + 1) % PWR_RING;
+}
+
+// Average of samples still within the last 3 s. Recomputed on every notify AND
+// once a second by the task, so the value decays promptly when you ease off —
+// otherwise a slow-notifying meter would leave a stale sample lingering > 3 s.
+uint16_t power3sAvg() {
     uint32_t now = millis(), sum = 0, n = 0;
-    for (int i = 0; i < 8; ++i) {
+    for (int i = 0; i < PWR_RING; ++i) {
         if (powerRingTimes[i] && now - powerRingTimes[i] <= 3000) {
             sum += powerRing[i];
             n++;
         }
     }
-    return n ? (uint16_t)(sum / n) : watts;
+    return n ? (uint16_t)(sum / n) : 0;
 }
 
 void onPowerNotify(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool) {
     if (len < 4) return;
     uint16_t flags = data[0] | (data[1] << 8);
     int16_t watts = (int16_t)(data[2] | (data[3] << 8));
+
+    // Diagnostic: log the raw payload periodically so a power-reads-0 issue can
+    // be inspected from the log (pedal, then download it).
+    static uint32_t lastLog = 0;
+    if (millis() - lastLog > 2000) {
+        lastLog = millis();
+        char hex[40];
+        int p = 0;
+        for (size_t i = 0; i < len && i < 12 && p < (int)sizeof(hex) - 3; ++i)
+            p += snprintf(hex + p, sizeof(hex) - p, "%02X ", data[i]);
+        diag::log("pwr: len=%u flags=0x%04X watts=%d [%s]", (unsigned)len, flags,
+                  watts, hex);
+    }
 
     // Walk optional fields in flag order to reach crank revolution data.
     size_t off = 4;
@@ -110,7 +133,8 @@ void onPowerNotify(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool)
     }
 
     uint16_t w = watts < 0 ? 0 : (uint16_t)watts;
-    uint16_t w3s = rollingPower3s(w);
+    addPowerSample(w);
+    uint16_t w3s = power3sAvg();
     g_state.with([&](RideState& s) {
         s.powerW = w;
         s.power3sW = w3s;
@@ -190,8 +214,11 @@ class ScanCallbacks : public NimBLEScanCallbacks {
             if (!saved[0] || strcasecmp(saved, addr.c_str()) != 0) continue;
             sensor.addr = dev->getAddress();
             sensor.found = true;
-            Serial.printf("[ble] found paired %s sensor: %s\n", sensor.name,
-                          addr.c_str());
+            std::string advName = dev->getName();
+            snprintf(sensor.advName, sizeof(sensor.advName), "%s",
+                     advName.empty() ? "(unnamed)" : advName.c_str());
+            diag::log("found paired %s: %s [%s]", sensor.name, sensor.advName,
+                      addr.c_str());
         }
     }
 } scanCallbacks;
@@ -274,7 +301,9 @@ bool connectSensor(SensorKind kind) {
         if (kind == KIND_POWER) s.powerConnected = true;
         if (kind == KIND_CSC) s.cadenceConnected = true;
     });
-    Serial.printf("[ble] %s connected\n", sensor.name);
+    static const char* kn[KIND_COUNT] = {"HR", "power", "cadence"};
+    diag::log("%s connected: %s [%s], notify %s", kn[kind], sensor.advName,
+              sensor.addr.toString().c_str(), ok ? "on" : "off");
     return true;
 }
 
@@ -322,6 +351,15 @@ void task(void*) {
                 if (scan->isScanning()) scan->stop();
                 connectSensor((SensorKind)k);
             }
+        }
+
+        // Keep the 3 s power average current even between notifications so it
+        // decays within 3 s when you stop pedaling (not "much longer").
+        if (sensors[KIND_POWER].connected) {
+            uint16_t w3s = power3sAvg();
+            g_state.with([&](RideState& s) {
+                if (s.powerW != 0xFFFF) s.power3sW = w3s;
+            });
         }
 
         vTaskDelay(pdMS_TO_TICKS(1000));

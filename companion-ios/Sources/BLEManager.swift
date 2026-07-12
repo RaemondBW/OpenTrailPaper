@@ -58,7 +58,7 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var otaProgress: Double = 0
     @Published var otaMessage: String? = nil
     @Published var logFileURL: URL? = nil           // device diagnostics log, ready to share
-    static let bundledFirmwareVersion = "v0.12"      // matches src/config.h
+    static let bundledFirmwareVersion = "v0.16"      // matches src/config.h
 
     // Saved routes on the device
     @Published var deviceRoutes: [String] = []
