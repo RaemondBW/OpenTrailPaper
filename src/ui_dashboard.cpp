@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <SD.h>
+#include <Update.h>
 #include <Wire.h>
 #include <epdiy.h>
 #include <TouchDrvGT911.hpp>
@@ -16,6 +17,9 @@
 #include "ui_render.h"
 #include "map_view.h"
 #include "map_tiles.h"
+#include "map_store.h"
+#include "i2c_bus.h"
+#include "usb_storage.h"
 #include "ble_sensors.h"
 #include "ble_server.h"
 #include "routes.h"
@@ -110,7 +114,7 @@ void shutdownDevice(uint8_t* fb, const char* reason) {
     epd_poweroff();
 
     // Peripherals down, matching the factory sleep sequence
-    touch.sleep();
+    i2cLock(); touch.sleep(); i2cUnlock();
     digitalWrite(BOARD_TOUCH_RST, LOW);
     gpio_hold_en((gpio_num_t)BOARD_TOUCH_RST);
     gpio_deep_sleep_hold_en();
@@ -220,8 +224,9 @@ void goBack() {
         case SCREEN_SENSORS:  leaveList(); break;  // also stops the BLE scan
         case SCREEN_MENU:     screen = SCREEN_DASH; break;
         case SCREEN_MAP:      screen = SCREEN_DASH; break;
-        // The summary needs an explicit SAVE / DISCARD, so back is ignored.
-        case SCREEN_SUMMARY:  break;
+        // Back on the summary resumes the ride (non-destructive); SAVE / DISCARD
+        // must be tapped explicitly.
+        case SCREEN_SUMMARY:  screen = SCREEN_DASH; break;
         case SCREEN_DASH:     break;  // already home
     }
 }
@@ -304,7 +309,11 @@ void handleTap(int x, int y) {
             else screen = screen == SCREEN_DASH ? SCREEN_MAP : SCREEN_DASH;
             break;
         case SCREEN_SUMMARY:
-            if (inRect(kSaveButton, x, y)) {
+            if (inRect(kResumeButton, x, y)) {
+                // Ride is still recording in the background — just go back to the
+                // dashboard and keep going.
+                screen = SCREEN_DASH;
+            } else if (inRect(kSaveButton, x, y)) {
                 ride_recorder::stopRide(true);
                 screen = SCREEN_DASH;
             } else if (inRect(kDiscardButton, x, y)) {
@@ -492,6 +501,21 @@ const char* kindsText(uint8_t mask) {
     }
 }
 
+// Compact kind label for the Sensors row subtitle (must stay short so the row
+// fits the screen width).
+const char* shortKinds(uint8_t mask) {
+    switch (mask & 0x7) {
+        case 1: return "HR";
+        case 2: return "Power";
+        case 3: return "HR+Power";
+        case 4: return "Cadence";
+        case 5: return "HR+Cadence";
+        case 6: return "Power+Cad";
+        case 7: return "HR+Power+Cad";
+        default: return "Sensor";
+    }
+}
+
 void renderListScreen(uint8_t* fb) {
     ListRow rows[kMenuRowCount] = {};
     int count = 0;
@@ -509,10 +533,19 @@ void renderListScreen(uint8_t* fb) {
                 auto& c = sensorCands[i];
                 snprintf(rows[i].title, sizeof(rows[i].title), "%s",
                          c.name[0] ? c.name : c.addr);
-                snprintf(rows[i].subtitle, sizeof(rows[i].subtitle),
-                         "%s · %d dBm%s", kindsText(c.kindsMask), c.rssi,
-                         c.connected ? " · connected"
-                                     : (c.paired ? " · paired" : ""));
+                // Status FIRST (short kind label second) so the important word
+                // — connected/saved — is never clipped off the right edge.
+                const char* kinds = shortKinds(c.kindsMask);
+                if (c.connected) {
+                    snprintf(rows[i].subtitle, sizeof(rows[i].subtitle),
+                             "Connected · %s", kinds);
+                } else if (c.paired) {
+                    snprintf(rows[i].subtitle, sizeof(rows[i].subtitle),
+                             "%s · %s", c.rssi ? "In range" : "Saved", kinds);
+                } else {
+                    snprintf(rows[i].subtitle, sizeof(rows[i].subtitle),
+                             "%s · %d dBm", kinds, c.rssi);
+                }
                 rows[i].inverted = c.connected;
             }
             break;
@@ -617,13 +650,67 @@ bool begin() {
     routeScreenPts = (int16_t*)heap_caps_malloc(
         MAX_ROUTE_SCREEN_PTS * 2 * sizeof(int16_t), MALLOC_CAP_SPIRAM);
 
-    size_t mapLen = map_ebm_end - map_ebm_start;
-    if (map_tiles::load(map_ebm_start, mapLen)) {
-        Serial.printf("[ui] map loaded: %u KB\n", (unsigned)(mapLen / 1024));
-    } else {
-        Serial.println("[ui] embedded map failed to load");
-    }
+    // Load the best downloaded map for our last-known spot, else the embedded
+    // default. New maps arrive from the phone over BLE (see map_store).
+    double mlat = DEFAULT_MAP_LAT, mlon = DEFAULT_MAP_LON;
+    settings::lastPosition(mlat, mlon);
+    map_store::begin(mlat, mlon);
     return true;
+}
+
+// Flash a firmware.bin dropped on the SD card, then reboot. Reads straight from
+// SD into the flash writer — no PSRAM staging (unlike the BLE OTA). ESP32 A/B
+// OTA partitions still protect the running image if the flash fails. To update:
+// copy the new firmware.bin to the SD card root and power the device on.
+void applySdUpdate() {
+    if (!ride_recorder::sdMounted() || !SD.exists("/firmware.bin")) return;
+
+    // Rename first so a bad/interrupted flash can never boot-loop re-trying it.
+    SD.remove("/firmware.applied");
+    SD.rename("/firmware.bin", "/firmware.applied");
+    File f = SD.open("/firmware.applied", FILE_READ);
+    if (!f) return;
+    size_t size = f.size();
+    if (size < 4096) { f.close(); return; }
+
+    auto drawProgress = [&](int pct, bool first) {
+        uint8_t* fb = epd_hl_get_framebuffer(&hl);
+        memset(fb, 0xFF, fbSize);
+        ui_render_update_overlay("Installing from SD", pct, fb);
+        refresh(first, !first);   // GL16 on first frame, fast DU for progress
+    };
+    drawProgress(0, true);
+    diag::log("sd update: flashing %u bytes from SD", (unsigned)size);
+
+    bool ok = false;
+    if (Update.begin(size)) {
+        uint8_t buf[4096];
+        size_t written = 0;
+        int lastPct = -10;
+        while (written < size) {
+            size_t n = f.read(buf, sizeof(buf));
+            if (n == 0) break;
+            if (Update.write(buf, n) != n) break;
+            written += n;
+            int pct = (int)(written * 100 / size);
+            if (pct - lastPct >= 10) { lastPct = pct; drawProgress(pct, false); }
+        }
+        ok = (written == size) && Update.end(true);
+    }
+    f.close();
+    if (ok) {
+        SD.remove("/firmware.applied");   // done — don't keep it around
+        diag::log("sd update OK — rebooting into new firmware");
+        diag::flushToSD();
+        drawProgress(100, false);
+        delay(600);
+        esp_restart();
+    } else {
+        // Leave /firmware.applied (not /firmware.bin) so it isn't retried; the
+        // device keeps running its current, untouched image.
+        diag::log("sd update FAILED (err %d) — keeping current firmware",
+                  Update.getError());
+    }
 }
 
 void task(void*) {
@@ -633,7 +720,48 @@ void task(void*) {
     bool lastNavPrompt = false;
 
     lastActivityMs = millis();
+    int lastUpdatePct = -100, lastUpdatePhase = -1;
+
+    applySdUpdate();          // flash a firmware.bin from the SD card, if present
+    usb_storage::begin();     // THEN expose the SD to a host computer over USB
+    bool lastHostActive = false;
+
     for (;;) {
+        // When the computer releases the SD (eject/unplug), check whether it
+        // dropped a firmware.bin on the card and flash it automatically.
+        bool host = usb_storage::hostActive();
+        if (lastHostActive && !host) applySdUpdate();
+        lastHostActive = host;
+
+        // A firmware update in progress takes over the screen with a progress
+        // modal (redrawn only when the percentage/phase moves so the e-paper
+        // isn't thrashed). Everything else is paused until it finishes/reboots.
+        if (ble_server::updateInProgress()) {
+            int pct = ble_server::updatePercent();
+            const char* phase = ble_server::updatePhase();
+            int phaseId = phase[0] == 'I' ? 2 : 1;
+            bool phaseChanged = phaseId != lastUpdatePhase;
+            // Redraw the modal on phase change or every 10% (the progress bar
+            // updates use the fast DU path, not a full GL16 — frequent
+            // high-current full refreshes during the BLE transfer can disrupt
+            // it). The current screen shows through behind the popup.
+            if (phaseChanged || pct - lastUpdatePct >= 10 ||
+                (pct == 100 && lastUpdatePct != 100)) {
+                lastUpdatePct = pct;
+                lastUpdatePhase = phaseId;
+                RideState s = g_state.snapshot();
+                s.phoneConnected = ble_server::isPhoneConnected();
+                uint8_t* fb = epd_hl_get_framebuffer(&hl);
+                memset(fb, 0xFF, fbSize);
+                ui_render_dashboard(s, routes::navActive(), fb);   // backdrop
+                ui_render_update_overlay(phase, pct, fb);          // modal on top
+                refresh(phaseChanged, !phaseChanged);   // GL16 on phase change, else DU
+            }
+            vTaskDelay(pdMS_TO_TICKS(200));
+            continue;
+        }
+        lastUpdatePct = -100; lastUpdatePhase = -1;
+
         // Riding counts as activity even without touching the screen — a bike
         // computer must NEVER auto-off while you're moving. Any real speed keeps
         // it awake (and for the idle timeout after you stop).
@@ -714,7 +842,9 @@ void task(void*) {
                 touchIrq = false;
                 lastTouchPoll = millis();
                 int16_t x[1], y[1];
+                i2cLock();
                 bool down = touch.getPoint(x, y, 1) > 0;
+                i2cUnlock();
                 if (down) {
                     lastX = x[0];
                     lastY = y[0];
@@ -758,8 +888,21 @@ void task(void*) {
             lastOverlay = powerOverlay;
             lastNavPrompt = navPrompt;
             RideState s = g_state.snapshot();
+            s.phoneConnected = ble_server::isPhoneConnected();   // for the status bar
+            // Swap to a downloaded map that covers where we are, if one exists.
+            // Not while a host computer owns the SD card.
+            if (s.everHadFix && !usb_storage::hostActive())
+                map_store::ensureForPosition(s.latitude, s.longitude);
             uint8_t* fb = epd_hl_get_framebuffer(&hl);
             memset(fb, 0xFF, epd_width() / 2 * epd_height());
+            // While the "Start navigation?" prompt is up, the base screen shows
+            // the whole route fitted so it can be recognized before accepting.
+            if (navPrompt && !powerOverlay) {
+              ui::statusBar(s, fb);
+              ui_render_route_preview(fb);
+              ui_render_nav_prompt(routes::activeName(),
+                                   routes::maneuverCount(), fb);
+            } else {
             switch (screen) {
                 case SCREEN_DASH:
                     ui_render_dashboard(s, routes::navActive(), fb);
@@ -831,11 +974,8 @@ void task(void*) {
                     break;
                 }
             }
-            if (navPrompt && !powerOverlay) {
-                ui_render_nav_prompt(routes::activeName(),
-                                     routes::maneuverCount(), fb);
-            }
             if (powerOverlay) ui_render_power_sheet(s.recording, fb);
+            }  // end else (normal screens)
             // The nav banner is pure black/white, so DU is fine during nav.
             bool fast = screenIsFast(screen, powerOverlay) && !navPrompt;
             refresh(screenChanged, fast);

@@ -225,8 +225,34 @@ void injectAiding(double lat, double lon, time_t utc, bool haveTime,
     }
 }
 
+// Pending phone fix, applied by the GPS task (all UART writes stay on-task).
+struct PendingSeed {
+    volatile bool pending = false;
+    double lat = 0, lon = 0;
+    time_t utc = 0;
+    bool haveTime = false;
+    float posAccM = 0;
+};
+static PendingSeed g_seed;
+
+void seedPosition(double lat, double lon, time_t utc, bool haveTime,
+                  float posAccM) {
+    g_seed.lat = lat;
+    g_seed.lon = lon;
+    g_seed.utc = utc;
+    g_seed.haveTime = haveTime;
+    g_seed.posAccM = posAccM;
+    g_seed.pending = true;   // publish last so the task sees a complete record
+}
+
 void task(void*) {
     for (;;) {
+        if (g_seed.pending) {
+            g_seed.pending = false;
+            injectAiding(g_seed.lat, g_seed.lon, g_seed.utc, g_seed.haveTime,
+                         g_seed.posAccM, 30.0f);
+        }
+
         while (SerialGPS.available()) {
             gps.encode(SerialGPS.read());
         }

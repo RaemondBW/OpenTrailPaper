@@ -57,10 +57,6 @@ struct RideDetailView: View {
                              unit: "bpm")
                     }
                     HStack(spacing: 16) {
-                        Stat(label: "Ascent",
-                             value: String(format: "%.0f",
-                                            Units.elevation(preview.ascentM, miles: useMiles)),
-                             unit: Units.elevLabel(useMiles))
                         Stat(label: "Points", value: "\(preview.points.count)", unit: "")
                     }
 

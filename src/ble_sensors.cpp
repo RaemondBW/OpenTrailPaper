@@ -30,6 +30,7 @@ struct Sensor {
     NimBLEUUID chr;
     NimBLEAddress addr{};
     char advName[24] = "";   // the device's advertised name (e.g. assioma…)
+    char make[32] = "";      // "Manufacturer Model" from Device Info Service
     bool found = false;      // discovered by scan, awaiting connect
     bool connected = false;
     NimBLEClient* client = nullptr;
@@ -296,14 +297,38 @@ bool connectSensor(SensorKind kind) {
     }
 
     sensor.connected = true;
+
+    // Read the Device Information Service (0x180A) for a human-readable make:
+    // Manufacturer Name (0x2A29) + Model Number (0x2A24). Many sensors have no
+    // advertised name (they show as a MAC), so this is what tells you the vendor.
+    sensor.make[0] = 0;
+    if (NimBLERemoteService* dis = sensor.client->getService(NimBLEUUID((uint16_t)0x180A))) {
+        char mfr[24] = "", mdl[24] = "";
+        if (auto* c = dis->getCharacteristic(NimBLEUUID((uint16_t)0x2A29))) {
+            if (c->canRead()) snprintf(mfr, sizeof(mfr), "%s", c->readValue().c_str());
+        }
+        if (auto* c = dis->getCharacteristic(NimBLEUUID((uint16_t)0x2A24))) {
+            if (c->canRead()) snprintf(mdl, sizeof(mdl), "%s", c->readValue().c_str());
+        }
+        if (mfr[0] && mdl[0]) snprintf(sensor.make, sizeof(sensor.make), "%s %s", mfr, mdl);
+        else if (mfr[0])      snprintf(sensor.make, sizeof(sensor.make), "%s", mfr);
+        else if (mdl[0])      snprintf(sensor.make, sizeof(sensor.make), "%s", mdl);
+    }
+    // Remember the best identity we have (persisted), so this sensor shows its
+    // vendor/model next time even before it reconnects, and across reboots.
+    {
+        const char* best = sensor.make[0] ? sensor.make : sensor.advName;
+        if (best[0]) settings::setSensorName(kind, best);
+    }
+
     g_state.with([&](RideState& s) {
         if (kind == KIND_HR) s.hrConnected = true;
         if (kind == KIND_POWER) s.powerConnected = true;
         if (kind == KIND_CSC) s.cadenceConnected = true;
     });
     static const char* kn[KIND_COUNT] = {"HR", "power", "cadence"};
-    diag::log("%s connected: %s [%s], notify %s", kn[kind], sensor.advName,
-              sensor.addr.toString().c_str(), ok ? "on" : "off");
+    diag::log("%s connected: %s [%s] make='%s', notify %s", kn[kind], sensor.advName,
+              sensor.addr.toString().c_str(), sensor.make, ok ? "on" : "off");
     return true;
 }
 
@@ -369,6 +394,18 @@ void task(void*) {
 void setScanAlways(bool on) { scanAlways = on; }
 void noteActivity() { lastActivityMs = millis(); }
 
+// The "Manufacturer Model" read from a connected sensor's Device Info Service,
+// or nullptr if that address isn't a connected sensor / had no DIS.
+static const char* makeForAddr(const char* addr) {
+    for (int k = 0; k < KIND_COUNT; ++k) {
+        if (sensors[k].make[0] &&
+            strcasecmp(sensors[k].addr.toString().c_str(), addr) == 0) {
+            return sensors[k].make;
+        }
+    }
+    return nullptr;
+}
+
 int getCandidates(Candidate* out, int maxOut) {
     xSemaphoreTake(candMutex, portMAX_DELAY);
     int n = candidateCount < maxOut ? candidateCount : maxOut;
@@ -386,17 +423,59 @@ int getCandidates(Candidate* out, int maxOut) {
                 out[i].paired = true;
             }
         }
+        // Prefer the human-readable make once we've connected and read the DIS.
+        if (const char* mk = makeForAddr(out[i].addr)) {
+            snprintf(out[i].name, sizeof(out[i].name), "%s", mk);
+        }
     }
     xSemaphoreGive(candMutex);
+
+    // A connected sensor stops advertising, so it drops out of the scan
+    // candidates above — yet the user needs to see it as connected. Append a
+    // persistent row for every paired kind whose address isn't already listed,
+    // marking its live connection state. This keeps paired sensors visible
+    // (connected or not) whether or not they're currently advertising.
+    for (int k = 0; k < KIND_COUNT && n < maxOut; ++k) {
+        const char* paddr = settings::sensorAddr(k);
+        if (!paddr || !paddr[0]) continue;
+        bool already = false;
+        for (int i = 0; i < n; ++i) {
+            if (strcasecmp(out[i].addr, paddr) == 0) { already = true; break; }
+        }
+        if (already) continue;
+        Candidate& c = out[n++];
+        memset(&c, 0, sizeof(c));
+        snprintf(c.addr, sizeof(c.addr), "%s", paddr);
+        // Live make (this session) > remembered name (NVS, survives reboot /
+        // shows before reconnect) > advertised name > generic kind label.
+        const char* nm = sensors[k].make[0]        ? sensors[k].make
+                       : settings::sensorName(k)[0] ? settings::sensorName(k)
+                       : sensors[k].advName[0]      ? sensors[k].advName
+                                                    : sensors[k].name;
+        snprintf(c.name, sizeof(c.name), "%s", nm);
+        c.kindsMask = (uint8_t)(1 << k);
+        c.paired = true;
+        c.connected = sensors[k].connected &&
+                      strcasecmp(sensors[k].addr.toString().c_str(), paddr) == 0;
+        c.rssi = 0;
+        // Fold in any other kinds paired to the same address (e.g. power+cadence).
+        for (int k2 = k + 1; k2 < KIND_COUNT; ++k2) {
+            if (strcasecmp(settings::sensorAddr(k2), paddr) == 0) {
+                c.kindsMask |= (uint8_t)(1 << k2);
+            }
+        }
+    }
     return n;
 }
 
 void pairCandidate(const char* addr) {
     xSemaphoreTake(candMutex, portMAX_DELAY);
     uint8_t mask = 0;
+    char advName[32] = "";
     for (int i = 0; i < candidateCount; ++i) {
         if (strcasecmp(candidates[i].addr, addr) == 0) {
             mask = candidates[i].kindsMask;
+            snprintf(advName, sizeof(advName), "%s", candidates[i].name);
             break;
         }
     }
@@ -405,6 +484,8 @@ void pairCandidate(const char* addr) {
     for (int k = 0; k < KIND_COUNT; ++k) {
         if (!(mask & (1 << k))) continue;
         settings::setSensorAddr(k, addr);
+        // Remember the advertised name now; upgraded to the DIS make on connect.
+        if (advName[0]) settings::setSensorName(k, advName);
         // drop a different currently-connected device for this kind
         if (sensors[k].connected &&
             strcasecmp(sensors[k].addr.toString().c_str(), addr) != 0) {
@@ -422,6 +503,20 @@ void forgetAll() {
         sensors[k].found = false;
     }
     Serial.println("[ble] pairings cleared");
+}
+
+void forget(const char* addr) {
+    if (!addr || !addr[0]) return;
+    for (int k = 0; k < KIND_COUNT; ++k) {
+        if (strcasecmp(settings::sensorAddr(k), addr) != 0) continue;
+        settings::setSensorAddr(k, "");
+        if (sensors[k].connected &&
+            strcasecmp(sensors[k].addr.toString().c_str(), addr) == 0) {
+            sensors[k].client->disconnect();
+        }
+        sensors[k].found = false;
+    }
+    Serial.printf("[ble] forgot %s\n", addr);
 }
 
 }  // namespace ble_sensors

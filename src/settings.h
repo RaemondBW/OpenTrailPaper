@@ -23,6 +23,11 @@ void setUseMiles(bool m);
 const char* sensorAddr(int kind);
 void setSensorAddr(int kind, const char* addr);
 
+// Remembered display name (vendor/model) per paired kind, so a paired sensor
+// shows its identity even before it reconnects and across reboots.
+const char* sensorName(int kind);
+void setSensorName(int kind, const char* name);
+
 // Last known GPS position (map center across reboots). Returns false if
 // no position has ever been saved.
 bool lastPosition(double& lat, double& lon);

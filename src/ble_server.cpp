@@ -12,6 +12,10 @@
 #include "ride_recorder.h"
 #include "settings.h"
 #include "routes.h"
+#include "gps_service.h"
+#include "ble_sensors.h"
+#include "map_store.h"
+#include "usb_storage.h"
 #include "diag.h"
 
 namespace {
@@ -23,8 +27,11 @@ const char* CHR_STATUS    = "b1c50002-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
 const char* CHR_ROUTE     = "b1c50003-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
 const char* CHR_RIDES     = "b1c50004-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
 const char* CHR_OTA       = "b1c50005-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
+const char* CHR_SENSORS   = "b1c50006-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
+const char* CHR_MAP       = "b1c50007-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
 
 NimBLECharacteristic* statusChr = nullptr;
+NimBLECharacteristic* sensorsChr = nullptr;
 NimBLECharacteristic* ridesChr = nullptr;
 NimBLECharacteristic* otaChr = nullptr;
 volatile bool otaRebootPending = false;
@@ -141,9 +148,96 @@ class RouteCb : public NimBLECharacteristicCallbacks {
             memcpy(routeReqName, payload, n);
             routeReqName[n] = 0;
             routeReq = RREQ_DELETE;
+        } else if (op == 0x08 && plen >= 8) {  // GPS aiding: phone's location
+            int32_t latE7, lonE7;
+            memcpy(&latE7, payload, 4);
+            memcpy(&lonE7, payload + 4, 4);
+            uint32_t utc = 0;
+            bool haveTime = false;
+            if (plen >= 12) { memcpy(&utc, payload + 8, 4); haveTime = utc > 1735689600UL; }
+            double lat = latE7 / 1e7, lon = lonE7 / 1e7;
+            gps_service::seedPosition(lat, lon, (time_t)utc, haveTime, 5000.0f);
+            settings::setLastPosition(lat, lon);
+            diag::log("gps aiding from phone: %.5f,%.5f time=%d", lat, lon, haveTime);
         }
     }
 };
+
+// Sensor management (phone <-> device). Lets the app scan for, pair, and
+// forget the head unit's cycling sensors and see their live connection state.
+//   Phone -> device:  [0x01] start scan + stream   [0x02] stop scan
+//                     [0x03]<addr> pair            [0x04]<addr> forget
+//                     [0x05] request list once
+//   Device -> phone (notify):
+//     [0x10] list begin
+//     [0x11][kindsMask][flags][rssi:i8][nameLen][name…][addr(17)]  per sensor
+//              flags bit0=connected bit1=paired
+//     [0x12] list end
+enum SensorReq { SREQ_NONE, SREQ_LIST };
+volatile SensorReq sensorReq = SREQ_NONE;
+volatile bool sensorsStreaming = false;   // app has the sensors screen open
+char sensorReqAddr[20];
+
+class SensorsCb : public NimBLECharacteristicCallbacks {
+    void onWrite(NimBLECharacteristic* c, NimBLEConnInfo&) override {
+        std::string v = c->getValue();
+        if (v.empty()) return;
+        uint8_t op = v[0];
+        if (op == 0x01) {                    // start scan + live stream
+            ble_sensors::setScanAlways(true);
+            ble_sensors::noteActivity();
+            sensorsStreaming = true;
+            sensorReq = SREQ_LIST;
+        } else if (op == 0x02) {             // stop scan
+            ble_sensors::setScanAlways(false);
+            sensorsStreaming = false;
+        } else if (op == 0x03 && v.size() > 1) {   // pair address
+            size_t n = v.size() - 1 < sizeof(sensorReqAddr) - 1 ? v.size() - 1
+                                                                : sizeof(sensorReqAddr) - 1;
+            memcpy(sensorReqAddr, v.data() + 1, n);
+            sensorReqAddr[n] = 0;
+            ble_sensors::pairCandidate(sensorReqAddr);
+            sensorReq = SREQ_LIST;
+        } else if (op == 0x04 && v.size() > 1) {   // forget address
+            size_t n = v.size() - 1 < sizeof(sensorReqAddr) - 1 ? v.size() - 1
+                                                                : sizeof(sensorReqAddr) - 1;
+            memcpy(sensorReqAddr, v.data() + 1, n);
+            sensorReqAddr[n] = 0;
+            ble_sensors::forget(sensorReqAddr);
+            sensorReq = SREQ_LIST;
+        } else if (op == 0x05) {             // request one snapshot
+            sensorReq = SREQ_LIST;
+        }
+    }
+};
+
+static void sendSensorList() {
+    if (!sensorsChr) return;
+    ble_sensors::Candidate cs[10];
+    int n = ble_sensors::getCandidates(cs, 10);
+    uint8_t begin = 0x10;
+    sensorsChr->setValue(&begin, 1);
+    sensorsChr->notify();
+    for (int i = 0; i < n; ++i) {
+        uint8_t pkt[64];
+        int nameLen = (int)strnlen(cs[i].name, sizeof(cs[i].name));
+        if (nameLen > 31) nameLen = 31;
+        int p = 0;
+        pkt[p++] = 0x11;
+        pkt[p++] = cs[i].kindsMask;
+        pkt[p++] = (cs[i].connected ? 1 : 0) | (cs[i].paired ? 2 : 0);
+        pkt[p++] = (uint8_t)cs[i].rssi;
+        pkt[p++] = (uint8_t)nameLen;
+        memcpy(pkt + p, cs[i].name, nameLen); p += nameLen;
+        int addrLen = (int)strnlen(cs[i].addr, sizeof(cs[i].addr));
+        memcpy(pkt + p, cs[i].addr, addrLen); p += addrLen;
+        sensorsChr->setValue(pkt, p);
+        sensorsChr->notify();
+    }
+    uint8_t end = 0x12;
+    sensorsChr->setValue(&end, 1);
+    sensorsChr->notify();
+}
 
 // Ride download (device -> phone). The phone writes a command; the task
 // streams the response via notifications on the same characteristic.
@@ -374,6 +468,11 @@ void deleteRoute(const char* name) {
 
 namespace ble_server {
 
+// Defined further down (after the OTA/map transfer state); called from
+// onDisconnect so an interrupted transfer can't wedge the device.
+void otaAbortIfDownloading();
+void mapAbortReceive();
+
 class ServerCb : public NimBLEServerCallbacks {
     void onConnect(NimBLEServer* srv, NimBLEConnInfo& info) override {
         negotiatedMTU = info.getMTU();
@@ -391,6 +490,14 @@ class ServerCb : public NimBLEServerCallbacks {
     void onDisconnect(NimBLEServer*, NimBLEConnInfo&, int reason) override {
         diag::log("phone disconnected (reason %d)", reason);
         phoneConnected = false;
+        // Recover from a transfer interrupted by the disconnect, so the device
+        // doesn't stay frozen on the update popup / refuse the next attempt.
+        otaAbortIfDownloading();
+        mapAbortReceive();
+        if (sensorsStreaming) {   // app's sensor screen can't still be open
+            sensorsStreaming = false;
+            ble_sensors::setScanAlways(false);
+        }
         // Advertising stops once a central connects; restart it so the phone
         // can find and reconnect to the device after disconnecting.
         NimBLEDevice::startAdvertising();
@@ -420,17 +527,28 @@ void otaNotify1(uint8_t b) { otaNotify(&b, 1); }
 //           [0xA3]<utf8 version>, [0xA4][u32 received] progress, [0xAF][err]
 uint8_t* otaBuf = nullptr;                 // PSRAM staging buffer
 volatile uint32_t otaBufLen = 0, otaBufCap = 0;
+volatile int otaPhase = 0;   // 0 idle, 1 downloading, 2 installing (for the UI)
 char otaMd5[33] = "";
 volatile bool otaCommitPending = false;    // task should flash the buffer
 uint32_t otaStartMs = 0, otaCommitStartMs = 0;
+volatile uint32_t otaLastDataMs = 0;       // for the stalled-download timeout
 
 void otaFreeBuf() {
     if (otaBuf) { heap_caps_free(otaBuf); otaBuf = nullptr; }
     otaBufLen = otaBufCap = 0;
 }
 
+// Abort a download-phase OTA (disconnect or stalled). NEVER touches an
+// in-flight install (otaPhase 2) — that owns otaBuf and will reboot.
+void otaAbortIfDownloading() {
+    if (otaPhase == 1) {
+        otaPhase = 0;
+        otaFreeBuf();
+        diag::log("ota download aborted (recovered)");
+    }
+}
+
 class OtaCb : public NimBLECharacteristicCallbacks {
-    bool updating = false;
     uint32_t lastProgress = 0;
     void onWrite(NimBLECharacteristic* c, NimBLEConnInfo&) override {
         std::string v = c->getValue();
@@ -463,14 +581,16 @@ class OtaCb : public NimBLECharacteristicCallbacks {
             lastProgress = 0;
             otaMd5[0] = 0;
             if (n >= 5 + 32) { memcpy(otaMd5, p + 5, 32); otaMd5[32] = 0; }
-            updating = true;
+            otaPhase = 1;                      // downloading -> device popup
             otaStartMs = millis();
+            otaLastDataMs = millis();
             otaNotify1(0xA0);
             diag::log("ota begin: %u bytes, MTU=%u", (unsigned)expected, negotiatedMTU);
             break;
         }
         case 0x02: {                          // data: memcpy into PSRAM (no flash)
-            if (!updating || !otaBuf) return;
+            if (otaPhase != 1 || !otaBuf) return;
+            otaLastDataMs = millis();
             size_t got = n - 1;
             if (otaBufLen + got > otaBufCap) got = otaBufCap - otaBufLen;
             memcpy(otaBuf + otaBufLen, p + 1, got);
@@ -485,8 +605,7 @@ class OtaCb : public NimBLECharacteristicCallbacks {
             break;
         }
         case 0x03: {                          // end: hand off to the task to flash
-            if (!updating) return;
-            updating = false;
+            if (otaPhase != 1) return;
             otaCommitPending = true;
             uint32_t dt = millis() - otaStartMs;
             float kbps = dt ? (otaBufLen / 1024.0f) / (dt / 1000.0f) : 0;
@@ -495,7 +614,7 @@ class OtaCb : public NimBLECharacteristicCallbacks {
             break;
         }
         case 0x04:                            // abort
-            updating = false;
+            otaPhase = 0;
             otaFreeBuf();
             otaNotify1(0xA2);
             break;
@@ -503,26 +622,167 @@ class OtaCb : public NimBLECharacteristicCallbacks {
     }
 };
 
-// Flash the PSRAM-staged firmware. Runs in the server task (NOT the BLE host),
-// so the multi-second erase+write can't drop the connection.
+// Vector-map transfer (phone -> device). Structurally identical to OTA: the
+// callback only stages the .ebm into PSRAM; the SD write + activate happens in
+// the server task (SD writes must not block the BLE host). Protocol on
+// CHR_MAP (write + write-no-response + notify):
+//   phone -> [0x01][u32 size][name…]  begin     [0x02]<bytes>  data
+//           [0x03]                     end        [0x04]         abort
+//   device notifies: [0xB0] ready, [0xB1] saved, [0xB4][u32 received], [0xBF][err]
+NimBLECharacteristic* mapChr = nullptr;
+uint8_t* mapBuf = nullptr;
+volatile uint32_t mapBufLen = 0, mapBufCap = 0;
+char mapName[52] = "";
+volatile bool mapCommitPending = false;
+volatile bool mapListReq = false;
+uint32_t mapStartMs = 0, mapLastProgress = 0;
+
+void mapNotify(const uint8_t* d, size_t n) {
+    if (!mapChr) return;
+    mapChr->setValue(d, n);
+    mapChr->notify();
+}
+void mapFreeBuf() {
+    if (mapBuf) { heap_caps_free(mapBuf); mapBuf = nullptr; }
+    mapBufLen = mapBufCap = 0;
+}
+
+// Drop a partially-received map on disconnect. Leaves a queued commit alone.
+void mapAbortReceive() {
+    if (!mapCommitPending) mapFreeBuf();
+}
+
+class MapCb : public NimBLECharacteristicCallbacks {
+    bool receiving = false;
+    void onWrite(NimBLECharacteristic* c, NimBLEConnInfo&) override {
+        std::string v = c->getValue();
+        if (v.empty()) return;
+        const uint8_t* p = (const uint8_t*)v.data();
+        size_t n = v.size();
+        switch (p[0]) {
+        case 0x01: {                              // begin
+            if (n < 5) return;
+            uint32_t expected = (uint32_t)p[1] | ((uint32_t)p[2] << 8) |
+                                ((uint32_t)p[3] << 16) | ((uint32_t)p[4] << 24);
+            mapFreeBuf();
+            mapBuf = (uint8_t*)heap_caps_malloc(expected, MALLOC_CAP_SPIRAM);
+            if (!mapBuf) { uint8_t e[2] = {0xBF, 0xF0}; mapNotify(e, 2); return; }
+            mapBufCap = expected;
+            mapBufLen = 0;
+            mapLastProgress = 0;
+            size_t nl = n - 5 < sizeof(mapName) - 1 ? n - 5 : sizeof(mapName) - 1;
+            memcpy(mapName, p + 5, nl);
+            mapName[nl] = 0;
+            if (!mapName[0]) snprintf(mapName, sizeof(mapName), "map.ebm");
+            receiving = true;
+            mapStartMs = millis();
+            mapNotify1_B0();
+            diag::log("map recv begin: %u bytes '%s'", (unsigned)expected, mapName);
+            break;
+        }
+        case 0x02: {                              // data
+            if (!receiving || !mapBuf) return;
+            size_t got = n - 1;
+            if (mapBufLen + got > mapBufCap) got = mapBufCap - mapBufLen;
+            memcpy(mapBuf + mapBufLen, p + 1, got);
+            mapBufLen += got;
+            if (mapBufLen - mapLastProgress >= 32768) {
+                mapLastProgress = mapBufLen;
+                uint8_t pr[5] = {0xB4};
+                uint32_t r = mapBufLen;
+                memcpy(pr + 1, &r, 4);
+                mapNotify(pr, 5);
+            }
+            break;
+        }
+        case 0x03:                                // end -> commit in task
+            if (!receiving) return;
+            receiving = false;
+            mapCommitPending = true;
+            break;
+        case 0x04:                                // abort
+            receiving = false;
+            mapFreeBuf();
+            break;
+        case 0x05:                                // list device map coverage
+            mapListReq = true;
+            break;
+        }
+    }
+    void mapNotify1_B0() { uint8_t b = 0xB0; mapNotify(&b, 1); }
+};
+
+// Stream the device's map coverage to the phone (bounds of the embedded map +
+// each downloaded /maps/*.ebm). Reads SD, so runs in the server task.
+void sendMapList() {
+    map_store::MapBounds mb[16];
+    int n = map_store::listMaps(mb, 16);
+    uint8_t begin = 0xC0;
+    mapNotify(&begin, 1);
+    for (int i = 0; i < n; ++i) {
+        uint8_t pkt[34];
+        pkt[0] = 0xC1;
+        memcpy(pkt + 1, &mb[i].s, 8);
+        memcpy(pkt + 9, &mb[i].w, 8);
+        memcpy(pkt + 17, &mb[i].n, 8);
+        memcpy(pkt + 25, &mb[i].e, 8);
+        pkt[33] = mb[i].builtin ? 1 : 0;
+        mapNotify(pkt, 34);
+    }
+    uint8_t end = 0xC2;
+    mapNotify(&end, 1);
+}
+
+// Write the staged map to SD + activate it. Runs in the server task.
+void mapCommit() {
+    bool ok = mapBuf && mapBufLen > 0 &&
+              map_store::saveAndActivate(mapName, mapBuf, mapBufLen);
+    uint32_t dt = millis() - mapStartMs;
+    diag::log("map commit %s: %u bytes in %.1fs", ok ? "ok" : "FAIL",
+              (unsigned)mapBufLen, dt / 1000.0f);
+    mapFreeBuf();
+    uint8_t r = ok ? 0xB1 : 0xBF;
+    mapNotify(&r, 1);
+}
+
+// Write the PSRAM-staged firmware to the SD card as /firmware.bin, then reboot
+// so the SD-update path (ui_dashboard applySdUpdate) flashes it on boot. This
+// keeps the actual flash OUT of the BLE session entirely — the transfer just
+// delivers the file, and flashing happens cleanly from SD after a reboot, which
+// is far more reliable than flashing during/right after the BLE transfer.
+// Runs in the server task; caller guards against SD contention with the recorder.
 void otaCommit() {
     uint32_t t0 = millis();
+    otaPhase = 2;                        // "installing" popup while we write SD
     bool ok = false;
-    if (otaBuf && otaBufLen > 0 && Update.begin(otaBufLen)) {
-        if (otaMd5[0]) Update.setMD5(otaMd5);
-        if (Update.write(otaBuf, otaBufLen) == otaBufLen && Update.end(true)) ok = true;
+    if (otaBuf && otaBufLen > 0) {
+        SD.remove("/firmware.bin");
+        File f = SD.open("/firmware.bin", FILE_WRITE);
+        if (f) {
+            size_t wrote = 0;
+            while (wrote < otaBufLen) {
+                size_t chunk = otaBufLen - wrote < 8192 ? otaBufLen - wrote : 8192;
+                size_t w = f.write(otaBuf + wrote, chunk);
+                if (w != chunk) break;
+                wrote += w;
+            }
+            f.close();
+            ok = (wrote == otaBufLen);
+            if (!ok) SD.remove("/firmware.bin");
+        }
     }
-    int err = Update.getError();
     otaFreeBuf();
     if (ok) {
-        otaNotify1(0xA1);
-        diag::log("ota flash ok in %.1fs, rebooting", (millis() - t0) / 1000.0f);
-        diag::flushToSD();               // persist the log before we reboot
-        otaRebootPending = true;
+        otaNotify1(0xA1);                // app: received + saved, device installing
+        diag::log("ota saved to SD in %.1fs — rebooting to flash from SD",
+                  (millis() - t0) / 1000.0f);
+        diag::flushToSD();
+        otaRebootPending = true;         // reboot -> applySdUpdate flashes it
     } else {
-        uint8_t e[2] = {0xAF, (uint8_t)err};
+        otaPhase = 0;
+        uint8_t e[2] = {0xAF, 0xE0};     // SD write failed
         otaNotify(e, 2);
-        diag::log("ota flash FAILED, error %d", err);
+        diag::log("ota SD save FAILED");
     }
 }
 
@@ -556,6 +816,15 @@ void begin() {
         NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::NOTIFY);
     otaChr->setCallbacks(new OtaCb());
 
+    sensorsChr = svc->createCharacteristic(
+        CHR_SENSORS, NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::NOTIFY);
+    sensorsChr->setCallbacks(new SensorsCb());
+
+    mapChr = svc->createCharacteristic(
+        CHR_MAP,
+        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::NOTIFY);
+    mapChr->setCallbacks(new MapCb());
+
     svc->start();
 
     NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
@@ -571,12 +840,35 @@ void pushSettingsToPhone() { settingsDirty = true; }
 
 bool isPhoneConnected() { return phoneConnected; }
 
+bool updateInProgress() { return otaPhase != 0; }
+int updatePercent() {
+    if (otaPhase == 1) return otaBufCap ? (int)((uint64_t)otaBufLen * 100 / otaBufCap) : 0;
+    return 100;   // installing
+}
+const char* updatePhase() { return otaPhase == 2 ? "Installing" : "Downloading"; }
+
 void task(void*) {
     uint32_t lastStatus = 0;
     for (;;) {
-        if (otaCommitPending) {          // flash the staged firmware (off BLE host)
-            otaCommitPending = false;
-            otaCommit();
+        // A download that stalls (app backgrounded/killed without a clean
+        // disconnect) must not leave the device stuck on the update popup.
+        if (otaPhase == 1 && millis() - otaLastDataMs > 20000) {
+            diag::log("ota download stalled — aborting");
+            otaAbortIfDownloading();
+        }
+        // SD writers pause while the recorder OR a host computer owns the card.
+        bool sdFree = !ride_recorder::isRecording() && !usb_storage::hostActive();
+        if (otaCommitPending && sdFree) {
+            otaCommitPending = false;    // write staged firmware to SD (off BLE
+            otaCommit();                 // host, and not while the recorder owns SD)
+        }
+        if (mapCommitPending && sdFree) {
+            mapCommitPending = false;    // write staged map to SD (off BLE host,
+            mapCommit();                 // and never while the recorder owns SD)
+        }
+        if (mapListReq && sdFree) {
+            mapListReq = false;          // enumerate SD maps (off BLE host)
+            sendMapList();
         }
         if (otaRebootPending) {          // OTA committed — reboot into new image
             vTaskDelay(pdMS_TO_TICKS(1500));   // let the success notify flush
@@ -587,31 +879,46 @@ void task(void*) {
             writeSettingsValue(settingsChr);
             settingsChr->notify();
         }
-        // Service a pending ride/route request promptly (streams via notify).
-        if (rideReq == REQ_LIST) {
-            rideReq = REQ_NONE;
-            sendRideList();
-        } else if (rideReq == REQ_DOWNLOAD) {
-            rideReq = REQ_NONE;
-            sendRide(rideReqName);
-        } else if (rideReq == REQ_DELETE) {
-            rideReq = REQ_NONE;
-            deleteRide(rideReqName);
-        } else if (rideReq == REQ_LOG) {
-            rideReq = REQ_NONE;
-            sendLog();
+        // Service pending ride/route requests (they read the SD) — but only when
+        // a host computer isn't using the card; otherwise leave them queued.
+        if (!usb_storage::hostActive()) {
+            if (rideReq == REQ_LIST) {
+                rideReq = REQ_NONE;
+                sendRideList();
+            } else if (rideReq == REQ_DOWNLOAD) {
+                rideReq = REQ_NONE;
+                sendRide(rideReqName);
+            } else if (rideReq == REQ_DELETE) {
+                rideReq = REQ_NONE;
+                deleteRide(rideReqName);
+            } else if (rideReq == REQ_LOG) {
+                rideReq = REQ_NONE;
+                sendLog();
+            }
+            if (routeReq == RREQ_LIST) {
+                routeReq = RREQ_NONE;
+                sendRouteList();
+            } else if (routeReq == RREQ_DELETE) {
+                routeReq = RREQ_NONE;
+                deleteRoute(routeReqName);
+            }
         }
-        if (routeReq == RREQ_LIST) {
-            routeReq = RREQ_NONE;
-            sendRouteList();
-        } else if (routeReq == RREQ_DELETE) {
-            routeReq = RREQ_NONE;
-            deleteRoute(routeReqName);
+        if (sensorReq == SREQ_LIST) {
+            sensorReq = SREQ_NONE;
+            sendSensorList();
         }
 
         vTaskDelay(pdMS_TO_TICKS(100));
         if (!statusChr || millis() - lastStatus < 1000) continue;
         lastStatus = millis();
+
+        // While the app's sensor screen is open, push the list ~every 2 s so
+        // discovered/connected changes show up live.
+        static uint32_t lastSensorPush = 0;
+        if (sensorsStreaming && phoneConnected && millis() - lastSensorPush > 2000) {
+            lastSensorPush = millis();
+            sendSensorList();
+        }
 
         diag::flushToSD();   // persist buffered diagnostics (no-op while recording)
 

@@ -44,6 +44,7 @@ void valueWithUnit(const EpdFont* valueFont, int x0, int x1, int baselineY,
 void ui_render_dashboard(const RideState& s, bool navActive, uint8_t* fb);
 
 // Ride summary (design 1g) with SAVE RIDE / DISCARD touch targets.
+extern const EpdRect kResumeButton;
 extern const EpdRect kSaveButton;
 extern const EpdRect kDiscardButton;
 void ui_render_summary(const RideSummary& r, uint8_t* fb);
@@ -72,7 +73,7 @@ void ui_render_menu(const MenuInfo& m, uint8_t* fb);
 // Generic list screen (Sensors / Navigate / Ride History). Same row
 // geometry as the menu; tap-outside-rows returns.
 struct ListRow {
-    char title[28];
+    char title[40];
     char subtitle[64];
     bool inverted;
 };
@@ -137,6 +138,9 @@ void ui_render_shutdown_screen(uint8_t* fb);
 // arrives. Reuses the power-sheet button rects: kPowerShutdown = START,
 // kPowerCancel = LATER.
 void ui_render_nav_prompt(const char* routeName, int turns, uint8_t* fb);
+
+// Full-screen "Updating firmware" modal shown while an OTA is in progress.
+void ui_render_update_overlay(const char* phase, int pct, uint8_t* fb);
 
 // Turn-by-turn banner drawn over the top of the map while navigating:
 // distance to the next turn + the instruction, with a direction arrow.

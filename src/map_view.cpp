@@ -5,6 +5,7 @@
 
 #include "epdiy.h"
 #include "ride_state.h"
+#include "routes.h"
 #include "ui_render.h"
 #include "fonts/arialbold_14.h"
 #include "fonts/arialbold_20.h"
@@ -225,26 +226,90 @@ void ui_render_map(const MapScreenData& map, const RideState& s, uint8_t* fb) {
         epd_fill_rect({i * colW - 1, STRIP_TOP + 3, 3, H - STRIP_TOP - 3}, 0x00, fb);
     }
 
-    char spdLabel[12], distLabel[12], leftLabel[12];
-    snprintf(spdLabel, sizeof(spdLabel), "SPEED %s", units::speedLabel(s.useMiles));
-    snprintf(distLabel, sizeof(distLabel), "DIST %s", units::distLabel(s.useMiles));
-    snprintf(leftLabel, sizeof(leftLabel), "LEFT %s", units::distLabel(s.useMiles));
-
-    ui::label(colW / 2, STRIP_TOP + 44, spdLabel, fb);
+    // Short unit-less headers: a "SPEED KM/H" header is wider than the 180px
+    // column and overlaps its neighbours. Units are shown on the dashboard,
+    // summary, and (for distance) the scale bar; the map footer stays glanceable.
+    ui::label(colW / 2, STRIP_TOP + 44, "SPEED", fb);
     snprintf(buf, sizeof(buf), "%.1f", units::speed(s.speedKmh, s.useMiles));
-    ui::valueWithUnit(&Impact_40, 8, colW - 8, H - 40, buf, "", fb);
+    ui::valueWithUnit(&Impact_40, 6, colW - 6, H - 40, buf, "", fb);
 
-    ui::label(colW + colW / 2, STRIP_TOP + 44, distLabel, fb);
+    ui::label(colW + colW / 2, STRIP_TOP + 44, "DIST", fb);
     snprintf(buf, sizeof(buf), "%.1f", units::distM(s.distanceM, s.useMiles));
-    ui::valueWithUnit(&Impact_40, colW + 8, 2 * colW - 8, H - 40, buf, "", fb);
+    ui::valueWithUnit(&Impact_40, colW + 6, 2 * colW - 6, H - 40, buf, "", fb);
 
     if (map.showRemaining) {
-        ui::label(2 * colW + colW / 2, STRIP_TOP + 44, leftLabel, fb);
+        ui::label(2 * colW + colW / 2, STRIP_TOP + 44, "LEFT", fb);
         snprintf(buf, sizeof(buf), "%.1f", units::dist(map.remainingKm, s.useMiles));
     } else {
         ui::label(2 * colW + colW / 2, STRIP_TOP + 44, "TIME", fb);
         snprintf(buf, sizeof(buf), "%lu:%02lu", (unsigned long)(s.elapsedS / 3600),
                  (unsigned long)((s.elapsedS / 60) % 60));
     }
-    ui::valueWithUnit(&Impact_40, 2 * colW + 8, W - 8, H - 40, buf, "", fb);
+    ui::valueWithUnit(&Impact_40, 2 * colW + 6, W - 6, H - 40, buf, "", fb);
+}
+
+// Whole-route preview for the "Start navigation?" accept page: fits the entire
+// route into the area above the prompt sheet so the rider can recognize it
+// before accepting. Independent of the live map zoom/center.
+void ui_render_route_preview(uint8_t* fb) {
+    const int n = routes::pointCount();
+    if (n < 2) return;
+    const int W = epd_rotated_display_width();
+
+    // Viewport: below the status bar, above the accept sheet (kPowerSheet.y=600).
+    const int top = ui::STATUS_H + 16, bot = 600 - 16;
+    const int left = 20, right = W - 20;
+    const int vw = right - left, vh = bot - top;
+
+    double minLat = 90, maxLat = -90, minLon = 180, maxLon = -180;
+    for (int i = 0; i < n; ++i) {
+        double la, lo;
+        routes::point(i, la, lo);
+        if (la < minLat) minLat = la;
+        if (la > maxLat) maxLat = la;
+        if (lo < minLon) minLon = lo;
+        if (lo > maxLon) maxLon = lo;
+    }
+    const double clat = (minLat + maxLat) / 2, clon = (minLon + maxLon) / 2;
+    const double cosc = cos(clat * M_PI / 180.0);
+    double mLat = (maxLat - minLat) * 111320.0;
+    double mLon = (maxLon - minLon) * 111320.0 * cosc;
+    if (mLat < 1) mLat = 1;
+    if (mLon < 1) mLon = 1;
+    double mpp = fmax(mLon / vw, mLat / vh) * 1.12;   // fit + 12% margin
+    if (mpp < 0.5) mpp = 0.5;
+
+    const int cx = left + vw / 2, cy = top + vh / 2;
+    auto toScreen = [&](double la, double lo, int16_t& sx, int16_t& sy) {
+        sx = (int16_t)(cx + (lo - clon) * 111320.0 * cosc / mpp);
+        sy = (int16_t)(cy - (la - clat) * 111320.0 / mpp);
+    };
+
+    // Subsample into a fixed buffer so any route length fits.
+    static int16_t pts[1024 * 2];
+    const int cap = 1024;
+    const int stride = (n + cap - 1) / cap;
+    int m = 0;
+    for (int i = 0; i < n && m < cap; i += stride) {
+        double la, lo;
+        routes::point(i, la, lo);
+        toScreen(la, lo, pts[m * 2], pts[m * 2 + 1]);
+        m++;
+    }
+    // Always include the final point so the end marker lands on the route end.
+    {
+        double la, lo;
+        routes::point(n - 1, la, lo);
+        if (m < cap) { toScreen(la, lo, pts[m * 2], pts[m * 2 + 1]); m++; }
+    }
+
+    drawPolyline(pts, m, {8, 0x00, 0, 0}, fb);
+
+    // Start (filled dot) and end (ring) markers.
+    int16_t sx, sy, ex, ey;
+    { double la, lo; routes::point(0, la, lo); toScreen(la, lo, sx, sy); }
+    { double la, lo; routes::point(n - 1, la, lo); toScreen(la, lo, ex, ey); }
+    epd_fill_circle(sx, sy, 10, 0x00, fb);
+    epd_fill_circle(ex, ey, 11, 0xFF, fb);
+    for (int r = 7; r <= 11; ++r) epd_draw_circle(ex, ey, r, 0x00, fb);
 }

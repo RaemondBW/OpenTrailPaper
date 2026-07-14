@@ -13,8 +13,10 @@ int tz = TIMEZONE_OFFSET_MINUTES;
 int bl = 2;  // frontlight level 0-3
 bool miles = false;  // false = km, true = miles
 char addrs[3][18] = {"", "", ""};
+char names[3][32] = {"", "", ""};   // remembered vendor/model per paired kind
 double lastLat = 0, lastLon = 0;
 const char* KEYS[3] = {"sens_hr", "sens_pwr", "sens_cad"};
+const char* NAME_KEYS[3] = {"snm_hr", "snm_pwr", "snm_cad"};
 
 }  // namespace
 
@@ -28,6 +30,7 @@ void begin() {
     miles = prefs.getBool("miles", false);
     for (int k = 0; k < 3; ++k) {
         prefs.getString(KEYS[k], addrs[k], sizeof(addrs[k]));
+        prefs.getString(NAME_KEYS[k], names[k], sizeof(names[k]));
     }
     lastLat = prefs.getDouble("lastlat", 0);
     lastLon = prefs.getDouble("lastlon", 0);
@@ -67,6 +70,16 @@ void setSensorAddr(int kind, const char* addr) {
     if (kind < 0 || kind >= 3) return;
     snprintf(addrs[kind], sizeof(addrs[kind]), "%s", addr ? addr : "");
     prefs.putString(KEYS[kind], addrs[kind]);
+}
+
+const char* sensorName(int kind) {
+    return (kind >= 0 && kind < 3) ? names[kind] : "";
+}
+
+void setSensorName(int kind, const char* name) {
+    if (kind < 0 || kind >= 3 || !name || !name[0]) return;
+    snprintf(names[kind], sizeof(names[kind]), "%s", name);
+    prefs.putString(NAME_KEYS[kind], names[kind]);
 }
 
 bool lastPosition(double& lat, double& lon) {

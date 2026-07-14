@@ -23,4 +23,9 @@ void pushSettingsToPhone();
 // auto-sleep during transfers.
 bool isPhoneConnected();
 
+// Firmware-update status, for the on-device "Updating firmware" popup.
+bool updateInProgress();      // true while receiving or flashing an OTA image
+int  updatePercent();         // 0..100
+const char* updatePhase();    // "Downloading" or "Installing"
+
 }

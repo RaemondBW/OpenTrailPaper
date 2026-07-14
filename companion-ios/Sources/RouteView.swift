@@ -8,6 +8,7 @@ struct RouteView: View {
     @EnvironmentObject var ble: BLEManager
     @StateObject private var model = RouteModel()
     @State private var showSaved = false
+    @State private var showMaps = false
 
     var body: some View {
         NavigationStack {
@@ -66,17 +67,43 @@ struct RouteView: View {
                 }
                 .padding(16)
             }
-            .navigationTitle("Route")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                Button {
-                    ble.refreshRoutes(); showSaved = true
-                } label: { Image(systemName: "folder") }
-                .disabled(ble.state != .connected)
-            }
+            .overlay(alignment: .top) { floatingControls }
+            .navigationBarHidden(true)
             .sheet(isPresented: $showSaved) { SavedRoutesSheet() }
+            .sheet(isPresented: $showMaps) { MapsView() }
             .onAppear { model.requestLocation() }
         }
+    }
+
+    // Floating "Route" title pill + a round folder button (mockup 2b).
+    private var floatingControls: some View {
+        HStack {
+            Text("Route").font(BarlowFont.condensed(22, .bold)).foregroundStyle(Palette.ink)
+                .padding(.horizontal, 16).padding(.vertical, 9)
+                .background(Palette.surface).clipShape(Capsule())
+                .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))
+                .shadow(color: .black.opacity(0.08), radius: 6, y: 2)
+            Spacer()
+            roundButton("square.and.arrow.down.on.square", enabled: true) { showMaps = true }
+            roundButton("folder", enabled: ble.state == .connected) {
+                ble.refreshRoutes(); showSaved = true
+            }
+        }
+        .padding(.horizontal, 16).padding(.top, 8)
+    }
+
+    private func roundButton(_ systemName: String, enabled: Bool,
+                             _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(enabled ? Palette.accent : Palette.faint)
+                .frame(width: 42, height: 42)
+                .background(Palette.surface).clipShape(Circle())
+                .overlay(Circle().strokeBorder(Palette.hairline, lineWidth: 1))
+                .shadow(color: .black.opacity(0.08), radius: 6, y: 2)
+        }
+        .disabled(!enabled)
     }
 }
 
@@ -270,6 +297,12 @@ private struct RouteSummaryCard: View {
     let clear: () -> Void
     @AppStorage(UnitPref.key) private var useMiles = false
 
+    // Trim a long place name so the button label stays on one line.
+    private var shortName: String {
+        let n = name.split(separator: ",").first.map(String.init) ?? name
+        return n.count > 18 ? String(n.prefix(17)) + "…" : n
+    }
+
     var body: some View {
         Card {
             VStack(alignment: .leading, spacing: 14) {
@@ -304,8 +337,9 @@ private struct RouteSummaryCard: View {
                             .foregroundStyle(Palette.muted)
                     }
                 } else {
-                    PrimaryButton(title: "Send to device",
-                                  systemImage: "arrow.down.circle",
+                    PrimaryButton(title: canSend ? "Send \(shortName) to device"
+                                                  : "Connect to send",
+                                  systemImage: "paperplane.fill",
                                   enabled: canSend, action: send)
                 }
             }

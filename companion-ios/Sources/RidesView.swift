@@ -29,13 +29,81 @@ struct RidesView: View {
         }
     }
 
+    // Big title + sync status + refresh (mockup 2c).
+    private var header: some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text("Rides").font(TypeScale.screenTitle).foregroundStyle(Palette.ink)
+            Spacer()
+            Text(ble.state == .connected
+                 ? (ble.loadingRides ? "Syncing…" : "Synced")
+                 : "Offline")
+                .font(BarlowFont.text(13, .medium)).foregroundStyle(Palette.muted)
+            Button {
+                if ble.state == .connected { ble.refreshRides() } else { ble.startScan() }
+            } label: {
+                Image(systemName: ble.state == .connected ? "arrow.clockwise"
+                                                           : "antenna.radiowaves.left.and.right")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Palette.accent)
+                    .padding(8).background(Palette.surface).clipShape(Circle())
+                    .overlay(Circle().strokeBorder(Palette.hairline, lineWidth: 1))
+            }
+        }
+        .padding(.top, 8)
+    }
+
+    // Week roll-up from whatever previews are decoded (fills in as rows load).
+    private func summary(_ rides: [RideFile]) -> some View {
+        let recent = rides.filter { daysAgo($0.name) <= 7 }
+        let loaded = recent.compactMap { previews.preview(for: $0.name) }
+        let dist = loaded.reduce(0.0) { $0 + $1.distanceKm }
+        let time = loaded.reduce(0.0) { $0 + $1.duration }
+        return Card {
+            HStack {
+                summaryCell("\(recent.count)", "rides this week")
+                Spacer()
+                summaryCell(String(format: "%.1f", Units.distance(dist, miles: useMiles)),
+                            "\(Units.distLabel(useMiles)) distance")
+                Spacer()
+                summaryCell(timeStrShort(time), "riding time")
+            }
+        }
+    }
+
+    private func summaryCell(_ value: String, _ label: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(value).font(TypeScale.value(26)).foregroundStyle(Palette.ink)
+            Text(label).font(BarlowFont.text(12)).foregroundStyle(Palette.muted)
+        }
+    }
+
+    @AppStorage(UnitPref.key) private var useMiles = false
+
+    private func daysAgo(_ name: String) -> Int {
+        guard let d = Self.rideDate(name) else { return 9999 }
+        return Int(Date().timeIntervalSince(d) / 86400)
+    }
+    private func timeStrShort(_ s: TimeInterval) -> String {
+        let m = Int(s) / 60, h = m / 60
+        return h > 0 ? "\(h)h \(m % 60)m" : "\(m)m"
+    }
+
+    // Filenames look like 20260712-150300.fit
+    static func rideDate(_ name: String) -> Date? {
+        let base = name.replacingOccurrences(of: ".fit", with: "")
+        let f = DateFormatter()
+        f.dateFormat = "yyyyMMdd-HHmmss"
+        return f.date(from: base)
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(spacing: 16) {
-                    ConnectionBanner()
+                let rides = displayedRides
+                VStack(spacing: 14) {
+                    header
+                    if !rides.isEmpty { summary(rides) }
 
-                    let rides = displayedRides
                     if ble.state == .connected && ble.loadingRides {
                         ProgressView("Loading rides…").padding(.top, 30)
                     } else if rides.isEmpty {
@@ -43,19 +111,14 @@ struct RidesView: View {
                             VStack(alignment: .leading, spacing: 6) {
                                 Text(ble.state == .connected ? "No rides found"
                                                              : "No cached rides")
-                                    .font(TypeScale.body).foregroundStyle(Palette.ink)
+                                    .font(TypeScale.title).foregroundStyle(Palette.ink)
                                 Text(ble.state == .connected
                                      ? "Rides are saved to the SD card. If you're mid-ride, stop it first."
                                      : "Connect to your Bike GPS to download rides. Downloaded rides stay here for offline viewing.")
-                                    .font(.system(size: 13)).foregroundStyle(Palette.muted)
+                                    .font(BarlowFont.text(14)).foregroundStyle(Palette.muted)
                             }
                         }
                     } else {
-                        if ble.state != .connected {
-                            Text("Showing downloaded rides · connect to fetch more")
-                                .font(.system(size: 12)).foregroundStyle(Palette.muted)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
                         ForEach(rides) { ride in
                             RideRow(ride: ride,
                                     cached: BLEManager.isCached(ride.name),
@@ -70,19 +133,13 @@ struct RidesView: View {
                                 .onAppear { previews.ensureLoaded(ride.name) }
                         }
                         Text("Tap to preview & share · long-press to delete")
-                            .font(.system(size: 12)).foregroundStyle(Palette.muted)
+                            .font(BarlowFont.text(12)).foregroundStyle(Palette.muted)
                     }
                 }
                 .padding(16)
             }
-            .background(Palette.paper)
-            .navigationTitle("Rides")
-            .toolbar {
-                Button {
-                    ble.refreshRides()
-                } label: { Image(systemName: "arrow.clockwise") }
-                .disabled(ble.state != .connected)
-            }
+            .background(Palette.paper.ignoresSafeArea())
+            .navigationBarHidden(true)
             .onAppear {
                 if ProcessInfo.processInfo.arguments.contains("-demo-ride"),
                    let url = Bundle.main.url(forResource: "demo", withExtension: "fit"),
@@ -137,14 +194,20 @@ private struct RideRow: View {
                 VStack(spacing: 12) {
                     banner
                     HStack(alignment: .top, spacing: 12) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(prettyDate).font(TypeScale.body).foregroundStyle(Palette.ink)
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 6) {
+                                Text(rideName).font(BarlowFont.condensed(20, .semibold))
+                                    .foregroundStyle(Palette.ink)
+                                Text(dateSubtitle).font(BarlowFont.text(13))
+                                    .foregroundStyle(Palette.muted)
+                            }
                             if let p = preview {
-                                stats(p)
+                                stats(p).padding(.top, 6)
                             } else {
-                                Text(String(format: "%.0f KB · %@",
-                                            Double(ride.size) / 1024, ride.name))
-                                    .font(.system(size: 12)).foregroundStyle(Palette.muted)
+                                Text(String(format: "%.0f KB · not downloaded",
+                                            Double(ride.size) / 1024))
+                                    .font(BarlowFont.text(12)).foregroundStyle(Palette.muted)
+                                    .padding(.top, 4)
                             }
                         }
                         Spacer()
@@ -198,18 +261,15 @@ private struct RideRow: View {
             statItem(timeStr(p.duration), "Time")
             statItem(String(format: "%.1f", Units.speed(p.avgSpeedKmh, miles: useMiles)),
                      "\(Units.speedLabel(useMiles)) avg")
-            statItem(String(format: "%.0f %@",
-                            Units.elevation(p.ascentM, miles: useMiles),
-                            Units.elevLabel(useMiles)), "Ascent")
             if let w = p.avgPower { statItem("\(w) W", "Power") }
         }
     }
 
     private func statItem(_ value: String, _ label: String) -> some View {
         VStack(alignment: .leading, spacing: 1) {
-            Text(value).font(.system(size: 13, weight: .semibold))
+            Text(value).font(BarlowFont.condensed(16, .semibold))
                 .foregroundStyle(Palette.ink)
-            Text(label).font(.system(size: 10)).foregroundStyle(Palette.muted)
+            Text(label).font(BarlowFont.text(10)).foregroundStyle(Palette.muted)
         }
     }
 
@@ -232,17 +292,19 @@ private struct RideRow: View {
         return h > 0 ? "\(h)h \(m % 60)m" : "\(m)m"
     }
 
-    // Filenames look like 20250710-212500.fit
-    private var prettyDate: String {
-        let base = ride.name.replacingOccurrences(of: ".fit", with: "")
-        let parts = base.split(separator: "-")
-        guard parts.count == 2, parts[0].count == 8, parts[1].count == 6 else {
-            return ride.name
-        }
-        let d = parts[0], t = parts[1]
-        let y = d.prefix(4), mo = d.dropFirst(4).prefix(2), da = d.suffix(2)
-        let h = t.prefix(2), mi = t.dropFirst(2).prefix(2)
-        return "\(y)-\(mo)-\(da)  \(h):\(mi)"
+    // Human name like "Saturday afternoon ride" from the file's timestamp.
+    private var rideName: String {
+        guard let d = RidesView.rideDate(ride.name) else { return ride.name }
+        let wd = d.formatted(.dateTime.weekday(.wide))
+        let h = Calendar.current.component(.hour, from: d)
+        let part = h < 5 ? "night" : h < 12 ? "morning" : h < 17 ? "afternoon"
+                 : h < 21 ? "evening" : "night"
+        return "\(wd) \(part) ride"
+    }
+    private var dateSubtitle: String {
+        guard let d = RidesView.rideDate(ride.name) else { return "" }
+        return d.formatted(.dateTime.month(.abbreviated).day()) + " · "
+             + d.formatted(.dateTime.hour().minute())
     }
 }
 

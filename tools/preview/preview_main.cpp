@@ -15,6 +15,13 @@
 #include "map_view.h"
 #include "map_tiles.h"
 
+// Stubs for the routes:: symbols map_view.cpp references (route preview). The
+// preview never has an active route, so an empty route is fine.
+namespace routes {
+int pointCount() { return 0; }
+void point(int, double& lat, double& lon) { lat = 0; lon = 0; }
+}
+
 namespace {
 
 constexpr int NATIVE_W = 960, NATIVE_H = 540;
@@ -93,6 +100,7 @@ RideState sampleState() {
     s.power3sW = 247;
     s.cadenceRpm = 88;
     s.hrConnected = s.powerConnected = s.cadenceConnected = true;
+    s.phoneConnected = true;
     s.recording = true;
     s.distanceM = 54800.0;
     s.elapsedS = 1 * 3600 + 47 * 60 + 12;
@@ -311,6 +319,11 @@ int main(int argc, char** argv) {
     ui_render_summary(sampleSummary(), fb.data());
     emit("summary.png");
 
+    // Firmware update modal
+    clearWhite(fb.data());
+    ui_render_update_overlay("Downloading", 42, fb.data());
+    emit("update.png");
+
     // Menu (1h)
     MenuInfo menu;
     menu.recording = false;
@@ -330,14 +343,14 @@ int main(int argc, char** argv) {
     ListRow sensors[3] = {};
     snprintf(sensors[0].title, sizeof(sensors[0].title), "WHOOP 4.0");
     snprintf(sensors[0].subtitle, sizeof(sensors[0].subtitle),
-             "heart rate · -58 dBm · paired · connected");
+             "Connected · HR");
     sensors[0].inverted = true;
     snprintf(sensors[1].title, sizeof(sensors[1].title), "Assioma DUO");
     snprintf(sensors[1].subtitle, sizeof(sensors[1].subtitle),
-             "power + cadence · -66 dBm · paired");
+             "Saved · Power+Cad");
     snprintf(sensors[2].title, sizeof(sensors[2].title), "f0:99:1c:22:8a:01");
     snprintf(sensors[2].subtitle, sizeof(sensors[2].subtitle),
-             "cadence · -80 dBm");
+             "Cadence · -80 dBm");
     clearWhite(fb.data());
     ui_render_list("SENSORS", sensors, 3, "tap a sensor to pair it · scanning...",
                    fb.data());

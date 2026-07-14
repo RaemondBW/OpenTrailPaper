@@ -5,12 +5,20 @@ struct SettingsView: View {
     @EnvironmentObject var ble: BLEManager
     @AppStorage(UnitPref.key) private var useMiles = false
     @State private var confirmUpdate = false
+    @State private var showSensors = false
 
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(spacing: 16) {
+                VStack(spacing: 14) {
+                    HStack {
+                        Text("Settings").font(TypeScale.screenTitle)
+                            .foregroundStyle(Palette.ink)
+                        Spacer()
+                    }
+                    .padding(.top, 8)
                     if ble.state == .connected { firmwareCard }
+                    if ble.state == .connected { sensorsCard }
                     Card {
                         VStack(alignment: .leading, spacing: 10) {
                             Text("Units").trackedLabel()
@@ -78,10 +86,41 @@ struct SettingsView: View {
                 }
                 .padding(16)
             }
-            .background(Palette.paper)
-            .navigationTitle("Settings")
+            .background(Palette.paper.ignoresSafeArea())
+            .navigationBarHidden(true)
             .sheet(item: $ble.logFileURL) { url in DiagnosticsView(url: url) }
+            .sheet(isPresented: $showSensors) { SensorsView() }
         }
+    }
+
+    @ViewBuilder private var sensorsCard: some View {
+        Button { showSensors = true } label: {
+            Card {
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Sensors").trackedLabel()
+                        Text(sensorSummary)
+                            .font(BarlowFont.text(15, .semibold)).foregroundStyle(Palette.ink)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 14, weight: .semibold)).foregroundStyle(Palette.muted)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var sensorSummary: String {
+        let connected = ble.sensors.filter { $0.connected }
+        if !connected.isEmpty {
+            return connected.map { $0.name }.joined(separator: ", ") + " connected"
+        }
+        let paired = ble.sensors.filter { $0.paired }
+        if !paired.isEmpty {
+            return "\(paired.count) saved · none connected"
+        }
+        return "Scan & pair heart rate, power, cadence"
     }
 
     @ViewBuilder private var diagnosticsCard: some View {

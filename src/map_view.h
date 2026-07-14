@@ -67,3 +67,7 @@ void ui_render_map(const MapScreenData& map, const RideState& s, uint8_t* fb);
 // backdrop behind the powered-off screen.
 void ui_render_map_features(const MapScreenData& map, const RideState& s,
                             uint8_t* fb);
+
+// Whole active route fitted into the area above the accept sheet, for the
+// "Start navigation?" preview.
+void ui_render_route_preview(uint8_t* fb);

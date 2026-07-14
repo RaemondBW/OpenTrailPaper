@@ -13,8 +13,9 @@
 #include "fonts/impact_128.h"
 
 // Summary footer touch targets (design 1g: two 100+ px tall actions)
-const EpdRect kSaveButton = {0, 830, 270, 130};
-const EpdRect kDiscardButton = {270, 830, 270, 130};
+const EpdRect kResumeButton = {0, 830, 180, 130};
+const EpdRect kSaveButton = {180, 830, 180, 130};
+const EpdRect kDiscardButton = {360, 830, 180, 130};
 
 namespace ui {
 
@@ -69,6 +70,7 @@ void valueWithUnit(const EpdFont* valueFont, int x0, int x1, int baselineY,
     int vw = textWidth(valueFont, value);
     int uw = unit && unit[0] ? textWidth(&ArialBold_14, unit) + 10 : 0;
     int startX = x0 + ((x1 - x0) - (vw + uw)) / 2;
+    if (startX < x0) startX = x0;   // never spill past the left bound / screen edge
     text(valueFont, startX, baselineY, value, fb, EPD_DRAW_ALIGN_LEFT, color);
     if (uw) {
         text(&ArialBold_14, startX + vw + 10, baselineY, unit, fb,
@@ -104,6 +106,12 @@ void batteryIcon(int rightX, int cy, uint8_t percent, bool charging,
     (void)charging;
 }
 
+// Small downward lightning bolt centered at (cx, cy) — the "charging" glyph.
+void drawBolt(int cx, int cy, uint8_t color, uint8_t* fb) {
+    epd_fill_triangle(cx + 4, cy - 9, cx - 3, cy + 2, cx + 2, cy + 1, color, fb);
+    epd_fill_triangle(cx - 4, cy + 9, cx + 3, cy - 2, cx - 2, cy - 1, color, fb);
+}
+
 }  // namespace
 
 void statusBar(const RideState& s, uint8_t* fb) {
@@ -119,20 +127,20 @@ void statusBar(const RideState& s, uint8_t* fb) {
     }
     text(&ArialBold_14, 16, 40, clock, fb);
 
-    // Center: GPS dots + sensor checks, e.g. "GPS ooo. HR/ PWR/"
-    int cx = W / 2;
-    char sensors[24];
-    snprintf(sensors, sizeof(sensors), "%s%s", s.hrConnected ? " · HR" : "",
-             s.powerConnected ? " · PWR" : "");
-    int gpsTextW = textWidth(&ArialBold_14, "GPS");
-    int dotsW = 4 * 16;
-    int hrW = sensors[0] ? textWidth(&ArialBold_14, sensors) : 0;
-    int checks = (s.hrConnected ? 1 : 0) + (s.powerConnected ? 1 : 0);
-    int total = gpsTextW + 8 + dotsW + hrW + checks * 20;
-    int x = cx - total / 2;
+    // Companion-app connection: a small phone glyph just after the clock (on the
+    // left, out of the crowded battery cluster). Absent = not connected.
+    if (s.phoneConnected) {
+        const int pw = 15, ph = 26, px = 96, py = 30 - ph / 2;
+        epd_fill_rect({px, py, pw, ph}, 0x00, fb);            // phone body
+        epd_fill_rect({px + 3, py + 4, pw - 6, ph - 10}, 0xFF, fb);  // screen
+        epd_fill_circle(px + pw / 2, py + ph - 4, 1, 0xFF, fb);      // home dot
+    }
 
-    text(&ArialBold_14, x, 40, "GPS", fb);
-    x += gpsTextW + 10;
+    // GPS signal dots + sensor labels, left-anchored after the clock/phone. The
+    // "GPS" text label is dropped — the dots read as signal strength and the
+    // saved width keeps "· PWR" clear of the battery %.
+    int dotsW = 4 * 16;
+    int x = 128;
     int bars = s.gpsFix ? (s.satellites >= 9 ? 4 : s.satellites >= 6 ? 3
                            : s.satellites >= 4 ? 2 : 1)
                         : 0;
@@ -141,20 +149,34 @@ void statusBar(const RideState& s, uint8_t* fb) {
         else epd_draw_circle(x + i * 16, 32, 5, 0x00, fb);
     }
     x += dotsW;
+    // The "· HR" / "· PWR" labels only appear when connected, so they need no
+    // extra checkmark — keeping them text-only frees room for the battery %.
     if (s.hrConnected) {
         text(&ArialBold_14, x, 40, " · HR", fb);
-        x += textWidth(&ArialBold_14, " · HR") + 4;
-        check(x, 38, fb);
-        x += 20;
+        x += textWidth(&ArialBold_14, " · HR");
     }
     if (s.powerConnected) {
         text(&ArialBold_14, x, 40, " · PWR", fb);
-        x += textWidth(&ArialBold_14, " · PWR") + 4;
-        check(x, 38, fb);
-        x += 20;
+        x += textWidth(&ArialBold_14, " · PWR");
     }
 
     batteryIcon(W - 12, 30, s.batteryPercent, s.charging, fb);
+
+    // Numeric battery level left of the icon — the fill bar alone is hard to
+    // read on e-paper. Battery body left edge = (W-12) - 44 - 6 = W-62. A
+    // reading of 0 means "not yet measured" (a real 0% would have shut down),
+    // so show "--" rather than a bogus 0% right after boot/install.
+    char pct[8];
+    if (s.batteryPercent == 0) snprintf(pct, sizeof(pct), "--%%");
+    else snprintf(pct, sizeof(pct), "%u%%", s.batteryPercent);
+    int pctRight = W - 62 - 8;
+    text(&ArialBold_14, pctRight, 40, pct, fb, EPD_DRAW_ALIGN_RIGHT);
+
+    // Lightning bolt left of the % when charging.
+    if (s.charging) {
+        int pctLeft = pctRight - textWidth(&ArialBold_14, pct);
+        drawBolt(pctLeft - 10, 30, 0x00, fb);
+    }
 
     epd_fill_rect({0, STATUS_H - 3, W, 3}, 0x00, fb);
 }
@@ -172,8 +194,15 @@ void formatHms(char* out, size_t len, uint32_t secs) {
 void cell(int x0, int y0, int x1, int y1, const char* labelStr,
           const char* value, const char* unit, uint8_t* fb) {
     int cx = (x0 + x1) / 2;
-    ui::label(cx, y0 + 40, labelStr, fb);
-    ui::valueWithUnit(&Impact_40, x0 + 8, x1 - 8, y1 - 28, value, unit, fb);
+    ui::label(cx, y0 + 36, labelStr, fb);
+    if (unit && unit[0]) {
+        // Value centered, with the unit stacked in a small caption below it.
+        // Kept low enough to clear the label even in the shorter summary cells.
+        ui::text(&Impact_40, cx, y1 - 34, value, fb, EPD_DRAW_ALIGN_CENTER, 0x00);
+        ui::text(&ArialBold_14, cx, y1 - 11, unit, fb, EPD_DRAW_ALIGN_CENTER, 0x00);
+    } else {
+        ui::text(&Impact_40, cx, y1 - 24, value, fb, EPD_DRAW_ALIGN_CENTER, 0x00);
+    }
 }
 
 }  // namespace
@@ -240,13 +269,14 @@ void ui_render_dashboard(const RideState& s, bool navActive, uint8_t* fb) {
 
     epd_fill_rect({0, heroBottom, W, 3}, 0x00, fb);
 
-    // --- 3 x 2 grid -----------------------------------------------------
-    const int rows[4] = {heroBottom + 3, 620, 790, H};
+    // --- 2 x 2 grid -----------------------------------------------------
+    // (Elevation/grade removed — GPS altitude with no barometer is unreliable.)
+    const int gridTop = heroBottom + 3;
+    const int rows[3] = {gridTop, (gridTop + H) / 2, H};
     const int midX = W / 2;
 
-    // Row separators + center divider
+    // Row separator + center divider
     epd_fill_rect({0, rows[1], W, 3}, 0x00, fb);
-    epd_fill_rect({0, rows[2], W, 3}, 0x00, fb);
     epd_fill_rect({midX - 1, rows[0], 3, H - rows[0]}, 0x00, fb);
 
     if (s.heartRateBpm != 0xFF) snprintf(buf, sizeof(buf), "%u", s.heartRateBpm);
@@ -265,13 +295,6 @@ void ui_render_dashboard(const RideState& s, bool navActive, uint8_t* fb) {
 
     snprintf(buf, sizeof(buf), "%.1f", units::distM(s.distanceM, s.useMiles));
     cell(midX, rows[1], W, rows[2], "DISTANCE", buf, units::distLabel(s.useMiles), fb);
-
-    if (s.gradeValid) snprintf(buf, sizeof(buf), "%.1f", s.gradePercent);
-    else snprintf(buf, sizeof(buf), "--");
-    cell(0, rows[2], midX, rows[3], "GRADE", buf, "%", fb);
-
-    snprintf(buf, sizeof(buf), "%.0f", units::elev(s.altitudeM, s.useMiles));
-    cell(midX, rows[2], W, rows[3], "ELEVATION", buf, units::elevLabel(s.useMiles), fb);
 }
 
 void ui_render_summary(const RideSummary& r, uint8_t* fb) {
@@ -320,20 +343,64 @@ void ui_render_summary(const RideSummary& r, uint8_t* fb) {
     if (r.avgHrBpm) snprintf(buf, sizeof(buf), "%u", r.avgHrBpm);
     else snprintf(buf, sizeof(buf), "--");
     cell(0, rows[2], midX, rows[3], "AVG HR", buf, "BPM", fb);
-    snprintf(buf, sizeof(buf), "%.0f", units::elev(r.climbedM, r.useMiles));
-    cell(midX, rows[2], W, rows[3], "CLIMBED", buf, units::elevLabel(r.useMiles), fb);
+    formatHms(buf, sizeof(buf), r.elapsedS);
+    cell(midX, rows[2], W, rows[3], "ELAPSED TIME", buf, "", fb);
 
-    // Footer actions: SAVE RIDE inverted, DISCARD bordered
+    // Footer actions: RESUME bordered, SAVE inverted (primary), DISCARD bordered.
+    // Top border across the whole footer row, plus dividers between the three.
+    epd_fill_rect({0, kResumeButton.y, W, 3}, 0x00, fb);
+    epd_fill_rect({kSaveButton.x - 1, kResumeButton.y, 3, kResumeButton.height}, 0x00, fb);
+    epd_fill_rect({kDiscardButton.x - 1, kResumeButton.y, 3, kResumeButton.height}, 0x00, fb);
+
+    // ArialBold_14 (not _20): "RESUME"/"DISCARD" in _20 are wider than the
+    // 180px columns and overlap into neighbouring buttons.
+    ui::label(kResumeButton.x + kResumeButton.width / 2,
+              kResumeButton.y + kResumeButton.height / 2 + 6, "RESUME", fb,
+              0x00, &ArialBold_14);
+
     epd_fill_rect({kSaveButton.x, kSaveButton.y, kSaveButton.width,
                    kSaveButton.height}, 0x00, fb);
     ui::label(kSaveButton.x + kSaveButton.width / 2,
-              kSaveButton.y + kSaveButton.height / 2 + 10, "SAVE RIDE", fb, 0xFF,
-              &ArialBold_20);
-    epd_fill_rect({kDiscardButton.x, kDiscardButton.y, kDiscardButton.width, 3},
-                  0x00, fb);
+              kSaveButton.y + kSaveButton.height / 2 + 6, "SAVE", fb, 0xFF,
+              &ArialBold_14);
+
     ui::label(kDiscardButton.x + kDiscardButton.width / 2,
-              kDiscardButton.y + kDiscardButton.height / 2 + 10, "DISCARD", fb,
-              0x00, &ArialBold_20);
+              kDiscardButton.y + kDiscardButton.height / 2 + 6, "DISCARD", fb,
+              0x00, &ArialBold_14);
+}
+
+void ui_render_update_overlay(const char* phase, int pct, uint8_t* fb) {
+    const int W = epd_rotated_display_width();
+    const int H = epd_rotated_display_height();
+
+    // Centered modal card.
+    const int bw = W - 80, bh = 340;
+    const int bx = 40, by = (H - bh) / 2;
+    epd_fill_rect({bx, by, bw, bh}, 0xFF, fb);
+    for (int i = 0; i < 4; ++i) epd_draw_rect({bx + i, by + i, bw - 2 * i, bh - 2 * i}, 0x00, fb);
+
+    // Inverted title band
+    epd_fill_rect({bx, by, bw, 76}, 0x00, fb);
+    ui::text(&ArialBold_20, W / 2, by + 50, "UPDATING FIRMWARE", fb,
+             EPD_DRAW_ALIGN_CENTER, 0xFF);
+
+    char sub[48];
+    if (pct < 0) pct = 0;
+    if (pct > 100) pct = 100;
+    snprintf(sub, sizeof(sub), "%s  %d%%", phase, pct);
+    ui::text(&ArialBold_20, W / 2, by + 138, sub, fb, EPD_DRAW_ALIGN_CENTER, 0x00);
+
+    // Progress bar
+    const int pbx = bx + 40, pby = by + 170, pbw = bw - 80, pbh = 44;
+    epd_draw_rect({pbx, pby, pbw, pbh}, 0x00, fb);
+    epd_draw_rect({pbx + 1, pby + 1, pbw - 2, pbh - 2}, 0x00, fb);
+    int fillw = (pbw - 8) * pct / 100;
+    if (fillw > 0) epd_fill_rect({pbx + 4, pby + 4, fillw, pbh - 8}, 0x00, fb);
+
+    ui::text(&ArialBold_14, W / 2, by + 270, "Keep the app open and the", fb,
+             EPD_DRAW_ALIGN_CENTER, 0x00);
+    ui::text(&ArialBold_14, W / 2, by + 300, "device nearby until it finishes.", fb,
+             EPD_DRAW_ALIGN_CENTER, 0x00);
 }
 
 void ui_render_menu(const MenuInfo& m, uint8_t* fb) {
@@ -416,7 +483,7 @@ void ui_render_list(const char* title, const ListRow* rows, int count,
 
     ui::text(&ArialBold_20, 28, 60, title, fb);
     ui::text(&ArialBold_14, W - 16, 54, "< BACK", fb, EPD_DRAW_ALIGN_RIGHT,
-             0x60);
+             0x00);
     epd_fill_rect({0, kMenuRowTop - 3, W, 3}, 0x00, fb);
 
     for (int i = 0; i < count && i < kMenuRowCount; ++i) {
@@ -428,20 +495,23 @@ void ui_render_list(const char* title, const ListRow* rows, int count,
         }
         ui::text(&ArialBold_20, 28, y + 64, rows[i].title, fb,
                  EPD_DRAW_ALIGN_LEFT, fg);
+        // PURE black/white subtitle. Grays reproduce poorly on the physical
+        // e-paper (fine in previews, faint on the panel), so any text that must
+        // be read uses full contrast; hierarchy comes from the smaller font.
         ui::text(&ArialBold_14, 28, y + 106, rows[i].subtitle, fb,
-                 EPD_DRAW_ALIGN_LEFT, fg == 0xFF ? 0xC0 : 0x60);
+                 EPD_DRAW_ALIGN_LEFT, fg == 0xFF ? 0xFF : 0x00);
         if (!rows[i].inverted) {
             epd_fill_rect({0, y + kMenuRowH - 1, W, 1}, 0x80, fb);
         }
     }
     if (count == 0) {
         ui::text(&ArialBold_14, W / 2, kMenuRowTop + 80, "nothing found", fb,
-                 EPD_DRAW_ALIGN_CENTER, 0x60);
+                 EPD_DRAW_ALIGN_CENTER, 0x00);
     }
 
     if (footer && footer[0]) {
         ui::text(&ArialBold_14, W / 2, kBackBar.y - 16, footer, fb,
-                 EPD_DRAW_ALIGN_CENTER, 0x60);
+                 EPD_DRAW_ALIGN_CENTER, 0x00);
     }
     ui_render_back_bar(fb);
 }

@@ -28,7 +28,22 @@
 	</array>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Connects to your Bike GPS to sync routes and settings.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>bluetooth-central</string>
+	</array>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Shows your position on the map when planning a route.</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+	<key>UIAppFonts</key>
+	<array>
+		<string>BarlowCondensed-Medium.ttf</string>
+		<string>BarlowCondensed-SemiBold.ttf</string>
+		<string>BarlowCondensed-Bold.ttf</string>
+		<string>Barlow-Regular.ttf</string>
+		<string>Barlow-Medium.ttf</string>
+		<string>Barlow-SemiBold.ttf</string>
+	</array>
 </dict>
 </plist>

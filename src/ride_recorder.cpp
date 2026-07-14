@@ -6,6 +6,7 @@
 
 #include "config.h"
 #include "fit_writer.h"
+#include "usb_storage.h"
 #include "diag.h"
 
 namespace {
@@ -177,7 +178,7 @@ bool begin() {
 }
 
 void startRide() {
-    if (!sdOk || fit.isOpen()) return;
+    if (!sdOk || fit.isOpen() || usb_storage::hostActive()) return;
 
     RideState s = g_state.snapshot();
     if (!s.timeValid) {
@@ -251,7 +252,8 @@ RideSummary summary() {
     return r;
 }
 
-bool sdMounted() { return sdOk; }
+// SD is "unavailable" to the firmware while a host computer owns it over USB.
+bool sdMounted() { return sdOk && !usb_storage::hostActive(); }
 
 int rideCount() {
     if (!sdOk) return 0;
@@ -274,7 +276,8 @@ uint32_t sdFreeMB() {
 void task(void*) {
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(RECORD_INTERVAL_MS));
-        if (!fit.isOpen()) continue;
+        // Never write while a host computer owns the SD over USB.
+        if (!fit.isOpen() || usb_storage::hostActive()) continue;
 
         RideState s = g_state.snapshot();
         timerS++;

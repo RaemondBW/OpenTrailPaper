@@ -31,6 +31,7 @@ struct RideState {
     bool     hrConnected = false;
     bool     powerConnected = false;
     bool     cadenceConnected = false;
+    bool     phoneConnected = false;   // companion app is connected over BLE
 
     // Ride accumulation (owned by the recorder)
     bool     recording = false;

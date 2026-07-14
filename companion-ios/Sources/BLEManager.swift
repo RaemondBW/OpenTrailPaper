@@ -1,7 +1,9 @@
 import Foundation
 import CoreBluetooth
+import CoreLocation
 import Combine
 import CryptoKit
+import UIKit
 
 // GATT UUIDs — must match src/ble_server.cpp on the device.
 enum BikeUUID {
@@ -11,6 +13,38 @@ enum BikeUUID {
     static let route    = CBUUID(string: "B1C50003-9E0F-4B7A-9C6D-1F2E3A4B5C6D")
     static let rides    = CBUUID(string: "B1C50004-9E0F-4B7A-9C6D-1F2E3A4B5C6D")
     static let ota      = CBUUID(string: "B1C50005-9E0F-4B7A-9C6D-1F2E3A4B5C6D")
+    static let sensors  = CBUUID(string: "B1C50006-9E0F-4B7A-9C6D-1F2E3A4B5C6D")
+    static let map      = CBUUID(string: "B1C50007-9E0F-4B7A-9C6D-1F2E3A4B5C6D")
+}
+
+// A cycling sensor known to the head unit (HR / power / cadence).
+struct BikeSensor: Identifiable, Equatable {
+    let addr: String
+    var name: String
+    var kindsMask: UInt8
+    var connected: Bool
+    var paired: Bool
+    var rssi: Int
+    var id: String { addr }
+
+    var kindsText: String {
+        var parts: [String] = []
+        if kindsMask & 1 != 0 { parts.append("Heart rate") }
+        if kindsMask & 2 != 0 { parts.append("Power") }
+        if kindsMask & 4 != 0 { parts.append("Cadence") }
+        return parts.isEmpty ? "Sensor" : parts.joined(separator: " + ")
+    }
+}
+
+// A vector map already stored on the device (its coverage bounds).
+struct DeviceMap: Identifiable, Equatable {
+    let id = UUID()
+    let south, west, north, east: Double
+    let builtin: Bool
+    var corners: [CLLocationCoordinate2D] {
+        [.init(latitude: south, longitude: west), .init(latitude: south, longitude: east),
+         .init(latitude: north, longitude: east), .init(latitude: north, longitude: west)]
+    }
 }
 
 // A recorded ride file on the device.
@@ -58,11 +92,29 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var otaProgress: Double = 0
     @Published var otaMessage: String? = nil
     @Published var logFileURL: URL? = nil           // device diagnostics log, ready to share
-    static let bundledFirmwareVersion = "v0.16"      // matches src/config.h
+    static let bundledFirmwareVersion = "v0.36"      // matches src/config.h
 
     // Saved routes on the device
     @Published var deviceRoutes: [String] = []
     @Published var loadingRoutes = false
+
+    // Cycling sensors known to the head unit (managed from the app)
+    @Published var sensors: [BikeSensor] = []
+    @Published var scanningSensors = false
+    private var sensorsChar: CBCharacteristic?
+    private var sensorsBuilding: [BikeSensor] = []
+
+    // Vector-map upload (phone -> device)
+    @Published var mapUploading = false
+    @Published var mapProgress: Double = 0
+    @Published var mapMessage: String? = nil
+    @Published var deviceMaps: [DeviceMap] = []     // coverage already on the device
+    private var deviceMapsBuilding: [DeviceMap] = []
+    private var mapChar: CBCharacteristic?
+    private var mapData = Data()
+    private var mapOffset = 0
+    private var mapChunk = 180
+    private var mapEndSent = false
 
     private var central: CBCentralManager!
     private var peripheral: CBPeripheral?
@@ -71,6 +123,12 @@ final class BLEManager: NSObject, ObservableObject {
     private var routeChar: CBCharacteristic?
     private var ridesChar: CBCharacteristic?
     private var otaChar: CBCharacteristic?
+
+    // One-shot location handed to the device on connect so its GPS warm-starts
+    // near the phone instead of cold-searching the whole sky.
+    private let locationManager = CLLocationManager()
+    private var wantsAiding = false
+    @Published var lastAidingSent: Date? = nil
 
     private var dlBuffer = Data()
     private var dlExpected = 0
@@ -87,6 +145,34 @@ final class BLEManager: NSObject, ObservableObject {
     override init() {
         super.init()
         central = CBCentralManager(delegate: self, queue: .main)
+        locationManager.delegate = self
+        locationManager.desiredAccuracy = kCLLocationAccuracyHundredMeters
+    }
+
+    // MARK: GPS aiding — send the phone's position to warm-start the receiver.
+
+    /// Request a one-shot fix; delivered to the device when it arrives.
+    func sendLocationAiding() {
+        guard routeChar != nil, peripheral != nil else { return }
+        wantsAiding = true
+        let auth = locationManager.authorizationStatus
+        if auth == .notDetermined {
+            locationManager.requestWhenInUseAuthorization()
+        } else if auth == .authorizedWhenInUse || auth == .authorizedAlways {
+            locationManager.requestLocation()
+        } else {
+            wantsAiding = false   // denied — nothing we can do
+        }
+    }
+
+    private func transmitAiding(_ loc: CLLocation) {
+        guard let c = routeChar, let p = peripheral else { return }
+        var payload = Data([0x08])
+        payload.appendLE(Int32((loc.coordinate.latitude * 1e7).rounded()))
+        payload.appendLE(Int32((loc.coordinate.longitude * 1e7).rounded()))
+        payload.appendLE(Int32(Date().timeIntervalSince1970))   // current UTC
+        p.writeValue(payload, for: c, type: .withResponse)
+        lastAidingSent = Date()
     }
 
     func startScan() {
@@ -167,10 +253,19 @@ final class BLEManager: NSObject, ObservableObject {
     }
 
     // Stream the app-bundled firmware.bin into the device's spare OTA slot.
+    // Keep the screen awake so an OTA/map transfer isn't interrupted when the
+    // phone would otherwise auto-lock. Backgrounding still works because the app
+    // declares the `bluetooth-central` background mode (Info.plist), so
+    // CoreBluetooth keeps delivering peripheralIsReady and the pump continues.
+    private func keepAwake(_ on: Bool) {
+        UIApplication.shared.isIdleTimerDisabled = on
+    }
+
     func startFirmwareUpdate() {
         guard let c = otaChar, let p = peripheral else {
             otaMessage = "Not connected"; return
         }
+        keepAwake(true)
         guard let url = Bundle.main.url(forResource: "firmware", withExtension: "bin"),
               let data = try? Data(contentsOf: url) else {
             otaMessage = "Bundled firmware missing"; return
@@ -218,20 +313,27 @@ final class BLEManager: NSObject, ObservableObject {
         switch op {
         case 0xA3:                                   // running version
             deviceFirmware = String(decoding: d[1...], as: UTF8.self)
-            // Reconnected after an update and now on the bundled version —
-            // clear the transient "rebooting" message so the card reads "Up to
-            // date" instead of staying stuck.
+            // Reconnected after an update. If the device now runs the bundled
+            // version, the update succeeded (even if the success notify was lost
+            // when it rebooted) — finish cleanly instead of sticking on
+            // "Verifying". Otherwise it's still on the old version.
             if deviceFirmware == BLEManager.bundledFirmwareVersion {
-                otaMessage = nil
+                if otaInProgress { otaProgress = 1; otaMessage = "Update complete" }
+                otaInProgress = false; keepAwake(false)
+            } else if otaInProgress && otaCommitSent {
+                // Rebooted but still old — the flash didn't take.
+                otaInProgress = false; keepAwake(false)
+                otaMessage = "Update didn't apply — device unchanged. Try again."
             }
         case 0xA0: otaMessage = "Sending…"; pumpOtaChunks()   // device ready
-        case 0xA1:                                   // success (device rebooting)
-            otaInProgress = false; otaProgress = 1
-            otaMessage = "Update complete — device rebooting"
-            deviceFirmware = BLEManager.bundledFirmwareVersion
-        case 0xA2: otaInProgress = false; otaMessage = "Update canceled"
+        case 0xA1:                                   // received + saved to SD
+            // The device now reboots and flashes from SD; keep waiting and let
+            // the reconnect version-check confirm success (don't declare done).
+            otaProgress = 1; keepAwake(false)
+            otaMessage = "Saved — device is installing…"
+        case 0xA2: otaInProgress = false; keepAwake(false); otaMessage = "Update canceled"
         case 0xAF:                                   // error
-            otaInProgress = false
+            otaInProgress = false; keepAwake(false)
             let code = d.count > 1 ? Int(d[1]) : -1
             otaMessage = "Update failed (error \(code)) — device unchanged"
         default: break
@@ -250,6 +352,145 @@ final class BLEManager: NSObject, ObservableObject {
         deviceRoutes.removeAll { $0 == name }
         var cmd = Data([0x07]); cmd.append(Data(name.utf8))
         p.writeValue(cmd, for: c, type: .withResponse)
+    }
+
+    // MARK: sensor management (device's HR / power / cadence sensors)
+
+    func startSensorScan() {
+        guard let c = sensorsChar, let p = peripheral else { return }
+        scanningSensors = true
+        p.writeValue(Data([0x01]), for: c, type: .withResponse)
+    }
+    // One snapshot of the device's sensors + status, without starting a scan.
+    func refreshSensors() {
+        guard let c = sensorsChar, let p = peripheral else { return }
+        p.writeValue(Data([0x05]), for: c, type: .withResponse)
+    }
+    // Connected sensors whose kind mask includes `bit` (1 HR, 2 power, 4 cadence).
+    func connectedSensor(kind bit: UInt8) -> BikeSensor? {
+        sensors.first { $0.connected && $0.kindsMask & bit != 0 }
+    }
+    func stopSensorScan() {
+        guard let c = sensorsChar, let p = peripheral else { return }
+        scanningSensors = false
+        p.writeValue(Data([0x02]), for: c, type: .withResponse)
+    }
+    func pairSensor(_ addr: String) {
+        guard let c = sensorsChar, let p = peripheral else { return }
+        var cmd = Data([0x03]); cmd.append(Data(addr.utf8))
+        p.writeValue(cmd, for: c, type: .withResponse)
+    }
+    func forgetSensor(_ addr: String) {
+        guard let c = sensorsChar, let p = peripheral else { return }
+        var cmd = Data([0x04]); cmd.append(Data(addr.utf8))
+        p.writeValue(cmd, for: c, type: .withResponse)
+    }
+
+    // MARK: vector-map upload (phone -> device SD, mirrors the OTA transfer)
+
+    var canUploadMap: Bool { mapChar != nil && peripheral != nil }
+
+    func uploadMap(_ ebm: Data, name: String) {
+        guard let c = mapChar, let p = peripheral else {
+            mapMessage = "Not connected"; return
+        }
+        mapData = ebm
+        mapOffset = 0
+        mapEndSent = false
+        mapUploading = true
+        mapProgress = 0
+        mapMessage = "Sending map…"
+        keepAwake(true)
+        mapChunk = max(20, p.maximumWriteValueLength(for: .withoutResponse)) - 1
+
+        var cmd = Data([0x01])
+        var size = UInt32(ebm.count).littleEndian
+        withUnsafeBytes(of: &size) { cmd.append(contentsOf: $0) }
+        cmd.append(Data(name.utf8))
+        p.writeValue(cmd, for: c, type: .withResponse)
+    }
+
+    func cancelMapUpload() {
+        guard let c = mapChar, let p = peripheral else { return }
+        p.writeValue(Data([0x04]), for: c, type: .withResponse)
+        mapUploading = false; keepAwake(false)
+        mapMessage = "Canceled"
+    }
+
+    // Ask the device which map areas it already has (streamed back via notify).
+    func refreshDeviceMaps() {
+        guard let c = mapChar, let p = peripheral else { return }
+        p.writeValue(Data([0x05]), for: c, type: .withResponse)
+    }
+
+    private func pumpMapChunks() {
+        guard mapUploading, let c = mapChar, let p = peripheral else { return }
+        while mapOffset < mapData.count {
+            guard p.canSendWriteWithoutResponse else { return }   // resume from ready
+            let end = min(mapOffset + mapChunk, mapData.count)
+            var pkt = Data([0x02])
+            pkt.append(mapData.subdata(in: mapOffset..<end))
+            mapOffset = end
+            mapProgress = Double(mapOffset) / Double(max(mapData.count, 1))
+            p.writeValue(pkt, for: c, type: .withoutResponse)
+        }
+        if !mapEndSent {
+            mapEndSent = true
+            p.writeValue(Data([0x03]), for: c, type: .withResponse)   // end -> save
+            mapMessage = "Saving to device…"
+        }
+    }
+
+    private func handleMapNotify(_ d: Data) {
+        guard let op = d.first else { return }
+        switch op {
+        case 0xB0: mapMessage = "Sending map…"; pumpMapChunks()   // device ready
+        case 0xB1:                                                // saved + active
+            mapUploading = false; mapProgress = 1; mapMessage = "Map installed"
+            keepAwake(false); refreshDeviceMaps()
+        case 0xBF:
+            mapUploading = false; keepAwake(false)
+            let code = d.count > 1 ? Int(d[1]) : -1
+            mapMessage = "Map upload failed (\(code))"
+        case 0xC0: deviceMapsBuilding = []                        // map-list begin
+        case 0xC1 where d.count >= 34:                            // entry: 4×f64 + flag
+            func f64(_ i: Int) -> Double {
+                var bits: UInt64 = 0
+                for k in 0..<8 { bits |= UInt64(d[1 + i * 8 + k]) << (8 * k) }
+                return Double(bitPattern: bits)
+            }
+            deviceMapsBuilding.append(DeviceMap(south: f64(0), west: f64(1),
+                north: f64(2), east: f64(3), builtin: d[33] != 0))
+        case 0xC2: deviceMaps = deviceMapsBuilding                // map-list end
+        default: break                                            // 0xB4 progress: device-side
+        }
+    }
+
+    private func handleSensorsNotify(_ d: Data) {
+        guard let op = d.first else { return }
+        switch op {
+        case 0x10:                      // list begin
+            sensorsBuilding = []
+        case 0x11 where d.count >= 5:   // entry
+            let mask = d[1]
+            let flags = d[2]
+            let rssi = Int(Int8(bitPattern: d[3]))
+            let nameLen = Int(d[4])
+            guard d.count >= 5 + nameLen else { return }
+            let name = String(data: d.subdata(in: 5..<(5 + nameLen)), encoding: .utf8) ?? ""
+            let addr = String(data: d.subdata(in: (5 + nameLen)..<d.count), encoding: .utf8) ?? ""
+            guard !addr.isEmpty else { return }
+            sensorsBuilding.append(BikeSensor(
+                addr: addr, name: name.isEmpty ? addr : name, kindsMask: mask,
+                connected: flags & 1 != 0, paired: flags & 2 != 0, rssi: rssi))
+        case 0x12:                      // list end — publish
+            sensors = sensorsBuilding.sorted {
+                if $0.connected != $1.connected { return $0.connected }
+                if $0.paired != $1.paired { return $0.paired }
+                return $0.rssi > $1.rssi
+            }
+        default: break
+        }
     }
 
     func downloadRide(_ name: String) {
@@ -462,9 +703,26 @@ extension BLEManager: CBCentralManagerDelegate {
         MainActor.assumeIsolated {
             peripheral = nil
             settingsChar = nil; statusChar = nil; routeChar = nil; ridesChar = nil
+            sensorsChar = nil; mapChar = nil; otaChar = nil
+            // If we disconnect mid-update: after the data is sent + commit
+            // requested, a disconnect is EXPECTED (the device reboots into the
+            // new firmware) — show "rebooting" and let the reconnect confirm the
+            // version. If we drop mid-download, the transfer failed.
+            if otaInProgress {
+                keepAwake(false)
+                if otaCommitSent {
+                    otaMessage = "Installing… device is rebooting"
+                } else {
+                    otaInProgress = false
+                    otaMessage = "Update interrupted — reconnect and try again"
+                }
+            }
+            if mapUploading { mapUploading = false; keepAwake(false)
+                              mapMessage = "Upload interrupted — try again" }
             status = DeviceStatus()
             rides = []; loadingRides = false; downloadingName = nil
             deviceRoutes = []; loadingRoutes = false
+            sensors = []; scanningSensors = false
             startScan()
         }
     }
@@ -472,10 +730,11 @@ extension BLEManager: CBCentralManagerDelegate {
 
 extension BLEManager: CBPeripheralDelegate {
     nonisolated func peripheral(_ p: CBPeripheral, didDiscoverServices error: Error?) {
+        // Discover ALL characteristics (nil) — an explicit list previously
+        // omitted the sensors + map characteristics, so those features never
+        // worked. nil is also future-proof as new characteristics are added.
         for s in p.services ?? [] where s.uuid == BikeUUID.service {
-            p.discoverCharacteristics(
-                [BikeUUID.settings, BikeUUID.status, BikeUUID.route,
-                 BikeUUID.rides, BikeUUID.ota], for: s)
+            p.discoverCharacteristics(nil, for: s)
         }
     }
 
@@ -494,10 +753,15 @@ extension BLEManager: CBPeripheralDelegate {
                     statusChar = ch; p.setNotifyValue(true, for: ch)
                 case BikeUUID.route:
                     routeChar = ch; p.setNotifyValue(true, for: ch)
+                    sendLocationAiding()   // warm-start the device's GPS
                 case BikeUUID.rides:
                     ridesChar = ch; p.setNotifyValue(true, for: ch)
                 case BikeUUID.ota:
                     otaChar = ch; p.setNotifyValue(true, for: ch)
+                case BikeUUID.sensors:
+                    sensorsChar = ch; p.setNotifyValue(true, for: ch)
+                case BikeUUID.map:
+                    mapChar = ch; p.setNotifyValue(true, for: ch)
                 default: break
                 }
             }
@@ -513,12 +777,18 @@ extension BLEManager: CBPeripheralDelegate {
                                 error: Error?) {
         MainActor.assumeIsolated {
             if ch.uuid == BikeUUID.ota { queryDeviceFirmware() }
+            if ch.uuid == BikeUUID.sensors, let p = peripheral {
+                p.writeValue(Data([0x05]), for: ch, type: .withResponse)   // one snapshot
+            }
         }
     }
 
-    // CoreBluetooth's send queue drained — push more firmware chunks.
+    // CoreBluetooth's send queue drained — push more firmware / map chunks.
     nonisolated func peripheralIsReady(toSendWriteWithoutResponse p: CBPeripheral) {
-        MainActor.assumeIsolated { pumpOtaChunks() }
+        MainActor.assumeIsolated {
+            pumpOtaChunks()
+            pumpMapChunks()
+        }
     }
 
     nonisolated func peripheral(_ p: CBPeripheral,
@@ -532,6 +802,8 @@ extension BLEManager: CBPeripheralDelegate {
             case BikeUUID.rides: handleRidesNotify(data)
             case BikeUUID.route: handleRouteNotify(data)
             case BikeUUID.ota: handleOtaNotify(data)
+            case BikeUUID.sensors: handleSensorsNotify(data)
+            case BikeUUID.map: handleMapNotify(data)
             default: break
             }
         }
@@ -564,6 +836,33 @@ extension BLEManager: CBPeripheralDelegate {
             UserDefaults.standard.set(d[4] != 0, forKey: UnitPref.key)
             backlight = Int(d[5])
         }
+    }
+}
+
+extension BLEManager: CLLocationManagerDelegate {
+    nonisolated func locationManagerDidChangeAuthorization(_ m: CLLocationManager) {
+        MainActor.assumeIsolated {
+            let a = m.authorizationStatus
+            if wantsAiding, a == .authorizedWhenInUse || a == .authorizedAlways {
+                m.requestLocation()
+            } else if a == .denied || a == .restricted {
+                wantsAiding = false
+            }
+        }
+    }
+
+    nonisolated func locationManager(_ m: CLLocationManager,
+                                     didUpdateLocations locs: [CLLocation]) {
+        MainActor.assumeIsolated {
+            guard wantsAiding, let loc = locs.last else { return }
+            wantsAiding = false
+            transmitAiding(loc)
+        }
+    }
+
+    nonisolated func locationManager(_ m: CLLocationManager,
+                                     didFailWithError error: Error) {
+        MainActor.assumeIsolated { wantsAiding = false }
     }
 }
 

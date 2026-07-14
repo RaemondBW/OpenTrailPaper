@@ -12,18 +12,29 @@
 		376908A07714407243E2E4ED /* RideView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EC186E273C590D7A6345915 /* RideView.swift */; };
 		3E5CA463CB2CE0A9DC48459B /* RidesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCD8003BE2453F3EDA25ED31 /* RidesView.swift */; };
 		47C83BDADFF3D31F4E43F37E /* BLEManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD543402D2E35FD58BA55A8E /* BLEManager.swift */; };
+		50A026FD2B5510457D29FA95 /* Barlow-Medium.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 79FE5391A9FE1ABC7B931516 /* Barlow-Medium.ttf */; };
+		5E6B170B7E5D95D64004B7DF /* MapBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 150D0FCA3BD00013D0221794 /* MapBuilder.swift */; };
+		657B6E68ECA92FB1C78F3A98 /* Barlow-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 9D40015EBE733F51D1D3B952 /* Barlow-Regular.ttf */; };
 		66DA8F56B10214B148939ADA /* RouteView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33F9FE9BEBAAA7755652F133 /* RouteView.swift */; };
 		68E61DE93629DD4481BB8FAE /* BikeGPSCompanionApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36D2B7A04F9D2AB7171161FA /* BikeGPSCompanionApp.swift */; };
+		694F09B2FB8C0E3A02BB7876 /* BarlowCondensed-SemiBold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 0DA896B58953F3B513B76B20 /* BarlowCondensed-SemiBold.ttf */; };
 		7801C9A5D7DE45C654CF72D9 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17822C740E6235705595201F /* Theme.swift */; };
 		7AF8E9C4FB19879DEC2AD2A0 /* demo.fit in Resources */ = {isa = PBXBuildFile; fileRef = C3696DA5A82601A862AE2EC2 /* demo.fit */; };
 		7D41105531AE1202B2D817F1 /* firmware.bin in Resources */ = {isa = PBXBuildFile; fileRef = 14E464ED0804B19DDBEC4745 /* firmware.bin */; };
+		82EFEDE0D1E1B12E562B3EFD /* BarlowCondensed-Medium.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 6DB8B95EE9F889CCBE49599A /* BarlowCondensed-Medium.ttf */; };
 		9176980BABF604ABA9659708 /* RideDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EDAC3AF1A02980A1CEB9145 /* RideDetailView.swift */; };
+		A984DF4C30E0938795C41C27 /* Barlow-SemiBold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = CC62803CF44D9FE23F7A54D3 /* Barlow-SemiBold.ttf */; };
+		AC7ABEC10AB52F7914830F7A /* BarlowCondensed-Bold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = DC7A31A6A25A548586169629 /* BarlowCondensed-Bold.ttf */; };
+		C4331000AD0382FB9855AA47 /* MapsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD05D7706E357555E889ED49 /* MapsView.swift */; };
 		DD5AF628B5DC8DCC6F9D5381 /* FITDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 836E0AABD268231ABD6B03E4 /* FITDecoder.swift */; };
+		F3B8C23D0C36C298B616ADF3 /* SensorsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 98C441B295E3AFE15EF0C75A /* SensorsView.swift */; };
 		FD7612579D7DAD95AD2CFE2D /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2081EBB94E5008A25AF17D2C /* SettingsView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		0DA896B58953F3B513B76B20 /* BarlowCondensed-SemiBold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "BarlowCondensed-SemiBold.ttf"; sourceTree = "<group>"; };
 		14E464ED0804B19DDBEC4745 /* firmware.bin */ = {isa = PBXFileReference; lastKnownFileType = archive.macbinary; path = firmware.bin; sourceTree = "<group>"; };
+		150D0FCA3BD00013D0221794 /* MapBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapBuilder.swift; sourceTree = "<group>"; };
 		17822C740E6235705595201F /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		2081EBB94E5008A25AF17D2C /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		33F9FE9BEBAAA7755652F133 /* RouteView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RouteView.swift; sourceTree = "<group>"; };
@@ -31,16 +42,36 @@
 		4EC186E273C590D7A6345915 /* RideView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RideView.swift; sourceTree = "<group>"; };
 		4EDAC3AF1A02980A1CEB9145 /* RideDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RideDetailView.swift; sourceTree = "<group>"; };
 		6AD10CB9A0264035C3DB368E /* DiagnosticsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsView.swift; sourceTree = "<group>"; };
+		6DB8B95EE9F889CCBE49599A /* BarlowCondensed-Medium.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "BarlowCondensed-Medium.ttf"; sourceTree = "<group>"; };
+		79FE5391A9FE1ABC7B931516 /* Barlow-Medium.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Barlow-Medium.ttf"; sourceTree = "<group>"; };
 		836E0AABD268231ABD6B03E4 /* FITDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FITDecoder.swift; sourceTree = "<group>"; };
 		9165B98C67EE602CB6416ECC /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		98C441B295E3AFE15EF0C75A /* SensorsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SensorsView.swift; sourceTree = "<group>"; };
+		9D40015EBE733F51D1D3B952 /* Barlow-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Barlow-Regular.ttf"; sourceTree = "<group>"; };
+		BD05D7706E357555E889ED49 /* MapsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapsView.swift; sourceTree = "<group>"; };
 		C3696DA5A82601A862AE2EC2 /* demo.fit */ = {isa = PBXFileReference; path = demo.fit; sourceTree = "<group>"; };
+		CC62803CF44D9FE23F7A54D3 /* Barlow-SemiBold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Barlow-SemiBold.ttf"; sourceTree = "<group>"; };
 		CCD8003BE2453F3EDA25ED31 /* RidesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RidesView.swift; sourceTree = "<group>"; };
+		DC7A31A6A25A548586169629 /* BarlowCondensed-Bold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "BarlowCondensed-Bold.ttf"; sourceTree = "<group>"; };
 		DD543402D2E35FD58BA55A8E /* BLEManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BLEManager.swift; sourceTree = "<group>"; };
 		DDB79DC111504015EA01A183 /* GPXExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GPXExporter.swift; sourceTree = "<group>"; };
 		F46204EF3D9A3EB08394C288 /* BikeGPSCompanion.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = BikeGPSCompanion.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
+		097E2D94B5CB25740AB3BAB8 /* Fonts */ = {
+			isa = PBXGroup;
+			children = (
+				79FE5391A9FE1ABC7B931516 /* Barlow-Medium.ttf */,
+				9D40015EBE733F51D1D3B952 /* Barlow-Regular.ttf */,
+				CC62803CF44D9FE23F7A54D3 /* Barlow-SemiBold.ttf */,
+				DC7A31A6A25A548586169629 /* BarlowCondensed-Bold.ttf */,
+				6DB8B95EE9F889CCBE49599A /* BarlowCondensed-Medium.ttf */,
+				0DA896B58953F3B513B76B20 /* BarlowCondensed-SemiBold.ttf */,
+			);
+			path = Fonts;
+			sourceTree = "<group>";
+		};
 		224D042D99B06A07620BD95C /* Sources */ = {
 			isa = PBXGroup;
 			children = (
@@ -52,12 +83,16 @@
 				836E0AABD268231ABD6B03E4 /* FITDecoder.swift */,
 				DDB79DC111504015EA01A183 /* GPXExporter.swift */,
 				9165B98C67EE602CB6416ECC /* Info.plist */,
+				150D0FCA3BD00013D0221794 /* MapBuilder.swift */,
+				BD05D7706E357555E889ED49 /* MapsView.swift */,
 				4EDAC3AF1A02980A1CEB9145 /* RideDetailView.swift */,
 				CCD8003BE2453F3EDA25ED31 /* RidesView.swift */,
 				4EC186E273C590D7A6345915 /* RideView.swift */,
 				33F9FE9BEBAAA7755652F133 /* RouteView.swift */,
+				98C441B295E3AFE15EF0C75A /* SensorsView.swift */,
 				2081EBB94E5008A25AF17D2C /* SettingsView.swift */,
 				17822C740E6235705595201F /* Theme.swift */,
+				097E2D94B5CB25740AB3BAB8 /* Fonts */,
 			);
 			path = Sources;
 			sourceTree = "<group>";
@@ -138,6 +173,12 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				50A026FD2B5510457D29FA95 /* Barlow-Medium.ttf in Resources */,
+				657B6E68ECA92FB1C78F3A98 /* Barlow-Regular.ttf in Resources */,
+				A984DF4C30E0938795C41C27 /* Barlow-SemiBold.ttf in Resources */,
+				AC7ABEC10AB52F7914830F7A /* BarlowCondensed-Bold.ttf in Resources */,
+				82EFEDE0D1E1B12E562B3EFD /* BarlowCondensed-Medium.ttf in Resources */,
+				694F09B2FB8C0E3A02BB7876 /* BarlowCondensed-SemiBold.ttf in Resources */,
 				7AF8E9C4FB19879DEC2AD2A0 /* demo.fit in Resources */,
 				7D41105531AE1202B2D817F1 /* firmware.bin in Resources */,
 			);
@@ -155,10 +196,13 @@
 				252C086BF5464E66881811E2 /* DiagnosticsView.swift in Sources */,
 				DD5AF628B5DC8DCC6F9D5381 /* FITDecoder.swift in Sources */,
 				238C28015928C2C46081BB14 /* GPXExporter.swift in Sources */,
+				5E6B170B7E5D95D64004B7DF /* MapBuilder.swift in Sources */,
+				C4331000AD0382FB9855AA47 /* MapsView.swift in Sources */,
 				9176980BABF604ABA9659708 /* RideDetailView.swift in Sources */,
 				376908A07714407243E2E4ED /* RideView.swift in Sources */,
 				3E5CA463CB2CE0A9DC48459B /* RidesView.swift in Sources */,
 				66DA8F56B10214B148939ADA /* RouteView.swift in Sources */,
+				F3B8C23D0C36C298B616ADF3 /* SensorsView.swift in Sources */,
 				FD7612579D7DAD95AD2CFE2D /* SettingsView.swift in Sources */,
 				7801C9A5D7DE45C654CF72D9 /* Theme.swift in Sources */,
 			);

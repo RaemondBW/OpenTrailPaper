@@ -44,6 +44,13 @@ const char* moduleName();
 void injectAiding(double lat, double lon, time_t utc, bool haveTime,
                   float posAccM, float timeAccS);
 
+// Thread-safe way to hand the receiver a fresh position from the phone. Unlike
+// injectAiding (which writes the GPS UART directly and must run on the GPS
+// task), this just stashes the fix; the GPS task applies it on its next loop.
+// Safe to call from the BLE callback.
+void seedPosition(double lat, double lon, time_t utc, bool haveTime,
+                  float posAccM);
+
 // FreeRTOS task: pumps NMEA into the parser and updates shared state.
 void task(void* arg);
 

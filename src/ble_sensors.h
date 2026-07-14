@@ -17,7 +17,7 @@ namespace ble_sensors {
 enum Kind { KIND_HR = 0, KIND_POWER = 1, KIND_CSC = 2, KIND_COUNT = 3 };
 
 struct Candidate {
-    char name[24];
+    char name[32];      // advertised name, or "Manufacturer Model" once connected
     char addr[18];
     uint8_t kindsMask;  // bit per Kind
     int8_t rssi;
@@ -33,6 +33,7 @@ void setScanAlways(bool on);            // keep scanning while the UI is open
 void noteActivity();                    // user interacted — scan for a while
 int getCandidates(Candidate* out, int maxOut);
 void pairCandidate(const char* addr);   // saves for every kind it advertises
+void forget(const char* addr);          // clear one paired address
 void forgetAll();
 
 }

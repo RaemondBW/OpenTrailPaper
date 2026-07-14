@@ -21,9 +21,14 @@
 #include "ride_recorder.h"
 #include "ui_dashboard.h"
 #include "board_power.h"
+#include "i2c_bus.h"
+#include "usb_storage.h"
 #include "diag.h"
 
 SharedRideState g_state;
+
+// Serializes all I2C access (fuel gauge / touch / IO expander / RTC).
+SemaphoreHandle_t g_i2cMutex = nullptr;
 
 static bool ioExpanderOk = false;
 
@@ -36,21 +41,36 @@ static void batteryTask(void*) {
     bool firstLog = true;
     for (;;) {
         if (fuelGaugeOk) {
-            uint16_t soc = fuelGauge.getStateOfCharge();
-            bool chg = fuelGauge.getIsCharging();
-            g_state.with([&](RideState& s) {
-                s.batteryPercent = soc > 100 ? 100 : (uint8_t)soc;
-                s.charging = chg;
-            });
+            // The fuel gauge shares the I2C bus with touch / IO expander / RTC;
+            // a colliding read returns 0 or 0xFFFF. Only accept a plausible SOC
+            // (1..100) and retry a few times — NEVER overwrite the last good
+            // value with a failed read, or the battery display flickers/vanishes.
+            uint16_t soc = 0;
+            for (int i = 0; i < 4; ++i) {
+                i2cLock(); uint16_t v = fuelGauge.getStateOfCharge(); i2cUnlock();
+                if (v >= 1 && v <= 100) { soc = v; break; }
+                vTaskDelay(pdMS_TO_TICKS(15));   // unlocked between tries
+            }
+            bool chg = false;
+            i2cLock(); chg = fuelGauge.getIsCharging(); i2cUnlock();
+            if (soc >= 1 && soc <= 100) {
+                g_state.with([&](RideState& s) {
+                    s.batteryPercent = (uint8_t)soc;
+                    s.charging = chg;
+                });
+            }
             // Log the battery every 2 min so drain rate can be tracked from the
             // diagnostics log. Current is signed: negative = discharging (mA).
-            if (firstLog || millis() - lastLog > 120000) {
+            if (soc >= 1 && (firstLog || millis() - lastLog > 120000)) {
                 firstLog = false;
                 lastLog = millis();
-                diag::log("battery: %u%% %umV %dmA %u/%umAh %s", soc,
-                          fuelGauge.getVoltage(), fuelGauge.getCurrent(),
-                          fuelGauge.getRemainingCapacity(),
-                          fuelGauge.getFullChargeCapacity(),
+                i2cLock();
+                uint16_t mv = fuelGauge.getVoltage();
+                int16_t ma = fuelGauge.getCurrent();
+                uint16_t rc = fuelGauge.getRemainingCapacity();
+                uint16_t fc = fuelGauge.getFullChargeCapacity();
+                i2cUnlock();
+                diag::log("battery: %u%% %umV %dmA %u/%umAh %s", soc, mv, ma, rc, fc,
                           chg ? "charging" : "discharging");
             }
         }
@@ -75,6 +95,13 @@ static const char* resetReasonStr(esp_reset_reason_t r) {
 }
 
 void setup() {
+    // NOTE: the CPU runs at the default 240 MHz. An experimental 160 MHz
+    // downclock (for power saving) was REMOVED — the OPI PSRAM couldn't handle
+    // the lower clock and the SoC panicked, and the RTC-flag "self-recovery"
+    // didn't survive the panic, so the device boot-looped (crash right after
+    // "map: embedded default"). Do not re-add setCpuFrequencyMhz() below default
+    // without confirming octal-PSRAM stability first.
+
     Serial.begin(115200);
     delay(200);
     Serial.println("\n[main] e-paper bike computer booting");
@@ -83,7 +110,9 @@ void setup() {
     esp_reset_reason_t rr = esp_reset_reason();
     diag::log("boot firmware %s (reset: %s [%d])", FIRMWARE_VERSION,
               resetReasonStr(rr), (int)rr);
+    diag::log("cpu %d MHz", getCpuFrequencyMhz());
     g_state.begin();
+    g_i2cMutex = xSemaphoreCreateMutex();   // guard the shared I2C bus
     Wire.begin(BOARD_SDA, BOARD_SCL);
 
     // GPS (and LoRa) 3V3 rail is gated by the IO expander.
@@ -100,6 +129,24 @@ void setup() {
     pinMode(BOARD_BOOT_BTN, INPUT_PULLUP);
 
     fuelGaugeOk = fuelGauge.init();
+    // Prime the battery reading synchronously so the first UI frame after boot
+    // (and right after an install) never shows a bogus 0%. The BQ27220 can need
+    // a moment to report a valid state-of-charge, so retry briefly for non-zero.
+    if (fuelGaugeOk) {
+        uint16_t soc = 0;
+        for (int i = 0; i < 25; ++i) {                 // retry until a valid read
+            uint16_t v = fuelGauge.getStateOfCharge();
+            if (v >= 1 && v <= 100) { soc = v; break; }  // ignore 0 / 0xFFFF
+            delay(20);
+        }
+        if (soc >= 1) {
+            bool chg = fuelGauge.getIsCharging();
+            g_state.with([&](RideState& s) {
+                s.batteryPercent = (uint8_t)soc;
+                s.charging = chg;
+            });
+        }
+    }
     settings::begin();
     g_state.with([](RideState& s) {
         s.ftpW = (uint16_t)settings::ftpWatts();
@@ -109,6 +156,9 @@ void setup() {
     if (ride_recorder::begin()) {
         routes::begin();
     }
+    // NOTE: usb_storage::begin() is called from the UI task AFTER the boot-time
+    // SD firmware-update check, so a firmware.bin dropped on the card always
+    // flashes before the computer can mount (and grab) the SD.
     gps_service::begin();
     diag::log("gps module: %s", gps_service::moduleName());
     // Warm-start seed: hand the receiver the last-known position (and time if
@@ -140,15 +190,21 @@ void setup() {
 }
 
 void loop() {
+    usb_storage::poll();   // reclaim the SD when the host disconnects
     vTaskDelay(pdMS_TO_TICKS(1000));
 }
 
 void board_radio_power(bool on) {
     if (!ioExpanderOk) return;
+    i2cLock();
     ioExpander.digitalWrite(IOEXP_PIN_RADIO_POWER, on ? HIGH : LOW);
+    i2cUnlock();
 }
 
 bool board_side_button_pressed() {
     if (!ioExpanderOk) return false;
-    return ioExpander.digitalRead(IOEXP_PIN_SIDE_BUTTON) == LOW;
+    i2cLock();
+    bool pressed = ioExpander.digitalRead(IOEXP_PIN_SIDE_BUTTON) == LOW;
+    i2cUnlock();
+    return pressed;
 }

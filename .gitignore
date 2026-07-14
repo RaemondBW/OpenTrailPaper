@@ -21,3 +21,6 @@ companion-ios/DerivedData/
 
 # Compiled preview-harness binary (rebuild via tools/preview/render_preview.sh)
 tools/preview/preview
+
+# Xcode archive / build output
+companion-ios/build/
