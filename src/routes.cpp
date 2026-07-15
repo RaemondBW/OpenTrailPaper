@@ -5,6 +5,7 @@
 #include <esp_heap_caps.h>
 
 #include "config.h"
+#include "sd_bus.h"
 
 #define ROUTE_DIR "/routes"
 
@@ -116,13 +117,16 @@ struct GpxScanner {
 namespace routes {
 
 bool begin() {
+    sdLock();
     if (!SD.exists(ROUTE_DIR)) SD.mkdir(ROUTE_DIR);
+    sdUnlock();
     return true;
 }
 
 int list(char names[][MAX_NAME], int maxNames) {
+    sdLock();
     File dir = SD.open(ROUTE_DIR);
-    if (!dir) return 0;
+    if (!dir) { sdUnlock(); return 0; }
     int n = 0;
     for (File f = dir.openNextFile(); f && n < maxNames;
          f = dir.openNextFile()) {
@@ -138,6 +142,7 @@ int list(char names[][MAX_NAME], int maxNames) {
         f.close();
     }
     dir.close();
+    sdUnlock();
     return n;
 }
 
@@ -146,8 +151,10 @@ bool load(const char* filename) {
 
     char path[64];
     snprintf(path, sizeof(path), ROUTE_DIR "/%s", filename);
+    sdLock();
     File f = SD.open(path, FILE_READ);
     if (!f) {
+        sdUnlock();
         Serial.printf("[route] can't open %s\n", path);
         return false;
     }
@@ -189,6 +196,7 @@ bool load(const char* filename) {
         memmove(buf, buf + len - carry, carry);
     }
     f.close();
+    sdUnlock();
 
     if (nPts < 2) {
         Serial.printf("[route] %s: no points found\n", filename);
@@ -245,6 +253,7 @@ bool loadFromMemory(const char* name, const char* gpx, size_t len) {
     snprintf(curName, sizeof(curName), "%s", name);
 
     // Persist to SD when a card is present so it survives a reboot.
+    sdLock();
     if (SD.exists(ROUTE_DIR) || SD.mkdir(ROUTE_DIR)) {
         char path[64];
         snprintf(path, sizeof(path), ROUTE_DIR "/%s", name);
@@ -254,6 +263,7 @@ bool loadFromMemory(const char* name, const char* gpx, size_t len) {
             f.close();
         }
     }
+    sdUnlock();
 
     Serial.printf("[route] uploaded %s: %d pts, %.1f km\n", name, nPts,
                   cumM[nPts - 1] / 1000.0f);

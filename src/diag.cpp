@@ -6,6 +6,7 @@
 #include <time.h>
 
 #include "ride_recorder.h"
+#include "sd_bus.h"
 
 namespace {
 
@@ -68,6 +69,7 @@ void flushToSD() {
     if (!ride_recorder::sdMounted() || ride_recorder::isRecording()) return;
     xSemaphoreTake(mtx, portMAX_DELAY);
     if (len == 0) { xSemaphoreGive(mtx); return; }
+    sdLock();
     if (!rotateChecked) {                  // roll over a large log once per boot
         rotateChecked = true;
         File chk = SD.open(PATH, FILE_READ);
@@ -83,6 +85,7 @@ void flushToSD() {
         f.close();
         len = 0;
     }
+    sdUnlock();
     xSemaphoreGive(mtx);
 }
 

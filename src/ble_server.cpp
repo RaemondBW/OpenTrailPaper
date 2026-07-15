@@ -15,6 +15,7 @@
 #include "gps_service.h"
 #include "ble_sensors.h"
 #include "map_store.h"
+#include "sd_bus.h"
 #include "usb_storage.h"
 #include "diag.h"
 
@@ -307,8 +308,9 @@ void sendRideList() {
         notifyByte(0x1F);
         return;
     }
+    sdLock();
     File dir = SD.open(RIDE_DIR);
-    if (!dir) { notifyByte(0x03); return; }
+    if (!dir) { sdUnlock(); notifyByte(0x03); return; }
     for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
         if (!f.isDirectory()) {
             const char* base = strrchr(f.name(), '/');
@@ -325,13 +327,16 @@ void sendRideList() {
         f.close();
     }
     dir.close();
+    sdUnlock();
     notifyByte(0x03);
 }
 
 // Stream any SD file to the phone with the reliable windowed protocol (used
 // for both ride downloads and the diagnostics log).
 void streamFileWindowed(const char* path, const char* label) {
+    sdLock();
     File f = SD.open(path, FILE_READ);
+    sdUnlock();
     if (!f) { notifyByte(0x1F); return; }
 
     uint32_t total = f.size();
@@ -370,6 +375,7 @@ void streamFileWindowed(const char* path, const char* label) {
             f.close();
             return;
         }
+        sdLock();
         f.seek((uint32_t)seq * chunk);
         for (int i = 0; i < WINDOW; ++i) {
             int n = f.read(pkt + 3, chunk);
@@ -379,6 +385,7 @@ void streamFileWindowed(const char* path, const char* label) {
             sendChunk(ridesChr, pkt, n + 3);
             seq++;
         }
+        sdUnlock();
         // Ask the app what it has, then wait for its ack.
         rideAckPending = false;
         uint8_t we = 0x14;                 // window-end / please-ack
@@ -428,15 +435,18 @@ void deleteRide(const char* name) {
     if (ride_recorder::isRecording()) { notifyByte(0x1F); return; }
     char path[80];
     snprintf(path, sizeof(path), RIDE_DIR "/%s", name);
+    sdLock();
     SD.remove(path);
+    sdUnlock();
     notifyByte(0x13);
     Serial.printf("[srv] deleted ride %s\n", name);
 }
 
 void sendRouteList() {
     if (!ride_recorder::sdMounted()) { notifyByte(0x21); return; }
+    sdLock();
     File dir = SD.open("/routes");
-    if (!dir) { notifyByte(0x21); return; }
+    if (!dir) { sdUnlock(); notifyByte(0x21); return; }
     for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
         if (!f.isDirectory()) {
             const char* base = strrchr(f.name(), '/');
@@ -451,13 +461,16 @@ void sendRouteList() {
         f.close();
     }
     dir.close();
+    sdUnlock();
     notifyByte2(0x21);
 }
 
 void deleteRoute(const char* name) {
     char path[80];
     snprintf(path, sizeof(path), "/routes/%s", name);
+    sdLock();
     SD.remove(path);
+    sdUnlock();
     // If the deleted route is the one currently loaded, drop it too.
     if (strcmp(routes::activeName(), name) == 0) routes::clearRoute();
     notifyByte2(0x22);
@@ -626,15 +639,20 @@ class OtaCb : public NimBLECharacteristicCallbacks {
 // callback only stages the .ebm into PSRAM; the SD write + activate happens in
 // the server task (SD writes must not block the BLE host). Protocol on
 // CHR_MAP (write + write-no-response + notify):
-//   phone -> [0x01][u32 size][name…]  begin     [0x02]<bytes>  data
-//           [0x03]                     end        [0x04]         abort
+//   phone -> [0x01][u32 size][name…]  begin whole map
+//           [0x06][u32 size][h3id…]   begin one H3 tile (-> /maps/tiles)
+//           [0x02]<bytes>  data        [0x03] end     [0x04] abort
+//           [0x05]  list whole-map coverage    [0x07]  list H3 tile ids
 //   device notifies: [0xB0] ready, [0xB1] saved, [0xB4][u32 received], [0xBF][err]
+//   tile-list reply: [0xD0] begin, [0xD1]<h3id chars> per tile, [0xD2] end
 NimBLECharacteristic* mapChr = nullptr;
 uint8_t* mapBuf = nullptr;
 volatile uint32_t mapBufLen = 0, mapBufCap = 0;
 char mapName[52] = "";
 volatile bool mapCommitPending = false;
+volatile bool mapIsTile = false;         // staged buffer is an H3 tile, not a whole map
 volatile bool mapListReq = false;
+volatile bool tileListReq = false;
 uint32_t mapStartMs = 0, mapLastProgress = 0;
 
 void mapNotify(const uint8_t* d, size_t n) {
@@ -660,7 +678,8 @@ class MapCb : public NimBLECharacteristicCallbacks {
         const uint8_t* p = (const uint8_t*)v.data();
         size_t n = v.size();
         switch (p[0]) {
-        case 0x01: {                              // begin
+        case 0x01:                                // begin whole map
+        case 0x06: {                              // begin one H3 tile
             if (n < 5) return;
             uint32_t expected = (uint32_t)p[1] | ((uint32_t)p[2] << 8) |
                                 ((uint32_t)p[3] << 16) | ((uint32_t)p[4] << 24);
@@ -670,14 +689,17 @@ class MapCb : public NimBLECharacteristicCallbacks {
             mapBufCap = expected;
             mapBufLen = 0;
             mapLastProgress = 0;
+            mapIsTile = (p[0] == 0x06);
             size_t nl = n - 5 < sizeof(mapName) - 1 ? n - 5 : sizeof(mapName) - 1;
             memcpy(mapName, p + 5, nl);
             mapName[nl] = 0;
-            if (!mapName[0]) snprintf(mapName, sizeof(mapName), "map.ebm");
+            if (!mapName[0])
+                snprintf(mapName, sizeof(mapName), mapIsTile ? "tile" : "map.ebm");
             receiving = true;
             mapStartMs = millis();
             mapNotify1_B0();
-            diag::log("map recv begin: %u bytes '%s'", (unsigned)expected, mapName);
+            diag::log("%s recv begin: %u bytes '%s'", mapIsTile ? "tile" : "map",
+                      (unsigned)expected, mapName);
             break;
         }
         case 0x02: {                              // data
@@ -707,6 +729,9 @@ class MapCb : public NimBLECharacteristicCallbacks {
         case 0x05:                                // list device map coverage
             mapListReq = true;
             break;
+        case 0x07:                                // list H3 tile ids on SD
+            tileListReq = true;
+            break;
         }
     }
     void mapNotify1_B0() { uint8_t b = 0xB0; mapNotify(&b, 1); }
@@ -733,16 +758,41 @@ void sendMapList() {
     mapNotify(&end, 1);
 }
 
-// Write the staged map to SD + activate it. Runs in the server task.
+// Write the staged map/tile to SD + activate it. Runs in the server task.
 void mapCommit() {
+    bool tile = mapIsTile;
     bool ok = mapBuf && mapBufLen > 0 &&
-              map_store::saveAndActivate(mapName, mapBuf, mapBufLen);
+              (tile ? map_store::saveTile(mapName, mapBuf, mapBufLen)
+                    : map_store::saveAndActivate(mapName, mapBuf, mapBufLen));
     uint32_t dt = millis() - mapStartMs;
-    diag::log("map commit %s: %u bytes in %.1fs", ok ? "ok" : "FAIL",
-              (unsigned)mapBufLen, dt / 1000.0f);
+    diag::log("%s commit %s: %u bytes in %.1fs", tile ? "tile" : "map",
+              ok ? "ok" : "FAIL", (unsigned)mapBufLen, dt / 1000.0f);
     mapFreeBuf();
+    mapIsTile = false;
     uint8_t r = ok ? 0xB1 : 0xBF;
     mapNotify(&r, 1);
+}
+
+// Stream the H3 tile ids already on the SD to the phone, so it can skip
+// re-sending tiles it already delivered. Reads the (in-RAM) tile index; runs
+// in the server task to stay off the BLE host thread.
+void sendTileList() {
+    constexpr int TILE_LIST_MAX = 512;
+    uint8_t begin = 0xD0;
+    mapNotify(&begin, 1);
+    static char ids[TILE_LIST_MAX][24];
+    int n = map_store::listTileIds(ids, TILE_LIST_MAX);
+    for (int i = 0; i < n; ++i) {
+        uint8_t pkt[25];
+        pkt[0] = 0xD1;
+        size_t idl = strlen(ids[i]);
+        if (idl > sizeof(pkt) - 1) idl = sizeof(pkt) - 1;
+        memcpy(pkt + 1, ids[i], idl);
+        mapNotify(pkt, 1 + idl);
+    }
+    uint8_t end = 0xD2;
+    mapNotify(&end, 1);
+    diag::log("tile list: %d ids sent", n);
 }
 
 // Write the PSRAM-staged firmware to the SD card as /firmware.bin, then reboot
@@ -756,6 +806,7 @@ void otaCommit() {
     otaPhase = 2;                        // "installing" popup while we write SD
     bool ok = false;
     if (otaBuf && otaBufLen > 0) {
+        sdLock();
         SD.remove("/firmware.bin");
         File f = SD.open("/firmware.bin", FILE_WRITE);
         if (f) {
@@ -770,6 +821,7 @@ void otaCommit() {
             ok = (wrote == otaBufLen);
             if (!ok) SD.remove("/firmware.bin");
         }
+        sdUnlock();
     }
     otaFreeBuf();
     if (ok) {
@@ -869,6 +921,10 @@ void task(void*) {
         if (mapListReq && sdFree) {
             mapListReq = false;          // enumerate SD maps (off BLE host)
             sendMapList();
+        }
+        if (tileListReq && sdFree) {
+            tileListReq = false;         // enumerate SD H3 tile ids for dedup
+            sendTileList();
         }
         if (otaRebootPending) {          // OTA committed — reboot into new image
             vTaskDelay(pdMS_TO_TICKS(1500));   // let the success notify flush

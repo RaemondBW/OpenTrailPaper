@@ -24,10 +24,11 @@ struct RouteView: View {
                             .stroke(Palette.accent, lineWidth: 5)
                     }
                 }
-                .mapControls { MapUserLocationButton() }
                 .ignoresSafeArea(edges: .top)
 
                 VStack(spacing: 12) {
+                    floatingControls
+
                     SearchField(text: $model.query) { model.search() }
 
                     if !model.results.isEmpty && model.route == nil {
@@ -67,7 +68,7 @@ struct RouteView: View {
                 }
                 .padding(16)
             }
-            .overlay(alignment: .top) { floatingControls }
+            .safeAreaInset(edge: .top, alignment: .leading, spacing: 0) { routeTitle }
             .navigationBarHidden(true)
             .sheet(isPresented: $showSaved) { SavedRoutesSheet() }
             .sheet(isPresented: $showMaps) { MapsView() }
@@ -75,21 +76,26 @@ struct RouteView: View {
         }
     }
 
-    // Floating "Route" title pill + a round folder button (mockup 2b).
+    // "Route" title pill, floated top-left below the status bar.
+    private var routeTitle: some View {
+        Text("Route").font(BarlowFont.condensed(22, .bold)).foregroundStyle(Palette.ink)
+            .padding(.horizontal, 16).padding(.vertical, 9)
+            .background(Palette.surface).clipShape(Capsule())
+            .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))
+            .shadow(color: .black.opacity(0.08), radius: 6, y: 2)
+            .padding(.horizontal, 16).padding(.top, 8)
+    }
+
+    // Round action buttons, bottom-right above the search field.
     private var floatingControls: some View {
         HStack {
-            Text("Route").font(BarlowFont.condensed(22, .bold)).foregroundStyle(Palette.ink)
-                .padding(.horizontal, 16).padding(.vertical, 9)
-                .background(Palette.surface).clipShape(Capsule())
-                .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))
-                .shadow(color: .black.opacity(0.08), radius: 6, y: 2)
             Spacer()
-            roundButton("square.and.arrow.down.on.square", enabled: true) { showMaps = true }
+            roundButton("location.fill", enabled: true) { model.recenter() }
+            roundButton("map", enabled: true) { showMaps = true }
             roundButton("folder", enabled: ble.state == .connected) {
                 ble.refreshRoutes(); showSaved = true
             }
         }
-        .padding(.horizontal, 16).padding(.top, 8)
     }
 
     private func roundButton(_ systemName: String, enabled: Bool,
@@ -169,6 +175,18 @@ final class RouteModel: NSObject, ObservableObject {
 
     func requestLocation() {
         locManager.requestWhenInUseAuthorization()
+    }
+
+    // Recenter/follow the user (replaces the default map location button, which
+    // sat under the status bar on the full-bleed map).
+    func recenter() {
+        locManager.requestWhenInUseAuthorization()
+        if let loc = locManager.location {
+            camera = .region(MKCoordinateRegion(center: loc.coordinate,
+                span: MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05)))
+        } else {
+            camera = .userLocation(fallback: .automatic)
+        }
     }
 
     func search() {

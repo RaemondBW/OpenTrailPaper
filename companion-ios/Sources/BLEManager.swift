@@ -92,7 +92,7 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var otaProgress: Double = 0
     @Published var otaMessage: String? = nil
     @Published var logFileURL: URL? = nil           // device diagnostics log, ready to share
-    static let bundledFirmwareVersion = "v0.36"      // matches src/config.h
+    static let bundledFirmwareVersion = "v0.39"      // matches src/config.h
 
     // Saved routes on the device
     @Published var deviceRoutes: [String] = []
@@ -115,6 +115,17 @@ final class BLEManager: NSObject, ObservableObject {
     private var mapOffset = 0
     private var mapChunk = 180
     private var mapEndSent = false
+
+    // H3 tile streaming (many small tiles sent one at a time over CHR_MAP).
+    @Published var tilesUploading = false
+    @Published var tilesTotal = 0
+    @Published var tilesDone = 0
+    @Published var tileMessage: String? = nil
+    @Published var deviceTileIds: Set<String> = []   // H3 ids already on the SD
+    private var tileIdsBuilding: [String] = []
+    private var tileQueue: [(id: String, data: Data)] = []
+    private var currentTileId: String? = nil        // non-nil while sending a tile
+    private var tileJobFailed = false
 
     private var central: CBCentralManager!
     private var peripheral: CBPeripheral?
@@ -423,6 +434,71 @@ final class BLEManager: NSObject, ObservableObject {
         p.writeValue(Data([0x05]), for: c, type: .withResponse)
     }
 
+    // MARK: H3 tile streaming
+
+    // Ask the device which H3 tile ids are already on its SD, so the caller can
+    // skip re-sending them (replied via 0xD0/0xD1/0xD2 notifies).
+    func refreshDeviceTiles() {
+        guard let c = mapChar, let p = peripheral else { return }
+        p.writeValue(Data([0x07]), for: c, type: .withResponse)
+    }
+
+    // Send a batch of already-built tiles one at a time. Tiles already on the
+    // device (by id) should be filtered out by the caller; we also guard here.
+    func uploadTiles(_ tiles: [(id: String, data: Data)]) {
+        guard mapChar != nil, peripheral != nil else { tileMessage = "Not connected"; return }
+        tileQueue = tiles.filter { !deviceTileIds.contains($0.id) }
+        tilesTotal = tileQueue.count
+        tilesDone = 0
+        tileJobFailed = false
+        guard !tileQueue.isEmpty else {
+            tileMessage = "Already up to date"; tilesUploading = false; return
+        }
+        tilesUploading = true
+        tileMessage = "Sending tiles…"
+        keepAwake(true)
+        sendNextTile()
+    }
+
+    func cancelTileUpload() {
+        tileQueue = []
+        if let c = mapChar, let p = peripheral, currentTileId != nil {
+            p.writeValue(Data([0x04]), for: c, type: .withResponse)
+        }
+        finishTileJob(message: "Canceled")
+    }
+
+    private func finishTileJob(message: String?) {
+        tilesUploading = false
+        mapUploading = false
+        currentTileId = nil
+        keepAwake(false)
+        if let message { tileMessage = message }
+    }
+
+    private func sendNextTile() {
+        guard tilesUploading, let c = mapChar, let p = peripheral else { return }
+        guard let tile = tileQueue.first else {   // queue drained -> done
+            finishTileJob(message: tileJobFailed ? "Some tiles failed" : "Tiles installed")
+            refreshDeviceTiles()
+            return
+        }
+        tileQueue.removeFirst()
+        currentTileId = tile.id
+        mapData = tile.data
+        mapOffset = 0
+        mapEndSent = false
+        mapUploading = true            // reuse the CHR_MAP chunk pump
+        mapChunk = max(20, p.maximumWriteValueLength(for: .withoutResponse)) - 1
+        tileMessage = "Sending tile \(tilesDone + 1)/\(tilesTotal)…"
+
+        var cmd = Data([0x06])         // begin-tile
+        var size = UInt32(tile.data.count).littleEndian
+        withUnsafeBytes(of: &size) { cmd.append(contentsOf: $0) }
+        cmd.append(Data(tile.id.utf8))
+        p.writeValue(cmd, for: c, type: .withResponse)
+    }
+
     private func pumpMapChunks() {
         guard mapUploading, let c = mapChar, let p = peripheral else { return }
         while mapOffset < mapData.count {
@@ -444,14 +520,33 @@ final class BLEManager: NSObject, ObservableObject {
     private func handleMapNotify(_ d: Data) {
         guard let op = d.first else { return }
         switch op {
-        case 0xB0: mapMessage = "Sending map…"; pumpMapChunks()   // device ready
+        case 0xB0: pumpMapChunks()                                // device ready (map or tile)
         case 0xB1:                                                // saved + active
-            mapUploading = false; mapProgress = 1; mapMessage = "Map installed"
-            keepAwake(false); refreshDeviceMaps()
+            if let id = currentTileId {                           // a tile finished
+                deviceTileIds.insert(id)
+                tilesDone += 1
+                currentTileId = nil
+                sendNextTile()
+            } else {
+                mapUploading = false; mapProgress = 1; mapMessage = "Map installed"
+                keepAwake(false); refreshDeviceMaps()
+            }
         case 0xBF:
-            mapUploading = false; keepAwake(false)
             let code = d.count > 1 ? Int(d[1]) : -1
-            mapMessage = "Map upload failed (\(code))"
+            if currentTileId != nil {                             // skip the failed tile, keep going
+                tileJobFailed = true
+                currentTileId = nil
+                sendNextTile()
+            } else {
+                mapUploading = false; keepAwake(false)
+                mapMessage = "Map upload failed (\(code))"
+            }
+        case 0xD0: tileIdsBuilding = []                           // tile-list begin
+        case 0xD1 where d.count > 1:                              // one tile id (ascii)
+            if let id = String(data: d.subdata(in: 1..<d.count), encoding: .utf8) {
+                tileIdsBuilding.append(id)
+            }
+        case 0xD2: deviceTileIds = Set(tileIdsBuilding)           // tile-list end
         case 0xC0: deviceMapsBuilding = []                        // map-list begin
         case 0xC1 where d.count >= 34:                            // entry: 4×f64 + flag
             func f64(_ i: Int) -> Double {
@@ -719,6 +814,10 @@ extension BLEManager: CBCentralManagerDelegate {
             }
             if mapUploading { mapUploading = false; keepAwake(false)
                               mapMessage = "Upload interrupted — try again" }
+            if tilesUploading {
+                tileQueue = []
+                finishTileJob(message: "Interrupted — reconnect to resume")
+            }
             status = DeviceStatus()
             rides = []; loadingRides = false; downloadingName = nil
             deviceRoutes = []; loadingRoutes = false

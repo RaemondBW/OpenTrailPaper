@@ -24,3 +24,8 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: cc.tdisplay.bikegps
         TARGETED_DEVICE_FAMILY: "1"
         ENABLE_PREVIEWS: YES
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/BikeGPS-Bridging-Header.h
+        HEADER_SEARCH_PATHS:
+          - $(SRCROOT)/Sources/H3/include
+        # H3 is third-party C; don't fail the build on its warnings.
+        GCC_WARN_INHIBIT_ALL_WARNINGS: YES

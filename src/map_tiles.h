@@ -23,6 +23,16 @@ bool loaded();
 void project(double lat, double lon, float metersPerPixel, int centerX,
              int centerY, float rotateDeg, MapScreenData& out);
 
+// Multi-tile projection: the map_store layer renders several small tile
+// blobs into one frame. beginProject resets the shared scratch cursors,
+// projectBlobInto appends one blob's features, endProject publishes the
+// count. Each blob carries its own EBM1 grid header.
+void beginProject(MapScreenData& out);
+void projectBlobInto(const uint8_t* blob, size_t blobLen, double lat,
+                     double lon, float metersPerPixel, int centerX,
+                     int centerY, float rotateDeg);
+void endProject(MapScreenData& out);
+
 // Standalone geo -> screen projection around a center point (works
 // without a loaded map; used for the route overlay).
 void geoToScreen(double lat, double lon, double centerLat, double centerLon,

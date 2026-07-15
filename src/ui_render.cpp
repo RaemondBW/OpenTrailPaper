@@ -374,21 +374,27 @@ void ui_render_update_overlay(const char* phase, int pct, uint8_t* fb) {
     const int H = epd_rotated_display_height();
 
     // Centered modal card.
-    const int bw = W - 80, bh = 340;
-    const int bx = 40, by = (H - bh) / 2;
+    const int bw = W - 56, bh = 340;
+    const int bx = (W - bw) / 2, by = (H - bh) / 2;
+    const int innerW = bw - 16;   // text must stay inside this (with margin)
     epd_fill_rect({bx, by, bw, bh}, 0xFF, fb);
     for (int i = 0; i < 4; ++i) epd_draw_rect({bx + i, by + i, bw - 2 * i, bh - 2 * i}, 0x00, fb);
 
+    // Pick the largest font that keeps a centered string inside the card.
+    auto fitFont = [&](const char* s) -> const EpdFont* {
+        return ui::textWidth(&ArialBold_20, s) <= innerW ? &ArialBold_20 : &ArialBold_14;
+    };
+
     // Inverted title band
     epd_fill_rect({bx, by, bw, 76}, 0x00, fb);
-    ui::text(&ArialBold_20, W / 2, by + 50, "UPDATING FIRMWARE", fb,
+    ui::text(fitFont("UPDATING FIRMWARE"), W / 2, by + 50, "UPDATING FIRMWARE", fb,
              EPD_DRAW_ALIGN_CENTER, 0xFF);
 
     char sub[48];
     if (pct < 0) pct = 0;
     if (pct > 100) pct = 100;
     snprintf(sub, sizeof(sub), "%s  %d%%", phase, pct);
-    ui::text(&ArialBold_20, W / 2, by + 138, sub, fb, EPD_DRAW_ALIGN_CENTER, 0x00);
+    ui::text(fitFont(sub), W / 2, by + 138, sub, fb, EPD_DRAW_ALIGN_CENTER, 0x00);
 
     // Progress bar
     const int pbx = bx + 40, pby = by + 170, pbw = bw - 80, pbh = 44;
@@ -403,13 +409,33 @@ void ui_render_update_overlay(const char* phase, int pct, uint8_t* fb) {
              EPD_DRAW_ALIGN_CENTER, 0x00);
 }
 
+// Copy `str` into `out`, truncating with a trailing ".." if it would exceed
+// `maxW` px in `font`. UTF-8 safe (never cuts mid-character). Use for any
+// variable-length text (sensor/route names, turn instructions) so it can never
+// run past its bounds.
+static void fitText(const EpdFont* font, const char* str, int maxW,
+                    char* out, size_t outSize) {
+    if (ui::textWidth(font, str) <= maxW || outSize < 4) {
+        snprintf(out, outSize, "%s", str);
+        return;
+    }
+    size_t n = strlen(str);
+    while (n > 1) {
+        n--;
+        while (n > 0 && ((unsigned char)str[n] & 0xC0) == 0x80) n--;  // UTF-8 boundary
+        snprintf(out, outSize, "%.*s..", (int)n, str);
+        if (ui::textWidth(font, out) <= maxW) return;
+    }
+    snprintf(out, outSize, "..");
+}
+
 void ui_render_menu(const MenuInfo& m, uint8_t* fb) {
     const int W = epd_rotated_display_width();
     const int H = epd_rotated_display_height();
     char sub[64];
 
-    // Header: MENU left, battery icon + percent right
-    ui::label(70, 60, "MENU", fb, 0x00, &ArialBold_20);
+    // Header: MENU left (inset to match the rows), battery percent right
+    ui::text(&ArialBold_20, 44, 60, "MENU", fb, EPD_DRAW_ALIGN_LEFT, 0x00);
     char pct[8];
     snprintf(pct, sizeof(pct), "%d%%", m.batteryPercent);
     ui::text(&ArialBold_14, W - 16, 54, pct, fb, EPD_DRAW_ALIGN_RIGHT);
@@ -454,10 +480,14 @@ void ui_render_menu(const MenuInfo& m, uint8_t* fb) {
             epd_fill_rect({0, y, W, kMenuRowH}, 0x00, fb);
             fg = 0xFF;
         }
-        ui::text(&ArialBold_20, 28, y + 66, rows[i].title, fb,
-                 EPD_DRAW_ALIGN_LEFT, fg);
-        ui::text(&ArialBold_14, 28, y + 108, rows[i].subtitle, fb,
-                 EPD_DRAW_ALIGN_LEFT, fg == 0xFF ? 0xC0 : 0x60);
+        // Left inset for breathing room; pure-contrast subtitle (gray is
+        // unreadable on the e-paper panel); truncate so text clears the arrow.
+        char mt[48], ms[64];
+        fitText(&ArialBold_20, rows[i].title, W - 44 - 44, mt, sizeof(mt));
+        fitText(&ArialBold_14, rows[i].subtitle, W - 44 - 44, ms, sizeof(ms));
+        ui::text(&ArialBold_20, 44, y + 66, mt, fb, EPD_DRAW_ALIGN_LEFT, fg);
+        ui::text(&ArialBold_14, 44, y + 108, ms, fb,
+                 EPD_DRAW_ALIGN_LEFT, fg == 0xFF ? 0xFF : 0x00);
         ui::text(&ArialBold_20, W - 28, y + 84, ">", fb,
                  EPD_DRAW_ALIGN_RIGHT, fg);
         if (!rows[i].inverted) {
@@ -473,7 +503,7 @@ void ui_render_menu(const MenuInfo& m, uint8_t* fb) {
         snprintf(sub, sizeof(sub), FIRMWARE_VERSION " · no SD card · %s",
                  m.gpsReady ? "GPS lock" : "no GPS");
     }
-    ui::text(&ArialBold_14, W / 2, H - 24, sub, fb, EPD_DRAW_ALIGN_CENTER, 0x60);
+    ui::text(&ArialBold_14, W / 2, H - 24, sub, fb, EPD_DRAW_ALIGN_CENTER, 0x00);
 }
 
 void ui_render_list(const char* title, const ListRow* rows, int count,
@@ -493,12 +523,14 @@ void ui_render_list(const char* title, const ListRow* rows, int count,
             epd_fill_rect({0, y, W, kMenuRowH}, 0x00, fb);
             fg = 0xFF;
         }
-        ui::text(&ArialBold_20, 28, y + 64, rows[i].title, fb,
-                 EPD_DRAW_ALIGN_LEFT, fg);
-        // PURE black/white subtitle. Grays reproduce poorly on the physical
-        // e-paper (fine in previews, faint on the panel), so any text that must
-        // be read uses full contrast; hierarchy comes from the smaller font.
-        ui::text(&ArialBold_14, 28, y + 106, rows[i].subtitle, fb,
+        // Truncate long names/subtitles so they can't run off the row. PURE
+        // black/white — grays reproduce poorly on the physical e-paper (fine in
+        // previews, faint on the panel); hierarchy comes from the smaller font.
+        char t[40], s[64];
+        fitText(&ArialBold_20, rows[i].title, W - 28 - 20, t, sizeof(t));
+        fitText(&ArialBold_14, rows[i].subtitle, W - 28 - 20, s, sizeof(s));
+        ui::text(&ArialBold_20, 28, y + 64, t, fb, EPD_DRAW_ALIGN_LEFT, fg);
+        ui::text(&ArialBold_14, 28, y + 106, s, fb,
                  EPD_DRAW_ALIGN_LEFT, fg == 0xFF ? 0xFF : 0x00);
         if (!rows[i].inverted) {
             epd_fill_rect({0, y + kMenuRowH - 1, W, 1}, 0x80, fb);
@@ -779,6 +811,7 @@ void ui_render_nav_banner(const char* instruction, float distanceM,
         snprintf(d, sizeof(d), "%d m", (int)(distanceM + 0.5f));
     }
     ui::text(&ArialBold_20, 108, top + 52, d, fb, EPD_DRAW_ALIGN_LEFT, 0xFF);
-    ui::text(&ArialBold_14, 24, top + 112, instruction, fb,
-             EPD_DRAW_ALIGN_LEFT, 0xFF);
+    char instr[48];
+    fitText(&ArialBold_14, instruction, W - 24 - 12, instr, sizeof(instr));
+    ui::text(&ArialBold_14, 24, top + 112, instr, fb, EPD_DRAW_ALIGN_LEFT, 0xFF);
 }

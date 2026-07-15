@@ -7,12 +7,20 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0342A87AE328C7601D8C6BCE /* h3shim.c in Sources */ = {isa = PBXBuildFile; fileRef = 79FF84A80EAC5550AD80261E /* h3shim.c */; };
+		05B05DF25BBF90F77F503C4E /* vec3d.c in Sources */ = {isa = PBXBuildFile; fileRef = 8F907AFEDCE73F04ECC51FCE /* vec3d.c */; };
+		0B309D3284C51920398E0405 /* h3Index.c in Sources */ = {isa = PBXBuildFile; fileRef = 9DFF59DD6F4D35EB15D1562F /* h3Index.c */; };
+		0EFBB6E14B5FD2AED277A238 /* vec2d.c in Sources */ = {isa = PBXBuildFile; fileRef = E1FDDCD93045902F9501304D /* vec2d.c */; };
 		238C28015928C2C46081BB14 /* GPXExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDB79DC111504015EA01A183 /* GPXExporter.swift */; };
 		252C086BF5464E66881811E2 /* DiagnosticsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6AD10CB9A0264035C3DB368E /* DiagnosticsView.swift */; };
+		29E4567CB74E6D97BBA11602 /* directedEdge.c in Sources */ = {isa = PBXBuildFile; fileRef = 8E7E61EF6B1D6FE07B3E20DB /* directedEdge.c */; };
 		376908A07714407243E2E4ED /* RideView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EC186E273C590D7A6345915 /* RideView.swift */; };
 		3E5CA463CB2CE0A9DC48459B /* RidesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCD8003BE2453F3EDA25ED31 /* RidesView.swift */; };
+		3EA201572C2A1308A3B6A4D7 /* h3Assert.c in Sources */ = {isa = PBXBuildFile; fileRef = 0C7BC34DD8ACC235C76C4257 /* h3Assert.c */; };
 		47C83BDADFF3D31F4E43F37E /* BLEManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD543402D2E35FD58BA55A8E /* BLEManager.swift */; };
 		50A026FD2B5510457D29FA95 /* Barlow-Medium.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 79FE5391A9FE1ABC7B931516 /* Barlow-Medium.ttf */; };
+		56244470A5750446E4F43021 /* mathExtensions.c in Sources */ = {isa = PBXBuildFile; fileRef = 26DDC00DA77F0B1F4654B093 /* mathExtensions.c */; };
+		57056A1140478EFA9182CA3C /* polygon.c in Sources */ = {isa = PBXBuildFile; fileRef = 505DC93F091358EEC901CFBE /* polygon.c */; };
 		5E6B170B7E5D95D64004B7DF /* MapBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 150D0FCA3BD00013D0221794 /* MapBuilder.swift */; };
 		657B6E68ECA92FB1C78F3A98 /* Barlow-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 9D40015EBE733F51D1D3B952 /* Barlow-Regular.ttf */; };
 		66DA8F56B10214B148939ADA /* RouteView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33F9FE9BEBAAA7755652F133 /* RouteView.swift */; };
@@ -20,42 +28,98 @@
 		694F09B2FB8C0E3A02BB7876 /* BarlowCondensed-SemiBold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 0DA896B58953F3B513B76B20 /* BarlowCondensed-SemiBold.ttf */; };
 		7801C9A5D7DE45C654CF72D9 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17822C740E6235705595201F /* Theme.swift */; };
 		7AF8E9C4FB19879DEC2AD2A0 /* demo.fit in Resources */ = {isa = PBXBuildFile; fileRef = C3696DA5A82601A862AE2EC2 /* demo.fit */; };
+		7D2A8BEB13AFF1B3B0AAC930 /* vertexGraph.c in Sources */ = {isa = PBXBuildFile; fileRef = 351775ACF2317D238FADF334 /* vertexGraph.c */; };
 		7D41105531AE1202B2D817F1 /* firmware.bin in Resources */ = {isa = PBXBuildFile; fileRef = 14E464ED0804B19DDBEC4745 /* firmware.bin */; };
 		82EFEDE0D1E1B12E562B3EFD /* BarlowCondensed-Medium.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 6DB8B95EE9F889CCBE49599A /* BarlowCondensed-Medium.ttf */; };
 		9176980BABF604ABA9659708 /* RideDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EDAC3AF1A02980A1CEB9145 /* RideDetailView.swift */; };
+		A595AF5AF369EAA95B75137D /* iterators.c in Sources */ = {isa = PBXBuildFile; fileRef = F420D80E8EE437556C5B5758 /* iterators.c */; };
 		A984DF4C30E0938795C41C27 /* Barlow-SemiBold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = CC62803CF44D9FE23F7A54D3 /* Barlow-SemiBold.ttf */; };
+		AB4CC93D353E5C714DB38A42 /* baseCells.c in Sources */ = {isa = PBXBuildFile; fileRef = D797586BB93DEF389676407A /* baseCells.c */; };
+		AC61444DAE0A927557010CC9 /* bbox.c in Sources */ = {isa = PBXBuildFile; fileRef = 931114BB69AEAF9DD400682E /* bbox.c */; };
 		AC7ABEC10AB52F7914830F7A /* BarlowCondensed-Bold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = DC7A31A6A25A548586169629 /* BarlowCondensed-Bold.ttf */; };
+		B1B95D7F377CD04FB3952F3E /* faceijk.c in Sources */ = {isa = PBXBuildFile; fileRef = B1F730238E35DC412829611A /* faceijk.c */; };
+		B52918F5922D788E05FD5A83 /* localij.c in Sources */ = {isa = PBXBuildFile; fileRef = 4D01067D79FE6685E299D8CF /* localij.c */; };
+		BA4785667E0D477A0C1F5D8A /* H3Tiles.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E3AEE56631086D9869D2AE4 /* H3Tiles.swift */; };
 		C4331000AD0382FB9855AA47 /* MapsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD05D7706E357555E889ED49 /* MapsView.swift */; };
+		C897596E7FE9AEB4B699BACD /* linkedGeo.c in Sources */ = {isa = PBXBuildFile; fileRef = 0A422D209D3DD72088B1DC71 /* linkedGeo.c */; };
 		DD5AF628B5DC8DCC6F9D5381 /* FITDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 836E0AABD268231ABD6B03E4 /* FITDecoder.swift */; };
+		DD66B24A2DD45D945932CD8D /* coordijk.c in Sources */ = {isa = PBXBuildFile; fileRef = 2314152D919270E6E7F3218E /* coordijk.c */; };
+		E6BA53FA2AC747A0F818D5CD /* algos.c in Sources */ = {isa = PBXBuildFile; fileRef = A6A976FBC75FC24903031377 /* algos.c */; };
+		EE0051326E4F0559797AB3B5 /* vertex.c in Sources */ = {isa = PBXBuildFile; fileRef = F784F93CE7AF333CF8D0E92B /* vertex.c */; };
+		F3092923EBB8F6C75F17A14E /* latLng.c in Sources */ = {isa = PBXBuildFile; fileRef = 41ABFC755A86A9E38EAC1EED /* latLng.c */; };
 		F3B8C23D0C36C298B616ADF3 /* SensorsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 98C441B295E3AFE15EF0C75A /* SensorsView.swift */; };
 		FD7612579D7DAD95AD2CFE2D /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2081EBB94E5008A25AF17D2C /* SettingsView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		0A422D209D3DD72088B1DC71 /* linkedGeo.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = linkedGeo.c; sourceTree = "<group>"; };
+		0C7BC34DD8ACC235C76C4257 /* h3Assert.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = h3Assert.c; sourceTree = "<group>"; };
 		0DA896B58953F3B513B76B20 /* BarlowCondensed-SemiBold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "BarlowCondensed-SemiBold.ttf"; sourceTree = "<group>"; };
 		14E464ED0804B19DDBEC4745 /* firmware.bin */ = {isa = PBXFileReference; lastKnownFileType = archive.macbinary; path = firmware.bin; sourceTree = "<group>"; };
 		150D0FCA3BD00013D0221794 /* MapBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapBuilder.swift; sourceTree = "<group>"; };
 		17822C740E6235705595201F /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
+		1A7EBEBE45A4248C59B460F8 /* constants.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = constants.h; sourceTree = "<group>"; };
+		1BBE70766519FE8A355EE01A /* iterators.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = iterators.h; sourceTree = "<group>"; };
+		1E8E773F063DF155EA2B2C05 /* localij.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = localij.h; sourceTree = "<group>"; };
 		2081EBB94E5008A25AF17D2C /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		2314152D919270E6E7F3218E /* coordijk.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = coordijk.c; sourceTree = "<group>"; };
+		2368F84D8E4866D7622B61AB /* vertex.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = vertex.h; sourceTree = "<group>"; };
+		26DDC00DA77F0B1F4654B093 /* mathExtensions.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = mathExtensions.c; sourceTree = "<group>"; };
+		2AFDA2E853DD811A5C16CD0D /* mathExtensions.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = mathExtensions.h; sourceTree = "<group>"; };
+		2BE61D4E452EA907672C539C /* directedEdge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = directedEdge.h; sourceTree = "<group>"; };
 		33F9FE9BEBAAA7755652F133 /* RouteView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RouteView.swift; sourceTree = "<group>"; };
+		351775ACF2317D238FADF334 /* vertexGraph.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = vertexGraph.c; sourceTree = "<group>"; };
 		36D2B7A04F9D2AB7171161FA /* BikeGPSCompanionApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BikeGPSCompanionApp.swift; sourceTree = "<group>"; };
+		3776B527CC9108BC928E63AE /* alloc.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = alloc.h; sourceTree = "<group>"; };
+		41ABFC755A86A9E38EAC1EED /* latLng.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = latLng.c; sourceTree = "<group>"; };
+		4D01067D79FE6685E299D8CF /* localij.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = localij.c; sourceTree = "<group>"; };
 		4EC186E273C590D7A6345915 /* RideView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RideView.swift; sourceTree = "<group>"; };
 		4EDAC3AF1A02980A1CEB9145 /* RideDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RideDetailView.swift; sourceTree = "<group>"; };
+		505DC93F091358EEC901CFBE /* polygon.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = polygon.c; sourceTree = "<group>"; };
+		5E3AEE56631086D9869D2AE4 /* H3Tiles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = H3Tiles.swift; sourceTree = "<group>"; };
 		6AD10CB9A0264035C3DB368E /* DiagnosticsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsView.swift; sourceTree = "<group>"; };
 		6DB8B95EE9F889CCBE49599A /* BarlowCondensed-Medium.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "BarlowCondensed-Medium.ttf"; sourceTree = "<group>"; };
+		6FC6EAD606210AEF93FCD2BA /* vec3d.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = vec3d.h; sourceTree = "<group>"; };
+		75D790E23ED49EB5261A0CA1 /* h3api.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = h3api.h; sourceTree = "<group>"; };
 		79FE5391A9FE1ABC7B931516 /* Barlow-Medium.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Barlow-Medium.ttf"; sourceTree = "<group>"; };
+		79FF84A80EAC5550AD80261E /* h3shim.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = h3shim.c; sourceTree = "<group>"; };
 		836E0AABD268231ABD6B03E4 /* FITDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FITDecoder.swift; sourceTree = "<group>"; };
+		8DBA5FDC0689B714603F921B /* polygonAlgos.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = polygonAlgos.h; sourceTree = "<group>"; };
+		8E7E61EF6B1D6FE07B3E20DB /* directedEdge.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = directedEdge.c; sourceTree = "<group>"; };
+		8F907AFEDCE73F04ECC51FCE /* vec3d.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = vec3d.c; sourceTree = "<group>"; };
 		9165B98C67EE602CB6416ECC /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		919144F53DB711C484580AFD /* faceijk.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = faceijk.h; sourceTree = "<group>"; };
+		9268ADD29CC936597DD90F01 /* bbox.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = bbox.h; sourceTree = "<group>"; };
+		931114BB69AEAF9DD400682E /* bbox.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = bbox.c; sourceTree = "<group>"; };
+		9808DD4FBDA428075C65A823 /* baseCells.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = baseCells.h; sourceTree = "<group>"; };
 		98C441B295E3AFE15EF0C75A /* SensorsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SensorsView.swift; sourceTree = "<group>"; };
+		9C117857A0C89FA1A5618FC5 /* vertexGraph.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = vertexGraph.h; sourceTree = "<group>"; };
 		9D40015EBE733F51D1D3B952 /* Barlow-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Barlow-Regular.ttf"; sourceTree = "<group>"; };
+		9DFF59DD6F4D35EB15D1562F /* h3Index.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = h3Index.c; sourceTree = "<group>"; };
+		A3B07ADBC727BC7B94BF5552 /* vec2d.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = vec2d.h; sourceTree = "<group>"; };
+		A6A976FBC75FC24903031377 /* algos.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = algos.c; sourceTree = "<group>"; };
+		AD1C7D56297DC9BF291D27C9 /* latLng.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = latLng.h; sourceTree = "<group>"; };
+		AEEEDDA4347A59C6739252AF /* linkedGeo.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = linkedGeo.h; sourceTree = "<group>"; };
+		B052049E28BE71E132A6DBF4 /* h3Assert.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = h3Assert.h; sourceTree = "<group>"; };
+		B1F730238E35DC412829611A /* faceijk.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = faceijk.c; sourceTree = "<group>"; };
+		B4DD2E2B7FE17DEDA57F162B /* algos.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = algos.h; sourceTree = "<group>"; };
+		B7561210D041DE21034D199A /* polygon.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = polygon.h; sourceTree = "<group>"; };
 		BD05D7706E357555E889ED49 /* MapsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapsView.swift; sourceTree = "<group>"; };
+		BF8CDD4E76FC4FA8BE6A7CFC /* coordijk.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = coordijk.h; sourceTree = "<group>"; };
+		C04B32DF213777503A85F8CF /* h3Index.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = h3Index.h; sourceTree = "<group>"; };
 		C3696DA5A82601A862AE2EC2 /* demo.fit */ = {isa = PBXFileReference; path = demo.fit; sourceTree = "<group>"; };
 		CC62803CF44D9FE23F7A54D3 /* Barlow-SemiBold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Barlow-SemiBold.ttf"; sourceTree = "<group>"; };
 		CCD8003BE2453F3EDA25ED31 /* RidesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RidesView.swift; sourceTree = "<group>"; };
+		D6A5EEC68C04B21636EF9A36 /* BikeGPS-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "BikeGPS-Bridging-Header.h"; sourceTree = "<group>"; };
+		D797586BB93DEF389676407A /* baseCells.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = baseCells.c; sourceTree = "<group>"; };
+		DA8E9B571EDBC6EAE9FA9AD5 /* h3shim.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = h3shim.h; sourceTree = "<group>"; };
 		DC7A31A6A25A548586169629 /* BarlowCondensed-Bold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "BarlowCondensed-Bold.ttf"; sourceTree = "<group>"; };
 		DD543402D2E35FD58BA55A8E /* BLEManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BLEManager.swift; sourceTree = "<group>"; };
 		DDB79DC111504015EA01A183 /* GPXExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GPXExporter.swift; sourceTree = "<group>"; };
+		E1FDDCD93045902F9501304D /* vec2d.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = vec2d.c; sourceTree = "<group>"; };
+		F420D80E8EE437556C5B5758 /* iterators.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = iterators.c; sourceTree = "<group>"; };
 		F46204EF3D9A3EB08394C288 /* BikeGPSCompanion.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = BikeGPSCompanion.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		F784F93CE7AF333CF8D0E92B /* vertex.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = vertex.c; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -72,9 +136,35 @@
 			path = Fonts;
 			sourceTree = "<group>";
 		};
+		19489F4321C78B1401705C1D /* lib */ = {
+			isa = PBXGroup;
+			children = (
+				A6A976FBC75FC24903031377 /* algos.c */,
+				D797586BB93DEF389676407A /* baseCells.c */,
+				931114BB69AEAF9DD400682E /* bbox.c */,
+				2314152D919270E6E7F3218E /* coordijk.c */,
+				8E7E61EF6B1D6FE07B3E20DB /* directedEdge.c */,
+				B1F730238E35DC412829611A /* faceijk.c */,
+				0C7BC34DD8ACC235C76C4257 /* h3Assert.c */,
+				9DFF59DD6F4D35EB15D1562F /* h3Index.c */,
+				F420D80E8EE437556C5B5758 /* iterators.c */,
+				41ABFC755A86A9E38EAC1EED /* latLng.c */,
+				0A422D209D3DD72088B1DC71 /* linkedGeo.c */,
+				4D01067D79FE6685E299D8CF /* localij.c */,
+				26DDC00DA77F0B1F4654B093 /* mathExtensions.c */,
+				505DC93F091358EEC901CFBE /* polygon.c */,
+				E1FDDCD93045902F9501304D /* vec2d.c */,
+				8F907AFEDCE73F04ECC51FCE /* vec3d.c */,
+				F784F93CE7AF333CF8D0E92B /* vertex.c */,
+				351775ACF2317D238FADF334 /* vertexGraph.c */,
+			);
+			path = lib;
+			sourceTree = "<group>";
+		};
 		224D042D99B06A07620BD95C /* Sources */ = {
 			isa = PBXGroup;
 			children = (
+				D6A5EEC68C04B21636EF9A36 /* BikeGPS-Bridging-Header.h */,
 				36D2B7A04F9D2AB7171161FA /* BikeGPSCompanionApp.swift */,
 				DD543402D2E35FD58BA55A8E /* BLEManager.swift */,
 				C3696DA5A82601A862AE2EC2 /* demo.fit */,
@@ -82,6 +172,7 @@
 				14E464ED0804B19DDBEC4745 /* firmware.bin */,
 				836E0AABD268231ABD6B03E4 /* FITDecoder.swift */,
 				DDB79DC111504015EA01A183 /* GPXExporter.swift */,
+				5E3AEE56631086D9869D2AE4 /* H3Tiles.swift */,
 				9165B98C67EE602CB6416ECC /* Info.plist */,
 				150D0FCA3BD00013D0221794 /* MapBuilder.swift */,
 				BD05D7706E357555E889ED49 /* MapsView.swift */,
@@ -93,8 +184,20 @@
 				2081EBB94E5008A25AF17D2C /* SettingsView.swift */,
 				17822C740E6235705595201F /* Theme.swift */,
 				097E2D94B5CB25740AB3BAB8 /* Fonts */,
+				58EF052D07CCE6671062950C /* H3 */,
 			);
 			path = Sources;
+			sourceTree = "<group>";
+		};
+		58EF052D07CCE6671062950C /* H3 */ = {
+			isa = PBXGroup;
+			children = (
+				79FF84A80EAC5550AD80261E /* h3shim.c */,
+				DA8E9B571EDBC6EAE9FA9AD5 /* h3shim.h */,
+				CFC005FB5888B7E181F4A9B2 /* include */,
+				19489F4321C78B1401705C1D /* lib */,
+			);
+			path = H3;
 			sourceTree = "<group>";
 		};
 		792DA7BBA6E2F3CA55EBA0BF = {
@@ -111,6 +214,35 @@
 				F46204EF3D9A3EB08394C288 /* BikeGPSCompanion.app */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		CFC005FB5888B7E181F4A9B2 /* include */ = {
+			isa = PBXGroup;
+			children = (
+				B4DD2E2B7FE17DEDA57F162B /* algos.h */,
+				3776B527CC9108BC928E63AE /* alloc.h */,
+				9808DD4FBDA428075C65A823 /* baseCells.h */,
+				9268ADD29CC936597DD90F01 /* bbox.h */,
+				1A7EBEBE45A4248C59B460F8 /* constants.h */,
+				BF8CDD4E76FC4FA8BE6A7CFC /* coordijk.h */,
+				2BE61D4E452EA907672C539C /* directedEdge.h */,
+				919144F53DB711C484580AFD /* faceijk.h */,
+				75D790E23ED49EB5261A0CA1 /* h3api.h */,
+				B052049E28BE71E132A6DBF4 /* h3Assert.h */,
+				C04B32DF213777503A85F8CF /* h3Index.h */,
+				1BBE70766519FE8A355EE01A /* iterators.h */,
+				AD1C7D56297DC9BF291D27C9 /* latLng.h */,
+				AEEEDDA4347A59C6739252AF /* linkedGeo.h */,
+				1E8E773F063DF155EA2B2C05 /* localij.h */,
+				2AFDA2E853DD811A5C16CD0D /* mathExtensions.h */,
+				B7561210D041DE21034D199A /* polygon.h */,
+				8DBA5FDC0689B714603F921B /* polygonAlgos.h */,
+				A3B07ADBC727BC7B94BF5552 /* vec2d.h */,
+				6FC6EAD606210AEF93FCD2BA /* vec3d.h */,
+				2368F84D8E4866D7622B61AB /* vertex.h */,
+				9C117857A0C89FA1A5618FC5 /* vertexGraph.h */,
+			);
+			path = include;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -196,6 +328,7 @@
 				252C086BF5464E66881811E2 /* DiagnosticsView.swift in Sources */,
 				DD5AF628B5DC8DCC6F9D5381 /* FITDecoder.swift in Sources */,
 				238C28015928C2C46081BB14 /* GPXExporter.swift in Sources */,
+				BA4785667E0D477A0C1F5D8A /* H3Tiles.swift in Sources */,
 				5E6B170B7E5D95D64004B7DF /* MapBuilder.swift in Sources */,
 				C4331000AD0382FB9855AA47 /* MapsView.swift in Sources */,
 				9176980BABF604ABA9659708 /* RideDetailView.swift in Sources */,
@@ -205,6 +338,25 @@
 				F3B8C23D0C36C298B616ADF3 /* SensorsView.swift in Sources */,
 				FD7612579D7DAD95AD2CFE2D /* SettingsView.swift in Sources */,
 				7801C9A5D7DE45C654CF72D9 /* Theme.swift in Sources */,
+				E6BA53FA2AC747A0F818D5CD /* algos.c in Sources */,
+				AB4CC93D353E5C714DB38A42 /* baseCells.c in Sources */,
+				AC61444DAE0A927557010CC9 /* bbox.c in Sources */,
+				DD66B24A2DD45D945932CD8D /* coordijk.c in Sources */,
+				29E4567CB74E6D97BBA11602 /* directedEdge.c in Sources */,
+				B1B95D7F377CD04FB3952F3E /* faceijk.c in Sources */,
+				3EA201572C2A1308A3B6A4D7 /* h3Assert.c in Sources */,
+				0B309D3284C51920398E0405 /* h3Index.c in Sources */,
+				0342A87AE328C7601D8C6BCE /* h3shim.c in Sources */,
+				A595AF5AF369EAA95B75137D /* iterators.c in Sources */,
+				F3092923EBB8F6C75F17A14E /* latLng.c in Sources */,
+				C897596E7FE9AEB4B699BACD /* linkedGeo.c in Sources */,
+				B52918F5922D788E05FD5A83 /* localij.c in Sources */,
+				56244470A5750446E4F43021 /* mathExtensions.c in Sources */,
+				57056A1140478EFA9182CA3C /* polygon.c in Sources */,
+				0EFBB6E14B5FD2AED277A238 /* vec2d.c in Sources */,
+				05B05DF25BBF90F77F503C4E /* vec3d.c in Sources */,
+				EE0051326E4F0559797AB3B5 /* vertex.c in Sources */,
+				7D2A8BEB13AFF1B3B0AAC930 /* vertexGraph.c in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -278,6 +430,10 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				ENABLE_PREVIEWS = YES;
+				GCC_WARN_INHIBIT_ALL_WARNINGS = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/Sources/H3/include",
+				);
 				INFOPLIST_FILE = Sources/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -285,6 +441,7 @@
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = cc.tdisplay.bikegps;
 				SDKROOT = iphoneos;
+				SWIFT_OBJC_BRIDGING_HEADER = "Sources/BikeGPS-Bridging-Header.h";
 				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Debug;
@@ -363,6 +520,10 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				ENABLE_PREVIEWS = YES;
+				GCC_WARN_INHIBIT_ALL_WARNINGS = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/Sources/H3/include",
+				);
 				INFOPLIST_FILE = Sources/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -370,6 +531,7 @@
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = cc.tdisplay.bikegps;
 				SDKROOT = iphoneos;
+				SWIFT_OBJC_BRIDGING_HEADER = "Sources/BikeGPS-Bridging-Header.h";
 				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Release;

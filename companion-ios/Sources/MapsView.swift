@@ -2,46 +2,14 @@ import SwiftUI
 import MapKit
 import CoreLocation
 
-// A downloaded map region, persisted so the app can show what's already on the
-// device and avoid re-downloading.
-struct MapRegion: Identifiable, Codable, Equatable {
-    var id = UUID()
-    var name: String
-    var south, west, north, east: Double
-    var sizeKB: Int
-    var date: Date
-
-    var center: CLLocationCoordinate2D {
-        .init(latitude: (south + north) / 2, longitude: (west + east) / 2)
-    }
-    var corners: [CLLocationCoordinate2D] {
-        [.init(latitude: south, longitude: west), .init(latitude: south, longitude: east),
-         .init(latitude: north, longitude: east), .init(latitude: north, longitude: west)]
-    }
-}
-
-@MainActor
-final class RegionStore: ObservableObject {
-    @Published private(set) var regions: [MapRegion] = []
-    private let key = "downloadedMapRegions"
-
-    init() { load() }
-    private func load() {
-        if let d = UserDefaults.standard.data(forKey: key),
-           let r = try? JSONDecoder().decode([MapRegion].self, from: d) { regions = r }
-    }
-    private func save() {
-        if let d = try? JSONEncoder().encode(regions) { UserDefaults.standard.set(d, forKey: key) }
-    }
-    func add(_ r: MapRegion) { regions.removeAll { $0.name == r.name }; regions.append(r); save() }
-    func remove(_ r: MapRegion) { regions.removeAll { $0.id == r.id }; save() }
-}
-
-// Draw a box on the map, download OSM vectors for it, and stream them to the
-// device. Already-downloaded regions are shown as filled rectangles.
+// Draw a box on the map; the app covers it with H3 hexagon tiles (~5.6 km
+// across), skips the ones already on the device, fetches OSM for the rest, and
+// streams each new tile to the device one at a time. The device stores every
+// tile by its H3 id and renders them straight off the SD card, so map coverage
+// is limited by the card, not memory — and re-selecting an overlapping area
+// only ever sends the genuinely new tiles.
 struct MapsView: View {
     @EnvironmentObject var ble: BLEManager
-    @StateObject private var store = RegionStore()
     @Environment(\.dismiss) private var dismiss
 
     @State private var cam: MapCameraPosition = .userLocation(fallback: .region(
@@ -50,9 +18,36 @@ struct MapsView: View {
     @State private var dragStart: CGPoint?
     @State private var dragEnd: CGPoint?
     @State private var box: (s: Double, w: Double, n: Double, e: Double)?
+    @State private var tiles: [MapTile] = []       // covering tiles for the current box
     @State private var building = false
     @State private var status: String?
     @State private var drawMode = false
+    @State private var excluded: Set<String> = []   // hexes the user tapped to skip
+    @State private var converted: Set<String> = []  // hexes downloaded + built this run
+    @State private var downloadTotal = 0            // hexes targeted this run
+    @State private var downloadTask: Task<Void, Never>?
+
+    // Tiles the device already has, as drawable rectangles.
+    private var deviceTiles: [MapTile] {
+        ble.deviceTileIds.compactMap { id in
+            let cell = h3_from_id(id)
+            return cell == 0 ? nil : H3Tiles.tile(from: cell)
+        }
+    }
+    // Tiles that will actually be sent: not already on the device and not
+    // tapped-out by the user.
+    private var newTiles: [MapTile] {
+        tiles.filter { !ble.deviceTileIds.contains($0.id) && !excluded.contains($0.id) }
+    }
+    private var onDeviceCount: Int { tiles.filter { ble.deviceTileIds.contains($0.id) }.count }
+
+    // Toggle whether a tapped hex is included in the download.
+    private func toggleHex(at coord: CLLocationCoordinate2D) {
+        guard let id = H3Tiles.id(at: coord),
+              tiles.contains(where: { $0.id == id }),
+              !ble.deviceTileIds.contains(id) else { return }   // can't skip what's on-device
+        if excluded.contains(id) { excluded.remove(id) } else { excluded.insert(id) }
+    }
 
     var body: some View {
         NavigationStack {
@@ -60,30 +55,42 @@ struct MapsView: View {
                 ZStack(alignment: .top) {
                     Map(position: $cam) {
                         UserAnnotation()
-                        // Areas already on the device (queried from it) — blue.
-                        ForEach(ble.deviceMaps) { m in
-                            MapPolygon(coordinates: m.corners)
+                        // Hexes already on the device — blue.
+                        ForEach(deviceTiles) { t in
+                            MapPolygon(coordinates: t.hexagon)
                                 .foregroundStyle(Color.blue.opacity(0.12))
-                                .stroke(Color.blue.opacity(0.6), lineWidth: 1.5)
+                                .stroke(Color.blue.opacity(0.5), lineWidth: 1)
                         }
-                        // Areas this app has downloaded — green.
-                        ForEach(store.regions) { r in
-                            MapPolygon(coordinates: r.corners)
-                                .foregroundStyle(Palette.good.opacity(0.18))
-                                .stroke(Palette.good, lineWidth: 2)
-                        }
-                        if let b = box {
-                            MapPolygon(coordinates: boxCorners(b))
-                                .foregroundStyle(Palette.accent.opacity(0.20))
-                                .stroke(Palette.accent, lineWidth: 2)
+                        // Covering tiles for the current selection. Live states:
+                        // on device (blue, drawn above) → done; converted this
+                        // run (green) → downloaded/building; tapped-out (faint);
+                        // pending (accent).
+                        ForEach(tiles) { t in
+                            let have = ble.deviceTileIds.contains(t.id)
+                            let done = converted.contains(t.id)
+                            let off = excluded.contains(t.id)
+                            MapPolygon(coordinates: t.hexagon)
+                                .foregroundStyle(have ? Color.clear
+                                                 : done ? Palette.good.opacity(0.28)
+                                                 : off ? Palette.muted.opacity(0.08)
+                                                       : Palette.accent.opacity(0.16))
+                                .stroke(have ? Palette.muted.opacity(0.4)
+                                        : done ? Palette.good
+                                        : off ? Palette.muted.opacity(0.55) : Palette.accent,
+                                        lineWidth: have ? 1 : 1.5)
                         }
                     }
                     .mapControls { MapUserLocationButton() }
                     .ignoresSafeArea(edges: .top)
+                    // Tap a hex (once an area is drawn) to skip/keep it.
+                    .simultaneousGesture(SpatialTapGesture().onEnded { e in
+                        guard box != nil, !drawMode,
+                              let c = proxy.convert(e.location, from: .local) else { return }
+                        toggleHex(at: c)
+                    })
 
-                    // In draw mode, a transparent layer above the map captures the
-                    // drag so the map doesn't pan — otherwise the map's own pan
-                    // gesture wins and you can never draw a box.
+                    // In draw mode a transparent layer captures the drag so the
+                    // map doesn't pan while you draw a box.
                     if drawMode {
                         Rectangle().fill(Color.black.opacity(0.001))
                             .contentShape(Rectangle())
@@ -96,8 +103,12 @@ struct MapsView: View {
                                     if let a = dragStart, let b = dragEnd,
                                        let c1 = proxy.convert(a, from: .local),
                                        let c2 = proxy.convert(b, from: .local) {
-                                        box = (min(c1.latitude, c2.latitude), min(c1.longitude, c2.longitude),
-                                               max(c1.latitude, c2.latitude), max(c1.longitude, c2.longitude))
+                                        let bx = (min(c1.latitude, c2.latitude), min(c1.longitude, c2.longitude),
+                                                  max(c1.latitude, c2.latitude), max(c1.longitude, c2.longitude))
+                                        box = bx
+                                        tiles = H3Tiles.coveringTiles(south: bx.0, west: bx.1, north: bx.2, east: bx.3)
+                                        excluded = []
+                                        converted = []
                                         status = nil
                                     }
                                     dragStart = nil; dragEnd = nil
@@ -106,7 +117,6 @@ struct MapsView: View {
                             .ignoresSafeArea(edges: .top)
                     }
 
-                    // Live selection rectangle (view space) while dragging.
                     if let a = dragStart, let b = dragEnd {
                         Rectangle().fill(Palette.accent.opacity(0.18))
                             .overlay(Rectangle().stroke(Palette.accent, lineWidth: 2))
@@ -120,7 +130,7 @@ struct MapsView: View {
             }
             .navigationBarHidden(true)
             .safeAreaInset(edge: .bottom) { bottomBar }
-            .onAppear { ble.refreshDeviceMaps() }
+            .onAppear { ble.refreshDeviceMaps(); ble.refreshDeviceTiles() }
         }
     }
 
@@ -132,7 +142,7 @@ struct MapsView: View {
                 .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))
             Spacer()
             Button(drawMode ? "Cancel" : "Select area") {
-                box = nil; dragStart = nil; dragEnd = nil
+                box = nil; tiles = []; excluded = []; converted = []; dragStart = nil; dragEnd = nil
                 drawMode.toggle()
             }
             .font(BarlowFont.condensed(18, .semibold))
@@ -150,68 +160,113 @@ struct MapsView: View {
         .shadow(color: .black.opacity(0.08), radius: 6, y: 2)
     }
 
+    // A floating "modal" card at the bottom. Progress states show a spinner +
+    // live hex counts; idle/selection states show the controls.
     @ViewBuilder private var bottomBar: some View {
-        VStack(spacing: 10) {
-            if ble.mapUploading {
-                ProgressView(value: ble.mapProgress) {
-                    Text(ble.mapMessage ?? "Sending…").font(BarlowFont.text(13)).foregroundStyle(Palette.muted)
-                }
+        Group {
+            if ble.tilesUploading {
+                progressCard(title: "Sending to device",
+                             detail: ble.tileMessage ?? "Uploading hexes…",
+                             done: ble.tilesDone, total: ble.tilesTotal,
+                             noun: "sent") { ble.cancelTileUpload() }
             } else if building {
-                HStack(spacing: 10) {
-                    ProgressView()
-                    Text(status ?? "Working…").font(BarlowFont.text(14)).foregroundStyle(Palette.muted)
-                }.frame(maxWidth: .infinity, alignment: .leading)
+                progressCard(title: "Downloading maps",
+                             detail: status ?? "Fetching…",
+                             done: converted.count, total: max(downloadTotal, 1),
+                             noun: "ready") { cancelDownload() }
             } else if let b = box {
+                selectionCard(b)
+            } else {
+                hintCard
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 6)
+    }
+
+    // Spinner + title + live "X of Y hexes" + progress bar + Cancel.
+    private func progressCard(title: String, detail: String, done: Int, total: Int,
+                              noun: String, cancel: @escaping () -> Void) -> some View {
+        card {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 12) {
+                    ProgressView().tint(Palette.accent)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(title).font(BarlowFont.condensed(19, .semibold)).foregroundStyle(Palette.ink)
+                        Text(detail).font(BarlowFont.text(12)).foregroundStyle(Palette.muted)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 6)
+                    Button("Cancel", action: cancel)
+                        .font(BarlowFont.text(14, .semibold)).foregroundStyle(Palette.accent)
+                }
+                ProgressView(value: Double(done), total: Double(max(total, 1))).tint(Palette.good)
+                Text("\(done) of \(total) hexes \(noun)")
+                    .font(BarlowFont.text(12, .semibold)).foregroundStyle(Palette.good)
+            }
+        }
+    }
+
+    private func selectionCard(_ b: (s: Double, w: Double, n: Double, e: Double)) -> some View {
+        let new = newTiles.count
+        let skipped = excluded.intersection(tiles.map(\.id)).count
+        return card {
+            VStack(alignment: .leading, spacing: 10) {
                 HStack {
                     VStack(alignment: .leading, spacing: 1) {
                         Text("Selected area").trackedLabel()
                         Text(areaText(b)).font(BarlowFont.text(15, .semibold)).foregroundStyle(Palette.ink)
                     }
                     Spacer()
-                    Button { box = nil } label: {
+                    Button { box = nil; tiles = []; excluded = []; converted = [] } label: {
                         Image(systemName: "xmark.circle.fill").foregroundStyle(Palette.muted)
                     }
                 }
-                PrimaryButton(title: ble.canUploadMap ? "Download to device" : "Connect device to send",
+                Text("\(new) to download · \(onDeviceCount) on device"
+                     + (skipped > 0 ? " · \(skipped) skipped" : ""))
+                    .font(BarlowFont.text(12)).foregroundStyle(Palette.muted)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text("Tap a hex to skip it (or add it back).")
+                    .font(BarlowFont.text(11)).foregroundStyle(Palette.faint)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                PrimaryButton(title: !ble.canUploadMap ? "Connect device to send"
+                                    : new == 0 ? "Nothing to download"
+                                    : "Download \(new) hex\(new == 1 ? "" : "es")",
                               systemImage: "arrow.down.circle",
-                              enabled: ble.canUploadMap && !tooBig(b)) { download(b) }
-                if tooBig(b) {
-                    Text("That area is large — zoom in and draw a smaller box (≤ ~25 km across) for a faster download.")
-                        .font(BarlowFont.text(12)).foregroundStyle(Palette.accent)
-                }
-            } else {
-                Text(status ?? (drawMode
-                    ? "Drag a box across the area you want."
-                    : "Tap “Select area”, then drag a box on the map. Blue = already on device, green = downloaded here."))
+                              enabled: ble.canUploadMap && new > 0) { download() }
+                if let s = status { Text(s).font(BarlowFont.text(12)).foregroundStyle(Palette.accent) }
+            }
+        }
+    }
+
+    private var hintCard: some View {
+        card {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(drawMode ? "Drag a box across the area you want."
+                              : "Tap “Select area”, then drag a box. Blue = already on the device.")
                     .font(BarlowFont.text(14)).foregroundStyle(drawMode ? Palette.accent : Palette.muted)
                     .frame(maxWidth: .infinity, alignment: .leading)
-            }
-
-            if !store.regions.isEmpty {
-                Divider().overlay(Palette.hairline)
-                ForEach(store.regions) { r in
-                    HStack {
-                        Image(systemName: "checkmark.circle.fill").foregroundStyle(Palette.good)
-                        VStack(alignment: .leading, spacing: 0) {
-                            Text(r.name).font(BarlowFont.text(14, .semibold)).foregroundStyle(Palette.ink)
-                            Text("\(r.sizeKB) KB · on device").font(BarlowFont.text(11)).foregroundStyle(Palette.muted)
-                        }
-                        Spacer()
-                        Button { store.remove(r) } label: {
-                            Image(systemName: "trash").foregroundStyle(Palette.muted)
-                        }
-                    }
+                if !ble.deviceTileIds.isEmpty {
+                    Text("\(ble.deviceTileIds.count) hexes on the device")
+                        .font(BarlowFont.text(11)).foregroundStyle(Palette.muted)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
         }
-        .padding(16)
-        .background(Palette.paper)
     }
 
-    private func boxCorners(_ b: (s: Double, w: Double, n: Double, e: Double)) -> [CLLocationCoordinate2D] {
-        [.init(latitude: b.s, longitude: b.w), .init(latitude: b.s, longitude: b.e),
-         .init(latitude: b.n, longitude: b.e), .init(latitude: b.n, longitude: b.w)]
+    private func card<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        content()
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Palette.surface, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .strokeBorder(Palette.hairline, lineWidth: 1))
+            .shadow(color: .black.opacity(0.14), radius: 14, y: 5)
     }
+
+    // MARK: geometry helpers
+
     private func spanKm(_ b: (s: Double, w: Double, n: Double, e: Double)) -> (Double, Double) {
         let latKm = (b.n - b.s) * 111.0
         let lonKm = (b.e - b.w) * 111.0 * cos((b.s + b.n) / 2 * .pi / 180)
@@ -221,25 +276,52 @@ struct MapsView: View {
         let (a, c) = spanKm(b)
         return String(format: "%.1f × %.1f km", c, a)
     }
-    private func tooBig(_ b: (s: Double, w: Double, n: Double, e: Double)) -> Bool {
-        let (a, c) = spanKm(b); return a > 25 || c > 25
-    }
 
-    private func download(_ b: (s: Double, w: Double, n: Double, e: Double)) {
+    // MARK: download
+
+    private func download() {
+        let missing = newTiles
+        guard !missing.isEmpty else { return }
         building = true
-        status = "Downloading map data…"
-        let name = "map-\(Int(b.s * 100))_\(Int(b.w * 100)).ebm"
-        Task {
+        converted = []
+        downloadTotal = missing.count
+        status = "Fetching map data…"
+
+        // Group tiles into bounded OSM fetches (~0.08° ≈ 9 km) so each Overpass
+        // query stays light — big queries 504 on the busy public servers. Each
+        // batch is one call (retried across mirrors in MapBuilder.fetchOSM).
+        let batches = Dictionary(grouping: missing) { t -> String in
+            let clat = (t.south + t.north) / 2, clon = (t.west + t.east) / 2
+            return "\(Int((clat / 0.08).rounded(.down)))_\(Int((clon / 0.08).rounded(.down)))"
+        }.map { $0.value }
+
+        downloadTask = Task {
+            var built: [(id: String, data: Data)] = []
             do {
-                let ebm = try await MapBuilder.build(south: b.s, west: b.w, north: b.n, east: b.e) { p in
-                    status = p.stage
+                for (i, batch) in batches.enumerated() {
+                    if i > 0 { try? await Task.sleep(nanoseconds: 1_000_000_000) }  // pace the servers
+                    try Task.checkCancellation()
+                    let n = batches.count
+                    status = "Fetching area \(i + 1)/\(n)…"
+                    let u = union(batch)
+                    let json = try await MapBuilder.fetchOSM(south: u.s, west: u.w, north: u.n, east: u.e) { m in
+                        Task { @MainActor in status = "Fetching area \(i + 1)/\(n) — \(m)" }
+                    }
+                    status = "Building tiles \(i + 1)/\(n)…"
+                    let part = try MapBuilder.encodeTiles(regionJSON: json, tiles: batch)
+                    built.append(contentsOf: part)
+                    converted.formUnion(batch.map(\.id))   // fill these hexes in live
                 }
                 building = false
-                ble.uploadMap(ebm, name: name)
-                // Persist once the device confirms it saved.
-                let region = MapRegion(name: name, south: b.s, west: b.w, north: b.n,
-                                       east: b.e, sizeKB: ebm.count / 1024, date: Date())
-                waitForInstall(region)
+                if built.isEmpty {
+                    status = "No roads found in that area."
+                    return
+                }
+                status = nil
+                ble.uploadTiles(built)
+            } catch is CancellationError {
+                building = false
+                status = "Canceled"
             } catch {
                 building = false
                 status = error.localizedDescription
@@ -247,16 +329,19 @@ struct MapsView: View {
         }
     }
 
-    // The device notifies "Map installed" via mapMessage; record the region then.
-    private func waitForInstall(_ r: MapRegion) {
-        Task {
-            for _ in 0..<600 {   // up to ~10 min
-                if !ble.mapUploading {
-                    if ble.mapMessage == "Map installed" { store.add(r); box = nil }
-                    return
-                }
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-            }
-        }
+    private func cancelDownload() {
+        downloadTask?.cancel()
+        downloadTask = nil
+        building = false
+        status = "Canceled"
+    }
+
+    // Bounding box enclosing a set of tiles, padded slightly so roads at tile
+    // edges are present in the fetch.
+    private func union(_ ts: [MapTile]) -> (s: Double, w: Double, n: Double, e: Double) {
+        var s = 90.0, w = 180.0, n = -90.0, e = -180.0
+        for t in ts { s = min(s, t.south); w = min(w, t.west); n = max(n, t.north); e = max(e, t.east) }
+        let pad = 0.003
+        return (s - pad, w - pad, n + pad, e + pad)
     }
 }

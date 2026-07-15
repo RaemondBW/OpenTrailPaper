@@ -49,7 +49,7 @@ enum Screen { SCREEN_DASH, SCREEN_MAP, SCREEN_SUMMARY, SCREEN_MENU,
 Screen screen = SCREEN_DASH;
 RideSummary pendingSummary;
 
-float mapMpp = 2.0f;  // map zoom: 1/2/4/8 m per px
+float mapMpp = 2.0f;  // map zoom: 1/2/4/8/16/32 m per px (wide levels show tiles)
 bool mapTrackUp = false;
 
 // When the "Start navigation?" prompt appeared (for the accept settle guard).
@@ -300,7 +300,7 @@ void handleTap(int x, int y) {
                     break;
                 }
                 if (y >= kMapZoom.zoomOutY && y < kMapZoom.zoomOutY + kMapZoom.size) {
-                    if (mapMpp < 8.0f) mapMpp *= 2.0f;
+                    if (mapMpp < 32.0f) mapMpp *= 2.0f;
                     break;
                 }
             }
@@ -441,7 +441,7 @@ void buildMapScreenData(const RideState& s, MapScreenData& map) {
     } else {
         settings::lastPosition(lat, lon);
     }
-    map_tiles::project(lat, lon, mapMpp, map.riderX, map.riderY, rot, map);
+    map_store::renderInto(lat, lon, mapMpp, map.riderX, map.riderY, rot, map);
 
     if (routes::active() && routeScreenPts) {
         int n = routes::pointCount();
@@ -676,7 +676,7 @@ void applySdUpdate() {
     auto drawProgress = [&](int pct, bool first) {
         uint8_t* fb = epd_hl_get_framebuffer(&hl);
         memset(fb, 0xFF, fbSize);
-        ui_render_update_overlay("Installing from SD", pct, fb);
+        ui_render_update_overlay("Installing", pct, fb);
         refresh(first, !first);   // GL16 on first frame, fast DU for progress
     };
     drawProgress(0, true);

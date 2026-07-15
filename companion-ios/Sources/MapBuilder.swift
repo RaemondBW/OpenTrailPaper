@@ -13,7 +13,13 @@ import Foundation
 //   class: 0 major road, 1 minor road, 2 path, 3 rail.
 
 enum MapBuilder {
-    static let overpassURL = URL(string: "https://overpass-api.de/api/interpreter")!
+    // Public Overpass instances (verified reachable) — the main one 504s under
+    // load, so we rotate through these on failure. Don't add a mirror without
+    // checking it actually responds; a hung endpoint just wastes the timeout.
+    static let overpassEndpoints = [
+        "https://overpass-api.de/api/interpreter",
+        "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+    ]
     static let tileDeg = 0.02
     static let simplifyM = 3.0
 
@@ -48,7 +54,7 @@ enum MapBuilder {
     // MARK: Overpass
 
     private static let query = """
-    [out:json][timeout:180];
+    [out:json][timeout:90];
     (
       way["highway"~"^(motorway|trunk|primary|secondary|tertiary|residential|unclassified|living_street|pedestrian|cycleway|footway|path|track|steps)"](%@,%@,%@,%@);
       way["railway"~"^(rail|light_rail)$"](%@,%@,%@,%@);
@@ -59,20 +65,78 @@ enum MapBuilder {
     """
 
     private static func fetchOverpass(s: Double, w: Double, n: Double, e: Double) async throws -> OverpassJSON {
+        let data = try await fetchOSM(south: s, west: w, north: n, east: e)
+        do { return try JSONDecoder().decode(OverpassJSON.self, from: data) }
+        catch { throw BuildError.overpass("bad response") }
+    }
+
+    // Raw Overpass JSON for a region. Tries each mirror with retry/backoff —
+    // 504/timeout on the busy public instance is common, so a retry on another
+    // endpoint usually succeeds. `onProgress` reports which mirror is being
+    // tried so the UI never looks frozen. Honors Task cancellation.
+    static func fetchOSM(south s: Double, west w: Double, north n: Double, east e: Double,
+                         onProgress: (@Sendable (String) -> Void)? = nil) async throws -> Data {
         let bbox = [s, w, n, e].map { String($0) }
         let q = String(format: query, bbox[0], bbox[1], bbox[2], bbox[3],
                        bbox[0], bbox[1], bbox[2], bbox[3])
-        var req = URLRequest(url: overpassURL)
-        req.httpMethod = "POST"
-        req.httpBody = ("data=" + (q.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? q)).data(using: .utf8)
-        req.setValue("eink-bike-gps", forHTTPHeaderField: "User-Agent")
-        let (data, resp) = try await URLSession.shared.data(for: req)
-        guard let http = resp as? HTTPURLResponse else { throw BuildError.overpass("no response") }
-        guard http.statusCode == 200 else {
-            throw BuildError.overpass("server returned \(http.statusCode) (area may be too large — try a smaller box)")
+        let body = ("data=" + (q.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? q))
+            .data(using: .utf8)
+
+        var lastStatus = 0
+        var lastError: Error? = nil
+        let total = overpassEndpoints.count * 2
+        // Two passes over the mirror list (so a transient failure gets retried).
+        for attempt in 0..<total {
+            try Task.checkCancellation()
+            let urlStr = overpassEndpoints[attempt % overpassEndpoints.count]
+            guard let url = URL(string: urlStr) else { continue }
+            let host = url.host ?? urlStr
+            onProgress?("server \(host) (try \(attempt + 1)/\(total))")
+            var req = URLRequest(url: url)
+            req.httpMethod = "POST"
+            req.httpBody = body
+            req.setValue("eink-bike-gps", forHTTPHeaderField: "User-Agent")
+            req.timeoutInterval = 45          // fail a hung mirror fast, move on
+            do {
+                let (data, resp) = try await URLSession.shared.data(for: req)
+                guard let http = resp as? HTTPURLResponse else { continue }
+                if http.statusCode == 200 { return data }
+                lastStatus = http.statusCode
+                // 429 (rate limit) / 504 (timeout) / 5xx (overload) → back off, try next mirror.
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                lastError = error
+            }
+            try? await Task.sleep(nanoseconds: 800_000_000)
         }
-        do { return try JSONDecoder().decode(OverpassJSON.self, from: data) }
-        catch { throw BuildError.overpass("bad response") }
+        if lastStatus == 429 {
+            throw BuildError.overpass("map servers are rate-limiting — wait a minute and retry")
+        } else if lastStatus == 504 || lastStatus >= 500 {
+            throw BuildError.overpass("map servers are busy (\(lastStatus)) — try again, or draw a smaller area")
+        } else if let lastError {
+            throw BuildError.overpass(lastError.localizedDescription)
+        }
+        throw BuildError.overpass("no response from map servers")
+    }
+
+    // Encode many H3 tiles' .ebm blobs from already-fetched region JSON, parsing
+    // the (large) JSON only once. Tiles with no roads are dropped. `progress` is
+    // called on the main actor as tiles are encoded.
+    static func encodeTiles(regionJSON: Data, tiles: [MapTile],
+                            progress: @escaping (Int, Int) -> Void = { _, _ in }
+    ) throws -> [(id: String, data: Data)] {
+        let json = try JSONDecoder().decode(OverpassJSON.self, from: regionJSON)
+        var out: [(id: String, data: Data)] = []
+        for (i, t) in tiles.enumerated() {
+            let data = try encode(json: json, s: t.south, w: t.west, n: t.north, e: t.east)
+            if data.count > headerOnly(s: t.south, w: t.west, n: t.north, e: t.east) {
+                out.append((id: t.id, data: data))
+            }
+            let done = i + 1
+            Task { @MainActor in progress(done, tiles.count) }
+        }
+        return out
     }
 
     // Test hook: encode a raw Overpass JSON payload (bypasses the network).

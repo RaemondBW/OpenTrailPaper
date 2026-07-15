@@ -6,6 +6,7 @@
 
 #include "config.h"
 #include "fit_writer.h"
+#include "sd_bus.h"
 #include "usb_storage.h"
 #include "diag.h"
 
@@ -166,12 +167,14 @@ bool begin() {
     digitalWrite(BOARD_SD_CS, HIGH);
 
     SPI.begin(BOARD_SPI_SCLK, BOARD_SPI_MISO, BOARD_SPI_MOSI);
+    sdLock();
     sdOk = SD.begin(BOARD_SD_CS);
+    if (sdOk && !SD.exists(RIDE_DIR)) SD.mkdir(RIDE_DIR);
+    sdUnlock();
     if (!sdOk) {
         Serial.println("[rec] SD mount failed — recording disabled");
         return false;
     }
-    if (!SD.exists(RIDE_DIR)) SD.mkdir(RIDE_DIR);
     Serial.printf("[rec] SD ready, %llu MB free\n",
                   (SD.totalBytes() - SD.usedBytes()) / (1024ULL * 1024ULL));
     return true;
@@ -187,7 +190,10 @@ void startRide() {
     }
 
     makeRidePath(ridePath, sizeof(ridePath), s.utc);
-    if (!fit.begin(SD, ridePath, s.utc)) {
+    sdLock();
+    bool opened = fit.begin(SD, ridePath, s.utc);
+    sdUnlock();
+    if (!opened) {
         Serial.printf("[rec] failed to open %s\n", ridePath);
         return;
     }
@@ -209,9 +215,11 @@ void stopRide(bool save) {
     if (!fit.isOpen()) return;
     RideState s = g_state.snapshot();
     endUtc = s.timeValid ? s.utc : startUtc + timerS;
+    sdLock();
     fit.finish(endUtc, distanceM, timerS);
+    if (!save) SD.remove(ridePath);
+    sdUnlock();
     if (!save) {
-        SD.remove(ridePath);
         diag::log("ride discarded");
     } else {
         diag::log("ride saved: %.2f km, %lu s", distanceM / 1000.0,
@@ -257,20 +265,26 @@ bool sdMounted() { return sdOk && !usb_storage::hostActive(); }
 
 int rideCount() {
     if (!sdOk) return 0;
+    sdLock();
     File dir = SD.open(RIDE_DIR);
-    if (!dir) return 0;
     int n = 0;
-    for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
-        if (!f.isDirectory()) n++;
-        f.close();
+    if (dir) {
+        for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
+            if (!f.isDirectory()) n++;
+            f.close();
+        }
+        dir.close();
     }
-    dir.close();
+    sdUnlock();
     return n;
 }
 
 uint32_t sdFreeMB() {
     if (!sdOk) return 0;
-    return (uint32_t)((SD.totalBytes() - SD.usedBytes()) / (1024ULL * 1024ULL));
+    sdLock();
+    uint32_t mb = (uint32_t)((SD.totalBytes() - SD.usedBytes()) / (1024ULL * 1024ULL));
+    sdUnlock();
+    return mb;
 }
 
 void task(void*) {
@@ -305,7 +319,9 @@ void task(void*) {
             r.powerW = s.powerW;
             r.heartRate = s.heartRateBpm;
             r.cadence = s.cadenceRpm;
+            sdLock();
             fit.writeRecord(r);
+            sdUnlock();
         }
 
         g_state.with([&](RideState& st) {
@@ -320,7 +336,9 @@ void task(void*) {
         });
 
         if (timerS - lastFlushS >= FIT_FLUSH_EVERY_S) {
+            sdLock();
             fit.checkpoint();
+            sdUnlock();
             lastFlushS = timerS;
         }
     }

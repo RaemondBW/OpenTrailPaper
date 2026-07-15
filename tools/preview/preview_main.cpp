@@ -321,7 +321,7 @@ int main(int argc, char** argv) {
 
     // Firmware update modal
     clearWhite(fb.data());
-    ui_render_update_overlay("Downloading", 42, fb.data());
+    ui_render_update_overlay("Downloading", 100, fb.data());
     emit("update.png");
 
     // Menu (1h)

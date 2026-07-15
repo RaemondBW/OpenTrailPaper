@@ -22,13 +22,22 @@
 #include "ui_dashboard.h"
 #include "board_power.h"
 #include "i2c_bus.h"
+#include "sd_bus.h"
 #include "usb_storage.h"
 #include "diag.h"
+
+#if __has_include("esp_core_dump.h")
+#include "esp_core_dump.h"
+#define HAVE_COREDUMP 1
+#endif
 
 SharedRideState g_state;
 
 // Serializes all I2C access (fuel gauge / touch / IO expander / RTC).
 SemaphoreHandle_t g_i2cMutex = nullptr;
+
+// Serializes all SD (SPI) access (recorder / map tiles / BLE saves / diag).
+SemaphoreHandle_t g_sdMutex = nullptr;
 
 static bool ioExpanderOk = false;
 
@@ -94,6 +103,35 @@ static const char* resetReasonStr(esp_reset_reason_t r) {
     }
 }
 
+// After a panic, the ESP32 auto-writes a full core dump to the `coredump`
+// flash partition (enabled in the Arduino sdkconfig). At the next boot we
+// summarize it — crashing task + program counter + backtrace — into the SD
+// diag log so a crash is diagnosable without a serial monitor, then erase it.
+// Decode the backtrace PCs offline with:
+//   xtensa-esp32s3-elf-addr2line -e .pio/build/t5s3-pro/firmware.elf <PC …>
+static void logCoreDumpIfAny() {
+#ifdef HAVE_COREDUMP
+    esp_core_dump_summary_t* s =
+        (esp_core_dump_summary_t*)malloc(sizeof(esp_core_dump_summary_t));
+    if (!s) return;
+    if (esp_core_dump_get_summary(s) == ESP_OK) {
+        diag::log("CRASH dump: task '%s' PC=0x%08x", s->exc_task,
+                  (unsigned)s->exc_pc);
+        char bt[220];
+        int o = 0;
+        for (uint32_t i = 0; i < s->exc_bt_info.depth &&
+                             o < (int)sizeof(bt) - 12; ++i) {
+            o += snprintf(bt + o, sizeof(bt) - o, "0x%08x ",
+                          (unsigned)s->exc_bt_info.bt[i]);
+        }
+        diag::log("CRASH backtrace%s: %s",
+                  s->exc_bt_info.corrupted ? " (corrupt)" : "", bt);
+        esp_core_dump_image_erase();   // consumed — don't re-log next boot
+    }
+    free(s);
+#endif
+}
+
 void setup() {
     // NOTE: the CPU runs at the default 240 MHz. An experimental 160 MHz
     // downclock (for power saving) was REMOVED — the OPI PSRAM couldn't handle
@@ -110,9 +148,12 @@ void setup() {
     esp_reset_reason_t rr = esp_reset_reason();
     diag::log("boot firmware %s (reset: %s [%d])", FIRMWARE_VERSION,
               resetReasonStr(rr), (int)rr);
+    if (rr == ESP_RST_PANIC || rr == ESP_RST_INT_WDT || rr == ESP_RST_TASK_WDT)
+        logCoreDumpIfAny();          // save the backtrace to SD after a crash
     diag::log("cpu %d MHz", getCpuFrequencyMhz());
     g_state.begin();
     g_i2cMutex = xSemaphoreCreateMutex();   // guard the shared I2C bus
+    g_sdMutex = xSemaphoreCreateRecursiveMutex();  // guard the shared SD bus
     Wire.begin(BOARD_SDA, BOARD_SCL);
 
     // GPS (and LoRa) 3V3 rail is gated by the IO expander.
