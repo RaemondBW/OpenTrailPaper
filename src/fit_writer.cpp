@@ -108,12 +108,34 @@ uint16_t crc16(uint16_t crc, uint8_t byte) {
 }
 
 uint32_t fitTime(time_t utc) { return (uint32_t)(utc - FIT_EPOCH_OFFSET); }
+time_t   utcFromFit(uint32_t fit) { return (time_t)fit + FIT_EPOCH_OFFSET; }
 
 void put16(uint8_t* p, uint16_t v) { p[0] = v & 0xFF; p[1] = v >> 8; }
 void put32(uint8_t* p, uint32_t v) {
     p[0] = v & 0xFF; p[1] = (v >> 8) & 0xFF;
     p[2] = (v >> 16) & 0xFF; p[3] = (v >> 24) & 0xFF;
 }
+uint32_t get32(const uint8_t* p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
+           ((uint32_t)p[3] << 24);
+}
+
+// begin() always emits the same prologue, so its length is fixed: the 12-byte
+// header, then the file_id definition + message, the timer-start event
+// definition + message, and the record definition. Records follow at a fixed
+// stride. repair() relies on both to find where the record stream starts and
+// how far it got. Keep in sync with begin() / writeRecord().
+constexpr uint32_t PROLOGUE_BYTES = 12 +          // header
+                                    (6 + 5 * 3) + // file_id definition
+                                    14 +          // file_id message
+                                    (6 + 4 * 3) + // event definition
+                                    8 +           // timer-start event
+                                    (6 + 9 * 3);  // record definition
+constexpr uint32_t RECORD_BYTES = 25;
+
+// Byte offsets within a record message, mirroring writeRecord().
+constexpr uint32_t REC_OFF_TIMESTAMP = 1;
+constexpr uint32_t REC_OFF_DISTANCE  = 15;
 
 }  // namespace
 
@@ -137,7 +159,9 @@ void FitWriter::writeDefinition(uint8_t localType, uint16_t globalNum,
 }
 
 bool FitWriter::begin(fs::FS& fs, const char* path, time_t startUtc) {
-    file_ = fs.open(path, FILE_WRITE);
+    // "w+", not FILE_WRITE ("w"): finish() computes the trailing CRC by
+    // re-reading the file, and a write-only handle reads back zero bytes.
+    file_ = fs.open(path, "w+");
     if (!file_) return false;
     startUtc_ = startUtc;
     dataSize_ = 0;
@@ -195,6 +219,80 @@ void FitWriter::writeRecord(const Record& r) {
     buf[23] = r.heartRate;
     buf[24] = r.cadence;
     writeBytes(buf, sizeof(buf));
+}
+
+FitWriter::RepairResult FitWriter::repair(fs::FS& fs, const char* path) {
+    RepairResult res;
+
+    File f = fs.open(path, "r+");  // read/write, no truncate
+    if (!f) return res;            // INVALID
+    uint32_t fileSize = f.size();
+    if (fileSize < PROLOGUE_BYTES) { f.close(); return res; }
+
+    uint8_t prologue[PROLOGUE_BYTES];
+    if (f.read(prologue, PROLOGUE_BYTES) != (int)PROLOGUE_BYTES) {
+        f.close();
+        return res;
+    }
+    if (prologue[0] != 12 || memcmp(&prologue[8], ".FIT", 4) != 0) {
+        f.close();
+        return res;  // not one of ours
+    }
+
+    // A finished ride is exactly header + data_size + the 2-byte CRC. Anything
+    // else is a ride that was still being written when the device went down;
+    // its data_size only reflects the last checkpoint, so don't trust it.
+    uint32_t headerDataSize = get32(&prologue[4]);
+    if (fileSize == 12 + headerDataSize + 2) {
+        f.close();
+        res.status = RepairResult::ALREADY_FINISHED;
+        return res;
+    }
+
+    res.startUtc = utcFromFit(get32(&prologue[43]));  // file_id.time_created
+
+    // Walk the record stream. A reset can leave a torn final record, so only
+    // whole ones count; the tail written below overwrites any partial bytes.
+    uint32_t records = (fileSize - PROLOGUE_BYTES) / RECORD_BYTES;
+    time_t   endUtc = res.startUtc;
+    double   distanceM = 0;
+    uint32_t good = 0;
+    uint8_t  rec[RECORD_BYTES];
+    for (uint32_t i = 0; i < records; ++i) {
+        f.seek(PROLOGUE_BYTES + i * RECORD_BYTES);
+        if (f.read(rec, RECORD_BYTES) != (int)RECORD_BYTES) break;
+        if (rec[0] != L_RECORD) break;  // stream desynced — salvage what we have
+        endUtc = utcFromFit(get32(&rec[REC_OFF_TIMESTAMP]));
+        distanceM = get32(&rec[REC_OFF_DISTANCE]) / 100.0;
+        good = i + 1;
+    }
+
+    if (good == 0) {
+        f.close();
+        res.status = RepairResult::EMPTY;
+        return res;
+    }
+
+    res.records = (int)good;
+    res.distanceM = distanceM;
+    // The true timer count died with the reset; elapsed time is the honest
+    // stand-in, and matches what the record stream actually spans.
+    res.elapsedS = (uint32_t)(endUtc - res.startUtc);
+
+    // Hand the open handle to a writer positioned just past the last whole
+    // record, so finish() appends the usual tail and fixes up size + CRC.
+    FitWriter w;
+    w.file_ = f;
+    w.startUtc_ = res.startUtc;
+    w.dataSize_ = PROLOGUE_BYTES - 12 + good * RECORD_BYTES;
+    if (!w.file_.seek(PROLOGUE_BYTES + good * RECORD_BYTES)) {
+        f.close();
+        return res;  // INVALID
+    }
+    if (!w.finish(endUtc, distanceM, res.elapsedS)) return res;
+
+    res.status = RepairResult::REPAIRED;
+    return res;
 }
 
 bool FitWriter::finish(time_t endUtc, double totalDistanceM, uint32_t timerS) {

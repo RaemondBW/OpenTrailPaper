@@ -32,15 +32,37 @@ public:
 
     void writeRecord(const Record& r);
 
-    // Call periodically so a crash mid-ride loses seconds, not the ride.
-    // Also patches the header's data_size to the bytes written so far, so a
-    // ride cut short by power loss is still recoverable without finish().
+    // Call periodically to push buffered records onto the card, so a crash
+    // mid-ride loses seconds rather than minutes. This does NOT leave a
+    // readable file behind: an activity is only valid once finish() has
+    // appended the lap/session/activity messages and the trailing CRC. A ride
+    // cut short by a reset is put back together by repair() on the next boot.
     void checkpoint();
 
     // Timer-stop event, lap, session, activity, then header/CRC fixup.
     bool finish(time_t endUtc, double totalDistanceM, uint32_t timerS);
 
     bool isOpen() const { return (bool)file_; }
+
+    struct RepairResult {
+        enum Status {
+            ALREADY_FINISHED,  // has a trailing CRC — left untouched
+            REPAIRED,          // records salvaged and finish() applied
+            EMPTY,             // valid prologue but no records to salvage
+            INVALID,           // not a file this writer produced
+        };
+        Status   status = INVALID;
+        int      records = 0;
+        double   distanceM = 0;
+        uint32_t elapsedS = 0;
+        time_t   startUtc = 0;
+    };
+
+    // Finalizes, in place, a ride left unfinished by a reset or power loss.
+    // Replays the record stream to recover the end time and distance, then
+    // writes the same tail finish() would have. Safe to call on any file: an
+    // already-finished ride is reported as ALREADY_FINISHED and not rewritten.
+    static RepairResult repair(fs::FS& fs, const char* path);
 
 private:
     void writeBytes(const uint8_t* data, size_t len);
