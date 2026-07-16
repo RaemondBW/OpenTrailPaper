@@ -42,13 +42,14 @@ NimBLECharacteristic* settingsChr = nullptr;
 // Settings payload (little-endian): { int16 ftpW, int16 tzMin, u8 useMiles,
 // u8 backlight }. Mirrored both ways so the app and device stay in sync.
 void writeSettingsValue(NimBLECharacteristic* c) {
-    uint8_t buf[6];
+    uint8_t buf[7];
     int16_t ftp = (int16_t)settings::ftpWatts();
     int16_t tz = (int16_t)settings::tzMinutes();
     memcpy(buf, &ftp, 2);
     memcpy(buf + 2, &tz, 2);
     buf[4] = settings::useMiles() ? 1 : 0;
     buf[5] = (uint8_t)settings::backlight();
+    buf[6] = settings::clock24h() ? 1 : 0;
     c->setValue(buf, sizeof(buf));
 }
 
@@ -70,10 +71,12 @@ class SettingsCb : public NimBLECharacteristicCallbacks {
                 settings::setUseMiles(v[4] != 0);
                 settings::setBacklight((uint8_t)v[5]);
             }
+            if (v.size() >= 7) settings::setClock24h(v[6] != 0);
             g_state.with([&](RideState& s) {
                 s.ftpW = (uint16_t)settings::ftpWatts();
                 s.tzMin = (int16_t)settings::tzMinutes();
                 s.useMiles = settings::useMiles();
+                s.clock24h = settings::clock24h();
             });
             Serial.printf("[srv] settings set: ftp=%d tz=%d miles=%d bl=%d\n",
                           settings::ftpWatts(), settings::tzMinutes(),
@@ -149,17 +152,29 @@ class RouteCb : public NimBLECharacteristicCallbacks {
             memcpy(routeReqName, payload, n);
             routeReqName[n] = 0;
             routeReq = RREQ_DELETE;
-        } else if (op == 0x08 && plen >= 8) {  // GPS aiding: phone's location
+        } else if (op == 0x08 && plen >= 8) {  // phone's live location
             int32_t latE7, lonE7;
             memcpy(&latE7, payload, 4);
             memcpy(&lonE7, payload + 4, 4);
             uint32_t utc = 0;
             bool haveTime = false;
             if (plen >= 12) { memcpy(&utc, payload + 8, 4); haveTime = utc > 1735689600UL; }
+            int16_t altM = 0;
+            bool haveAlt = false;
+            if (plen >= 14) { memcpy(&altM, payload + 12, 2); haveAlt = true; }
             double lat = latE7 / 1e7, lon = lonE7 / 1e7;
+            // Warm-start the receiver (throttled + no-fix-only inside the task).
             gps_service::seedPosition(lat, lon, (time_t)utc, haveTime, 5000.0f);
             settings::setLastPosition(lat, lon);
-            diag::log("gps aiding from phone: %.5f,%.5f time=%d", lat, lon, haveTime);
+            // Stash as the phone fallback fix (used when the device GPS is cold).
+            uint32_t nowMs = millis();
+            g_state.with([&](RideState& st) {
+                st.phoneLat = lat;
+                st.phoneLon = lon;
+                if (haveAlt) st.phoneAltM = (float)altM;
+                st.phoneFixValid = true;
+                st.phoneFixMs = nowMs;
+            });
         }
     }
 };
@@ -246,7 +261,8 @@ static void sendSensorList() {
 //   Device -> phone:  list:     [0x01][u32 size][name] per ride, [0x03] end
 //                     download:  [0x10][u32 total], [0x11]<bytes>…, [0x12] end
 //                     delete ack: [0x13]        error (e.g. recording): [0x1F]
-enum RideReq { REQ_NONE, REQ_LIST, REQ_DOWNLOAD, REQ_DELETE, REQ_LOG };
+enum RideReq { REQ_NONE, REQ_LIST, REQ_DOWNLOAD, REQ_DELETE, REQ_LOG,
+               REQ_LOG_LIST, REQ_LOG_FILE };
 volatile RideReq rideReq = REQ_NONE;
 char rideReqName[48];
 
@@ -260,17 +276,20 @@ class RidesCb : public NimBLECharacteristicCallbacks {
         if (v.empty()) return;
         if (v[0] == 0x01) {
             rideReq = REQ_LIST;
-        } else if (v[0] == 0x05) {                    // download diagnostics log
+        } else if (v[0] == 0x05) {                    // download today's log
             rideReq = REQ_LOG;
+        } else if (v[0] == 0x06) {                    // list per-day log files
+            rideReq = REQ_LOG_LIST;
         } else if (v[0] == 0x04 && v.size() >= 3) {   // window ack
             rideAckSeq = (uint8_t)v[1] | ((uint8_t)v[2] << 8);
             rideAckPending = true;
-        } else if ((v[0] == 0x02 || v[0] == 0x03) && v.size() > 1) {
+        } else if ((v[0] == 0x02 || v[0] == 0x03 || v[0] == 0x07) && v.size() > 1) {
             size_t n = v.size() - 1;
             if (n > sizeof(rideReqName) - 1) n = sizeof(rideReqName) - 1;
             memcpy(rideReqName, v.data() + 1, n);
             rideReqName[n] = 0;
-            rideReq = v[0] == 0x02 ? REQ_DOWNLOAD : REQ_DELETE;
+            rideReq = v[0] == 0x02 ? REQ_DOWNLOAD
+                    : v[0] == 0x03 ? REQ_DELETE : REQ_LOG_FILE;   // 0x07 = one log file
         }
     }
 };
@@ -429,6 +448,50 @@ void sendLog() {
     }
     diag::flushToSD();                 // make sure the newest lines are on SD
     streamFileWindowed(diag::logPath(), "diag.log");
+}
+
+// List the per-day log files under /logs. Reply: [0x30][u32 size][name] per
+// file, then [0x31] done ([0x1F] if SD busy).
+void sendLogList() {
+    if (ride_recorder::isRecording() || !ride_recorder::sdMounted()) {
+        notifyByte(0x1F);
+        return;
+    }
+    diag::flushToSD();                 // so today's file exists + is current
+    sdLock();
+    File dir = SD.open("/logs");
+    if (!dir) { sdUnlock(); notifyByte(0x31); return; }
+    for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
+        if (!f.isDirectory()) {
+            const char* base = strrchr(f.name(), '/');
+            base = base ? base + 1 : f.name();
+            if (strstr(base, ".log")) {
+                uint8_t pkt[64];
+                pkt[0] = 0x30;
+                uint32_t sz = f.size();
+                memcpy(pkt + 1, &sz, 4);
+                size_t nl = strlen(base);
+                if (nl > sizeof(pkt) - 5) nl = sizeof(pkt) - 5;
+                memcpy(pkt + 5, base, nl);
+                sendChunk(ridesChr, pkt, 5 + nl);
+            }
+        }
+        f.close();
+    }
+    dir.close();
+    sdUnlock();
+    notifyByte(0x31);
+}
+
+void sendLogFile(const char* name) {
+    if (ride_recorder::isRecording() || !ride_recorder::sdMounted()) {
+        notifyByte(0x1F);
+        return;
+    }
+    diag::flushToSD();
+    char path[64];
+    snprintf(path, sizeof(path), "/logs/%.40s", name);
+    streamFileWindowed(path, name);
 }
 
 void deleteRide(const char* name) {
@@ -778,20 +841,35 @@ void mapCommit() {
 // in the server task to stay off the BLE host thread.
 void sendTileList() {
     constexpr int TILE_LIST_MAX = 512;
-    uint8_t begin = 0xD0;
-    mapNotify(&begin, 1);
     static char ids[TILE_LIST_MAX][24];
     int n = map_store::listTileIds(ids, TILE_LIST_MAX);
+
+    uint8_t begin = 0xD0;
+    sendChunk(mapChr, &begin, 1);
+
+    // Pack comma-separated ids into MTU-sized 0xD1 packets so a big list is a
+    // handful of reliable notifications, not one per tile (that was slow).
+    int cap = (int)negotiatedMTU - 3;      // leave ATT overhead
+    if (cap < 20) cap = 20;
+    if (cap > 240) cap = 240;
+    uint8_t pkt[244];
+    int len = 1;
+    pkt[0] = 0xD1;
     for (int i = 0; i < n; ++i) {
-        uint8_t pkt[25];
-        pkt[0] = 0xD1;
-        size_t idl = strlen(ids[i]);
-        if (idl > sizeof(pkt) - 1) idl = sizeof(pkt) - 1;
-        memcpy(pkt + 1, ids[i], idl);
-        mapNotify(pkt, 1 + idl);
+        int idl = (int)strlen(ids[i]);
+        if (idl > 22) idl = 22;
+        if (len > 1 && len + 1 + idl > cap) {   // flush the full packet
+            sendChunk(mapChr, pkt, len);
+            len = 1;
+        }
+        if (len > 1) pkt[len++] = ',';
+        memcpy(pkt + len, ids[i], idl);
+        len += idl;
     }
+    if (len > 1) sendChunk(mapChr, pkt, len);
+
     uint8_t end = 0xD2;
-    mapNotify(&end, 1);
+    sendChunk(mapChr, &end, 1);
     diag::log("tile list: %d ids sent", n);
 }
 
@@ -950,6 +1028,12 @@ void task(void*) {
             } else if (rideReq == REQ_LOG) {
                 rideReq = REQ_NONE;
                 sendLog();
+            } else if (rideReq == REQ_LOG_LIST) {
+                rideReq = REQ_NONE;
+                sendLogList();
+            } else if (rideReq == REQ_LOG_FILE) {
+                rideReq = REQ_NONE;
+                sendLogFile(rideReqName);
             }
             if (routeReq == RREQ_LIST) {
                 routeReq = RREQ_NONE;

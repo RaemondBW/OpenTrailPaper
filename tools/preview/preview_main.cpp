@@ -20,6 +20,16 @@
 namespace routes {
 int pointCount() { return 0; }
 void point(int, double& lat, double& lon) { lat = 0; lon = 0; }
+const char* activeName() { return ""; }
+}
+
+// map_store is device-only (SD-backed tile store). On the host, forward the
+// route-preview road-context render to map_tiles' single loaded blob.
+namespace map_store {
+void renderInto(double lat, double lon, float mpp, int cx, int cy, float rot,
+                MapScreenData& out) {
+    map_tiles::project(lat, lon, mpp, cx, cy, rot, out);
+}
 }
 
 namespace {
@@ -288,6 +298,16 @@ int main(int argc, char** argv) {
     clearWhite(fb.data());
     ui_render_map(map, s, fb.data());
     emit("map.png");
+
+    // No-map-coverage state (nothing downloaded for this position).
+    {
+        MapScreenData empty = map;
+        empty.featureCount = 0;
+        empty.hasMap = false;
+        clearWhite(fb.data());
+        ui_render_map(empty, s, fb.data());
+        emit("map_nomap.png");
+    }
 
     // Powered-off screen: full-screen map backdrop + plate
     clearWhite(fb.data());

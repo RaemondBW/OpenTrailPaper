@@ -47,6 +47,13 @@ struct MapScreenData {
     // Screen direction of true north (0 = up; track-up sets -heading).
     float northDeg;
     bool trackUp;
+
+    // Position is coming from the connected phone (device GPS has no fix).
+    bool phonePosition = false;
+
+    // A map actually covers the current position. When false the map screen
+    // shows a "no map here — download it in the app" prompt.
+    bool hasMap = true;
 };
 
 // Compass touch target (tap toggles north-up / track-up)

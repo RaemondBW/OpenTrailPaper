@@ -11,9 +11,9 @@
 #include "usb_storage.h"
 #include "diag.h"
 
-// Embedded default map (board_build.embed_files = data/sf.ebm).
-extern const uint8_t map_ebm_start[] asm("_binary_data_sf_ebm_start");
-extern const uint8_t map_ebm_end[] asm("_binary_data_sf_ebm_end");
+// No embedded fallback map — the device only shows maps that were explicitly
+// downloaded to the SD card. Where nothing covers the position the map screen
+// shows "NO MAP HERE".
 
 namespace {
 
@@ -22,9 +22,9 @@ constexpr char TILE_DIR[] = "/maps/tiles";
 
 uint8_t* activeBuf = nullptr;     // PSRAM copy of the active whole SD map (or null)
 size_t activeLen = 0;
-bool usingEmbedded = true;
 
-// The whole-map/embedded blob rendered when no per-position tiles cover us.
+// The active whole-map blob rendered as a base where no per-position tiles
+// cover us (null when no whole map is loaded).
 const uint8_t* primaryBlob = nullptr;
 size_t primaryLen = 0;
 
@@ -69,15 +69,12 @@ bool boundsCover(double lat, double lon) {
            lon >= loadedW && lon <= loadedE;
 }
 
-void loadEmbedded() {
-    size_t len = map_ebm_end - map_ebm_start;
-    if (map_tiles::load(map_ebm_start, len)) {
-        usingEmbedded = true;
-        primaryBlob = map_ebm_start;
-        primaryLen = len;
-        haveBounds = headerBounds(map_ebm_start, loadedS, loadedW, loadedN, loadedE);
-        diag::log("map: embedded default (%u KB)", (unsigned)(len / 1024));
-    }
+// No whole map covers us (or none is downloaded): clear the primary base so
+// the renderer draws only tiles (if any) and the map screen reports no coverage.
+void clearPrimary() {
+    primaryBlob = nullptr;
+    primaryLen = 0;
+    haveBounds = false;
 }
 
 // Read a whole .ebm file into a fresh PSRAM buffer and make it the active map.
@@ -99,7 +96,6 @@ bool loadFile(const char* path) {
     if (activeBuf) heap_caps_free(activeBuf);   // free the previous SD map
     activeBuf = buf;
     activeLen = len;
-    usingEmbedded = false;
     primaryBlob = buf;
     primaryLen = len;
     haveBounds = headerBounds(buf, loadedS, loadedW, loadedN, loadedE);
@@ -216,6 +212,43 @@ const uint8_t* ensureTileLoaded(int idx, size_t& outLen) {
     return buf;
 }
 
+// Interpolate elevation from a blob's ELV1 grid (appended after the tile data).
+// Returns NAN if the blob has no elevation block covering (lat, lon).
+float elevFromBlob(const uint8_t* b, size_t len, double lat, double lon) {
+    if (len < 36 || memcmp(b, "EBM1", 4) != 0) return NAN;
+    int32_t nx = rd<int32_t>(b + 28), ny = rd<int32_t>(b + 32);
+    const uint8_t* index = b + 36;
+    size_t maxEnd = 36 + (size_t)nx * ny * 8;      // end of the tile data
+    for (int k = 0; k < nx * ny; ++k) {
+        uint32_t off = rd<uint32_t>(index + (size_t)k * 8);
+        uint32_t l = rd<uint32_t>(index + (size_t)k * 8 + 4);
+        if (off && (size_t)off + l > maxEnd) maxEnd = (size_t)off + l;
+    }
+    if (maxEnd + 44 > len || memcmp(b + maxEnd, "ELV1", 4) != 0) return NAN;
+    const uint8_t* p = b + maxEnd + 4;
+    int32_t gw = rd<int32_t>(p), gh = rd<int32_t>(p + 4);
+    double s = rd<double>(p + 8), w = rd<double>(p + 16);
+    double n = rd<double>(p + 24), e = rd<double>(p + 32);
+    const uint8_t* grid = p + 40;
+    if (gw < 2 || gh < 2 || e <= w || n <= s) return NAN;
+    if (maxEnd + 44 + (size_t)gw * gh * 2 > len) return NAN;
+
+    double fx = (lon - w) / (e - w) * (gw - 1);
+    double fy = (lat - s) / (n - s) * (gh - 1);
+    if (fx < 0) fx = 0; if (fx > gw - 1) fx = gw - 1;
+    if (fy < 0) fy = 0; if (fy > gh - 1) fy = gh - 1;
+    int x0 = (int)fx, y0 = (int)fy;
+    int x1 = x0 + 1 < gw ? x0 + 1 : x0;
+    int y1 = y0 + 1 < gh ? y0 + 1 : y0;
+    float tx = (float)(fx - x0), ty = (float)(fy - y0);
+    auto gv = [&](int xx, int yy) -> float {
+        return (float)rd<int16_t>(grid + ((size_t)yy * gw + xx) * 2);
+    };
+    float top = gv(x0, y0) + (gv(x1, y0) - gv(x0, y0)) * tx;
+    float bot = gv(x0, y1) + (gv(x1, y1) - gv(x0, y1)) * tx;
+    return top + (bot - top) * ty;
+}
+
 }  // namespace
 
 namespace map_store {
@@ -225,13 +258,13 @@ void begin(double lat, double lon) {
     if (!SD.exists(MAP_DIR)) SD.mkdir(MAP_DIR);
     sdUnlock();
     scanTiles();
-    if (!loadCovering(lat, lon)) loadEmbedded();
+    if (!loadCovering(lat, lon)) clearPrimary();   // no fallback map
 }
 
 void ensureForPosition(double lat, double lon) {
     if (boundsCover(lat, lon)) return;      // current whole map already covers us
     if (loadCovering(lat, lon)) return;     // switched to a better downloaded map
-    if (!usingEmbedded && !haveBounds) loadEmbedded();
+    if (!boundsCover(lat, lon)) clearPrimary();   // nothing whole-map covers us now
 }
 
 void renderInto(double lat, double lon, float metersPerPixel, int centerX,
@@ -258,8 +291,14 @@ void renderInto(double lat, double lon, float metersPerPixel, int centerX,
         }
     }
 
-    // No H3 tiles cover this spot: fall back to the whole-map / embedded blob.
-    if (projected == 0 && primaryBlob) {
+    // Always draw the whole-map / embedded blob as a BASE layer underneath the
+    // tiles. Tiles cover only the downloaded area; when zoomed out past them the
+    // rest of the viewport would otherwise be blank. The base fills those gaps
+    // where it has data (its viewport reject draws nothing outside its bounds).
+    // Tiles are projected first so they win the polygon budget; where both have
+    // the same roads they land on the same pixels (identical 3 m simplification),
+    // so the overlap is invisible.
+    if (primaryBlob) {
         map_tiles::projectBlobInto(primaryBlob, primaryLen, lat, lon,
                                    metersPerPixel, centerX, centerY, rotateDeg);
     }
@@ -335,6 +374,28 @@ bool hasTile(const char* id) {
 
 int tileCount() { return g_tileCount; }
 
+bool coversPosition(double lat, double lon) {
+    for (int i = 0; i < g_tileCount; ++i) {
+        const TileMeta& t = g_tiles[i];
+        if (lat >= t.s && lat <= t.n && lon >= t.w && lon <= t.e) return true;
+    }
+    return haveBounds && lat >= loadedS && lat <= loadedN &&
+           lon >= loadedW && lon <= loadedE;
+}
+
+float elevationAt(double lat, double lon) {
+    for (int i = 0; i < g_tileCount; ++i) {
+        const TileMeta& t = g_tiles[i];
+        if (lat < t.s || lat > t.n || lon < t.w || lon > t.e) continue;
+        size_t len;
+        const uint8_t* b = ensureTileLoaded(i, len);
+        if (!b) continue;
+        float ev = elevFromBlob(b, len, lat, lon);
+        if (!isnan(ev)) return ev;
+    }
+    return NAN;
+}
+
 int listTileIds(char out[][24], int maxOut) {
     int n = 0;
     for (int i = 0; i < g_tileCount && n < maxOut; ++i) {
@@ -356,14 +417,6 @@ uint32_t sdFreeKB() {
 
 int listMaps(MapBounds* out, int maxOut) {
     int n = 0;
-    // Embedded default first.
-    if (n < maxOut) {
-        double s, w, nn, e;
-        if (headerBounds(map_ebm_start, s, w, nn, e)) {
-            out[n] = {s, w, nn, e, true};
-            n++;
-        }
-    }
     sdLock();
     File dir = SD.open(MAP_DIR);
     if (dir) {

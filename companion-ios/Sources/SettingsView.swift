@@ -17,7 +17,11 @@ struct SettingsView: View {
                         Spacer()
                     }
                     .padding(.top, 8)
-                    if ble.state == .connected { firmwareCard }
+                    // Keep the firmware card visible through the reboot/disconnect
+                    // of an in-progress (or just-finished) update so its status
+                    // doesn't vanish.
+                    if ble.state == .connected || ble.otaInProgress
+                        || ble.otaPhase == .failed || ble.otaPhase == .done { firmwareCard }
                     if ble.state == .connected { sensorsCard }
                     Card {
                         VStack(alignment: .leading, spacing: 10) {
@@ -29,6 +33,21 @@ struct SettingsView: View {
                                 Text("Standard (mi)").tag(true)
                             }
                             .pickerStyle(.segmented)
+                        }
+                    }
+
+                    if ble.state == .connected {
+                        Card {
+                            VStack(alignment: .leading, spacing: 10) {
+                                Text("Clock").trackedLabel()
+                                Picker("Clock", selection: Binding(
+                                    get: { ble.clock24h },
+                                    set: { ble.setClock24h($0) })) {
+                                    Text("24-hour").tag(true)
+                                    Text("12-hour").tag(false)
+                                }
+                                .pickerStyle(.segmented)
+                            }
                         }
                     }
 
@@ -127,20 +146,55 @@ struct SettingsView: View {
         Card {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Diagnostics").trackedLabel()
-                Text("The device keeps a log (boot, GPS, BLE, OTA timing, errors). Download it to review or share if something goes wrong.")
+                Text("The device keeps a daily log (boot, GPS, BLE, OTA, errors). Grab today's, or pick a specific day.")
                     .font(.system(size: 12)).foregroundStyle(Palette.muted)
-                if ble.downloadingName == "diagnostics" {
+                if ble.downloadingLog {
                     ProgressView(value: ble.downloadProgress) {
-                        Text("Downloading log…").font(.system(size: 12))
-                            .foregroundStyle(Palette.muted)
+                        Text("Downloading \(logDayLabel(ble.downloadingName ?? "log"))…")
+                            .font(.system(size: 12)).foregroundStyle(Palette.muted)
                     }
                 } else {
-                    PrimaryButton(title: "Download device log",
+                    PrimaryButton(title: "Download today's log",
                                   systemImage: "doc.text.magnifyingglass",
                                   enabled: true) { ble.downloadLog() }
+                    Button { ble.requestLogList() } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "calendar")
+                            Text("Other days")
+                            Spacer()
+                            if ble.loadingLogs { ProgressView() }
+                        }
+                        .font(.system(size: 13, weight: .semibold)).foregroundStyle(Palette.accent)
+                    }
+                    ForEach(ble.deviceLogs) { log in
+                        Button { ble.downloadLogFile(log.name) } label: {
+                            HStack {
+                                Text(logDayLabel(log.name)).font(.system(size: 13))
+                                    .foregroundStyle(Palette.ink)
+                                Spacer()
+                                Text(sizeLabel(log.size)).font(.system(size: 11))
+                                    .foregroundStyle(Palette.muted)
+                                Image(systemName: "arrow.down.circle").foregroundStyle(Palette.accent)
+                            }
+                        }
+                    }
                 }
             }
         }
+    }
+
+    // "20260716.log" -> "Jul 16, 2026"; "pending.log" -> "Before first GPS fix".
+    private func logDayLabel(_ name: String) -> String {
+        let base = name.replacingOccurrences(of: ".log", with: "")
+        if base == "pending" || base == "diag" { return base == "diag" ? "Today" : "Before first GPS fix" }
+        guard base.count == 8, let _ = Int(base) else { return name }
+        let f = DateFormatter(); f.dateFormat = "yyyyMMdd"; f.timeZone = TimeZone(secondsFromGMT: 0)
+        guard let d = f.date(from: base) else { return name }
+        let out = DateFormatter(); out.dateFormat = "MMM d, yyyy"
+        return out.string(from: d)
+    }
+    private func sizeLabel(_ bytes: Int) -> String {
+        bytes >= 1024 ? "\(bytes / 1024) KB" : "\(bytes) B"
     }
 
     private var tzLabel: String {
@@ -171,18 +225,27 @@ struct SettingsView: View {
                 }
 
                 if ble.otaInProgress {
-                    ProgressView(value: ble.otaProgress) {
-                        Text(ble.otaMessage ?? "Updating…").font(.system(size: 12))
-                            .foregroundStyle(Palette.muted)
+                    otaProgressView
+                } else if ble.otaPhase == .failed {
+                    HStack(spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Palette.accent)
+                        Text(ble.otaMessage ?? "Update failed").font(.system(size: 12))
+                            .foregroundStyle(Palette.ink)
                     }
-                    Text("Keep the app open and the device nearby until it finishes.")
+                    PrimaryButton(title: "Try again", systemImage: "arrow.clockwise",
+                                  enabled: true) { ble.startFirmwareUpdate() }
+                    Text("Or copy firmware.bin to the device's SD card and eject it — that path doesn't use Bluetooth.")
                         .font(.system(size: 11)).foregroundStyle(Palette.muted)
+                } else if ble.otaPhase == .done {
+                    HStack(spacing: 8) {
+                        Image(systemName: "checkmark.circle.fill").foregroundStyle(Palette.good)
+                        Text(ble.otaMessage ?? "Up to date").font(.system(size: 12))
+                            .foregroundStyle(Palette.good)
+                    }
                 } else if ble.updateAvailable {
                     PrimaryButton(title: "Install \(BLEManager.bundledFirmwareVersion)",
                                   systemImage: "arrow.down.circle",
                                   enabled: true) { confirmUpdate = true }
-                } else if let msg = ble.otaMessage {
-                    Text(msg).font(.system(size: 12)).foregroundStyle(Palette.muted)
                 } else if !ble.deviceFirmware.isEmpty {
                     Text("Up to date.").font(.system(size: 12)).foregroundStyle(Palette.muted)
                 }
@@ -194,6 +257,53 @@ struct SettingsView: View {
             Button("Install") { ble.startFirmwareUpdate() }
         } message: {
             Text("This sends the new firmware to your Bike GPS and restarts it. It takes a few minutes — keep the app open and the device close. If anything goes wrong, the device keeps running its current firmware.")
+        }
+    }
+
+    // Clear, phase-based progress while an OTA is running.
+    private var otaProgressView: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                if ble.otaPhase == .sending {
+                    Image(systemName: "arrow.up.circle.fill").foregroundStyle(Palette.accent)
+                } else {
+                    ProgressView()
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(otaTitle).font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Palette.ink)
+                    Text(ble.otaMessage ?? "").font(.system(size: 12))
+                        .foregroundStyle(Palette.muted)
+                }
+                Spacer()
+            }
+            if ble.otaPhase == .sending {
+                ProgressView(value: ble.otaProgress).tint(Palette.accent)
+                Text("\(Int(ble.otaProgress * 100))% sent")
+                    .font(.system(size: 11)).foregroundStyle(Palette.muted)
+            }
+            Text(otaHint).font(.system(size: 11)).foregroundStyle(Palette.muted)
+        }
+    }
+
+    private var otaTitle: String {
+        switch ble.otaPhase {
+        case .sending:    return "Step 1 of 2 · Sending firmware"
+        case .saving:     return "Step 1 of 2 · Saving to the device"
+        case .installing: return "Step 2 of 2 · Installing"
+        case .verifying:  return "Step 2 of 2 · Verifying"
+        default:          return "Updating"
+        }
+    }
+
+    private var otaHint: String {
+        switch ble.otaPhase {
+        case .sending, .saving:
+            return "Keep the app open and the device nearby, and don't lock the phone."
+        case .installing, .verifying:
+            return "The device restarts to install (~30 s) and reconnects on its own. Keep it powered on and close."
+        default:
+            return ""
         }
     }
 }

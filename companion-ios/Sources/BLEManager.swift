@@ -54,6 +54,13 @@ struct RideFile: Identifiable, Hashable {
     var id: String { name }
 }
 
+// A per-day diagnostics log file on the device (/logs/YYYYMMDD.log).
+struct LogFile: Identifiable, Hashable {
+    let name: String
+    let size: Int
+    var id: String { name }
+}
+
 // Live status pushed by the device once a second.
 struct DeviceStatus {
     var gpsFix = false
@@ -76,7 +83,9 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var ftpWatts = 250
     @Published var tzMinutes = -420
     @Published var backlight = 2        // 0 off .. 3 bright (mirrors device)
+    @Published var clock24h = true      // device status-bar clock format
     @Published var lastUploadProgress: Double? = nil   // 0...1 while sending
+    @Published var routeSent = false                   // last route reached the device
     @Published var lastMessage: String? = nil
 
     // Ride download
@@ -87,12 +96,19 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var downloadedFileURL: URL? = nil       // set when a ride is ready
 
     // Firmware / OTA
+    // Explicit phases so the UI can show exactly what's happening.
+    enum OTAPhase: Equatable { case idle, sending, saving, installing, verifying, done, failed }
     @Published var deviceFirmware: String = ""      // running version on the device
     @Published var otaInProgress = false
+    @Published var otaPhase: OTAPhase = .idle
     @Published var otaProgress: Double = 0
     @Published var otaMessage: String? = nil
+    private var otaWatchdog: Task<Void, Never>?
     @Published var logFileURL: URL? = nil           // device diagnostics log, ready to share
-    static let bundledFirmwareVersion = "v0.39"      // matches src/config.h
+    @Published var deviceLogs: [LogFile] = []        // per-day log files on the device
+    @Published var loadingLogs = false
+    private var logsBuilding: [LogFile] = []
+    static let bundledFirmwareVersion = "v0.50"      // matches src/config.h
 
     // Saved routes on the device
     @Published var deviceRoutes: [String] = []
@@ -126,6 +142,7 @@ final class BLEManager: NSObject, ObservableObject {
     private var tileQueue: [(id: String, data: Data)] = []
     private var currentTileId: String? = nil        // non-nil while sending a tile
     private var tileJobFailed = false
+    private var tilesMoreComing = false             // app still building tiles to enqueue
 
     private var central: CBCentralManager!
     private var peripheral: CBPeripheral?
@@ -139,13 +156,14 @@ final class BLEManager: NSObject, ObservableObject {
     // near the phone instead of cold-searching the whole sky.
     private let locationManager = CLLocationManager()
     private var wantsAiding = false
+    private var fixStableTask: Task<Void, Never>?   // debounce stopping the stream
     @Published var lastAidingSent: Date? = nil
 
     private var dlBuffer = Data()
     private var dlExpected = 0
     private var dlName = ""
     private var dlNextSeq: UInt16 = 0
-    private var downloadingLog = false
+    @Published private(set) var downloadingLog = false
 
     // OTA transfer state
     private var otaData = Data()
@@ -158,30 +176,65 @@ final class BLEManager: NSObject, ObservableObject {
         central = CBCentralManager(delegate: self, queue: .main)
         locationManager.delegate = self
         locationManager.desiredAccuracy = kCLLocationAccuracyHundredMeters
+        // Show last-known on-device tiles immediately; a refresh confirms them.
+        if let saved = UserDefaults.standard.stringArray(forKey: Self.tileCacheKey) {
+            deviceTileIds = Set(saved)
+        }
     }
 
-    // MARK: GPS aiding — send the phone's position to warm-start the receiver.
+    private static let tileCacheKey = "deviceTileIds"
+    private func cacheDeviceTiles() {
+        UserDefaults.standard.set(Array(deviceTileIds), forKey: Self.tileCacheKey)
+    }
 
-    /// Request a one-shot fix; delivered to the device when it arrives.
-    func sendLocationAiding() {
+    // MARK: GPS aiding + live phone position
+
+    // Stream the phone's location to the device: warm-starts its GPS (AGNSS
+    // seed), and serves as a fallback position + altitude source when the
+    // device's own GPS has no fix. Started on connect, stopped on disconnect.
+
+    /// Begin streaming the phone's location to the device.
+    func startLocationStream() {
         guard routeChar != nil, peripheral != nil else { return }
         wantsAiding = true
         let auth = locationManager.authorizationStatus
         if auth == .notDetermined {
             locationManager.requestWhenInUseAuthorization()
         } else if auth == .authorizedWhenInUse || auth == .authorizedAlways {
-            locationManager.requestLocation()
+            beginLocationUpdates()
         } else {
             wantsAiding = false   // denied — nothing we can do
         }
     }
 
+    private func beginLocationUpdates() {
+        wantsAiding = true
+        // Keep streaming while riding with the phone pocketed / app backgrounded
+        // (requires the `location` background mode, which we declare).
+        locationManager.allowsBackgroundLocationUpdates = true
+        locationManager.pausesLocationUpdatesAutomatically = false
+        locationManager.startUpdatingLocation()
+        locationManager.requestLocation()   // nudge an immediate first fix
+    }
+
+    func stopLocationStream() {
+        wantsAiding = false
+        locationManager.stopUpdatingLocation()
+        locationManager.allowsBackgroundLocationUpdates = false
+    }
+
     private func transmitAiding(_ loc: CLLocation) {
         guard let c = routeChar, let p = peripheral else { return }
+        // Throttle to ~3 s so we don't flood BLE with position updates.
+        if let last = lastAidingSent, Date().timeIntervalSince(last) < 3 { return }
         var payload = Data([0x08])
         payload.appendLE(Int32((loc.coordinate.latitude * 1e7).rounded()))
         payload.appendLE(Int32((loc.coordinate.longitude * 1e7).rounded()))
-        payload.appendLE(Int32(Date().timeIntervalSince1970))   // current UTC
+        payload.appendLE(Int32(Date().timeIntervalSince1970))     // current UTC
+        // Extended fields (device parses when present): altitude + accuracy.
+        payload.appendLE(Int16(max(-2000, min(9000, loc.altitude.rounded()))))
+        let acc = loc.horizontalAccuracy > 0 ? loc.horizontalAccuracy : 200
+        payload.appendLE(Int16(max(1, min(9999, acc.rounded()))))
         p.writeValue(payload, for: c, type: .withResponse)
         lastAidingSent = Date()
     }
@@ -209,6 +262,7 @@ final class BLEManager: NSObject, ObservableObject {
         UserDefaults.standard.set(v, forKey: UnitPref.key)
         pushSettings()
     }
+    func setClock24h(_ v: Bool) { clock24h = v; pushSettings() }
 
     func pushSettings() {
         guard let c = settingsChar, let p = peripheral else { return }
@@ -217,6 +271,7 @@ final class BLEManager: NSObject, ObservableObject {
         payload.appendLE(Int16(tzMinutes))
         payload.append(UserDefaults.standard.bool(forKey: UnitPref.key) ? 1 : 0)
         payload.append(UInt8(clamping: backlight))
+        payload.append(clock24h ? 1 : 0)
         p.writeValue(payload, for: c, type: .withResponse)
     }
 
@@ -246,10 +301,31 @@ final class BLEManager: NSObject, ObservableObject {
         dlBuffer = Data()
         dlExpected = 0
         downloadingLog = true
-        downloadingName = "diagnostics"
+        downloadingName = "diag"
         downloadProgress = 0
         logFileURL = nil
         p.writeValue(Data([0x05]), for: c, type: .withResponse)
+    }
+
+    // List the per-day log files on the device (reply parsed via 0x30/0x31).
+    func requestLogList() {
+        guard let c = ridesChar, let p = peripheral else { return }
+        logsBuilding = []
+        loadingLogs = true
+        p.writeValue(Data([0x06]), for: c, type: .withResponse)
+    }
+
+    // Download one specific day's log file.
+    func downloadLogFile(_ name: String) {
+        guard let c = ridesChar, let p = peripheral else { lastMessage = "Not connected"; return }
+        dlBuffer = Data()
+        dlExpected = 0
+        downloadingLog = true
+        downloadingName = name
+        downloadProgress = 0
+        logFileURL = nil
+        var cmd = Data([0x07]); cmd.append(Data(name.utf8))
+        p.writeValue(cmd, for: c, type: .withResponse)
     }
 
     // MARK: firmware / OTA
@@ -285,8 +361,10 @@ final class BLEManager: NSObject, ObservableObject {
         otaOffset = 0
         otaCommitSent = false
         otaInProgress = true
+        otaPhase = .sending
         otaProgress = 0
         otaMessage = "Preparing…"
+        otaWatchdog?.cancel(); otaWatchdog = nil
         otaChunk = max(20, p.maximumWriteValueLength(for: .withoutResponse)) - 1
 
         // begin: [0x01][u32 size][32-char md5 hex]
@@ -315,8 +393,29 @@ final class BLEManager: NSObject, ObservableObject {
         if !otaCommitSent {                                        // all data sent
             otaCommitSent = true
             p.writeValue(Data([0x03]), for: c, type: .withResponse)   // commit
-            otaMessage = "Verifying…"
+            otaPhase = .saving
+            otaMessage = "Saving to the device…"
         }
+    }
+
+    // Fail the update if the device doesn't reach the new version in time.
+    private func armOtaWatchdog(seconds: UInt64, failMessage: String) {
+        otaWatchdog?.cancel()
+        otaWatchdog = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
+            guard !Task.isCancelled, otaInProgress else { return }
+            otaFinish(.failed, failMessage)
+        }
+    }
+    private static let installWatchdogMsg =
+        "Device didn't come back after installing. Check it's powered on and nearby, or use the SD-card method."
+
+    private func otaFinish(_ phase: OTAPhase, _ msg: String) {
+        otaWatchdog?.cancel(); otaWatchdog = nil
+        otaInProgress = false
+        otaPhase = phase
+        otaMessage = msg
+        keepAwake(false)
     }
 
     private func handleOtaNotify(_ d: Data) {
@@ -324,29 +423,38 @@ final class BLEManager: NSObject, ObservableObject {
         switch op {
         case 0xA3:                                   // running version
             deviceFirmware = String(decoding: d[1...], as: UTF8.self)
-            // Reconnected after an update. If the device now runs the bundled
-            // version, the update succeeded (even if the success notify was lost
-            // when it rebooted) — finish cleanly instead of sticking on
-            // "Verifying". Otherwise it's still on the old version.
             if deviceFirmware == BLEManager.bundledFirmwareVersion {
-                if otaInProgress { otaProgress = 1; otaMessage = "Update complete" }
-                otaInProgress = false; keepAwake(false)
+                // Now on the new version — success (clears any earlier transient
+                // failure state too, e.g. a reconnect seen mid-flash).
+                if otaInProgress {
+                    otaProgress = 1
+                    otaFinish(.done, "Updated to \(deviceFirmware) 🎉")
+                } else if otaPhase == .failed {
+                    otaWatchdog?.cancel(); otaPhase = .idle; otaMessage = nil
+                }
             } else if otaInProgress && otaCommitSent {
-                // Rebooted but still old — the flash didn't take.
-                otaInProgress = false; keepAwake(false)
-                otaMessage = "Update didn't apply — device unchanged. Try again."
+                // Reconnected but STILL on the old version. The device flashes
+                // from SD and reboots ONCE MORE, so don't fail yet — give it a
+                // short grace for that second reboot to land on the new version.
+                otaPhase = .verifying
+                otaMessage = "Verifying the new version…"
+                armOtaWatchdog(seconds: 60,
+                    failMessage: "Device restarted but is still on \(deviceFirmware). The install didn't take — try again, or use the SD-card method.")
             }
-        case 0xA0: otaMessage = "Sending…"; pumpOtaChunks()   // device ready
+        case 0xA0: otaPhase = .sending; otaMessage = "Sending firmware…"; pumpOtaChunks()
         case 0xA1:                                   // received + saved to SD
-            // The device now reboots and flashes from SD; keep waiting and let
-            // the reconnect version-check confirm success (don't declare done).
-            otaProgress = 1; keepAwake(false)
-            otaMessage = "Saved — device is installing…"
-        case 0xA2: otaInProgress = false; keepAwake(false); otaMessage = "Update canceled"
+            // The device reboots and flashes from SD now; wait for the reconnect
+            // version-check to confirm. Arm the watchdog in case it never returns.
+            otaProgress = 1
+            otaPhase = .installing
+            otaMessage = "Installing — the device is restarting…"
+            keepAwake(false)
+            armOtaWatchdog(seconds: 150, failMessage: BLEManager.installWatchdogMsg)
+        case 0xA2: otaFinish(.failed, "Update canceled.")
         case 0xAF:                                   // error
-            otaInProgress = false; keepAwake(false)
             let code = d.count > 1 ? Int(d[1]) : -1
-            otaMessage = "Update failed (error \(code)) — device unchanged"
+            otaFinish(.failed,
+                "Transfer failed (error \(code)). The device is unchanged — tap to try again.")
         default: break
         }
     }
@@ -443,25 +551,45 @@ final class BLEManager: NSObject, ObservableObject {
         p.writeValue(Data([0x07]), for: c, type: .withResponse)
     }
 
-    // Send a batch of already-built tiles one at a time. Tiles already on the
-    // device (by id) should be filtered out by the caller; we also guard here.
-    func uploadTiles(_ tiles: [(id: String, data: Data)]) {
+    // Streaming upload: the app produces tiles batch-by-batch while download +
+    // vectorization runs, and sends them in parallel. Call startTileStream()
+    // once, enqueueTiles() per batch as they're built, finishTileStream() when
+    // the last batch has been produced.
+    func startTileStream() {
         guard mapChar != nil, peripheral != nil else { tileMessage = "Not connected"; return }
-        tileQueue = tiles.filter { !deviceTileIds.contains($0.id) }
-        tilesTotal = tileQueue.count
+        tileQueue = []
+        tilesTotal = 0
         tilesDone = 0
         tileJobFailed = false
-        guard !tileQueue.isEmpty else {
-            tileMessage = "Already up to date"; tilesUploading = false; return
-        }
+        tilesMoreComing = true
         tilesUploading = true
         tileMessage = "Sending tiles…"
         keepAwake(true)
-        sendNextTile()
+    }
+
+    // Add freshly-built tiles to the send queue; starts pumping if idle. Skips
+    // tiles already on the device or already queued.
+    func enqueueTiles(_ newOnes: [(id: String, data: Data)]) {
+        guard tilesUploading else { return }
+        let queued = Set(tileQueue.map(\.id))
+        let fresh = newOnes.filter {
+            !deviceTileIds.contains($0.id) && !queued.contains($0.id) && $0.id != currentTileId
+        }
+        guard !fresh.isEmpty else { return }
+        tileQueue.append(contentsOf: fresh)
+        tilesTotal += fresh.count
+        if currentTileId == nil { sendNextTile() }   // pump if idle
+    }
+
+    // No more batches coming; let the queue drain and finish.
+    func finishTileStream() {
+        tilesMoreComing = false
+        if currentTileId == nil { sendNextTile() }   // trigger drain-finish if idle
     }
 
     func cancelTileUpload() {
         tileQueue = []
+        tilesMoreComing = false
         if let c = mapChar, let p = peripheral, currentTileId != nil {
             p.writeValue(Data([0x04]), for: c, type: .withResponse)
         }
@@ -470,6 +598,7 @@ final class BLEManager: NSObject, ObservableObject {
 
     private func finishTileJob(message: String?) {
         tilesUploading = false
+        tilesMoreComing = false
         mapUploading = false
         currentTileId = nil
         keepAwake(false)
@@ -478,7 +607,8 @@ final class BLEManager: NSObject, ObservableObject {
 
     private func sendNextTile() {
         guard tilesUploading, let c = mapChar, let p = peripheral else { return }
-        guard let tile = tileQueue.first else {   // queue drained -> done
+        guard let tile = tileQueue.first else {   // queue drained
+            if tilesMoreComing { return }         // more tiles still being built — idle, wait
             finishTileJob(message: tileJobFailed ? "Some tiles failed" : "Tiles installed")
             refreshDeviceTiles()
             return
@@ -542,11 +672,15 @@ final class BLEManager: NSObject, ObservableObject {
                 mapMessage = "Map upload failed (\(code))"
             }
         case 0xD0: tileIdsBuilding = []                           // tile-list begin
-        case 0xD1 where d.count > 1:                              // one tile id (ascii)
-            if let id = String(data: d.subdata(in: 1..<d.count), encoding: .utf8) {
-                tileIdsBuilding.append(id)
+        case 0xD1 where d.count > 1:                              // comma-separated ids
+            if let s = String(data: d.subdata(in: 1..<d.count), encoding: .utf8) {
+                for id in s.split(separator: ",") where !id.isEmpty {
+                    tileIdsBuilding.append(String(id))
+                }
             }
-        case 0xD2: deviceTileIds = Set(tileIdsBuilding)           // tile-list end
+        case 0xD2:                                               // tile-list end
+            deviceTileIds = Set(tileIdsBuilding)
+            cacheDeviceTiles()
         case 0xC0: deviceMapsBuilding = []                        // map-list begin
         case 0xC1 where d.count >= 34:                            // entry: 4×f64 + flag
             func f64(_ i: Int) -> Double {
@@ -612,6 +746,13 @@ final class BLEManager: NSObject, ObservableObject {
         case 0x03:  // list done
             loadingRides = false
             rides.sort { $0.name > $1.name }   // newest first
+        case 0x30:  // log-list entry: [u32 size][name]
+            guard d.count > 5 else { return }
+            let size = Int(d[1]) | (Int(d[2]) << 8) | (Int(d[3]) << 16) | (Int(d[4]) << 24)
+            logsBuilding.append(LogFile(name: String(decoding: d[5...], as: UTF8.self), size: size))
+        case 0x31:  // log-list done
+            loadingLogs = false
+            deviceLogs = logsBuilding.sorted { $0.name > $1.name }   // newest day first
         case 0x10:  // download start: [u32 total]
             dlExpected = Int(d[1]) | (Int(d[2]) << 8) | (Int(d[3]) << 16) | (Int(d[4]) << 24)
             dlBuffer = Data(capacity: dlExpected)
@@ -694,9 +835,11 @@ final class BLEManager: NSObject, ObservableObject {
         }
         if downloadingLog {                    // diagnostics log, not a ride
             downloadingLog = false
+            var fname = (downloadingName ?? "diag").replacingOccurrences(of: "/", with: "_")
             downloadingName = nil
+            if !fname.hasSuffix(".log") { fname += ".log" }
             let url = FileManager.default.temporaryDirectory
-                .appendingPathComponent("bikegps-diag.log")
+                .appendingPathComponent("bikegps-\(fname)")
             do {
                 try dlBuffer.write(to: url)
                 logFileURL = url
@@ -750,6 +893,7 @@ final class BLEManager: NSObject, ObservableObject {
         packets.append(Data([0x05]))                                 // end nav
 
         lastUploadProgress = 0
+        routeSent = false
         Task { @MainActor in
             for (idx, packet) in packets.enumerated() {
                 p.writeValue(packet, for: c, type: .withResponse)
@@ -757,6 +901,7 @@ final class BLEManager: NSObject, ObservableObject {
                 try? await Task.sleep(nanoseconds: 12_000_000)  // pace writes
             }
             lastUploadProgress = nil
+            routeSent = true
             lastMessage = "Route “\(name)” sent — \(maneuvers.count) turns"
         }
     }
@@ -799,6 +944,7 @@ extension BLEManager: CBCentralManagerDelegate {
             peripheral = nil
             settingsChar = nil; statusChar = nil; routeChar = nil; ridesChar = nil
             sensorsChar = nil; mapChar = nil; otaChar = nil
+            stopLocationStream()   // no device to send the phone's position to
             // If we disconnect mid-update: after the data is sent + commit
             // requested, a disconnect is EXPECTED (the device reboots into the
             // new firmware) — show "rebooting" and let the reconnect confirm the
@@ -806,10 +952,14 @@ extension BLEManager: CBCentralManagerDelegate {
             if otaInProgress {
                 keepAwake(false)
                 if otaCommitSent {
-                    otaMessage = "Installing… device is rebooting"
+                    // Expected: the device reboots to flash. Wait for it to come
+                    // back and confirm the version; the watchdog covers a no-show.
+                    otaPhase = .installing
+                    otaMessage = "Installing — the device is restarting…"
+                    armOtaWatchdog(seconds: 150, failMessage: BLEManager.installWatchdogMsg)
                 } else {
-                    otaInProgress = false
-                    otaMessage = "Update interrupted — reconnect and try again"
+                    // Dropped mid-transfer — nothing was flashed.
+                    otaFinish(.failed, "Connection dropped mid-transfer. The device is unchanged — try again.")
                 }
             }
             if mapUploading { mapUploading = false; keepAwake(false)
@@ -852,7 +1002,7 @@ extension BLEManager: CBPeripheralDelegate {
                     statusChar = ch; p.setNotifyValue(true, for: ch)
                 case BikeUUID.route:
                     routeChar = ch; p.setNotifyValue(true, for: ch)
-                    sendLocationAiding()   // warm-start the device's GPS
+                    startLocationStream()   // warm-start + live fallback position
                 case BikeUUID.rides:
                     ridesChar = ch; p.setNotifyValue(true, for: ch)
                 case BikeUUID.ota:
@@ -923,6 +1073,26 @@ extension BLEManager: CBPeripheralDelegate {
         s.speedKmh = Double(Int(d[6]) | (Int(d[7]) << 8)) / 10.0
         s.remainingKm = Double(Int(d[8]) | (Int(d[9]) << 8)) / 10.0
         status = s
+        syncLocationStreamToDeviceFix()
+    }
+
+    // Only run iOS location (and the blue background indicator) while the device
+    // NEEDS it. Once the device has its own GPS fix, stop streaming; resume if it
+    // loses the fix. Debounced so a brief dropout doesn't flap the stream.
+    private func syncLocationStreamToDeviceFix() {
+        guard state == .connected, routeChar != nil else { return }
+        if status.gpsFix {
+            if wantsAiding && fixStableTask == nil {
+                fixStableTask = Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 8_000_000_000)   // fix held 8 s
+                    if !Task.isCancelled, status.gpsFix { stopLocationStream() }
+                    fixStableTask = nil
+                }
+            }
+        } else {
+            fixStableTask?.cancel(); fixStableTask = nil
+            if !wantsAiding { startLocationStream() }   // device is cold again — help it
+        }
     }
 
     // Values pushed from the device (on connect, or when edited on the unit).
@@ -935,6 +1105,7 @@ extension BLEManager: CBPeripheralDelegate {
             UserDefaults.standard.set(d[4] != 0, forKey: UnitPref.key)
             backlight = Int(d[5])
         }
+        if d.count >= 7 { clock24h = d[6] != 0 }
     }
 }
 
@@ -943,7 +1114,7 @@ extension BLEManager: CLLocationManagerDelegate {
         MainActor.assumeIsolated {
             let a = m.authorizationStatus
             if wantsAiding, a == .authorizedWhenInUse || a == .authorizedAlways {
-                m.requestLocation()
+                beginLocationUpdates()
             } else if a == .denied || a == .restricted {
                 wantsAiding = false
             }
@@ -954,8 +1125,7 @@ extension BLEManager: CLLocationManagerDelegate {
                                      didUpdateLocations locs: [CLLocation]) {
         MainActor.assumeIsolated {
             guard wantsAiding, let loc = locs.last else { return }
-            wantsAiding = false
-            transmitAiding(loc)
+            transmitAiding(loc)   // stream every fix (throttled inside)
         }
     }
 

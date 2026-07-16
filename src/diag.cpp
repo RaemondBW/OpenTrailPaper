@@ -13,10 +13,23 @@ namespace {
 char* buf = nullptr;
 size_t len = 0;
 constexpr size_t CAP = 48 * 1024;         // in-RAM staging before an SD flush
-constexpr size_t ROTATE_AT = 256 * 1024;  // roll /diag.log over past this size
 SemaphoreHandle_t mtx = nullptr;
-const char* PATH = "/diag.log";
-bool rotateChecked = false;
+constexpr char LOG_DIR[] = "/logs";
+char activePath[48] = "/logs/pending.log";
+
+// One log file per day (UTC): /logs/YYYYMMDD.log — small and easy to grab.
+// Before the clock is set (no GPS fix yet) lines go to /logs/pending.log.
+void computeLogPath(char* out, size_t n) {
+    time_t now = time(nullptr);
+    if (now > 1735689600) {
+        struct tm t;
+        gmtime_r(&now, &t);
+        snprintf(out, n, "%s/%04d%02d%02d.log", LOG_DIR, t.tm_year + 1900,
+                 t.tm_mon + 1, t.tm_mday);
+    } else {
+        snprintf(out, n, "%s/pending.log", LOG_DIR);
+    }
+}
 
 void timestamp(char* out, size_t n) {
     time_t now = time(nullptr);
@@ -70,16 +83,9 @@ void flushToSD() {
     xSemaphoreTake(mtx, portMAX_DELAY);
     if (len == 0) { xSemaphoreGive(mtx); return; }
     sdLock();
-    if (!rotateChecked) {                  // roll over a large log once per boot
-        rotateChecked = true;
-        File chk = SD.open(PATH, FILE_READ);
-        if (chk) {
-            size_t sz = chk.size();
-            chk.close();
-            if (sz > ROTATE_AT) { SD.remove("/diag.prev"); SD.rename(PATH, "/diag.prev"); }
-        }
-    }
-    File f = SD.open(PATH, FILE_APPEND);
+    if (!SD.exists(LOG_DIR)) SD.mkdir(LOG_DIR);
+    computeLogPath(activePath, sizeof(activePath));   // today's file (UTC)
+    File f = SD.open(activePath, FILE_APPEND);
     if (f) {
         f.write((const uint8_t*)buf, len);
         f.close();
@@ -89,6 +95,9 @@ void flushToSD() {
     xSemaphoreGive(mtx);
 }
 
-const char* logPath() { return PATH; }
+const char* logPath() {
+    computeLogPath(activePath, sizeof(activePath));
+    return activePath;
+}
 
 }  // namespace diag

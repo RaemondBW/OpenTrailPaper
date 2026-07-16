@@ -19,6 +19,9 @@ void setBacklight(int b);
 bool useMiles();          // false = metric (km), true = imperial (mi/ft/mph)
 void setUseMiles(bool m);
 
+bool clock24h();          // true = 24-hour clock, false = 12-hour (AM/PM)
+void setClock24h(bool h);
+
 // kind: 0 HR, 1 Power, 2 Cadence (matches ble_sensors). "" = none saved.
 const char* sensorAddr(int kind);
 void setSensorAddr(int kind, const char* addr);

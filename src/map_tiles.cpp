@@ -10,9 +10,11 @@
 
 namespace {
 
-// Scratch capacity: worst case is dense downtown at wide zoom.
-constexpr int MAX_POINTS = 60000;
-constexpr int MAX_POLYS = 8000;
+// Scratch capacity: worst case is the whole city visible at max zoom-out.
+// If these overflow the projector stops mid-iteration, dropping whatever comes
+// last (the north), so keep generous headroom.
+constexpr int MAX_POINTS = 160000;
+constexpr int MAX_POLYS = 20000;
 
 // The single "primary" blob used by the embedded map + route overlay path.
 const uint8_t* blob = nullptr;
@@ -134,8 +136,16 @@ void projectBlobInto(const uint8_t* b, size_t bLen, double lat, double lon,
                 p += 3;
                 if (p + n * 4 > end) goto done;
 
-                // Zoomed out: drop footpaths to keep draw time bounded.
+                // Zoomed out: shed detail to keep the feature count + draw time
+                // bounded and the overview legible. Footpaths go first; at the
+                // widest levels (16/32 m/px) minor/residential roads too — they
+                // are sub-pixel clutter there, and dropping them keeps the whole
+                // city inside the scratch buffers so the north isn't truncated.
                 if (metersPerPixel >= 6.0f && cls == MAP_PATH) {
+                    p += n * 4;
+                    continue;
+                }
+                if (metersPerPixel >= 14.0f && cls == MAP_ROAD_MINOR) {
                     p += n * 4;
                     continue;
                 }

@@ -46,6 +46,16 @@ bool hasTile(const char* id);
 // Number of H3 tiles currently indexed.
 int tileCount();
 
+// Whether any map (a downloaded tile, a whole map, or the embedded default)
+// actually covers (lat, lon). False => the map screen has nothing to draw here
+// and should show a "download this area" prompt.
+bool coversPosition(double lat, double lon);
+
+// Terrain elevation (metres) at (lat, lon), interpolated from the DEM grid
+// baked into the covering tile (ELV1 block). NAN if no tile/elevation covers
+// the point. Call from the UI task only (shares the tile LRU cache).
+float elevationAt(double lat, double lon);
+
 // Copy up to maxOut tile ids (H3 ids, no extension) into out for the app's
 // dedup check. Returns the count written.
 int listTileIds(char out[][24], int maxOut);

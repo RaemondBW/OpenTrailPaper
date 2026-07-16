@@ -88,11 +88,14 @@ struct RidesView: View {
         return h > 0 ? "\(h)h \(m % 60)m" : "\(m)m"
     }
 
-    // Filenames look like 20260712-150300.fit
+    // Filenames look like 20260712-150300.fit — the device names them in UTC
+    // (gmtime), so parse as UTC to get the correct absolute instant. Display
+    // then uses the phone's local time zone (Calendar.current / .formatted).
     static func rideDate(_ name: String) -> Date? {
         let base = name.replacingOccurrences(of: ".fit", with: "")
         let f = DateFormatter()
         f.dateFormat = "yyyyMMdd-HHmmss"
+        f.timeZone = TimeZone(secondsFromGMT: 0)
         return f.date(from: base)
     }
 

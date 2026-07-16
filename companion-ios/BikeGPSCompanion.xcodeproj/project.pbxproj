@@ -22,6 +22,7 @@
 		56244470A5750446E4F43021 /* mathExtensions.c in Sources */ = {isa = PBXBuildFile; fileRef = 26DDC00DA77F0B1F4654B093 /* mathExtensions.c */; };
 		57056A1140478EFA9182CA3C /* polygon.c in Sources */ = {isa = PBXBuildFile; fileRef = 505DC93F091358EEC901CFBE /* polygon.c */; };
 		5E6B170B7E5D95D64004B7DF /* MapBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 150D0FCA3BD00013D0221794 /* MapBuilder.swift */; };
+		624BEA62D6C082EB2D2686AD /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 39F84008D6685A8A597D89EE /* Assets.xcassets */; };
 		657B6E68ECA92FB1C78F3A98 /* Barlow-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 9D40015EBE733F51D1D3B952 /* Barlow-Regular.ttf */; };
 		66DA8F56B10214B148939ADA /* RouteView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33F9FE9BEBAAA7755652F133 /* RouteView.swift */; };
 		68E61DE93629DD4481BB8FAE /* BikeGPSCompanionApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36D2B7A04F9D2AB7171161FA /* BikeGPSCompanionApp.swift */; };
@@ -71,6 +72,7 @@
 		351775ACF2317D238FADF334 /* vertexGraph.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = vertexGraph.c; sourceTree = "<group>"; };
 		36D2B7A04F9D2AB7171161FA /* BikeGPSCompanionApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BikeGPSCompanionApp.swift; sourceTree = "<group>"; };
 		3776B527CC9108BC928E63AE /* alloc.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = alloc.h; sourceTree = "<group>"; };
+		39F84008D6685A8A597D89EE /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		41ABFC755A86A9E38EAC1EED /* latLng.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = latLng.c; sourceTree = "<group>"; };
 		4D01067D79FE6685E299D8CF /* localij.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = localij.c; sourceTree = "<group>"; };
 		4EC186E273C590D7A6345915 /* RideView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RideView.swift; sourceTree = "<group>"; };
@@ -164,6 +166,7 @@
 		224D042D99B06A07620BD95C /* Sources */ = {
 			isa = PBXGroup;
 			children = (
+				39F84008D6685A8A597D89EE /* Assets.xcassets */,
 				D6A5EEC68C04B21636EF9A36 /* BikeGPS-Bridging-Header.h */,
 				36D2B7A04F9D2AB7171161FA /* BikeGPSCompanionApp.swift */,
 				DD543402D2E35FD58BA55A8E /* BLEManager.swift */,
@@ -305,6 +308,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				624BEA62D6C082EB2D2686AD /* Assets.xcassets in Resources */,
 				50A026FD2B5510457D29FA95 /* Barlow-Medium.ttf in Resources */,
 				657B6E68ECA92FB1C78F3A98 /* Barlow-Regular.ttf in Resources */,
 				A984DF4C30E0938795C41C27 /* Barlow-SemiBold.ttf in Resources */,

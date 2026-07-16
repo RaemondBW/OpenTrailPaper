@@ -193,6 +193,7 @@ void setup() {
         s.ftpW = (uint16_t)settings::ftpWatts();
         s.tzMin = (int16_t)settings::tzMinutes();
         s.useMiles = settings::useMiles();
+        s.clock24h = settings::clock24h();
     });
     if (ride_recorder::begin()) {
         routes::begin();

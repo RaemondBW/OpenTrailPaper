@@ -7,6 +7,7 @@
 #include "ride_state.h"
 #include "routes.h"
 #include "settings.h"
+#include "diag.h"
 
 #define SerialGPS Serial2
 
@@ -197,6 +198,7 @@ void injectAiding(double lat, double lon, time_t utc, bool haveTime,
         }
         sendCasicAidIni(lat, lon, tow, wn, posAccM, timeAccS, flags);
         Serial.printf("[gps] CASIC AID-INI: %.5f,%.5f time=%d\n", lat, lon, haveTime);
+        diag::log("gps aiding (CASIC): %.4f,%.4f time=%d", lat, lon, haveTime);
     } else if (moduleKind == GPS_UBLOX) {
         if (haveTime) {                       // MGA-INI-TIME_UTC (type 0x10, len 24)
             struct tm t;
@@ -222,6 +224,7 @@ void injectAiding(double lat, double lon, time_t utc, bool haveTime,
         memcpy(p + 16, &accCm, 4);
         sendUbx(0x13, 0x40, p, 20);
         Serial.printf("[gps] u-blox MGA-INI: %.5f,%.5f time=%d\n", lat, lon, haveTime);
+        diag::log("gps aiding (u-blox): %.4f,%.4f time=%d", lat, lon, haveTime);
     }
 }
 
@@ -249,8 +252,17 @@ void task(void*) {
     for (;;) {
         if (g_seed.pending) {
             g_seed.pending = false;
-            injectAiding(g_seed.lat, g_seed.lon, g_seed.utc, g_seed.haveTime,
-                         g_seed.posAccM, 30.0f);
+            // Only warm-start while we DON'T have a fix, and at most every 20 s
+            // (the phone streams its position every ~3 s — re-seeding a receiver
+            // that's already searching or locked doesn't help and spams the UART).
+            static uint32_t lastAidMs = 0;
+            bool haveFix = gps.location.isValid() && gps.location.age() < 5000;
+            uint32_t now = millis();
+            if (!haveFix && (lastAidMs == 0 || now - lastAidMs > 20000)) {
+                injectAiding(g_seed.lat, g_seed.lon, g_seed.utc, g_seed.haveTime,
+                             g_seed.posAccM, 30.0f);
+                lastAidMs = now;
+            }
         }
 
         while (SerialGPS.available()) {
@@ -339,6 +351,44 @@ void task(void*) {
                                         gps.date.day(), gps.time.hour(),
                                         gps.time.minute(), gps.time.second()), 0};
             settimeofday(&tv, nullptr);
+        }
+
+        // GPS acquisition diagnostics to the SD log, so a "won't get a fix"
+        // problem is diagnosable afterward. Reads like: chars=NMEA bytes (0 =
+        // module silent → power/wiring/baud), ck=good/bad checksums (data
+        // quality), sats=inUse/inView (0 in view → no sky/antenna), snr=best
+        // C/N0 dB-Hz (low → weak signal / indoors), hdop=geometry. Logged more
+        // often while searching, plus first-fix time and fix gain/loss.
+        {
+            static uint32_t lastGpsLog = 0;
+            static bool loggedModule = false, prevFix = false, loggedFirstFix = false;
+            if (!loggedModule) {
+                loggedModule = true;
+                diag::log("gps module: %s", moduleName());
+            }
+            bool haveFix = gps.location.isValid() && gps.location.age() < 3000;
+            uint32_t interval = haveFix ? 120000 : 15000;
+            if (millis() - lastGpsLog > interval) {
+                lastGpsLog = millis();
+                GpsDebug d;
+                getDebug(d);
+                diag::log("gps %s: chars=%lu ck=%lu/%lu sats=%d/%d snr=%d hdop=%.1f",
+                          haveFix ? "FIX" : "searching", (unsigned long)d.chars,
+                          (unsigned long)d.passedCksum, (unsigned long)d.failedCksum,
+                          d.satsInUse, d.satsInView, d.bestSnr, d.hdop);
+            }
+            if (haveFix != prevFix) {
+                prevFix = haveFix;
+                if (haveFix && !loggedFirstFix) {
+                    loggedFirstFix = true;
+                    diag::log("gps FIRST FIX at %lus (sats=%d snr=%d hdop=%.1f)",
+                              (unsigned long)(millis() / 1000),
+                              gps.satellites.isValid() ? (int)gps.satellites.value() : 0,
+                              bestSnr, gps.hdop.isValid() ? gps.hdop.hdop() : 0.0);
+                } else {
+                    diag::log("gps: fix %s", haveFix ? "reacquired" : "LOST");
+                }
+            }
         }
 
         vTaskDelay(pdMS_TO_TICKS(50));

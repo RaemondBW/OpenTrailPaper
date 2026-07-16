@@ -42,6 +42,7 @@ struct RouteView: View {
                             distanceKm: route.distance / 1000,
                             minutes: Int(route.expectedTravelTime / 60),
                             progress: ble.lastUploadProgress,
+                            sent: ble.routeSent,
                             canSend: ble.state == .connected
                         ) {
                             let coords = route.polyline.coordinates
@@ -73,6 +74,7 @@ struct RouteView: View {
             .sheet(isPresented: $showSaved) { SavedRoutesSheet() }
             .sheet(isPresented: $showMaps) { MapsView() }
             .onAppear { model.requestLocation() }
+            .onChange(of: model.destinationName) { ble.routeSent = false }
         }
     }
 
@@ -310,16 +312,11 @@ private struct RouteSummaryCard: View {
     let distanceKm: Double
     let minutes: Int
     let progress: Double?
+    let sent: Bool
     let canSend: Bool
     let send: () -> Void
     let clear: () -> Void
     @AppStorage(UnitPref.key) private var useMiles = false
-
-    // Trim a long place name so the button label stays on one line.
-    private var shortName: String {
-        let n = name.split(separator: ",").first.map(String.init) ?? name
-        return n.count > 18 ? String(n.prefix(17)) + "…" : n
-    }
 
     var body: some View {
         Card {
@@ -354,9 +351,19 @@ private struct RouteSummaryCard: View {
                         Text("Sending to device…").font(.system(size: 12))
                             .foregroundStyle(Palette.muted)
                     }
+                } else if sent {
+                    HStack(spacing: 8) {
+                        Image(systemName: "checkmark.circle.fill").foregroundStyle(Palette.good)
+                        Text("Sent to device").font(TypeScale.body).foregroundStyle(Palette.good)
+                        Spacer()
+                        Button("Send again", action: send)
+                            .font(.system(size: 13, weight: .semibold)).foregroundStyle(Palette.accent)
+                            .disabled(!canSend)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
                 } else {
-                    PrimaryButton(title: canSend ? "Send \(shortName) to device"
-                                                  : "Connect to send",
+                    PrimaryButton(title: canSend ? "Send to device" : "Connect to send",
                                   systemImage: "paperplane.fill",
                                   enabled: canSend, action: send)
                 }

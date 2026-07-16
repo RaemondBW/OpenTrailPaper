@@ -145,6 +145,62 @@ enum MapBuilder {
         return try encode(json: json, s: s, w: w, n: n, e: e)
     }
 
+    // MARK: elevation (DEM baked into the tile so the device needs no GPS
+    // altitude or phone — see the ELV1 block the device reads back).
+
+    static let elevationGrid = 20     // gw = gh; ~20 samples over a ~7 km tile ≈ 350 m
+
+    private struct ElevResp: Decodable { let elevation: [Double?] }
+
+    // A gw×gh grid of int16 elevations (metres) over [s,w]-[n,e], row 0 = south,
+    // west→east within a row. Sampled from Open-Meteo (free, no key, 100/req).
+    static func fetchElevationGrid(south s: Double, west w: Double,
+                                   north n: Double, east e: Double,
+                                   n gridN: Int = elevationGrid) async throws -> [Int16] {
+        var lats: [Double] = [], lons: [Double] = []
+        lats.reserveCapacity(gridN * gridN)
+        for i in 0..<gridN {
+            let lat = s + (n - s) * Double(i) / Double(gridN - 1)
+            for j in 0..<gridN {
+                let lon = w + (e - w) * Double(j) / Double(gridN - 1)
+                lats.append(lat); lons.append(lon)
+            }
+        }
+        var out = [Int16](repeating: 0, count: gridN * gridN)
+        var idx = 0
+        while idx < lats.count {
+            let end = min(idx + 100, lats.count)
+            let la = lats[idx..<end].map { String(format: "%.5f", $0) }.joined(separator: ",")
+            let lo = lons[idx..<end].map { String(format: "%.5f", $0) }.joined(separator: ",")
+            var comp = URLComponents(string: "https://api.open-meteo.com/v1/elevation")!
+            comp.queryItems = [URLQueryItem(name: "latitude", value: la),
+                               URLQueryItem(name: "longitude", value: lo)]
+            var req = URLRequest(url: comp.url!)
+            req.timeoutInterval = 30
+            let (data, resp) = try await URLSession.shared.data(for: req)
+            guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
+                throw BuildError.overpass("elevation server error")
+            }
+            let decoded = try JSONDecoder().decode(ElevResp.self, from: data)
+            for (k, ev) in decoded.elevation.enumerated() where idx + k < out.count {
+                out[idx + k] = Int16(max(-2000, min(9000, (ev ?? 0).rounded())))
+            }
+            idx = end
+        }
+        return out
+    }
+
+    // Append an ELV1 elevation block to an already-encoded tile.
+    //   'ELV1', i32 gw, i32 gh, f64 s,w,n,e, i16 elev[gh*gw]  (row 0 = south)
+    static func appendElevation(to data: inout Data, south s: Double, west w: Double,
+                                north n: Double, east e: Double, grid: [Int16], n gridN: Int) {
+        guard grid.count == gridN * gridN else { return }
+        data.append("ELV1".data(using: .ascii)!)
+        data.appendI32(Int32(gridN)); data.appendI32(Int32(gridN))
+        data.appendF64(s); data.appendF64(w); data.appendF64(n); data.appendF64(e)
+        for v in grid { data.appendI16(v) }
+    }
+
     private struct OverpassJSON: Decodable { let elements: [Element] }
     private struct Element: Decodable {
         let type: String

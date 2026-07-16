@@ -117,13 +117,20 @@ void drawBolt(int cx, int cy, uint8_t color, uint8_t* fb) {
 void statusBar(const RideState& s, uint8_t* fb) {
     const int W = epd_rotated_display_width();
 
-    // Clock from GPS time (local)
-    char clock[8] = "--:--";
+    // Clock from GPS time (local), 24h or 12h per the setting.
+    char clock[10] = "--:--";
     if (s.timeValid) {
         time_t local = s.utc + (time_t)s.tzMin * 60;
         struct tm tmv;
         gmtime_r(&local, &tmv);
-        snprintf(clock, sizeof(clock), "%d:%02d", tmv.tm_hour, tmv.tm_min);
+        if (s.clock24h) {
+            snprintf(clock, sizeof(clock), "%d:%02d", tmv.tm_hour, tmv.tm_min);
+        } else {
+            int h = tmv.tm_hour % 12;
+            if (h == 0) h = 12;
+            snprintf(clock, sizeof(clock), "%d:%02d%c", h, tmv.tm_min,
+                     tmv.tm_hour < 12 ? 'a' : 'p');
+        }
     }
     text(&ArialBold_14, 16, 40, clock, fb);
 
@@ -343,8 +350,9 @@ void ui_render_summary(const RideSummary& r, uint8_t* fb) {
     if (r.avgHrBpm) snprintf(buf, sizeof(buf), "%u", r.avgHrBpm);
     else snprintf(buf, sizeof(buf), "--");
     cell(0, rows[2], midX, rows[3], "AVG HR", buf, "BPM", fb);
-    formatHms(buf, sizeof(buf), r.elapsedS);
-    cell(midX, rows[2], W, rows[3], "ELAPSED TIME", buf, "", fb);
+    // Ascent from the map DEM (accurate, unlike GPS altitude).
+    snprintf(buf, sizeof(buf), "%.0f", units::elev(r.climbedM, r.useMiles));
+    cell(midX, rows[2], W, rows[3], "ASCENT", buf, units::elevLabel(r.useMiles), fb);
 
     // Footer actions: RESUME bordered, SAVE inverted (primary), DISCARD bordered.
     // Top border across the whole footer row, plus dividers between the three.

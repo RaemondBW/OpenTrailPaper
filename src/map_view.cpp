@@ -2,10 +2,12 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 
 #include "epdiy.h"
 #include "ride_state.h"
 #include "routes.h"
+#include "map_store.h"
 #include "ui_render.h"
 #include "fonts/arialbold_14.h"
 #include "fonts/arialbold_20.h"
@@ -201,6 +203,29 @@ void ui_render_map(const MapScreenData& map, const RideState& s, uint8_t* fb) {
     drawScaleBar(map.metersPerPixel, s.useMiles, fb);
     drawCompass(kMapCompass.cx, kMapCompass.cy, map.northDeg, map.trackUp, fb);
 
+    // No map covers this position — tell the rider how to get one instead of
+    // showing a blank screen.
+    if (!map.hasMap) {
+        const int bw = 500, bh = 96;
+        const int bx = (W - bw) / 2, by = (H - bh) / 2 - 30;
+        epd_fill_rect({bx, by, bw, bh}, 0xFF, fb);
+        for (int i = 0; i < 2; ++i)
+            epd_draw_rect({bx - i, by - i, bw + 2 * i, bh + 2 * i}, 0x00, fb);
+        ui::text(&ArialBold_20, W / 2, by + 38, "NO MAP HERE", fb,
+                 EPD_DRAW_ALIGN_CENTER, 0x00);
+        ui::text(&ArialBold_14, W / 2, by + 70, "Download this area from the app",
+                 fb, EPD_DRAW_ALIGN_CENTER, 0x00);
+    }
+
+    // Badge when the map is centered on the phone's position (device GPS cold).
+    if (map.phonePosition) {
+        EpdRect b = {12, ui::STATUS_H + 8, 150, 28};
+        epd_fill_rect(b, 0xFF, fb);
+        epd_draw_rect(b, 0x00, fb);
+        ui::text(&ArialBold_14, b.x + 9, b.y + 20, "PHONE GPS", fb,
+                 EPD_DRAW_ALIGN_LEFT, 0x00);
+    }
+
     // Zoom buttons (design 1f, right edge)
     for (int i = 0; i < 2; ++i) {
         int by = i == 0 ? kMapZoom.zoomInY : kMapZoom.zoomOutY;
@@ -256,8 +281,9 @@ void ui_render_route_preview(uint8_t* fb) {
     if (n < 2) return;
     const int W = epd_rotated_display_width();
 
-    // Viewport: below the status bar, above the accept sheet (kPowerSheet.y=600).
-    const int top = ui::STATUS_H + 16, bot = 600 - 16;
+    // Viewport: below the status bar + route-name band, above the accept sheet.
+    const int nameBandH = 40;
+    const int top = ui::STATUS_H + nameBandH + 8, bot = 600 - 16;
     const int left = 20, right = W - 20;
     const int vw = right - left, vh = bot - top;
 
@@ -284,6 +310,19 @@ void ui_render_route_preview(uint8_t* fb) {
         sx = (int16_t)(cx + (lo - clon) * 111320.0 * cosc / mpp);
         sy = (int16_t)(cy - (la - clat) * 111320.0 / mpp);
     };
+
+    // Major-road context behind the route so the shape is recognizable. The
+    // status bar + accept sheet are drawn AFTER this, covering any roads that
+    // spill above/below the preview viewport (see ui_dashboard draw order).
+    static MapScreenData ctx;
+    ctx.route = nullptr;
+    ctx.routePointCount = 0;
+    map_store::renderInto(clat, clon, (float)mpp, cx, cy, 0.0f, ctx);
+    for (int i = 0; i < ctx.featureCount; ++i) {
+        if (ctx.features[i].cls != MAP_ROAD_MAJOR) continue;
+        drawPolyline(ctx.features[i].pts, ctx.features[i].pointCount,
+                     {3, 0x00, 0, 0}, fb);
+    }
 
     // Subsample into a fixed buffer so any route length fits.
     static int16_t pts[1024 * 2];
@@ -312,4 +351,20 @@ void ui_render_route_preview(uint8_t* fb) {
     epd_fill_circle(sx, sy, 10, 0x00, fb);
     epd_fill_circle(ex, ey, 11, 0xFF, fb);
     for (int r = 7; r <= 11; ++r) epd_draw_circle(ex, ey, r, 0x00, fb);
+
+    // Route-name band across the top (over any road spill), stripped of .gpx.
+    epd_fill_rect({0, ui::STATUS_H, W, nameBandH}, 0xFF, fb);
+    epd_fill_rect({0, ui::STATUS_H + nameBandH - 2, W, 2}, 0x00, fb);
+    const char* rname = routes::activeName();
+    if (rname && rname[0]) {
+        char nm[40];
+        size_t len = strlen(rname);
+        const char* dot = strstr(rname, ".gpx");
+        if (dot) len = (size_t)(dot - rname);
+        if (len > sizeof(nm) - 1) len = sizeof(nm) - 1;
+        memcpy(nm, rname, len);
+        nm[len] = 0;
+        ui::text(&ArialBold_20, W / 2, ui::STATUS_H + 28, nm, fb,
+                 EPD_DRAW_ALIGN_CENTER, 0x00);
+    }
 }

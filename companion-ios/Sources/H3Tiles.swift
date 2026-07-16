@@ -13,6 +13,10 @@ struct MapTile: Identifiable, Equatable {
 
     // The tile's actual hexagon outline (not its bounding box).
     var hexagon: [CLLocationCoordinate2D] { H3Tiles.hexagon(of: cell) }
+    // Center of the hexagon (for placing the on-device check mark).
+    var center: CLLocationCoordinate2D {
+        .init(latitude: (south + north) / 2, longitude: (west + east) / 2)
+    }
 }
 
 // Thin Swift front for the H3 C shim (Sources/H3/h3shim.*). Res-6 hexagons are

@@ -26,10 +26,6 @@
 #include "settings.h"
 #include "diag.h"
 
-// SF map embedded in flash (board_build.embed_files = data/sf.ebm)
-extern const uint8_t map_ebm_start[] asm("_binary_data_sf_ebm_start");
-extern const uint8_t map_ebm_end[] asm("_binary_data_sf_ebm_end");
-
 namespace {
 
 EpdiyHighlevelState hl;
@@ -262,7 +258,10 @@ void handleTap(int x, int y) {
             routes::startNav();
             screen = SCREEN_MAP;
         } else {
-            routes::dismissNav();
+            // LATER: don't just stop navigating — fully unload the route so it
+            // isn't drawn on the map. It's still saved on the SD card, so it can
+            // be started later from Saved Routes.
+            routes::clearRoute();
         }
         return;
     }
@@ -392,6 +391,7 @@ void handleTap(int x, int y) {
                     st.ftpW = (uint16_t)settings::ftpWatts();
                     st.tzMin = (int16_t)settings::tzMinutes();
                     st.useMiles = settings::useMiles();
+                    st.clock24h = settings::clock24h();
                 });
                 ble_server::pushSettingsToPhone();   // mirror the edit to the app
             } else if (y >= kMenuRowTop && row == kSettingsSensorsRow) {
@@ -431,17 +431,27 @@ void buildMapScreenData(const RideState& s, MapScreenData& map) {
     map.trackUp = mapTrackUp;
     map.metersPerPixel = mapMpp;
 
-    // Hold the last known position through fix dropouts; fall back to the
-    // persisted position from a previous session, then the default. Never
-    // jump to the default mid-ride.
+    // Position priority: the device's own current GPS fix; else the connected
+    // phone's recent location (fallback when our receiver is cold); else the
+    // last known device position; else the persisted/default. Never jump to the
+    // default mid-ride.
     double lat = DEFAULT_MAP_LAT, lon = DEFAULT_MAP_LON;
-    if (s.everHadFix) {
+    bool phoneRecent = s.phoneFixValid && (millis() - s.phoneFixMs) < 15000;
+    map.phonePosition = phoneRecent && !s.gpsFix;
+    if (s.gpsFix) {
+        lat = s.latitude;
+        lon = s.longitude;
+    } else if (phoneRecent) {
+        lat = s.phoneLat;
+        lon = s.phoneLon;
+    } else if (s.everHadFix) {
         lat = s.latitude;
         lon = s.longitude;
     } else {
         settings::lastPosition(lat, lon);
     }
     map_store::renderInto(lat, lon, mapMpp, map.riderX, map.riderY, rot, map);
+    map.hasMap = map_store::coversPosition(lat, lon);
 
     if (routes::active() && routeScreenPts) {
         int n = routes::pointCount();
@@ -733,6 +743,29 @@ void task(void*) {
         if (lastHostActive && !host) applySdUpdate();
         lastHostActive = host;
 
+        // Terrain elevation from the map DEM at the current position (~1 Hz).
+        // Only the UI task touches the tile cache, so this stays race-free with
+        // the map render. The recorder reads mapElevationM to integrate ascent.
+        static uint32_t lastElevMs = 0;
+        if (millis() - lastElevMs > 1000 && !host) {
+            lastElevMs = millis();
+            RideState es = g_state.snapshot();
+            double elat = 0, elon = 0;
+            bool have = false;
+            if (es.gpsFix) { elat = es.latitude; elon = es.longitude; have = true; }
+            else if (es.phoneFixValid && millis() - es.phoneFixMs < 15000) {
+                elat = es.phoneLat; elon = es.phoneLon; have = true;
+            } else if (es.everHadFix) { elat = es.latitude; elon = es.longitude; have = true; }
+            if (have) {
+                float ev = map_store::elevationAt(elat, elon);
+                bool ok = (ev == ev);   // false when NAN
+                g_state.with([&](RideState& st) {
+                    st.mapElevationValid = ok;
+                    if (ok) st.mapElevationM = ev;
+                });
+            }
+        }
+
         // A firmware update in progress takes over the screen with a progress
         // modal (redrawn only when the percentage/phase moves so the e-paper
         // isn't thrashed). Everything else is paused until it finishes/reboots.
@@ -898,8 +931,10 @@ void task(void*) {
             // While the "Start navigation?" prompt is up, the base screen shows
             // the whole route fitted so it can be recognized before accepting.
             if (navPrompt && !powerOverlay) {
-              ui::statusBar(s, fb);
+              // Preview first (its road context projects full-screen), then the
+              // status bar + accept sheet on top to mask any road spill.
               ui_render_route_preview(fb);
+              ui::statusBar(s, fb);
               ui_render_nav_prompt(routes::activeName(),
                                    routes::maneuverCount(), fb);
             } else {

@@ -23,6 +23,21 @@ struct RideState {
     bool     timeValid = false;
     time_t   utc = 0;              // unix time from GPS
 
+    // Companion-phone live position: warm-starts the receiver and acts as a
+    // fallback location (+ altitude) when the device's own GPS has no fix.
+    // phoneFixMs is the device millis() at receipt (staleness check).
+    bool     phoneFixValid = false;
+    double   phoneLat = 0.0;
+    double   phoneLon = 0.0;
+    float    phoneAltM = 0.0f;
+    uint32_t phoneFixMs = 0;
+
+    // Terrain elevation at the current position, from the DEM baked into the
+    // map tiles (set by the UI task). Used for ascent/grade instead of the
+    // noisy GPS-chip altitude.
+    bool     mapElevationValid = false;
+    float    mapElevationM = 0.0f;
+
     // BLE sensors (0xFF/0xFFFF = no data, matching FIT invalid values)
     uint8_t  heartRateBpm = 0xFF;
     uint16_t powerW = 0xFFFF;      // instantaneous
@@ -50,6 +65,7 @@ struct RideState {
     uint16_t ftpW = 250;
     int16_t  tzMin = -420;
     bool     useMiles = false;   // display units: false = km, true = miles
+    bool     clock24h = true;    // status-bar clock: true = 24h, false = 12h
 };
 
 // End-of-ride stats for the summary screen (design 1g).

@@ -55,29 +55,32 @@ struct MapsView: View {
                 ZStack(alignment: .top) {
                     Map(position: $cam) {
                         UserAnnotation()
-                        // Hexes already on the device — blue.
+                        // Hexes already on the device — green highlight + a green
+                        // check in the middle. Drawn once here (not repeated in the
+                        // selection loop below).
                         ForEach(deviceTiles) { t in
                             MapPolygon(coordinates: t.hexagon)
-                                .foregroundStyle(Color.blue.opacity(0.12))
-                                .stroke(Color.blue.opacity(0.5), lineWidth: 1)
+                                .foregroundStyle(Palette.good.opacity(0.25))
+                                .stroke(Palette.good, lineWidth: 1.5)
+                            Annotation("", coordinate: t.center) {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .font(.system(size: 15))
+                                    .foregroundStyle(Palette.good)
+                            }
                         }
-                        // Covering tiles for the current selection. Live states:
-                        // on device (blue, drawn above) → done; converted this
-                        // run (green) → downloaded/building; tapped-out (faint);
-                        // pending (accent).
-                        ForEach(tiles) { t in
-                            let have = ble.deviceTileIds.contains(t.id)
+                        // Selection hexes NOT yet on the device (so on-device ones
+                        // aren't drawn twice). converted this run → green; tapped
+                        // out → faint; pending → accent.
+                        ForEach(tiles.filter { !ble.deviceTileIds.contains($0.id) }) { t in
                             let done = converted.contains(t.id)
                             let off = excluded.contains(t.id)
                             MapPolygon(coordinates: t.hexagon)
-                                .foregroundStyle(have ? Color.clear
-                                                 : done ? Palette.good.opacity(0.28)
+                                .foregroundStyle(done ? Palette.good.opacity(0.22)
                                                  : off ? Palette.muted.opacity(0.08)
                                                        : Palette.accent.opacity(0.16))
-                                .stroke(have ? Palette.muted.opacity(0.4)
-                                        : done ? Palette.good
+                                .stroke(done ? Palette.good
                                         : off ? Palette.muted.opacity(0.55) : Palette.accent,
-                                        lineWidth: have ? 1 : 1.5)
+                                        lineWidth: 1.5)
                         }
                     }
                     .mapControls { MapUserLocationButton() }
@@ -164,16 +167,8 @@ struct MapsView: View {
     // live hex counts; idle/selection states show the controls.
     @ViewBuilder private var bottomBar: some View {
         Group {
-            if ble.tilesUploading {
-                progressCard(title: "Sending to device",
-                             detail: ble.tileMessage ?? "Uploading hexes…",
-                             done: ble.tilesDone, total: ble.tilesTotal,
-                             noun: "sent") { ble.cancelTileUpload() }
-            } else if building {
-                progressCard(title: "Downloading maps",
-                             detail: status ?? "Fetching…",
-                             done: converted.count, total: max(downloadTotal, 1),
-                             noun: "ready") { cancelDownload() }
+            if building || ble.tilesUploading {
+                streamCard
             } else if let b = box {
                 selectionCard(b)
             } else {
@@ -184,24 +179,29 @@ struct MapsView: View {
         .padding(.bottom, 6)
     }
 
-    // Spinner + title + live "X of Y hexes" + progress bar + Cancel.
-    private func progressCard(title: String, detail: String, done: Int, total: Int,
-                              noun: String, cancel: @escaping () -> Void) -> some View {
-        card {
+    // Download + vectorize + send all run in parallel, so one card shows the
+    // fetch stage AND the live send progress.
+    private var streamCard: some View {
+        let sent = ble.tilesDone
+        let total = max(ble.tilesTotal, downloadTotal, 1)
+        return card {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 12) {
                     ProgressView().tint(Palette.accent)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(title).font(BarlowFont.condensed(19, .semibold)).foregroundStyle(Palette.ink)
-                        Text(detail).font(BarlowFont.text(12)).foregroundStyle(Palette.muted)
-                            .lineLimit(1)
+                        Text(building ? "Downloading maps" : "Sending to device")
+                            .font(BarlowFont.condensed(19, .semibold)).foregroundStyle(Palette.ink)
+                        Text(building ? (status ?? "Fetching…")
+                                      : (ble.tileMessage ?? "Uploading hexes…"))
+                            .font(BarlowFont.text(12)).foregroundStyle(Palette.muted).lineLimit(1)
                     }
                     Spacer(minLength: 6)
-                    Button("Cancel", action: cancel)
+                    Button("Cancel") { cancelDownload() }
                         .font(BarlowFont.text(14, .semibold)).foregroundStyle(Palette.accent)
                 }
-                ProgressView(value: Double(done), total: Double(max(total, 1))).tint(Palette.good)
-                Text("\(done) of \(total) hexes \(noun)")
+                ProgressView(value: Double(sent), total: Double(total)).tint(Palette.good)
+                Text("\(sent) of \(total) hexes sent"
+                     + (building && converted.count > sent ? " · \(converted.count) built" : ""))
                     .font(BarlowFont.text(12, .semibold)).foregroundStyle(Palette.good)
             }
         }
@@ -295,8 +295,9 @@ struct MapsView: View {
             return "\(Int((clat / 0.08).rounded(.down)))_\(Int((clon / 0.08).rounded(.down)))"
         }.map { $0.value }
 
+        ble.startTileStream()            // begin sending as tiles are produced
         downloadTask = Task {
-            var built: [(id: String, data: Data)] = []
+            var anyBuilt = false
             do {
                 for (i, batch) in batches.enumerated() {
                     if i > 0 { try? await Task.sleep(nanoseconds: 1_000_000_000) }  // pace the servers
@@ -309,21 +310,33 @@ struct MapsView: View {
                     }
                     status = "Building tiles \(i + 1)/\(n)…"
                     let part = try MapBuilder.encodeTiles(regionJSON: json, tiles: batch)
-                    built.append(contentsOf: part)
+                    // Bake a DEM elevation grid into each tile (best-effort) so
+                    // the device has elevation without GPS altitude or the phone.
+                    status = "Elevation \(i + 1)/\(n)…"
+                    var withElev: [(id: String, data: Data)] = []
+                    for var p in part {
+                        if let t = batch.first(where: { $0.id == p.id }),
+                           let grid = try? await MapBuilder.fetchElevationGrid(
+                                south: t.south, west: t.west, north: t.north, east: t.east) {
+                            MapBuilder.appendElevation(to: &p.data, south: t.south, west: t.west,
+                                north: t.north, east: t.east, grid: grid, n: MapBuilder.elevationGrid)
+                        }
+                        withElev.append(p)
+                    }
                     converted.formUnion(batch.map(\.id))   // fill these hexes in live
+                    if !withElev.isEmpty { anyBuilt = true }
+                    ble.enqueueTiles(withElev)             // send in parallel with the next fetch
                 }
                 building = false
-                if built.isEmpty {
-                    status = "No roads found in that area."
-                    return
-                }
-                status = nil
-                ble.uploadTiles(built)
+                ble.finishTileStream()                     // let the queue drain
+                status = anyBuilt ? nil : "No roads found in that area."
             } catch is CancellationError {
                 building = false
+                ble.cancelTileUpload()
                 status = "Canceled"
             } catch {
                 building = false
+                ble.finishTileStream()                     // send whatever built before the error
                 status = error.localizedDescription
             }
         }
@@ -333,6 +346,7 @@ struct MapsView: View {
         downloadTask?.cancel()
         downloadTask = nil
         building = false
+        ble.cancelTileUpload()
         status = "Canceled"
     }
 

@@ -12,6 +12,7 @@ int ftp = FTP_WATTS;
 int tz = TIMEZONE_OFFSET_MINUTES;
 int bl = 2;  // frontlight level 0-3
 bool miles = false;  // false = km, true = miles
+bool clk24 = true;   // true = 24-hour clock, false = 12-hour
 char addrs[3][18] = {"", "", ""};
 char names[3][32] = {"", "", ""};   // remembered vendor/model per paired kind
 double lastLat = 0, lastLon = 0;
@@ -28,6 +29,7 @@ void begin() {
     tz = prefs.getInt("tz", TIMEZONE_OFFSET_MINUTES);
     bl = prefs.getInt("bl", 2);
     miles = prefs.getBool("miles", false);
+    clk24 = prefs.getBool("clk24", true);
     for (int k = 0; k < 3; ++k) {
         prefs.getString(KEYS[k], addrs[k], sizeof(addrs[k]));
         prefs.getString(NAME_KEYS[k], names[k], sizeof(names[k]));
@@ -60,6 +62,12 @@ bool useMiles() { return miles; }
 void setUseMiles(bool m) {
     miles = m;
     prefs.putBool("miles", miles);
+}
+
+bool clock24h() { return clk24; }
+void setClock24h(bool h) {
+    clk24 = h;
+    prefs.putBool("clk24", clk24);
 }
 
 const char* sensorAddr(int kind) {

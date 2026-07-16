@@ -102,16 +102,18 @@ void accumulateStats(const RideState& s) {
         hrCount++;
     }
 
-    // Climb: accumulate ascent with 3 m hysteresis against GPS noise
-    if (s.gpsFix) {
+    // Climb from the map DEM elevation (the GPS chip's altitude is intentionally
+    // unused — it's far too noisy). 3 m hysteresis smooths the accumulation.
+    if (s.mapElevationValid) {
+        float elev = s.mapElevationM;
         if (!climbBaseValid) {
-            climbBaseAlt = s.altitudeM;
+            climbBaseAlt = elev;
             climbBaseValid = true;
-        } else if (s.altitudeM > climbBaseAlt + 3.0f) {
-            climbedM += s.altitudeM - climbBaseAlt;
-            climbBaseAlt = s.altitudeM;
-        } else if (s.altitudeM < climbBaseAlt - 3.0f) {
-            climbBaseAlt = s.altitudeM;
+        } else if (elev > climbBaseAlt + 3.0f) {
+            climbedM += elev - climbBaseAlt;
+            climbBaseAlt = elev;
+        } else if (elev < climbBaseAlt - 3.0f) {
+            climbBaseAlt = elev;
         }
     }
 }
@@ -307,13 +309,14 @@ void task(void*) {
             lastLat = s.latitude;
             lastLon = s.longitude;
             havePrevFix = true;
-            grade = updateGrade(s.altitudeM);
+            if (s.mapElevationValid) grade = updateGrade(s.mapElevationM);
 
             FitWriter::Record r;
             r.utc = s.utc;
             r.latitudeDeg = s.latitude;
             r.longitudeDeg = s.longitude;
-            r.altitudeM = s.altitudeM;
+            // Record the map DEM elevation so the ride profile is accurate.
+            r.altitudeM = s.mapElevationValid ? s.mapElevationM : s.altitudeM;
             r.speedMs = s.speedKmh / 3.6f;
             r.distanceM = distanceM;
             r.powerW = s.powerW;

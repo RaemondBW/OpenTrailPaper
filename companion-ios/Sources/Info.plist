@@ -31,9 +31,10 @@
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>bluetooth-central</string>
+		<string>location</string>
 	</array>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>Shows your position on the map when planning a route.</string>
+	<string>Shows your position on the map and sends it to your Bike GPS to warm-start its GPS and act as a backup location when the device has no fix.</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>UIAppFonts</key>
