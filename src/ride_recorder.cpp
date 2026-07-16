@@ -303,6 +303,12 @@ void stopRide(bool save) {
 
 bool isRecording() { return rideActive; }
 
+const char* currentRideFile() {
+    if (!fit.isOpen()) return "";
+    const char* base = strrchr(ridePath, '/');
+    return base ? base + 1 : ridePath;
+}
+
 RideSummary summary() {
     RideSummary r;
     r.distanceM = distanceM;

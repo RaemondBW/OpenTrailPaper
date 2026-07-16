@@ -16,6 +16,10 @@ void startRide();
 void stopRide(bool save);
 bool isRecording();
 
+// Basename (no directory) of the FIT file currently being recorded, or ""
+// when idle. Lets the history screen skip the still-open, unfinalized file.
+const char* currentRideFile();
+
 // Stats of the ride in progress (or the one just stopped) for the
 // summary screen.
 RideSummary summary();

@@ -10,6 +10,7 @@
 #include "config.h"
 #include "ride_state.h"
 #include "ride_recorder.h"
+#include "sd_bus.h"
 #include "gps_service.h"
 #include "board_power.h"
 #include <esp_sleep.h>
@@ -588,13 +589,41 @@ void renderListScreen(uint8_t* fb) {
         case SCREEN_HISTORY: {
             title = "RIDE HISTORY";
             footer = "rides upload from /rides on the SD card";
+
+            // A ride in progress gets a pinned row at the top; its still-open,
+            // unfinalized FIT file is then skipped in the scan below.
+            const char* activeFile = ride_recorder::currentRideFile();
+            if (activeFile[0]) {
+                RideState s = g_state.snapshot();
+                snprintf(rows[count].title, sizeof(rows[0].title),
+                         "Recording in progress");
+                uint32_t secs = s.elapsedS;
+                snprintf(rows[count].subtitle, sizeof(rows[0].subtitle),
+                         "%.1f %s · %lu:%02lu:%02lu",
+                         units::distM(s.distanceM, s.useMiles),
+                         units::distLabel(s.useMiles),
+                         (unsigned long)(secs / 3600),
+                         (unsigned long)(secs / 60 % 60),
+                         (unsigned long)(secs % 60));
+                rows[count].inverted = true;
+                count++;
+            }
+
+            // The recorder writes FIT records on this same SPI bus 1 Hz while
+            // riding; scanning the directory without the lock corrupts that
+            // traffic and returns a garbled/empty list (why history looked
+            // inaccessible during a ride). Hold the lock for the whole scan.
+            sdLock();
             File dir = SD.open(RIDE_DIR);
             if (dir) {
                 for (File f = dir.openNextFile(); f && count < kMenuRowCount;
                      f = dir.openNextFile()) {
-                    if (!f.isDirectory()) {
-                        const char* base = strrchr(f.name(), '/');
-                        base = base ? base + 1 : f.name();
+                    const char* base = strrchr(f.name(), '/');
+                    base = base ? base + 1 : f.name();
+                    // Skip subdirs, the in-progress file (shown above), and
+                    // stub rides too small to be worth opening.
+                    if (!f.isDirectory() && strcmp(base, activeFile) != 0 &&
+                        f.size() >= RIDE_MIN_USEFUL_BYTES) {
                         snprintf(rows[count].title, sizeof(rows[0].title),
                                  "%s", base);
                         snprintf(rows[count].subtitle, sizeof(rows[0].subtitle),
@@ -605,6 +634,7 @@ void renderListScreen(uint8_t* fb) {
                 }
                 dir.close();
             }
+            sdUnlock();
             break;
         }
         default:
