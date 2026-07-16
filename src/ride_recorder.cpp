@@ -16,6 +16,13 @@ FitWriter fit;
 bool sdOk = false;
 char ridePath[48];
 
+// The rider started a ride and hasn't stopped it. Deliberately NOT derived from
+// fit.isOpen(): the FIT handle lives on an SPI bus shared with the map store,
+// the diag log and USB mass storage, and a ride must outlive any trouble down
+// there. Only startRide()/stopRide() move this.
+bool rideActive = false;
+bool loggedFileLost = false;   // so a lost handle logs once, not once a second
+
 double lastLat = 0, lastLon = 0;
 bool havePrevFix = false;
 double distanceM = 0;
@@ -232,7 +239,7 @@ bool begin() {
 }
 
 void startRide() {
-    if (!sdOk || fit.isOpen() || usb_storage::hostActive()) return;
+    if (!sdOk || rideActive || usb_storage::hostActive()) return;
 
     RideState s = g_state.snapshot();
     if (!s.timeValid) {
@@ -251,6 +258,8 @@ void startRide() {
 
     startUtc = s.utc;
     resetStats();
+    rideActive = true;
+    loggedFileLost = false;
     g_state.with([](RideState& st) {
         st.recording = true;
         st.distanceM = 0;
@@ -263,7 +272,8 @@ void startRide() {
 }
 
 void stopRide(bool save) {
-    if (!fit.isOpen()) return;
+    if (!rideActive) return;
+    rideActive = false;
     RideState s = g_state.snapshot();
     endUtc = s.timeValid ? s.utc : startUtc + timerS;
     sdLock();
@@ -291,7 +301,7 @@ void stopRide(bool save) {
     });
 }
 
-bool isRecording() { return fit.isOpen(); }
+bool isRecording() { return rideActive; }
 
 RideSummary summary() {
     RideSummary r;
@@ -342,7 +352,18 @@ void task(void*) {
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(RECORD_INTERVAL_MS));
         // Never write while a host computer owns the SD over USB.
-        if (!fit.isOpen() || usb_storage::hostActive()) continue;
+        if (!rideActive || usb_storage::hostActive()) continue;
+
+        // The FIT handle went away underneath us (SD trouble — the card is
+        // shared with the map store, diag logging and USB storage). Keep the
+        // ride running: the timer, distance and summary stay live, auto-sleep
+        // stays blocked, and the rider stops the ride when they mean to. Say so
+        // in the log, once, so a short FIT is diagnosable after the fact.
+        if (!fit.isOpen() && !loggedFileLost) {
+            loggedFileLost = true;
+            diag::log("rec: FIT handle lost mid-ride (%s) — ride still timing, "
+                      "records not being written", ridePath);
+        }
 
         RideState s = g_state.snapshot();
         timerS++;

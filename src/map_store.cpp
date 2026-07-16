@@ -32,6 +32,16 @@ size_t primaryLen = 0;
 double loadedS = 0, loadedW = 0, loadedN = 0, loadedE = 0;
 bool haveBounds = false;
 
+// Index of the whole maps on the card (name + bbox), so "which whole map covers
+// this position?" is a RAM lookup rather than a scan of the card. Mirrors the
+// H3 tile index below. Whole maps only appear/disappear when one is downloaded
+// or a host computer edits the card, so this is rebuilt at those points instead
+// of being re-derived from SD on every position update.
+constexpr int MAX_MAPS = 32;
+struct MapMeta { char name[56]; double s, w, n, e; };
+MapMeta g_maps[MAX_MAPS];
+int g_mapCount = 0;
+
 // --- H3 tile layer -------------------------------------------------------
 // Each downloaded H3 cell is its own small .ebm under /maps/tiles, named by
 // its H3 id. We keep a lightweight in-memory index of (name, bbox) and load
@@ -103,34 +113,49 @@ bool loadFile(const char* path) {
     return true;
 }
 
-// Find a downloaded whole map whose bounds contain (lat, lon); load if found.
-bool loadCovering(double lat, double lon) {
+// (Re)build the in-memory whole-map index from the /maps headers.
+void scanMaps() {
+    g_mapCount = 0;
     sdLock();
+    if (!SD.exists(MAP_DIR)) SD.mkdir(MAP_DIR);
     File dir = SD.open(MAP_DIR);
-    if (!dir) { sdUnlock(); return false; }
-    char best[64] = "";
-    for (File e = dir.openNextFile(); e; e = dir.openNextFile()) {
-        if (!e.isDirectory()) {
-            const char* nm = e.name();
-            const char* base = strrchr(nm, '/');
-            base = base ? base + 1 : nm;
-            if (strstr(base, ".ebm")) {
-                uint8_t h[36];
-                if (e.read(h, 36) == 36) {
+    if (dir) {
+        for (File e = dir.openNextFile(); e && g_mapCount < MAX_MAPS;
+             e = dir.openNextFile()) {
+            if (!e.isDirectory()) {
+                const char* nm = e.name();
+                const char* base = strrchr(nm, '/');
+                base = base ? base + 1 : nm;
+                if (strstr(base, ".ebm")) {
+                    uint8_t h[36];
                     double s, w, n, ee;
-                    if (headerBounds(h, s, w, n, ee) &&
-                        lat >= s && lat <= n && lon >= w && lon <= ee) {
-                        snprintf(best, sizeof(best), "%s/%s", MAP_DIR, base);
+                    if (e.read(h, 36) == 36 && headerBounds(h, s, w, n, ee)) {
+                        MapMeta& m = g_maps[g_mapCount++];
+                        strncpy(m.name, base, sizeof(m.name) - 1);
+                        m.name[sizeof(m.name) - 1] = 0;
+                        m.s = s; m.w = w; m.n = n; m.e = ee;
                     }
                 }
             }
+            e.close();
         }
-        e.close();
-        if (best[0]) break;
+        dir.close();
     }
-    dir.close();
     sdUnlock();
-    return best[0] ? loadFile(best) : false;
+    diag::log("map: %d whole maps indexed", g_mapCount);
+}
+
+// Find an indexed whole map whose bounds contain (lat, lon); load if found.
+// A RAM lookup — no SD work unless there's actually a map to load.
+bool loadCovering(double lat, double lon) {
+    for (int i = 0; i < g_mapCount; ++i) {
+        const MapMeta& m = g_maps[i];
+        if (lat < m.s || lat > m.n || lon < m.w || lon > m.e) continue;
+        char path[80];
+        snprintf(path, sizeof(path), "%s/%s", MAP_DIR, m.name);
+        return loadFile(path);
+    }
+    return false;
 }
 
 // (Re)build the in-memory tile index from /maps/tiles headers. Invalidates
@@ -258,13 +283,24 @@ void begin(double lat, double lon) {
     if (!SD.exists(MAP_DIR)) SD.mkdir(MAP_DIR);
     sdUnlock();
     scanTiles();
+    scanMaps();
     if (!loadCovering(lat, lon)) clearPrimary();   // no fallback map
 }
 
+void rescanCard() {
+    scanTiles();
+    scanMaps();
+}
+
+// Called once per rendered frame (~1 Hz), including the whole time the rider is
+// outside the downloaded area — so it must not touch the SD card unless there
+// is actually a map to load. The recorder appends to the FIT on the same SPI
+// bus under the same mutex once a second, and a ride must never be held up by
+// map bookkeeping. Hence the RAM-resident bounds index.
 void ensureForPosition(double lat, double lon) {
     if (boundsCover(lat, lon)) return;      // current whole map already covers us
     if (loadCovering(lat, lon)) return;     // switched to a better downloaded map
-    if (!boundsCover(lat, lon)) clearPrimary();   // nothing whole-map covers us now
+    clearPrimary();                         // nothing whole-map covers us now
 }
 
 void renderInto(double lat, double lon, float metersPerPixel, int centerX,
@@ -330,6 +366,7 @@ bool saveAndActivate(const char* name, const uint8_t* data, size_t len) {
     sdUnlock();
     if (!ok) { diag::log("map save: write failed %s", path); return false; }
     diag::log("map saved: %s (%u KB)", path, (unsigned)(len / 1024));
+    scanMaps();   // index the new map so ensureForPosition can find it later
     return loadFile(path);
 }
 
