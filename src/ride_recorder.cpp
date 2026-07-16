@@ -62,6 +62,54 @@ void makeRidePath(char* out, size_t len, time_t utc) {
              tmv.tm_hour, tmv.tm_min, tmv.tm_sec);
 }
 
+// A reset mid-ride (watchdog, brownout, flat battery) leaves the ride on the
+// card without the lap/session/activity tail and CRC that make it an activity,
+// so Strava and friends reject it — the ride looks lost even though every
+// record is sitting there. Put those files back together at boot, before the
+// UI or a USB host can touch the card.
+//
+// Repairing rewrites a file's tail but never adds or removes a directory
+// entry, so it is safe to do while walking the directory; deletions are held
+// back until the walk is done.
+void recoverInterruptedRides() {
+    char toDelete[8][32];
+    int deleteCount = 0;
+    int repaired = 0;
+
+    sdLock();
+    File dir = SD.open(RIDE_DIR);
+    if (dir) {
+        for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
+            if (f.isDirectory()) { f.close(); continue; }
+            char path[48];
+            // name() is the bare filename on this core, not the full path.
+            snprintf(path, sizeof(path), RIDE_DIR "/%s", f.name());
+            f.close();
+
+            FitWriter::RepairResult r = FitWriter::repair(SD, path);
+            if (r.status == FitWriter::RepairResult::REPAIRED) {
+                repaired++;
+                diag::log("ride recovered: %s — %.2f km, %lu s (%d pts)", path,
+                          r.distanceM / 1000.0, (unsigned long)r.elapsedS,
+                          r.records);
+            } else if (r.status == FitWriter::RepairResult::EMPTY) {
+                // Died before the first GPS fix: a header and nothing else.
+                if (deleteCount < 8) {
+                    snprintf(toDelete[deleteCount++], sizeof(toDelete[0]), "%s",
+                             path);
+                }
+            }
+        }
+        dir.close();
+    }
+    for (int i = 0; i < deleteCount; ++i) SD.remove(toDelete[i]);
+    sdUnlock();
+
+    if (repaired) {
+        Serial.printf("[rec] recovered %d interrupted ride(s)\n", repaired);
+    }
+}
+
 void resetStats() {
     distanceM = 0;
     timerS = 0;
@@ -179,6 +227,7 @@ bool begin() {
     }
     Serial.printf("[rec] SD ready, %llu MB free\n",
                   (SD.totalBytes() - SD.usedBytes()) / (1024ULL * 1024ULL));
+    recoverInterruptedRides();
     return true;
 }
 

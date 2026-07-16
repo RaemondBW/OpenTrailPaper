@@ -61,6 +61,15 @@ code for macOS (hardware layer stubbed) and renders the UI to PNGs in
 map view fed with a synthetic street scene. Iterate on layout there before
 flashing.
 
+## FIT encoder tests without hardware
+
+`tools/fit_test/run_fit_test.sh` compiles the real `src/fit_writer.cpp`
+against a small FS shim and writes sample rides to `tools/fit_test/out/` —
+including a ride cut short by a reset, to cover the boot-time recovery path.
+With [fitdecode](https://pypi.org/project/fitdecode/) installed
+(`pip install fitdecode`) it then parses each file with CRC checking, which
+is what catches encoder bugs an upload would otherwise reject.
+
 ## Layout
 
 ```
