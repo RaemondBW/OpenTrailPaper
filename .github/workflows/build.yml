@@ -56,7 +56,10 @@ jobs:
 
   ios:
     name: Companion app (iOS)
-    runs-on: macos-15
+    # RouteView uses MKDirectionsTransportType.cycling, which Apple only
+    # exposes in the iOS 26 SDK (backdated to iOS 14 availability). macos-15
+    # defaults to Xcode 16.4 / iOS 18.5, where that symbol does not exist.
+    runs-on: macos-26
     defaults:
       run:
         working-directory: companion-ios
@@ -77,6 +80,7 @@ jobs:
       # neither scheme autocreation nor run-destination resolution.
       - name: Build
         run: |
+          xcodebuild -version
           xcodebuild build \
             -project BikeGPSCompanion.xcodeproj \
             -target BikeGPSCompanion \
