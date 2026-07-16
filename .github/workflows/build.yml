@@ -1,0 +1,85 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  firmware:
+    name: Firmware (ESP32-S3)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # The espressif32 toolchain is a few hundred MB and unpacks slowly;
+      # keyed on platformio.ini so a platform bump refetches it.
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            ~/.cache/pip
+          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
+          restore-keys: pio-${{ runner.os }}-
+
+      - name: Install PlatformIO
+        run: pip install --upgrade platformio
+
+      # Board definition + display/touch/battery drivers live here, and
+      # platformio.ini points boards_dir/lib_extra_dirs at it.
+      - name: Clone LilyGO board support
+        run: |
+          git clone --depth 1 \
+            https://github.com/Xinyuan-LilyGO/T5S3-4.7-e-paper-PRO \
+            vendor/T5S3-4.7-e-paper-PRO
+
+      - name: Build
+        run: pio run
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware
+          path: |
+            .pio/build/t5s3-pro/firmware.bin
+            .pio/build/t5s3-pro/firmware.elf
+          if-no-files-found: error
+
+  ios:
+    name: Companion app (iOS)
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: companion-ios
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate project
+        run: xcodegen generate
+
+      # Signing off: the project pins a DEVELOPMENT_TEAM that a runner has no
+      # certificate for, and this only needs to prove the app compiles.
+      # Built by -target against the simulator SDK rather than
+      # -scheme/-destination: no scheme is committed (project.yml declares
+      # none, so schemes are synthesized per-invocation) and this form needs
+      # neither scheme autocreation nor run-destination resolution.
+      - name: Build
+        run: |
+          xcodebuild build \
+            -project BikeGPSCompanion.xcodeproj \
+            -target BikeGPSCompanion \
+            -sdk iphonesimulator \
+            -configuration Debug \
+            CODE_SIGNING_ALLOWED=NO

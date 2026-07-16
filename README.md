@@ -1,5 +1,7 @@
 # Open E-Paper Bike Computer
 
+[![Build](https://github.com/RaemondBW/epaper-bike-gps/actions/workflows/build.yml/badge.svg)](https://github.com/RaemondBW/epaper-bike-gps/actions/workflows/build.yml)
+
 DIY bike GPS head unit for the [LilyGO T5S3 4.7" e-paper PRO](https://github.com/Xinyuan-LilyGO/T5S3-4.7-e-paper-PRO).
 
 The board has everything onboard: ESP32-S3 (16MB flash / 8MB PSRAM, BLE 5),
