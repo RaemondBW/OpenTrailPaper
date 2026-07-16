@@ -59,3 +59,7 @@
 #define RIDE_DIR            "/rides"
 #define RECORD_INTERVAL_MS  1000
 #define FIT_FLUSH_EVERY_S   15
+// Rides smaller than this are stubs (an accidental start/stop with under a
+// minute of data) and are hidden from the history list — a FIT file is ~284
+// fixed bytes plus ~25 per 1 Hz record (see fit_writer.cpp).
+#define RIDE_MIN_USEFUL_BYTES 1500
