@@ -740,7 +740,10 @@ void task(void*) {
         // When the computer releases the SD (eject/unplug), check whether it
         // dropped a firmware.bin on the card and flash it automatically.
         bool host = usb_storage::hostActive();
-        if (lastHostActive && !host) applySdUpdate();
+        if (lastHostActive && !host) {
+            applySdUpdate();
+            map_store::rescanCard();   // it may have added/removed maps too
+        }
         lastHostActive = host;
 
         // Terrain elevation from the map DEM at the current position (~1 Hz).

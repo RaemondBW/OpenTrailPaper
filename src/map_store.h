@@ -21,9 +21,16 @@ namespace map_store {
 // embedded default). Call after the SD card is mounted.
 void begin(double lat, double lon);
 
-// If the currently loaded whole map doesn't cover (lat, lon), look for a
-// downloaded one that does. No-op when tiles are what's covering us.
+// If the currently loaded whole map doesn't cover (lat, lon), load the
+// downloaded one that does. Answered from the in-RAM bounds index, so outside
+// the downloaded area (where there is nothing to load) this costs no SD access
+// at all — it runs every second, on the bus the recorder writes the FIT to.
 void ensureForPosition(double lat, double lon);
+
+// Re-read the tile and whole-map indexes from the card. Call after something
+// other than saveTile/saveAndActivate could have changed /maps — i.e. when a
+// host computer releases the SD after mounting it over USB.
+void rescanCard();
 
 // Render the map around (lat, lon) into `out`: projects every H3 tile that
 // overlaps the viewport (loading them from SD on demand), falling back to the
