@@ -440,9 +440,6 @@ void handleTap(int x, int y) {
                     st.clock24h = settings::clock24h();
                 });
                 ble_server::pushSettingsToPhone();   // mirror the edit to the app
-            } else if (y >= kMenuRowTop && row == kSettingsSensorsRow) {
-                sensorsFrom = SCREEN_SETTINGS;
-                enterSensors();
             } else if (y >= kMenuRowTop && row == kSettingsGpsRow) {
                 screen = SCREEN_GPSDEBUG;
             } else if (y >= kMenuRowTop && row == kSettingsGreyRow) {

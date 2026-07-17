@@ -615,14 +615,14 @@ void ui_render_settings(const SettingsInfo& si, uint8_t* fb) {
         epd_fill_rect({0, y + kSettingsRowH - 1, W, 1}, 0x00, fb);
     }
 
-    // Navigation rows below the adjustable settings.
+    // Navigation rows below the adjustable settings. (Sensors is on the main
+    // menu, not duplicated here.)
     struct NavRow { const char* title; const char* sub; };
-    const NavRow navs[3] = {
-        {"Sensors", "pair heart rate / power / cadence"},
+    const NavRow navs[2] = {
         {"GPS Debug", "receiver diagnostics"},
         {"Grey Test", "grayscale swatches for tuning"},
     };
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < 2; ++i) {
         int y = kMenuRowTop + (5 + i) * kSettingsRowH;
         ui::text(&ArialBold_20, 28, y + 40, navs[i].title, fb);
         ui::text(&ArialBold_14, 28, y + 70, navs[i].sub, fb,

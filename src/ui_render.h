@@ -86,7 +86,7 @@ constexpr int kSettingsMinusX = 220;
 constexpr int kSettingsPlusX = 440;
 constexpr int kSettingsBtn = 84;
 // The settings screen packs more rows than the menu, so it uses a shorter row.
-constexpr int kSettingsRowH = 95;
+constexpr int kSettingsRowH = 111;
 struct SettingsInfo {
     int ftpW;
     int tzMin;
@@ -101,13 +101,13 @@ extern const EpdRect kBackBar;
 void ui_render_back_bar(uint8_t* fb);
 
 // Settings sub-page row hit-testing. Rows 0-4 are +/- adjusters (FTP,
-// timezone, frontlight, units, USB drive); rows 5-7 are navigation.
+// timezone, frontlight, units, USB drive); rows 5-6 are navigation. Sensors
+// lives on the main menu, not here.
 constexpr int kSettingsBacklightRow = 2;
 constexpr int kSettingsUnitsRow = 3;
 constexpr int kSettingsUsbRow = 4;
-constexpr int kSettingsSensorsRow = 5;
-constexpr int kSettingsGpsRow = 6;
-constexpr int kSettingsGreyRow = 7;
+constexpr int kSettingsGpsRow = 5;
+constexpr int kSettingsGreyRow = 6;
 
 // Grayscale test screen: labelled swatches from white to black to pick which
 // gray levels reproduce on the panel.
