@@ -748,7 +748,7 @@ void ui_render_power_sheet(bool recording, uint8_t* fb) {
     ui::text(&ArialBold_14, 118, kPowerSheet.y + 98,
              recording ? "your ride will be saved first"
                        : "press BOOT to wake up again",
-             fb, EPD_DRAW_ALIGN_LEFT, 0x60);
+             fb, EPD_DRAW_ALIGN_LEFT, 0x33);   // 0x33 = darkest grey the panel shows
 
     // SHUT DOWN — inverted
     epd_fill_rect({kPowerShutdown.x, kPowerShutdown.y, kPowerShutdown.width,
@@ -777,7 +777,7 @@ void ui_render_shutdown_screen(uint8_t* fb) {
     epd_fill_rect({0, bandY + bandH, W, 3}, 0xFF, fb);
     ui::label(W / 2, bandY + 50, "POWERED OFF", fb, 0xFF, &ArialBold_20);
     ui::text(&ArialBold_14, W / 2, bandY + 90, "press the BOOT button to wake", fb,
-             EPD_DRAW_ALIGN_CENTER, 0xC0);
+             EPD_DRAW_ALIGN_CENTER, 0xFF);   // white on the black band
 }
 
 void ui_render_nav_prompt(const char* routeName, int turns, uint8_t* fb) {
@@ -796,7 +796,7 @@ void ui_render_nav_prompt(const char* routeName, int turns, uint8_t* fb) {
     char sub[64];
     snprintf(sub, sizeof(sub), "%s · %d turns", routeName, turns);
     ui::text(&ArialBold_14, 118, kPowerSheet.y + 94, sub, fb,
-             EPD_DRAW_ALIGN_LEFT, 0x60);
+             EPD_DRAW_ALIGN_LEFT, 0x33);
 
     epd_fill_rect({kPowerShutdown.x, kPowerShutdown.y, kPowerShutdown.width,
                    kPowerShutdown.height}, 0x00, fb);
