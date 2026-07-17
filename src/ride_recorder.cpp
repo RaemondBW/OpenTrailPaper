@@ -428,7 +428,12 @@ void task(void*) {
             r.latitudeDeg = s.latitude;
             r.longitudeDeg = s.longitude;
             // Record the map DEM elevation so the ride profile is accurate.
-            r.altitudeM = s.mapElevationValid ? s.mapElevationM : s.altitudeM;
+            // The raw GPS altitude is deliberately NOT used as a fallback: it's
+            // far too noisy (the summary's ascent ignores it for the same
+            // reason), and mixing it into the record stream with DEM values
+            // makes phone-side ascent totals disagree with the device. Mark the
+            // point's altitude invalid instead when the DEM has no value.
+            r.altitudeM = s.mapElevationValid ? s.mapElevationM : NAN;
             r.speedMs = s.speedKmh / 3.6f;
             r.distanceM = distanceM;
             r.powerW = s.powerW;

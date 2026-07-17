@@ -13,6 +13,16 @@ clang++ -std=c++17 -O2 -Wall \
 
 ./tools/fit_test/fit_test
 
+# Issue #12: the phone app's ascent must match the device end-ride summary,
+# which means the record altitude carries the map DEM (invalid marker when
+# absent), never the noisy GPS altitude.
+echo
+clang++ -std=c++17 -O2 -Wall \
+    -I tools/fit_test/shim -I src \
+    tools/fit_test/ascent_test.cpp src/fit_writer.cpp \
+    -o tools/fit_test/ascent_test
+./tools/fit_test/ascent_test
+
 # empty.fit is deliberately unrecoverable (the device deletes it rather than
 # keeping a ride with no points), so it is not expected to parse.
 if python3 -c "import fitdecode" 2>/dev/null; then
@@ -20,7 +30,8 @@ if python3 -c "import fitdecode" 2>/dev/null; then
     python3 tools/fit_test/validate_fit.py \
         tools/fit_test/out/normal.fit \
         tools/fit_test/out/crashed.fit \
-        tools/fit_test/out/torn.fit
+        tools/fit_test/out/torn.fit \
+        tools/fit_test/out/ascent_new.fit
 else
     echo
     echo "(skipping parser validation — pip install fitdecode to enable)"

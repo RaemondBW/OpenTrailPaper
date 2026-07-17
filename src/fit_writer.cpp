@@ -212,7 +212,12 @@ void FitWriter::writeRecord(const Record& r) {
     put32(&buf[1], fitTime(r.utc));
     put32(&buf[5], (uint32_t)(int32_t)llround(r.latitudeDeg * SEMICIRCLES_PER_DEG));
     put32(&buf[9], (uint32_t)(int32_t)llround(r.longitudeDeg * SEMICIRCLES_PER_DEG));
-    put16(&buf[13], (uint16_t)lround((r.altitudeM + 500.0f) * 5.0f));
+    // 0xFFFF is the FIT invalid marker: emit it rather than encoding a bogus
+    // altitude, so a point with no elevation is skipped by readers instead of
+    // being taken as a real value (which would corrupt ascent totals).
+    put16(&buf[13], isnan(r.altitudeM)
+                        ? 0xFFFF
+                        : (uint16_t)lround((r.altitudeM + 500.0f) * 5.0f));
     put32(&buf[15], (uint32_t)llround(r.distanceM * 100.0));
     put16(&buf[19], (uint16_t)lround(r.speedMs * 1000.0f));
     put16(&buf[21], r.powerW);
