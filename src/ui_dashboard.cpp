@@ -50,6 +50,11 @@ RideSummary pendingSummary;
 float mapMpp = 2.0f;  // map zoom: 1/2/4/8/16/32 m per px (wide levels show tiles)
 bool mapTrackUp = false;
 
+// Serial test hooks: drive the UI over the CDC serial port to profile the map
+// without physical taps. Toggle timing logs with 't'; single-char commands
+// injected in the task loop mirror button presses. See pollSerialCommands().
+bool dbgTiming = false;
+
 // When the "Start navigation?" prompt appeared (for the accept settle guard).
 uint32_t navPromptShownAt = 0;
 
@@ -198,6 +203,7 @@ bool refresh(bool screenChanged, bool fastInPage, bool listFast) {
     bool active = millis() - lastUiInputMs < 1200;
     bool du = wantDu && (active || ghostDebt < GHOST_GL16_EVERY);
 
+    uint32_t tw0 = millis();
     if (!epdPowered) { epd_poweron(); epdPowered = true; }
     if (du) {
         epd_hl_update_screen(&hl, MODE_DU, epd_ambient_temperature());
@@ -206,6 +212,9 @@ bool refresh(bool screenChanged, bool fastInPage, bool listFast) {
         epd_hl_update_screen(&hl, MODE_GL16, epd_ambient_temperature());
         ghostDebt = 0;
     }
+    if (dbgTiming)
+        diag::log("refresh %s: %lums", du ? "DU" : "GL16",
+                  (unsigned long)(millis() - tw0));
     // Keep the panel powered only through an interactive burst (so successive
     // zoom/settings taps skip the ~36 ms power-up). Passive 1 Hz updates power
     // straight back off, so idle/riding battery draw is unchanged.
@@ -531,8 +540,14 @@ void buildMapScreenData(const RideState& s, MapScreenData& map) {
 
 void renderMapScreen(const RideState& s, uint8_t* fb) {
     MapScreenData map = {};
+    uint32_t m0 = millis();
     buildMapScreenData(s, map);
+    uint32_t m1 = millis();
     ui_render_map(map, s, fb);
+    if (dbgTiming)
+        diag::log("map: project=%lu draw=%lu polys=%d mpp=%d",
+                  (unsigned long)(m1 - m0), (unsigned long)(millis() - m1),
+                  map.featureCount, (int)mapMpp);
     drawNavBanner(fb);
 }
 
@@ -810,6 +825,34 @@ void applySdUpdate() {
     }
 }
 
+// Serial test console over the CDC port: single-char commands mirror button
+// presses so map/UI performance can be profiled without physical taps.
+//   i / o  zoom in / out (map)      p / d  map / dashboard
+//   m / s  menu / settings          g / y  gps debug / grey test
+//   b      back                     t      toggle timing logs
+void pollSerialCommands() {
+    while (Serial.available() > 0) {
+        int c = Serial.read();
+        bool acted = true;
+        switch (c) {
+            case 'i': if (mapMpp > 1.0f) mapMpp /= 2.0f; screen = SCREEN_MAP; break;
+            case 'o': if (mapMpp < 32.0f) mapMpp *= 2.0f; screen = SCREEN_MAP; break;
+            case 'p': screen = SCREEN_MAP; break;
+            case 'd': screen = SCREEN_DASH; break;
+            case 'm': screen = SCREEN_MENU; break;
+            case 's': screen = SCREEN_SETTINGS; break;
+            case 'g': screen = SCREEN_GPSDEBUG; break;
+            case 'y': screen = SCREEN_GREYTEST; break;
+            case 'b': goBack(); break;
+            case 't': dbgTiming = !dbgTiming;
+                      diag::log("dbg timing %s", dbgTiming ? "ON" : "OFF");
+                      acted = false; break;
+            default: acted = false; break;   // ignore whitespace / unknown
+        }
+        if (acted) noteActivity();   // forceDraw + panel power keep-alive
+    }
+}
+
 void task(void*) {
     uint32_t lastDraw = 0;
     Screen lastScreen = screen;
@@ -1000,6 +1043,8 @@ void task(void*) {
                 goBack();
             }
         }
+
+        pollSerialCommands();   // serial-driven button presses (testing/profiling)
 
         bool navPrompt = routes::navPending();
         if (navPrompt && !lastNavPrompt) navPromptShownAt = millis();
