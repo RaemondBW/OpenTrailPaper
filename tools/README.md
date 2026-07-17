@@ -33,6 +33,17 @@ Copy the result to `/maps/` on the SD card. `sf_overpass.json` is a cached
 Overpass response for the San Francisco box so the build is reproducible
 offline.
 
+## 3. In the browser (region bake, no toolchain)
+
+The project site's *Generate an offline map* section
+([`docs/mapgen.js`](../docs/mapgen.js) + `docs/mapgen-ui.js`) is a JS port of
+`build_map.py`: pick a bounding box on a Leaflet map, and it fetches Overpass
+and encodes the same whole-region `EBM1` blob client-side, then downloads a
+`<name>.ebm` to drop in `/maps/`. Output is byte-for-byte identical to
+`build_map.py` for the same Overpass response, so the three paths stay in sync.
+Like `build_map.py`, it has no `ELV1` elevation block — that's the phone's
+per-hex path.
+
 ## Render classes
 
 Both paths classify OSM tags identically (`build_map.py` and `MapBuilder.swift`

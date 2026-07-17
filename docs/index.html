@@ -10,6 +10,8 @@
 <meta property="og:type" content="website">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%9A%B2%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
 </head>
 <body>
 
@@ -20,6 +22,7 @@
       <a href="#features">Features</a>
       <a href="#screens">Screens</a>
       <a href="#split">Phone&nbsp;/&nbsp;device</a>
+      <a href="#maps">Generate maps</a>
       <a href="#flash">Flash firmware</a>
       <a href="https://github.com/RaemondBW/epaper-bike-gps">GitHub</a>
     </nav>
@@ -128,6 +131,54 @@
     </table>
   </section>
 
+  <section id="maps">
+    <h2>🗺️ Generate an offline map</h2>
+    <p class="sub">Pick an area, download a <code>.ebm</code> map, and drop it in <code>/maps</code> on the SD card — the device draws it offline, no phone needed. Everything runs locally in your browser from <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> data (via <a href="https://overpass-api.de/">Overpass</a>); nothing is uploaded anywhere. This bakes a whole-region fallback map — the iOS app is still the way to author the per-hex tiles with baked-in elevation.</p>
+
+    <div class="flash-grid mapgen-grid">
+      <div class="card">
+        <div id="pickmap" class="pickmap" role="application" aria-label="Map area picker"></div>
+        <div class="pickmap-tools">
+          <button id="drawbox" class="btn secondary" type="button">✏️ Draw a box</button>
+          <button id="useview" class="btn secondary" type="button">Use current view</button>
+        </div>
+        <div class="bbox-fields">
+          <label>North<input id="bb-n" type="number" step="any" inputmode="decimal"></label>
+          <label>South<input id="bb-s" type="number" step="any" inputmode="decimal"></label>
+          <label>West<input id="bb-w" type="number" step="any" inputmode="decimal"></label>
+          <label>East<input id="bb-e" type="number" step="any" inputmode="decimal"></label>
+        </div>
+        <p id="bb-info" class="bbox-info">Pan and zoom to your area, then draw a box or use the current view.</p>
+      </div>
+
+      <div class="card">
+        <strong>1 &nbsp;Choose your area</strong>
+        <p style="color:var(--ink-soft);font-size:.95rem;margin:.5rem 0 0;">
+          Pan/zoom the map to where you ride, then <em>Draw a box</em> (drag across the map) or
+          <em>Use current view</em>. Keep it modest — a city or a county is fine; a whole state
+          is too much data for one download.
+        </p>
+        <strong style="display:block;margin-top:1rem;">2 &nbsp;Name &amp; generate</strong>
+        <label class="name-row">Map name
+          <input id="map-name" type="text" value="map" aria-label="Map name">
+        </label>
+        <div class="flash-controls" style="margin-top:12px;">
+          <button id="gen-btn" class="btn accent" type="button" disabled>Generate .ebm</button>
+          <span id="gen-status" class="status">Pick an area to begin.</span>
+        </div>
+        <div class="progress" hidden><i id="gen-bar"></i></div>
+        <p style="margin:12px 0 0;"><a id="gen-download" class="btn" hidden download>⬇ Download map</a></p>
+        <div class="console" id="gen-log" aria-live="polite"></div>
+        <strong style="display:block;margin-top:1rem;">3 &nbsp;Copy it to the SD card</strong>
+        <p style="color:var(--ink-soft);font-size:.95rem;margin:.5rem 0 0;">
+          Put <code>&lt;name&gt;.ebm</code> in the <code>/maps</code> folder on the device's SD card —
+          over the built-in USB-drive mode, or with a card reader. It shows up on the map screen
+          the next time you ride through that area.
+        </p>
+      </div>
+    </div>
+  </section>
+
   <section id="flash">
     <h2>⚡ Flash firmware from your browser</h2>
     <p class="sub">Powered by <a href="https://github.com/espressif/esptool-js">esptool-js</a> and the Web Serial API — the same approach as the <a href="https://github.com/adafruit/Adafruit_WebSerial_ESPTool">Adafruit WebSerial ESPTool</a>. Everything runs locally in your browser; nothing is uploaded anywhere.</p>
@@ -219,5 +270,8 @@
 </footer>
 
 <script type="module" src="flash.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script type="module" src="mapgen-ui.js"></script>
 </body>
 </html>
