@@ -95,7 +95,9 @@ class SettingsCb : public NimBLECharacteristicCallbacks {
 //   [0x02] data      : rest is raw GPX bytes, appended in order
 //   [0x03] end track : finalize geometry -> parse + activate
 //   [0x04] maneuver  : [i32 lat_e7][i32 lon_e7][utf8 instruction]
-//   [0x05] end nav   : all maneuvers received -> raise nav prompt
+//   [0x05] end nav   : all maneuvers received -> raise nav prompt, then the
+//                      device notifies [0x23] received-ok / [0x24] parse-failed
+//                      so the phone can confirm receipt instead of guessing
 //   [0x06] list      : device notifies [0x20][name].. then [0x21] done
 //   [0x07] delete    : rest is a route filename to remove
 constexpr size_t ROUTE_MAX = 256 * 1024;  // 256 KB GPX cap (PSRAM)
@@ -108,6 +110,11 @@ enum RouteReq { RREQ_NONE, RREQ_LIST, RREQ_DELETE };
 volatile RouteReq routeReq = RREQ_NONE;
 char routeReqName[48];
 
+// Receipt acknowledgement for the phone. onWrite can't safely notify from the
+// BLE callback, so 0x05 stashes the outcome here and the server loop notifies.
+volatile bool routeTrackLoaded = false;   // did the last 0x03 track parse OK
+volatile int  pendingRouteAck  = 0;       // 0 none, 1 received-ok, 2 parse-failed
+
 class RouteCb : public NimBLECharacteristicCallbacks {
     void onWrite(NimBLECharacteristic* c, NimBLEConnInfo&) override {
         std::string v = c->getValue();
@@ -118,6 +125,7 @@ class RouteCb : public NimBLECharacteristicCallbacks {
 
         if (op == 0x01) {  // start
             routeLen = 0;
+            routeTrackLoaded = false;
             routes::clearManeuvers();
             size_t n = plen < sizeof(routeName) - 1 ? plen : sizeof(routeName) - 1;
             memcpy(routeName, payload, n);
@@ -132,6 +140,7 @@ class RouteCb : public NimBLECharacteristicCallbacks {
             if (routeBuf && routeLen > 0) {
                 routeBuf[routeLen < ROUTE_MAX ? routeLen : ROUTE_MAX - 1] = 0;
                 bool ok = routes::loadFromMemory(routeName, routeBuf, routeLen);
+                routeTrackLoaded = ok;
                 Serial.printf("[srv] route track end: %u bytes, %s\n",
                               (unsigned)routeLen, ok ? "loaded" : "parse failed");
             }
@@ -149,6 +158,7 @@ class RouteCb : public NimBLECharacteristicCallbacks {
             routes::finishManeuvers();
             Serial.printf("[srv] navigation ready: %d maneuvers\n",
                           routes::maneuverCount());
+            pendingRouteAck = routeTrackLoaded ? 1 : 2;   // tell the phone
         } else if (op == 0x06) {  // list routes
             routeReq = RREQ_LIST;
         } else if (op == 0x07 && plen > 0) {  // delete route
@@ -1051,6 +1061,12 @@ void task(void*) {
         if (sensorReq == SREQ_LIST) {
             sensorReq = SREQ_NONE;
             sendSensorList();
+        }
+        // Confirm route receipt to the phone (no SD access needed, so this runs
+        // even while a host computer is using the card).
+        if (routeChr && pendingRouteAck) {
+            int a = pendingRouteAck; pendingRouteAck = 0;
+            notifyByte2(a == 1 ? 0x23 : 0x24);
         }
 
         vTaskDelay(pdMS_TO_TICKS(100));
