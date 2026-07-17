@@ -1,0 +1,55 @@
+name: Deploy site
+
+# Publishes the static project site in docs/ to GitHub Pages.
+# One-time setup: repo Settings → Pages → Build and deployment →
+# Source: "GitHub Actions". After that this runs on every push to main
+# that touches docs/.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow one concurrent deployment; don't cancel an in-progress one.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Assemble the publish dir from docs/ plus the device screenshots, which
+      # live in tools/preview/out/ (regenerated on every UI change) and are
+      # copied in here rather than duplicated into docs/ — so the gallery is
+      # always current and the repo carries a single copy of each image.
+      - name: Assemble site
+        run: |
+          mkdir -p _site/img
+          cp -R docs/. _site/
+          for f in dashboard map summary menu sensors nav_banner; do
+            cp "tools/preview/out/$f.png" "_site/img/$f.png"
+          done
+          touch _site/.nojekyll
+
+      - name: Upload site artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

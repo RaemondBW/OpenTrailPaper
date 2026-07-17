@@ -5,6 +5,10 @@
 DIY bike GPS head unit for the [LilyGO T5S3 4.7" e-paper PRO](https://github.com/Xinyuan-LilyGO/T5S3-4.7-e-paper-PRO),
 plus a SwiftUI iOS companion app for maps, routes and settings.
 
+**[→ Project site](https://raemondbw.github.io/epaper-bike-gps/)** — feature tour
+and an in-browser Web Serial firmware flasher (Chrome/Edge, no toolchain needed).
+Source in [`docs/`](docs/).
+
 The board has everything onboard: ESP32-S3 (16 MB flash / 8 MB PSRAM, BLE 5),
 960×540 e-paper (driven in 540×960 portrait) with GT911 touch, GPS (u-blox
 MIA-M10Q or L76K/CASIC — autodetected), SD card slot, PCF8563 RTC, BQ25896
@@ -203,6 +207,10 @@ The board runs in USB-OTG mode, so esptool's auto-reset can't enter the
 bootloader: to flash, hold **BOOT**, tap **RESET**, release **BOOT** (the port
 enumerates as `…usbmodem2101`), upload, then tap **RESET** to run. Alternatively
 copy `firmware.bin` to the SD card root and reboot, or push OTA from the app.
+
+No toolchain? Flash a prebuilt `firmware.bin` (from CI artifacts or a release)
+straight from the [project site](https://raemondbw.github.io/epaper-bike-gps/#flash)
+over Web Serial in Chrome/Edge — same manual download-mode step as above.
 
 ### iOS companion
 
