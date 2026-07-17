@@ -86,12 +86,13 @@ constexpr int kSettingsMinusX = 220;
 constexpr int kSettingsPlusX = 440;
 constexpr int kSettingsBtn = 84;
 // The settings screen packs more rows than the menu, so it uses a shorter row.
-constexpr int kSettingsRowH = 126;
+constexpr int kSettingsRowH = 95;
 struct SettingsInfo {
     int ftpW;
     int tzMin;
     int backlight;   // 0 off .. 3 bright
     bool useMiles;   // false = km, true = miles
+    bool usbDrive;   // expose the SD to a host as a USB drive
 };
 void ui_render_settings(const SettingsInfo& si, uint8_t* fb);
 
@@ -99,12 +100,18 @@ void ui_render_settings(const SettingsInfo& si, uint8_t* fb);
 extern const EpdRect kBackBar;
 void ui_render_back_bar(uint8_t* fb);
 
-// Settings sub-page row hit-testing. Rows 0-3 are +/- adjusters (FTP,
-// timezone, frontlight, units); rows 4-5 are navigation.
+// Settings sub-page row hit-testing. Rows 0-4 are +/- adjusters (FTP,
+// timezone, frontlight, units, USB drive); rows 5-7 are navigation.
 constexpr int kSettingsBacklightRow = 2;
 constexpr int kSettingsUnitsRow = 3;
-constexpr int kSettingsSensorsRow = 4;
-constexpr int kSettingsGpsRow = 5;
+constexpr int kSettingsUsbRow = 4;
+constexpr int kSettingsSensorsRow = 5;
+constexpr int kSettingsGpsRow = 6;
+constexpr int kSettingsGreyRow = 7;
+
+// Grayscale test screen: labelled swatches from white to black to pick which
+// gray levels reproduce on the panel.
+void ui_render_grey_test(uint8_t* fb);
 
 // GPS diagnostics page (reached from Settings). Mirrors GpsDebug from
 // gps_service.h but stays host-safe for the preview harness.

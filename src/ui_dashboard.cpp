@@ -43,7 +43,7 @@ size_t fbSize = 0;
 
 enum Screen { SCREEN_DASH, SCREEN_MAP, SCREEN_SUMMARY, SCREEN_MENU,
               SCREEN_SENSORS, SCREEN_ROUTES, SCREEN_HISTORY,
-              SCREEN_SETTINGS, SCREEN_GPSDEBUG };
+              SCREEN_SETTINGS, SCREEN_GPSDEBUG, SCREEN_GREYTEST };
 Screen screen = SCREEN_DASH;
 RideSummary pendingSummary;
 
@@ -254,6 +254,7 @@ void goBack() {
     }
     switch (screen) {
         case SCREEN_GPSDEBUG: screen = SCREEN_SETTINGS; break;
+        case SCREEN_GREYTEST: screen = SCREEN_SETTINGS; break;
         case SCREEN_SETTINGS:
         case SCREEN_ROUTES:
         case SCREEN_HISTORY:  screen = SCREEN_MENU; break;
@@ -416,7 +417,7 @@ void handleTap(int x, int y) {
             int row = (y - kMenuRowTop) / kSettingsRowH;
             bool minus = x >= kSettingsMinusX && x < kSettingsMinusX + kSettingsBtn;
             bool plus = x >= kSettingsPlusX && x < kSettingsPlusX + kSettingsBtn;
-            if (y >= kMenuRowTop && row >= 0 && row < 4 && (minus || plus)) {
+            if (y >= kMenuRowTop && row >= 0 && row < 5 && (minus || plus)) {
                 int dir = plus ? 1 : -1;
                 if (row == 0) settings::setFtpWatts(settings::ftpWatts() + dir * 5);
                 if (row == 1) settings::setTzMinutes(settings::tzMinutes() + dir * 30);
@@ -426,6 +427,11 @@ void handleTap(int x, int y) {
                 }
                 if (row == kSettingsUnitsRow) {   // either button toggles
                     settings::setUseMiles(!settings::useMiles());
+                }
+                if (row == kSettingsUsbRow) {   // either button toggles the drive
+                    bool on = !settings::usbDrive();
+                    settings::setUsbDrive(on);
+                    usb_storage::setDriveEnabled(on);
                 }
                 g_state.with([](RideState& st) {
                     st.ftpW = (uint16_t)settings::ftpWatts();
@@ -439,6 +445,8 @@ void handleTap(int x, int y) {
                 enterSensors();
             } else if (y >= kMenuRowTop && row == kSettingsGpsRow) {
                 screen = SCREEN_GPSDEBUG;
+            } else if (y >= kMenuRowTop && row == kSettingsGreyRow) {
+                screen = SCREEN_GREYTEST;
             } else {
                 screen = SCREEN_MENU;
             }
@@ -456,6 +464,9 @@ void handleTap(int x, int y) {
             } else {
                 screen = SCREEN_SETTINGS;
             }
+            break;
+        case SCREEN_GREYTEST:
+            screen = SCREEN_SETTINGS;   // tap anywhere returns
             break;
     }
 }
@@ -1061,10 +1072,14 @@ void task(void*) {
                     break;
                 case SCREEN_SETTINGS: {
                     SettingsInfo si{settings::ftpWatts(), settings::tzMinutes(),
-                                    settings::backlight(), settings::useMiles()};
+                                    settings::backlight(), settings::useMiles(),
+                                    settings::usbDrive()};
                     ui_render_settings(si, fb);
                     break;
                 }
+                case SCREEN_GREYTEST:
+                    ui_render_grey_test(fb);
+                    break;
                 case SCREEN_GPSDEBUG: {
                     GpsDebug d;
                     gps_service::getDebug(d);

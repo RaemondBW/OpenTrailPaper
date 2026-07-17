@@ -394,10 +394,15 @@ int main(int argc, char** argv) {
     emit("routes.png");
 
     // Settings
-    SettingsInfo si{250, -420, 2};
+    SettingsInfo si{250, -420, 2, false, true};
     clearWhite(fb.data());
     ui_render_settings(si, fb.data());
     emit("settings.png");
+
+    // Grayscale test
+    clearWhite(fb.data());
+    ui_render_grey_test(fb.data());
+    emit("grey_test.png");
 
     // GPS debug: the "sees satellites but no fix" case
     GpsDebugView g = {};

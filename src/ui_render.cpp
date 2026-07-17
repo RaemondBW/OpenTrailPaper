@@ -575,7 +575,7 @@ void ui_render_settings(const SettingsInfo& si, uint8_t* fb) {
     struct Row {
         const char* label;
         char value[16];
-    } rows[4];
+    } rows[5];
     snprintf(rows[0].value, sizeof(rows[0].value), "%d W", si.ftpW);
     rows[0].label = "FTP";
     int tzH = si.tzMin / 60, tzM = abs(si.tzMin % 60);
@@ -589,10 +589,13 @@ void ui_render_settings(const SettingsInfo& si, uint8_t* fb) {
     snprintf(rows[3].value, sizeof(rows[3].value), "%s",
              si.useMiles ? "Miles" : "Km");
     rows[3].label = "UNITS";
+    snprintf(rows[4].value, sizeof(rows[4].value), "%s",
+             si.usbDrive ? "On" : "Off");
+    rows[4].label = "USB DRIVE";
 
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < 5; ++i) {
         int y = kMenuRowTop + i * kSettingsRowH;
-        ui::text(&ArialBold_14, 28, y + 76, rows[i].label, fb);
+        ui::text(&ArialBold_14, 28, y + kSettingsRowH / 2 + 5, rows[i].label, fb);
 
         // minus / plus buttons with the value between
         for (int b = 0; b < 2; ++b) {
@@ -607,30 +610,56 @@ void ui_render_settings(const SettingsInfo& si, uint8_t* fb) {
             if (b == 1) epd_fill_rect({cx - 2, cy - 12, 5, 24}, 0x00, fb);
         }
         int vx = (kSettingsMinusX + kSettingsBtn + kSettingsPlusX) / 2;
-        ui::text(&ArialBold_20, vx, y + 80, rows[i].value, fb,
+        ui::text(&ArialBold_20, vx, y + kSettingsRowH / 2 + 8, rows[i].value, fb,
                  EPD_DRAW_ALIGN_CENTER);
         epd_fill_rect({0, y + kSettingsRowH - 1, W, 1}, 0x00, fb);
     }
 
     // Navigation rows below the adjustable settings.
     struct NavRow { const char* title; const char* sub; };
-    const NavRow navs[2] = {
+    const NavRow navs[3] = {
         {"Sensors", "pair heart rate / power / cadence"},
         {"GPS Debug", "receiver diagnostics"},
+        {"Grey Test", "grayscale swatches for tuning"},
     };
-    for (int i = 0; i < 2; ++i) {
-        int y = kMenuRowTop + (4 + i) * kSettingsRowH;
-        ui::text(&ArialBold_20, 28, y + 64, navs[i].title, fb);
-        ui::text(&ArialBold_14, 28, y + 106, navs[i].sub, fb,
+    for (int i = 0; i < 3; ++i) {
+        int y = kMenuRowTop + (5 + i) * kSettingsRowH;
+        ui::text(&ArialBold_20, 28, y + 40, navs[i].title, fb);
+        ui::text(&ArialBold_14, 28, y + 70, navs[i].sub, fb,
                  EPD_DRAW_ALIGN_LEFT, 0x00);
-        ui::text(&ArialBold_20, W - 28, y + 84, ">", fb, EPD_DRAW_ALIGN_RIGHT);
-        epd_fill_rect({0, y + kMenuRowH - 1, W, 1}, 0x80, fb);
+        ui::text(&ArialBold_20, W - 28, y + 54, ">", fb, EPD_DRAW_ALIGN_RIGHT);
+        epd_fill_rect({0, y + kSettingsRowH - 1, W, 1}, 0x00, fb);
     }
 
-    ui::text(&ArialBold_14, W / 2, kBackBar.y - 16,
-             FIRMWARE_VERSION " · more settings in src/config.h", fb,
-             EPD_DRAW_ALIGN_CENTER, 0x00);
     ui_render_back_bar(fb);
+}
+
+// Grayscale test: 16 labelled swatches, white at top to black at bottom, so we
+// can see which gray levels the panel actually reproduces. Tap anywhere to
+// return. Must be shown with a full-grayscale (GL16/GC16) refresh, not DU.
+void ui_render_grey_test(uint8_t* fb) {
+    const int W = epd_rotated_display_width();
+    const int H = epd_rotated_display_height();
+    const int top = 84;
+
+    memset(fb, 0xFF, (size_t)(W / 2) * H);   // clear (4bpp: 2 px/byte)
+    ui::text(&ArialBold_20, 28, 60, "GREY TEST", fb);
+    epd_fill_rect({0, top - 3, W, 3}, 0x00, fb);
+
+    const int n = 16;
+    const int bandH = (H - top) / n;
+    for (int i = 0; i < n; ++i) {
+        // White (0xFF) at top down to black (0x00). 16 even steps = the panel's
+        // native GL16 levels (the value's high nibble is the gray).
+        uint8_t v = (uint8_t)((15 - i) * 0x11);
+        int y = top + i * bandH;
+        epd_fill_rect({0, y, W, bandH}, v, fb);
+        char lbl[8];
+        snprintf(lbl, sizeof(lbl), "0x%02X", v);
+        uint8_t txt = v < 0x88 ? 0xFF : 0x00;   // contrast against the band
+        ui::text(&ArialBold_20, 24, y + bandH / 2 + 8, lbl, fb,
+                 EPD_DRAW_ALIGN_LEFT, txt);
+    }
 }
 
 void ui_render_gps_debug(const GpsDebugView& g, uint8_t* fb) {
