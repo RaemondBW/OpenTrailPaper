@@ -30,17 +30,36 @@ struct Style {
     uint8_t color;
     int dashLen;     // 0 = solid
     int gapLen;
+    bool dither;     // draw as a 50% black/white checker so it reads light-grey
+                     // even through the fast 1-bit DU refresh
 };
 
 Style styleFor(MapFeatureClass cls) {
     switch (cls) {
-        case MAP_ROAD_MAJOR: return {5, ROAD_INK, 0, 0};
-        case MAP_ROAD_MINOR: return {2, ROAD_INK, 0, 0};
-        case MAP_PATH:       return {2, ROAD_INK, 8, 8};
-        case MAP_RAIL:       return {2, ROAD_INK, 14, 12};
-        case MAP_WATER:      return {18, WATER_GRAY, 0, 0};
+        case MAP_ROAD_MAJOR: return {5, ROAD_INK, 0, 0, false};
+        case MAP_ROAD_MINOR: return {2, ROAD_INK, 0, 0, false};
+        // Trails: a light-grey dithered thin line (was heavy black dashes).
+        case MAP_PATH:       return {1, ROAD_INK, 0, 0, true};
+        case MAP_RAIL:       return {2, ROAD_INK, 14, 12, false};
+        case MAP_WATER:      return {18, WATER_GRAY, 0, 0, false};
     }
-    return {1, 0x00, 0, 0};
+    return {1, 0x00, 0, 0, false};
+}
+
+// Bresenham line that plots only the checkerboard-even pixels, so it reads as a
+// light grey on the 1-bit panel and survives the fast DU refresh (unlike a
+// solid grey value, which DU snaps to black or white).
+void ditherLine(int x0, int y0, int x1, int y1, uint8_t* fb) {
+    int dx = abs(x1 - x0), dy = -abs(y1 - y0);
+    int sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+    int err = dx + dy;
+    for (;;) {
+        if (((x0 ^ y0) & 1) == 0) epd_draw_pixel(x0, y0, 0x00, fb);
+        if (x0 == x1 && y0 == y1) break;
+        int e2 = 2 * err;
+        if (e2 >= dy) { err += dy; x0 += sx; }
+        if (e2 <= dx) { err += dx; y0 += sy; }
+    }
 }
 
 // Thick segment as a quad (two triangles) plus round caps.
@@ -86,6 +105,10 @@ void thickSegment(float x0, float y0, float x1, float y1, int width,
 
 void drawSegmentStyled(float x0, float y0, float x1, float y1,
                        const Style& st, uint8_t* fb) {
+    if (st.dither) {
+        ditherLine(lroundf(x0), lroundf(y0), lroundf(x1), lroundf(y1), fb);
+        return;
+    }
     if (st.dashLen == 0) {
         thickSegment(x0, y0, x1, y1, st.width, st.color, fb);
         return;
@@ -187,7 +210,9 @@ void ui_render_map_features(const MapScreenData& map, const RideState& s,
                             uint8_t* fb) {
     (void)s;
     // Map features: water under roads, all in grays
-    const MapFeatureClass order[] = {MAP_WATER, MAP_RAIL, MAP_PATH,
+    // Rail/transit removed by request. Water (dithered fill) is drawn first as
+    // the base layer, then trails, then roads on top.
+    const MapFeatureClass order[] = {MAP_WATER, MAP_PATH,
                                      MAP_ROAD_MINOR, MAP_ROAD_MAJOR};
     for (MapFeatureClass cls : order) {
         for (int i = 0; i < map.featureCount; ++i) {
