@@ -46,6 +46,25 @@ Style styleFor(MapFeatureClass cls) {
 // Thick segment as a quad (two triangles) plus round caps.
 void thickSegment(float x0, float y0, float x1, float y1, int width,
                   uint8_t color, uint8_t* fb) {
+    // Fast path for thin strokes — minor roads, paths and rail (width 2) are the
+    // vast majority of map features, and one or two Bresenham lines rasterize
+    // far cheaper than two filled triangles. This is the bulk of the map draw
+    // time on a dense view.
+    if (width <= 2) {
+        int ix0 = lroundf(x0), iy0 = lroundf(y0);
+        int ix1 = lroundf(x1), iy1 = lroundf(y1);
+        epd_draw_line(ix0, iy0, ix1, iy1, color, fb);
+        if (width == 2) {
+            float dx = x1 - x0, dy = y1 - y0;
+            float len = sqrtf(dx * dx + dy * dy);
+            if (len >= 0.5f) {
+                int ox = lroundf(-dy / len), oy = lroundf(dx / len);
+                if (ox || oy)
+                    epd_draw_line(ix0 + ox, iy0 + oy, ix1 + ox, iy1 + oy, color, fb);
+            }
+        }
+        return;
+    }
     float dx = x1 - x0, dy = y1 - y0;
     float len = sqrtf(dx * dx + dy * dy);
     if (len < 0.5f) return;

@@ -101,6 +101,9 @@ void projectBlobInto(const uint8_t* b, size_t bLen, double lat, double lon,
     // Viewport extent in meters around the center (portrait 540x960 max)
     const float halfWm = 300 * metersPerPixel;
     const float halfHm = 520 * metersPerPixel;
+    // Reciprocal so the hot per-point projection uses a multiply, not an FPU
+    // divide (thousands of points per frame).
+    const float invMpp = 1.0f / metersPerPixel;
 
     // Position in grid meters
     double px = (lon - gridLon0) * kx;
@@ -152,38 +155,54 @@ void projectBlobInto(const uint8_t* b, size_t bLen, double lat, double lon,
 
                 if (usedPolys >= MAX_POLYS || usedPts + n > MAX_POINTS) goto done;
 
-                // Project + viewport reject in one pass
+                // Project + viewport reject + screen-space decimation in one
+                // pass. The tile keeps 3 m detail; zoomed out that is far below a
+                // pixel, so most points land on top of each other. Dropping any
+                // point within ~2 px of the last kept one collapses the geometry
+                // to what the current zoom can show — a big cut in segments (and
+                // draw time), invisible on glass. First/last points always kept
+                // so roads still connect.
                 int16_t* dst = pts + usedPts * 2;
+                int kept = 0;
+                int lastKx = -30000, lastKy = -30000;
                 bool anyVisible = false;
                 for (uint16_t j = 0; j < n; ++j) {
                     int16_t mx = rd<int16_t>(p + j * 4);
                     int16_t my = rd<int16_t>(p + j * 4 + 2);
-                    float sx = originX + mx / metersPerPixel;
-                    float sy = originY - my / metersPerPixel;
+                    float sx = originX + mx * invMpp;
+                    float sy = originY - my * invMpp;
                     if (rotateDeg != 0) {
                         float dx = sx - centerX, dy = sy - centerY;
                         sx = centerX + dx * rc - dy * rs;
                         sy = centerY + dx * rs + dy * rc;
-                    }
-                    if (sx > -50 && sx < 590 && sy > -50 && sy < 1010) {
-                        anyVisible = true;
                     }
                     // clamp to int16 to be safe at deep zoom-out
                     if (sx < -20000) sx = -20000;
                     if (sx > 20000) sx = 20000;
                     if (sy < -20000) sy = -20000;
                     if (sy > 20000) sy = 20000;
-                    dst[j * 2] = (int16_t)lroundf(sx);
-                    dst[j * 2 + 1] = (int16_t)lroundf(sy);
+                    int ix = (int)lroundf(sx), iy = (int)lroundf(sy);
+                    bool isLast = (j == n - 1);
+                    if (kept > 0 && !isLast) {
+                        int adx = ix - lastKx, ady = iy - lastKy;
+                        if (adx * adx + ady * ady < 4) continue;   // within ~2 px
+                    }
+                    if (ix > -50 && ix < 590 && iy > -50 && iy < 1010) {
+                        anyVisible = true;
+                    }
+                    dst[kept * 2] = (int16_t)ix;
+                    dst[kept * 2 + 1] = (int16_t)iy;
+                    lastKx = ix; lastKy = iy;
+                    kept++;
                 }
                 p += n * 4;
 
-                if (!anyVisible) continue;
+                if (kept < 2 || !anyVisible) continue;
                 polys[usedPolys].cls = (MapFeatureClass)cls;
                 polys[usedPolys].pts = dst;
-                polys[usedPolys].pointCount = n;
+                polys[usedPolys].pointCount = kept;
                 usedPolys++;
-                usedPts += n;
+                usedPts += kept;
             }
         }
     }
