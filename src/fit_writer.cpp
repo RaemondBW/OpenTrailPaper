@@ -366,9 +366,12 @@ bool FitWriter::finish(time_t endUtc, double totalDistanceM, uint32_t timerS) {
     file_.seek(0);
     uint16_t crc = 0;
     uint8_t chunk[256];
-    size_t n;
+    // read() returns int and gives -1 on error; a size_t here would wrap to a
+    // huge value and spin forever (the boot-time recovery hit this and hung the
+    // whole device, so the SD never got mounted).
+    int n;
     while ((n = file_.read(chunk, sizeof(chunk))) > 0) {
-        for (size_t i = 0; i < n; ++i) crc = crc16(crc, chunk[i]);
+        for (int i = 0; i < n; ++i) crc = crc16(crc, chunk[i]);
     }
     file_.seek(12 + dataSize_);
     uint8_t crcBuf[2];
