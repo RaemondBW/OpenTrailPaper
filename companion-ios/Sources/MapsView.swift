@@ -1,6 +1,7 @@
 import SwiftUI
 import MapKit
 import CoreLocation
+import Combine
 
 // Draw a box on the map; the app covers it with H3 hexagon tiles (~5.6 km
 // across), skips the ones already on the device, fetches OSM for the rest, and
@@ -12,9 +13,17 @@ struct MapsView: View {
     @EnvironmentObject var ble: BLEManager
     @Environment(\.dismiss) private var dismiss
 
-    @State private var cam: MapCameraPosition = .userLocation(fallback: .region(
+    // Res-6 H3 tiles are ~5.6 km across; start wide enough to show at least
+    // 3–4 of them across the screen (~0.25° ≈ 22 km) so a whole area is easy to
+    // box in one drag. `.userLocation` would snap to MapKit's default
+    // street-level zoom (far too tight for tile selection), so we center on the
+    // user ourselves once a fix arrives (see `locator`), keeping this fixed
+    // span. Falls back to a fixed region until then.
+    @State private var cam: MapCameraPosition = .region(
         MKCoordinateRegion(center: .init(latitude: 37.7764, longitude: -122.4346),
-                           span: MKCoordinateSpan(latitudeDelta: 0.15, longitudeDelta: 0.15))))
+                           span: MKCoordinateSpan(latitudeDelta: 0.25, longitudeDelta: 0.25)))
+    @StateObject private var locator = MapLocator()
+    @State private var didCenter = false
     @State private var dragStart: CGPoint?
     @State private var dragEnd: CGPoint?
     @State private var box: (s: Double, w: Double, n: Double, e: Double)?
@@ -133,7 +142,16 @@ struct MapsView: View {
             }
             .navigationBarHidden(true)
             .safeAreaInset(edge: .bottom) { bottomBar }
-            .onAppear { ble.refreshDeviceMaps(); ble.refreshDeviceTiles() }
+            .onAppear { ble.refreshDeviceMaps(); ble.refreshDeviceTiles(); locator.start() }
+            // Center on the user's first fix, once, at our fixed tile-friendly
+            // span. Only before any interaction so it never yanks the map away
+            // from a box the user is drawing.
+            .onReceive(locator.$coordinate) { coord in
+                guard !didCenter, box == nil, !drawMode, let coord else { return }
+                didCenter = true
+                cam = .region(MKCoordinateRegion(center: coord,
+                    span: MKCoordinateSpan(latitudeDelta: 0.25, longitudeDelta: 0.25)))
+            }
         }
     }
 
@@ -373,4 +391,30 @@ struct MapsView: View {
         let pad = 0.003
         return (s - pad, w - pad, n + pad, e + pad)
     }
+}
+
+// Publishes the user's location so the map can center itself at a fixed,
+// tile-friendly zoom on the first fix. (MapKit's `.userLocation` follow mode
+// gives no control over the zoom, so we position the camera ourselves.)
+@MainActor final class MapLocator: NSObject, ObservableObject, CLLocationManagerDelegate {
+    @Published var coordinate: CLLocationCoordinate2D?
+    private let manager = CLLocationManager()
+
+    override init() {
+        super.init()
+        manager.delegate = self
+    }
+
+    func start() {
+        manager.requestWhenInUseAuthorization()
+        manager.requestLocation()
+        if let c = manager.location?.coordinate { coordinate = c }
+    }
+
+    nonisolated func locationManager(_ m: CLLocationManager, didUpdateLocations locs: [CLLocation]) {
+        guard let c = locs.last?.coordinate else { return }
+        Task { @MainActor in self.coordinate = c }
+    }
+
+    nonisolated func locationManager(_ m: CLLocationManager, didFailWithError error: Error) {}
 }
