@@ -25,6 +25,7 @@ tools/preview/preview
 # FIT test-harness binary and the .fit files it emits (rebuild via
 # tools/fit_test/run_fit_test.sh)
 tools/fit_test/fit_test
+tools/fit_test/ascent_test
 tools/fit_test/out/
 
 # Xcode archive / build output

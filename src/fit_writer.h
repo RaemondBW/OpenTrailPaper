@@ -11,12 +11,13 @@
 
 class FitWriter {
 public:
-    // One data point, 1 Hz. Use the INVALID_* constants for missing values.
+    // One data point, 1 Hz. Use the INVALID_* constants for missing values;
+    // altitudeM is left out of the record (field marked invalid) when NAN.
     struct Record {
         time_t   utc;
         double   latitudeDeg;
         double   longitudeDeg;
-        float    altitudeM;
+        float    altitudeM;   // NAN => no elevation for this point
         float    speedMs;
         double   distanceM;
         uint16_t powerW;      // INVALID_U16 if absent
