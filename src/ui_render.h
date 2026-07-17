@@ -87,6 +87,11 @@ constexpr int kSettingsPlusX = 440;
 constexpr int kSettingsBtn = 84;
 // The settings screen packs more rows than the menu, so it uses a shorter row.
 constexpr int kSettingsRowH = 111;
+// On/off (and level) rows are switches rather than +/- steppers: a single
+// toggle target on the right, right-aligned with the old plus button.
+constexpr int kSettingsToggleW = 120;
+constexpr int kSettingsToggleH = 52;
+constexpr int kSettingsToggleX = kSettingsPlusX + kSettingsBtn - kSettingsToggleW;
 struct SettingsInfo {
     int ftpW;
     int tzMin;
@@ -100,9 +105,9 @@ void ui_render_settings(const SettingsInfo& si, uint8_t* fb);
 extern const EpdRect kBackBar;
 void ui_render_back_bar(uint8_t* fb);
 
-// Settings sub-page row hit-testing. Rows 0-4 are +/- adjusters (FTP,
-// timezone, frontlight, units, USB drive); rows 5-6 are navigation. Sensors
-// lives on the main menu, not here.
+// Settings sub-page row hit-testing. Rows 0-1 are +/- adjusters (FTP,
+// timezone); rows 2-4 are toggle switches (backlight, units, USB drive);
+// rows 5-6 are navigation. Sensors lives on the main menu, not here.
 constexpr int kSettingsBacklightRow = 2;
 constexpr int kSettingsUnitsRow = 3;
 constexpr int kSettingsUsbRow = 4;

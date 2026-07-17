@@ -75,7 +75,7 @@ remaining), and framed **route**, **map-tile**, **log** and **OTA** transfers.
   Navigate. Route draws on the map (ridden solid / ahead dashed) with
   km-remaining in the footer and optional turn banners.
 - **On-device settings** — units (mi/km), 12/24 h clock, FTP (power zone bar),
-  timezone, frontlight level, USB drive on/off — persisted in NVS, mirrored to
+  timezone, backlight level, USB drive on/off — persisted in NVS, mirrored to
   the app.
 - **Updates** — drop `firmware.bin` on the SD card, or push it over BLE from the
   app (A/B OTA partitions protect the running image either way).

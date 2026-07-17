@@ -10,7 +10,7 @@ namespace {
 Preferences prefs;
 int ftp = FTP_WATTS;
 int tz = TIMEZONE_OFFSET_MINUTES;
-int bl = 2;  // frontlight level 0-3
+int bl = 2;  // backlight level 0-3
 bool miles = false;  // false = km, true = miles
 bool clk24 = true;   // true = 24-hour clock, false = 12-hour
 bool usbDrv = true;  // true = expose SD as USB drive when plugged into a host
