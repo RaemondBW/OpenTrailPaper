@@ -499,7 +499,7 @@ void ui_render_menu(const MenuInfo& m, uint8_t* fb) {
         ui::text(&ArialBold_20, W - 28, y + 84, ">", fb,
                  EPD_DRAW_ALIGN_RIGHT, fg);
         if (!rows[i].inverted) {
-            epd_fill_rect({0, y + kMenuRowH - 1, W, 1}, 0x80, fb);
+            epd_fill_rect({0, y + kMenuRowH - 1, W, 1}, 0x00, fb);
         }
     }
 
@@ -541,7 +541,7 @@ void ui_render_list(const char* title, const ListRow* rows, int count,
         ui::text(&ArialBold_14, 28, y + 106, s, fb,
                  EPD_DRAW_ALIGN_LEFT, fg == 0xFF ? 0xFF : 0x00);
         if (!rows[i].inverted) {
-            epd_fill_rect({0, y + kMenuRowH - 1, W, 1}, 0x80, fb);
+            epd_fill_rect({0, y + kMenuRowH - 1, W, 1}, 0x00, fb);
         }
     }
     if (count == 0) {
@@ -609,7 +609,7 @@ void ui_render_settings(const SettingsInfo& si, uint8_t* fb) {
         int vx = (kSettingsMinusX + kSettingsBtn + kSettingsPlusX) / 2;
         ui::text(&ArialBold_20, vx, y + 80, rows[i].value, fb,
                  EPD_DRAW_ALIGN_CENTER);
-        epd_fill_rect({0, y + kSettingsRowH - 1, W, 1}, 0x80, fb);
+        epd_fill_rect({0, y + kSettingsRowH - 1, W, 1}, 0x00, fb);
     }
 
     // Navigation rows below the adjustable settings.
@@ -622,14 +622,14 @@ void ui_render_settings(const SettingsInfo& si, uint8_t* fb) {
         int y = kMenuRowTop + (4 + i) * kSettingsRowH;
         ui::text(&ArialBold_20, 28, y + 64, navs[i].title, fb);
         ui::text(&ArialBold_14, 28, y + 106, navs[i].sub, fb,
-                 EPD_DRAW_ALIGN_LEFT, 0x60);
+                 EPD_DRAW_ALIGN_LEFT, 0x00);
         ui::text(&ArialBold_20, W - 28, y + 84, ">", fb, EPD_DRAW_ALIGN_RIGHT);
         epd_fill_rect({0, y + kMenuRowH - 1, W, 1}, 0x80, fb);
     }
 
     ui::text(&ArialBold_14, W / 2, kBackBar.y - 16,
              FIRMWARE_VERSION " · more settings in src/config.h", fb,
-             EPD_DRAW_ALIGN_CENTER, 0x60);
+             EPD_DRAW_ALIGN_CENTER, 0x00);
     ui_render_back_bar(fb);
 }
 

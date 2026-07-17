@@ -26,6 +26,7 @@
 #include "routes.h"
 #include "settings.h"
 #include "diag.h"
+#include "smooth_epd.h"
 
 namespace {
 
@@ -139,8 +140,15 @@ bool touchWasDown = false;
 // a quiet period (unless riding / navigating / phone connected).
 uint32_t lastActivityMs = 0;
 constexpr uint32_t AUTO_SLEEP_MS = 10 * 60 * 1000;   // 10 minutes idle
+// Set by any input so the next loop iteration redraws immediately instead of
+// waiting for the 1 Hz periodic tick — otherwise an in-place change (zoom, a
+// map toggle) can sit up to a second before the panel repaints.
+bool forceDraw = false;
+uint32_t lastUiInputMs = 0;   // last touch/button; gates the deferred ghost-clean
 void noteActivity() {
     lastActivityMs = millis();
+    lastUiInputMs = millis();
+    forceDraw = true;
     ble_sensors::noteActivity();
 }
 
@@ -164,26 +172,49 @@ void noteActivity() {
 int ghostDebt = 0;
 constexpr int GHOST_GL16_EVERY = 24;   // ~24 s of DU before a clean pass
 
-bool refresh(bool screenChanged, bool fastOk) {
+// Panel power keep-alive: powering the TPS rails up costs ~36 ms, so during a
+// burst of interactions we leave the panel powered and only release it a beat
+// after the rider stops. epdIdleOffAt is the deadline; the task loop powers off.
+bool epdPowered = false;
+uint32_t epdIdleOffAt = 0;
+
+bool refresh(bool screenChanged, bool fastInPage, bool listFast) {
     uint8_t* fb = epd_hl_get_framebuffer(&hl);
     if (!screenChanged && shadowFb && memcmp(fb, shadowFb, fbSize) == 0) {
         return false;  // identical frame — never touch the panel
     }
     if (shadowFb) memcpy(shadowFb, fb, fbSize);
 
-    epd_poweron();
-    if (fastOk && !screenChanged && ghostDebt < GHOST_GL16_EVERY) {
-        // Fast partial update; the highlevel diff only rewrites changed
-        // pixels, so this is cheap for live numbers.
+    // DU is ~2x quicker than GL16. Use it when we can: live in-place updates on
+    // the pure black/white screens (dash/map numbers), and — the win for
+    // "switching menu state" — page changes INTO the menu/list/settings screens,
+    // which are pure B/W so DU loses no grays. Page changes into dash/map keep
+    // GL16 so a busy previous screen (the map) doesn't ghost through. A periodic
+    // GL16 clears the ghosting DU accumulates.
+    bool wantDu = (fastInPage && !screenChanged) || listFast;
+    // While the rider is actively tapping, never take the ~950 ms GL16
+    // ghost-clean hit mid-interaction — stay on fast DU and let the clean happen
+    // once things settle (the task loop does it during idle).
+    bool active = millis() - lastUiInputMs < 1200;
+    bool du = wantDu && (active || ghostDebt < GHOST_GL16_EVERY);
+
+    if (!epdPowered) { epd_poweron(); epdPowered = true; }
+    if (du) {
         epd_hl_update_screen(&hl, MODE_DU, epd_ambient_temperature());
         ghostDebt += 1;
     } else {
-        // Non-flashing full-quality pass: page changes, gray screens, and
-        // the periodic ghost clean.
         epd_hl_update_screen(&hl, MODE_GL16, epd_ambient_temperature());
         ghostDebt = 0;
     }
-    epd_poweroff();
+    // Keep the panel powered only through an interactive burst (so successive
+    // zoom/settings taps skip the ~36 ms power-up). Passive 1 Hz updates power
+    // straight back off, so idle/riding battery draw is unchanged.
+    if (active) {
+        epdIdleOffAt = millis() + 1500;
+    } else {
+        epd_poweroff();
+        epdPowered = false;
+    }
     refreshCount++;
     return true;
 }
@@ -193,6 +224,14 @@ bool refresh(bool screenChanged, bool fastOk) {
 bool screenIsFast(Screen s, bool overlay) {
     if (overlay) return false;  // power sheet has gray subtitle
     return s == SCREEN_DASH || s == SCREEN_MAP || s == SCREEN_GPSDEBUG;
+}
+
+// The menu / list / settings screens are pure black/white, so both their page
+// changes and any in-place updates can take the fast DU path instead of the
+// slower GL16 — this is what makes "switching menu state" feel snappy.
+bool screenListFast(Screen s) {
+    return s == SCREEN_MENU || s == SCREEN_SENSORS || s == SCREEN_ROUTES ||
+           s == SCREEN_HISTORY || s == SCREEN_SETTINGS;
 }
 
 bool inRect(const EpdRect& r, int x, int y) {
@@ -406,7 +445,17 @@ void handleTap(int x, int y) {
             break;
         }
         case SCREEN_GPSDEBUG:
-            screen = SCREEN_SETTINGS;
+            // Experimental: a tap in the top band runs the smooth-drive
+            // pipeline self-test; anywhere else navigates back to Settings.
+            if (y < 150) {
+                smooth_epd::selfTest();
+                // The self-test cleared the glass to white behind epdiy's back;
+                // resync its front buffer and force a full redraw next frame.
+                epd_hl_set_all_white(&hl);
+                if (shadowFb) memset(shadowFb, 0, fbSize);
+            } else {
+                screen = SCREEN_SETTINGS;
+            }
             break;
     }
 }
@@ -717,7 +766,7 @@ void applySdUpdate() {
         uint8_t* fb = epd_hl_get_framebuffer(&hl);
         memset(fb, 0xFF, fbSize);
         ui_render_update_overlay("Installing", pct, fb);
-        refresh(first, !first);   // GL16 on first frame, fast DU for progress
+        refresh(first, !first, false);   // GL16 on first frame, fast DU for progress
     };
     drawProgress(0, true);
     diag::log("sd update: flashing %u bytes from SD", (unsigned)size);
@@ -821,7 +870,7 @@ void task(void*) {
                 memset(fb, 0xFF, fbSize);
                 ui_render_dashboard(s, routes::navActive(), fb);   // backdrop
                 ui_render_update_overlay(phase, pct, fb);          // modal on top
-                refresh(phaseChanged, !phaseChanged);   // GL16 on phase change, else DU
+                refresh(phaseChanged, !phaseChanged, false);   // GL16 on phase change, else DU
             }
             vTaskDelay(pdMS_TO_TICKS(200));
             continue;
@@ -948,8 +997,10 @@ void task(void*) {
         if (navPrompt && !lastNavPrompt) navPromptShownAt = millis();
         bool screenChanged = screen != lastScreen || powerOverlay != lastOverlay
                              || navPrompt != lastNavPrompt;
-        if (screenChanged || millis() - lastDraw >= 1000) {
+        if (screenChanged || forceDraw || millis() - lastDraw >= 1000) {
             lastDraw = millis();
+            forceDraw = false;
+            Screen prevScreen = lastScreen;
             lastScreen = screen;
             lastOverlay = powerOverlay;
             lastNavPrompt = navPrompt;
@@ -1045,8 +1096,19 @@ void task(void*) {
             if (powerOverlay) ui_render_power_sheet(s.recording, fb);
             }  // end else (normal screens)
             // The nav banner is pure black/white, so DU is fine during nav.
-            bool fast = screenIsFast(screen, powerOverlay) && !navPrompt;
-            refresh(screenChanged, fast);
+            bool fastInPage = screenIsFast(screen, powerOverlay) && !navPrompt;
+            // Snappy DU only for menu<->menu navigation; entering the menu
+            // system from dash/map still gets a clean GL16 (no busy-screen ghost).
+            bool listFast = screenListFast(screen) && screenListFast(prevScreen) &&
+                            !powerOverlay && !navPrompt;
+            refresh(screenChanged, fastInPage, listFast);
+        }
+
+        // Release panel power a beat after an interactive burst ends (the keep
+        // -alive above holds it on across successive taps).
+        if (epdPowered && (int32_t)(millis() - epdIdleOffAt) >= 0) {
+            epd_poweroff();
+            epdPowered = false;
         }
 
         vTaskDelay(pdMS_TO_TICKS(30));
