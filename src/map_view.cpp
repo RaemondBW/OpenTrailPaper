@@ -75,9 +75,10 @@ void fillDitheredPolygon(const int16_t* pts, int n, uint8_t* fb) {
         for (int a = 0; a + 1 < cnt; a += 2) {
             int xL = xs[a] < 0 ? 0 : xs[a];
             int xR = xs[a + 1] > 539 ? 539 : xs[a + 1];
-            if (((y & 1) == 0))
-                for (int x = xL; x <= xR; ++x)
-                    if ((x & 1) == 0) epd_draw_pixel(x, y, 0x00, fb);  // ~25% dots
+            // 50% checkerboard: reads as a clear medium grey through DU (25% was
+            // too faint to see on the panel). Roads draw solid black on top.
+            for (int x = xL; x <= xR; ++x)
+                if (((x ^ y) & 1) == 0) epd_draw_pixel(x, y, 0x00, fb);
         }
     }
 }

@@ -292,8 +292,10 @@ int main(int argc, char** argv) {
         // Alamo Square, zoom 2 m/px (matches device defaults)
         map.northDeg = 0;
         map.trackUp = false;
-        map_tiles::project(37.7764, -122.4346, 2.0f, 270, 430, 0, map);
-        printf("sf.ebm: %d visible polylines\n", map.featureCount);
+        map.metersPerPixel = 8.0f;
+        map_tiles::project(37.7764, -122.4346, 8.0f, 270, 430, 0, map);
+        printf("sf.ebm: %d polylines, %d water polys\n", map.featureCount,
+               map.waterCount);
     } else {
         buildScene(sc);
         int ridden = 0;
