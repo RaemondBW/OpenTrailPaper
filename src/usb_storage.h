@@ -13,6 +13,13 @@ namespace usb_storage {
 // Call after the SD card is mounted (SD.begin succeeded).
 void begin();
 
+// Show/hide the SD to a host as a USB drive at runtime (persisted setting read
+// at begin). When off, the drive disappears from the computer and the firmware
+// keeps the SD to itself; turning it off also reclaims the card. Lets the rider
+// leave the device plugged in for power/serial without losing the SD.
+void setDriveEnabled(bool on);
+bool driveEnabled();
+
 // True while a host computer has the drive mounted — firmware SD access paused.
 bool hostActive();
 

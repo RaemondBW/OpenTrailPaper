@@ -49,6 +49,19 @@ struct SettingsView: View {
                                 .pickerStyle(.segmented)
                             }
                         }
+
+                        Card {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Toggle(isOn: Binding(get: { ble.usbDrive },
+                                                     set: { ble.setUsbDrive($0) })) {
+                                    Text("USB drive").trackedLabel()
+                                }
+                                Text(ble.usbDrive
+                                     ? "The SD mounts on a computer when plugged in. Turn off to keep the SD with the device (record/maps keep working while plugged in for power or serial)."
+                                     : "The SD stays with the device when plugged in. Turn on to copy maps, firmware, or logs from a computer.")
+                                    .font(.system(size: 12)).foregroundStyle(Palette.muted)
+                            }
+                        }
                     }
 
                     Card {

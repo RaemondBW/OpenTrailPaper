@@ -13,6 +13,7 @@ int tz = TIMEZONE_OFFSET_MINUTES;
 int bl = 2;  // frontlight level 0-3
 bool miles = false;  // false = km, true = miles
 bool clk24 = true;   // true = 24-hour clock, false = 12-hour
+bool usbDrv = true;  // true = expose SD as USB drive when plugged into a host
 char addrs[3][18] = {"", "", ""};
 char names[3][32] = {"", "", ""};   // remembered vendor/model per paired kind
 double lastLat = 0, lastLon = 0;
@@ -30,6 +31,7 @@ void begin() {
     bl = prefs.getInt("bl", 2);
     miles = prefs.getBool("miles", false);
     clk24 = prefs.getBool("clk24", true);
+    usbDrv = prefs.getBool("usbdrv", true);
     for (int k = 0; k < 3; ++k) {
         prefs.getString(KEYS[k], addrs[k], sizeof(addrs[k]));
         prefs.getString(NAME_KEYS[k], names[k], sizeof(names[k]));
@@ -68,6 +70,12 @@ bool clock24h() { return clk24; }
 void setClock24h(bool h) {
     clk24 = h;
     prefs.putBool("clk24", clk24);
+}
+
+bool usbDrive() { return usbDrv; }
+void setUsbDrive(bool on) {
+    usbDrv = on;
+    prefs.putBool("usbdrv", usbDrv);
 }
 
 const char* sensorAddr(int kind) {

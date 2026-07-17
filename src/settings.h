@@ -22,6 +22,9 @@ void setUseMiles(bool m);
 bool clock24h();          // true = 24-hour clock, false = 12-hour (AM/PM)
 void setClock24h(bool h);
 
+bool usbDrive();          // true = expose SD as a USB drive when plugged in
+void setUsbDrive(bool on);
+
 // kind: 0 HR, 1 Power, 2 Cadence (matches ble_sensors). "" = none saved.
 const char* sensorAddr(int kind);
 void setSensorAddr(int kind, const char* addr);

@@ -42,7 +42,7 @@ NimBLECharacteristic* settingsChr = nullptr;
 // Settings payload (little-endian): { int16 ftpW, int16 tzMin, u8 useMiles,
 // u8 backlight }. Mirrored both ways so the app and device stay in sync.
 void writeSettingsValue(NimBLECharacteristic* c) {
-    uint8_t buf[7];
+    uint8_t buf[8];
     int16_t ftp = (int16_t)settings::ftpWatts();
     int16_t tz = (int16_t)settings::tzMinutes();
     memcpy(buf, &ftp, 2);
@@ -50,6 +50,7 @@ void writeSettingsValue(NimBLECharacteristic* c) {
     buf[4] = settings::useMiles() ? 1 : 0;
     buf[5] = (uint8_t)settings::backlight();
     buf[6] = settings::clock24h() ? 1 : 0;
+    buf[7] = settings::usbDrive() ? 1 : 0;
     c->setValue(buf, sizeof(buf));
 }
 
@@ -72,6 +73,10 @@ class SettingsCb : public NimBLECharacteristicCallbacks {
                 settings::setBacklight((uint8_t)v[5]);
             }
             if (v.size() >= 7) settings::setClock24h(v[6] != 0);
+            if (v.size() >= 8) {
+                settings::setUsbDrive(v[7] != 0);
+                usb_storage::setDriveEnabled(v[7] != 0);   // apply immediately
+            }
             g_state.with([&](RideState& s) {
                 s.ftpW = (uint16_t)settings::ftpWatts();
                 s.tzMin = (int16_t)settings::tzMinutes();

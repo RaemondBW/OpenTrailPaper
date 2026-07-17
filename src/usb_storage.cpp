@@ -6,6 +6,7 @@
 #include "USBMSC.h"
 
 #include "config.h"
+#include "settings.h"
 #include "diag.h"
 
 namespace {
@@ -15,6 +16,7 @@ volatile bool g_hostActive = false;     // computer has the drive mounted
 volatile bool g_reclaimPending = false; // host gone -> remount FAT (in poll)
 volatile uint32_t g_lastActivityMs = 0;
 bool g_ready = false;
+bool g_driveEnabled = true;             // SD exposed to a host as a USB drive
 
 // Read/write whole 512-byte sectors straight off the SD card. TinyUSB passes
 // sector-aligned requests (offset 0, bufsize a multiple of 512).
@@ -74,12 +76,27 @@ void begin() {
     msc.onRead(onRead);
     msc.onWrite(onWrite);
     msc.onStartStop(onStartStop);
-    msc.mediaPresent(true);
+    g_driveEnabled = settings::usbDrive();
+    msc.mediaPresent(g_driveEnabled);   // "no media" when the drive is disabled
     msc.begin(sectors, 512);
     USB.begin();
     g_ready = true;
-    diag::log("usb storage: SD exposed as USB drive (%u sectors)", (unsigned)sectors);
+    diag::log("usb storage: MSC ready, drive %s (%u sectors)",
+              g_driveEnabled ? "ON" : "OFF", (unsigned)sectors);
 }
+
+// Toggle whether the host sees the SD. Turning it off presents "no media" so
+// the drive vanishes and the firmware keeps the card; also reclaims the SD (in
+// poll) in case the host had written to it.
+void setDriveEnabled(bool on) {
+    if (!g_ready || on == g_driveEnabled) return;
+    g_driveEnabled = on;
+    msc.mediaPresent(on);
+    if (!on) g_reclaimPending = true;   // take the SD back / remount FAT
+    diag::log("usb storage: drive turned %s", on ? "ON" : "OFF");
+}
+
+bool driveEnabled() { return g_driveEnabled; }
 
 bool hostActive() { return g_hostActive; }
 

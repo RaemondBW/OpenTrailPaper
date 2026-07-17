@@ -84,6 +84,7 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var tzMinutes = -420
     @Published var backlight = 2        // 0 off .. 3 bright (mirrors device)
     @Published var clock24h = true      // device status-bar clock format
+    @Published var usbDrive = true      // expose device SD as a USB drive
     @Published var lastUploadProgress: Double? = nil   // 0...1 while sending
     @Published var routeSent = false                   // last route reached the device
     @Published var lastMessage: String? = nil
@@ -108,7 +109,7 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var deviceLogs: [LogFile] = []        // per-day log files on the device
     @Published var loadingLogs = false
     private var logsBuilding: [LogFile] = []
-    static let bundledFirmwareVersion = "v0.51"      // matches src/config.h
+    static let bundledFirmwareVersion = "v0.52"      // matches src/config.h
 
     // Saved routes on the device
     @Published var deviceRoutes: [String] = []
@@ -263,6 +264,7 @@ final class BLEManager: NSObject, ObservableObject {
         pushSettings()
     }
     func setClock24h(_ v: Bool) { clock24h = v; pushSettings() }
+    func setUsbDrive(_ v: Bool) { usbDrive = v; pushSettings() }
 
     func pushSettings() {
         guard let c = settingsChar, let p = peripheral else { return }
@@ -272,6 +274,7 @@ final class BLEManager: NSObject, ObservableObject {
         payload.append(UserDefaults.standard.bool(forKey: UnitPref.key) ? 1 : 0)
         payload.append(UInt8(clamping: backlight))
         payload.append(clock24h ? 1 : 0)
+        payload.append(usbDrive ? 1 : 0)
         p.writeValue(payload, for: c, type: .withResponse)
     }
 
@@ -1106,6 +1109,7 @@ extension BLEManager: CBPeripheralDelegate {
             backlight = Int(d[5])
         }
         if d.count >= 7 { clock24h = d[6] != 0 }
+        if d.count >= 8 { usbDrive = d[7] != 0 }
     }
 }
 
