@@ -86,7 +86,8 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var clock24h = true      // device status-bar clock format
     @Published var usbDrive = true      // expose device SD as a USB drive
     @Published var lastUploadProgress: Double? = nil   // 0...1 while sending
-    @Published var routeSent = false                   // last route reached the device
+    @Published var routeSent = false                   // last route's writes were queued
+    @Published var routeReceived = false               // device confirmed it got the route
     @Published var lastMessage: String? = nil
 
     // Ride download
@@ -797,6 +798,15 @@ final class BLEManager: NSObject, ObservableObject {
         case 0x20: deviceRoutes.append(String(decoding: d[1...], as: UTF8.self))
         case 0x21: loadingRoutes = false; deviceRoutes.sort()
         case 0x22: break  // delete ack
+        case 0x23:        // device received + parsed the route
+            lastUploadProgress = nil
+            routeSent = true
+            routeReceived = true
+        case 0x24:        // device got the upload but couldn't read the route
+            lastUploadProgress = nil
+            routeSent = false
+            routeReceived = false
+            lastMessage = "Device couldn’t read the route — try sending again"
         default: break
         }
     }
@@ -897,6 +907,7 @@ final class BLEManager: NSObject, ObservableObject {
 
         lastUploadProgress = 0
         routeSent = false
+        routeReceived = false
         Task { @MainActor in
             for (idx, packet) in packets.enumerated() {
                 p.writeValue(packet, for: c, type: .withResponse)
@@ -904,6 +915,9 @@ final class BLEManager: NSObject, ObservableObject {
                 try? await Task.sleep(nanoseconds: 12_000_000)  // pace writes
             }
             lastUploadProgress = nil
+            // The writes are queued; the button now shows "Sent". Firmware ≥ this
+            // release notifies back (0x23/0x24) so we can upgrade that to a real
+            // "Received by device" confirmation — see handleRouteNotify.
             routeSent = true
             lastMessage = "Route “\(name)” sent — \(maneuvers.count) turns"
         }
@@ -974,6 +988,7 @@ extension BLEManager: CBCentralManagerDelegate {
             status = DeviceStatus()
             rides = []; loadingRides = false; downloadingName = nil
             deviceRoutes = []; loadingRoutes = false
+            lastUploadProgress = nil; routeSent = false; routeReceived = false
             sensors = []; scanningSensors = false
             startScan()
         }

@@ -43,6 +43,7 @@ struct RouteView: View {
                             minutes: Int(route.expectedTravelTime / 60),
                             progress: ble.lastUploadProgress,
                             sent: ble.routeSent,
+                            received: ble.routeReceived,
                             canSend: ble.state == .connected
                         ) {
                             let coords = route.polyline.coordinates
@@ -74,7 +75,9 @@ struct RouteView: View {
             .sheet(isPresented: $showSaved) { SavedRoutesSheet() }
             .sheet(isPresented: $showMaps) { MapsView() }
             .onAppear { model.requestLocation() }
-            .onChange(of: model.destinationName) { ble.routeSent = false }
+            .onChange(of: model.destinationName) {
+                ble.routeSent = false; ble.routeReceived = false
+            }
         }
     }
 
@@ -313,6 +316,7 @@ private struct RouteSummaryCard: View {
     let minutes: Int
     let progress: Double?
     let sent: Bool
+    let received: Bool
     let canSend: Bool
     let send: () -> Void
     let clear: () -> Void
@@ -354,7 +358,10 @@ private struct RouteSummaryCard: View {
                 } else if sent {
                     HStack(spacing: 8) {
                         Image(systemName: "checkmark.circle.fill").foregroundStyle(Palette.good)
-                        Text("Sent to device").font(TypeScale.body).foregroundStyle(Palette.good)
+                        // "Received" once the device confirms (0x23); until then
+                        // (or on older firmware that never acks) show "Sent".
+                        Text(received ? "Received by device" : "Sent to device")
+                            .font(TypeScale.body).foregroundStyle(Palette.good)
                         Spacer()
                         Button("Send again", action: send)
                             .font(.system(size: 13, weight: .semibold)).foregroundStyle(Palette.accent)
