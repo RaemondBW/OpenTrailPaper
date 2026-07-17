@@ -124,7 +124,7 @@ Roads are classified into 4 render classes that map to line widths/dash styles;
 geometry is simplified and delta-encoded as 16-bit metre offsets to keep tiles
 tiny. Parsing/projection lives in `src/map_tiles.cpp`.
 
-### Two ways to create tiles
+### Three ways to create tiles
 
 **1. On the phone (primary).** In the Route tab, draw a box over the area you
 want. The app (`companion-ios/Sources/`):
@@ -144,6 +144,15 @@ want. The app (`companion-ios/Sources/`):
 for a bounding box, clips it into a square grid, and writes a single `EBM1`
 file you copy to `/maps/` — the legacy whole-map fallback used where no H3 tile
 covers the rider. See [`tools/README.md`](tools/README.md).
+
+**3. In the browser (region bake, no toolchain).** The
+[project site](https://raemondbw.github.io/epaper-bike-gps/#maps) has a
+*Generate an offline map* section: pick a bounding box on a map, and it fetches
+Overpass and encodes the same whole-region `EBM1` blob as `build_map.py`
+entirely client-side, then hands you a `<name>.ebm` to drop in `/maps/`. It's a
+JS port of `build_map.py` (`docs/mapgen.js`) — byte-for-byte identical output.
+No elevation grid (that's the phone's per-hex path), so it's the whole-map
+fallback layer, not the primary tile layer.
 
 ### On-device handling
 
