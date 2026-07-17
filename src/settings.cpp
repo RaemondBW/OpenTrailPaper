@@ -31,7 +31,10 @@ void begin() {
     bl = prefs.getInt("bl", 2);
     miles = prefs.getBool("miles", false);
     clk24 = prefs.getBool("clk24", true);
-    usbDrv = prefs.getBool("usbdrv", true);
+    // Key bumped to usbdrv2 so the new OFF default takes effect even on devices
+    // that had the old (default-ON) "usbdrv" value stored. OFF = the device
+    // keeps the SD (logs/recording) when plugged in.
+    usbDrv = prefs.getBool("usbdrv2", false);
     for (int k = 0; k < 3; ++k) {
         prefs.getString(KEYS[k], addrs[k], sizeof(addrs[k]));
         prefs.getString(NAME_KEYS[k], names[k], sizeof(names[k]));
@@ -75,7 +78,7 @@ void setClock24h(bool h) {
 bool usbDrive() { return usbDrv; }
 void setUsbDrive(bool on) {
     usbDrv = on;
-    prefs.putBool("usbdrv", usbDrv);
+    prefs.putBool("usbdrv2", usbDrv);
 }
 
 const char* sensorAddr(int kind) {
