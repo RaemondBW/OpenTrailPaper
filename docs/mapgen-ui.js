@@ -8,7 +8,6 @@ const infoEl = $("bb-info");
 const genBtn = $("gen-btn"), genStatus = $("gen-status"), genLog = $("gen-log");
 const genDownload = $("gen-download");
 const barWrap = document.querySelector("#maps .progress");
-const nameEl = $("map-name");
 const drawBtn = $("drawbox"), useViewBtn = $("useview");
 
 // The generator section is optional on the page; bail cleanly if it's absent.
@@ -135,10 +134,57 @@ function init() {
   function log(msg) { genLog.textContent += msg + "\n"; genLog.scrollTop = genLog.scrollHeight; }
   function setStatus(text, kind) { genStatus.textContent = text; genStatus.className = "status" + (kind ? " " + kind : ""); }
 
+  // --- minimal store-only ZIP (so the download drops straight onto the SD) ---
+  const _crcT = (() => {
+    const t = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+      t[n] = c >>> 0;
+    }
+    return t;
+  })();
+  function crc32(buf) {
+    let c = 0xFFFFFFFF;
+    for (let i = 0; i < buf.length; i++) c = _crcT[(c ^ buf[i]) & 0xFF] ^ (c >>> 8);
+    return (c ^ 0xFFFFFFFF) >>> 0;
+  }
+  function zipStore(files) {
+    const enc = new TextEncoder();
+    const u16 = (v) => new Uint8Array([v & 255, (v >> 8) & 255]);
+    const u32 = (v) => new Uint8Array([v & 255, (v >>> 8) & 255, (v >>> 16) & 255, (v >>> 24) & 255]);
+    const parts = [], central = [];
+    let offset = 0;
+    for (const f of files) {
+      const nb = enc.encode(f.name), crc = crc32(f.data), sz = f.data.length;
+      const lfh = [u32(0x04034b50), u16(20), u16(0), u16(0), u16(0), u16(0),
+                   u32(crc), u32(sz), u32(sz), u16(nb.length), u16(0), nb];
+      lfh.forEach((p) => parts.push(p));
+      parts.push(f.data);
+      central.push([u32(0x02014b50), u16(20), u16(20), u16(0), u16(0), u16(0), u16(0),
+                    u32(crc), u32(sz), u32(sz), u16(nb.length), u16(0), u16(0), u16(0),
+                    u16(0), u32(0), u32(offset), nb]);
+      offset += 30 + nb.length + sz;
+    }
+    const cStart = offset;
+    let cSize = 0;
+    central.forEach((e) => e.forEach((p) => { parts.push(p); cSize += p.length; }));
+    [u32(0x06054b50), u16(0), u16(0), u16(files.length), u16(files.length),
+     u32(cSize), u32(cStart), u16(0)].forEach((p) => parts.push(p));
+    let total = 0;
+    parts.forEach((p) => (total += p.length));
+    const out = new Uint8Array(total);
+    let o = 0;
+    parts.forEach((p) => { out.set(p, o); o += p.length; });
+    return out;
+  }
+
   genBtn.addEventListener("click", async () => {
     const bb = readFields();
     if (!bb) return;
-    const name = (nameEl.value || "map").trim().replace(/[^A-Za-z0-9._-]/g, "_") || "map";
+    // Auto-named from the box centre so several regions never collide in /maps.
+    const latC = ((bb.s + bb.n) / 2).toFixed(3), lonC = ((bb.w + bb.e) / 2).toFixed(3);
+    const name = `map_${latC}_${lonC}`.replace(/[^A-Za-z0-9._-]/g, "_");
 
     genBtn.disabled = true;
     genDownload.hidden = true;
@@ -161,14 +207,17 @@ function init() {
         throw new Error("No roads found in that area — try a different or larger box.");
       }
 
-      const blob = new Blob([ebm], { type: "application/octet-stream" });
+      // Package as a ZIP laid out for the SD card: unzip onto the card root and
+      // it lands at /maps/<name>.ebm.
+      const zip = zipStore([{ name: `maps/${name}.ebm`, data: ebm }]);
+      const blob = new Blob([zip], { type: "application/zip" });
       downloadUrl = URL.createObjectURL(blob);
       genDownload.href = downloadUrl;
-      genDownload.download = `${name}.ebm`;
-      genDownload.textContent = `⬇ Download ${name}.ebm (${fmtBytes(ebm.length)})`;
+      genDownload.download = `bikegps-${name}.zip`;
+      genDownload.textContent = `⬇ Download ZIP (${fmtBytes(zip.length)}) — unzip onto the SD card`;
       genDownload.hidden = false;
-      log(`Done: ${name}.ebm, ${fmtBytes(ebm.length)}. Copy it into /maps on the SD card.`);
-      setStatus("Map ready — download below.", "ok");
+      log(`Done: ${fmtBytes(ebm.length)} map. Unzip onto the SD card root → /maps/${name}.ebm.`);
+      setStatus("Map ready — download the ZIP below.", "ok");
     } catch (err) {
       log("Error: " + (err && err.message ? err.message : String(err)));
       setStatus(err && err.message ? err.message : "Failed.", "err");

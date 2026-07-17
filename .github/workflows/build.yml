@@ -10,6 +10,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Needed so the firmware job can publish a Release on push to main.
+permissions:
+  contents: write
+
 jobs:
   firmware:
     name: Firmware (ESP32-S3)
@@ -53,6 +57,28 @@ jobs:
             .pio/build/t5s3-pro/firmware.bin
             .pio/build/t5s3-pro/firmware.elf
           if-no-files-found: error
+
+      # Publish firmware.bin to a GitHub Release so the web flasher can fetch it
+      # (Actions artifacts need auth and expire; Releases are public + permanent).
+      # One release per FIRMWARE_VERSION, refreshed on every push to main.
+      - name: Read firmware version
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        id: ver
+        run: |
+          v=$(sed -n 's/.*FIRMWARE_VERSION[[:space:]]*"\([^"]*\)".*/\1/p' src/config.h)
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Publish firmware release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.version }}
+          name: Firmware ${{ steps.ver.outputs.version }}
+          body: |
+            Firmware ${{ steps.ver.outputs.version }} built from ${{ github.sha }}.
+            Flash it from the project site (Flash firmware) or drop firmware.bin on the SD card.
+          files: .pio/build/t5s3-pro/firmware.bin
+          fail_on_unmatched_files: true
 
   ios:
     name: Companion app (iOS)

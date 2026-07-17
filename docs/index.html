@@ -158,22 +158,19 @@
           <em>Use current view</em>. Keep it modest — a city or a county is fine; a whole state
           is too much data for one download.
         </p>
-        <strong style="display:block;margin-top:1rem;">2 &nbsp;Name &amp; generate</strong>
-        <label class="name-row">Map name
-          <input id="map-name" type="text" value="map" aria-label="Map name">
-        </label>
+        <strong style="display:block;margin-top:1rem;">2 &nbsp;Generate</strong>
         <div class="flash-controls" style="margin-top:12px;">
-          <button id="gen-btn" class="btn accent" type="button" disabled>Generate .ebm</button>
+          <button id="gen-btn" class="btn accent" type="button" disabled>Generate map</button>
           <span id="gen-status" class="status">Pick an area to begin.</span>
         </div>
         <div class="progress" hidden><i id="gen-bar"></i></div>
         <p style="margin:12px 0 0;"><a id="gen-download" class="btn" hidden download>⬇ Download map</a></p>
         <div class="console" id="gen-log" aria-live="polite"></div>
-        <strong style="display:block;margin-top:1rem;">3 &nbsp;Copy it to the SD card</strong>
+        <strong style="display:block;margin-top:1rem;">3 &nbsp;Unzip onto the SD card</strong>
         <p style="color:var(--ink-soft);font-size:.95rem;margin:.5rem 0 0;">
-          Put <code>&lt;name&gt;.ebm</code> in the <code>/maps</code> folder on the device's SD card —
-          over the built-in USB-drive mode, or with a card reader. It shows up on the map screen
-          the next time you ride through that area.
+          Unzip the download onto the SD card&rsquo;s root and it lands in <code>/maps</code>
+          automatically — over the built-in USB-drive mode, or with a card reader. It shows up
+          on the map screen the next time you ride through that area.
         </p>
       </div>
     </div>
@@ -218,6 +215,18 @@
           <button id="connect" class="btn accent">Connect</button>
           <button id="disconnect" class="btn secondary" hidden>Disconnect</button>
           <span id="status" class="status">Not connected.</span>
+        </div>
+
+        <div class="version-pick" style="margin:0 0 14px;">
+          <label style="display:block;font-size:.9rem;color:var(--ink-soft);margin-bottom:5px;">
+            Firmware version (built by CI, flashed to <code>0x10000</code>)
+          </label>
+          <select id="version-select" style="width:100%;padding:8px;border:1px solid var(--hairline);border-radius:8px;font-size:.95rem;">
+            <option value="">Loading versions…</option>
+          </select>
+          <p id="version-note" style="color:var(--ink-soft);font-size:.85rem;margin:.4rem 0 0;">
+            Pick a version above — or use your own <code>.bin</code> below (that overrides the dropdown).
+          </p>
         </div>
 
         <div class="file-rows" id="rows">

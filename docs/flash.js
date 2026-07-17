@@ -16,6 +16,55 @@ const flashBtn = $("flash-btn");
 const rowsEl = $("rows");
 const barWrap = document.querySelector(".progress");
 const bar = $("bar");
+const versionSelect = $("version-select");
+
+// CI publishes firmware.bin to a Release per version; list them for the dropdown.
+const REPO = "RaemondBW/epaper-bike-gps";
+let releases = []; // [{ tag, url }]
+
+async function loadReleases() {
+  if (!versionSelect) return;
+  try {
+    const res = await fetch(`https://api.github.com/repos/${REPO}/releases?per_page=40`);
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+    releases = data
+      .map((r) => {
+        const bin = (r.assets || []).find((a) => a.name === "firmware.bin");
+        return bin ? { tag: r.tag_name, url: bin.browser_download_url } : null;
+      })
+      .filter(Boolean);
+    versionSelect.innerHTML = "";
+    if (releases.length === 0) {
+      versionSelect.innerHTML = '<option value="">No CI releases yet — use a .bin below</option>';
+      return;
+    }
+    releases.forEach((r, i) => {
+      const o = document.createElement("option");
+      o.value = String(i);
+      o.textContent = r.tag + (i === 0 ? "  (latest)" : "");
+      versionSelect.appendChild(o);
+    });
+  } catch (e) {
+    versionSelect.innerHTML = '<option value="">Could not load releases</option>';
+    log("Release list error: " + (e?.message || e));
+  }
+}
+
+// Download a release's firmware.bin as a binary (latin-1) string for esptool-js.
+async function fetchReleaseBin(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error("download HTTP " + res.status);
+  const buf = new Uint8Array(await res.arrayBuffer());
+  let s = "";
+  const CHUNK = 0x8000;
+  for (let i = 0; i < buf.length; i += CHUNK) {
+    s += String.fromCharCode.apply(null, buf.subarray(i, i + CHUNK));
+  }
+  return s;
+}
+
+loadReleases();
 
 let transport = null;
 let esploader = null;
@@ -146,8 +195,25 @@ flashBtn.addEventListener("click", async () => {
     fileArray.push({ data, address, name: file.name });
   }
 
+  // No custom file chosen? Use the selected CI release binary at 0x10000.
+  if (fileArray.length === 0 && versionSelect && versionSelect.value !== "") {
+    const rel = releases[parseInt(versionSelect.value, 10)];
+    if (rel) {
+      try {
+        setStatus(`Downloading firmware ${rel.tag}…`, "");
+        const data = await fetchReleaseBin(rel.url);
+        fileArray.push({ data, address: 0x10000, name: `firmware.bin (${rel.tag})` });
+      } catch (e) {
+        console.error(e);
+        log("Download error: " + (e?.message || e));
+        setStatus("Couldn't download the release binary (network/CORS). Try a .bin file instead.", "err");
+        return;
+      }
+    }
+  }
+
   if (fileArray.length === 0) {
-    setStatus("Choose at least one .bin file to flash.", "err");
+    setStatus("Pick a version or choose a .bin file to flash.", "err");
     return;
   }
 
