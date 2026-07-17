@@ -236,7 +236,32 @@ bool begin() {
 
     SPI.begin(BOARD_SPI_SCLK, BOARD_SPI_MISO, BOARD_SPI_MOSI);
     sdLock();
-    sdOk = SD.begin(BOARD_SD_CS);
+    // Retry: the SPI card-init handshake is flaky right after power-on and can
+    // fail the first time or two, especially if a prior session left the card
+    // mid-transaction (only a clean re-init clears it). Stay at the library's
+    // proven 4 MHz — the same clock the recorder has always used — and just give
+    // it a few gentle attempts with a settle delay, dropping to 1 MHz last-ditch.
+    // (Do NOT start high: a too-fast probe can wedge a marginal card so the
+    // slower retries then also fail.)
+    const uint32_t freqs[] = {4000000, 4000000, 1000000};
+    for (int attempt = 0; attempt < 3 && !sdOk; ++attempt) {
+        uint32_t f = freqs[attempt];
+        if (attempt > 0) delay(50);   // let the card/bus settle before re-probing
+        sdOk = SD.begin(BOARD_SD_CS, SPI, f);
+        if (!sdOk) {
+            // Read cardType()/cardSize() BEFORE SD.end() — end() de-inits the
+            // card and would make both report NONE/0. cardType reflects the
+            // low-level SPI init (independent of the FAT mount): NONE => card not
+            // talking (bus/power/seating); a real type with begin() still failing
+            // => filesystem/format problem (e.g. exFAT).
+            uint8_t ct = SD.cardType();
+            const char* cn = ct == CARD_NONE ? "NONE" : ct == CARD_MMC ? "MMC"
+                           : ct == CARD_SD ? "SD" : ct == CARD_SDHC ? "SDHC" : "UNKNOWN";
+            diag::log("[rec] SD.begin failed @%uMHz cardType=%s size=%lluMB",
+                      (unsigned)(f / 1000000), cn, SD.cardSize() / (1024ULL * 1024ULL));
+            SD.end();
+        }
+    }
     if (sdOk && !SD.exists(RIDE_DIR)) SD.mkdir(RIDE_DIR);
     sdUnlock();
     if (!sdOk) {
