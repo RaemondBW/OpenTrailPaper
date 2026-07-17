@@ -61,6 +61,7 @@ enum MapBuilder {
     (
       way["highway"~"^(motorway|trunk|primary|secondary|tertiary|residential|unclassified|living_street|pedestrian|cycleway|footway|path|track|steps)"](%@,%@,%@,%@);
       way["natural"="water"](%@,%@,%@,%@);
+      way["natural"="coastline"](%@,%@,%@,%@);
     );
     out body;
     >;
@@ -81,6 +82,7 @@ enum MapBuilder {
                          onProgress: (@Sendable (String) -> Void)? = nil) async throws -> Data {
         let bbox = [s, w, n, e].map { String($0) }
         let q = String(format: query, bbox[0], bbox[1], bbox[2], bbox[3],
+                       bbox[0], bbox[1], bbox[2], bbox[3],
                        bbox[0], bbox[1], bbox[2], bbox[3])
         let body = ("data=" + (q.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? q))
             .data(using: .utf8)
@@ -225,6 +227,255 @@ enum MapBuilder {
         return wayNodeIds.map { nids in nids.compactMap { nodes[$0] } }
     }
 
+    // Resolve natural=coastline ways and assemble them into maximal chains of
+    // (lat, lon), preserving direction (LAND on the LEFT, SEA on the RIGHT).
+    // Call once per region, then pass the result to appendWater for each tile.
+    static func extractCoastlineChains(regionJSON: Data) throws -> [[(Double, Double)]] {
+        let json = try JSONDecoder().decode(OverpassJSON.self, from: regionJSON)
+        var nodes: [Int: (Double, Double)] = [:]
+        nodes.reserveCapacity(json.elements.count)
+        var coastWays: [[Int]] = []
+        for el in json.elements {
+            if el.type == "node", let la = el.lat, let lo = el.lon {
+                nodes[el.id] = (la, lo)
+            } else if el.type == "way", let nids = el.nodes,
+                      el.tags?["natural"] == "coastline" {
+                coastWays.append(nids)
+            }
+        }
+        return assembleCoastline(coastWays, nodes)
+    }
+
+    // Join coastline ways (node-id lists) into maximal chains of (lat,lon).
+    // Ways are joined end-to-end; a way is reversed only to make endpoints meet.
+    static func assembleCoastline(_ coastWays: [[Int]],
+                                  _ nodes: [Int: (Double, Double)]) -> [[(Double, Double)]] {
+        var chains: [[Int]?] = coastWays.map { $0 }
+        var changed = true
+        while changed {
+            changed = false
+            for i in 0..<chains.count {
+                if chains[i] == nil { continue }
+                for j in 0..<chains.count {
+                    if j == i || chains[j] == nil { continue }
+                    let a = chains[i]!
+                    let b = chains[j]!
+                    if a.last! == b.first! {
+                        chains[i] = a + b.dropFirst()
+                        chains[j] = nil; changed = true
+                    } else if a.last! == b.last! {
+                        chains[i] = a + b.dropLast().reversed()
+                        chains[j] = nil; changed = true
+                    } else if a.first! == b.last! {
+                        chains[i] = b + a.dropFirst()
+                        chains[j] = nil; changed = true
+                    } else if a.first! == b.first! {
+                        chains[i] = Array(b.reversed()) + a.dropFirst()
+                        chains[j] = nil; changed = true
+                    }
+                    if changed { break }
+                }
+                if changed { break }
+            }
+        }
+        var out: [[(Double, Double)]] = []
+        for c in chains {
+            guard let c else { continue }
+            let pts = c.compactMap { nodes[$0] }
+            if pts.count >= 2 { out.append(pts) }
+        }
+        return out
+    }
+
+    // Clip segment a->b (points (lat,lon)) to the rectangle. Returns the inside
+    // parameter interval (t0,t1) with 0<=t0<=t1<=1, or nil if outside.
+    private static func liangBarsky(_ a: (Double, Double), _ b: (Double, Double),
+                                    _ s: Double, _ w: Double, _ n: Double, _ e: Double) -> (Double, Double)? {
+        let ax = a.1, ay = a.0  // x=lon, y=lat
+        let bx = b.1, by = b.0
+        let dx = bx - ax, dy = by - ay
+        let p = [-dx, dx, -dy, dy]
+        let q = [ax - w, e - ax, ay - s, n - ay]
+        var t0 = 0.0, t1 = 1.0
+        for i in 0..<4 {
+            if p[i] == 0.0 {
+                if q[i] < 0.0 { return nil }
+            } else {
+                let t = q[i] / p[i]
+                if p[i] < 0.0 {
+                    if t > t1 { return nil }
+                    if t > t0 { t0 = t }
+                } else {
+                    if t < t0 { return nil }
+                    if t < t1 { t1 = t }
+                }
+            }
+        }
+        return (t0, t1)
+    }
+
+    private static func lerp(_ a: (Double, Double), _ b: (Double, Double), _ t: Double) -> (Double, Double) {
+        (a.0 + t * (b.0 - a.0), a.1 + t * (b.1 - a.1))
+    }
+
+    // Split a chain into rectangle-clipped sub-chains. Each result is
+    // (points, startOnBoundary, endOnBoundary).
+    private static func clipChain(_ chain: [(Double, Double)],
+                                  _ s: Double, _ w: Double, _ n: Double, _ e: Double)
+        -> [([(Double, Double)], Bool, Bool)] {
+        var subs: [([(Double, Double)], Bool, Bool)] = []
+        var cur: [(Double, Double)]? = nil
+        var startB = false
+        if chain.count >= 2 {
+            for k in 0..<(chain.count - 1) {
+                let a = chain[k], b = chain[k + 1]
+                guard let lb = liangBarsky(a, b, s, w, n, e) else {
+                    if let c = cur { subs.append((c, startB, false)); cur = nil }
+                    continue
+                }
+                let (t0, t1) = lb
+                // Use the exact chain endpoint when unclipped, so a shared point
+                // matches bit-for-bit across adjacent segments (avoids a
+                // degenerate zero-length segment from float drift in lerp).
+                let p0 = t0 == 0.0 ? a : lerp(a, b, t0)
+                let p1 = t1 == 1.0 ? b : lerp(a, b, t1)
+                if cur == nil {
+                    cur = [p0]
+                    startB = t0 > 0.0
+                } else if cur!.last! != p0 {
+                    cur!.append(p0)
+                }
+                if cur!.last! != p1 { cur!.append(p1) }
+                if t1 < 1.0 { subs.append((cur!, startB, true)); cur = nil }
+            }
+        }
+        if let c = cur { subs.append((c, startB, false)) }
+        return subs
+    }
+
+    // Position of a boundary point along the perimeter, CCW from the SW corner.
+    private static func perimPos(_ pt: (Double, Double),
+                                 _ s: Double, _ w: Double, _ n: Double, _ e: Double) -> Double {
+        let lat = pt.0, lon = pt.1
+        let ww = e - w, hh = n - s
+        let db = abs(lat - s), dr = abs(lon - e)
+        let dt = abs(lat - n), dl = abs(lon - w)
+        let mn = min(min(db, dr), min(dt, dl))
+        if mn == db { return lon - w }
+        if mn == dr { return ww + (lat - s) }
+        if mn == dt { return ww + hh + (e - lon) }
+        return ww + hh + ww + (n - lat)
+    }
+
+    // Positive modulo (matches Python's % for the perimeter math).
+    private static func pmod(_ a: Double, _ b: Double) -> Double {
+        let r = a.truncatingRemainder(dividingBy: b)
+        return r < 0 ? r + b : r
+    }
+
+    // Corner points passed walking the perimeter from fromPos to toPos, CCW
+    // (increasing) or CW (decreasing).
+    private static func closing(_ fromPos: Double, _ toPos: Double,
+                                _ s: Double, _ w: Double, _ n: Double, _ e: Double,
+                                _ ccw: Bool) -> [(Double, Double)] {
+        let ww = e - w, hh = n - s
+        let total = 2 * ww + 2 * hh
+        let corners: [(Double, Double, Double)] = [
+            (s, w, 0.0),
+            (s, e, ww),
+            (n, e, ww + hh),
+            (n, w, ww + hh + ww),
+        ]
+        var res: [(Double, (Double, Double))] = []
+        if ccw {
+            let d = pmod(toPos - fromPos, total)
+            for (clat, clon, cpos) in corners {
+                let cd = pmod(cpos - fromPos, total)
+                if cd > 0.0 && cd < d { res.append((cd, (clat, clon))) }
+            }
+        } else {
+            let d = pmod(fromPos - toPos, total)
+            for (clat, clon, cpos) in corners {
+                let cd = pmod(fromPos - cpos, total)
+                if cd > 0.0 && cd < d { res.append((cd, (clat, clon))) }
+            }
+        }
+        res.sort { $0.0 < $1.0 }
+        return res.map { $0.1 }
+    }
+
+    // Even-odd ray-cast point-in-polygon; ring is [(lat,lon), ...].
+    private static func pointInRing(_ ring: [(Double, Double)], _ lat: Double, _ lon: Double) -> Bool {
+        var inside = false
+        let m = ring.count
+        var j = m - 1
+        for i in 0..<m {
+            let yi = ring[i].0, xi = ring[i].1
+            let yj = ring[j].0, xj = ring[j].1
+            if (yi > lat) != (yj > lat) {
+                let xint = (xj - xi) * (lat - yi) / (yj - yi) + xi
+                if lon < xint { inside = !inside }
+            }
+            j = i
+        }
+        return inside
+    }
+
+    // Close a boundary-to-boundary sub-chain p into a ring enclosing the SEA
+    // side (right of the coastline direction). Returns the ring or nil.
+    private static func seaPolygon(_ p: [(Double, Double)],
+                                   _ s: Double, _ w: Double, _ n: Double, _ e: Double) -> [(Double, Double)]? {
+        let m = p.count
+        if m < 2 { return nil }
+        let i = (m - 1) / 2
+        let a = p[i], b = p[i + 1]
+        let dLat = b.0 - a.0
+        let dLon = b.1 - a.1
+        let ln = (dLon * dLon + dLat * dLat).squareRoot()
+        if ln == 0.0 { return nil }
+        let midLat = (a.0 + b.0) / 2
+        let midLon = (a.1 + b.1) / 2
+        let eps = 1e-4
+        // right-of-direction normal (dLat,-dLon) in (lon,lat) space, normalized.
+        let probeLon = midLon + eps * (dLat / ln)
+        let probeLat = midLat + eps * (-dLon / ln)
+        let posA = perimPos(p[0], s, w, n, e)
+        let posB = perimPos(p[p.count - 1], s, w, n, e)
+        let ringCcw = p + closing(posB, posA, s, w, n, e, true)
+        let ringCw = p + closing(posB, posA, s, w, n, e, false)
+        let inCcw = pointInRing(ringCcw, probeLat, probeLon)
+        let inCw = pointInRing(ringCw, probeLat, probeLon)
+        if inCcw && !inCw { return ringCcw }
+        if inCw && !inCcw { return ringCw }
+        return nil
+    }
+
+    // Turn assembled coastline chains into projected, decimated, int16 sea
+    // polygons for the tile [s,w,n,e] — same encoding as natural=water polys.
+    private static func coastlinePolys(_ chains: [[(Double, Double)]],
+                                       _ s: Double, _ w: Double, _ n: Double, _ e: Double,
+                                       _ lon0: Double, _ lat0: Double,
+                                       _ kx: Double, _ ky: Double) -> [[(Int16, Int16)]] {
+        var out: [[(Int16, Int16)]] = []
+        for chain in chains {
+            for (pts, sb, eb) in clipChain(chain, s, w, n, e) {
+                if !(sb && eb) { continue }  // island loop / dangling end — skip for v1
+                guard let ring = seaPolygon(pts, s, w, n, e) else { continue }
+                let m = decimate(ring.map { (lat, lon) in ((lon - lon0) * kx, (lat - lat0) * ky) }, simplifyM)
+                if m.count < 3 { continue }
+                var poly: [(Int16, Int16)] = []
+                poly.reserveCapacity(m.count)
+                for (x, y) in m {
+                    let ix = Int16(max(-32000, min(32000, Int(x.rounded()))))
+                    let iy = Int16(max(-32000, min(32000, Int(y.rounded()))))
+                    poly.append((ix, iy))
+                }
+                out.append(poly)
+            }
+        }
+        return out
+    }
+
     // Append a WTR2 water section to an already-encoded tile (after its ELV1
     // block, if any). Mirrors the whole-region encoders: points are meters E/N
     // of the tile's snapped grid origin (lat0,lon0), RDP-simplified at
@@ -232,6 +483,7 @@ enum MapBuilder {
     // in [s,w,n,e]; the whole simplified ring is stored (>= 3 points, else it
     // is skipped). Always writes the "WTR2" magic + count (0 if no polygons).
     static func appendWater(to data: inout Data, waterWays: [[(Double, Double)]],
+                            coastChains: [[(Double, Double)]] = [],
                             south s: Double, west w: Double, north n: Double, east e: Double) {
         let td = tileDeg
         let midLat = (s + n) / 2
@@ -258,6 +510,9 @@ enum MapBuilder {
             }
             polys.append(poly)
         }
+
+        // Coastline-derived sea polygons -> append to the SAME WTR2 polygon list.
+        polys.append(contentsOf: coastlinePolys(coastChains, s, w, n, e, lon0, lat0, kx, ky))
 
         data.append("WTR2".data(using: .ascii)!)
         data.appendU16(UInt16(min(polys.count, 0xFFFF)))

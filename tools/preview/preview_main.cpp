@@ -293,7 +293,7 @@ int main(int argc, char** argv) {
         map.northDeg = 0;
         map.trackUp = false;
         map.metersPerPixel = 8.0f;
-        map_tiles::project(37.7764, -122.4346, 8.0f, 270, 430, 0, map);
+        map_tiles::project(37.760, -122.505, 8.0f, 270, 430, 0, map);
         printf("sf.ebm: %d polylines, %d water polys\n", map.featureCount,
                map.waterCount);
     } else {
@@ -331,7 +331,7 @@ int main(int argc, char** argv) {
 
     // Zoomed-out view of the same spot
     if (mf) {
-        map_tiles::project(37.7764, -122.4346, 8.0f, 270, 430, 0, map);
+        map_tiles::project(37.760, -122.505, 8.0f, 270, 430, 0, map);
         map.metersPerPixel = 8.0f;
         clearWhite(fb.data());
         ui_render_map(map, s, fb.data());

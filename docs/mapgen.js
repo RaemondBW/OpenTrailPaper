@@ -29,6 +29,7 @@ const QUERY = `[out:json][timeout:90];
 (
   way["highway"~"^(motorway|trunk|primary|secondary|tertiary|residential|unclassified|living_street|pedestrian|cycleway|footway|path|track|steps)"](%S,%W,%N,%E);
   way["natural"="water"](%S,%W,%N,%E);
+  way["natural"="coastline"](%S,%W,%N,%E);
 );
 out body;
 >;
@@ -103,6 +104,231 @@ export function decimate(points, eps) {
   return kept;
 }
 
+// --- coastline -> sea polygons ---------------------------------------------
+// OSM splits coastlines into many ways that share endpoints; each way keeps
+// LAND on its LEFT and SEA on its RIGHT. Assemble ways into maximal chains
+// (preserving that direction), clip each chain to a tile rectangle, and close
+// each boundary-to-boundary sub-chain along the rectangle edge that encloses
+// the SEA side — yielding filled WTR2 sea polygons. Must agree byte-for-byte
+// with build_map.py.
+
+// Positive modulo (matches Python's % for the float perimeter math).
+function pmod(a, b) { return ((a % b) + b) % b; }
+
+// Join coastline ways (node-id lists) into maximal chains of [lat,lon]. Ways
+// are joined end-to-end; a way is reversed only to make endpoints meet.
+export function assembleCoastline(coastWays, nodes) {
+  const chains = coastWays.map((nids) => nids.slice());
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (let i = 0; i < chains.length && !changed; i++) {
+      if (chains[i] == null) continue;
+      for (let j = 0; j < chains.length && !changed; j++) {
+        if (j === i || chains[j] == null) continue;
+        const a = chains[i];
+        const b = chains[j];
+        if (a[a.length - 1] === b[0]) {
+          chains[i] = a.concat(b.slice(1));
+          chains[j] = null; changed = true;
+        } else if (a[a.length - 1] === b[b.length - 1]) {
+          chains[i] = a.concat(b.slice(0, -1).reverse());
+          chains[j] = null; changed = true;
+        } else if (a[0] === b[b.length - 1]) {
+          chains[i] = b.concat(a.slice(1));
+          chains[j] = null; changed = true;
+        } else if (a[0] === b[0]) {
+          chains[i] = b.slice().reverse().concat(a.slice(1));
+          chains[j] = null; changed = true;
+        }
+      }
+    }
+  }
+  const out = [];
+  for (const c of chains) {
+    if (c == null) continue;
+    const pts = [];
+    for (const id of c) { const p = nodes.get(id); if (p) pts.push(p); }
+    if (pts.length >= 2) out.push(pts);
+  }
+  return out;
+}
+
+// Clip segment a->b (points [lat,lon]) to the rectangle. Returns [t0,t1] with
+// 0<=t0<=t1<=1, or null if the segment is entirely outside.
+function liangBarsky(a, b, s, w, n, e) {
+  const ax = a[1], ay = a[0]; // x=lon, y=lat
+  const bx = b[1], by = b[0];
+  const dx = bx - ax, dy = by - ay;
+  const p = [-dx, dx, -dy, dy];
+  const q = [ax - w, e - ax, ay - s, n - ay];
+  let t0 = 0.0, t1 = 1.0;
+  for (let i = 0; i < 4; i++) {
+    if (p[i] === 0.0) {
+      if (q[i] < 0.0) return null;
+    } else {
+      const t = q[i] / p[i];
+      if (p[i] < 0.0) {
+        if (t > t1) return null;
+        if (t > t0) t0 = t;
+      } else {
+        if (t < t0) return null;
+        if (t < t1) t1 = t;
+      }
+    }
+  }
+  return [t0, t1];
+}
+
+function lerp(a, b, t) {
+  return [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])];
+}
+
+function ptEq(a, b) { return a[0] === b[0] && a[1] === b[1]; }
+
+// Split a chain into rectangle-clipped sub-chains. Each result is
+// [points, startOnBoundary, endOnBoundary].
+export function clipChain(chain, s, w, n, e) {
+  const subs = [];
+  let cur = null;
+  let startB = false;
+  for (let k = 0; k < chain.length - 1; k++) {
+    const a = chain[k], b = chain[k + 1];
+    const lb = liangBarsky(a, b, s, w, n, e);
+    if (lb == null) {
+      if (cur != null) { subs.push([cur, startB, false]); cur = null; }
+      continue;
+    }
+    const [t0, t1] = lb;
+    // Use the exact chain endpoint when unclipped, so a shared point matches
+    // bit-for-bit across adjacent segments (avoids a degenerate zero-length
+    // segment from float drift in lerp(a,b,1)).
+    const p0 = t0 === 0.0 ? a : lerp(a, b, t0);
+    const p1 = t1 === 1.0 ? b : lerp(a, b, t1);
+    if (cur == null) {
+      cur = [p0];
+      startB = t0 > 0.0;
+    } else if (!ptEq(cur[cur.length - 1], p0)) {
+      cur.push(p0);
+    }
+    if (!ptEq(cur[cur.length - 1], p1)) cur.push(p1);
+    if (t1 < 1.0) { subs.push([cur, startB, true]); cur = null; }
+  }
+  if (cur != null) subs.push([cur, startB, false]);
+  return subs;
+}
+
+// Position of a boundary point along the perimeter, CCW from the SW corner.
+function perimPos(pt, s, w, n, e) {
+  const lat = pt[0], lon = pt[1];
+  const ww = e - w, hh = n - s;
+  const db = Math.abs(lat - s), dr = Math.abs(lon - e);
+  const dt = Math.abs(lat - n), dl = Math.abs(lon - w);
+  const mn = Math.min(db, dr, dt, dl);
+  if (mn === db) return lon - w;
+  if (mn === dr) return ww + (lat - s);
+  if (mn === dt) return ww + hh + (e - lon);
+  return ww + hh + ww + (n - lat);
+}
+
+// Corner points passed walking the perimeter from fromPos to toPos, CCW
+// (increasing) or CW (decreasing).
+function closing(fromPos, toPos, s, w, n, e, ccw) {
+  const ww = e - w, hh = n - s;
+  const total = 2 * ww + 2 * hh;
+  const corners = [
+    [s, w, 0.0],
+    [s, e, ww],
+    [n, e, ww + hh],
+    [n, w, ww + hh + ww],
+  ];
+  const res = [];
+  if (ccw) {
+    const d = pmod(toPos - fromPos, total);
+    for (const [clat, clon, cpos] of corners) {
+      const cd = pmod(cpos - fromPos, total);
+      if (cd > 0.0 && cd < d) res.push([cd, [clat, clon]]);
+    }
+  } else {
+    const d = pmod(fromPos - toPos, total);
+    for (const [clat, clon, cpos] of corners) {
+      const cd = pmod(fromPos - cpos, total);
+      if (cd > 0.0 && cd < d) res.push([cd, [clat, clon]]);
+    }
+  }
+  res.sort((x, y) => x[0] - y[0]);
+  return res.map((r) => r[1]);
+}
+
+// Even-odd ray-cast point-in-polygon; ring is [[lat,lon], ...].
+function pointInRing(ring, lat, lon) {
+  let inside = false;
+  const m = ring.length;
+  let j = m - 1;
+  for (let i = 0; i < m; i++) {
+    const yi = ring[i][0], xi = ring[i][1];
+    const yj = ring[j][0], xj = ring[j][1];
+    if ((yi > lat) !== (yj > lat)) {
+      const xint = (xj - xi) * (lat - yi) / (yj - yi) + xi;
+      if (lon < xint) inside = !inside;
+    }
+    j = i;
+  }
+  return inside;
+}
+
+// Close a boundary-to-boundary sub-chain p (points [lat,lon]) into a ring
+// enclosing the SEA side (right of the coastline direction). Returns the ring
+// or null if degenerate.
+export function seaPolygon(p, s, w, n, e) {
+  const m = p.length;
+  if (m < 2) return null;
+  const i = Math.floor((m - 1) / 2);
+  const a = p[i], b = p[i + 1];
+  const dLat = b[0] - a[0];
+  const dLon = b[1] - a[1];
+  const ln = Math.hypot(dLon, dLat);
+  if (ln === 0.0) return null;
+  const midLat = (a[0] + b[0]) / 2;
+  const midLon = (a[1] + b[1]) / 2;
+  const eps = 1e-4;
+  // right-of-direction normal (dLat,-dLon) in (lon,lat) space, normalized.
+  const probeLon = midLon + eps * (dLat / ln);
+  const probeLat = midLat + eps * (-dLon / ln);
+  const posA = perimPos(p[0], s, w, n, e);
+  const posB = perimPos(p[p.length - 1], s, w, n, e);
+  const ringCcw = p.concat(closing(posB, posA, s, w, n, e, true));
+  const ringCw = p.concat(closing(posB, posA, s, w, n, e, false));
+  const inCcw = pointInRing(ringCcw, probeLat, probeLon);
+  const inCw = pointInRing(ringCw, probeLat, probeLon);
+  if (inCcw && !inCw) return ringCcw;
+  if (inCw && !inCcw) return ringCw;
+  return null;
+}
+
+// Turn assembled coastline chains into projected, decimated, int16 sea
+// polygons for the tile [s,w,n,e] — same encoding as natural=water polys.
+export function coastlinePolys(chains, s, w, n, e, lon0, lat0, kx, ky, simplifyM) {
+  const out = [];
+  for (const chain of chains) {
+    for (const [pts, sb, eb] of clipChain(chain, s, w, n, e)) {
+      if (!(sb && eb)) continue; // island loop / dangling end — skip for v1
+      const ring = seaPolygon(pts, s, w, n, e);
+      if (ring == null) continue;
+      const m = decimate(ring.map(([lat, lon]) => [(lon - lon0) * kx, (lat - lat0) * ky]), simplifyM);
+      if (m.length < 3) continue;
+      const poly = [];
+      for (const [x, y] of m) {
+        const ix = Math.max(-32000, Math.min(32000, pyRound(x)));
+        const iy = Math.max(-32000, Math.min(32000, pyRound(y)));
+        poly.push([ix, iy]);
+      }
+      out.push(poly);
+    }
+  }
+  return out;
+}
+
 // Python's int(round(x)): round-half-to-even, then truncate toward zero.
 // build_map.py rounds this way, so matching it keeps our bytes identical.
 function pyRound(x) {
@@ -149,6 +375,7 @@ export function buildEbm(json, { s, w, n, e, tileDeg = TILE_DEG, simplifyM = SIM
   const nodes = new Map();
   const ways = [];
   const waterWays = []; // node-id lists for natural=water polygons
+  const coastWays = []; // node-id lists for natural=coastline ways
   for (const el of json.elements) {
     if (el.type === "node" && el.lat != null && el.lon != null) {
       nodes.set(el.id, [el.lat, el.lon]);
@@ -157,8 +384,10 @@ export function buildEbm(json, { s, w, n, e, tileDeg = TILE_DEG, simplifyM = SIM
       const cls = classify(tags);
       if (cls != null) ways.push([cls, el.nodes]);
       else if (tags.natural === "water") waterWays.push(el.nodes);
+      else if (tags.natural === "coastline") coastWays.push(el.nodes);
     }
   }
+  const coastChains = assembleCoastline(coastWays, nodes);
 
   const td = tileDeg;
   const midLat = (s + n) / 2;
@@ -238,6 +467,11 @@ export function buildEbm(json, { s, w, n, e, tileDeg = TILE_DEG, simplifyM = SIM
       const iy = Math.max(-32000, Math.min(32000, pyRound(y)));
       poly.push([ix, iy]);
     }
+    waterPolys.push(poly);
+  }
+
+  // Coastline-derived sea polygons -> append to the SAME WTR2 polygon list.
+  for (const poly of coastlinePolys(coastChains, s, w, n, e, lon0, lat0, kx, ky, simplifyM)) {
     waterPolys.push(poly);
   }
 

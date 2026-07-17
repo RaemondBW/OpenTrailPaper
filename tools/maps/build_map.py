@@ -44,6 +44,7 @@ QUERY = """
 (
   way["highway"~"^(motorway|trunk|primary|secondary|tertiary|residential|unclassified|living_street|pedestrian|cycleway|footway|path|track|steps)"]({s},{w},{n},{e});
   way["natural"="water"]({s},{w},{n},{e});
+  way["natural"="coastline"]({s},{w},{n},{e});
 );
 out body;
 >;
@@ -142,6 +143,251 @@ def decimate(points, eps):
     return kept
 
 
+# --- coastline -> sea polygons -------------------------------------------
+# OSM splits coastlines into many ways that share endpoints; each way keeps
+# LAND on its LEFT and SEA on its RIGHT. We assemble the ways into maximal
+# chains (preserving that direction), clip each chain to a tile rectangle,
+# and close each boundary-to-boundary sub-chain along the rectangle edge that
+# encloses the SEA side — yielding filled WTR2 sea polygons.
+
+def assemble_coastline(coast_ways, nodes):
+    """Join coastline ways (node-id lists) into maximal chains of (lat,lon).
+    Ways are joined end-to-end; a way is reversed only to make endpoints meet.
+    """
+    chains = [list(nids) for nids in coast_ways]
+    changed = True
+    while changed:
+        changed = False
+        for i in range(len(chains)):
+            if chains[i] is None:
+                continue
+            for j in range(len(chains)):
+                if j == i or chains[j] is None:
+                    continue
+                a = chains[i]
+                b = chains[j]
+                if a[-1] == b[0]:
+                    chains[i] = a + b[1:]
+                    chains[j] = None
+                    changed = True
+                elif a[-1] == b[-1]:
+                    chains[i] = a + b[-2::-1]
+                    chains[j] = None
+                    changed = True
+                elif a[0] == b[-1]:
+                    chains[i] = b + a[1:]
+                    chains[j] = None
+                    changed = True
+                elif a[0] == b[0]:
+                    chains[i] = b[::-1] + a[1:]
+                    chains[j] = None
+                    changed = True
+                if changed:
+                    break
+            if changed:
+                break
+    out = []
+    for c in chains:
+        if c is None:
+            continue
+        pts = [nodes[i] for i in c if i in nodes]
+        if len(pts) >= 2:
+            out.append(pts)
+    return out
+
+
+def _liang_barsky(a, b, s, w, n, e):
+    """Clip segment a->b (points are (lat,lon)) to the rectangle. Returns the
+    inside parameter interval (t0,t1) with 0<=t0<=t1<=1, or None if outside."""
+    ax, ay = a[1], a[0]  # x=lon, y=lat
+    bx, by = b[1], b[0]
+    dx = bx - ax
+    dy = by - ay
+    p = [-dx, dx, -dy, dy]
+    q = [ax - w, e - ax, ay - s, n - ay]
+    t0, t1 = 0.0, 1.0
+    for i in range(4):
+        if p[i] == 0.0:
+            if q[i] < 0.0:
+                return None
+        else:
+            t = q[i] / p[i]
+            if p[i] < 0.0:
+                if t > t1:
+                    return None
+                if t > t0:
+                    t0 = t
+            else:
+                if t < t0:
+                    return None
+                if t < t1:
+                    t1 = t
+    return (t0, t1)
+
+
+def _lerp(a, b, t):
+    return (a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]))
+
+
+def clip_chain(chain, s, w, n, e):
+    """Split a chain into sub-chains clipped to the rectangle. Each result is
+    (points, start_on_boundary, end_on_boundary)."""
+    subs = []
+    cur = None
+    start_b = False
+    for k in range(len(chain) - 1):
+        a = chain[k]
+        b = chain[k + 1]
+        lb = _liang_barsky(a, b, s, w, n, e)
+        if lb is None:
+            if cur is not None:
+                subs.append((cur, start_b, False))
+                cur = None
+            continue
+        t0, t1 = lb
+        # Use the exact chain endpoint when unclipped, so a shared point matches
+        # bit-for-bit across adjacent segments (avoids a degenerate zero-length
+        # segment from float drift in lerp(a,b,1)).
+        p0 = a if t0 == 0.0 else _lerp(a, b, t0)
+        p1 = b if t1 == 1.0 else _lerp(a, b, t1)
+        if cur is None:
+            cur = [p0]
+            start_b = t0 > 0.0
+        elif cur[-1] != p0:
+            cur.append(p0)
+        if cur[-1] != p1:
+            cur.append(p1)
+        if t1 < 1.0:
+            subs.append((cur, start_b, True))
+            cur = None
+    if cur is not None:
+        subs.append((cur, start_b, False))
+    return subs
+
+
+def _perim_pos(pt, s, w, n, e):
+    """Position of a boundary point along the rectangle perimeter, CCW from
+    the SW corner (w,s)."""
+    lat, lon = pt
+    ww = e - w
+    hh = n - s
+    db = abs(lat - s)
+    dr = abs(lon - e)
+    dt = abs(lat - n)
+    dl = abs(lon - w)
+    mn = min(db, dr, dt, dl)
+    if mn == db:
+        return lon - w
+    if mn == dr:
+        return ww + (lat - s)
+    if mn == dt:
+        return ww + hh + (e - lon)
+    return ww + hh + ww + (n - lat)
+
+
+def _closing(from_pos, to_pos, s, w, n, e, ccw):
+    """Corner points passed walking the perimeter from from_pos to to_pos,
+    CCW (increasing) or CW (decreasing)."""
+    ww = e - w
+    hh = n - s
+    total = 2 * ww + 2 * hh
+    corners = [
+        (s, w, 0.0),
+        (s, e, ww),
+        (n, e, ww + hh),
+        (n, w, ww + hh + ww),
+    ]
+    res = []
+    if ccw:
+        d = (to_pos - from_pos) % total
+        for clat, clon, cpos in corners:
+            cd = (cpos - from_pos) % total
+            if 0.0 < cd < d:
+                res.append((cd, (clat, clon)))
+    else:
+        d = (from_pos - to_pos) % total
+        for clat, clon, cpos in corners:
+            cd = (from_pos - cpos) % total
+            if 0.0 < cd < d:
+                res.append((cd, (clat, clon)))
+    res.sort(key=lambda r: r[0])
+    return [pt for _, pt in res]
+
+
+def _point_in_ring(ring, lat, lon):
+    """Even-odd ray-cast point-in-polygon; ring is [(lat,lon), ...]."""
+    inside = False
+    m = len(ring)
+    j = m - 1
+    for i in range(m):
+        yi, xi = ring[i][0], ring[i][1]
+        yj, xj = ring[j][0], ring[j][1]
+        if (yi > lat) != (yj > lat):
+            xint = (xj - xi) * (lat - yi) / (yj - yi) + xi
+            if lon < xint:
+                inside = not inside
+        j = i
+    return inside
+
+
+def sea_polygon(p, s, w, n, e):
+    """Close a boundary-to-boundary sub-chain p (points (lat,lon)) into a ring
+    enclosing the SEA side (right of the coastline direction). Returns the ring
+    (lat,lon) or None if degenerate."""
+    m = len(p)
+    if m < 2:
+        return None
+    i = (m - 1) // 2
+    a = p[i]
+    b = p[i + 1]
+    d_lat = b[0] - a[0]
+    d_lon = b[1] - a[1]
+    ln = math.hypot(d_lon, d_lat)
+    if ln == 0.0:
+        return None
+    mid_lat = (a[0] + b[0]) / 2
+    mid_lon = (a[1] + b[1]) / 2
+    eps = 1e-4
+    # right-of-direction normal (dLat,-dLon) in (lon,lat) space, normalized.
+    probe_lon = mid_lon + eps * (d_lat / ln)
+    probe_lat = mid_lat + eps * (-d_lon / ln)
+    pos_a = _perim_pos(p[0], s, w, n, e)
+    pos_b = _perim_pos(p[-1], s, w, n, e)
+    ring_ccw = p + _closing(pos_b, pos_a, s, w, n, e, True)
+    ring_cw = p + _closing(pos_b, pos_a, s, w, n, e, False)
+    in_ccw = _point_in_ring(ring_ccw, probe_lat, probe_lon)
+    in_cw = _point_in_ring(ring_cw, probe_lat, probe_lon)
+    if in_ccw and not in_cw:
+        return ring_ccw
+    if in_cw and not in_ccw:
+        return ring_cw
+    return None
+
+
+def coastline_polys(chains, s, w, n, e, lon0, lat0, kx, ky, simplify_m):
+    """Turn assembled coastline chains into projected, decimated, int16 sea
+    polygons for the tile [s,w,n,e] — same encoding as natural=water polys."""
+    out = []
+    for chain in chains:
+        for pts, sb, eb in clip_chain(chain, s, w, n, e):
+            if not (sb and eb):
+                continue  # island loop / dangling end — skip for v1
+            ring = sea_polygon(pts, s, w, n, e)
+            if ring is None:
+                continue
+            m = [((lon - lon0) * kx, (lat - lat0) * ky) for lat, lon in ring]
+            m = decimate(m, simplify_m)
+            if len(m) < 3:
+                continue
+            poly = []
+            for x, y in m:
+                ix = max(-32000, min(32000, int(round(x))))
+                iy = max(-32000, min(32000, int(round(y))))
+                poly.append((ix, iy))
+            out.append(poly)
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--bbox", nargs=4, type=float, required=True,
@@ -158,6 +404,7 @@ def main():
     nodes = {}
     ways = []
     water_ways = []  # node-id lists for natural=water polygons
+    coast_ways = []  # node-id lists for natural=coastline ways
     for el in data["elements"]:
         if el["type"] == "node":
             nodes[el["id"]] = (el["lat"], el["lon"])
@@ -168,7 +415,12 @@ def main():
                 ways.append((cls, el["nodes"]))
             elif tags.get("natural") == "water":
                 water_ways.append(el["nodes"])
-    print(f"{len(ways)} ways, {len(water_ways)} water, {len(nodes)} nodes")
+            elif tags.get("natural") == "coastline":
+                coast_ways.append(el["nodes"])
+    coast_chains = assemble_coastline(coast_ways, nodes)
+    print(f"{len(ways)} ways, {len(water_ways)} water, "
+          f"{len(coast_ways)} coastline ({len(coast_chains)} chains), "
+          f"{len(nodes)} nodes")
 
     mid_lat = (s + n) / 2
     kx = 111320.0 * math.cos(math.radians(mid_lat))  # m per deg lon
@@ -257,6 +509,11 @@ def main():
             iy = max(-32000, min(32000, int(round(y))))
             poly.append((ix, iy))
         water_polys.append(poly)
+
+    # Coastline-derived sea polygons -> append to the SAME WTR2 polygon list.
+    water_polys.extend(
+        coastline_polys(coast_chains, s, w, n, e, lon0, lat0, kx, ky,
+                        args.simplify_m))
 
     with open(args.out, "wb") as f:
         f.write(b"EBM2")
