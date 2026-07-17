@@ -7,11 +7,13 @@
 // the binary — all locally in the browser, nothing uploaded anywhere.
 //
 // Format (little-endian):
-//   'EBM1', f64 lat0, f64 lon0, f64 tileDeg, i32 nx, i32 ny,
+//   'EBM2', f64 lat0, f64 lon0, f64 tileDeg, i32 nx, i32 ny,
 //   index[nx*ny] of (u32 offset, u32 length)  (0,0 = empty tile),
 //   tiles: u16 polylineCount, per polyline { u8 class, u16 pointCount,
 //          i16 x,y per point (metres E/N of the tile SW corner) }.
-//   class: 0 major road, 1 minor road, 2 path, 3 rail.
+//   class: 0 arterial, 1 secondary, 2 minor, 3 path.
+//   water: 'WTR2', u16 polygonCount, per polygon { u16 pointCount,
+//          i16 x,y per point (metres E/N of the grid SW origin lat0,lon0) }.
 
 export const TILE_DEG = 0.02;
 export const SIMPLIFY_M = 3.0;
@@ -26,28 +28,31 @@ export const OVERPASS_ENDPOINTS = [
 const QUERY = `[out:json][timeout:90];
 (
   way["highway"~"^(motorway|trunk|primary|secondary|tertiary|residential|unclassified|living_street|pedestrian|cycleway|footway|path|track|steps)"](%S,%W,%N,%E);
-  way["railway"~"^(rail|light_rail)$"](%S,%W,%N,%E);
+  way["natural"="water"](%S,%W,%N,%E);
 );
 out body;
 >;
 out skel qt;`;
 
-const MAJOR = new Set(["motorway", "trunk", "primary", "secondary"]);
-const MINOR = new Set(["tertiary", "residential", "unclassified", "living_street", "pedestrian"]);
+// Road tiers (device render classes).
+const ARTERIAL = new Set(["motorway", "trunk", "primary"]);
+const SECONDARY = new Set(["secondary", "tertiary"]);
+const MINOR = new Set(["residential", "unclassified", "living_street", "pedestrian"]);
 const PATH = new Set(["cycleway", "footway", "path", "track", "steps"]);
 
-// OSM tags -> render class (0 major, 1 minor, 2 path, 3 rail), or null to drop.
-// Must agree with build_map.py / MapBuilder.swift.
+// OSM tags -> road tier (0 arterial, 1 secondary, 2 minor, 3 path), or null to
+// drop. Rail is dropped; natural=water is handled separately (WTR2). Must agree
+// with build_map.py / MapBuilder.swift.
 export function classify(tags) {
   if (tags == null) return null;
-  if (tags.railway != null) return 3;
   const hw = tags.highway || "";
   // Sidewalks and crossings duplicate every street — noise on a bike map.
   if (hw === "footway" && (tags.footway === "sidewalk" || tags.footway === "crossing")) return null;
   const base = hw.split("_link")[0];
-  if (MAJOR.has(base)) return 0;
-  if (MINOR.has(base)) return 1;
-  if (PATH.has(base)) return 2;
+  if (ARTERIAL.has(base)) return 0;
+  if (SECONDARY.has(base)) return 1;
+  if (MINOR.has(base)) return 2;
+  if (PATH.has(base)) return 3;
   return null;
 }
 
@@ -79,6 +84,23 @@ export function rdp(points, eps) {
   const out = [];
   for (let i = 0; i < nPts; i++) if (keep[i]) out.push(points[i]);
   return out;
+}
+
+// Radial decimation for closed rings (water): keep the first point, then each
+// point only if it's > eps metres from the last kept point. Unlike RDP this
+// survives closed rings (the implicit closing point drops at distance 0).
+export function decimate(points, eps) {
+  if (points.length === 0) return points.slice();
+  const kept = [points[0]];
+  let lx = points[0][0], ly = points[0][1];
+  for (let i = 1; i < points.length; i++) {
+    const [x, y] = points[i];
+    if (Math.hypot(x - lx, y - ly) > eps) {
+      kept.push([x, y]);
+      lx = x; ly = y;
+    }
+  }
+  return kept;
 }
 
 // Python's int(round(x)): round-half-to-even, then truncate toward zero.
@@ -126,12 +148,15 @@ export function headerOnlySize(s, w, n, e, tileDeg = TILE_DEG) {
 export function buildEbm(json, { s, w, n, e, tileDeg = TILE_DEG, simplifyM = SIMPLIFY_M }) {
   const nodes = new Map();
   const ways = [];
+  const waterWays = []; // node-id lists for natural=water polygons
   for (const el of json.elements) {
     if (el.type === "node" && el.lat != null && el.lon != null) {
       nodes.set(el.id, [el.lat, el.lon]);
     } else if (el.type === "way" && el.nodes) {
-      const cls = classify(el.tags || {});
+      const tags = el.tags || {};
+      const cls = classify(tags);
       if (cls != null) ways.push([cls, el.nodes]);
+      else if (tags.natural === "water") waterWays.push(el.nodes);
     }
   }
 
@@ -189,9 +214,36 @@ export function buildEbm(json, { s, w, n, e, tileDeg = TILE_DEG, simplifyM = SIM
     emit(cur[0], cur[1], cls, run);
   }
 
+  // Water polygons (natural=water) -> WTR2 section. Points are metres E/N of
+  // the grid SW origin (lat0,lon0) — the same snapped origin the road grid
+  // uses. A polygon is kept if any of its points fall in [s,w,n,e]; the whole
+  // simplified ring is stored (no clipping).
+  const waterPolys = [];
+  for (const nids of waterWays) {
+    const pts = [];
+    for (const id of nids) { const p = nodes.get(id); if (p) pts.push(p); }
+    let inBox = false;
+    for (const [lat, lon] of pts) {
+      if (lat >= s && lat <= n && lon >= w && lon <= e) { inBox = true; break; }
+    }
+    if (!inBox) continue;
+    // Radial decimation (NOT RDP) so closed rings survive; the implicit
+    // closing point (equal to the first) drops at distance 0. The device
+    // closes the ring, so we never append a closing point.
+    const m = decimate(pts.map(([lat, lon]) => [(lon - lon0) * kx, (lat - lat0) * ky]), simplifyM);
+    if (m.length < 3) continue;
+    const poly = [];
+    for (const [x, y] of m) {
+      const ix = Math.max(-32000, Math.min(32000, pyRound(x)));
+      const iy = Math.max(-32000, Math.min(32000, pyRound(y)));
+      poly.push([ix, iy]);
+    }
+    waterPolys.push(poly);
+  }
+
   // Serialize header.
   const out = new ByteWriter();
-  out.ascii("EBM1");
+  out.ascii("EBM2");
   out.f64(lat0); out.f64(lon0); out.f64(td);
   out.i32(nx); out.i32(ny);
 
@@ -224,6 +276,14 @@ export function buildEbm(json, { s, w, n, e, tileDeg = TILE_DEG, simplifyM = SIM
   }
   out.concat(index);
   for (const b of ordered) out.concat(b);
+
+  // WTR2 water section (after the tile data).
+  out.ascii("WTR2");
+  out.u16(waterPolys.length & 0xffff);
+  for (const poly of waterPolys) {
+    out.u16(poly.length & 0xffff);
+    for (const [x, y] of poly) { out.i16(x); out.i16(y); }
+  }
   return out.toUint8Array();
 }
 

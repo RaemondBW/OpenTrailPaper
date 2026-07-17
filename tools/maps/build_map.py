@@ -6,7 +6,7 @@ clips into a fixed lat/lon tile grid, and writes a compact binary the
 firmware memory-maps from flash (or later, SD).
 
 Format (little-endian):
-  magic  'EBM1'
+  magic  'EBM2'
   f64    lat0, lon0        grid SW origin (deg)
   f64    tileDeg           tile size (deg, same in lat and lon)
   i32    nx, ny            grid dimensions
@@ -14,9 +14,15 @@ Format (little-endian):
   tiles:
     u16  polylineCount
     per polyline:
-      u8   class            0 major road, 1 minor road, 2 path, 3 rail
+      u8   class            0 arterial, 1 secondary, 2 minor, 3 path
       u16  pointCount
       i16  x,y per point    meters east/north of the tile SW corner
+  water section (appended after the tile data):
+    magic  'WTR2'
+    u16    polygonCount
+    per polygon:
+      u16  pointCount
+      i16  x,y per point    meters east/north of the grid SW origin (lat0,lon0)
 
 Usage:
   python3 build_map.py --bbox 37.703 -122.525 37.835 -122.355 \
@@ -37,32 +43,36 @@ QUERY = """
 [out:json][timeout:300];
 (
   way["highway"~"^(motorway|trunk|primary|secondary|tertiary|residential|unclassified|living_street|pedestrian|cycleway|footway|path|track|steps)"]({s},{w},{n},{e});
-  way["railway"~"^(rail|light_rail)$"]({s},{w},{n},{e});
+  way["natural"="water"]({s},{w},{n},{e});
 );
 out body;
 >;
 out skel qt;
 """
 
-MAJOR = {"motorway", "trunk", "primary", "secondary"}
-MINOR = {"tertiary", "residential", "unclassified", "living_street", "pedestrian"}
+# Road tiers (device render classes).
+ARTERIAL = {"motorway", "trunk", "primary"}
+SECONDARY = {"secondary", "tertiary"}
+MINOR = {"residential", "unclassified", "living_street", "pedestrian"}
 PATH = {"cycleway", "footway", "path", "track", "steps"}
 
 
 def classify(tags):
-    if "railway" in tags:
-        return 3
+    # Rail/transit is dropped; natural=water is handled separately (WTR2), so
+    # neither yields a road class here.
     hw = tags.get("highway", "")
     # Sidewalks and crossings duplicate every street — noise on a bike map.
     if hw == "footway" and tags.get("footway") in ("sidewalk", "crossing"):
         return None
     base = hw.split("_link")[0]
-    if base in MAJOR:
+    if base in ARTERIAL:
         return 0
-    if base in MINOR:
+    if base in SECONDARY:
         return 1
-    if base in PATH:
+    if base in MINOR:
         return 2
+    if base in PATH:
+        return 3
     return None
 
 
@@ -116,6 +126,22 @@ def rdp(points, eps):
     return [p for p, k in zip(points, keep) if k]
 
 
+def decimate(points, eps):
+    """Radial decimation for closed rings (water): keep the first point, then
+    each point only if it's > eps metres from the last kept point. Unlike RDP,
+    this survives closed rings (the implicit closing point drops at distance 0).
+    """
+    if not points:
+        return points
+    kept = [points[0]]
+    lx, ly = points[0]
+    for x, y in points[1:]:
+        if math.hypot(x - lx, y - ly) > eps:
+            kept.append((x, y))
+            lx, ly = x, y
+    return kept
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--bbox", nargs=4, type=float, required=True,
@@ -131,14 +157,18 @@ def main():
 
     nodes = {}
     ways = []
+    water_ways = []  # node-id lists for natural=water polygons
     for el in data["elements"]:
         if el["type"] == "node":
             nodes[el["id"]] = (el["lat"], el["lon"])
         elif el["type"] == "way":
-            cls = classify(el.get("tags", {}))
+            tags = el.get("tags", {})
+            cls = classify(tags)
             if cls is not None:
                 ways.append((cls, el["nodes"]))
-    print(f"{len(ways)} ways, {len(nodes)} nodes")
+            elif tags.get("natural") == "water":
+                water_ways.append(el["nodes"])
+    print(f"{len(ways)} ways, {len(water_ways)} water, {len(nodes)} nodes")
 
     mid_lat = (s + n) / 2
     kx = 111320.0 * math.cos(math.radians(mid_lat))  # m per deg lon
@@ -204,13 +234,44 @@ def main():
             else:
                 index += struct.pack("<II", 0, 0)
 
+    # Water polygons (natural=water) -> WTR2 section. Points are meters E/N of
+    # the grid SW origin (lat0,lon0) — the same snapped origin the road grid
+    # uses. A polygon is kept if any of its points fall in [s,w,n,e]; the whole
+    # simplified ring is stored (no clipping).
+    water_polys = []
+    for nids in water_ways:
+        pts = [nodes[i] for i in nids if i in nodes]
+        if not any(s <= lat <= n and w <= lon <= e for lat, lon in pts):
+            continue
+        m = [((lon - lon0) * kx, (lat - lat0) * ky) for lat, lon in pts]
+        # Radial decimation (NOT RDP): keep a point only if it's > simplify_m
+        # from the last kept point. Survives closed rings; the implicit closing
+        # point (equal to the first) naturally drops at distance 0. The device
+        # closes the ring, so we never append a closing point.
+        m = decimate(m, args.simplify_m)
+        if len(m) < 3:
+            continue
+        poly = []
+        for x, y in m:
+            ix = max(-32000, min(32000, int(round(x))))
+            iy = max(-32000, min(32000, int(round(y))))
+            poly.append((ix, iy))
+        water_polys.append(poly)
+
     with open(args.out, "wb") as f:
-        f.write(b"EBM1")
+        f.write(b"EBM2")
         f.write(struct.pack("<ddd", lat0, lon0, td))
         f.write(struct.pack("<ii", nx, ny))
         f.write(index)
         for b in order:
             f.write(b)
+        # WTR2 water section
+        f.write(b"WTR2")
+        f.write(struct.pack("<H", len(water_polys)))
+        for poly in water_polys:
+            f.write(struct.pack("<H", len(poly)))
+            for x, y in poly:
+                f.write(struct.pack("<hh", x, y))
 
     total_pts = sum(len(p) for polys in tiles.values() for _, p in polys)
     print(f"wrote {args.out}: {off/1e6:.2f} MB, "

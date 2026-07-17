@@ -15,6 +15,9 @@ namespace {
 // last (the north), so keep generous headroom.
 constexpr int MAX_POINTS = 160000;
 constexpr int MAX_POLYS = 20000;
+// Water polygons (WTR2) get their own smaller scratch.
+constexpr int MAX_WATER_POINTS = 24000;
+constexpr int MAX_WATER_POLYS = 512;
 
 // The single "primary" blob used by the embedded map + route overlay path.
 const uint8_t* blob = nullptr;
@@ -22,10 +25,13 @@ size_t blobLen = 0;
 
 int16_t* pts = nullptr;
 MapPolyline* polys = nullptr;
+int16_t* waterPts = nullptr;
+MapPolyline* waterPolys = nullptr;
 
 // Shared append cursors across a multi-tile frame (map_store drives these
 // via beginProject / projectBlobInto / endProject).
 int g_usedPts = 0, g_usedPolys = 0;
+int g_usedWaterPts = 0, g_usedWaterPolys = 0;
 
 void* bigAlloc(size_t n) {
 #ifdef ARDUINO
@@ -50,12 +56,14 @@ static bool ensureScratch() {
     if (!pts) {
         pts = (int16_t*)bigAlloc(MAX_POINTS * 2 * sizeof(int16_t));
         polys = (MapPolyline*)bigAlloc(MAX_POLYS * sizeof(MapPolyline));
+        waterPts = (int16_t*)bigAlloc(MAX_WATER_POINTS * 2 * sizeof(int16_t));
+        waterPolys = (MapPolyline*)bigAlloc(MAX_WATER_POLYS * sizeof(MapPolyline));
     }
-    return pts && polys;
+    return pts && polys && waterPts && waterPolys;
 }
 
 bool load(const uint8_t* data, size_t len) {
-    if (len < 36 || memcmp(data, "EBM1", 4) != 0) return false;
+    if (len < 36 || memcmp(data, "EBM2", 4) != 0) return false;
     blob = data;
     blobLen = len;
     return ensureScratch();
@@ -67,11 +75,18 @@ void beginProject(MapScreenData& out) {
     ensureScratch();
     out.features = polys;
     out.featureCount = 0;
+    out.water = waterPolys;
+    out.waterCount = 0;
     g_usedPts = 0;
     g_usedPolys = 0;
+    g_usedWaterPts = 0;
+    g_usedWaterPolys = 0;
 }
 
-void endProject(MapScreenData& out) { out.featureCount = g_usedPolys; }
+void endProject(MapScreenData& out) {
+    out.featureCount = g_usedPolys;
+    out.waterCount = g_usedWaterPolys;
+}
 
 // Project a single EBM1 blob (with its own grid header) into the shared
 // scratch buffers, appending at the current cursors. Safe to call for
@@ -79,7 +94,7 @@ void endProject(MapScreenData& out) { out.featureCount = g_usedPolys; }
 void projectBlobInto(const uint8_t* b, size_t bLen, double lat, double lon,
                      float metersPerPixel, int centerX, int centerY,
                      float rotateDeg) {
-    if (!pts || bLen < 36 || memcmp(b, "EBM1", 4) != 0) return;
+    if (!pts || bLen < 36 || memcmp(b, "EBM2", 4) != 0) return;
 
     double gridLat0 = rd<double>(b + 4);
     double gridLon0 = rd<double>(b + 12);
@@ -144,12 +159,16 @@ void projectBlobInto(const uint8_t* b, size_t bLen, double lat, double lon,
                 // widest levels (16/32 m/px) minor/residential roads too — they
                 // are sub-pixel clutter there, and dropping them keeps the whole
                 // city inside the scratch buffers so the north isn't truncated.
-                if (metersPerPixel >= 6.0f && cls == MAP_PATH) {
+                if (metersPerPixel >= 4.0f && cls == MAP_PATH) {
                     p += n * 4;
                     continue;
                 }
-                if (metersPerPixel >= 14.0f && cls == MAP_ROAD_MINOR) {
+                if (metersPerPixel >= 8.0f && cls == MAP_ROAD_MINOR) {
                     p += n * 4;
+                    continue;
+                }
+                if (metersPerPixel >= 16.0f && cls == MAP_ROAD_SECONDARY) {
+                    p += n * 4;   // arterial (MAP_ROAD_MAJOR) never shed
                     continue;
                 }
 
@@ -209,6 +228,63 @@ void projectBlobInto(const uint8_t* b, size_t bLen, double lat, double lon,
 done:
     g_usedPts = usedPts;
     g_usedPolys = usedPolys;
+
+    // --- water polygons (WTR2), stored after the road data + optional ELV1.
+    // Points are metres E/N of the tile origin (gridLat0/gridLon0), like roads
+    // but relative to the tile corner instead of a sub-tile. Projected here and
+    // filled (dithered) by the renderer under the roads.
+    size_t maxEnd = 36 + (size_t)gridNx * gridNy * 8;
+    for (int k = 0; k < gridNx * gridNy; ++k) {
+        uint32_t off = rd<uint32_t>(indexBase + (size_t)k * 8);
+        uint32_t l = rd<uint32_t>(indexBase + (size_t)k * 8 + 4);
+        if (off && (size_t)off + l > maxEnd) maxEnd = (size_t)off + l;
+    }
+    size_t wp = maxEnd;
+    if (wp + 44 <= bLen && memcmp(b + wp, "ELV1", 4) == 0) {
+        int32_t gw = rd<int32_t>(b + wp + 4), gh = rd<int32_t>(b + wp + 8);
+        wp += 44 + (size_t)gw * gh * 2;   // skip the elevation block
+    }
+    if (wp + 6 > bLen || memcmp(b + wp, "WTR2", 4) != 0) return;
+    uint16_t polyCount = rd<uint16_t>(b + wp + 4);
+    const uint8_t* q = b + wp + 6;
+    const uint8_t* wend = b + bLen;
+    int uwPts = g_usedWaterPts, uwPolys = g_usedWaterPolys;
+    for (int pi = 0; pi < polyCount && q + 2 <= wend; ++pi) {
+        uint16_t wn = rd<uint16_t>(q);
+        q += 2;
+        if (q + (size_t)wn * 4 > wend) break;
+        if (uwPolys >= MAX_WATER_POLYS || uwPts + wn > MAX_WATER_POINTS) break;
+        int16_t* wdst = waterPts + uwPts * 2;
+        int kept = 0;
+        bool vis = false;
+        for (uint16_t j = 0; j < wn; ++j) {
+            float sx = centerX + ((float)rd<int16_t>(q + j * 4) - (float)px) * invMpp;
+            float sy = centerY - ((float)rd<int16_t>(q + j * 4 + 2) - (float)py) * invMpp;
+            if (rotateDeg != 0) {
+                float dx = sx - centerX, dy = sy - centerY;
+                sx = centerX + dx * rc - dy * rs;
+                sy = centerY + dx * rs + dy * rc;
+            }
+            if (sx < -20000) sx = -20000;
+            if (sx > 20000) sx = 20000;
+            if (sy < -20000) sy = -20000;
+            if (sy > 20000) sy = 20000;
+            if (sx > -50 && sx < 590 && sy > -50 && sy < 1010) vis = true;
+            wdst[kept * 2] = (int16_t)lroundf(sx);
+            wdst[kept * 2 + 1] = (int16_t)lroundf(sy);
+            kept++;
+        }
+        q += (size_t)wn * 4;
+        if (kept >= 3 && vis) {
+            waterPolys[uwPolys].cls = MAP_WATER;
+            waterPolys[uwPolys].pts = wdst;
+            waterPolys[uwPolys].pointCount = kept;
+            uwPolys++;
+            uwPts += kept;
+        }
+    }
+    g_usedWaterPts = uwPts;
+    g_usedWaterPolys = uwPolys;
 }
 
 void project(double lat, double lon, float metersPerPixel, int centerX,

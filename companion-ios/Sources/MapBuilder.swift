@@ -6,11 +6,14 @@ import Foundation
 // with what the device already renders.
 //
 // Format (little-endian):
-//   'EBM1', f64 lat0, f64 lon0, f64 tileDeg, i32 nx, i32 ny,
+//   'EBM2', f64 lat0, f64 lon0, f64 tileDeg, i32 nx, i32 ny,
 //   index[nx*ny] of (u32 offset, u32 length)  (0,0 = empty tile),
 //   tiles: u16 polylineCount, per polyline { u8 class, u16 pointCount,
 //          i16 x,y per point (meters E/N of the tile SW corner) }.
-//   class: 0 major road, 1 minor road, 2 path, 3 rail.
+//   class: 0 arterial, 1 secondary, 2 minor, 3 path.
+//   then an optional 'ELV1' block, then a 'WTR2' water section:
+//   'WTR2', u16 polygonCount, per polygon { u16 pointCount,
+//          i16 x,y per point (meters E/N of the grid SW origin lat0,lon0) }.
 
 enum MapBuilder {
     // Public Overpass instances (verified reachable) — the main one 504s under
@@ -57,7 +60,7 @@ enum MapBuilder {
     [out:json][timeout:90];
     (
       way["highway"~"^(motorway|trunk|primary|secondary|tertiary|residential|unclassified|living_street|pedestrian|cycleway|footway|path|track|steps)"](%@,%@,%@,%@);
-      way["railway"~"^(rail|light_rail)$"](%@,%@,%@,%@);
+      way["natural"="water"](%@,%@,%@,%@);
     );
     out body;
     >;
@@ -201,6 +204,69 @@ enum MapBuilder {
         for v in grid { data.appendI16(v) }
     }
 
+    // MARK: water (natural=water polygons -> WTR2 section)
+
+    // Resolve natural=water ways to lists of (lat, lon) node coords, using the
+    // shared node table (parsed once). Call once per region, then pass the
+    // result to appendWater for each tile.
+    static func extractWaterWays(regionJSON: Data) throws -> [[(Double, Double)]] {
+        let json = try JSONDecoder().decode(OverpassJSON.self, from: regionJSON)
+        var nodes: [Int: (Double, Double)] = [:]
+        nodes.reserveCapacity(json.elements.count)
+        var wayNodeIds: [[Int]] = []
+        for el in json.elements {
+            if el.type == "node", let la = el.lat, let lo = el.lon {
+                nodes[el.id] = (la, lo)
+            } else if el.type == "way", let nids = el.nodes,
+                      el.tags?["natural"] == "water" {
+                wayNodeIds.append(nids)
+            }
+        }
+        return wayNodeIds.map { nids in nids.compactMap { nodes[$0] } }
+    }
+
+    // Append a WTR2 water section to an already-encoded tile (after its ELV1
+    // block, if any). Mirrors the whole-region encoders: points are meters E/N
+    // of the tile's snapped grid origin (lat0,lon0), RDP-simplified at
+    // simplifyM, i16-clamped. A polygon is included if any of its points fall
+    // in [s,w,n,e]; the whole simplified ring is stored (>= 3 points, else it
+    // is skipped). Always writes the "WTR2" magic + count (0 if no polygons).
+    static func appendWater(to data: inout Data, waterWays: [[(Double, Double)]],
+                            south s: Double, west w: Double, north n: Double, east e: Double) {
+        let td = tileDeg
+        let midLat = (s + n) / 2
+        let kx = 111320.0 * cos(midLat * .pi / 180)
+        let ky = 110540.0
+        let lat0 = (s / td).rounded(.down) * td
+        let lon0 = (w / td).rounded(.down) * td
+
+        var polys: [[(Int16, Int16)]] = []
+        for pts in waterWays {
+            let inBox = pts.contains { (lat, lon) in lat >= s && lat <= n && lon >= w && lon <= e }
+            if !inBox { continue }
+            // Radial decimation (NOT RDP) so closed rings survive; the implicit
+            // closing point (equal to the first) drops at distance 0. The device
+            // closes the ring, so we never append a closing point.
+            let m = decimate(pts.map { (lat, lon) in ((lon - lon0) * kx, (lat - lat0) * ky) }, simplifyM)
+            guard m.count >= 3 else { continue }
+            var poly: [(Int16, Int16)] = []
+            poly.reserveCapacity(m.count)
+            for (x, y) in m {
+                let ix = Int16(max(-32000, min(32000, Int(x.rounded()))))
+                let iy = Int16(max(-32000, min(32000, Int(y.rounded()))))
+                poly.append((ix, iy))
+            }
+            polys.append(poly)
+        }
+
+        data.append("WTR2".data(using: .ascii)!)
+        data.appendU16(UInt16(min(polys.count, 0xFFFF)))
+        for poly in polys {
+            data.appendU16(UInt16(min(poly.count, 0xFFFF)))
+            for (x, y) in poly { data.appendI16(x); data.appendI16(y) }
+        }
+    }
+
     private struct OverpassJSON: Decodable { let elements: [Element] }
     private struct Element: Decodable {
         let type: String
@@ -213,18 +279,22 @@ enum MapBuilder {
 
     // MARK: classify (mirrors build_map.py)
 
-    private static let major: Set<String> = ["motorway", "trunk", "primary", "secondary"]
-    private static let minor: Set<String> = ["tertiary", "residential", "unclassified", "living_street", "pedestrian"]
-    private static let path:  Set<String> = ["cycleway", "footway", "path", "track", "steps"]
+    // Road tiers (device render classes).
+    private static let arterial:  Set<String> = ["motorway", "trunk", "primary"]
+    private static let secondary: Set<String> = ["secondary", "tertiary"]
+    private static let minor:     Set<String> = ["residential", "unclassified", "living_street", "pedestrian"]
+    private static let path:      Set<String> = ["cycleway", "footway", "path", "track", "steps"]
 
+    // Rail/transit is dropped; natural=water is handled separately (WTR2), so
+    // neither yields a road class here.
     private static func classify(_ tags: [String: String]) -> UInt8? {
-        if tags["railway"] != nil { return 3 }
         let hw = tags["highway"] ?? ""
         if hw == "footway", let f = tags["footway"], f == "sidewalk" || f == "crossing" { return nil }
         let base = hw.components(separatedBy: "_link").first ?? hw
-        if major.contains(base) { return 0 }
-        if minor.contains(base) { return 1 }
-        if path.contains(base) { return 2 }
+        if arterial.contains(base) { return 0 }
+        if secondary.contains(base) { return 1 }
+        if minor.contains(base) { return 2 }
+        if path.contains(base) { return 3 }
         return nil
     }
 
@@ -305,7 +375,7 @@ enum MapBuilder {
 
         // Serialize
         var out = Data()
-        out.append("EBM1".data(using: .ascii)!)
+        out.append("EBM2".data(using: .ascii)!)
         out.appendF64(lat0); out.appendF64(lon0); out.appendF64(td)
         out.appendI32(Int32(nx)); out.appendI32(Int32(ny))
 
@@ -363,6 +433,23 @@ enum MapBuilder {
             }
         }
         return zip(points, keep).filter { $0.1 }.map { $0.0 }
+    }
+
+    // Radial decimation for closed rings (water): keep the first point, then
+    // each point only if it's > eps metres from the last kept point. Unlike
+    // RDP this survives closed rings (the implicit closing point drops at
+    // distance 0).
+    private static func decimate(_ points: [(Double, Double)], _ eps: Double) -> [(Double, Double)] {
+        guard let first = points.first else { return points }
+        var kept = [first]
+        var (lx, ly) = first
+        for (x, y) in points.dropFirst() {
+            if hypot(x - lx, y - ly) > eps {
+                kept.append((x, y))
+                lx = x; ly = y
+            }
+        }
+        return kept
     }
 }
 

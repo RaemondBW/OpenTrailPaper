@@ -11,12 +11,13 @@
 
 struct RideState;
 
+// Road tiers (EBM2). Numbers are the on-tile class bytes.
 enum MapFeatureClass : uint8_t {
-    MAP_ROAD_MAJOR,   // 40% gray, wide
-    MAP_ROAD_MINOR,   // 40% gray, medium
-    MAP_PATH,         // 40% gray, dashed thin
-    MAP_RAIL,         // gray, long-dashed thin
-    MAP_WATER,        // light gray, wide
+    MAP_ROAD_MAJOR = 0,      // arterial: motorway/trunk/primary — never shed
+    MAP_ROAD_SECONDARY = 1,  // secondary/tertiary — shed when zoomed out
+    MAP_ROAD_MINOR = 2,      // residential/etc — shed sooner
+    MAP_PATH = 3,            // trails — light dither, shed soonest
+    MAP_WATER = 4,           // water bodies (WTR2 section) — filled dither
 };
 
 struct MapPolyline {
@@ -28,6 +29,11 @@ struct MapPolyline {
 struct MapScreenData {
     const MapPolyline* features;
     int featureCount;
+
+    // Water bodies (from the tile WTR2 section), projected to screen; drawn as
+    // a light dithered fill under the roads.
+    const MapPolyline* water = nullptr;
+    int waterCount = 0;
 
     // Route polyline; the first riddenPointCount points render solid
     // (already ridden), the rest dashed (ahead) per the design.

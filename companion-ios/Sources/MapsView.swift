@@ -310,16 +310,23 @@ struct MapsView: View {
                     }
                     status = "Building tiles \(i + 1)/\(n)…"
                     let part = try MapBuilder.encodeTiles(regionJSON: json, tiles: batch)
+                    // natural=water polygons for this region, parsed once and
+                    // appended per tile as a WTR2 section (after ELV1).
+                    let waterWays = (try? MapBuilder.extractWaterWays(regionJSON: json)) ?? []
                     // Bake a DEM elevation grid into each tile (best-effort) so
                     // the device has elevation without GPS altitude or the phone.
                     status = "Elevation \(i + 1)/\(n)…"
                     var withElev: [(id: String, data: Data)] = []
                     for var p in part {
-                        if let t = batch.first(where: { $0.id == p.id }),
-                           let grid = try? await MapBuilder.fetchElevationGrid(
-                                south: t.south, west: t.west, north: t.north, east: t.east) {
-                            MapBuilder.appendElevation(to: &p.data, south: t.south, west: t.west,
-                                north: t.north, east: t.east, grid: grid, n: MapBuilder.elevationGrid)
+                        if let t = batch.first(where: { $0.id == p.id }) {
+                            if let grid = try? await MapBuilder.fetchElevationGrid(
+                                    south: t.south, west: t.west, north: t.north, east: t.east) {
+                                MapBuilder.appendElevation(to: &p.data, south: t.south, west: t.west,
+                                    north: t.north, east: t.east, grid: grid, n: MapBuilder.elevationGrid)
+                            }
+                            // WTR2 water section goes last, after any ELV1 block.
+                            MapBuilder.appendWater(to: &p.data, waterWays: waterWays,
+                                south: t.south, west: t.west, north: t.north, east: t.east)
                         }
                         withElev.append(p)
                     }

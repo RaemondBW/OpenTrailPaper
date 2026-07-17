@@ -60,9 +60,9 @@ uint32_t g_clock = 0;
 template <typename T>
 T rd(const uint8_t* p) { T v; memcpy(&v, p, sizeof(T)); return v; }
 
-// Read the EBM1 header (36 bytes) and fill s/w/n/e. Returns false if not EBM1.
+// Read the EBM2 header (36 bytes) and fill s/w/n/e. Returns false if not EBM2.
 bool headerBounds(const uint8_t* h, double& s, double& w, double& n, double& e) {
-    if (memcmp(h, "EBM1", 4) != 0) return false;
+    if (memcmp(h, "EBM2", 4) != 0) return false;
     double lat0 = rd<double>(h + 4);
     double lon0 = rd<double>(h + 12);
     double td = rd<double>(h + 20);
@@ -240,7 +240,7 @@ const uint8_t* ensureTileLoaded(int idx, size_t& outLen) {
 // Interpolate elevation from a blob's ELV1 grid (appended after the tile data).
 // Returns NAN if the blob has no elevation block covering (lat, lon).
 float elevFromBlob(const uint8_t* b, size_t len, double lat, double lon) {
-    if (len < 36 || memcmp(b, "EBM1", 4) != 0) return NAN;
+    if (len < 36 || memcmp(b, "EBM2", 4) != 0) return NAN;
     int32_t nx = rd<int32_t>(b + 28), ny = rd<int32_t>(b + 32);
     const uint8_t* index = b + 36;
     size_t maxEnd = 36 + (size_t)nx * ny * 8;      // end of the tile data
@@ -342,8 +342,8 @@ void renderInto(double lat, double lon, float metersPerPixel, int centerX,
 }
 
 bool saveAndActivate(const char* name, const uint8_t* data, size_t len) {
-    if (len < 36 || memcmp(data, "EBM1", 4) != 0) {
-        diag::log("map save rejected: not EBM1 (%u bytes)", (unsigned)len);
+    if (len < 36 || memcmp(data, "EBM2", 4) != 0) {
+        diag::log("map save rejected: not EBM2 (%u bytes)", (unsigned)len);
         return false;
     }
     char path[80];
@@ -371,8 +371,8 @@ bool saveAndActivate(const char* name, const uint8_t* data, size_t len) {
 }
 
 bool saveTile(const char* id, const uint8_t* data, size_t len) {
-    if (len < 36 || memcmp(data, "EBM1", 4) != 0) {
-        diag::log("tile save rejected: not EBM1 (%u bytes)", (unsigned)len);
+    if (len < 36 || memcmp(data, "EBM2", 4) != 0) {
+        diag::log("tile save rejected: not EBM2 (%u bytes)", (unsigned)len);
         return false;
     }
     char path[80];

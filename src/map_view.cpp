@@ -36,14 +36,50 @@ struct Style {
 
 Style styleFor(MapFeatureClass cls) {
     switch (cls) {
-        case MAP_ROAD_MAJOR: return {5, ROAD_INK, 0, 0, false};
-        case MAP_ROAD_MINOR: return {2, ROAD_INK, 0, 0, false};
+        case MAP_ROAD_MAJOR:     return {5, ROAD_INK, 0, 0, false};  // arterial
+        case MAP_ROAD_SECONDARY: return {3, ROAD_INK, 0, 0, false};
+        case MAP_ROAD_MINOR:     return {2, ROAD_INK, 0, 0, false};
         // Trails: a light-grey dithered thin line (was heavy black dashes).
-        case MAP_PATH:       return {1, ROAD_INK, 0, 0, true};
-        case MAP_RAIL:       return {2, ROAD_INK, 14, 12, false};
-        case MAP_WATER:      return {18, WATER_GRAY, 0, 0, false};
+        case MAP_PATH:           return {1, ROAD_INK, 0, 0, true};
+        case MAP_WATER:          return {0, 0, 0, 0, false};   // filled, not stroked
     }
     return {1, 0x00, 0, 0, false};
+}
+
+// Scanline-fill a screen-space polygon with a sparse black dither so it reads as
+// a pale grey water tint and survives the fast 1-bit DU refresh. Even-odd rule.
+void fillDitheredPolygon(const int16_t* pts, int n, uint8_t* fb) {
+    if (n < 3) return;
+    int minY = 100000, maxY = -100000;
+    for (int i = 0; i < n; ++i) {
+        int y = pts[i * 2 + 1];
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+    }
+    if (minY < 0) minY = 0;
+    if (maxY > 959) maxY = 959;
+    int xs[64];
+    for (int y = minY; y <= maxY; ++y) {
+        int cnt = 0;
+        for (int i = 0; i < n && cnt < 64; ++i) {
+            int j = (i + 1) % n;
+            int y0 = pts[i * 2 + 1], y1 = pts[j * 2 + 1];
+            if ((y0 <= y && y1 > y) || (y1 <= y && y0 > y)) {
+                int x0 = pts[i * 2], x1 = pts[j * 2];
+                xs[cnt++] = x0 + (int)((int64_t)(y - y0) * (x1 - x0) / (y1 - y0));
+            }
+        }
+        for (int a = 0; a < cnt; ++a)
+            for (int b = a + 1; b < cnt; ++b)
+                if (xs[b] < xs[a]) { int t = xs[a]; xs[a] = xs[b]; xs[b] = t; }
+        for (int a = 0; a + 1 < cnt; a += 2) {
+            int xL = xs[a] < 0 ? 0 : xs[a];
+            int xR = xs[a + 1] > 539 ? 539 : xs[a + 1];
+            if (((y & 1) == 0))
+                for (int x = xL; x <= xR; ++x)
+                    if ((x & 1) == 0) epd_draw_pixel(x, y, 0x00, fb);  // ~25% dots
+        }
+    }
 }
 
 // Bresenham line that plots only the checkerboard-even pixels, so it reads as a
@@ -210,10 +246,13 @@ void ui_render_map_features(const MapScreenData& map, const RideState& s,
                             uint8_t* fb) {
     (void)s;
     // Map features: water under roads, all in grays
-    // Rail/transit removed by request. Water (dithered fill) is drawn first as
-    // the base layer, then trails, then roads on top.
-    const MapFeatureClass order[] = {MAP_WATER, MAP_PATH,
-                                     MAP_ROAD_MINOR, MAP_ROAD_MAJOR};
+    // Water bodies as the base layer (dithered fill), then trails, then roads
+    // in tier order on top. Rail/transit removed by request.
+    for (int i = 0; i < map.waterCount; ++i) {
+        fillDitheredPolygon(map.water[i].pts, map.water[i].pointCount, fb);
+    }
+    const MapFeatureClass order[] = {MAP_PATH, MAP_ROAD_MINOR,
+                                     MAP_ROAD_SECONDARY, MAP_ROAD_MAJOR};
     for (MapFeatureClass cls : order) {
         for (int i = 0; i < map.featureCount; ++i) {
             if (map.features[i].cls != cls) continue;

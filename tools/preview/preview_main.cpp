@@ -149,6 +149,8 @@ RideSummary sampleSummary() {
 struct Scene {
     std::vector<std::vector<int16_t>> lines;
     std::vector<MapPolyline> features;
+    std::vector<std::vector<int16_t>> waterLines;
+    std::vector<MapPolyline> water;
 
     void add(MapFeatureClass cls, std::vector<std::pair<float, float>> pts) {
         std::vector<int16_t> flat;
@@ -159,6 +161,17 @@ struct Scene {
         lines.push_back(std::move(flat));
         features.push_back({cls, lines.back().data(),
                             (int)lines.back().size() / 2});
+    }
+
+    void addWater(std::vector<std::pair<float, float>> pts) {
+        std::vector<int16_t> flat;
+        for (auto& p : pts) {
+            flat.push_back((int16_t)lroundf(p.first));
+            flat.push_back((int16_t)lroundf(p.second));
+        }
+        waterLines.push_back(std::move(flat));
+        water.push_back({MAP_WATER, waterLines.back().data(),
+                         (int)waterLines.back().size() / 2});
     }
 };
 
@@ -180,16 +193,13 @@ void buildScene(Scene& sc) {
         sc.add(cls, {xy(-700, g), xy(700, g)});
     }
 
-    std::vector<std::pair<float, float>> river;
-    for (int i = 0; i <= 14; ++i) {
-        float t = i / 14.0f;
-        float gy = -700 + 1400 * t;
-        float gx = 480 + 70 * sinf(t * 5.5f);
-        river.push_back(xy(gx, gy));
-    }
-    sc.add(MAP_WATER, river);
+    // Water body (a lake) as a CLOSED polygon so the renderer's dithered fill
+    // has something to test — placed on-screen (upper-left of the viewport).
+    sc.addWater({xy(-250, -360), xy(-20, -330), xy(40, -140), xy(-90, -40),
+                 xy(-260, -110), xy(-320, -250)});
 
-    sc.add(MAP_RAIL, {xy(-700, 420), xy(700, 250)});
+    // Secondary road (new tier) in place of the removed rail line.
+    sc.add(MAP_ROAD_SECONDARY, {xy(-700, 420), xy(700, 250)});
     sc.add(MAP_PATH, {xy(-170, -170), xy(-40, -60), xy(170, 0)});
 }
 
@@ -290,6 +300,8 @@ int main(int argc, char** argv) {
         route = buildRoute(ridden);
         map.features = sc.features.data();
         map.featureCount = (int)sc.features.size();
+        map.water = sc.water.data();
+        map.waterCount = (int)sc.water.size();
         map.route = route.data();
         map.routePointCount = (int)route.size() / 2;
         map.riddenPointCount = ridden;
