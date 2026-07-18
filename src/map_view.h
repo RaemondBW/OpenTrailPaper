@@ -63,6 +63,8 @@ struct MapScreenData {
 
     // How many SD tiles were projected this frame (diagnostics/timing).
     int projectedTiles = 0;
+    int tilePolys = 0;          // polys from tiles (before the base blob)
+    int clsCount[5] = {0, 0, 0, 0, 0};  // kept polys per class
 };
 
 // Compass touch target (tap toggles north-up / track-up)

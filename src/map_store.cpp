@@ -359,6 +359,8 @@ void renderInto(double lat, double lon, float metersPerPixel, int centerX,
                                           centerX, centerY, rotateDeg);
     }
 
+    int tilePolys = map_tiles::projectedPolyCount();   // split for diagnostics
+
     // Always draw the whole-map / embedded blob as a BASE layer underneath the
     // tiles. Tiles cover only the downloaded area; when zoomed out past them the
     // rest of the viewport would otherwise be blank. The base fills those gaps
@@ -372,6 +374,8 @@ void renderInto(double lat, double lon, float metersPerPixel, int centerX,
     }
     map_tiles::endProject(out);
     out.projectedTiles = lim;
+    out.tilePolys = tilePolys;
+    map_tiles::projectedClassCounts(out.clsCount);
 }
 
 bool saveAndActivate(const char* name, const uint8_t* data, size_t len) {

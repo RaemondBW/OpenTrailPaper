@@ -34,9 +34,13 @@ struct Style {
                      // even through the fast 1-bit DU refresh
 };
 
-Style styleFor(MapFeatureClass cls) {
+Style styleFor(MapFeatureClass cls, float mpp) {
     switch (cls) {
-        case MAP_ROAD_MAJOR:     return {5, ROAD_INK, 0, 0, false};  // arterial
+        // Zoomed out (mpp>=16) only arterials survive shedding and there are
+        // thousands of them; width<=2 takes the fast Bresenham draw path instead
+        // of filled triangles + round caps — a big cut in draw time. Full width
+        // up close where a bold arterial reads against the finer roads.
+        case MAP_ROAD_MAJOR:     return {mpp >= 16.0f ? 2 : 5, ROAD_INK, 0, 0, false};
         case MAP_ROAD_SECONDARY: return {3, ROAD_INK, 0, 0, false};
         case MAP_ROAD_MINOR:     return {2, ROAD_INK, 0, 0, false};
         // Trails: a light-grey dithered thin line (was heavy black dashes).
@@ -258,7 +262,7 @@ void ui_render_map_features(const MapScreenData& map, const RideState& s,
         for (int i = 0; i < map.featureCount; ++i) {
             if (map.features[i].cls != cls) continue;
             drawPolyline(map.features[i].pts, map.features[i].pointCount,
-                         styleFor(cls), fb);
+                         styleFor(cls, map.metersPerPixel), fb);
         }
     }
 
