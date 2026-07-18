@@ -329,10 +329,10 @@ int main(int argc, char** argv) {
     ui_render_shutdown_screen(fb.data());
     emit("powered_off.png");
 
-    // Zoomed-out view of the same spot
+    // Zoomed-out overview: whole SF, ocean (west) + bay (east) both in frame.
     if (mf) {
-        map_tiles::project(37.7764, -122.4346, 2.0f, 270, 430, 0, map);
-        map.metersPerPixel = 2.0f;
+        map_tiles::project(37.765, -122.435, 32.0f, 270, 430, 0, map);
+        map.metersPerPixel = 32.0f;
         clearWhite(fb.data());
         ui_render_map(map, s, fb.data());
         emit("map_zoom8.png");

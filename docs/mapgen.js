@@ -280,51 +280,63 @@ function pointInRing(ring, lat, lon) {
 // Close a boundary-to-boundary sub-chain p (points [lat,lon]) into a ring
 // enclosing the SEA side (right of the coastline direction). Returns the ring
 // or null if degenerate.
-export function seaPolygon(p, s, w, n, e) {
-  const m = p.length;
-  if (m < 2) return null;
-  const i = Math.floor((m - 1) / 2);
-  const a = p[i], b = p[i + 1];
-  const dLat = b[0] - a[0];
-  const dLon = b[1] - a[1];
-  const ln = Math.hypot(dLon, dLat);
-  if (ln === 0.0) return null;
-  const midLat = (a[0] + b[0]) / 2;
-  const midLon = (a[1] + b[1]) / 2;
-  const eps = 1e-4;
-  // right-of-direction normal (dLat,-dLon) in (lon,lat) space, normalized.
-  const probeLon = midLon + eps * (dLat / ln);
-  const probeLat = midLat + eps * (-dLon / ln);
-  const posA = perimPos(p[0], s, w, n, e);
-  const posB = perimPos(p[p.length - 1], s, w, n, e);
-  const ringCcw = p.concat(closing(posB, posA, s, w, n, e, true));
-  const ringCw = p.concat(closing(posB, posA, s, w, n, e, false));
-  const inCcw = pointInRing(ringCcw, probeLat, probeLon);
-  const inCw = pointInRing(ringCw, probeLat, probeLon);
-  if (inCcw && !inCw) return ringCcw;
-  if (inCw && !inCcw) return ringCw;
-  return null;
+// Assemble SEA rings for the box [s,w,n,e] the osmcoastline way: clip every
+// chain to the box into boundary-to-boundary sub-chains, then trace rings by
+// following each coast forward (OSM: water on the right) and, at its exit,
+// walking the box boundary CLOCKWISE (interior on the right = water) to the
+// NEXT coast's entry. Uses the real topology, so a peninsula never encloses
+// land. Returns rings as [[lat,lon], ...]. Must match build_map.py.
+export function regionSeaPolygons(chains, s, w, n, e) {
+  const subs = [];
+  for (const chain of chains) {
+    for (const [pts, sb, eb] of clipChain(chain, s, w, n, e)) {
+      if (sb && eb && pts.length >= 2) subs.push(pts);
+    }
+  }
+  if (subs.length === 0) return [];
+  const ww = e - w, hh = n - s, total = 2 * ww + 2 * hh;
+  const entries = subs.map((sub) => perimPos(sub[0], s, w, n, e));
+  const exits = subs.map((sub) => perimPos(sub[sub.length - 1], s, w, n, e));
+  const used = new Array(subs.length).fill(false);
+  const rings = [];
+  for (let start = 0; start < subs.length; start++) {
+    if (used[start]) continue;
+    const ring = [];
+    let i = start;
+    let guard = 0;
+    while (!used[i] && guard < 4 * subs.length + 8) {
+      guard++;
+      used[i] = true;
+      for (const p of subs[i]) ring.push(p); // coast A->B (water right)
+      const ex = exits[i];
+      let best = -1, bestGap = Infinity;
+      for (let j = 0; j < subs.length; j++) {
+        let gap = ((ex - entries[j]) % total + total) % total; // CW ex->entry
+        if (gap <= 1e-12) gap += total; // not the same point
+        if (gap < bestGap) { bestGap = gap; best = j; }
+      }
+      for (const p of closing(ex, entries[best], s, w, n, e, false)) ring.push(p);
+      i = best;
+    }
+    if (ring.length >= 3) rings.push(ring);
+  }
+  return rings;
 }
 
-// Turn assembled coastline chains into projected, decimated, int16 sea
+// Turn assembled coastline chains into projected, decimated, int16 SEA
 // polygons for the tile [s,w,n,e] — same encoding as natural=water polys.
 export function coastlinePolys(chains, s, w, n, e, lon0, lat0, kx, ky, simplifyM) {
   const out = [];
-  for (const chain of chains) {
-    for (const [pts, sb, eb] of clipChain(chain, s, w, n, e)) {
-      if (!(sb && eb)) continue; // island loop / dangling end — skip for v1
-      const ring = seaPolygon(pts, s, w, n, e);
-      if (ring == null) continue;
-      const m = decimate(ring.map(([lat, lon]) => [(lon - lon0) * kx, (lat - lat0) * ky]), simplifyM);
-      if (m.length < 3) continue;
-      const poly = [];
-      for (const [x, y] of m) {
-        const ix = Math.max(-32000, Math.min(32000, pyRound(x)));
-        const iy = Math.max(-32000, Math.min(32000, pyRound(y)));
-        poly.push([ix, iy]);
-      }
-      out.push(poly);
+  for (const ring of regionSeaPolygons(chains, s, w, n, e)) {
+    const m = decimate(ring.map(([lat, lon]) => [(lon - lon0) * kx, (lat - lat0) * ky]), simplifyM);
+    if (m.length < 3) continue;
+    const poly = [];
+    for (const [x, y] of m) {
+      const ix = Math.max(-32000, Math.min(32000, pyRound(x)));
+      const iy = Math.max(-32000, Math.min(32000, pyRound(y)));
+      poly.push([ix, iy]);
     }
+    out.push(poly);
   }
   return out;
 }
@@ -470,11 +482,11 @@ export function buildEbm(json, { s, w, n, e, tileDeg = TILE_DEG, simplifyM = SIM
     waterPolys.push(poly);
   }
 
-  // Coastline sea-fill DISABLED: the per-tile close of a peninsula coastline can
-  // enclose land. Kept for a future robust fix; only natural=water fills.
-  // for (const poly of coastlinePolys(coastChains, s, w, n, e, lon0, lat0, kx, ky, simplifyM)) {
-  //   waterPolys.push(poly);
-  // }
+  // Coastline sea-fill: region-level assembly (osmcoastline-style) so a
+  // peninsula's coast never encloses land — see regionSeaPolygons().
+  for (const poly of coastlinePolys(coastChains, s, w, n, e, lon0, lat0, kx, ky, simplifyM)) {
+    waterPolys.push(poly);
+  }
 
   // Serialize header.
   const out = new ByteWriter();
