@@ -1,6 +1,6 @@
-# Bike GPS — iOS Companion App
+# OpenCycleInk — iOS Companion App
 
-SwiftUI app that pairs with the e-paper bike computer over BLE to control
+SwiftUI app that pairs with the OpenCycleInk device over BLE to control
 settings and push routes.
 
 ## What it does
@@ -27,7 +27,7 @@ open BikeGPSCompanion.xcodeproj
 
 Set your development team in the target's Signing settings, then run on an
 iPhone (BLE needs a real device; the simulator has no Bluetooth). The app
-auto-scans for the `BikeGPS` peripheral on launch.
+auto-scans for the device by its GATT service UUID on launch.
 
 ## BLE protocol (matches `src/ble_server.cpp`)
 

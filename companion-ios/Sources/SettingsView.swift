@@ -109,8 +109,8 @@ struct SettingsView: View {
                     if ble.state == .connected { diagnosticsCard }
 
                     Text(ble.state == .connected
-                         ? "Settings sync automatically with your Bike GPS, both ways."
-                         : "Connect to sync settings with your Bike GPS.")
+                         ? "Settings sync automatically with your OpenCycleInk, both ways."
+                         : "Connect to sync settings with your OpenCycleInk.")
                         .font(.system(size: 13))
                         .foregroundStyle(Palette.muted)
                         .frame(maxWidth: .infinity, alignment: .center)
@@ -269,7 +269,7 @@ struct SettingsView: View {
             Button("Cancel", role: .cancel) {}
             Button("Install") { ble.startFirmwareUpdate() }
         } message: {
-            Text("This sends the new firmware to your Bike GPS and restarts it. It takes a few minutes — keep the app open and the device close. If anything goes wrong, the device keeps running its current firmware.")
+            Text("This sends the new firmware to your OpenCycleInk and restarts it. It takes a few minutes — keep the app open and the device close. If anything goes wrong, the device keeps running its current firmware.")
         }
     }
 

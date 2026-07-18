@@ -1,8 +1,8 @@
-# Open E-Paper Bike Computer
+# OpenCycleInk
 
 [![Build](https://github.com/RaemondBW/epaper-bike-gps/actions/workflows/build.yml/badge.svg)](https://github.com/RaemondBW/epaper-bike-gps/actions/workflows/build.yml)
 
-DIY bike GPS head unit for the [LilyGO T5S3 4.7" e-paper PRO](https://github.com/Xinyuan-LilyGO/T5S3-4.7-e-paper-PRO),
+OpenCycleInk — a DIY e-paper bike GPS head unit for the [LilyGO T5S3 4.7" e-paper PRO](https://github.com/Xinyuan-LilyGO/T5S3-4.7-e-paper-PRO),
 plus a SwiftUI iOS companion app for maps, routes and settings.
 
 **[→ Project site](https://raemondbw.github.io/epaper-bike-gps/)** — feature tour

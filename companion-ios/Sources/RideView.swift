@@ -46,7 +46,7 @@ struct RideView: View {
             HStack(spacing: 7) {
                 Circle().fill(ble.state == .connected ? Palette.good : Palette.faint)
                     .frame(width: 9, height: 9)
-                Text(ble.state == .connected ? "Bike GPS" : connectLabel)
+                Text(ble.state == .connected ? "OpenCycleInk" : connectLabel)
                     .font(BarlowFont.text(14, .semibold)).foregroundStyle(Palette.ink)
                 if ble.state == .connected {
                     Text("\(s.battery)%").font(BarlowFont.text(14, .semibold))
@@ -164,7 +164,7 @@ struct RideView: View {
         }
     }
     private var primaryTitle: String {
-        ble.state == .scanning || ble.state == .connecting ? "Searching…" : "Connect to Bike GPS"
+        ble.state == .scanning || ble.state == .connecting ? "Searching…" : "Connect to OpenCycleInk"
     }
 }
 
@@ -201,7 +201,7 @@ struct ConnectionBanner: View {
     }
     private var title: String {
         switch ble.state {
-        case .connected: return "Connected to Bike GPS"
+        case .connected: return "Connected to OpenCycleInk"
         case .scanning: return "Searching…"
         case .connecting: return "Connecting…"
         case .poweredOff: return "Bluetooth is off"

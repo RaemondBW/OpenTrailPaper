@@ -20,7 +20,7 @@ struct SensorsView: View {
 
                     if ble.state != .connected {
                         Card {
-                            Text("Connect to your Bike GPS to manage sensors.")
+                            Text("Connect to your OpenCycleInk to manage sensors.")
                                 .font(BarlowFont.text(15)).foregroundStyle(Palette.muted)
                         }
                     } else {

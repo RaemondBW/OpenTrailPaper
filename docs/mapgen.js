@@ -1,4 +1,4 @@
-// In-browser offline-map builder for the Open E-Paper Bike Computer.
+// In-browser offline-map builder for OpenCycleInk.
 //
 // A straight port of tools/maps/build_map.py (and companion-ios MapBuilder.swift)
 // so the output is byte-compatible with the .ebm whole-region maps the firmware
