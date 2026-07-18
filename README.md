@@ -1,11 +1,11 @@
 # OpenTrailPaper
 
-[![Build](https://github.com/RaemondBW/epaper-bike-gps/actions/workflows/build.yml/badge.svg)](https://github.com/RaemondBW/epaper-bike-gps/actions/workflows/build.yml)
+[![Build](https://github.com/RaemondBW/OpenTrailPaper/actions/workflows/build.yml/badge.svg)](https://github.com/RaemondBW/OpenTrailPaper/actions/workflows/build.yml)
 
 OpenTrailPaper — a DIY e-paper bike GPS head unit for the [LilyGO T5S3 4.7" e-paper PRO](https://github.com/Xinyuan-LilyGO/T5S3-4.7-e-paper-PRO),
 plus a SwiftUI iOS companion app for maps, routes and settings.
 
-**[→ Project site](https://raemondbw.github.io/epaper-bike-gps/)** — feature tour
+**[→ Project site](https://raemondbw.github.io/OpenTrailPaper/)** — feature tour
 and an in-browser Web Serial firmware flasher (Chrome/Edge, no toolchain needed).
 Source in [`docs/`](docs/).
 
@@ -146,7 +146,7 @@ file you copy to `/maps/` — the legacy whole-map fallback used where no H3 til
 covers the rider. See [`tools/README.md`](tools/README.md).
 
 **3. In the browser (region bake, no toolchain).** The
-[project site](https://raemondbw.github.io/epaper-bike-gps/#maps) has a
+[project site](https://raemondbw.github.io/OpenTrailPaper/#maps) has a
 *Generate an offline map* section: pick a bounding box on a map, and it fetches
 Overpass and encodes the same whole-region `EBM1` blob as `build_map.py`
 entirely client-side, then hands you a `<name>.ebm` to drop in `/maps/`. It's a
@@ -218,7 +218,7 @@ enumerates as `…usbmodem2101`), upload, then tap **RESET** to run. Alternative
 copy `firmware.bin` to the SD card root and reboot, or push OTA from the app.
 
 No toolchain? Flash a prebuilt `firmware.bin` (from CI artifacts or a release)
-straight from the [project site](https://raemondbw.github.io/epaper-bike-gps/#flash)
+straight from the [project site](https://raemondbw.github.io/OpenTrailPaper/#flash)
 over Web Serial in Chrome/Edge — same manual download-mode step as above.
 
 ### iOS companion

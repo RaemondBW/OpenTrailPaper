@@ -19,7 +19,7 @@ const bar = $("bar");
 const versionSelect = $("version-select");
 
 // CI publishes firmware.bin to a Release per version; list them for the dropdown.
-const REPO = "RaemondBW/epaper-bike-gps";
+const REPO = "RaemondBW/OpenTrailPaper";
 let releases = []; // [{ tag, url }]
 
 async function loadReleases() {
