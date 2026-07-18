@@ -221,7 +221,12 @@ bool refresh(bool screenChanged, bool fastInPage, bool listFast,
         // updates while riding (no recent tap) rely on the periodic GL16.
         if (active) ghostCleanPending = true;
     } else {
-        epd_hl_update_screen(&hl, MODE_GL16, epd_ambient_temperature());
+        // Map settle-clean uses GC16 (one brief black/white flash): DU drives the
+        // solid-black roads hard, and GL16 (no inversion) can't lift that ghost
+        // where the new frame is the water checker. GC16 clears it. Elsewhere
+        // (menus/dash are pure B/W) GL16 is enough — no flash.
+        auto mode = (forceClean && screen == SCREEN_MAP) ? MODE_GC16 : MODE_GL16;
+        epd_hl_update_screen(&hl, mode, epd_ambient_temperature());
         ghostDebt = 0;
         ghostCleanPending = false;
     }

@@ -301,12 +301,10 @@ void ui_render_map(const MapScreenData& map, const RideState& s, uint8_t* fb) {
                  fb, EPD_DRAW_ALIGN_CENTER, 0x00);
     }
 
-    // Badge when the map is centered on the phone's position (device GPS cold).
+    // Label when the map is centered on the phone's position (device GPS cold).
+    // No background box by request — just the text.
     if (map.phonePosition) {
-        EpdRect b = {12, ui::STATUS_H + 8, 150, 28};
-        epd_fill_rect(b, 0xFF, fb);
-        epd_draw_rect(b, 0x00, fb);
-        ui::text(&ArialBold_14, b.x + 9, b.y + 20, "PHONE GPS", fb,
+        ui::text(&ArialBold_14, 21, ui::STATUS_H + 28, "PHONE GPS", fb,
                  EPD_DRAW_ALIGN_LEFT, 0x00);
     }
 
@@ -338,23 +336,23 @@ void ui_render_map(const MapScreenData& map, const RideState& s, uint8_t* fb) {
     // Short unit-less headers: a "SPEED KM/H" header is wider than the 180px
     // column and overlaps its neighbours. Units are shown on the dashboard,
     // summary, and (for distance) the scale bar; the map footer stays glanceable.
-    ui::label(colW / 2, STRIP_TOP + 44, "SPEED", fb);
+    ui::label(colW / 2, STRIP_TOP + 36, "SPEED", fb);
     snprintf(buf, sizeof(buf), "%.1f", units::speed(s.speedKmh, s.useMiles));
-    ui::valueWithUnit(&Impact_40, 6, colW - 6, H - 40, buf, "", fb);
+    ui::valueWithUnit(&Impact_40, 6, colW - 6, H - 30, buf, "", fb);
 
-    ui::label(colW + colW / 2, STRIP_TOP + 44, "DIST", fb);
+    ui::label(colW + colW / 2, STRIP_TOP + 36, "DIST", fb);
     snprintf(buf, sizeof(buf), "%.1f", units::distM(s.distanceM, s.useMiles));
-    ui::valueWithUnit(&Impact_40, colW + 6, 2 * colW - 6, H - 40, buf, "", fb);
+    ui::valueWithUnit(&Impact_40, colW + 6, 2 * colW - 6, H - 30, buf, "", fb);
 
     if (map.showRemaining) {
-        ui::label(2 * colW + colW / 2, STRIP_TOP + 44, "LEFT", fb);
+        ui::label(2 * colW + colW / 2, STRIP_TOP + 36, "LEFT", fb);
         snprintf(buf, sizeof(buf), "%.1f", units::dist(map.remainingKm, s.useMiles));
     } else {
-        ui::label(2 * colW + colW / 2, STRIP_TOP + 44, "TIME", fb);
+        ui::label(2 * colW + colW / 2, STRIP_TOP + 36, "TIME", fb);
         snprintf(buf, sizeof(buf), "%lu:%02lu", (unsigned long)(s.elapsedS / 3600),
                  (unsigned long)((s.elapsedS / 60) % 60));
     }
-    ui::valueWithUnit(&Impact_40, 2 * colW + 6, W - 6, H - 40, buf, "", fb);
+    ui::valueWithUnit(&Impact_40, 2 * colW + 6, W - 6, H - 30, buf, "", fb);
 }
 
 // Whole-route preview for the "Start navigation?" accept page: fits the entire

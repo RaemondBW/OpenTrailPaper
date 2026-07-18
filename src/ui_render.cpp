@@ -202,13 +202,15 @@ void cell(int x0, int y0, int x1, int y1, const char* labelStr,
           const char* value, const char* unit, uint8_t* fb) {
     int cx = (x0 + x1) / 2;
     ui::label(cx, y0 + 36, labelStr, fb);
+    // Center the value (with its unit caption) vertically in the area below the
+    // label, rather than hugging the cell bottom. cyc is that area's midpoint;
+    // the Impact_40 baseline sits ~half a cap-height below the target center.
+    int cyc = (y0 + 48 + y1) / 2;
     if (unit && unit[0]) {
-        // Value centered, with the unit stacked in a small caption below it.
-        // Kept low enough to clear the label even in the shorter summary cells.
-        ui::text(&Impact_40, cx, y1 - 34, value, fb, EPD_DRAW_ALIGN_CENTER, 0x00);
-        ui::text(&ArialBold_14, cx, y1 - 11, unit, fb, EPD_DRAW_ALIGN_CENTER, 0x00);
+        ui::text(&Impact_40, cx, cyc + 4, value, fb, EPD_DRAW_ALIGN_CENTER, 0x00);
+        ui::text(&ArialBold_14, cx, cyc + 27, unit, fb, EPD_DRAW_ALIGN_CENTER, 0x00);
     } else {
-        ui::text(&Impact_40, cx, y1 - 24, value, fb, EPD_DRAW_ALIGN_CENTER, 0x00);
+        ui::text(&Impact_40, cx, cyc + 14, value, fb, EPD_DRAW_ALIGN_CENTER, 0x00);
     }
 }
 
