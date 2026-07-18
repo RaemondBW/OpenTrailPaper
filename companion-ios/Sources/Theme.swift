@@ -1,6 +1,6 @@
 import SwiftUI
 
-// Design system for the OpenCycleInk companion app.
+// Design system for the OpenTrailPaper companion app.
 //
 // The language borrows from the e-paper head unit it pairs with: warm
 // off-white "paper", near-black ink, heavy condensed numerals, generous

@@ -7,7 +7,7 @@ enum GPXExporter {
     static func make(name: String, coordinates: [CLLocationCoordinate2D]) -> String {
         var s = """
         <?xml version="1.0" encoding="UTF-8"?>
-        <gpx version="1.1" creator="OpenCycleInk" xmlns="http://www.topografix.com/GPX/1/1">
+        <gpx version="1.1" creator="OpenTrailPaper" xmlns="http://www.topografix.com/GPX/1/1">
         <trk><name>\(xmlEscape(name))</name><trkseg>
         """
         s.reserveCapacity(coordinates.count * 48)

@@ -1,4 +1,4 @@
-// Web Serial firmware flasher for OpenCycleInk.
+// Web Serial firmware flasher for OpenTrailPaper.
 //
 // Uses esptool-js (the maintained successor to Adafruit_WebSerial_ESPTool).
 // Pinned to a known version whose writeFlash() expects each fileArray entry's

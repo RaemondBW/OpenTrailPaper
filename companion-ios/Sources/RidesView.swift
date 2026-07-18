@@ -117,7 +117,7 @@ struct RidesView: View {
                                     .font(TypeScale.title).foregroundStyle(Palette.ink)
                                 Text(ble.state == .connected
                                      ? "Rides are saved to the SD card. If you're mid-ride, stop it first."
-                                     : "Connect to your OpenCycleInk to download rides. Downloaded rides stay here for offline viewing.")
+                                     : "Connect to your OpenTrailPaper to download rides. Downloaded rides stay here for offline viewing.")
                                     .font(BarlowFont.text(14)).foregroundStyle(Palette.muted)
                             }
                         }

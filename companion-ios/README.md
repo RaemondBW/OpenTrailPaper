@@ -1,6 +1,6 @@
-# OpenCycleInk — iOS Companion App
+# OpenTrailPaper — iOS Companion App
 
-SwiftUI app that pairs with the OpenCycleInk device over BLE to control
+SwiftUI app that pairs with the OpenTrailPaper device over BLE to control
 settings and push routes.
 
 ## What it does
