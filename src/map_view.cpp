@@ -400,6 +400,12 @@ void ui_render_route_preview(uint8_t* fb) {
     ctx.route = nullptr;
     ctx.routePointCount = 0;
     map_store::renderInto(clat, clon, (float)mpp, cx, cy, 0.0f, ctx);
+    // Water bodies (dithered shading) under the roads, so the coast/bay reads —
+    // matches the map screen. Spill above/below the viewport is masked by the
+    // status bar + accept sheet drawn afterwards.
+    for (int i = 0; i < ctx.waterCount; ++i) {
+        fillDitheredPolygon(ctx.water[i].pts, ctx.water[i].pointCount, fb);
+    }
     for (int i = 0; i < ctx.featureCount; ++i) {
         if (ctx.features[i].cls != MAP_ROAD_MAJOR) continue;
         drawPolyline(ctx.features[i].pts, ctx.features[i].pointCount,

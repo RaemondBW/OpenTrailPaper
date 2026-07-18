@@ -788,16 +788,27 @@ void ui_render_nav_prompt(const char* routeName, int turns, uint8_t* fb) {
                    kPowerSheet.height}, 0xFF, fb);
     epd_fill_rect({0, kPowerSheet.y, W, 4}, 0x00, fb);
 
-    // Signpost glyph
-    int gx = 70, gy = kPowerSheet.y + 60;
-    epd_fill_rect({gx - 4, gy - 34, 8, 60}, 0x00, fb);
-    epd_fill_triangle(gx + 34, gy - 22, gx - 2, gy - 34, gx - 2, gy - 10, 0x00, fb);
+    // Signpost glyph (aligned with the title line)
+    int gx = 70, gy = kPowerSheet.y + 34;
+    epd_fill_rect({gx - 4, gy - 28, 8, 46}, 0x00, fb);
+    epd_fill_triangle(gx + 34, gy - 18, gx - 2, gy - 28, gx - 2, gy - 8, 0x00, fb);
 
-    ui::text(&ArialBold_20, 118, kPowerSheet.y + 54, "Start navigation?", fb);
+    ui::text(&ArialBold_20, 118, kPowerSheet.y + 42, "Start navigation?", fb);
+
+    // Route name + turn count in an inverted (black) band with breathing room
+    // above and below — reads much darker than the old light-grey caption.
+    char name[48];
+    snprintf(name, sizeof(name), "%s", routeName);
+    size_t nl = strlen(name);   // drop a trailing ".gpx" for a cleaner label
+    if (nl > 4 && strcmp(name + nl - 4, ".gpx") == 0) name[nl - 4] = 0;
     char sub[64];
-    snprintf(sub, sizeof(sub), "%s · %d turns", routeName, turns);
-    ui::text(&ArialBold_14, 118, kPowerSheet.y + 94, sub, fb,
-             EPD_DRAW_ALIGN_LEFT, 0x33);
+    snprintf(sub, sizeof(sub), "%s · %d turns", name, turns);
+    char fitted[64];
+    fitText(&ArialBold_20, sub, 480 - 28, fitted, sizeof(fitted));
+    EpdRect band = {30, kPowerSheet.y + 58, 480, 46};
+    epd_fill_rect(band, 0x00, fb);
+    ui::text(&ArialBold_20, band.x + band.width / 2, band.y + band.height / 2 + 8,
+             fitted, fb, EPD_DRAW_ALIGN_CENTER, 0xFF);
 
     epd_fill_rect({kPowerShutdown.x, kPowerShutdown.y, kPowerShutdown.width,
                    kPowerShutdown.height}, 0x00, fb);
