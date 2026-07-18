@@ -313,8 +313,9 @@ struct MapsView: View {
                     // natural=water polygons for this region, parsed once and
                     // appended per tile as a WTR2 section (after ELV1).
                     let waterWays = (try? MapBuilder.extractWaterWays(regionJSON: json)) ?? []
-                    // natural=coastline assembled into chains -> sea polygons.
-                    let coastChains = (try? MapBuilder.extractCoastlineChains(regionJSON: json)) ?? []
+                    // Coastline sea-fill disabled for now: the per-tile close of
+                    // SF's peninsula coastline can enclose land. Lakes/ponds
+                    // (natural=water) still fill correctly. See coastlinePolys.
                     // Bake a DEM elevation grid into each tile (best-effort) so
                     // the device has elevation without GPS altitude or the phone.
                     status = "Elevation \(i + 1)/\(n)…"
@@ -328,7 +329,6 @@ struct MapsView: View {
                             }
                             // WTR2 water section goes last, after any ELV1 block.
                             MapBuilder.appendWater(to: &p.data, waterWays: waterWays,
-                                coastChains: coastChains,
                                 south: t.south, west: t.west, north: t.north, east: t.east)
                         }
                         withElev.append(p)

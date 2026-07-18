@@ -470,10 +470,11 @@ export function buildEbm(json, { s, w, n, e, tileDeg = TILE_DEG, simplifyM = SIM
     waterPolys.push(poly);
   }
 
-  // Coastline-derived sea polygons -> append to the SAME WTR2 polygon list.
-  for (const poly of coastlinePolys(coastChains, s, w, n, e, lon0, lat0, kx, ky, simplifyM)) {
-    waterPolys.push(poly);
-  }
+  // Coastline sea-fill DISABLED: the per-tile close of a peninsula coastline can
+  // enclose land. Kept for a future robust fix; only natural=water fills.
+  // for (const poly of coastlinePolys(coastChains, s, w, n, e, lon0, lat0, kx, ky, simplifyM)) {
+  //   waterPolys.push(poly);
+  // }
 
   // Serialize header.
   const out = new ByteWriter();

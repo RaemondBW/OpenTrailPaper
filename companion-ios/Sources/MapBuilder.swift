@@ -260,17 +260,15 @@ enum MapBuilder {
                     if j == i || chains[j] == nil { continue }
                     let a = chains[i]!
                     let b = chains[j]!
+                    // Forward joins only. Reversing a coastline way flips its
+                    // direction and thus which side is water (OSM: water on the
+                    // right), which inverts the sea fill. Valid coastlines chain
+                    // head-to-tail, so forward joins suffice.
                     if a.last! == b.first! {
                         chains[i] = a + b.dropFirst()
                         chains[j] = nil; changed = true
-                    } else if a.last! == b.last! {
-                        chains[i] = a + b.dropLast().reversed()
-                        chains[j] = nil; changed = true
                     } else if a.first! == b.last! {
                         chains[i] = b + a.dropFirst()
-                        chains[j] = nil; changed = true
-                    } else if a.first! == b.first! {
-                        chains[i] = Array(b.reversed()) + a.dropFirst()
                         chains[j] = nil; changed = true
                     }
                     if changed { break }
@@ -425,29 +423,26 @@ enum MapBuilder {
     // side (right of the coastline direction). Returns the ring or nil.
     private static func seaPolygon(_ p: [(Double, Double)],
                                    _ s: Double, _ w: Double, _ n: Double, _ e: Double) -> [(Double, Double)]? {
-        let m = p.count
-        if m < 2 { return nil }
-        let i = (m - 1) / 2
-        let a = p[i], b = p[i + 1]
-        let dLat = b.0 - a.0
-        let dLon = b.1 - a.1
-        let ln = (dLon * dLon + dLat * dLat).squareRoot()
-        if ln == 0.0 { return nil }
-        let midLat = (a.0 + b.0) / 2
-        let midLon = (a.1 + b.1) / 2
-        let eps = 1e-4
-        // right-of-direction normal (dLat,-dLon) in (lon,lat) space, normalized.
-        let probeLon = midLon + eps * (dLat / ln)
-        let probeLat = midLat + eps * (-dLon / ln)
+        if p.count < 2 { return nil }
         let posA = perimPos(p[0], s, w, n, e)
         let posB = perimPos(p[p.count - 1], s, w, n, e)
         let ringCcw = p + closing(posB, posA, s, w, n, e, true)
         let ringCw = p + closing(posB, posA, s, w, n, e, false)
-        let inCcw = pointInRing(ringCcw, probeLat, probeLon)
-        let inCw = pointInRing(ringCw, probeLat, probeLon)
-        if inCcw && !inCw { return ringCcw }
-        if inCw && !inCcw { return ringCw }
-        return nil
+        // OSM: sea is on the RIGHT of the coastline direction. Closing coast(A->B)
+        // back along the boundary makes two candidate rings; the one whose
+        // interior is on the right of the A->B traversal is CLOCKWISE (negative
+        // signed area, lon=x/lat=y). Pick the more-clockwise ring. This is a
+        // global property, robust to a wiggly coast (a point probe near the shore
+        // is not).
+        func signedArea(_ r: [(Double, Double)]) -> Double {
+            var s2 = 0.0
+            for k in 0..<r.count {
+                let p0 = r[k], p1 = r[(k + 1) % r.count]
+                s2 += p0.1 * p1.0 - p1.1 * p0.0   // x=lon(.1), y=lat(.0)
+            }
+            return s2
+        }
+        return signedArea(ringCcw) < signedArea(ringCw) ? ringCcw : ringCw
     }
 
     // Turn assembled coastline chains into projected, decimated, int16 sea

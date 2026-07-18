@@ -510,10 +510,11 @@ def main():
             poly.append((ix, iy))
         water_polys.append(poly)
 
-    # Coastline-derived sea polygons -> append to the SAME WTR2 polygon list.
-    water_polys.extend(
-        coastline_polys(coast_chains, s, w, n, e, lon0, lat0, kx, ky,
-                        args.simplify_m))
+    # Coastline sea-fill DISABLED: the per-tile close of a peninsula coastline
+    # can enclose land. Kept for a future robust fix; only natural=water fills.
+    # water_polys.extend(
+    #     coastline_polys(coast_chains, s, w, n, e, lon0, lat0, kx, ky,
+    #                     args.simplify_m))
 
     with open(args.out, "wb") as f:
         f.write(b"EBM2")
