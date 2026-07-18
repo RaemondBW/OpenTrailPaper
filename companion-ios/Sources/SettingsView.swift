@@ -304,7 +304,9 @@ struct SettingsView: View {
         case .sending:    return "Step 1 of 2 · Sending firmware"
         case .saving:     return "Step 1 of 2 · Saving to the device"
         case .installing: return "Step 2 of 2 · Installing"
-        case .verifying:  return "Step 2 of 2 · Verifying"
+        // The device is still flashing from SD here (its screen reads
+        // "Installing"), so match that rather than saying "Verifying".
+        case .verifying:  return "Step 2 of 2 · Installing"
         default:          return "Updating"
         }
     }
