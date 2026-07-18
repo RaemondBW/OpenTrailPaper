@@ -52,8 +52,8 @@ out skel qt;
 """
 
 # Road tiers (device render classes).
-ARTERIAL = {"motorway", "trunk", "primary"}
-SECONDARY = {"secondary", "tertiary"}
+ARTERIAL = {"motorway", "trunk"}
+SECONDARY = {"primary", "secondary", "tertiary"}
 MINOR = {"residential", "unclassified", "living_street", "pedestrian"}
 PATH = {"cycleway", "footway", "path", "track", "steps"}
 

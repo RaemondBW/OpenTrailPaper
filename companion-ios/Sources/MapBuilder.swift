@@ -553,9 +553,12 @@ enum MapBuilder {
 
     // MARK: classify (mirrors build_map.py)
 
-    // Road tiers (device render classes).
-    private static let arterial:  Set<String> = ["motorway", "trunk", "primary"]
-    private static let secondary: Set<String> = ["secondary", "tertiary"]
+    // Road tiers (device render classes). `primary` sits in the secondary tier,
+    // not arterial: in a dense city primary streets are numerous (~75% of the
+    // old arterial tier), so keeping them arterial made the zoomed-out overview a
+    // solid mesh. Now only motorway/trunk survive at the widest zooms.
+    private static let arterial:  Set<String> = ["motorway", "trunk"]
+    private static let secondary: Set<String> = ["primary", "secondary", "tertiary"]
     private static let minor:     Set<String> = ["residential", "unclassified", "living_street", "pedestrian"]
     private static let path:      Set<String> = ["cycleway", "footway", "path", "track", "steps"]
 
