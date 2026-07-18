@@ -8,7 +8,10 @@
 <meta property="og:title" content="Open E-Paper Bike Computer">
 <meta property="og:description" content="A hackable e-paper bike GPS. Offline maps, routes, FIT recording — flash it from the browser.">
 <meta property="og:type" content="website">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%9A%B2%3C/text%3E%3C/svg%3E">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'%3E%3Crect width='120' height='120' rx='20' fill='%23141414'/%3E%3Crect x='30' y='18' width='60' height='84' rx='8' fill='%23fff'/%3E%3Cpath d='M60 26 L60 46' fill='none' stroke='%23141414' stroke-width='6' stroke-dasharray='8 5'/%3E%3Ccircle cx='60' cy='64' r='16' fill='none' stroke='%23141414' stroke-width='5'/%3E%3Cpath d='M60 54 L68 74 L60 69.5 L52 74 Z' fill='%23F4501E'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
       integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
@@ -17,76 +20,114 @@
 
 <header class="nav">
   <div class="wrap">
-    <span class="brand">🚲 E-Paper Bike Computer</span>
+    <span class="brand">
+      <svg width="28" height="28" viewBox="0 0 120 120" aria-hidden="true"><rect width="120" height="120" rx="20" fill="#141414"/><rect x="30" y="18" width="60" height="84" rx="8" fill="#fff"/><path d="M60 26 L60 46" fill="none" stroke="#141414" stroke-width="6" stroke-dasharray="8 5"/><circle cx="60" cy="64" r="16" fill="none" stroke="#141414" stroke-width="5"/><path d="M60 54 L68 74 L60 69.5 L52 74 Z" fill="#F4501E"/></svg>
+      E-Paper Bike Computer
+    </span>
     <nav>
       <a href="#features">Features</a>
       <a href="#screens">Screens</a>
       <a href="#split">Phone&nbsp;/&nbsp;device</a>
-      <a href="#maps">Generate maps</a>
-      <a href="#flash">Flash firmware</a>
-      <a href="https://github.com/RaemondBW/epaper-bike-gps">GitHub</a>
+      <a href="#maps">Maps</a>
+      <a href="#flash">Flash</a>
+      <a class="gh" href="https://github.com/RaemondBW/epaper-bike-gps">GitHub</a>
     </nav>
   </div>
 </header>
 
-<div class="wrap">
-
-  <section class="hero" style="border-bottom:none;">
-    <h1>An open e-paper bike computer you can hack.</h1>
-    <p class="lede">A sunlight-readable GPS head unit for the LilyGO&nbsp;T5S3 4.7&quot; e-paper PRO — offline maps, GPX routes, FIT ride recording and BLE sensors, all onboard. Flash the latest firmware straight from this page over USB.</p>
-    <div class="cta-row">
-      <a class="btn accent" href="#flash">⚡ Flash firmware</a>
-      <a class="btn secondary" href="#features">See what it does</a>
-      <a class="btn secondary" href="https://github.com/RaemondBW/epaper-bike-gps">View source</a>
+<section class="hero">
+  <div class="wrap">
+    <div class="copy">
+      <span class="tag">Open source · ESP32-S3 · LilyGO T5S3 4.7&quot;</span>
+      <h1>A bike GPS you can read in the sun.<br>And hack.</h1>
+      <p class="lede">Offline maps, GPX routes, FIT ride recording and BLE sensors on a 4.7&quot; e-paper panel — fully standalone, no subscription, no phone required. Flash the firmware straight from this page.</p>
+      <div class="cta-row">
+        <a class="btn accent" href="#flash">Flash firmware →</a>
+        <a class="btn secondary" href="#features">See what it does</a>
+        <a class="btn secondary" href="https://github.com/RaemondBW/epaper-bike-gps">View source</a>
+      </div>
+      <p class="badge-row">
+        <a href="https://github.com/RaemondBW/epaper-bike-gps/actions/workflows/build.yml">CI builds</a> ·
+        <a href="https://github.com/RaemondBW/epaper-bike-gps/blob/main/LICENSE">open source</a>
+      </p>
     </div>
-    <p class="badge-row" style="color:var(--ink-soft);font-size:.9rem;">
-      LilyGO T5S3 4.7&quot; e-paper PRO · ESP32-S3 · open source ·
-      <a href="https://github.com/RaemondBW/epaper-bike-gps/actions/workflows/build.yml">CI builds</a>
-    </p>
-  </section>
+    <div class="device-mock" aria-hidden="true">
+      <div class="bezel">
+        <div class="panel">
+          <div class="statusbar">
+            <span class="t">14:32</span><span class="g">GPS ●●●○</span>
+            <span class="batt"><i></i></span>
+          </div>
+          <div class="heroval">
+            <span class="lbl">SPEED · KM/H</span>
+            <span class="num">32.4</span>
+          </div>
+          <div class="cells">
+            <div class="cell"><span class="lbl">POWER</span><span class="num">247</span></div>
+            <div class="cell"><span class="lbl">HEART RATE</span><span class="num">156</span></div>
+            <div class="cell"><span class="lbl">DISTANCE</span><span class="num">54.8</span></div>
+            <div class="cell"><span class="lbl">TIME</span><span class="num">1:47</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
 
-  <section id="features">
-    <h2>Features</h2>
-    <p class="sub">Everything a ride needs, on a screen you can actually read in direct sun — and none of it depends on a phone once it&rsquo;s set up.</p>
+<div class="ticker" aria-hidden="true">
+  <div class="wrap">
+    <span>960×540 E-PAPER</span><span>16 MB FLASH</span><span>BLE 5 SENSORS</span>
+    <span>1 HZ FIT RECORDING</span><span>H3 OFFLINE TILES</span><span>WEB SERIAL FLASHER</span>
+  </div>
+</div>
+
+<section id="features">
+  <div class="wrap">
+    <p class="kicker">01 — Features</p>
+    <h2>Everything a ride needs, nothing that phones home.</h2>
+    <p class="sub">Fully standalone once set up — the phone is only for authoring maps, routes and settings.</p>
     <div class="features">
       <div class="feature">
-        <h3><span class="ic">🛰️</span>GPS &amp; speed</h3>
+        <h3>GPS &amp; speed</h3>
         <p>Position, speed, heading, altitude, satellites and UTC time. L76K/CASIC and u-blox M10Q auto-detected, warm-started from the last-known fix.</p>
       </div>
       <div class="feature">
-        <h3><span class="ic">🗺️</span>Offline maps</h3>
+        <h3>Offline maps</h3>
         <p>1-bit H3 hexagonal vector tiles on the SD card. Zoom 1–8&nbsp;m/px, follows GPS, optional track-up rotation. No data connection on the bike.</p>
       </div>
       <div class="feature">
-        <h3><span class="ic">🧭</span>GPX routes</h3>
+        <h3>GPX routes</h3>
         <p>Plan on the phone or drop a <code>.gpx</code> in <code>/routes</code>. The route draws on the map — ridden solid, ahead dashed — with km-remaining and turn banners.</p>
       </div>
       <div class="feature">
-        <h3><span class="ic">⏺️</span>Ride recording</h3>
+        <h3>Ride recording</h3>
         <p>1&nbsp;Hz FIT files ready for Strava or intervals.icu. Moving time, avg/normalized power, HR and climbing. Rides cut short by a crash are repaired on next boot.</p>
       </div>
       <div class="feature">
-        <h3><span class="ic">❤️</span>BLE sensors</h3>
+        <h3>BLE sensors</h3>
         <p>Heart rate, cycling power (with cadence from crank data) and speed/cadence. Pair once from the Sensors screen; pairings persist in flash.</p>
       </div>
       <div class="feature">
-        <h3><span class="ic">⛰️</span>Map-cached elevation</h3>
+        <h3>Real elevation</h3>
         <p>Altitude and climb read from a DEM grid baked into each map tile — not the GPS chip&rsquo;s noisy barometric altitude.</p>
       </div>
       <div class="feature">
-        <h3><span class="ic">⚙️</span>On-device settings</h3>
+        <h3>On-device settings</h3>
         <p>Units, 12/24&nbsp;h clock, FTP power zones, timezone, backlight and USB-drive mode — persisted in NVS and mirrored to the companion app.</p>
       </div>
       <div class="feature">
-        <h3><span class="ic">⬆️</span>Easy updates</h3>
+        <h3>Easy updates</h3>
         <p>Flash from this page over USB, drop <code>firmware.bin</code> on the SD card, or push OTA from the app. A/B partitions protect the running image either way.</p>
       </div>
     </div>
-  </section>
+  </div>
+</section>
 
-  <section id="screens">
-    <h2>On the panel</h2>
-    <p class="sub">Rendered pixel-for-pixel by the real drawing code (<code>src/ui_render.cpp</code>) — these are the actual device screens.</p>
+<section id="screens" class="dim">
+  <div class="wrap">
+    <p class="kicker">02 — On the panel</p>
+    <h2>Pixel-for-pixel real.</h2>
+    <p class="sub">Every screenshot is rendered by the actual firmware drawing code (<code>src/ui_render.cpp</code>) compiled on the desktop — what you see is what the panel draws.</p>
     <div class="gallery">
       <figure class="shot device">
         <img loading="lazy" src="img/dashboard.png" alt="Dashboard screen">
@@ -94,7 +135,7 @@
       </figure>
       <figure class="shot device">
         <img loading="lazy" src="img/map.png" alt="Map following GPS">
-        <figcaption>Map (follows GPS)</figcaption>
+        <figcaption>Map — follows GPS</figcaption>
       </figure>
       <figure class="shot device">
         <img loading="lazy" src="img/summary.png" alt="Ride summary screen">
@@ -113,33 +154,48 @@
         <figcaption>Turn banner</figcaption>
       </figure>
     </div>
-  </section>
+  </div>
+</section>
 
-  <section id="split">
-    <h2>Phone / device split</h2>
-    <p class="sub">The head unit is fully standalone. The iOS companion app is the authoring surface — anything awkward on a touch e-paper screen happens on the phone and is pushed over BLE.</p>
-    <table class="split">
-      <thead>
-        <tr><th></th><th>Device (ESP32-S3 firmware)</th><th>iOS companion app</th></tr>
-      </thead>
-      <tbody>
-        <tr><td>Owns</td><td>GPS, sensors, ride recording, rendering, navigation</td><td>Map-tile authoring, route planning, ride history, settings UI, OTA</td></tr>
-        <tr><td>Storage</td><td>SD card (<code>/rides</code>, <code>/routes</code>, <code>/maps</code>, <code>/logs</code>)</td><td>Transient — streamed to/from the device</td></tr>
-        <tr><td>Maps</td><td>Renders H3 tiles from the SD card</td><td>Fetches OSM + elevation, builds tiles, streams them</td></tr>
-        <tr><td>Firmware</td><td>Applies updates from USB, SD or BLE</td><td>Bundles <code>firmware.bin</code>, pushes OTA over BLE</td></tr>
-      </tbody>
-    </table>
-  </section>
+<section id="split">
+  <div class="wrap">
+    <p class="kicker">03 — Phone / device split</p>
+    <h2>Standalone on the bike. Authored on the phone.</h2>
+    <p class="sub">Anything awkward on a touch e-paper screen — typing a destination, drawing a map region, editing settings — happens in the iOS companion app and is pushed over BLE.</p>
+    <div class="split-grid">
+      <div class="split-col device">
+        <div class="head">Device — ESP32-S3 firmware</div>
+        <ul>
+          <li>GPS, sensors, ride recording, rendering, navigation</li>
+          <li>SD card storage — <code>/rides /routes /maps /logs</code></li>
+          <li>Renders H3 tiles offline</li>
+          <li>Applies updates from USB, SD or BLE</li>
+        </ul>
+      </div>
+      <div class="split-col phone">
+        <div class="head">iOS companion app</div>
+        <ul>
+          <li>Map-tile authoring, route planning, ride history</li>
+          <li>Transient storage — everything streams over BLE</li>
+          <li>Fetches OSM + elevation, builds tiles</li>
+          <li>Bundles <code>firmware.bin</code>, pushes OTA</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
 
-  <section id="maps">
-    <h2>🗺️ Generate an offline map</h2>
+<section id="maps">
+  <div class="wrap">
+    <p class="kicker">04 — Generate an offline map</p>
+    <h2>Bake a map in your browser.</h2>
     <p class="sub">Pick an area, download a <code>.ebm</code> map, and drop it in <code>/maps</code> on the SD card — the device draws it offline, no phone needed. Everything runs locally in your browser from <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> data (via <a href="https://overpass-api.de/">Overpass</a>); nothing is uploaded anywhere. This bakes a whole-region fallback map — the iOS app is still the way to author the per-hex tiles with baked-in elevation.</p>
 
     <div class="flash-grid mapgen-grid">
       <div class="card">
         <div id="pickmap" class="pickmap" role="application" aria-label="Map area picker"></div>
         <div class="pickmap-tools">
-          <button id="drawbox" class="btn secondary" type="button">✏️ Draw a box</button>
+          <button id="drawbox" class="btn secondary" type="button">Draw a box</button>
           <button id="useview" class="btn secondary" type="button">Use current view</button>
         </div>
         <div class="bbox-fields">
@@ -152,13 +208,15 @@
       </div>
 
       <div class="card">
-        <strong>1 &nbsp;Choose your area</strong>
+        <span class="step-num">1</span>
+        <strong>Choose your area</strong>
         <p style="color:var(--ink-soft);font-size:.95rem;margin:.5rem 0 0;">
           Pan/zoom the map to where you ride, then <em>Draw a box</em> (drag across the map) or
           <em>Use current view</em>. Keep it modest — a city or a county is fine; a whole state
           is too much data for one download.
         </p>
-        <strong style="display:block;margin-top:1rem;">2 &nbsp;Generate</strong>
+        <span class="step-num" style="margin-top:1rem;">2</span>
+        <strong>Generate</strong>
         <div class="flash-controls" style="margin-top:12px;">
           <button id="gen-btn" class="btn accent" type="button" disabled>Generate map</button>
           <span id="gen-status" class="status">Pick an area to begin.</span>
@@ -166,7 +224,8 @@
         <div class="progress" hidden><i id="gen-bar"></i></div>
         <p style="margin:12px 0 0;"><a id="gen-download" class="btn" hidden download>⬇ Download map</a></p>
         <div class="console" id="gen-log" aria-live="polite"></div>
-        <strong style="display:block;margin-top:1rem;">3 &nbsp;Unzip onto the SD card</strong>
+        <span class="step-num" style="margin-top:1rem;">3</span>
+        <strong>Unzip onto the SD card</strong>
         <p style="color:var(--ink-soft);font-size:.95rem;margin:.5rem 0 0;">
           Unzip the download onto the SD card&rsquo;s root and it lands in <code>/maps</code>
           automatically — over the built-in USB-drive mode, or with a card reader. It shows up
@@ -174,11 +233,14 @@
         </p>
       </div>
     </div>
-  </section>
+  </div>
+</section>
 
-  <section id="flash">
-    <h2>⚡ Flash firmware from your browser</h2>
-    <p class="sub">Powered by <a href="https://github.com/espressif/esptool-js">esptool-js</a> and the Web Serial API — the same approach as the <a href="https://github.com/adafruit/Adafruit_WebSerial_ESPTool">Adafruit WebSerial ESPTool</a>. Everything runs locally in your browser; nothing is uploaded anywhere.</p>
+<section id="flash" class="dark">
+  <div class="wrap">
+    <p class="kicker">05 — Flash firmware</p>
+    <h2>From zero to riding, in the browser.</h2>
+    <p class="sub">Powered by <a href="https://github.com/espressif/esptool-js">esptool-js</a> and the Web Serial API — everything runs locally in your browser; nothing is uploaded anywhere. Chrome or Edge on desktop.</p>
 
     <div id="unsupported" class="notice warn" hidden>
       <strong>Your browser can&rsquo;t do this.</strong> Web Serial needs a Chromium-based desktop browser —
@@ -187,23 +249,26 @@
 
     <div class="flash-grid">
       <div class="card">
-        <strong>1 &nbsp;Get a firmware binary</strong>
-        <p style="color:var(--ink-soft);font-size:.95rem;margin:.5rem 0 0;">
+        <span class="step-num">1</span>
+        <strong>Get a firmware binary</strong>
+        <p style="font-size:.95rem;margin:.5rem 0 0;">
           Grab <code>firmware.bin</code> from a
           <a href="https://github.com/RaemondBW/epaper-bike-gps/actions/workflows/build.yml">CI build</a>
           (the <em>firmware</em> artifact) or a
           <a href="https://github.com/RaemondBW/epaper-bike-gps/releases">release</a>,
           or build it yourself with <code>pio run</code>.
         </p>
-        <strong style="display:block;margin-top:1rem;">2 &nbsp;Put the board in download mode</strong>
-        <p style="color:var(--ink-soft);font-size:.95rem;margin:.5rem 0 0;">
+        <span class="step-num" style="margin-top:1rem;">2</span>
+        <strong>Put the board in download mode</strong>
+        <p style="font-size:.95rem;margin:.5rem 0 0;">
           The board runs in USB-OTG mode, so it can&rsquo;t auto-reset into the bootloader.
           Do it by hand: hold <span class="kbd">BOOT</span>, tap <span class="kbd">RESET</span>,
-          then release <span class="kbd">BOOT</span>. Then click <em>Connect</em> below and pick the
+          then release <span class="kbd">BOOT</span>. Then click <em>Connect</em> and pick the
           <code>usbmodem</code> / <code>USB Serial</code> port.
         </p>
-        <strong style="display:block;margin-top:1rem;">3 &nbsp;Flash, then tap RESET to run</strong>
-        <p style="color:var(--ink-soft);font-size:.95rem;margin:.5rem 0 0;">
+        <span class="step-num" style="margin-top:1rem;">3</span>
+        <strong>Flash, then tap RESET to run</strong>
+        <p style="font-size:.95rem;margin:.5rem 0 0;">
           By default this writes just the app at <code>0x10000</code> — enough to update an already-set-up
           board. For a blank board or recovery, add the bootloader / partition rows under
           <em>Advanced</em>.
@@ -217,14 +282,14 @@
           <span id="status" class="status">Not connected.</span>
         </div>
 
-        <div class="version-pick" style="margin:0 0 14px;">
-          <label style="display:block;font-size:.9rem;color:var(--ink-soft);margin-bottom:5px;">
+        <div class="version-pick" style="margin:14px 0;">
+          <label style="display:block;font-size:.9rem;margin-bottom:5px;">
             Firmware version (built by CI, flashed to <code>0x10000</code>)
           </label>
-          <select id="version-select" style="width:100%;padding:8px;border:1px solid var(--hairline);border-radius:8px;font-size:.95rem;">
+          <select id="version-select" style="width:100%;padding:8px;font-size:.95rem;">
             <option value="">Loading versions…</option>
           </select>
-          <p id="version-note" style="color:var(--ink-soft);font-size:.85rem;margin:.4rem 0 0;">
+          <p id="version-note" style="font-size:.85rem;margin:.4rem 0 0;">
             Pick a version above — or use your own <code>.bin</code> below (that overrides the dropdown).
           </p>
         </div>
@@ -239,7 +304,7 @@
 
         <details class="adv">
           <summary>Advanced — full / blank-board flash</summary>
-          <p style="font-size:.9rem;color:var(--ink-soft);">
+          <p style="font-size:.9rem;">
             A full ESP32-S3 flash needs four parts. Add rows and supply each binary
             (from your PlatformIO <code>.pio/build/t5s3-pro/</code> folder):
           </p>
@@ -249,12 +314,12 @@
             <tr><td><code>0xe000</code></td><td>boot_app0.bin</td></tr>
             <tr><td><code>0x10000</code></td><td>firmware.bin</td></tr>
           </table>
-          <button id="addrow" class="btn secondary" style="padding:7px 14px;font-size:.9rem;">+ Add row</button>
+          <button id="addrow" class="btn secondary" style="padding:7px 14px;font-size:.85rem;">+ Add row</button>
         </details>
 
         <div class="flash-controls">
           <button id="flash-btn" class="btn" disabled>Flash</button>
-          <label style="font-size:.9rem;color:var(--ink-soft);">
+          <label style="font-size:.9rem;">
             <input type="checkbox" id="erase"> Erase whole flash first
           </label>
         </div>
@@ -263,9 +328,8 @@
         <div class="console" id="log" aria-live="polite"></div>
       </div>
     </div>
-  </section>
-
-</div>
+  </div>
+</section>
 
 <footer>
   <div class="wrap">

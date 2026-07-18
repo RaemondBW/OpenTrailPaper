@@ -176,6 +176,12 @@ void noteActivity() {
 // GC16 (the black/white/black flash) only ever runs at boot and shutdown.
 int ghostDebt = 0;
 constexpr int GHOST_GL16_EVERY = 24;   // ~24 s of DU before a clean pass
+// After an interactive DU burst (zoom / menu taps) settles, do ONE GL16 pass to
+// clear the ghost those fast 1-bit updates leave behind — otherwise the old
+// frame's solid-black roads linger as light grey where the new frame is now
+// water or white. Set on interactive DU, fired once the taps stop.
+bool ghostCleanPending = false;
+constexpr uint32_t GHOST_CLEAN_SETTLE_MS = 900;
 
 // Panel power keep-alive: powering the TPS rails up costs ~36 ms, so during a
 // burst of interactions we leave the panel powered and only release it a beat
@@ -183,9 +189,12 @@ constexpr int GHOST_GL16_EVERY = 24;   // ~24 s of DU before a clean pass
 bool epdPowered = false;
 uint32_t epdIdleOffAt = 0;
 
-bool refresh(bool screenChanged, bool fastInPage, bool listFast) {
+bool refresh(bool screenChanged, bool fastInPage, bool listFast,
+             bool forceClean = false) {
     uint8_t* fb = epd_hl_get_framebuffer(&hl);
-    if (!screenChanged && shadowFb && memcmp(fb, shadowFb, fbSize) == 0) {
+    // forceClean re-pushes the current (unchanged) frame with GL16 to wipe DU
+    // ghosting, so it must run even when the framebuffer is identical.
+    if (!forceClean && !screenChanged && shadowFb && memcmp(fb, shadowFb, fbSize) == 0) {
         return false;  // identical frame — never touch the panel
     }
     if (shadowFb) memcpy(shadowFb, fb, fbSize);
@@ -201,16 +210,25 @@ bool refresh(bool screenChanged, bool fastInPage, bool listFast) {
     // ghost-clean hit mid-interaction — stay on fast DU and let the clean happen
     // once things settle (the task loop does it during idle).
     bool active = millis() - lastUiInputMs < 1200;
-    bool du = wantDu && (active || ghostDebt < GHOST_GL16_EVERY);
+    bool du = !forceClean && wantDu && (active || ghostDebt < GHOST_GL16_EVERY);
 
     uint32_t tw0 = millis();
     if (!epdPowered) { epd_poweron(); epdPowered = true; }
     if (du) {
         epd_hl_update_screen(&hl, MODE_DU, epd_ambient_temperature());
         ghostDebt += 1;
+        // Only interactive bursts schedule a settle-clean; passive 1 Hz DU
+        // updates while riding (no recent tap) rely on the periodic GL16.
+        if (active) ghostCleanPending = true;
     } else {
-        epd_hl_update_screen(&hl, MODE_GL16, epd_ambient_temperature());
+        // Map settle-clean uses GC16 (one brief black/white flash): DU drives the
+        // solid-black roads hard, and GL16 (no inversion) can't lift that ghost
+        // where the new frame is the water checker. GC16 clears it. Elsewhere
+        // (menus/dash are pure B/W) GL16 is enough — no flash.
+        auto mode = (forceClean && screen == SCREEN_MAP) ? MODE_GC16 : MODE_GL16;
+        epd_hl_update_screen(&hl, mode, epd_ambient_temperature());
         ghostDebt = 0;
+        ghostCleanPending = false;
     }
     if (dbgTiming)
         diag::log("refresh %s: %lums", du ? "DU" : "GL16",
@@ -1059,7 +1077,10 @@ void task(void*) {
         if (navPrompt && !lastNavPrompt) navPromptShownAt = millis();
         bool screenChanged = screen != lastScreen || powerOverlay != lastOverlay
                              || navPrompt != lastNavPrompt;
-        if (screenChanged || forceDraw || millis() - lastDraw >= 1000) {
+        // Once an interactive DU burst has settled, push one GL16 clean pass.
+        bool wantClean = ghostCleanPending &&
+                         millis() - lastUiInputMs >= GHOST_CLEAN_SETTLE_MS;
+        if (screenChanged || forceDraw || wantClean || millis() - lastDraw >= 1000) {
             lastDraw = millis();
             forceDraw = false;
             Screen prevScreen = lastScreen;
@@ -1167,7 +1188,7 @@ void task(void*) {
             // system from dash/map still gets a clean GL16 (no busy-screen ghost).
             bool listFast = screenListFast(screen) && screenListFast(prevScreen) &&
                             !powerOverlay && !navPrompt;
-            refresh(screenChanged, fastInPage, listFast);
+            refresh(screenChanged, fastInPage, listFast, wantClean);
         }
 
         // Release panel power a beat after an interactive burst ends (the keep

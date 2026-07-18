@@ -13,6 +13,8 @@ compile_commands.json
 
 # Large regenerable map cache (refetch via tools/maps/build_map.py)
 tools/maps/sf_overpass.json
+*_overpass.json
+tools/maps/__pycache__/
 
 # Xcode user-specific state (the generated .xcodeproj itself is kept)
 **/xcuserdata/

@@ -260,17 +260,15 @@ enum MapBuilder {
                     if j == i || chains[j] == nil { continue }
                     let a = chains[i]!
                     let b = chains[j]!
+                    // Forward joins only. Reversing a coastline way flips its
+                    // direction and thus which side is water (OSM: water on the
+                    // right), which inverts the sea fill. Valid coastlines chain
+                    // head-to-tail, so forward joins suffice.
                     if a.last! == b.first! {
                         chains[i] = a + b.dropFirst()
                         chains[j] = nil; changed = true
-                    } else if a.last! == b.last! {
-                        chains[i] = a + b.dropLast().reversed()
-                        chains[j] = nil; changed = true
                     } else if a.first! == b.last! {
                         chains[i] = b + a.dropFirst()
-                        chains[j] = nil; changed = true
-                    } else if a.first! == b.first! {
-                        chains[i] = Array(b.reversed()) + a.dropFirst()
                         chains[j] = nil; changed = true
                     }
                     if changed { break }
@@ -404,76 +402,82 @@ enum MapBuilder {
         return res.map { $0.1 }
     }
 
-    // Even-odd ray-cast point-in-polygon; ring is [(lat,lon), ...].
-    private static func pointInRing(_ ring: [(Double, Double)], _ lat: Double, _ lon: Double) -> Bool {
-        var inside = false
-        let m = ring.count
-        var j = m - 1
-        for i in 0..<m {
-            let yi = ring[i].0, xi = ring[i].1
-            let yj = ring[j].0, xj = ring[j].1
-            if (yi > lat) != (yj > lat) {
-                let xint = (xj - xi) * (lat - yi) / (yj - yi) + xi
-                if lon < xint { inside = !inside }
-            }
-            j = i
-        }
-        return inside
-    }
-
-    // Close a boundary-to-boundary sub-chain p into a ring enclosing the SEA
-    // side (right of the coastline direction). Returns the ring or nil.
-    private static func seaPolygon(_ p: [(Double, Double)],
-                                   _ s: Double, _ w: Double, _ n: Double, _ e: Double) -> [(Double, Double)]? {
-        let m = p.count
-        if m < 2 { return nil }
-        let i = (m - 1) / 2
-        let a = p[i], b = p[i + 1]
-        let dLat = b.0 - a.0
-        let dLon = b.1 - a.1
-        let ln = (dLon * dLon + dLat * dLat).squareRoot()
-        if ln == 0.0 { return nil }
-        let midLat = (a.0 + b.0) / 2
-        let midLon = (a.1 + b.1) / 2
-        let eps = 1e-4
-        // right-of-direction normal (dLat,-dLon) in (lon,lat) space, normalized.
-        let probeLon = midLon + eps * (dLat / ln)
-        let probeLat = midLat + eps * (-dLon / ln)
-        let posA = perimPos(p[0], s, w, n, e)
-        let posB = perimPos(p[p.count - 1], s, w, n, e)
-        let ringCcw = p + closing(posB, posA, s, w, n, e, true)
-        let ringCw = p + closing(posB, posA, s, w, n, e, false)
-        let inCcw = pointInRing(ringCcw, probeLat, probeLon)
-        let inCw = pointInRing(ringCw, probeLat, probeLon)
-        if inCcw && !inCw { return ringCcw }
-        if inCw && !inCcw { return ringCw }
-        return nil
-    }
-
-    // Turn assembled coastline chains into projected, decimated, int16 sea
-    // polygons for the tile [s,w,n,e] — same encoding as natural=water polys.
-    private static func coastlinePolys(_ chains: [[(Double, Double)]],
-                                       _ s: Double, _ w: Double, _ n: Double, _ e: Double,
-                                       _ lon0: Double, _ lat0: Double,
-                                       _ kx: Double, _ ky: Double) -> [[(Int16, Int16)]] {
-        var out: [[(Int16, Int16)]] = []
+    // Assemble SEA rings for the box [s,w,n,e] the osmcoastline way: clip every
+    // chain into boundary-to-boundary sub-chains, then trace rings by following
+    // each coast forward (OSM: water on the right) and, at its exit, walking the
+    // box boundary CLOCKWISE (interior on the right = water) to the NEXT coast's
+    // entry. Uses the real topology, so a peninsula never encloses land. Returns
+    // rings as [(lat,lon), ...]. Must match build_map.py / mapgen.js.
+    static func regionSeaPolygons(_ chains: [[(Double, Double)]],
+                                  south s: Double, west w: Double,
+                                  north n: Double, east e: Double) -> [[(Double, Double)]] {
+        var subs: [[(Double, Double)]] = []
         for chain in chains {
             for (pts, sb, eb) in clipChain(chain, s, w, n, e) {
-                if !(sb && eb) { continue }  // island loop / dangling end — skip for v1
-                guard let ring = seaPolygon(pts, s, w, n, e) else { continue }
-                let m = decimate(ring.map { (lat, lon) in ((lon - lon0) * kx, (lat - lat0) * ky) }, simplifyM)
-                if m.count < 3 { continue }
-                var poly: [(Int16, Int16)] = []
-                poly.reserveCapacity(m.count)
-                for (x, y) in m {
-                    let ix = Int16(max(-32000, min(32000, Int(x.rounded()))))
-                    let iy = Int16(max(-32000, min(32000, Int(y.rounded()))))
-                    poly.append((ix, iy))
-                }
-                out.append(poly)
+                if sb && eb && pts.count >= 2 { subs.append(pts) }
             }
         }
-        return out
+        if subs.isEmpty { return [] }
+        let ww = e - w, hh = n - s, total = 2 * ww + 2 * hh
+        let entries = subs.map { perimPos($0[0], s, w, n, e) }
+        let exits = subs.map { perimPos($0[$0.count - 1], s, w, n, e) }
+        var used = [Bool](repeating: false, count: subs.count)
+        var rings: [[(Double, Double)]] = []
+        for start in 0..<subs.count {
+            if used[start] { continue }
+            var ring: [(Double, Double)] = []
+            var i = start
+            var guardN = 0
+            while !used[i] && guardN < 4 * subs.count + 8 {
+                guardN += 1
+                used[i] = true
+                ring.append(contentsOf: subs[i])            // coast A->B (water right)
+                let ex = exits[i]
+                var best = -1
+                var bestGap = Double.infinity
+                for j in 0..<subs.count {
+                    var gap = pmod(ex - entries[j], total)  // CW ex -> entry
+                    if gap <= 1e-12 { gap += total }        // not the same point
+                    if gap < bestGap { bestGap = gap; best = j }
+                }
+                ring.append(contentsOf: closing(ex, entries[best], s, w, n, e, false))  // CW
+                i = best
+            }
+            if ring.count >= 3 { rings.append(ring) }
+        }
+        return rings
+    }
+
+    // Sutherland–Hodgman clip of a polygon (lat,lon) to the rectangle [s,w,n,e].
+    // Needed because a region sea ring can enclose a fully-ocean tile without
+    // placing any vertex inside it — the tile must still fill.
+    private static func clipToBox(_ poly: [(Double, Double)],
+                                  _ s: Double, _ w: Double, _ n: Double, _ e: Double) -> [(Double, Double)] {
+        func clip(_ pts: [(Double, Double)],
+                  _ inside: ((Double, Double)) -> Bool,
+                  _ isect: ((Double, Double), (Double, Double)) -> (Double, Double)) -> [(Double, Double)] {
+            if pts.isEmpty { return [] }
+            var res: [(Double, Double)] = []
+            let m = pts.count
+            for i in 0..<m {
+                let cur = pts[i]
+                let prev = pts[(i + m - 1) % m]
+                let curIn = inside(cur), prevIn = inside(prev)
+                if curIn {
+                    if !prevIn { res.append(isect(prev, cur)) }
+                    res.append(cur)
+                } else if prevIn {
+                    res.append(isect(prev, cur))
+                }
+            }
+            return res
+        }
+        var p = poly
+        p = clip(p, { $0.1 >= w }, { a, b in let t = (w - a.1) / (b.1 - a.1); return (a.0 + t * (b.0 - a.0), w) })
+        p = clip(p, { $0.1 <= e }, { a, b in let t = (e - a.1) / (b.1 - a.1); return (a.0 + t * (b.0 - a.0), e) })
+        p = clip(p, { $0.0 >= s }, { a, b in let t = (s - a.0) / (b.0 - a.0); return (s, a.1 + t * (b.1 - a.1)) })
+        p = clip(p, { $0.0 <= n }, { a, b in let t = (n - a.0) / (b.0 - a.0); return (n, a.1 + t * (b.1 - a.1)) })
+        return p
     }
 
     // Append a WTR2 water section to an already-encoded tile (after its ELV1
@@ -483,7 +487,7 @@ enum MapBuilder {
     // in [s,w,n,e]; the whole simplified ring is stored (>= 3 points, else it
     // is skipped). Always writes the "WTR2" magic + count (0 if no polygons).
     static func appendWater(to data: inout Data, waterWays: [[(Double, Double)]],
-                            coastChains: [[(Double, Double)]] = [],
+                            seaRings: [[(Double, Double)]] = [],
                             south s: Double, west w: Double, north n: Double, east e: Double) {
         let td = tileDeg
         let midLat = (s + n) / 2
@@ -511,8 +515,23 @@ enum MapBuilder {
             polys.append(poly)
         }
 
-        // Coastline-derived sea polygons -> append to the SAME WTR2 polygon list.
-        polys.append(contentsOf: coastlinePolys(coastChains, s, w, n, e, lon0, lat0, kx, ky))
+        // Coastline sea-fill: clip each region-level sea ring to this tile, then
+        // project/decimate/i16 like a water polygon. Clipping (not a vertex test)
+        // is required so a tile fully inside the sea still fills.
+        for ring in seaRings {
+            let clipped = clipToBox(ring, s, w, n, e)
+            if clipped.count < 3 { continue }
+            let m = decimate(clipped.map { (lat, lon) in ((lon - lon0) * kx, (lat - lat0) * ky) }, simplifyM)
+            if m.count < 3 { continue }
+            var poly: [(Int16, Int16)] = []
+            poly.reserveCapacity(m.count)
+            for (x, y) in m {
+                let ix = Int16(max(-32000, min(32000, Int(x.rounded()))))
+                let iy = Int16(max(-32000, min(32000, Int(y.rounded()))))
+                poly.append((ix, iy))
+            }
+            polys.append(poly)
+        }
 
         data.append("WTR2".data(using: .ascii)!)
         data.appendU16(UInt16(min(polys.count, 0xFFFF)))

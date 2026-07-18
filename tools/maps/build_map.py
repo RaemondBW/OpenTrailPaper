@@ -330,61 +330,70 @@ def _point_in_ring(ring, lat, lon):
     return inside
 
 
-def sea_polygon(p, s, w, n, e):
-    """Close a boundary-to-boundary sub-chain p (points (lat,lon)) into a ring
-    enclosing the SEA side (right of the coastline direction). Returns the ring
-    (lat,lon) or None if degenerate."""
-    m = len(p)
-    if m < 2:
-        return None
-    i = (m - 1) // 2
-    a = p[i]
-    b = p[i + 1]
-    d_lat = b[0] - a[0]
-    d_lon = b[1] - a[1]
-    ln = math.hypot(d_lon, d_lat)
-    if ln == 0.0:
-        return None
-    mid_lat = (a[0] + b[0]) / 2
-    mid_lon = (a[1] + b[1]) / 2
-    eps = 1e-4
-    # right-of-direction normal (dLat,-dLon) in (lon,lat) space, normalized.
-    probe_lon = mid_lon + eps * (d_lat / ln)
-    probe_lat = mid_lat + eps * (-d_lon / ln)
-    pos_a = _perim_pos(p[0], s, w, n, e)
-    pos_b = _perim_pos(p[-1], s, w, n, e)
-    ring_ccw = p + _closing(pos_b, pos_a, s, w, n, e, True)
-    ring_cw = p + _closing(pos_b, pos_a, s, w, n, e, False)
-    in_ccw = _point_in_ring(ring_ccw, probe_lat, probe_lon)
-    in_cw = _point_in_ring(ring_cw, probe_lat, probe_lon)
-    if in_ccw and not in_cw:
-        return ring_ccw
-    if in_cw and not in_ccw:
-        return ring_cw
-    return None
+def region_sea_polygons(chains, s, w, n, e):
+    """Assemble SEA rings for the box [s,w,n,e] from coastline chains, the
+    osmcoastline way: clip every chain to the box into boundary-to-boundary
+    sub-chains, then trace rings by following each coast forward (OSM: water on
+    the right) and, at its exit, walking the box boundary CLOCKWISE (interior on
+    the right = water) to the NEXT coast's entry. This uses the real topology, so
+    a peninsula's coast never encloses land. Returns rings as [(lat,lon), ...]."""
+    subs = []
+    for chain in chains:
+        for pts, sb, eb in clip_chain(chain, s, w, n, e):
+            if sb and eb and len(pts) >= 2:
+                subs.append(pts)
+    if not subs:
+        return []
+    ww = e - w
+    hh = n - s
+    total = 2 * ww + 2 * hh
+    entries = [_perim_pos(sub[0], s, w, n, e) for sub in subs]
+    exits = [_perim_pos(sub[-1], s, w, n, e) for sub in subs]
+    used = [False] * len(subs)
+    rings = []
+    for start in range(len(subs)):
+        if used[start]:
+            continue
+        ring = []
+        i = start
+        guard = 0
+        while not used[i] and guard < 4 * len(subs) + 8:
+            guard += 1
+            used[i] = True
+            ring.extend(subs[i])                       # coast A->B (water right)
+            ex = exits[i]
+            # next coast entry going CW (decreasing perim, wrapping)
+            best = None
+            best_gap = None
+            for j in range(len(subs)):
+                gap = (ex - entries[j]) % total        # CW distance ex -> entry
+                if gap <= 1e-12:
+                    gap += total                       # not the same point
+                if best_gap is None or gap < best_gap:
+                    best_gap = gap
+                    best = j
+            ring.extend(_closing(ex, entries[best], s, w, n, e, False))  # CW
+            i = best
+        if len(ring) >= 3:
+            rings.append(ring)
+    return rings
 
 
 def coastline_polys(chains, s, w, n, e, lon0, lat0, kx, ky, simplify_m):
-    """Turn assembled coastline chains into projected, decimated, int16 sea
+    """Turn assembled coastline chains into projected, decimated, int16 SEA
     polygons for the tile [s,w,n,e] — same encoding as natural=water polys."""
     out = []
-    for chain in chains:
-        for pts, sb, eb in clip_chain(chain, s, w, n, e):
-            if not (sb and eb):
-                continue  # island loop / dangling end — skip for v1
-            ring = sea_polygon(pts, s, w, n, e)
-            if ring is None:
-                continue
-            m = [((lon - lon0) * kx, (lat - lat0) * ky) for lat, lon in ring]
-            m = decimate(m, simplify_m)
-            if len(m) < 3:
-                continue
-            poly = []
-            for x, y in m:
-                ix = max(-32000, min(32000, int(round(x))))
-                iy = max(-32000, min(32000, int(round(y))))
-                poly.append((ix, iy))
-            out.append(poly)
+    for ring in region_sea_polygons(chains, s, w, n, e):
+        m = [((lon - lon0) * kx, (lat - lat0) * ky) for lat, lon in ring]
+        m = decimate(m, simplify_m)
+        if len(m) < 3:
+            continue
+        poly = []
+        for x, y in m:
+            ix = max(-32000, min(32000, int(round(x))))
+            iy = max(-32000, min(32000, int(round(y))))
+            poly.append((ix, iy))
+        out.append(poly)
     return out
 
 
@@ -510,7 +519,8 @@ def main():
             poly.append((ix, iy))
         water_polys.append(poly)
 
-    # Coastline-derived sea polygons -> append to the SAME WTR2 polygon list.
+    # Coastline sea-fill: region-level assembly (osmcoastline-style) so a
+    # peninsula's coast never encloses land — see region_sea_polygons().
     water_polys.extend(
         coastline_polys(coast_chains, s, w, n, e, lon0, lat0, kx, ky,
                         args.simplify_m))
