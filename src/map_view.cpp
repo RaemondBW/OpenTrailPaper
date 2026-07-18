@@ -363,9 +363,9 @@ void ui_render_route_preview(uint8_t* fb) {
     if (n < 2) return;
     const int W = epd_rotated_display_width();
 
-    // Viewport: below the status bar + route-name band, above the accept sheet.
-    const int nameBandH = 40;
-    const int top = ui::STATUS_H + nameBandH + 8, bot = 600 - 16;
+    // Viewport: below the status bar, above the accept sheet. The route name is
+    // shown by the nav-prompt band below, so there's no name band up here.
+    const int top = ui::STATUS_H + 8, bot = 600 - 16;
     const int left = 20, right = W - 20;
     const int vw = right - left, vh = bot - top;
 
@@ -439,20 +439,4 @@ void ui_render_route_preview(uint8_t* fb) {
     epd_fill_circle(sx, sy, 10, 0x00, fb);
     epd_fill_circle(ex, ey, 11, 0xFF, fb);
     for (int r = 7; r <= 11; ++r) epd_draw_circle(ex, ey, r, 0x00, fb);
-
-    // Route-name band across the top (over any road spill), stripped of .gpx.
-    epd_fill_rect({0, ui::STATUS_H, W, nameBandH}, 0xFF, fb);
-    epd_fill_rect({0, ui::STATUS_H + nameBandH - 2, W, 2}, 0x00, fb);
-    const char* rname = routes::activeName();
-    if (rname && rname[0]) {
-        char nm[40];
-        size_t len = strlen(rname);
-        const char* dot = strstr(rname, ".gpx");
-        if (dot) len = (size_t)(dot - rname);
-        if (len > sizeof(nm) - 1) len = sizeof(nm) - 1;
-        memcpy(nm, rname, len);
-        nm[len] = 0;
-        ui::text(&ArialBold_20, W / 2, ui::STATUS_H + 28, nm, fb,
-                 EPD_DRAW_ALIGN_CENTER, 0x00);
-    }
 }
