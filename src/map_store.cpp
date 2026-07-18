@@ -52,7 +52,13 @@ struct TileMeta { char name[28]; double s, w, n, e; };
 TileMeta g_tiles[MAX_TILES];
 int g_tileCount = 0;
 
-constexpr int CACHE_N = 20;   // enough resident tiles for a wide zoom-out view
+// renderInto projects every tile overlapping the viewable rectangle. The cache
+// must hold that whole set, or a render evicts a tile it still needs and every
+// zoom-out (and every 1 Hz redraw at that zoom) re-reads the tiles from the SD
+// card — seconds of lag. A wide north-up view is ~a dozen-plus H3 tiles; 32
+// leaves margin so repeated zoom in/out stays all cache hits, and only a
+// pathologically dense overlap culls to the nearest 32 (see renderInto).
+constexpr int CACHE_N = 32;
 struct CachedTile { int idx; uint8_t* buf; size_t len; uint32_t stamp; };
 CachedTile g_cache[CACHE_N] = {};
 uint32_t g_clock = 0;
@@ -307,24 +313,50 @@ void renderInto(double lat, double lon, float metersPerPixel, int centerX,
                 int centerY, float rotateDeg, MapScreenData& out) {
     map_tiles::beginProject(out);
 
-    // Viewport half-extents (portrait 540x960 max) as lat/lon deltas.
+    // Tile-selection rectangle = the VISIBLE map band around the rider. The map
+    // draws under the status bar and footer, so those covered bands (~150 px top
+    // + bottom) don't need tiles — a ~410 px half-height covers what's actually
+    // shown, vs the old 520 that pulled a third more tiles off-screen. North-up
+    // uses this tight extent; track-up expands to the rotated diagonal so a
+    // rotated corner still pulls its tile.
     double kx = 111320.0 * cos(lat * M_PI / 180.0);
     double ky = 110540.0;
-    double dLat = (520.0 * metersPerPixel) / ky;
-    double dLon = (300.0 * metersPerPixel) / (kx > 1 ? kx : 1);
+    float hx = 290.0f, hy = 410.0f;                        // px half-extents
+    if (rotateDeg != 0.0f) { hx = 480.0f; hy = 480.0f; }   // cover the diagonal
+    double dLat = (hy * metersPerPixel) / ky;
+    double dLon = (hx * metersPerPixel) / (kx > 1 ? kx : 1);
     double vs = lat - dLat, vn = lat + dLat, vw = lon - dLon, ve = lon + dLon;
 
-    int projected = 0;
-    for (int i = 0; i < g_tileCount && projected < 40; ++i) {
+    // Which tiles are required? A fast RAM pass over the tile-bounds index: EVERY
+    // tile whose bbox overlaps the viewable rectangle — that set (not "the
+    // nearest N": a portrait view's corner tiles are visible but far) is what we
+    // draw. The rectangle bounds the count. Only if it would overflow the cache
+    // (pathologically dense coverage) do we fall back to the nearest CACHE_N so
+    // the LRU can't thrash. No SD access here, just bbox tests.
+    static struct Cand { int idx; double d2; } cand[MAX_TILES];
+    int nc = 0;
+    for (int i = 0; i < g_tileCount; ++i) {
         const TileMeta& t = g_tiles[i];
         if (t.e < vw || t.w > ve || t.n < vs || t.s > vn) continue;  // no overlap
-        size_t len;
-        const uint8_t* b = ensureTileLoaded(i, len);
-        if (b) {
-            map_tiles::projectBlobInto(b, len, lat, lon, metersPerPixel,
-                                       centerX, centerY, rotateDeg);
-            projected++;
+        double dx = ((t.w + t.e) * 0.5 - lon) * kx;
+        double dy = ((t.s + t.n) * 0.5 - lat) * ky;
+        cand[nc].idx = i;
+        cand[nc].d2 = dx * dx + dy * dy;
+        nc++;
+    }
+    bool cull = nc > CACHE_N;                 // only when it would overflow the cache
+    int lim = cull ? CACHE_N : nc;
+    for (int a = 0; a < lim; ++a) {
+        if (cull) {                           // keep the nearest CACHE_N (rare)
+            int best = a;
+            for (int j = a + 1; j < nc; ++j)
+                if (cand[j].d2 < cand[best].d2) best = j;
+            Cand tmp = cand[a]; cand[a] = cand[best]; cand[best] = tmp;
         }
+        size_t len;
+        const uint8_t* b = ensureTileLoaded(cand[a].idx, len);
+        if (b) map_tiles::projectBlobInto(b, len, lat, lon, metersPerPixel,
+                                          centerX, centerY, rotateDeg);
     }
 
     // Always draw the whole-map / embedded blob as a BASE layer underneath the
@@ -339,6 +371,7 @@ void renderInto(double lat, double lon, float metersPerPixel, int centerX,
                                    metersPerPixel, centerX, centerY, rotateDeg);
     }
     map_tiles::endProject(out);
+    out.projectedTiles = lim;
 }
 
 bool saveAndActivate(const char* name, const uint8_t* data, size_t len) {

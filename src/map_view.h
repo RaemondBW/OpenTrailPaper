@@ -60,6 +60,9 @@ struct MapScreenData {
     // A map actually covers the current position. When false the map screen
     // shows a "no map here — download it in the app" prompt.
     bool hasMap = true;
+
+    // How many SD tiles were projected this frame (diagnostics/timing).
+    int projectedTiles = 0;
 };
 
 // Compass touch target (tap toggles north-up / track-up)
