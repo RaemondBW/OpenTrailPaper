@@ -1,4 +1,4 @@
-// Web Serial firmware flasher for the Open E-Paper Bike Computer.
+// Web Serial firmware flasher for OpenTrailPaper.
 //
 // Uses esptool-js (the maintained successor to Adafruit_WebSerial_ESPTool).
 // Pinned to a known version whose writeFlash() expects each fileArray entry's
@@ -19,7 +19,7 @@ const bar = $("bar");
 const versionSelect = $("version-select");
 
 // CI publishes firmware.bin to a Release per version; list them for the dropdown.
-const REPO = "RaemondBW/epaper-bike-gps";
+const REPO = "RaemondBW/OpenTrailPaper";
 let releases = []; // [{ tag, url }]
 
 async function loadReleases() {

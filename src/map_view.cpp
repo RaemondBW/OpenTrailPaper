@@ -75,10 +75,10 @@ void fillDitheredPolygon(const int16_t* pts, int n, uint8_t* fb) {
         for (int a = 0; a + 1 < cnt; a += 2) {
             int xL = xs[a] < 0 ? 0 : xs[a];
             int xR = xs[a + 1] > 539 ? 539 : xs[a + 1];
-            // 50% checkerboard: reads as a clear medium grey through DU (25% was
-            // too faint to see on the panel). Roads draw solid black on top.
+            // 25% dot dither (one pixel per 2x2 block): a lighter grey water
+            // tint than the old 50% checker. Roads draw solid black on top.
             for (int x = xL; x <= xR; ++x)
-                if (((x ^ y) & 1) == 0) epd_draw_pixel(x, y, 0x00, fb);
+                if ((x & 1) == 0 && (y & 1) == 0) epd_draw_pixel(x, y, 0x00, fb);
         }
     }
 }
@@ -363,9 +363,9 @@ void ui_render_route_preview(uint8_t* fb) {
     if (n < 2) return;
     const int W = epd_rotated_display_width();
 
-    // Viewport: below the status bar + route-name band, above the accept sheet.
-    const int nameBandH = 40;
-    const int top = ui::STATUS_H + nameBandH + 8, bot = 600 - 16;
+    // Viewport: below the status bar, above the accept sheet. The route name is
+    // shown by the nav-prompt band below, so there's no name band up here.
+    const int top = ui::STATUS_H + 8, bot = 600 - 16;
     const int left = 20, right = W - 20;
     const int vw = right - left, vh = bot - top;
 
@@ -400,6 +400,12 @@ void ui_render_route_preview(uint8_t* fb) {
     ctx.route = nullptr;
     ctx.routePointCount = 0;
     map_store::renderInto(clat, clon, (float)mpp, cx, cy, 0.0f, ctx);
+    // Water bodies (dithered shading) under the roads, so the coast/bay reads —
+    // matches the map screen. Spill above/below the viewport is masked by the
+    // status bar + accept sheet drawn afterwards.
+    for (int i = 0; i < ctx.waterCount; ++i) {
+        fillDitheredPolygon(ctx.water[i].pts, ctx.water[i].pointCount, fb);
+    }
     for (int i = 0; i < ctx.featureCount; ++i) {
         if (ctx.features[i].cls != MAP_ROAD_MAJOR) continue;
         drawPolyline(ctx.features[i].pts, ctx.features[i].pointCount,
@@ -433,20 +439,4 @@ void ui_render_route_preview(uint8_t* fb) {
     epd_fill_circle(sx, sy, 10, 0x00, fb);
     epd_fill_circle(ex, ey, 11, 0xFF, fb);
     for (int r = 7; r <= 11; ++r) epd_draw_circle(ex, ey, r, 0x00, fb);
-
-    // Route-name band across the top (over any road spill), stripped of .gpx.
-    epd_fill_rect({0, ui::STATUS_H, W, nameBandH}, 0xFF, fb);
-    epd_fill_rect({0, ui::STATUS_H + nameBandH - 2, W, 2}, 0x00, fb);
-    const char* rname = routes::activeName();
-    if (rname && rname[0]) {
-        char nm[40];
-        size_t len = strlen(rname);
-        const char* dot = strstr(rname, ".gpx");
-        if (dot) len = (size_t)(dot - rname);
-        if (len > sizeof(nm) - 1) len = sizeof(nm) - 1;
-        memcpy(nm, rname, len);
-        nm[len] = 0;
-        ui::text(&ArialBold_20, W / 2, ui::STATUS_H + 28, nm, fb,
-                 EPD_DRAW_ALIGN_CENTER, 0x00);
-    }
 }

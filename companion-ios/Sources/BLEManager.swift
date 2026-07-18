@@ -110,7 +110,7 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var deviceLogs: [LogFile] = []        // per-day log files on the device
     @Published var loadingLogs = false
     private var logsBuilding: [LogFile] = []
-    static let bundledFirmwareVersion = "v0.75"      // matches src/config.h
+    static let bundledFirmwareVersion = "v0.78"      // matches src/config.h
 
     // Saved routes on the device
     @Published var deviceRoutes: [String] = []
@@ -441,7 +441,7 @@ final class BLEManager: NSObject, ObservableObject {
                 // from SD and reboots ONCE MORE, so don't fail yet — give it a
                 // short grace for that second reboot to land on the new version.
                 otaPhase = .verifying
-                otaMessage = "Verifying the new version…"
+                otaMessage = "Installing — flashing from the SD card…"
                 armOtaWatchdog(seconds: 60,
                     failMessage: "Device restarted but is still on \(deviceFirmware). The install didn't take — try again, or use the SD-card method.")
             }

@@ -11,9 +11,9 @@
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>CFBundleName</key>
-	<string>Bike GPS</string>
+	<string>OpenTrailPaper</string>
 	<key>CFBundleDisplayName</key>
-	<string>Bike GPS</string>
+	<string>OpenTrailPaper</string>
 	<key>CFBundleIdentifier</key>
 	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
 	<key>CFBundleShortVersionString</key>
@@ -27,14 +27,14 @@
 		<string>UIInterfaceOrientationPortrait</string>
 	</array>
 	<key>NSBluetoothAlwaysUsageDescription</key>
-	<string>Connects to your Bike GPS to sync routes and settings.</string>
+	<string>Connects to your OpenTrailPaper to sync routes and settings.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>bluetooth-central</string>
 		<string>location</string>
 	</array>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>Shows your position on the map and sends it to your Bike GPS to warm-start its GPS and act as a backup location when the device has no fix.</string>
+	<string>Shows your position on the map and sends it to your OpenTrailPaper to warm-start its GPS and act as a backup location when the device has no fix.</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>UIAppFonts</key>

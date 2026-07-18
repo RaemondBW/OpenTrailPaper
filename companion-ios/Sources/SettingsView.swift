@@ -109,8 +109,8 @@ struct SettingsView: View {
                     if ble.state == .connected { diagnosticsCard }
 
                     Text(ble.state == .connected
-                         ? "Settings sync automatically with your Bike GPS, both ways."
-                         : "Connect to sync settings with your Bike GPS.")
+                         ? "Settings sync automatically with your OpenTrailPaper, both ways."
+                         : "Connect to sync settings with your OpenTrailPaper.")
                         .font(.system(size: 13))
                         .foregroundStyle(Palette.muted)
                         .frame(maxWidth: .infinity, alignment: .center)
@@ -269,7 +269,7 @@ struct SettingsView: View {
             Button("Cancel", role: .cancel) {}
             Button("Install") { ble.startFirmwareUpdate() }
         } message: {
-            Text("This sends the new firmware to your Bike GPS and restarts it. It takes a few minutes — keep the app open and the device close. If anything goes wrong, the device keeps running its current firmware.")
+            Text("This sends the new firmware to your OpenTrailPaper and restarts it. It takes a few minutes — keep the app open and the device close. If anything goes wrong, the device keeps running its current firmware.")
         }
     }
 
@@ -304,7 +304,9 @@ struct SettingsView: View {
         case .sending:    return "Step 1 of 2 · Sending firmware"
         case .saving:     return "Step 1 of 2 · Saving to the device"
         case .installing: return "Step 2 of 2 · Installing"
-        case .verifying:  return "Step 2 of 2 · Verifying"
+        // The device is still flashing from SD here (its screen reads
+        // "Installing"), so match that rather than saying "Verifying".
+        case .verifying:  return "Step 2 of 2 · Installing"
         default:          return "Updating"
         }
     }
