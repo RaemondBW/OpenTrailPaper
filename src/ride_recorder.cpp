@@ -312,8 +312,11 @@ void stopRide(bool save) {
     rideActive = false;
     RideState s = g_state.snapshot();
     endUtc = s.timeValid ? s.utc : startUtc + timerS;
+    RideSummary sm = summary();   // fold the roll-up into the FIT session message
     sdLock();
-    fit.finish(endUtc, distanceM, timerS);
+    fit.finish(endUtc, distanceM, timerS,
+               {movingS, sm.avgSpeedKmh, sm.avgPowerW, sm.normPowerW,
+                sm.avgHrBpm, (float)climbedM});
     if (!save) SD.remove(ridePath);
     sdUnlock();
     if (!save) {

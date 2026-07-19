@@ -13,11 +13,13 @@ struct RidePreview {
     }
     var points: [Point] = []
     var start: Date?
-    var duration: TimeInterval = 0
+    var duration: TimeInterval = 0       // elapsed wall-clock
+    var movingTime: TimeInterval = 0     // device "MOVING TIME" (session timer)
     var distanceKm: Double = 0
     var avgSpeedKmh: Double = 0
     var maxSpeedKmh: Double = 0
     var avgPower: Int?
+    var normPower: Int?
     var avgHeartRate: Int?
     var ascentM: Double = 0
 
@@ -58,6 +60,12 @@ enum FITDecoder {
         var lastTime: UInt32 = 0
         var powerSum = 0, powerN = 0, hrSum = 0, hrN = 0
         var climbBase: Double? = nil   // 3 m-hysteresis ascent, like the device
+        // Session roll-up (global 18) — the numbers the device shows on its
+        // ride-complete screen. Preferred over the record-derived values below
+        // when present (older files without a summary fall back to derived).
+        var sMoving: Double? = nil, sDistKm: Double? = nil, sAvgSpeed: Double? = nil
+        var sAvgPower: Int? = nil, sNormPower: Int? = nil, sAvgHr: Int? = nil
+        var sAscent: Double? = nil
 
         while i < end {
             let rec = b[i]; i += 1
@@ -102,6 +110,17 @@ enum FITDecoder {
                         case 4:   let v = b[off]; if v != 0xFF { cad = Int(v) }
                         default: break
                         }
+                    } else if def.global == 18 {    // session roll-up
+                        switch f.num {
+                        case 8:  sMoving = Double(u32(b, off)) / 1000.0
+                        case 9:  sDistKm = Double(u32(b, off)) / 100.0 / 1000.0
+                        case 14: let v = u16(b, off); if v != 0xFFFF { sAvgSpeed = Double(v) / 1000.0 * 3.6 }
+                        case 16: let v = b[off]; if v != 0xFF { sAvgHr = Int(v) }
+                        case 20: let v = u16(b, off); if v != 0xFFFF { sAvgPower = Int(v) }
+                        case 34: let v = u16(b, off); if v != 0xFFFF { sNormPower = Int(v) }
+                        case 22: let v = u16(b, off); if v != 0xFFFF { sAscent = Double(v) }
+                        default: break
+                        }
                     }
                     off += f.size
                 }
@@ -140,6 +159,16 @@ enum FITDecoder {
         }
         preview.avgPower = powerN > 0 ? powerSum / powerN : nil
         preview.avgHeartRate = hrN > 0 ? hrSum / hrN : nil
+
+        // Prefer the device's session roll-up so the app matches the ride-complete
+        // screen exactly (incl. the map-DEM ascent, which can't be re-derived).
+        preview.movingTime = sMoving ?? preview.duration
+        if let d = sDistKm, d > 0 { preview.distanceKm = d }
+        if let s = sAvgSpeed { preview.avgSpeedKmh = s }
+        if let p = sAvgPower { preview.avgPower = p }
+        if let n = sNormPower { preview.normPower = n }
+        if let h = sAvgHr { preview.avgHeartRate = h }
+        preview.ascentM = sAscent ?? preview.ascentM
         return preview
     }
 

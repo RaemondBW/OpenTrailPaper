@@ -32,33 +32,38 @@ struct RideDetailView: View {
                     .overlay(RoundedRectangle(cornerRadius: 18)
                         .strokeBorder(Palette.hairline, lineWidth: 1))
 
+                    // Mirrors the device's ride-complete screen: distance hero,
+                    // then moving time / avg speed / avg + normalized power /
+                    // avg HR / DEM ascent, read straight from the FIT session.
                     HStack(spacing: 16) {
                         Stat(label: "Distance",
                              value: String(format: "%.1f",
                                             Units.distance(preview.distanceKm, miles: useMiles)),
                              unit: Units.distLabel(useMiles), big: true)
-                        Stat(label: "Duration", value: durationText, unit: "")
+                        Stat(label: "Moving Time", value: movingText, unit: "")
                     }
                     HStack(spacing: 16) {
                         Stat(label: "Avg Speed",
                              value: String(format: "%.1f",
                                             Units.speed(preview.avgSpeedKmh, miles: useMiles)),
                              unit: Units.speedLabel(useMiles))
-                        Stat(label: "Max Speed",
-                             value: String(format: "%.1f",
-                                            Units.speed(preview.maxSpeedKmh, miles: useMiles)),
-                             unit: Units.speedLabel(useMiles))
-                    }
-                    HStack(spacing: 16) {
                         Stat(label: "Avg Power",
                              value: preview.avgPower.map(String.init) ?? "—", unit: "W")
+                    }
+                    HStack(spacing: 16) {
+                        Stat(label: "Norm Power",
+                             value: preview.normPower.map(String.init) ?? "—", unit: "W")
                         Stat(label: "Avg HR",
                              value: preview.avgHeartRate.map(String.init) ?? "—",
                              unit: "bpm")
                     }
-                    // Ascent + point-count removed: the recorded GPS altitude is
-                    // unreliable (no barometer), so ascent is meaningless — same
-                    // reason the device dropped elevation/grade.
+                    HStack(spacing: 16) {
+                        Stat(label: "Ascent",
+                             value: String(format: "%.0f",
+                                            Units.elevation(preview.ascentM, miles: useMiles)),
+                             unit: Units.elevLabel(useMiles))
+                        Color.clear
+                    }
 
                     PrimaryButton(title: "Share .fit file",
                                   systemImage: "square.and.arrow.up") {
@@ -79,8 +84,8 @@ struct RideDetailView: View {
         }
     }
 
-    private var durationText: String {
-        let s = Int(preview.duration)
+    private var movingText: String {
+        let s = Int(preview.movingTime)
         return String(format: "%d:%02d:%02d", s / 3600, (s / 60) % 60, s % 60)
     }
     private var dateTitle: String {

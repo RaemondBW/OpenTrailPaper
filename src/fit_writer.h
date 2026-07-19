@@ -28,6 +28,18 @@ public:
     static constexpr uint16_t INVALID_U16 = 0xFFFF;
     static constexpr uint8_t  INVALID_U8 = 0xFF;
 
+    // Ride roll-up written into the session message so the app (and Strava etc.)
+    // read exactly the numbers the device shows on its ride-complete screen —
+    // including the map-DEM ascent, which can't be re-derived from the GPS track.
+    struct Summary {
+        uint32_t movingS;      // time moving (device "MOVING TIME")
+        float    avgSpeedKmh;
+        uint16_t avgPowerW;    // 0 => absent
+        uint16_t normPowerW;   // 0 => absent
+        uint8_t  avgHrBpm;     // 0 => absent
+        float    ascentM;      // from the map DEM
+    };
+
     // Opens the file and writes header, file_id and timer-start event.
     bool begin(fs::FS& fs, const char* path, time_t startUtc);
 
@@ -40,8 +52,11 @@ public:
     // cut short by a reset is put back together by repair() on the next boot.
     void checkpoint();
 
-    // Timer-stop event, lap, session, activity, then header/CRC fixup.
-    bool finish(time_t endUtc, double totalDistanceM, uint32_t timerS);
+    // Timer-stop event, lap, session, activity, then header/CRC fixup. The
+    // summary is folded into the session message (empty for a repaired ride,
+    // where only distance/time can be recovered).
+    bool finish(time_t endUtc, double totalDistanceM, uint32_t timerS,
+                const Summary& sum);
 
     bool isOpen() const { return (bool)file_; }
 

@@ -73,8 +73,13 @@ const uint8_t FIELDS_SESSION[][3] = {
     {253, 4, T_U32},  // timestamp
     {2, 4, T_U32},    // start_time
     {7, 4, T_U32},    // total_elapsed_time (ms)
-    {8, 4, T_U32},    // total_timer_time (ms)
+    {8, 4, T_U32},    // total_timer_time (ms) — moving time
     {9, 4, T_U32},    // total_distance (cm)
+    {14, 2, T_U16},   // avg_speed (mm/s)
+    {16, 1, T_U8},    // avg_heart_rate (bpm)
+    {20, 2, T_U16},   // avg_power (W)
+    {34, 2, T_U16},   // normalized_power (W)
+    {22, 2, T_U16},   // total_ascent (m) — from the map DEM
     {25, 2, T_U16},   // first_lap_index
     {26, 2, T_U16},   // num_laps
     {0, 1, T_ENUM},   // event = 8 (session)
@@ -294,13 +299,14 @@ FitWriter::RepairResult FitWriter::repair(fs::FS& fs, const char* path) {
         f.close();
         return res;  // INVALID
     }
-    if (!w.finish(endUtc, distanceM, res.elapsedS)) return res;
+    if (!w.finish(endUtc, distanceM, res.elapsedS, {})) return res;  // no roll-up on repair
 
     res.status = RepairResult::REPAIRED;
     return res;
 }
 
-bool FitWriter::finish(time_t endUtc, double totalDistanceM, uint32_t timerS) {
+bool FitWriter::finish(time_t endUtc, double totalDistanceM, uint32_t timerS,
+                       const Summary& sum) {
     if (!file_) return false;
 
     uint32_t ts = fitTime(endUtc);
@@ -330,20 +336,27 @@ bool FitWriter::finish(time_t endUtc, double totalDistanceM, uint32_t timerS) {
     lap[24] = 1;         // event_type: stop
     writeBytes(lap, sizeof(lap));
 
-    writeDefinition(L_SESSION, MSG_SESSION, FIELDS_SESSION, 11);
-    uint8_t ses[29];
+    writeDefinition(L_SESSION, MSG_SESSION, FIELDS_SESSION, 16);
+    uint8_t ses[38];
     ses[0] = L_SESSION;
     put32(&ses[1], ts);
     put32(&ses[5], start);
     put32(&ses[9], elapsedMs);
-    put32(&ses[13], timerMs);
+    // total_timer_time = moving time (what the ride-complete screen shows);
+    // fall back to the recording timer for a repaired ride with no summary.
+    put32(&ses[13], sum.movingS ? sum.movingS * 1000 : timerMs);
     put32(&ses[17], distCm);
-    put16(&ses[21], 0);  // first_lap_index
-    put16(&ses[23], 1);  // num_laps
-    ses[25] = 8;         // event: session
-    ses[26] = 1;         // event_type: stop
-    ses[27] = 2;         // sport: cycling
-    ses[28] = 0;         // sub_sport: generic
+    put16(&ses[21], (uint16_t)llround(sum.avgSpeedKmh / 3.6 * 1000.0));  // mm/s
+    ses[23] = sum.avgHrBpm ? sum.avgHrBpm : INVALID_U8;
+    put16(&ses[24], sum.avgPowerW ? sum.avgPowerW : INVALID_U16);
+    put16(&ses[26], sum.normPowerW ? sum.normPowerW : INVALID_U16);
+    put16(&ses[28], (uint16_t)llround(sum.ascentM));
+    put16(&ses[30], 0);  // first_lap_index
+    put16(&ses[32], 1);  // num_laps
+    ses[34] = 8;         // event: session
+    ses[35] = 1;         // event_type: stop
+    ses[36] = 2;         // sport: cycling
+    ses[37] = 0;         // sub_sport: generic
     writeBytes(ses, sizeof(ses));
 
     writeDefinition(L_ACTIVITY, MSG_ACTIVITY, FIELDS_ACTIVITY, 7);
