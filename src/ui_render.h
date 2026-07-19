@@ -107,16 +107,11 @@ void ui_render_back_bar(uint8_t* fb);
 
 // Settings sub-page row hit-testing. Rows 0-1 are +/- adjusters (FTP,
 // timezone); rows 2-4 are toggle switches (backlight, units, USB drive);
-// rows 5-6 are navigation. Sensors lives on the main menu, not here.
+// row 5 is navigation. Sensors lives on the main menu, not here.
 constexpr int kSettingsBacklightRow = 2;
 constexpr int kSettingsUnitsRow = 3;
 constexpr int kSettingsUsbRow = 4;
 constexpr int kSettingsGpsRow = 5;
-constexpr int kSettingsGreyRow = 6;
-
-// Grayscale test screen: labelled swatches from white to black to pick which
-// gray levels reproduce on the panel.
-void ui_render_grey_test(uint8_t* fb);
 
 // GPS diagnostics page (reached from Settings). Mirrors GpsDebug from
 // gps_service.h but stays host-safe for the preview harness.
