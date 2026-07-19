@@ -574,9 +574,12 @@ void renderMapScreen(const RideState& s, uint8_t* fb) {
     uint32_t m1 = millis();
     ui_render_map(map, s, fb);
     if (dbgTiming)
-        diag::log("map: project=%lu draw=%lu polys=%d mpp=%d",
+        diag::log("map: project=%lu draw=%lu polys=%d (tiles=%d base=%d) "
+                  "cls[maj=%d sec=%d min=%d path=%d] ntiles=%d mpp=%d",
                   (unsigned long)(m1 - m0), (unsigned long)(millis() - m1),
-                  map.featureCount, (int)mapMpp);
+                  map.featureCount, map.tilePolys, map.featureCount - map.tilePolys,
+                  map.clsCount[0], map.clsCount[1], map.clsCount[2], map.clsCount[3],
+                  map.projectedTiles, (int)mapMpp);
     drawNavBanner(fb);
 }
 

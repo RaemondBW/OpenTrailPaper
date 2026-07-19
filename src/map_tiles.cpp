@@ -31,6 +31,7 @@ MapPolyline* waterPolys = nullptr;
 // Shared append cursors across a multi-tile frame (map_store drives these
 // via beginProject / projectBlobInto / endProject).
 int g_usedPts = 0, g_usedPolys = 0;
+int g_clsKept[5] = {0, 0, 0, 0, 0};   // diag: polys kept per class this frame
 int g_usedWaterPts = 0, g_usedWaterPolys = 0;
 
 void* bigAlloc(size_t n) {
@@ -81,7 +82,11 @@ void beginProject(MapScreenData& out) {
     g_usedPolys = 0;
     g_usedWaterPts = 0;
     g_usedWaterPolys = 0;
+    for (int i = 0; i < 5; ++i) g_clsKept[i] = 0;
 }
+
+int projectedPolyCount() { return g_usedPolys; }
+void projectedClassCounts(int out[5]) { for (int i = 0; i < 5; ++i) out[i] = g_clsKept[i]; }
 
 void endProject(MapScreenData& out) {
     out.featureCount = g_usedPolys;
@@ -222,6 +227,7 @@ void projectBlobInto(const uint8_t* b, size_t bLen, double lat, double lon,
                 polys[usedPolys].pointCount = kept;
                 usedPolys++;
                 usedPts += kept;
+                if (cls < 5) g_clsKept[cls]++;
             }
         }
     }

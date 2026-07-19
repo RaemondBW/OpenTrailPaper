@@ -36,8 +36,8 @@ out body;
 out skel qt;`;
 
 // Road tiers (device render classes).
-const ARTERIAL = new Set(["motorway", "trunk", "primary"]);
-const SECONDARY = new Set(["secondary", "tertiary"]);
+const ARTERIAL = new Set(["motorway", "trunk"]);
+const SECONDARY = new Set(["primary", "secondary", "tertiary"]);
 const MINOR = new Set(["residential", "unclassified", "living_street", "pedestrian"]);
 const PATH = new Set(["cycleway", "footway", "path", "track", "steps"]);
 

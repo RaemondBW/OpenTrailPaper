@@ -10,9 +10,17 @@ struct RidesView: View {
     @State private var detail: RideDetailData?
     @State private var failedURL: URL?          // parsed badly → offer to share it
 
-    // Connected: the device's ride list. Offline: whatever is cached locally.
+    // Always show the pre-synced (locally cached) rides; when connected, merge in
+    // the device's live list too. Mid-ride the device refuses to list the SD (it's
+    // busy recording), so `ble.rides` is empty then — the cached rides keep showing
+    // instead of the view going blank. Newest first.
     private var displayedRides: [RideFile] {
-        ble.state == .connected ? ble.rides : BLEManager.cachedRides()
+        let cached = BLEManager.cachedRides()
+        guard ble.state == .connected else { return cached }
+        var seen = Set<String>()
+        var out: [RideFile] = []
+        for r in ble.rides + cached where seen.insert(r.name).inserted { out.append(r) }
+        return out.sorted { $0.name > $1.name }
     }
 
     // Show a cached ride immediately; otherwise pull it over BLE.
@@ -50,6 +58,24 @@ struct RidesView: View {
             }
         }
         .padding(.top, 8)
+    }
+
+    // Shown while the device is actively recording, so the tab makes clear a ride
+    // is underway (and why new rides haven't synced yet).
+    private var inProgressBanner: some View {
+        Card {
+            HStack(spacing: 12) {
+                Image(systemName: "record.circle.fill")
+                    .font(.system(size: 22)).foregroundStyle(.red)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Ride in progress")
+                        .font(BarlowFont.text(15, .semibold)).foregroundStyle(Palette.ink)
+                    Text("Recording to the SD card — it'll sync here when you stop.")
+                        .font(BarlowFont.text(12)).foregroundStyle(Palette.muted)
+                }
+                Spacer()
+            }
+        }
     }
 
     // Week roll-up from whatever previews are decoded (fills in as rows load).
@@ -105,6 +131,7 @@ struct RidesView: View {
                 let rides = displayedRides
                 VStack(spacing: 14) {
                     header
+                    if ble.status.recording { inProgressBanner }
                     if !rides.isEmpty { summary(rides) }
 
                     if ble.state == .connected && ble.loadingRides {
@@ -112,11 +139,14 @@ struct RidesView: View {
                     } else if rides.isEmpty {
                         Card {
                             VStack(alignment: .leading, spacing: 6) {
-                                Text(ble.state == .connected ? "No rides found"
-                                                             : "No cached rides")
+                                Text(ble.status.recording ? "No synced rides yet"
+                                     : ble.state == .connected ? "No rides found"
+                                                               : "No cached rides")
                                     .font(TypeScale.title).foregroundStyle(Palette.ink)
-                                Text(ble.state == .connected
-                                     ? "Rides are saved to the SD card. If you're mid-ride, stop it first."
+                                Text(ble.status.recording
+                                     ? "The current ride is being recorded to the SD card — it'll appear here once you finish and stop it."
+                                     : ble.state == .connected
+                                     ? "Rides are saved to the SD card and sync here automatically."
                                      : "Connect to your OpenTrailPaper to download rides. Downloaded rides stay here for offline viewing.")
                                     .font(BarlowFont.text(14)).foregroundStyle(Palette.muted)
                             }
