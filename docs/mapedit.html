@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenTrailPaper — map style editor</title>
+<meta name="description" content="Tune which road tiers and features appear at each zoom level on the OpenTrailPaper map, with a live device-style preview.">
+<style>
+  :root { --bg:#14171a; --panel:#1c2126; --line:#2c333a; --ink:#e7ecf0; --muted:#8b97a3; --accent:#F4501E; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+         font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
+  header { padding:20px 24px; border-bottom:1px solid var(--line); }
+  header h1 { margin:0 0 4px; font-size:20px; }
+  header p { margin:0; color:var(--muted); font-size:13px; }
+  header a { color:var(--accent); }
+  .wrap { display:flex; gap:24px; padding:24px; align-items:flex-start; flex-wrap:wrap; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px; }
+  .controls { flex:1 1 460px; min-width:340px; }
+  .preview { flex:0 0 auto; }
+  label.field { display:inline-flex; flex-direction:column; gap:3px; font-size:12px; color:var(--muted); }
+  input[type=number], input[type=text] { background:#0f1214; border:1px solid var(--line); color:var(--ink);
+        border-radius:7px; padding:6px 8px; font:inherit; font-size:13px; }
+  input.n { width:70px; }
+  input.w { width:46px; text-align:center; }
+  button { background:var(--accent); color:#fff; border:0; border-radius:8px; padding:8px 14px;
+        font:inherit; font-weight:600; cursor:pointer; }
+  button.ghost { background:transparent; color:var(--ink); border:1px solid var(--line); font-weight:500; }
+  button:disabled { opacity:.5; cursor:default; }
+  .row { display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap; margin-bottom:12px; }
+  .status { color:var(--muted); font-size:12px; min-height:16px; margin-top:6px; }
+  table { border-collapse:collapse; width:100%; margin-top:8px; font-size:13px; }
+  th, td { border:1px solid var(--line); padding:6px 8px; text-align:center; }
+  th.tier, td.tier { text-align:left; white-space:nowrap; }
+  td.tier small { color:var(--muted); display:block; font-size:10px; }
+  th { color:var(--muted); font-weight:600; }
+  th .cur { color:var(--accent); }
+  .cell { display:flex; flex-direction:column; gap:3px; align-items:center; }
+  .cell input[type=checkbox] { width:16px; height:16px; accent-color:var(--accent); }
+  canvas { background:#fff; border-radius:10px; display:block; }
+  .zoombar { display:flex; gap:6px; margin-bottom:10px; }
+  .zoombar button { padding:5px 10px; font-size:13px; }
+  .zoombar button.active { outline:2px solid var(--accent); }
+  .legend { color:var(--muted); font-size:11px; margin-top:8px; }
+  pre { background:#0f1214; border:1px solid var(--line); border-radius:8px; padding:12px;
+        overflow:auto; font-size:11px; max-height:200px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Map style editor</h1>
+  <p>Tune which road tiers and water appear — and how thick — at each zoom level, with a live
+     device-style preview. Defaults match the firmware. <a href="index.html">← back to the site</a></p>
+</header>
+
+<div class="wrap">
+  <div class="panel controls">
+    <div class="row">
+      <label class="field">center lat<input class="n" id="lat" type="number" step="0.0001" value="37.7764"></label>
+      <label class="field">center lon<input class="n" id="lon" type="number" step="0.0001" value="-122.4346"></label>
+      <label class="field">area (km)<input class="n" id="km" type="number" step="0.5" min="1" max="12" value="5"></label>
+      <button id="load">Load area</button>
+      <button class="ghost" id="reset">Reset defaults</button>
+    </div>
+    <div class="status" id="status">Enter a center + area and load OSM roads to preview.</div>
+
+    <table id="matrix"></table>
+    <div class="legend">Check = the tier is drawn at that zoom (blank = shed). Number = stroke width in px.
+      Water is a single dithered fill. The orange column is the zoom shown in the preview.</div>
+
+    <div class="row" style="margin-top:16px">
+      <button class="ghost" id="export">Export config (JSON)</button>
+    </div>
+    <pre id="out" hidden></pre>
+  </div>
+
+  <div class="panel preview">
+    <div class="zoombar" id="zoombar"></div>
+    <canvas id="cv" width="378" height="539"></canvas>
+    <div class="legend" id="pvinfo">— m/px · load an area to render</div>
+  </div>
+</div>
+
+<script type="module" src="mapedit.js"></script>
+</body>
+</html>
