@@ -14,6 +14,76 @@ The board has everything onboard: ESP32-S3 (16 MB flash / 8 MB PSRAM, BLE 5),
 MIA-M10Q or L76K/CASIC — autodetected), SD card slot, PCF8563 RTC, BQ25896
 charger and BQ27220 fuel gauge.
 
+## Hardware
+
+### Reference board
+
+The reference hardware is the **LilyGO T5S3 4.7" e-paper PRO** — everything is
+onboard, nothing to wire. The firmware targets it directly, but the
+hardware-specific pieces are small and isolated, so alternative boards are
+intended to be supportable.
+
+### Supporting other boards
+
+A candidate board needs, at minimum:
+
+- **ESP32-S3 with PSRAM.** The map tiles, elevation grids and the two 540×960
+  framebuffers live in PSRAM — an S3 without PSRAM (or a plain ESP32) won't fit.
+- **An e-paper panel [epdiy](https://github.com/vroland/epdiy) can drive.** All
+  rendering goes through epdiy, so the panel needs an epdiy board definition (or
+  you add one). The layout assumes ~4.7" / 960×540; a different size means
+  reworking `src/ui_render.cpp`.
+- **A UART GPS.** Any NMEA receiver works; u-blox M10 and CASIC additionally get
+  a binary warm-start path (see below).
+- **An SD card on SPI** — all maps, rides, routes and logs live there.
+- **BLE** — the companion-app link (built into the ESP32-S3).
+- **At least one button** for start/stop and menu. Touch is used but optional.
+
+Porting is mostly re-pointing three things:
+
+- [`src/config.h`](src/config.h) — every GPIO (GPS UART, shared I²C, SD SPI,
+  buttons, backlight) and the display rotation.
+- `src/board_power.*` — power rails and sleep. On the reference board the
+  **GPS 3V3 rail is gated behind pin 0 of the XL9555 I²C expander**, so the
+  receiver stays dark until that's switched on — an easy thing to miss on a port.
+- The epdiy board definition (via `platformio.ini`) — how the panel is driven.
+
+The non-essential peripherals (RTC, fuel gauge, charger, frontlight) degrade
+gracefully if a board lacks them.
+
+### Elevation without a barometer
+
+The board has **no pressure sensor**, and the GPS chip's own altitude
+(geometric, no barometric aiding) is far too noisy to derive climb from — tens
+of metres of jitter while standing still. So the device ignores GPS altitude
+entirely.
+
+Instead, **elevation is baked into the map tiles.** When the app builds a tile it
+also fetches a coarse DEM (digital elevation model) for that area from
+[Open-Meteo](https://open-meteo.com/) and appends it as an `ELV1` block (~20×20
+samples, ≈350 m spacing — see [Tile format](#tile-format-ebm1--elv1-little-endian)).
+At runtime the device reads its altitude by bilinearly interpolating that grid at
+the current GPS position and accumulates climb from it — a smooth, real elevation
+profile that needs only a horizontal fix. The trade-off: elevation exists only
+where you've downloaded tiles.
+
+### GPS cold-start seeding
+
+A receiver that has no idea where or when it is — a **cold start**, on first
+power-on or after its almanac goes stale — can take **many minutes** to fix: it
+blindly searches the whole sky. Two things cut that down:
+
+- **Warm start from the last fix.** The device persists its last position and the
+  RTC holds time across sleep, so on wake it already has a rough where/when to
+  seed the receiver — most starts become warm starts (seconds, not minutes).
+- **Phone-seeded start.** While connected, the companion app streams the phone's
+  location to the device every few seconds. When the device has no fix it injects
+  that position and time as an aiding message — **CASIC `AID-INI`** or a **u-blox
+  `UBX` aiding frame** depending on the detected chip (see
+  [`src/gps_service.cpp`](src/gps_service.cpp)) — so the receiver knows where to
+  look and locks on fast. The phone location also stands in as the map position
+  until the device's own fix lands.
+
 ## Screens
 
 **Device** — rendered by `src/ui_render.cpp` on the e-paper panel:
