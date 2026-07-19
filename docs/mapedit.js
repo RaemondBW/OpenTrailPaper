@@ -35,18 +35,81 @@ const $ = (id) => document.getElementById(id);
 const cv = $("cv"), ctx = cv.getContext("2d");
 const setStatus = (m) => { $("status").textContent = m; };
 
+// --- area picker (same Leaflet box selector as the docs site) --------------
+const bbN = $("bb-n"), bbS = $("bb-s"), bbW = $("bb-w"), bbE = $("bb-e");
+const round5 = (v) => Math.round(v * 1e5) / 1e5;
+
+function readBbox() {
+  const s = parseFloat(bbS.value), w = parseFloat(bbW.value);
+  const n = parseFloat(bbN.value), e = parseFloat(bbE.value);
+  if ([s, w, n, e].some((v) => !isFinite(v)) || s >= n || w >= e) return null;
+  return { s, w, n, e };
+}
+function setBbox(s, w, n, e) {
+  bbS.value = round5(s); bbW.value = round5(w);
+  bbN.value = round5(n); bbE.value = round5(e);
+  drawRect();
+}
+
+let lmap = null, rect = null, drawing = false, dragStart = null;
+if (typeof L !== "undefined") {
+  lmap = L.map("pickmap", { zoomControl: true }).setView([37.7625, -122.44], 12);
+  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+    { maxZoom: 19, attribution: "&copy; OpenStreetMap contributors" }).addTo(lmap);
+  setTimeout(() => lmap.invalidateSize(), 200);
+
+  $("useview").onclick = () => {
+    const b = lmap.getBounds();
+    setBbox(b.getSouth(), b.getWest(), b.getNorth(), b.getEast());
+  };
+  $("drawbox").onclick = () => setDrawing(!drawing);
+  lmap.on("mousedown", (e) => {
+    if (!drawing) return;
+    dragStart = e.latlng; L.DomEvent.preventDefault(e.originalEvent);
+  });
+  lmap.on("mousemove", (e) => { if (drawing && dragStart) drawRectBounds(L.latLngBounds(dragStart, e.latlng)); });
+  lmap.on("mouseup", (e) => {
+    if (!drawing || !dragStart) return;
+    const b = L.latLngBounds(dragStart, e.latlng);
+    dragStart = null; setDrawing(false);
+    setBbox(b.getSouth(), b.getWest(), b.getNorth(), b.getEast());
+  });
+} else {
+  ["pickmap", "drawbox", "useview"].forEach((id) => { const el = $(id); if (el) el.style.display = "none"; });
+}
+
+function setDrawing(on) {
+  drawing = on;
+  $("drawbox").classList.toggle("active", on);
+  if (!lmap) return;
+  lmap.getContainer().style.cursor = on ? "crosshair" : "";
+  on ? lmap.dragging.disable() : lmap.dragging.enable();
+}
+function drawRectBounds(b) {
+  if (!lmap) return;
+  if (!rect) rect = L.rectangle(b, { color: "#F4501E", weight: 2, fillOpacity: 0.08 }).addTo(lmap);
+  else rect.setBounds(b);
+}
+function drawRect() {
+  const bb = readBbox();
+  if (bb && lmap) drawRectBounds(L.latLngBounds([bb.s, bb.w], [bb.n, bb.e]));
+}
+[bbN, bbS, bbW, bbE].forEach((f) => f.addEventListener("input", drawRect));
+
 $("load").onclick = async () => {
-  const lat = parseFloat($("lat").value), lon = parseFloat($("lon").value);
-  const km = Math.max(1, Math.min(12, parseFloat($("km").value) || 5));
-  const dLat = (km / 2) / 111.0;
-  const dLon = (km / 2) / (111.0 * Math.cos(lat * Math.PI / 180));
-  const bb = { s: lat - dLat, w: lon - dLon, n: lat + dLat, e: lon + dLon };
+  const bb = readBbox();
+  if (!bb) { setStatus("Draw or enter a valid box (north above south, east right of west)."); return; }
+  const midLat = (bb.s + bb.n) / 2;
+  const kmW = (bb.e - bb.w) * 111.32 * Math.cos(midLat * Math.PI / 180);
+  const kmH = (bb.n - bb.s) * 110.57;
+  if (kmW * kmH > 40000) { setStatus("Too large — draw a smaller box (Overpass will refuse it)."); return; }
   $("load").disabled = true;
   setStatus("Downloading OSM data…");
   try {
     const json = await fetchOverpass(bb, (m) => setStatus(m));
     parse(json);
-    setStatus(`Loaded ${roads.length} roads, ${waterPolys.length} water polygons.`);
+    center = [midLat, (bb.w + bb.e) / 2];   // preview centred on the selected box
+    setStatus(`Loaded ${roads.length} roads, ${waterPolys.length} water polygons · ${kmW.toFixed(1)}×${kmH.toFixed(1)} km.`);
     render();
   } catch (e) {
     setStatus("Failed: " + (e && e.message ? e.message : e));
@@ -164,4 +227,7 @@ function buildZoombar() {
 
 buildZoombar();
 buildMatrix();
+// Default selection: ~5 km around Alamo Square, San Francisco.
+setBbox(37.7764 - 0.0225, -122.4346 - 0.0284, 37.7764 + 0.0225, -122.4346 + 0.0284);
+if (lmap) lmap.fitBounds([[37.7539, -122.463], [37.7989, -122.4062]], { padding: [20, 20] });
 render();
