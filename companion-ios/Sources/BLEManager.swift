@@ -785,9 +785,13 @@ final class BLEManager: NSObject, ObservableObject {
             finishDownload()
         case 0x13: break  // delete ack (already removed locally)
         case 0x1F:  // error (e.g. recording in progress)
+            // Only surface a toast if the user was actively downloading; the
+            // routine list-refresh fails silently mid-ride (the Rides tab shows
+            // an "in progress" banner + the already-synced rides instead).
+            let wasDownloading = downloadingName != nil
             downloadingName = nil
             loadingRides = false
-            lastMessage = "Device busy — stop the ride first"
+            if wasDownloading { lastMessage = "Device busy — stop the ride first" }
         default: break
         }
     }
