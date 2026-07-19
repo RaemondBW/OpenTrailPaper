@@ -569,6 +569,30 @@ void ui_render_back_bar(uint8_t* fb) {
              EPD_DRAW_ALIGN_CENTER);
 }
 
+// iOS-style pill switch: black filled pill with a white knob on the right
+// when on; white outlined pill with a black knob on the left when off.
+static void settingsToggle(int x, int y, int w, int h, bool on, uint8_t* fb) {
+    const int r = h / 2;
+    const int lcx = x + r;          // left cap center
+    const int rcx = x + w - r;      // right cap center
+    const int cy = y + r;
+    const int knobR = r - 6;
+    // Solid black pill (rounded rect = middle band + two end caps).
+    epd_fill_rect({lcx, y, w - h, h}, 0x00, fb);
+    epd_fill_circle(lcx, cy, r, 0x00, fb);
+    epd_fill_circle(rcx, cy, r, 0x00, fb);
+    if (on) {
+        epd_fill_circle(rcx, cy, knobR, 0xFF, fb);   // white knob, right
+    } else {
+        // Hollow the pill to a thin outline, then a black knob on the left.
+        const int t = 3;
+        epd_fill_rect({lcx, y + t, w - h, h - 2 * t}, 0xFF, fb);
+        epd_fill_circle(lcx, cy, r - t, 0xFF, fb);
+        epd_fill_circle(rcx, cy, r - t, 0xFF, fb);
+        epd_fill_circle(lcx, cy, knobR, 0x00, fb);
+    }
+}
+
 void ui_render_settings(const SettingsInfo& si, uint8_t* fb) {
     const int W = epd_rotated_display_width();
 
@@ -578,43 +602,63 @@ void ui_render_settings(const SettingsInfo& si, uint8_t* fb) {
     struct Row {
         const char* label;
         char value[16];
+        bool toggle;   // switch instead of +/- stepper
+        bool on;       // switch position when toggle
     } rows[5];
     snprintf(rows[0].value, sizeof(rows[0].value), "%d W", si.ftpW);
     rows[0].label = "FTP";
+    rows[0].toggle = false;
     int tzH = si.tzMin / 60, tzM = abs(si.tzMin % 60);
     if (tzM) snprintf(rows[1].value, sizeof(rows[1].value), "%+d:%02d", tzH, tzM);
     else snprintf(rows[1].value, sizeof(rows[1].value), "UTC%+d", tzH);
     rows[1].label = "TIMEZONE";
+    rows[1].toggle = false;
     static const char* BL[] = {"Off", "Low", "Med", "Bright"};
     snprintf(rows[2].value, sizeof(rows[2].value), "%s",
              BL[si.backlight < 0 ? 0 : si.backlight > 3 ? 3 : si.backlight]);
-    rows[2].label = "FRONTLIGHT";
+    rows[2].label = "BACKLIGHT";
+    rows[2].toggle = true;
+    rows[2].on = si.backlight > 0;
     snprintf(rows[3].value, sizeof(rows[3].value), "%s",
              si.useMiles ? "Miles" : "Km");
     rows[3].label = "UNITS";
+    rows[3].toggle = true;
+    rows[3].on = si.useMiles;
     snprintf(rows[4].value, sizeof(rows[4].value), "%s",
              si.usbDrive ? "On" : "Off");
     rows[4].label = "USB DRIVE";
+    rows[4].toggle = true;
+    rows[4].on = si.usbDrive;
 
     for (int i = 0; i < 5; ++i) {
         int y = kMenuRowTop + i * kSettingsRowH;
         ui::text(&ArialBold_14, 28, y + kSettingsRowH / 2 + 5, rows[i].label, fb);
 
-        // minus / plus buttons with the value between
-        for (int b = 0; b < 2; ++b) {
-            int bx = b == 0 ? kSettingsMinusX : kSettingsPlusX;
-            EpdRect r = {bx, y + (kSettingsRowH - kSettingsBtn) / 2, kSettingsBtn,
-                         kSettingsBtn};
-            epd_draw_rect(r, 0x00, fb);
-            EpdRect r2 = {r.x + 1, r.y + 1, r.width - 2, r.height - 2};
-            epd_draw_rect(r2, 0x00, fb);
-            int cx = r.x + r.width / 2, cy = r.y + r.height / 2;
-            epd_fill_rect({cx - 12, cy - 2, 24, 5}, 0x00, fb);
-            if (b == 1) epd_fill_rect({cx - 2, cy - 12, 5, 24}, 0x00, fb);
+        if (rows[i].toggle) {
+            // current value to the left, switch on the right
+            int vx = (kSettingsMinusX + kSettingsToggleX) / 2;
+            ui::text(&ArialBold_20, vx, y + kSettingsRowH / 2 + 8, rows[i].value,
+                     fb, EPD_DRAW_ALIGN_CENTER);
+            int ty = y + (kSettingsRowH - kSettingsToggleH) / 2;
+            settingsToggle(kSettingsToggleX, ty, kSettingsToggleW,
+                           kSettingsToggleH, rows[i].on, fb);
+        } else {
+            // minus / plus buttons with the value between
+            for (int b = 0; b < 2; ++b) {
+                int bx = b == 0 ? kSettingsMinusX : kSettingsPlusX;
+                EpdRect r = {bx, y + (kSettingsRowH - kSettingsBtn) / 2,
+                             kSettingsBtn, kSettingsBtn};
+                epd_draw_rect(r, 0x00, fb);
+                EpdRect r2 = {r.x + 1, r.y + 1, r.width - 2, r.height - 2};
+                epd_draw_rect(r2, 0x00, fb);
+                int cx = r.x + r.width / 2, cy = r.y + r.height / 2;
+                epd_fill_rect({cx - 12, cy - 2, 24, 5}, 0x00, fb);
+                if (b == 1) epd_fill_rect({cx - 2, cy - 12, 5, 24}, 0x00, fb);
+            }
+            int vx = (kSettingsMinusX + kSettingsBtn + kSettingsPlusX) / 2;
+            ui::text(&ArialBold_20, vx, y + kSettingsRowH / 2 + 8, rows[i].value,
+                     fb, EPD_DRAW_ALIGN_CENTER);
         }
-        int vx = (kSettingsMinusX + kSettingsBtn + kSettingsPlusX) / 2;
-        ui::text(&ArialBold_20, vx, y + kSettingsRowH / 2 + 8, rows[i].value, fb,
-                 EPD_DRAW_ALIGN_CENTER);
         epd_fill_rect({0, y + kSettingsRowH - 1, W, 1}, 0x00, fb);
     }
 

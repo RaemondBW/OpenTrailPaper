@@ -26,10 +26,10 @@
 #define BOARD_PCA9535_INT   38
 #define BOARD_BOOT_BTN      0
 
-// Frontlight: PT4103 driver enabled by GPIO11 (PWM brightness).
+// Backlight: PT4103 driver enabled by GPIO11 (PWM brightness).
 #define BOARD_BL_EN         11
 // Front button on GPIO48 (free — epdiy drives the panel CKV via the LCD
-// peripheral, not this pin). Cycles the frontlight brightness.
+// peripheral, not this pin). Cycles the backlight brightness.
 #define BOARD_BL_BTN        48
 
 // GPS + LoRa 3V3 rail is gated by IO0 on the XL9555 expander.

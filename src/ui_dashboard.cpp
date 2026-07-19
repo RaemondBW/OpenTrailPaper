@@ -81,7 +81,7 @@ void IRAM_ATTR onBoardBtnIrq() { boardBtnIrq = true; }
 // Power/shutdown dialog overlay (opened by holding BOOT 1.5 s).
 bool powerOverlay = false;
 
-// Frontlight: 4 levels cycled by the GPIO48 button.
+// Backlight: 4 levels cycled by the GPIO48 button.
 const uint8_t kBacklightPWM[4] = {0, 50, 110, 230};
 void applyBacklight(int level) {
     if (level < 0) level = 0;
@@ -308,8 +308,8 @@ void toggleRide() {
     }
 }
 
-// Side-key short-press: step the frontlight Off -> Low -> Med -> Bright -> Off.
-void cycleFrontlight() {
+// Side-key short-press: step the backlight Off -> Low -> Med -> Bright -> Off.
+void cycleBacklight() {
     int next = (settings::backlight() + 1) & 3;
     settings::setBacklight(next);
     applyBacklight(next);
@@ -444,24 +444,33 @@ void handleTap(int x, int y) {
             break;
         case SCREEN_SETTINGS: {
             int row = (y - kMenuRowTop) / kSettingsRowH;
+            bool inRows = y >= kMenuRowTop && row >= 0 && row < 5;
+            bool toggleRow = row == kSettingsBacklightRow ||
+                             row == kSettingsUnitsRow || row == kSettingsUsbRow;
             bool minus = x >= kSettingsMinusX && x < kSettingsMinusX + kSettingsBtn;
             bool plus = x >= kSettingsPlusX && x < kSettingsPlusX + kSettingsBtn;
-            if (y >= kMenuRowTop && row >= 0 && row < 5 && (minus || plus)) {
+            bool toggleHit = x >= kSettingsToggleX &&
+                             x < kSettingsToggleX + kSettingsToggleW;
+            bool edited = false;
+            if (inRows && !toggleRow && (minus || plus)) {
                 int dir = plus ? 1 : -1;
                 if (row == 0) settings::setFtpWatts(settings::ftpWatts() + dir * 5);
                 if (row == 1) settings::setTzMinutes(settings::tzMinutes() + dir * 30);
-                if (row == kSettingsBacklightRow) {
-                    settings::setBacklight(settings::backlight() + dir);
+                edited = true;
+            } else if (inRows && toggleRow && toggleHit) {
+                if (row == kSettingsBacklightRow) {   // tap cycles off/low/med/bright
+                    settings::setBacklight((settings::backlight() + 1) & 3);
                     applyBacklight(settings::backlight());
-                }
-                if (row == kSettingsUnitsRow) {   // either button toggles
+                } else if (row == kSettingsUnitsRow) {
                     settings::setUseMiles(!settings::useMiles());
-                }
-                if (row == kSettingsUsbRow) {   // either button toggles the drive
+                } else {   // USB drive
                     bool on = !settings::usbDrive();
                     settings::setUsbDrive(on);
                     usb_storage::setDriveEnabled(on);
                 }
+                edited = true;
+            }
+            if (edited) {
                 g_state.with([](RideState& st) {
                     st.ftpW = (uint16_t)settings::ftpWatts();
                     st.tzMin = (int16_t)settings::tzMinutes();
@@ -748,7 +757,7 @@ bool begin() {
     hl = epd_hl_init(EPD_BUILTIN_WAVEFORM);
     epd_set_rotation(DISPLAY_ROTATION);
 
-    // Frontlight — level set in Settings, applied here at boot.
+    // Backlight — level set in Settings, applied here at boot.
     pinMode(BOARD_BL_EN, OUTPUT);
     applyBacklight(settings::backlight());
 
@@ -970,7 +979,7 @@ void task(void*) {
             shutdownDevice(fb, "auto-sleep (idle timeout)");   // does not return
         }
 
-        // Apply a frontlight level changed from the phone (BLE writes NVS but
+        // Apply a backlight level changed from the phone (BLE writes NVS but
         // not the PWM). Also covers the device's own +/- which already applied.
         static int lastBl = -1;
         if (settings::backlight() != lastBl) {
@@ -981,7 +990,7 @@ void task(void*) {
         // Left-side physical buttons, each with its own debounce/hold state.
         // BOOT (GPIO0): short press starts/stops the ride, hold 1.5 s opens the
         // power dialog. Side key (expander PC12): short press cycles the
-        // frontlight. Interrupt-driven, with a 200 ms fallback poll; two
+        // backlight. Interrupt-driven, with a 200 ms fallback poll; two
         // consecutive LOW reads debounce noise.
         {
             bool irq = boardBtnIrq;
@@ -1015,7 +1024,7 @@ void task(void*) {
                 if (board_side_button_pressed()) {
                     if (sideLow < 200) sideLow++;
                 } else {
-                    if (sideLow >= 2) { noteActivity(); cycleFrontlight(); }
+                    if (sideLow >= 2) { noteActivity(); cycleBacklight(); }
                     sideLow = 0;
                 }
             }
