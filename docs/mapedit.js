@@ -1,7 +1,7 @@
 // Map style editor: fetch OSM roads for an area (reusing the tile builder's
 // Overpass fetch + road classifier), then preview them rendered device-style at
 // each zoom level with a configurable per-zoom "what's shown + how thick" table.
-import { fetchOverpass, classify } from "./mapgen.js";
+import { fetchOverpass, classify, assembleCoastline, regionSeaPolygons } from "./mapgen.js";
 
 const ZOOMS = [1, 2, 4, 8, 16, 32];   // m/px, the device's zoom stops
 const TIERS = [
@@ -107,7 +107,7 @@ $("load").onclick = async () => {
   setStatus("Downloading OSM data…");
   try {
     const json = await fetchOverpass(bb, (m) => setStatus(m));
-    parse(json);
+    parse(json, bb);
     center = [midLat, (bb.w + bb.e) / 2];   // preview centred on the selected box
     setStatus(`Loaded ${roads.length} roads, ${waterPolys.length} water polygons · ${kmW.toFixed(1)}×${kmH.toFixed(1)} km.`);
     render();
@@ -123,24 +123,29 @@ $("export").onclick = () => {
   out.textContent = JSON.stringify(cfg, null, 2);
 };
 
-function parse(json) {
+function parse(json, bb) {
   const nodes = new Map();
   for (const el of json.elements) if (el.type === "node") nodes.set(el.id, [el.lat, el.lon]);
   roads = []; waterPolys = [];
-  let sumLa = 0, sumLo = 0, n = 0;
+  const coastWays = [];
   for (const el of json.elements) {
     if (el.type !== "way" || !el.nodes) continue;
+    const tags = el.tags || {};
+    if (tags.natural === "coastline") { coastWays.push(el.nodes); continue; }
     const pts = el.nodes.map((id) => nodes.get(id)).filter(Boolean);
     if (pts.length < 2) continue;
-    const tags = el.tags || {};
     if (tags.natural === "water") { waterPolys.push(pts); continue; }
-    if (tags.natural === "coastline") continue;
     const cls = classify(tags);
     if (cls == null) continue;
     roads.push({ cls, pts });
-    for (const p of pts) { sumLa += p[0]; sumLo += p[1]; n++; }
   }
-  center = n ? [sumLa / n, sumLo / n] : null;
+  // Ocean/bay come from natural=coastline, not natural=water — assemble the
+  // coastline into sea polygons for the box (the same region-level fill the
+  // tile builder uses) so the big water shows, not just inland lakes.
+  if (coastWays.length) {
+    const chains = assembleCoastline(coastWays, nodes);
+    for (const ring of regionSeaPolygons(chains, bb.s, bb.w, bb.n, bb.e)) waterPolys.push(ring);
+  }
 }
 
 function render() {
@@ -160,7 +165,7 @@ function render() {
   ];
 
   if (cfg.water[curMpp]) {
-    ctx.fillStyle = "#e2e2e2";
+    ctx.fillStyle = "#cfd6dd";   // light slate — reads as water on the white map
     for (const poly of waterPolys) {
       ctx.beginPath();
       poly.forEach((p, i) => { const q = proj(p); i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); });
@@ -227,7 +232,7 @@ function buildZoombar() {
 
 buildZoombar();
 buildMatrix();
-// Default selection: ~5 km around Alamo Square, San Francisco.
-setBbox(37.7764 - 0.0225, -122.4346 - 0.0284, 37.7764 + 0.0225, -122.4346 + 0.0284);
-if (lmap) lmap.fitBounds([[37.7539, -122.463], [37.7989, -122.4062]], { padding: [20, 20] });
+// Default: central + NE San Francisco, so the bay is in frame to show water.
+setBbox(37.762, -122.435, 37.808, -122.388);
+if (lmap) lmap.fitBounds([[37.762, -122.435], [37.808, -122.388]], { padding: [20, 20] });
 render();
