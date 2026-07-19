@@ -56,13 +56,9 @@ struct RideDetailView: View {
                              value: preview.avgHeartRate.map(String.init) ?? "—",
                              unit: "bpm")
                     }
-                    HStack(spacing: 16) {
-                        Stat(label: "Ascent",
-                             value: String(format: "%.0f",
-                                            Units.elevation(preview.ascentM, miles: useMiles)),
-                             unit: Units.elevLabel(useMiles))
-                        Stat(label: "Points", value: "\(preview.points.count)", unit: "")
-                    }
+                    // Ascent + point-count removed: the recorded GPS altitude is
+                    // unreliable (no barometer), so ascent is meaningless — same
+                    // reason the device dropped elevation/grade.
 
                     PrimaryButton(title: "Share .fit file",
                                   systemImage: "square.and.arrow.up") {
