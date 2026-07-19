@@ -92,8 +92,8 @@ struct SettingsView: View {
 
                     Card {
                         VStack(alignment: .leading, spacing: 10) {
-                            Text("Frontlight").trackedLabel()
-                            Picker("Frontlight", selection: Binding(
+                            Text("Backlight").trackedLabel()
+                            Picker("Backlight", selection: Binding(
                                 get: { ble.backlight },
                                 set: { ble.setBacklight($0) })) {
                                 Text("Off").tag(0)
