@@ -211,12 +211,24 @@ final class BLEManager: NSObject, ObservableObject {
 
     private func beginLocationUpdates() {
         wantsAiding = true
-        // Keep streaming while riding with the phone pocketed / app backgrounded
-        // (requires the `location` background mode, which we declare).
-        locationManager.allowsBackgroundLocationUpdates = true
-        locationManager.pausesLocationUpdatesAutomatically = false
+        // Background location (the blue status bar; keeps the phone's GPS running
+        // while the app is backgrounded) is only justified while a ride is being
+        // recorded — then the pocketed phone stays a seed/backup for the device.
+        // When not recording we only run location in the FOREGROUND to seed the
+        // device; iOS suspends it once the app backgrounds, so there's no battery
+        // drain or blue bar while idle. See updateBackgroundLocationMode().
+        locationManager.allowsBackgroundLocationUpdates = status.recording
+        locationManager.pausesLocationUpdatesAutomatically = !status.recording
         locationManager.startUpdatingLocation()
         locationManager.requestLocation()   // nudge an immediate first fix
+    }
+
+    // Tie background location to the ride state: only a recording ride warrants
+    // the phone tracking in the background. Called as the recording flag changes.
+    private func updateBackgroundLocationMode() {
+        guard wantsAiding else { return }
+        locationManager.allowsBackgroundLocationUpdates = status.recording
+        locationManager.pausesLocationUpdatesAutomatically = !status.recording
     }
 
     func stopLocationStream() {
@@ -1096,6 +1108,7 @@ extension BLEManager: CBPeripheralDelegate {
         s.remainingKm = Double(Int(d[8]) | (Int(d[9]) << 8)) / 10.0
         status = s
         syncLocationStreamToDeviceFix()
+        updateBackgroundLocationMode()   // background GPS only while recording
     }
 
     // Only run iOS location (and the blue background indicator) while the device
