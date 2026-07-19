@@ -203,9 +203,11 @@ void cell(int x0, int y0, int x1, int y1, const char* labelStr,
     int cx = (x0 + x1) / 2;
     ui::label(cx, y0 + 36, labelStr, fb);
     // Big value centered in the space between the label and the bottom-anchored
-    // unit caption; the unit sits at the cell bottom. The Impact_40 baseline
-    // sits ~half a cap-height below the target center.
-    int unitTop = (unit && unit[0]) ? y1 - 28 : y1;
+    // unit caption; the unit sits at the cell bottom. Always reserve the unit
+    // slot (even when there's no unit) so the value baseline lines up across
+    // cells — e.g. RIDE TIME aligns with DISTANCE beside it. The Impact_40
+    // baseline sits ~half a cap-height below the target center.
+    int unitTop = y1 - 28;
     int vcy = (y0 + 46 + unitTop) / 2;
     ui::text(&Impact_40, cx, vcy + 14, value, fb, EPD_DRAW_ALIGN_CENTER, 0x00);
     if (unit && unit[0]) {
