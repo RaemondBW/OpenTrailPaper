@@ -41,6 +41,7 @@ struct DiagnosticsView: View {
 
     @ViewBuilder private var batteryTab: some View {
         let s = samples
+        let L = layout(s)
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 if s.count >= 2 {
@@ -48,30 +49,17 @@ struct DiagnosticsView: View {
                     Card {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Battery %").trackedLabel()
-                            Chart(s) { p in
-                                LineMark(x: .value("Hours", p.hours),
-                                         y: .value("Battery", p.percent))
-                                    .foregroundStyle(Palette.accent)
-                                    .interpolationMethod(.monotone)
-                            }
-                            .chartYScale(domain: 0...100)
-                            .chartXAxisLabel("hours")
-                            .frame(height: 220)
+                            batteryChart(L, value: \.percent, color: Palette.accent,
+                                         yDomain: 0...100).frame(height: 220)
                         }
                     }
                     Card {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Current draw (mA)").trackedLabel()
-                            Text("Negative = discharging")
+                            Text("Negative = discharging · shaded = unit off (time compressed)")
                                 .font(.system(size: 11)).foregroundStyle(Palette.muted)
-                            Chart(s) { p in
-                                LineMark(x: .value("Hours", p.hours),
-                                         y: .value("mA", p.currentMa))
-                                    .foregroundStyle(Palette.good)
-                                    .interpolationMethod(.monotone)
-                            }
-                            .chartXAxisLabel("hours")
-                            .frame(height: 180)
+                            batteryChart(L, value: \.currentMa, color: Palette.good,
+                                         yDomain: nil).frame(height: 180)
                         }
                     }
                 } else {
@@ -83,6 +71,80 @@ struct DiagnosticsView: View {
             }
             .padding(16)
         }
+    }
+
+    // A point on the compressed timeline: `x` is the plotted position (off
+    // periods collapsed), `session` groups contiguous awake runs so the line
+    // breaks across an off period instead of drawing fake drain through it.
+    private struct PlotPoint: Identifiable {
+        let id: UUID
+        let x: Double
+        let percent: Double
+        let currentMa: Double
+        let session: Int
+    }
+
+    // Lay the samples out on a compressed x-axis: the device logs every ~2 min
+    // while awake, so a gap bigger than that means it was off — collapse those
+    // gaps to a thin fixed width so the active runtime fills the chart instead of
+    // being squeezed by hours of off time. Returns the points, the x positions +
+    // clock labels for each session start, and the collapsed off bands to shade.
+    private func layout(_ s: [BatterySample])
+        -> (pts: [PlotPoint], marks: [(x: Double, label: String)], offBands: [(Double, Double)]) {
+        guard !s.isEmpty else { return ([], [], []) }
+        let offThresh = 8.0 / 60.0    // gap > 8 min => unit was off
+        let gapWidth  = 4.0 / 60.0    // draw each off period as a 4-min-wide break
+        var pts: [PlotPoint] = []
+        var marks: [(Double, String)] = [(0, String(s[0].timeLabel.prefix(5)))]
+        var offBands: [(Double, Double)] = []
+        var x = 0.0, session = 0
+        for (i, sample) in s.enumerated() {
+            if i > 0 {
+                let gap = sample.hours - s[i - 1].hours
+                if gap > offThresh {
+                    offBands.append((x, x + gapWidth))
+                    x += gapWidth
+                    session += 1
+                    marks.append((x, String(sample.timeLabel.prefix(5))))
+                } else {
+                    x += gap
+                }
+            }
+            pts.append(PlotPoint(id: sample.id, x: x, percent: sample.percent,
+                                 currentMa: sample.currentMa, session: session))
+        }
+        return (pts, marks, offBands)
+    }
+
+    @ViewBuilder
+    private func batteryChart(_ L: (pts: [PlotPoint], marks: [(x: Double, label: String)],
+                                    offBands: [(Double, Double)]),
+                              value: KeyPath<PlotPoint, Double>,
+                              color: Color, yDomain: ClosedRange<Double>?) -> some View {
+        Chart {
+            ForEach(L.offBands, id: \.0) { band in
+                RectangleMark(xStart: .value("s", band.0), xEnd: .value("e", band.1))
+                    .foregroundStyle(Palette.muted.opacity(0.12))
+            }
+            ForEach(L.pts) { p in
+                LineMark(x: .value("t", p.x), y: .value("v", p[keyPath: value]),
+                         series: .value("session", p.session))
+                    .foregroundStyle(color)
+                    .interpolationMethod(.monotone)
+            }
+        }
+        .chartXAxis {
+            AxisMarks(values: L.marks.map(\.x)) { v in
+                AxisGridLine()
+                AxisValueLabel {
+                    if let d = v.as(Double.self),
+                       let m = L.marks.first(where: { abs($0.x - d) < 1e-6 }) {
+                        Text(m.label).font(.system(size: 9))
+                    }
+                }
+            }
+        }
+        .modifier(YScale(domain: yDomain))
     }
 
     @ViewBuilder private func batterySummary(_ s: [BatterySample]) -> some View {
@@ -123,6 +185,15 @@ struct DiagnosticsView: View {
                 .padding(16)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+}
+
+// Apply a fixed y-domain only when one is given; otherwise let the chart
+// auto-scale (the current-draw chart has no natural fixed range).
+private struct YScale: ViewModifier {
+    let domain: ClosedRange<Double>?
+    func body(content: Content) -> some View {
+        if let domain { content.chartYScale(domain: domain) } else { content }
     }
 }
 
