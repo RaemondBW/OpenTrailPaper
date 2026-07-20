@@ -201,7 +201,8 @@ void formatHms(char* out, size_t len, uint32_t secs) {
 void cell(int x0, int y0, int x1, int y1, const char* labelStr,
           const char* value, const char* unit, uint8_t* fb) {
     int cx = (x0 + x1) / 2;
-    ui::label(cx, y0 + 36, labelStr, fb);
+    const int labelY = y0 + 36;
+    ui::label(cx, labelY, labelStr, fb);
     // Big value centered in the space between the label and the bottom-anchored
     // unit caption; the unit sits at the cell bottom. Always reserve the unit
     // slot (even when there's no unit) so the value baseline lines up across
@@ -209,7 +210,14 @@ void cell(int x0, int y0, int x1, int y1, const char* labelStr,
     // baseline sits ~half a cap-height below the target center.
     int unitTop = y1 - 28;
     int vcy = (y0 + 46 + unitTop) / 2;
-    ui::text(&Impact_40, cx, vcy + 14, value, fb, EPD_DRAW_ALIGN_CENTER, 0x00);
+    int vBaseline = vcy + 14;
+    // Impact_40's glyphs are ~58 px tall; in short cells (the ride-summary grid)
+    // the centered value would ride up into the label, so push the baseline down
+    // until the glyph top clears it. Roomy cells (dashboard) are unaffected.
+    const int kValueCapH = 58;
+    int minBaseline = labelY + 8 + kValueCapH;
+    if (vBaseline < minBaseline) vBaseline = minBaseline;
+    ui::text(&Impact_40, cx, vBaseline, value, fb, EPD_DRAW_ALIGN_CENTER, 0x00);
     if (unit && unit[0]) {
         ui::text(&ArialBold_14, cx, y1 - 12, unit, fb, EPD_DRAW_ALIGN_CENTER, 0x00);
     }
