@@ -43,7 +43,7 @@ size_t fbSize = 0;
 
 enum Screen { SCREEN_DASH, SCREEN_MAP, SCREEN_SUMMARY, SCREEN_MENU,
               SCREEN_SENSORS, SCREEN_ROUTES, SCREEN_HISTORY,
-              SCREEN_SETTINGS, SCREEN_GPSDEBUG, SCREEN_GREYTEST };
+              SCREEN_SETTINGS, SCREEN_GPSDEBUG };
 Screen screen = SCREEN_DASH;
 RideSummary pendingSummary;
 
@@ -283,7 +283,6 @@ void goBack() {
     }
     switch (screen) {
         case SCREEN_GPSDEBUG: screen = SCREEN_SETTINGS; break;
-        case SCREEN_GREYTEST: screen = SCREEN_SETTINGS; break;
         case SCREEN_SETTINGS:
         case SCREEN_ROUTES:
         case SCREEN_HISTORY:  screen = SCREEN_MENU; break;
@@ -480,8 +479,6 @@ void handleTap(int x, int y) {
                 ble_server::pushSettingsToPhone();   // mirror the edit to the app
             } else if (y >= kMenuRowTop && row == kSettingsGpsRow) {
                 screen = SCREEN_GPSDEBUG;
-            } else if (y >= kMenuRowTop && row == kSettingsGreyRow) {
-                screen = SCREEN_GREYTEST;
             } else {
                 screen = SCREEN_MENU;
             }
@@ -499,9 +496,6 @@ void handleTap(int x, int y) {
             } else {
                 screen = SCREEN_SETTINGS;
             }
-            break;
-        case SCREEN_GREYTEST:
-            screen = SCREEN_SETTINGS;   // tap anywhere returns
             break;
     }
 }
@@ -860,7 +854,7 @@ void applySdUpdate() {
 // Serial test console over the CDC port: single-char commands mirror button
 // presses so map/UI performance can be profiled without physical taps.
 //   i / o  zoom in / out (map)      p / d  map / dashboard
-//   m / s  menu / settings          g / y  gps debug / grey test
+//   m / s  menu / settings          g      gps debug
 //   b      back                     t      toggle timing logs
 void pollSerialCommands() {
     while (Serial.available() > 0) {
@@ -874,7 +868,6 @@ void pollSerialCommands() {
             case 'm': screen = SCREEN_MENU; break;
             case 's': screen = SCREEN_SETTINGS; break;
             case 'g': screen = SCREEN_GPSDEBUG; break;
-            case 'y': screen = SCREEN_GREYTEST; break;
             case 'b': goBack(); break;
             case 't': dbgTiming = !dbgTiming;
                       diag::log("dbg timing %s", dbgTiming ? "ON" : "OFF");
@@ -1157,9 +1150,6 @@ void task(void*) {
                     ui_render_settings(si, fb);
                     break;
                 }
-                case SCREEN_GREYTEST:
-                    ui_render_grey_test(fb);
-                    break;
                 case SCREEN_GPSDEBUG: {
                     GpsDebug d;
                     gps_service::getDebug(d);
