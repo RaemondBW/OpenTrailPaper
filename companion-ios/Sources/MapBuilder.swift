@@ -10,9 +10,9 @@ import Foundation
 //   index[nx*ny] of (u32 offset, u32 length)  (0,0 = empty tile),
 //   tiles: u16 polylineCount, per polyline { u8 class, u16 pointCount,
 //          i16 x,y per point (meters E/N of the tile SW corner) }.
-//   class: 0 arterial, 1 secondary, 2 minor, 3 path.
-//   then an optional 'ELV1' block, then a 'WTR2' water section:
-//   'WTR2', u16 polygonCount, per polygon { u16 pointCount,
+//   class: 0 arterial, 1 primary, 2 secondary, 3 tertiary, 4 minor, 5 path.
+//   then an optional 'ELV1' block, a 'WTR2' water section, then a 'PRK2' park
+//   section: 'WTR2'/'PRK2', u16 polygonCount, per polygon { u16 pointCount,
 //          i16 x,y per point (meters E/N of the grid SW origin lat0,lon0) }.
 
 enum MapBuilder {
@@ -62,6 +62,9 @@ enum MapBuilder {
       way["highway"~"^(motorway|trunk|primary|secondary|tertiary|residential|unclassified|living_street|pedestrian|cycleway|footway|path|track|steps)"](%@,%@,%@,%@);
       way["natural"="water"](%@,%@,%@,%@);
       way["natural"="coastline"](%@,%@,%@,%@);
+      way["leisure"="park"](%@,%@,%@,%@);
+      way["landuse"~"^(grass|forest|meadow|recreation_ground|cemetery|village_green)$"](%@,%@,%@,%@);
+      way["natural"~"^(wood|scrub|grassland|heath)$"](%@,%@,%@,%@);
     );
     out body;
     >;
@@ -81,7 +84,11 @@ enum MapBuilder {
     static func fetchOSM(south s: Double, west w: Double, north n: Double, east e: Double,
                          onProgress: (@Sendable (String) -> Void)? = nil) async throws -> Data {
         let bbox = [s, w, n, e].map { String($0) }
+        // One bbox group per way[...] line in `query` (6 lines → 24 args).
         let q = String(format: query, bbox[0], bbox[1], bbox[2], bbox[3],
+                       bbox[0], bbox[1], bbox[2], bbox[3],
+                       bbox[0], bbox[1], bbox[2], bbox[3],
+                       bbox[0], bbox[1], bbox[2], bbox[3],
                        bbox[0], bbox[1], bbox[2], bbox[3],
                        bbox[0], bbox[1], bbox[2], bbox[3])
         let body = ("data=" + (q.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? q))
@@ -221,6 +228,35 @@ enum MapBuilder {
                 nodes[el.id] = (la, lo)
             } else if el.type == "way", let nids = el.nodes,
                       el.tags?["natural"] == "water" {
+                wayNodeIds.append(nids)
+            }
+        }
+        return wayNodeIds.map { nids in nids.compactMap { nodes[$0] } }
+    }
+
+    // Parks / green areas -> PRK2 section. Must agree with mapgen.js /
+    // build_map.py and the fetchOSM query.
+    private static let parkLanduse: Set<String> = ["grass", "forest", "meadow", "recreation_ground", "cemetery", "village_green"]
+    private static let parkNatural: Set<String> = ["wood", "scrub", "grassland", "heath"]
+    private static func isPark(_ tags: [String: String]) -> Bool {
+        if tags["leisure"] == "park" { return true }
+        if let lu = tags["landuse"], parkLanduse.contains(lu) { return true }
+        if let na = tags["natural"], parkNatural.contains(na) { return true }
+        return false
+    }
+
+    // Resolve park / green-area ways to lists of (lat, lon) node coords, like
+    // extractWaterWays. Call once per region, then pass to appendParks per tile.
+    static func extractParkWays(regionJSON: Data) throws -> [[(Double, Double)]] {
+        let json = try JSONDecoder().decode(OverpassJSON.self, from: regionJSON)
+        var nodes: [Int: (Double, Double)] = [:]
+        nodes.reserveCapacity(json.elements.count)
+        var wayNodeIds: [[Int]] = []
+        for el in json.elements {
+            if el.type == "node", let la = el.lat, let lo = el.lon {
+                nodes[el.id] = (la, lo)
+            } else if el.type == "way", let nids = el.nodes,
+                      let tags = el.tags, isPark(tags) {
                 wayNodeIds.append(nids)
             }
         }
@@ -541,6 +577,42 @@ enum MapBuilder {
         }
     }
 
+    // Append a PRK2 park section (after the WTR2 block). Same encoding as
+    // appendWater's water polygons; parks are already closed rings so there is
+    // no coastline assembly. Always writes the "PRK2" magic + count.
+    static func appendParks(to data: inout Data, parkWays: [[(Double, Double)]],
+                            south s: Double, west w: Double, north n: Double, east e: Double) {
+        let td = tileDeg
+        let midLat = (s + n) / 2
+        let kx = 111320.0 * cos(midLat * .pi / 180)
+        let ky = 110540.0
+        let lat0 = (s / td).rounded(.down) * td
+        let lon0 = (w / td).rounded(.down) * td
+
+        var polys: [[(Int16, Int16)]] = []
+        for pts in parkWays {
+            let inBox = pts.contains { (lat, lon) in lat >= s && lat <= n && lon >= w && lon <= e }
+            if !inBox { continue }
+            let m = decimate(pts.map { (lat, lon) in ((lon - lon0) * kx, (lat - lat0) * ky) }, simplifyM)
+            guard m.count >= 3 else { continue }
+            var poly: [(Int16, Int16)] = []
+            poly.reserveCapacity(m.count)
+            for (x, y) in m {
+                let ix = Int16(max(-32000, min(32000, Int(x.rounded()))))
+                let iy = Int16(max(-32000, min(32000, Int(y.rounded()))))
+                poly.append((ix, iy))
+            }
+            polys.append(poly)
+        }
+
+        data.append("PRK2".data(using: .ascii)!)
+        data.appendU16(UInt16(min(polys.count, 0xFFFF)))
+        for poly in polys {
+            data.appendU16(UInt16(min(poly.count, 0xFFFF)))
+            for (x, y) in poly { data.appendI16(x); data.appendI16(y) }
+        }
+    }
+
     private struct OverpassJSON: Decodable { let elements: [Element] }
     private struct Element: Decodable {
         let type: String
@@ -553,25 +625,29 @@ enum MapBuilder {
 
     // MARK: classify (mirrors build_map.py)
 
-    // Road tiers (device render classes). `primary` sits in the secondary tier,
-    // not arterial: in a dense city primary streets are numerous (~75% of the
-    // old arterial tier), so keeping them arterial made the zoomed-out overview a
-    // solid mesh. Now only motorway/trunk survive at the widest zooms.
+    // Road tiers (device render classes). primary/secondary/tertiary are their
+    // own tiers so each can be styled + shed independently per zoom; only
+    // motorway/trunk (arterial) survive at the widest zooms.
     private static let arterial:  Set<String> = ["motorway", "trunk"]
-    private static let secondary: Set<String> = ["primary", "secondary", "tertiary"]
+    private static let primary:   Set<String> = ["primary"]
+    private static let secondary: Set<String> = ["secondary"]
+    private static let tertiary:  Set<String> = ["tertiary"]
     private static let minor:     Set<String> = ["residential", "unclassified", "living_street", "pedestrian"]
     private static let path:      Set<String> = ["cycleway", "footway", "path", "track", "steps"]
 
     // Rail/transit is dropped; natural=water is handled separately (WTR2), so
-    // neither yields a road class here.
+    // neither yields a road class here. Numbering must agree with build_map.py /
+    // mapgen.js and the firmware MapFeatureClass enum.
     private static func classify(_ tags: [String: String]) -> UInt8? {
         let hw = tags["highway"] ?? ""
         if hw == "footway", let f = tags["footway"], f == "sidewalk" || f == "crossing" { return nil }
         let base = hw.components(separatedBy: "_link").first ?? hw
         if arterial.contains(base) { return 0 }
-        if secondary.contains(base) { return 1 }
-        if minor.contains(base) { return 2 }
-        if path.contains(base) { return 3 }
+        if primary.contains(base) { return 1 }
+        if secondary.contains(base) { return 2 }
+        if tertiary.contains(base) { return 3 }
+        if minor.contains(base) { return 4 }
+        if path.contains(base) { return 5 }
         return nil
     }
 

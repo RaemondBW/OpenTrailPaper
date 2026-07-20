@@ -294,8 +294,11 @@ int main(int argc, char** argv) {
         map.trackUp = false;
         map.metersPerPixel = 2.0f;
         map_tiles::project(37.7764, -122.4346, 2.0f, 270, 430, 0, map);
-        printf("sf.ebm: %d polylines, %d water polys\n", map.featureCount,
-               map.waterCount);
+        int cc[7]; map_tiles::projectedClassCounts(cc);
+        printf("sf.ebm: %d polylines, %d water polys, %d park polys\n",
+               map.featureCount, map.waterCount, map.parkCount);
+        printf("  kept by class: art=%d pri=%d sec=%d ter=%d min=%d path=%d\n",
+               cc[0], cc[1], cc[2], cc[3], cc[4], cc[5]);
     } else {
         buildScene(sc);
         int ridden = 0;

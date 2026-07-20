@@ -13,11 +13,14 @@ struct RideState;
 
 // Road tiers (EBM2). Numbers are the on-tile class bytes.
 enum MapFeatureClass : uint8_t {
-    MAP_ROAD_MAJOR = 0,      // arterial: motorway/trunk/primary — never shed
-    MAP_ROAD_SECONDARY = 1,  // secondary/tertiary — shed when zoomed out
-    MAP_ROAD_MINOR = 2,      // residential/etc — shed sooner
-    MAP_PATH = 3,            // trails — light dither, shed soonest
-    MAP_WATER = 4,           // water bodies (WTR2 section) — filled dither
+    MAP_ROAD_MAJOR = 0,      // arterial: motorway/trunk — never shed
+    MAP_ROAD_PRIMARY = 1,    // primary — never shed (carries the overview)
+    MAP_ROAD_SECONDARY = 2,  // secondary — shed at ≥32 m/px
+    MAP_ROAD_TERTIARY = 3,   // tertiary — shed at ≥32 m/px
+    MAP_ROAD_MINOR = 4,      // residential/etc — shed at ≥16 m/px
+    MAP_PATH = 5,            // trails — light dither, shed at ≥4 m/px
+    MAP_WATER = 6,           // water bodies (WTR2 section) — filled dot dither
+    MAP_PARK = 7,            // parks/green (PRK2 section) — filled hatch dither
 };
 
 struct MapPolyline {
@@ -31,9 +34,14 @@ struct MapScreenData {
     int featureCount;
 
     // Water bodies (from the tile WTR2 section), projected to screen; drawn as
-    // a light dithered fill under the roads.
+    // a light dot-dithered fill under the roads.
     const MapPolyline* water = nullptr;
     int waterCount = 0;
+
+    // Parks/green areas (from the tile PRK2 section); drawn as a hatch-dithered
+    // fill beneath the water + roads. Distinct dither so it reads apart from water.
+    const MapPolyline* parks = nullptr;
+    int parkCount = 0;
 
     // Route polyline; the first riddenPointCount points render solid
     // (already ridden), the rest dashed (ahead) per the design.
@@ -64,7 +72,7 @@ struct MapScreenData {
     // How many SD tiles were projected this frame (diagnostics/timing).
     int projectedTiles = 0;
     int tilePolys = 0;          // polys from tiles (before the base blob)
-    int clsCount[5] = {0, 0, 0, 0, 0};  // kept polys per class
+    int clsCount[7] = {0, 0, 0, 0, 0, 0, 0};  // kept polys per class
 };
 
 // Compass touch target (tap toggles north-up / track-up)

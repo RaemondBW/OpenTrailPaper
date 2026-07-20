@@ -41,18 +41,26 @@ Style styleFor(MapFeatureClass cls, float mpp) {
         // of filled triangles + round caps — a big cut in draw time. Full width
         // up close where a bold arterial reads against the finer roads.
         case MAP_ROAD_MAJOR:     return {mpp >= 16.0f ? 2 : 5, ROAD_INK, 0, 0, false};
+        // primary/secondary/tertiary form a width hierarchy (4/3/2) so the road
+        // grade reads at a glance. Primary is never shed (thins to 2 at ≥16 like
+        // arterial); secondary/tertiary shed at ≥32.
+        case MAP_ROAD_PRIMARY:   return {mpp >= 16.0f ? 2 : 4, ROAD_INK, 0, 0, false};
         case MAP_ROAD_SECONDARY: return {3, ROAD_INK, 0, 0, false};
+        case MAP_ROAD_TERTIARY:  return {2, ROAD_INK, 0, 0, false};
         case MAP_ROAD_MINOR:     return {2, ROAD_INK, 0, 0, false};
         // Trails: a light-grey dithered thin line (was heavy black dashes).
         case MAP_PATH:           return {1, ROAD_INK, 0, 0, true};
         case MAP_WATER:          return {0, 0, 0, 0, false};   // filled, not stroked
+        case MAP_PARK:           return {0, 0, 0, 0, false};   // filled (hatch), not stroked
     }
     return {1, 0x00, 0, 0, false};
 }
 
 // Scanline-fill a screen-space polygon with a sparse black dither so it reads as
-// a pale grey water tint and survives the fast 1-bit DU refresh. Even-odd rule.
-void fillDitheredPolygon(const int16_t* pts, int n, uint8_t* fb) {
+// a pale grey tint and survives the fast 1-bit DU refresh. Even-odd rule.
+// hatch=false: 25% dot dither (water). hatch=true: diagonal hatch (parks) — a
+// visually distinct texture so green areas don't read the same as water.
+void fillDitheredPolygon(const int16_t* pts, int n, uint8_t* fb, bool hatch = false) {
     if (n < 3) return;
     int minY = 100000, maxY = -100000;
     for (int i = 0; i < n; ++i) {
@@ -79,10 +87,14 @@ void fillDitheredPolygon(const int16_t* pts, int n, uint8_t* fb) {
         for (int a = 0; a + 1 < cnt; a += 2) {
             int xL = xs[a] < 0 ? 0 : xs[a];
             int xR = xs[a + 1] > 539 ? 539 : xs[a + 1];
-            // 25% dot dither (one pixel per 2x2 block): a lighter grey water
-            // tint than the old 50% checker. Roads draw solid black on top.
-            for (int x = xL; x <= xR; ++x)
-                if ((x & 1) == 0 && (y & 1) == 0) epd_draw_pixel(x, y, 0x00, fb);
+            // Water: 25% dot dither (one pixel per 2x2 block). Parks: a 25%
+            // diagonal hatch (every 4th main diagonal). Both read as light grey
+            // through DU; roads draw solid black on top.
+            for (int x = xL; x <= xR; ++x) {
+                bool on = hatch ? (((x - y) & 3) == 0)
+                                : ((x & 1) == 0 && (y & 1) == 0);
+                if (on) epd_draw_pixel(x, y, 0x00, fb);
+            }
         }
     }
 }
@@ -250,14 +262,19 @@ const MapCompassZone kMapCompass = {540 - 46, 64 + 48, 34};
 void ui_render_map_features(const MapScreenData& map, const RideState& s,
                             uint8_t* fb) {
     (void)s;
-    // Map features: water under roads, all in grays
-    // Water bodies as the base layer (dithered fill), then trails, then roads
-    // in tier order on top. Rail/transit removed by request.
+    // Map features: parks + water under roads, all in grays. Parks (hatch) are
+    // the base layer, then water (dots) over them, then trails, then roads in
+    // tier order on top. Rail/transit removed by request.
+    for (int i = 0; i < map.parkCount; ++i) {
+        fillDitheredPolygon(map.parks[i].pts, map.parks[i].pointCount, fb, true);
+    }
     for (int i = 0; i < map.waterCount; ++i) {
         fillDitheredPolygon(map.water[i].pts, map.water[i].pointCount, fb);
     }
-    const MapFeatureClass order[] = {MAP_PATH, MAP_ROAD_MINOR,
-                                     MAP_ROAD_SECONDARY, MAP_ROAD_MAJOR};
+    // Back-to-front: higher-grade roads paint on top at intersections.
+    const MapFeatureClass order[] = {MAP_PATH, MAP_ROAD_MINOR, MAP_ROAD_TERTIARY,
+                                     MAP_ROAD_SECONDARY, MAP_ROAD_PRIMARY,
+                                     MAP_ROAD_MAJOR};
     for (MapFeatureClass cls : order) {
         for (int i = 0; i < map.featureCount; ++i) {
             if (map.features[i].cls != cls) continue;
@@ -404,9 +421,12 @@ void ui_render_route_preview(uint8_t* fb) {
     ctx.route = nullptr;
     ctx.routePointCount = 0;
     map_store::renderInto(clat, clon, (float)mpp, cx, cy, 0.0f, ctx);
-    // Water bodies (dithered shading) under the roads, so the coast/bay reads —
-    // matches the map screen. Spill above/below the viewport is masked by the
-    // status bar + accept sheet drawn afterwards.
+    // Parks (hatch) + water (dots) under the roads, so the coast/bay + green
+    // areas read — matches the map screen. Spill above/below the viewport is
+    // masked by the status bar + accept sheet drawn afterwards.
+    for (int i = 0; i < ctx.parkCount; ++i) {
+        fillDitheredPolygon(ctx.parks[i].pts, ctx.parks[i].pointCount, fb, true);
+    }
     for (int i = 0; i < ctx.waterCount; ++i) {
         fillDitheredPolygon(ctx.water[i].pts, ctx.water[i].pointCount, fb);
     }

@@ -15,9 +15,11 @@ namespace {
 // last (the north), so keep generous headroom.
 constexpr int MAX_POINTS = 160000;
 constexpr int MAX_POLYS = 20000;
-// Water polygons (WTR2) get their own smaller scratch.
+// Water (WTR2) and park (PRK2) polygons get their own smaller scratch.
 constexpr int MAX_WATER_POINTS = 24000;
 constexpr int MAX_WATER_POLYS = 512;
+constexpr int MAX_PARK_POINTS = 24000;
+constexpr int MAX_PARK_POLYS = 512;
 
 // The single "primary" blob used by the embedded map + route overlay path.
 const uint8_t* blob = nullptr;
@@ -27,12 +29,15 @@ int16_t* pts = nullptr;
 MapPolyline* polys = nullptr;
 int16_t* waterPts = nullptr;
 MapPolyline* waterPolys = nullptr;
+int16_t* parkPts = nullptr;
+MapPolyline* parkPolys = nullptr;
 
 // Shared append cursors across a multi-tile frame (map_store drives these
 // via beginProject / projectBlobInto / endProject).
 int g_usedPts = 0, g_usedPolys = 0;
-int g_clsKept[5] = {0, 0, 0, 0, 0};   // diag: polys kept per class this frame
+int g_clsKept[7] = {0, 0, 0, 0, 0, 0, 0};   // diag: polys kept per class this frame
 int g_usedWaterPts = 0, g_usedWaterPolys = 0;
+int g_usedParkPts = 0, g_usedParkPolys = 0;
 
 void* bigAlloc(size_t n) {
 #ifdef ARDUINO
@@ -59,8 +64,10 @@ static bool ensureScratch() {
         polys = (MapPolyline*)bigAlloc(MAX_POLYS * sizeof(MapPolyline));
         waterPts = (int16_t*)bigAlloc(MAX_WATER_POINTS * 2 * sizeof(int16_t));
         waterPolys = (MapPolyline*)bigAlloc(MAX_WATER_POLYS * sizeof(MapPolyline));
+        parkPts = (int16_t*)bigAlloc(MAX_PARK_POINTS * 2 * sizeof(int16_t));
+        parkPolys = (MapPolyline*)bigAlloc(MAX_PARK_POLYS * sizeof(MapPolyline));
     }
-    return pts && polys && waterPts && waterPolys;
+    return pts && polys && waterPts && waterPolys && parkPts && parkPolys;
 }
 
 bool load(const uint8_t* data, size_t len) {
@@ -78,19 +85,24 @@ void beginProject(MapScreenData& out) {
     out.featureCount = 0;
     out.water = waterPolys;
     out.waterCount = 0;
+    out.parks = parkPolys;
+    out.parkCount = 0;
     g_usedPts = 0;
     g_usedPolys = 0;
     g_usedWaterPts = 0;
     g_usedWaterPolys = 0;
-    for (int i = 0; i < 5; ++i) g_clsKept[i] = 0;
+    g_usedParkPts = 0;
+    g_usedParkPolys = 0;
+    for (int i = 0; i < 7; ++i) g_clsKept[i] = 0;
 }
 
 int projectedPolyCount() { return g_usedPolys; }
-void projectedClassCounts(int out[5]) { for (int i = 0; i < 5; ++i) out[i] = g_clsKept[i]; }
+void projectedClassCounts(int out[7]) { for (int i = 0; i < 7; ++i) out[i] = g_clsKept[i]; }
 
 void endProject(MapScreenData& out) {
     out.featureCount = g_usedPolys;
     out.waterCount = g_usedWaterPolys;
+    out.parkCount = g_usedParkPolys;
 }
 
 // Project a single EBM1 blob (with its own grid header) into the shared
@@ -160,20 +172,22 @@ void projectBlobInto(const uint8_t* b, size_t bLen, double lat, double lon,
                 if (p + n * 4 > end) goto done;
 
                 // Zoomed out: shed detail to keep the feature count + draw time
-                // bounded and the overview legible. Footpaths go first; at the
-                // widest levels (16/32 m/px) minor/residential roads too — they
-                // are sub-pixel clutter there, and dropping them keeps the whole
+                // bounded and the overview legible. Paths go first (≥4), then
+                // minor/residential (≥16), then secondary/tertiary (≥32). Primary
+                // and arterial (motorway/trunk) never shed — they carry the
+                // overview at the widest zooms. Dropping the rest keeps the whole
                 // city inside the scratch buffers so the north isn't truncated.
                 if (metersPerPixel >= 4.0f && cls == MAP_PATH) {
                     p += n * 4;
                     continue;
                 }
-                if (metersPerPixel >= 8.0f && cls == MAP_ROAD_MINOR) {
+                if (metersPerPixel >= 16.0f && cls == MAP_ROAD_MINOR) {
                     p += n * 4;
                     continue;
                 }
-                if (metersPerPixel >= 16.0f && cls == MAP_ROAD_SECONDARY) {
-                    p += n * 4;   // arterial (MAP_ROAD_MAJOR) never shed
+                if (metersPerPixel >= 32.0f &&
+                    (cls == MAP_ROAD_SECONDARY || cls == MAP_ROAD_TERTIARY)) {
+                    p += n * 4;   // primary + arterial never shed
                     continue;
                 }
 
@@ -227,7 +241,7 @@ void projectBlobInto(const uint8_t* b, size_t bLen, double lat, double lon,
                 polys[usedPolys].pointCount = kept;
                 usedPolys++;
                 usedPts += kept;
-                if (cls < 5) g_clsKept[cls]++;
+                if (cls < 7) g_clsKept[cls]++;
             }
         }
     }
@@ -251,46 +265,64 @@ done:
         wp += 44 + (size_t)gw * gh * 2;   // skip the elevation block
     }
     if (wp + 6 > bLen || memcmp(b + wp, "WTR2", 4) != 0) return;
-    uint16_t polyCount = rd<uint16_t>(b + wp + 4);
-    const uint8_t* q = b + wp + 6;
+    const uint8_t* q = b + wp;
     const uint8_t* wend = b + bLen;
-    int uwPts = g_usedWaterPts, uwPolys = g_usedWaterPolys;
-    for (int pi = 0; pi < polyCount && q + 2 <= wend; ++pi) {
-        uint16_t wn = rd<uint16_t>(q);
-        q += 2;
-        if (q + (size_t)wn * 4 > wend) break;
-        if (uwPolys >= MAX_WATER_POLYS || uwPts + wn > MAX_WATER_POINTS) break;
-        int16_t* wdst = waterPts + uwPts * 2;
-        int kept = 0;
-        bool vis = false;
-        for (uint16_t j = 0; j < wn; ++j) {
-            float sx = centerX + ((float)rd<int16_t>(q + j * 4) - (float)px) * invMpp;
-            float sy = centerY - ((float)rd<int16_t>(q + j * 4 + 2) - (float)py) * invMpp;
-            if (rotateDeg != 0) {
-                float dx = sx - centerX, dy = sy - centerY;
-                sx = centerX + dx * rc - dy * rs;
-                sy = centerY + dx * rs + dy * rc;
+
+    // Parse a filled-polygon section: <4-byte magic><u16 count>, then each
+    // polygon as <u16 pointCount><i16 x,y ...> in metres E/N of the grid origin.
+    // Points project exactly like the roads. q is always advanced past every
+    // polygon (even when the scratch is full) so the next section stays aligned.
+    // Assumes the magic at q was already matched by the caller.
+    auto parseFill = [&](int16_t* dstPts, MapPolyline* dstPolys,
+                         int& usedPts, int& usedPolys, int maxPts, int maxPolys,
+                         MapFeatureClass cls) {
+        uint16_t polyCount = rd<uint16_t>(q + 4);
+        q += 6;
+        for (int pi = 0; pi < polyCount && q + 2 <= wend; ++pi) {
+            uint16_t wn = rd<uint16_t>(q);
+            q += 2;
+            if (q + (size_t)wn * 4 > wend) break;
+            const uint8_t* poly = q;
+            q += (size_t)wn * 4;                 // always advance to next poly
+            if (usedPolys >= maxPolys || usedPts + wn > maxPts) continue;
+            int16_t* dst = dstPts + usedPts * 2;
+            int kept = 0;
+            bool vis = false;
+            for (uint16_t j = 0; j < wn; ++j) {
+                float sx = centerX + ((float)rd<int16_t>(poly + j * 4) - (float)px) * invMpp;
+                float sy = centerY - ((float)rd<int16_t>(poly + j * 4 + 2) - (float)py) * invMpp;
+                if (rotateDeg != 0) {
+                    float dx = sx - centerX, dy = sy - centerY;
+                    sx = centerX + dx * rc - dy * rs;
+                    sy = centerY + dx * rs + dy * rc;
+                }
+                if (sx < -20000) sx = -20000;
+                if (sx > 20000) sx = 20000;
+                if (sy < -20000) sy = -20000;
+                if (sy > 20000) sy = 20000;
+                if (sx > -50 && sx < 590 && sy > -50 && sy < 1010) vis = true;
+                dst[kept * 2] = (int16_t)lroundf(sx);
+                dst[kept * 2 + 1] = (int16_t)lroundf(sy);
+                kept++;
             }
-            if (sx < -20000) sx = -20000;
-            if (sx > 20000) sx = 20000;
-            if (sy < -20000) sy = -20000;
-            if (sy > 20000) sy = 20000;
-            if (sx > -50 && sx < 590 && sy > -50 && sy < 1010) vis = true;
-            wdst[kept * 2] = (int16_t)lroundf(sx);
-            wdst[kept * 2 + 1] = (int16_t)lroundf(sy);
-            kept++;
+            if (kept >= 3 && vis) {
+                dstPolys[usedPolys].cls = cls;
+                dstPolys[usedPolys].pts = dst;
+                dstPolys[usedPolys].pointCount = kept;
+                usedPolys++;
+                usedPts += kept;
+            }
         }
-        q += (size_t)wn * 4;
-        if (kept >= 3 && vis) {
-            waterPolys[uwPolys].cls = MAP_WATER;
-            waterPolys[uwPolys].pts = wdst;
-            waterPolys[uwPolys].pointCount = kept;
-            uwPolys++;
-            uwPts += kept;
-        }
+    };
+
+    parseFill(waterPts, waterPolys, g_usedWaterPts, g_usedWaterPolys,
+              MAX_WATER_POINTS, MAX_WATER_POLYS, MAP_WATER);
+
+    // Parks (PRK2) follow the water section. Older tiles omit it — skip cleanly.
+    if (q + 6 <= wend && memcmp(q, "PRK2", 4) == 0) {
+        parseFill(parkPts, parkPolys, g_usedParkPts, g_usedParkPolys,
+                  MAX_PARK_POINTS, MAX_PARK_POLYS, MAP_PARK);
     }
-    g_usedWaterPts = uwPts;
-    g_usedWaterPolys = uwPolys;
 }
 
 void project(double lat, double lon, float metersPerPixel, int centerX,

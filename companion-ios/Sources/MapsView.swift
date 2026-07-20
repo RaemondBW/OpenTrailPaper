@@ -338,6 +338,9 @@ struct MapsView: View {
                     let coastChains = (try? MapBuilder.extractCoastlineChains(regionJSON: json)) ?? []
                     let seaRings = MapBuilder.regionSeaPolygons(coastChains,
                         south: u.s, west: u.w, north: u.n, east: u.e)
+                    // Parks / green areas for this region, appended per tile as a
+                    // PRK2 section (after WTR2).
+                    let parkWays = (try? MapBuilder.extractParkWays(regionJSON: json)) ?? []
                     // Bake a DEM elevation grid into each tile (best-effort) so
                     // the device has elevation without GPS altitude or the phone.
                     status = "Elevation \(i + 1)/\(n)…"
@@ -349,9 +352,11 @@ struct MapsView: View {
                                 MapBuilder.appendElevation(to: &p.data, south: t.south, west: t.west,
                                     north: t.north, east: t.east, grid: grid, n: MapBuilder.elevationGrid)
                             }
-                            // WTR2 water section goes last, after any ELV1 block.
+                            // WTR2 water section after any ELV1 block, then PRK2.
                             MapBuilder.appendWater(to: &p.data, waterWays: waterWays,
                                 seaRings: seaRings,
+                                south: t.south, west: t.west, north: t.north, east: t.east)
+                            MapBuilder.appendParks(to: &p.data, parkWays: parkWays,
                                 south: t.south, west: t.west, north: t.north, east: t.east)
                         }
                         withElev.append(p)

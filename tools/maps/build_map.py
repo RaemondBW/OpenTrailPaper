@@ -14,11 +14,11 @@ Format (little-endian):
   tiles:
     u16  polylineCount
     per polyline:
-      u8   class            0 arterial, 1 secondary, 2 minor, 3 path
+      u8   class            0 arterial, 1 primary, 2 secondary, 3 tertiary, 4 minor, 5 path
       u16  pointCount
       i16  x,y per point    meters east/north of the tile SW corner
-  water section (appended after the tile data):
-    magic  'WTR2'
+  water section (appended after the tile data), then a park section (after it):
+    magic  'WTR2' (water) / 'PRK2' (parks)
     u16    polygonCount
     per polygon:
       u16  pointCount
@@ -45,15 +45,21 @@ QUERY = """
   way["highway"~"^(motorway|trunk|primary|secondary|tertiary|residential|unclassified|living_street|pedestrian|cycleway|footway|path|track|steps)"]({s},{w},{n},{e});
   way["natural"="water"]({s},{w},{n},{e});
   way["natural"="coastline"]({s},{w},{n},{e});
+  way["leisure"="park"]({s},{w},{n},{e});
+  way["landuse"~"^(grass|forest|meadow|recreation_ground|cemetery|village_green)$"]({s},{w},{n},{e});
+  way["natural"~"^(wood|scrub|grassland|heath)$"]({s},{w},{n},{e});
 );
 out body;
 >;
 out skel qt;
 """
 
-# Road tiers (device render classes).
+# Road tiers (device render classes). primary/secondary/tertiary are separate
+# tiers so each can be styled + shed independently per zoom.
 ARTERIAL = {"motorway", "trunk"}
-SECONDARY = {"primary", "secondary", "tertiary"}
+PRIMARY = {"primary"}
+SECONDARY = {"secondary"}
+TERTIARY = {"tertiary"}
 MINOR = {"residential", "unclassified", "living_street", "pedestrian"}
 PATH = {"cycleway", "footway", "path", "track", "steps"}
 
@@ -68,13 +74,29 @@ def classify(tags):
     base = hw.split("_link")[0]
     if base in ARTERIAL:
         return 0
-    if base in SECONDARY:
+    if base in PRIMARY:
         return 1
-    if base in MINOR:
+    if base in SECONDARY:
         return 2
-    if base in PATH:
+    if base in TERTIARY:
         return 3
+    if base in MINOR:
+        return 4
+    if base in PATH:
+        return 5
     return None
+
+
+# Parks / green areas -> PRK2 filled-polygon section (hatch dither on device).
+# Must agree with mapgen.js / MapBuilder.swift and the QUERY above.
+PARK_LANDUSE = {"grass", "forest", "meadow", "recreation_ground", "cemetery", "village_green"}
+PARK_NATURAL = {"wood", "scrub", "grassland", "heath"}
+
+
+def is_park(tags):
+    return (tags.get("leisure") == "park"
+            or tags.get("landuse") in PARK_LANDUSE
+            or tags.get("natural") in PARK_NATURAL)
 
 
 def fetch(bbox, cache):
@@ -414,6 +436,7 @@ def main():
     ways = []
     water_ways = []  # node-id lists for natural=water polygons
     coast_ways = []  # node-id lists for natural=coastline ways
+    park_ways = []   # node-id lists for parks / green areas
     for el in data["elements"]:
         if el["type"] == "node":
             nodes[el["id"]] = (el["lat"], el["lon"])
@@ -426,6 +449,8 @@ def main():
                 water_ways.append(el["nodes"])
             elif tags.get("natural") == "coastline":
                 coast_ways.append(el["nodes"])
+            elif is_park(tags):
+                park_ways.append(el["nodes"])
     coast_chains = assemble_coastline(coast_ways, nodes)
     print(f"{len(ways)} ways, {len(water_ways)} water, "
           f"{len(coast_ways)} coastline ({len(coast_chains)} chains), "
@@ -525,6 +550,24 @@ def main():
         coastline_polys(coast_chains, s, w, n, e, lon0, lat0, kx, ky,
                         args.simplify_m))
 
+    # Park polygons (PRK2) — same region-relative-metre encoding as water, no
+    # coastline assembly (parks are already closed rings).
+    park_polys = []
+    for nids in park_ways:
+        pts = [nodes[i] for i in nids if i in nodes]
+        if not any(s <= lat <= n and w <= lon <= e for lat, lon in pts):
+            continue
+        m = [((lon - lon0) * kx, (lat - lat0) * ky) for lat, lon in pts]
+        m = decimate(m, args.simplify_m)
+        if len(m) < 3:
+            continue
+        poly = []
+        for x, y in m:
+            ix = max(-32000, min(32000, int(round(x))))
+            iy = max(-32000, min(32000, int(round(y))))
+            poly.append((ix, iy))
+        park_polys.append(poly)
+
     with open(args.out, "wb") as f:
         f.write(b"EBM2")
         f.write(struct.pack("<ddd", lat0, lon0, td))
@@ -536,6 +579,13 @@ def main():
         f.write(b"WTR2")
         f.write(struct.pack("<H", len(water_polys)))
         for poly in water_polys:
+            f.write(struct.pack("<H", len(poly)))
+            for x, y in poly:
+                f.write(struct.pack("<hh", x, y))
+        # PRK2 park section (same layout as WTR2)
+        f.write(b"PRK2")
+        f.write(struct.pack("<H", len(park_polys)))
+        for poly in park_polys:
             f.write(struct.pack("<H", len(poly)))
             for x, y in poly:
                 f.write(struct.pack("<hh", x, y))

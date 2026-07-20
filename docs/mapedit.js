@@ -7,9 +7,11 @@ import { classify, assembleCoastline, regionSeaPolygons, OVERPASS_ENDPOINTS } fr
 const ZOOMS = [1, 2, 4, 8, 16, 32];   // m/px, the device's zoom stops
 const TIERS = [
   { cls: 0, key: "arterial",  label: "Arterial",  hint: "motorway · trunk" },
-  { cls: 1, key: "secondary", label: "Secondary", hint: "primary · secondary · tertiary" },
-  { cls: 2, key: "minor",     label: "Minor",     hint: "residential · unclassified · …" },
-  { cls: 3, key: "path",      label: "Path",      hint: "footway · cycleway · track · steps" },
+  { cls: 1, key: "primary",   label: "Primary",   hint: "primary" },
+  { cls: 2, key: "secondary", label: "Secondary", hint: "secondary" },
+  { cls: 3, key: "tertiary",  label: "Tertiary",  hint: "tertiary" },
+  { cls: 4, key: "minor",     label: "Minor",     hint: "residential · unclassified · …" },
+  { cls: 5, key: "path",      label: "Path",      hint: "footway · cycleway · track · steps" },
 ];
 // Optional feature layers you can add. `match` assigns a fetched way to the
 // layer; `filter` builds its Overpass clause (b = "S,W,N,E"). Drawn in the
@@ -17,7 +19,7 @@ const TIERS = [
 const ADDABLE = {
   parks: {
     label: "Parks / green", hint: "leisure=park · landuse=forest/grass · natural=wood",
-    kind: "fill", fill: "#d7e7cf",
+    kind: "fill",   // drawn as a greyscale hatch (parkPat)
     match: (t) => t.leisure === "park" || /^(grass|forest|meadow|recreation_ground|cemetery|village_green)$/.test(t.landuse || "") || /^(wood|scrub|grassland|heath)$/.test(t.natural || ""),
     filter: (b) => [`way["leisure"="park"](${b});`,
                     `way["landuse"~"^(grass|forest|meadow|recreation_ground|cemetery|village_green)$"](${b});`,
@@ -25,7 +27,7 @@ const ADDABLE = {
   },
   rivers: {
     label: "Rivers / streams", hint: "waterway=river/stream/canal",
-    kind: "line", stroke: "#8fabc4", width: 2,
+    kind: "line", stroke: "#7a7a7a", width: 2,
     match: (t) => /^(river|stream|canal)$/.test(t.waterway || ""),
     filter: (b) => [`way["waterway"~"^(river|stream|canal)$"](${b});`],
   },
@@ -40,20 +42,24 @@ const ADDABLE = {
 const DEV_W = 540, DEV_H = 770, SC = 0.7;   // device map area, scaled to fit
 
 let cfg = defaultConfig();
-let roads = [], waterPolys = [], layerData = {}, added = [];
+let roads = [], waterPolys = [], layerData = {}, added = ["parks"];
 let center = null, curMpp = 8, lastBbox = null;
 
-// Defaults mirror the firmware: path shed ≥4, minor ≥8, secondary ≥16, arterial
-// never (thinning 5→2 at ≥16). Added layers default to showing in ≤8 m/px.
+// Defaults mirror the firmware: path shed ≥4, minor ≥16, secondary/tertiary
+// ≥32; primary + arterial never shed (both thin to 2 at ≥16). primary/
+// secondary/tertiary form a 4/3/2 width hierarchy.
 function defaultConfig() {
-  const c = { tiers: {}, water: {}, layers: {} };
+  const c = { tiers: {}, water: {}, layers: { parks: {} } };
   for (const t of TIERS) c.tiers[t.key] = {};
   for (const m of ZOOMS) {
     c.tiers.arterial[m]  = { show: true,   width: m >= 16 ? 2 : 5 };
-    c.tiers.secondary[m] = { show: m < 16, width: 3 };
-    c.tiers.minor[m]     = { show: m < 8,  width: 2 };
+    c.tiers.primary[m]   = { show: true,   width: m >= 16 ? 2 : 4 };
+    c.tiers.secondary[m] = { show: m < 32, width: 3 };
+    c.tiers.tertiary[m]  = { show: m < 32, width: 2 };
+    c.tiers.minor[m]     = { show: m < 16, width: 2 };
     c.tiers.path[m]      = { show: m < 4,  width: 1 };
     c.water[m] = true;
+    c.layers.parks[m] = true;   // parks ship in the tiles; on at every zoom
   }
   return c;
 }
@@ -66,6 +72,20 @@ function defaultLayerShow() {
 const $ = (id) => document.getElementById(id);
 const cv = $("cv"), ctx = cv.getContext("2d");
 const setStatus = (m) => { $("status").textContent = m; };
+
+// The panel is 1-bit greyscale, so fills are DITHER patterns (not colour) — the
+// same trick the firmware uses. Different patterns keep layers distinguishable
+// without any colour: water = 25% dots, parks = a diagonal hatch.
+function ditherPattern(draw) {
+  const c = document.createElement("canvas");
+  c.width = c.height = 4;
+  const p = c.getContext("2d");
+  p.fillStyle = "#000";
+  draw(p);
+  return ctx.createPattern(c, "repeat");
+}
+const waterPat = ditherPattern((p) => { p.fillRect(0, 0, 1, 1); p.fillRect(2, 0, 1, 1); p.fillRect(0, 2, 1, 1); p.fillRect(2, 2, 1, 1); });
+const parkPat  = ditherPattern((p) => { for (let i = 0; i < 4; i++) p.fillRect(i, i, 1, 1); });
 
 // --- Overpass (custom query so added layers come down too) -----------------
 async function overpass(filters, onStatus) {
@@ -150,7 +170,7 @@ function drawRect() {
 [bbN, bbS, bbW, bbE].forEach((f) => f.addEventListener("input", drawRect));
 
 $("load").onclick = () => loadArea(readBbox());
-$("reset").onclick = () => { cfg = defaultConfig(); for (const k of added) cfg.layers[k] = defaultLayerShow(); buildMatrix(); render(); };
+$("reset").onclick = () => { cfg = defaultConfig(); for (const k of added) if (!cfg.layers[k]) cfg.layers[k] = defaultLayerShow(); buildMatrix(); render(); };
 $("export").onclick = () => { const o = $("out"); o.hidden = false; o.textContent = JSON.stringify({ ...cfg, added }, null, 2); };
 
 const HIGHWAYS = `way["highway"~"^(motorway|trunk|primary|secondary|tertiary|residential|unclassified|living_street|pedestrian|cycleway|footway|path|track|steps)"]`;
@@ -233,16 +253,16 @@ function render() {
     ctx.setLineDash([]);
   };
 
-  // parks → water → added lines → roads (bottom to top)
-  if (added.includes("parks") && cfg.layers.parks[curMpp]) fillLayer(layerData.parks, ADDABLE.parks.fill);
-  if (cfg.water[curMpp]) fillLayer(waterPolys, "#cfd6dd");
+  // parks → water → added lines → roads (bottom to top). Greyscale like the panel.
+  if (added.includes("parks") && cfg.layers.parks[curMpp]) fillLayer(layerData.parks, parkPat);
+  if (cfg.water[curMpp]) fillLayer(waterPolys, waterPat);
   for (const k of ["rivers", "rail"])
     if (added.includes(k) && cfg.layers[k][curMpp]) lineLayer(layerData[k], ADDABLE[k].stroke, ADDABLE[k].width, ADDABLE[k].dash);
 
   for (const t of [...TIERS].reverse()) {
     const c = cfg.tiers[t.key][curMpp];
     if (!c.show) continue;
-    ctx.strokeStyle = t.cls === 3 ? "#b0b0b0" : "#111";
+    ctx.strokeStyle = t.key === "path" ? "#b0b0b0" : "#111";
     ctx.lineWidth = Math.max(0.5, c.width * SC);
     ctx.lineJoin = "round"; ctx.lineCap = "round";
     ctx.beginPath();

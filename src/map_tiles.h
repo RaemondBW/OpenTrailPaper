@@ -35,7 +35,7 @@ void endProject(MapScreenData& out);
 
 // Diagnostics: polys accumulated so far this frame, and the per-class breakdown.
 int projectedPolyCount();
-void projectedClassCounts(int out[5]);
+void projectedClassCounts(int out[7]);
 
 // Standalone geo -> screen projection around a center point (works
 // without a loaded map; used for the route overlay).

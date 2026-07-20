@@ -30,20 +30,26 @@ const QUERY = `[out:json][timeout:90];
   way["highway"~"^(motorway|trunk|primary|secondary|tertiary|residential|unclassified|living_street|pedestrian|cycleway|footway|path|track|steps)"](%S,%W,%N,%E);
   way["natural"="water"](%S,%W,%N,%E);
   way["natural"="coastline"](%S,%W,%N,%E);
+  way["leisure"="park"](%S,%W,%N,%E);
+  way["landuse"~"^(grass|forest|meadow|recreation_ground|cemetery|village_green)$"](%S,%W,%N,%E);
+  way["natural"~"^(wood|scrub|grassland|heath)$"](%S,%W,%N,%E);
 );
 out body;
 >;
 out skel qt;`;
 
-// Road tiers (device render classes).
+// Road tiers (device render classes). primary/secondary/tertiary are separate
+// tiers so each can be styled + shed independently per zoom.
 const ARTERIAL = new Set(["motorway", "trunk"]);
-const SECONDARY = new Set(["primary", "secondary", "tertiary"]);
+const PRIMARY = new Set(["primary"]);
+const SECONDARY = new Set(["secondary"]);
+const TERTIARY = new Set(["tertiary"]);
 const MINOR = new Set(["residential", "unclassified", "living_street", "pedestrian"]);
 const PATH = new Set(["cycleway", "footway", "path", "track", "steps"]);
 
-// OSM tags -> road tier (0 arterial, 1 secondary, 2 minor, 3 path), or null to
-// drop. Rail is dropped; natural=water is handled separately (WTR2). Must agree
-// with build_map.py / MapBuilder.swift.
+// OSM tags -> road tier (0 arterial, 1 primary, 2 secondary, 3 tertiary,
+// 4 minor, 5 path), or null to drop. Rail is dropped; natural=water is handled
+// separately (WTR2). Must agree with build_map.py / MapBuilder.swift.
 export function classify(tags) {
   if (tags == null) return null;
   const hw = tags.highway || "";
@@ -51,10 +57,24 @@ export function classify(tags) {
   if (hw === "footway" && (tags.footway === "sidewalk" || tags.footway === "crossing")) return null;
   const base = hw.split("_link")[0];
   if (ARTERIAL.has(base)) return 0;
-  if (SECONDARY.has(base)) return 1;
-  if (MINOR.has(base)) return 2;
-  if (PATH.has(base)) return 3;
+  if (PRIMARY.has(base)) return 1;
+  if (SECONDARY.has(base)) return 2;
+  if (TERTIARY.has(base)) return 3;
+  if (MINOR.has(base)) return 4;
+  if (PATH.has(base)) return 5;
   return null;
+}
+
+// Parks / green areas -> PRK2 filled-polygon section (drawn as a hatch dither
+// under the roads). Must agree with build_map.py / MapBuilder.swift and the
+// Overpass QUERY above. natural=water/coastline are handled separately.
+const PARK_LANDUSE = new Set(["grass", "forest", "meadow", "recreation_ground", "cemetery", "village_green"]);
+const PARK_NATURAL = new Set(["wood", "scrub", "grassland", "heath"]);
+export function isPark(tags) {
+  if (tags == null) return false;
+  return tags.leisure === "park" ||
+         PARK_LANDUSE.has(tags.landuse || "") ||
+         PARK_NATURAL.has(tags.natural || "");
 }
 
 // Ramer–Douglas–Peucker on projected metre coords. points: [[x,y], …].
@@ -388,6 +408,7 @@ export function buildEbm(json, { s, w, n, e, tileDeg = TILE_DEG, simplifyM = SIM
   const ways = [];
   const waterWays = []; // node-id lists for natural=water polygons
   const coastWays = []; // node-id lists for natural=coastline ways
+  const parkWays = [];  // node-id lists for parks / green areas
   for (const el of json.elements) {
     if (el.type === "node" && el.lat != null && el.lon != null) {
       nodes.set(el.id, [el.lat, el.lon]);
@@ -397,6 +418,7 @@ export function buildEbm(json, { s, w, n, e, tileDeg = TILE_DEG, simplifyM = SIM
       if (cls != null) ways.push([cls, el.nodes]);
       else if (tags.natural === "water") waterWays.push(el.nodes);
       else if (tags.natural === "coastline") coastWays.push(el.nodes);
+      else if (isPark(tags)) parkWays.push(el.nodes);
     }
   }
   const coastChains = assembleCoastline(coastWays, nodes);
@@ -488,6 +510,28 @@ export function buildEbm(json, { s, w, n, e, tileDeg = TILE_DEG, simplifyM = SIM
     waterPolys.push(poly);
   }
 
+  // Park polygons (PRK2) — same region-relative-metre encoding as water, no
+  // coastline assembly (parks are already closed rings).
+  const parkPolys = [];
+  for (const nids of parkWays) {
+    const pts = [];
+    for (const id of nids) { const p = nodes.get(id); if (p) pts.push(p); }
+    let inBox = false;
+    for (const [lat, lon] of pts) {
+      if (lat >= s && lat <= n && lon >= w && lon <= e) { inBox = true; break; }
+    }
+    if (!inBox) continue;
+    const m = decimate(pts.map(([lat, lon]) => [(lon - lon0) * kx, (lat - lat0) * ky]), simplifyM);
+    if (m.length < 3) continue;
+    const poly = [];
+    for (const [x, y] of m) {
+      const ix = Math.max(-32000, Math.min(32000, pyRound(x)));
+      const iy = Math.max(-32000, Math.min(32000, pyRound(y)));
+      poly.push([ix, iy]);
+    }
+    parkPolys.push(poly);
+  }
+
   // Serialize header.
   const out = new ByteWriter();
   out.ascii("EBM2");
@@ -528,6 +572,14 @@ export function buildEbm(json, { s, w, n, e, tileDeg = TILE_DEG, simplifyM = SIM
   out.ascii("WTR2");
   out.u16(waterPolys.length & 0xffff);
   for (const poly of waterPolys) {
+    out.u16(poly.length & 0xffff);
+    for (const [x, y] of poly) { out.i16(x); out.i16(y); }
+  }
+
+  // PRK2 park section (after WTR2). Same layout as WTR2.
+  out.ascii("PRK2");
+  out.u16(parkPolys.length & 0xffff);
+  for (const poly of parkPolys) {
     out.u16(poly.length & 0xffff);
     for (const [x, y] of poly) { out.i16(x); out.i16(y); }
   }
