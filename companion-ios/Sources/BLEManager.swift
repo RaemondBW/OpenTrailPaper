@@ -110,7 +110,7 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var deviceLogs: [LogFile] = []        // per-day log files on the device
     @Published var loadingLogs = false
     private var logsBuilding: [LogFile] = []
-    static let bundledFirmwareVersion = "v0.83"      // matches src/config.h
+    static let bundledFirmwareVersion = "v0.84"      // matches src/config.h
 
     // Saved routes on the device
     @Published var deviceRoutes: [String] = []
