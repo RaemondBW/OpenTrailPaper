@@ -13,7 +13,6 @@ const statusEl = $("status");
 const connectBtn = $("connect");
 const disconnectBtn = $("disconnect");
 const flashBtn = $("flash-btn");
-const rowsEl = $("rows");
 const barWrap = document.querySelector(".progress");
 const bar = $("bar");
 const versionSelect = $("version-select");
@@ -36,7 +35,7 @@ async function loadReleases() {
       .filter(Boolean);
     versionSelect.innerHTML = "";
     if (releases.length === 0) {
-      versionSelect.innerHTML = '<option value="">No CI releases yet — use a .bin below</option>';
+      versionSelect.innerHTML = '<option value="">No CI releases available yet</option>';
       return;
     }
     releases.forEach((r, i) => {
@@ -93,49 +92,6 @@ if (!("serial" in navigator)) {
   setStatus("Web Serial not available in this browser.", "err");
 }
 
-// --- file rows --------------------------------------------------------------
-function refreshRemoveButtons() {
-  const rows = rowsEl.querySelectorAll(".file-row");
-  rows.forEach((r) => {
-    r.querySelector("button.rm").hidden = rows.length <= 1;
-  });
-}
-
-$("addrow").addEventListener("click", () => {
-  const row = document.createElement("div");
-  row.className = "file-row";
-  row.innerHTML =
-    '<input type="text" value="0x0" aria-label="Flash offset" class="offset">' +
-    '<input type="file" accept=".bin" class="bin" aria-label="firmware binary">' +
-    '<button class="rm" title="Remove row">×</button>';
-  rowsEl.appendChild(row);
-  refreshRemoveButtons();
-});
-
-rowsEl.addEventListener("click", (e) => {
-  if (e.target.classList.contains("rm")) {
-    e.target.closest(".file-row").remove();
-    refreshRemoveButtons();
-  }
-});
-
-// Read a File as a binary (latin-1) string, which is what esptool-js wants.
-function readBinaryString(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = () => reject(reader.error);
-    reader.readAsBinaryString(file);
-  });
-}
-
-// Parse a flash offset, always interpreted as hexadecimal ("0x10000" or "10000").
-function parseOffset(str) {
-  const cleaned = String(str).trim().replace(/^0x/i, "");
-  if (!/^[0-9a-f]+$/i.test(cleaned)) return NaN;
-  return parseInt(cleaned, 16);
-}
-
 // --- connect / disconnect ---------------------------------------------------
 connectBtn.addEventListener("click", async () => {
   try {
@@ -179,41 +135,26 @@ async function cleanup() {
 flashBtn.addEventListener("click", async () => {
   if (!esploader) return;
 
-  // Gather and validate rows.
-  const rows = [...rowsEl.querySelectorAll(".file-row")];
+  // Only the official CI firmware is flashable, always at 0x10000 (the app
+  // partition) — no custom binaries, offsets or partition edits.
   const fileArray = [];
-  for (const row of rows) {
-    const fileInput = row.querySelector("input.bin");
-    const file = fileInput.files[0];
-    if (!file) continue; // skip empty rows
-    const address = parseOffset(row.querySelector("input.offset").value);
-    if (Number.isNaN(address)) {
-      setStatus("Bad offset — use hex like 0x10000.", "err");
-      return;
-    }
-    const data = await readBinaryString(file);
-    fileArray.push({ data, address, name: file.name });
+  if (!versionSelect || versionSelect.value === "") {
+    setStatus("Pick a firmware version to flash.", "err");
+    return;
   }
-
-  // No custom file chosen? Use the selected CI release binary at 0x10000.
-  if (fileArray.length === 0 && versionSelect && versionSelect.value !== "") {
-    const rel = releases[parseInt(versionSelect.value, 10)];
-    if (rel) {
-      try {
-        setStatus(`Downloading firmware ${rel.tag}…`, "");
-        const data = await fetchReleaseBin(rel.url);
-        fileArray.push({ data, address: 0x10000, name: `firmware.bin (${rel.tag})` });
-      } catch (e) {
-        console.error(e);
-        log("Download error: " + (e?.message || e));
-        setStatus("Couldn't download the release binary (network/CORS). Try a .bin file instead.", "err");
-        return;
-      }
-    }
+  const rel = releases[parseInt(versionSelect.value, 10)];
+  if (!rel) {
+    setStatus("No firmware release available to flash.", "err");
+    return;
   }
-
-  if (fileArray.length === 0) {
-    setStatus("Pick a version or choose a .bin file to flash.", "err");
+  try {
+    setStatus(`Downloading firmware ${rel.tag}…`, "");
+    const data = await fetchReleaseBin(rel.url);
+    fileArray.push({ data, address: 0x10000, name: `firmware.bin (${rel.tag})` });
+  } catch (e) {
+    console.error(e);
+    log("Download error: " + (e?.message || e));
+    setStatus("Couldn't download the firmware (network/CORS). Try again.", "err");
     return;
   }
 
@@ -234,7 +175,7 @@ flashBtn.addEventListener("click", async () => {
       flashSize: "keep",
       flashMode: "keep",
       flashFreq: "keep",
-      eraseAll: $("erase").checked,
+      eraseAll: false,
       compress: true,
       // esptool-js reports written/size in compressed bytes per file, so track
       // the per-file fraction across the file count rather than summing bytes.
@@ -258,5 +199,3 @@ flashBtn.addEventListener("click", async () => {
     connectBtn.disabled = false;
   }
 });
-
-refreshRemoveButtons();

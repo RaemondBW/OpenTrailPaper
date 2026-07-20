@@ -40,8 +40,11 @@ jobs:
         run: |
           mkdir -p _site/img
           cp -R docs/. _site/
-          for f in dashboard map summary menu sensors nav_banner; do
+          for f in dashboard map summary menu sensors nav_banner nav_prompt; do
             cp "tools/preview/out/$f.png" "_site/img/$f.png"
+          done
+          for f in route ride settings; do
+            cp "companion-ios/$f.png" "_site/img/app_$f.png"
           done
           touch _site/.nojekyll
 

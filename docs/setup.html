@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Set up your OpenTrailPaper device</title>
+<meta name="description" content="Set up your OpenTrailPaper head unit: flash the firmware from your browser over USB, and bake offline maps onto the SD card.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'%3E%3Crect width='120' height='120' rx='20' fill='%23141414'/%3E%3Crect x='30' y='18' width='60' height='84' rx='8' fill='%23fff'/%3E%3Cpath d='M60 26 L60 46' fill='none' stroke='%23141414' stroke-width='6' stroke-dasharray='8 5'/%3E%3Ccircle cx='60' cy='64' r='16' fill='none' stroke='%23141414' stroke-width='5'/%3E%3Cpath d='M60 54 L68 74 L60 69.5 L52 74 Z' fill='%23F4501E'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+</head>
+<body>
+
+<header class="nav">
+  <div class="wrap">
+    <span class="brand">
+      <svg width="28" height="28" viewBox="0 0 120 120" aria-hidden="true"><rect width="120" height="120" rx="20" fill="#141414"/><rect x="30" y="18" width="60" height="84" rx="8" fill="#fff"/><path d="M60 26 L60 46" fill="none" stroke="#141414" stroke-width="6" stroke-dasharray="8 5"/><circle cx="60" cy="64" r="16" fill="none" stroke="#141414" stroke-width="5"/><path d="M60 54 L68 74 L60 69.5 L52 74 Z" fill="#F4501E"/></svg>
+      OpenTrailPaper
+    </span>
+    <nav>
+      <a href="index.html">← Home</a>
+      <a href="#flash">Flash</a>
+      <a href="#maps">Maps</a>
+      <a class="gh" href="https://github.com/RaemondBW/OpenTrailPaper">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<section class="setup-intro">
+  <div class="wrap">
+    <p class="kicker">Set up your device</p>
+    <h1>Got the hardware? Let&rsquo;s get it riding.</h1>
+    <p class="lede">Two steps, both in your browser: flash the firmware over USB, then bake offline maps onto the SD card. Nothing is uploaded — it all runs on your computer.</p>
+  </div>
+</section>
+
+<section id="flash" class="dark">
+  <div class="wrap">
+    <p class="kicker">01 — Flash firmware</p>
+    <h2>From zero to riding, in the browser.</h2>
+    <p class="sub">Flash the head unit straight from this page over USB — no app, no command line. Everything happens on your computer; nothing is uploaded. Use Chrome or Edge on a desktop.</p>
+
+    <div id="unsupported" class="notice warn" hidden>
+      <strong>Your browser can&rsquo;t do this.</strong> Web Serial needs a Chromium-based desktop browser —
+      use <strong>Chrome</strong>, <strong>Edge</strong> or <strong>Opera</strong> on desktop (not Safari, Firefox or mobile).
+    </div>
+
+    <div class="flash-steps">
+      <div class="flash-step">
+        <span class="step-num">1</span>
+        <div class="step-body">
+          <strong>Connect the head unit</strong>
+          <p>
+            Plug it into your computer with a USB-C cable. Put it in flashing mode:
+            hold <span class="kbd">BOOT</span>, tap <span class="kbd">RESET</span>, then
+            let go of <span class="kbd">BOOT</span>. Click <em>Connect</em> and pick the
+            <code>usbmodem</code> / <code>USB Serial</code> port that appears.
+          </p>
+          <div class="flash-controls">
+            <button id="connect" class="btn accent">Connect</button>
+            <button id="disconnect" class="btn secondary" hidden>Disconnect</button>
+            <span id="status" class="status">Not connected.</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="flash-step">
+        <span class="step-num">2</span>
+        <div class="step-body">
+          <strong>Choose the firmware</strong>
+          <p>
+            Pick a version from the dropdown. The newest is already selected, so
+            you can usually leave it as-is.
+          </p>
+          <div class="version-pick">
+            <select id="version-select" aria-label="Firmware version">
+              <option value="">Loading versions…</option>
+            </select>
+            <p id="version-note">The latest release is selected by default.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="flash-step">
+        <span class="step-num">3</span>
+        <div class="step-body">
+          <strong>Flash it</strong>
+          <p>
+            Click <em>Flash firmware</em> and wait for it to finish — it takes about a
+            minute. When it&rsquo;s done, tap <span class="kbd">RESET</span> on the head
+            unit and it boots into the new firmware.
+          </p>
+          <div class="flash-controls">
+            <button id="flash-btn" class="btn" disabled>Flash firmware</button>
+          </div>
+          <div class="progress" hidden><i id="bar"></i></div>
+          <div class="console" id="log" aria-live="polite"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="maps">
+  <div class="wrap">
+    <p class="kicker">02 — Generate an offline map</p>
+    <h2>Bake a map in your browser.</h2>
+    <p class="sub">Pick an area and the browser bakes the very same <code>H3</code> map tiles the companion app builds — one <code>.ebm</code> per hexagon under <code>/maps/tiles</code> on the SD card. Everything runs locally from <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> data (via <a href="https://overpass-api.de/">Overpass</a>); nothing is uploaded. (The app additionally bakes in elevation; that&rsquo;s the one thing the browser leaves out.)</p>
+
+    <div class="flash-steps">
+      <div class="flash-step">
+        <span class="step-num">1</span>
+        <div class="step-body">
+          <strong>Choose your area</strong>
+          <p>
+            Pan and zoom to where you ride, then <em>Draw a box</em> (drag across the map)
+            or <em>Use current view</em>. Keep it modest — a city or a county is fine; a
+            whole state is too much data for one download.
+          </p>
+          <div id="pickmap" class="pickmap" role="application" aria-label="Map area picker"></div>
+          <div class="pickmap-tools">
+            <button id="drawbox" class="btn secondary" type="button">Draw a box</button>
+            <button id="useview" class="btn secondary" type="button">Use current view</button>
+          </div>
+          <p id="bb-info" class="bbox-info">Pan and zoom to your area, then draw a box or use the current view.</p>
+        </div>
+      </div>
+
+      <div class="flash-step">
+        <span class="step-num">2</span>
+        <div class="step-body">
+          <strong>Generate the map</strong>
+          <p>
+            Click <em>Generate map</em> — it fetches the roads for your area and bakes the
+            <code>.ebm</code> right here in your browser.
+          </p>
+          <div class="flash-controls">
+            <button id="gen-btn" class="btn accent" type="button" disabled>Generate map</button>
+            <span id="gen-status" class="status">Pick an area to begin.</span>
+          </div>
+          <div class="progress" hidden><i id="gen-bar"></i></div>
+          <div class="console" id="gen-log" aria-live="polite"></div>
+        </div>
+      </div>
+
+      <div class="flash-step">
+        <span class="step-num">3</span>
+        <div class="step-body">
+          <strong>Download &amp; drop on the SD card</strong>
+          <p>
+            Download the tiles, then unzip onto the SD card&rsquo;s root and they land in
+            <code>/maps/tiles</code> automatically — over the built-in USB-drive mode, or with
+            a card reader. They show up on the map screen the next time you ride through that area.
+          </p>
+          <p style="margin:12px 0 0;"><a id="gen-download" class="btn accent" hidden download>⬇ Download map</a></p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <span>OpenTrailPaper — <a href="https://github.com/RaemondBW/OpenTrailPaper/blob/main/LICENSE">open source</a>.</span>
+    <span>
+      <a href="index.html">Home</a> ·
+      <a href="https://github.com/RaemondBW/OpenTrailPaper">Source</a> ·
+      <a href="https://github.com/RaemondBW/OpenTrailPaper/issues">Issues</a>
+    </span>
+  </div>
+</footer>
+
+<script type="module" src="flash.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script type="module" src="mapgen-ui.js"></script>
+</body>
+</html>

@@ -32,3 +32,6 @@ tools/fit_test/out/
 
 # Xcode archive / build output
 companion-ios/build/
+
+# Site images are generated at deploy time from tools/preview/out (see pages.yml)
+docs/img/

@@ -1,9 +1,50 @@
 // DOM wiring for the in-browser offline-map generator. The encoding lives in
 // mapgen.js (a pure, testable library); this file is just the map picker + form.
-import { buildEbm, headerOnlySize, fetchOverpass } from "./mapgen.js";
+import { buildEbm, fetchOverpass } from "./mapgen.js";
+import { latLngToCell, gridDisk, cellToBoundary }
+  from "https://cdn.jsdelivr.net/npm/h3-js@4.1.0/+esm";
+
+// H3 res-6 tiling, mirroring the app's companion-ios/Sources/H3/h3shim.c so the
+// website builds the exact same per-hex tiles (/maps/tiles/<h3id>.ebm).
+const H3_RES = 6;
+function cellBbox(cell) {
+  const verts = cellToBoundary(cell);         // [[lat, lng], ...]
+  let s = 90, w = 180, n = -90, e = -180;
+  for (const [la, lo] of verts) {
+    if (la < s) s = la;
+    if (la > n) n = la;
+    if (lo < w) w = lo;
+    if (lo > e) e = lo;
+  }
+  return { s, w, n, e };
+}
+function coveringCells(bb) {
+  const clat = (bb.s + bb.n) / 2, clon = (bb.w + bb.e) / 2;
+  const center = latLngToCell(clat, clon, H3_RES);
+  const dLatKm = (bb.n - bb.s) / 2 * 110.54;
+  const dLonKm = (bb.e - bb.w) / 2 * 111.32 * Math.cos(clat * Math.PI / 180);
+  let k = Math.ceil(Math.hypot(dLatKm, dLonKm) / 5.0) + 1;
+  k = Math.max(1, Math.min(200, k));
+  const out = [];
+  for (const cell of gridDisk(center, k)) {
+    const c = cellBbox(cell);
+    if (c.e < bb.w || c.w > bb.e || c.n < bb.s || c.s > bb.n) continue;  // no overlap
+    out.push({ id: cell, ...c });
+  }
+  return out;
+}
+// Keep a tile only if it holds road geometry — the app drops tiles whose road
+// encode is header-only. Reads the EBM2 index for any non-zero tile offset.
+function ebmHasRoads(bytes) {
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const nx = dv.getInt32(28, true), ny = dv.getInt32(32, true);
+  for (let k = 0; k < nx * ny; k++) {
+    if (dv.getUint32(36 + k * 8, true) !== 0) return true;
+  }
+  return false;
+}
 
 const $ = (id) => document.getElementById(id);
-const fieldN = $("bb-n"), fieldS = $("bb-s"), fieldW = $("bb-w"), fieldE = $("bb-e");
 const infoEl = $("bb-info");
 const genBtn = $("gen-btn"), genStatus = $("gen-status"), genLog = $("gen-log");
 const genDownload = $("gen-download");
@@ -15,8 +56,10 @@ if (genBtn) init();
 
 function init() {
   let map = null, rect = null, drawing = false, downloadUrl = null;
+  let curBbox = null;   // { s, w, n, e } from the drawn box / current view
 
-  // --- Leaflet map (optional — the numeric fields work without it) ----------
+  // --- Leaflet map: the area is chosen entirely by drawing a box or using the
+  //     current view — there are no manual lat/lon fields. -------------------
   if (typeof L !== "undefined") {
     map = L.map("pickmap", { zoomControl: true }).setView([37.7625, -122.44], 12);
     L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
@@ -53,11 +96,13 @@ function init() {
       setBbox(b.getSouth(), b.getWest(), b.getNorth(), b.getEast(), false);
     });
   } else {
-    // No Leaflet (offline / blocked CDN): hide map affordances, keep the form.
+    // No Leaflet (offline / blocked CDN): the box is the only way to pick an
+    // area, so without the map there's nothing to do here.
     const pm = $("pickmap");
     if (pm) pm.style.display = "none";
     drawBtn.style.display = "none";
     useViewBtn.style.display = "none";
+    infoEl.textContent = "The map picker couldn't load — check your connection and reload.";
   }
 
   function setDrawing(on) {
@@ -76,32 +121,18 @@ function init() {
     else rect.setBounds(bounds);
   }
 
-  // --- bbox state <-> fields -----------------------------------------------
+  // --- bbox state ----------------------------------------------------------
   function setBbox(s, w, n, e, fit) {
-    fieldS.value = round5(s); fieldW.value = round5(w);
-    fieldN.value = round5(n); fieldE.value = round5(e);
-    onFieldsChanged(fit);
+    curBbox = { s, w, n, e };
+    onBboxChanged(fit);
   }
 
-  function readFields() {
-    const s = parseFloat(fieldS.value), w = parseFloat(fieldW.value);
-    const n = parseFloat(fieldN.value), e = parseFloat(fieldE.value);
-    if ([s, w, n, e].some((v) => !isFinite(v))) return null;
-    return { s, w, n, e };
-  }
-
-  function onFieldsChanged(fit) {
-    const bb = readFields();
+  function onBboxChanged(fit) {
+    const bb = curBbox;
     if (!bb) {
       genBtn.disabled = true;
-      infoEl.textContent = "Enter or draw a bounding box.";
+      infoEl.textContent = "Draw a box on the map to choose your area.";
       infoEl.className = "bbox-info";
-      return;
-    }
-    if (bb.s >= bb.n || bb.w >= bb.e) {
-      genBtn.disabled = true;
-      infoEl.textContent = "North must be above south and east must be right of west.";
-      infoEl.className = "bbox-info warn";
       return;
     }
     if (map) {
@@ -126,9 +157,6 @@ function init() {
       ? msg + " Large — the download may take a minute or two."
       : msg;
   }
-
-  [fieldS, fieldW, fieldN, fieldE].forEach((f) =>
-    f.addEventListener("input", () => onFieldsChanged(false)));
 
   // --- generate -------------------------------------------------------------
   function log(msg) { genLog.textContent += msg + "\n"; genLog.scrollTop = genLog.scrollHeight; }
@@ -180,7 +208,7 @@ function init() {
   }
 
   genBtn.addEventListener("click", async () => {
-    const bb = readFields();
+    const bb = curBbox;
     if (!bb) return;
     // Auto-named from the box centre so several regions never collide in /maps.
     const latC = ((bb.s + bb.n) / 2).toFixed(3), lonC = ((bb.w + bb.e) / 2).toFixed(3);
@@ -202,22 +230,34 @@ function init() {
       // Yield so the status paints before the (synchronous) encode.
       await new Promise((r) => setTimeout(r, 0));
 
-      const ebm = buildEbm(json, bb);
-      if (ebm.length <= headerOnlySize(bb.s, bb.w, bb.n, bb.e)) {
+      // Split the box into H3 res-6 tiles (the same ones the app builds) and
+      // encode each hex's own .ebm from the shared OSM data.
+      const cells = coveringCells(bb);
+      log(`${cells.length} H3 tiles cover the area. Building each…`);
+      const files = [];
+      for (let ci = 0; ci < cells.length; ci++) {
+        const c = cells[ci];
+        const ebm = buildEbm(json, { s: c.s, w: c.w, n: c.n, e: c.e });
+        if (ebmHasRoads(ebm)) files.push({ name: `maps/tiles/${c.id}.ebm`, data: ebm });
+        setStatus(`Building tiles… ${ci + 1}/${cells.length}`);
+        if (ci % 6 === 5) await new Promise((r) => setTimeout(r, 0));  // keep UI live
+      }
+      if (files.length === 0) {
         throw new Error("No roads found in that area — try a different or larger box.");
       }
 
       // Package as a ZIP laid out for the SD card: unzip onto the card root and
-      // it lands at /maps/<name>.ebm.
-      const zip = zipStore([{ name: `maps/${name}.ebm`, data: ebm }]);
+      // the tiles land at /maps/tiles/<h3id>.ebm — exactly where the app puts them.
+      const zip = zipStore(files);
+      const bytes = files.reduce((a, f) => a + f.data.length, 0);
       const blob = new Blob([zip], { type: "application/zip" });
       downloadUrl = URL.createObjectURL(blob);
       genDownload.href = downloadUrl;
-      genDownload.download = `bikegps-${name}.zip`;
-      genDownload.textContent = `⬇ Download ZIP (${fmtBytes(zip.length)}) — unzip onto the SD card`;
+      genDownload.download = `bikegps-tiles-${name}.zip`;
+      genDownload.textContent = `⬇ Download ${files.length} tiles (${fmtBytes(zip.length)})`;
       genDownload.hidden = false;
-      log(`Done: ${fmtBytes(ebm.length)} map. Unzip onto the SD card root → /maps/${name}.ebm.`);
-      setStatus("Map ready — download the ZIP below.", "ok");
+      log(`Done: ${files.length} tiles, ${fmtBytes(bytes)}. Unzip onto the SD card root → /maps/tiles/. These are the same H3 tiles the app builds.`);
+      setStatus("Tiles ready — download the ZIP below.", "ok");
     } catch (err) {
       log("Error: " + (err && err.message ? err.message : String(err)));
       setStatus(err && err.message ? err.message : "Failed.", "err");
@@ -228,10 +268,9 @@ function init() {
     }
   });
 
-  onFieldsChanged(false);
+  onBboxChanged(false);
 }
 
-function round5(v) { return Math.round(v * 1e5) / 1e5; }
 function fmtBytes(n) {
   if (n < 1024) return n + " B";
   if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
