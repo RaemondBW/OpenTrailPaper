@@ -130,7 +130,7 @@ header.nav nav a.gh:hover { background: #000; color: #fff; }
 .device-mock .device {
   position: relative; width: 290px;
   background: linear-gradient(155deg, #fcfcfd, #e8eaed);
-  border-radius: 34px; padding: 30px 15px 0;   /* taller bezel at the top */
+  border-radius: 34px; padding: 74px 15px 0;   /* tall bezel at the top */
   box-shadow: 0 26px 52px rgba(20, 20, 20, 0.20),
               inset 0 0 0 1px rgba(255, 255, 255, 0.7),
               inset 0 0 0 2px rgba(0, 0, 0, 0.06);
