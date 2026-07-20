@@ -326,7 +326,11 @@ int main(int argc, char** argv) {
         emit("map_nomap.png");
     }
 
-    // Powered-off screen: full-screen map backdrop + plate
+    // Powered-off screen: full-screen map backdrop (max zoom-out) + plate
+    if (mf) {
+        map_tiles::project(37.765, -122.435, 32.0f, 270, 430, 0, map);
+        map.metersPerPixel = 32.0f;
+    }
     clearWhite(fb.data());
     ui_render_map_features(map, s, fb.data());
     ui_render_shutdown_screen(fb.data());

@@ -101,8 +101,11 @@ void shutdownDevice(uint8_t* fb, const char* reason) {
 
     // Leave a static farewell on the glass — e-paper keeps it for free.
     // Full-screen map backdrop (last known position) with a POWERED OFF plate.
+    // Force the widest zoom so the farewell shows the broadest area overview
+    // (we're deep-sleeping right after, so mutating mapMpp is harmless).
     memset(fb, 0xFF, fbSize);
     {
+        mapMpp = 32.0f;   // max zoom-out (1/2/4/8/16/32 m per px)
         RideState s = g_state.snapshot();
         MapScreenData map = {};
         buildMapScreenData(s, map);
