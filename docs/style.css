@@ -275,10 +275,21 @@ section .sub { color: var(--ink-soft); font-size: 1.06rem; margin: 0 0 40px; max
   .app-shot { flex: none; width: 240px; }
 }
 .app-shot { margin: 0; }
-.app-shot img {
-  width: 100%; max-width: 236px; height: auto; display: block; margin: 0 auto;
-  border-radius: 26px; border: 1px solid var(--line);
-  box-shadow: 0 18px 40px rgba(20, 20, 20, 0.16);
+/* iPhone 17 Pro: titanium frame, thin uniform bezel, Dynamic Island */
+.iphone {
+  position: relative; width: 100%; max-width: 232px; margin: 0 auto;
+  padding: 9px; border-radius: 46px;
+  background: linear-gradient(150deg, #e4e5e8, #b8bcc2 45%, #cfd2d7);
+  box-shadow: 0 20px 44px rgba(20, 20, 20, 0.22),
+              inset 0 0 0 1.5px rgba(255, 255, 255, 0.45),
+              inset 0 0 2px 2.5px rgba(0, 0, 0, 0.12);
+}
+.iphone img {
+  display: block; width: 100%; height: auto; border-radius: 38px; background: #000;
+}
+.iphone .island {
+  position: absolute; top: 20px; left: 50%; transform: translateX(-50%);
+  width: 30%; height: 20px; background: #000; border-radius: 11px; z-index: 2;
 }
 .app-shot figcaption { margin-top: 20px; font-size: 0.95rem; color: var(--ink-soft); line-height: 1.55; }
 .app-shot figcaption strong {
