@@ -74,7 +74,10 @@ struct RouteView: View {
             .navigationBarHidden(true)
             .sheet(isPresented: $showSaved) { SavedRoutesSheet() }
             .sheet(isPresented: $showMaps) { MapsView() }
-            .onAppear { model.requestLocation() }
+            .onAppear {
+                if ProcessInfo.processInfo.arguments.contains("-demo-route") { model.demoRoute() }
+                else { model.requestLocation() }
+            }
             .onChange(of: model.destinationName) {
                 ble.routeSent = false; ble.routeReceived = false
             }
@@ -191,6 +194,19 @@ final class RouteModel: NSObject, ObservableObject {
                 span: MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05)))
         } else {
             camera = .userLocation(fallback: .automatic)
+        }
+    }
+
+    // Screenshot demo: build a fixed SF route without needing a live location.
+    func demoRoute() {
+        let from = CLLocationCoordinate2D(latitude: 37.7690, longitude: -122.4830)
+        let dest = CLLocationCoordinate2D(latitude: 37.8079, longitude: -122.4177)
+        destination = dest
+        destinationName = "Fisherman's Wharf"
+        calcRoute(from: from, to: dest, type: .cycling) { [weak self] r in
+            if let r { self?.apply(r, mode: "Cycling") }
+            else { self?.calcRoute(from: from, to: dest, type: .walking) { r2 in
+                if let r2 { self?.apply(r2, mode: "Walking") } } }
         }
     }
 

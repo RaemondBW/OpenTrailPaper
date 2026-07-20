@@ -173,9 +173,14 @@ final class BLEManager: NSObject, ObservableObject {
     private var otaChunk = 180
     private var otaCommitSent = false
 
+    // Screenshot demo: pose as connected to an older-firmware device so the
+    // update-pending UI shows, without touching real Bluetooth.
+    private let isDemoUpdate = ProcessInfo.processInfo.arguments.contains("-demo-update")
+
     override init() {
         super.init()
         central = CBCentralManager(delegate: self, queue: .main)
+        if isDemoUpdate { state = .connected; deviceFirmware = "v0.83" }
         locationManager.delegate = self
         locationManager.desiredAccuracy = kCLLocationAccuracyHundredMeters
         // Show last-known on-device tiles immediately; a refresh confirms them.
@@ -942,6 +947,7 @@ final class BLEManager: NSObject, ObservableObject {
 
 extension BLEManager: CBCentralManagerDelegate {
     nonisolated func centralManagerDidUpdateState(_ c: CBCentralManager) {
+        if isDemoUpdate { return }   // demo holds a fake connected state
         MainActor.assumeIsolated {
             switch c.state {
             case .poweredOn: startScan()

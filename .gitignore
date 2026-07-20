@@ -35,3 +35,4 @@ companion-ios/build/
 
 # Site images are generated at deploy time from tools/preview/out (see pages.yml)
 docs/img/
+companion-ios/build-sim/

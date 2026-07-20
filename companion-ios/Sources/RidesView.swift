@@ -174,7 +174,22 @@ struct RidesView: View {
             .background(Palette.paper.ignoresSafeArea())
             .navigationBarHidden(true)
             .onAppear {
-                if ProcessInfo.processInfo.arguments.contains("-demo-ride"),
+                let args = ProcessInfo.processInfo.arguments
+                if args.contains("-demo-rides"),
+                   let url = Bundle.main.url(forResource: "demo", withExtension: "fit"),
+                   let data = try? Data(contentsOf: url) {
+                    // Screenshot demo: seed a few recent rides into the cache so the
+                    // Rides list renders with cards (all preview the bundled demo ride).
+                    let names = ["20260719-071500.fit", "20260718-163000.fit", "20260716-090000.fit"]
+                    let dir = BLEManager.cachedURL(for: "x").deletingLastPathComponent()
+                    for f in (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
+                        where f.pathExtension == "fit" { try? FileManager.default.removeItem(at: f) }
+                    let preview = FITDecoder.decode(data)
+                    for n in names {
+                        try? data.write(to: BLEManager.cachedURL(for: n))
+                        if let preview { previews.store(preview, for: n) }
+                    }
+                } else if args.contains("-demo-ride"),
                    let url = Bundle.main.url(forResource: "demo", withExtension: "fit"),
                    let data = try? Data(contentsOf: url),
                    let preview = FITDecoder.decode(data) {
