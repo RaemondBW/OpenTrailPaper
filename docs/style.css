@@ -287,10 +287,6 @@ section .sub { color: var(--ink-soft); font-size: 1.06rem; margin: 0 0 40px; max
 .iphone img {
   display: block; width: 100%; height: auto; border-radius: 38px; background: #000;
 }
-.iphone .island {
-  position: absolute; top: 20px; left: 50%; transform: translateX(-50%);
-  width: 30%; height: 20px; background: #000; border-radius: 11px; z-index: 2;
-}
 .app-shot figcaption { margin-top: 20px; font-size: 0.95rem; color: var(--ink-soft); line-height: 1.55; }
 .app-shot figcaption strong {
   display: block; font-family: var(--display); font-size: 1.24rem;
