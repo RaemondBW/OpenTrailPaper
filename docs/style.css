@@ -188,7 +188,6 @@ section .sub { color: var(--ink-soft); font-size: 1.06rem; margin: 0 0 40px; max
 
 /* --- device walkthrough emulator (section 01) --- */
 .emu { display: grid; grid-template-columns: auto 1fr; gap: 48px; align-items: center; }
-@media (max-width: 780px) { .emu { grid-template-columns: 1fr; gap: 28px; justify-items: center; } }
 
 /* the screen becomes a positioning context for the tap indicator */
 .emu-device .screen { position: relative; }
@@ -262,6 +261,32 @@ section .sub { color: var(--ink-soft); font-size: 1.06rem; margin: 0 0 40px; max
   color: var(--ink-soft); font-size: 0.96rem; line-height: 1.55; }
 .emu-hint { display: flex; align-items: center; gap: 8px; color: var(--ink); font-weight: 600; }
 .emu-hand { font-size: 1.25rem; line-height: 1; }
+
+/* step dots — hidden on desktop (the accordion is the nav), shown on mobile */
+.emu-dots { display: none; gap: 9px; margin-top: 18px; }
+.emu-dot {
+  width: 9px; height: 9px; border-radius: 50%; border: 0; padding: 0;
+  background: var(--line); cursor: pointer; transition: background 0.15s, transform 0.15s;
+}
+.emu-dot:hover { transform: scale(1.25); }
+.emu-dot.on { background: var(--accent); }
+
+/* Mobile: stack a smaller device over just the current step's explanation, with
+   dots to move between them — so the device and its caption are visible together. */
+@media (max-width: 780px) {
+  .emu { grid-template-columns: 1fr; gap: 16px; justify-items: center; }
+  .emu-device .device { width: 208px; }
+  .emu-panel { max-width: 400px; width: 100%; }
+  .emu-steps { text-align: center; }
+  .emu-step { border: 0; }
+  .emu-step:not(.on) { display: none; }        /* show only the current step */
+  .emu-step-head { justify-content: center; padding: 0 0 6px; cursor: default; }
+  .emu-step-n { display: none; }               /* the dots convey progress */
+  .emu-step-title { font-size: 1.3rem; }
+  .emu-step-body p { padding-left: 0; margin-bottom: 10px; }
+  .emu-hint { justify-content: center; }
+  .emu-dots { display: flex; justify-content: center; }
+}
 
 /* --- companion app gallery --- */
 .app-gallery { display: grid; grid-template-columns: repeat(3, 1fr); gap: 40px; }

@@ -60,7 +60,7 @@ if ($("emu")) init();
 
 function init() {
   const img = $("emu-img"), tap = $("emu-tap"), flash = $("emu-flash"), glow = $("emu-glow");
-  const stepsEl = $("emu-steps"), root = $("emu");
+  const stepsEl = $("emu-steps"), dotsEl = $("emu-dots"), root = $("emu");
   let i = 0, advanceTimer = null, tapTimer = null, resultTimer = null;
 
   // Build the always-visible step list (an accordion; the active row expands).
@@ -87,8 +87,16 @@ function init() {
     body.append(inner);
     li.append(head, body);
     stepsEl.append(li);
+
+    const dot = document.createElement("button");
+    dot.type = "button";
+    dot.className = "emu-dot";
+    dot.setAttribute("aria-label", "Step " + (k + 1) + ": " + s.title);
+    dot.addEventListener("click", () => select(k, true));
+    dotsEl.append(dot);
   });
   const items = [...stepsEl.children];
+  const dots = [...dotsEl.children];
 
   function replay(el, cls) {
     el.classList.remove(cls);
@@ -102,6 +110,7 @@ function init() {
     img.src = "img/" + s.from + ".png";
     glow.classList.remove("on");
     items.forEach((li, k2) => li.classList.toggle("on", k2 === i));
+    dots.forEach((d, k2) => d.classList.toggle("on", k2 === i));
 
     clearTimeout(tapTimer);
     clearTimeout(resultTimer);
