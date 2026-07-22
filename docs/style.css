@@ -193,7 +193,8 @@ section .sub { color: var(--ink-soft); font-size: 1.06rem; margin: 0 0 40px; max
 }
 
 /* --- device walkthrough emulator (section 01) --- */
-.emu { display: grid; grid-template-columns: auto 1fr; gap: 48px; align-items: center; }
+.emu { display: grid; grid-template-columns: auto auto; gap: 56px;
+  align-items: center; justify-content: center; }
 
 /* the screen becomes a positioning context for the tap indicator */
 .emu-device .screen { position: relative; }
