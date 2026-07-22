@@ -32,17 +32,18 @@
 
 <section class="setup-intro">
   <div class="wrap">
-    <p class="kicker">Set up your device</p>
-    <h1>Got the hardware? Let&rsquo;s get it riding.</h1>
-    <p class="lede">Two steps, both in your browser: flash the firmware over USB, then bake offline maps onto the SD card. Nothing is uploaded — it all runs on your computer.</p>
+    <p class="kicker">Device setup</p>
+    <h1>Setting up your OpenTrailPaper</h1>
+    <p class="lede">There are two parts, both handled here in the browser: flashing the firmware onto the head unit over USB, and building offline map tiles for its SD card. Everything runs locally on your computer — no data is uploaded.</p>
+    <div class="notice"><strong>This page needs a desktop Chromium browser.</strong> Flashing uses the Web Serial API, which is only available in <strong>Chrome, Edge, or Opera on a desktop</strong>. It will not work on a phone or tablet, or in Safari or Firefox.</div>
   </div>
 </section>
 
 <section id="flash" class="dark">
   <div class="wrap">
     <p class="kicker">01 — Flash firmware</p>
-    <h2>From zero to riding, in the browser.</h2>
-    <p class="sub">Flash the head unit straight from this page over USB — no app, no command line. Everything happens on your computer; nothing is uploaded. Use Chrome or Edge on a desktop.</p>
+    <h2>Flash the firmware over USB</h2>
+    <p class="sub">This writes the firmware to the head unit directly from the browser over a USB cable, using the Web Serial API — no separate installer or command line. It runs entirely on your computer; nothing is uploaded.</p>
 
     <div id="unsupported" class="notice warn" hidden>
       <strong>Your browser can&rsquo;t do this.</strong> Web Serial needs a Chromium-based desktop browser —
@@ -108,7 +109,7 @@
 <section id="maps">
   <div class="wrap">
     <p class="kicker">02 — Generate an offline map</p>
-    <h2>Bake a map in your browser.</h2>
+    <h2>Build offline map tiles</h2>
     <p class="sub">Pick an area and the browser bakes the very same <code>H3</code> map tiles the companion app builds — one <code>.ebm</code> per hexagon under <code>/maps/tiles</code> on the SD card. Everything runs locally from <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> data (via <a href="https://overpass-api.de/">Overpass</a>); nothing is uploaded. (The app additionally bakes in elevation; that&rsquo;s the one thing the browser leaves out.)</p>
 
     <div class="flash-steps">
