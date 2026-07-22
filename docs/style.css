@@ -284,6 +284,10 @@ section .sub { color: var(--ink-soft); font-size: 1.06rem; margin: 0 0 40px; max
    current step's explanation, with dots — device + caption visible together. */
 @media (max-width: 780px) {
   .emu { grid-template-columns: 1fr; gap: 16px; justify-items: center; }
+  /* scale the bezel/home down with the smaller mobile device so it keeps the
+     real unit's proportions instead of a huge top bezel on a narrow body */
+  .device-mock .device { padding: 52px 11px 0; border-radius: 26px; }
+  .device-mock .home { width: 33px; height: 33px; margin: 9px auto 12px; }
   .emu-device { align-items: center; gap: 8px; max-width: 100%; }
   .emu-arrow {
     display: inline-flex; align-items: center; justify-content: center; flex: none;
