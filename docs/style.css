@@ -62,6 +62,12 @@ header.nav nav { display: flex; gap: 22px; margin-left: auto; flex-wrap: wrap; a
   header.nav nav a { font-size: 0.85rem; }
   header.nav nav a.gh { padding: 6px 12px; }
 }
+/* Phones: drop the in-page section links, keep the logo + Set up + GitHub. */
+@media (max-width: 720px) {
+  header.nav .wrap { flex-wrap: nowrap; }
+  header.nav nav { gap: 16px; }
+  header.nav nav a[href^="#"] { display: none; }
+}
 header.nav nav a { text-decoration: none; color: var(--ink-soft); font-size: 0.95rem; font-weight: 500; }
 header.nav nav a:hover { color: var(--ink); }
 header.nav nav a.gh {
@@ -271,11 +277,22 @@ section .sub { color: var(--ink-soft); font-size: 1.06rem; margin: 0 0 40px; max
 .emu-dot:hover { transform: scale(1.25); }
 .emu-dot.on { background: var(--accent); }
 
-/* Mobile: stack a smaller device over just the current step's explanation, with
-   dots to move between them — so the device and its caption are visible together. */
+/* prev/next arrows — hidden on desktop (the accordion is the nav) */
+.emu-arrow { display: none; }
+
+/* Mobile: stack a smaller device (flanked by prev/next arrows) over just the
+   current step's explanation, with dots — device + caption visible together. */
 @media (max-width: 780px) {
   .emu { grid-template-columns: 1fr; gap: 16px; justify-items: center; }
-  .emu-device .device { width: 208px; }
+  .emu-device { align-items: center; gap: 8px; max-width: 100%; }
+  .emu-arrow {
+    display: inline-flex; align-items: center; justify-content: center; flex: none;
+    width: 40px; height: 40px; padding: 0; border-radius: 50%;
+    border: 1px solid var(--line); background: var(--paper); color: var(--ink);
+    font: 400 1.8rem/1 system-ui; cursor: pointer;
+  }
+  .emu-arrow:active { background: var(--paper-dim); transform: scale(0.94); }
+  .emu-device .device { width: 200px; flex: none; }   /* never squeeze the device */
   .emu-panel { max-width: 400px; width: 100%; }
   .emu-steps { text-align: center; }
   .emu-step { border: 0; }

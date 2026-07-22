@@ -137,6 +137,9 @@ function init() {
     advanceTimer = setTimeout(() => select(i + 1, false), STEP_MS);
   }
 
+  $("emu-prev").addEventListener("click", () => select(i - 1, true));
+  $("emu-next").addEventListener("click", () => select(i + 1, true));
+
   // Pause auto-play while the visitor is reading (hovering the component).
   root.addEventListener("mouseenter", () => clearTimeout(advanceTimer));
   root.addEventListener("mouseleave", schedule);
