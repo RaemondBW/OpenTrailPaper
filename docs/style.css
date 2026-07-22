@@ -459,6 +459,9 @@ section.dark select {
 .pickmap {
   height: 340px; border: 2px solid var(--rule); border-radius: 0;
   overflow: hidden; background: var(--paper-dim);
+  /* contain Leaflet's high z-index panes/controls so the map never draws over
+     the sticky nav when scrolling */
+  position: relative; z-index: 0;
 }
 .pickmap-tools { display: flex; gap: 8px; margin: 12px 0; flex-wrap: wrap; }
 .pickmap-tools .btn { padding: 8px 16px; font-size: 0.85rem; }
