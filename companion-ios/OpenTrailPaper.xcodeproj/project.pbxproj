@@ -109,7 +109,7 @@
 		BD05D7706E357555E889ED49 /* MapsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapsView.swift; sourceTree = "<group>"; };
 		BF8CDD4E76FC4FA8BE6A7CFC /* coordijk.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = coordijk.h; sourceTree = "<group>"; };
 		C04B32DF213777503A85F8CF /* h3Index.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = h3Index.h; sourceTree = "<group>"; };
-		C3696DA5A82601A862AE2EC2 /* demo.fit */ = {isa = PBXFileReference; path = demo.fit; sourceTree = "<group>"; };
+		C3696DA5A82601A862AE2EC2 /* demo.fit */ = {isa = PBXFileReference; lastKnownFileType = file; path = demo.fit; sourceTree = "<group>"; };
 		CC62803CF44D9FE23F7A54D3 /* Barlow-SemiBold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Barlow-SemiBold.ttf"; sourceTree = "<group>"; };
 		CCD8003BE2453F3EDA25ED31 /* RidesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RidesView.swift; sourceTree = "<group>"; };
 		D6A5EEC68C04B21636EF9A36 /* BikeGPS-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "BikeGPS-Bridging-Header.h"; sourceTree = "<group>"; };
@@ -120,7 +120,7 @@
 		DDB79DC111504015EA01A183 /* GPXExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GPXExporter.swift; sourceTree = "<group>"; };
 		E1FDDCD93045902F9501304D /* vec2d.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = vec2d.c; sourceTree = "<group>"; };
 		F420D80E8EE437556C5B5758 /* iterators.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = iterators.c; sourceTree = "<group>"; };
-		F46204EF3D9A3EB08394C288 /* BikeGPSCompanion.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = BikeGPSCompanion.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		F46204EF3D9A3EB08394C288 /* OpenTrailPaper.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OpenTrailPaper.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		F784F93CE7AF333CF8D0E92B /* vertex.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = vertex.c; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -214,7 +214,7 @@
 		9D5C1E9F6C873648F60BADA5 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				F46204EF3D9A3EB08394C288 /* BikeGPSCompanion.app */,
+				F46204EF3D9A3EB08394C288 /* OpenTrailPaper.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -251,9 +251,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		11EFF920F41BBA9109332778 /* BikeGPSCompanion */ = {
+		11EFF920F41BBA9109332778 /* OpenTrailPaper */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 6038210508765517B64857BB /* Build configuration list for PBXNativeTarget "BikeGPSCompanion" */;
+			buildConfigurationList = 6038210508765517B64857BB /* Build configuration list for PBXNativeTarget "OpenTrailPaper" */;
 			buildPhases = (
 				492D858DF48F494AA648B73A /* Sources */,
 				9838F248DEB4AB0BF7428DDC /* Resources */,
@@ -262,11 +262,11 @@
 			);
 			dependencies = (
 			);
-			name = BikeGPSCompanion;
+			name = OpenTrailPaper;
 			packageProductDependencies = (
 			);
 			productName = BikeGPSCompanion;
-			productReference = F46204EF3D9A3EB08394C288 /* BikeGPSCompanion.app */;
+			productReference = F46204EF3D9A3EB08394C288 /* OpenTrailPaper.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -284,7 +284,7 @@
 					};
 				};
 			};
-			buildConfigurationList = 484629FD3C1787F528A16CC9 /* Build configuration list for PBXProject "BikeGPSCompanion" */;
+			buildConfigurationList = 484629FD3C1787F528A16CC9 /* Build configuration list for PBXProject "OpenTrailPaper" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -298,7 +298,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				11EFF920F41BBA9109332778 /* BikeGPSCompanion */,
+				11EFF920F41BBA9109332778 /* OpenTrailPaper */,
 			);
 		};
 /* End PBXProject section */
@@ -433,18 +433,24 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CURRENT_PROJECT_VERSION = 2;
 				ENABLE_PREVIEWS = YES;
 				GCC_WARN_INHIBIT_ALL_WARNINGS = YES;
-				HEADER_SEARCH_PATHS = (
-					"$(SRCROOT)/Sources/H3/include",
-				);
+				HEADER_SEARCH_PATHS = "$(SRCROOT)/Sources/H3/include";
 				INFOPLIST_FILE = Sources/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = OpenTrailPaper;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.healthcare-fitness";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = cc.tdisplay.bikegps;
+				PRODUCT_BUNDLE_IDENTIFIER = com.raemond.opentrailpaper;
+				PRODUCT_NAME = OpenTrailPaper;
 				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_OBJC_BRIDGING_HEADER = "Sources/BikeGPS-Bridging-Header.h";
 				TARGETED_DEVICE_FAMILY = 1;
 			};
@@ -523,18 +529,24 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CURRENT_PROJECT_VERSION = 2;
 				ENABLE_PREVIEWS = YES;
 				GCC_WARN_INHIBIT_ALL_WARNINGS = YES;
-				HEADER_SEARCH_PATHS = (
-					"$(SRCROOT)/Sources/H3/include",
-				);
+				HEADER_SEARCH_PATHS = "$(SRCROOT)/Sources/H3/include";
 				INFOPLIST_FILE = Sources/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = OpenTrailPaper;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.healthcare-fitness";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = cc.tdisplay.bikegps;
+				PRODUCT_BUNDLE_IDENTIFIER = com.raemond.opentrailpaper;
+				PRODUCT_NAME = OpenTrailPaper;
 				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_OBJC_BRIDGING_HEADER = "Sources/BikeGPS-Bridging-Header.h";
 				TARGETED_DEVICE_FAMILY = 1;
 			};
@@ -543,7 +555,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		484629FD3C1787F528A16CC9 /* Build configuration list for PBXProject "BikeGPSCompanion" */ = {
+		484629FD3C1787F528A16CC9 /* Build configuration list for PBXProject "OpenTrailPaper" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				7DFB30AE63C54FBA8D46936D /* Debug */,
@@ -552,7 +564,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
 		};
-		6038210508765517B64857BB /* Build configuration list for PBXNativeTarget "BikeGPSCompanion" */ = {
+		6038210508765517B64857BB /* Build configuration list for PBXNativeTarget "OpenTrailPaper" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				398605E3E4CA5F340F7B89AD /* Debug */,
