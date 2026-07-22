@@ -84,6 +84,43 @@ blindly searches the whole sky. Two things cut that down:
   look and locks on fast. The phone location also stands in as the map position
   until the device's own fix lands.
 
+### Where better hardware would help
+
+The reference board works well, but a few of its choices are compromises the
+firmware works around. A future revision — or a custom board — could improve on
+them:
+
+- **A pressure sensor (barometric altimeter).** Elevation today comes entirely
+  from map-baked DEM tiles (see
+  [Elevation without a barometer](#elevation-without-a-barometer)): smooth and
+  accurate, but it only exists where you've downloaded tiles, it can't sense
+  short local features (an overpass, a parking-garage ramp), and it can't work
+  off the grid at all. A cheap I²C barometer (BMP390, DPS310, …) would give
+  real-time relative altitude *anywhere*. The ideal is to fuse the two — the DEM
+  as an absolute reference, the barometer for fine changes and for filling gaps
+  where no tile is loaded — plus a live vertical-speed / grade readout. It hangs
+  off the existing I²C bus, so it's a small add.
+
+- **ANT+ alongside BLE.** Sensor pairing is BLE-only. Plenty of cycling gear —
+  especially older heart-rate straps and power meters — speaks ANT+ (or both).
+  The ESP32-S3 has no ANT+ radio, so this needs an add-on: an ANT transceiver on
+  UART/SPI (e.g. an nRF52 running the ANT stack) or a Garmin ANT+ USB stick. It
+  would broaden sensor compatibility at the cost of a second radio and its power.
+
+- **A bigger battery.** The reference board's onboard cell is modest, so runtime
+  is the main limit on long / multi-day rides. The e-paper only draws power on
+  refresh, so the battery is the biggest lever on total ride time — and the
+  firmware already logs fuel-gauge drain (SoC, voltage, current, capacity), so
+  the effect of a larger cell is directly measurable.
+
+- **Dedicated GPIO buttons.** The buttons sit on awkward pins. The main button is
+  **GPIO0**, the ESP32 strapping / download-mode pin — it doubles as the sole
+  deep-sleep (`ext0`) wake source and is shared with the bootloader. The side
+  button hangs off the **XL9555 I²C expander (PC12)**, which can't wake the chip
+  from deep sleep directly — its interrupt has to be routed through a GPIO.
+  Wiring the buttons to plain, wake-capable GPIOs would give cleaner input,
+  independent wake sources, and free GPIO0 from double duty.
+
 ## Screens
 
 **Device** — rendered by `src/ui_render.cpp` on the e-paper panel:
