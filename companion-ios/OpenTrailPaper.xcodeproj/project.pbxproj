@@ -7,243 +7,246 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		0342A87AE328C7601D8C6BCE /* h3shim.c in Sources */ = {isa = PBXBuildFile; fileRef = 79FF84A80EAC5550AD80261E /* h3shim.c */; };
-		05B05DF25BBF90F77F503C4E /* vec3d.c in Sources */ = {isa = PBXBuildFile; fileRef = 8F907AFEDCE73F04ECC51FCE /* vec3d.c */; };
-		0B309D3284C51920398E0405 /* h3Index.c in Sources */ = {isa = PBXBuildFile; fileRef = 9DFF59DD6F4D35EB15D1562F /* h3Index.c */; };
-		0EFBB6E14B5FD2AED277A238 /* vec2d.c in Sources */ = {isa = PBXBuildFile; fileRef = E1FDDCD93045902F9501304D /* vec2d.c */; };
-		238C28015928C2C46081BB14 /* GPXExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDB79DC111504015EA01A183 /* GPXExporter.swift */; };
-		252C086BF5464E66881811E2 /* DiagnosticsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6AD10CB9A0264035C3DB368E /* DiagnosticsView.swift */; };
-		29E4567CB74E6D97BBA11602 /* directedEdge.c in Sources */ = {isa = PBXBuildFile; fileRef = 8E7E61EF6B1D6FE07B3E20DB /* directedEdge.c */; };
-		376908A07714407243E2E4ED /* RideView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EC186E273C590D7A6345915 /* RideView.swift */; };
-		3E5CA463CB2CE0A9DC48459B /* RidesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCD8003BE2453F3EDA25ED31 /* RidesView.swift */; };
-		3EA201572C2A1308A3B6A4D7 /* h3Assert.c in Sources */ = {isa = PBXBuildFile; fileRef = 0C7BC34DD8ACC235C76C4257 /* h3Assert.c */; };
-		47C83BDADFF3D31F4E43F37E /* BLEManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD543402D2E35FD58BA55A8E /* BLEManager.swift */; };
-		50A026FD2B5510457D29FA95 /* Barlow-Medium.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 79FE5391A9FE1ABC7B931516 /* Barlow-Medium.ttf */; };
-		56244470A5750446E4F43021 /* mathExtensions.c in Sources */ = {isa = PBXBuildFile; fileRef = 26DDC00DA77F0B1F4654B093 /* mathExtensions.c */; };
-		57056A1140478EFA9182CA3C /* polygon.c in Sources */ = {isa = PBXBuildFile; fileRef = 505DC93F091358EEC901CFBE /* polygon.c */; };
-		5E6B170B7E5D95D64004B7DF /* MapBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 150D0FCA3BD00013D0221794 /* MapBuilder.swift */; };
-		624BEA62D6C082EB2D2686AD /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 39F84008D6685A8A597D89EE /* Assets.xcassets */; };
-		657B6E68ECA92FB1C78F3A98 /* Barlow-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 9D40015EBE733F51D1D3B952 /* Barlow-Regular.ttf */; };
-		66DA8F56B10214B148939ADA /* RouteView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33F9FE9BEBAAA7755652F133 /* RouteView.swift */; };
-		68E61DE93629DD4481BB8FAE /* BikeGPSCompanionApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36D2B7A04F9D2AB7171161FA /* BikeGPSCompanionApp.swift */; };
-		694F09B2FB8C0E3A02BB7876 /* BarlowCondensed-SemiBold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 0DA896B58953F3B513B76B20 /* BarlowCondensed-SemiBold.ttf */; };
-		7801C9A5D7DE45C654CF72D9 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17822C740E6235705595201F /* Theme.swift */; };
-		7AF8E9C4FB19879DEC2AD2A0 /* demo.fit in Resources */ = {isa = PBXBuildFile; fileRef = C3696DA5A82601A862AE2EC2 /* demo.fit */; };
-		7D2A8BEB13AFF1B3B0AAC930 /* vertexGraph.c in Sources */ = {isa = PBXBuildFile; fileRef = 351775ACF2317D238FADF334 /* vertexGraph.c */; };
-		7D41105531AE1202B2D817F1 /* firmware.bin in Resources */ = {isa = PBXBuildFile; fileRef = 14E464ED0804B19DDBEC4745 /* firmware.bin */; };
-		82EFEDE0D1E1B12E562B3EFD /* BarlowCondensed-Medium.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 6DB8B95EE9F889CCBE49599A /* BarlowCondensed-Medium.ttf */; };
-		9176980BABF604ABA9659708 /* RideDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EDAC3AF1A02980A1CEB9145 /* RideDetailView.swift */; };
-		A595AF5AF369EAA95B75137D /* iterators.c in Sources */ = {isa = PBXBuildFile; fileRef = F420D80E8EE437556C5B5758 /* iterators.c */; };
-		A984DF4C30E0938795C41C27 /* Barlow-SemiBold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = CC62803CF44D9FE23F7A54D3 /* Barlow-SemiBold.ttf */; };
-		AB4CC93D353E5C714DB38A42 /* baseCells.c in Sources */ = {isa = PBXBuildFile; fileRef = D797586BB93DEF389676407A /* baseCells.c */; };
-		AC61444DAE0A927557010CC9 /* bbox.c in Sources */ = {isa = PBXBuildFile; fileRef = 931114BB69AEAF9DD400682E /* bbox.c */; };
-		AC7ABEC10AB52F7914830F7A /* BarlowCondensed-Bold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = DC7A31A6A25A548586169629 /* BarlowCondensed-Bold.ttf */; };
-		B1B95D7F377CD04FB3952F3E /* faceijk.c in Sources */ = {isa = PBXBuildFile; fileRef = B1F730238E35DC412829611A /* faceijk.c */; };
-		B52918F5922D788E05FD5A83 /* localij.c in Sources */ = {isa = PBXBuildFile; fileRef = 4D01067D79FE6685E299D8CF /* localij.c */; };
-		BA4785667E0D477A0C1F5D8A /* H3Tiles.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E3AEE56631086D9869D2AE4 /* H3Tiles.swift */; };
-		C4331000AD0382FB9855AA47 /* MapsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD05D7706E357555E889ED49 /* MapsView.swift */; };
-		C897596E7FE9AEB4B699BACD /* linkedGeo.c in Sources */ = {isa = PBXBuildFile; fileRef = 0A422D209D3DD72088B1DC71 /* linkedGeo.c */; };
-		DD5AF628B5DC8DCC6F9D5381 /* FITDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 836E0AABD268231ABD6B03E4 /* FITDecoder.swift */; };
-		DD66B24A2DD45D945932CD8D /* coordijk.c in Sources */ = {isa = PBXBuildFile; fileRef = 2314152D919270E6E7F3218E /* coordijk.c */; };
-		E6BA53FA2AC747A0F818D5CD /* algos.c in Sources */ = {isa = PBXBuildFile; fileRef = A6A976FBC75FC24903031377 /* algos.c */; };
-		EE0051326E4F0559797AB3B5 /* vertex.c in Sources */ = {isa = PBXBuildFile; fileRef = F784F93CE7AF333CF8D0E92B /* vertex.c */; };
-		F3092923EBB8F6C75F17A14E /* latLng.c in Sources */ = {isa = PBXBuildFile; fileRef = 41ABFC755A86A9E38EAC1EED /* latLng.c */; };
-		F3B8C23D0C36C298B616ADF3 /* SensorsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 98C441B295E3AFE15EF0C75A /* SensorsView.swift */; };
-		FD7612579D7DAD95AD2CFE2D /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2081EBB94E5008A25AF17D2C /* SettingsView.swift */; };
+		021E5D177FE3BCD463AA49BF /* BikeGPSCompanionApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37C3CA9775B956BC238BAA42 /* BikeGPSCompanionApp.swift */; };
+		05EFA1438A835BB33D929DF4 /* BarlowCondensed-Medium.ttf in Resources */ = {isa = PBXBuildFile; fileRef = A97893E68863ECCF2D0D4400 /* BarlowCondensed-Medium.ttf */; };
+		1E84B7CD7869CDE2FAD486B0 /* BarlowCondensed-Bold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 08F073C2FF3FF2C629AFE7E8 /* BarlowCondensed-Bold.ttf */; };
+		206AAAF21E4BC20EAB8D7C79 /* vertex.c in Sources */ = {isa = PBXBuildFile; fileRef = 861D40F3D0D6EE123389E135 /* vertex.c */; };
+		292571D164EEF9C5316E8BAB /* linkedGeo.c in Sources */ = {isa = PBXBuildFile; fileRef = 878E3C8F7719672814B9A1C2 /* linkedGeo.c */; };
+		2A3194F4903302F4B2C27D19 /* polygon.c in Sources */ = {isa = PBXBuildFile; fileRef = 0CBC93C157DBF69D2E2C1823 /* polygon.c */; };
+		2D50FCD8D5DDF2010C20E161 /* RideView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4E83FB3A70437DD5D0F8629 /* RideView.swift */; };
+		33C76F52DC53AF15753FE58B /* h3Index.c in Sources */ = {isa = PBXBuildFile; fileRef = 61E9FB68F94751F3E5B65B66 /* h3Index.c */; };
+		39C207696331341232C496B3 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = C1BEEC4DAFA43A7B290097DE /* Assets.xcassets */; };
+		3D7FAC61F9099EA56E8B6FD6 /* vec2d.c in Sources */ = {isa = PBXBuildFile; fileRef = BE9D3D566A0847CF4753797F /* vec2d.c */; };
+		41FC8112747D053ED15F0B72 /* latLng.c in Sources */ = {isa = PBXBuildFile; fileRef = A0306F2F39F6FD2D70319F80 /* latLng.c */; };
+		42D0BA08D929EAF01939F014 /* bbox.c in Sources */ = {isa = PBXBuildFile; fileRef = 2E449077B1E39DF8A349A23D /* bbox.c */; };
+		42D2FCE22B005258F3DFCE9C /* BarlowCondensed-SemiBold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = F14CD69E3959EF829E9F0717 /* BarlowCondensed-SemiBold.ttf */; };
+		431EACF518E6E7F25D9682EC /* H3Tiles.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD6BA4ACE6890EF09B9A8F6F /* H3Tiles.swift */; };
+		4608B467E047801D5219DD54 /* faceijk.c in Sources */ = {isa = PBXBuildFile; fileRef = 21F000263728C013838D0605 /* faceijk.c */; };
+		50C29F659BE2ACD7B9B29D73 /* Barlow-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = F21BF62E40922CF797D8119D /* Barlow-Regular.ttf */; };
+		59AED5C1500B37FB3E7E3010 /* vec3d.c in Sources */ = {isa = PBXBuildFile; fileRef = 85064AEE7F2DEAD8495F5FDC /* vec3d.c */; };
+		5BC98F4BF77D1A33EF8F546B /* BLEManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = CBBFA5634178A1D43462F629 /* BLEManager.swift */; };
+		5D1E2FE5B8652DC846C39AF7 /* SensorsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D0FC030F1FACFFD44C96837 /* SensorsView.swift */; };
+		5D72742ADF79FE45ED70CBEA /* MapBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = B784675A7E0FFAA781206855 /* MapBuilder.swift */; };
+		72A4059778F0676C0911C393 /* RideDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1B62C507D47EAD0BDDDD24F /* RideDetailView.swift */; };
+		79F918433F0C02EF0915A0EE /* RouteView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A26EB50B7E6CF1B4A63235CA /* RouteView.swift */; };
+		8F39135FF7E1E777F4833280 /* Barlow-Medium.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 9D58367A52D10F5F1C035423 /* Barlow-Medium.ttf */; };
+		90BE2D6324721EC08C93E435 /* GPXExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05C73BCF289591ECA86720C6 /* GPXExporter.swift */; };
+		9A51A79216A6D77B6B223CE3 /* Barlow-SemiBold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 42632703DAE05E73F934FFE1 /* Barlow-SemiBold.ttf */; };
+		A44F34DFEC944328672D82B2 /* FITDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 590A2666A030966B6741EDAF /* FITDecoder.swift */; };
+		ABE6FDB260BAA3609F5C5516 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 756CD94A1C875E17A3321CC8 /* OnboardingView.swift */; };
+		B1BE7F5A245A3C270036C6E2 /* algos.c in Sources */ = {isa = PBXBuildFile; fileRef = ABBED3B34B25D9BCAFA3FDB5 /* algos.c */; };
+		BE0814223F037C69E39B93D7 /* RidesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F897B750389038E18EE9AC09 /* RidesView.swift */; };
+		C462314C3BD9E277B9F451A9 /* MapsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7C77C595BBAE5BCBD82A004 /* MapsView.swift */; };
+		CD0EDC65F5A9395EE7649CDE /* directedEdge.c in Sources */ = {isa = PBXBuildFile; fileRef = CC8F9A2A7C26F2C54766428B /* directedEdge.c */; };
+		D017F03AE055F1971F5815BA /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79F3F907C8247AC1B8A63959 /* Theme.swift */; };
+		D18324D7B11DC7874A2252C3 /* mathExtensions.c in Sources */ = {isa = PBXBuildFile; fileRef = C79A61A359DA1F3938DE464C /* mathExtensions.c */; };
+		D6593DA4DB2D54C490D89D63 /* firmware.bin in Resources */ = {isa = PBXBuildFile; fileRef = 8573B3F08B3AD8A472D61A2D /* firmware.bin */; };
+		DA77B28069DBB60831A903C9 /* h3shim.c in Sources */ = {isa = PBXBuildFile; fileRef = 158AB26E91BB4024B25490AD /* h3shim.c */; };
+		E1BBBE95FA5BC48203720329 /* baseCells.c in Sources */ = {isa = PBXBuildFile; fileRef = CB4C7FC4CD9B1C363CD59A20 /* baseCells.c */; };
+		E30ADD326442FABF6002866E /* demo.fit in Resources */ = {isa = PBXBuildFile; fileRef = D66117B8CB78BBC0949D8DF3 /* demo.fit */; };
+		E3824F33E70991FAC6B09EBF /* h3Assert.c in Sources */ = {isa = PBXBuildFile; fileRef = 89FCEFD5F2F255C490F8E615 /* h3Assert.c */; };
+		E53264DC25E80F7DA0499687 /* localij.c in Sources */ = {isa = PBXBuildFile; fileRef = B8D421E4B1C588F4073BC375 /* localij.c */; };
+		E8B02637D663F1BB063A4D60 /* iterators.c in Sources */ = {isa = PBXBuildFile; fileRef = F2E1BEE825D22D8612B19893 /* iterators.c */; };
+		F5E522C16FCFE097E2072926 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE5C27C920995C9292457A9C /* SettingsView.swift */; };
+		F71D1CFFCC25AD4A7A19D698 /* DiagnosticsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 336612AF0918144CAB1C1FCD /* DiagnosticsView.swift */; };
+		FB766E892D24ED9F1215F002 /* coordijk.c in Sources */ = {isa = PBXBuildFile; fileRef = A5CBCC5E20270A3D4DF70257 /* coordijk.c */; };
+		FF0F4581FC7558266780F24B /* vertexGraph.c in Sources */ = {isa = PBXBuildFile; fileRef = 94274D68499F022BC3F0DBC8 /* vertexGraph.c */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		0A422D209D3DD72088B1DC71 /* linkedGeo.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = linkedGeo.c; sourceTree = "<group>"; };
-		0C7BC34DD8ACC235C76C4257 /* h3Assert.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = h3Assert.c; sourceTree = "<group>"; };
-		0DA896B58953F3B513B76B20 /* BarlowCondensed-SemiBold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "BarlowCondensed-SemiBold.ttf"; sourceTree = "<group>"; };
-		14E464ED0804B19DDBEC4745 /* firmware.bin */ = {isa = PBXFileReference; lastKnownFileType = archive.macbinary; path = firmware.bin; sourceTree = "<group>"; };
-		150D0FCA3BD00013D0221794 /* MapBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapBuilder.swift; sourceTree = "<group>"; };
-		17822C740E6235705595201F /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
-		1A7EBEBE45A4248C59B460F8 /* constants.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = constants.h; sourceTree = "<group>"; };
-		1BBE70766519FE8A355EE01A /* iterators.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = iterators.h; sourceTree = "<group>"; };
-		1E8E773F063DF155EA2B2C05 /* localij.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = localij.h; sourceTree = "<group>"; };
-		2081EBB94E5008A25AF17D2C /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
-		2314152D919270E6E7F3218E /* coordijk.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = coordijk.c; sourceTree = "<group>"; };
-		2368F84D8E4866D7622B61AB /* vertex.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = vertex.h; sourceTree = "<group>"; };
-		26DDC00DA77F0B1F4654B093 /* mathExtensions.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = mathExtensions.c; sourceTree = "<group>"; };
-		2AFDA2E853DD811A5C16CD0D /* mathExtensions.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = mathExtensions.h; sourceTree = "<group>"; };
-		2BE61D4E452EA907672C539C /* directedEdge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = directedEdge.h; sourceTree = "<group>"; };
-		33F9FE9BEBAAA7755652F133 /* RouteView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RouteView.swift; sourceTree = "<group>"; };
-		351775ACF2317D238FADF334 /* vertexGraph.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = vertexGraph.c; sourceTree = "<group>"; };
-		36D2B7A04F9D2AB7171161FA /* BikeGPSCompanionApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BikeGPSCompanionApp.swift; sourceTree = "<group>"; };
-		3776B527CC9108BC928E63AE /* alloc.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = alloc.h; sourceTree = "<group>"; };
-		39F84008D6685A8A597D89EE /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
-		41ABFC755A86A9E38EAC1EED /* latLng.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = latLng.c; sourceTree = "<group>"; };
-		4D01067D79FE6685E299D8CF /* localij.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = localij.c; sourceTree = "<group>"; };
-		4EC186E273C590D7A6345915 /* RideView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RideView.swift; sourceTree = "<group>"; };
-		4EDAC3AF1A02980A1CEB9145 /* RideDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RideDetailView.swift; sourceTree = "<group>"; };
-		505DC93F091358EEC901CFBE /* polygon.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = polygon.c; sourceTree = "<group>"; };
-		5E3AEE56631086D9869D2AE4 /* H3Tiles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = H3Tiles.swift; sourceTree = "<group>"; };
-		6AD10CB9A0264035C3DB368E /* DiagnosticsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsView.swift; sourceTree = "<group>"; };
-		6DB8B95EE9F889CCBE49599A /* BarlowCondensed-Medium.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "BarlowCondensed-Medium.ttf"; sourceTree = "<group>"; };
-		6FC6EAD606210AEF93FCD2BA /* vec3d.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = vec3d.h; sourceTree = "<group>"; };
-		75D790E23ED49EB5261A0CA1 /* h3api.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = h3api.h; sourceTree = "<group>"; };
-		79FE5391A9FE1ABC7B931516 /* Barlow-Medium.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Barlow-Medium.ttf"; sourceTree = "<group>"; };
-		79FF84A80EAC5550AD80261E /* h3shim.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = h3shim.c; sourceTree = "<group>"; };
-		836E0AABD268231ABD6B03E4 /* FITDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FITDecoder.swift; sourceTree = "<group>"; };
-		8DBA5FDC0689B714603F921B /* polygonAlgos.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = polygonAlgos.h; sourceTree = "<group>"; };
-		8E7E61EF6B1D6FE07B3E20DB /* directedEdge.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = directedEdge.c; sourceTree = "<group>"; };
-		8F907AFEDCE73F04ECC51FCE /* vec3d.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = vec3d.c; sourceTree = "<group>"; };
-		9165B98C67EE602CB6416ECC /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
-		919144F53DB711C484580AFD /* faceijk.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = faceijk.h; sourceTree = "<group>"; };
-		9268ADD29CC936597DD90F01 /* bbox.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = bbox.h; sourceTree = "<group>"; };
-		931114BB69AEAF9DD400682E /* bbox.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = bbox.c; sourceTree = "<group>"; };
-		9808DD4FBDA428075C65A823 /* baseCells.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = baseCells.h; sourceTree = "<group>"; };
-		98C441B295E3AFE15EF0C75A /* SensorsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SensorsView.swift; sourceTree = "<group>"; };
-		9C117857A0C89FA1A5618FC5 /* vertexGraph.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = vertexGraph.h; sourceTree = "<group>"; };
-		9D40015EBE733F51D1D3B952 /* Barlow-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Barlow-Regular.ttf"; sourceTree = "<group>"; };
-		9DFF59DD6F4D35EB15D1562F /* h3Index.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = h3Index.c; sourceTree = "<group>"; };
-		A3B07ADBC727BC7B94BF5552 /* vec2d.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = vec2d.h; sourceTree = "<group>"; };
-		A6A976FBC75FC24903031377 /* algos.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = algos.c; sourceTree = "<group>"; };
-		AD1C7D56297DC9BF291D27C9 /* latLng.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = latLng.h; sourceTree = "<group>"; };
-		AEEEDDA4347A59C6739252AF /* linkedGeo.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = linkedGeo.h; sourceTree = "<group>"; };
-		B052049E28BE71E132A6DBF4 /* h3Assert.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = h3Assert.h; sourceTree = "<group>"; };
-		B1F730238E35DC412829611A /* faceijk.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = faceijk.c; sourceTree = "<group>"; };
-		B4DD2E2B7FE17DEDA57F162B /* algos.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = algos.h; sourceTree = "<group>"; };
-		B7561210D041DE21034D199A /* polygon.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = polygon.h; sourceTree = "<group>"; };
-		BD05D7706E357555E889ED49 /* MapsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapsView.swift; sourceTree = "<group>"; };
-		BF8CDD4E76FC4FA8BE6A7CFC /* coordijk.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = coordijk.h; sourceTree = "<group>"; };
-		C04B32DF213777503A85F8CF /* h3Index.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = h3Index.h; sourceTree = "<group>"; };
-		C3696DA5A82601A862AE2EC2 /* demo.fit */ = {isa = PBXFileReference; lastKnownFileType = file; path = demo.fit; sourceTree = "<group>"; };
-		CC62803CF44D9FE23F7A54D3 /* Barlow-SemiBold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Barlow-SemiBold.ttf"; sourceTree = "<group>"; };
-		CCD8003BE2453F3EDA25ED31 /* RidesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RidesView.swift; sourceTree = "<group>"; };
-		D6A5EEC68C04B21636EF9A36 /* BikeGPS-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "BikeGPS-Bridging-Header.h"; sourceTree = "<group>"; };
-		D797586BB93DEF389676407A /* baseCells.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = baseCells.c; sourceTree = "<group>"; };
-		DA8E9B571EDBC6EAE9FA9AD5 /* h3shim.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = h3shim.h; sourceTree = "<group>"; };
-		DC7A31A6A25A548586169629 /* BarlowCondensed-Bold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "BarlowCondensed-Bold.ttf"; sourceTree = "<group>"; };
-		DD543402D2E35FD58BA55A8E /* BLEManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BLEManager.swift; sourceTree = "<group>"; };
-		DDB79DC111504015EA01A183 /* GPXExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GPXExporter.swift; sourceTree = "<group>"; };
-		E1FDDCD93045902F9501304D /* vec2d.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = vec2d.c; sourceTree = "<group>"; };
-		F420D80E8EE437556C5B5758 /* iterators.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = iterators.c; sourceTree = "<group>"; };
-		F46204EF3D9A3EB08394C288 /* OpenTrailPaper.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OpenTrailPaper.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		F784F93CE7AF333CF8D0E92B /* vertex.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = vertex.c; sourceTree = "<group>"; };
+		05C73BCF289591ECA86720C6 /* GPXExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GPXExporter.swift; sourceTree = "<group>"; };
+		08F073C2FF3FF2C629AFE7E8 /* BarlowCondensed-Bold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "BarlowCondensed-Bold.ttf"; sourceTree = "<group>"; };
+		0CBC93C157DBF69D2E2C1823 /* polygon.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = polygon.c; sourceTree = "<group>"; };
+		0D0FC030F1FACFFD44C96837 /* SensorsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SensorsView.swift; sourceTree = "<group>"; };
+		119DE3CCD0BED37A2EED959F /* polygonAlgos.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = polygonAlgos.h; sourceTree = "<group>"; };
+		158AB26E91BB4024B25490AD /* h3shim.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = h3shim.c; sourceTree = "<group>"; };
+		1727B3F48F1EFA384DE4B5C8 /* h3api.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = h3api.h; sourceTree = "<group>"; };
+		21F000263728C013838D0605 /* faceijk.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = faceijk.c; sourceTree = "<group>"; };
+		22AE81B336FF77D1655400EA /* constants.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = constants.h; sourceTree = "<group>"; };
+		27A939183F2903B61CA144FB /* bbox.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = bbox.h; sourceTree = "<group>"; };
+		2A59688151174F730E1FDAD4 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		2E449077B1E39DF8A349A23D /* bbox.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = bbox.c; sourceTree = "<group>"; };
+		336612AF0918144CAB1C1FCD /* DiagnosticsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsView.swift; sourceTree = "<group>"; };
+		37C3CA9775B956BC238BAA42 /* BikeGPSCompanionApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BikeGPSCompanionApp.swift; sourceTree = "<group>"; };
+		403E838590B5304D34C70F23 /* mathExtensions.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = mathExtensions.h; sourceTree = "<group>"; };
+		42632703DAE05E73F934FFE1 /* Barlow-SemiBold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Barlow-SemiBold.ttf"; sourceTree = "<group>"; };
+		4D6D4D7CC3D2F7CA7F2BB14A /* vec3d.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = vec3d.h; sourceTree = "<group>"; };
+		590A2666A030966B6741EDAF /* FITDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FITDecoder.swift; sourceTree = "<group>"; };
+		61E9FB68F94751F3E5B65B66 /* h3Index.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = h3Index.c; sourceTree = "<group>"; };
+		6AEE6D137CDDF2F463F27932 /* OpenTrailPaper.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = OpenTrailPaper.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		6CDCF740EC9B89D5492FD0C7 /* h3Assert.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = h3Assert.h; sourceTree = "<group>"; };
+		6FA4F76096362CE92F71ED36 /* latLng.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = latLng.h; sourceTree = "<group>"; };
+		73E0BFD770D75ABD5ABB61B8 /* alloc.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = alloc.h; sourceTree = "<group>"; };
+		756CD94A1C875E17A3321CC8 /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
+		792C3E9270334E7AE1A24B68 /* directedEdge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = directedEdge.h; sourceTree = "<group>"; };
+		79F3F907C8247AC1B8A63959 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
+		79F5CE09D7F91D2DE8AECC02 /* faceijk.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = faceijk.h; sourceTree = "<group>"; };
+		7CB591195919CC7D9D57E330 /* algos.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = algos.h; sourceTree = "<group>"; };
+		7E1EE5B5FE7A084D0C8BA153 /* h3Index.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = h3Index.h; sourceTree = "<group>"; };
+		8023062657D19B0163482E22 /* baseCells.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = baseCells.h; sourceTree = "<group>"; };
+		82FADE55692F39B30C21D313 /* vec2d.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = vec2d.h; sourceTree = "<group>"; };
+		85064AEE7F2DEAD8495F5FDC /* vec3d.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = vec3d.c; sourceTree = "<group>"; };
+		8573B3F08B3AD8A472D61A2D /* firmware.bin */ = {isa = PBXFileReference; lastKnownFileType = archive.macbinary; path = firmware.bin; sourceTree = "<group>"; };
+		861D40F3D0D6EE123389E135 /* vertex.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = vertex.c; sourceTree = "<group>"; };
+		878E3C8F7719672814B9A1C2 /* linkedGeo.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = linkedGeo.c; sourceTree = "<group>"; };
+		89FCEFD5F2F255C490F8E615 /* h3Assert.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = h3Assert.c; sourceTree = "<group>"; };
+		8B5925C2E9B5B94C94F1FEF7 /* iterators.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = iterators.h; sourceTree = "<group>"; };
+		8F52BCC155561E0D292BAAB2 /* h3shim.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = h3shim.h; sourceTree = "<group>"; };
+		94274D68499F022BC3F0DBC8 /* vertexGraph.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = vertexGraph.c; sourceTree = "<group>"; };
+		983A6286E04A3B9DE101DF7E /* localij.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = localij.h; sourceTree = "<group>"; };
+		9D58367A52D10F5F1C035423 /* Barlow-Medium.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Barlow-Medium.ttf"; sourceTree = "<group>"; };
+		A0306F2F39F6FD2D70319F80 /* latLng.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = latLng.c; sourceTree = "<group>"; };
+		A26EB50B7E6CF1B4A63235CA /* RouteView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RouteView.swift; sourceTree = "<group>"; };
+		A5CBCC5E20270A3D4DF70257 /* coordijk.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = coordijk.c; sourceTree = "<group>"; };
+		A7C77C595BBAE5BCBD82A004 /* MapsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapsView.swift; sourceTree = "<group>"; };
+		A97893E68863ECCF2D0D4400 /* BarlowCondensed-Medium.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "BarlowCondensed-Medium.ttf"; sourceTree = "<group>"; };
+		ABBED3B34B25D9BCAFA3FDB5 /* algos.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = algos.c; sourceTree = "<group>"; };
+		AD6BA4ACE6890EF09B9A8F6F /* H3Tiles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = H3Tiles.swift; sourceTree = "<group>"; };
+		B61D714603B1F9543D8049F1 /* vertex.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = vertex.h; sourceTree = "<group>"; };
+		B784675A7E0FFAA781206855 /* MapBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapBuilder.swift; sourceTree = "<group>"; };
+		B8D421E4B1C588F4073BC375 /* localij.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = localij.c; sourceTree = "<group>"; };
+		BE5C27C920995C9292457A9C /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		BE9D3D566A0847CF4753797F /* vec2d.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = vec2d.c; sourceTree = "<group>"; };
+		C1BEEC4DAFA43A7B290097DE /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		C4E83FB3A70437DD5D0F8629 /* RideView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RideView.swift; sourceTree = "<group>"; };
+		C79A61A359DA1F3938DE464C /* mathExtensions.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = mathExtensions.c; sourceTree = "<group>"; };
+		CB3F4FE4971EC341C310BFBE /* polygon.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = polygon.h; sourceTree = "<group>"; };
+		CB4C7FC4CD9B1C363CD59A20 /* baseCells.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = baseCells.c; sourceTree = "<group>"; };
+		CBBFA5634178A1D43462F629 /* BLEManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BLEManager.swift; sourceTree = "<group>"; };
+		CC8F9A2A7C26F2C54766428B /* directedEdge.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = directedEdge.c; sourceTree = "<group>"; };
+		D66117B8CB78BBC0949D8DF3 /* demo.fit */ = {isa = PBXFileReference; path = demo.fit; sourceTree = "<group>"; };
+		E1B62C507D47EAD0BDDDD24F /* RideDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RideDetailView.swift; sourceTree = "<group>"; };
+		E284B25E233005D7FEF20F6F /* coordijk.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = coordijk.h; sourceTree = "<group>"; };
+		F14CD69E3959EF829E9F0717 /* BarlowCondensed-SemiBold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "BarlowCondensed-SemiBold.ttf"; sourceTree = "<group>"; };
+		F21BF62E40922CF797D8119D /* Barlow-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Barlow-Regular.ttf"; sourceTree = "<group>"; };
+		F2E1BEE825D22D8612B19893 /* iterators.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = iterators.c; sourceTree = "<group>"; };
+		F42E0A1FDF3C1CED966A8893 /* vertexGraph.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = vertexGraph.h; sourceTree = "<group>"; };
+		F897B750389038E18EE9AC09 /* RidesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RidesView.swift; sourceTree = "<group>"; };
+		F993B08CE32DB569E2279B90 /* BikeGPS-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "BikeGPS-Bridging-Header.h"; sourceTree = "<group>"; };
+		FB4FCCF15F9E57B3747DD159 /* linkedGeo.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = linkedGeo.h; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
-		097E2D94B5CB25740AB3BAB8 /* Fonts */ = {
+		18CC695DF5F6C2584F4E3869 = {
 			isa = PBXGroup;
 			children = (
-				79FE5391A9FE1ABC7B931516 /* Barlow-Medium.ttf */,
-				9D40015EBE733F51D1D3B952 /* Barlow-Regular.ttf */,
-				CC62803CF44D9FE23F7A54D3 /* Barlow-SemiBold.ttf */,
-				DC7A31A6A25A548586169629 /* BarlowCondensed-Bold.ttf */,
-				6DB8B95EE9F889CCBE49599A /* BarlowCondensed-Medium.ttf */,
-				0DA896B58953F3B513B76B20 /* BarlowCondensed-SemiBold.ttf */,
-			);
-			path = Fonts;
-			sourceTree = "<group>";
-		};
-		19489F4321C78B1401705C1D /* lib */ = {
-			isa = PBXGroup;
-			children = (
-				A6A976FBC75FC24903031377 /* algos.c */,
-				D797586BB93DEF389676407A /* baseCells.c */,
-				931114BB69AEAF9DD400682E /* bbox.c */,
-				2314152D919270E6E7F3218E /* coordijk.c */,
-				8E7E61EF6B1D6FE07B3E20DB /* directedEdge.c */,
-				B1F730238E35DC412829611A /* faceijk.c */,
-				0C7BC34DD8ACC235C76C4257 /* h3Assert.c */,
-				9DFF59DD6F4D35EB15D1562F /* h3Index.c */,
-				F420D80E8EE437556C5B5758 /* iterators.c */,
-				41ABFC755A86A9E38EAC1EED /* latLng.c */,
-				0A422D209D3DD72088B1DC71 /* linkedGeo.c */,
-				4D01067D79FE6685E299D8CF /* localij.c */,
-				26DDC00DA77F0B1F4654B093 /* mathExtensions.c */,
-				505DC93F091358EEC901CFBE /* polygon.c */,
-				E1FDDCD93045902F9501304D /* vec2d.c */,
-				8F907AFEDCE73F04ECC51FCE /* vec3d.c */,
-				F784F93CE7AF333CF8D0E92B /* vertex.c */,
-				351775ACF2317D238FADF334 /* vertexGraph.c */,
-			);
-			path = lib;
-			sourceTree = "<group>";
-		};
-		224D042D99B06A07620BD95C /* Sources */ = {
-			isa = PBXGroup;
-			children = (
-				39F84008D6685A8A597D89EE /* Assets.xcassets */,
-				D6A5EEC68C04B21636EF9A36 /* BikeGPS-Bridging-Header.h */,
-				36D2B7A04F9D2AB7171161FA /* BikeGPSCompanionApp.swift */,
-				DD543402D2E35FD58BA55A8E /* BLEManager.swift */,
-				C3696DA5A82601A862AE2EC2 /* demo.fit */,
-				6AD10CB9A0264035C3DB368E /* DiagnosticsView.swift */,
-				14E464ED0804B19DDBEC4745 /* firmware.bin */,
-				836E0AABD268231ABD6B03E4 /* FITDecoder.swift */,
-				DDB79DC111504015EA01A183 /* GPXExporter.swift */,
-				5E3AEE56631086D9869D2AE4 /* H3Tiles.swift */,
-				9165B98C67EE602CB6416ECC /* Info.plist */,
-				150D0FCA3BD00013D0221794 /* MapBuilder.swift */,
-				BD05D7706E357555E889ED49 /* MapsView.swift */,
-				4EDAC3AF1A02980A1CEB9145 /* RideDetailView.swift */,
-				CCD8003BE2453F3EDA25ED31 /* RidesView.swift */,
-				4EC186E273C590D7A6345915 /* RideView.swift */,
-				33F9FE9BEBAAA7755652F133 /* RouteView.swift */,
-				98C441B295E3AFE15EF0C75A /* SensorsView.swift */,
-				2081EBB94E5008A25AF17D2C /* SettingsView.swift */,
-				17822C740E6235705595201F /* Theme.swift */,
-				097E2D94B5CB25740AB3BAB8 /* Fonts */,
-				58EF052D07CCE6671062950C /* H3 */,
-			);
-			path = Sources;
-			sourceTree = "<group>";
-		};
-		58EF052D07CCE6671062950C /* H3 */ = {
-			isa = PBXGroup;
-			children = (
-				79FF84A80EAC5550AD80261E /* h3shim.c */,
-				DA8E9B571EDBC6EAE9FA9AD5 /* h3shim.h */,
-				CFC005FB5888B7E181F4A9B2 /* include */,
-				19489F4321C78B1401705C1D /* lib */,
-			);
-			path = H3;
-			sourceTree = "<group>";
-		};
-		792DA7BBA6E2F3CA55EBA0BF = {
-			isa = PBXGroup;
-			children = (
-				224D042D99B06A07620BD95C /* Sources */,
-				9D5C1E9F6C873648F60BADA5 /* Products */,
+				AE187636AF6257DBD1A75F05 /* Sources */,
+				50CE6737CF57F2CA89F9BC4F /* Products */,
 			);
 			sourceTree = "<group>";
 		};
-		9D5C1E9F6C873648F60BADA5 /* Products */ = {
+		50CE6737CF57F2CA89F9BC4F /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				F46204EF3D9A3EB08394C288 /* OpenTrailPaper.app */,
+				6AEE6D137CDDF2F463F27932 /* OpenTrailPaper.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
 		};
-		CFC005FB5888B7E181F4A9B2 /* include */ = {
+		80ACFA8CA9080B22457972EF /* Fonts */ = {
 			isa = PBXGroup;
 			children = (
-				B4DD2E2B7FE17DEDA57F162B /* algos.h */,
-				3776B527CC9108BC928E63AE /* alloc.h */,
-				9808DD4FBDA428075C65A823 /* baseCells.h */,
-				9268ADD29CC936597DD90F01 /* bbox.h */,
-				1A7EBEBE45A4248C59B460F8 /* constants.h */,
-				BF8CDD4E76FC4FA8BE6A7CFC /* coordijk.h */,
-				2BE61D4E452EA907672C539C /* directedEdge.h */,
-				919144F53DB711C484580AFD /* faceijk.h */,
-				75D790E23ED49EB5261A0CA1 /* h3api.h */,
-				B052049E28BE71E132A6DBF4 /* h3Assert.h */,
-				C04B32DF213777503A85F8CF /* h3Index.h */,
-				1BBE70766519FE8A355EE01A /* iterators.h */,
-				AD1C7D56297DC9BF291D27C9 /* latLng.h */,
-				AEEEDDA4347A59C6739252AF /* linkedGeo.h */,
-				1E8E773F063DF155EA2B2C05 /* localij.h */,
-				2AFDA2E853DD811A5C16CD0D /* mathExtensions.h */,
-				B7561210D041DE21034D199A /* polygon.h */,
-				8DBA5FDC0689B714603F921B /* polygonAlgos.h */,
-				A3B07ADBC727BC7B94BF5552 /* vec2d.h */,
-				6FC6EAD606210AEF93FCD2BA /* vec3d.h */,
-				2368F84D8E4866D7622B61AB /* vertex.h */,
-				9C117857A0C89FA1A5618FC5 /* vertexGraph.h */,
+				9D58367A52D10F5F1C035423 /* Barlow-Medium.ttf */,
+				F21BF62E40922CF797D8119D /* Barlow-Regular.ttf */,
+				42632703DAE05E73F934FFE1 /* Barlow-SemiBold.ttf */,
+				08F073C2FF3FF2C629AFE7E8 /* BarlowCondensed-Bold.ttf */,
+				A97893E68863ECCF2D0D4400 /* BarlowCondensed-Medium.ttf */,
+				F14CD69E3959EF829E9F0717 /* BarlowCondensed-SemiBold.ttf */,
+			);
+			path = Fonts;
+			sourceTree = "<group>";
+		};
+		AB3D8101160CEE2B90CCFEE3 /* H3 */ = {
+			isa = PBXGroup;
+			children = (
+				158AB26E91BB4024B25490AD /* h3shim.c */,
+				8F52BCC155561E0D292BAAB2 /* h3shim.h */,
+				CECAA484CA40D442E0851AF1 /* include */,
+				CD7A0C4DF595FAC2FEE73690 /* lib */,
+			);
+			path = H3;
+			sourceTree = "<group>";
+		};
+		AE187636AF6257DBD1A75F05 /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				C1BEEC4DAFA43A7B290097DE /* Assets.xcassets */,
+				F993B08CE32DB569E2279B90 /* BikeGPS-Bridging-Header.h */,
+				37C3CA9775B956BC238BAA42 /* BikeGPSCompanionApp.swift */,
+				CBBFA5634178A1D43462F629 /* BLEManager.swift */,
+				D66117B8CB78BBC0949D8DF3 /* demo.fit */,
+				336612AF0918144CAB1C1FCD /* DiagnosticsView.swift */,
+				8573B3F08B3AD8A472D61A2D /* firmware.bin */,
+				590A2666A030966B6741EDAF /* FITDecoder.swift */,
+				05C73BCF289591ECA86720C6 /* GPXExporter.swift */,
+				AD6BA4ACE6890EF09B9A8F6F /* H3Tiles.swift */,
+				2A59688151174F730E1FDAD4 /* Info.plist */,
+				B784675A7E0FFAA781206855 /* MapBuilder.swift */,
+				A7C77C595BBAE5BCBD82A004 /* MapsView.swift */,
+				756CD94A1C875E17A3321CC8 /* OnboardingView.swift */,
+				E1B62C507D47EAD0BDDDD24F /* RideDetailView.swift */,
+				F897B750389038E18EE9AC09 /* RidesView.swift */,
+				C4E83FB3A70437DD5D0F8629 /* RideView.swift */,
+				A26EB50B7E6CF1B4A63235CA /* RouteView.swift */,
+				0D0FC030F1FACFFD44C96837 /* SensorsView.swift */,
+				BE5C27C920995C9292457A9C /* SettingsView.swift */,
+				79F3F907C8247AC1B8A63959 /* Theme.swift */,
+				80ACFA8CA9080B22457972EF /* Fonts */,
+				AB3D8101160CEE2B90CCFEE3 /* H3 */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
+		CD7A0C4DF595FAC2FEE73690 /* lib */ = {
+			isa = PBXGroup;
+			children = (
+				ABBED3B34B25D9BCAFA3FDB5 /* algos.c */,
+				CB4C7FC4CD9B1C363CD59A20 /* baseCells.c */,
+				2E449077B1E39DF8A349A23D /* bbox.c */,
+				A5CBCC5E20270A3D4DF70257 /* coordijk.c */,
+				CC8F9A2A7C26F2C54766428B /* directedEdge.c */,
+				21F000263728C013838D0605 /* faceijk.c */,
+				89FCEFD5F2F255C490F8E615 /* h3Assert.c */,
+				61E9FB68F94751F3E5B65B66 /* h3Index.c */,
+				F2E1BEE825D22D8612B19893 /* iterators.c */,
+				A0306F2F39F6FD2D70319F80 /* latLng.c */,
+				878E3C8F7719672814B9A1C2 /* linkedGeo.c */,
+				B8D421E4B1C588F4073BC375 /* localij.c */,
+				C79A61A359DA1F3938DE464C /* mathExtensions.c */,
+				0CBC93C157DBF69D2E2C1823 /* polygon.c */,
+				BE9D3D566A0847CF4753797F /* vec2d.c */,
+				85064AEE7F2DEAD8495F5FDC /* vec3d.c */,
+				861D40F3D0D6EE123389E135 /* vertex.c */,
+				94274D68499F022BC3F0DBC8 /* vertexGraph.c */,
+			);
+			path = lib;
+			sourceTree = "<group>";
+		};
+		CECAA484CA40D442E0851AF1 /* include */ = {
+			isa = PBXGroup;
+			children = (
+				7CB591195919CC7D9D57E330 /* algos.h */,
+				73E0BFD770D75ABD5ABB61B8 /* alloc.h */,
+				8023062657D19B0163482E22 /* baseCells.h */,
+				27A939183F2903B61CA144FB /* bbox.h */,
+				22AE81B336FF77D1655400EA /* constants.h */,
+				E284B25E233005D7FEF20F6F /* coordijk.h */,
+				792C3E9270334E7AE1A24B68 /* directedEdge.h */,
+				79F5CE09D7F91D2DE8AECC02 /* faceijk.h */,
+				1727B3F48F1EFA384DE4B5C8 /* h3api.h */,
+				6CDCF740EC9B89D5492FD0C7 /* h3Assert.h */,
+				7E1EE5B5FE7A084D0C8BA153 /* h3Index.h */,
+				8B5925C2E9B5B94C94F1FEF7 /* iterators.h */,
+				6FA4F76096362CE92F71ED36 /* latLng.h */,
+				FB4FCCF15F9E57B3747DD159 /* linkedGeo.h */,
+				983A6286E04A3B9DE101DF7E /* localij.h */,
+				403E838590B5304D34C70F23 /* mathExtensions.h */,
+				CB3F4FE4971EC341C310BFBE /* polygon.h */,
+				119DE3CCD0BED37A2EED959F /* polygonAlgos.h */,
+				82FADE55692F39B30C21D313 /* vec2d.h */,
+				4D6D4D7CC3D2F7CA7F2BB14A /* vec3d.h */,
+				B61D714603B1F9543D8049F1 /* vertex.h */,
+				F42E0A1FDF3C1CED966A8893 /* vertexGraph.h */,
 			);
 			path = include;
 			sourceTree = "<group>";
@@ -251,12 +254,12 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		11EFF920F41BBA9109332778 /* OpenTrailPaper */ = {
+		F0C3C01AB397A74EB43C57A5 /* OpenTrailPaper */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 6038210508765517B64857BB /* Build configuration list for PBXNativeTarget "OpenTrailPaper" */;
+			buildConfigurationList = 52450F9F51E09D7B4AD6D06B /* Build configuration list for PBXNativeTarget "OpenTrailPaper" */;
 			buildPhases = (
-				492D858DF48F494AA648B73A /* Sources */,
-				9838F248DEB4AB0BF7428DDC /* Resources */,
+				2ABCFDB68F0BDE6533A99F34 /* Sources */,
+				DB1DAE7FDCB80F57D75AF147 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -265,198 +268,132 @@
 			name = OpenTrailPaper;
 			packageProductDependencies = (
 			);
-			productName = BikeGPSCompanion;
-			productReference = F46204EF3D9A3EB08394C288 /* OpenTrailPaper.app */;
+			productName = OpenTrailPaper;
+			productReference = 6AEE6D137CDDF2F463F27932 /* OpenTrailPaper.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
-		912E755F175789950EC70D79 /* Project object */ = {
+		8BA9E00CC1259C370A1A3517 /* Project object */ = {
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
-					11EFF920F41BBA9109332778 = {
+					F0C3C01AB397A74EB43C57A5 = {
 						DevelopmentTeam = G5JFC849XY;
 						ProvisioningStyle = Automatic;
 					};
 				};
 			};
-			buildConfigurationList = 484629FD3C1787F528A16CC9 /* Build configuration list for PBXProject "OpenTrailPaper" */;
+			buildConfigurationList = ED660818303780A5A3F10879 /* Build configuration list for PBXProject "OpenTrailPaper" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
 				Base,
 				en,
 			);
-			mainGroup = 792DA7BBA6E2F3CA55EBA0BF;
+			mainGroup = 18CC695DF5F6C2584F4E3869;
 			minimizedProjectReferenceProxies = 1;
 			preferredProjectObjectVersion = 77;
-			productRefGroup = 9D5C1E9F6C873648F60BADA5 /* Products */;
+			productRefGroup = 50CE6737CF57F2CA89F9BC4F /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				11EFF920F41BBA9109332778 /* OpenTrailPaper */,
+				F0C3C01AB397A74EB43C57A5 /* OpenTrailPaper */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
-		9838F248DEB4AB0BF7428DDC /* Resources */ = {
+		DB1DAE7FDCB80F57D75AF147 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				624BEA62D6C082EB2D2686AD /* Assets.xcassets in Resources */,
-				50A026FD2B5510457D29FA95 /* Barlow-Medium.ttf in Resources */,
-				657B6E68ECA92FB1C78F3A98 /* Barlow-Regular.ttf in Resources */,
-				A984DF4C30E0938795C41C27 /* Barlow-SemiBold.ttf in Resources */,
-				AC7ABEC10AB52F7914830F7A /* BarlowCondensed-Bold.ttf in Resources */,
-				82EFEDE0D1E1B12E562B3EFD /* BarlowCondensed-Medium.ttf in Resources */,
-				694F09B2FB8C0E3A02BB7876 /* BarlowCondensed-SemiBold.ttf in Resources */,
-				7AF8E9C4FB19879DEC2AD2A0 /* demo.fit in Resources */,
-				7D41105531AE1202B2D817F1 /* firmware.bin in Resources */,
+				39C207696331341232C496B3 /* Assets.xcassets in Resources */,
+				8F39135FF7E1E777F4833280 /* Barlow-Medium.ttf in Resources */,
+				50C29F659BE2ACD7B9B29D73 /* Barlow-Regular.ttf in Resources */,
+				9A51A79216A6D77B6B223CE3 /* Barlow-SemiBold.ttf in Resources */,
+				1E84B7CD7869CDE2FAD486B0 /* BarlowCondensed-Bold.ttf in Resources */,
+				05EFA1438A835BB33D929DF4 /* BarlowCondensed-Medium.ttf in Resources */,
+				42D2FCE22B005258F3DFCE9C /* BarlowCondensed-SemiBold.ttf in Resources */,
+				E30ADD326442FABF6002866E /* demo.fit in Resources */,
+				D6593DA4DB2D54C490D89D63 /* firmware.bin in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
-		492D858DF48F494AA648B73A /* Sources */ = {
+		2ABCFDB68F0BDE6533A99F34 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				47C83BDADFF3D31F4E43F37E /* BLEManager.swift in Sources */,
-				68E61DE93629DD4481BB8FAE /* BikeGPSCompanionApp.swift in Sources */,
-				252C086BF5464E66881811E2 /* DiagnosticsView.swift in Sources */,
-				DD5AF628B5DC8DCC6F9D5381 /* FITDecoder.swift in Sources */,
-				238C28015928C2C46081BB14 /* GPXExporter.swift in Sources */,
-				BA4785667E0D477A0C1F5D8A /* H3Tiles.swift in Sources */,
-				5E6B170B7E5D95D64004B7DF /* MapBuilder.swift in Sources */,
-				C4331000AD0382FB9855AA47 /* MapsView.swift in Sources */,
-				9176980BABF604ABA9659708 /* RideDetailView.swift in Sources */,
-				376908A07714407243E2E4ED /* RideView.swift in Sources */,
-				3E5CA463CB2CE0A9DC48459B /* RidesView.swift in Sources */,
-				66DA8F56B10214B148939ADA /* RouteView.swift in Sources */,
-				F3B8C23D0C36C298B616ADF3 /* SensorsView.swift in Sources */,
-				FD7612579D7DAD95AD2CFE2D /* SettingsView.swift in Sources */,
-				7801C9A5D7DE45C654CF72D9 /* Theme.swift in Sources */,
-				E6BA53FA2AC747A0F818D5CD /* algos.c in Sources */,
-				AB4CC93D353E5C714DB38A42 /* baseCells.c in Sources */,
-				AC61444DAE0A927557010CC9 /* bbox.c in Sources */,
-				DD66B24A2DD45D945932CD8D /* coordijk.c in Sources */,
-				29E4567CB74E6D97BBA11602 /* directedEdge.c in Sources */,
-				B1B95D7F377CD04FB3952F3E /* faceijk.c in Sources */,
-				3EA201572C2A1308A3B6A4D7 /* h3Assert.c in Sources */,
-				0B309D3284C51920398E0405 /* h3Index.c in Sources */,
-				0342A87AE328C7601D8C6BCE /* h3shim.c in Sources */,
-				A595AF5AF369EAA95B75137D /* iterators.c in Sources */,
-				F3092923EBB8F6C75F17A14E /* latLng.c in Sources */,
-				C897596E7FE9AEB4B699BACD /* linkedGeo.c in Sources */,
-				B52918F5922D788E05FD5A83 /* localij.c in Sources */,
-				56244470A5750446E4F43021 /* mathExtensions.c in Sources */,
-				57056A1140478EFA9182CA3C /* polygon.c in Sources */,
-				0EFBB6E14B5FD2AED277A238 /* vec2d.c in Sources */,
-				05B05DF25BBF90F77F503C4E /* vec3d.c in Sources */,
-				EE0051326E4F0559797AB3B5 /* vertex.c in Sources */,
-				7D2A8BEB13AFF1B3B0AAC930 /* vertexGraph.c in Sources */,
+				5BC98F4BF77D1A33EF8F546B /* BLEManager.swift in Sources */,
+				021E5D177FE3BCD463AA49BF /* BikeGPSCompanionApp.swift in Sources */,
+				F71D1CFFCC25AD4A7A19D698 /* DiagnosticsView.swift in Sources */,
+				A44F34DFEC944328672D82B2 /* FITDecoder.swift in Sources */,
+				90BE2D6324721EC08C93E435 /* GPXExporter.swift in Sources */,
+				431EACF518E6E7F25D9682EC /* H3Tiles.swift in Sources */,
+				5D72742ADF79FE45ED70CBEA /* MapBuilder.swift in Sources */,
+				C462314C3BD9E277B9F451A9 /* MapsView.swift in Sources */,
+				ABE6FDB260BAA3609F5C5516 /* OnboardingView.swift in Sources */,
+				72A4059778F0676C0911C393 /* RideDetailView.swift in Sources */,
+				2D50FCD8D5DDF2010C20E161 /* RideView.swift in Sources */,
+				BE0814223F037C69E39B93D7 /* RidesView.swift in Sources */,
+				79F918433F0C02EF0915A0EE /* RouteView.swift in Sources */,
+				5D1E2FE5B8652DC846C39AF7 /* SensorsView.swift in Sources */,
+				F5E522C16FCFE097E2072926 /* SettingsView.swift in Sources */,
+				D017F03AE055F1971F5815BA /* Theme.swift in Sources */,
+				B1BE7F5A245A3C270036C6E2 /* algos.c in Sources */,
+				E1BBBE95FA5BC48203720329 /* baseCells.c in Sources */,
+				42D0BA08D929EAF01939F014 /* bbox.c in Sources */,
+				FB766E892D24ED9F1215F002 /* coordijk.c in Sources */,
+				CD0EDC65F5A9395EE7649CDE /* directedEdge.c in Sources */,
+				4608B467E047801D5219DD54 /* faceijk.c in Sources */,
+				E3824F33E70991FAC6B09EBF /* h3Assert.c in Sources */,
+				33C76F52DC53AF15753FE58B /* h3Index.c in Sources */,
+				DA77B28069DBB60831A903C9 /* h3shim.c in Sources */,
+				E8B02637D663F1BB063A4D60 /* iterators.c in Sources */,
+				41FC8112747D053ED15F0B72 /* latLng.c in Sources */,
+				292571D164EEF9C5316E8BAB /* linkedGeo.c in Sources */,
+				E53264DC25E80F7DA0499687 /* localij.c in Sources */,
+				D18324D7B11DC7874A2252C3 /* mathExtensions.c in Sources */,
+				2A3194F4903302F4B2C27D19 /* polygon.c in Sources */,
+				3D7FAC61F9099EA56E8B6FD6 /* vec2d.c in Sources */,
+				59AED5C1500B37FB3E7E3010 /* vec3d.c in Sources */,
+				206AAAF21E4BC20EAB8D7C79 /* vertex.c in Sources */,
+				FF0F4581FC7558266780F24B /* vertexGraph.c in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin XCBuildConfiguration section */
-		35ECDBBF90C077B8D6F08CF3 /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ALWAYS_SEARCH_USER_PATHS = NO;
-				CLANG_ANALYZER_NONNULL = YES;
-				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
-				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
-				CLANG_CXX_LIBRARY = "libc++";
-				CLANG_ENABLE_MODULES = YES;
-				CLANG_ENABLE_OBJC_ARC = YES;
-				CLANG_ENABLE_OBJC_WEAK = YES;
-				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
-				CLANG_WARN_BOOL_CONVERSION = YES;
-				CLANG_WARN_COMMA = YES;
-				CLANG_WARN_CONSTANT_CONVERSION = YES;
-				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
-				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
-				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
-				CLANG_WARN_EMPTY_BODY = YES;
-				CLANG_WARN_ENUM_CONVERSION = YES;
-				CLANG_WARN_INFINITE_RECURSION = YES;
-				CLANG_WARN_INT_CONVERSION = YES;
-				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
-				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
-				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
-				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
-				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
-				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
-				CLANG_WARN_STRICT_PROTOTYPES = YES;
-				CLANG_WARN_SUSPICIOUS_MOVE = YES;
-				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
-				CLANG_WARN_UNREACHABLE_CODE = YES;
-				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
-				CODE_SIGN_STYLE = Automatic;
-				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 1;
-				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				DEVELOPMENT_TEAM = G5JFC849XY;
-				ENABLE_NS_ASSERTIONS = NO;
-				ENABLE_STRICT_OBJC_MSGSEND = YES;
-				GCC_C_LANGUAGE_STANDARD = gnu11;
-				GCC_NO_COMMON_BLOCKS = YES;
-				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
-				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
-				GCC_WARN_UNDECLARED_SELECTOR = YES;
-				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
-				GCC_WARN_UNUSED_FUNCTION = YES;
-				GCC_WARN_UNUSED_VARIABLE = YES;
-				GENERATE_INFOPLIST_FILE = NO;
-				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 0.1;
-				MTL_ENABLE_DEBUG_INFO = NO;
-				MTL_FAST_MATH = YES;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SDKROOT = iphoneos;
-				SWIFT_COMPILATION_MODE = wholemodule;
-				SWIFT_OPTIMIZATION_LEVEL = "-O";
-				SWIFT_VERSION = 5.0;
-			};
-			name = Release;
-		};
-		398605E3E4CA5F340F7B89AD /* Debug */ = {
+		12791CCE84FF34C154B09EF9 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 2;
 				ENABLE_PREVIEWS = YES;
 				GCC_WARN_INHIBIT_ALL_WARNINGS = YES;
-				HEADER_SEARCH_PATHS = "$(SRCROOT)/Sources/H3/include";
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/Sources/H3/include",
+				);
 				INFOPLIST_FILE = Sources/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = OpenTrailPaper;
-				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.healthcare-fitness";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.raemond.opentrailpaper;
-				PRODUCT_NAME = OpenTrailPaper;
 				SDKROOT = iphoneos;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
-				SUPPORTS_MACCATALYST = NO;
-				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
-				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_OBJC_BRIDGING_HEADER = "Sources/BikeGPS-Bridging-Header.h";
 				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Debug;
 		};
-		7DFB30AE63C54FBA8D46936D /* Debug */ = {
+		1849DB9F2FC9905914C6AD7F /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -491,7 +428,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEVELOPMENT_TEAM = G5JFC849XY;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -524,29 +461,84 @@
 			};
 			name = Debug;
 		};
-		BB637C687477D45ED4FD82B1 /* Release */ = {
+		6C6F2443A957B3DC1062BB18 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 2;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = G5JFC849XY;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 0.1;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		C1A940DE7864D95C7611F8CE /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 2;
 				ENABLE_PREVIEWS = YES;
 				GCC_WARN_INHIBIT_ALL_WARNINGS = YES;
-				HEADER_SEARCH_PATHS = "$(SRCROOT)/Sources/H3/include";
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/Sources/H3/include",
+				);
 				INFOPLIST_FILE = Sources/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = OpenTrailPaper;
-				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.healthcare-fitness";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.raemond.opentrailpaper;
-				PRODUCT_NAME = OpenTrailPaper;
 				SDKROOT = iphoneos;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
-				SUPPORTS_MACCATALYST = NO;
-				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
-				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_OBJC_BRIDGING_HEADER = "Sources/BikeGPS-Bridging-Header.h";
 				TARGETED_DEVICE_FAMILY = 1;
 			};
@@ -555,25 +547,25 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		484629FD3C1787F528A16CC9 /* Build configuration list for PBXProject "OpenTrailPaper" */ = {
+		52450F9F51E09D7B4AD6D06B /* Build configuration list for PBXNativeTarget "OpenTrailPaper" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				7DFB30AE63C54FBA8D46936D /* Debug */,
-				35ECDBBF90C077B8D6F08CF3 /* Release */,
+				12791CCE84FF34C154B09EF9 /* Debug */,
+				C1A940DE7864D95C7611F8CE /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
 		};
-		6038210508765517B64857BB /* Build configuration list for PBXNativeTarget "OpenTrailPaper" */ = {
+		ED660818303780A5A3F10879 /* Build configuration list for PBXProject "OpenTrailPaper" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				398605E3E4CA5F340F7B89AD /* Debug */,
-				BB637C687477D45ED4FD82B1 /* Release */,
+				1849DB9F2FC9905914C6AD7F /* Debug */,
+				6C6F2443A957B3DC1062BB18 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
 		};
 /* End XCConfigurationList section */
 	};
-	rootObject = 912E755F175789950EC70D79 /* Project object */;
+	rootObject = 8BA9E00CC1259C370A1A3517 /* Project object */;
 }

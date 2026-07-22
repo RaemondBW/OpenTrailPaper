@@ -90,6 +90,10 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var routeReceived = false               // device confirmed it got the route
     @Published var lastMessage: String? = nil
 
+    // Permission state, surfaced so onboarding can reflect what's been granted.
+    @Published var locationAuthorized = false
+    @Published var bluetoothReady = false          // central powered on & allowed
+
     // Ride download
     @Published var rides: [RideFile] = []
     @Published var loadingRides = false
@@ -179,13 +183,39 @@ final class BLEManager: NSObject, ObservableObject {
 
     override init() {
         super.init()
-        central = CBCentralManager(delegate: self, queue: .main)
         if isDemoUpdate { state = .connected; deviceFirmware = "v0.83" }
         locationManager.delegate = self
         locationManager.desiredAccuracy = kCLLocationAccuracyHundredMeters
+        let a = locationManager.authorizationStatus
+        locationAuthorized = (a == .authorizedWhenInUse || a == .authorizedAlways)
         // Show last-known on-device tiles immediately; a refresh confirms them.
         if let saved = UserDefaults.standard.stringArray(forKey: Self.tileCacheKey) {
             deviceTileIds = Set(saved)
+        }
+        // Returning users get Bluetooth up immediately so the device auto-
+        // connects. First-run users create the central when they tap "Enable
+        // Bluetooth" in onboarding, so the system prompt lands on that screen.
+        if UserDefaults.standard.bool(forKey: Self.onboardedKey) {
+            startCentral()
+        }
+    }
+
+    static let onboardedKey = "didOnboard"
+
+    /// Create the Bluetooth central. iOS shows the Bluetooth permission prompt
+    /// the first time this runs. Idempotent; skipped in the update demo.
+    private func startCentral() {
+        guard central == nil, !isDemoUpdate else { return }
+        central = CBCentralManager(delegate: self, queue: .main)
+    }
+
+    /// Onboarding: bring Bluetooth up and trigger its permission prompt.
+    func enableBluetooth() { startCentral() }
+
+    /// Onboarding: trigger the when-in-use location prompt.
+    func requestLocationPermission() {
+        if locationManager.authorizationStatus == .notDetermined {
+            locationManager.requestWhenInUseAuthorization()
         }
     }
 
@@ -259,13 +289,13 @@ final class BLEManager: NSObject, ObservableObject {
     }
 
     func startScan() {
-        guard central.state == .poweredOn else { return }
+        guard let central, central.state == .poweredOn else { return }
         state = .scanning
         central.scanForPeripherals(withServices: [BikeUUID.service])
     }
 
     func disconnect() {
-        if let p = peripheral { central.cancelPeripheralConnection(p) }
+        if let p = peripheral { central?.cancelPeripheralConnection(p) }
     }
 
     // MARK: settings
@@ -949,6 +979,7 @@ extension BLEManager: CBCentralManagerDelegate {
     nonisolated func centralManagerDidUpdateState(_ c: CBCentralManager) {
         if isDemoUpdate { return }   // demo holds a fake connected state
         MainActor.assumeIsolated {
+            bluetoothReady = (c.state == .poweredOn)
             switch c.state {
             case .poweredOn: startScan()
             case .poweredOff: state = .poweredOff
@@ -1155,6 +1186,7 @@ extension BLEManager: CLLocationManagerDelegate {
     nonisolated func locationManagerDidChangeAuthorization(_ m: CLLocationManager) {
         MainActor.assumeIsolated {
             let a = m.authorizationStatus
+            locationAuthorized = (a == .authorizedWhenInUse || a == .authorizedAlways)
             if wantsAiding, a == .authorizedWhenInUse || a == .authorizedAlways {
                 beginLocationUpdates()
             } else if a == .denied || a == .restricted {

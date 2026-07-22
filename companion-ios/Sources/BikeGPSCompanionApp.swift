@@ -17,6 +17,7 @@ struct BikeGPSCompanionApp: App {
 struct RootView: View {
     @EnvironmentObject var ble: BLEManager
     @State private var tab = RootView.initialTab
+    @State private var showOnboarding = RootView.shouldOnboard
 
     init() { RootView.configureAppearance() }
 
@@ -30,6 +31,13 @@ struct RootView: View {
                 .tabItem { Label("Rides", systemImage: "list.bullet.rectangle") }.tag(2)
             SettingsView()
                 .tabItem { Label("Settings", systemImage: "slider.horizontal.3") }.tag(3)
+        }
+        .fullScreenCover(isPresented: $showOnboarding) {
+            OnboardingView {
+                UserDefaults.standard.set(true, forKey: BLEManager.onboardedKey)
+                showOnboarding = false
+            }
+            .environmentObject(ble)
         }
     }
 
@@ -69,5 +77,17 @@ struct RootView: View {
         if a.contains("-tab-rides") { return 2 }
         if a.contains("-tab-settings") { return 3 }
         return 0
+    }
+
+    // Whether to show the first-run tutorial. Suppressed under the screenshot
+    // demo flags (so gallery captures aren't covered by it); `-onboarding`
+    // forces it on for capturing the tutorial itself.
+    static var shouldOnboard: Bool {
+        let a = ProcessInfo.processInfo.arguments
+        if a.contains(where: { $0.hasPrefix("-onboarding") }) { return true }
+        let demoFlags = ["-tab-route", "-tab-rides", "-tab-settings",
+                         "-demo-route", "-demo-rides", "-demo-update"]
+        if demoFlags.contains(where: a.contains) { return false }
+        return !UserDefaults.standard.bool(forKey: BLEManager.onboardedKey)
     }
 }
