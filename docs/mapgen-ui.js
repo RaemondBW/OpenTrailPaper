@@ -62,9 +62,12 @@ function init() {
   //     current view — there are no manual lat/lon fields. -------------------
   if (typeof L !== "undefined") {
     map = L.map("pickmap", { zoomControl: true }).setView([37.7625, -122.44], 12);
-    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    // A clean, minimal light basemap (CARTO Positron); the CSS greyscales it so
+    // the picker reads as a simple monotone map that matches the e-paper theme.
+    L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", {
       maxZoom: 19,
-      attribution: "&copy; OpenStreetMap contributors",
+      subdomains: "abcd",
+      attribution: "&copy; OpenStreetMap contributors &copy; CARTO",
     }).addTo(map);
     // Recompute size once laid out (in case the section was display:none-ish).
     setTimeout(() => map.invalidateSize(), 200);
