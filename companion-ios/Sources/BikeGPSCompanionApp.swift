@@ -4,20 +4,29 @@ import UIKit
 @main
 struct BikeGPSCompanionApp: App {
     @StateObject private var ble = BLEManager()
+    @StateObject private var appState = AppState()
 
     var body: some Scene {
         WindowGroup {
             RootView()
                 .environmentObject(ble)
+                .environmentObject(appState)
                 .tint(Palette.accent)
         }
     }
 }
 
+// Lightweight app-wide UI state. Owns whether the first-run tutorial is
+// showing, so both first launch and the Settings "Show tutorial" button can
+// drive the same full-screen cover.
+final class AppState: ObservableObject {
+    @Published var showTutorial: Bool = RootView.shouldOnboard
+}
+
 struct RootView: View {
     @EnvironmentObject var ble: BLEManager
+    @EnvironmentObject var appState: AppState
     @State private var tab = RootView.initialTab
-    @State private var showOnboarding = RootView.shouldOnboard
 
     init() { RootView.configureAppearance() }
 
@@ -32,10 +41,10 @@ struct RootView: View {
             SettingsView()
                 .tabItem { Label("Settings", systemImage: "slider.horizontal.3") }.tag(3)
         }
-        .fullScreenCover(isPresented: $showOnboarding) {
+        .fullScreenCover(isPresented: $appState.showTutorial) {
             OnboardingView {
                 UserDefaults.standard.set(true, forKey: BLEManager.onboardedKey)
-                showOnboarding = false
+                appState.showTutorial = false
             }
             .environmentObject(ble)
         }

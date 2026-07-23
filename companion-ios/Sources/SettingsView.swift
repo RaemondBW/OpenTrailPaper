@@ -3,6 +3,7 @@ import SwiftUI
 // Edit device settings (FTP, timezone) and push them over BLE.
 struct SettingsView: View {
     @EnvironmentObject var ble: BLEManager
+    @EnvironmentObject var appState: AppState
     @AppStorage(UnitPref.key) private var useMiles = false
     @State private var confirmUpdate = false
     @State private var showSensors = false
@@ -108,6 +109,8 @@ struct SettingsView: View {
 
                     if ble.state == .connected { diagnosticsCard }
 
+                    tutorialCard
+
                     Text(ble.state == .connected
                          ? "Settings sync automatically with your OpenTrailPaper, both ways."
                          : "Connect to sync settings with your OpenTrailPaper.")
@@ -123,6 +126,26 @@ struct SettingsView: View {
             .sheet(item: $ble.logFileURL) { url in DiagnosticsView(url: url) }
             .sheet(isPresented: $showSensors) { SensorsView() }
         }
+    }
+
+    @ViewBuilder private var tutorialCard: some View {
+        Button { appState.showTutorial = true } label: {
+            Card {
+                HStack(spacing: 12) {
+                    Image(systemName: "questionmark.circle")
+                        .font(.system(size: 20, weight: .semibold)).foregroundStyle(Palette.accent)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("How it works").trackedLabel()
+                        Text("Replay the intro tutorial")
+                            .font(BarlowFont.text(15, .semibold)).foregroundStyle(Palette.ink)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 14, weight: .semibold)).foregroundStyle(Palette.muted)
+                }
+            }
+        }
+        .buttonStyle(.plain)
     }
 
     @ViewBuilder private var sensorsCard: some View {
