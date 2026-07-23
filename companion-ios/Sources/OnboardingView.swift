@@ -103,10 +103,28 @@ struct OnboardingView: View {
 
     private var welcome: some View {
         page(
-            art: AnyView(deviceGlyph),
+            art: AnyView(deviceHero),
             title: "Welcome to OpenTrailPaper",
-            body: "The companion for your e-paper bike computer. Plan routes, bake offline maps, and pull your rides — the phone does the fiddly bits, the device does the riding."
+            body: "This is the companion for the OpenTrailPaper head unit — a sunlight-readable e-paper bike computer you build yourself. The phone does the fiddly bits; the device does the riding."
         )
+    }
+
+    // A product shot of the head unit so it's obvious from the first screen
+    // what this app pairs with — the map screen tucked behind the dashboard.
+    private var deviceHero: some View {
+        ZStack {
+            Image("DeviceMap")
+                .resizable().scaledToFit()
+                .frame(width: 148)
+                .rotationEffect(.degrees(-9))
+                .offset(x: -84, y: 12)
+            Image("DeviceDashboard")
+                .resizable().scaledToFit()
+                .frame(width: 182)
+                .rotationEffect(.degrees(5))
+                .offset(x: 26)
+        }
+        .frame(height: 300)
     }
 
     private var overview: some View {
@@ -266,24 +284,6 @@ struct OnboardingView: View {
             Image(systemName: symbol)
                 .font(.system(size: 56, weight: .semibold))
                 .foregroundStyle(tint)
-        }
-    }
-
-    // A little cream "device" nodding to the head unit.
-    private var deviceGlyph: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(Palette.surface)
-                .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .strokeBorder(Palette.hairline, lineWidth: 1.5))
-                .frame(width: 116, height: 150)
-            VStack(spacing: 10) {
-                Image(systemName: "bicycle")
-                    .font(.system(size: 40, weight: .semibold))
-                    .foregroundStyle(Palette.ink)
-                Capsule().fill(Palette.accent).frame(width: 44, height: 6)
-                Capsule().fill(Palette.hairline).frame(width: 60, height: 6)
-            }
         }
     }
 
