@@ -52,7 +52,11 @@ header.nav .brand {
   display: flex; align-items: center; gap: 10px;
   font-family: var(--display); font-size: 1.35rem; font-weight: 700;
   letter-spacing: 0.02em; text-transform: uppercase;
+  /* it's a link home on every page — keep it looking like the wordmark */
+  color: var(--ink); text-decoration: none;
 }
+header.nav .brand:hover { color: var(--accent); }
+header.nav .brand:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 header.nav .brand svg { display: block; }
 header.nav nav { display: flex; gap: 22px; margin-left: auto; flex-wrap: wrap; align-items: center; }
 @media (max-width: 860px) {
