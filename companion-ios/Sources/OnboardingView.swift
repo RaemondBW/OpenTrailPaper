@@ -11,13 +11,13 @@ struct OnboardingView: View {
     @State private var step = OnboardingView.initialStep
     @State private var askedThisStep = false
 
-    private let lastStep = 4
+    private let lastStep = 5
 
     // Screenshot support: `-onboarding-step N` opens the tutorial on a page.
     static var initialStep: Int {
         let a = ProcessInfo.processInfo.arguments
         if let i = a.firstIndex(of: "-onboarding-step"), i + 1 < a.count,
-           let n = Int(a[i + 1]) { return min(max(n, 0), 4) }
+           let n = Int(a[i + 1]) { return min(max(n, 0), 5) }
         return 0
     }
 
@@ -33,7 +33,8 @@ struct OnboardingView: View {
                     overview.tag(1)
                     locationStep.tag(2)
                     bluetoothStep.tag(3)
-                    ready.tag(4)
+                    connectStep.tag(4)
+                    ready.tag(5)
                 }
                 .tabViewStyle(.page(indexDisplayMode: .never))
                 .animation(.easeInOut, value: step)
@@ -139,15 +140,78 @@ struct OnboardingView: View {
         page(
             art: AnyView(iconBadge("dot.radiowaves.left.and.right", tint: Palette.accent)),
             title: "Connect over Bluetooth",
-            body: "Everything travels to and from your OpenTrailPaper over Bluetooth — routes, offline maps, settings and recorded rides. No account, no cloud."
+            body: "Everything travels to and from your OpenTrailPaper over Bluetooth — routes, offline maps, settings and recorded rides. No account, no cloud. Next, we'll link the app to your device."
         )
+    }
+
+    // Reassures the user the app pairs with the head unit, and — because the
+    // Bluetooth central is live by now — shows it actually finding the device.
+    private var connectStep: some View {
+        VStack(spacing: 0) {
+            Spacer()
+            iconBadge(connectSymbol, tint: connectTint)
+                .padding(.bottom, 36)
+            Text("Pair with your device")
+                .font(TypeScale.screenTitle)
+                .foregroundStyle(Palette.ink)
+                .multilineTextAlignment(.center)
+                .padding(.bottom, 14)
+            Text("Turn on your OpenTrailPaper and keep it nearby. The app finds it over Bluetooth automatically — no pairing codes to type. Once linked, it stays paired and reconnects on its own every ride.")
+                .font(TypeScale.body)
+                .foregroundStyle(Palette.muted)
+                .multilineTextAlignment(.center)
+                .lineSpacing(3)
+                .fixedSize(horizontal: false, vertical: true)
+            connectStatusChip
+                .padding(.top, 26)
+            Spacer()
+            Spacer()
+        }
+        .padding(.horizontal, 34)
+        .frame(maxWidth: .infinity)
+    }
+
+    private var connectSymbol: String {
+        ble.state == .connected ? "checkmark.circle.fill" : "antenna.radiowaves.left.and.right"
+    }
+    private var connectTint: Color {
+        ble.state == .connected ? Palette.good : Palette.accent
+    }
+
+    private var connectStatusChip: some View {
+        HStack(spacing: 10) {
+            if ble.state == .connected {
+                Circle().fill(Palette.good).frame(width: 10, height: 10)
+            } else if ble.state == .poweredOff {
+                Circle().fill(Palette.faint).frame(width: 10, height: 10)
+            } else {
+                ProgressView().controlSize(.small).tint(Palette.accent)
+            }
+            Text(connectStatusText)
+                .font(TypeScale.bodyStrong)
+                .foregroundStyle(Palette.ink)
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 12)
+        .background(Palette.surface)
+        .clipShape(Capsule())
+        .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))
+    }
+
+    private var connectStatusText: String {
+        switch ble.state {
+        case .connected:  return "Connected to your device"
+        case .connecting: return "Connecting…"
+        case .poweredOff: return "Turn on Bluetooth to connect"
+        default:          return "Looking for your device…"
+        }
     }
 
     private var ready: some View {
         page(
             art: AnyView(iconBadge("checkmark", tint: Palette.good)),
             title: "You're all set",
-            body: "Turn on your OpenTrailPaper and open the Ride tab — the app finds it automatically. You can change permissions any time in Settings."
+            body: "Your device connects on its own whenever it's on and nearby — you'll see it on the Ride tab. Plan a route or build a map any time, and it syncs over. You can change permissions later in Settings."
         )
     }
 

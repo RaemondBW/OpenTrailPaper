@@ -12,6 +12,7 @@ for the required largest-iPhone slot.
 | `04-tutorial-welcome.png` | First-run tutorial — welcome |
 | `05-tutorial-location.png` | First-run tutorial — location permission |
 | `06-tutorial-bluetooth.png` | First-run tutorial — Bluetooth permission |
+| `07-tutorial-connect.png` | First-run tutorial — pairing with the device |
 
 ## Regenerating
 
@@ -40,6 +41,7 @@ shoot 03-tune-and-update.png   -tab-settings -demo-update
 shoot 04-tutorial-welcome.png  -onboarding-step 0
 shoot 05-tutorial-location.png -onboarding-step 2
 shoot 06-tutorial-bluetooth.png -onboarding-step 3
+shoot 07-tutorial-connect.png  -onboarding-step 4
 ```
 
 Launch flags: `-tab-{route,rides,settings}` pick the tab; `-demo-route`,
