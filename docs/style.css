@@ -483,3 +483,29 @@ footer .wrap { display: flex; gap: 18px; flex-wrap: wrap; justify-content: space
 @media (max-width: 560px) { footer .wrap { flex-direction: column; gap: 10px; } }
 
 code { font-family: var(--mono); background: var(--paper-dim); padding: 1px 5px; border-radius: 0; font-size: 0.9em; }
+
+/* --- privacy policy / long-form prose --- */
+.policy-date {
+  font-family: var(--mono); font-size: 0.82rem; color: var(--ink-soft);
+  text-transform: uppercase; letter-spacing: 0.04em; margin: 14px 0 0;
+}
+/* keep the 1080px wrap so the prose lines up with the page header above,
+   but hold the text itself to a comfortable measure */
+.policy > * { max-width: 72ch; }
+.policy h2 {
+  font-family: var(--display); font-size: 1.5rem; font-weight: 700;
+  margin: 40px 0 10px; padding-top: 18px; border-top: 2px solid var(--rule);
+  line-height: 1.15;
+}
+.policy h2:first-of-type { margin-top: 30px; }
+.policy h3 {
+  font-family: var(--display); font-size: 1.13rem; font-weight: 600;
+  margin: 24px 0 6px; color: var(--ink);
+}
+.policy p { margin: 0 0 14px; color: var(--ink-soft); }
+.policy p strong, .policy li strong { color: var(--ink); }
+.policy ul { margin: 0 0 16px; padding-left: 22px; color: var(--ink-soft); }
+.policy li { margin-bottom: 7px; }
+@media (max-width: 560px) {
+  .policy h2 { font-size: 1.3rem; margin-top: 32px; }
+}
