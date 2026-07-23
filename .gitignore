@@ -33,6 +33,12 @@ tools/fit_test/out/
 # Xcode archive / build output
 companion-ios/build/
 
-# Site images are generated at deploy time from tools/preview/out (see pages.yml)
-docs/img/
+# Site images are generated at deploy time from tools/preview/out (see pages.yml).
+# Uses docs/img/* rather than docs/img/ so the negations below work — git can't
+# re-include a file whose parent *directory* is excluded.
+docs/img/*
+# ...except the brand icons, which are static assets, not generated screenshots.
+!docs/img/favicon.png
+!docs/img/favicon-32.png
+!docs/img/apple-touch-icon.png
 companion-ios/build-sim/
