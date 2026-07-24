@@ -41,4 +41,5 @@ docs/img/*
 !docs/img/favicon.png
 !docs/img/favicon-32.png
 !docs/img/apple-touch-icon.png
+!docs/img/logo.png
 companion-ios/build-sim/

@@ -57,7 +57,7 @@ header.nav .brand {
 }
 header.nav .brand:hover { color: var(--accent); }
 header.nav .brand:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
-header.nav .brand svg { display: block; }
+header.nav .brand .brand-mark { display: block; width: 28px; height: 28px; }
 header.nav nav { display: flex; gap: 22px; margin-left: auto; flex-wrap: wrap; align-items: center; }
 @media (max-width: 860px) {
   header.nav .wrap { gap: 12px; }
