@@ -30,6 +30,7 @@ const char* CHR_RIDES     = "b1c50004-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
 const char* CHR_OTA       = "b1c50005-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
 const char* CHR_SENSORS   = "b1c50006-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
 const char* CHR_MAP       = "b1c50007-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
+const char* CHR_AGNSS     = "b1c50008-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
 
 NimBLECharacteristic* statusChr = nullptr;
 NimBLECharacteristic* sensorsChr = nullptr;
@@ -815,6 +816,45 @@ class MapCb : public NimBLECharacteristicCallbacks {
     void mapNotify1_B0() { uint8_t b = 0xB0; mapNotify(&b, 1); }
 };
 
+// AGNSS ephemeris injection: the phone streams a module-specific ephemeris blob
+// and we pipe the raw bytes to the receiver's UART (gps_service parses nothing —
+// the module ingests its own format). See design/agnss.md.
+NimBLECharacteristic* agnssChr = nullptr;
+void agnssNotify(const uint8_t* d, size_t n) {
+    if (agnssChr) { agnssChr->setValue(d, n); agnssChr->notify(); }
+}
+class AgnssCb : public NimBLECharacteristicCallbacks {
+    void onWrite(NimBLECharacteristic* c, NimBLEConnInfo&) override {
+        std::string v = c->getValue();
+        if (v.empty()) return;
+        const uint8_t* p = (const uint8_t*)v.data();
+        size_t n = v.size();
+        switch (p[0]) {
+        case 0x10: {                              // query module + fix state
+            RideState s = g_state.snapshot();
+            uint8_t r[3] = {0x10, (uint8_t)gps_service::moduleKindCode(),
+                            (uint8_t)(s.gpsFix ? 1 : 0)};
+            agnssNotify(r, 3);
+            break;
+        }
+        case 0x01:                                // begin
+            gps_service::agnssBegin();
+            { uint8_t a = 0xA1; agnssNotify(&a, 1); }
+            break;
+        case 0x02:                                // ephemeris bytes
+            if (n > 1) gps_service::agnssInject(p + 1, n - 1);
+            break;
+        case 0x03:                                // end
+            gps_service::agnssEnd();
+            { uint8_t d = 0xA3; agnssNotify(&d, 1); }
+            break;
+        case 0x04:                                // abort
+            gps_service::agnssBegin();             // reset the stream, drop bytes
+            break;
+        }
+    }
+};
+
 // Stream the device's map coverage to the phone (bounds of the embedded map +
 // each downloaded /maps/*.ebm). Reads SD, so runs in the server task.
 void sendMapList() {
@@ -969,6 +1009,11 @@ void begin() {
         CHR_MAP,
         NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::NOTIFY);
     mapChr->setCallbacks(new MapCb());
+
+    agnssChr = svc->createCharacteristic(
+        CHR_AGNSS,
+        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::NOTIFY);
+    agnssChr->setCallbacks(new AgnssCb());
 
     svc->start();
 

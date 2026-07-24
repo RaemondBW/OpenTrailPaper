@@ -2,6 +2,8 @@
 
 #include <Arduino.h>
 #include <TinyGPS++.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/stream_buffer.h>
 
 #include "config.h"
 #include "ride_state.h"
@@ -62,6 +64,13 @@ volatile int g_coldReq = 0;   // 0 none, 1 cold+aided, 2 cold+unaided
 uint32_t acqStartMs = 0;
 bool g_loggedFirstFix = false;
 bool g_prevFix = false;
+
+// AGNSS ephemeris bytes from the phone (BLE task) → GPS UART (GPS task). A
+// stream buffer is the FreeRTOS SPSC primitive for exactly this. Drained a
+// little each GPS loop, paced by the UART's free space so a multi-KB blob never
+// stalls NMEA parsing.
+StreamBufferHandle_t agnssStream = nullptr;
+constexpr size_t AGNSS_STREAM_CAP = 16 * 1024;
 
 // Smoothed heading state (EMA over the course unit vector).
 float headX = 0, headY = 0;
@@ -184,6 +193,8 @@ bool begin() {
     SerialGPS.setRxBufferSize(1024);
     SerialGPS.begin(9600, SERIAL_8N1, BOARD_GPS_RXD, BOARD_GPS_TXD);
     delay(100);
+
+    if (!agnssStream) agnssStream = xStreamBufferCreate(AGNSS_STREAM_CAP, 1);
 
     if (initL76K()) {
         Serial.println("[gps] CASIC/L76K initialized @9600");
@@ -354,6 +365,8 @@ void seedPosition(double lat, double lon, time_t utc, bool haveTime,
 
 void forceColdStart(bool withAiding) { g_coldReq = withAiding ? 1 : 2; }
 
+int moduleKindCode() { return (int)moduleKind; }   // 0 none, 1 CASIC, 2 u-blox
+
 // Re-seed the receiver exactly like boot does: last-known position, plus time
 // only if the RTC has been GPS-validated. Shared by the cold-start test path.
 void seedFromSaved() {
@@ -362,6 +375,21 @@ void seedFromSaved() {
     time_t now = settings::rtcTrusted() ? time(nullptr) : 0;
     bool haveTime = now > 1735689600;
     injectAiding(alat, alon, now, haveTime, 50000.0f, 30.0f);
+}
+
+void agnssBegin() {
+    if (agnssStream) xStreamBufferReset(agnssStream);
+    seedFromSaved();          // position/time first, so ephemeris is bounded
+    diag::log("agnss: injection begin");
+}
+
+void agnssInject(const uint8_t* data, size_t len) {
+    if (agnssStream && len) xStreamBufferSend(agnssStream, data, len, 0);
+}
+
+void agnssEnd() {
+    seedFromSaved();          // re-seed time so the fresh ephemeris is used now
+    diag::log("agnss: injection end");
 }
 
 // Tell the receiver to cold-start: forget ephemeris, almanac, last position and
@@ -417,6 +445,19 @@ void task(void*) {
             Serial.write(c);
 #endif
             gps.encode(c);
+        }
+
+        // Drain any pending AGNSS ephemeris bytes to the receiver, but only as
+        // much as the UART TX buffer can take right now, so injecting a multi-KB
+        // blob at 9600/38400 baud never blocks this loop or the NMEA parse.
+        if (agnssStream && !xStreamBufferIsEmpty(agnssStream)) {
+            int room = SerialGPS.availableForWrite();
+            if (room > 0) {
+                uint8_t tmp[128];
+                size_t want = room < (int)sizeof(tmp) ? room : sizeof(tmp);
+                size_t got = xStreamBufferReceive(agnssStream, tmp, want, 0);
+                if (got) SerialGPS.write(tmp, got);
+            }
         }
 
         // Track the strongest C/N0 across all constellations' GSV batches;

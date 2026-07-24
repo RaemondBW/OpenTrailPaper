@@ -58,6 +58,17 @@ void seedPosition(double lat, double lon, time_t utc, bool haveTime,
 // much the aiding actually helps. Handled on the GPS task; safe from any task.
 void forceColdStart(bool withAiding);
 
+// Detected chipset as a code for the BLE AGNSS query: 0 none, 1 CASIC, 2 u-blox.
+int moduleKindCode();
+
+// AGNSS (assisted GPS) ephemeris injection. The phone fetches a module-specific
+// ephemeris blob and streams it here; we pipe the raw bytes to the receiver's
+// UART (paced on the GPS task) — the module parses its own format. See
+// design/agnss.md. All three are safe to call from the BLE task.
+void agnssBegin();                             // start a session, re-seed AID-INI
+void agnssInject(const uint8_t* data, size_t len);  // feed raw ephemeris bytes
+void agnssEnd();                               // finish, re-seed AID-INI
+
 // FreeRTOS task: pumps NMEA into the parser and updates shared state.
 void task(void* arg);
 
