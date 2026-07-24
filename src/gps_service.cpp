@@ -19,17 +19,41 @@ TinyGPSPlus gps;
 TinyGPSCustom gpgsvInView(gps, "GPGSV", 3);   // GPS
 TinyGPSCustom glgsvInView(gps, "GLGSV", 3);   // GLONASS
 TinyGPSCustom bdgsvInView(gps, "GBGSV", 3);   // BeiDou (L76K uses GB)
-// C/N0 of the up-to-four satellites in each GPGSV message (terms 7/11/
-// 15/19) — signal strength is the decisive weak-signal-vs-obstruction
-// metric. bestSnr tracks the strongest we currently hear.
+// C/N0 of the up-to-four satellites in each GSV message (terms 7/11/15/19) —
+// signal strength is the decisive weak-signal-vs-obstruction metric. Parse it
+// for every constellation so bestSnr reflects whatever's strongest overhead.
 TinyGPSCustom gpgsvSnr0(gps, "GPGSV", 7);
 TinyGPSCustom gpgsvSnr1(gps, "GPGSV", 11);
 TinyGPSCustom gpgsvSnr2(gps, "GPGSV", 15);
 TinyGPSCustom gpgsvSnr3(gps, "GPGSV", 19);
+TinyGPSCustom glgsvSnr0(gps, "GLGSV", 7);
+TinyGPSCustom glgsvSnr1(gps, "GLGSV", 11);
+TinyGPSCustom glgsvSnr2(gps, "GLGSV", 15);
+TinyGPSCustom glgsvSnr3(gps, "GLGSV", 19);
+TinyGPSCustom bdgsvSnr0(gps, "GBGSV", 7);
+TinyGPSCustom bdgsvSnr1(gps, "GBGSV", 11);
+TinyGPSCustom bdgsvSnr2(gps, "GBGSV", 15);
+TinyGPSCustom bdgsvSnr3(gps, "GBGSV", 19);
+// Fix mode and dilution-of-precision from the combined GSA sentence: term 2 is
+// the fix type (1=none, 2=2D, 3=3D), 15/16/17 are P/H/V-DOP. Both talker IDs
+// appear in the wild (GN for multi-constellation, GP for GPS-only).
+TinyGPSCustom gngsaFix(gps, "GNGSA", 2);
+TinyGPSCustom gngsaPdop(gps, "GNGSA", 15);
+TinyGPSCustom gngsaVdop(gps, "GNGSA", 17);
+TinyGPSCustom gpgsaFix(gps, "GPGSA", 2);
 int bestSnr = 0;
 bool moduleDetected = false;
 enum GpsKind { GPS_NONE, GPS_CASIC, GPS_UBLOX };
 GpsKind moduleKind = GPS_NONE;
+
+// Last aiding we injected, surfaced in the serial telemetry so a slow fix can
+// be correlated with whether (and how well) the receiver was seeded.
+struct AidState {
+    uint32_t count = 0;
+    uint32_t lastMs = 0;
+    double lat = 0, lon = 0;
+    bool haveTime = false;
+} aidState;
 
 // Smoothed heading state (EMA over the course unit vector).
 float headX = 0, headY = 0;
@@ -45,6 +69,58 @@ time_t toUnix(int y, unsigned m, unsigned d, unsigned hh, unsigned mm, unsigned 
     const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     const long days = era * 146097L + static_cast<long>(doe) - 719468L;
     return static_cast<time_t>(days) * 86400 + hh * 3600 + mm * 60 + ss;
+}
+
+// Compact 1 Hz acquisition telemetry to USB serial, so first-fix behaviour can
+// be watched and iterated on live. Serial-only (never the SD log). Everything
+// here is read-only against the shared TinyGPS parser, called from the GPS task.
+void printSerialTelemetry() {
+#if GPS_DEBUG_SERIAL
+    bool fix = gps.location.isValid() && gps.location.age() < 3000;
+    int inView = (gpgsvInView.isValid() ? atoi(gpgsvInView.value()) : 0) +
+                 (glgsvInView.isValid() ? atoi(glgsvInView.value()) : 0) +
+                 (bdgsvInView.isValid() ? atoi(bdgsvInView.value()) : 0);
+    int fixType = gngsaFix.isValid() && *gngsaFix.value()
+                      ? atoi(gngsaFix.value())
+                      : (gpgsaFix.isValid() ? atoi(gpgsaFix.value()) : 0);
+    float pdop = gngsaPdop.isValid() ? atof(gngsaPdop.value()) : 0.0f;
+    float vdop = gngsaVdop.isValid() ? atof(gngsaVdop.value()) : 0.0f;
+
+    time_t sysNow = time(nullptr);
+    char sysBuf[16] = "unset";
+    if (sysNow > 1735689600) {
+        struct tm t; gmtime_r(&sysNow, &t);
+        snprintf(sysBuf, sizeof(sysBuf), "%02d:%02d:%02d", t.tm_hour, t.tm_min, t.tm_sec);
+    }
+    char gpsBuf[16] = "--:--:--";
+    if (gps.time.isValid())
+        snprintf(gpsBuf, sizeof(gpsBuf), "%02d:%02d:%02d",
+                 gps.time.hour(), gps.time.minute(), gps.time.second());
+
+    Serial.printf(
+        "[gpsdbg t=%lus] %s type=%d sats=%d/%d snr=%d hdop=%.1f pdop=%.1f vdop=%.1f "
+        "chars=%lu ck=%lu/%lu wfix=%lu locAge=%ldms sys=%s gps=%s aid=%lux%s",
+        (unsigned long)(millis() / 1000),
+        fix ? "FIX " : "SRCH",
+        fixType,
+        gps.satellites.isValid() ? (int)gps.satellites.value() : 0, inView,
+        bestSnr,
+        gps.hdop.isValid() ? gps.hdop.hdop() : 0.0,
+        pdop, vdop,
+        (unsigned long)gps.charsProcessed(),
+        (unsigned long)gps.passedChecksum(), (unsigned long)gps.failedChecksum(),
+        (unsigned long)gps.sentencesWithFix(),
+        gps.location.isValid() ? (long)gps.location.age() : -1L,
+        sysBuf, gpsBuf,
+        (unsigned long)aidState.count,
+        aidState.count ? (aidState.haveTime ? " pos+time" : " pos") : "");
+    if (fix)
+        Serial.printf(" @ %.6f,%.6f alt=%.0f spd=%.1f",
+                      gps.location.lat(), gps.location.lng(),
+                      gps.altitude.isValid() ? gps.altitude.meters() : 0.0,
+                      gps.speed.isValid() ? gps.speed.kmph() : 0.0);
+    Serial.println();
+#endif
 }
 
 bool waitForBytes(uint32_t timeoutMs) {
@@ -129,6 +205,15 @@ bool begin() {
     return false;
 }
 
+void logBanner() {
+#if GPS_DEBUG_SERIAL
+    Serial.printf("[gpsdbg] --- GPS telemetry on. module=%s rxbuf=1024 "
+                  "echo=%d ---\n", moduleName(), GPS_ECHO_NMEA);
+    Serial.println("[gpsdbg] legend: type(0none/2=2D/3=3D) sats=inUse/inView "
+                   "snr=best C/N0 dB-Hz  ck=ok/bad  aid=count(pos|pos+time)");
+#endif
+}
+
 const char* moduleName() {
     switch (moduleKind) {
         case GPS_CASIC: return "CASIC";
@@ -192,6 +277,11 @@ void sendUbx(uint8_t cls, uint8_t id, const uint8_t* payload, uint16_t len) {
 
 void injectAiding(double lat, double lon, time_t utc, bool haveTime,
                   float posAccM, float timeAccS) {
+    aidState.count++;
+    aidState.lastMs = millis();
+    aidState.lat = lat;
+    aidState.lon = lon;
+    aidState.haveTime = haveTime;
     if (moduleKind == GPS_CASIC) {
         double tow = 0;
         uint16_t wn = 0;
@@ -255,6 +345,7 @@ void seedPosition(double lat, double lon, time_t utc, bool haveTime,
 }
 
 void task(void*) {
+    logBanner();
     for (;;) {
         if (g_seed.pending) {
             g_seed.pending = false;
@@ -272,14 +363,19 @@ void task(void*) {
         }
 
         while (SerialGPS.available()) {
-            gps.encode(SerialGPS.read());
+            char c = SerialGPS.read();
+#if GPS_ECHO_NMEA
+            Serial.write(c);
+#endif
+            gps.encode(c);
         }
 
-        // Track the strongest C/N0 among the first four GPS satellites of
-        // each GSV batch; recompute when a fresh batch arrives.
+        // Track the strongest C/N0 across all constellations' GSV batches;
+        // recompute whenever a fresh GPGSV batch arrives (roughly 1 Hz).
         if (gpgsvSnr0.isUpdated()) {
-            TinyGPSCustom* snrs[4] = {&gpgsvSnr0, &gpgsvSnr1, &gpgsvSnr2,
-                                      &gpgsvSnr3};
+            TinyGPSCustom* snrs[12] = {&gpgsvSnr0, &gpgsvSnr1, &gpgsvSnr2, &gpgsvSnr3,
+                                       &glgsvSnr0, &glgsvSnr1, &glgsvSnr2, &glgsvSnr3,
+                                       &bdgsvSnr0, &bdgsvSnr1, &bdgsvSnr2, &bdgsvSnr3};
             int best = 0;
             for (auto* c : snrs) {
                 if (c->isValid()) {
@@ -400,13 +496,32 @@ void task(void*) {
                 prevFix = haveFix;
                 if (haveFix && !loggedFirstFix) {
                     loggedFirstFix = true;
-                    diag::log("gps FIRST FIX at %lus (sats=%d snr=%d hdop=%.1f)",
+                    // TTFF with the context that explains it: how the receiver
+                    // was seeded (aiding count + whether time was included) is
+                    // the key variable when iterating on fix speed.
+                    diag::log("gps FIRST FIX at %lus (sats=%d snr=%d hdop=%.1f "
+                              "aided=%lux%s)",
                               (unsigned long)(millis() / 1000),
                               gps.satellites.isValid() ? (int)gps.satellites.value() : 0,
-                              bestSnr, gps.hdop.isValid() ? gps.hdop.hdop() : 0.0);
+                              bestSnr, gps.hdop.isValid() ? gps.hdop.hdop() : 0.0,
+                              (unsigned long)aidState.count,
+                              aidState.count ? (aidState.haveTime ? " pos+time"
+                                                                  : " pos") : " none");
                 } else {
                     diag::log("gps: fix %s", haveFix ? "reacquired" : "LOST");
                 }
+            }
+        }
+
+        // High-rate serial telemetry for live iteration: 1 Hz while searching,
+        // 5 Hz-slow (5 s) once locked so the console isn't a firehose.
+        {
+            static uint32_t lastTelem = 0;
+            bool haveFix = gps.location.isValid() && gps.location.age() < 3000;
+            uint32_t telemInterval = haveFix ? 5000 : 1000;
+            if (millis() - lastTelem > telemInterval) {
+                lastTelem = millis();
+                printSerialTelemetry();
             }
         }
 
