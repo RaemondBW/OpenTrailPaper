@@ -553,8 +553,8 @@ code { font-family: var(--mono); background: var(--paper-dim); padding: 1px 5px;
 .hw-list.is-good li::before { content: "+"; color: var(--good); }
 .hw-list.is-warn li::before { content: "–"; color: var(--accent); }
 .hw-list strong { color: var(--ink); }
-.hw-card.is-coming { border-style: dashed; background: transparent; }
-.hw-card.is-coming .hw-head { background: transparent; border-bottom-style: dashed; }
+.hw-card.is-open { border-style: dashed; background: transparent; }
+.hw-card.is-open .hw-head { background: transparent; border-bottom-style: dashed; }
 .hw-note { margin: 0; padding: 20px; font-size: 0.93rem; color: var(--ink-soft); max-width: 76ch; }
 @media (max-width: 720px) {
   .hw-cols { grid-template-columns: 1fr; }
