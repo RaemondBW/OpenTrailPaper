@@ -14,6 +14,8 @@
 #include "gps_service.h"
 #include "board_power.h"
 #include <esp_sleep.h>
+#include <esp_system.h>
+#include <soc/rtc_cntl_reg.h>
 #include <driver/gpio.h>
 #include "ui_render.h"
 #include "map_view.h"
@@ -858,11 +860,24 @@ void applySdUpdate() {
     }
 }
 
+// Reboot straight into the ROM serial bootloader (download mode), so the host
+// can reflash without the physical BOOT/RESET button dance.
+static void rebootToBootloader() {
+    Serial.println("[cmd] entering download mode for flashing — reflash now");
+    Serial.flush();
+    delay(80);
+    REG_WRITE(RTC_CNTL_OPTION1_REG, RTC_CNTL_FORCE_DOWNLOAD_BOOT);
+    esp_restart();
+}
+
 // Serial test console over the CDC port: single-char commands mirror button
 // presses so map/UI performance can be profiled without physical taps.
 //   i / o  zoom in / out (map)      p / d  map / dashboard
 //   m / s  menu / settings          g      gps debug
 //   b      back                     t      toggle timing logs
+// Uppercase = dev/flash-loop helpers (kept distinct from the taps above):
+//   B  reboot into bootloader (download mode)   R  reboot
+//   C  GPS cold-start test (power-cycle module, remeasure TTFF)
 void pollSerialCommands() {
     while (Serial.available() > 0) {
         int c = Serial.read();
@@ -879,6 +894,11 @@ void pollSerialCommands() {
             case 't': dbgTiming = !dbgTiming;
                       diag::log("dbg timing %s", dbgTiming ? "ON" : "OFF");
                       acted = false; break;
+            case 'B': rebootToBootloader(); acted = false; break;
+            case 'R': Serial.println("[cmd] rebooting"); Serial.flush();
+                      delay(80); esp_restart(); break;
+            case 'C': Serial.println("[cmd] GPS cold-start test");
+                      gps_service::requestReacquire(); acted = false; break;
             default: acted = false; break;   // ignore whitespace / unknown
         }
         if (acted) noteActivity();   // forceDraw + panel power keep-alive

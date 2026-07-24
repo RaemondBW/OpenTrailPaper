@@ -51,6 +51,12 @@ void injectAiding(double lat, double lon, time_t utc, bool haveTime,
 void seedPosition(double lat, double lon, time_t utc, bool haveTime,
                   float posAccM);
 
+// Testing/iteration: briefly cut GPS power and re-init, forcing a fresh
+// acquisition so warm-start time-to-first-fix can be measured repeatedly over
+// serial (the "gpscold" console command) without a physical power-cycle.
+// Handled on the GPS task; safe to call from any task.
+void requestReacquire();
+
 // FreeRTOS task: pumps NMEA into the parser and updates shared state.
 void task(void* arg);
 

@@ -8,6 +8,7 @@
 #include "routes.h"
 #include "settings.h"
 #include "rtc_clock.h"
+#include "board_power.h"
 #include "diag.h"
 
 #define SerialGPS Serial2
@@ -55,6 +56,13 @@ struct AidState {
     bool haveTime = false;
 } aidState;
 
+// Acquisition tracking, so TTFF is measured from each (re)start rather than
+// from boot — makes the "gpscold" iteration loop read cleanly.
+volatile bool g_reacqReq = false;
+uint32_t acqStartMs = 0;
+bool g_loggedFirstFix = false;
+bool g_prevFix = false;
+
 // Smoothed heading state (EMA over the course unit vector).
 float headX = 0, headY = 0;
 bool headingPrimed = false;
@@ -100,7 +108,7 @@ void printSerialTelemetry() {
     Serial.printf(
         "[gpsdbg t=%lus] %s type=%d sats=%d/%d snr=%d hdop=%.1f pdop=%.1f vdop=%.1f "
         "chars=%lu ck=%lu/%lu wfix=%lu locAge=%ldms sys=%s gps=%s aid=%lux%s",
-        (unsigned long)(millis() / 1000),
+        (unsigned long)((millis() - acqStartMs) / 1000),
         fix ? "FIX " : "SRCH",
         fixType,
         gps.satellites.isValid() ? (int)gps.satellites.value() : 0, inView,
@@ -344,9 +352,39 @@ void seedPosition(double lat, double lon, time_t utc, bool haveTime,
     g_seed.pending = true;   // publish last so the task sees a complete record
 }
 
+void requestReacquire() { g_reacqReq = true; }
+
+// Re-seed the receiver exactly like boot does: last-known position, plus time
+// only if the RTC has been GPS-validated. Shared by the reacquire path.
+void seedFromSaved() {
+    double alat, alon;
+    if (!settings::lastPosition(alat, alon)) return;
+    time_t now = settings::rtcTrusted() ? time(nullptr) : 0;
+    bool haveTime = now > 1735689600;
+    injectAiding(alat, alon, now, haveTime, 50000.0f, 30.0f);
+}
+
 void task(void*) {
     logBanner();
+    acqStartMs = millis();
     for (;;) {
+        // On-demand cold/warm restart for iteration: cut GPS power so the
+        // module drops its ephemeris, power back up, re-init, re-seed, and
+        // reset the TTFF clock — mirrors a real wake-from-shutdown.
+        if (g_reacqReq) {
+            g_reacqReq = false;
+            diag::log("gps reacquire: power-cycling module (cold start test)");
+            board_radio_power(false);
+            vTaskDelay(pdMS_TO_TICKS(1500));
+            board_radio_power(true);
+            vTaskDelay(pdMS_TO_TICKS(400));
+            begin();
+            seedFromSaved();
+            acqStartMs = millis();
+            g_loggedFirstFix = false;
+            g_prevFix = false;
+        }
+
         if (g_seed.pending) {
             g_seed.pending = false;
             // Only warm-start while we DON'T have a fix, and at most every 20 s
@@ -479,7 +517,7 @@ void task(void*) {
         // often while searching, plus first-fix time and fix gain/loss.
         {
             static uint32_t lastGpsLog = 0;
-            static bool loggedModule = false, prevFix = false, loggedFirstFix = false;
+            static bool loggedModule = false;
             if (!loggedModule) {
                 loggedModule = true;
                 diag::log("gps module: %s", moduleName());
@@ -495,16 +533,16 @@ void task(void*) {
                           (unsigned long)d.passedCksum, (unsigned long)d.failedCksum,
                           d.satsInUse, d.satsInView, d.bestSnr, d.hdop);
             }
-            if (haveFix != prevFix) {
-                prevFix = haveFix;
-                if (haveFix && !loggedFirstFix) {
-                    loggedFirstFix = true;
-                    // TTFF with the context that explains it: how the receiver
-                    // was seeded (aiding count + whether time was included) is
-                    // the key variable when iterating on fix speed.
-                    diag::log("gps FIRST FIX at %lus (sats=%d snr=%d hdop=%.1f "
+            if (haveFix != g_prevFix) {
+                g_prevFix = haveFix;
+                if (haveFix && !g_loggedFirstFix) {
+                    g_loggedFirstFix = true;
+                    // TTFF measured from this acquisition start (boot or the
+                    // last reacquire), with the seeding context that explains
+                    // it — the key variable when iterating on fix speed.
+                    diag::log("gps FIRST FIX in %lus (sats=%d snr=%d hdop=%.1f "
                               "aided=%lux%s)",
-                              (unsigned long)(millis() / 1000),
+                              (unsigned long)((millis() - acqStartMs) / 1000),
                               gps.satellites.isValid() ? (int)gps.satellites.value() : 0,
                               bestSnr, gps.hdop.isValid() ? gps.hdop.hdop() : 0.0,
                               (unsigned long)aidState.count,
