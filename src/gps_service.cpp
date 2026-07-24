@@ -7,6 +7,7 @@
 #include "ride_state.h"
 #include "routes.h"
 #include "settings.h"
+#include "rtc_clock.h"
 #include "diag.h"
 
 #define SerialGPS Serial2
@@ -92,6 +93,11 @@ bool initL76K() {
 namespace gps_service {
 
 bool begin() {
+    // Bigger RX ring than the 256-byte default: with GPS+GLONASS+BeiDou all
+    // streaming NMEA, a burst of GSV sentences can otherwise overrun the buffer
+    // between task polls and drop bytes mid-sentence — a dropped GGA/RMC costs a
+    // whole second of fix confirmation. Must be set before begin().
+    SerialGPS.setRxBufferSize(1024);
     SerialGPS.begin(9600, SERIAL_8N1, BOARD_GPS_RXD, BOARD_GPS_TXD);
     delay(100);
 
@@ -332,10 +338,15 @@ void task(void*) {
             });
         }
 
-        // Persist the position every 5 min so the map starts at the last
-        // known location after a reboot.
+        // Persist the position so the map — and the next boot's warm-start
+        // seed — start from the last known location. Save the very first fix
+        // immediately (so a short session still leaves a fresh seed), then at
+        // most every 2 min. Also saved on shutdown.
         static uint32_t lastPosSave = 0;
-        if (gps.location.isValid() && millis() - lastPosSave > 300000) {
+        static bool savedFirstFix = false;
+        if (gps.location.isValid() &&
+            (!savedFirstFix || millis() - lastPosSave > 120000)) {
+            savedFirstFix = true;
             lastPosSave = millis();
             settings::setLastPosition(gps.location.lat(), gps.location.lng());
         }
@@ -344,13 +355,21 @@ void task(void*) {
         // sleep, so after a shutdown/wake we can seed the receiver with an
         // accurate time (warm start) even before the first fix.
         static uint32_t lastClockSet = 0;
+        static uint32_t lastRtcWrite = 0;
         if (gps.date.isValid() && gps.time.isValid() && gps.date.year() >= 2025 &&
             millis() - lastClockSet > 60000) {
             lastClockSet = millis();
-            struct timeval tv = {toUnix(gps.date.year(), gps.date.month(),
-                                        gps.date.day(), gps.time.hour(),
-                                        gps.time.minute(), gps.time.second()), 0};
+            time_t u = toUnix(gps.date.year(), gps.date.month(), gps.date.day(),
+                              gps.time.hour(), gps.time.minute(), gps.time.second());
+            struct timeval tv = {u, 0};
             settimeofday(&tv, nullptr);
+            // Also push GPS time into the coin-cell RTC (every ~10 min), so it
+            // stays accurate across a full power-off and can seed time-aiding
+            // on the next cold boot.
+            if (lastRtcWrite == 0 || millis() - lastRtcWrite > 600000) {
+                lastRtcWrite = millis();
+                rtc_clock::write(u);
+            }
         }
 
         // GPS acquisition diagnostics to the SD log, so a "won't get a fix"

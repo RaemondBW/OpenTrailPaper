@@ -107,6 +107,9 @@ void shutdownDevice(uint8_t* fb, const char* reason) {
     {
         mapMpp = 32.0f;   // max zoom-out (1/2/4/8/16/32 m per px)
         RideState s = g_state.snapshot();
+        // Save the last known position on the way down, so the next boot's
+        // GPS warm-start seed is as fresh as possible.
+        if (s.everHadFix) settings::setLastPosition(s.latitude, s.longitude);
         MapScreenData map = {};
         buildMapScreenData(s, map);
         ui_render_map_features(map, s, fb);

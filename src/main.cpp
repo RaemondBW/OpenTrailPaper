@@ -14,6 +14,7 @@
 #include "config.h"
 #include "ride_state.h"
 #include "gps_service.h"
+#include "rtc_clock.h"
 #include "settings.h"
 #include "routes.h"
 #include "ble_sensors.h"
@@ -197,6 +198,22 @@ void setup() {
     });
     if (ride_recorder::begin()) {
         routes::begin();
+    }
+    // Restore the wall clock from the coin-cell RTC (which, unlike the ESP32's
+    // internal clock, survives a full power-off). Must happen before the GPS
+    // warm-start seed below so time-aiding fires on a cold boot too — a cold
+    // start with a known position AND time is far faster than position alone.
+    if (rtc_clock::begin()) {
+        time_t rt;
+        if (rtc_clock::read(rt)) {
+            struct timeval tv = {rt, 0};
+            settimeofday(&tv, nullptr);
+            diag::log("rtc: clock restored (%ld)", (long)rt);
+        } else {
+            diag::log("rtc: present, time not yet set");
+        }
+    } else {
+        diag::log("rtc: not found");
     }
     // NOTE: usb_storage::begin() is called from the UI task AFTER the boot-time
     // SD firmware-update check, so a firmware.bin dropped on the card always
