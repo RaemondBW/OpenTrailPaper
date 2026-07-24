@@ -877,7 +877,8 @@ static void rebootToBootloader() {
 //   b      back                     t      toggle timing logs
 // Uppercase = dev/flash-loop helpers (kept distinct from the taps above):
 //   B  reboot into bootloader (download mode)   R  reboot
-//   C  GPS cold-start test (power-cycle module, remeasure TTFF)
+//   C  GPS cold-start test, AIDED (wipe eph, re-seed pos+time, remeasure TTFF)
+//   X  GPS cold-start test, UNAIDED (baseline, no re-seed)
 void pollSerialCommands() {
     while (Serial.available() > 0) {
         int c = Serial.read();
@@ -897,8 +898,10 @@ void pollSerialCommands() {
             case 'B': rebootToBootloader(); acted = false; break;
             case 'R': Serial.println("[cmd] rebooting"); Serial.flush();
                       delay(80); esp_restart(); break;
-            case 'C': Serial.println("[cmd] GPS cold-start test");
-                      gps_service::requestReacquire(); acted = false; break;
+            case 'C': Serial.println("[cmd] GPS cold-start test (aided)");
+                      gps_service::forceColdStart(true); acted = false; break;
+            case 'X': Serial.println("[cmd] GPS cold-start test (unaided)");
+                      gps_service::forceColdStart(false); acted = false; break;
             default: acted = false; break;   // ignore whitespace / unknown
         }
         if (acted) noteActivity();   // forceDraw + panel power keep-alive

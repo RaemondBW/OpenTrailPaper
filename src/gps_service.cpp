@@ -57,8 +57,8 @@ struct AidState {
 } aidState;
 
 // Acquisition tracking, so TTFF is measured from each (re)start rather than
-// from boot — makes the "gpscold" iteration loop read cleanly.
-volatile bool g_reacqReq = false;
+// from boot — makes the cold-start iteration loop read cleanly.
+volatile int g_coldReq = 0;   // 0 none, 1 cold+aided, 2 cold+unaided
 uint32_t acqStartMs = 0;
 bool g_loggedFirstFix = false;
 bool g_prevFix = false;
@@ -352,10 +352,10 @@ void seedPosition(double lat, double lon, time_t utc, bool haveTime,
     g_seed.pending = true;   // publish last so the task sees a complete record
 }
 
-void requestReacquire() { g_reacqReq = true; }
+void forceColdStart(bool withAiding) { g_coldReq = withAiding ? 1 : 2; }
 
 // Re-seed the receiver exactly like boot does: last-known position, plus time
-// only if the RTC has been GPS-validated. Shared by the reacquire path.
+// only if the RTC has been GPS-validated. Shared by the cold-start test path.
 void seedFromSaved() {
     double alat, alon;
     if (!settings::lastPosition(alat, alon)) return;
@@ -364,22 +364,33 @@ void seedFromSaved() {
     injectAiding(alat, alon, now, haveTime, 50000.0f, 30.0f);
 }
 
+// Tell the receiver to cold-start: forget ephemeris, almanac, last position and
+// time. This is the honest way to measure first-fix time — a brief power cut
+// doesn't clear the module's backup-powered RAM, so it hot-starts in a few sec.
+void sendColdStartCommand() {
+    if (moduleKind == GPS_CASIC) {
+        SerialGPS.write("$PCAS10,2*1E\r\n");     // 2 = cold start
+    } else if (moduleKind == GPS_UBLOX) {
+        uint8_t p[4] = {0xFF, 0xFF, 0x02, 0x00}; // navBbrMask=cold, sw reset
+        sendUbx(0x06, 0x04, p, 4);               // CFG-RST
+    }
+}
+
 void task(void*) {
     logBanner();
     acqStartMs = millis();
     for (;;) {
-        // On-demand cold/warm restart for iteration: cut GPS power so the
-        // module drops its ephemeris, power back up, re-init, re-seed, and
-        // reset the TTFF clock — mirrors a real wake-from-shutdown.
-        if (g_reacqReq) {
-            g_reacqReq = false;
-            diag::log("gps reacquire: power-cycling module (cold start test)");
-            board_radio_power(false);
-            vTaskDelay(pdMS_TO_TICKS(1500));
-            board_radio_power(true);
-            vTaskDelay(pdMS_TO_TICKS(400));
-            begin();
-            seedFromSaved();
+        // On-demand cold-start test for iteration: wipe the receiver's stored
+        // ephemeris/almanac/time/position, optionally re-seed, and reset the
+        // TTFF clock — mirrors a real cold wake after a long power-off.
+        if (g_coldReq) {
+            int mode = g_coldReq;
+            g_coldReq = 0;
+            diag::log("gps cold-start test: %s", mode == 1 ? "AIDED" : "unaided");
+            sendColdStartCommand();
+            vTaskDelay(pdMS_TO_TICKS(600));   // let the cold start take effect
+            aidState.count = 0;               // TTFF context reflects THIS test
+            if (mode == 1) seedFromSaved();
             acqStartMs = millis();
             g_loggedFirstFix = false;
             g_prevFix = false;

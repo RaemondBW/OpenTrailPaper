@@ -51,11 +51,12 @@ void injectAiding(double lat, double lon, time_t utc, bool haveTime,
 void seedPosition(double lat, double lon, time_t utc, bool haveTime,
                   float posAccM);
 
-// Testing/iteration: briefly cut GPS power and re-init, forcing a fresh
-// acquisition so warm-start time-to-first-fix can be measured repeatedly over
-// serial (the "gpscold" console command) without a physical power-cycle.
-// Handled on the GPS task; safe to call from any task.
-void requestReacquire();
+// Testing/iteration: force a receiver COLD start (wipe ephemeris/almanac/time/
+// position) so time-to-first-fix can be measured repeatedly over serial without
+// a physical power-cycle. withAiding re-seeds position(+time) right after — the
+// path we ship; withAiding=false measures the unaided baseline, to quantify how
+// much the aiding actually helps. Handled on the GPS task; safe from any task.
+void forceColdStart(bool withAiding);
 
 // FreeRTOS task: pumps NMEA into the parser and updates shared state.
 void task(void* arg);
