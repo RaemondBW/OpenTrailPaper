@@ -465,6 +465,9 @@ void task(void*) {
             if (lastRtcWrite == 0 || millis() - lastRtcWrite > 600000) {
                 lastRtcWrite = millis();
                 rtc_clock::write(u);
+                // The RTC now holds GPS-sourced UTC, so it's safe to seed
+                // time-aiding from it on future boots.
+                settings::setRtcTrusted(true);
             }
         }
 

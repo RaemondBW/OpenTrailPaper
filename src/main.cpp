@@ -32,6 +32,9 @@
 #define HAVE_COREDUMP 1
 #endif
 
+#include <esp_system.h>
+#include <soc/rtc_cntl_reg.h>
+
 SharedRideState g_state;
 
 // Serializes all I2C access (fuel gauge / touch / IO expander / RTC).
@@ -203,14 +206,19 @@ void setup() {
     // internal clock, survives a full power-off). Must happen before the GPS
     // warm-start seed below so time-aiding fires on a cold boot too — a cold
     // start with a known position AND time is far faster than position alone.
+    // Only trust the RTC once GPS has written UTC to it at least once: from the
+    // factory it can hold LOCAL time (observed 8 h off UTC), and seeding a
+    // grossly wrong time into the receiver hurts acquisition rather than helps.
     if (rtc_clock::begin()) {
         time_t rt;
-        if (rtc_clock::read(rt)) {
+        if (!settings::rtcTrusted()) {
+            diag::log("rtc: present, not yet GPS-validated (ignoring for aiding)");
+        } else if (rtc_clock::read(rt)) {
             struct timeval tv = {rt, 0};
             settimeofday(&tv, nullptr);
             diag::log("rtc: clock restored (%ld)", (long)rt);
         } else {
-            diag::log("rtc: present, time not yet set");
+            diag::log("rtc: trusted but read invalid (VL set?)");
         }
     } else {
         diag::log("rtc: not found");
@@ -248,9 +256,50 @@ void setup() {
     Serial.println("[main] all tasks started");
 }
 
+// Reboot straight into the ROM serial bootloader (download mode), so the host
+// can flash without the physical BOOT/RESET button dance. Sets the RTC
+// force-download-boot flag, then resets.
+static void rebootToBootloader() {
+    Serial.println("[cmd] entering download mode for flashing — reflash now");
+    Serial.flush();
+    delay(80);
+    REG_WRITE(RTC_CNTL_OPTION1_REG, RTC_CNTL_FORCE_DOWNLOAD_BOOT);
+    esp_restart();
+}
+
+// Line-based serial control on the USB console, for the flash/iterate loop.
+static void pollSerialCommands() {
+    static char buf[24];
+    static uint8_t n = 0;
+    while (Serial.available()) {
+        char c = (char)Serial.read();
+        if (c == '\r') continue;
+        if (c == '\n') {
+            buf[n] = 0;
+            if (n) {
+                if (!strcasecmp(buf, "bootloader") || !strcasecmp(buf, "dl")) {
+                    rebootToBootloader();
+                } else if (!strcasecmp(buf, "reboot")) {
+                    Serial.println("[cmd] rebooting");
+                    Serial.flush(); delay(80); esp_restart();
+                } else {
+                    Serial.printf("[cmd] unknown '%s' (try: bootloader, reboot)\n",
+                                  buf);
+                }
+            }
+            n = 0;
+        } else if (n < sizeof(buf) - 1) {
+            buf[n++] = c;
+        } else {
+            n = 0;   // overflow — drop the line
+        }
+    }
+}
+
 void loop() {
+    pollSerialCommands();  // "bootloader" -> download mode, "reboot" -> restart
     usb_storage::poll();   // reclaim the SD when the host disconnects
-    vTaskDelay(pdMS_TO_TICKS(1000));
+    vTaskDelay(pdMS_TO_TICKS(200));
 }
 
 void board_radio_power(bool on) {
