@@ -39,7 +39,7 @@
 <section class="hero">
   <div class="wrap">
     <div class="copy">
-      <span class="tag">Open source · ESP32-S3 · LilyGO T5S3 4.7&quot;</span>
+      <span class="tag">Open source</span>
       <h1>Open Source E‑Ink Bike Computer</h1>
       <p class="lede">Offline maps, GPX routes, FIT ride recording and BLE sensors on a 4.7&quot; e-paper panel — fully standalone, no subscription, no phone required.</p>
       <div class="cta-row">
@@ -154,6 +154,60 @@
           <li>Change settings and update the firmware</li>
         </ul>
       </div>
+    </div>
+  </div>
+</section>
+
+<section id="hardware">
+  <div class="wrap">
+    <p class="kicker">04 — Supported hardware</p>
+    <h2>One board today. Bigger hardware coming.</h2>
+    <p class="sub">OpenTrailPaper runs on off-the-shelf hardware you buy and flash yourself. Today that means a single board — here&rsquo;s honestly what it&rsquo;s good at and where it falls short.</p>
+
+    <div class="hw-grid">
+      <article class="hw-card">
+        <div class="hw-head">
+          <div>
+            <h3>LilyGO T5S3 4.7&quot; E-Paper PRO</h3>
+            <p class="hw-meta">ESP32-S3 · 16 MB flash · 8 MB PSRAM · 960×540 e-paper · BLE 5</p>
+          </div>
+          <span class="hw-badge is-supported">Supported</span>
+        </div>
+
+        <div class="hw-cols">
+          <div class="hw-col">
+            <p class="hw-label">Strengths</p>
+            <ul class="hw-list is-good">
+              <li>A 4.7&quot; e-paper panel that stays readable in direct sun and sips power</li>
+              <li>Enough flash and PSRAM to hold offline map tiles for a whole region</li>
+              <li>Capacitive touch, an SD slot and USB-C, so no extra parts to solder</li>
+              <li>Bluetooth 5 for heart-rate, power and cadence sensors</li>
+              <li>Cheap, easy to buy, and flashable straight from your browser</li>
+            </ul>
+          </div>
+          <div class="hw-col">
+            <p class="hw-label">Tradeoffs</p>
+            <ul class="hw-list is-warn">
+              <li><strong>No pressure sensor.</strong> There&rsquo;s no barometric altimeter, so climbing is derived from elevation baked into the map tiles rather than measured — total ascent is an estimate.</li>
+              <li><strong>Basic GPS.</strong> The receiver works, but a modern multi-band module would lock on faster and hold a fix better under tree cover or between buildings.</li>
+              <li><strong>No magnetometer.</strong> Without a compass the map can only orient from your direction of travel, so it can&rsquo;t point the right way while you&rsquo;re stopped.</li>
+              <li><strong>Modest battery.</strong> Fine for a long day out, but a bigger cell would carry you through multi-day trips without a recharge.</li>
+              <li><strong>Weak hardware buttons.</strong> Most interaction goes through the touch panel, which is fiddly with winter gloves or in the rain.</li>
+            </ul>
+          </div>
+        </div>
+      </article>
+
+      <article class="hw-card is-coming">
+        <div class="hw-head">
+          <div>
+            <h3>More boards</h3>
+            <p class="hw-meta">Support for larger hardware is coming</p>
+          </div>
+          <span class="hw-badge">Coming soon</span>
+        </div>
+        <p class="hw-note">Work is under way to run OpenTrailPaper on bigger, better-equipped hardware — the kind that closes the gaps above with a barometric altimeter for real ascent, a multi-band GPS, a magnetometer for a true compass, a larger battery and proper tactile buttons you can hit with gloves on.</p>
+      </article>
     </div>
   </div>
 </section>
