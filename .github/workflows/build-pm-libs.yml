@@ -63,6 +63,11 @@ jobs:
           # v1.5.3 (IDF 4.4 era) and re-init its littlefs submodule after reset.
           git -C "$AR_COMPS/esp_littlefs" reset --hard fb1470a59dad5949396919f34b9856fa8d29d55f || exit 1
           git -C "$AR_COMPS/esp_littlefs" submodule update --init --recursive || exit 1
+          # tinyusb HEAD moved the ESP32-Sx device driver from dcd_esp32sx.c to
+          # the generic dwc2 layout, so arduino_tinyusb's CMakeLists (IDF 4.4 era)
+          # can't find its source files. Pin to 0.14.0 (last release with the old
+          # layout the wrapper expects).
+          git -C "$AR_COMPS/arduino_tinyusb/tinyusb" reset --hard 9e91b02ec7fb3502747b5c413a4824654fa7fc7e || exit 1
           PIN
           echo "----- update-components.sh tail -----"
           tail -8 tools/update-components.sh
