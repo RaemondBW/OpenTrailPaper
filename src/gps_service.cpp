@@ -2,11 +2,15 @@
 
 #include <Arduino.h>
 #include <TinyGPS++.h>
+#include <freertos/FreeRTOS.h>
+#include <esp_heap_caps.h>
 
 #include "config.h"
 #include "ride_state.h"
 #include "routes.h"
 #include "settings.h"
+#include "rtc_clock.h"
+#include "board_power.h"
 #include "diag.h"
 
 #define SerialGPS Serial2
@@ -18,17 +22,57 @@ TinyGPSPlus gps;
 TinyGPSCustom gpgsvInView(gps, "GPGSV", 3);   // GPS
 TinyGPSCustom glgsvInView(gps, "GLGSV", 3);   // GLONASS
 TinyGPSCustom bdgsvInView(gps, "GBGSV", 3);   // BeiDou (L76K uses GB)
-// C/N0 of the up-to-four satellites in each GPGSV message (terms 7/11/
-// 15/19) — signal strength is the decisive weak-signal-vs-obstruction
-// metric. bestSnr tracks the strongest we currently hear.
+// C/N0 of the up-to-four satellites in each GSV message (terms 7/11/15/19) —
+// signal strength is the decisive weak-signal-vs-obstruction metric. Parse it
+// for every constellation so bestSnr reflects whatever's strongest overhead.
 TinyGPSCustom gpgsvSnr0(gps, "GPGSV", 7);
 TinyGPSCustom gpgsvSnr1(gps, "GPGSV", 11);
 TinyGPSCustom gpgsvSnr2(gps, "GPGSV", 15);
 TinyGPSCustom gpgsvSnr3(gps, "GPGSV", 19);
+TinyGPSCustom glgsvSnr0(gps, "GLGSV", 7);
+TinyGPSCustom glgsvSnr1(gps, "GLGSV", 11);
+TinyGPSCustom glgsvSnr2(gps, "GLGSV", 15);
+TinyGPSCustom glgsvSnr3(gps, "GLGSV", 19);
+TinyGPSCustom bdgsvSnr0(gps, "GBGSV", 7);
+TinyGPSCustom bdgsvSnr1(gps, "GBGSV", 11);
+TinyGPSCustom bdgsvSnr2(gps, "GBGSV", 15);
+TinyGPSCustom bdgsvSnr3(gps, "GBGSV", 19);
+// Fix mode and dilution-of-precision from the combined GSA sentence: term 2 is
+// the fix type (1=none, 2=2D, 3=3D), 15/16/17 are P/H/V-DOP. Both talker IDs
+// appear in the wild (GN for multi-constellation, GP for GPS-only).
+TinyGPSCustom gngsaFix(gps, "GNGSA", 2);
+TinyGPSCustom gngsaPdop(gps, "GNGSA", 15);
+TinyGPSCustom gngsaVdop(gps, "GNGSA", 17);
+TinyGPSCustom gpgsaFix(gps, "GPGSA", 2);
 int bestSnr = 0;
 bool moduleDetected = false;
 enum GpsKind { GPS_NONE, GPS_CASIC, GPS_UBLOX };
 GpsKind moduleKind = GPS_NONE;
+
+// Last aiding we injected, surfaced in the serial telemetry so a slow fix can
+// be correlated with whether (and how well) the receiver was seeded.
+struct AidState {
+    uint32_t count = 0;
+    uint32_t lastMs = 0;
+    double lat = 0, lon = 0;
+    bool haveTime = false;
+} aidState;
+
+// Acquisition tracking, so TTFF is measured from each (re)start rather than
+// from boot — makes the cold-start iteration loop read cleanly.
+volatile int g_coldReq = 0;   // 0 none, 1 cold+aided, 2 cold+unaided
+uint32_t acqStartMs = 0;
+bool g_loggedFirstFix = false;
+bool g_prevFix = false;
+
+// AGNSS ephemeris blob (from the phone/console), buffered whole then sent to the
+// receiver one CASIC message at a time, ACK-gated: the module NAKs messages that
+// arrive while it's still busy, so back-to-back streaming loses most of them
+// (measured: 4 ACK / 30 NAK). Buffer, then send-and-wait-for-ACK per message.
+uint8_t* agnssBuf = nullptr;
+size_t   agnssLen = 0, agnssCap = 0;
+volatile bool agnssReady = false;
+constexpr size_t AGNSS_CAP = 32 * 1024;
 
 // Smoothed heading state (EMA over the course unit vector).
 float headX = 0, headY = 0;
@@ -44,6 +88,58 @@ time_t toUnix(int y, unsigned m, unsigned d, unsigned hh, unsigned mm, unsigned 
     const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     const long days = era * 146097L + static_cast<long>(doe) - 719468L;
     return static_cast<time_t>(days) * 86400 + hh * 3600 + mm * 60 + ss;
+}
+
+// Compact 1 Hz acquisition telemetry to USB serial, so first-fix behaviour can
+// be watched and iterated on live. Serial-only (never the SD log). Everything
+// here is read-only against the shared TinyGPS parser, called from the GPS task.
+void printSerialTelemetry() {
+#if GPS_DEBUG_SERIAL
+    bool fix = gps.location.isValid() && gps.location.age() < 3000;
+    int inView = (gpgsvInView.isValid() ? atoi(gpgsvInView.value()) : 0) +
+                 (glgsvInView.isValid() ? atoi(glgsvInView.value()) : 0) +
+                 (bdgsvInView.isValid() ? atoi(bdgsvInView.value()) : 0);
+    int fixType = gngsaFix.isValid() && *gngsaFix.value()
+                      ? atoi(gngsaFix.value())
+                      : (gpgsaFix.isValid() ? atoi(gpgsaFix.value()) : 0);
+    float pdop = gngsaPdop.isValid() ? atof(gngsaPdop.value()) : 0.0f;
+    float vdop = gngsaVdop.isValid() ? atof(gngsaVdop.value()) : 0.0f;
+
+    time_t sysNow = time(nullptr);
+    char sysBuf[16] = "unset";
+    if (sysNow > 1735689600) {
+        struct tm t; gmtime_r(&sysNow, &t);
+        snprintf(sysBuf, sizeof(sysBuf), "%02d:%02d:%02d", t.tm_hour, t.tm_min, t.tm_sec);
+    }
+    char gpsBuf[16] = "--:--:--";
+    if (gps.time.isValid())
+        snprintf(gpsBuf, sizeof(gpsBuf), "%02d:%02d:%02d",
+                 gps.time.hour(), gps.time.minute(), gps.time.second());
+
+    Serial.printf(
+        "[gpsdbg t=%lus] %s type=%d sats=%d/%d snr=%d hdop=%.1f pdop=%.1f vdop=%.1f "
+        "chars=%lu ck=%lu/%lu wfix=%lu locAge=%ldms sys=%s gps=%s aid=%lux%s",
+        (unsigned long)((millis() - acqStartMs) / 1000),
+        fix ? "FIX " : "SRCH",
+        fixType,
+        gps.satellites.isValid() ? (int)gps.satellites.value() : 0, inView,
+        bestSnr,
+        gps.hdop.isValid() ? gps.hdop.hdop() : 0.0,
+        pdop, vdop,
+        (unsigned long)gps.charsProcessed(),
+        (unsigned long)gps.passedChecksum(), (unsigned long)gps.failedChecksum(),
+        (unsigned long)gps.sentencesWithFix(),
+        gps.location.isValid() ? (long)gps.location.age() : -1L,
+        sysBuf, gpsBuf,
+        (unsigned long)aidState.count,
+        aidState.count ? (aidState.haveTime ? " pos+time" : " pos") : "");
+    if (fix)
+        Serial.printf(" @ %.6f,%.6f alt=%.0f spd=%.1f",
+                      gps.location.lat(), gps.location.lng(),
+                      gps.altitude.isValid() ? gps.altitude.meters() : 0.0,
+                      gps.speed.isValid() ? gps.speed.kmph() : 0.0);
+    Serial.println();
+#endif
 }
 
 bool waitForBytes(uint32_t timeoutMs) {
@@ -92,6 +188,11 @@ bool initL76K() {
 namespace gps_service {
 
 bool begin() {
+    // Bigger RX ring than the 256-byte default: with GPS+GLONASS+BeiDou all
+    // streaming NMEA, a burst of GSV sentences can otherwise overrun the buffer
+    // between task polls and drop bytes mid-sentence — a dropped GGA/RMC costs a
+    // whole second of fix confirmation. Must be set before begin().
+    SerialGPS.setRxBufferSize(1024);
     SerialGPS.begin(9600, SERIAL_8N1, BOARD_GPS_RXD, BOARD_GPS_TXD);
     delay(100);
 
@@ -121,6 +222,15 @@ bool begin() {
 
     Serial.println("[gps] no module detected");
     return false;
+}
+
+void logBanner() {
+#if GPS_DEBUG_SERIAL
+    Serial.printf("[gpsdbg] --- GPS telemetry on. module=%s rxbuf=1024 "
+                  "echo=%d ---\n", moduleName(), GPS_ECHO_NMEA);
+    Serial.println("[gpsdbg] legend: type(0none/2=2D/3=3D) sats=inUse/inView "
+                   "snr=best C/N0 dB-Hz  ck=ok/bad  aid=count(pos|pos+time)");
+#endif
 }
 
 const char* moduleName() {
@@ -186,6 +296,11 @@ void sendUbx(uint8_t cls, uint8_t id, const uint8_t* payload, uint16_t len) {
 
 void injectAiding(double lat, double lon, time_t utc, bool haveTime,
                   float posAccM, float timeAccS) {
+    aidState.count++;
+    aidState.lastMs = millis();
+    aidState.lat = lat;
+    aidState.lon = lon;
+    aidState.haveTime = haveTime;
     if (moduleKind == GPS_CASIC) {
         double tow = 0;
         uint16_t wn = 0;
@@ -248,8 +363,168 @@ void seedPosition(double lat, double lon, time_t utc, bool haveTime,
     g_seed.pending = true;   // publish last so the task sees a complete record
 }
 
+void forceColdStart(bool withAiding) { g_coldReq = withAiding ? 1 : 2; }
+
+int moduleKindCode() { return (int)moduleKind; }   // 0 none, 1 CASIC, 2 u-blox
+
+// Console-driven investigation flags, serviced on the GPS task.
+volatile bool g_rawEcho = false;
+volatile bool g_verReq = false;
+volatile int  g_powerCycleMs = 0;
+
+void setRawEcho(bool on) { g_rawEcho = on; }
+void queryVersion() { g_verReq = true; }
+void powerCycleTest(int offMs) { g_powerCycleMs = offMs > 0 ? offMs : 1; }
+
+char g_cmdBuf[64];
+volatile bool g_cmdReq = false;
+void sendNmeaCommand(const char* body) {
+    strncpy(g_cmdBuf, body, sizeof(g_cmdBuf) - 1);
+    g_cmdBuf[sizeof(g_cmdBuf) - 1] = 0;
+    g_cmdReq = true;
+}
+
+// Re-seed the receiver exactly like boot does: last-known position, plus time
+// only if the RTC has been GPS-validated. Shared by the cold-start test path.
+void seedFromSaved() {
+    double alat, alon;
+    if (!settings::lastPosition(alat, alon)) return;
+    time_t now = settings::rtcTrusted() ? time(nullptr) : 0;
+    bool haveTime = now > 1735689600;
+    injectAiding(alat, alon, now, haveTime, 50000.0f, 30.0f);
+}
+
+void agnssBegin() {
+    if (!agnssBuf) agnssBuf = (uint8_t*)heap_caps_malloc(AGNSS_CAP, MALLOC_CAP_SPIRAM);
+    agnssLen = 0;
+    agnssReady = false;
+    seedFromSaved();          // position/time first, so ephemeris is bounded
+    diag::log("agnss: injection begin");
+}
+
+void agnssInject(const uint8_t* data, size_t len) {
+    if (!agnssBuf || !len) return;
+    if (agnssLen + len > AGNSS_CAP) len = AGNSS_CAP - agnssLen;
+    memcpy(agnssBuf + agnssLen, data, len);
+    agnssLen += len;
+}
+
+void agnssEnd() {
+    agnssReady = true;        // GPS task sends it, ACK-gated, then re-seeds time
+    diag::log("agnss: %u bytes buffered, sending", (unsigned)agnssLen);
+}
+
+// Wait up to timeoutMs for a CASIC ACK (BA CE .. 05 01) or NAK (.. 05 00),
+// keeping NMEA parsing alive. Returns 1 ACK, 0 NAK, -1 timeout.
+int waitForCasicAck(uint32_t timeoutMs) {
+    uint32_t start = millis();
+    int st = 0;   // scan for BA CE <lenlo> <lenhi> <cls=05> <id>
+    while (millis() - start < timeoutMs) {
+        while (SerialGPS.available()) {
+            uint8_t c = SerialGPS.read();
+            gps.encode(c);
+            switch (st) {
+                case 0: st = (c == 0xBA) ? 1 : 0; break;
+                case 1: st = (c == 0xCE) ? 2 : (c == 0xBA ? 1 : 0); break;
+                case 2: st = 3; break;              // len lo
+                case 3: st = 4; break;              // len hi
+                case 4: st = (c == 0x05) ? 5 : (c == 0xBA ? 1 : 0); break;   // class
+                case 5:
+                    if (c == 0x01) return 1;        // ACK
+                    if (c == 0x00) return 0;        // NAK
+                    st = (c == 0xBA) ? 1 : 0; break;
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(2));
+    }
+    return -1;
+}
+
+// Send the buffered blob one CASIC message at a time, waiting for each ACK.
+// Frame = BA CE | len(u16) | cls | id | payload[len] | cksum(u32) = 10+len.
+void sendAgnssGated() {
+    int ok = 0, nak = 0, to = 0, msgs = 0;
+    size_t i = 0;
+    while (i + 6 <= agnssLen) {
+        if (agnssBuf[i] != 0xBA || agnssBuf[i + 1] != 0xCE) { i++; continue; }
+        uint16_t len = agnssBuf[i + 2] | ((uint16_t)agnssBuf[i + 3] << 8);
+        size_t frame = 10 + len;
+        if (i + frame > agnssLen) break;
+        SerialGPS.write(agnssBuf + i, frame);
+        int r = waitForCasicAck(300);
+        if (r == 1) ok++; else if (r == 0) nak++; else to++;
+        msgs++;
+        i += frame;
+    }
+    diag::log("agnss gated: %d msgs, %d ACK %d NAK %d timeout", msgs, ok, nak, to);
+    Serial.printf("[agnss] %d msgs: %d ACK, %d NAK, %d timeout\n", msgs, ok, nak, to);
+    seedFromSaved();          // re-seed time so the fresh ephemeris applies now
+}
+
+// Tell the receiver to cold-start: forget ephemeris, almanac, last position and
+// time. This is the honest way to measure first-fix time — a brief power cut
+// doesn't clear the module's backup-powered RAM, so it hot-starts in a few sec.
+void sendColdStartCommand() {
+    if (moduleKind == GPS_CASIC) {
+        SerialGPS.write("$PCAS10,2*1E\r\n");     // 2 = cold start
+    } else if (moduleKind == GPS_UBLOX) {
+        uint8_t p[4] = {0xFF, 0xFF, 0x02, 0x00}; // navBbrMask=cold, sw reset
+        sendUbx(0x06, 0x04, p, 4);               // CFG-RST
+    }
+}
+
 void task(void*) {
+    logBanner();
+    acqStartMs = millis();
     for (;;) {
+        // On-demand cold-start test for iteration: wipe the receiver's stored
+        // ephemeris/almanac/time/position, optionally re-seed, and reset the
+        // TTFF clock — mirrors a real cold wake after a long power-off.
+        if (g_coldReq) {
+            int mode = g_coldReq;
+            g_coldReq = 0;
+            diag::log("gps cold-start test: %s", mode == 1 ? "AIDED" : "unaided");
+            sendColdStartCommand();
+            vTaskDelay(pdMS_TO_TICKS(600));   // let the cold start take effect
+            aidState.count = 0;               // TTFF context reflects THIS test
+            if (mode == 1) seedFromSaved();
+            acqStartMs = millis();
+            g_loggedFirstFix = false;
+            g_prevFix = false;
+        }
+
+        if (g_verReq) {
+            g_verReq = false;
+            // PCAS06,0 -> the module replies with a $GPTXT version line. Echo
+            // raw for a moment so it lands on the console verbatim.
+            g_rawEcho = true;
+            SerialGPS.write("$PCAS06,0*1B\r\n");
+        }
+
+        if (g_cmdReq) {
+            g_cmdReq = false;
+            uint8_t ck = 0;
+            for (const char* p = g_cmdBuf; *p; ++p) ck ^= (uint8_t)*p;
+            g_rawEcho = true;
+            SerialGPS.printf("$%s*%02X\r\n", g_cmdBuf, ck);
+        }
+
+        if (g_powerCycleMs > 0) {
+            int off = g_powerCycleMs;
+            g_powerCycleMs = 0;
+            diag::log("gps power-cycle test: off %dms", off);
+            board_radio_power(false);
+            vTaskDelay(pdMS_TO_TICKS(off));
+            board_radio_power(true);
+            vTaskDelay(pdMS_TO_TICKS(400));
+            begin();
+            aidState.count = 0;
+            seedFromSaved();
+            acqStartMs = millis();
+            g_loggedFirstFix = false;
+            g_prevFix = false;
+        }
+
         if (g_seed.pending) {
             g_seed.pending = false;
             // Only warm-start while we DON'T have a fix, and at most every 20 s
@@ -266,14 +541,28 @@ void task(void*) {
         }
 
         while (SerialGPS.available()) {
-            gps.encode(SerialGPS.read());
+            char c = SerialGPS.read();
+#if GPS_ECHO_NMEA
+            Serial.write(c);
+#else
+            if (g_rawEcho) Serial.write(c);
+#endif
+            gps.encode(c);
         }
 
-        // Track the strongest C/N0 among the first four GPS satellites of
-        // each GSV batch; recompute when a fresh batch arrives.
+        // A completed AGNSS blob is sent here, ACK-gated (blocks this loop for
+        // the ~seconds of injection, which is fine — we're not fixing meanwhile).
+        if (agnssReady) {
+            agnssReady = false;
+            sendAgnssGated();
+        }
+
+        // Track the strongest C/N0 across all constellations' GSV batches;
+        // recompute whenever a fresh GPGSV batch arrives (roughly 1 Hz).
         if (gpgsvSnr0.isUpdated()) {
-            TinyGPSCustom* snrs[4] = {&gpgsvSnr0, &gpgsvSnr1, &gpgsvSnr2,
-                                      &gpgsvSnr3};
+            TinyGPSCustom* snrs[12] = {&gpgsvSnr0, &gpgsvSnr1, &gpgsvSnr2, &gpgsvSnr3,
+                                       &glgsvSnr0, &glgsvSnr1, &glgsvSnr2, &glgsvSnr3,
+                                       &bdgsvSnr0, &bdgsvSnr1, &bdgsvSnr2, &bdgsvSnr3};
             int best = 0;
             for (auto* c : snrs) {
                 if (c->isValid()) {
@@ -332,10 +621,15 @@ void task(void*) {
             });
         }
 
-        // Persist the position every 5 min so the map starts at the last
-        // known location after a reboot.
+        // Persist the position so the map — and the next boot's warm-start
+        // seed — start from the last known location. Save the very first fix
+        // immediately (so a short session still leaves a fresh seed), then at
+        // most every 2 min. Also saved on shutdown.
         static uint32_t lastPosSave = 0;
-        if (gps.location.isValid() && millis() - lastPosSave > 300000) {
+        static bool savedFirstFix = false;
+        if (gps.location.isValid() &&
+            (!savedFirstFix || millis() - lastPosSave > 120000)) {
+            savedFirstFix = true;
             lastPosSave = millis();
             settings::setLastPosition(gps.location.lat(), gps.location.lng());
         }
@@ -344,13 +638,24 @@ void task(void*) {
         // sleep, so after a shutdown/wake we can seed the receiver with an
         // accurate time (warm start) even before the first fix.
         static uint32_t lastClockSet = 0;
+        static uint32_t lastRtcWrite = 0;
         if (gps.date.isValid() && gps.time.isValid() && gps.date.year() >= 2025 &&
             millis() - lastClockSet > 60000) {
             lastClockSet = millis();
-            struct timeval tv = {toUnix(gps.date.year(), gps.date.month(),
-                                        gps.date.day(), gps.time.hour(),
-                                        gps.time.minute(), gps.time.second()), 0};
+            time_t u = toUnix(gps.date.year(), gps.date.month(), gps.date.day(),
+                              gps.time.hour(), gps.time.minute(), gps.time.second());
+            struct timeval tv = {u, 0};
             settimeofday(&tv, nullptr);
+            // Also push GPS time into the coin-cell RTC (every ~10 min), so it
+            // stays accurate across a full power-off and can seed time-aiding
+            // on the next cold boot.
+            if (lastRtcWrite == 0 || millis() - lastRtcWrite > 600000) {
+                lastRtcWrite = millis();
+                rtc_clock::write(u);
+                // The RTC now holds GPS-sourced UTC, so it's safe to seed
+                // time-aiding from it on future boots.
+                settings::setRtcTrusted(true);
+            }
         }
 
         // GPS acquisition diagnostics to the SD log, so a "won't get a fix"
@@ -361,7 +666,7 @@ void task(void*) {
         // often while searching, plus first-fix time and fix gain/loss.
         {
             static uint32_t lastGpsLog = 0;
-            static bool loggedModule = false, prevFix = false, loggedFirstFix = false;
+            static bool loggedModule = false;
             if (!loggedModule) {
                 loggedModule = true;
                 diag::log("gps module: %s", moduleName());
@@ -377,17 +682,36 @@ void task(void*) {
                           (unsigned long)d.passedCksum, (unsigned long)d.failedCksum,
                           d.satsInUse, d.satsInView, d.bestSnr, d.hdop);
             }
-            if (haveFix != prevFix) {
-                prevFix = haveFix;
-                if (haveFix && !loggedFirstFix) {
-                    loggedFirstFix = true;
-                    diag::log("gps FIRST FIX at %lus (sats=%d snr=%d hdop=%.1f)",
-                              (unsigned long)(millis() / 1000),
+            if (haveFix != g_prevFix) {
+                g_prevFix = haveFix;
+                if (haveFix && !g_loggedFirstFix) {
+                    g_loggedFirstFix = true;
+                    // TTFF measured from this acquisition start (boot or the
+                    // last reacquire), with the seeding context that explains
+                    // it — the key variable when iterating on fix speed.
+                    diag::log("gps FIRST FIX in %lus (sats=%d snr=%d hdop=%.1f "
+                              "aided=%lux%s)",
+                              (unsigned long)((millis() - acqStartMs) / 1000),
                               gps.satellites.isValid() ? (int)gps.satellites.value() : 0,
-                              bestSnr, gps.hdop.isValid() ? gps.hdop.hdop() : 0.0);
+                              bestSnr, gps.hdop.isValid() ? gps.hdop.hdop() : 0.0,
+                              (unsigned long)aidState.count,
+                              aidState.count ? (aidState.haveTime ? " pos+time"
+                                                                  : " pos") : " none");
                 } else {
                     diag::log("gps: fix %s", haveFix ? "reacquired" : "LOST");
                 }
+            }
+        }
+
+        // High-rate serial telemetry for live iteration: 1 Hz while searching,
+        // 5 Hz-slow (5 s) once locked so the console isn't a firehose.
+        {
+            static uint32_t lastTelem = 0;
+            bool haveFix = gps.location.isValid() && gps.location.age() < 3000;
+            uint32_t telemInterval = haveFix ? 5000 : 1000;
+            if (millis() - lastTelem > telemInterval) {
+                lastTelem = millis();
+                printSerialTelemetry();
             }
         }
 

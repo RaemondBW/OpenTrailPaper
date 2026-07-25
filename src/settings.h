@@ -39,4 +39,10 @@ void setSensorName(int kind, const char* name);
 bool lastPosition(double& lat, double& lon);
 void setLastPosition(double lat, double lon);
 
+// Whether GPS has ever written UTC to the coin-cell RTC on this device. Until
+// it has, the RTC may hold factory/local time (seen 8 h off UTC), so we must
+// NOT seed GPS time-aiding from it — a grossly wrong time slows acquisition.
+bool rtcTrusted();
+void setRtcTrusted(bool ok);
+
 }

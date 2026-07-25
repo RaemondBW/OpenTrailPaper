@@ -8,6 +8,15 @@
 #define BOARD_GPS_RXD       44
 #define BOARD_GPS_TXD       43
 
+// GPS acquisition telemetry over USB serial, for iterating on first-fix time.
+// Prints a 1 Hz status line while searching (sats, SNR, DOP, fix type, aiding,
+// system-vs-GPS time). Serial-only, so it doesn't spam the SD log. Cheap enough
+// to leave on; set to 0 to silence.
+#define GPS_DEBUG_SERIAL    1
+// Echo every raw NMEA/UBX byte from the receiver to serial. Very noisy — turn
+// on only for deep protocol debugging.
+#define GPS_ECHO_NMEA       0
+
 // Shared I2C bus: touch (GT911), RTC (PCF8563), fuel gauge (BQ27220),
 // charger (BQ25896), IO expander (XL9555/PCA9535)
 #define BOARD_SDA           39

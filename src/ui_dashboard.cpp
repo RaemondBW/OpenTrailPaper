@@ -14,6 +14,8 @@
 #include "gps_service.h"
 #include "board_power.h"
 #include <esp_sleep.h>
+#include <esp_system.h>
+#include <esp32-hal-tinyusb.h>   // usb_persist_restart / RESTART_BOOTLOADER
 #include <driver/gpio.h>
 #include "ui_render.h"
 #include "map_view.h"
@@ -107,6 +109,9 @@ void shutdownDevice(uint8_t* fb, const char* reason) {
     {
         mapMpp = 32.0f;   // max zoom-out (1/2/4/8/16/32 m per px)
         RideState s = g_state.snapshot();
+        // Save the last known position on the way down, so the next boot's
+        // GPS warm-start seed is as fresh as possible.
+        if (s.everHadFix) settings::setLastPosition(s.latitude, s.longitude);
         MapScreenData map = {};
         buildMapScreenData(s, map);
         ui_render_map_features(map, s, fb);
@@ -855,30 +860,135 @@ void applySdUpdate() {
     }
 }
 
-// Serial test console over the CDC port: single-char commands mirror button
-// presses so map/UI performance can be profiled without physical taps.
-//   i / o  zoom in / out (map)      p / d  map / dashboard
-//   m / s  menu / settings          g      gps debug
-//   b      back                     t      toggle timing logs
+// Reboot into the ROM serial bootloader (download mode) for hands-free
+// reflashing. usb_persist_restart keeps the USB-CDC enumerated across the reset
+// (same port, no re-enumeration) — unlike a raw FORCE_DOWNLOAD_BOOT + restart,
+// which tears the USB down and leaves no port for the host to connect to.
+static void rebootToBootloader() {
+    Serial.println("[cmd] entering download mode (USB persists) — flash now");
+    Serial.flush();
+    delay(100);
+    usb_persist_restart(RESTART_BOOTLOADER);
+}
+
+// After an `agnss <n>` command, the next n bytes on the console are raw AGNSS
+// ephemeris (not console text) piped straight into the GPS inject stream.
+static long agnssRxRemaining = 0;
+
+static void printConsoleHelp() {
+    Serial.println("commands:");
+    Serial.println("  help                 this list");
+    Serial.println("  cold [unaided]       GPS cold-start test (re-seed unless 'unaided')");
+    Serial.println("  gpsoff <sec>         cut GPS power for N s, then re-seed (retention test)");
+    Serial.println("  gpsver               query GPS module firmware version");
+    Serial.println("  gpsraw <on|off>      echo raw receiver bytes");
+    Serial.println("  power                battery voltage + current draw (mA)");
+    Serial.println("  bootloader           reboot into download mode for flashing");
+    Serial.println("  reboot               restart the device");
+    Serial.println("  timing               toggle frame-timing logs");
+    Serial.println("  screen <map|dash|menu|settings|gps>   switch UI screen");
+    Serial.println("  zoom <in|out>        map zoom     back   go back");
+}
+
+// Dispatch one console line (first word = command, rest = args).
+static void runConsoleLine(char* line) {
+    char* cmd = strtok(line, " \t");
+    if (!cmd) return;
+    char* arg = strtok(nullptr, " \t");
+
+    if (!strcasecmp(cmd, "help") || !strcmp(cmd, "?")) {
+        printConsoleHelp();
+    } else if (!strcasecmp(cmd, "cold")) {
+        bool aided = !(arg && !strcasecmp(arg, "unaided"));
+        Serial.printf("[cmd] GPS cold-start test (%s)\n", aided ? "aided" : "unaided");
+        gps_service::forceColdStart(aided);
+    } else if (!strcasecmp(cmd, "gpsoff")) {
+        int sec = arg ? atoi(arg) : 5;
+        if (sec < 1) sec = 1;
+        Serial.printf("[cmd] GPS power off %ds, then re-seed\n", sec);
+        gps_service::powerCycleTest(sec * 1000);
+    } else if (!strcasecmp(cmd, "gpsver")) {
+        Serial.println("[cmd] querying GPS version (watch for $GPTXT)");
+        gps_service::queryVersion();
+    } else if (!strcasecmp(cmd, "gpssend")) {
+        if (!arg) { Serial.println("[cmd] gpssend <nmea-body, no $ or *cksum>"); return; }
+        Serial.printf("[cmd] -> $%s\n", arg);
+        gps_service::sendNmeaCommand(arg);
+    } else if (!strcasecmp(cmd, "gpsraw")) {
+        bool on = !(arg && !strcasecmp(arg, "off"));
+        gps_service::setRawEcho(on);
+        Serial.printf("[cmd] raw GPS echo %s\n", on ? "ON" : "OFF");
+    } else if (!strcasecmp(cmd, "agnss")) {
+        // Test hook: stream N raw AGNSS ephemeris bytes over serial into the
+        // same pipe the BLE path uses. After this line, the next N bytes are
+        // taken verbatim (see pollSerialCommands), not parsed as commands.
+        long n = arg ? atol(arg) : 0;
+        if (n <= 0) { Serial.println("[cmd] agnss <byte-count>, then send raw bytes"); return; }
+        agnssRxRemaining = n;
+        gps_service::agnssBegin();
+        Serial.printf("[cmd] AGNSS: send %ld raw bytes now\n", n);
+    } else if (!strcasecmp(cmd, "power")) {
+        uint16_t mv = 0; int16_t ma = 0;
+        if (board_read_power(mv, ma))
+            Serial.printf("[power] %umV %dmA (%s)\n", mv, ma,
+                          ma < 0 ? "discharging" : "charging/idle");
+        else
+            Serial.println("[power] fuel gauge unavailable");
+    } else if (!strcasecmp(cmd, "bootloader") || !strcasecmp(cmd, "boot")) {
+        rebootToBootloader();
+    } else if (!strcasecmp(cmd, "reboot")) {
+        Serial.println("[cmd] rebooting");
+        Serial.flush(); delay(80); esp_restart();
+    } else if (!strcasecmp(cmd, "timing")) {
+        dbgTiming = !dbgTiming;
+        diag::log("dbg timing %s", dbgTiming ? "ON" : "OFF");
+    } else if (!strcasecmp(cmd, "screen")) {
+        if (!arg) { Serial.println("[cmd] screen <map|dash|menu|settings|gps>"); return; }
+        if      (!strcasecmp(arg, "map"))      screen = SCREEN_MAP;
+        else if (!strcasecmp(arg, "dash"))     screen = SCREEN_DASH;
+        else if (!strcasecmp(arg, "menu"))     screen = SCREEN_MENU;
+        else if (!strcasecmp(arg, "settings")) screen = SCREEN_SETTINGS;
+        else if (!strcasecmp(arg, "gps"))      screen = SCREEN_GPSDEBUG;
+        else { Serial.printf("[cmd] unknown screen '%s'\n", arg); return; }
+        noteActivity();
+    } else if (!strcasecmp(cmd, "zoom")) {
+        if (arg && !strcasecmp(arg, "in") && mapMpp > 1.0f) mapMpp /= 2.0f;
+        else if (arg && !strcasecmp(arg, "out") && mapMpp < 32.0f) mapMpp *= 2.0f;
+        screen = SCREEN_MAP; noteActivity();
+    } else if (!strcasecmp(cmd, "back")) {
+        goBack(); noteActivity();
+    } else {
+        Serial.printf("[cmd] unknown '%s' (type 'help')\n", cmd);
+    }
+}
+
+// Line-based serial console over the USB-CDC port. The one Serial reader in the
+// firmware (a second reader would race it for bytes). Commands drive the UI for
+// profiling and the flash/GPS iteration loop; see printConsoleHelp().
 void pollSerialCommands() {
+    static char buf[48];
+    static uint8_t n = 0;
     while (Serial.available() > 0) {
-        int c = Serial.read();
-        bool acted = true;
-        switch (c) {
-            case 'i': if (mapMpp > 1.0f) mapMpp /= 2.0f; screen = SCREEN_MAP; break;
-            case 'o': if (mapMpp < 32.0f) mapMpp *= 2.0f; screen = SCREEN_MAP; break;
-            case 'p': screen = SCREEN_MAP; break;
-            case 'd': screen = SCREEN_DASH; break;
-            case 'm': screen = SCREEN_MENU; break;
-            case 's': screen = SCREEN_SETTINGS; break;
-            case 'g': screen = SCREEN_GPSDEBUG; break;
-            case 'b': goBack(); break;
-            case 't': dbgTiming = !dbgTiming;
-                      diag::log("dbg timing %s", dbgTiming ? "ON" : "OFF");
-                      acted = false; break;
-            default: acted = false; break;   // ignore whitespace / unknown
+        if (agnssRxRemaining > 0) {           // raw AGNSS byte-stream mode
+            uint8_t b = (uint8_t)Serial.read();
+            gps_service::agnssInject(&b, 1);
+            if (--agnssRxRemaining == 0) {
+                gps_service::agnssEnd();
+                Serial.println("[cmd] AGNSS: all bytes received");
+            }
+            continue;
         }
-        if (acted) noteActivity();   // forceDraw + panel power keep-alive
+        int c = Serial.read();
+        if (c == '\r') continue;
+        if (c == '\n') {
+            buf[n] = 0;
+            if (n) runConsoleLine(buf);
+            n = 0;
+        } else if (n < sizeof(buf) - 1) {
+            buf[n++] = (char)c;
+        } else {
+            n = 0;   // overflow — drop the line
+        }
     }
 }
 

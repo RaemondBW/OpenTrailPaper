@@ -14,6 +14,7 @@
 #include "config.h"
 #include "ride_state.h"
 #include "gps_service.h"
+#include "rtc_clock.h"
 #include "settings.h"
 #include "routes.h"
 #include "ble_sensors.h"
@@ -198,6 +199,27 @@ void setup() {
     if (ride_recorder::begin()) {
         routes::begin();
     }
+    // Restore the wall clock from the coin-cell RTC (which, unlike the ESP32's
+    // internal clock, survives a full power-off). Must happen before the GPS
+    // warm-start seed below so time-aiding fires on a cold boot too — a cold
+    // start with a known position AND time is far faster than position alone.
+    // Only trust the RTC once GPS has written UTC to it at least once: from the
+    // factory it can hold LOCAL time (observed 8 h off UTC), and seeding a
+    // grossly wrong time into the receiver hurts acquisition rather than helps.
+    if (rtc_clock::begin()) {
+        time_t rt;
+        if (!settings::rtcTrusted()) {
+            diag::log("rtc: present, not yet GPS-validated (ignoring for aiding)");
+        } else if (rtc_clock::read(rt)) {
+            struct timeval tv = {rt, 0};
+            settimeofday(&tv, nullptr);
+            diag::log("rtc: clock restored (%ld)", (long)rt);
+        } else {
+            diag::log("rtc: trusted but read invalid (VL set?)");
+        }
+    } else {
+        diag::log("rtc: not found");
+    }
     // NOTE: usb_storage::begin() is called from the UI task AFTER the boot-time
     // SD firmware-update check, so a firmware.bin dropped on the card always
     // flashes before the computer can mount (and grab) the SD.
@@ -241,6 +263,15 @@ void board_radio_power(bool on) {
     i2cLock();
     ioExpander.digitalWrite(IOEXP_PIN_RADIO_POWER, on ? HIGH : LOW);
     i2cUnlock();
+}
+
+bool board_read_power(uint16_t& mv, int16_t& ma) {
+    if (!fuelGaugeOk) return false;
+    i2cLock();
+    mv = fuelGauge.getVoltage();
+    ma = fuelGauge.getCurrent();
+    i2cUnlock();
+    return true;
 }
 
 bool board_side_button_pressed() {

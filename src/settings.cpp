@@ -17,6 +17,7 @@ bool usbDrv = true;  // true = expose SD as USB drive when plugged into a host
 char addrs[3][18] = {"", "", ""};
 char names[3][32] = {"", "", ""};   // remembered vendor/model per paired kind
 double lastLat = 0, lastLon = 0;
+bool rtcSynced = false;  // has GPS ever written UTC to the coin-cell RTC?
 const char* KEYS[3] = {"sens_hr", "sens_pwr", "sens_cad"};
 const char* NAME_KEYS[3] = {"snm_hr", "snm_pwr", "snm_cad"};
 
@@ -41,6 +42,7 @@ void begin() {
     }
     lastLat = prefs.getDouble("lastlat", 0);
     lastLon = prefs.getDouble("lastlon", 0);
+    rtcSynced = prefs.getBool("rtcok", false);
     Serial.printf("[cfg] ftp=%dW tz=%dmin sensors=[%s|%s|%s]\n", ftp, tz,
                   addrs[0], addrs[1], addrs[2]);
 }
@@ -113,6 +115,13 @@ void setLastPosition(double lat, double lon) {
     lastLon = lon;
     prefs.putDouble("lastlat", lat);
     prefs.putDouble("lastlon", lon);
+}
+
+bool rtcTrusted() { return rtcSynced; }
+void setRtcTrusted(bool ok) {
+    if (rtcSynced == ok) return;
+    rtcSynced = ok;
+    prefs.putBool("rtcok", ok);
 }
 
 }  // namespace settings
