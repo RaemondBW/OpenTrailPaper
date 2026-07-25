@@ -61,6 +61,15 @@ jobs:
           cat >> tools/update-components.sh <<'PIN'
 
           # ---- CI (added by workflow): drop unused add-ons, pin kept components ----
+          # Match the PlatformIO framework core exactly: reset arduino from
+          # release/v2.x HEAD (2.0.17) to the 2.0.14 tag that
+          # framework-arduinoespressif32@3.20014.231204 ships. Otherwise the
+          # built libs' link-wrap symbols (__wrap_esp_log_write / __wrap_log_printf)
+          # don't match the 2.0.14 core we overlay them onto (undefined refs at
+          # link). Done here (not via -A) because update-components.sh git-pulls
+          # AR_BRANCH, which fails on a detached tag.
+          echo "Resetting arduino to 2.0.14 to match the PlatformIO framework..."
+          git -C "$AR_COMPS/arduino" reset --hard 2.0.14 || exit 1
           echo "Pruning unused add-on components (camera / esp-dl / esp-dsp / rainmaker)..."
           rm -rf "$AR_COMPS/esp32-camera" "$AR_COMPS/esp-dl" \
                  "$AR_COMPS/espressif__esp-dsp" "$AR_COMPS/esp-rainmaker" || exit 1
