@@ -875,6 +875,10 @@ static void printConsoleHelp() {
     Serial.println("commands:");
     Serial.println("  help                 this list");
     Serial.println("  cold [unaided]       GPS cold-start test (re-seed unless 'unaided')");
+    Serial.println("  gpsoff <sec>         cut GPS power for N s, then re-seed (retention test)");
+    Serial.println("  gpsver               query GPS module firmware version");
+    Serial.println("  gpsraw <on|off>      echo raw receiver bytes");
+    Serial.println("  power                battery voltage + current draw (mA)");
     Serial.println("  bootloader           reboot into download mode for flashing");
     Serial.println("  reboot               restart the device");
     Serial.println("  timing               toggle frame-timing logs");
@@ -894,6 +898,25 @@ static void runConsoleLine(char* line) {
         bool aided = !(arg && !strcasecmp(arg, "unaided"));
         Serial.printf("[cmd] GPS cold-start test (%s)\n", aided ? "aided" : "unaided");
         gps_service::forceColdStart(aided);
+    } else if (!strcasecmp(cmd, "gpsoff")) {
+        int sec = arg ? atoi(arg) : 5;
+        if (sec < 1) sec = 1;
+        Serial.printf("[cmd] GPS power off %ds, then re-seed\n", sec);
+        gps_service::powerCycleTest(sec * 1000);
+    } else if (!strcasecmp(cmd, "gpsver")) {
+        Serial.println("[cmd] querying GPS version (watch for $GPTXT)");
+        gps_service::queryVersion();
+    } else if (!strcasecmp(cmd, "gpsraw")) {
+        bool on = !(arg && !strcasecmp(arg, "off"));
+        gps_service::setRawEcho(on);
+        Serial.printf("[cmd] raw GPS echo %s\n", on ? "ON" : "OFF");
+    } else if (!strcasecmp(cmd, "power")) {
+        uint16_t mv = 0; int16_t ma = 0;
+        if (board_read_power(mv, ma))
+            Serial.printf("[power] %umV %dmA (%s)\n", mv, ma,
+                          ma < 0 ? "discharging" : "charging/idle");
+        else
+            Serial.println("[power] fuel gauge unavailable");
     } else if (!strcasecmp(cmd, "bootloader") || !strcasecmp(cmd, "boot")) {
         rebootToBootloader();
     } else if (!strcasecmp(cmd, "reboot")) {

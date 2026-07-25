@@ -61,6 +61,14 @@ void forceColdStart(bool withAiding);
 // Detected chipset as a code for the BLE AGNSS query: 0 none, 1 CASIC, 2 u-blox.
 int moduleKindCode();
 
+// Investigation helpers, driven from the serial console:
+void setRawEcho(bool on);        // mirror every raw receiver byte to USB serial
+void queryVersion();             // ask the module its firmware version (PCAS06)
+void powerCycleTest(int offMs);  // cut GPS power offMs, restore+re-seed, reset
+                                 // TTFF — maps how long ephemeris survives a
+                                 // power gap (retention) and lets current draw
+                                 // be measured with the module off.
+
 // AGNSS (assisted GPS) ephemeris injection. The phone fetches a module-specific
 // ephemeris blob and streams it here; we pipe the raw bytes to the receiver's
 // UART (paced on the GPS task) — the module parses its own format. See

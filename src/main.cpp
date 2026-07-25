@@ -265,6 +265,15 @@ void board_radio_power(bool on) {
     i2cUnlock();
 }
 
+bool board_read_power(uint16_t& mv, int16_t& ma) {
+    if (!fuelGaugeOk) return false;
+    i2cLock();
+    mv = fuelGauge.getVoltage();
+    ma = fuelGauge.getCurrent();
+    i2cUnlock();
+    return true;
+}
+
 bool board_side_button_pressed() {
     if (!ioExpanderOk) return false;
     i2cLock();

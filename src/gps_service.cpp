@@ -367,6 +367,15 @@ void forceColdStart(bool withAiding) { g_coldReq = withAiding ? 1 : 2; }
 
 int moduleKindCode() { return (int)moduleKind; }   // 0 none, 1 CASIC, 2 u-blox
 
+// Console-driven investigation flags, serviced on the GPS task.
+volatile bool g_rawEcho = false;
+volatile bool g_verReq = false;
+volatile int  g_powerCycleMs = 0;
+
+void setRawEcho(bool on) { g_rawEcho = on; }
+void queryVersion() { g_verReq = true; }
+void powerCycleTest(int offMs) { g_powerCycleMs = offMs > 0 ? offMs : 1; }
+
 // Re-seed the receiver exactly like boot does: last-known position, plus time
 // only if the RTC has been GPS-validated. Shared by the cold-start test path.
 void seedFromSaved() {
@@ -424,6 +433,30 @@ void task(void*) {
             g_prevFix = false;
         }
 
+        if (g_verReq) {
+            g_verReq = false;
+            // PCAS06,0 -> the module replies with a $GPTXT version line. Echo
+            // raw for a moment so it lands on the console verbatim.
+            g_rawEcho = true;
+            SerialGPS.write("$PCAS06,0*1B\r\n");
+        }
+
+        if (g_powerCycleMs > 0) {
+            int off = g_powerCycleMs;
+            g_powerCycleMs = 0;
+            diag::log("gps power-cycle test: off %dms", off);
+            board_radio_power(false);
+            vTaskDelay(pdMS_TO_TICKS(off));
+            board_radio_power(true);
+            vTaskDelay(pdMS_TO_TICKS(400));
+            begin();
+            aidState.count = 0;
+            seedFromSaved();
+            acqStartMs = millis();
+            g_loggedFirstFix = false;
+            g_prevFix = false;
+        }
+
         if (g_seed.pending) {
             g_seed.pending = false;
             // Only warm-start while we DON'T have a fix, and at most every 20 s
@@ -443,6 +476,8 @@ void task(void*) {
             char c = SerialGPS.read();
 #if GPS_ECHO_NMEA
             Serial.write(c);
+#else
+            if (g_rawEcho) Serial.write(c);
 #endif
             gps.encode(c);
         }
