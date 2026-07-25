@@ -101,6 +101,28 @@ Public broadcast ephemeris (NASA CDDIS / IGS, free, RINEX) can be encoded into
 CASIC `MSG-GPSEPH` messages ourselves (server-side), giving ~4 h validity with
 no dependency on gnss-aide. More work, but removes the sketchy endpoint.
 
+## Results so far (URANUS5 V5.3.0.0, over the serial `agnss` test hook)
+
+- Data source **works**: `api.smawatch.cn/epo/ble_epo_offline.bin`, 2650 binary
+  bytes, framing **validated** — 33 CASIC frames tile exactly: 32× MSG-GPSEPH
+  (0807) + 1× MSG-GPSION (0806).
+- Injection reaches the module and it **understands the format** — ungated,
+  back-to-back streaming got **4 ACK / 30 NAK**.
+- **ACK-gating did NOT help** — sending one message and waiting for its ACK
+  before the next gave **0 ACK / 28 NAK / 5 timeout**. So the NAKs are *not*
+  flow control; the module is **semantically rejecting** the ephemeris.
+- Baseline and post-inject `PCAS06,L` both report `LT=0` (no ephemeris stored).
+
+**Open question — why the NAKs.** Likely a CASIC/URANUS injection requirement we
+haven't met: time-of-ephemeris validity vs our ±30 s aided time, a required
+message ordering (ION/UTC/health before EPH?), or an injection-state/handshake.
+Nailing it needs the CASIC AGNSS integration doc or a verified working URANUS5
+reference — reverse-engineering beyond what the public AT6558 threads cover.
+Next cheap step: log the NAK payload (class/id/reason) from `waitForCasicAck`.
+
+Note: end-to-end *benefit* (faster TTFF) also couldn't be validated because the
+test location was signal-starved (snr≈17–25, 0 sats tracked, no fix).
+
 ## Validation
 
 - Firmware pipe: a console command streams a canned `AID-INI` through the same
