@@ -115,16 +115,20 @@ jobs:
       - name: Locate and verify the built S3 SDK tree
         working-directory: lib-builder
         run: |
-          S3=$(find . -type d -path '*esp32-arduino-libs/esp32s3' | head -1)
-          if [ -z "$S3" ]; then S3=$(find . -type d -name esp32s3 -path '*arduino*libs*' | head -1); fi
+          # IDF-4.4 / Arduino-2.x lib-builder writes the packaged SDK tree to
+          # out/tools/sdk/esp32s3 (newer 5.x uses esp32-arduino-libs/esp32s3).
+          S3=$(find . -type d -path '*out/tools/sdk/esp32s3' | head -1)
+          [ -n "$S3" ] || S3=$(find . -type d -path '*esp32-arduino-libs/esp32s3' | head -1)
+          S3=${S3#./}
           echo "S3 SDK tree: $S3"
           test -n "$S3" || { echo "could not locate esp32s3 libs"; find . -type d -name esp32s3 | head; exit 1; }
           echo "S3DIR=lib-builder/$S3" >> "$GITHUB_ENV"
-          echo "--- base sdkconfig PM flags ---"
-          grep -E 'CONFIG_PM_ENABLE|FREERTOS_USE_TICKLESS_IDLE|BT_CTRL_MODEM_SLEEP' "$S3/sdkconfig" || true
-          echo "--- qio_opi variant sdkconfig.h ---"
-          grep -E 'CONFIG_PM_ENABLE|CONFIG_SPIRAM_MODE_OCT' "$S3/qio_opi/include/sdkconfig.h" || true
-          grep -q 'CONFIG_PM_ENABLE=y' "$S3/sdkconfig" && echo "OK: PM_ENABLE landed" || { echo "FAIL: PM_ENABLE missing"; exit 1; }
+          echo "--- PM flags found in the tree ---"
+          grep -RIl 'CONFIG_PM_ENABLE=y' "$S3" | head
+          grep -RhE 'CONFIG_PM_ENABLE|FREERTOS_USE_TICKLESS_IDLE|BT_CTRL_MODEM_SLEEP' \
+            "$S3"/sdkconfig "$S3"/*/include/sdkconfig.h 2>/dev/null | sort -u | head
+          grep -Rq 'CONFIG_PM_ENABLE=y' "$S3" && echo "OK: PM_ENABLE landed" \
+            || { echo "FAIL: PM_ENABLE missing"; exit 1; }
 
       - name: Upload the PM-enabled S3 libs
         uses: actions/upload-artifact@v4
