@@ -123,6 +123,41 @@ Next cheap step: log the NAK payload (class/id/reason) from `waitForCasicAck`.
 Note: end-to-end *benefit* (faster TTFF) also couldn't be validated because the
 test location was signal-starved (snr≈17–25, 0 sats tracked, no fix).
 
+## Protocol research — why the NAKs (and the hard truth)
+
+Found the official spec: **CASIC Multimode Satellite Navigation Receiver
+Protocol Specification** (Hangzhou Zhongke Micro), `espruino.com/files/CASIC_en.pdf`
+(local extract in scratchpad `casic.txt`). Key points:
+
+- **ACK/NAK (class 0x05) is documented as the reply to CFG (0x06) messages** —
+  the spec does NOT document `MSG-GPSEPH` (0x08 0x07) as a *writable/injectable*
+  message; it's listed as a **cycle/output** message ("the receiver *outputs*
+  GPS ephemeris"). So ephemeris injection via MSG-GPSEPH is **undocumented**.
+- AID class (0x0B): `AID-INI` (0x0B 0x01, pos/time/freq) and `AID-HUI` (0x0B
+  0x03, health/UTC/iono). AID-INI time has a `valid` field 0–7 (0 invalid,
+  1 RTC, … 7 exact).
+
+**The hard truth from reference implementations:** injecting the smawatch/CASIC
+`.bin` is a **known, community-unsolved problem** — nobody has a fully-working,
+documented recipe:
+- wardriver ATGM336H (CASIC): got **2/33 ACKs**, cause of the rest "unknown".
+- Bangle.js AT6558 threads: same partial-acceptance behavior; base64 EPO from
+  espruino.com/agps/ produced *no* response.
+- Us (URANUS5): 4/33 ungated, 0/33 ACK-gated. `PCAS06,L` stays `LT=0`.
+
+So our result matches the state of the art — partial ephemeris acceptance,
+reason for NAKs undocumented. Plausible (unproven) levers: mark AID-INI time as
+higher validity / ensure sub-second time; send `AID-HUI` (iono/UTC) before EPH;
+try slower pacing. But even the best community efforts only land a few messages.
+
+**Recommendation:** treat CASIC AGNSS injection as high-effort / low-confidence
+(reverse-engineering an undocumented path others haven't cracked). Prefer:
+1. the RTC time-aiding already shipped (reliable), and
+2. **ephemeris retention across sleep** — the module decodes its *own* ephemeris
+   perfectly given signal; keeping it across sleep sidesteps injection entirely.
+Revisit AGNSS only if a fully-working URANUS reference or the vendor integration
+guide surfaces.
+
 ## Validation
 
 - Firmware pipe: a console command streams a canned `AID-INI` through the same
