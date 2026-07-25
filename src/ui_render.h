@@ -18,6 +18,8 @@ struct RideSummary;
 namespace ui {
 
 constexpr int STATUS_H = 64;   // status bar height incl. 3 px rule
+constexpr int MAP_STRIP_TOP = 810;  // map viewport is [STATUS_H, MAP_STRIP_TOP);
+                                    // the 3-cell data footer sits below it
 
 void statusBar(const RideState& s, uint8_t* fb);
 

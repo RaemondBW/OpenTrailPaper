@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <esp_heap_caps.h>
 
 #include "epdiy.h"
 #include "ride_state.h"
@@ -17,7 +18,7 @@ namespace {
 
 // Layout bands (portrait 540x960, design 1f)
 constexpr int MAP_TOP = ui::STATUS_H;
-constexpr int STRIP_TOP = 810;   // 3-cell footer below
+constexpr int STRIP_TOP = ui::MAP_STRIP_TOP;   // 3-cell footer below
 constexpr int MAP_BOTTOM = STRIP_TOP;
 
 // The fast DU refresh is strictly 1-bit (grays snap to white), so all
@@ -58,9 +59,37 @@ Style styleFor(MapFeatureClass cls, float mpp) {
 
 // Scanline-fill a screen-space polygon with a sparse black dither so it reads as
 // a pale grey tint and survives the fast 1-bit DU refresh. Even-odd rule.
+// Native-fb-aligned mask (1 byte/fb-byte) of the current frame's dithered dark
+// fills (water/parks) — the only regions where DU ghosting settles in, so the
+// settle-clean flashes exactly them and nothing else. Rebuilt every map render.
+uint8_t* s_ditherMask = nullptr;
+size_t s_ditherMaskSize = 0;
+
+void ditherMaskReset() {
+    size_t sz = (size_t)(epd_width() / 2) * epd_height();
+    if (!s_ditherMask) {
+        s_ditherMask = (uint8_t*)heap_caps_malloc(sz, MALLOC_CAP_SPIRAM);
+        s_ditherMaskSize = s_ditherMask ? sz : 0;
+    }
+    if (s_ditherMask) memset(s_ditherMask, 0, s_ditherMaskSize);
+}
+
+// Mark the native byte holding app pixel (x,y) as dithered fill, only inside the
+// map band [MAP_TOP, MAP_BOTTOM) so the status bar/footer never flash.
+inline void ditherMaskMark(int x, int y) {
+    if (!s_ditherMask || y < MAP_TOP || y >= MAP_BOTTOM) return;
+    // INVERTED_PORTRAIT: native_x = app_y, native_y = epd_height()-1 - app_x.
+    int nx = y, ny = epd_height() - 1 - x;
+    if (nx < 0 || nx >= epd_width() || ny < 0 || ny >= epd_height()) return;
+    s_ditherMask[(size_t)ny * (epd_width() / 2) + (nx >> 1)] = 1;
+}
+
 // hatch=false: 25% dot dither (water). hatch=true: diagonal hatch (parks) — a
 // visually distinct texture so green areas don't read the same as water.
-void fillDitheredPolygon(const int16_t* pts, int n, uint8_t* fb, bool hatch = false) {
+// mask=true also records the polygon interior in s_ditherMask (EVERY covered
+// pixel, not just the dithered-on ones) for the ghost settle-clean.
+void fillDitheredPolygon(const int16_t* pts, int n, uint8_t* fb, bool hatch = false,
+                         bool mask = false) {
     if (n < 3) return;
     int minY = 100000, maxY = -100000;
     for (int i = 0; i < n; ++i) {
@@ -94,7 +123,11 @@ void fillDitheredPolygon(const int16_t* pts, int n, uint8_t* fb, bool hatch = fa
             // light + textured so green areas stay distinct from water. Roads
             // draw solid black on top.
             for (int x = xL; x <= xR; ++x) {
-                bool on = hatch ? (((x - y) & 3) == 0)
+                if (mask) ditherMaskMark(x, y);
+                // Parks: 50% diagonal hatch (was 25%) — darker, still a diagonal
+                // texture so green reads distinct from the water's dot dither.
+                // Water: dense 75% dot dither.
+                bool on = hatch ? (((x - y) & 1) == 0)
                                 : !((x & 1) && (y & 1));
                 if (on) epd_draw_pixel(x, y, 0x00, fb);
             }
@@ -262,17 +295,24 @@ void drawCompass(int cx, int cy, float northDeg, bool trackUp, uint8_t* fb) {
 const MapTouchZones kMapZoom = {540 - 78, 560, 640, 76};
 const MapCompassZone kMapCompass = {540 - 46, 64 + 48, 34};
 
+// Native-fb-aligned mask of the current frame's water/park fills (1 = covered).
+// Null until the first map render. Used by the ghost settle-clean.
+const uint8_t* ui_map_dither_mask() { return s_ditherMask; }
+
 void ui_render_map_features(const MapScreenData& map, const RideState& s,
                             uint8_t* fb) {
     (void)s;
     // Map features: parks + water under roads, all in grays. Parks (hatch) are
     // the base layer, then water (dots) over them, then trails, then roads in
     // tier order on top. Rail/transit removed by request.
+    // mask=true records the dithered fills so the settle-clean flashes exactly
+    // those (where DU ghosting settles), not the whole viewport.
+    ditherMaskReset();
     for (int i = 0; i < map.parkCount; ++i) {
-        fillDitheredPolygon(map.parks[i].pts, map.parks[i].pointCount, fb, true);
+        fillDitheredPolygon(map.parks[i].pts, map.parks[i].pointCount, fb, true, true);
     }
     for (int i = 0; i < map.waterCount; ++i) {
-        fillDitheredPolygon(map.water[i].pts, map.water[i].pointCount, fb);
+        fillDitheredPolygon(map.water[i].pts, map.water[i].pointCount, fb, false, true);
     }
     // Back-to-front: higher-grade roads paint on top at intersections.
     const MapFeatureClass order[] = {MAP_PATH, MAP_ROAD_MINOR, MAP_ROAD_TERTIARY,

@@ -87,6 +87,11 @@ struct MapTouchZones {
 };
 extern const MapTouchZones kMapZoom;
 
+// Native-fb-aligned mask (1 byte/fb-byte, 1 = covered) of the current map frame's
+// water/park dithered fills — the dense-dark regions where DU ghosting settles.
+// Null until the first map render. The settle-clean flashes exactly these bytes.
+const uint8_t* ui_map_dither_mask();
+
 void ui_render_map(const MapScreenData& map, const RideState& s, uint8_t* fb);
 
 // Just the map (features + route + rider), full-screen, no chrome. Used as the
