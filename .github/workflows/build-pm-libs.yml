@@ -64,10 +64,13 @@ jobs:
           echo "Pruning unused add-on components (camera / esp-dl / esp-dsp / rainmaker)..."
           rm -rf "$AR_COMPS/esp32-camera" "$AR_COMPS/esp-dl" \
                  "$AR_COMPS/espressif__esp-dsp" "$AR_COMPS/esp-rainmaker" || exit 1
-          # esp_littlefs HEAD needs esp_partition (an IDF-5 split); pin to v1.5.3
-          # (IDF 4.4 era) and re-init its littlefs submodule after the reset.
+          # esp_littlefs: pin to v1.10.2. Newer HEAD requires the esp_partition
+          # IDF-5 component; older (v1.5.3) lacks the .partition conf field that
+          # arduino 2.0.17's LittleFS.cpp uses (compile error). v1.10.2 has the
+          # field AND, on IDF<5, requires spi_flash (which provides esp_partition.h)
+          # instead of the esp_partition component. Re-init its littlefs submodule.
           echo "Pinning esp_littlefs + tinyusb for IDF 4.4..."
-          git -C "$AR_COMPS/esp_littlefs" reset --hard fb1470a59dad5949396919f34b9856fa8d29d55f || exit 1
+          git -C "$AR_COMPS/esp_littlefs" reset --hard v1.10.2 || exit 1
           git -C "$AR_COMPS/esp_littlefs" submodule update --init --recursive || exit 1
           # tinyusb HEAD moved the ESP32-Sx device driver to the generic dwc2
           # layout; pin to 0.14.0 (last release with the dcd_esp32sx.c the arduino
