@@ -69,6 +69,38 @@ Streaming with no per-message ACK is fine for a first cut; u-blox MGA supports
 4. Refresh Offline data every few days; skip injection when the device already
    reports a fix.
 
+## CASIC / URANUS specifics (our module: SW=URANUS5, V5.3.0.0)
+
+Confirmed against the CASIC family (AT6558/URANUS, same protocol):
+
+- **Service:** Zhongke Micro (中科微 = CASIC) AGNSS, `gnss-aide.com`, in practice
+  reached via mirrors like `https://api.smawatch.cn/epo/ble_epo_offline.bin`.
+  These are **reverse-engineered, rate-limited endpoints, not an official free
+  API** — a real dependency risk to design around (self-host/cache a copy, or
+  generate our own from public broadcast ephemeris — see below).
+- **File:** ~2.4 KB, a text header (ignore) then ready-to-stream CASIC binary
+  messages with pre-computed checksums: 32× `MSG-GPSEPH` (0x08 0x07, one per GPS
+  SV) + one `MSG-GPSION` (0x08 0x06) + one `MSG-GPSUTC` (0x08 0x05). No parsing
+  or decryption — stream as-is. This is exactly the "dumb pipe" the firmware
+  already implements.
+- **Validity ~4 h** (this is *online* current ephemeris despite the "offline"
+  filename) — so fetch at ride start while the phone is present; not multi-day.
+- **Pacing:** CASIC docs say wait for `MSG-ACK` before sending the next message.
+  Our current pipe only paces by UART free space; at 9600 baud the 2.4 KB takes
+  ~2.5 s with natural gaps, which often suffices, but **ACK-gated sending is the
+  robust version** and a likely follow-up.
+- **Send `AID-INI` (pos+time) first**, then the EPH/ION/UTC messages (we already
+  do the AID-INI seed in `agnssBegin`/`agnssEnd`).
+- **`$PCAS06,L`** reports how many valid ephemeris the module holds — a way to
+  measure retention (and confirm injection worked) **without needing a sky-view
+  fix**: query count → `gpsoff N` → query again.
+
+### Independent data source (no third-party endpoint)
+
+Public broadcast ephemeris (NASA CDDIS / IGS, free, RINEX) can be encoded into
+CASIC `MSG-GPSEPH` messages ourselves (server-side), giving ~4 h validity with
+no dependency on gnss-aide. More work, but removes the sketchy endpoint.
+
 ## Validation
 
 - Firmware pipe: a console command streams a canned `AID-INI` through the same
