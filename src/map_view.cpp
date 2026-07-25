@@ -87,12 +87,15 @@ void fillDitheredPolygon(const int16_t* pts, int n, uint8_t* fb, bool hatch = fa
         for (int a = 0; a + 1 < cnt; a += 2) {
             int xL = xs[a] < 0 ? 0 : xs[a];
             int xR = xs[a + 1] > 539 ? 539 : xs[a + 1];
-            // Water: 25% dot dither (one pixel per 2x2 block). Parks: a 25%
-            // diagonal hatch (every 4th main diagonal). Both read as light grey
-            // through DU; roads draw solid black on top.
+            // Water: dense 75% black dither (3 of every 2x2 block) so it reads as
+            // a solid, pretty-dark grey — true solid grey would snap to white on
+            // the fast 1-bit DU refresh, so a dense dither is the DU-safe way to
+            // get a dark solid tone. Parks: a sparse 25% diagonal hatch, kept
+            // light + textured so green areas stay distinct from water. Roads
+            // draw solid black on top.
             for (int x = xL; x <= xR; ++x) {
                 bool on = hatch ? (((x - y) & 3) == 0)
-                                : ((x & 1) == 0 && (y & 1) == 0);
+                                : !((x & 1) && (y & 1));
                 if (on) epd_draw_pixel(x, y, 0x00, fb);
             }
         }
