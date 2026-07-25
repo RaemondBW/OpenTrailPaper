@@ -34,6 +34,7 @@ bool pendingNav = false;
 bool activeNav = false;
 bool navDismissed = false;        // user tapped the banner away; don't re-grab
 float offRouteM = 99999.0f;       // rider's distance to the nearest route point
+int offRouteFixes = 0;            // consecutive fixes far from the window match
 
 double haversineM(double lat1, double lon1, double lat2, double lon2) {
     const double R = 6371000.0;
@@ -63,12 +64,22 @@ int nearestRouteIdx(double lat, double lon, int from, int to, float& outDist2) {
 
 // Snap each maneuver to its nearest point on the loaded route so turns can be
 // tracked by along-route distance (robust) instead of GPS proximity.
+//
+// Maneuvers arrive in route order, so we snap them monotonically: each search
+// starts at the previous maneuver's snapped index and runs forward. Without
+// this, a maneuver on a returning/overlapping leg (out-and-backs, lollipop
+// loops, routes that cross themselves) could snap onto an *earlier* leg that
+// passes nearby, giving it too small a cumM[] and making advanceManeuverCursor
+// skip several turns at once.
 void mapManeuversToRoute() {
+    int from = 0;
     for (int i = 0; i < nManeuvers; ++i) {
         float d2;
         int idx = nPts > 0 ? nearestRouteIdx(maneuvers[i].lat, maneuvers[i].lon,
-                                             0, nPts, d2) : 0;
-        maneuverIdx[i] = idx < 0 ? 0 : idx;
+                                             from, nPts, d2) : 0;
+        if (idx < 0) idx = from;
+        maneuverIdx[i] = idx;
+        from = idx;   // the next maneuver is at or after this one on the route
     }
 }
 
@@ -296,17 +307,33 @@ void updateProgress(double lat, double lon) {
     int prev = progIdx;
 
     // Project the rider onto the route. Look in a forward window (with a small
-    // backward allowance) for smooth tracking; if that comes up off-route,
-    // re-acquire against the whole route so we can grab it after joining
-    // mid-way or returning from a detour.
+    // backward allowance) for smooth, monotonic tracking that is immune to the
+    // route passing near itself (loops, out-and-backs, self-crossings).
     int from = progIdx - 8;   if (from < 0) from = 0;
     int to   = progIdx + 120; if (to > nPts) to = nPts;
     float d2;
     int idx = nearestRouteIdx(lat, lon, from, to, d2);
+
+    // Whole-route re-acquire, for joining mid-route or rejoining after a real
+    // detour. This is the dangerous case: on a route that comes back near
+    // itself, the globally-nearest point can be a *later* leg sitting next to
+    // the rider, which would yank progIdx forward and run the turn prompts
+    // several maneuvers ahead. Guard it so it can't fire on GPS jitter:
+    //   - only after we've been clearly off the window for a few fixes, and
+    //   - only if the global match is decisively closer than the window match
+    //     (fd2 < d2/4 == less than half the distance).
     if (d2 > 60.0f * 60.0f) {
-        float fd2;
-        int fidx = nearestRouteIdx(lat, lon, 0, nPts, fd2);
-        if (fidx >= 0 && fd2 < d2) { idx = fidx; d2 = fd2; }
+        if (++offRouteFixes >= 4) {
+            float fd2;
+            int fidx = nearestRouteIdx(lat, lon, 0, nPts, fd2);
+            if (fidx >= 0 && fd2 < d2 * 0.25f) {
+                idx = fidx;
+                d2 = fd2;
+                offRouteFixes = 0;
+            }
+        }
+    } else {
+        offRouteFixes = 0;
     }
     if (idx >= 0) progIdx = idx;
     offRouteM = sqrtf(d2);

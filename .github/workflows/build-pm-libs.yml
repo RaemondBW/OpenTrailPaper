@@ -1,0 +1,85 @@
+# Rebuild the Arduino-ESP32 core 2.x (IDF 4.4) precompiled libraries for the
+# ESP32-S3 WITH power management enabled (automatic light sleep, tickless idle,
+# BLE modem sleep — no DFS), so the firmware's esp_pm wiring goes live.
+# Manual, one-off: run from the Actions tab. Downloads the built S3 SDK tree as
+# an artifact; overlay it into a local framework copy + point platformio.ini at
+# it. See design/ (CPU sleep notes).
+name: Build PM-enabled Arduino S3 libs
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-libs:
+    runs-on: ubuntu-22.04   # Python 3.10 — IDF 4.4 needs <=3.11
+    timeout-minutes: 90
+    steps:
+      - name: Free up runner disk (build needs ~15 GB)
+        run: |
+          sudo rm -rf /usr/local/lib/android /opt/ghc /usr/share/dotnet \
+            /opt/hostedtoolcache/CodeQL /usr/local/.ghcup "${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache}" || true
+          sudo docker image prune --all --force || true
+          sudo apt-get clean || true
+          df -h /
+
+      - name: Install build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git wget curl flex bison gperf \
+            python3 python3-pip python3-venv python3-setuptools \
+            cmake ninja-build ccache libffi-dev libssl-dev dfu-util \
+            libusb-1.0-0 jq
+
+      - name: Clone esp32-arduino-lib-builder (release/v4.4)
+        run: |
+          git clone -b release/v4.4 --depth 1 --recurse-submodules \
+            https://github.com/espressif/esp32-arduino-lib-builder lib-builder
+
+      - name: Inject power-management sdkconfig into the S3 base defconfig
+        working-directory: lib-builder
+        run: |
+          cat >> configs/defconfig.esp32s3 <<'EOF'
+          # ---- Power management: automatic light sleep, NO DFS ----
+          CONFIG_PM_ENABLE=y
+          CONFIG_FREERTOS_USE_TICKLESS_IDLE=y
+          CONFIG_FREERTOS_IDLE_TIME_BEFORE_SLEEP=3
+          CONFIG_PM_SLP_IRAM_OPT=y
+          CONFIG_PM_RTOS_IDLE_OPT=y
+          CONFIG_ESP32S3_DEFAULT_CPU_FREQ_240=y
+          CONFIG_ESP32S3_RTC_CLK_SRC_INT_RC=y
+          CONFIG_BT_CTRL_MODEM_SLEEP=y
+          CONFIG_BT_CTRL_MODEM_SLEEP_MODE_1=y
+          CONFIG_BT_CTRL_LPCLK_SEL_RTC_SLOW=y
+          CONFIG_ESP_SLEEP_PSRAM_LEAKAGE_WORKAROUND=y
+          CONFIG_ESP_SLEEP_FLASH_LEAKAGE_WORKAROUND=y
+          EOF
+          echo "----- appended defconfig.esp32s3 tail -----"
+          tail -20 configs/defconfig.esp32s3
+
+      - name: Build the ESP32-S3 libraries
+        working-directory: lib-builder
+        run: |
+          chmod +x build.sh || true
+          ./build.sh -t esp32s3
+
+      - name: Locate and verify the built S3 SDK tree
+        working-directory: lib-builder
+        run: |
+          S3=$(find . -type d -path '*esp32-arduino-libs/esp32s3' | head -1)
+          if [ -z "$S3" ]; then S3=$(find . -type d -name esp32s3 -path '*arduino*libs*' | head -1); fi
+          echo "S3 SDK tree: $S3"
+          test -n "$S3" || { echo "could not locate esp32s3 libs"; find . -type d -name esp32s3 | head; exit 1; }
+          echo "S3DIR=lib-builder/$S3" >> "$GITHUB_ENV"
+          echo "--- base sdkconfig PM flags ---"
+          grep -E 'CONFIG_PM_ENABLE|FREERTOS_USE_TICKLESS_IDLE|BT_CTRL_MODEM_SLEEP' "$S3/sdkconfig" || true
+          echo "--- qio_opi variant sdkconfig.h ---"
+          grep -E 'CONFIG_PM_ENABLE|CONFIG_SPIRAM_MODE_OCT' "$S3/qio_opi/include/sdkconfig.h" || true
+          grep -q 'CONFIG_PM_ENABLE=y' "$S3/sdkconfig" && echo "OK: PM_ENABLE landed" || { echo "FAIL: PM_ENABLE missing"; exit 1; }
+
+      - name: Upload the PM-enabled S3 libs
+        uses: actions/upload-artifact@v4
+        with:
+          name: esp32s3-arduino-libs-pm
+          path: ${{ env.S3DIR }}
+          if-no-files-found: error
+          retention-days: 14

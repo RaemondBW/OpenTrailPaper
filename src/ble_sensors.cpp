@@ -351,9 +351,16 @@ void begin() {
 void task(void*) {
     NimBLEScan* scan = NimBLEDevice::getScan();
     for (;;) {
+        // "All connected" means every PAIRED sensor is connected. A kind the
+        // user never paired (no saved address) can never connect, so counting
+        // it here would leave allConnected=false forever and keep the radio
+        // active-scanning for the entire ride (recording holds wantScan true) —
+        // burning power hunting for a power meter / cadence sensor that doesn't
+        // exist. Only paired kinds gate scanning; once they're up, scanning stops.
         bool allConnected = true;
-        for (auto& sensor : sensors) {
-            if (!sensor.connected) allConnected = false;
+        for (int k = 0; k < KIND_COUNT; ++k) {
+            bool paired = settings::sensorAddr(k)[0] != 0;
+            if (paired && !sensors[k].connected) allConnected = false;
         }
 
         // Only scan when it's actually useful: while recording, while the

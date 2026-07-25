@@ -197,6 +197,100 @@ constexpr uint32_t GHOST_CLEAN_SETTLE_MS = 900;
 bool epdPowered = false;
 uint32_t epdIdleOffAt = 0;
 
+// ---- Region-scoped ghost clear (v3) --------------------------------------
+//
+// The map settle-clean must remove the solid-black-over-a-line trail WITHOUT
+// flashing the whole panel (v2 did a full epd_fullclear on every settle — way
+// too many full-screen flashes). epdiy's high-level update is DIFFERENTIAL: a
+// pixel that is black before AND after gets no waveform (render.c:390), and
+// re-pushing an unchanged frame drives nothing at all (highlevel.c:127). So the
+// only way to equalise the old mark with its surroundings is to flush the
+// affected REGION to uniform white and repaint it from there — scoped to just
+// the rectangle that actually changed, never the status bar or footer.
+//
+// We track the union of what changed across the interactive DU burst (where the
+// marker / roads swept and left a trail) as a bounding box in the panel's NATIVE
+// framebuffer layout, convert it to the app's rotated coordinates, clamp it to
+// the map viewport, and clear+repaint just that rect.
+
+// Accumulated dirty bounding box, NATIVE fb coords (960x540). Inverted sentinel
+// (max < min) means "empty".
+int ghMinX = 0, ghMinY = 0, ghMaxX = -1, ghMaxY = -1;
+bool ghostRectValid = false;
+
+void ghostRectReset() { ghMaxX = -1; ghMaxY = -1; ghostRectValid = false; }
+
+// Union the native-fb bounding box of pixels that differ between two full frames
+// (prev vs cur) into the accumulator. Both buffers are native layout, fbSize
+// bytes, epd_width()/2 bytes per row. Runs only during an active map DU burst,
+// so the O(fb) scan stays off the idle/riding path.
+void ghostRectAccumulate(const uint8_t* prev, const uint8_t* cur) {
+    const int nwb = epd_width() / 2;     // bytes per native row (480)
+    const int nh = epd_height();         // native rows (540)
+    for (int y = 0; y < nh; y++) {
+        const uint8_t* a = prev + (size_t)y * nwb;
+        const uint8_t* b = cur + (size_t)y * nwb;
+        int first = -1, last = -1;
+        for (int bx = 0; bx < nwb; bx++) {
+            if (a[bx] != b[bx]) { if (first < 0) first = bx; last = bx; }
+        }
+        if (first < 0) continue;
+        int x0 = first * 2, x1 = last * 2 + 1;
+        if (!ghostRectValid) {
+            ghMinX = x0; ghMaxX = x1; ghMinY = y; ghMaxY = y; ghostRectValid = true;
+        } else {
+            if (x0 < ghMinX) ghMinX = x0;
+            if (x1 > ghMaxX) ghMaxX = x1;
+            if (y < ghMinY) ghMinY = y;
+            ghMaxY = y;   // scanned top-to-bottom, so y is the running max
+        }
+    }
+}
+
+// Convert the accumulated native box to an app-coord EpdRect, clamped to the map
+// viewport (below the status bar). INVERTED_PORTRAIT maps app<->native as
+// native_x = app_y, native_y = epd_height()-1 - app_x (epdiy.c _rotate), so a
+// native box (nx,ny,nw,nh) inverts to app:
+//   x = epd_height() - (ny+nh),  y = nx,  w = nh,  h = nw
+EpdRect ghostRectToAppClamped() {
+    const int nx = ghMinX, ny = ghMinY;
+    const int nw = ghMaxX - ghMinX + 1, nh = ghMaxY - ghMinY + 1;
+    const int ax = epd_height() - (ny + nh);
+    const int ay = nx;
+    const int aw = nh, ah = nw;
+    const int W = epd_rotated_display_width();
+    const int H = epd_rotated_display_height();
+    int x0 = ax < 0 ? 0 : ax;
+    int y0 = ay < ui::STATUS_H ? ui::STATUS_H : ay;   // never touch the status bar
+    int x1 = ax + aw; if (x1 > W) x1 = W;
+    int y1 = ay + ah; if (y1 > H) y1 = H;
+    EpdRect r = { (uint16_t)x0, (uint16_t)y0,
+                  (uint16_t)(x1 > x0 ? x1 - x0 : 0),
+                  (uint16_t)(y1 > y0 ? y1 - y0 : 0) };
+    return r;
+}
+
+// Scoped, non-differential clear+repaint of one app-coord rectangle.
+//   1. white-out the rect in front_fb (epd_fill_rect: app coords, rotation-safe)
+//   2. GC16 the rect: drives every non-white pixel in it to white AND, via the
+//      high-level buffer-update loop (highlevel.c:150-170), sets epdiy's back_fb
+//      for the rect to white — so the repaint below is NOT a differential no-op
+//      (the exact v1 failure mode: no back_fb reset => nothing driven).
+//   3. restore the real frame, then GL16 the rect: every target pixel is driven
+//      from the identical white origin, so the old mark and its surroundings end
+//      identically black — the trail is gone.
+// The update is masked to the rect's dirty lines/columns (render.c:456-495), so
+// only the rect is ever driven; the status bar and footer are never touched.
+void regionClean(EpdRect r, int temp) {
+    if (r.width == 0 || r.height == 0 || !shadowFb) return;
+    uint8_t* front = epd_hl_get_framebuffer(&hl);
+    memcpy(shadowFb, front, fbSize);                  // save the real frame
+    epd_fill_rect(r, 0xFF, front);                    // rect -> white in front_fb
+    epd_hl_update_area(&hl, MODE_GC16, temp, r);      // clear rect; back_fb rect -> white
+    memcpy(front, shadowFb, fbSize);                  // restore the real frame
+    epd_hl_update_area(&hl, MODE_GL16, temp, r);      // repaint rect from uniform white
+}
+
 bool refresh(bool screenChanged, bool fastInPage, bool listFast,
              bool forceClean = false, bool gc16 = false) {
     uint8_t* fb = epd_hl_get_framebuffer(&hl);
@@ -205,8 +299,6 @@ bool refresh(bool screenChanged, bool fastInPage, bool listFast,
     if (!forceClean && !gc16 && !screenChanged && shadowFb && memcmp(fb, shadowFb, fbSize) == 0) {
         return false;  // identical frame — never touch the panel
     }
-    if (shadowFb) memcpy(shadowFb, fb, fbSize);
-
     // DU is ~2x quicker than GL16. Use it when we can: live in-place updates on
     // the pure black/white screens (dash/map numbers), and — the win for
     // "switching menu state" — page changes INTO the menu/list/settings screens,
@@ -220,6 +312,16 @@ bool refresh(bool screenChanged, bool fastInPage, bool listFast,
     bool active = millis() - lastUiInputMs < 1200;
     bool du = !forceClean && !gc16 && wantDu && (active || ghostDebt < GHOST_GL16_EVERY);
 
+    // Grow the dirty rect for the map settle-clean while the rider is actively
+    // interacting: diff this frame against the previous one (shadowFb still holds
+    // it, before the copy below) and union the changed native-fb box. Only on the
+    // map, only for active DU frames, so hands-off riding and other screens never
+    // pay the scan and never schedule a region clean.
+    if (screen == SCREEN_MAP && du && active && shadowFb)
+        ghostRectAccumulate(shadowFb, fb);
+
+    if (shadowFb) memcpy(shadowFb, fb, fbSize);
+
     uint32_t tw0 = millis();
     if (!epdPowered) { epd_poweron(); epdPowered = true; }
     if (du) {
@@ -229,16 +331,26 @@ bool refresh(bool screenChanged, bool fastInPage, bool listFast,
         // updates while riding (no recent tap) rely on the periodic GL16.
         if (active) ghostCleanPending = true;
     } else {
-        // GC16 (one brief black/white flash) is needed to fully clear heavy
-        // ghosting that GL16 (no inversion) can't lift: the map settle-clean
-        // (solid roads over the water checker) and the nav-prompt modal appearing
-        // over a busy dash/map (its black band + buttons otherwise ghost the old
-        // screen through). Everything else takes the no-flash GL16.
-        bool useGc16 = gc16 || (forceClean && screen == SCREEN_MAP);
-        epd_hl_update_screen(&hl, useGc16 ? MODE_GC16 : MODE_GL16,
-                             epd_ambient_temperature());
+        int temp = epd_ambient_temperature();
+        if (forceClean && screen == SCREEN_MAP && ghostRectValid) {
+            // Map settle after an interactive DU burst — the case that leaves the
+            // solid-black-over-a-line trail. Clear+repaint ONLY the rectangle that
+            // actually changed (clamped to the map viewport): never the whole
+            // panel, never the status bar/footer. This drives every pixel in the
+            // rect from a uniform white origin, which a differential GC16/GL16
+            // cannot (an unchanged frame diffs to nothing, so a plain re-push is a
+            // no-op — the v1 failure).
+            regionClean(ghostRectToAppClamped(), temp);
+        } else {
+            // The nav-prompt modal over a busy dash/map still gets a full GC16 so
+            // its black band + buttons don't ghost the old screen through; every
+            // other clean is the no-flash GL16. The map settle no longer
+            // full-flashes — it takes the scoped regionClean above.
+            epd_hl_update_screen(&hl, gc16 ? MODE_GC16 : MODE_GL16, temp);
+        }
         ghostDebt = 0;
         ghostCleanPending = false;
+        ghostRectReset();
     }
     if (dbgTiming)
         diag::log("refresh %s: %lums", du ? "DU" : "GL16",

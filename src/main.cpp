@@ -25,6 +25,7 @@
 #include "i2c_bus.h"
 #include "sd_bus.h"
 #include "usb_storage.h"
+#include "power_mgmt.h"
 #include "diag.h"
 
 #if __has_include("esp_core_dump.h")
@@ -243,6 +244,10 @@ void setup() {
     ble_server::begin();   // GATT server for the iOS companion app
     ui_dashboard::begin();
 
+    // Enable automatic light sleep now that every peripheral (GPS UART, BLE, EPD)
+    // is up. No-op + logged warning on a stock framework without CONFIG_PM_ENABLE.
+    power_mgmt::begin();
+
     xTaskCreatePinnedToCore(gps_service::task, "gps", 4096, nullptr, 3, nullptr, 0);
     xTaskCreatePinnedToCore(ble_sensors::task, "ble", 6144, nullptr, 2, nullptr, 0);
     xTaskCreatePinnedToCore(ble_server::task, "srv", 4096, nullptr, 1, nullptr, 0);
@@ -255,6 +260,7 @@ void setup() {
 
 void loop() {
     usb_storage::poll();   // reclaim the SD when the host disconnects
+    power_mgmt::tick();    // hold light sleep off while the USB console is open
     vTaskDelay(pdMS_TO_TICKS(1000));
 }
 
