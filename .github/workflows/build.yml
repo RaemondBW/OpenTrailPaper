@@ -108,8 +108,8 @@ jobs:
         run: |
           xcodebuild -version
           xcodebuild build \
-            -project BikeGPSCompanion.xcodeproj \
-            -target BikeGPSCompanion \
+            -project OpenTrailPaper.xcodeproj \
+            -target OpenTrailPaper \
             -sdk iphonesimulator \
             -configuration Debug \
             CODE_SIGNING_ALLOWED=NO
