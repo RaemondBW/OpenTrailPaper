@@ -3,7 +3,7 @@
 #include <Arduino.h>
 #include <TinyGPS++.h>
 #include <freertos/FreeRTOS.h>
-#include <freertos/stream_buffer.h>
+#include <esp_heap_caps.h>
 
 #include "config.h"
 #include "ride_state.h"
@@ -65,12 +65,14 @@ uint32_t acqStartMs = 0;
 bool g_loggedFirstFix = false;
 bool g_prevFix = false;
 
-// AGNSS ephemeris bytes from the phone (BLE task) → GPS UART (GPS task). A
-// stream buffer is the FreeRTOS SPSC primitive for exactly this. Drained a
-// little each GPS loop, paced by the UART's free space so a multi-KB blob never
-// stalls NMEA parsing.
-StreamBufferHandle_t agnssStream = nullptr;
-constexpr size_t AGNSS_STREAM_CAP = 16 * 1024;
+// AGNSS ephemeris blob (from the phone/console), buffered whole then sent to the
+// receiver one CASIC message at a time, ACK-gated: the module NAKs messages that
+// arrive while it's still busy, so back-to-back streaming loses most of them
+// (measured: 4 ACK / 30 NAK). Buffer, then send-and-wait-for-ACK per message.
+uint8_t* agnssBuf = nullptr;
+size_t   agnssLen = 0, agnssCap = 0;
+volatile bool agnssReady = false;
+constexpr size_t AGNSS_CAP = 32 * 1024;
 
 // Smoothed heading state (EMA over the course unit vector).
 float headX = 0, headY = 0;
@@ -193,8 +195,6 @@ bool begin() {
     SerialGPS.setRxBufferSize(1024);
     SerialGPS.begin(9600, SERIAL_8N1, BOARD_GPS_RXD, BOARD_GPS_TXD);
     delay(100);
-
-    if (!agnssStream) agnssStream = xStreamBufferCreate(AGNSS_STREAM_CAP, 1);
 
     if (initL76K()) {
         Serial.println("[gps] CASIC/L76K initialized @9600");
@@ -395,18 +395,70 @@ void seedFromSaved() {
 }
 
 void agnssBegin() {
-    if (agnssStream) xStreamBufferReset(agnssStream);
+    if (!agnssBuf) agnssBuf = (uint8_t*)heap_caps_malloc(AGNSS_CAP, MALLOC_CAP_SPIRAM);
+    agnssLen = 0;
+    agnssReady = false;
     seedFromSaved();          // position/time first, so ephemeris is bounded
     diag::log("agnss: injection begin");
 }
 
 void agnssInject(const uint8_t* data, size_t len) {
-    if (agnssStream && len) xStreamBufferSend(agnssStream, data, len, 0);
+    if (!agnssBuf || !len) return;
+    if (agnssLen + len > AGNSS_CAP) len = AGNSS_CAP - agnssLen;
+    memcpy(agnssBuf + agnssLen, data, len);
+    agnssLen += len;
 }
 
 void agnssEnd() {
-    seedFromSaved();          // re-seed time so the fresh ephemeris is used now
-    diag::log("agnss: injection end");
+    agnssReady = true;        // GPS task sends it, ACK-gated, then re-seeds time
+    diag::log("agnss: %u bytes buffered, sending", (unsigned)agnssLen);
+}
+
+// Wait up to timeoutMs for a CASIC ACK (BA CE .. 05 01) or NAK (.. 05 00),
+// keeping NMEA parsing alive. Returns 1 ACK, 0 NAK, -1 timeout.
+int waitForCasicAck(uint32_t timeoutMs) {
+    uint32_t start = millis();
+    int st = 0;   // scan for BA CE <lenlo> <lenhi> <cls=05> <id>
+    while (millis() - start < timeoutMs) {
+        while (SerialGPS.available()) {
+            uint8_t c = SerialGPS.read();
+            gps.encode(c);
+            switch (st) {
+                case 0: st = (c == 0xBA) ? 1 : 0; break;
+                case 1: st = (c == 0xCE) ? 2 : (c == 0xBA ? 1 : 0); break;
+                case 2: st = 3; break;              // len lo
+                case 3: st = 4; break;              // len hi
+                case 4: st = (c == 0x05) ? 5 : (c == 0xBA ? 1 : 0); break;   // class
+                case 5:
+                    if (c == 0x01) return 1;        // ACK
+                    if (c == 0x00) return 0;        // NAK
+                    st = (c == 0xBA) ? 1 : 0; break;
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(2));
+    }
+    return -1;
+}
+
+// Send the buffered blob one CASIC message at a time, waiting for each ACK.
+// Frame = BA CE | len(u16) | cls | id | payload[len] | cksum(u32) = 10+len.
+void sendAgnssGated() {
+    int ok = 0, nak = 0, to = 0, msgs = 0;
+    size_t i = 0;
+    while (i + 6 <= agnssLen) {
+        if (agnssBuf[i] != 0xBA || agnssBuf[i + 1] != 0xCE) { i++; continue; }
+        uint16_t len = agnssBuf[i + 2] | ((uint16_t)agnssBuf[i + 3] << 8);
+        size_t frame = 10 + len;
+        if (i + frame > agnssLen) break;
+        SerialGPS.write(agnssBuf + i, frame);
+        int r = waitForCasicAck(300);
+        if (r == 1) ok++; else if (r == 0) nak++; else to++;
+        msgs++;
+        i += frame;
+    }
+    diag::log("agnss gated: %d msgs, %d ACK %d NAK %d timeout", msgs, ok, nak, to);
+    Serial.printf("[agnss] %d msgs: %d ACK, %d NAK, %d timeout\n", msgs, ok, nak, to);
+    seedFromSaved();          // re-seed time so the fresh ephemeris applies now
 }
 
 // Tell the receiver to cold-start: forget ephemeris, almanac, last position and
@@ -498,17 +550,11 @@ void task(void*) {
             gps.encode(c);
         }
 
-        // Drain any pending AGNSS ephemeris bytes to the receiver, but only as
-        // much as the UART TX buffer can take right now, so injecting a multi-KB
-        // blob at 9600/38400 baud never blocks this loop or the NMEA parse.
-        if (agnssStream && !xStreamBufferIsEmpty(agnssStream)) {
-            int room = SerialGPS.availableForWrite();
-            if (room > 0) {
-                uint8_t tmp[128];
-                size_t want = room < (int)sizeof(tmp) ? room : sizeof(tmp);
-                size_t got = xStreamBufferReceive(agnssStream, tmp, want, 0);
-                if (got) SerialGPS.write(tmp, got);
-            }
+        // A completed AGNSS blob is sent here, ACK-gated (blocks this loop for
+        // the ~seconds of injection, which is fine — we're not fixing meanwhile).
+        if (agnssReady) {
+            agnssReady = false;
+            sendAgnssGated();
         }
 
         // Track the strongest C/N0 across all constellations' GSV batches;
