@@ -59,6 +59,10 @@ jobs:
           echo "Pinning esp32-camera + esp-dsp for IDF 4.4..."
           git -C "$AR_COMPS/esp32-camera" reset --hard 2478a5fc7aca43137c8b112af5805f9f5b4d0fab || exit 1
           git -C "$AR_COMPS/espressif__esp-dsp" reset --hard 3ce0ca8546d23825cf57907d02a5e4be7c12d03c || exit 1
+          # esp_littlefs HEAD requires esp_partition (another IDF-5 split). Pin to
+          # v1.5.3 (IDF 4.4 era) and re-init its littlefs submodule after reset.
+          git -C "$AR_COMPS/esp_littlefs" reset --hard fb1470a59dad5949396919f34b9856fa8d29d55f || exit 1
+          git -C "$AR_COMPS/esp_littlefs" submodule update --init --recursive || exit 1
           PIN
           echo "----- update-components.sh tail -----"
           tail -8 tools/update-components.sh
