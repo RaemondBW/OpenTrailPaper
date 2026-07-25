@@ -58,7 +58,7 @@ jobs:
           # ---- CI pin (added by workflow): keep these on IDF-4.4-compatible commits ----
           echo "Pinning esp32-camera + esp-dsp for IDF 4.4..."
           git -C "$AR_COMPS/esp32-camera" reset --hard 2478a5fc7aca43137c8b112af5805f9f5b4d0fab || exit 1
-          git -C "$AR_COMPS/esp-dsp" reset --hard 3ce0ca8546d23825cf57907d02a5e4be7c12d03c || exit 1
+          git -C "$AR_COMPS/espressif__esp-dsp" reset --hard 3ce0ca8546d23825cf57907d02a5e4be7c12d03c || exit 1
           PIN
           echo "----- update-components.sh tail -----"
           tail -8 tools/update-components.sh
