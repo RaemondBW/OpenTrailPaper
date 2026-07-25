@@ -32,8 +32,16 @@ jobs:
 
       - name: Clone esp32-arduino-lib-builder (release/v4.4)
         run: |
-          git clone -b release/v4.4 --depth 1 --recurse-submodules \
+          # NOT --depth 1 --recurse-submodules: shallow submodule clones grab the
+          # submodules' default branch (arduino 3.x -> wants IDF 5) instead of the
+          # v4.4-pinned commits, which fails dep-solving ("idf 4.4.* and idf >=5.0").
+          git clone -b release/v4.4 \
             https://github.com/espressif/esp32-arduino-lib-builder lib-builder
+          cd lib-builder
+          git submodule update --init --recursive
+          echo "--- arduino component version ---"
+          grep -m1 version components/arduino/package.json 2>/dev/null || true
+          cat esp-idf/version.txt 2>/dev/null || git -C esp-idf describe --tags 2>/dev/null || true
 
       - name: Inject power-management sdkconfig into the S3 base defconfig
         working-directory: lib-builder
