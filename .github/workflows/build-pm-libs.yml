@@ -66,6 +66,11 @@ jobs:
 
       - name: Build the ESP32-S3 libraries
         working-directory: lib-builder
+        env:
+          # IDF 4.4 pulls a too-new idf-component-manager (1.5.x, IDF-5 era) that
+          # injects a bogus "idf >=5.0" dependency and fails solving. This build
+          # needs no external managed components, so disable the manager entirely.
+          IDF_COMPONENT_MANAGER: "0"
         run: |
           chmod +x build.sh || true
           ./build.sh -t esp32s3
