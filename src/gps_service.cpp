@@ -376,6 +376,14 @@ void setRawEcho(bool on) { g_rawEcho = on; }
 void queryVersion() { g_verReq = true; }
 void powerCycleTest(int offMs) { g_powerCycleMs = offMs > 0 ? offMs : 1; }
 
+char g_cmdBuf[64];
+volatile bool g_cmdReq = false;
+void sendNmeaCommand(const char* body) {
+    strncpy(g_cmdBuf, body, sizeof(g_cmdBuf) - 1);
+    g_cmdBuf[sizeof(g_cmdBuf) - 1] = 0;
+    g_cmdReq = true;
+}
+
 // Re-seed the receiver exactly like boot does: last-known position, plus time
 // only if the RTC has been GPS-validated. Shared by the cold-start test path.
 void seedFromSaved() {
@@ -439,6 +447,14 @@ void task(void*) {
             // raw for a moment so it lands on the console verbatim.
             g_rawEcho = true;
             SerialGPS.write("$PCAS06,0*1B\r\n");
+        }
+
+        if (g_cmdReq) {
+            g_cmdReq = false;
+            uint8_t ck = 0;
+            for (const char* p = g_cmdBuf; *p; ++p) ck ^= (uint8_t)*p;
+            g_rawEcho = true;
+            SerialGPS.printf("$%s*%02X\r\n", g_cmdBuf, ck);
         }
 
         if (g_powerCycleMs > 0) {

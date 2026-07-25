@@ -871,6 +871,10 @@ static void rebootToBootloader() {
     usb_persist_restart(RESTART_BOOTLOADER);
 }
 
+// After an `agnss <n>` command, the next n bytes on the console are raw AGNSS
+// ephemeris (not console text) piped straight into the GPS inject stream.
+static long agnssRxRemaining = 0;
+
 static void printConsoleHelp() {
     Serial.println("commands:");
     Serial.println("  help                 this list");
@@ -906,10 +910,23 @@ static void runConsoleLine(char* line) {
     } else if (!strcasecmp(cmd, "gpsver")) {
         Serial.println("[cmd] querying GPS version (watch for $GPTXT)");
         gps_service::queryVersion();
+    } else if (!strcasecmp(cmd, "gpssend")) {
+        if (!arg) { Serial.println("[cmd] gpssend <nmea-body, no $ or *cksum>"); return; }
+        Serial.printf("[cmd] -> $%s\n", arg);
+        gps_service::sendNmeaCommand(arg);
     } else if (!strcasecmp(cmd, "gpsraw")) {
         bool on = !(arg && !strcasecmp(arg, "off"));
         gps_service::setRawEcho(on);
         Serial.printf("[cmd] raw GPS echo %s\n", on ? "ON" : "OFF");
+    } else if (!strcasecmp(cmd, "agnss")) {
+        // Test hook: stream N raw AGNSS ephemeris bytes over serial into the
+        // same pipe the BLE path uses. After this line, the next N bytes are
+        // taken verbatim (see pollSerialCommands), not parsed as commands.
+        long n = arg ? atol(arg) : 0;
+        if (n <= 0) { Serial.println("[cmd] agnss <byte-count>, then send raw bytes"); return; }
+        agnssRxRemaining = n;
+        gps_service::agnssBegin();
+        Serial.printf("[cmd] AGNSS: send %ld raw bytes now\n", n);
     } else if (!strcasecmp(cmd, "power")) {
         uint16_t mv = 0; int16_t ma = 0;
         if (board_read_power(mv, ma))
@@ -952,6 +969,15 @@ void pollSerialCommands() {
     static char buf[48];
     static uint8_t n = 0;
     while (Serial.available() > 0) {
+        if (agnssRxRemaining > 0) {           // raw AGNSS byte-stream mode
+            uint8_t b = (uint8_t)Serial.read();
+            gps_service::agnssInject(&b, 1);
+            if (--agnssRxRemaining == 0) {
+                gps_service::agnssEnd();
+                Serial.println("[cmd] AGNSS: all bytes received");
+            }
+            continue;
+        }
         int c = Serial.read();
         if (c == '\r') continue;
         if (c == '\n') {

@@ -64,6 +64,7 @@ int moduleKindCode();
 // Investigation helpers, driven from the serial console:
 void setRawEcho(bool on);        // mirror every raw receiver byte to USB serial
 void queryVersion();             // ask the module its firmware version (PCAS06)
+void sendNmeaCommand(const char* body);  // send "$<body>*<cksum>" + echo reply
 void powerCycleTest(int offMs);  // cut GPS power offMs, restore+re-seed, reset
                                  // TTFF — maps how long ephemeris survives a
                                  // power gap (retention) and lets current draw
