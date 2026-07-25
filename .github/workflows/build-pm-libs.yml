@@ -60,31 +60,27 @@ jobs:
           # before the build ($AR_COMPS is in scope; config.sh already sourced).
           cat >> tools/update-components.sh <<'PIN'
 
-          # ---- CI (added by workflow): drop unused add-ons, pin kept components ----
-          # Match the PlatformIO framework core exactly: reset arduino from
-          # release/v2.x HEAD (2.0.17) to the 2.0.14 tag that
-          # framework-arduinoespressif32@3.20014.231204 ships. Otherwise the
-          # built libs' link-wrap symbols (__wrap_esp_log_write / __wrap_log_printf)
-          # don't match the 2.0.14 core we overlay them onto (undefined refs at
-          # link). Done here (not via -A) because update-components.sh git-pulls
-          # AR_BRANCH, which fails on a detached tag.
-          echo "Resetting arduino to 2.0.14 to match the PlatformIO framework..."
-          git -C "$AR_COMPS/arduino" reset --hard 2.0.14 || exit 1
-          echo "Pruning unused add-on components (camera / esp-dl / esp-dsp / rainmaker)..."
+          # ---- CI (added by workflow): match the PlatformIO framework EXACTLY ----
+          # Every version below is the exact commit from the stock framework's
+          # tools/sdk/versions.txt (framework-arduinoespressif32@3.20014.231204),
+          # so the rebuilt libs differ from the shipped ones ONLY by the PM
+          # sdkconfig flags. Pinning the *libraries* isn't enough — arduino 2.0.14
+          # also needs its exact IDF (v4.4.6), else its BLE lib fails on renamed
+          # bluedroid types (esp_ble_gap_ext_adv_reprot_t). The IDF pin is passed
+          # to build.sh via -i; these component pins run here (config.sh sourced).
+          echo "Pinning arduino / littlefs / tinyusb to framework versions.txt commits..."
+          git -C "$AR_COMPS/arduino" reset --hard 16668c7f || exit 1
+          # Drop add-ons we don't link (camera/esp-dl/esp-dsp/rainmaker). Rainmaker
+          # in particular needs esp_secure_cert_mgr via the (disabled) component
+          # manager; the arduino core references all four only through
+          # maybe_add_component()/config-guarded sources, so removing the dirs is
+          # clean. Their -l entries are stripped from the framework link list.
+          echo "Pruning unused add-on components..."
           rm -rf "$AR_COMPS/esp32-camera" "$AR_COMPS/esp-dl" \
                  "$AR_COMPS/espressif__esp-dsp" "$AR_COMPS/esp-rainmaker" || exit 1
-          # esp_littlefs: pin to v1.10.2. Newer HEAD requires the esp_partition
-          # IDF-5 component; older (v1.5.3) lacks the .partition conf field that
-          # arduino 2.0.17's LittleFS.cpp uses (compile error). v1.10.2 has the
-          # field AND, on IDF<5, requires spi_flash (which provides esp_partition.h)
-          # instead of the esp_partition component. Re-init its littlefs submodule.
-          echo "Pinning esp_littlefs + tinyusb for IDF 4.4..."
-          git -C "$AR_COMPS/esp_littlefs" reset --hard v1.10.2 || exit 1
+          git -C "$AR_COMPS/esp_littlefs" reset --hard 032f9eb || exit 1
           git -C "$AR_COMPS/esp_littlefs" submodule update --init --recursive || exit 1
-          # tinyusb HEAD moved the ESP32-Sx device driver to the generic dwc2
-          # layout; pin to 0.14.0 (last release with the dcd_esp32sx.c the arduino
-          # wrapper's CMakeLists expects).
-          git -C "$AR_COMPS/arduino_tinyusb/tinyusb" reset --hard 9e91b02ec7fb3502747b5c413a4824654fa7fc7e || exit 1
+          git -C "$AR_COMPS/arduino_tinyusb/tinyusb" reset --hard b394ae178 || exit 1
           PIN
           echo "----- update-components.sh tail -----"
           tail -10 tools/update-components.sh
@@ -119,7 +115,9 @@ jobs:
           IDF_COMPONENT_MANAGER: "0"
         run: |
           chmod +x build.sh || true
-          ./build.sh -t esp32s3
+          # -i pins ESP-IDF to v4.4.6 (the commit in the framework's versions.txt);
+          # install-esp-idf.sh checks it out. Matches arduino 2.0.14's expected IDF.
+          ./build.sh -i 3572900934 -t esp32s3
 
       - name: Locate and verify the built S3 SDK tree
         working-directory: lib-builder
