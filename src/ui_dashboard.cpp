@@ -246,6 +246,54 @@ void ghostRectAccumulate(const uint8_t* prev, const uint8_t* cur) {
         if (prev[i] != cur[i]) { ghostDirty[i] = 1; ghostRectValid = true; }
 }
 
+// Bounding box (native-fb coords) of the bytes that differ between two frames.
+// False when nothing changed. Used to scope a DU update to the rows that
+// actually moved — see the note at the DU call site.
+bool changedNativeBox(const uint8_t* prev, const uint8_t* cur,
+                      int& nx, int& ny, int& nw, int& nh) {
+    const int nwb = epd_width() / 2;
+    const int rows = epd_height();
+    int minB = nwb, maxB = -1, minY = rows, maxY = -1;
+    for (int y = 0; y < rows; y++) {
+        const uint8_t* a = prev + (size_t)y * nwb;
+        const uint8_t* b = cur + (size_t)y * nwb;
+        if (memcmp(a, b, nwb) == 0) continue;
+        if (y < minY) minY = y;
+        maxY = y;
+        for (int bx = 0; bx < nwb; bx++) {
+            if (a[bx] != b[bx]) {
+                if (bx < minB) minB = bx;
+                if (bx > maxB) maxB = bx;
+            }
+        }
+    }
+    if (maxB < 0) return false;
+    nx = minB * 2;
+    nw = (maxB - minB + 1) * 2;
+    ny = minY;
+    nh = maxY - minY + 1;
+    return true;
+}
+
+// Native box -> app EpdRect WITHOUT clamping away the status bar (unlike
+// nativeBoxToApp below, which is map-only). The clock and GPS dots live in the
+// status bar and are exactly what changes on an idle screen, so they must stay
+// updatable.
+EpdRect nativeBoxToAppFull(int nx, int ny, int nw, int nh) {
+    const int ax = epd_height() - (ny + nh);
+    const int ay = nx;
+    const int aw = nh, ah = nw;
+    const int W = epd_rotated_display_width();
+    const int H = epd_rotated_display_height();
+    int x0 = ax < 0 ? 0 : ax;
+    int y0 = ay < 0 ? 0 : ay;
+    int x1 = ax + aw; if (x1 > W) x1 = W;
+    int y1 = ay + ah; if (y1 > H) y1 = H;
+    return EpdRect{ (uint16_t)x0, (uint16_t)y0,
+                    (uint16_t)(x1 > x0 ? x1 - x0 : 0),
+                    (uint16_t)(y1 > y0 ? y1 - y0 : 0) };
+}
+
 // Convert a NATIVE-fb box (nx,ny,nw,nh) to an app-coord EpdRect, clamped to the
 // map viewport (below the status bar). INVERTED_PORTRAIT maps app<->native as
 // native_x = app_y, native_y = epd_height()-1 - app_x (epdiy.c _rotate), so a
@@ -391,12 +439,43 @@ bool refresh(bool screenChanged, bool fastInPage, bool listFast,
     if (screen == SCREEN_MAP && du && active && shadowFb)
         ghostRectAccumulate(shadowFb, fb);
 
+    // Scope the DU update to the region that actually changed.
+    //
+    // This is what causes "the white background slowly greys while it sits
+    // there". A DU waveform is fast, 1-bit and NOT DC-balanced. Pushing every DU
+    // as a full-screen update meant one tiny change — the clock ticking a
+    // minute, a GPS signal dot appearing, the battery percent moving — ran a DU
+    // scan across the ENTIRE panel. Pixels holding still get no intended
+    // transition, but they do sit through the scan's drive voltages, and that
+    // small DC imbalance accumulates over hundreds of updates until white reads
+    // grey. (Which is exactly why it never happens with the display off: no
+    // scans, no drift.) Driving only the changed rows leaves the rest of the
+    // panel electrically untouched, and is quicker and lower power besides.
+    //
+    // Diff against epdiy's back_fb — what it believes is on glass — NOT our
+    // shadowFb. epd_hl_update_area only syncs back_fb for the lines inside the
+    // rect it is given, so scoping by shadowFb would let the two records drift
+    // apart: a pixel changing outside the rect would be "already drawn" to us
+    // and "never drawn" to epdiy, and would never appear again.
+    bool duRegionOk = false;
+    EpdRect duRect{0, 0, 0, 0};
+    if (du && hl.back_fb) {
+        int nx, ny, nw, nh;
+        if (changedNativeBox(hl.back_fb, fb, nx, ny, nw, nh)) {
+            duRect = nativeBoxToAppFull(nx, ny, nw, nh);
+            duRegionOk = duRect.width > 0 && duRect.height > 0;
+        }
+    }
+
     if (shadowFb) memcpy(shadowFb, fb, fbSize);
 
     uint32_t tw0 = millis();
     if (!epdPowered) { epd_poweron(); epdPowered = true; }
     if (du) {
-        epd_hl_update_screen(&hl, MODE_DU, epd_ambient_temperature());
+        if (duRegionOk)
+            epd_hl_update_area(&hl, MODE_DU, epd_ambient_temperature(), duRect);
+        else
+            epd_hl_update_screen(&hl, MODE_DU, epd_ambient_temperature());
         ghostDebt += 1;
         // Only interactive bursts schedule a settle-clean; passive 1 Hz DU
         // updates while riding (no recent tap) rely on the periodic GL16.
