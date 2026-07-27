@@ -404,9 +404,39 @@ void twoPhaseFlash(int bx0, int bx1, int temp) {
     epd_hl_update_area(&hl, MODE_GC16, temp, r);
 }
 
+// Snap every pixel to pure black or pure white — no intermediate greys anywhere
+// in the framebuffer.
+//
+// The remaining cause of "grey bleeds into the white areas over time". The
+// bundled fonts are 4bpp ANTI-ALIASED: measured on ArialBold_14, ~20% of glyph
+// pixels sit at intermediate levels (1..14). DU is strictly 1-bit and cannot
+// represent those, so on every text update — the clock ticking, a speed digit
+// changing — the panel drives each anti-aliased edge pixel toward black or
+// white with no stable target. Repeated indefinitely, that is a continuous
+// disturbance that accumulates as a grey cast, and it is why the effect stops
+// dead when the display is off.
+//
+// Flattening makes the framebuffer genuinely 1-bit, so DU always has an exact
+// target and GL16 renders the same thing — the screentone approach the map
+// already uses for water and parks, applied everywhere. Text loses its
+// anti-aliasing and reads slightly harder-edged; on a 1-bit e-paper panel that
+// is the honest rendering rather than a compromise.
+void flattenTo1Bit(uint8_t* fb) {
+    for (size_t i = 0; i < fbSize; i++) {
+        uint8_t b = fb[i];
+        if (b == 0x00 || b == 0xFF) continue;          // already flat, common case
+        uint8_t lo = (b & 0x0F) >= 0x8 ? 0x0F : 0x00;
+        uint8_t hi = (b >> 4)   >= 0x8 ? 0xF0 : 0x00;
+        fb[i] = hi | lo;
+    }
+}
+
 bool refresh(bool screenChanged, bool fastInPage, bool listFast,
              bool forceClean = false, bool gc16 = false, bool fullFlash = false) {
     uint8_t* fb = epd_hl_get_framebuffer(&hl);
+    // Before anything reads the frame (identical-frame check, region diff,
+    // panel push), remove every grey the renderer produced.
+    flattenTo1Bit(fb);
     // forceClean re-pushes the current (unchanged) frame with GL16 to wipe DU
     // ghosting, so it must run even when the framebuffer is identical.
     if (!forceClean && !gc16 && !screenChanged && shadowFb && memcmp(fb, shadowFb, fbSize) == 0) {
