@@ -3,7 +3,7 @@
 # BLE modem sleep — no DFS), so the firmware's esp_pm wiring goes live.
 # Manual, one-off: run from the Actions tab. Downloads the built S3 SDK tree as
 # an artifact; overlay it into a local framework copy + point platformio.ini at
-# it. See design/ (CPU sleep notes).
+# it. See investigations/ (CPU sleep notes).
 name: Build PM-enabled Arduino S3 libs
 
 on:
