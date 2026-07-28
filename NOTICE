@@ -1,0 +1,45 @@
+OpenTrailPaper
+Copyright 2025-2026 Raemond Bergstrom-Wood
+
+This product includes software developed as part of the OpenTrailPaper project,
+licensed under the Apache License, Version 2.0 (see LICENSE).
+
+--------------------------------------------------------------------------------
+Third-party components included in this repository
+--------------------------------------------------------------------------------
+
+H3 — hexagonal hierarchical geospatial indexing system
+  companion-ios/Sources/H3/
+  Copyright 2016-2021 Uber Technologies, Inc.
+  Licensed under the Apache License, Version 2.0
+  https://github.com/uber/h3
+
+--------------------------------------------------------------------------------
+Third-party components fetched at build time (not included in this repository)
+--------------------------------------------------------------------------------
+
+The firmware build clones the LilyGO board-support repository into vendor/,
+which supplies the board definition and several drivers. These carry their own
+licenses, which apply to those components rather than to this project:
+
+  epdiy (e-paper driver)            LGPL-3.0-or-later   https://github.com/vroland/epdiy
+  SensorLib (touch, IO expander)    MIT                 https://github.com/lewisxhe/SensorLib
+  TinyGPSPlus                       LGPL-2.1            https://github.com/mikalhart/TinyGPSPlus
+  BQ27220 (fuel gauge)              see vendor source
+  LilyGO T5S3-4.7-e-paper-PRO       see upstream repo   https://github.com/Xinyuan-LilyGO/T5S3-4.7-e-paper-PRO
+
+PlatformIO additionally resolves:
+
+  NimBLE-Arduino                    Apache-2.0          https://github.com/h2zero/NimBLE-Arduino
+  arduino-esp32 / ESP-IDF           Apache-2.0 / LGPL   https://github.com/espressif
+
+--------------------------------------------------------------------------------
+Map data
+--------------------------------------------------------------------------------
+
+Map tiles generated and displayed by this project are derived from
+OpenStreetMap data, © OpenStreetMap contributors, available under the Open
+Database License (ODbL). https://www.openstreetmap.org/copyright
+
+Maps produced from that data are subject to the ODbL's share-alike terms
+independently of this project's Apache-2.0 license.

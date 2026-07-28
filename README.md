@@ -384,3 +384,16 @@ tools/
   maps/              OSM → EBM1 region map builder
 vendor/              LilyGO board support (cloned, not committed)
 ```
+
+## License
+
+Licensed under the [Apache License, Version 2.0](LICENSE).
+
+Third-party components and their licenses are listed in [NOTICE](NOTICE) —
+notably Uber H3 (Apache-2.0, vendored into the iOS app) and the LilyGO board
+support cloned into `vendor/` at build time, which carries its own licenses
+(epdiy is LGPL-3.0-or-later).
+
+Map data is derived from OpenStreetMap, © OpenStreetMap contributors, under the
+[ODbL](https://www.openstreetmap.org/copyright). Generated maps are subject to
+the ODbL independently of this project's license.
