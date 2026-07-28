@@ -175,7 +175,7 @@ DU scoping or 1-bit flattening; those need on-device testing.
 ## 7. Testing caveat on this history
 
 A stretch of display work (`power-quick-wins`) was compiled by a **corrupted
-local toolchain** (see `design/battery-life.md` §4). Results from that period —
+local toolchain** (see `investigations/battery-life.md` §4). Results from that period —
 including at least one round of "the ghosting fix didn't work" — are unreliable,
 because the binary was mis-built rather than the logic wrong. The fixes were
 re-applied in isolation on a known-good base afterwards

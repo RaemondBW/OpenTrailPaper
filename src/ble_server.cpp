@@ -818,7 +818,7 @@ class MapCb : public NimBLECharacteristicCallbacks {
 
 // AGNSS ephemeris injection: the phone streams a module-specific ephemeris blob
 // and we pipe the raw bytes to the receiver's UART (gps_service parses nothing —
-// the module ingests its own format). See design/agnss.md.
+// the module ingests its own format). See investigations/agnss.md.
 NimBLECharacteristic* agnssChr = nullptr;
 void agnssNotify(const uint8_t* d, size_t n) {
     if (agnssChr) { agnssChr->setValue(d, n); agnssChr->notify(); }
