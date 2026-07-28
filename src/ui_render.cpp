@@ -820,20 +820,41 @@ void ui_render_nav_prompt(const char* routeName, int turns, uint8_t* fb) {
 
     ui::text(&ArialBold_20, 118, kPowerSheet.y + 42, "Start navigation?", fb);
 
-    // Route name + turn count in an inverted (black) band with breathing room
-    // above and below — reads much darker than the old light-grey caption.
+    // Destination: the route name set as the main line, with the turn count as
+    // a quieter line beneath it.
+    //
+    // This used to be white-on-black in a solid inverted band. On a sheet that
+    // is otherwise white, a full-width slab of black is the heaviest thing on
+    // screen — it pulled the eye away from the START/LATER buttons and read as
+    // a warning rather than as information. Black-on-white with a rule above it
+    // gives the same separation with none of the shouting, and it matches how
+    // the rest of the UI presents content.
     char name[48];
     snprintf(name, sizeof(name), "%s", routeName);
     size_t nl = strlen(name);   // drop a trailing ".gpx" for a cleaner label
     if (nl > 4 && strcmp(name + nl - 4, ".gpx") == 0) name[nl - 4] = 0;
-    char sub[64];
-    snprintf(sub, sizeof(sub), "%s · %d turns", name, turns);
-    char fitted[64];
-    fitText(&ArialBold_20, sub, 480 - 28, fitted, sizeof(fitted));
-    EpdRect band = {30, kPowerSheet.y + 58, 480, 46};
-    epd_fill_rect(band, 0x00, fb);
-    ui::text(&ArialBold_20, band.x + band.width / 2, band.y + band.height / 2 + 8,
-             fitted, fb, EPD_DRAW_ALIGN_CENTER, 0xFF);
+
+    // Only ~120 px between the sheet top (600) and the START button (720), so
+    // this is one line, not two — a stacked name + turn count collided with the
+    // button.
+    const int bandX = 30, bandW = 480;
+    const int ruleY = kPowerSheet.y + 64;
+    epd_fill_rect({bandX, ruleY, bandW, 2}, 0x00, fb);
+
+    // Fit the NAME to whatever is left after the turn count, rather than
+    // fitting the whole string — otherwise a long route name eats the count and
+    // it truncates to something like "8 t..", which is worse than a shortened
+    // name.
+    char tail[24];
+    snprintf(tail, sizeof(tail), " · %d turns", turns);
+    const int tailW = ui::textWidth(&ArialBold_20, tail);
+    char fittedName[64];
+    fitText(&ArialBold_20, name, bandW - 28 - tailW, fittedName,
+            sizeof(fittedName));
+    char sub[80];
+    snprintf(sub, sizeof(sub), "%s%s", fittedName, tail);
+    ui::text(&ArialBold_20, bandX + bandW / 2, ruleY + 36, sub, fb,
+             EPD_DRAW_ALIGN_CENTER);
 
     epd_fill_rect({kPowerShutdown.x, kPowerShutdown.y, kPowerShutdown.width,
                    kPowerShutdown.height}, 0x00, fb);
@@ -862,16 +883,45 @@ void ui_render_nav_banner(const char* instruction, float distanceM,
     bool right = strstr(instruction, "right") || strstr(instruction, "Right");
     int ax = 60, ay = top + 60;
     if (left || right) {
-        int dir = left ? -1 : 1;
-        // shaft up, head turning left/right
-        epd_fill_rect({ax - 4, ay - 4, 8, 34}, 0xFF, fb);
-        epd_fill_rect({ax, ay - 4, dir * 30, 8}, 0xFF, fb);
-        int hx = ax + dir * 30;
-        epd_fill_triangle(hx + dir * 16, ay, hx, ay - 14, hx, ay + 14, 0xFF, fb);
+        // Turn arrow: a stem rising from the bottom, an elbow, and a head
+        // pointing the way to turn.
+        //
+        // EpdRect.width is UNSIGNED. The previous version drew the horizontal
+        // arm as {ax, y, dir * 30, 8} with dir = -1 for a left turn, so the
+        // width wrapped to a huge value and the arm never rendered where it
+        // should — which is why the left arrow's head floated away from the
+        // body while the right one looked fine. Always pass a positive width
+        // and move the origin instead.
+        const int dir = left ? -1 : 1;
+        const int stemW = 10;         // stroke weight, shared by stem and arm
+        const int stemBottom = ay + 30;
+        const int armLen = 30;        // elbow -> base of the head
+        const int headLen = 18, headHalf = 15;
+
+        // Vertical stem, from the elbow down. Starts at the arm's top edge so
+        // the two overlap and read as one continuous stroke.
+        epd_fill_rect({ax - stemW / 2, ay - stemW / 2,
+                       stemW, stemBottom - (ay - stemW / 2)}, 0xFF, fb);
+
+        // Horizontal arm out to the head. Extend it back through the stem's
+        // centre so the inside of the elbow is square rather than notched.
+        const int armX = left ? ax - armLen : ax - stemW / 2;
+        const int armW = armLen + stemW / 2;
+        epd_fill_rect({armX, ay - stemW / 2, armW, stemW}, 0xFF, fb);
+
+        // Head. Its base sits ON the end of the arm (not beyond it), so the
+        // triangle and the body are always joined.
+        const int baseX = ax + dir * armLen;
+        epd_fill_triangle(baseX + dir * headLen, ay,
+                          baseX, ay - headHalf,
+                          baseX, ay + headHalf, 0xFF, fb);
     } else {
-        // straight-ahead chevron
-        epd_fill_triangle(ax, ay - 18, ax - 16, ay + 8, ax + 16, ay + 8, 0xFF, fb);
-        epd_fill_rect({ax - 5, ay + 2, 10, 26}, 0xFF, fb);
+        // Straight ahead: head on top of a stem, overlapping so they join.
+        const int stemW = 10, headHalf = 17, headH = 20;
+        epd_fill_rect({ax - stemW / 2, ay - 6, stemW, 34}, 0xFF, fb);
+        epd_fill_triangle(ax, ay - 6 - headH,
+                          ax - headHalf, ay - 4,
+                          ax + headHalf, ay - 4, 0xFF, fb);
     }
 
     char d[16];
