@@ -17,22 +17,26 @@ const barWrap = document.querySelector(".progress");
 const bar = $("bar");
 const versionSelect = $("version-select");
 
-// CI publishes firmware.bin to a Release per version; list them for the dropdown.
-const REPO = "RaemondBW/OpenTrailPaper";
+// CI publishes firmware.bin per version; the Pages build bundles them into
+// firmware/ alongside this site (see loadReleases).
 let releases = []; // [{ tag, url }]
 
+// Firmware is served from THIS site (firmware/<tag>/firmware.bin), not from the
+// GitHub Release asset URL.
+//
+// GitHub moved release-asset downloads to release-assets.githubusercontent.com
+// (Azure Blob), which sends no access-control-allow-origin header, so a browser
+// fetch() of one fails with "Failed to fetch". The api.github.com asset endpoint
+// does not help either: its redirect carries CORS but the blob it points at does
+// not, and the browser needs CORS on the final response. The Pages workflow
+// downloads the binaries server-side and ships them alongside the site, so this
+// is a same-origin fetch with no CORS involved.
 async function loadReleases() {
   if (!versionSelect) return;
   try {
-    const res = await fetch(`https://api.github.com/repos/${REPO}/releases?per_page=40`);
+    const res = await fetch("firmware/index.json", { cache: "no-cache" });
     if (!res.ok) throw new Error("HTTP " + res.status);
-    const data = await res.json();
-    releases = data
-      .map((r) => {
-        const bin = (r.assets || []).find((a) => a.name === "firmware.bin");
-        return bin ? { tag: r.tag_name, url: bin.browser_download_url } : null;
-      })
-      .filter(Boolean);
+    releases = await res.json();
     versionSelect.innerHTML = "";
     if (releases.length === 0) {
       versionSelect.innerHTML = '<option value="">No CI releases available yet</option>';

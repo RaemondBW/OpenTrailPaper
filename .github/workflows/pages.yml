@@ -11,6 +11,12 @@ on:
     paths:
       - "docs/**"
       - ".github/workflows/pages.yml"
+  # Redeploy after a firmware build publishes a Release, so the flasher's
+  # bundled firmware/ directory picks up the new version (see "Bundle firmware").
+  workflow_run:
+    workflows: ["Build"]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -47,6 +53,49 @@ jobs:
             cp "companion-ios/$f.png" "_site/img/app_$f.png"
           done
           touch _site/.nojekyll
+
+      # Serve firmware.bin from the site itself rather than linking the GitHub
+      # Release asset.
+      #
+      # GitHub moved release-asset downloads to release-assets.githubusercontent.com
+      # (Azure Blob), which sends NO access-control-allow-origin header. A browser
+      # fetch() of a release asset from the site's origin therefore fails with
+      # "Failed to fetch", which broke the web flasher for every version. The
+      # api.github.com asset endpoint does not help: its 302 carries CORS but the
+      # blob it redirects to does not, and browsers require CORS on the FINAL
+      # response.
+      #
+      # Downloading here is server-side, so CORS never applies; the flasher then
+      # fetches a same-origin path and needs no CORS at all. Nothing is committed
+      # to the repo, so there is no binary bloat in git.
+      - name: Bundle firmware for the web flasher
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p _site/firmware
+          # Newest 10 releases that actually carry a firmware.bin.
+          gh release list --repo "$GITHUB_REPOSITORY" --limit 30 \
+            --json tagName --jq '.[].tagName' > tags.txt || true
+          : > _site/firmware/index.json
+          echo "[" >> _site/firmware/index.json
+          first=1
+          count=0
+          while read -r tag; do
+            [ -n "$tag" ] || continue
+            [ "$count" -ge 10 ] && break
+            if gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
+                 --pattern firmware.bin --dir "_site/firmware/$tag" 2>/dev/null; then
+              [ "$first" = 1 ] || echo "," >> _site/firmware/index.json
+              printf '  {"tag": "%s", "url": "firmware/%s/firmware.bin"}' \
+                "$tag" "$tag" >> _site/firmware/index.json
+              first=0
+              count=$((count + 1))
+              echo "bundled $tag"
+            fi
+          done < tags.txt
+          echo "" >> _site/firmware/index.json
+          echo "]" >> _site/firmware/index.json
+          echo "--- index.json ---"; cat _site/firmware/index.json
 
       - name: Upload site artifact
         uses: actions/upload-pages-artifact@v3
