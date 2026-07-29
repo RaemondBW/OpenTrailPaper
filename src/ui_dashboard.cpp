@@ -1314,11 +1314,25 @@ void task(void*) {
         }
         lastHostActive = host;
 
-        // Terrain elevation from the map DEM at the current position (~1 Hz).
+        // Terrain elevation from the map DEM at the current position.
         // Only the UI task touches the tile cache, so this stays race-free with
         // the map render. The recorder reads mapElevationM to integrate ascent.
+        //
+        // This is an SD read, and it sits near the top of the loop — ahead of
+        // touch handling. While a ride is recording, the recorder task (which
+        // runs at a HIGHER priority than the UI) takes sdLock every second to
+        // write a FIT record, and every 15 s to flush. A DEM read here then
+        // blocks behind it and the rider's tap is not processed until it
+        // returns, which is why touch felt sluggish only while recording.
+        //
+        // So skip it entirely while the rider is interacting, and sample at
+        // 2.5 s rather than 1 s otherwise: ascent is integrated with 3 m
+        // hysteresis, so a slower sample costs nothing but removes most of the
+        // opportunities to collide with the recorder.
         static uint32_t lastElevMs = 0;
-        if (millis() - lastElevMs > 1000 && !host) {
+        const bool interacting = touchIrq || touchWasDown ||
+                                 millis() - lastUiInputMs < 1500;
+        if (!interacting && millis() - lastElevMs > 2500 && !host) {
             lastElevMs = millis();
             RideState es = g_state.snapshot();
             double elat = 0, elon = 0;
