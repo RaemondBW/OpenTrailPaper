@@ -1,5 +1,6 @@
 #include "ui_render.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -883,38 +884,46 @@ void ui_render_nav_banner(const char* instruction, float distanceM,
     bool right = strstr(instruction, "right") || strstr(instruction, "Right");
     int ax = 60, ay = top + 60;
     if (left || right) {
-        // Turn arrow: a stem rising from the bottom, an elbow, and a head
-        // pointing the way to turn.
+        // Turn arrow: a stem that sweeps through a quarter-circle into the head,
+        // so it reads like a road bending rather than a right-angled elbow.
         //
-        // EpdRect.width is UNSIGNED. The previous version drew the horizontal
-        // arm as {ax, y, dir * 30, 8} with dir = -1 for a left turn, so the
-        // width wrapped to a huge value and the arm never rendered where it
-        // should — which is why the left arrow's head floated away from the
-        // body while the right one looked fine. Always pass a positive width
-        // and move the origin instead.
+        // The curve is stamped as a run of filled circles along the arc. That
+        // gives a constant stroke weight and round joins for free, and avoids
+        // needing a polygon rasteriser — epdiy only offers rects, triangles and
+        // circles.
+        //
+        // NOTE EpdRect.width is UNSIGNED. An earlier version drew the arm as
+        // {ax, y, dir * 30, 8} with dir = -1 for a left turn; the width wrapped
+        // to a huge value, so the arm never landed where it should and the head
+        // appeared detached. Nothing here passes a signed width.
         const int dir = left ? -1 : 1;
-        const int stemW = 10;         // stroke weight, shared by stem and arm
-        const int stemBottom = ay + 30;
-        const int armLen = 30;        // elbow -> base of the head
+        const int strokeW = 11;             // stroke weight
+        const int r = strokeW / 2;
+        const int R = 26;                   // radius of the turn
+        const int arcTopY = ay + 6;         // where the stem meets the curve
+        const int stemBottom = ay + 34;
         const int headLen = 18, headHalf = 15;
 
-        // Vertical stem, from the elbow down. Starts at the arm's top edge so
-        // the two overlap and read as one continuous stroke.
-        epd_fill_rect({ax - stemW / 2, ay - stemW / 2,
-                       stemW, stemBottom - (ay - stemW / 2)}, 0xFF, fb);
+        // Straight stem, from the bottom up to where the curve begins.
+        epd_fill_rect({ax - r, arcTopY, strokeW, stemBottom - arcTopY}, 0xFF, fb);
 
-        // Horizontal arm out to the head. Extend it back through the stem's
-        // centre so the inside of the elbow is square rather than notched.
-        const int armX = left ? ax - armLen : ax - stemW / 2;
-        const int armW = armLen + stemW / 2;
-        epd_fill_rect({armX, ay - stemW / 2, armW, stemW}, 0xFF, fb);
+        // Quarter arc. Centre sits beside the stem on the side we turn toward,
+        // so theta = 0 lands exactly on the stem top and theta = 90 ends
+        // travelling horizontally, ready for the head.
+        const int cx = ax + dir * R;
+        for (int i = 0; i <= 24; ++i) {
+            const float t = (float)i / 24.0f * (float)M_PI / 2.0f;
+            const int px = cx - (int)lroundf(dir * R * cosf(t));
+            const int py = arcTopY - (int)lroundf(R * sinf(t));
+            epd_fill_circle(px, py, r, 0xFF, fb);
+        }
 
-        // Head. Its base sits ON the end of the arm (not beyond it), so the
-        // triangle and the body are always joined.
-        const int baseX = ax + dir * armLen;
-        epd_fill_triangle(baseX + dir * headLen, ay,
-                          baseX, ay - headHalf,
-                          baseX, ay + headHalf, 0xFF, fb);
+        // Head at the end of the arc, pointing the way we turn. Its base sits ON
+        // the arc's last stamp, so body and head are always joined.
+        const int endX = cx, endY = arcTopY - R;
+        epd_fill_triangle(endX + dir * headLen, endY,
+                          endX, endY - headHalf,
+                          endX, endY + headHalf, 0xFF, fb);
     } else {
         // Straight ahead: head on top of a stem, overlapping so they join.
         const int stemW = 10, headHalf = 17, headH = 20;
