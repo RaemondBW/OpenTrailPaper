@@ -116,18 +116,22 @@ void fillDitheredPolygon(const int16_t* pts, int n, uint8_t* fb, bool hatch = fa
         for (int a = 0; a + 1 < cnt; a += 2) {
             int xL = xs[a] < 0 ? 0 : xs[a];
             int xR = xs[a + 1] > 539 ? 539 : xs[a + 1];
-            // Water: dense 75% black dither (3 of every 2x2 block) so it reads as
-            // a solid, pretty-dark grey — true solid grey would snap to white on
-            // the fast 1-bit DU refresh, so a dense dither is the DU-safe way to
-            // get a dark solid tone. Parks: a sparse 25% diagonal hatch, kept
-            // light + textured so green areas stay distinct from water. Roads
-            // draw solid black on top.
+            // Screentones, not flat tone. Both fills are 1-bit patterns, because
+            // a true grey value is not displayable on the fast DU refresh — but
+            // the PATTERN has to be coarse enough to read as texture. A 1-pixel
+            // checkerboard is 50% ink yet resolves as mushy flat grey, which is
+            // what parks used to look like: darker than before, but no longer
+            // recognisably a screentone the way the water is.
+            //
+            //   Water — 75% dots (3 of every 2x2). Dense and dark, still clearly
+            //           dotted. This is the one that already looked right.
+            //   Parks — 50% ink as 2-pixel diagonal stripes on a 4-pixel pitch.
+            //           Same darkness as the 1-pixel hatch it replaces, but the
+            //           stripes are visible, so parks read as hatched ground and
+            //           stay distinct from water at a glance.
             for (int x = xL; x <= xR; ++x) {
                 if (mask) ditherMaskMark(x, y);
-                // Parks: 50% diagonal hatch (was 25%) — darker, still a diagonal
-                // texture so green reads distinct from the water's dot dither.
-                // Water: dense 75% dot dither.
-                bool on = hatch ? (((x - y) & 1) == 0)
+                bool on = hatch ? (((x - y) & 3) < 2)
                                 : !((x & 1) && (y & 1));
                 if (on) epd_draw_pixel(x, y, 0x00, fb);
             }
