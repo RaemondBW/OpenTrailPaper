@@ -9,7 +9,11 @@
 #include <vector>
 #include <zlib.h>
 
-#include "epdiy.h"
+// epd_compat.h rather than epdiy.h: the preview must exercise the SAME
+// rasteriser the device runs, or it stops being evidence. It caught two layout
+// bugs against epdiy's renderer; pointed at a different renderer than ships, the
+// next one it "catches" could be its own.
+#include "epd_compat.h"
 #include "ride_state.h"
 #include "ui_render.h"
 #include "map_view.h"
@@ -229,7 +233,8 @@ std::vector<int16_t> buildRoute(int& riddenPoints) {
 int main(int argc, char** argv) {
     std::string outDir = argc > 1 ? argv[1] : ".";
 
-    epd_init(NULL, &ED047TC1, EPD_OPTIONS_DEFAULT);
+    // No epd_init(): the compat rasteriser has no hardware state to bring up, and
+    // rotation is the only thing the old call was here for.
     epd_set_rotation(EPD_ROT_INVERTED_PORTRAIT);
 
     std::vector<uint8_t> fb(NATIVE_W / 2 * NATIVE_H);

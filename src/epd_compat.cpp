@@ -9,6 +9,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+// Compiled for the EPD_Painter device build and for the host preview harness.
+// The epdiy device build (env t5s3-pro) gets its drawing functions from epdiy
+// itself, so compiling ours there would be a duplicate definition of all
+// thirteen; its epdc_* panel shim lives in epd_compat_epdiy.cpp instead.
+#if !defined(ARDUINO) || defined(USE_EPD_PAINTER)
+
 namespace {
 
 // Native panel geometry. The framebuffer is always in NATIVE orientation;
@@ -90,16 +96,46 @@ void epd_draw_vline(int x, int y, int length, uint8_t color, uint8_t* fb) {
     for (int i = 0; i < length; ++i) epd_draw_pixel(x, y + i, color, fb);
 }
 
+// Bresenham, stepping along whichever axis is longer and always left-to-right on
+// that axis.
+//
+// The tie-breaking here is deliberate, not incidental: the symmetric two-error
+// form this used at first draws a *valid* line that picks different pixels on
+// roughly half of all diagonals, which showed up as ~90 stray pixels per map
+// screen against the epdiy baseline. Map polylines and the turn arrow are drawn
+// with this, so matching the shipped rasterisation is what keeps the port
+// invisible. Axis-aligned cases go to the span helpers, again as epdiy does — an
+// exactly-horizontal line must not depend on the DDA rounding at all.
 void epd_draw_line(int x0, int y0, int x1, int y1, uint8_t color, uint8_t* fb) {
-    const int dx = abs(x1 - x0), dy = -abs(y1 - y0);
-    const int sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
-    int err = dx + dy;
-    for (;;) {
-        epd_draw_pixel(x0, y0, color, fb);
-        if (x0 == x1 && y0 == y1) break;
-        const int e2 = 2 * err;
-        if (e2 >= dy) { err += dy; x0 += sx; }
-        if (e2 <= dx) { err += dx; y0 += sy; }
+    if (x0 == x1) {
+        if (y0 > y1) { const int t = y0; y0 = y1; y1 = t; }
+        epd_draw_vline(x0, y0, y1 - y0 + 1, color, fb);
+        return;
+    }
+    if (y0 == y1) {
+        if (x0 > x1) { const int t = x0; x0 = x1; x1 = t; }
+        epd_draw_hline(x0, y0, x1 - x0 + 1, color, fb);
+        return;
+    }
+
+    const bool steep = abs(y1 - y0) > abs(x1 - x0);
+    if (steep) {
+        int t = x0; x0 = y0; y0 = t;
+        t = x1; x1 = y1; y1 = t;
+    }
+    if (x0 > x1) {
+        int t = x0; x0 = x1; x1 = t;
+        t = y0; y0 = y1; y1 = t;
+    }
+
+    const int dx = x1 - x0, dy = abs(y1 - y0);
+    const int ystep = y0 < y1 ? 1 : -1;
+    int err = dx / 2;
+    for (; x0 <= x1; ++x0) {
+        if (steep) epd_draw_pixel(y0, x0, color, fb);
+        else       epd_draw_pixel(x0, y0, color, fb);
+        err -= dy;
+        if (err < 0) { y0 += ystep; err += dx; }
     }
 }
 
@@ -134,13 +170,51 @@ void epd_draw_circle(int x0, int y0, int r, uint8_t color, uint8_t* fb) {
     }
 }
 
-// Filled circle as horizontal spans, so it is solid with no seams.
+// Filled circle: one horizontal span per row, its half-width taken from the
+// midpoint outline above.
+//
+// Deriving the spans from the same recurrence as epd_draw_circle — rather than
+// from the exact disc dx^2 + dy^2 <= r^2, which is what this did first — matters
+// because it is what makes the result pixel-identical to epdiy's fill for every
+// radius 1..40 (verified exhaustively). The exact disc is a rounder circle by any
+// mathematical measure and about 12 pixels different at r=4, which is enough to
+// make the GPS signal dots in the status bar visibly thinner than they have been.
+// Matching the shipped look wins over matching the ideal one.
 void epd_fill_circle(int x0, int y0, int r, uint8_t color, uint8_t* fb) {
+    if (r < 0) return;
+    // Half-width per row, indexed by dy + r. Stack-resident: this runs per dot in
+    // the map render loop, and a malloc/free pair per circle there is not worth
+    // it. 128 covers every radius the UI uses (the largest is the compass ring);
+    // anything bigger falls back to the exact disc rather than growing the frame.
+    constexpr int kMaxR = 128;
+    if (r > kMaxR) {
+        for (int dy = -r; dy <= r; ++dy) {
+            int dx = 0;
+            while ((dx + 1) * (dx + 1) + dy * dy <= r * r) dx++;
+            epd_draw_hline(x0 - dx, y0 + dy, 2 * dx + 1, color, fb);
+        }
+        return;
+    }
+    int half[2 * kMaxR + 1] = {0};
+    auto mark = [&](int dx, int dy) {
+        const int i = dy + r;
+        if (i < 0 || i > 2 * r) return;
+        const int ax = dx < 0 ? -dx : dx;
+        if (ax > half[i]) half[i] = ax;
+    };
+
+    int x = r, y = 0, err = 1 - r;
+    while (x >= y) {
+        mark(x, y);  mark(y, x);  mark(-y, x);  mark(-x, y);
+        mark(-x, -y); mark(-y, -x); mark(y, -x); mark(x, -y);
+        y++;
+        if (err < 0) err += 2 * y + 1;
+        else { x--; err += 2 * (y - x) + 1; }
+    }
+
     for (int dy = -r; dy <= r; ++dy) {
-        // Largest dx with dx^2 + dy^2 <= r^2, without floating point.
-        int dx = 0;
-        while ((dx + 1) * (dx + 1) + dy * dy <= r * r) dx++;
-        epd_draw_hline(x0 - dx, y0 + dy, 2 * dx + 1, color, fb);
+        const int hx = half[dy + r];
+        epd_draw_hline(x0 - hx, y0 + dy, 2 * hx + 1, color, fb);
     }
 }
 
@@ -222,37 +296,108 @@ uint32_t nextCodePoint(const char** s) {
     return cp;
 }
 
-int stringWidth(const EpdFont* font, const char* s) {
-    int w = 0;
+// Accumulate the bounding box of a string, mirroring epdiy's get_char_bounds /
+// epd_get_text_bounds exactly. Getting this wrong shifts every centred and
+// right-aligned label on every screen, so it is worth the fidelity.
+//
+// The subtlety is that the two callers want DIFFERENT boxes, which is what
+// `background` selects — epd_get_string_rect forces EPD_DRAW_BACKGROUND on and
+// so measures the full advance box (pen start to pen end, ascender to
+// descender), while alignment in epd_write_string measures the INK box (leftmost
+// to rightmost lit pixel). Those differ by the last glyph's right side bearing,
+// typically 1-3 px: enough that right-aligned text measured the advance way
+// stops sitting flush against its anchor.
+struct TextBounds { int minx, miny, maxx, maxy, penEnd; };
+
+TextBounds measure(const EpdFont* font, const char* s, int x, int y,
+                   bool background) {
+    TextBounds b{100000, 100000, -1, -1, x};
+    int px = x;
     while (*s) {
         const uint32_t cp = nextCodePoint(&s);
         const EpdGlyph* g = findGlyph(font, cp);
-        if (g) w += g->advance_x;
+        if (!g) continue;
+        const int x1 = px + g->left;
+        const int y1 = y + g->top - g->height;
+        const int x2 = x1 + g->width;
+        const int y2 = y1 + g->height;
+        if (background) {
+            if (px < b.minx) b.minx = px;
+            if (x1 < b.minx) b.minx = x1;
+            const int adv = px + g->advance_x;
+            if (adv > b.maxx) b.maxx = adv;
+            if (x2 > b.maxx) b.maxx = x2;
+            if (y + font->descender < b.miny) b.miny = y + font->descender;
+            if (y1 < b.miny) b.miny = y1;
+            if (y + font->ascender > b.maxy) b.maxy = y + font->ascender;
+            if (y2 > b.maxy) b.maxy = y2;
+        } else {
+            if (x1 < b.minx) b.minx = x1;
+            if (y1 < b.miny) b.miny = y1;
+            if (x2 > b.maxx) b.maxx = x2;
+            if (y2 > b.maxy) b.maxy = y2;
+        }
+        px += g->advance_x;
     }
-    return w;
+    b.penEnd = px;
+    return b;
+}
+
+// The width alignment shifts by: epd_get_text_bounds' `w`.
+int alignWidth(const EpdFont* font, const char* s) {
+    if (!s || !*s) return 0;
+    const TextBounds b = measure(font, s, 0, 0, /*background=*/false);
+    if (b.maxx < 0) return 0;                  // nothing drawable
+    const int x1 = 0 < b.minx ? 0 : b.minx;    // min(original_x, minx)
+    return b.maxx - x1;
 }
 
 // Blit one glyph. The bitmap is 4bpp, 2 pixels per byte, low nibble first, each
 // nibble an intensity 0..15 (0 = leave background alone).
 //
-// We THRESHOLD that intensity to fully on/off rather than blending. The panel is
-// driven 1-bit for text, and the anti-aliased edge values were a real problem
-// with epdiy: a pixel stuck between black and white gives the waveform no
-// stable target and contributed to the grey drift (see
-// investigations/display-ghosting.md). Thresholding also makes text render
-// identically on the device and in the host preview.
+// By default we THRESHOLD that intensity to fully on/off rather than blending it
+// toward the background. The bundled fonts are anti-aliased — measured on
+// ArialBold_14, ~20% of a glyph's lit pixels sit at intermediate levels — and
+// under epdiy those edge pixels were an active problem: DU is strictly 1-bit, so
+// every text update drove them toward black or white with no stable target, which
+// was the last source of the grey drift (investigations/display-ghosting.md).
+// Flattening them made text 1-bit, and that is what has been shipping.
+//
+// EPD_Painter removes the reason for that constraint, so the blend is available
+// again behind EPDC_TEXT_ANTIALIAS. Two things to know before turning it on: the
+// driver runs 4 grey levels by default, so 16-level AA collapses to 4 and edges
+// go chunky rather than smooth; and the tools/preview diff against the epdiy
+// baseline is only zero WITH it on — that is how the geometry above was verified
+// (see the same file). Left off because crisp 1-bit reads better than 4-level AA
+// at 14-20 px, not because it is unsafe.
 void blitGlyph(const EpdFont* font, const EpdGlyph* g, int* cursorX, int cursorY,
-               uint8_t fgLevel, uint8_t* fb) {
+               uint8_t fgLevel, uint8_t bgLevel, uint8_t* fb) {
     const int byteWidth = (g->width + 1) / 2;
     const uint8_t* bmp = &font->bitmap[g->data_offset];
+
+#ifdef EPDC_TEXT_ANTIALIAS
+    // epdiy's ramp, reproduced exactly: level = bg + v*(fg-bg)/15, clamped.
+    uint8_t ramp[16];
+    for (int v = 0; v < 16; ++v) {
+        int lv = (int)bgLevel + v * ((int)fgLevel - (int)bgLevel) / 15;
+        ramp[v] = (uint8_t)(lv < 0 ? 0 : (lv > 15 ? 15 : lv));
+    }
+#else
+    (void)bgLevel;
     const uint8_t color = (uint8_t)(fgLevel << 4);
+#endif
 
     for (int y = 0; y < g->height; ++y) {
         const int py = cursorY - g->top + y;
         for (int x = 0; x < g->width; ++x) {
             const uint8_t byte = bmp[y * byteWidth + (x >> 1)];
             const uint8_t v = (x & 1) ? (byte >> 4) : (byte & 0x0F);
+#ifdef EPDC_TEXT_ANTIALIAS
+            if (v) epd_draw_pixel(*cursorX + g->left + x, py,
+                                  (uint8_t)(ramp[v] << 4), fb);
+#else
             if (v >= 8) epd_draw_pixel(*cursorX + g->left + x, py, color, fb);
+#endif
         }
     }
     *cursorX += g->advance_x;
@@ -269,10 +414,19 @@ enum EpdDrawError epd_write_string(const EpdFont* font, const char* string,
 
     // Alignment: epdiy treats cursor_x as the anchor and shifts by the string
     // width for centre/right. Our layouts rely on this heavily.
+    //
+    // Mask on the three ALIGN bits by name. They are 0x2/0x4/0x8 — masking 0x3,
+    // as this did at first, catches only ALIGN_LEFT and silently left-aligns
+    // every right- and centre-aligned string in the UI. It looked plausible on
+    // most screens and put the battery percentage on top of the battery icon;
+    // the host preview diff is what caught it.
     int x = *cursor_x;
-    const EpdFontFlags align = (EpdFontFlags)(props.flags & 0x3);
-    if (align == EPD_DRAW_ALIGN_CENTER)     x -= stringWidth(font, string) / 2;
-    else if (align == EPD_DRAW_ALIGN_RIGHT) x -= stringWidth(font, string);
+    const int align = props.flags &
+        (EPD_DRAW_ALIGN_LEFT | EPD_DRAW_ALIGN_RIGHT | EPD_DRAW_ALIGN_CENTER);
+    // Mutually exclusive, as in epdiy: more than one bit set is a caller bug.
+    if (align & (align - 1)) return EPD_DRAW_INVALID_FONT_FLAGS;
+    if (align == EPD_DRAW_ALIGN_CENTER)     x -= alignWidth(font, string) / 2;
+    else if (align == EPD_DRAW_ALIGN_RIGHT) x -= alignWidth(font, string);
 
     const char* s = string;
     while (*s) {
@@ -280,7 +434,7 @@ enum EpdDrawError epd_write_string(const EpdFont* font, const char* string,
         const EpdGlyph* g = findGlyph(font, cp);
         if (!g) g = findGlyph(font, props.fallback_glyph);
         if (!g) continue;
-        blitGlyph(font, g, &x, *cursor_y, props.fg_color, fb);
+        blitGlyph(font, g, &x, *cursor_y, props.fg_color, props.bg_color, fb);
     }
     *cursor_x = x;
     return EPD_DRAW_SUCCESS;
@@ -288,15 +442,19 @@ enum EpdDrawError epd_write_string(const EpdFont* font, const char* string,
 
 EpdRect epd_get_string_rect(const EpdFont* font, const char* string, int x, int y,
                             int margin, const EpdFontProperties* properties) {
-    (void)properties;
-    EpdRect r = {0, 0, 0, 0};
-    if (!font || !string) return r;
-    const int w = stringWidth(font, string);
-    const int h = font->ascender - font->descender;
-    r.x = (uint16_t)(x - margin);
-    r.y = (uint16_t)(y - font->ascender - margin);
-    r.width = (uint16_t)(w + 2 * margin);
-    r.height = (uint16_t)(h + 2 * margin);
+    (void)properties;   // epdiy forces EPD_DRAW_BACKGROUND on here regardless
+    EpdRect r = {(uint16_t)x, (uint16_t)y, 0, 0};
+    if (!font || !string || !*string) return r;
+
+    // epdiy measures from y + ascender, and reports width relative to the
+    // caller's x (not to minx) — so a glyph with negative left bearing makes the
+    // rect start left of x. Kept identical because ui_render's textWidth() is
+    // just this .width, and it drives every fits-in-the-box decision.
+    const TextBounds b = measure(font, string, x, y + font->ascender,
+                                 /*background=*/true);
+    if (b.maxx < 0) return r;
+    r.width  = (uint16_t)(b.maxx - x + 2 * margin);
+    r.height = (uint16_t)(b.maxy - b.miny + 2 * margin);
     return r;
 }
 
@@ -388,3 +546,5 @@ void epdc_clear(int passes) {
 }
 
 #endif  // ARDUINO
+
+#endif  // !ARDUINO || USE_EPD_PAINTER

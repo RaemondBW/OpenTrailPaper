@@ -4,7 +4,7 @@
 #include <SD.h>
 #include <Update.h>
 #include <Wire.h>
-#include <epdiy.h>
+#include "epd_compat.h"
 #include <TouchDrvGT911.hpp>
 
 #include "config.h"
@@ -32,7 +32,6 @@
 
 namespace {
 
-EpdiyHighlevelState hl;
 TouchDrvGT911 touch;
 bool touchOk = false;
 int refreshCount = 0;
@@ -41,8 +40,6 @@ int refreshCount = 0;
 // repaint when nothing changed (design: "static chrome never repaints"),
 // so identical frames are dropped before any epd update.
 uint8_t* shadowFb = nullptr;
-uint8_t* flashSave = nullptr;   // holds content across the 2-phase flash
-uint8_t* ghostDirty = nullptr;  // 1 per fb-byte: changed during this map burst
 size_t fbSize = 0;
 
 enum Screen { SCREEN_DASH, SCREEN_MAP, SCREEN_SUMMARY, SCREEN_MENU,
@@ -120,11 +117,13 @@ void shutdownDevice(uint8_t* fb, const char* reason) {
     }
     ui_render_shutdown_screen(fb);
     if (shadowFb) memcpy(shadowFb, fb, fbSize);
-    epd_poweron();
-    epd_fullclear(&hl, epd_ambient_temperature());
-    if (shadowFb) memcpy(fb, shadowFb, fbSize);  // fullclear wipes fb
-    epd_hl_update_screen(&hl, MODE_GC16, epd_ambient_temperature());
-    epd_poweroff();
+    // The shutdown screen has to survive on the glass for days with no power, so
+    // it gets the one place a HARD clear is genuinely worth its cost: scrub to
+    // white, then paint the final image with everything driven from a known
+    // state. epdc_clear() leaves our framebuffer alone (unlike epdiy's
+    // fullclear, which wiped it and needed a save/restore around the call).
+    epdc_clear();
+    epdc_paint();
 
     // Peripherals down, matching the factory sleep sequence
     i2cLock(); touch.sleep(); i2cUnlock();
@@ -159,7 +158,9 @@ constexpr uint32_t AUTO_SLEEP_MS = 10 * 60 * 1000;   // 10 minutes idle
 // waiting for the 1 Hz periodic tick — otherwise an in-place change (zoom, a
 // map toggle) can sit up to a second before the panel repaints.
 bool forceDraw = false;
-uint32_t lastUiInputMs = 0;   // last touch/button; gates the deferred ghost-clean
+// Last touch/button. Used to back off the barometer sample while the rider is
+// interacting, so it does not contend with the recorder for the SD lock.
+uint32_t lastUiInputMs = 0;
 void noteActivity() {
     lastActivityMs = millis();
     lastUiInputMs = millis();
@@ -167,391 +168,53 @@ void noteActivity() {
     ble_sensors::noteActivity();
 }
 
-// Hybrid refresh policy to avoid the GC16 white-flash on every page.
+// Panel refresh.
 //
-//   - Page transition  -> GL16: renders full grays, NO inversion flash.
-//   - In-page update on a pure black/white screen -> DU: fast 1-bit.
-//   - Deep clean (GC16 + white flash) only when ghosting has actually
-//     built up, tracked by `ghostDebt`, not on a fixed page count.
+// This used to be ~260 lines of waveform policy: DU vs GL16 vs GC16, ghostDebt
+// accounting, a deferred settle-clean, region-scoped two-phase flashes through
+// white, a changed-region differ, and a pass that flattened the framebuffer to
+// 1-bit. ALL of it existed to work around epdiy's differential DU — a pixel that
+// is black before and after gets no waveform, DU is not DC-balanced, and neither
+// DU nor GL16 can restore a white pixel it never drove. See
+// investigations/display-ghosting.md for the full history.
 //
-// DU leaves ghosting and can't render gray, so it is used only for the
-// live black/white screens; everything else (and every transition) takes
-// the clean GL16 path.
-// Refresh strategy that never does the slow, flashing GC16 clean during
-// use:
-//   - Live black/white screen  -> DU (fast, ~300 ms), accumulates ghosting.
-//   - Every GHOST_GL16_EVERY DU updates -> one GL16 instead: a full but
-//     NON-flashing pass that clears accumulated ghosting.
-//   - Page transitions / gray screens -> GL16 (no flash, moderate speed).
-// GC16 (the black/white/black flash) only ever runs at boot and shutdown.
-int ghostDebt = 0;
-constexpr int GHOST_GL16_EVERY = 24;   // ~24 s of DU before a clean pass
-// After an interactive DU burst (zoom / menu taps) settles, do ONE GL16 pass to
-// clear the ghost those fast 1-bit updates leave behind — otherwise the old
-// frame's solid-black roads linger as light grey where the new frame is now
-// water or white. Set on interactive DU, fired once the taps stop.
-bool ghostCleanPending = false;
-constexpr uint32_t GHOST_CLEAN_SETTLE_MS = 900;
-
-// The map's live DU frames slowly grey the white background (1-bit residue that
-// a differential GL16 can't clear, since white==white never drives). Bound that
-// drift: once it's been this long since the last real (clearing) map refresh,
-// take one 2-phase viewport clear in place of the next passive DU frame. Only
-// when NOT actively interacting, so it never interrupts a pan/zoom.
-uint32_t lastMapCleanMs = 0;
-constexpr uint32_t MAP_PERIODIC_CLEAN_MS = 45000;
-
-// Panel power keep-alive: powering the TPS rails up costs ~36 ms, so during a
-// burst of interactions we leave the panel powered and only release it a beat
-// after the rider stops. epdIdleOffAt is the deadline; the task loop powers off.
-bool epdPowered = false;
-uint32_t epdIdleOffAt = 0;
-
-// ---- Region-scoped ghost clear (v3) --------------------------------------
+// EPD_Painter makes every one of those workarounds unnecessary: it has its own
+// delta engine, per-panel measured waveform tables, and an explicit DC-balance
+// pass. Soaked on hardware with a 1 Hz partial update, the white background held
+// with no drift — which is what none of our epdiy schemes achieved.
 //
-// The map settle-clean must remove the solid-black-over-a-line trail WITHOUT
-// flashing the whole panel (v2 did a full epd_fullclear on every settle — way
-// too many full-screen flashes). epdiy's high-level update is DIFFERENTIAL: a
-// pixel that is black before AND after gets no waveform (render.c:390), and
-// re-pushing an unchanged frame drives nothing at all (highlevel.c:127). So the
-// only way to equalise the old mark with its surroundings is to flush the
-// affected REGION to uniform white and repaint it from there — scoped to just
-// the rectangle that actually changed, never the status bar or footer.
-//
-// We track the union of what changed across the interactive DU burst (where the
-// marker / roads swept and left a trail) as a bounding box in the panel's NATIVE
-// framebuffer layout, convert it to the app's rotated coordinates, clamp it to
-// the map viewport, and clear+repaint just that rect.
-
-// Per-byte record of what CHANGED during this map interaction burst. This is how
-// road ghosts get cleaned: a road that pans/sheds leaves a dark trail at its old
-// spot (byte changed dark->white) and dark ink at its new spot (white->dark) —
-// both marked dirty. Static white land stays unmarked (never flashes); static
-// dithered fills stay unmarked too, but the water/park mask covers those. The
-// settle flashes (dirty OR mask), so it clears exactly the moved ink plus the
-// ghost-prone fills, and nothing that didn't change.
-bool ghostRectValid = false;
-
-void ghostRectReset() {
-    if (ghostDirty) memset(ghostDirty, 0, fbSize);
-    ghostRectValid = false;
-}
-
-// Mark every native-fb byte that differs between two full frames (prev vs cur).
-// Runs only during an active map DU burst, so the O(fb) scan stays off the
-// idle/riding path.
-void ghostRectAccumulate(const uint8_t* prev, const uint8_t* cur) {
-    if (!ghostDirty) return;
-    for (size_t i = 0; i < fbSize; i++)
-        if (prev[i] != cur[i]) { ghostDirty[i] = 1; ghostRectValid = true; }
-}
-
-// Bounding box (native-fb coords) of the bytes that differ between two frames.
-// False when nothing changed. Used to scope a DU update to the rows that
-// actually moved — see the note at the DU call site.
-bool changedNativeBox(const uint8_t* prev, const uint8_t* cur,
-                      int& nx, int& ny, int& nw, int& nh) {
-    const int nwb = epd_width() / 2;
-    const int rows = epd_height();
-    int minB = nwb, maxB = -1, minY = rows, maxY = -1;
-    for (int y = 0; y < rows; y++) {
-        const uint8_t* a = prev + (size_t)y * nwb;
-        const uint8_t* b = cur + (size_t)y * nwb;
-        if (memcmp(a, b, nwb) == 0) continue;
-        if (y < minY) minY = y;
-        maxY = y;
-        for (int bx = 0; bx < nwb; bx++) {
-            if (a[bx] != b[bx]) {
-                if (bx < minB) minB = bx;
-                if (bx > maxB) maxB = bx;
-            }
-        }
-    }
-    if (maxB < 0) return false;
-    nx = minB * 2;
-    nw = (maxB - minB + 1) * 2;
-    ny = minY;
-    nh = maxY - minY + 1;
-    return true;
-}
-
-// Native box -> app EpdRect WITHOUT clamping away the status bar (unlike
-// nativeBoxToApp below, which is map-only). The clock and GPS dots live in the
-// status bar and are exactly what changes on an idle screen, so they must stay
-// updatable.
-EpdRect nativeBoxToAppFull(int nx, int ny, int nw, int nh) {
-    const int ax = epd_height() - (ny + nh);
-    const int ay = nx;
-    const int aw = nh, ah = nw;
-    const int W = epd_rotated_display_width();
-    const int H = epd_rotated_display_height();
-    int x0 = ax < 0 ? 0 : ax;
-    int y0 = ay < 0 ? 0 : ay;
-    int x1 = ax + aw; if (x1 > W) x1 = W;
-    int y1 = ay + ah; if (y1 > H) y1 = H;
-    return EpdRect{ (uint16_t)x0, (uint16_t)y0,
-                    (uint16_t)(x1 > x0 ? x1 - x0 : 0),
-                    (uint16_t)(y1 > y0 ? y1 - y0 : 0) };
-}
-
-// Convert a NATIVE-fb box (nx,ny,nw,nh) to an app-coord EpdRect, clamped to the
-// map viewport (below the status bar). INVERTED_PORTRAIT maps app<->native as
-// native_x = app_y, native_y = epd_height()-1 - app_x (epdiy.c _rotate), so a
-// native box inverts to app: x = epd_height()-(ny+nh), y = nx, w = nh, h = nw.
-EpdRect nativeBoxToApp(int nx, int ny, int nw, int nh) {
-    const int ax = epd_height() - (ny + nh);
-    const int ay = nx;
-    const int aw = nh, ah = nw;
-    const int W = epd_rotated_display_width();
-    const int H = epd_rotated_display_height();
-    int x0 = ax < 0 ? 0 : ax;
-    int y0 = ay < ui::STATUS_H ? ui::STATUS_H : ay;   // never touch the status bar
-    int x1 = ax + aw; if (x1 > W) x1 = W;
-    int y1 = ay + ah; if (y1 > H) y1 = H;
-    return EpdRect{ (uint16_t)x0, (uint16_t)y0,
-                    (uint16_t)(x1 > x0 ? x1 - x0 : 0),
-                    (uint16_t)(y1 > y0 ? y1 - y0 : 0) };
-}
-
-// Settle-clean that flashes the union of (a) the water/park dithered fills —
-// where DU ghosting settles into a static screen-locked pattern — and (b) every
-// byte that CHANGED this burst — the moving roads and their trails. Everything
-// that didn't change and isn't a fill (static white land, unmoved roads, text)
-// keeps front==back and never flashes, so the refresh stays scoped to what
-// actually needs it. Two-phase per selected byte:
-//   1. blank it to white (front=white, back=black -> every pixel drives);
-//   2. restore content, drive white->content (holes stay white, no crosstalk),
-// so dark tones come back saturated. epdiy is differential, so only the selected
-// bytes ever move.
-void ghostRegionClean(int temp) {
-    const uint8_t* mask = ui_map_dither_mask();
-    if (!flashSave || !ghostDirty) return;
-    const int nwb = epd_width() / 2;
-    const int nh  = epd_height();
-    // Confine to the map viewport columns so the status bar/footer never flash.
-    const int bx0 = ui::STATUS_H / 2, bx1 = ui::MAP_STRIP_TOP / 2;
-    uint8_t* front = epd_hl_get_framebuffer(&hl);
-    uint8_t* back  = hl.back_fb;
-    int minX = epd_width(), minY = nh, maxX = -1, maxY = -1;
-    for (int y = 0; y < nh; y++) {                       // phase 1: selected -> white
-        const size_t row = (size_t)y * nwb;
-        uint8_t* f = front + row; uint8_t* bk = back + row; uint8_t* sv = flashSave + row;
-        const uint8_t* d = ghostDirty + row;
-        const uint8_t* m = mask ? mask + row : nullptr;
-        for (int bx = bx0; bx < bx1; bx++) {
-            if (d[bx] || (m && m[bx])) {
-                sv[bx] = f[bx]; f[bx] = 0xFF; bk[bx] = 0x00;
-                int px = bx * 2;
-                if (px < minX) minX = px;   if (px + 1 > maxX) maxX = px + 1;
-                if (y < minY) minY = y;     if (y > maxY) maxY = y;
-            }
-        }
-    }
-    if (maxX < 0) return;                                // nothing to clean
-    EpdRect r = nativeBoxToApp(minX, minY, maxX - minX + 1, maxY - minY + 1);
-    if (!r.width || !r.height) return;
-    epd_hl_update_area(&hl, MODE_GC16, temp, r);
-    for (int y = minY; y <= maxY; y++) {                 // phase 2: white -> content
-        const size_t row = (size_t)y * nwb;
-        uint8_t* f = front + row; uint8_t* bk = back + row; const uint8_t* sv = flashSave + row;
-        const uint8_t* d = ghostDirty + row;
-        const uint8_t* m = mask ? mask + row : nullptr;
-        for (int bx = bx0; bx < bx1; bx++)
-            if (d[bx] || (m && m[bx])) { f[bx] = sv[bx]; bk[bx] = 0xFF; }
-    }
-    epd_hl_update_area(&hl, MODE_GC16, temp, r);
-}
-
-// Two-phase clear of the native columns [bx0, bx1): white flash, then repaint
-// from white. A plain differential GC16 only drives pixels where the new frame
-// differs from the old ON-GLASS state — so where a heavy previous screen's black
-// (the dashboard's big digits) sits under the map's dark water, front==back==dark
-// and the pixel is skipped, leaving that black as a ghost. Driving EVERY pixel
-// through a clean white sheet scrubs it, and the second pass paints the content
-// from that white origin so dark tones come back saturated.
-//   [0, nwb)                       -> whole screen (map<->data transitions).
-//   [STATUS_H/2, MAP_STRIP_TOP/2)  -> the map viewport only, leaving the status
-//                                     bar/clock AND the data footer steady (the
-//                                     deferred settle after a pan/zoom burst).
-// INVERTED_PORTRAIT: native column bx == app_y bx*2, so the column range maps
-// straight to an app-row band.
-void twoPhaseFlash(int bx0, int bx1, int temp) {
-    uint8_t* front = epd_hl_get_framebuffer(&hl);
-    const int nwb = epd_width() / 2;
-    const int nh  = epd_height();
-    if (bx1 > nwb) bx1 = nwb;
-    if (bx0 < 0) bx0 = 0;
-    EpdRect r = nativeBoxToApp(bx0 * 2, 0, (bx1 - bx0) * 2, nh);
-    if (!flashSave || bx1 <= bx0 || !r.width || !r.height) {
-        epd_hl_update_area(&hl, MODE_GC16, temp, r);   // fallback: differential
-        return;
-    }
-    for (int y = 0; y < nh; y++) {                      // phase 1: -> white
-        const size_t row = (size_t)y * nwb;
-        for (int bx = bx0; bx < bx1; bx++) {
-            const size_t i = row + bx;
-            flashSave[i] = front[i]; front[i] = 0xFF; hl.back_fb[i] = 0x00;
-        }
-    }
-    epd_hl_update_area(&hl, MODE_GC16, temp, r);
-    for (int y = 0; y < nh; y++) {                      // phase 2: white -> content
-        const size_t row = (size_t)y * nwb;
-        for (int bx = bx0; bx < bx1; bx++) {
-            const size_t i = row + bx;
-            front[i] = flashSave[i]; hl.back_fb[i] = 0xFF;
-        }
-    }
-    epd_hl_update_area(&hl, MODE_GC16, temp, r);
-}
-
-// Snap every pixel to pure black or pure white — no intermediate greys anywhere
-// in the framebuffer.
-//
-// The remaining cause of "grey bleeds into the white areas over time". The
-// bundled fonts are 4bpp ANTI-ALIASED: measured on ArialBold_14, ~20% of glyph
-// pixels sit at intermediate levels (1..14). DU is strictly 1-bit and cannot
-// represent those, so on every text update — the clock ticking, a speed digit
-// changing — the panel drives each anti-aliased edge pixel toward black or
-// white with no stable target. Repeated indefinitely, that is a continuous
-// disturbance that accumulates as a grey cast, and it is why the effect stops
-// dead when the display is off.
-//
-// Flattening makes the framebuffer genuinely 1-bit, so DU always has an exact
-// target and GL16 renders the same thing — the screentone approach the map
-// already uses for water and parks, applied everywhere. Text loses its
-// anti-aliasing and reads slightly harder-edged; on a 1-bit e-paper panel that
-// is the honest rendering rather than a compromise.
-void flattenTo1Bit(uint8_t* fb) {
-    for (size_t i = 0; i < fbSize; i++) {
-        uint8_t b = fb[i];
-        if (b == 0x00 || b == 0xFF) continue;          // already flat, common case
-        uint8_t lo = (b & 0x0F) >= 0x8 ? 0x0F : 0x00;
-        uint8_t hi = (b >> 4)   >= 0x8 ? 0xF0 : 0x00;
-        fb[i] = hi | lo;
-    }
-}
-
+// So the whole policy reduces to: skip identical frames, otherwise paint.
 bool refresh(bool screenChanged, bool fastInPage, bool listFast,
              bool forceClean = false, bool gc16 = false, bool fullFlash = false) {
-    uint8_t* fb = epd_hl_get_framebuffer(&hl);
-    // Before anything reads the frame (identical-frame check, region diff,
-    // panel push), remove every grey the renderer produced.
-    flattenTo1Bit(fb);
-    // forceClean re-pushes the current (unchanged) frame with GL16 to wipe DU
-    // ghosting, so it must run even when the framebuffer is identical.
-    if (!forceClean && !gc16 && !screenChanged && shadowFb && memcmp(fb, shadowFb, fbSize) == 0) {
-        return false;  // identical frame — never touch the panel
-    }
-    // DU is ~2x quicker than GL16. Use it when we can: live in-place updates on
-    // the pure black/white screens (dash/map numbers), and — the win for
-    // "switching menu state" — page changes INTO the menu/list/settings screens,
-    // which are pure B/W so DU loses no grays. Page changes into dash/map keep
-    // GL16 so a busy previous screen (the map) doesn't ghost through. A periodic
-    // GL16 clears the ghosting DU accumulates.
-    bool wantDu = (fastInPage && !screenChanged) || listFast;
-    // While the rider is actively tapping, never take the ~950 ms GL16
-    // ghost-clean hit mid-interaction — stay on fast DU and let the clean happen
-    // once things settle (the task loop does it during idle).
-    bool active = millis() - lastUiInputMs < 1200;
-    bool du = !forceClean && !gc16 && !fullFlash && wantDu && (active || ghostDebt < GHOST_GL16_EVERY);
+    // Every one of these parameters selected an epdiy waveform. The driver makes
+    // that choice itself now, so they survive only to keep the ~15 call sites
+    // unchanged. Notably fullFlash — the map<->dash transition scrub — is also a
+    // no-op: it existed because DU/GL16 could not restore a white pixel they had
+    // never driven, so the old screen bled through. A full paint() drives every
+    // changed pixel with a real waveform, which is the same guarantee the old
+    // two-phase flash bought at the cost of a 1.5 s white flash. If residue ever
+    // does show up on that transition, clearDirtyAreas() is the tool for it —
+    // scoped, not a whole-panel clear.
+    (void)screenChanged; (void)fastInPage; (void)listFast;
+    (void)forceClean; (void)gc16; (void)fullFlash;
 
-    // Replace a passive (non-interactive) map DU frame with a real 2-phase
-    // viewport clear once the drift timer expires, to scrub accumulated grey.
-    bool mapPeriodicClean = du && !active && screen == SCREEN_MAP &&
-                            millis() - lastMapCleanMs > MAP_PERIODIC_CLEAN_MS;
-    if (mapPeriodicClean) du = false;
+    uint8_t* fb = epdc_framebuffer();
 
-    // Grow the dirty rect for the map settle-clean while the rider is actively
-    // interacting: diff this frame against the previous one (shadowFb still holds
-    // it, before the copy below) and union the changed native-fb box. Only on the
-    // map, only for active DU frames, so hands-off riding and other screens never
-    // pay the scan and never schedule a region clean.
-    if (screen == SCREEN_MAP && du && active && shadowFb)
-        ghostRectAccumulate(shadowFb, fb);
-
-    // Scope the DU update to the region that actually changed.
-    //
-    // This is what causes "the white background slowly greys while it sits
-    // there". A DU waveform is fast, 1-bit and NOT DC-balanced. Pushing every DU
-    // as a full-screen update meant one tiny change — the clock ticking a
-    // minute, a GPS signal dot appearing, the battery percent moving — ran a DU
-    // scan across the ENTIRE panel. Pixels holding still get no intended
-    // transition, but they do sit through the scan's drive voltages, and that
-    // small DC imbalance accumulates over hundreds of updates until white reads
-    // grey. (Which is exactly why it never happens with the display off: no
-    // scans, no drift.) Driving only the changed rows leaves the rest of the
-    // panel electrically untouched, and is quicker and lower power besides.
-    //
-    // Diff against epdiy's back_fb — what it believes is on glass — NOT our
-    // shadowFb. epd_hl_update_area only syncs back_fb for the lines inside the
-    // rect it is given, so scoping by shadowFb would let the two records drift
-    // apart: a pixel changing outside the rect would be "already drawn" to us
-    // and "never drawn" to epdiy, and would never appear again.
-    bool duRegionOk = false;
-    EpdRect duRect{0, 0, 0, 0};
-    if (du && hl.back_fb) {
-        int nx, ny, nw, nh;
-        if (changedNativeBox(hl.back_fb, fb, nx, ny, nw, nh)) {
-            duRect = nativeBoxToAppFull(nx, ny, nw, nh);
-            duRegionOk = duRect.width > 0 && duRect.height > 0;
-        }
-    }
-
+    // Identical frame: never touch the panel. Cheaper than letting the delta
+    // engine discover there is nothing to do, and it keeps the 1 Hz idle path
+    // free of panel activity entirely.
+    if (shadowFb && memcmp(fb, shadowFb, fbSize) == 0) return false;
     if (shadowFb) memcpy(shadowFb, fb, fbSize);
 
-    uint32_t tw0 = millis();
-    if (!epdPowered) { epd_poweron(); epdPowered = true; }
-    if (du) {
-        if (duRegionOk)
-            epd_hl_update_area(&hl, MODE_DU, epd_ambient_temperature(), duRect);
-        else
-            epd_hl_update_screen(&hl, MODE_DU, epd_ambient_temperature());
-        ghostDebt += 1;
-        // Only interactive bursts schedule a settle-clean; passive 1 Hz DU
-        // updates while riding (no recent tap) rely on the periodic GL16.
-        if (active) ghostCleanPending = true;
-    } else {
-        int temp = epd_ambient_temperature();
-        if (fullFlash) {
-            // Map<->data transition: scrub the whole previous screen.
-            twoPhaseFlash(0, epd_width() / 2, temp);
-            lastMapCleanMs = millis();
-        } else if (mapPeriodicClean) {
-            // Idle drift reset: clear the whole map viewport (see the timer note).
-            twoPhaseFlash(ui::STATUS_H / 2, ui::MAP_STRIP_TOP / 2, temp);
-            lastMapCleanMs = millis();
-        } else if (forceClean && screen == SCREEN_MAP && ghostRectValid) {
-            // Deferred settle after a pan/zoom burst: the rider saw the fast DU
-            // frames live (with ghosting); now that input has stopped for
-            // GHOST_CLEAN_SETTLE_MS, flash ONLY the water/park fills — the sole
-            // ghost-prone regions — leaving the rest of the map untouched.
-            ghostRegionClean(temp);
-            lastMapCleanMs = millis();
-        } else {
-            // The nav-prompt modal over a busy dash/map still gets a full GC16 so
-            // its black band + buttons don't ghost the old screen through; every
-            // other clean is the no-flash GL16.
-            epd_hl_update_screen(&hl, gc16 ? MODE_GC16 : MODE_GL16, temp);
-        }
-        ghostDebt = 0;
-        ghostCleanPending = false;
-        ghostRectReset();
-    }
+    const uint32_t tw0 = millis();
+    epdc_paint();
+
     if (dbgTiming)
-        diag::log("refresh %s: %lums", du ? "DU" : "GL16",
-                  (unsigned long)(millis() - tw0));
-    // Keep the panel powered only through an interactive burst (so successive
-    // zoom/settings taps skip the ~36 ms power-up). Passive 1 Hz updates power
-    // straight back off, so idle/riding battery draw is unchanged.
-    if (active) {
-        epdIdleOffAt = millis() + 1500;
-    } else {
-        epd_poweroff();
-        epdPowered = false;
-    }
+        diag::log("refresh: %lums", (unsigned long)(millis() - tw0));
     refreshCount++;
     return true;
 }
+
 
 // Screens that are pure black/white AND update in place can use the fast
 // DU path between frames. Screens with gray tones must take GL16.
@@ -794,9 +457,11 @@ void handleTap(int x, int y) {
             // pipeline self-test; anywhere else navigates back to Settings.
             if (y < 150) {
                 smooth_epd::selfTest();
-                // The self-test cleared the glass to white behind epdiy's back;
-                // resync its front buffer and force a full redraw next frame.
-                epd_hl_set_all_white(&hl);
+                // The self-test drove the panel directly, behind the driver's
+                // back, so its record of what is on glass is now wrong. A clear
+                // puts both back in agreement at white; zeroing shadowFb (a
+                // value the renderer never produces) forces a full redraw.
+                epdc_clear();
                 if (shadowFb) memset(shadowFb, 0, fbSize);
             } else {
                 screen = SCREEN_SETTINGS;
@@ -807,7 +472,7 @@ void handleTap(int x, int y) {
 
 void handlePowerTap(int x, int y) {
     if (inRect(kPowerShutdown, x, y)) {
-        uint8_t* fb = epd_hl_get_framebuffer(&hl);
+        uint8_t* fb = epdc_framebuffer();
         shutdownDevice(fb, "user power-off (dialog)");  // does not return
     } else {
         // CANCEL, or a tap anywhere outside the sheet, dismisses it.
@@ -1052,10 +717,13 @@ void renderListScreen(uint8_t* fb) {
 namespace ui_dashboard {
 
 bool begin() {
-    epd_init(&epd_board_v7, &ED047TC1, EPD_LUT_64K);
-    epd_set_vcom(1560);
-    hl = epd_hl_init(EPD_BUILTIN_WAVEFORM);
-    epd_set_rotation(DISPLAY_ROTATION);
+    // Panel up. Board config, VCOM, waveform tables and rotation all live inside
+    // the compat layer now (see epd_compat.cpp) — including the NVS-stored
+    // per-board tuning EPD_Painter loads at the end of its own begin().
+    if (!epdc_begin()) {
+        Serial.println("[ui] display init FAILED");
+        return false;
+    }
 
     // Backlight — level set in Settings, applied here at boot.
     pinMode(BOARD_BL_EN, OUTPUT);
@@ -1084,14 +752,14 @@ bool begin() {
     // via this callback during touch.getPoint(). It navigates back.
     touch.setHomeButtonCallback([](void*) { homeKeyPressed = true; }, nullptr);
 
-    epd_poweron();
-    epd_clear();
-    epd_poweroff();
+    // Scrub before the first paint. E-paper holds its image with no power, so
+    // what is physically on the glass right now is the shutdown screen from the
+    // last ride (or another firmware's screen entirely) while the driver's record
+    // says white. One pass did not shift it on hardware; four does.
+    epdc_clear(4);
 
     fbSize = epd_width() / 2 * epd_height();
     shadowFb = (uint8_t*)heap_caps_malloc(fbSize, MALLOC_CAP_SPIRAM);
-    flashSave = (uint8_t*)heap_caps_malloc(fbSize, MALLOC_CAP_SPIRAM);
-    ghostDirty = (uint8_t*)heap_caps_malloc(fbSize, MALLOC_CAP_SPIRAM);
 
     routeScreenPts = (int16_t*)heap_caps_malloc(
         MAX_ROUTE_SCREEN_PTS * 2 * sizeof(int16_t), MALLOC_CAP_SPIRAM);
@@ -1120,7 +788,7 @@ void applySdUpdate() {
     if (size < 4096) { f.close(); return; }
 
     auto drawProgress = [&](int pct, bool first) {
-        uint8_t* fb = epd_hl_get_framebuffer(&hl);
+        uint8_t* fb = epdc_framebuffer();
         memset(fb, 0xFF, fbSize);
         ui_render_update_overlay("Installing", pct, fb);
         refresh(first, !first, false);   // GL16 on first frame, fast DU for progress
@@ -1369,7 +1037,7 @@ void task(void*) {
                 lastUpdatePhase = phaseId;
                 RideState s = g_state.snapshot();
                 s.phoneConnected = ble_server::isPhoneConnected();
-                uint8_t* fb = epd_hl_get_framebuffer(&hl);
+                uint8_t* fb = epdc_framebuffer();
                 memset(fb, 0xFF, fbSize);
                 ui_render_dashboard(s, routes::navActive(), fb);   // backdrop
                 ui_render_update_overlay(phase, pct, fb);          // modal on top
@@ -1395,7 +1063,7 @@ void task(void*) {
         if (millis() - lastActivityMs > AUTO_SLEEP_MS &&
             !ride_recorder::isRecording() && !routes::navActive() &&
             !ble_server::isPhoneConnected()) {
-            uint8_t* fb = epd_hl_get_framebuffer(&hl);
+            uint8_t* fb = epdc_framebuffer();
             shutdownDevice(fb, "auto-sleep (idle timeout)");   // does not return
         }
 
@@ -1502,13 +1170,14 @@ void task(void*) {
         if (navPrompt && !lastNavPrompt) navPromptShownAt = millis();
         bool screenChanged = screen != lastScreen || powerOverlay != lastOverlay
                              || navPrompt != lastNavPrompt;
-        // Once an interactive DU burst has settled, push one GL16 clean pass.
-        bool wantClean = ghostCleanPending &&
-                         millis() - lastUiInputMs >= GHOST_CLEAN_SETTLE_MS;
-        // The nav-prompt modal appears over a busy dash/map; force a GC16 clear
-        // so its black band + buttons don't ghost the old screen through.
+        // Was: a deferred GL16 clean scheduled after an interactive DU burst
+        // settled. The driver DC-balances its own output, so there is nothing
+        // left to clean up after — and the ~950 ms hitch that clean cost is gone
+        // with it. Kept as a constant only because refresh() still takes the
+        // argument.
+        const bool wantClean = false;
         bool navPromptAppearing = navPrompt && !lastNavPrompt;
-        if (screenChanged || forceDraw || wantClean || millis() - lastDraw >= 1000) {
+        if (screenChanged || forceDraw || millis() - lastDraw >= 1000) {
             lastDraw = millis();
             forceDraw = false;
             Screen prevScreen = lastScreen;
@@ -1521,7 +1190,7 @@ void task(void*) {
             // Not while a host computer owns the SD card.
             if (s.everHadFix && !usb_storage::hostActive())
                 map_store::ensureForPosition(s.latitude, s.longitude);
-            uint8_t* fb = epd_hl_get_framebuffer(&hl);
+            uint8_t* fb = epdc_framebuffer();
             memset(fb, 0xFF, epd_width() / 2 * epd_height());
             // While the "Start navigation?" prompt is up, the base screen shows
             // the whole route fitted so it can be recognized before accepting.
@@ -1607,30 +1276,24 @@ void task(void*) {
             }
             if (powerOverlay) ui_render_power_sheet(s.recording, fb);
             }  // end else (normal screens)
-            // The nav banner is pure black/white, so DU is fine during nav.
+            // These three classified the frame so refresh() could pick a waveform.
+            // The driver picks its own now (see refresh()), so they are inert — kept
+            // because they document which screens are pure black/white and which
+            // transitions used to need scrubbing, and because deleting them would
+            // mean touching all ~15 refresh() call sites for no behaviour change.
             bool fastInPage = screenIsFast(screen, powerOverlay) && !navPrompt;
-            // Snappy DU only for menu<->menu navigation; entering the menu
-            // system from dash/map still gets a clean GL16 (no busy-screen ghost).
             bool listFast = screenListFast(screen) && screenListFast(prevScreen) &&
                             !powerOverlay && !navPrompt;
-            // Entering OR leaving the map takes a full two-phase clear, not a
-            // differential GL16/GC16: the map's dense dark water makes residual
-            // ghost from a heavy screen (the dashboard's big black digits)
-            // glaringly visible, and a differential update SKIPS the pixels where
-            // that black lands under dark water (front==back). fullScreenFlash
-            // drives every pixel through white to scrub it.
             bool mapTransition = screenChanged &&
                 (screen == SCREEN_MAP || prevScreen == SCREEN_MAP);
             refresh(screenChanged, fastInPage, listFast, wantClean,
                     navPromptAppearing, mapTransition);
         }
 
-        // Release panel power a beat after an interactive burst ends (the keep
-        // -alive above holds it on across successive taps).
-        if (epdPowered && (int32_t)(millis() - epdIdleOffAt) >= 0) {
-            epd_poweroff();
-            epdPowered = false;
-        }
+        // The epdiy path managed panel rails by hand here — poweron before an
+        // update, and a 1.5 s keep-alive so successive taps skipped the ~36 ms
+        // power-up. EPD_Painter owns its rails around each paint, so there is
+        // nothing to release.
 
         vTaskDelay(pdMS_TO_TICKS(30));
     }

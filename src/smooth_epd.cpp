@@ -1,5 +1,23 @@
 #include "smooth_epd.h"
 
+// On the EPD_Painter panel layer this self-test cannot exist: it drives epdiy's
+// LCD primitives (epd_lcd_start_frame and friends) directly, and the painter
+// build does not compile or link any epdiy source at all — the symbols are
+// simply absent. EPD_Painter has no equivalent hook that hands out raw frame
+// scanlines, and it already does continuous-scan drive internally, which was the
+// whole point of this experiment. So the feature is stubbed rather than ported;
+// if the M2 per-pixel state machine is ever revisited it belongs inside the
+// driver, not alongside it.
+#ifdef USE_EPD_PAINTER
+
+#include "diag.h"
+
+namespace smooth_epd {
+void selfTest() { diag::log("smooth: unavailable on the EPD_Painter driver"); }
+}  // namespace smooth_epd
+
+#else
+
 #include <Arduino.h>
 #include <epdiy.h>
 #include <freertos/FreeRTOS.h>
@@ -92,3 +110,5 @@ void selfTest() {
 }
 
 }  // namespace smooth_epd
+
+#endif  // USE_EPD_PAINTER

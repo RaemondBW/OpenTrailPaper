@@ -51,6 +51,11 @@ void epdc_paint();
 // image through power-off, so the first boot after a different firmware needs
 // several passes to shift what is physically on the glass (one was not enough,
 // verified on hardware).
+//
+// Leaves the framebuffer untouched — it resets what is on the GLASS and the
+// driver's record of it, not what the renderers have drawn. So the sequence
+// "draw, clear, paint" puts the drawn frame on a scrubbed panel, which is what
+// the shutdown screen wants.
 void epdc_clear(int passes = 1);
 
 // Number of grey levels the driver is currently using (4 by default). Exposed

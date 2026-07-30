@@ -169,8 +169,33 @@ doing its own DC damage.
 `tools/preview/out/*.png` — pixel-identical to the device. Always render and
 inspect after UI changes.
 
-Note it exercises the **render** path only, not `refresh()`, so it will not show
-DU scoping or 1-bit flattening; those need on-device testing.
+Note it exercises the **render** path only, not `refresh()`, so waveform and
+panel-driver behaviour still needs on-device testing.
+
+### How the EPD_Painter port was verified against epdiy
+
+Worth recording because it worked far better than expected. `src/epd_compat.cpp`
+replaces epdiy's thirteen drawing functions with from-scratch implementations, and
+the risk in that is not "does it compile" but "does anything move by a pixel". The
+test: render all 18 screens with epdiy, port the rasteriser, render again, and
+diff every pixel — with `-DEPDC_TEXT_ANTIALIAS`, which restores epdiy's glyph
+blending so text is comparable.
+
+It caught four real defects that reading the code had not:
+
+| Symptom in the diff | Cause |
+|---|---|
+| 286k px, long runs on every screen | alignment flags masked `& 0x3`, but `ALIGN_RIGHT` is `0x4` and `CENTER` is `0x8` — so every right/centre-aligned string silently rendered left-aligned. On the dashboard it put the battery percentage on top of the battery icon. |
+| ~110k px at glyph edges | the AA threshold (expected; this is what the flag isolates) |
+| 64 px per dashboard, x 123–181 | `epd_fill_circle` used the exact disc `dx²+dy² ≤ r²`. Mathematically rounder, ~12 px different at r=4, and it made the GPS signal dots visibly thinner. Deriving the spans from the midpoint outline instead is identical to epdiy for every r in 1..40. |
+| ~90 px per map screen, isolated | `epd_draw_line` used the symmetric two-error Bresenham; epdiy uses the steep-swap left-to-right form. Both draw valid lines, and they disagree on about half of all diagonals. |
+
+Final state: **0 differing pixels across all 18 screens.**
+
+The first of those was a genuine visual regression that no amount of "it builds
+and it looks about right" would have surfaced. If the drawing layer is ever
+touched again, re-run this diff — keep a copy of `out/*.png` first, since the
+script overwrites it.
 
 ## 7. Testing caveat on this history
 
