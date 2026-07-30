@@ -30,9 +30,15 @@ static EPD_PainterAdafruit gfx(EPD_LILYGO_T5_S3_GPS_PRESET, /*portrait=*/true);
 static const int W = 540;
 static const int H = 960;
 
-// Greys as GFXcanvas8 values: 0 = black, 255 = white.
-static const uint8_t BLACK = 0x00;
-static const uint8_t WHITE = 0xFF;
+// The GFXcanvas8 buffer holds LEVEL INDICES, not luminance: EPD_Painter's own
+// binding memsets it to 0 with the comment "level 0 = paper white", and packing
+// maps 2bpp levels 0..3 onto 4bpp {0,5,10,15}. So 0 is white and the highest
+// level is black — the opposite of the usual 8bpp convention. Getting this
+// backwards renders the whole UI inverted (verified on hardware).
+static const uint8_t WHITE = 0;   // paper
+static const uint8_t GREY1 = 1;   // light
+static const uint8_t GREY2 = 2;   // dark
+static const uint8_t BLACK = 3;   // ink
 
 // A screentone fill, the same idea the map uses for water/parks: 1-bit patterns
 // rather than a grey value, because a true grey is not displayable on the fast
@@ -76,12 +82,23 @@ static void drawChrome() {
     screentone(20, 344, (W - 60) / 2, 120, false);   // 75% dots  (water)
     screentone(20 + (W - 40) / 2, 344, (W - 60) / 2, 120, true);  // hatch (parks)
 
+    // The driver's four NATIVE grey levels, side by side with the screentones
+    // above. If these render cleanly and hold, we could use real greys instead
+    // of dithering — which epdiy's DU mode could never do.
+    gfx.setTextSize(1);
+    gfx.setCursor(24, 474);
+    gfx.print("NATIVE 4-LEVEL GREYS (0=white .. 3=black)");
+    for (int i = 0; i < 4; ++i) {
+        gfx.fillRect(20 + i * 124, 490, 118, 56, (uint8_t)i);
+        gfx.drawRect(20 + i * 124, 490, 118, 56, BLACK);
+    }
+
     // Some body text, to see how 1-bit GFX fonts read next to our
     // anti-aliased epdiy fonts.
     gfx.setTextSize(1);
-    gfx.setCursor(24, 490);
+    gfx.setCursor(24, 566);
     gfx.print("Counter below updates 1 Hz - a partial/delta update.");
-    gfx.setCursor(24, 506);
+    gfx.setCursor(24, 582);
     gfx.print("That repeated update is what greys our panel today.");
 }
 
@@ -96,10 +113,16 @@ void setup() {
     }
     Serial.println("[epdtest] begin() ok");
 
-    // Start from a genuinely clean panel so any grey we see afterwards was
-    // produced during this run rather than inherited.
-    gfx.clear();
-    Serial.println("[epdtest] panel cleared");
+    // Scrub the panel HARD before drawing anything. E-paper keeps its image
+    // through power-off, so on first run the previous firmware's screen is still
+    // physically on the glass — and one clear() did not remove it (our old
+    // settings screen was still legible underneath, verified on hardware).
+    // Several passes give the particles somewhere to settle.
+    for (int i = 0; i < 4; ++i) {
+        gfx.clear();
+        delay(120);
+    }
+    Serial.println("[epdtest] panel scrubbed (4 clear passes)");
 
     drawChrome();
     gfx.paint();
@@ -115,10 +138,10 @@ void loop() {
     char buf[24];
     snprintf(buf, sizeof(buf), "%lu s", (unsigned long)n);
 
-    gfx.fillRect(24, 540, W - 48, 90, WHITE);
+    gfx.fillRect(24, 610, W - 48, 90, WHITE);
     gfx.setTextColor(BLACK);
     gfx.setTextSize(5);
-    gfx.setCursor(24, 556);
+    gfx.setCursor(24, 626);
     gfx.print(buf);
 
     gfx.paint();   // delta update: only changed pixels should be driven
