@@ -7,6 +7,10 @@ struct DiagnosticsView: View {
     let url: URL
     @Environment(\.dismiss) private var dismiss
     @State private var tab = 0
+    // One per chart: chartXSelection writes the tapped x here, and the two
+    // charts are inspected independently.
+    @State private var selPercent: Double?
+    @State private var selDraw: Double?
 
     private var text: String { (try? String(contentsOf: url, encoding: .utf8)) ?? "" }
     private var samples: [BatterySample] { BatterySample.parse(text) }
@@ -49,17 +53,23 @@ struct DiagnosticsView: View {
                     Card {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Battery %").trackedLabel()
+                            Text("Tap the chart to read a value · shaded = unit off (time compressed)")
+                                .font(.system(size: 11)).foregroundStyle(Palette.muted)
                             batteryChart(L, value: \.percent, color: Palette.accent,
-                                         yDomain: 0...100).frame(height: 220)
+                                         yDomain: 0...100, selection: $selPercent,
+                                         format: { String(format: "%.0f%%", $0) })
+                                .frame(height: 220)
                         }
                     }
                     Card {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Current draw (mA)").trackedLabel()
-                            Text("Negative = discharging · shaded = unit off (time compressed)")
+                            Text("Higher = drawing more · tap to read a value")
                                 .font(.system(size: 11)).foregroundStyle(Palette.muted)
-                            batteryChart(L, value: \.currentMa, color: Palette.good,
-                                         yDomain: nil).frame(height: 180)
+                            batteryChart(L, value: \.drawMa, color: Palette.good,
+                                         yDomain: nil, selection: $selDraw,
+                                         format: { String(format: "%.0f mA", $0) })
+                                .frame(height: 180)
                         }
                     }
                 } else {
@@ -82,6 +92,14 @@ struct DiagnosticsView: View {
         let percent: Double
         let currentMa: Double
         let session: Int
+        let timeLabel: String
+
+        // The gauge reports current signed from the battery's point of view, so
+        // discharging is negative (-174mA) and it never goes positive in
+        // practice. Plotting that put the whole "current draw" trace below zero,
+        // which reads as though the device were producing power. Flip it so draw
+        // is a positive number; a genuine charge current would show as negative.
+        var drawMa: Double { -currentMa }
     }
 
     // Lay the samples out on a compressed x-axis: the device logs every ~2 min
@@ -111,7 +129,8 @@ struct DiagnosticsView: View {
                 }
             }
             pts.append(PlotPoint(id: sample.id, x: x, percent: sample.percent,
-                                 currentMa: sample.currentMa, session: session))
+                                 currentMa: sample.currentMa, session: session,
+                                 timeLabel: String(sample.timeLabel.prefix(5))))
         }
         return (pts, marks, offBands)
     }
@@ -120,7 +139,15 @@ struct DiagnosticsView: View {
     private func batteryChart(_ L: (pts: [PlotPoint], marks: [(x: Double, label: String)],
                                     offBands: [(Double, Double)]),
                               value: KeyPath<PlotPoint, Double>,
-                              color: Color, yDomain: ClosedRange<Double>?) -> some View {
+                              color: Color, yDomain: ClosedRange<Double>?,
+                              selection: Binding<Double?>,
+                              format: @escaping (Double) -> String) -> some View {
+        // The x axis is the COMPRESSED position, not elapsed time, so snap to the
+        // nearest plotted point rather than interpolating — otherwise a tap
+        // inside a collapsed off-band would report a value that was never sampled.
+        let hit = selection.wrappedValue.flatMap { x in
+            L.pts.min(by: { abs($0.x - x) < abs($1.x - x) })
+        }
         Chart {
             ForEach(L.offBands, id: \.0) { band in
                 RectangleMark(xStart: .value("s", band.0), xEnd: .value("e", band.1))
@@ -132,7 +159,32 @@ struct DiagnosticsView: View {
                     .foregroundStyle(color)
                     .interpolationMethod(.monotone)
             }
+            if let hit {
+                RuleMark(x: .value("t", hit.x))
+                    .foregroundStyle(Palette.muted.opacity(0.35))
+                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                PointMark(x: .value("t", hit.x), y: .value("v", hit[keyPath: value]))
+                    .foregroundStyle(color)
+                    .symbolSize(70)
+                    .annotation(position: .top, spacing: 6,
+                                overflowResolution: .init(x: .fit(to: .chart), y: .disabled)) {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(format(hit[keyPath: value]))
+                                .font(.system(size: 13, weight: .bold))
+                                .foregroundStyle(Palette.ink)
+                            Text(hit.timeLabel)
+                                .font(.system(size: 10)).foregroundStyle(Palette.muted)
+                        }
+                        .padding(.horizontal, 8).padding(.vertical, 5)
+                        .background(Palette.surface)
+                        .clipShape(RoundedRectangle(cornerRadius: 7))
+                        .overlay(RoundedRectangle(cornerRadius: 7)
+                            .strokeBorder(Palette.hairline, lineWidth: 1))
+                        .shadow(color: .black.opacity(0.10), radius: 4, y: 2)
+                    }
+            }
         }
+        .chartXSelection(value: selection)
         .chartXAxis {
             AxisMarks(values: L.marks.map(\.x)) { v in
                 AxisGridLine()
@@ -147,20 +199,52 @@ struct DiagnosticsView: View {
         .modifier(YScale(domain: yDomain))
     }
 
+    // Drain measured over DISCHARGING time only.
+    //
+    // This used to be (first% - last%) / total elapsed, which any mid-log charge
+    // destroys: charge back up and the net drop collapses while the clock keeps
+    // running, so the rate reads far too low and "Est. left" far too high. On a
+    // real log that went 99% -> 47%, charged to 100%, then ran down to 80% over
+    // 9.5 h, it reported 2.0 %/hr and 40 h left; the true figures are 10.8 %/hr
+    // and 7.4 h.
+    //
+    // So accumulate drop and time only across adjacent pairs that are genuinely
+    // discharging: skip any pair where the percentage ROSE (charging), and any
+    // pair separated by more than the off-threshold (the unit was asleep, and
+    // that wall-clock time is not runtime). Same threshold the x-axis layout
+    // uses, so the summary and the shaded bands agree about what "off" means.
+    private func drainStats(_ s: [BatterySample]) -> (rate: Double, avgDraw: Double)? {
+        let offThresh = 8.0 / 60.0
+        var drop = 0.0, hours = 0.0
+        for (a, b) in zip(s, s.dropFirst()) {
+            let gap = b.hours - a.hours
+            if gap > offThresh { continue }        // unit was off
+            if b.percent > a.percent { continue }  // charging
+            drop += a.percent - b.percent
+            hours += gap
+        }
+        // Average only samples actually drawing, and as a positive number to
+        // match the flipped chart.
+        let draws = s.map(\.currentMa).filter { $0 < 0 }.map { -$0 }
+        let avg = draws.isEmpty ? 0 : draws.reduce(0, +) / Double(draws.count)
+        guard hours > 0.01, drop > 0 else { return nil }
+        return (drop / hours, avg)
+    }
+
     @ViewBuilder private func batterySummary(_ s: [BatterySample]) -> some View {
-        let first = s.first!, last = s.last!
-        let drop = first.percent - last.percent
-        let hours = max(0.001, last.hours - first.hours)
-        let rate = drop / hours                       // %/hr
-        let avgDraw = s.map(\.currentMa).reduce(0, +) / Double(s.count)
-        let runtime = rate > 0.01 ? last.percent / rate : 0   // hrs to empty
+        let last = s.last!
+        let stats = drainStats(s)
         Card {
             HStack(spacing: 16) {
                 stat(String(format: "%.0f%%", last.percent), "Now")
-                stat(String(format: "%.1f %%/hr", rate), "Drain")
-                stat(String(format: "%.0f mA", avgDraw), "Avg draw")
-                if runtime > 0 {
-                    stat(String(format: "%.1f h", runtime), "Est. left")
+                if let stats {
+                    stat(String(format: "%.1f %%/hr", stats.rate), "Drain")
+                    stat(String(format: "%.0f mA", stats.avgDraw), "Avg draw")
+                    stat(String(format: "%.1f h", last.percent / stats.rate), "Est. left")
+                } else {
+                    // Charging throughout, or too little discharging time to say.
+                    stat("—", "Drain")
+                    stat("—", "Est. left")
                 }
             }
         }
