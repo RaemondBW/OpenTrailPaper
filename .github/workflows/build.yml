@@ -54,8 +54,8 @@ jobs:
         with:
           name: firmware
           path: |
-            .pio/build/t5s3-pro/firmware.bin
-            .pio/build/t5s3-pro/firmware.elf
+            .pio/build/t5s3-painter/firmware.bin
+            .pio/build/t5s3-painter/firmware.elf
           if-no-files-found: error
 
       # Publish firmware.bin to a GitHub Release so the web flasher can fetch it
@@ -77,7 +77,7 @@ jobs:
           body: |
             Firmware ${{ steps.ver.outputs.version }} built from ${{ github.sha }}.
             Flash it from the project site (Flash firmware) or drop firmware.bin on the SD card.
-          files: .pio/build/t5s3-pro/firmware.bin
+          files: .pio/build/t5s3-painter/firmware.bin
           fail_on_unmatched_files: true
 
   ios:

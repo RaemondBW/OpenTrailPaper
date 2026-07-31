@@ -677,17 +677,23 @@ void epdc_clear(int passes) {
     if (!g_painter) return;
     if (passes < 1) passes = 1;
     for (int i = 0; i < passes; ++i) {
+#ifdef EPDC_BOOT_WAIT
         // BRING-UP TRACE. EPD_Painter::clear() contains two unbounded waits: a
         // `while (paintStage == 1) vTaskDelay(1)` spin that only the epd_paint
         // task can break, and an xSemaphoreTake(_paint_active_sem,
         // portMAX_DELAY). Either hangs setup() forever with no output, so log
         // per pass — "clear 0/4 enter" with no "done" pins the hang on the very
         // first pass (paint task never scheduled) rather than on a later one.
+        // Gated: this fires on every clear, boot and shutdown alike, which is
+        // noise once the panel is known to come up.
         Serial.printf("[epdc] clear %d/%d enter (%lu ms)\n", i, passes,
                       (unsigned long)millis());
+#endif
         g_painter->clear();
+#ifdef EPDC_BOOT_WAIT
         Serial.printf("[epdc] clear %d/%d done (%lu ms)\n", i, passes,
                       (unsigned long)millis());
+#endif
     }
 }
 
