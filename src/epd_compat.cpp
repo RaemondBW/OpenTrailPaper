@@ -658,6 +658,21 @@ void epdc_paint() {
     g_painter->paint(g_levels);
 }
 
+void epdc_paint_wait() {
+    if (!g_painter) return;
+    // paintIdle() is paintStage == 0, i.e. the paint task has finished driving
+    // and gone back to waiting. Bounded so a wedged driver can never turn a
+    // power-off into a hang — a truncated farewell screen beats a device that
+    // will not switch off. 6 s is far beyond a full-panel paint (~1.9 s of the
+    // 4x clear at boot is four of them).
+    const uint32_t deadline = millis() + 6000;
+    while (!g_painter->paintIdle() && (int32_t)(millis() - deadline) < 0) {
+        vTaskDelay(pdMS_TO_TICKS(2));
+    }
+    if (!g_painter->paintIdle())
+        Serial.println("[epdc] paint did not finish within 6 s; powering off anyway");
+}
+
 void epdc_clear(int passes) {
     if (!g_painter) return;
     if (passes < 1) passes = 1;

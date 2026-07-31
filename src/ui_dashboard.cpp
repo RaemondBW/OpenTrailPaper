@@ -124,6 +124,12 @@ void shutdownDevice(uint8_t* fb, const char* reason) {
     // fullclear, which wiped it and needed a save/restore around the call).
     epdc_clear();
     epdc_paint();
+    // MUST come before deep sleep. On the EPD_Painter backend epdc_paint() only
+    // hands the frame to the driver's paint task and returns while the rows are
+    // still being clocked out, so powering down here caught the panel mid-drive
+    // and left the farewell screen half-written. (The epdiy backend painted
+    // inline, which is why this never used to be needed.)
+    epdc_paint_wait();
 
     // Peripherals down, matching the factory sleep sequence
     i2cLock(); touch.sleep(); i2cUnlock();
@@ -842,6 +848,8 @@ void applySdUpdate() {
         diag::log("sd update OK — rebooting into new firmware");
         diag::flushToSD();
         drawProgress(100, false);
+        epdc_paint_wait();   // same async-paint hazard as shutdownDevice(): the
+                             // delay below is a guess, not a completion signal
         delay(600);
         esp_restart();
     } else {

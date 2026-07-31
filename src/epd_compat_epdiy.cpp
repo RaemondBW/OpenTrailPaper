@@ -60,6 +60,11 @@ void epdc_paint() {
     epd_poweroff();
 }
 
+// Nothing to wait for: epd_hl_update_screen() above drives the panel inline and
+// has already returned by the time epdc_paint() does. Present so callers that
+// must not sleep mid-drive (shutdownDevice) can be backend-agnostic.
+void epdc_paint_wait() {}
+
 void epdc_clear(int passes) {
     if (!g_ready) return;
     if (passes < 1) passes = 1;

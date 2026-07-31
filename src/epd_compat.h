@@ -47,6 +47,19 @@ uint8_t* epdc_framebuffer();
 // no need for the dirty-rect bookkeeping the epdiy path required.
 void epdc_paint();
 
+// Block until the panel has actually finished being driven.
+//
+// epdc_paint() is ASYNCHRONOUS on the EPD_Painter backend: paint() hands the
+// buffer to the driver's epd_paint task and returns as soon as that task has
+// picked it up ("wait until this buffer has been picked up by the paint loop"),
+// while the rows are still being clocked out. Normally that is exactly what we
+// want — the UI task gets on with the next frame. It is wrong only when the
+// very next thing we do stops the CPU: deep sleep mid-drive leaves a partially
+// written image on the glass, which is what the shutdown screen was showing.
+//
+// No-op on the epdiy backend, whose epd_hl_update_screen() already blocks.
+void epdc_paint_wait();
+
 // Drive the whole panel to white. `passes` > 1 repeats it: e-paper keeps its
 // image through power-off, so the first boot after a different firmware needs
 // several passes to shift what is physically on the glass (one was not enough,
