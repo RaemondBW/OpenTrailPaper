@@ -114,7 +114,12 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var deviceLogs: [LogFile] = []        // per-day log files on the device
     @Published var loadingLogs = false
     private var logsBuilding: [LogFile] = []
-    static let bundledFirmwareVersion = "v0.84"      // matches src/config.h
+    // MUST match FIRMWARE_VERSION in src/config.h *and* the Sources/firmware.bin
+    // sitting next to this file — updateAvailable below compares with !=, not
+    // "is newer", so a stale value here does not just mislabel things: the app
+    // offers an "update" that silently downgrades the device to whatever binary
+    // is bundled. This sat at v0.84 while devices ran v0.85/v0.86.
+    static let bundledFirmwareVersion = "v0.86"
 
     // Saved routes on the device
     @Published var deviceRoutes: [String] = []
