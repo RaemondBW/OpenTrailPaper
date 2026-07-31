@@ -8,7 +8,6 @@ struct RouteView: View {
     @EnvironmentObject var ble: BLEManager
     @StateObject private var model = RouteModel()
     @State private var showSaved = false
-    @State private var showMaps = false
 
     var body: some View {
         NavigationStack {
@@ -73,7 +72,6 @@ struct RouteView: View {
             .safeAreaInset(edge: .top, alignment: .leading, spacing: 0) { routeTitle }
             .navigationBarHidden(true)
             .sheet(isPresented: $showSaved) { SavedRoutesSheet() }
-            .sheet(isPresented: $showMaps) { MapsView() }
             .onAppear {
                 if ProcessInfo.processInfo.arguments.contains("-demo-route") { model.demoRoute() }
                 else { model.requestLocation() }
@@ -99,7 +97,8 @@ struct RouteView: View {
         HStack {
             Spacer()
             roundButton("location.fill", enabled: true) { model.recenter() }
-            roundButton("map", enabled: true) { showMaps = true }
+            // Map downloads moved to Settings — this page is for building and
+            // sending a route, and the map tool is device-content management.
             roundButton("folder", enabled: ble.state == .connected) {
                 ble.refreshRoutes(); showSaved = true
             }

@@ -7,6 +7,7 @@ struct SettingsView: View {
     @AppStorage(UnitPref.key) private var useMiles = false
     @State private var confirmUpdate = false
     @State private var showSensors = false
+    @State private var showMaps = false
 
     var body: some View {
         NavigationStack {
@@ -24,6 +25,12 @@ struct SettingsView: View {
                     if ble.state == .connected || ble.otaInProgress
                         || ble.otaPhase == .failed || ble.otaPhase == .done { firmwareCard }
                     if ble.state == .connected { sensorsCard }
+                    // Not gated on the connection, unlike sensors: picking an
+                    // area and fetching OSM works offline, and MapsView only
+                    // needs the link for the upload itself. It was reachable
+                    // with no connection from the Route page too, so gating it
+                    // here would be a quiet regression.
+                    mapsCard
                     Card {
                         VStack(alignment: .leading, spacing: 10) {
                             Text("Units").trackedLabel()
@@ -125,7 +132,36 @@ struct SettingsView: View {
             .navigationBarHidden(true)
             .sheet(item: $ble.logFileURL) { url in DiagnosticsView(url: url) }
             .sheet(isPresented: $showSensors) { SensorsView() }
+            .sheet(isPresented: $showMaps) { MapsView() }
         }
+    }
+
+    @ViewBuilder private var mapsCard: some View {
+        Button { showMaps = true } label: {
+            Card {
+                HStack(spacing: 12) {
+                    Image(systemName: "map")
+                        .font(.system(size: 20, weight: .semibold)).foregroundStyle(Palette.accent)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Maps").trackedLabel()
+                        Text(mapsSummary)
+                            .font(BarlowFont.text(15, .semibold)).foregroundStyle(Palette.ink)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 14, weight: .semibold)).foregroundStyle(Palette.muted)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    // deviceTileIds is cached in UserDefaults, so this still reads correctly
+    // while disconnected rather than claiming the device holds nothing.
+    private var mapsSummary: String {
+        let n = ble.deviceTileIds.count
+        if n == 0 { return "Download map areas to your device" }
+        return "\(n) area\(n == 1 ? "" : "s") on device"
     }
 
     @ViewBuilder private var tutorialCard: some View {
