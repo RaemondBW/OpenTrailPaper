@@ -466,6 +466,8 @@ EpdRect epd_get_string_rect(const EpdFont* font, const char* string, int x, int 
 // above and writes PNGs itself, so it must not pull in EPD_Painter or ESP-IDF.
 #ifdef ARDUINO
 
+#include <Arduino.h>
+#include <Wire.h>
 #include <esp_heap_caps.h>
 
 #include "EPD_Painter_presets.h"
@@ -501,21 +503,138 @@ bool epdc_begin() {
     const size_t fb4Size = (size_t)kBytesPerRow * kNativeH;             // 259200
     const size_t lvlSize = (size_t)kNativeW * kNativeH;                 // 518400
 
+    // Report the heap before we start. EPD_Painter wants a substantial chunk of
+    // INTERNAL, DMA-capable RAM (two scan-line DMA buffers, a 129600-byte packed
+    // fast buffer, and the decision-engine sweep tables), and unlike the
+    // standalone eval app this runs after NimBLE, the GPS service and the SD
+    // stack have already taken theirs. Several of its failure paths return false
+    // without logging anything, so if begin() fails these two numbers are the
+    // first thing worth looking at.
+    Serial.printf("[epdc] heap before: internal=%u (largest %u) psram=%u\n",
+                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+
     g_fb4 = (uint8_t*)heap_caps_malloc(fb4Size, MALLOC_CAP_SPIRAM);
     g_levels = (uint8_t*)heap_caps_aligned_alloc(16, lvlSize, MALLOC_CAP_SPIRAM);
-    if (!g_fb4 || !g_levels) return false;
+    if (!g_fb4 || !g_levels) {
+        Serial.printf("[epdc] PSRAM alloc failed: fb4=%p levels=%p\n",
+                      (void*)g_fb4, (void*)g_levels);
+        return false;
+    }
     memset(g_fb4, 0xFF, fb4Size);      // white
     memset(g_levels, 0, lvlSize);      // level 0 = white
 
     buildLut();
 
+    // Hand the driver OUR Wire. Not a tidiness point — without this the port
+    // hangs on boot, and this was the hang.
+    //
+    // EPD_Painter::begin() does `if (i2c.wire == nullptr) new TwoWire(0)`, and
+    // TwoWire(0) is the very peripheral main.cpp already brought up with
+    // Wire.begin(BOARD_SDA, BOARD_SCL). Arduino's TwoWire::begin() then takes
+    //     if (i2cIsInit(num)) { started = true; goto end; }
+    // and that goto jumps straight over allocateWireBuffer(), so the second
+    // instance is left with txBuffer/rxBuffer == NULL while reporting success.
+    // Every write() on it returns 0 ("NULL TX buffer pointer"), so powerctl's
+    // pcaWriteReg() fails, epd_painter_powerctl::begin() returns false, and the
+    // library does:
+    //     printf("FATAL: powerctl init failed!\n");  while (1) delay(1000);
+    // setup() never returns, no tasks are created, the panel stays blank and
+    // serial stays silent while USB remains enumerated. The FATAL line goes to
+    // newlib stdout -> UART0 -> GPIO43, which is BOARD_GPS_TXD, so nothing on
+    // the USB console ever sees it either.
+    //
+    // tools/epdpainter_test works only because it never calls Wire.begin(), so
+    // the library's own TwoWire is the first to init the bus and does allocate.
+    //
+    // Sharing the one instance also puts the driver's power-control traffic
+    // (PanelPowerGuard runs from the epd_paint task) behind the same TwoWire
+    // lock as our touch/fuel-gauge/RTC reads, instead of a second, independent
+    // lock guarding the same hardware.
+    EPD_Painter::Config cfg = EPD_LILYGO_T5_S3_GPS_PRESET;
+    cfg.i2c.wire = &Wire;
+
     // Landscape here: our UI does its own rotation through epd_set_rotation()
     // below, and letting the driver rotate as well would apply it twice.
-    static EPD_Painter painter(EPD_LILYGO_T5_S3_GPS_PRESET, /*portrait=*/false);
-    if (!painter.begin()) return false;
+    static EPD_Painter painter(cfg, /*portrait=*/false);
+
+    // MUST be off, and it defaults to on.
+    //
+    // EPD_Painter ships a power-button emulation: EPD_BootCtl treats "reset was
+    // pressed while running" as a shutdown request, and at the end of begin() it
+    // paints a boot image and calls _powerOff(), which is [[noreturn]]. For a
+    // standalone e-paper app with no other power management that is a feature. For
+    // us it is fatal — begin() never returns, so setup() never finishes, no tasks
+    // are ever created, and the device sits there blank and silent on serial while
+    // USB stays enumerated. That is exactly the symptom this cost a long debugging
+    // session to explain.
+    //
+    // Its one escape hatch is _isUsbConnected(), which probes a BQ25896 charger at
+    // I2C 0x6B. That read does not succeed here — different charger, and the
+    // library probes on its own TwoWire instance — so "no USB" is the verdict on
+    // every boot, USB cable or not.
+    //
+    // We already own shutdown: shutdownDevice() draws the farewell screen and
+    // calls esp_deep_sleep_start(). Reset must mean reset.
+    painter.setAutoShutdown(false);
+
+    // Push the 129,600-byte fastbuffer into PSRAM so NimBLE can have the
+    // internal RAM back.
+    //
+    // Internal DRAM is oversubscribed on this build: ~137 KB static + ~160 KB
+    // for EPD_Painter + ~60 KB for the BLE controller does not fit in 320 KB.
+    // Measured, with the display initialised first: 209 KB internal free before
+    // begin(), 49 KB after — and NimBLEDevice::init() then hangs with a 34 KB
+    // largest block. Initialising BLE first instead just moves the failure: the
+    // display is then ~1 KB short on dec_sweeps and begin() returns false
+    // silently at EPD_Painter.cpp:780, which is the blank screen this port
+    // started with. Neither order fits.
+    //
+    // Nearly all of the display's internal usage is one allocation, and the
+    // library already knows how to do without it:
+    //     packed_fastbuffer = heap_caps_aligned_alloc(16, packed_size, INTERNAL);
+    //     if (!packed_fastbuffer) { log_w(...); ... alloc in SPIRAM; }
+    // There is no config flag to choose, so make an internal block that size
+    // simply unavailable while begin() runs. The decision tables (dec_sweeps is
+    // the largest at ~13 KB) still come from internal, which is what they need.
+    //
+    // Costs paint throughput — the fastbuffer is read on every scan line, and
+    // the library's own comment calls the PSRAM path "slower for the per-pixel
+    // ops in epd_painter_ink_dual() but boots cleanly". Worth measuring; if it
+    // proves too slow the real fix is a library patch taking the placement as a
+    // Config field, rather than trimming elsewhere to win back 129 KB.
+    const size_t fastBytes = (size_t)kNativeW * kNativeH / 4;   // 129600
+    const size_t keepFree = 48 * 1024;    // dec_* + DMA rows + paint-task stack
+    void* ballast = nullptr;
+    const size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    if (largest > fastBytes) {
+        ballast = heap_caps_malloc(largest - keepFree, MALLOC_CAP_INTERNAL);
+        Serial.printf("[epdc] fastbuffer->PSRAM: reserved %u internal, "
+                      "largest now %u (need >%u to stay internal)\n",
+                      (unsigned)(largest - keepFree),
+                      (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+                      (unsigned)fastBytes);
+    }
+
+    const bool painterOk = painter.begin();
+    if (ballast) heap_caps_free(ballast);   // hand it straight back to NimBLE
+
+    if (!painterOk) {
+        Serial.printf("[epdc] EPD_Painter::begin() failed; "
+                      "internal=%u (largest %u) psram=%u\n",
+                      (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                      (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+                      (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+        return false;
+    }
     g_painter = &painter;
 
     epd_set_rotation(DISPLAY_ROTATION);
+    Serial.printf("[epdc] ready: %d grey levels, internal left=%u psram left=%u\n",
+                  g_painter->greyLevels(),
+                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
     return true;
 }
 
@@ -542,7 +661,19 @@ void epdc_paint() {
 void epdc_clear(int passes) {
     if (!g_painter) return;
     if (passes < 1) passes = 1;
-    for (int i = 0; i < passes; ++i) g_painter->clear();
+    for (int i = 0; i < passes; ++i) {
+        // BRING-UP TRACE. EPD_Painter::clear() contains two unbounded waits: a
+        // `while (paintStage == 1) vTaskDelay(1)` spin that only the epd_paint
+        // task can break, and an xSemaphoreTake(_paint_active_sem,
+        // portMAX_DELAY). Either hangs setup() forever with no output, so log
+        // per pass — "clear 0/4 enter" with no "done" pins the hang on the very
+        // first pass (paint task never scheduled) rather than on a later one.
+        Serial.printf("[epdc] clear %d/%d enter (%lu ms)\n", i, passes,
+                      (unsigned long)millis());
+        g_painter->clear();
+        Serial.printf("[epdc] clear %d/%d done (%lu ms)\n", i, passes,
+                      (unsigned long)millis());
+    }
 }
 
 #endif  // ARDUINO

@@ -33,6 +33,53 @@
 #define HAVE_COREDUMP 1
 #endif
 
+#ifdef EPDC_BOOT_WAIT
+// ---------------------------------------------------------------------------
+// BRING-UP ONLY — route the ESP-IDF console to the USB-CDC.
+//
+// Everything the display library says about itself was being thrown away, which
+// is the main reason the port has been so hard to debug. Two separate sinks,
+// both dead:
+//
+//   log_w()/log_e() (Arduino macros, and EPD_Painter's PSRAM-fallback warning)
+//       -> log_printf() -> ets_printf() -> putc1, and NOTHING installs a putc1
+//          handler unless setDebugOutput(true) is called. Dropped on the floor.
+//
+//   printf() (every "[PWRCTL] ..." line, including the "FATAL: powerctl init
+//   failed!" printed immediately before the library's own while(1) hang)
+//       -> newlib stdout -> UART0 -> GPIO43. That is BOARD_GPS_TXD: the console
+//          UART shares pins with the GPS. Before gps_service::begin() those
+//          bytes are transmitted into the GPS module's RX; after it, Serial1
+//          re-muxes GPIO43 to UART1 and the console is left driving no pin at
+//          all. Either way we never see a character of it.
+//
+// setDebugOutput(true) fixes the first. The second needs stdout itself pointed
+// somewhere else, so register a tiny write-only VFS backed by Serial and reopen
+// stdout onto it. Gated with the rest of the bring-up aids — it must not ship.
+// ---------------------------------------------------------------------------
+#include <esp_heap_caps.h>
+#include <esp_vfs.h>
+
+static ssize_t cdcConsoleWrite(int, const void* data, size_t size) {
+    return Serial.write((const uint8_t*)data, size);
+}
+
+static void routeConsoleToUsb() {
+    Serial.setDebugOutput(true);          // ets_printf/log_w/log_e -> USB-CDC
+
+    esp_vfs_t vfs = {};
+    vfs.flags = ESP_VFS_FLAG_DEFAULT;
+    vfs.write = &cdcConsoleWrite;
+    if (esp_vfs_register("/cdc", &vfs, nullptr) != ESP_OK) return;
+
+    FILE* f = fopen("/cdc/0", "w");
+    if (!f) return;
+    setvbuf(f, nullptr, _IONBF, 0);       // unbuffered: a hang must not eat the
+    stdout = f;                           // last line before it
+    stderr = f;
+}
+#endif
+
 SharedRideState g_state;
 
 // Serializes all I2C access (fuel gauge / touch / IO expander / RTC).
@@ -144,6 +191,18 @@ void setup() {
 
     Serial.begin(115200);
     delay(200);
+#ifdef EPDC_BOOT_WAIT
+    // Bring-up aid: hold here until a serial host attaches (DTR asserted), up to
+    // 8 s. USB-CDC discards everything written before the host opens the port, and
+    // this board only re-enumerates its OTG port on a physical RST — so catching
+    // the early boot lines otherwise means winning a race against a human pressing
+    // a button. If setup() hangs, those lines are the only evidence there is.
+    // Build-flag gated: it must NOT ship, since with no host attached it adds 8 s
+    // to every cold boot.
+    while (!Serial && millis() < 8000) delay(50);
+    delay(300);
+    routeConsoleToUsb();   // must precede anything that logs, incl. the panel
+#endif
     Serial.println("\n[main] e-paper bike computer booting");
 
     diag::begin();
@@ -240,13 +299,65 @@ void setup() {
             diag::log("gps warm-start: no saved position");
         }
     }
-    ble_sensors::begin();
-    ble_server::begin();   // GATT server for the iOS companion app
+    // Display BEFORE the two NimBLE stacks, which is the opposite of the order
+    // that shipped on epdiy.
+    //
+    // Internal DRAM does not fit everything: ~137 KB static + ~160 KB for
+    // EPD_Painter's default layout + ~50 KB for the BLE controller, against
+    // 320 KB. Measured both ways, and each order breaks the other subsystem:
+    //
+    //   BLE first     - 147 KB contiguous left, so the 129,600-byte fastbuffer
+    //                   still fits internal and eats it; dec_sweeps then wants
+    //                   12,960 with 11,764 left and EPD_Painter::begin() returns
+    //                   false SILENTLY at EPD_Painter.cpp:780. Blank screen.
+    //   Display first - display fine, but NimBLEDevice::init() then hangs with
+    //                   46 KB free / 34 KB largest. setup() never finishes.
+    //
+    // What actually makes it fit is epdc_begin() steering the fastbuffer into
+    // PSRAM (see the ballast comment there), which frees ~129 KB. With that in
+    // place the order is no longer load-bearing — this one is kept only because
+    // it puts the panel up early, and boot now ends with ~124 KB internal spare.
+    // The [epdc]/[main] heap lines exist to make any regression obvious.
     ui_dashboard::begin();
+#ifdef EPDC_BOOT_WAIT
+    // Bring-up trace. setup() now reaches "begin() done" and then stops before
+    // "[main] all tasks started" — no panic, no reset, the USB CDC stays up, so
+    // it is a hang, not a crash. The suspect is RAM: epdc_begin() reports only
+    // ~49 KB of INTERNAL left, and NimBLEDevice::init() brings up the controller,
+    // which wants internal/DMA-capable memory. Log the internal heap either side
+    // of each remaining init so the culprit and its headroom are unambiguous.
+#define BOOT_STEP(msg)                                                        \
+    Serial.printf("[main] %lu ms: %s (internal=%u largest=%u)\n",             \
+                  (unsigned long)millis(), msg,                               \
+                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),     \
+                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL))
+#else
+#define BOOT_STEP(msg) ((void)0)
+#endif
+    // Take the side button back off the display driver.
+    //
+    // epd_painter_powerctl::begin() runs `for (pin = 8; pin <= 13) pcaPinMode(pin,
+    // PCA_OUTPUT)`, but its own map only uses 8/9/11/12/13 (OE, MODE, PWRUP,
+    // VCOM, WAKEUP). Pin 10 is not the driver's at all — it is our side button —
+    // and the blanket loop turns it into an output, so board_side_button_pressed()
+    // reads a driven pin and the button stops working. The expander is shared;
+    // the driver just assumes the whole upper port is its own.
+    //
+    // Re-assert it after the panel is up. XL9555::pinMode() read-modify-writes
+    // the config register, so this touches bit 10 only and leaves the driver's
+    // rail pins alone.
+    if (ioExpanderOk) ioExpander.pinMode(IOEXP_PIN_SIDE_BUTTON, INPUT);
+
+    BOOT_STEP("ui_dashboard done -> ble_sensors::begin()");
+    ble_sensors::begin();
+    BOOT_STEP("ble_sensors done -> ble_server::begin()");
+    ble_server::begin();   // GATT server for the iOS companion app
+    BOOT_STEP("ble_server done -> power_mgmt::begin()");
 
     // Enable automatic light sleep now that every peripheral (GPS UART, BLE, EPD)
     // is up. No-op + logged warning on a stock framework without CONFIG_PM_ENABLE.
     power_mgmt::begin();
+    BOOT_STEP("power_mgmt done -> creating tasks");
 
     xTaskCreatePinnedToCore(gps_service::task, "gps", 4096, nullptr, 3, nullptr, 0);
     xTaskCreatePinnedToCore(ble_sensors::task, "ble", 6144, nullptr, 2, nullptr, 0);

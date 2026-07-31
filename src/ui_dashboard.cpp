@@ -714,6 +714,20 @@ void renderListScreen(uint8_t* fb) {
 
 }  // namespace
 
+// Boot progress trace. ui_dashboard::begin() drives the panel through a lot of
+// steps that only ever ran once epdc_begin() started succeeding, and a hang in
+// any of them stops setup() before the tasks are created — which looks, from the
+// outside, exactly like a dead device: blank screen and total serial silence.
+// The last line printed says where it stopped.
+//
+// Gated with the rest of the bring-up aids: this is diagnostic scaffolding, and
+// the shipping t5s3-pro build (the one CI releases) should not carry it.
+#ifdef EPDC_BOOT_WAIT
+#define EPDC_STEP(msg) Serial.printf("[ui] %lu ms: %s\n", (unsigned long)millis(), msg)
+#else
+#define EPDC_STEP(msg) ((void)0)
+#endif
+
 namespace ui_dashboard {
 
 bool begin() {
@@ -725,6 +739,8 @@ bool begin() {
         return false;
     }
 
+    EPDC_STEP("panel up");
+
     // Backlight — level set in Settings, applied here at boot.
     pinMode(BOARD_BL_EN, OUTPUT);
     applyBacklight(settings::backlight());
@@ -735,9 +751,13 @@ bool begin() {
     gpio_hold_dis((gpio_num_t)BOARD_TOUCH_RST);
     gpio_deep_sleep_hold_dis();
 
+    EPDC_STEP("backlight");
+
     touch.setPins(BOARD_TOUCH_RST, BOARD_TOUCH_INT);
     touchOk = touch.begin(Wire, GT911_SLAVE_ADDRESS_L, BOARD_SDA, BOARD_SCL);
     if (!touchOk) Serial.println("[ui] GT911 touch not found");
+
+    EPDC_STEP("touch");
 
     // Interrupt-drive the inputs. The GT911 pulses its INT on a touch event;
     // the XL9555 pulls its INT low when a button changes; BOOT is a plain
@@ -756,7 +776,9 @@ bool begin() {
     // what is physically on the glass right now is the shutdown screen from the
     // last ride (or another firmware's screen entirely) while the driver's record
     // says white. One pass did not shift it on hardware; four does.
+    EPDC_STEP("about to clear x4");
     epdc_clear(4);
+    EPDC_STEP("cleared");
 
     fbSize = epd_width() / 2 * epd_height();
     shadowFb = (uint8_t*)heap_caps_malloc(fbSize, MALLOC_CAP_SPIRAM);
@@ -764,11 +786,14 @@ bool begin() {
     routeScreenPts = (int16_t*)heap_caps_malloc(
         MAX_ROUTE_SCREEN_PTS * 2 * sizeof(int16_t), MALLOC_CAP_SPIRAM);
 
+    EPDC_STEP("buffers");
+
     // Load the best downloaded map for our last-known spot, else the embedded
     // default. New maps arrive from the phone over BLE (see map_store).
     double mlat = DEFAULT_MAP_LAT, mlon = DEFAULT_MAP_LON;
     settings::lastPosition(mlat, mlon);
     map_store::begin(mlat, mlon);
+    EPDC_STEP("map loaded — begin() done");
     return true;
 }
 
