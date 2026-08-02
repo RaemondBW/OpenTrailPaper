@@ -412,9 +412,19 @@ void handleTap(int x, int y) {
                     break;
                 }
             }
-            // Status bar opens the menu; anywhere else flips dash <-> map.
+            // Status bar opens the menu. On the map, the DATA STRIP along the
+            // bottom (below MAP_STRIP_TOP, clear of the zoom buttons at y 560
+            // and 640) goes to the dashboard. The body of either screen does
+            // nothing.
+            //
+            // Tapping anywhere used to flip, which made the map hostile to use:
+            // every miss of the compass or a zoom button threw the rider off the
+            // map, and on the dashboard a stray glove brush did the same. The
+            // flip now has deliberate targets — that strip, and the Home key,
+            // which is the only way back to the map.
             if (y < ui::STATUS_H) screen = SCREEN_MENU;
-            else screen = screen == SCREEN_DASH ? SCREEN_MAP : SCREEN_DASH;
+            else if (screen == SCREEN_MAP && y >= ui::MAP_STRIP_TOP)
+                screen = SCREEN_DASH;
             break;
         case SCREEN_SUMMARY:
             if (inRect(kResumeButton, x, y)) {
@@ -1343,15 +1353,20 @@ void task(void*) {
             }
         }
 
-        // Capacitive Home button (GT911 key) — navigate back. Debounced so
-        // one press triggers once even while the key is held.
+        // Capacitive Home button (GT911 key). On the two main screens it swaps
+        // dash <-> map — the gesture that used to be "tap anywhere", now on a
+        // dedicated key so the map body is safe to touch. Everywhere else it
+        // still navigates back. Debounced so one press triggers once even while
+        // the key is held.
         if (homeKeyPressed) {
             homeKeyPressed = false;
             static uint32_t lastHome = 0;
             if (millis() - lastHome > 400) {
                 lastHome = millis();
                 noteActivity();
-                goBack();
+                if (screen == SCREEN_DASH)      screen = SCREEN_MAP;
+                else if (screen == SCREEN_MAP)  screen = SCREEN_DASH;
+                else                            goBack();
             }
         }
 
