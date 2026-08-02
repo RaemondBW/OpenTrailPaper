@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdio>   // snprintf, for units::navDist below
+
 #include <cstdint>
 #include <ctime>
 
@@ -94,6 +96,21 @@ inline double elev(double m, bool miles)   { return miles ? m * 3.28084 : m; }
 inline const char* distLabel(bool miles)  { return miles ? "MI" : "KM"; }
 inline const char* speedLabel(bool miles) { return miles ? "MPH" : "KM/H"; }
 inline const char* elevLabel(bool miles)  { return miles ? "FT" : "M"; }
+
+// Navigation distance-to-turn: feet/miles or metres/km, switching at 1000 of
+// the small unit. Used by BOTH the turn banner and the directions list — they
+// showed different units when the list open-coded its own formatting.
+inline void navDist(char* out, size_t len, float m, bool miles) {
+    if (miles) {
+        float ft = m * 3.28084f;
+        if (ft >= 1000) snprintf(out, len, "%.1f mi", m * 0.000621371f);
+        else            snprintf(out, len, "%d ft", (int)(ft + 0.5f));
+    } else if (m >= 1000) {
+        snprintf(out, len, "%.1f km", m / 1000);
+    } else {
+        snprintf(out, len, "%d m", (int)(m + 0.5f));
+    }
+}
 }
 
 #ifdef ARDUINO

@@ -970,15 +970,7 @@ void ui_render_nav_banner(const char* instruction, float distanceM,
     }
 
     char d[16];
-    if (useMiles) {
-        float ft = distanceM * 3.28084f;
-        if (ft >= 1000) snprintf(d, sizeof(d), "%.1f mi", distanceM * 0.000621371f);
-        else snprintf(d, sizeof(d), "%d ft", (int)(ft + 0.5f));
-    } else if (distanceM >= 1000) {
-        snprintf(d, sizeof(d), "%.1f km", distanceM / 1000);
-    } else {
-        snprintf(d, sizeof(d), "%d m", (int)(distanceM + 0.5f));
-    }
+    units::navDist(d, sizeof(d), distanceM, useMiles);
     ui::text(&ArialBold_20, 108, top + 52, d, fb, EPD_DRAW_ALIGN_LEFT, 0xFF);
     char instr[48];
     fitText(&ArialBold_14, instruction, W - 24 - 12, instr, sizeof(instr));

@@ -373,7 +373,8 @@ void handleTap(int x, int y) {
         case SCREEN_DASH:
         case SCREEN_MAP:
             if (screen == SCREEN_MAP) {
-                int dx = x - kMapCompass.cx, dy = y - kMapCompass.cy;
+                int dx = x - kMapCompass.cx,
+                    dy = y - mapCompassCy(routes::navActive());
                 if (dx * dx + dy * dy <= kMapCompass.r * kMapCompass.r) {
                     mapTrackUp = !mapTrackUp;
                     break;
@@ -720,14 +721,10 @@ void renderListScreen(uint8_t* fb) {
                 if (!routes::upcomingTurn(i, instr, sizeof(instr), dm)) break;
                 snprintf(rows[count].title, sizeof(rows[0].title), "%s", instr);
                 RideState s = g_state.snapshot();
-                if (dm < 1000.0f) {
-                    snprintf(rows[count].subtitle, sizeof(rows[0].subtitle),
-                             "in %d m", (int)(dm + 0.5f));
-                } else {
-                    snprintf(rows[count].subtitle, sizeof(rows[0].subtitle),
-                             "in %.1f %s", units::distM(dm, s.useMiles),
-                             units::distLabel(s.useMiles));
-                }
+                char dtxt[16];
+                units::navDist(dtxt, sizeof(dtxt), dm, s.useMiles);
+                snprintf(rows[count].subtitle, sizeof(rows[0].subtitle),
+                         "in %s", dtxt);
                 rows[count].inverted = (i == 0);   // the turn you are riding to
                 count++;
             }
