@@ -146,6 +146,11 @@ void ui_render_shutdown_screen(uint8_t* fb);
 // "Start navigation?" bottom sheet shown when a route with turn cues
 // arrives. Reuses the power-sheet button rects: kPowerShutdown = START,
 // kPowerCancel = LATER.
+// Boot progress. `lines`/`ok` are parallel arrays, one entry per step done so
+// far; ok[i] picks a tick or a cross. Drawn as setup() progresses.
+void ui_render_boot_screen(const char* version, const char* const* lines,
+                           const bool* ok, int count, uint8_t* fb);
+
 void ui_render_nav_prompt(const char* routeName, int turns, uint8_t* fb);
 
 // Full-screen "Updating firmware" modal shown while an OTA is in progress.

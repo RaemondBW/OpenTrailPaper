@@ -20,6 +20,15 @@ CONFIG_PM_DFS_INIT_AUTO=n
 # ---- Keep the CPU at 240 MHz ----
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 
+# ---- Restore arduino-esp32's FreeRTOS timer task stack ----
+# The stock Arduino framework ships 3120; lib-builder's defaults drop it to
+# 2048, and that was the ONLY non-PM difference between the two sdkconfigs
+# (verified by diff, 2026-08-01 — the rest is PM/tickless/BT-modem-sleep). A
+# 2048-byte timer service task is a plausible source of the interrupt-watchdog
+# reset seen on the first PM build, so keep it matched to stock.
+CONFIG_FREERTOS_TIMER_TASK_STACK_DEPTH=3120
+CONFIG_TIMER_TASK_STACK_DEPTH=3120
+
 # ---- Octal (OPI) PSRAM at 80 MHz — unchanged from the stock qio_opi variant ----
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_OCT=y

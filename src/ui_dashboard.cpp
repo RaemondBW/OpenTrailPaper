@@ -76,8 +76,32 @@ volatile bool homeKeyPressed = false;
 volatile bool touchIrq = false;      // GT911 INT (GPIO3)
 volatile bool boardBtnIrq = false;   // BOOT edge or expander INT (GPIO38)
 
-void IRAM_ATTR onTouchIrq() { touchIrq = true; }
-void IRAM_ATTR onBoardBtnIrq() { boardBtnIrq = true; }
+// Wakes the UI task from its idle block. Everything the loop services is either
+// interrupt-driven (touch, buttons) or on its own slower timer (redraw 1 Hz,
+// touch-poll fallback 200 ms, elevation 2.5 s), so the task has no reason to
+// spin — it blocks here and the ISRs below release it.
+//
+// MUST be a dedicated semaphore, NEVER the task's built-in notification slot.
+// ESP-IDF drivers use the CALLING task's notification slot to wait for
+// completion — including the SPI master behind the SD card and the panel's DMA
+// waits — and this task does both SD reads and panel painting. An input
+// interrupt landing mid-transfer would corrupt a driver's completion handshake.
+SemaphoreHandle_t uiWake = nullptr;
+
+// Idle block length. 200 ms is the loop's own touch-poll backstop, so nothing
+// inside it is starved; input latency is unaffected because the ISRs release
+// the semaphore immediately.
+constexpr uint32_t UI_IDLE_TICK_MS = 200;
+
+inline void IRAM_ATTR uiWakeFromIsr() {
+    if (!uiWake) return;
+    BaseType_t hpw = pdFALSE;
+    xSemaphoreGiveFromISR(uiWake, &hpw);
+    if (hpw) portYIELD_FROM_ISR();
+}
+
+void IRAM_ATTR onTouchIrq() { touchIrq = true; uiWakeFromIsr(); }
+void IRAM_ATTR onBoardBtnIrq() { boardBtnIrq = true; uiWakeFromIsr(); }
 
 // Power/shutdown dialog overlay (opened by holding BOOT 1.5 s).
 bool powerOverlay = false;
@@ -171,6 +195,7 @@ void noteActivity() {
     lastActivityMs = millis();
     lastUiInputMs = millis();
     forceDraw = true;
+    if (uiWake) xSemaphoreGive(uiWake);   // redraw now, don't wait out the block
     ble_sensors::noteActivity();
 }
 
@@ -736,7 +761,19 @@ void renderListScreen(uint8_t* fb) {
 
 namespace ui_dashboard {
 
-bool begin() {
+// Boot progress state. Kept tiny and static — this runs before any allocation
+// we control, and a boot screen that can fail to allocate is worse than none.
+namespace {
+const char* bootLines[6];
+bool        bootOk[6];
+int         bootCount = 0;
+bool        bootScreenLive = false;
+}
+
+// Panel-only bring-up, split out of begin() so setup() can show progress while
+// the slow subsystems (SD, GPS, BLE) start. Everything here is display/input;
+// nothing touches the SD card or the radios.
+bool beginPanel() {
     // Panel up. Board config, VCOM, waveform tables and rotation all live inside
     // the compat layer now (see epd_compat.cpp) — including the NVS-stored
     // per-board tuning EPD_Painter loads at the end of its own begin().
@@ -768,6 +805,10 @@ bool begin() {
     // Interrupt-drive the inputs. The GT911 pulses its INT on a touch event;
     // the XL9555 pulls its INT low when a button changes; BOOT is a plain
     // GPIO edge. ISRs just set a flag that the task acts on.
+    // Must exist before any ISR can fire (they no-op on null, but the task
+    // blocks on it immediately).
+    uiWake = xSemaphoreCreateBinary();
+
     attachInterrupt(digitalPinToInterrupt(BOARD_TOUCH_INT), onTouchIrq, FALLING);
     attachInterrupt(digitalPinToInterrupt(BOARD_BOOT_BTN), onBoardBtnIrq, CHANGE);
     pinMode(BOARD_PCA9535_INT, INPUT_PULLUP);
@@ -793,13 +834,36 @@ bool begin() {
         MAX_ROUTE_SCREEN_PTS * 2 * sizeof(int16_t), MALLOC_CAP_SPIRAM);
 
     EPDC_STEP("buffers");
+    bootScreenLive = true;
+    bootStatus("Display", true);
+    return true;
+}
 
+// Append a step to the boot screen and repaint. Safe to call before beginPanel()
+// (no-op) and after the dashboard takes over (also no-op, via bootScreenLive).
+void bootStatus(const char* step, bool ok) {
+    if (!bootScreenLive || bootCount >= (int)(sizeof(bootLines) / sizeof(*bootLines)))
+        return;
+    bootLines[bootCount] = step;
+    bootOk[bootCount] = ok;
+    ++bootCount;
+    uint8_t* fb = epdc_framebuffer();
+    if (!fb) return;
+    ui_render_boot_screen(FIRMWARE_VERSION, bootLines, bootOk, bootCount, fb);
+    epdc_paint();
+    if (shadowFb) memcpy(shadowFb, fb, fbSize);   // keep the delta engine honest
+}
+
+bool begin() {
     // Load the best downloaded map for our last-known spot, else the embedded
     // default. New maps arrive from the phone over BLE (see map_store).
     double mlat = DEFAULT_MAP_LAT, mlon = DEFAULT_MAP_LON;
     settings::lastPosition(mlat, mlon);
     map_store::begin(mlat, mlon);
     EPDC_STEP("map loaded — begin() done");
+    // Hand the panel over to the dashboard: further bootStatus() calls no-op,
+    // and the task's first refresh() paints the real UI over the boot screen.
+    bootScreenLive = false;
     return true;
 }
 
@@ -882,6 +946,7 @@ static void printConsoleHelp() {
     Serial.println("  gpsoff <sec>         cut GPS power for N s, then re-seed (retention test)");
     Serial.println("  gpsver               query GPS module firmware version");
     Serial.println("  gpsraw <on|off>      echo raw receiver bytes");
+    Serial.println("  sd                   SD mount state + cardType (NONE = card not answering)");
     Serial.println("  power                battery voltage + current draw (mA)");
     Serial.println("  bootloader           reboot into download mode for flashing");
     Serial.println("  reboot               restart the device");
@@ -934,6 +999,23 @@ static void runConsoleLine(char* line) {
                           ma < 0 ? "discharging" : "charging/idle");
         else
             Serial.println("[power] fuel gauge unavailable");
+    } else if (!strcasecmp(cmd, "sd")) {
+        // SD status without needing a boot log. The mount happens ~1.4 s into
+        // boot, long before a USB-CDC host can attach, so for a long time the
+        // only way to know why the card was missing was to win a race against
+        // the console coming up. cardType is the useful bit: NONE means the card
+        // is not answering at all (seating / wedged / dead), a real type with no
+        // mount means the filesystem is the problem.
+        uint8_t ct = SD.cardType();
+        const char* cn = ct == CARD_NONE ? "NONE" : ct == CARD_MMC ? "MMC"
+                       : ct == CARD_SD ? "SD" : ct == CARD_SDHC ? "SDHC" : "UNKNOWN";
+        Serial.printf("[sd] mounted=%s cardType=%s size=%lluMB\n",
+                      ride_recorder::sdMounted() ? "yes" : "NO", cn,
+                      SD.cardSize() / (1024ULL * 1024ULL));
+        if (ride_recorder::sdMounted())
+            Serial.printf("[sd] %llu MB free, log=%s\n",
+                          (SD.totalBytes() - SD.usedBytes()) / (1024ULL * 1024ULL),
+                          diag::logPath());
     } else if (!strcasecmp(cmd, "bootloader") || !strcasecmp(cmd, "boot")) {
         rebootToBootloader();
     } else if (!strcasecmp(cmd, "reboot")) {
@@ -1328,7 +1410,16 @@ void task(void*) {
         // power-up. EPD_Painter owns its rails around each paint, so there is
         // nothing to release.
 
-        vTaskDelay(pdMS_TO_TICKS(30));
+        // Block until an input interrupt or a redraw request, with a fallback
+        // tick that still satisfies the slowest thing the loop owes anyone (the
+        // 200 ms touch-poll backstop). Was a flat 30 ms delay, i.e. ~33
+        // wakeups/s to discover there was nothing to do ~30 times out of 33.
+        //
+        // This only became worth fixing once light sleep worked: the SoC can
+        // only sleep when BOTH cores are idle, and tickless idle sizes each
+        // sleep by the shortest pending timer across them, so this task's tick
+        // was capping every sleep on core 1 at 30 ms.
+        xSemaphoreTake(uiWake, pdMS_TO_TICKS(UI_IDLE_TICK_MS));
     }
 }
 

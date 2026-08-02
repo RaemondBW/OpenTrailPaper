@@ -50,11 +50,15 @@ enum GpsKind { GPS_NONE, GPS_CASIC, GPS_UBLOX };
 GpsKind moduleKind = GPS_NONE;
 
 // Last aiding we injected, surfaced in the serial telemetry so a slow fix can
-// be correlated with whether (and how well) the receiver was seeded.
+// be correlated with whether (and how well) the receiver was seeded. posAccM is
+// the uncertainty we claimed for it, which is also the radius inside which a
+// fresh phone position tells the receiver nothing new (see aidingIsNews).
 struct AidState {
     uint32_t count = 0;
+    uint32_t skipped = 0;   // phone seeds withheld as redundant
     uint32_t lastMs = 0;
     double lat = 0, lon = 0;
+    float posAccM = 0;
     bool haveTime = false;
 } aidState;
 
@@ -300,6 +304,7 @@ void injectAiding(double lat, double lon, time_t utc, bool haveTime,
     aidState.lastMs = millis();
     aidState.lat = lat;
     aidState.lon = lon;
+    aidState.posAccM = posAccM;
     aidState.haveTime = haveTime;
     if (moduleKind == GPS_CASIC) {
         double tow = 0;
@@ -352,6 +357,36 @@ struct PendingSeed {
     float posAccM = 0;
 };
 static PendingSeed g_seed;
+
+// Floor between two position-only re-seeds. Only guards the "we moved" test
+// below; a seed carrying strictly better information is never delayed by it.
+constexpr uint32_t AID_REPEAT_MIN_MS = 60000;
+
+// Does a phone position tell the receiver anything it wasn't already told?
+//
+// AID-INI is a one-shot acquisition aid, not a subscription: every injection
+// restarts the receiver's search. The phone streams its location every ~3 s, so
+// a plain rate-limit still let 48 injections through in one 5 h session (diag
+// log 2026-07-31) — the *same* coordinates re-sent every 20 s for 40 minutes,
+// at a receiver that never fixed, and whose one first fix took 716 s. That is
+// not neutral: each re-seed throws away the correlation work in progress.
+//
+// So accept a seed only when it is genuinely better information than the last
+// one we sent — otherwise the best thing we can do for first-fix time is shut
+// up and let the receiver work.
+static bool aidingIsNews(const PendingSeed& s) {
+    if (aidState.count == 0) return true;              // nothing sent yet
+    if (s.haveTime && !aidState.haveTime) return true; // time bounds the search
+    // The boot seed is the saved NVS position at 50 km; a phone CoreLocation
+    // fix is 5 km. Tightening the uncertainty by 2x is worth one re-send.
+    if (s.posAccM < aidState.posAccM * 0.5f) return true;
+    // Position-only change: we have to be outside the circle we already gave
+    // the receiver for this to mean anything, and the input jitters.
+    if (millis() - aidState.lastMs < AID_REPEAT_MIN_MS) return false;
+    double dLat = s.lat - aidState.lat;
+    double dLon = (s.lon - aidState.lon) * cos(aidState.lat * DEG_TO_RAD);
+    return sqrt(dLat * dLat + dLon * dLon) * 111320.0 > aidState.posAccM;
+}
 
 void seedPosition(double lat, double lon, time_t utc, bool haveTime,
                   float posAccM) {
@@ -487,6 +522,7 @@ void task(void*) {
             sendColdStartCommand();
             vTaskDelay(pdMS_TO_TICKS(600));   // let the cold start take effect
             aidState.count = 0;               // TTFF context reflects THIS test
+            aidState.skipped = 0;
             if (mode == 1) seedFromSaved();
             acqStartMs = millis();
             g_loggedFirstFix = false;
@@ -519,6 +555,7 @@ void task(void*) {
             vTaskDelay(pdMS_TO_TICKS(400));
             begin();
             aidState.count = 0;
+            aidState.skipped = 0;
             seedFromSaved();
             acqStartMs = millis();
             g_loggedFirstFix = false;
@@ -527,16 +564,14 @@ void task(void*) {
 
         if (g_seed.pending) {
             g_seed.pending = false;
-            // Only warm-start while we DON'T have a fix, and at most every 20 s
-            // (the phone streams its position every ~3 s — re-seeding a receiver
-            // that's already searching or locked doesn't help and spams the UART).
-            static uint32_t lastAidMs = 0;
+            // Never re-seed a receiver that already has a fix, and otherwise
+            // only when the phone is telling it something new (aidingIsNews).
             bool haveFix = gps.location.isValid() && gps.location.age() < 5000;
-            uint32_t now = millis();
-            if (!haveFix && (lastAidMs == 0 || now - lastAidMs > 20000)) {
+            if (!haveFix && aidingIsNews(g_seed)) {
                 injectAiding(g_seed.lat, g_seed.lon, g_seed.utc, g_seed.haveTime,
                              g_seed.posAccM, 30.0f);
-                lastAidMs = now;
+            } else {
+                aidState.skipped++;
             }
         }
 
@@ -690,13 +725,14 @@ void task(void*) {
                     // last reacquire), with the seeding context that explains
                     // it — the key variable when iterating on fix speed.
                     diag::log("gps FIRST FIX in %lus (sats=%d snr=%d hdop=%.1f "
-                              "aided=%lux%s)",
+                              "aided=%lux%s, %lu redundant seeds withheld)",
                               (unsigned long)((millis() - acqStartMs) / 1000),
                               gps.satellites.isValid() ? (int)gps.satellites.value() : 0,
                               bestSnr, gps.hdop.isValid() ? gps.hdop.hdop() : 0.0,
                               (unsigned long)aidState.count,
                               aidState.count ? (aidState.haveTime ? " pos+time"
-                                                                  : " pos") : " none");
+                                                                  : " pos") : " none",
+                              (unsigned long)aidState.skipped);
                 } else {
                     diag::log("gps: fix %s", haveFix ? "reacquired" : "LOST");
                 }

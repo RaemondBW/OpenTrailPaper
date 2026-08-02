@@ -256,7 +256,17 @@ void setup() {
         s.useMiles = settings::useMiles();
         s.clock24h = settings::clock24h();
     });
-    if (ride_recorder::begin()) {
+    // Panel FIRST, before anything slow. E-paper holds its last image with no
+    // power, so until this runs the glass still shows the previous session and
+    // the device looks dead — worst exactly when something is wrong, since a
+    // failing SD mount alone burns ~1.5 s in sdWait() timeouts before setup()
+    // gets anywhere. beginPanel() touches only the display, touch and input
+    // interrupts; the map load stays in begin() below because it needs the SD.
+    bool uiOk = ui_dashboard::beginPanel();
+
+    bool sdOk = ride_recorder::begin();
+    ui_dashboard::bootStatus("SD card", sdOk);
+    if (sdOk) {
         routes::begin();
     }
     // Restore the wall clock from the coin-cell RTC (which, unlike the ESP32's
@@ -283,7 +293,8 @@ void setup() {
     // NOTE: usb_storage::begin() is called from the UI task AFTER the boot-time
     // SD firmware-update check, so a firmware.bin dropped on the card always
     // flashes before the computer can mount (and grab) the SD.
-    gps_service::begin();
+    bool gpsOk = gps_service::begin();
+    ui_dashboard::bootStatus("GPS", gpsOk);
     diag::log("gps module: %s", gps_service::moduleName());
     // Warm-start seed: hand the receiver the last-known position (and time if
     // the system clock survived deep sleep) so it doesn't cold-search the whole
@@ -318,6 +329,7 @@ void setup() {
     // place the order is no longer load-bearing — this one is kept only because
     // it puts the panel up early, and boot now ends with ~124 KB internal spare.
     // The [epdc]/[main] heap lines exist to make any regression obvious.
+    ui_dashboard::bootStatus("Display", uiOk);   // panel came up back at the top
     ui_dashboard::begin();
 #ifdef EPDC_BOOT_WAIT
     // Bring-up trace. setup() now reaches "begin() done" and then stops before

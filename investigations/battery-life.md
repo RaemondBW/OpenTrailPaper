@@ -91,6 +91,131 @@ re-testing on a clean environment before any claim is made about them.
   corrupts a driver's completion handshake. **Use a dedicated semaphore, never
   the task notification slot, for anything that shares a task with a driver.**
 
+### Landed 2026-07-31 (from `bikegps-diag 7.log`, v0.85/0.86, 163 samples)
+
+That log reconfirms the shape — grouping every `battery:` sample by what was
+actually running at the time:
+
+| GPS fix | recording | phone | HR | power | n | mean |
+|---|---|---|---|---|---|---|
+| ✓ | ✓ | ✓ | ✓ | ✓ | 48 | 194 mA |
+| ✗ | ✗ | ✓ | ✗ | ✗ | 21 | 177 mA |
+| ✗ | ✗ | ✓ | ✓ | ✓ | 43 | 170 mA |
+| ✗ | ✗ | ✗ | ✗ | ✗ | 7 | **167 mA** |
+
+**BLE is not the problem and should not be optimised further**: three
+simultaneous links (phone + HR + Assioma) cost 3 mA over nothing connected.
+Doing the actual job — fix, map redraw, FIT logging — costs ~27 mA. Session mean
+183 mA; 848 mAh burned in 4 h 37 m; ~8 h to empty. Same story as `diag 6`.
+
+Two new things the log shows:
+
+- **Deep sleep is ~2.5 mA, not µA.** One long window (18:28:46 → 19:39:34,
+  70.8 min) burned 7 mAh; back out the 73 s of runtime before sleep and the
+  wake/boot and it is ~3 mAh over 1.2 h. The `mAh` column is a genuine coulomb
+  count (it tracks the reported mA to within 1 %), so this is real. Something —
+  GPS backup rail, SD, EPD boost, the XL9555 — stays powered in "off". Standby
+  is weeks, not months. Not chased yet.
+- **The GPS UART runs at 761 chars/s / 16.0 NMEA sentences/s, continuously**,
+  measured over 18,876 s. Every sentence type for every constellation, 24/7,
+  including 5 h indoors at `sats=0`. Trimming to GGA+RMC+GSA is free and cuts
+  the RX interrupt rate ~4x; that matters once the CPU can actually sleep.
+
+**AID-INI spam — fixed.** 48 aiding injections in one session, gaps as short as
+5 s, mostly the *identical* coordinate (`37.7698,-122.4377` fourteen times in a
+row). There was already a 20 s rate limit, but (a) the boot seed didn't prime
+it, so the first phone seed always slipped through ~5 s later, and (b) 20 s is
+meaningless for a one-shot acquisition aid — each AID-INI restarts the
+receiver's search, so re-seeding a searching receiver actively delays the fix it
+is meant to speed up. TTFF in that log was **716 s on an aided warm start**, and
+the other indoor sessions never fixed at all. `aidingIsNews()` in
+`gps_service.cpp` now accepts a phone seed only when it carries information the
+receiver doesn't already have (first seed / gained time / ≥2x tighter accuracy /
+moved outside the uncertainty circle we already gave it, that last one floored
+at 60 s). Withheld seeds are counted and reported on the `gps FIRST FIX` line,
+so the gate is visible in the log rather than indistinguishable from the phone
+having gone quiet. **Effect on TTFF not yet measured** — that is the next ride.
+
+### Landed 2026-08-02 — PM is ON, and the UI task no longer caps sleep
+
+**CPU light sleep finally runs.** The `build-pm-libs.yml` artifact was installed
+whole (it contains the entire `tools/sdk/esp32s3/` tree, so the partial-overlay
+hazard in `pm-rebuild-baseline.md` §3 never applied), and the device boots with
+`esp_pm_configure(min=max=240, light_sleep=1) -> ESP_OK`. Verified by A/B with
+the new `-DPM_LIGHT_SLEEP=0` switch: PM linked and configured but not sleeping,
+then sleeping. SD mounted in both. Route A of §3 is no longer blocked.
+
+Two of our own bugs had to be fixed first, and both would bite any future PM
+build:
+
+- **`power_mgmt::tick()` deadlocked the console.** It held the no-light-sleep
+  lock only while `(bool)Serial` was true — but that is `USBCDC::connected`,
+  which `USBCDC.cpp:236` sets only when a host asserts **both DTR and RTS**, and
+  light sleep gates the USB PHY before any host can attach. The condition the
+  guard depended on was destroyed by the thing it guarded against. Now: lock
+  acquired inside `begin()` (closing the setup→loop gap) plus a 30 s boot grace
+  window. The durable fix is to key off VBUS via the BQ25896 rather than
+  `Serial`; not done.
+- **The SD path takes no PM lock.** `sd_diskio.cpp` drives the card through
+  Arduino's `SPIClass` → `esp32-hal-spi.c`, which has **zero** references to
+  `esp_pm_lock`, where IDF's own `spi_master` in `libdriver.a` has 32. So light
+  sleep could land mid-transaction. Fixed by holding `ESP_PM_NO_LIGHT_SLEEP`
+  across `sdLock()`/`sdUnlock()` (`power_mgmt::busyAcquire/busyRelease`), which
+  covers every SD access in the firmware since they all go through that guard.
+  Known gap: `SPI.begin()` in `ride_recorder::begin()` is still outside it.
+
+**UI task is now wake-on-input**, which is what makes light sleep pay. It ran a
+flat 30 ms tick — ~33 wakeups/s — while everything inside the loop was already
+interrupt-driven or on a slower timer (redraw 1 Hz, touch-poll fallback 200 ms,
+elevation 2.5 s). Since the SoC only sleeps when **both cores** are idle and
+tickless idle sizes each sleep by the shortest pending timer across them, that
+tick capped every sleep on core 1 at 30 ms. Now it blocks on a dedicated
+semaphore with a 200 ms fallback. Per the warning above in §2, it is a
+semaphore, **not** the task notification slot.
+
+**The next constraint is the GPS task's 50 ms poll on core 0**, which now sets
+the sleep ceiling. It is deliberate — it bounds each sleep so the 128-byte UART
+FIFO cannot overflow at ~960 byte/s. Raising it needs `esp_sleep_enable_uart_wakeup()`,
+which only works on UART0/1 while `SerialGPS` is UART2. **Watch `ck=good/bad` in
+the GPS log after enabling sleep**: the UART is unclocked while asleep, so a
+50 ms sleep drops ~48 bytes mid-sentence and bad checksums are the tell.
+
+**Still not measured.** Everything above is verified working, but no before/after
+current figure has been taken against the 167 mA idle / 183 mA session baseline.
+That is the next thing to do, on battery with USB unplugged (a connected console
+holds the anti-sleep lock and suppresses what you are trying to measure).
+
+### A day lost to a self-inflicted fault — worth reading before the next session
+
+Most of 2026-08-01 went on an SD card that would not mount, which looked exactly
+like a PM regression and was not. The chain:
+
+1. The DTR/RTS handshake in `USBCDC::_onLineState` reboots the device into the
+   **bootloader** on the sequence `!dtr&&rts → dtr&&rts → dtr&&!rts → !dtr&&!rts`.
+   A serial helper that opened and closed the port in a loop walked that sequence
+   and silently reset the device dozens of times, some landing mid-SPI-write.
+2. That left the card's controller in a state where it refused CMD0 —
+   `GO_IDLE_STATE failed`, `cardType=NONE`, and a **different garbage token each
+   time** (`0x4`, `0x44`, `0x36`…), which is the giveaway that the bytes coming
+   back are data, not a response.
+3. It survived power cycles, reflashes and a full framework revert, so it
+   persisted across every build and made PM look guilty. Reformatting the card
+   cleared it (rebuilding the controller's internal tables — not a filesystem
+   fix, since the failure is at CMD0, before any filesystem read).
+4. It mounted fine on a Mac throughout, because a card reader power-cycles the
+   card and talks native SD mode, not SPI.
+
+Lessons: **hold DTR and RTS steady and never reopen the port** (see
+`tools/` helpers); `cardType=NONE` means the card is not answering at the
+protocol level, so never look at the filesystem for it; and a symptom that
+survives a revert cannot be caused by the thing you reverted.
+
+Two theories that were confidently wrong and are recorded so they are not
+re-derived: "the rebuilt SDK's SPI/driver stack breaks the SD" (the sdkconfig
+diff is six values and three additions, **none** touching SPI/SDMMC/driver/flash/
+cache/IRAM) and "the card is stuck mid-transaction holding MISO" (the bus flush
+always found it idle within 16 bytes).
+
 ### Not attempted
 
 - **GPS duty-cycling when parked.** Up to 20–30 mA while stopped, ~0 while
@@ -100,7 +225,40 @@ re-testing on a clean environment before any claim is made about them.
   `BOARD_LORA_CS` is defined (no RST/BUSY pins), so it needs hand-rolled SPI
   commands on the bus the SD card shares. Poor risk/reward.
 
+- **Not running USB when no host is attached.** *Investigated 2026-07-31 and
+  deliberately not done — it is not reachable from this firmware.* `USBMSC`'s
+  constructor claims the MSC interface during static init, and the Arduino core
+  calls `USB.begin()` — the call that actually starts TinyUSB, the USB PHY and
+  the 48 MHz USB clock domain — from `app_main()` **before `setup()` runs**,
+  unconditionally: `ARDUINO_USB_ON_BOOT` is `#define`d in `USB.h` as the OR of
+  the three `USB_*_ON_BOOT` flags, so it cannot be overridden from
+  `build_flags`, and we need `ARDUINO_USB_CDC_ON_BOOT=1` for serial. Gating
+  `usb_storage::begin()` on VBUS therefore saves exactly nothing.
+
+  The real fix is `ARDUINO_USB_CDC_ON_BOOT=0` plus calling `USB.begin()`
+  ourselves once VBUS is seen (BQ25896 `isVbusIn()` is the clean detector — the
+  BQ27220 charging flag flaps and cannot be used). Cost: `Serial` reverts to
+  `HardwareSerial` on UART0 = **GPIO43/44, the GPS pins**, so all 89 `Serial.`
+  call sites across 10 files must move to a `USBCDC` instance we own; and a VBUS
+  misdetection costs the OTG flashing port on a board that only re-enumerates on
+  a physical RST.
+
+  That is real risk for an unknown number, and the number is probably small: the
+  `usbd` task blocks (`tud_task()` → `tud_task_ext(UINT32_MAX)`), it does not
+  spin, so the cost is PHY + clock, not CPU. **So measure first** — the
+  `usbpower [sec]` console command samples the gauge with USB up, gates
+  `PERIPH_USB_MODULE`, samples again, writes both to the diag log and reboots
+  (`periph_module_disable` also asserts the module reset, so USB can't be
+  resumed in place). Run it on battery with nothing mounted. If the answer is
+  ≥10 mA the rename is worth it; if it's 2 mA, close this out for good.
+
 ## 3. CPU light sleep — the big lever, still unclaimed
+
+> **Before touching `CONFIG_PM_ENABLE`, read
+> [`pm-rebuild-baseline.md`](pm-rebuild-baseline.md)** — it records the exact
+> known-good toolchain with content hashes (`tools/check-framework.sh` verifies
+> them), explains why a *partial* SDK overlay is what broke `SD.begin()` on every
+> local build last time, and gives the revert procedure.
 
 Worth 55–80 mA, and the reason for most of the effort. Two routes were pushed
 a long way; **neither works.**

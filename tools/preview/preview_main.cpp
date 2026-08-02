@@ -370,6 +370,19 @@ int main(int argc, char** argv) {
     ui_render_update_overlay("Downloading", 100, fb.data());
     emit("update.png");
 
+    // Boot progress — mid-boot, and the failure case that matters most
+    {
+        const char* steps[] = {"Display", "SD card", "GPS"};
+        const bool  allOk[] = {true, true, true};
+        const bool  sdBad[] = {true, false, true};
+        clearWhite(fb.data());
+        ui_render_boot_screen("v0.86", steps, allOk, 3, fb.data());
+        emit("boot.png");
+        clearWhite(fb.data());
+        ui_render_boot_screen("v0.86", steps, sdBad, 3, fb.data());
+        emit("boot_sd_failed.png");
+    }
+
     // Menu (1h)
     MenuInfo menu;
     menu.recording = false;
