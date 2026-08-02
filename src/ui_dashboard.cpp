@@ -17,6 +17,7 @@
 #include <esp_system.h>
 #include <esp32-hal-tinyusb.h>   // usb_persist_restart / RESTART_BOOTLOADER
 #include <driver/gpio.h>
+#include <driver/rtc_io.h>
 #include "ui_render.h"
 #include "map_view.h"
 #include "map_tiles.h"
@@ -172,6 +173,26 @@ void shutdownDevice(uint8_t* fb, const char* reason) {
     gpio_hold_en((gpio_num_t)BOARD_TOUCH_RST);
     gpio_deep_sleep_hold_en();
     board_radio_power(false);
+
+    // Wait for BOOT to come back up before arming the wake on it. The power
+    // dialog is opened by HOLDING BOOT, so the button can still be down when the
+    // rider taps Shut down — and ext0 waits for LOW, which a held button already
+    // satisfies. Bounded, so a stuck button can't hang the shutdown.
+    for (uint32_t t0 = millis();
+         digitalRead(BOARD_BOOT_BTN) == LOW && millis() - t0 < 3000; ) {
+        delay(20);
+    }
+
+    // ext0 wakes on GPIO0 going LOW, so the pin MUST be held high while asleep.
+    // pinMode(INPUT_PULLUP) sets the *digital* pull-up, and that does not survive
+    // the pad switching to RTC-domain control on the way into deep sleep — the
+    // pin then floats, reads LOW, and the device wakes immediately. That is the
+    // "pressing Shut down just restarts it" bug, and it hit auto-sleep too:
+    // 2026-08-02 shows three auto-sleeps waking after exactly 1 s and a manual
+    // power-off waking after 3 s, while one power-off that happened to settle
+    // high stayed asleep 4 h 16 m. Intermittent because a floating pin is.
+    rtc_gpio_pullup_en((gpio_num_t)BOARD_BOOT_BTN);
+    rtc_gpio_pulldown_dis((gpio_num_t)BOARD_BOOT_BTN);
 
     esp_sleep_enable_ext0_wakeup((gpio_num_t)BOARD_BOOT_BTN, 0);
     esp_deep_sleep_start();
