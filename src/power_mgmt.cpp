@@ -6,6 +6,7 @@
 #include <esp_err.h>
 #include <driver/uart.h>
 
+#include "ride_state.h"
 #include "diag.h"
 
 namespace power_mgmt {
@@ -90,6 +91,24 @@ bool begin() {
     return s_enabled;
 }
 
+// While the companion app is connected, light sleep is held off entirely.
+//
+// WHY: the BT controller sleeps between connection events and wakes on the RTC
+// slow clock, which on this board is the internal 150 kHz RC — it drifts ~5%
+// (sdkconfig.defaults.pm says so, and calls it "slightly widens BLE wake
+// windows"). At a 30 ms connection interval that is ~1.5 ms of error per event,
+// enough to miss the master's anchor point, drop packets, and hit supervision
+// timeout. Measured 2026-08-02: 1231 phone disconnects, ALL of them with light
+// sleep on, none with it off — every one HCI 0x08, supervision timeout — which
+// made map transfers over BLE practically impossible.
+//
+// The phone is only connected while the rider is actually using the app, so
+// suppressing sleep for that window costs little: the long tail of a ride has
+// no phone attached and still sleeps. The real fix is a stable low-power clock
+// for the controller (CONFIG_RTC_CLK_SRC_EXT_CRYS + BT_CTRL_LPCLK_SEL_EXT_32K_XTAL
+// if the board wires a 32.768 kHz crystal, else BT_CTRL_MODEM_SLEEP=n), but both
+// need a lib-builder rebuild; this needs none and can ship today.
+
 // Grace window after boot during which light sleep is held off unconditionally.
 //
 // LOAD-BEARING — without it there is no console and no OTG flashing, ever.
@@ -107,8 +126,10 @@ static constexpr uint32_t USB_GRACE_MS = 30000;
 
 void tick() {
     if (!s_usbLock) return;
-    // Held open during the grace window, then only while a host is attached.
-    bool usb = (millis() < USB_GRACE_MS) || (bool)Serial;
+    // Held during the boot grace window, while a serial host is attached, and
+    // for as long as the phone is connected (see the note above).
+    bool phone = g_state.snapshot().phoneConnected;
+    bool usb = (millis() < USB_GRACE_MS) || (bool)Serial || phone;
     if (usb && !s_usbHeld) {
         esp_pm_lock_acquire(s_usbLock);
         s_usbHeld = true;

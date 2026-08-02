@@ -180,10 +180,41 @@ which only works on UART0/1 while `SerialGPS` is UART2. **Watch `ck=good/bad` in
 the GPS log after enabling sleep**: the UART is unclocked while asleep, so a
 50 ms sleep drops ~48 bytes mid-sentence and bad checksums are the tell.
 
-**Still not measured.** Everything above is verified working, but no before/after
-current figure has been taken against the 167 mA idle / 183 mA session baseline.
-That is the next thing to do, on battery with USB unplugged (a connected console
-holds the anti-sleep lock and suppresses what you are trying to measure).
+**Measured 2026-08-02, on battery: mean -130 mA, median -132 mA** over 45
+samples (range -104 to -174), against the **167 mA idle / 183 mA session mean**
+baseline. Roughly **30-50 mA saved, ~20-28%** — and understated, because the BLE
+link was thrashing throughout that log (see below). GPS survives sleep fine:
+`ck=1042/2`, two bad checksums per thousand sentences, so the NMEA-loss risk did
+not materialise at a 50 ms sleep ceiling.
+
+**Light sleep breaks the BLE link to the phone.** 1231 phone disconnects in one
+log, ALL of them with light sleep on and none with it off, every one HCI error
+0x08 (`reason 520` = NimBLE HCI base 0x200 + 0x08) — **connection supervision
+timeout**. Map transfers over BLE were practically impossible.
+
+The cause is in `sdkconfig.defaults.pm`, which warned about it: with
+`CONFIG_BT_CTRL_MODEM_SLEEP` the controller sleeps between connection events and
+wakes on the RTC slow clock, and `CONFIG_RTC_CLK_SRC_INT_RC` is the internal
+150 kHz RC that drifts ~5%. At a 30 ms connection interval that is ~1.5 ms of
+error per event — enough to miss the master's anchor point and time the link out.
+The file called this "slightly widens BLE wake windows"; it is fatal.
+
+Mitigated in firmware by holding the no-light-sleep lock while the phone is
+connected (`power_mgmt::tick`). Costs little — the phone is only connected while
+the app is in use, and the long tail of a ride still sleeps. The real fixes both
+need a lib-builder rebuild: `CONFIG_RTC_CLK_SRC_EXT_CRYS` +
+`CONFIG_BT_CTRL_LPCLK_SEL_EXT_32K_XTAL` **if** the board wires a 32.768 kHz
+crystal to XTAL_32K (VERIFY against the LilyGO schematic — the PCF8563 is a
+separate I2C RTC and does not count), else `CONFIG_BT_CTRL_MODEM_SLEEP=n`.
+
+**One unexplained reset**, 2026-08-02 22:57:22, `ESP_RST_POWERON` during normal
+use with the battery at 92%/4008 mV. No panic, no watchdog, no coredump — the
+rail actually collapsed. A BLE disconnect storm preceded it, but that storm runs
+at 40-47/min for minutes elsewhere in the same log without any reset, so it is
+correlation not cause. Open: intermittent battery/JST contact, or a brownout
+from a radio transient out of light sleep (the S3 has a distinct
+`ESP_RST_BROWNOUT` code and we did not get it, which argues against). Single
+occurrence; not reproduced.
 
 ### A day lost to a self-inflicted fault — worth reading before the next session
 
