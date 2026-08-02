@@ -19,6 +19,11 @@ float* cumM = nullptr;      // cumulative distance from route start (m)
 int nPts = 0;
 char curName[routes::MAX_NAME] = "";
 int progIdx = 0;
+// Continuous along-route distance (m). progIdx is still the nearest vertex (the
+// map view and the route overlay want an index), but every distance decision —
+// turn countdown, cursor advance, remaining — uses this, so it tracks the rider
+// instead of quantising to the point spacing.
+float progAlongM = 0.0f;
 
 // Turn-by-turn maneuvers
 constexpr int MAX_MANEUVERS = 128;
@@ -62,6 +67,51 @@ int nearestRouteIdx(double lat, double lon, int from, int to, float& outDist2) {
     return bestI;
 }
 
+// Project (lat,lon) onto the polyline SEGMENT from point i to i+1. Returns the
+// squared distance (m^2) and, via outT, how far along that segment the foot of
+// the perpendicular falls (clamped to 0..1).
+//
+// Snapping to the nearest vertex instead — which is what this used to do —
+// quantises the rider's along-route position to the point spacing. After
+// decimation that spacing can be tens of metres, so the distance-to-turn
+// readout sticks and then jumps rather than counting down, and a maneuver can
+// sit at "0 m" while the rider is already well past it. That is what made
+// turn-by-turn look unrelated to actual position.
+float projectOnSegment(double lat, double lon, int i, float cosL, float& outT) {
+    float ay = (float)((latArr[i] - lat) * 110540.0);
+    float ax = (float)((lonArr[i] - lon) * 111320.0 * cosL);
+    float by = (float)((latArr[i + 1] - lat) * 110540.0);
+    float bx = (float)((lonArr[i + 1] - lon) * 111320.0 * cosL);
+    float vx = bx - ax, vy = by - ay;
+    float len2 = vx * vx + vy * vy;
+    float t = 0.0f;
+    if (len2 > 1e-6f) {
+        t = -(ax * vx + ay * vy) / len2;       // foot of the perpendicular
+        if (t < 0.0f) t = 0.0f;
+        if (t > 1.0f) t = 1.0f;
+    }
+    float px = ax + vx * t, py = ay + vy * t;  // closest point, rider-relative
+    outT = t;
+    return px * px + py * py;
+}
+
+// Nearest segment to (lat,lon) over points [from,to). Returns the segment's
+// start index (or -1), with the along-segment fraction and squared distance.
+int nearestSegment(double lat, double lon, int from, int to, float& outT,
+                   float& outDist2) {
+    float best = 1e18f, bestT = 0.0f;
+    int bestI = -1;
+    float cosL = (float)cos(lat * M_PI / 180.0);
+    for (int i = from; i + 1 < to; ++i) {
+        float t;
+        float d2 = projectOnSegment(lat, lon, i, cosL, t);
+        if (d2 < best) { best = d2; bestT = t; bestI = i; }
+    }
+    outT = bestT;
+    outDist2 = best;
+    return bestI;
+}
+
 // Snap each maneuver to its nearest point on the loaded route so turns can be
 // tracked by along-route distance (robust) instead of GPS proximity.
 //
@@ -78,7 +128,16 @@ void mapManeuversToRoute() {
         int idx = nPts > 0 ? nearestRouteIdx(maneuvers[i].lat, maneuvers[i].lon,
                                              from, nPts, d2) : 0;
         if (idx < 0) idx = from;
-        maneuverIdx[i] = idx;
+        // STRICTLY increasing, not just non-decreasing. Two maneuvers close
+        // together relative to the point spacing — a slip road, a quick
+        // left-then-right, anything tighter than the decimated route resolution
+        // — otherwise snap to the SAME index, share a cumM, and get consumed
+        // together by advanceManeuverCursor(), silently dropping the second
+        // instruction. Covered by testCloselySpacedTurns.
+        if (i > 0 && idx <= maneuverIdx[i - 1])
+            idx = maneuverIdx[i - 1] + 1;
+        if (idx >= nPts) idx = nPts - 1;      // clamp; a tail of maneuvers on a
+        maneuverIdx[i] = idx;                 // very short route can run off it
         from = idx;   // the next maneuver is at or after this one on the route
     }
 }
@@ -87,7 +146,7 @@ void mapManeuversToRoute() {
 // position is behind us, with a small margin).
 void advanceManeuverCursor() {
     while (curManeuver < nManeuvers &&
-           cumM[maneuverIdx[curManeuver]] <= cumM[progIdx] - 5.0f) {
+           cumM[maneuverIdx[curManeuver]] <= progAlongM - 5.0f) {
         curManeuver++;
     }
 }
@@ -172,6 +231,7 @@ bool load(const char* filename) {
 
     nPts = 0;
     progIdx = 0;
+    progAlongM = 0.0f;
     GpxScanner sc;
 
     // Chunked scan with carryover so attributes split across chunk
@@ -231,6 +291,7 @@ bool loadFromMemory(const char* name, const char* gpx, size_t len) {
 
     nPts = 0;
     progIdx = 0;
+    progAlongM = 0.0f;
     GpxScanner sc;
 
     // gpx is NUL-terminated by the caller, so strstr is safe. Scan for the
@@ -284,6 +345,7 @@ bool loadFromMemory(const char* name, const char* gpx, size_t len) {
 void clearRoute() {
     nPts = 0;
     progIdx = 0;
+    progAlongM = 0.0f;
     curName[0] = 0;
     // Clearing a route also ends any navigation on it, otherwise the turn
     // banner would linger with stale maneuvers.
@@ -311,8 +373,10 @@ void updateProgress(double lat, double lon) {
     // route passing near itself (loops, out-and-backs, self-crossings).
     int from = progIdx - 8;   if (from < 0) from = 0;
     int to   = progIdx + 120; if (to > nPts) to = nPts;
-    float d2;
-    int idx = nearestRouteIdx(lat, lon, from, to, d2);
+    float d2, segT;
+    int seg = nearestSegment(lat, lon, from, to, segT, d2);
+    // Single-point route (or a window with no segment): fall back to the vertex.
+    int idx = seg >= 0 ? seg : nearestRouteIdx(lat, lon, from, to, d2);
 
     // Whole-route re-acquire, for joining mid-route or rejoining after a real
     // detour. This is the dangerous case: on a route that comes back near
@@ -324,10 +388,11 @@ void updateProgress(double lat, double lon) {
     //     (fd2 < d2/4 == less than half the distance).
     if (d2 > 60.0f * 60.0f) {
         if (++offRouteFixes >= 4) {
-            float fd2;
-            int fidx = nearestRouteIdx(lat, lon, 0, nPts, fd2);
-            if (fidx >= 0 && fd2 < d2 * 0.25f) {
-                idx = fidx;
+            float fd2, ft;
+            int fseg = nearestSegment(lat, lon, 0, nPts, ft, fd2);
+            if (fseg >= 0 && fd2 < d2 * 0.25f) {
+                idx = fseg;
+                segT = ft;
                 d2 = fd2;
                 offRouteFixes = 0;
             }
@@ -335,7 +400,14 @@ void updateProgress(double lat, double lon) {
     } else {
         offRouteFixes = 0;
     }
-    if (idx >= 0) progIdx = idx;
+    if (idx >= 0) {
+        progIdx = idx;
+        // Interpolate along the matched segment so the along-route position is
+        // continuous rather than quantised to the vertex spacing.
+        progAlongM = (idx + 1 < nPts)
+                         ? cumM[idx] + segT * (cumM[idx + 1] - cumM[idx])
+                         : cumM[idx];
+    }
     offRouteM = sqrtf(d2);
 
     // Grab the route into the turn view when we're clearly on it and moving
@@ -405,7 +477,7 @@ bool navActive() { return activeNav; }
 bool nextTurn(char* instruction, int textLen, float& distanceM) {
     if (!activeNav || curManeuver >= nManeuvers || nPts == 0) return false;
     // Along-route distance from the rider's projected position to the turn.
-    float along = cumM[maneuverIdx[curManeuver]] - cumM[progIdx];
+    float along = cumM[maneuverIdx[curManeuver]] - progAlongM;
     if (along < 0) along = 0;
     distanceM = along;
     snprintf(instruction, textLen, "%s", maneuvers[curManeuver].instr);
@@ -416,7 +488,7 @@ int progressIndex() { return progIdx; }
 
 float remainingKm() {
     if (!active()) return 0;
-    return (cumM[nPts - 1] - cumM[progIdx]) / 1000.0f;
+    return (cumM[nPts - 1] - progAlongM) / 1000.0f;
 }
 
 }  // namespace routes
