@@ -602,14 +602,19 @@ void renderMapScreen(const RideState& s, uint8_t* fb) {
     drawNavBanner(fb);
 }
 
-// Turn-by-turn banner across the top, shown on the map AND the dashboard
-// while navigating. Tapping it (kNavBanner) ends navigation.
+// Turn-by-turn banner across the top, shown on the map AND the dashboard while
+// navigating. Tapping it (kNavBanner) opens the directions list.
+//
+// Units come from the shared state, the same source the directions list reads,
+// rather than settings:: directly. Both stay in sync today (the settings screen
+// and the phone's BLE settings write both), but reading one fact from two
+// places is what made the list and the banner disagree in the first place.
 void drawNavBanner(uint8_t* fb) {
     if (!routes::navActive()) return;
     char instr[routes::MANEUVER_TEXT];
     float dist = 0;
     if (routes::nextTurn(instr, sizeof(instr), dist)) {
-        ui_render_nav_banner(instr, dist, settings::useMiles(), fb);
+        ui_render_nav_banner(instr, dist, g_state.snapshot().useMiles, fb);
     }
 }
 
