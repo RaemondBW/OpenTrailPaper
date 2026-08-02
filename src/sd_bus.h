@@ -11,7 +11,22 @@
 // sdLock()/sdUnlock(). Created in setup() before any task starts; the guards
 // no-op until then. Recursive so a locked helper can call another safely.
 
+// These also hold light sleep off for the duration. The SD path runs through
+// Arduino's SPIClass, which — unlike ESP-IDF's spi_master — takes no PM lock, so
+// a light sleep landing mid-command gates the SPI clock and wedges the card
+// until it is physically power-cycled. Since every SD access is already wrapped
+// here, this is the one place that needs to know. No-op without PM.
+// See power_mgmt::busyAcquire().
+
+#include "power_mgmt.h"
+
 extern SemaphoreHandle_t g_sdMutex;
 
-inline void sdLock()   { if (g_sdMutex) xSemaphoreTakeRecursive(g_sdMutex, portMAX_DELAY); }
-inline void sdUnlock() { if (g_sdMutex) xSemaphoreGiveRecursive(g_sdMutex); }
+inline void sdLock()   {
+    power_mgmt::busyAcquire();
+    if (g_sdMutex) xSemaphoreTakeRecursive(g_sdMutex, portMAX_DELAY);
+}
+inline void sdUnlock() {
+    if (g_sdMutex) xSemaphoreGiveRecursive(g_sdMutex);
+    power_mgmt::busyRelease();
+}

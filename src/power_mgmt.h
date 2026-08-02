@@ -21,4 +21,20 @@ bool begin();
 // CPU is free to sleep.
 void tick();
 
+// Hold light sleep off across a bus transaction that must not be interrupted.
+//
+// WHY: the SD card is driven by sd_diskio.cpp -> Arduino SPIClass ->
+// esp32-hal-spi.c, which — unlike ESP-IDF's own spi_master — never takes a PM
+// lock. With light sleep armed the SoC can therefore sleep in the middle of an
+// SD command, gating the SPI clock and leaving the card mid-transaction. The
+// card then refuses CMD0/GO_IDLE_STATE on every subsequent mount, reporting
+// cardType=NONE, and stays that way until it is physically power-cycled —
+// surviving reboots, reflashes and even a revert to a non-PM framework, which
+// makes it look like a permanent hardware fault.
+//
+// Recursive-safe: esp_pm_lock keeps a count, so nested acquire/release pairs
+// balance. Both are no-ops when PM is unavailable (stock framework).
+void busyAcquire();
+void busyRelease();
+
 }  // namespace power_mgmt

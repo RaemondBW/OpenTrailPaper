@@ -807,6 +807,41 @@ void ui_render_shutdown_screen(uint8_t* fb) {
              EPD_DRAW_ALIGN_CENTER, 0xFF);   // white on the black band
 }
 
+// Boot progress screen. Drawn from setup() as each subsystem comes up, so the
+// glass shows what the firmware is doing instead of holding the previous
+// session's image for the several seconds setup() takes. That wait is worst
+// exactly when something is wrong — a failing SD mount alone burns ~1.5 s in
+// sdWait() timeouts — which is precisely when a blank-looking device is most
+// alarming.
+void ui_render_boot_screen(const char* version, const char* const* lines,
+                           const bool* ok, int count, uint8_t* fb) {
+    const int W = epd_rotated_display_width();
+    const int H = epd_rotated_display_height();
+    epd_fill_rect({0, 0, W, H}, 0xFF, fb);
+
+    ui::label(W / 2, 120, "OpenTrailPaper", fb, 0x00, &ArialBold_20);
+    ui::text(&ArialBold_14, W / 2, 156, version, fb, EPD_DRAW_ALIGN_CENTER, 0x00);
+    epd_fill_rect({W / 2 - 90, 178, 180, 2}, 0x00, fb);
+
+    // One line per step, with a tick or cross so a failure is readable across
+    // the room rather than needing a serial console.
+    int y = 236;
+    for (int i = 0; i < count; ++i) {
+        const int x = 70;
+        if (ok) {
+            if (ok[i]) {                        // tick
+                epd_draw_line(x, y - 6, x + 6, y, 0x00, fb);
+                epd_draw_line(x + 6, y, x + 18, y - 18, 0x00, fb);
+            } else {                            // cross
+                epd_draw_line(x, y - 16, x + 16, y, 0x00, fb);
+                epd_draw_line(x + 16, y - 16, x, y, 0x00, fb);
+            }
+        }
+        ui::text(&ArialBold_14, x + 34, y, lines[i], fb, EPD_DRAW_ALIGN_LEFT, 0x00);
+        y += 38;
+    }
+}
+
 void ui_render_nav_prompt(const char* routeName, int turns, uint8_t* fb) {
     const int W = epd_rotated_display_width();
 
