@@ -62,6 +62,10 @@ struct MapScreenData {
     float northDeg;
     bool trackUp;
 
+    // A turn-by-turn banner is drawn over the top of the map. The compass sits
+    // in the same place, so it moves below the banner rather than under it.
+    bool navBannerVisible = false;
+
     // Position is coming from the connected phone (device GPS has no fix).
     bool phonePosition = false;
 

@@ -44,7 +44,7 @@ size_t fbSize = 0;
 
 enum Screen { SCREEN_DASH, SCREEN_MAP, SCREEN_SUMMARY, SCREEN_MENU,
               SCREEN_SENSORS, SCREEN_ROUTES, SCREEN_HISTORY,
-              SCREEN_SETTINGS, SCREEN_GPSDEBUG };
+              SCREEN_SETTINGS, SCREEN_GPSDEBUG, SCREEN_DIRECTIONS };
 Screen screen = SCREEN_DASH;
 RideSummary pendingSummary;
 
@@ -66,6 +66,9 @@ void buildMapScreenData(const RideState& s, MapScreenData& map);
 
 // Which screen the Sensors page was opened from, so back returns there.
 Screen sensorsFrom = SCREEN_MENU;
+
+// Same for the upcoming-directions list, reached by tapping the turn banner.
+Screen directionsFrom = SCREEN_MAP;
 
 // Set from the GT911 home-button callback (fires inside touch.getPoint()).
 volatile bool homeKeyPressed = false;
@@ -107,7 +110,10 @@ void IRAM_ATTR onBoardBtnIrq() { boardBtnIrq = true; uiWakeFromIsr(); }
 bool powerOverlay = false;
 
 // Backlight: 4 levels cycled by the GPIO48 button.
-const uint8_t kBacklightPWM[4] = {0, 50, 110, 230};
+// Off / Low / Med / Bright. Low is deliberately very dim — it is for reading the
+// panel at night, where 50/255 was still dazzling; e-paper needs far less
+// frontlight than an emissive display to become legible.
+const uint8_t kBacklightPWM[4] = {0, 12, 90, 230};
 void applyBacklight(int level) {
     if (level < 0) level = 0;
     if (level > 3) level = 3;
@@ -131,6 +137,11 @@ void shutdownDevice(uint8_t* fb, const char* reason) {
     memset(fb, 0xFF, fbSize);
     {
         mapMpp = 32.0f;   // max zoom-out (1/2/4/8/16/32 m per px)
+        // Always north-up for the farewell. This image sits on the glass for
+        // days; rotated to whatever heading the last fix happened to have, it is
+        // unreadable as a map of where the bike is. (Deep sleep follows
+        // immediately, so mutating the live setting here is harmless.)
+        mapTrackUp = false;
         RideState s = g_state.snapshot();
         // Save the last known position on the way down, so the next boot's
         // GPS warm-start seed is as fresh as possible.
@@ -259,7 +270,8 @@ bool screenIsFast(Screen s, bool overlay) {
 // slower GL16 — this is what makes "switching menu state" feel snappy.
 bool screenListFast(Screen s) {
     return s == SCREEN_MENU || s == SCREEN_SENSORS || s == SCREEN_ROUTES ||
-           s == SCREEN_HISTORY || s == SCREEN_SETTINGS;
+           s == SCREEN_HISTORY || s == SCREEN_SETTINGS ||
+           s == SCREEN_DIRECTIONS;
 }
 
 bool inRect(const EpdRect& r, int x, int y) {
@@ -282,6 +294,7 @@ void goBack() {
     }
     switch (screen) {
         case SCREEN_GPSDEBUG: screen = SCREEN_SETTINGS; break;
+        case SCREEN_DIRECTIONS: screen = directionsFrom; break;
         case SCREEN_SETTINGS:
         case SCREEN_ROUTES:
         case SCREEN_HISTORY:  screen = SCREEN_MENU; break;
@@ -337,16 +350,22 @@ void handleTap(int x, int y) {
     // Bottom BACK strip on every sub-screen.
     if ((screen == SCREEN_SETTINGS || screen == SCREEN_SENSORS ||
          screen == SCREEN_ROUTES || screen == SCREEN_HISTORY ||
-         screen == SCREEN_GPSDEBUG) &&
+         screen == SCREEN_GPSDEBUG || screen == SCREEN_DIRECTIONS) &&
         inRect(kBackBar, x, y)) {
         goBack();
         return;
     }
 
-    // Tapping the turn banner (map or dashboard) ends navigation.
+    // Tapping the turn banner opens the rest of the route's directions. It used
+    // to end navigation, which is a destructive action on the one control a
+    // rider is most likely to hit by accident — and it threw away the thing they
+    // probably wanted, which is to see what is coming up. Navigation is ended
+    // from the menu instead.
     if (routes::navActive() && inRect(kNavBanner, x, y) &&
         (screen == SCREEN_DASH || screen == SCREEN_MAP)) {
-        routes::dismissNav();
+        directionsFrom = screen;
+        screen = SCREEN_DIRECTIONS;
+        noteActivity();
         return;
     }
 
@@ -520,6 +539,9 @@ void buildMapScreenData(const RideState& s, MapScreenData& map) {
     map.headingDeg = mapTrackUp ? 0.0f : s.courseDeg;
     map.northDeg = rot;
     map.trackUp = mapTrackUp;
+    // Tell the map renderer to drop the compass below the turn banner when one
+    // is drawn over the top of the viewport.
+    map.navBannerVisible = routes::navActive();
     map.metersPerPixel = mapMpp;
 
     // Position priority: the device's own current GPS fix; else the connected
@@ -683,6 +705,37 @@ void renderListScreen(uint8_t* fb) {
                          routeFiles[i]);
                 snprintf(rows[base + i].subtitle, sizeof(rows[0].subtitle),
                          "tap to ride this route");
+            }
+            break;
+        }
+        case SCREEN_DIRECTIONS: {
+            title = "DIRECTIONS";
+            footer = routes::navActive() ? "distances update as you ride"
+                                         : "navigation has ended";
+            int n = routes::upcomingCount();
+            for (int i = 0; i < n && count < (int)(sizeof(rows) / sizeof(rows[0]));
+                 ++i) {
+                char instr[routes::MANEUVER_TEXT];
+                float dm = 0;
+                if (!routes::upcomingTurn(i, instr, sizeof(instr), dm)) break;
+                snprintf(rows[count].title, sizeof(rows[0].title), "%s", instr);
+                RideState s = g_state.snapshot();
+                if (dm < 1000.0f) {
+                    snprintf(rows[count].subtitle, sizeof(rows[0].subtitle),
+                             "in %d m", (int)(dm + 0.5f));
+                } else {
+                    snprintf(rows[count].subtitle, sizeof(rows[0].subtitle),
+                             "in %.1f %s", units::distM(dm, s.useMiles),
+                             units::distLabel(s.useMiles));
+                }
+                rows[count].inverted = (i == 0);   // the turn you are riding to
+                count++;
+            }
+            if (count == 0) {
+                snprintf(rows[count].title, sizeof(rows[0].title), "No turns ahead");
+                snprintf(rows[count].subtitle, sizeof(rows[0].subtitle),
+                         "you are on the last leg");
+                count++;
             }
             break;
         }
@@ -1352,6 +1405,7 @@ void task(void*) {
                 case SCREEN_SENSORS:
                 case SCREEN_ROUTES:
                 case SCREEN_HISTORY:
+                case SCREEN_DIRECTIONS:
                     renderListScreen(fb);
                     break;
                 case SCREEN_SETTINGS: {

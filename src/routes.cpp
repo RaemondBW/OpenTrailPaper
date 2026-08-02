@@ -484,6 +484,21 @@ bool nextTurn(char* instruction, int textLen, float& distanceM) {
     return true;
 }
 
+int upcomingCount() {
+    if (!activeNav || nPts == 0) return 0;
+    return nManeuvers - curManeuver;
+}
+
+bool upcomingTurn(int i, char* instruction, int textLen, float& distanceM) {
+    int m = curManeuver + i;
+    if (!activeNav || i < 0 || m >= nManeuvers || nPts == 0) return false;
+    float along = cumM[maneuverIdx[m]] - progAlongM;
+    if (along < 0) along = 0;
+    distanceM = along;
+    snprintf(instruction, textLen, "%s", maneuvers[m].instr);
+    return true;
+}
+
 int progressIndex() { return progIdx; }
 
 float remainingKm() {
