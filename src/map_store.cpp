@@ -48,6 +48,43 @@ int g_mapCount = 0;
 // the actual tile bytes on demand into a small PSRAM LRU cache. This caps
 // resident map memory regardless of how much of the world is on the card.
 constexpr int MAX_TILES = 512;
+
+// Tiles are sharded into 256 subdirectories, /maps/tiles/<xy>/<id>.ebm.
+//
+// WHY: FAT32 directory lookup is LINEAR. Every SD.open()/SD.exists() walks the
+// directory entries from the start, and each 15-hex-char H3 id (e.g.
+// "8a2830828767fff.ebm") needs a long-filename entry chain — 3 directory
+// entries per file, not 1 — so a flat folder burns entries fast and every
+// lookup gets slower as the map collection grows. Boot rescans every tile to
+// read its 36-byte header, so the cost is O(tiles^2) in directory reads. FAT32
+// also caps a directory at 65534 entries, which a flat layout would reach at
+// ~21k tiles; the linear-scan slowdown bites long before that.
+//
+// The shard is a hash, not a prefix of the id: H3 cells in one region share
+// their leading characters (resolution + base cell), so a prefix would pile
+// everything into one bucket and achieve nothing.
+//
+// Reads accept BOTH layouts. Cards written by older firmware keep working
+// untouched — the scan walks the shard directories and the flat directory into
+// one index, and tile reads try the shard path then the flat path. Only newly
+// saved tiles go into shards, so no migration is needed and nothing is moved.
+constexpr int TILE_SHARDS = 256;
+
+// FNV-1a over the id, low byte. Must match the app if it ever writes tiles
+// directly; today the device owns tile placement, so this is the only copy.
+uint8_t tileShard(const char* id) {
+    uint32_t h = 2166136261u;
+    for (const char* p = id; *p && *p != '.'; ++p) {
+        h ^= (uint8_t)*p;
+        h *= 16777619u;
+    }
+    return (uint8_t)(h & 0xFF);
+}
+
+// "<TILE_DIR>/<xy>" — the shard directory for this id.
+void tileShardDir(const char* id, char* out, size_t len) {
+    snprintf(out, len, "%s/%02x", TILE_DIR, tileShard(id));
+}
 struct TileMeta { char name[28]; double s, w, n, e; };
 TileMeta g_tiles[MAX_TILES];
 int g_tileCount = 0;
@@ -176,28 +213,46 @@ void scanTiles() {
     sdLock();
     if (!SD.exists(MAP_DIR)) SD.mkdir(MAP_DIR);
     if (!SD.exists(TILE_DIR)) SD.mkdir(TILE_DIR);
-    File dir = SD.open(TILE_DIR);
-    if (dir) {
-        for (File f = dir.openNextFile(); f && g_tileCount < MAX_TILES;
-             f = dir.openNextFile()) {
-            if (!f.isDirectory()) {
-                const char* nm = f.name();
-                const char* base = strrchr(nm, '/');
-                base = base ? base + 1 : nm;
-                if (strstr(base, ".ebm")) {
-                    uint8_t h[36];
-                    double s, w, n, e;
-                    if (f.read(h, 36) == 36 && headerBounds(h, s, w, n, e)) {
-                        TileMeta& t = g_tiles[g_tileCount++];
-                        strncpy(t.name, base, sizeof(t.name) - 1);
-                        t.name[sizeof(t.name) - 1] = 0;
-                        t.s = s; t.w = w; t.n = n; t.e = e;
-                    }
+    // Index one directory of .ebm tiles. Shared by the shard directories and the
+    // legacy flat directory, so cards written by either firmware just work.
+    bool truncated = false;
+    auto indexDir = [&](const char* path) {
+        File d = SD.open(path);
+        if (!d) return;
+        for (File f = d.openNextFile(); f; f = d.openNextFile()) {
+            if (f.isDirectory()) { f.close(); continue; }
+            if (g_tileCount >= MAX_TILES) { truncated = true; f.close(); break; }
+            const char* nm = f.name();
+            const char* base = strrchr(nm, '/');
+            base = base ? base + 1 : nm;
+            if (strstr(base, ".ebm")) {
+                uint8_t h[36];
+                double s, w, n, e;
+                if (f.read(h, 36) == 36 && headerBounds(h, s, w, n, e)) {
+                    TileMeta& t = g_tiles[g_tileCount++];
+                    strncpy(t.name, base, sizeof(t.name) - 1);
+                    t.name[sizeof(t.name) - 1] = 0;
+                    t.s = s; t.w = w; t.n = n; t.e = e;
                 }
             }
             f.close();
         }
-        dir.close();
+        d.close();
+    };
+
+    indexDir(TILE_DIR);                 // legacy flat layout
+    for (int i = 0; i < TILE_SHARDS && g_tileCount < MAX_TILES; ++i) {
+        char sd[72];
+        snprintf(sd, sizeof(sd), "%s/%02x", TILE_DIR, i);
+        if (SD.exists(sd)) indexDir(sd);
+    }
+    if (truncated) {
+        // Previously this stopped at MAX_TILES in silence, so tiles past the cap
+        // were simply invisible and WHICH ones depended on directory order.
+        diag::log("map: WARNING tile index full at %d — some tiles on the card "
+                  "are not visible", MAX_TILES);
+    }
+    {
     }
     sdUnlock();
     diag::log("map: %d tiles indexed", g_tileCount);
@@ -217,7 +272,13 @@ const uint8_t* ensureTileLoaded(int idx, size_t& outLen) {
     if (usb_storage::hostActive()) { outLen = 0; return nullptr; }
 
     char path[80];
-    snprintf(path, sizeof(path), "%s/%s", TILE_DIR, g_tiles[idx].name);
+    // Shard first, flat second: the index does not record which layout a tile
+    // came from, and a card can legitimately hold both.
+    char shardDir[72];
+    tileShardDir(g_tiles[idx].name, shardDir, sizeof(shardDir));
+    snprintf(path, sizeof(path), "%s/%s", shardDir, g_tiles[idx].name);
+    if (!SD.exists(path))
+        snprintf(path, sizeof(path), "%s/%s", TILE_DIR, g_tiles[idx].name);
     sdLock();
     File f = SD.open(path, FILE_READ);
     size_t len = f ? f.size() : 0;
@@ -412,14 +473,26 @@ bool saveTile(const char* id, const uint8_t* data, size_t len) {
         diag::log("tile save rejected: not EBM2 (%u bytes)", (unsigned)len);
         return false;
     }
-    char path[80];
-    snprintf(path, sizeof(path), "%s/%.40s", TILE_DIR, id);
+    char shardDir[72];
+    tileShardDir(id, shardDir, sizeof(shardDir));
+    char path[96];
+    snprintf(path, sizeof(path), "%s/%.40s", shardDir, id);
     if (!strstr(path, ".ebm")) strncat(path, ".ebm", sizeof(path) - strlen(path) - 1);
 
     sdLock();
     if (!SD.exists(MAP_DIR)) SD.mkdir(MAP_DIR);
     if (!SD.exists(TILE_DIR)) SD.mkdir(TILE_DIR);
+    if (!SD.exists(shardDir)) SD.mkdir(shardDir);
     SD.remove(path);
+    // An older firmware may have left this tile in the flat directory; drop it
+    // so the card never holds two copies of the same cell.
+    {
+        char legacy[96];
+        snprintf(legacy, sizeof(legacy), "%s/%.40s", TILE_DIR, id);
+        if (!strstr(legacy, ".ebm"))
+            strncat(legacy, ".ebm", sizeof(legacy) - strlen(legacy) - 1);
+        if (SD.exists(legacy)) SD.remove(legacy);
+    }
     File f = SD.open(path, FILE_WRITE);
     bool ok = (bool)f;
     size_t wrote = 0;
