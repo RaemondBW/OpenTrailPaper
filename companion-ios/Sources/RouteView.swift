@@ -272,7 +272,11 @@ final class RouteModel: NSObject, ObservableObject {
     @MainActor private func apply(_ r: MKRoute, mode: String) {
         route = r
         routeMode = mode
-        camera = .rect(r.polyline.boundingMapRect)
+        // Pad the bounding rect before framing. .rect() fits the polyline edge
+        // to edge, so the route ran into the screen borders and under the
+        // search field and the route summary — hard to read, and impossible to
+        // see what it passes near. 25% on each axis gives it room to breathe.
+        camera = .rect(r.polyline.boundingMapRect.paddedForDisplay())
     }
 }
 
@@ -402,5 +406,21 @@ extension MKPolyline {
             repeating: kCLLocationCoordinate2DInvalid, count: pointCount)
         getCoordinates(&coords, range: NSRange(location: 0, length: pointCount))
         return coords
+    }
+}
+
+extension MKMapRect {
+    /// Grow the rect by a fraction of its own size on each axis, so a route
+    /// framed with `.rect(...)` is not flush against the screen edges or hidden
+    /// behind the search field and summary overlays.
+    ///
+    /// A minimum span keeps very short routes (a few hundred metres) from
+    /// filling the screen at street level, where the surrounding context that
+    /// makes a route legible is all off-screen.
+    func paddedForDisplay(fraction: Double = 0.25,
+                          minimumSpan: Double = 2_000) -> MKMapRect {
+        let padX = max(width * fraction, (minimumSpan - width) / 2)
+        let padY = max(height * fraction, (minimumSpan - height) / 2)
+        return insetBy(dx: -max(padX, 0), dy: -max(padY, 0))
     }
 }
