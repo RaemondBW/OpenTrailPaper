@@ -54,4 +54,10 @@ bool navActive();
 // Returns false when there is no upcoming maneuver.
 bool nextTurn(char* instruction, int textLen, float& distanceM);
 
+// The whole remaining turn list, for the upcoming-directions screen. Index 0 is
+// the same turn nextTurn() reports; distances are along-route from the rider's
+// current position, so the list stays live as the ride progresses.
+int  upcomingCount();
+bool upcomingTurn(int i, char* instruction, int textLen, float& distanceM);
+
 }

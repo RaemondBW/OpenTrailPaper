@@ -626,8 +626,9 @@ void ui_render_settings(const SettingsInfo& si, uint8_t* fb) {
     snprintf(rows[2].value, sizeof(rows[2].value), "%s",
              BL[si.backlight < 0 ? 0 : si.backlight > 3 ? 3 : si.backlight]);
     rows[2].label = "BACKLIGHT";
-    rows[2].toggle = true;
-    rows[2].on = si.backlight > 0;
+    // Four levels, so show which one is selected rather than a switch: a toggle
+    // renders on/off and hides the fact that tapping cycles Off->Low->Med->Bright.
+    rows[2].toggle = false;
     snprintf(rows[3].value, sizeof(rows[3].value), "%s",
              si.useMiles ? "Miles" : "Km");
     rows[3].label = "UNITS";

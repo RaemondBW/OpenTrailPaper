@@ -468,11 +468,14 @@ int main(int argc, char** argv) {
     ui_render_nav_prompt("mission_dolores.gpx", 8, fb.data());
     emit("nav_prompt.png");
 
-    // Turn-by-turn banner over the map
+    // Turn-by-turn banner over the map. navBannerVisible must move the compass
+    // clear of the banner — it used to be drawn underneath it and invisible.
     clearWhite(fb.data());
+    map.navBannerVisible = true;
     ui_render_map(map, s, fb.data());
     ui_render_nav_banner("Turn left onto Valencia St", 180, false, fb.data());
     emit("nav_banner.png");
+    map.navBannerVisible = false;
 
     return 0;
 }

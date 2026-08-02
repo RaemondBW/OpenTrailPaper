@@ -298,6 +298,9 @@ void drawCompass(int cx, int cy, float northDeg, bool trackUp, uint8_t* fb) {
 
 const MapTouchZones kMapZoom = {540 - 78, 560, 640, 76};
 const MapCompassZone kMapCompass = {540 - 46, 64 + 48, 34};
+// Bottom edge of the turn-by-turn banner (ui_dashboard's kNavBanner is
+// {0, STATUS_H, 540, 138}); the compass drops below this while navigating.
+constexpr int kNavBannerBottom = 64 + 138;
 
 // Native-fb-aligned mask of the current frame's water/park fills (1 = covered).
 // Null until the first map render. Used by the ghost settle-clean.
@@ -353,7 +356,13 @@ void ui_render_map(const MapScreenData& map, const RideState& s, uint8_t* fb) {
 
     ui_render_map_features(map, s, fb);
     drawScaleBar(map.metersPerPixel, s.useMiles, fb);
-    drawCompass(kMapCompass.cx, kMapCompass.cy, map.northDeg, map.trackUp, fb);
+    // The turn banner occupies the top of the map, exactly where the compass
+    // lives (compass spans y 78..146; the banner runs to y 202), so the north
+    // indicator was drawn underneath it and invisible while navigating. Drop it
+    // clear of the banner instead of hiding it.
+    int compassCy = map.navBannerVisible ? kNavBannerBottom + kMapCompass.r + 14
+                                         : kMapCompass.cy;
+    drawCompass(kMapCompass.cx, compassCy, map.northDeg, map.trackUp, fb);
 
     // No map covers this position — tell the rider how to get one instead of
     // showing a blank screen.
