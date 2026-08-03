@@ -119,7 +119,7 @@ final class BLEManager: NSObject, ObservableObject {
     // "is newer", so a stale value here does not just mislabel things: the app
     // offers an "update" that silently downgrades the device to whatever binary
     // is bundled. This sat at v0.84 while devices ran v0.85/v0.86.
-    static let bundledFirmwareVersion = "v0.86"
+    static let bundledFirmwareVersion = "v0.87"
 
     // Saved routes on the device
     @Published var deviceRoutes: [String] = []
@@ -1016,7 +1016,6 @@ extension BLEManager: CBCentralManagerDelegate {
                                     didDisconnectPeripheral p: CBPeripheral,
                                     error: Error?) {
         MainActor.assumeIsolated {
-            peripheral = nil
             settingsChar = nil; statusChar = nil; routeChar = nil; ridesChar = nil
             sensorsChar = nil; mapChar = nil; otaChar = nil
             stopLocationStream()   // no device to send the phone's position to
@@ -1048,7 +1047,23 @@ extension BLEManager: CBCentralManagerDelegate {
             deviceRoutes = []; loadingRoutes = false
             lastUploadProgress = nil; routeSent = false; routeReceived = false
             sensors = []; scanningSensors = false
-            startScan()
+
+            // Hand the peripheral straight back to CoreBluetooth instead of
+            // dropping it and re-scanning. connect() on a known peripheral has no
+            // timeout — CB reconnects the instant the device is reachable again,
+            // without a scan/discover/connect round trip. Re-scanning meant every
+            // brief drop cost seconds and a visible "connecting…" flap, which is
+            // what made the link look like it was cycling in and out while the
+            // app was foregrounded, and what made log downloads and map sends
+            // fail: they abort on disconnect and the retry raced the rescan.
+            if let known = p as CBPeripheral? {
+                peripheral = known
+                known.delegate = self
+                state = .connecting
+                c.connect(known)
+            } else {
+                startScan()
+            }
         }
     }
 }

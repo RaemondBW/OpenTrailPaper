@@ -48,6 +48,7 @@
 		E53264DC25E80F7DA0499687 /* localij.c in Sources */ = {isa = PBXBuildFile; fileRef = B8D421E4B1C588F4073BC375 /* localij.c */; };
 		E8B02637D663F1BB063A4D60 /* iterators.c in Sources */ = {isa = PBXBuildFile; fileRef = F2E1BEE825D22D8612B19893 /* iterators.c */; };
 		F5E522C16FCFE097E2072926 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE5C27C920995C9292457A9C /* SettingsView.swift */; };
+		F6958E6E296967C90F9CDC75 /* TileCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = E15692F37161BEC610966D47 /* TileCache.swift */; };
 		F71D1CFFCC25AD4A7A19D698 /* DiagnosticsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 336612AF0918144CAB1C1FCD /* DiagnosticsView.swift */; };
 		FB766E892D24ED9F1215F002 /* coordijk.c in Sources */ = {isa = PBXBuildFile; fileRef = A5CBCC5E20270A3D4DF70257 /* coordijk.c */; };
 		FF0F4581FC7558266780F24B /* vertexGraph.c in Sources */ = {isa = PBXBuildFile; fileRef = 94274D68499F022BC3F0DBC8 /* vertexGraph.c */; };
@@ -115,6 +116,7 @@
 		CBBFA5634178A1D43462F629 /* BLEManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BLEManager.swift; sourceTree = "<group>"; };
 		CC8F9A2A7C26F2C54766428B /* directedEdge.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = directedEdge.c; sourceTree = "<group>"; };
 		D66117B8CB78BBC0949D8DF3 /* demo.fit */ = {isa = PBXFileReference; path = demo.fit; sourceTree = "<group>"; };
+		E15692F37161BEC610966D47 /* TileCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TileCache.swift; sourceTree = "<group>"; };
 		E1B62C507D47EAD0BDDDD24F /* RideDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RideDetailView.swift; sourceTree = "<group>"; };
 		E284B25E233005D7FEF20F6F /* coordijk.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = coordijk.h; sourceTree = "<group>"; };
 		F14CD69E3959EF829E9F0717 /* BarlowCondensed-SemiBold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "BarlowCondensed-SemiBold.ttf"; sourceTree = "<group>"; };
@@ -191,6 +193,7 @@
 				0D0FC030F1FACFFD44C96837 /* SensorsView.swift */,
 				BE5C27C920995C9292457A9C /* SettingsView.swift */,
 				79F3F907C8247AC1B8A63959 /* Theme.swift */,
+				E15692F37161BEC610966D47 /* TileCache.swift */,
 				80ACFA8CA9080B22457972EF /* Fonts */,
 				AB3D8101160CEE2B90CCFEE3 /* H3 */,
 			);
@@ -346,6 +349,7 @@
 				5D1E2FE5B8652DC846C39AF7 /* SensorsView.swift in Sources */,
 				F5E522C16FCFE097E2072926 /* SettingsView.swift in Sources */,
 				D017F03AE055F1971F5815BA /* Theme.swift in Sources */,
+				F6958E6E296967C90F9CDC75 /* TileCache.swift in Sources */,
 				B1BE7F5A245A3C270036C6E2 /* algos.c in Sources */,
 				E1BBBE95FA5BC48203720329 /* baseCells.c in Sources */,
 				42D0BA08D929EAF01939F014 /* bbox.c in Sources */,
@@ -428,7 +432,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 6;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEVELOPMENT_TEAM = G5JFC849XY;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -496,7 +500,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 6;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = G5JFC849XY;
 				ENABLE_NS_ASSERTIONS = NO;
