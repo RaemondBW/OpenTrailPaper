@@ -75,9 +75,26 @@ constexpr int MAX_TILES = 512;
 //   FAT metadata writes during a bulk transfer and with them the chances that an
 //   interrupted write corrupts the card.
 //
-// The prefix scheme gives a metro area ONE directory, a continent a handful, and
-// still bounds any single directory well below the linear-scan and entry limits.
-constexpr int TILE_PREFIX_LEN = 4;
+// LENGTH 6 is not arbitrary — it is exactly the res-3 parent cell. After the
+// mode and resolution nibbles, the base cell (7 bits) plus digits 1-3 (9 bits)
+// is 16 bits = 4 hex chars, so chars 0-5 identify the res-3 ancestor. One res-3
+// cell is ~12,393 km2 and contains exactly 7^3 = 343 res-6 cells, which caps a
+// directory at 343 tiles.
+//
+// That sits in the right place against the real limits of this filesystem:
+//   * FatFs directory lookup is LINEAR, so a full scan of N files costs O(N^2)
+//     in directory reads; 343 is comfortable, tens of thousands is not.
+//   * Each 19-char name ("862830827ffffff.ebm") needs a long-filename chain —
+//     3 directory entries, not 1 — so FAT32's 65,536-entry directory limit is
+//     really ~21,800 files. 343 leaves that irrelevant.
+//   * Every directory costs a whole cluster (32 KB on a 32 GB card), so
+//     directories must stay FEW. A 4-char prefix (the bare base cell) is
+//     ~4.25M km2 — a whole country in one folder, no split at all. A 9-char
+//     prefix would be res-5, ~6 tiles per folder, back to wasting clusters.
+//
+// In practice: one metro is still a single directory (a city is far smaller
+// than 12,000 km2), a state splits into tens, a continent into hundreds.
+constexpr int TILE_PREFIX_LEN = 6;
 
 // "<TILE_DIR>/<prefix>" for this id. Ids shorter than the prefix (or odd input)
 // fall back to the flat directory rather than producing a stub folder.
