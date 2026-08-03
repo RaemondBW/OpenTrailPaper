@@ -821,33 +821,84 @@ void ui_render_shutdown_screen(uint8_t* fb) {
 // exactly when something is wrong — a failing SD mount alone burns ~1.5 s in
 // sdWait() timeouts — which is precisely when a blank-looking device is most
 // alarming.
+//
+// Composition: the mark and wordmark sit on the upper third, the step list runs
+// from the optical centre, and the version anchors the foot. Only 0x00 and the
+// 0x22/0x33 greys are used — this panel renders 0x44 and lighter as plain white.
 void ui_render_boot_screen(const char* version, const char* const* lines,
                            const bool* ok, int count, uint8_t* fb) {
     const int W = epd_rotated_display_width();
     const int H = epd_rotated_display_height();
     epd_fill_rect({0, 0, W, H}, 0xFF, fb);
+    const int cx = W / 2;
 
-    ui::label(W / 2, 120, "OpenTrailPaper", fb, 0x00, &ArialBold_20);
-    ui::text(&ArialBold_14, W / 2, 156, version, fb, EPD_DRAW_ALIGN_CENTER, 0x00);
-    epd_fill_rect({W / 2 - 90, 178, 180, 2}, 0x00, fb);
+    // Mark: an H3-style hexagon (the unit of every map on the card) with a route
+    // running through it. Flat-top, drawn as thick outline strokes.
+    const int hx = cx, hy = 250, R = 92;
+    auto hexPoint = [&](int i, int r, int& px, int& py) {
+        float a = (float)i * (float)M_PI / 3.0f;          // 60 deg steps, flat-top
+        px = hx + (int)(r * cosf(a));
+        py = hy + (int)(r * sinf(a));
+    };
+    for (int t = 0; t < 7; ++t) {                          // thicken the outline
+        for (int i = 0; i < 6; ++i) {
+            int x0, y0, x1, y1;
+            hexPoint(i, R - t, x0, y0);
+            hexPoint((i + 1) % 6, R - t, x1, y1);
+            epd_draw_line(x0, y0, x1, y1, 0x00, fb);
+        }
+    }
+    // Route through the hex: a couple of gentle doglegs, thickened.
+    // Kept well inside the hex — the end markers used to sit on the border and
+    // read as a collision rather than a route.
+    const int rt[][2] = {{hx - 52, hy + 30}, {hx - 20, hy + 2},
+                         {hx + 2,  hy - 24}, {hx + 30, hy - 6},
+                         {hx + 52, hy - 28}};
+    for (int t = -3; t <= 3; ++t) {          // match the hex outline's weight
+        for (int i = 0; i + 1 < 5; ++i) {
+            epd_draw_line(rt[i][0], rt[i][1] + t, rt[i + 1][0], rt[i + 1][1] + t,
+                          0x00, fb);
+        }
+    }
+    epd_fill_circle(rt[0][0], rt[0][1], 8, 0x00, fb);       // start dot
+    epd_fill_circle(rt[4][0], rt[4][1], 4, 0xFF, fb);       // finish: ring on white
+    for (int t = 0; t < 3; ++t)
+        epd_draw_circle(rt[4][0], rt[4][1], 9 - t, 0x00, fb);
 
-    // One line per step, with a tick or cross so a failure is readable across
-    // the room rather than needing a serial console.
-    int y = 236;
+    // Wordmark.
+    ui::label(cx, 424, "OPEN TRAIL PAPER", fb, 0x00, &ArialBold_20);
+    epd_fill_rect({cx - 150, 446, 300, 3}, 0x00, fb);
+
+    // Steps. One line each, ticked or crossed, from the optical centre.
+    int y = 540;
     for (int i = 0; i < count; ++i) {
-        const int x = 70;
+        const int x = 132;
         if (ok) {
-            if (ok[i]) {                        // tick
-                epd_draw_line(x, y - 6, x + 6, y, 0x00, fb);
-                epd_draw_line(x + 6, y, x + 18, y - 18, 0x00, fb);
-            } else {                            // cross
-                epd_draw_line(x, y - 16, x + 16, y, 0x00, fb);
-                epd_draw_line(x + 16, y - 16, x, y, 0x00, fb);
+            if (ok[i]) {
+                for (int t = 0; t < 3; ++t) {              // tick
+                    epd_draw_line(x, y - 7 + t, x + 7, y + t, 0x00, fb);
+                    epd_draw_line(x + 7, y + t, x + 21, y - 20 + t, 0x00, fb);
+                }
+            } else {
+                for (int t = 0; t < 3; ++t) {              // cross
+                    epd_draw_line(x + t, y - 18, x + 18 + t, y, 0x00, fb);
+                    epd_draw_line(x + 18 + t, y - 18, x + t, y, 0x00, fb);
+                }
             }
         }
-        ui::text(&ArialBold_14, x + 34, y, lines[i], fb, EPD_DRAW_ALIGN_LEFT, 0x00);
-        y += 38;
+        ui::text(&ArialBold_20, x + 44, y, lines[i], fb, EPD_DRAW_ALIGN_LEFT,
+                 ok && !ok[i] ? 0x00 : 0x22);
+        y += 56;
     }
+
+    // Foot: a track of steps done, then the version.
+    const int barW = 300, barH = 6, barX = cx - barW / 2, barY = 846;
+    epd_fill_rect({barX, barY, barW, barH}, 0x33, fb);
+    if (count > 0) {
+        int done = count > 4 ? 4 : count;                  // 4 steps in a boot
+        epd_fill_rect({barX, barY, barW * done / 4, barH}, 0x00, fb);
+    }
+    ui::text(&ArialBold_14, cx, 894, version, fb, EPD_DRAW_ALIGN_CENTER, 0x22);
 }
 
 void ui_render_nav_prompt(const char* routeName, int turns, uint8_t* fb) {
