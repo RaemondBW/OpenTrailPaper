@@ -62,36 +62,9 @@ struct MapsView: View {
         NavigationStack {
             MapReader { proxy in
                 ZStack(alignment: .top) {
-                    Map(position: $cam) {
-                        UserAnnotation()
-                        // Hexes already on the device — green highlight + a green
-                        // check in the middle. Drawn once here (not repeated in the
-                        // selection loop below).
-                        ForEach(deviceTiles) { t in
-                            MapPolygon(coordinates: t.hexagon)
-                                .foregroundStyle(Palette.good.opacity(0.25))
-                                .stroke(Palette.good, lineWidth: 1.5)
-                            Annotation("", coordinate: t.center) {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .font(.system(size: 15))
-                                    .foregroundStyle(Palette.good)
-                            }
-                        }
-                        // Selection hexes NOT yet on the device (so on-device ones
-                        // aren't drawn twice). converted this run → green; tapped
-                        // out → faint; pending → accent.
-                        ForEach(tiles.filter { !ble.deviceTileIds.contains($0.id) }) { t in
-                            let done = converted.contains(t.id)
-                            let off = excluded.contains(t.id)
-                            MapPolygon(coordinates: t.hexagon)
-                                .foregroundStyle(done ? Palette.good.opacity(0.22)
-                                                 : off ? Palette.muted.opacity(0.08)
-                                                       : Palette.accent.opacity(0.16))
-                                .stroke(done ? Palette.good
-                                        : off ? Palette.muted.opacity(0.55) : Palette.accent,
-                                        lineWidth: 1.5)
-                        }
-                    }
+                    HexMap(cam: $cam, deviceTiles: deviceTiles,
+                           selection: tiles.filter { !ble.deviceTileIds.contains($0.id) },
+                           converted: converted, excluded: excluded)
                     .mapControls { MapUserLocationButton() }
                     .ignoresSafeArea(edges: .top)
                     // Tap a hex (once an area is drawn) to skip/keep it.
@@ -338,8 +311,14 @@ struct MapsView: View {
                     let n = batches.count
                     status = "Fetching area \(i + 1)/\(n)…"
                     let u = union(batch)
+                    // Coalesce the fetch progress text. It arrives many times a
+                    // second, and every distinct value re-evaluates this view's
+                    // body; the map itself is insulated now (HexMap is Equatable)
+                    // but the rest of the body need not churn either.
+                    let tick = StatusThrottle()
                     let json = try await MapBuilder.fetchOSM(south: u.s, west: u.w, north: u.n, east: u.e) { m in
-                        Task { @MainActor in status = "Fetching area \(i + 1)/\(n) — \(m)" }
+                        let text = "Fetching area \(i + 1)/\(n) — \(m)"
+                        Task { @MainActor in if tick.allow(text) { status = text } }
                     }
                     status = "Building tiles \(i + 1)/\(n)…"
                     let part = try MapBuilder.encodeTiles(regionJSON: json, tiles: batch)
@@ -374,6 +353,11 @@ struct MapsView: View {
                             MapBuilder.appendParks(to: &p.data, parkWays: parkWays,
                                 south: t.south, west: t.west, north: t.north, east: t.east)
                         }
+                        // Decide emptiness only now, with water/parks/sea/elevation
+                        // already appended — a hex can be pure water and still be
+                        // worth storing.
+                        if let t = batch.first(where: { $0.id == p.id }),
+                           MapBuilder.isEmpty(p.data, tile: t) { continue }
                         withElev.append(p)
                     }
                     converted.formUnion(batch.map(\.id))   // fill these hexes in live
@@ -440,4 +424,74 @@ struct MapsView: View {
     }
 
     nonisolated func locationManager(_ m: CLLocationManager, didFailWithError error: Error) {}
+}
+
+
+/// The hex overlay map, pulled out of MapsView so that view's frequently
+/// changing state cannot invalidate it.
+///
+/// The fetch progress callback updates `status` many times a second, and while
+/// the Map lived in MapsView's body every one of those re-evaluated the body and
+/// rebuilt the Map and every MapPolygon — the map visibly flashed and stuttered
+/// for the whole download. Here its inputs are only the things that actually
+/// change what is drawn, and Equatable lets SwiftUI skip the rebuild when none
+/// of them moved.
+private struct HexMap: View, Equatable {
+    @Binding var cam: MapCameraPosition
+    let deviceTiles: [MapTile]
+    let selection: [MapTile]
+    let converted: Set<String>
+    let excluded: Set<String>
+
+    static func == (a: HexMap, b: HexMap) -> Bool {
+        a.deviceTiles.map(\.id) == b.deviceTiles.map(\.id) &&
+        a.selection.map(\.id) == b.selection.map(\.id) &&
+        a.converted == b.converted && a.excluded == b.excluded
+    }
+
+    var body: some View {
+        Map(position: $cam) {
+            UserAnnotation()
+            // Hexes already on the device — green highlight + a green check in
+            // the middle. Drawn once here (not repeated in the selection loop).
+            ForEach(deviceTiles) { t in
+                MapPolygon(coordinates: t.hexagon)
+                    .foregroundStyle(Palette.good.opacity(0.25))
+                    .stroke(Palette.good, lineWidth: 1.5)
+                Annotation("", coordinate: t.center) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 15))
+                        .foregroundStyle(Palette.good)
+                }
+            }
+            // Selection hexes NOT yet on the device. converted this run → green;
+            // tapped out → faint; pending → accent.
+            ForEach(selection) { t in
+                let done = converted.contains(t.id)
+                let off = excluded.contains(t.id)
+                MapPolygon(coordinates: t.hexagon)
+                    .foregroundStyle(done ? Palette.good.opacity(0.22)
+                                     : off ? Palette.muted.opacity(0.08)
+                                           : Palette.accent.opacity(0.16))
+                    .stroke(done ? Palette.good
+                            : off ? Palette.muted.opacity(0.55) : Palette.accent,
+                            lineWidth: 1.5)
+            }
+        }
+    }
+}
+
+
+/// Rate-limits a status string so a chatty progress callback cannot drive one
+/// SwiftUI state update per network chunk.
+private final class StatusThrottle: @unchecked Sendable {
+    private var last = Date.distantPast
+    private var lastText = ""
+    func allow(_ text: String, minInterval: TimeInterval = 0.3) -> Bool {
+        if text == lastText { return false }
+        let now = Date()
+        guard now.timeIntervalSince(last) >= minInterval else { return false }
+        last = now; lastText = text
+        return true
+    }
 }
