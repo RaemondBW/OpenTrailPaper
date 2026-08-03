@@ -167,6 +167,16 @@ void shutdownDevice(uint8_t* fb, const char* reason) {
     // inline, which is why this never used to be needed.)
     epdc_paint_wait();
 
+    // Close the SD cleanly before the card loses its host. An interrupted SD
+    // transaction leaves the card's controller refusing CMD0 on the next boot —
+    // cardType=NONE, unrecoverable by retrying, and it survives power cycles
+    // until the card is reformatted. This cannot help an unexpected reset, but
+    // the planned paths (power-off dialog, auto-sleep) have no excuse to leave
+    // the card mid-transaction.
+    sdLock();
+    SD.end();
+    sdUnlock();
+
     // Peripherals down, matching the factory sleep sequence
     i2cLock(); touch.sleep(); i2cUnlock();
     digitalWrite(BOARD_TOUCH_RST, LOW);
