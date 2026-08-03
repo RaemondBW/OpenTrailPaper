@@ -50,7 +50,7 @@ bool begin() {
     s_enabled = (err == ESP_OK);
     if (err == ESP_ERR_NOT_SUPPORTED) {
         diag::log("pm: light sleep UNAVAILABLE — framework lacks CONFIG_PM_ENABLE"
-                  "/TICKLESS_IDLE (rebuild required; see CPU_SLEEP_SPIKE.md)");
+                  "/TICKLESS_IDLE (rebuild required; see investigations/archive/cpu-sleep-spike.md)");
         return false;
     }
     diag::log("pm: esp_pm_configure(min=max=240, light_sleep=%d) -> %s",

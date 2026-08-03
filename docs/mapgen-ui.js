@@ -5,7 +5,8 @@ import { latLngToCell, gridDisk, cellToBoundary }
   from "https://cdn.jsdelivr.net/npm/h3-js@4.1.0/+esm";
 
 // H3 res-6 tiling, mirroring the app's companion-ios/Sources/H3/h3shim.c so the
-// website builds the exact same per-hex tiles (/maps/tiles/<h3id>.ebm).
+// website builds the exact same per-hex tiles
+// (/maps/tiles/<first 6 of h3id>/<rest>.ebm).
 const H3_RES = 6;
 function cellBbox(cell) {
   const verts = cellToBoundary(cell);         // [[lat, lng], ...]
@@ -33,15 +34,29 @@ function coveringCells(bb) {
   }
   return out;
 }
-// Keep a tile only if it holds road geometry — the app drops tiles whose road
-// encode is header-only. Reads the EBM2 index for any non-zero tile offset.
-function ebmHasRoads(bytes) {
+// Keep a tile if it holds ANYTHING — roads, water, sea fill or parks.
+//
+// This used to test roads alone, which threw away every hex that is pure water:
+// buildEbm() appends WTR2/PRK2 sections after the road index, so an ocean hex
+// has real content and an empty road index. Dropping it meant a bay rendered as
+// blank paper. (The phone app had the identical bug — see MapBuilder.isEmpty.)
+function ebmHasContent(bytes) {
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const nx = dv.getInt32(28, true), ny = dv.getInt32(32, true);
   for (let k = 0; k < nx * ny; k++) {
-    if (dv.getUint32(36 + k * 8, true) !== 0) return true;
+    if (dv.getUint32(36 + k * 8, true) !== 0) return true;   // a road tile
   }
-  return false;
+  // No roads: anything past the header + index is a water/park/sea section.
+  return bytes.length > 36 + nx * ny * 8;
+}
+
+// Where a tile lives on the card: /maps/tiles/<first 6 of id>/<rest>.ebm.
+// Must match tileDirFor() in src/map_store.cpp — an H3 id's leading characters
+// are a geographic key, so one area lands in one directory.
+function tilePath(id) {
+  return id.length > 6
+    ? `maps/tiles/${id.slice(0, 6)}/${id.slice(6)}.ebm`
+    : `maps/tiles/${id}.ebm`;
 }
 
 const $ = (id) => document.getElementById(id);
@@ -241,16 +256,17 @@ function init() {
       for (let ci = 0; ci < cells.length; ci++) {
         const c = cells[ci];
         const ebm = buildEbm(json, { s: c.s, w: c.w, n: c.n, e: c.e });
-        if (ebmHasRoads(ebm)) files.push({ name: `maps/tiles/${c.id}.ebm`, data: ebm });
+        if (ebmHasContent(ebm)) files.push({ name: tilePath(c.id), data: ebm });
         setStatus(`Building tiles… ${ci + 1}/${cells.length}`);
         if (ci % 6 === 5) await new Promise((r) => setTimeout(r, 0));  // keep UI live
       }
       if (files.length === 0) {
-        throw new Error("No roads found in that area — try a different or larger box.");
+        throw new Error("Nothing found in that area — try a different or larger box.");
       }
 
       // Package as a ZIP laid out for the SD card: unzip onto the card root and
-      // the tiles land at /maps/tiles/<h3id>.ebm — exactly where the app puts them.
+      // the tiles land at /maps/tiles/<first 6 of h3id>/<rest>.ebm — exactly where
+      // the app and firmware put them.
       const zip = zipStore(files);
       const bytes = files.reduce((a, f) => a + f.data.length, 0);
       const blob = new Blob([zip], { type: "application/zip" });
@@ -259,7 +275,7 @@ function init() {
       genDownload.download = `bikegps-tiles-${name}.zip`;
       genDownload.textContent = `⬇ Download ${files.length} tiles (${fmtBytes(zip.length)})`;
       genDownload.hidden = false;
-      log(`Done: ${files.length} tiles, ${fmtBytes(bytes)}. Unzip onto the SD card root → /maps/tiles/. These are the same H3 tiles the app builds.`);
+      log(`Done: ${files.length} tiles, ${fmtBytes(bytes)}. Unzip onto the SD card root → /maps/tiles/<area>/. These are the same H3 tiles the app builds.`);
       setStatus("Tiles ready — download the ZIP below.", "ok");
     } catch (err) {
       log("Error: " + (err && err.message ? err.message : String(err)));

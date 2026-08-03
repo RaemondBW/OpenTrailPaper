@@ -1,7 +1,8 @@
 # sdkconfig.defaults for the PM-enabled framework rebuild.
 #
 # Use with the `framework = arduino, espidf` component build (see
-# CPU_SLEEP_SPIKE.md). Rename to `sdkconfig.defaults` in the project root; the
+# investigations/archive/cpu-sleep-spike.md). Rename to `sdkconfig.defaults` in
+# the project root; the
 # ESP-IDF builder picks it up automatically and rebuilds the affected components
 # from source. These options do NOT take effect on the stock precompiled Arduino
 # framework — that ships with PM compiled out.

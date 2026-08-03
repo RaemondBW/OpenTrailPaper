@@ -3,8 +3,9 @@
 // Automatic light-sleep power management for the ESP32-S3.
 //
 // IMPORTANT: this only DOES anything on a framework built with CONFIG_PM_ENABLE
-// and CONFIG_FREERTOS_USE_TICKLESS_IDLE (see CPU_SLEEP_SPIKE.md). The stock
-// precompiled Arduino framework compiles those OUT, so esp_pm_configure()
+// and CONFIG_FREERTOS_USE_TICKLESS_IDLE (see
+// investigations/archive/cpu-sleep-spike.md). The stock precompiled Arduino
+// framework compiles those OUT, so esp_pm_configure()
 // returns ESP_ERR_NOT_SUPPORTED and this degrades to a logged no-op — the code
 // is safe to build (and even flash): it simply won't sleep until the framework
 // is rebuilt with power management enabled.

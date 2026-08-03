@@ -25,11 +25,16 @@ export const OVERPASS_ENDPOINTS = [
   "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
 ];
 
+// Coastline uses a PADDED bbox (%CS,%CW,%CN,%CE), everything else the drawn
+// one. Sea fill needs the COAST, and a box drawn out in open water contains
+// none — no coastline ways means no sea rings, so those hexes came out blank.
+// Only the coastline filter is widened, so this does not drag in roads for the
+// whole padded area.
 const QUERY = `[out:json][timeout:90];
 (
   way["highway"~"^(motorway|trunk|primary|secondary|tertiary|residential|unclassified|living_street|pedestrian|cycleway|footway|path|track|steps)"](%S,%W,%N,%E);
   way["natural"="water"](%S,%W,%N,%E);
-  way["natural"="coastline"](%S,%W,%N,%E);
+  way["natural"="coastline"](%CS,%CW,%CN,%CE);
   way["leisure"="park"](%S,%W,%N,%E);
   way["landuse"~"^(grass|forest|meadow|recreation_ground|cemetery|village_green)$"](%S,%W,%N,%E);
   way["natural"~"^(wood|scrub|grassland|heath)$"](%S,%W,%N,%E);
@@ -590,8 +595,14 @@ export function buildEbm(json, { s, w, n, e, tileDeg = TILE_DEG, simplifyM = SIM
 // retry pass. `onStatus(text)` reports which mirror is being tried.
 export async function fetchOverpass({ s, w, n, e }, onStatus = () => {}) {
   const bbox = { S: String(s), W: String(w), N: String(n), E: String(e) };
-  const q = QUERY.replace(/%S/g, bbox.S).replace(/%W/g, bbox.W)
-                 .replace(/%N/g, bbox.N).replace(/%E/g, bbox.E);
+  // ~0.35 deg (~35 km) reaches the shore from anywhere a box would sensibly be
+  // drawn. Matches the padding MapBuilder.fetchCoastline uses in the app.
+  const PAD = 0.35;
+  const q = QUERY
+    .replace(/%CS/g, String(s - PAD)).replace(/%CW/g, String(w - PAD))
+    .replace(/%CN/g, String(n + PAD)).replace(/%CE/g, String(e + PAD))
+    .replace(/%S/g, bbox.S).replace(/%W/g, bbox.W)
+    .replace(/%N/g, bbox.N).replace(/%E/g, bbox.E);
   const body = "data=" + encodeURIComponent(q);
 
   const total = OVERPASS_ENDPOINTS.length * 2;
