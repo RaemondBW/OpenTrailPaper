@@ -300,6 +300,23 @@ struct MapsView: View {
                     anyBuilt = true
                     ble.enqueueTiles(cached)
                 }
+                // ONE coastline fetch for the whole selection, padded well past
+                // it. Sea fill needs the COAST, and an ocean-only selection does
+                // not contain any — the batch bbox for hexes out in open water
+                // has no coastline in it, so no rings could be assembled and
+                // those tiles came out blank. Padding by ~0.35 deg (~35 km)
+                // reaches the shore from anywhere a rider would sensibly select.
+                // Coastline-only, so widening it is cheap.
+                let all = union(missing)
+                let pad = 0.35
+                status = "Fetching coastline…"
+                let coastJSON = try? await MapBuilder.fetchCoastline(
+                    south: all.s - pad, west: all.w - pad,
+                    north: all.n + pad, east: all.e + pad)
+                let coastChains = coastJSON.flatMap {
+                    try? MapBuilder.extractCoastlineChains(regionJSON: $0)
+                } ?? []
+
                 let cachedIds = Set(cached.map(\.id))
                 let batches = batches
                     .map { $0.filter { !cachedIds.contains($0.id) } }
@@ -329,9 +346,12 @@ struct MapsView: View {
                     // for the whole fetch region (osmcoastline-style — the real
                     // topology, so a peninsula never encloses land), then clip
                     // each ring to the tile inside appendWater.
-                    let coastChains = (try? MapBuilder.extractCoastlineChains(regionJSON: json)) ?? []
+                    // Rings are assembled against the PADDED region, not this
+                    // batch's bbox, so a batch sitting entirely offshore is still
+                    // inside a ring and fills.
                     let seaRings = MapBuilder.regionSeaPolygons(coastChains,
-                        south: u.s, west: u.w, north: u.n, east: u.e)
+                        south: all.s - pad, west: all.w - pad,
+                        north: all.n + pad, east: all.e + pad)
                     // Parks / green areas for this region, appended per tile as a
                     // PRK2 section (after WTR2).
                     let parkWays = (try? MapBuilder.extractParkWays(regionJSON: json)) ?? []
