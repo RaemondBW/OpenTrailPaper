@@ -189,7 +189,7 @@ pio pkg uninstall -p espressif32@6.5.0 && pio pkg install -e t5s3-painter
 ## 6. Loose end
 
 `power_mgmt.h`, `power_mgmt.cpp`, the runtime `pm:` log line and
-`sdkconfig.defaults.pm` all cite **`CPU_SLEEP_SPIKE.md`**, which is not in the
+`sdkconfig.defaults.pm` all cite **`investigations/archive/cpu-sleep-spike.md`**, which is not in the
 main tree — the only copy is under `.claude/worktrees/agent-a5d264ba6aeddbd5f/`.
 Four dangling references to the document that explains the problem. Restore it
 or repoint them at this file and `battery-life.md`.
