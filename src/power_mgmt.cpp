@@ -6,7 +6,9 @@
 #include <esp_err.h>
 #include <driver/uart.h>
 
-#include "ride_state.h"
+#include <esp_bt.h>
+
+#include "ble_server.h"
 #include "diag.h"
 
 namespace power_mgmt {
@@ -128,8 +130,30 @@ void tick() {
     if (!s_usbLock) return;
     // Held during the boot grace window, while a serial host is attached, and
     // for as long as the phone is connected (see the note above).
-    bool phone = g_state.snapshot().phoneConnected;
+    // Ask ble_server DIRECTLY, not via g_state. The shared state's copy is
+    // written by the UI task at 1 Hz and read here at 1 Hz, so it lagged the
+    // actual connection by up to two seconds — long enough for the link to time
+    // out before sleep was ever suppressed.
+    bool phone = ble_server::isPhoneConnected();
     bool usb = (millis() < USB_GRACE_MS) || (bool)Serial || phone;
+
+    // Suppressing CPU light sleep is NOT enough on its own. The BT controller
+    // has its own modem sleep, and with CONFIG_BT_CTRL_LPCLK_SEL_RTC_SLOW it
+    // wakes for each connection event on the internal 150 kHz RC — the ~5%-drift
+    // clock. It widens its receive window by the sleep-clock accuracy it
+    // advertised, and that RC cannot hold to it, so events are missed and the
+    // link dies of supervision timeout no matter what the CPU is doing.
+    // Stop the controller sleeping while the phone is attached; let it sleep
+    // again when it goes away, since that is the state a ride spends its time in.
+    static int btSleep = -1;                 // -1 unknown, 0 disabled, 1 enabled
+    int wantBtSleep = phone ? 0 : 1;
+    if (btSleep != wantBtSleep) {
+        esp_err_t e = wantBtSleep ? esp_bt_sleep_enable() : esp_bt_sleep_disable();
+        if (e == ESP_OK || e == ESP_ERR_INVALID_STATE) btSleep = wantBtSleep;
+        if (e == ESP_OK)
+            diag::log("pm: BT modem sleep %s (phone %s)",
+                      wantBtSleep ? "on" : "OFF", phone ? "connected" : "gone");
+    }
     if (usb && !s_usbHeld) {
         esp_pm_lock_acquire(s_usbLock);
         s_usbHeld = true;
