@@ -104,8 +104,24 @@ void tileDirFor(const char* id, char* out, size_t len) {
     if (n < TILE_PREFIX_LEN) { snprintf(out, len, "%s", TILE_DIR); return; }
     snprintf(out, len, "%s/%.*s", TILE_DIR, TILE_PREFIX_LEN, id);
 }
-struct TileMeta { char name[28]; double s, w, n, e; };
+// name is the FULL "<id>.ebm" — hasTile() and the tile list the app syncs
+// against both need the whole id. dir is the subdirectory under TILE_DIR ("" for
+// a flat card). The on-disk FILENAME is derived from the two: when dir is a
+// TILE_PREFIX_LEN prefix the file drops that prefix, otherwise it is the full
+// id. Same 60 bytes as before — name shrank as dir was added.
+struct TileMeta { char name[20]; char dir[8]; double s, w, n, e; };
 TileMeta g_tiles[MAX_TILES];
+
+// On-disk path for an indexed tile. The filename drops the directory prefix
+// when the tile lives in a prefix directory (the current layout) and is the full
+// id otherwise (flat cards, and the reverted hash-sharded build).
+void tilePathOf(const TileMeta& t, char* out, size_t len) {
+    if (t.dir[0] == 0) { snprintf(out, len, "%s/%s", TILE_DIR, t.name); return; }
+    const char* file = t.name;
+    if (strlen(t.dir) == TILE_PREFIX_LEN) file += TILE_PREFIX_LEN;
+    snprintf(out, len, "%s/%s/%s", TILE_DIR, t.dir, file);
+}
+
 int g_tileCount = 0;
 
 // renderInto projects every tile overlapping the viewable rectangle. The cache
@@ -235,7 +251,10 @@ void scanTiles() {
     // Index one directory of .ebm tiles. Shared by the shard directories and the
     // legacy flat directory, so cards written by either firmware just work.
     bool truncated = false;
-    auto indexDir = [&](const char* path) {
+    // subdir is "" for the flat directory. When it is a TILE_PREFIX_LEN prefix
+    // the filenames on disk have that prefix stripped, so the full id is
+    // subdir + filename; otherwise the filename already IS the full id.
+    auto indexDir = [&](const char* path, const char* subdir) {
         File d = SD.open(path);
         if (!d) return;
         for (File f = d.openNextFile(); f; f = d.openNextFile()) {
@@ -249,8 +268,11 @@ void scanTiles() {
                 double s, w, n, e;
                 if (f.read(h, 36) == 36 && headerBounds(h, s, w, n, e)) {
                     TileMeta& t = g_tiles[g_tileCount++];
-                    strncpy(t.name, base, sizeof(t.name) - 1);
-                    t.name[sizeof(t.name) - 1] = 0;
+                    snprintf(t.dir, sizeof(t.dir), "%s", subdir);
+                    if (subdir[0] && strlen(subdir) == TILE_PREFIX_LEN)
+                        snprintf(t.name, sizeof(t.name), "%s%s", subdir, base);
+                    else
+                        snprintf(t.name, sizeof(t.name), "%s", base);
                     t.s = s; t.w = w; t.n = n; t.e = e;
                 }
             }
@@ -259,7 +281,7 @@ void scanTiles() {
         d.close();
     };
 
-    indexDir(TILE_DIR);
+    indexDir(TILE_DIR, "");
     // Then every subdirectory: the current <prefix> grouping, and any left by
     // the reverted hash-sharded build. Indexing both means no card ever needs a
     // map re-downloaded because the layout changed under it.
@@ -274,8 +296,10 @@ void scanTiles() {
                     const char* base = strrchr(nm, '/');
                     snprintf(sub, sizeof(sub), "%s/%s", TILE_DIR,
                              base ? base + 1 : nm);
+                    char sname[16];
+                    snprintf(sname, sizeof(sname), "%s", base ? base + 1 : nm);
                     e.close();
-                    indexDir(sub);
+                    indexDir(sub, sname);
                     continue;
                 }
                 e.close();
@@ -309,13 +333,7 @@ const uint8_t* ensureTileLoaded(int idx, size_t& outLen) {
     if (usb_storage::hostActive()) { outLen = 0; return nullptr; }
 
     char path[80];
-    // Prefix directory first, then the flat directory: cards written by older
-    // firmware (and by the reverted hash-sharded build) still read correctly.
-    char dir[80];
-    tileDirFor(g_tiles[idx].name, dir, sizeof(dir));
-    snprintf(path, sizeof(path), "%s/%s", dir, g_tiles[idx].name);
-    if (!SD.exists(path))
-        snprintf(path, sizeof(path), "%s/%s", TILE_DIR, g_tiles[idx].name);
+    tilePathOf(g_tiles[idx], path, sizeof(path));
     sdLock();
     File f = SD.open(path, FILE_READ);
     size_t len = f ? f.size() : 0;
@@ -510,11 +528,19 @@ bool saveTile(const char* id, const uint8_t* data, size_t len) {
         diag::log("tile save rejected: not EBM2 (%u bytes)", (unsigned)len);
         return false;
     }
+    // Strip the ".ebm" the caller may have included, then split the id: the
+    // directory carries the first TILE_PREFIX_LEN characters and the filename
+    // carries the rest, so the prefix is not repeated in every name.
+    char bare[48];
+    snprintf(bare, sizeof(bare), "%.40s", id);
+    if (char* dot = strstr(bare, ".ebm")) *dot = 0;
+
     char dir[80];
-    tileDirFor(id, dir, sizeof(dir));
+    tileDirFor(bare, dir, sizeof(dir));
+    const char* leaf = (strlen(dir) > strlen(TILE_DIR)) ? bare + TILE_PREFIX_LEN
+                                                        : bare;
     char path[96];
-    snprintf(path, sizeof(path), "%s/%.40s", dir, id);
-    if (!strstr(path, ".ebm")) strncat(path, ".ebm", sizeof(path) - strlen(path) - 1);
+    snprintf(path, sizeof(path), "%s/%s.ebm", dir, leaf);
 
     sdLock();
     if (!SD.exists(MAP_DIR)) SD.mkdir(MAP_DIR);
