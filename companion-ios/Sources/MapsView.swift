@@ -317,6 +317,21 @@ struct MapsView: View {
         downloadTask = Task {
             var anyBuilt = false
             do {
+                // Anything built before goes straight out — no Overpass, no
+                // elevation fetch, no re-encoding. This is what makes a retry
+                // after a dropped link cheap instead of a full rebuild.
+                let (cached, _) = await TileCache.shared.partition(missing.map(\.id))
+                if !cached.isEmpty {
+                    status = "Reusing \(cached.count) cached tile\(cached.count == 1 ? "" : "s")…"
+                    converted.formUnion(cached.map(\.id))
+                    anyBuilt = true
+                    ble.enqueueTiles(cached)
+                }
+                let cachedIds = Set(cached.map(\.id))
+                let batches = batches
+                    .map { $0.filter { !cachedIds.contains($0.id) } }
+                    .filter { !$0.isEmpty }
+
                 for (i, batch) in batches.enumerated() {
                     if i > 0 { try? await Task.sleep(nanoseconds: 1_000_000_000) }  // pace the servers
                     try Task.checkCancellation()
@@ -363,6 +378,9 @@ struct MapsView: View {
                     }
                     converted.formUnion(batch.map(\.id))   // fill these hexes in live
                     if !withElev.isEmpty { anyBuilt = true }
+                    // Cache BEFORE sending: if the link drops mid-transfer the
+                    // expensive work survives and the retry is instant.
+                    await TileCache.shared.store(withElev)
                     ble.enqueueTiles(withElev)             // send in parallel with the next fetch
                 }
                 building = false
