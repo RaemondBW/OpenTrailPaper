@@ -43,3 +43,10 @@ docs/img/*
 !docs/img/apple-touch-icon.png
 !docs/img/logo.png
 companion-ios/build-sim/
+
+# Host test binaries (built by the run_*.sh scripts)
+tools/route_test/route_test
+tools/map_test/roundtrip
+tools/fit_test/fit_test
+tools/fit_test/ascent_test
+tools/preview/preview

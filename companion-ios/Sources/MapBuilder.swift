@@ -81,6 +81,21 @@ enum MapBuilder {
     // 504/timeout on the busy public instance is common, so a retry on another
     // endpoint usually succeeds. `onProgress` reports which mirror is being
     // tried so the UI never looks frozen. Honors Task cancellation.
+    /// Coastline ways alone, over a deliberately generous bbox.
+    ///
+    /// Sea fill needs the COAST, and a selection out in open water does not
+    /// contain any: the batch bbox for a set of ocean-only hexes has no
+    /// coastline in it at all, so no rings could be assembled and those tiles
+    /// came out blank. Fetching coastline on its own lets the box be padded far
+    /// past the tiles without dragging in every road for that wider area.
+    static func fetchCoastline(south s: Double, west w: Double,
+                               north n: Double, east e: Double) async throws -> Data {
+        let q = "[out:json][timeout:60];"
+              + "way[\"natural\"=\"coastline\"](\(s),\(w),\(n),\(e));"
+              + "(._;>;);out body;"
+        return try await overpassPost(q)
+    }
+
     static func fetchOSM(south s: Double, west w: Double, north n: Double, east e: Double,
                          onProgress: (@Sendable (String) -> Void)? = nil) async throws -> Data {
         let bbox = [s, w, n, e].map { String($0) }
@@ -91,6 +106,16 @@ enum MapBuilder {
                        bbox[0], bbox[1], bbox[2], bbox[3],
                        bbox[0], bbox[1], bbox[2], bbox[3],
                        bbox[0], bbox[1], bbox[2], bbox[3])
+        return try await overpassPost(q, onProgress: onProgress)
+    }
+
+    /// POST an Overpass QL query, walking the mirror list twice so a transient
+    /// failure on one server is retried elsewhere. Shared by every fetch —
+    /// this retry logic used to live inside fetchOSM, so any new query either
+    /// duplicated it or went without.
+    private static func overpassPost(_ q: String,
+                                     onProgress: (@Sendable (String) -> Void)? = nil
+    ) async throws -> Data {
         let body = ("data=" + (q.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? q))
             .data(using: .utf8)
 
