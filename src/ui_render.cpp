@@ -8,7 +8,6 @@
 
 #include "config.h"
 #include "ride_state.h"
-#include "boot_icon.h"
 #include "fonts/arialbold_14.h"
 #include "fonts/arialbold_20.h"
 #include "fonts/impact_40.h"
@@ -816,6 +815,56 @@ void ui_render_shutdown_screen(uint8_t* fb) {
              EPD_DRAW_ALIGN_CENTER, 0xFF);   // white on the black band
 }
 
+// The app icon, drawn with primitives so the device and the phone show the same
+// mark without carrying a bitmap. Proportions measured off
+// companion-ios/.../AppIcon-1024.png: within a 290x358 shape the border is 30,
+// the compass ring sits at centre (144.5, 208.5) with outer radius 86.5 and
+// thickness 21, the stem is 24 wide in two segments with a notch between, and
+// the heading arrow spans 75x92. All scaled from that reference here.
+//
+// A 264 px bitmap of the same thing cost 35 KB of flash and resampled badly on a
+// 4-grey panel; this costs nothing and stays crisp at any size.
+static void drawAppIcon(int cx, int topY, int height, uint8_t* fb) {
+    const float k = (float)height / 358.0f;          // reference shape is 358 tall
+    auto S = [&](float v) { return (int)(v * k + 0.5f); };
+    const int W = S(290);
+    const int x0 = cx - W / 2, y0 = topY;
+
+    // Rounded rectangle, filled — no primitive for it, so a cross of two rects
+    // plus four corner circles.
+    auto roundRect = [&](int x, int y, int w, int h, int r, uint8_t c) {
+        epd_fill_rect({x + r, y, w - 2 * r, h}, c, fb);
+        epd_fill_rect({x, y + r, w, h - 2 * r}, c, fb);
+        epd_fill_circle(x + r, y + r, r, c, fb);
+        epd_fill_circle(x + w - 1 - r, y + r, r, c, fb);
+        epd_fill_circle(x + r, y + h - 1 - r, r, c, fb);
+        epd_fill_circle(x + w - 1 - r, y + h - 1 - r, r, c, fb);
+    };
+
+    const int border = S(30), radius = S(46);
+    roundRect(x0, y0, W, S(358), radius, 0x00);                     // shell
+    roundRect(x0 + border, y0 + border, W - 2 * border, S(358) - 2 * border,
+              radius - border > 2 ? radius - border : 2, 0xFF);     // inner face
+
+    // Stem: two segments with a notch, joining the shell to the compass.
+    const int stemW = S(24), stemX = cx - stemW / 2;
+    epd_fill_rect({stemX, y0 + S(30), stemW, S(37)}, 0x00, fb);
+    epd_fill_rect({stemX, y0 + S(94), stemW, S(40)}, 0x00, fb);
+
+    // Compass ring.
+    const int ringX = x0 + S(144.5f), ringY = y0 + S(208.5f);
+    epd_fill_circle(ringX, ringY, S(86.5f), 0x00, fb);
+    epd_fill_circle(ringX, ringY, S(65.5f), 0xFF, fb);
+
+    // Heading arrow. The accent is orange in the app; on this panel only
+    // 0x00..0x33 render at all, so it takes the mid tone — black would collapse
+    // it into the ring and lose the two-tone reading.
+    const int apexY = y0 + S(163), baseY = y0 + S(255), notchY = y0 + S(230);
+    const int lx = x0 + S(107), rx = x0 + S(182);
+    epd_fill_triangle(cx, apexY, lx, baseY, cx, notchY, 0x33, fb);
+    epd_fill_triangle(cx, apexY, rx, baseY, cx, notchY, 0x33, fb);
+}
+
 // Boot progress screen. Drawn from setup() as each subsystem comes up, so the
 // glass shows what the firmware is doing instead of holding the previous
 // session's image for the several seconds setup() takes. That wait is worst
@@ -833,21 +882,7 @@ void ui_render_boot_screen(const char* version, const char* const* lines,
     epd_fill_rect({0, 0, W, H}, 0xFF, fb);
     const int cx = W / 2;
 
-    // The app icon, so the device and the phone show the same mark. Blitted a
-    // pixel at a time rather than with epd_copy_to_framebuffer — epdiy's source
-    // is not compiled in this build (see epd_compat.h), and this runs once at
-    // boot where 48k pixel writes cost nothing.
-    {
-        const int ix = cx - BOOT_ICON_W / 2, iy = 140;
-        for (int y = 0; y < BOOT_ICON_H; ++y) {
-            const uint8_t* row = kBootIcon + (size_t)y * (BOOT_ICON_W / 2);
-            for (int x = 0; x < BOOT_ICON_W; ++x) {
-                uint8_t nib = (x & 1) ? (row[x >> 1] >> 4) : (row[x >> 1] & 0x0F);
-                if (nib >= 0xF) continue;              // white: leave the page
-                epd_draw_pixel(ix + x, iy + y, (uint8_t)(nib << 4), fb);
-            }
-        }
-    }
+    drawAppIcon(cx, 152, 248, fb);
 
     // Wordmark.
     ui::label(cx, 462, "OPEN TRAIL PAPER", fb, 0x00, &ArialBold_20);
