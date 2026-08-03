@@ -49,22 +49,44 @@ int g_mapCount = 0;
 // resident map memory regardless of how much of the world is on the card.
 constexpr int MAX_TILES = 512;
 
-// Tiles live FLAT in /maps/tiles, one .ebm per H3 cell.
+// Tiles are grouped by the first TILE_PREFIX_LEN characters of their H3 id:
+//   /maps/tiles/8628/862830827ffffff.ebm
 //
-// A 256-bucket hash-sharded layout was tried (2026-08-02) and reverted the same
-// day. The reasoning for it was sound at scale — FAT32 directory lookup is
-// linear, and a 15-hex-char id needs a long-filename entry chain, so 3 directory
-// entries per file — but wrong at the scale this device actually operates at.
-// With ~55 tiles the hash puts roughly one file in each of 55 directories, so it
-// produced MORE directories than the flat layout had files, and on FAT32 every
-// directory costs at least a full cluster (32 KB on a 32 GB card) plus its own
-// parent entry. It also turned each tile save into mkdir + open + write + close,
-// multiplying the FAT metadata writes during a bulk transfer — i.e. more moments
-// where an interrupted write can corrupt the card, which is what happened.
+// An H3 index is HIERARCHICAL — leading bits encode resolution, base cell and
+// then the digit path — so a leading substring of the id is a GEOGRAPHIC key,
+// not an arbitrary one. Every res-6 cell across one metro area shares the same
+// first few characters, which is exactly the property wanted here: tiles are
+// always downloaded in geographically adjacent batches, so a batch lands in one
+// directory, and reads of neighbouring tiles hit the same directory (and the
+// same cached FAT sectors).
 //
-// If tile counts ever reach the thousands, revisit — but shard on few buckets
-// (16, say) and only above a threshold, and measure the boot scan before and
-// after rather than assuming.
+// This replaces two earlier attempts, both wrong:
+//
+//   Flat /maps/tiles — fine to ~1000 tiles, but FAT32 directory lookup is
+//   linear and each 15-hex-char id needs a long-filename entry chain (3
+//   directory entries per file), so the boot scan degrades as O(tiles^2) in
+//   directory reads and a directory caps out at 65534 entries.
+//
+//   256 hash-sharded buckets (2026-08-02, reverted same day) — the hash
+//   DESTROYED the locality that makes this work. At ~55 tiles it put roughly
+//   one file in each of 55 directories, more directories than there were files,
+//   each costing a full FAT cluster (32 KB on a 32 GB card) plus a parent entry.
+//   It also made every tile save a mkdir + open + write + close, multiplying the
+//   FAT metadata writes during a bulk transfer and with them the chances that an
+//   interrupted write corrupts the card.
+//
+// The prefix scheme gives a metro area ONE directory, a continent a handful, and
+// still bounds any single directory well below the linear-scan and entry limits.
+constexpr int TILE_PREFIX_LEN = 4;
+
+// "<TILE_DIR>/<prefix>" for this id. Ids shorter than the prefix (or odd input)
+// fall back to the flat directory rather than producing a stub folder.
+void tileDirFor(const char* id, char* out, size_t len) {
+    int n = 0;
+    while (n < TILE_PREFIX_LEN && id[n] && id[n] != '.') ++n;
+    if (n < TILE_PREFIX_LEN) { snprintf(out, len, "%s", TILE_DIR); return; }
+    snprintf(out, len, "%s/%.*s", TILE_DIR, TILE_PREFIX_LEN, id);
+}
 struct TileMeta { char name[28]; double s, w, n, e; };
 TileMeta g_tiles[MAX_TILES];
 int g_tileCount = 0;
@@ -221,9 +243,9 @@ void scanTiles() {
     };
 
     indexDir(TILE_DIR);
-    // Cards written by the short-lived sharded build (2026-08-02) have tiles in
-    // /maps/tiles/<xy>/ subdirectories. Index those too so nobody has to
-    // re-download a map, but nothing new is ever written there.
+    // Then every subdirectory: the current <prefix> grouping, and any left by
+    // the reverted hash-sharded build. Indexing both means no card ever needs a
+    // map re-downloaded because the layout changed under it.
     {
         File d = SD.open(TILE_DIR);
         if (d) {
@@ -270,7 +292,13 @@ const uint8_t* ensureTileLoaded(int idx, size_t& outLen) {
     if (usb_storage::hostActive()) { outLen = 0; return nullptr; }
 
     char path[80];
-    snprintf(path, sizeof(path), "%s/%s", TILE_DIR, g_tiles[idx].name);
+    // Prefix directory first, then the flat directory: cards written by older
+    // firmware (and by the reverted hash-sharded build) still read correctly.
+    char dir[80];
+    tileDirFor(g_tiles[idx].name, dir, sizeof(dir));
+    snprintf(path, sizeof(path), "%s/%s", dir, g_tiles[idx].name);
+    if (!SD.exists(path))
+        snprintf(path, sizeof(path), "%s/%s", TILE_DIR, g_tiles[idx].name);
     sdLock();
     File f = SD.open(path, FILE_READ);
     size_t len = f ? f.size() : 0;
@@ -465,13 +493,26 @@ bool saveTile(const char* id, const uint8_t* data, size_t len) {
         diag::log("tile save rejected: not EBM2 (%u bytes)", (unsigned)len);
         return false;
     }
+    char dir[80];
+    tileDirFor(id, dir, sizeof(dir));
     char path[96];
-    snprintf(path, sizeof(path), "%s/%.40s", TILE_DIR, id);
+    snprintf(path, sizeof(path), "%s/%.40s", dir, id);
     if (!strstr(path, ".ebm")) strncat(path, ".ebm", sizeof(path) - strlen(path) - 1);
 
     sdLock();
     if (!SD.exists(MAP_DIR)) SD.mkdir(MAP_DIR);
     if (!SD.exists(TILE_DIR)) SD.mkdir(TILE_DIR);
+    // Remember the last directory we ensured exists. A bulk transfer is one
+    // geographic area, so this collapses to a SINGLE exists+mkdir for the whole
+    // batch instead of a pair of FAT metadata operations per tile — fewer writes
+    // to be interrupted, which is how the previous layout helped corrupt a card.
+    {
+        static char ensured[80] = "";
+        if (strcmp(ensured, dir) != 0) {
+            if (!SD.exists(dir)) SD.mkdir(dir);
+            snprintf(ensured, sizeof(ensured), "%s", dir);
+        }
+    }
     SD.remove(path);
     File f = SD.open(path, FILE_WRITE);
     bool ok = (bool)f;
