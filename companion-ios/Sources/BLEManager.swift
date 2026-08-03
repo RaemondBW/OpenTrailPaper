@@ -119,7 +119,7 @@ final class BLEManager: NSObject, ObservableObject {
     // "is newer", so a stale value here does not just mislabel things: the app
     // offers an "update" that silently downgrades the device to whatever binary
     // is bundled. This sat at v0.84 while devices ran v0.85/v0.86.
-    static let bundledFirmwareVersion = "v0.87"
+    static let bundledFirmwareVersion = "v0.88"
 
     // Saved routes on the device
     @Published var deviceRoutes: [String] = []
