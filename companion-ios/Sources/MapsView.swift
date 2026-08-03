@@ -32,6 +32,12 @@ struct MapsView: View {
     @State private var status: String?
     @State private var drawMode = false
     @State private var excluded: Set<String> = []   // hexes the user tapped to skip
+    // Long-pressed hex: its id, whether the device already has it, and where to
+    // put the callout. Useful when a specific hex misbehaves — an ocean tile
+    // that will not fill, a hex missing roads — since the id is what names the
+    // file on the card (/maps/tiles/<first 6>/<rest>.ebm) and what the tile-list
+    // sync talks in.
+    @State private var inspected: (id: String, onDevice: Bool)?
     @State private var converted: Set<String> = []  // hexes downloaded + built this run
     @State private var downloadTotal = 0            // hexes targeted this run
     @State private var downloadTask: Task<Void, Never>?
@@ -73,6 +79,21 @@ struct MapsView: View {
                               let c = proxy.convert(e.location, from: .local) else { return }
                         toggleHex(at: c)
                     })
+                    // Long-press any hex to read its id. Deliberately NOT gated
+                    // on an area being drawn — inspecting a hex already on the
+                    // device is the more useful case of the two.
+                    .simultaneousGesture(
+                        LongPressGesture(minimumDuration: 0.5)
+                            .sequenced(before: SpatialTapGesture())
+                            .onEnded { value in
+                                guard !drawMode,
+                                      case .second(_, let tap?) = value,
+                                      let c = proxy.convert(tap.location, from: .local),
+                                      let id = H3Tiles.id(at: c) else { return }
+                                inspected = (id, ble.deviceTileIds.contains(id))
+                                UIImpactFeedbackGenerator(style: .medium)
+                                    .impactOccurred()
+                            })
 
                     // In draw mode a transparent layer captures the drag so the
                     // map doesn't pan while you draw a box.
@@ -114,6 +135,12 @@ struct MapsView: View {
                 }
             }
             .navigationBarHidden(true)
+            .sheet(item: Binding(
+                get: { inspected.map { TileInspection(id: $0.id, onDevice: $0.onDevice) } },
+                set: { if $0 == nil { inspected = nil } }
+            )) { info in
+                TileInspectorSheet(info: info)
+            }
             .safeAreaInset(edge: .bottom) { bottomBar }
             .onAppear { ble.refreshDeviceMaps(); ble.refreshDeviceTiles(); locator.start() }
             // Center on the user's first fix, once, at our fixed tile-friendly
@@ -513,5 +540,65 @@ private final class StatusThrottle: @unchecked Sendable {
         guard now.timeIntervalSince(last) >= minInterval else { return false }
         last = now; lastText = text
         return true
+    }
+}
+
+/// A hex the user long-pressed, for the inspector sheet.
+struct TileInspection: Identifiable {
+    let id: String
+    let onDevice: Bool
+}
+
+/// Shows a hex's H3 id and where it lives on the card.
+///
+/// The id is the thing every other part of the system names a tile by: the
+/// filename on the SD card, the tile-list the app and device reconcile, and what
+/// a diag log prints. When one specific hex misbehaves — an ocean tile that will
+/// not fill, a hex with no roads — being able to read its id off the map turns
+/// "somewhere around here" into something greppable.
+private struct TileInspectorSheet: View {
+    let info: TileInspection
+    @Environment(\.dismiss) private var dismiss
+
+    /// Matches src/map_store.cpp: /maps/tiles/<first 6>/<rest>.ebm
+    private var cardPath: String {
+        guard info.id.count > 6 else { return "/maps/tiles/\(info.id).ebm" }
+        let cut = info.id.index(info.id.startIndex, offsetBy: 6)
+        return "/maps/tiles/\(info.id[..<cut])/\(info.id[cut...]).ebm"
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("H3 cell") {
+                    HStack {
+                        Text(info.id).font(.system(.body, design: .monospaced))
+                        Spacer()
+                        Button {
+                            UIPasteboard.general.string = info.id
+                        } label: { Image(systemName: "doc.on.doc") }
+                            .buttonStyle(.borderless)
+                    }
+                }
+                Section("On the SD card") {
+                    Text(cardPath).font(.system(.footnote, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+                Section("Status") {
+                    Label(info.onDevice ? "On the device" : "Not on the device",
+                          systemImage: info.onDevice ? "checkmark.circle.fill"
+                                                     : "circle.dashed")
+                        .foregroundStyle(info.onDevice ? Palette.good : Palette.muted)
+                }
+            }
+            .navigationTitle("Tile")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .presentationDetents([.medium])
     }
 }
