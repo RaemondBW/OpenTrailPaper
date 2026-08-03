@@ -29,7 +29,12 @@ actor TileCache {
     init() {
         let base = FileManager.default.urls(for: .cachesDirectory,
                                             in: .userDomainMask)[0]
-        dir = base.appendingPathComponent("TileCache", isDirectory: true)
+        // Versioned. Bump when a builder change alters what a tile SHOULD
+        // contain, so stale blobs cannot mask the fix. v2: tiles built before
+        // the padded-coastline fetch have no sea fill — an ocean-only hex was
+        // cached blank (elevation alone made it non-empty), and reusing it would
+        // look exactly like the bug still being there.
+        dir = base.appendingPathComponent("TileCache-v2", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir,
                                                  withIntermediateDirectories: true)
     }
