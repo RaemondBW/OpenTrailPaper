@@ -133,12 +133,18 @@ void statusBar(const RideState& s, uint8_t* fb) {
                      tmv.tm_hour < 12 ? 'a' : 'p');
         }
     }
-    text(&ArialBold_14, 16, 40, clock, fb);
+    const int clockX = 16;
+    text(&ArialBold_14, clockX, 40, clock, fb);
+    // Lay the rest of the left cluster out FROM the clock's measured width. It
+    // was hardcoded at x=96, which is fine for "14:25" but not for the 12-hour
+    // format: "12:45p" is a character wider and ran straight into the phone
+    // glyph. Widths differ per string ("1:05a" vs "12:45p"), so measure.
+    int leftX = clockX + textWidth(&ArialBold_14, clock) + 14;
 
     // Companion-app connection: a small phone glyph just after the clock (on the
     // left, out of the crowded battery cluster). Absent = not connected.
     if (s.phoneConnected) {
-        const int pw = 15, ph = 26, px = 96, py = 30 - ph / 2;
+        const int pw = 15, ph = 26, px = leftX, py = 30 - ph / 2;
         epd_fill_rect({px, py, pw, ph}, 0x00, fb);            // phone body
         epd_fill_rect({px + 3, py + 4, pw - 6, ph - 10}, 0xFF, fb);  // screen
         epd_fill_circle(px + pw / 2, py + ph - 4, 1, 0xFF, fb);      // home dot
@@ -147,8 +153,9 @@ void statusBar(const RideState& s, uint8_t* fb) {
     // GPS signal dots + sensor labels, left-anchored after the clock/phone. The
     // "GPS" text label is dropped — the dots read as signal strength and the
     // saved width keeps "· PWR" clear of the battery %.
+    if (s.phoneConnected) leftX += 15 + 14;   // phone glyph width + gap
     int dotsW = 4 * 16;
-    int x = 128;
+    int x = leftX;
     int bars = s.gpsFix ? (s.satellites >= 9 ? 4 : s.satellites >= 6 ? 3
                            : s.satellites >= 4 ? 2 : 1)
                         : 0;

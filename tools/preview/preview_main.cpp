@@ -370,6 +370,23 @@ int main(int argc, char** argv) {
     ui_render_update_overlay("Downloading", 100, fb.data());
     emit("update.png");
 
+    // Status bar: 12-hour clock with the phone connected. "12:45p" is a
+    // character wider than "14:25" and used to run into the phone glyph.
+    {
+        RideState sb = s;
+        sb.phoneConnected = true;
+        sb.hrConnected = true;
+        sb.powerConnected = true;
+        sb.clock24h = false;
+        clearWhite(fb.data());
+        ui_render_dashboard(sb, false, fb.data());
+        emit("statusbar_12h.png");
+        sb.clock24h = true;
+        clearWhite(fb.data());
+        ui_render_dashboard(sb, false, fb.data());
+        emit("statusbar_24h.png");
+    }
+
     // Boot progress — mid-boot, and the failure case that matters most
     {
         const char* steps[] = {"Display", "SD card", "GPS"};
