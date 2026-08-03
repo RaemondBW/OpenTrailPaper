@@ -269,7 +269,7 @@ bool refresh(bool screenChanged, bool fastInPage, bool listFast,
     // does show up on that transition, clearDirtyAreas() is the tool for it —
     // scoped, not a whole-panel clear.
     (void)screenChanged; (void)fastInPage; (void)listFast;
-    (void)forceClean; (void)gc16; (void)fullFlash;
+    (void)forceClean; (void)gc16;
 
     uint8_t* fb = epdc_framebuffer();
 
@@ -280,6 +280,14 @@ bool refresh(bool screenChanged, bool fastInPage, bool listFast,
     if (shadowFb) memcpy(shadowFb, fb, fbSize);
 
     const uint32_t tw0 = millis();
+    // Scrub the panel before painting the map. A map is nearly all fine dark
+    // lines on white; the dashboard it replaces is large filled blocks and heavy
+    // type. Driving straight from one to the other leaves the dashboard's
+    // residue sitting under the streets, and on this panel that reads as grey
+    // haze exactly where map detail needs contrast. One clear pass costs ~200 ms
+    // on a transition the rider already expects to take a moment, and it is only
+    // paid when entering or leaving the map — not on the 1 Hz map redraws.
+    if (fullFlash) epdc_clear();
     epdc_paint();
 
     if (dbgTiming)
