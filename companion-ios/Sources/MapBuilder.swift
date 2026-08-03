@@ -142,9 +142,13 @@ enum MapBuilder {
         var out: [(id: String, data: Data)] = []
         for (i, t) in tiles.enumerated() {
             let data = try encode(json: json, s: t.south, w: t.west, n: t.north, e: t.east)
-            if data.count > headerOnly(s: t.south, w: t.west, n: t.north, e: t.east) {
-                out.append((id: t.id, data: data))
-            }
+            // Emit EVERY tile, including ones with no roads. Water, sea rings,
+            // parks and elevation are appended by the caller AFTER this, so
+            // dropping a road-empty tile here threw away the only chance an
+            // all-water or all-park hex had to become anything — which is why a
+            // bay hex with no streets in it never saved as water. The caller
+            // decides what is empty once everything has been appended.
+            out.append((id: t.id, data: data))
             let done = i + 1
             Task { @MainActor in progress(done, tiles.count) }
         }
@@ -218,6 +222,12 @@ enum MapBuilder {
     // Resolve natural=water ways to lists of (lat, lon) node coords, using the
     // shared node table (parsed once). Call once per region, then pass the
     // result to appendWater for each tile.
+    /// True when a finished tile carries nothing but its header — no roads, no
+    /// water, no parks, no elevation. Only then is it not worth storing.
+    static func isEmpty(_ data: Data, tile t: MapTile) -> Bool {
+        data.count <= headerOnly(s: t.south, w: t.west, n: t.north, e: t.east)
+    }
+
     static func extractWaterWays(regionJSON: Data) throws -> [[(Double, Double)]] {
         let json = try JSONDecoder().decode(OverpassJSON.self, from: regionJSON)
         var nodes: [Int: (Double, Double)] = [:]
