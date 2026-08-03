@@ -8,6 +8,7 @@
 
 #include "config.h"
 #include "ride_state.h"
+#include "boot_icon.h"
 #include "fonts/arialbold_14.h"
 #include "fonts/arialbold_20.h"
 #include "fonts/impact_40.h"
@@ -832,45 +833,28 @@ void ui_render_boot_screen(const char* version, const char* const* lines,
     epd_fill_rect({0, 0, W, H}, 0xFF, fb);
     const int cx = W / 2;
 
-    // Mark: an H3-style hexagon (the unit of every map on the card) with a route
-    // running through it. Flat-top, drawn as thick outline strokes.
-    const int hx = cx, hy = 250, R = 92;
-    auto hexPoint = [&](int i, int r, int& px, int& py) {
-        float a = (float)i * (float)M_PI / 3.0f;          // 60 deg steps, flat-top
-        px = hx + (int)(r * cosf(a));
-        py = hy + (int)(r * sinf(a));
-    };
-    for (int t = 0; t < 7; ++t) {                          // thicken the outline
-        for (int i = 0; i < 6; ++i) {
-            int x0, y0, x1, y1;
-            hexPoint(i, R - t, x0, y0);
-            hexPoint((i + 1) % 6, R - t, x1, y1);
-            epd_draw_line(x0, y0, x1, y1, 0x00, fb);
+    // The app icon, so the device and the phone show the same mark. Blitted a
+    // pixel at a time rather than with epd_copy_to_framebuffer — epdiy's source
+    // is not compiled in this build (see epd_compat.h), and this runs once at
+    // boot where 48k pixel writes cost nothing.
+    {
+        const int ix = cx - BOOT_ICON_W / 2, iy = 140;
+        for (int y = 0; y < BOOT_ICON_H; ++y) {
+            const uint8_t* row = kBootIcon + (size_t)y * (BOOT_ICON_W / 2);
+            for (int x = 0; x < BOOT_ICON_W; ++x) {
+                uint8_t nib = (x & 1) ? (row[x >> 1] >> 4) : (row[x >> 1] & 0x0F);
+                if (nib >= 0xF) continue;              // white: leave the page
+                epd_draw_pixel(ix + x, iy + y, (uint8_t)(nib << 4), fb);
+            }
         }
     }
-    // Route through the hex: a couple of gentle doglegs, thickened.
-    // Kept well inside the hex — the end markers used to sit on the border and
-    // read as a collision rather than a route.
-    const int rt[][2] = {{hx - 52, hy + 30}, {hx - 20, hy + 2},
-                         {hx + 2,  hy - 24}, {hx + 30, hy - 6},
-                         {hx + 52, hy - 28}};
-    for (int t = -3; t <= 3; ++t) {          // match the hex outline's weight
-        for (int i = 0; i + 1 < 5; ++i) {
-            epd_draw_line(rt[i][0], rt[i][1] + t, rt[i + 1][0], rt[i + 1][1] + t,
-                          0x00, fb);
-        }
-    }
-    epd_fill_circle(rt[0][0], rt[0][1], 8, 0x00, fb);       // start dot
-    epd_fill_circle(rt[4][0], rt[4][1], 4, 0xFF, fb);       // finish: ring on white
-    for (int t = 0; t < 3; ++t)
-        epd_draw_circle(rt[4][0], rt[4][1], 9 - t, 0x00, fb);
 
     // Wordmark.
-    ui::label(cx, 424, "OPEN TRAIL PAPER", fb, 0x00, &ArialBold_20);
-    epd_fill_rect({cx - 150, 446, 300, 3}, 0x00, fb);
+    ui::label(cx, 462, "OPEN TRAIL PAPER", fb, 0x00, &ArialBold_20);
+    epd_fill_rect({cx - 150, 484, 300, 3}, 0x00, fb);
 
     // Steps. One line each, ticked or crossed, from the optical centre.
-    int y = 540;
+    int y = 572;
     for (int i = 0; i < count; ++i) {
         const int x = 132;
         if (ok) {
