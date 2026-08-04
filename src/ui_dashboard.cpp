@@ -1051,7 +1051,7 @@ static void printConsoleHelp() {
     Serial.println("  gpsver               query GPS module firmware version");
     Serial.println("  gpsraw <on|off>      echo raw receiver bytes");
     Serial.println("  sd                   SD mount state + cardType (NONE = card not answering)");
-    Serial.println("  power                battery voltage + current draw (mA)");
+    Serial.println("  power                battery voltage + draw (mA) + full fuel-gauge state");
     Serial.println("  bootloader           reboot into download mode for flashing");
     Serial.println("  reboot               restart the device");
     Serial.println("  timing               toggle frame-timing logs");
@@ -1102,7 +1102,13 @@ static void runConsoleLine(char* line) {
             Serial.printf("[power] %umV %dmA (%s)\n", mv, ma,
                           ma < 0 ? "discharging" : "charging/idle");
         else
-            Serial.println("[power] fuel gauge unavailable");
+            Serial.println("[power] fuel gauge init failed at boot "
+                           "(raw registers still read below)");
+        // Always dump the full gauge state: when the battery percentage is
+        // missing, the status words and the raw SOC are the whole diagnosis.
+        char rep[200];
+        board_gauge_report(rep, sizeof(rep));
+        Serial.printf("[gauge] %s\n", rep);
     } else if (!strcasecmp(cmd, "sd")) {
         // SD status without needing a boot log. The mount happens ~1.4 s into
         // boot, long before a USB-CDC host can attach, so for a long time the
