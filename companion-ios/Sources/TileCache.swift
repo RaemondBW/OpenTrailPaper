@@ -13,13 +13,18 @@ import Foundation
 /// mapgen.js / build_map.py / MapBuilder.swift by design), so caching them by id
 /// is safe and needs no invalidation beyond age.
 ///
-/// Stored in Caches: this is reconstructible from the network, so the system is
-/// free to evict it under disk pressure, and it must not count against the
-/// user's iCloud backup.
+/// Lives in Application Support, NOT Caches. It started in Caches on the theory
+/// that it is reconstructible from the network — true, but it is no longer only
+/// a build cache: these blobs are what the map draws downloaded areas from
+/// (`EInkTileStore`), so an eviction would silently blank out areas the user
+/// downloaded, with an Overpass round-trip to get them back. Excluded from
+/// backup, so it still doesn't ride along in iCloud.
 actor TileCache {
     static let shared = TileCache()
 
     /// Tiles older than this are re-fetched, so OSM edits eventually land.
+    /// Applies to REUSE only — `displayData` ignores it, since drawing a
+    /// slightly stale area beats drawing nothing.
     private let maxAge: TimeInterval = 60 * 60 * 24 * 90   // 90 days
     /// Rough ceiling before the oldest entries are dropped.
     private let maxBytes: Int = 256 * 1024 * 1024
@@ -27,16 +32,21 @@ actor TileCache {
     private let dir: URL
 
     init() {
-        let base = FileManager.default.urls(for: .cachesDirectory,
-                                            in: .userDomainMask)[0]
+        let fm = FileManager.default
+        let base = (try? fm.url(for: .applicationSupportDirectory, in: .userDomainMask,
+                                appropriateFor: nil, create: true))
+            ?? fm.urls(for: .cachesDirectory, in: .userDomainMask)[0]
         // Versioned. Bump when a builder change alters what a tile SHOULD
         // contain, so stale blobs cannot mask the fix. v2: tiles built before
         // the padded-coastline fetch have no sea fill — an ocean-only hex was
         // cached blank (elevation alone made it non-empty), and reusing it would
         // look exactly like the bug still being there.
         dir = base.appendingPathComponent("TileCache-v2", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir,
-                                                 withIntermediateDirectories: true)
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        var res = URLResourceValues()
+        res.isExcludedFromBackup = true
+        var d = dir
+        try? d.setResourceValues(res)
     }
 
     private func url(_ id: String) -> URL {
@@ -55,6 +65,23 @@ actor TileCache {
               let d = try? Data(contentsOf: u), !d.isEmpty
         else { return nil }
         return d
+    }
+
+    /// Blob for `id` with no age check, for DRAWING the area on the map.
+    /// `data(for:)` expires tiles so a rebuild picks up OSM edits; expiring what
+    /// the map draws would instead make downloaded areas quietly disappear.
+    func displayData(for id: String) -> Data? {
+        let d = try? Data(contentsOf: url(id))
+        return (d?.isEmpty == false) ? d : nil
+    }
+
+    /// Every H3 id this phone holds tile data for — the set of areas the map can
+    /// draw in the device's own style.
+    func cachedIds() -> Set<String> {
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: nil) else { return [] }
+        return Set(files.filter { $0.pathExtension == "ebm" }
+                        .map { $0.deletingPathExtension().lastPathComponent })
     }
 
     func store(_ data: Data, for id: String) {

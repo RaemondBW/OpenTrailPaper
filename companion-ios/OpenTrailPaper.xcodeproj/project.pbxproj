@@ -11,6 +11,8 @@
 		05EFA1438A835BB33D929DF4 /* BarlowCondensed-Medium.ttf in Resources */ = {isa = PBXBuildFile; fileRef = A97893E68863ECCF2D0D4400 /* BarlowCondensed-Medium.ttf */; };
 		1E84B7CD7869CDE2FAD486B0 /* BarlowCondensed-Bold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 08F073C2FF3FF2C629AFE7E8 /* BarlowCondensed-Bold.ttf */; };
 		206AAAF21E4BC20EAB8D7C79 /* vertex.c in Sources */ = {isa = PBXBuildFile; fileRef = 861D40F3D0D6EE123389E135 /* vertex.c */; };
+		2593A42A317117DDFBAF716E /* EInkMapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 062C37A066E27E1DEC3AF253 /* EInkMapView.swift */; };
+		2896F748FD963A319E478447 /* EBMDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18E924B930AF50BBF8472A7F /* EBMDecoder.swift */; };
 		292571D164EEF9C5316E8BAB /* linkedGeo.c in Sources */ = {isa = PBXBuildFile; fileRef = 878E3C8F7719672814B9A1C2 /* linkedGeo.c */; };
 		2A3194F4903302F4B2C27D19 /* polygon.c in Sources */ = {isa = PBXBuildFile; fileRef = 0CBC93C157DBF69D2E2C1823 /* polygon.c */; };
 		2D50FCD8D5DDF2010C20E161 /* RideView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4E83FB3A70437DD5D0F8629 /* RideView.swift */; };
@@ -40,6 +42,7 @@
 		CD0EDC65F5A9395EE7649CDE /* directedEdge.c in Sources */ = {isa = PBXBuildFile; fileRef = CC8F9A2A7C26F2C54766428B /* directedEdge.c */; };
 		D017F03AE055F1971F5815BA /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79F3F907C8247AC1B8A63959 /* Theme.swift */; };
 		D18324D7B11DC7874A2252C3 /* mathExtensions.c in Sources */ = {isa = PBXBuildFile; fileRef = C79A61A359DA1F3938DE464C /* mathExtensions.c */; };
+		D51119ACFAB6419E07143355 /* EInkTileStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = CDD609424C1648F1D8704550 /* EInkTileStore.swift */; };
 		D6593DA4DB2D54C490D89D63 /* firmware.bin in Resources */ = {isa = PBXBuildFile; fileRef = 8573B3F08B3AD8A472D61A2D /* firmware.bin */; };
 		DA77B28069DBB60831A903C9 /* h3shim.c in Sources */ = {isa = PBXBuildFile; fileRef = 158AB26E91BB4024B25490AD /* h3shim.c */; };
 		E1BBBE95FA5BC48203720329 /* baseCells.c in Sources */ = {isa = PBXBuildFile; fileRef = CB4C7FC4CD9B1C363CD59A20 /* baseCells.c */; };
@@ -56,12 +59,14 @@
 
 /* Begin PBXFileReference section */
 		05C73BCF289591ECA86720C6 /* GPXExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GPXExporter.swift; sourceTree = "<group>"; };
+		062C37A066E27E1DEC3AF253 /* EInkMapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EInkMapView.swift; sourceTree = "<group>"; };
 		08F073C2FF3FF2C629AFE7E8 /* BarlowCondensed-Bold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "BarlowCondensed-Bold.ttf"; sourceTree = "<group>"; };
 		0CBC93C157DBF69D2E2C1823 /* polygon.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = polygon.c; sourceTree = "<group>"; };
 		0D0FC030F1FACFFD44C96837 /* SensorsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SensorsView.swift; sourceTree = "<group>"; };
 		119DE3CCD0BED37A2EED959F /* polygonAlgos.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = polygonAlgos.h; sourceTree = "<group>"; };
 		158AB26E91BB4024B25490AD /* h3shim.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = h3shim.c; sourceTree = "<group>"; };
 		1727B3F48F1EFA384DE4B5C8 /* h3api.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = h3api.h; sourceTree = "<group>"; };
+		18E924B930AF50BBF8472A7F /* EBMDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EBMDecoder.swift; sourceTree = "<group>"; };
 		21F000263728C013838D0605 /* faceijk.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = faceijk.c; sourceTree = "<group>"; };
 		22AE81B336FF77D1655400EA /* constants.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = constants.h; sourceTree = "<group>"; };
 		27A939183F2903B61CA144FB /* bbox.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = bbox.h; sourceTree = "<group>"; };
@@ -115,6 +120,7 @@
 		CB4C7FC4CD9B1C363CD59A20 /* baseCells.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = baseCells.c; sourceTree = "<group>"; };
 		CBBFA5634178A1D43462F629 /* BLEManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BLEManager.swift; sourceTree = "<group>"; };
 		CC8F9A2A7C26F2C54766428B /* directedEdge.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = directedEdge.c; sourceTree = "<group>"; };
+		CDD609424C1648F1D8704550 /* EInkTileStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EInkTileStore.swift; sourceTree = "<group>"; };
 		D66117B8CB78BBC0949D8DF3 /* demo.fit */ = {isa = PBXFileReference; path = demo.fit; sourceTree = "<group>"; };
 		E15692F37161BEC610966D47 /* TileCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TileCache.swift; sourceTree = "<group>"; };
 		E1B62C507D47EAD0BDDDD24F /* RideDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RideDetailView.swift; sourceTree = "<group>"; };
@@ -178,6 +184,9 @@
 				CBBFA5634178A1D43462F629 /* BLEManager.swift */,
 				D66117B8CB78BBC0949D8DF3 /* demo.fit */,
 				336612AF0918144CAB1C1FCD /* DiagnosticsView.swift */,
+				18E924B930AF50BBF8472A7F /* EBMDecoder.swift */,
+				062C37A066E27E1DEC3AF253 /* EInkMapView.swift */,
+				CDD609424C1648F1D8704550 /* EInkTileStore.swift */,
 				8573B3F08B3AD8A472D61A2D /* firmware.bin */,
 				590A2666A030966B6741EDAF /* FITDecoder.swift */,
 				05C73BCF289591ECA86720C6 /* GPXExporter.swift */,
@@ -336,6 +345,9 @@
 				5BC98F4BF77D1A33EF8F546B /* BLEManager.swift in Sources */,
 				021E5D177FE3BCD463AA49BF /* BikeGPSCompanionApp.swift in Sources */,
 				F71D1CFFCC25AD4A7A19D698 /* DiagnosticsView.swift in Sources */,
+				2896F748FD963A319E478447 /* EBMDecoder.swift in Sources */,
+				2593A42A317117DDFBAF716E /* EInkMapView.swift in Sources */,
+				D51119ACFAB6419E07143355 /* EInkTileStore.swift in Sources */,
 				A44F34DFEC944328672D82B2 /* FITDecoder.swift in Sources */,
 				90BE2D6324721EC08C93E435 /* GPXExporter.swift in Sources */,
 				431EACF518E6E7F25D9682EC /* H3Tiles.swift in Sources */,
