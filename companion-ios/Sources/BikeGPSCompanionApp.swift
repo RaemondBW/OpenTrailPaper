@@ -5,6 +5,7 @@ import UIKit
 struct BikeGPSCompanionApp: App {
     @StateObject private var ble = BLEManager()
     @StateObject private var appState = AppState()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
@@ -13,7 +14,22 @@ struct BikeGPSCompanionApp: App {
                 .environmentObject(appState)
                 .tint(Palette.accent)
         }
+        // Coming back from the Settings app is the one way a permission changes
+        // without either framework telling us, and it's exactly the path our own
+        // "Open Settings" buttons send people down.
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { ble.refreshPermissions() }
+        }
     }
+}
+
+/// Opens this app's page in the Settings app — the only place a refused
+/// permission can be granted again.
+@MainActor
+func openAppSettings() {
+    guard let url = URL(string: UIApplication.openSettingsURLString),
+          UIApplication.shared.canOpenURL(url) else { return }
+    UIApplication.shared.open(url)
 }
 
 // Lightweight app-wide UI state. Owns whether the first-run tutorial is

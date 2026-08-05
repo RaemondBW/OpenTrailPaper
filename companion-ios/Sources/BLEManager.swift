@@ -74,6 +74,21 @@ struct DeviceStatus {
     var remainingKm = 0.0
 }
 
+/// How a system permission stands right now.
+///
+/// Kept as four cases rather than a Bool because each one calls for different
+/// UI: `notDetermined` means we still owe the user the system prompt,
+/// `denied` can only be undone in Settings, and `unavailable` (restricted by
+/// parental controls or an MDM profile) can't be undone at all — sending
+/// someone to Settings for that is a dead end.
+enum PermissionState: Equatable {
+    case notDetermined, granted, denied, unavailable
+
+    var isGranted: Bool { self == .granted }
+    /// Whether the Settings app can actually change this.
+    var fixableInSettings: Bool { self == .denied }
+}
+
 @MainActor
 final class BLEManager: NSObject, ObservableObject {
     enum ConnState: Equatable { case idle, scanning, connecting, connected, poweredOff }
@@ -93,6 +108,15 @@ final class BLEManager: NSObject, ObservableObject {
     // Permission state, surfaced so onboarding can reflect what's been granted.
     @Published var locationAuthorized = false
     @Published var bluetoothReady = false          // central powered on & allowed
+
+    // The precise state of each permission, so the UI can tell apart the three
+    // situations that need three different answers: not asked yet (we must ask),
+    // refused (only Settings can undo it), and restricted (nothing the user can
+    // do). `bluetoothPoweredOn` is deliberately separate — a switched-off radio
+    // is not a refused permission and must not be reported as one.
+    @Published var locationPermission: PermissionState = .notDetermined
+    @Published var bluetoothPermission: PermissionState = .notDetermined
+    @Published var bluetoothPoweredOn = false
 
     // Ride download
     @Published var rides: [RideFile] = []
@@ -193,6 +217,10 @@ final class BLEManager: NSObject, ObservableObject {
         locationManager.desiredAccuracy = kCLLocationAccuracyHundredMeters
         let a = locationManager.authorizationStatus
         locationAuthorized = (a == .authorizedWhenInUse || a == .authorizedAlways)
+        locationPermission = Self.state(of: a)
+        // Readable WITHOUT creating a central, which is the point: it tells us
+        // whether Bluetooth was already refused before we consider prompting.
+        bluetoothPermission = Self.state(of: CBCentralManager.authorization)
         // Show last-known on-device tiles immediately; a refresh confirms them.
         if let saved = UserDefaults.standard.stringArray(forKey: Self.tileCacheKey) {
             deviceTileIds = Set(saved)
@@ -221,6 +249,39 @@ final class BLEManager: NSObject, ObservableObject {
     func requestLocationPermission() {
         if locationManager.authorizationStatus == .notDetermined {
             locationManager.requestWhenInUseAuthorization()
+        }
+    }
+
+    /// Re-read both permissions. Called when the app comes back to the
+    /// foreground, because the user may have just changed them in Settings and
+    /// neither framework reports that while we're backgrounded.
+    func refreshPermissions() {
+        let a = locationManager.authorizationStatus
+        locationAuthorized = (a == .authorizedWhenInUse || a == .authorizedAlways)
+        locationPermission = Self.state(of: a)
+        bluetoothPermission = Self.state(of: CBCentralManager.authorization)
+        // Permission granted while we were away: bring the radio up now, so the
+        // device connects without the user having to hunt for a button.
+        if bluetoothPermission.isGranted { startCentral() }
+    }
+
+    private static func state(of a: CLAuthorizationStatus) -> PermissionState {
+        switch a {
+        case .notDetermined:                       return .notDetermined
+        case .authorizedWhenInUse, .authorizedAlways: return .granted
+        case .denied:                              return .denied
+        case .restricted:                          return .unavailable
+        @unknown default:                          return .notDetermined
+        }
+    }
+
+    private static func state(of a: CBManagerAuthorization) -> PermissionState {
+        switch a {
+        case .notDetermined:  return .notDetermined
+        case .allowedAlways:  return .granted
+        case .denied:         return .denied
+        case .restricted:     return .unavailable
+        @unknown default:     return .notDetermined
         }
     }
 
@@ -985,6 +1046,11 @@ extension BLEManager: CBCentralManagerDelegate {
         if isDemoUpdate { return }   // demo holds a fake connected state
         MainActor.assumeIsolated {
             bluetoothReady = (c.state == .poweredOn)
+            bluetoothPoweredOn = (c.state == .poweredOn)
+            // .unauthorized IS the refusal arriving; otherwise re-read, since
+            // the answer to our prompt lands here.
+            bluetoothPermission = c.state == .unauthorized
+                ? .denied : Self.state(of: CBCentralManager.authorization)
             switch c.state {
             case .poweredOn: startScan()
             case .poweredOff: state = .poweredOff
@@ -1207,6 +1273,7 @@ extension BLEManager: CLLocationManagerDelegate {
         MainActor.assumeIsolated {
             let a = m.authorizationStatus
             locationAuthorized = (a == .authorizedWhenInUse || a == .authorizedAlways)
+            locationPermission = Self.state(of: a)
             if wantsAiding, a == .authorizedWhenInUse || a == .authorizedAlways {
                 beginLocationUpdates()
             } else if a == .denied || a == .restricted {

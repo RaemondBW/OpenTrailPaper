@@ -15,14 +15,20 @@ struct MapsView: View {
 
     // Res-6 H3 tiles are ~5.6 km across; start wide enough to show at least
     // 3–4 of them across the screen (~0.25° ≈ 22 km) so a whole area is easy to
-    // box in one drag. `.userLocation` would snap to MapKit's default
+    // box in one drag. Following the user would snap to MapKit's default
     // street-level zoom (far too tight for tile selection), so we center on the
     // user ourselves once a fix arrives (see `locator`), keeping this fixed
     // span. Falls back to a fixed region until then.
-    @State private var cam: MapCameraPosition = .region(
-        MKCoordinateRegion(center: .init(latitude: 37.7764, longitude: -122.4346),
-                           span: MKCoordinateSpan(latitudeDelta: 0.25, longitudeDelta: 0.25)))
+    @State private var camera: MapCameraCommand? =
+        MapCameraCommand(target: .region(MKCoordinateRegion(
+            center: .init(latitude: 37.7764, longitude: -122.4346),
+            span: MKCoordinateSpan(latitudeDelta: 0.25, longitudeDelta: 0.25))))
     @StateObject private var locator = MapLocator()
+    @StateObject private var projection = MapProjection()
+    @ObservedObject private var store = EInkTileStore.shared
+    @State private var visibleRegion: MKCoordinateRegion?
+    @State private var einkAreas: [EInkArea] = []
+    @State private var outlineHexes: [OutlineHex] = []
     @State private var didCenter = false
     @State private var dragStart: CGPoint?
     @State private var dragEnd: CGPoint?
@@ -42,13 +48,18 @@ struct MapsView: View {
     @State private var downloadTotal = 0            // hexes targeted this run
     @State private var downloadTask: Task<Void, Never>?
 
-    // Tiles the device already has, as drawable rectangles.
-    private var deviceTiles: [MapTile] {
-        ble.deviceTileIds.compactMap { id in
-            let cell = h3_from_id(id)
-            return cell == 0 ? nil : H3Tiles.tile(from: cell)
+    // Hexes in the drawn box that aren't on the device yet, in whichever state
+    // the download has reached. Areas already downloaded are NOT in here — they
+    // draw as e-ink underneath, which says "you have this" far better than a
+    // selection tint would.
+    private var selectionHexes: [SelectionHex] {
+        tiles.filter { !ble.deviceTileIds.contains($0.id) }.map { t in
+            SelectionHex(id: t.id, hexagon: t.hexagon,
+                         kind: converted.contains(t.id) ? .done
+                             : excluded.contains(t.id) ? .excluded : .pending)
         }
     }
+
     // Tiles that will actually be sent: not already on the device and not
     // tapped-out by the user.
     private var newTiles: [MapTile] {
@@ -66,73 +77,71 @@ struct MapsView: View {
 
     var body: some View {
         NavigationStack {
-            MapReader { proxy in
-                ZStack(alignment: .top) {
-                    HexMap(cam: $cam, deviceTiles: deviceTiles,
-                           selection: tiles.filter { !ble.deviceTileIds.contains($0.id) },
-                           converted: converted, excluded: excluded)
-                    .mapControls { MapUserLocationButton() }
-                    .ignoresSafeArea(edges: .top)
+            ZStack(alignment: .top) {
+                EInkMapView(
+                    areas: einkAreas,
+                    outlines: outlineHexes,
+                    selection: selectionHexes,
+                    camera: camera,
+                    showsUserLocation: ble.locationPermission.isGranted,
+                    showsTrackingButton: true,
+                    projection: projection,
                     // Tap a hex (once an area is drawn) to skip/keep it.
-                    .simultaneousGesture(SpatialTapGesture().onEnded { e in
-                        guard box != nil, !drawMode,
-                              let c = proxy.convert(e.location, from: .local) else { return }
+                    onTap: { c in
+                        guard box != nil, !drawMode else { return }
                         toggleHex(at: c)
-                    })
+                    },
                     // Long-press any hex to read its id. Deliberately NOT gated
                     // on an area being drawn — inspecting a hex already on the
                     // device is the more useful case of the two.
-                    .simultaneousGesture(
-                        LongPressGesture(minimumDuration: 0.5)
-                            .sequenced(before: SpatialTapGesture())
-                            .onEnded { value in
-                                guard !drawMode,
-                                      case .second(_, let tap?) = value,
-                                      let c = proxy.convert(tap.location, from: .local),
-                                      let id = H3Tiles.id(at: c) else { return }
-                                inspected = (id, ble.deviceTileIds.contains(id))
-                                UIImpactFeedbackGenerator(style: .medium)
-                                    .impactOccurred()
-                            })
+                    onLongPress: { c in
+                        guard !drawMode, let id = H3Tiles.id(at: c) else { return }
+                        inspected = (id, ble.deviceTileIds.contains(id))
+                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    },
+                    onRegionChange: { r in
+                        visibleRegion = r
+                        refreshEInk()
+                    })
+                .ignoresSafeArea(edges: .top)
 
-                    // In draw mode a transparent layer captures the drag so the
-                    // map doesn't pan while you draw a box.
-                    if drawMode {
-                        Rectangle().fill(Color.black.opacity(0.001))
-                            .contentShape(Rectangle())
-                            .gesture(DragGesture(minimumDistance: 4)
-                                .onChanged { g in
-                                    if dragStart == nil { dragStart = g.startLocation }
-                                    dragEnd = g.location
+                // In draw mode a transparent layer captures the drag so the
+                // map doesn't pan while you draw a box.
+                if drawMode {
+                    Rectangle().fill(Color.black.opacity(0.001))
+                        .contentShape(Rectangle())
+                        .gesture(DragGesture(minimumDistance: 4)
+                            .onChanged { g in
+                                if dragStart == nil { dragStart = g.startLocation }
+                                dragEnd = g.location
+                            }
+                            .onEnded { _ in
+                                if let a = dragStart, let b = dragEnd,
+                                   let c1 = projection.coordinate(at: a),
+                                   let c2 = projection.coordinate(at: b) {
+                                    let bx = (min(c1.latitude, c2.latitude), min(c1.longitude, c2.longitude),
+                                              max(c1.latitude, c2.latitude), max(c1.longitude, c2.longitude))
+                                    box = bx
+                                    tiles = H3Tiles.coveringTiles(south: bx.0, west: bx.1, north: bx.2, east: bx.3)
+                                    excluded = []
+                                    converted = []
+                                    status = nil
                                 }
-                                .onEnded { _ in
-                                    if let a = dragStart, let b = dragEnd,
-                                       let c1 = proxy.convert(a, from: .local),
-                                       let c2 = proxy.convert(b, from: .local) {
-                                        let bx = (min(c1.latitude, c2.latitude), min(c1.longitude, c2.longitude),
-                                                  max(c1.latitude, c2.latitude), max(c1.longitude, c2.longitude))
-                                        box = bx
-                                        tiles = H3Tiles.coveringTiles(south: bx.0, west: bx.1, north: bx.2, east: bx.3)
-                                        excluded = []
-                                        converted = []
-                                        status = nil
-                                    }
-                                    dragStart = nil; dragEnd = nil
-                                    drawMode = false
-                                })
-                            .ignoresSafeArea(edges: .top)
-                    }
-
-                    if let a = dragStart, let b = dragEnd {
-                        Rectangle().fill(Palette.accent.opacity(0.18))
-                            .overlay(Rectangle().stroke(Palette.accent, lineWidth: 2))
-                            .frame(width: abs(b.x - a.x), height: abs(b.y - a.y))
-                            .position(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
-                            .allowsHitTesting(false)
-                    }
-
-                    header
+                                dragStart = nil; dragEnd = nil
+                                drawMode = false
+                            })
+                        .ignoresSafeArea(edges: .top)
                 }
+
+                if let a = dragStart, let b = dragEnd {
+                    Rectangle().fill(Palette.accent.opacity(0.18))
+                        .overlay(Rectangle().stroke(Palette.accent, lineWidth: 2))
+                        .frame(width: abs(b.x - a.x), height: abs(b.y - a.y))
+                        .position(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
+                        .allowsHitTesting(false)
+                }
+
+                header
             }
             .navigationBarHidden(true)
             .sheet(item: Binding(
@@ -142,17 +151,32 @@ struct MapsView: View {
                 TileInspectorSheet(info: info)
             }
             .safeAreaInset(edge: .bottom) { bottomBar }
-            .onAppear { ble.refreshDeviceMaps(); ble.refreshDeviceTiles(); locator.start() }
+            .onAppear {
+                ble.refreshDeviceMaps(); ble.refreshDeviceTiles(); locator.start()
+                store.refresh()
+            }
+            // Redraw when a tile finishes decoding, or when the device's own
+            // tile list arrives and flips areas to "synced".
+            .onChange(of: store.version) { refreshEInk() }
+            .onChange(of: ble.deviceTileIds) { refreshEInk() }
             // Center on the user's first fix, once, at our fixed tile-friendly
             // span. Only before any interaction so it never yanks the map away
             // from a box the user is drawing.
             .onReceive(locator.$coordinate) { coord in
                 guard !didCenter, box == nil, !drawMode, let coord else { return }
                 didCenter = true
-                cam = .region(MKCoordinateRegion(center: coord,
-                    span: MKCoordinateSpan(latitudeDelta: 0.25, longitudeDelta: 0.25)))
+                camera = MapCameraCommand(target: .region(MKCoordinateRegion(center: coord,
+                    span: MKCoordinateSpan(latitudeDelta: 0.25, longitudeDelta: 0.25))))
             }
         }
+    }
+
+    /// Ask the store what to draw for the region now on screen.
+    private func refreshEInk() {
+        guard let r = visibleRegion else { return }
+        let content = store.visibleContent(in: r, synced: ble.deviceTileIds)
+        einkAreas = content.areas
+        outlineHexes = content.outlines
     }
 
     private var header: some View {
@@ -261,7 +285,7 @@ struct MapsView: View {
         card {
             VStack(alignment: .leading, spacing: 3) {
                 Text(drawMode ? "Drag a box across the area you want."
-                              : "Tap “Select area”, then drag a box. Blue = already on the device.")
+                              : "Tap “Select area”, then drag a box. Areas drawn like the device’s screen are downloaded; a green check means the device has them too.")
                     .font(BarlowFont.text(14)).foregroundStyle(drawMode ? Palette.accent : Palette.muted)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 if !ble.deviceTileIds.isEmpty {
@@ -326,6 +350,7 @@ struct MapsView: View {
                     converted.formUnion(cached.map(\.id))
                     anyBuilt = true
                     ble.enqueueTiles(cached)
+                    store.noteDownloaded(cached.map(\.id))
                 }
                 // ONE coastline fetch for the whole selection, padded well past
                 // it. Sea fill needs the COAST, and an ocean-only selection does
@@ -412,6 +437,9 @@ struct MapsView: View {
                     // Cache BEFORE sending: if the link drops mid-transfer the
                     // expensive work survives and the retry is instant.
                     await TileCache.shared.store(withElev)
+                    // Draw the new areas in the device's style straight away —
+                    // the download IS what "downloaded" means on this map.
+                    store.noteDownloaded(withElev.map(\.id))
                     ble.enqueueTiles(withElev)             // send in parallel with the next fetch
                 }
                 building = false
@@ -471,61 +499,6 @@ struct MapsView: View {
     }
 
     nonisolated func locationManager(_ m: CLLocationManager, didFailWithError error: Error) {}
-}
-
-
-/// The hex overlay map, pulled out of MapsView so that view's frequently
-/// changing state cannot invalidate it.
-///
-/// The fetch progress callback updates `status` many times a second, and while
-/// the Map lived in MapsView's body every one of those re-evaluated the body and
-/// rebuilt the Map and every MapPolygon — the map visibly flashed and stuttered
-/// for the whole download. Here its inputs are only the things that actually
-/// change what is drawn, and Equatable lets SwiftUI skip the rebuild when none
-/// of them moved.
-private struct HexMap: View, Equatable {
-    @Binding var cam: MapCameraPosition
-    let deviceTiles: [MapTile]
-    let selection: [MapTile]
-    let converted: Set<String>
-    let excluded: Set<String>
-
-    static func == (a: HexMap, b: HexMap) -> Bool {
-        a.deviceTiles.map(\.id) == b.deviceTiles.map(\.id) &&
-        a.selection.map(\.id) == b.selection.map(\.id) &&
-        a.converted == b.converted && a.excluded == b.excluded
-    }
-
-    var body: some View {
-        Map(position: $cam) {
-            UserAnnotation()
-            // Hexes already on the device — green highlight + a green check in
-            // the middle. Drawn once here (not repeated in the selection loop).
-            ForEach(deviceTiles) { t in
-                MapPolygon(coordinates: t.hexagon)
-                    .foregroundStyle(Palette.good.opacity(0.25))
-                    .stroke(Palette.good, lineWidth: 1.5)
-                Annotation("", coordinate: t.center) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.system(size: 15))
-                        .foregroundStyle(Palette.good)
-                }
-            }
-            // Selection hexes NOT yet on the device. converted this run → green;
-            // tapped out → faint; pending → accent.
-            ForEach(selection) { t in
-                let done = converted.contains(t.id)
-                let off = excluded.contains(t.id)
-                MapPolygon(coordinates: t.hexagon)
-                    .foregroundStyle(done ? Palette.good.opacity(0.22)
-                                     : off ? Palette.muted.opacity(0.08)
-                                           : Palette.accent.opacity(0.16))
-                    .stroke(done ? Palette.good
-                            : off ? Palette.muted.opacity(0.55) : Palette.accent,
-                            lineWidth: 1.5)
-            }
-        }
-    }
 }
 
 

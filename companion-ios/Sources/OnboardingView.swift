@@ -4,12 +4,18 @@ import SwiftUI
 // the two system permission prompts (location, Bluetooth) on their own
 // explaining screens — so the OS dialog arrives with context rather than cold
 // at launch. Shown once; gated by BLEManager.onboardedKey.
+//
+// Every screen that explains a permission must be able to ACT on it, which is
+// what the permission steps below are built around: if it hasn't been asked, the
+// button raises the system prompt; if it was refused, the button opens Settings
+// (the only place that can be undone); either way there is always a way past the
+// screen without granting anything. A screen that describes a permission and
+// then can't do anything about it is the failure mode to avoid.
 struct OnboardingView: View {
     @EnvironmentObject var ble: BLEManager
     var onFinish: () -> Void
 
     @State private var step = OnboardingView.initialStep
-    @State private var askedThisStep = false
 
     private let lastStep = 5
 
@@ -50,7 +56,6 @@ struct OnboardingView: View {
         .onChange(of: ble.bluetoothReady) { _, ready in
             if step == 3, ready { advance() }
         }
-        .onChange(of: step) { _, _ in askedThisStep = false }
     }
 
     // MARK: chrome
@@ -83,15 +88,14 @@ struct OnboardingView: View {
 
     private var footer: some View {
         VStack(spacing: 12) {
-            PrimaryButton(title: primaryTitle, action: primaryAction)
-            // Permission steps: an out on the same screen as the ask.
-            if step == 2 || step == 3 {
-                Button(askedThisStep ? "Continue" : "Not now") {
-                    advance()
-                }
-                .font(TypeScale.bodyStrong)
-                .foregroundStyle(Palette.muted)
-                .opacity(askedThisStep ? 0 : 1)   // once asked, primary says Continue
+            PrimaryButton(title: stepAction.title, action: primaryAction)
+            // Permission steps always keep an out on the same screen as the ask,
+            // so declining never traps anyone. Hidden only when the primary
+            // button IS "Continue" — two identical buttons help nobody.
+            if let state = permissionState, stepAction.kind != .next {
+                Button(state == .notDetermined ? "Not now" : "Continue") { advance() }
+                    .font(TypeScale.bodyStrong)
+                    .foregroundStyle(Palette.muted)
             }
         }
         .padding(.horizontal, 24)
@@ -148,18 +152,70 @@ struct OnboardingView: View {
 
     private var locationStep: some View {
         page(
-            art: AnyView(iconBadge("location.fill", tint: Palette.accent)),
+            art: AnyView(SketchIcon(glyph: .location, tint: tint(ble.locationPermission),
+                                    active: step == 2)),
             title: "Share your location",
-            body: "Used to show your position on the map, warm-start the device's GPS so it locks on fast, and act as a backup fix when the device can't see the sky. Only while you're using the app."
+            body: "Used to show your position on the map, warm-start the device's GPS so it locks on fast, and act as a backup fix when the device can't see the sky. Only while you're using the app.",
+            note: AnyView(statusChip(for: ble.locationPermission,
+                                     granted: "Location allowed",
+                                     denied: "Location is off for this app. Open Settings to allow it — the map still works without it.",
+                                     unavailable: "Location is restricted on this iPhone."))
         )
     }
 
     private var bluetoothStep: some View {
         page(
-            art: AnyView(iconBadge("dot.radiowaves.left.and.right", tint: Palette.accent)),
+            art: AnyView(SketchIcon(glyph: .waves, tint: tint(ble.bluetoothPermission),
+                                    active: step == 3)),
             title: "Connect over Bluetooth",
-            body: "Everything travels to and from your OpenTrailPaper over Bluetooth — routes, offline maps, settings and recorded rides. No account, no cloud. Next, we'll link the app to your device."
+            body: "Everything travels to and from your OpenTrailPaper over Bluetooth — routes, offline maps, settings and recorded rides. No account, no cloud. Next, we'll link the app to your device.",
+            note: AnyView(bluetoothNote)
         )
+    }
+
+    // Bluetooth has a fourth state the others don't: allowed, but the radio is
+    // switched off. That is not a refused permission and must not be reported as
+    // one — no button of ours can fix it, only Control Centre.
+    @ViewBuilder private var bluetoothNote: some View {
+        if ble.bluetoothPermission.isGranted && !ble.bluetoothPoweredOn {
+            chip("Bluetooth is switched off — turn it on in Control Centre.",
+                 symbol: "exclamationmark.circle.fill", tint: Palette.accent)
+        } else {
+            statusChip(for: ble.bluetoothPermission,
+                       granted: "Bluetooth allowed",
+                       denied: "Bluetooth is off for this app. Open Settings to allow it — without it the app can't reach your device at all.",
+                       unavailable: "Bluetooth is restricted on this iPhone.")
+        }
+    }
+
+    @ViewBuilder private func statusChip(for state: PermissionState, granted: String,
+                                         denied: String, unavailable: String) -> some View {
+        switch state {
+        case .granted:      chip(granted, symbol: "checkmark.circle.fill", tint: Palette.good)
+        case .denied:       chip(denied, symbol: "exclamationmark.circle.fill", tint: Palette.accent)
+        case .unavailable:  chip(unavailable, symbol: "lock.circle.fill", tint: Palette.muted)
+        case .notDetermined: EmptyView()
+        }
+    }
+
+    private func chip(_ text: String, symbol: String, tint: Color) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: symbol).foregroundStyle(tint)
+            Text(text)
+                .font(BarlowFont.text(13))
+                .foregroundStyle(Palette.muted)
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, 16).padding(.vertical, 12)
+        .background(Palette.surface)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
+            .strokeBorder(Palette.hairline, lineWidth: 1))
+    }
+
+    private func tint(_ state: PermissionState) -> Color {
+        state.isGranted ? Palette.good : Palette.accent
     }
 
     // Reassures the user the app pairs with the head unit, and — because the
@@ -167,7 +223,8 @@ struct OnboardingView: View {
     private var connectStep: some View {
         VStack(spacing: 0) {
             Spacer()
-            iconBadge(connectSymbol, tint: connectTint)
+            SketchIcon(glyph: ble.state == .connected ? .check : .waves,
+                       tint: connectTint, active: step == 4)
                 .padding(.bottom, 36)
             Text("Pair with your device")
                 .font(TypeScale.screenTitle)
@@ -189,9 +246,6 @@ struct OnboardingView: View {
         .frame(maxWidth: .infinity)
     }
 
-    private var connectSymbol: String {
-        ble.state == .connected ? "checkmark.circle.fill" : "antenna.radiowaves.left.and.right"
-    }
     private var connectTint: Color {
         ble.state == .connected ? Palette.good : Palette.accent
     }
@@ -227,15 +281,16 @@ struct OnboardingView: View {
 
     private var ready: some View {
         page(
-            art: AnyView(iconBadge("checkmark", tint: Palette.good)),
+            art: AnyView(SketchIcon(glyph: .check, tint: Palette.good, active: step == lastStep)),
             title: "You're all set",
-            body: "Your device connects on its own whenever it's on and nearby — you'll see it on the Ride tab. Plan a route or build a map any time, and it syncs over. You can change permissions later in Settings."
+            body: "Your device connects on its own whenever it's on and nearby — you'll see it on the Ride tab. Plan a route or build a map any time, and it syncs over. Anything you skipped is listed under Permissions in Settings."
         )
     }
 
     // MARK: pieces
 
-    private func page(art: AnyView, title: String, body: String) -> some View {
+    private func page(art: AnyView, title: String, body: String,
+                      note: AnyView? = nil) -> some View {
         VStack(spacing: 0) {
             Spacer()
             art
@@ -251,6 +306,7 @@ struct OnboardingView: View {
                 .multilineTextAlignment(.center)
                 .lineSpacing(3)
                 .fixedSize(horizontal: false, vertical: true)
+            if let note { note.padding(.top, 22) }
             Spacer()
             Spacer()
         }
@@ -276,40 +332,51 @@ struct OnboardingView: View {
         }
     }
 
-    private func iconBadge(_ symbol: String, tint: Color) -> some View {
-        ZStack {
-            Circle()
-                .fill(tint.opacity(0.12))
-                .frame(width: 132, height: 132)
-            Image(systemName: symbol)
-                .font(.system(size: 56, weight: .semibold))
-                .foregroundStyle(tint)
-        }
-    }
 
     // MARK: button logic
 
-    private var primaryTitle: String {
+    /// The permission this step is about, if any.
+    private var permissionState: PermissionState? {
         switch step {
-        case 2: return askedThisStep ? "Continue" : "Allow location access"
-        case 3: return askedThisStep ? "Continue" : "Enable Bluetooth"
-        case lastStep: return "Start riding"
-        default: return "Continue"
+        case 2: return ble.locationPermission
+        case 3: return ble.bluetoothPermission
+        default: return nil
+        }
+    }
+
+    private struct StepAction {
+        enum Kind { case ask, openSettings, next, finish }
+        let title: String
+        let kind: Kind
+    }
+
+    /// What the primary button says and does. The permission steps are driven
+    /// entirely by the current state, so the button can never be an ask that
+    /// raises no prompt (iOS only prompts once) or a dead end after a refusal.
+    private var stepAction: StepAction {
+        if step == lastStep { return .init(title: "Start riding", kind: .finish) }
+        guard let state = permissionState else { return .init(title: "Continue", kind: .next) }
+        switch state {
+        case .notDetermined:
+            return .init(title: step == 2 ? "Allow location access" : "Enable Bluetooth",
+                         kind: .ask)
+        case .denied:
+            return .init(title: "Open Settings", kind: .openSettings)
+        case .granted, .unavailable:
+            return .init(title: "Continue", kind: .next)
         }
     }
 
     private func primaryAction() {
-        switch step {
-        case 2:
-            if askedThisStep { advance() }
-            else { ble.requestLocationPermission(); askedThisStep = true }
-        case 3:
-            if askedThisStep { advance() }
-            else { ble.enableBluetooth(); askedThisStep = true }
-        case lastStep:
-            onFinish()
-        default:
+        switch stepAction.kind {
+        case .ask:
+            if step == 2 { ble.requestLocationPermission() } else { ble.enableBluetooth() }
+        case .openSettings:
+            openAppSettings()
+        case .next:
             advance()
+        case .finish:
+            onFinish()
         }
     }
 

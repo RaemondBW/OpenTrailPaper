@@ -7,22 +7,32 @@ import CoreLocation
 struct RouteView: View {
     @EnvironmentObject var ble: BLEManager
     @StateObject private var model = RouteModel()
+    @ObservedObject private var store = EInkTileStore.shared
     @State private var showSaved = false
+    @State private var visibleRegion: MKCoordinateRegion?
+    @State private var einkAreas: [EInkArea] = []
+    @State private var outlineHexes: [OutlineHex] = []
 
     var body: some View {
         NavigationStack {
             ZStack(alignment: .bottom) {
-                Map(position: $model.camera) {
-                    UserAnnotation()
-                    if let dest = model.destination {
-                        Marker(model.destinationName, coordinate: dest)
-                            .tint(Palette.accent)
-                    }
-                    if let route = model.route {
-                        MapPolyline(route.polyline)
-                            .stroke(Palette.accent, lineWidth: 5)
-                    }
-                }
+                // Same map as the Maps screen: the areas already downloaded are
+                // drawn as the head unit will draw them, so you can see at a
+                // glance whether a route you're planning is inside the coverage
+                // the device actually carries.
+                EInkMapView(
+                    areas: einkAreas,
+                    outlines: outlineHexes,
+                    route: model.route?.polyline,
+                    destination: model.destination.map {
+                        MapDestination(name: model.destinationName, coordinate: $0)
+                    },
+                    camera: model.camera,
+                    showsUserLocation: ble.locationPermission.isGranted,
+                    onRegionChange: { r in
+                        visibleRegion = r
+                        refreshEInk()
+                    })
                 .ignoresSafeArea(edges: .top)
 
                 VStack(spacing: 12) {
@@ -75,11 +85,22 @@ struct RouteView: View {
             .onAppear {
                 if ProcessInfo.processInfo.arguments.contains("-demo-route") { model.demoRoute() }
                 else { model.requestLocation() }
+                store.refresh()
             }
             .onChange(of: model.destinationName) {
                 ble.routeSent = false; ble.routeReceived = false
             }
+            .onChange(of: store.version) { refreshEInk() }
+            .onChange(of: ble.deviceTileIds) { refreshEInk() }
         }
+    }
+
+    /// Ask the store what to draw for the region now on screen.
+    private func refreshEInk() {
+        guard let r = visibleRegion else { return }
+        let content = store.visibleContent(in: r, synced: ble.deviceTileIds)
+        einkAreas = content.areas
+        outlineHexes = content.outlines
     }
 
     // "Route" title pill, floated top-left below the status bar.
@@ -165,8 +186,11 @@ final class RouteModel: NSObject, ObservableObject {
     @Published var destinationName = ""
     @Published var route: MKRoute?
     @Published var routeMode = ""   // "Cycling" or "Walking"
-    @Published var camera: MapCameraPosition = .userLocation(
-        fallback: .region(MKCoordinateRegion(
+    // Starts on a fixed region and switches to following the user as soon as a
+    // fix exists (see requestLocation/recenter) — the map has no fallback mode
+    // of its own, so the camera is always something we chose.
+    @Published var camera: MapCameraCommand? = MapCameraCommand(
+        target: .region(MKCoordinateRegion(
             center: CLLocationCoordinate2D(latitude: 37.7764, longitude: -122.4346),
             span: MKCoordinateSpan(latitudeDelta: 0.08, longitudeDelta: 0.08))))
 
@@ -182,6 +206,13 @@ final class RouteModel: NSObject, ObservableObject {
 
     func requestLocation() {
         locManager.requestWhenInUseAuthorization()
+        // Frame the user as soon as we have them, instead of sitting on the
+        // fallback region until the first tap of "recenter".
+        if let loc = locManager.location {
+            camera = MapCameraCommand(target: .region(MKCoordinateRegion(
+                center: loc.coordinate,
+                span: MKCoordinateSpan(latitudeDelta: 0.08, longitudeDelta: 0.08))))
+        }
     }
 
     // Recenter/follow the user (replaces the default map location button, which
@@ -189,10 +220,10 @@ final class RouteModel: NSObject, ObservableObject {
     func recenter() {
         locManager.requestWhenInUseAuthorization()
         if let loc = locManager.location {
-            camera = .region(MKCoordinateRegion(center: loc.coordinate,
-                span: MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05)))
+            camera = MapCameraCommand(target: .region(MKCoordinateRegion(center: loc.coordinate,
+                span: MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05))))
         } else {
-            camera = .userLocation(fallback: .automatic)
+            camera = MapCameraCommand(target: .followUser)
         }
     }
 
@@ -276,7 +307,7 @@ final class RouteModel: NSObject, ObservableObject {
         // to edge, so the route ran into the screen borders and under the
         // search field and the route summary — hard to read, and impossible to
         // see what it passes near. 25% on each axis gives it room to breathe.
-        camera = .rect(r.polyline.boundingMapRect.paddedForDisplay())
+        camera = MapCameraCommand(target: .rect(r.polyline.boundingMapRect.paddedForDisplay()))
     }
 }
 
