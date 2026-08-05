@@ -227,28 +227,31 @@ float updateGrade(float altitudeM) {
 
 namespace ride_recorder {
 
-bool begin() {
-    // SD and LoRa share the SPI bus; a floating LoRa CS corrupts SD traffic.
-    pinMode(BOARD_LORA_CS, OUTPUT);
-    digitalWrite(BOARD_LORA_CS, HIGH);
-    pinMode(BOARD_SD_CS, OUTPUT);
-    digitalWrite(BOARD_SD_CS, HIGH);
+namespace {
 
-    SPI.begin(BOARD_SPI_SCLK, BOARD_SPI_MISO, BOARD_SPI_MOSI);
-    sdLock();
-    // Retry: the SPI card-init handshake is flaky right after power-on and can
-    // fail the first time or two, especially if a prior session left the card
-    // mid-transaction (only a clean re-init clears it). Stay at the library's
-    // proven 4 MHz — the same clock the recorder has always used — and just give
-    // it a few gentle attempts with a settle delay, dropping to 1 MHz last-ditch.
-    // (Do NOT start high: a too-fast probe can wedge a marginal card so the
-    // slower retries then also fail.)
+// Mount the card. Caller holds sdLock.
+//
+// Retry: the SPI card-init handshake is flaky right after power-on and can fail
+// the first time or two, especially if a prior session left the card
+// mid-transaction (only a clean re-init clears it). Stay at the library's proven
+// 4 MHz — the same clock the recorder has always used — and just give it a few
+// gentle attempts with a settle delay, dropping to 1 MHz last-ditch. (Do NOT
+// start high: a too-fast probe can wedge a marginal card so the slower retries
+// then also fail.)
+//
+// `logFailures` is off for the background retry, which would otherwise write
+// three lines every 30 s for as long as a card is simply absent.
+bool mountLocked(bool logFailures) {
     const uint32_t freqs[] = {4000000, 4000000, 1000000};
-    for (int attempt = 0; attempt < 3 && !sdOk; ++attempt) {
+    for (int attempt = 0; attempt < 3; ++attempt) {
         uint32_t f = freqs[attempt];
         if (attempt > 0) delay(50);   // let the card/bus settle before re-probing
-        sdOk = SD.begin(BOARD_SD_CS, SPI, f);
-        if (!sdOk) {
+        // max_files: the library default is 5 open files for the WHOLE firmware,
+        // and a ride holds one of them open from start to finish. Ten leaves room
+        // for a map tile, a route, a diag flush and a BLE download at the same
+        // time without opens starting to fail mid-ride.
+        if (SD.begin(BOARD_SD_CS, SPI, f, "/sd", 10)) return true;
+        if (logFailures) {
             // Read cardType()/cardSize() BEFORE SD.end() — end() de-inits the
             // card and would make both report NONE/0. cardType reflects the
             // low-level SPI init (independent of the FAT mount): NONE => card not
@@ -259,9 +262,24 @@ bool begin() {
                            : ct == CARD_SD ? "SD" : ct == CARD_SDHC ? "SDHC" : "UNKNOWN";
             diag::log("[rec] SD.begin failed @%uMHz cardType=%s size=%lluMB",
                       (unsigned)(f / 1000000), cn, SD.cardSize() / (1024ULL * 1024ULL));
-            SD.end();
         }
+        SD.end();
     }
+    return false;
+}
+
+}  // namespace
+
+bool begin() {
+    // SD and LoRa share the SPI bus; a floating LoRa CS corrupts SD traffic.
+    pinMode(BOARD_LORA_CS, OUTPUT);
+    digitalWrite(BOARD_LORA_CS, HIGH);
+    pinMode(BOARD_SD_CS, OUTPUT);
+    digitalWrite(BOARD_SD_CS, HIGH);
+
+    SPI.begin(BOARD_SPI_SCLK, BOARD_SPI_MISO, BOARD_SPI_MOSI);
+    sdLock();
+    sdOk = mountLocked(true);
     if (sdOk && !SD.exists(RIDE_DIR)) SD.mkdir(RIDE_DIR);
     sdUnlock();
     if (!sdOk) {
@@ -288,7 +306,20 @@ void startRide() {
     bool opened = fit.begin(SD, ridePath, s.utc);
     sdUnlock();
     if (!opened) {
+        // The mount was only ever established at boot, so a card that dropped
+        // since then failed every ride for the rest of the session. One remount
+        // and one retry — cheap, and the difference between losing a ride and
+        // not. (rideActive is still false here, so remount() will proceed.)
+        diag::log("[rec] ride file open failed — remounting");
+        if (remount("ride file open failed")) {
+            sdLock();
+            opened = fit.begin(SD, ridePath, s.utc);
+            sdUnlock();
+        }
+    }
+    if (!opened) {
         Serial.printf("[rec] failed to open %s\n", ridePath);
+        diag::log("[rec] ride NOT started: cannot open %s", ridePath);
         return;
     }
 
@@ -364,6 +395,47 @@ RideSummary summary() {
     r.tzMin = g_state.snapshot().tzMin;
     r.useMiles = g_state.snapshot().useMiles;
     return r;
+}
+
+bool remount(const char* why) {
+    // Never mid-ride: SD.end() with the FIT file open leaves the card
+    // mid-transaction, which is the failure that makes it refuse CMD0 on every
+    // subsequent mount. Callers hold their request and retry once the ride ends.
+    if (rideActive) return sdOk;
+    sdLock();
+    SD.end();
+    sdOk = mountLocked(true);
+    if (sdOk && !SD.exists(RIDE_DIR)) SD.mkdir(RIDE_DIR);
+    sdUnlock();
+    diag::log("sd: remount (%s) -> %s", why, sdOk ? "ok" : "FAILED");
+    return sdOk;
+}
+
+void retryMountIfNeeded() {
+    // Nothing to do when it's mounted, and nothing we're allowed to do while a
+    // host computer owns the card over USB.
+    if (sdOk || rideActive || usb_storage::hostActive()) return;
+
+    static uint32_t lastTry = 0;
+    static uint16_t tries = 0;
+    uint32_t now = millis();
+    if (lastTry != 0 && now - lastTry < 30000) return;
+    lastTry = now;
+
+    sdLock();
+    bool ok = mountLocked(tries < 3);   // stop logging once it's clearly absent
+    if (ok && !SD.exists(RIDE_DIR)) SD.mkdir(RIDE_DIR);
+    sdUnlock();
+
+    if (ok) {
+        sdOk = true;
+        diag::log("sd: card back after %u retr%s", (unsigned)tries + 1,
+                  tries ? "ies" : "y");
+        tries = 0;
+    } else {
+        if (tries == 3) diag::log("sd: still absent — retrying quietly from here");
+        if (tries < 0xFFFF) tries++;
+    }
 }
 
 // SD is "unavailable" to the firmware while a host computer owns it over USB.

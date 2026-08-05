@@ -1051,6 +1051,7 @@ static void printConsoleHelp() {
     Serial.println("  gpsver               query GPS module firmware version");
     Serial.println("  gpsraw <on|off>      echo raw receiver bytes");
     Serial.println("  sd                   SD mount state + cardType (NONE = card not answering)");
+    Serial.println("  usbdrive [on|off]    expose the SD to a host; off takes the card back");
     Serial.println("  power                battery voltage + current draw (mA)");
     Serial.println("  bootloader           reboot into download mode for flashing");
     Serial.println("  reboot               restart the device");
@@ -1116,10 +1117,35 @@ static void runConsoleLine(char* line) {
         Serial.printf("[sd] mounted=%s cardType=%s size=%lluMB\n",
                       ride_recorder::sdMounted() ? "yes" : "NO", cn,
                       SD.cardSize() / (1024ULL * 1024ULL));
+        // "Not mounted" has two causes that need opposite responses, and the
+        // difference is invisible on the device's own screen. Say which it is.
+        if (!ride_recorder::sdMounted()) {
+            if (usb_storage::hostActive())
+                Serial.println("[sd] a USB host owns the card — unplug it, eject it, "
+                               "or toggle the USB drive off/on ('usbdrive off' then 'on')");
+            else
+                Serial.println("[sd] not mounted by the firmware — cardType=NONE means "
+                               "the card is not answering (seating / wedged / dead)");
+        }
         if (ride_recorder::sdMounted())
             Serial.printf("[sd] %llu MB free, log=%s\n",
                           (SD.totalBytes() - SD.usedBytes()) / (1024ULL * 1024ULL),
                           diag::logPath());
+    } else if (!strcasecmp(cmd, "usbdrive")) {
+        // The serial-side escape hatch for a stuck "a USB host owns the card":
+        // turning the drive off hands the card straight back to the firmware.
+        // Same switch as device Settings, so it persists.
+        if (!arg) {
+            Serial.printf("[usbdrive] %s (host %s the card)\n",
+                          settings::usbDrive() ? "on" : "off",
+                          usb_storage::hostActive() ? "HAS" : "does not have");
+        } else {
+            bool on = !strcasecmp(arg, "on") || !strcasecmp(arg, "1");
+            settings::setUsbDrive(on);
+            usb_storage::setDriveEnabled(on);
+            ble_server::pushSettingsToPhone();   // keep the app's toggle in step
+            Serial.printf("[usbdrive] turned %s\n", on ? "on" : "off");
+        }
     } else if (!strcasecmp(cmd, "bootloader") || !strcasecmp(cmd, "boot")) {
         rebootToBootloader();
     } else if (!strcasecmp(cmd, "reboot")) {

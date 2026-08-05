@@ -383,6 +383,7 @@ void setup() {
 
 void loop() {
     usb_storage::poll();   // reclaim the SD when the host disconnects
+    ride_recorder::retryMountIfNeeded();   // pick a dropped card back up
     power_mgmt::tick();    // hold light sleep off while the USB console is open
     vTaskDelay(pdMS_TO_TICKS(1000));
 }
