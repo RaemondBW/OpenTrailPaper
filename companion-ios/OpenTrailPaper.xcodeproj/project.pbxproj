@@ -39,6 +39,7 @@
 		B1BE7F5A245A3C270036C6E2 /* algos.c in Sources */ = {isa = PBXBuildFile; fileRef = ABBED3B34B25D9BCAFA3FDB5 /* algos.c */; };
 		BE0814223F037C69E39B93D7 /* RidesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F897B750389038E18EE9AC09 /* RidesView.swift */; };
 		C462314C3BD9E277B9F451A9 /* MapsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7C77C595BBAE5BCBD82A004 /* MapsView.swift */; };
+		C7F7382D5542409C17015EFB /* SketchIcon.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73ECF60CAA9C73957BC40AC2 /* SketchIcon.swift */; };
 		CD0EDC65F5A9395EE7649CDE /* directedEdge.c in Sources */ = {isa = PBXBuildFile; fileRef = CC8F9A2A7C26F2C54766428B /* directedEdge.c */; };
 		D017F03AE055F1971F5815BA /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79F3F907C8247AC1B8A63959 /* Theme.swift */; };
 		D18324D7B11DC7874A2252C3 /* mathExtensions.c in Sources */ = {isa = PBXBuildFile; fileRef = C79A61A359DA1F3938DE464C /* mathExtensions.c */; };
@@ -83,6 +84,7 @@
 		6CDCF740EC9B89D5492FD0C7 /* h3Assert.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = h3Assert.h; sourceTree = "<group>"; };
 		6FA4F76096362CE92F71ED36 /* latLng.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = latLng.h; sourceTree = "<group>"; };
 		73E0BFD770D75ABD5ABB61B8 /* alloc.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = alloc.h; sourceTree = "<group>"; };
+		73ECF60CAA9C73957BC40AC2 /* SketchIcon.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SketchIcon.swift; sourceTree = "<group>"; };
 		756CD94A1C875E17A3321CC8 /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
 		792C3E9270334E7AE1A24B68 /* directedEdge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = directedEdge.h; sourceTree = "<group>"; };
 		79F3F907C8247AC1B8A63959 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
@@ -201,6 +203,7 @@
 				A26EB50B7E6CF1B4A63235CA /* RouteView.swift */,
 				0D0FC030F1FACFFD44C96837 /* SensorsView.swift */,
 				BE5C27C920995C9292457A9C /* SettingsView.swift */,
+				73ECF60CAA9C73957BC40AC2 /* SketchIcon.swift */,
 				79F3F907C8247AC1B8A63959 /* Theme.swift */,
 				E15692F37161BEC610966D47 /* TileCache.swift */,
 				80ACFA8CA9080B22457972EF /* Fonts */,
@@ -360,6 +363,7 @@
 				79F918433F0C02EF0915A0EE /* RouteView.swift in Sources */,
 				5D1E2FE5B8652DC846C39AF7 /* SensorsView.swift in Sources */,
 				F5E522C16FCFE097E2072926 /* SettingsView.swift in Sources */,
+				C7F7382D5542409C17015EFB /* SketchIcon.swift in Sources */,
 				D017F03AE055F1971F5815BA /* Theme.swift in Sources */,
 				F6958E6E296967C90F9CDC75 /* TileCache.swift in Sources */,
 				B1BE7F5A245A3C270036C6E2 /* algos.c in Sources */,

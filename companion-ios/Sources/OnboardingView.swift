@@ -152,7 +152,8 @@ struct OnboardingView: View {
 
     private var locationStep: some View {
         page(
-            art: AnyView(iconBadge("location.fill", tint: tint(ble.locationPermission))),
+            art: AnyView(SketchIcon(glyph: .location, tint: tint(ble.locationPermission),
+                                    active: step == 2)),
             title: "Share your location",
             body: "Used to show your position on the map, warm-start the device's GPS so it locks on fast, and act as a backup fix when the device can't see the sky. Only while you're using the app.",
             note: AnyView(statusChip(for: ble.locationPermission,
@@ -164,7 +165,8 @@ struct OnboardingView: View {
 
     private var bluetoothStep: some View {
         page(
-            art: AnyView(iconBadge("dot.radiowaves.left.and.right", tint: tint(ble.bluetoothPermission))),
+            art: AnyView(SketchIcon(glyph: .waves, tint: tint(ble.bluetoothPermission),
+                                    active: step == 3)),
             title: "Connect over Bluetooth",
             body: "Everything travels to and from your OpenTrailPaper over Bluetooth — routes, offline maps, settings and recorded rides. No account, no cloud. Next, we'll link the app to your device.",
             note: AnyView(bluetoothNote)
@@ -221,7 +223,8 @@ struct OnboardingView: View {
     private var connectStep: some View {
         VStack(spacing: 0) {
             Spacer()
-            iconBadge(connectSymbol, tint: connectTint)
+            SketchIcon(glyph: ble.state == .connected ? .check : .waves,
+                       tint: connectTint, active: step == 4)
                 .padding(.bottom, 36)
             Text("Pair with your device")
                 .font(TypeScale.screenTitle)
@@ -243,9 +246,6 @@ struct OnboardingView: View {
         .frame(maxWidth: .infinity)
     }
 
-    private var connectSymbol: String {
-        ble.state == .connected ? "checkmark.circle.fill" : "antenna.radiowaves.left.and.right"
-    }
     private var connectTint: Color {
         ble.state == .connected ? Palette.good : Palette.accent
     }
@@ -281,7 +281,7 @@ struct OnboardingView: View {
 
     private var ready: some View {
         page(
-            art: AnyView(iconBadge("checkmark", tint: Palette.good)),
+            art: AnyView(SketchIcon(glyph: .check, tint: Palette.good, active: step == lastStep)),
             title: "You're all set",
             body: "Your device connects on its own whenever it's on and nearby — you'll see it on the Ride tab. Plan a route or build a map any time, and it syncs over. Anything you skipped is listed under Permissions in Settings."
         )
@@ -332,16 +332,6 @@ struct OnboardingView: View {
         }
     }
 
-    private func iconBadge(_ symbol: String, tint: Color) -> some View {
-        ZStack {
-            Circle()
-                .fill(tint.opacity(0.12))
-                .frame(width: 132, height: 132)
-            Image(systemName: symbol)
-                .font(.system(size: 56, weight: .semibold))
-                .foregroundStyle(tint)
-        }
-    }
 
     // MARK: button logic
 
