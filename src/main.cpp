@@ -94,19 +94,111 @@ static ExtensionIOXL9555 ioExpander;
 static BQ27220 fuelGauge;
 static bool fuelGaugeOk = false;
 
+// Everything the BQ27220 will tell us in one pass. Logged RAW (no "looks
+// implausible, drop it" filtering) because the whole point is to tell a real
+// reading apart from a bus collision — which returns 0 or 0xFFFF and is
+// otherwise indistinguishable from a flat battery / missing gauge.
+struct GaugeSnapshot {
+    uint16_t soc = 0, mv = 0, rc = 0, fc = 0, dc = 0, soh = 0, tempRaw = 0;
+    int16_t  ma = 0;
+    uint16_t battStatus = 0, opStatus = 0;
+    bool     charging = false;
+};
+
+// Takes the I2C lock ONCE for the whole snapshot (~10 register reads, a couple
+// of ms) so the fields describe the same instant. Only called when a line is
+// about to be logged, never on the 30 s display poll — see batteryTask.
+static void gaugeRead(GaugeSnapshot& g) {
+    BQ27220BatteryStatus bs{};
+    BQ27220OperationStatus os{};
+    i2cLock();
+    g.soc     = fuelGauge.getStateOfCharge();
+    g.mv      = fuelGauge.getVoltage();
+    g.ma      = fuelGauge.getCurrent();
+    g.rc      = fuelGauge.getRemainingCapacity();
+    g.fc      = fuelGauge.getFullChargeCapacity();
+    g.dc      = fuelGauge.getDesignCapacity();
+    g.soh     = fuelGauge.getStateOfHealth();
+    g.tempRaw = fuelGauge.getTemperature();
+    fuelGauge.getBatteryStatus(&bs);
+    fuelGauge.getOperationStatus(&os);
+    i2cUnlock();
+    g.battStatus = bs.full;
+    g.opStatus   = os.full;
+    g.charging   = !bs.reg.DSG;
+}
+
+// The diagnostic tail shared by every gauge log line: temperature, health,
+// design capacity and the two status words (raw hex + the bits that explain a
+// missing reading). NOTE: no '%' character in here — the phone's diagnostics
+// chart takes the FIRST '%' on a "battery:" line as the state-of-charge
+// (DiagnosticsView.swift), so only the leading SOC may carry one.
+static void gaugeDetail(const GaugeSnapshot& g, char* out, size_t n) {
+    BQ27220BatteryStatus bs{};   bs.full = g.battStatus;
+    BQ27220OperationStatus os{}; os.full = g.opStatus;
+    int t10 = (int)g.tempRaw - 2732;          // gauge reports 0.1 K
+    int at  = t10 < 0 ? -t10 : t10;
+    snprintf(out, n,
+             "%s%d.%dC soh %u dc %umAh batt 0x%04x%s%s%s%s op 0x%04x%s sec%u",
+             t10 < 0 ? "-" : "", at / 10, at % 10, g.soh, g.dc,
+             g.battStatus,
+             bs.reg.BATTPRES ? " pres" : " NOBATT",
+             bs.reg.AUTH_GD  ? " auth" : "",
+             bs.reg.FC       ? " full" : "",
+             bs.reg.SYSDWN   ? " SYSDWN" : "",
+             g.opStatus,
+             os.reg.INITCOMP ? " init" : " NOINIT",
+             os.reg.SEC);
+}
+
+// One "battery:" line. The valid-reading form MUST keep its leading
+// "<soc>% <mv>mV <ma>mA <rc>/<fc>mAh <charging|discharging>" shape — the phone
+// app parses exactly that prefix to draw the drain chart. Detail is appended
+// after it. When the SOC is not plausible we log a differently-shaped line with
+// no '%' at all, so the phone skips it instead of charting a bogus 0 %.
+static void gaugeLogLine(const GaugeSnapshot& g, bool socValid, int tries) {
+    char detail[140];
+    gaugeDetail(g, detail, sizeof(detail));
+    if (socValid) {
+        diag::log("battery: %u%% %umV %dmA %u/%umAh %s %s", g.soc, g.mv, g.ma,
+                  g.rc, g.fc, g.charging ? "charging" : "discharging", detail);
+    } else {
+        // tries == 0 means the poll loop never ran (init() failed at boot), so
+        // the raw SOC below came from this snapshot rather than a retry round.
+        char how[28];
+        if (tries > 0) snprintf(how, sizeof(how), "after %d tries", tries);
+        else           snprintf(how, sizeof(how), "gauge uninitialised");
+        diag::log("battery: NO-SOC raw 0x%04x (%s), %umV %dmA "
+                  "rc %u fc %u %s", g.soc, how, g.mv, g.ma, g.rc, g.fc, detail);
+    }
+}
+
 static void batteryTask(void*) {
     uint32_t lastLog = 0;
     bool firstLog = true;
+    uint32_t failStreak = 0;
+    // A gauge whose init() failed is still polled here, purely so the log can
+    // say WHICH failure it is: registers that answer with a sane SOC prove the
+    // chip is on the bus and only the unseal/provisioning in init() went wrong,
+    // while 0xFFFF everywhere means nothing is answering at all. The display
+    // still shows nothing in this state — the reading is not trusted, because a
+    // failed init can also mean a wrong device ID or the wrong battery profile.
+    if (!fuelGaugeOk)
+        diag::log("battery: gauge init FAILED at boot — logging raw reads only, "
+                  "display stays blank");
     for (;;) {
+        uint16_t soc = 0;
+        int tries = 0;
         if (fuelGaugeOk) {
             // The fuel gauge shares the I2C bus with touch / IO expander / RTC;
             // a colliding read returns 0 or 0xFFFF. Only accept a plausible SOC
             // (1..100) and retry a few times — NEVER overwrite the last good
             // value with a failed read, or the battery display flickers/vanishes.
-            uint16_t soc = 0;
             for (int i = 0; i < 4; ++i) {
+                ++tries;
                 i2cLock(); uint16_t v = fuelGauge.getStateOfCharge(); i2cUnlock();
                 if (v >= 1 && v <= 100) { soc = v; break; }
+                soc = v;                         // keep the raw value for the log
                 vTaskDelay(pdMS_TO_TICKS(15));   // unlocked between tries
             }
             bool chg = false;
@@ -117,20 +209,33 @@ static void batteryTask(void*) {
                     s.charging = chg;
                 });
             }
-            // Log the battery every 2 min so drain rate can be tracked from the
-            // diagnostics log. Current is signed: negative = discharging (mA).
-            if (soc >= 1 && (firstLog || millis() - lastLog > 120000)) {
-                firstLog = false;
-                lastLog = millis();
-                i2cLock();
-                uint16_t mv = fuelGauge.getVoltage();
-                int16_t ma = fuelGauge.getCurrent();
-                uint16_t rc = fuelGauge.getRemainingCapacity();
-                uint16_t fc = fuelGauge.getFullChargeCapacity();
-                i2cUnlock();
-                diag::log("battery: %u%% %umV %dmA %u/%umAh %s", soc, mv, ma, rc, fc,
-                          chg ? "charging" : "discharging");
-            }
+        }
+        bool socValid = fuelGaugeOk && soc >= 1 && soc <= 100;
+
+        // A run of failed reads is exactly the "battery % vanished" symptom, so
+        // it gets logged the moment it starts (and again when it ends) instead
+        // of leaving a silent gap in the log where the samples should be.
+        bool firstFailure = false;
+        if (!socValid) {
+            firstFailure = (failStreak == 0);
+            ++failStreak;
+        } else if (failStreak) {
+            diag::log("battery: reads recovered after %u failed poll(s) (~%us)",
+                      (unsigned)failStreak, (unsigned)(failStreak * 30));
+            failStreak = 0;
+        }
+
+        // Sample every 2 min so drain rate can be tracked from the diagnostics
+        // log. Current is signed: negative = discharging (mA).
+        if (firstLog || firstFailure || millis() - lastLog > 120000) {
+            firstLog = false;
+            lastLog = millis();
+            GaugeSnapshot g;
+            gaugeRead(g);
+            // Report the SOC the display poll actually saw, not a fresh read —
+            // a second read that happens to succeed would hide the failure.
+            if (fuelGaugeOk) g.soc = soc;
+            gaugeLogLine(g, socValid, tries);
         }
         vTaskDelay(pdMS_TO_TICKS(30000));
     }
@@ -231,14 +336,21 @@ void setup() {
     pinMode(BOARD_BOOT_BTN, INPUT_PULLUP);
 
     fuelGaugeOk = fuelGauge.init();
+    // init() failing kills the battery display for the whole session, so record
+    // it — with the device number, which separates "wrong/absent chip" (anything
+    // but 0x0220) from "right chip, but unseal or profile check refused".
+    diag::log("gauge: init %s, device 0x%04x (expect 0x0220)",
+              fuelGaugeOk ? "ok" : "FAILED", fuelGauge.getDeviceNumber());
     // Prime the battery reading synchronously so the first UI frame after boot
     // (and right after an install) never shows a bogus 0%. The BQ27220 can need
     // a moment to report a valid state-of-charge, so retry briefly for non-zero.
     if (fuelGaugeOk) {
-        uint16_t soc = 0;
+        uint16_t soc = 0, raw = 0;
+        int tries = 0;
         for (int i = 0; i < 25; ++i) {                 // retry until a valid read
-            uint16_t v = fuelGauge.getStateOfCharge();
-            if (v >= 1 && v <= 100) { soc = v; break; }  // ignore 0 / 0xFFFF
+            ++tries;
+            raw = fuelGauge.getStateOfCharge();
+            if (raw >= 1 && raw <= 100) { soc = raw; break; }  // ignore 0 / 0xFFFF
             delay(20);
         }
         if (soc >= 1) {
@@ -247,6 +359,14 @@ void setup() {
                 s.batteryPercent = (uint8_t)soc;
                 s.charging = chg;
             });
+            diag::log("gauge: boot SOC %u%% after %d tr%s", soc, tries,
+                      tries == 1 ? "y" : "ies");
+        } else {
+            // The first frame will show "--%". Say so, and say what the gauge
+            // did answer: a steady 0x0000 or 0xFFFF here is the fingerprint of
+            // a dead/unresponsive gauge rather than a slow-to-settle one.
+            diag::log("gauge: NO valid boot SOC, last raw 0x%04x after %d tries",
+                      raw, tries);
         }
     }
     settings::begin();
@@ -402,6 +522,17 @@ bool board_read_power(uint16_t& mv, int16_t& ma) {
     ma = fuelGauge.getCurrent();
     i2cUnlock();
     return true;
+}
+
+bool board_gauge_report(char* out, size_t n) {
+    GaugeSnapshot g;
+    gaugeRead(g);                      // read even when init() failed — the raw
+    char detail[140];                  // registers are the evidence we want
+    gaugeDetail(g, detail, sizeof(detail));
+    snprintf(out, n, "soc %u%s %umV %dmA %u/%umAh %s %s", g.soc,
+             (g.soc >= 1 && g.soc <= 100) ? "%" : "% (INVALID)", g.mv, g.ma,
+             g.rc, g.fc, g.charging ? "charging" : "discharging", detail);
+    return fuelGaugeOk;
 }
 
 bool board_side_button_pressed() {
