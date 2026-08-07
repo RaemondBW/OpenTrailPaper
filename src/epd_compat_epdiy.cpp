@@ -83,4 +83,12 @@ void epdc_clear(int passes) {
     if (g_hl.back_fb) memset(g_hl.back_fb, 0xFF, (size_t)epd_width() / 2 * epd_height());
 }
 
+// epdiy has no dirty-rect scrub (computeDirtyRects is EPD_Painter's), so the
+// fallback is the whole-panel clear this backend always did. Keeping the
+// signature means the UI never has to know which backend it is on.
+void epdc_clear_dirty(int tolerance) {
+    (void)tolerance;
+    epdc_clear();
+}
+
 #endif  // ARDUINO && !USE_EPD_PAINTER
