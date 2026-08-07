@@ -876,7 +876,7 @@ static void drawAppIcon(int cx, int topY, int height, uint8_t* fb) {
 // from the optical centre, and the version anchors the foot. Only 0x00 and the
 // 0x22/0x33 greys are used — this panel renders 0x44 and lighter as plain white.
 void ui_render_boot_screen(const char* version, const char* const* lines,
-                           const bool* ok, int count, uint8_t* fb) {
+                           const int8_t* state, int count, uint8_t* fb) {
     const int W = epd_rotated_display_width();
     const int H = epd_rotated_display_height();
     epd_fill_rect({0, 0, W, H}, 0xFF, fb);
@@ -892,29 +892,45 @@ void ui_render_boot_screen(const char* version, const char* const* lines,
     int y = 572;
     for (int i = 0; i < count; ++i) {
         const int x = 132;
-        if (ok) {
-            if (ok[i]) {
-                for (int t = 0; t < 3; ++t) {              // tick
-                    epd_draw_line(x, y - 7 + t, x + 7, y + t, 0x00, fb);
-                    epd_draw_line(x + 7, y + t, x + 21, y - 20 + t, 0x00, fb);
-                }
-            } else {
-                for (int t = 0; t < 3; ++t) {              // cross
-                    epd_draw_line(x + t, y - 18, x + 18 + t, y, 0x00, fb);
-                    epd_draw_line(x + 18 + t, y - 18, x + t, y, 0x00, fb);
-                }
+        const int8_t st = state ? state[i] : BOOT_OK;
+        if (st == BOOT_OK) {
+            for (int t = 0; t < 3; ++t) {                  // tick
+                epd_draw_line(x, y - 7 + t, x + 7, y + t, 0x00, fb);
+                epd_draw_line(x + 7, y + t, x + 21, y - 20 + t, 0x00, fb);
             }
+        } else if (st == BOOT_FAIL) {
+            for (int t = 0; t < 3; ++t) {                  // cross
+                epd_draw_line(x + t, y - 18, x + 18 + t, y, 0x00, fb);
+                epd_draw_line(x + 18 + t, y - 18, x + t, y, 0x00, fb);
+            }
+        } else {
+            // In progress: a hollow ring, sized and seated to occupy the same
+            // box as the tick/cross so the label never shifts when it resolves.
+            // Grey rather than black — it reads as "not done yet" next to the
+            // solid black marks, and 0x22 is one of the four greys this panel
+            // actually renders.
+            // Three concentric rings, matching the 3 px stroke the tick and
+            // cross are built from — at 2 px it read noticeably lighter than the
+            // marks above it.
+            const int cxm = x + 10, cym = y - 9, r = 11;
+            for (int t = 0; t < 3; ++t)
+                epd_draw_circle(cxm, cym, r - t, 0x22, fb);
         }
         ui::text(&ArialBold_20, x + 44, y, lines[i], fb, EPD_DRAW_ALIGN_LEFT,
-                 ok && !ok[i] ? 0x00 : 0x22);
+                 st == BOOT_FAIL ? 0x00 : 0x22);
         y += 56;
     }
 
     // Foot: a track of steps done, then the version.
     const int barW = 300, barH = 6, barX = cx - barW / 2, barY = 846;
     epd_fill_rect({barX, barY, barW, barH}, 0x33, fb);
-    if (count > 0) {
-        int done = count > 4 ? 4 : count;                  // 4 steps in a boot
+    // Count only RESOLVED steps — a step that has merely started is what the bar
+    // is currently waiting on, so filling for it would race ahead of the truth.
+    int done = 0;
+    for (int i = 0; i < count; ++i)
+        if (!state || state[i] != BOOT_PENDING) ++done;
+    if (done > 0) {
+        if (done > 4) done = 4;                            // 4 steps in a boot
         epd_fill_rect({barX, barY, barW * done / 4, barH}, 0x00, fb);
     }
     ui::text(&ArialBold_14, cx, 894, version, fb, EPD_DRAW_ALIGN_CENTER, 0x22);

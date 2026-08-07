@@ -36,6 +36,21 @@ bool remount(const char* why);
 // once at boot, so any drop was permanent for the session.
 void retryMountIfNeeded();
 
+// Rebuild rides that a reset or power cut left half-written. MUST NOT be called
+// from setup(): the work is proportional to what is on the card and once blew
+// the interrupt watchdog, and a reset mid-recovery tears one more file, so the
+// next boot finds more work than the last — a boot loop with no escape short of
+// removing the card. The UI task calls this once it is running, before the SD
+// is offered to a USB host.
+void recoverRides();
+
+// True once after a card mounted later than boot did. Boot skips routes, the
+// map index and USB mass storage when the mount fails, and nothing used to
+// revisit that — so a card picked up by the retry above was mounted but
+// entirely unused (no maps, no routes) until the next reboot. The UI task
+// consumes this and re-runs that bring-up.
+bool consumeLateMount();
+
 // SD card info for the menu screen.
 bool sdMounted();
 int rideCount();

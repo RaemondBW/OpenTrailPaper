@@ -1,0 +1,66 @@
+[opened /dev/cu.usbmodem3C8427EEA3582]
+
+[main] e-paper bike computer booting
+[+1s] boot firmware v0.88 (reset: power-on / power-loss [1])
+[+1s] cpu 240 MHz
+[  1105][W][Wire.cpp:301] begin(): Bus already started in Master Mode.
+(230) Checking chosen profile
+(244) Checking data memory
+[+1s] gauge: init ok, device 0x0220 (expect 0x0220)
+[+1s] gauge: boot SOC 91% after 1 try
+[  1360][E][Preferences.cpp:460] getString(): nvs_get_str len fail: sens_cad NOT_FOUND
+[  1364][E][Preferences.cpp:460] getString(): nvs_get_str len fail: snm_cad NOT_FOUND
+[cfg] ftp=300W tz=-420min sensors=[de:16:0b:2f:f7:eb|da:6a:a5:0e:6f:b0|]
+[epdc] heap before: internal=207896 (largest 180212) psram=8337127
+[epdc] fastbuffer->PSRAM: reserved 131060 internal, largest now 49140 (need >129600 to stay internal)
+[  1394][W][EPD_Painter.cpp:765] begin(): [EPD] packed_fastbuffer: internal alloc failed, retrying in PSRAM
+[epdc] ready: 4 grey levels, internal left=177776 psram left=7040847
+[ui] 1454 ms: panel up
+[ui] 1455 ms: backlight
+[  1455][W][Wire.cpp:301] begin(): Bus already started in Master Mode.
+[ui] 1502 ms: touch
+[ui] 1502 ms: about to clear x4
+[epdc] clear 0/4 enter (1503 ms)
+[epdc] clear 0/4 done (1917 ms)
+[epdc] clear 1/4 enter (1917 ms)
+[epdc] clear 1/4 done (2115 ms)
+[epdc] clear 2/4 enter (2115 ms)
+[epdc] clear 2/4 done (2313 ms)
+[epdc] clear 3/4 enter (2313 ms)
+[epdc] clear 3/4 done (2511 ms)
+[ui] 2511 ms: cleared
+[ui] 2511 ms: buffers
+[  3089][W][sd_diskio.cpp:180] sdCommand(): crc error
+[  3199][W][sd_diskio.cpp:186] sdCommand(): token error [0] 0x5
+[  3203][W][sd_diskio.cpp:516] ff_sd_initialize(): GO_IDLE_STATE failed
+[  3205][E][sd_diskio.cpp:805] sdcard_mount(): f_mount failed: (3) The physical drive cannot work
+[+3s] [rec] SD.begin failed @4MHz (settle 0ms)
+[rec] SD ready, 30412 MB free
+[02:43:14] rtc: clock restored (1785984194)
+[gps] CASIC/L76K initialized @9600
+[02:43:16] gps module: CASIC
+[gps] CASIC AID-INI: 37.53425,-122.33279 time=1
+[02:43:16] gps aiding (CASIC): 37.5343,-122.3328 time=1
+[02:43:16] gps warm-start seed: 37.5343,-122.3328 time=1
+[02:43:21] map: 104 tiles indexed
+[02:43:21] map: 0 whole maps indexed
+[ui] 10597 ms: map loaded — begin() done
+[main] 10598 ms: ui_dashboard done -> ble_sensors::begin() (internal=171504 largest=131060)
+[main] 10644 ms: ble_sensors done -> ble_server::begin() (internal=122336 largest=110580)
+[srv] GATT server advertising as BikeGPS
+[main] 10650 ms: ble_server done -> power_mgmt::begin() (internal=119488 largest=110580)
+[02:43:21] pm: esp_pm_configure(min=max=240, light_sleep=1) -> ESP_OK
+[main] 10651 ms: power_mgmt done -> creating tasks (internal=105928 largest=94196)
+[gpsdbg] --- GPS telemetry on. module=CASIC rxbuf=1024 echo=0 ---
+[gpsdbg] legend: type(0none/2=2D/3=3D) sats=inUse/inView snr=best C/N0 dB-Hz  ck=ok/bad  aid=count(pos|pos+time)
+[02:43:21] gps module: CASIC
+[gpsdbg t=0s] SRCH type=1 sats=0/11 snr=0 hdop=1.9 pdop=4.2 vdop=3.7 chars=1144 ck=27/2 wfix=0 locAge=-1ms sys=02:43:21 gps=02:43:19 aid=1x pos+time
+[main] all tasks started
+[02:43:21] pm: BT modem sleep on (phone gone)
+[02:43:21] ride recovered: /rides/20260804-171653.fit — 22.27 km, 915 s (882 pts)
+[02:43:21] battery: 91% 4195mV 1223mA 1359/1500mAh charging 42.6C soh 100 dc 1500mAh batt 0x4128 pres op 0x00a6 init sec3
+[gpsdbg t=1s] SRCH type=1 sats=0/11 snr=0 hdop=1.9 pdop=4.2 vdop=3.7 chars=1735 ck=42/2 wfix=0 locAge=-1ms sys=02:43:22 gps=02:43:23 aid=1x pos+time
+[gpsdbg t=2s] SRCH type=1 sats=0/11 snr=0 hdop=1.9 pdop=4.2 vdop=3.7 chars=2327 ck=57/2 wfix=0 locAge=-1ms sys=02:43:23 gps=02:43:24 aid=1x pos+time
+[gpsdbg t=3s] SRCH type=1 sats=0/11 snr=0 hdop=1.9 pdop=4.2 vdop=3.7 chars=2919 ck=72/2 wfix=0 locAge=-1ms sys=02:43:24 gps=02:43:25 aid=1x pos+time
+[gpsdbg t=4s] SRCH type=1 sats=0/11 snr=0 hdop=1.9 pdop=4.2 vdop=3.7 chars=3510 ck=87/2 wfix=0 locAge=-1ms sys=02:43:25 gps=02:43:26 aid=1x pos+time
+[02:43:25] gps searching: chars=3518 ck=88/2 sats=0/11 snr=0 hdop=1.9

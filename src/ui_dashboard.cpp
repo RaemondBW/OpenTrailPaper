@@ -869,7 +869,7 @@ namespace ui_dashboard {
 // we control, and a boot screen that can fail to allocate is worse than none.
 namespace {
 const char* bootLines[6];
-bool        bootOk[6];
+int8_t      bootState[6];
 int         bootCount = 0;
 bool        bootScreenLive = false;
 }
@@ -943,19 +943,53 @@ bool beginPanel() {
     return true;
 }
 
-// Append a step to the boot screen and repaint. Safe to call before beginPanel()
-// (no-op) and after the dashboard takes over (also no-op, via bootScreenLive).
-void bootStatus(const char* step, bool ok) {
-    if (!bootScreenLive || bootCount >= (int)(sizeof(bootLines) / sizeof(*bootLines)))
-        return;
-    bootLines[bootCount] = step;
-    bootOk[bootCount] = ok;
-    ++bootCount;
+namespace {
+// Repaint the boot screen from the current step table. Safe before beginPanel()
+// (no framebuffer yet) and after the dashboard takes over (bootScreenLive).
+void bootRepaint() {
+    if (!bootScreenLive) return;
     uint8_t* fb = epdc_framebuffer();
     if (!fb) return;
-    ui_render_boot_screen(FIRMWARE_VERSION, bootLines, bootOk, bootCount, fb);
+    ui_render_boot_screen(FIRMWARE_VERSION, bootLines, bootState, bootCount, fb);
     epdc_paint();
     if (shadowFb) memcpy(shadowFb, fb, fbSize);   // keep the delta engine honest
+}
+
+// Index of `step` in the table, or -1. Compared by pointer first since every
+// caller passes the same string literal, with a strcmp fallback.
+int bootFind(const char* step) {
+    for (int i = 0; i < bootCount; ++i)
+        if (bootLines[i] == step || strcmp(bootLines[i], step) == 0) return i;
+    return -1;
+}
+}  // namespace
+
+// Announce a step that is ABOUT to run, so the glass shows what the device is
+// working on rather than sitting on the previous step until this one finishes.
+// Matters most for the SD mount, which can take seconds and used to look like a
+// freeze. Pair every bootStep() with a bootStatus() carrying the same literal.
+void bootStep(const char* step) {
+    if (!bootScreenLive || bootFind(step) >= 0) return;
+    if (bootCount >= (int)(sizeof(bootLines) / sizeof(*bootLines))) return;
+    bootLines[bootCount] = step;
+    bootState[bootCount] = BOOT_PENDING;
+    ++bootCount;
+    bootRepaint();
+}
+
+// Resolve a step to a tick or a cross. Updates the pending line in place when
+// bootStep() announced it, otherwise appends a completed one (so callers that
+// never announce still work).
+void bootStatus(const char* step, bool ok) {
+    if (!bootScreenLive) return;
+    int i = bootFind(step);
+    if (i < 0) {
+        if (bootCount >= (int)(sizeof(bootLines) / sizeof(*bootLines))) return;
+        i = bootCount++;
+        bootLines[i] = step;
+    }
+    bootState[i] = ok ? BOOT_OK : BOOT_FAIL;
+    bootRepaint();
 }
 
 bool begin() {
@@ -1219,6 +1253,11 @@ void task(void*) {
     lastActivityMs = millis();
     int lastUpdatePct = -100, lastUpdatePhase = -1;
 
+    // Ride recovery runs HERE, not in setup(). It is unbounded card work — it
+    // once ran long enough to trip the interrupt watchdog, and since a reset
+    // mid-recovery tears another file, every reboot found more to do than the
+    // last. Off the boot path a slow recovery costs time, not a brick.
+    ride_recorder::recoverRides();
     applySdUpdate();          // flash a firmware.bin from the SD card, if present
     usb_storage::begin();     // THEN expose the SD to a host computer over USB
     bool lastHostActive = false;
@@ -1232,6 +1271,20 @@ void task(void*) {
             map_store::rescanCard();   // it may have added/removed maps too
         }
         lastHostActive = host;
+
+        // A card that only mounted after boot had given up: setup() skipped the
+        // routes, the map index and the USB drive, and nothing revisited them, so
+        // the card stayed mounted-but-unused for the whole session. Run that
+        // bring-up now. It happens here, in the UI task, because the map cache is
+        // this task's alone — doing it from loop() would race the renderer.
+        if (ride_recorder::consumeLateMount()) {
+            diag::log("sd: late mount — loading routes/maps, exposing USB drive");
+            ride_recorder::recoverRides();
+            routes::begin();
+            map_store::rescanCard();
+            applySdUpdate();      // a firmware.bin may have been on the card
+            usb_storage::begin(); // no-op if it already came up
+        }
 
         // Terrain elevation from the map DEM at the current position.
         // Only the UI task touches the tile cache, so this stays race-free with

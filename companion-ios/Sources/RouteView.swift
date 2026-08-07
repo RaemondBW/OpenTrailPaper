@@ -12,6 +12,9 @@ struct RouteView: View {
     @State private var visibleRegion: MKCoordinateRegion?
     @State private var einkAreas: [EInkArea] = []
     @State private var outlineHexes: [OutlineHex] = []
+    /// Whether the planned route leaves the downloaded coverage. Hexagons are
+    /// only worth showing when it does — see `visibleOutlines`.
+    @State private var routeLeavesCoverage = false
 
     var body: some View {
         NavigationStack {
@@ -22,7 +25,7 @@ struct RouteView: View {
                 // the device actually carries.
                 EInkMapView(
                     areas: einkAreas,
-                    outlines: outlineHexes,
+                    outlines: visibleOutlines,
                     route: model.route?.polyline,
                     destination: model.destination.map {
                         MapDestination(name: model.destinationName, coordinate: $0)
@@ -90,9 +93,23 @@ struct RouteView: View {
             .onChange(of: model.destinationName) {
                 ble.routeSent = false; ble.routeReceived = false
             }
-            .onChange(of: store.version) { refreshEInk() }
-            .onChange(of: ble.deviceTileIds) { refreshEInk() }
+            .onChange(of: store.version) { refreshEInk(); recomputeCoverage() }
+            .onChange(of: ble.deviceTileIds) { refreshEInk(); recomputeCoverage() }
+            // The route itself is the trigger that matters: a new route can walk
+            // straight off the downloaded area, and clearing one must take the
+            // hexagons away again.
+            .onChange(of: model.route) { recomputeCoverage() }
         }
+    }
+
+    /// Bare hexagons are noise on this screen. Areas the phone can actually draw
+    /// still render in the device's ink; the outline fallback only earns its
+    /// place when it answers a question the user is asking — "will I ride off
+    /// the edge of my maps?" So it appears only once a route does exactly that,
+    /// and then it shows where the coverage ends. The Maps screen keeps its
+    /// outlines unconditionally: picking areas to download needs the grid.
+    private var visibleOutlines: [OutlineHex] {
+        routeLeavesCoverage ? outlineHexes : []
     }
 
     /// Ask the store what to draw for the region now on screen.
@@ -101,6 +118,32 @@ struct RouteView: View {
         let content = store.visibleContent(in: r, synced: ble.deviceTileIds)
         einkAreas = content.areas
         outlineHexes = content.outlines
+    }
+
+    /// Does the route pass through ground no downloaded area covers?
+    ///
+    /// Tested against the H3 cell of each route point rather than the hexes
+    /// currently on screen: coverage is a property of the whole route, not of
+    /// the part the camera happens to frame, so panning must not change the
+    /// answer. `store.ids` is what the phone holds, `deviceTileIds` what the
+    /// head unit holds — riding into either is covered, since the device draws
+    /// from its own card.
+    private func recomputeCoverage() {
+        guard let coords = model.route?.polyline.coordinates, !coords.isEmpty else {
+            routeLeavesCoverage = false   // no route, nothing to warn about
+            return
+        }
+        let covered = store.ids.union(ble.deviceTileIds)
+        guard !covered.isEmpty else {
+            // Nothing downloaded at all. There are no hexagons to reveal, so
+            // flagging this would only add a redundant state.
+            routeLeavesCoverage = false
+            return
+        }
+        routeLeavesCoverage = coords.contains { c in
+            guard let id = H3Tiles.id(at: c) else { return false }
+            return !covered.contains(id)
+        }
     }
 
     // "Route" title pill, floated top-left below the status bar.

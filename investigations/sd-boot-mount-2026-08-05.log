@@ -1,0 +1,146 @@
+
+[PORT APPEARED /dev/cu.usbmodem2101 @ 230.5s]
+
+[PORT GONE /dev/cu.usbmodem2101 @ 231.2s]
+
+[PORT APPEARED /dev/cu.usbmodem3C8427EEA3582 @ 233.2s]
+[+2s] [rec] SD.begin failed @4MHz cardType=NONE size=0MB
+[+2s] [rec] SD.begin failed @4MHz cardType=NONE size=0MB
+[+2s] [rec] SD.begin failed @1MHz cardType=NONE size=0MB
+[rec] SD mount failed — recording disabled
+[02:13:45] rtc: clock restored (1785982425)
+[gps] CASIC/L76K initialized @9600
+[02:13:47] gps module: CASIC
+[gps] CASIC AID-INI: 37.53425,-122.33279 time=1
+[02:13:47] gps aiding (CASIC): 37.5343,-122.3328 time=1
+[02:13:47] gps warm-start seed: 37.5343,-122.3328 time=1
+[02:13:47] map: 0 tiles indexed
+[02:13:47] map: 0 whole maps indexed
+[srv] GATT server advertising as BikeGPS
+[02:13:47] pm: esp_pm_configure(min=max=240, light_sleep=1) -> ESP_OK
+[gpsdbg] --- GPS telemetry on. module=CASIC rxbuf=1024 echo=0 ---
+[gpsdbg] legend: type(0none/2=2D/3=3D) sats=inUse/inView snr=best C/N0 dB-Hz  ck=ok/bad  aid=count(pos|pos+time)
+[02:13:47] gps module: CASIC
+[gpsdbg t=0s] SRCH type=1 sats=0/9 snr=0 hdop=1.9 pdop=4.2 vdop=3.7 chars=326 ck=6/0 wfix=0 locAge=-1ms sys=02:13:47 gps=02:13:49 aid=1x pos+time
+[main] all tasks started
+[02:13:47] battery: 36% 3960mV 2054mA 527/1500mAh charging 46.8C soh 100 dc 1500mAh batt 0x4128 pres op 0x00a6 init sec3
+[02:13:47] [rec] SD.begin failed @4MHz cardType=NONE size=0MB
+[02:13:48] sd: card back after 1 retry
+[02:13:48] pm: BT modem sleep on (phone gone)
+[gpsdbg t=1s] SRCH type=1 sats=0/9 snr=0 hdop=1.9 pdop=4.2 vdop=3.7 chars=914 ck=22/0 wfix=0 locAge=-1ms sys=02:13:48 gps=02:13:50 aid=1x pos+time
+[gpsdbg t=2s] SRCH type=1 sats=0/9 snr=0 hdop=1.9 pdop=4.2 vdop=3.7 chars=1485 ck=37/0 wfix=0 locAge=-1ms sys=02:13:49 gps=02:13:51 aid=1x pos+time
+[gpsdbg t=3s] SRCH type=1 sats=0/9 snr=0 hdop=1.9 pdop=4.2 vdop=3.7 chars=2046 ck=53/0 wfix=0 locAge=-1ms sys=02:13:50 gps=02:13:52 aid=1x pos+time
+[gpsdbg t=4s] SRCH type=1 sats=0/9 snr=0 hdop=1.9 pdop=4.2 vdop=3.7 chars=2607 ck=68/0 wfix=0 locAge=-1ms sys=02:13:51 gps=02:13:53 aid=1x pos+time
+[gpsdbg t=5s] SRCH type=1 sats=0/9 snr=0 hdop=1.9 pdop=4.2 vdop=3.7 chars=3169 ck=83/0 wfix=0 locAge=-1ms sys=02:13:52 gps=02:13:54 aid=1x pos+time
+[gpsdbg t=6s] SRCH type=1 sats=0/9 snr=0 hdop=1.9 pdop=4.2 vdop=3.7 chars=3729 ck=98/0 wfix=0 locAge=-1ms sys=02:13:53 gps=02:13:55 aid=1x pos+time
+[gpsdbg t=7s] SRCH type=1 sats=0/9 snr=0 hdop=1.9 pdop=4.2 vdop=3.7 chars=4290 ck=113/0 wfix=0 locAge=-1ms sys=02:13:54 gps=02:13:56 aid=1x pos+time
+[gpsdbg t=8s] SRCH type=1 sats=0/9 snr=0 hdop=1.9 pdop=4.2 vdop=3.7 chars=4852 ck=128/0 wfix=0 locAge=-1ms sys=02:13:55 gps=02:13:57 aid=1x pos+time
+[gpsdbg t=9s] SRCH type=1 sats=0/9 snr=0 hdop=1.9 pdop=4.2 vdop=3.7 chars=5414 ck=143/0 wfix=0 locAge=-1ms sys=02:13:56 gps=02:13:58 aid=1x pos+time
+[02:13:57] gps searching: chars=5614 ck=150/0 sats=0/9 snr=0 hdop=1.9
+[gpsdbg t=10s] SRCH type=1 sats=0/9 snr=0 hdop=1.9 pdop=4.2 vdop=3.7 chars=5975 ck=158/0 wfix=0 locAge=-1ms sys=02:13:57 gps=02:13:59 aid=1x pos+time
+[gpsdbg t=11s] SRCH type=1 sats=0/9 snr=0 hdop=1.9 pdop=4.2 vdop=3.7 chars=6544 ck=173/0 wfix=0 locAge=-1ms sys=02:13:58 gps=02:14:00 aid=1x pos+time
+[gpsdbg t=12s] SRCH type=1 sats=0/9 snr=0 hdop=1.9 pdop=4.2 vdop=3.7 chars=7108 ck=189/0 wfix=0 locAge=-1ms sys=02:13:59 gps=02:14:01 aid=1x pos+time
+[gpsdbg t=13s] SRCH type=1 sats=0/9 snr=0 hdop=1.9 pdop=4.2 vdop=3.7 chars=7671 ck=204/0 wfix=0 locAge=-1ms sys=02:14:00 gps=02:14:02 aid=1x pos+time
+[gpsdbg t=14s] SRCH type=1 sats=0/9 snr=0 hdop=1.9 pdop=4.2 vdop=3.7 chars=8233 ck=219/0 wfix=0 locAge=-1ms sys=02:14:01 gps=02:14:03 aid=1x pos+time
+[gpsdbg t=15s] SRCH type=1 sats=0/9 snr=0 hdop=1.9 pdop=4.2 vdop=3.7 chars=8795 ck=234/0 wfix=0 locAge=-1ms sys=02:14:02 gps=02:14:04 aid=1x pos+time
+[gpsdbg t=16s] SRCH type=1 sats=0/9 snr=0 hdop=1.9 pdop=4.2 vdop=3.7 chars=9356 ck=249/0 wfix=0 locAge=-1ms sys=02:14:03 gps=02:14:05 aid=1x pos+time
+[gpsdbg t=17s] SRCH type=1 sats=0/9 snr=0 hdop=1.9 pdop=4.2 vdop=3.7 chars=9919 ck=264/0 wfix=0 locAge=-1ms sys=02:14:04 gps=02:14:06 aid=1x pos+time
+[gpsdbg t=18s] SRCH type=1 sats=0/9 snr=0 hdop=1.9 pdop=4.2 vdop=3.7 chars=10482 ck=279/0 wfix=0 locAge=-1ms sys=02:14:05 gps=02:14:07 aid=1x pos+time
+[gpsdbg t=19s] SRCH type=1 sats=0/9 snr=0 hdop=1.9 pdop=4.2 vdop=3.7 chars=11045 ck=294/0 wfix=0 locAge=-1ms sys=02:14:06 gps=02:14:08 aid=1x pos+time
+[gpsdbg t=20s] SRCH type=1 sats=0/9 snr=0 hdop=1.9 pdop=4.2 vdop=3.7 chars=11609 ck=310/0 wfix=0 locAge=-1ms sys=02:14:07 gps=02:14:09 aid=1x pos+time
+[gpsdbg t=21s] SRCH type=1 sats=0/9 snr=0 hdop=1.9 pdop=4.2 vdop=3.7 chars=12170 ck=325/0 wfix=0 locAge=-1ms sys=02:14:08 gps=02:14:10 aid=1x pos+time
+[gpsdbg t=22s] SRCH type=1 sats=0/9 snr=0 hdop=1.9 pdop=4.2 vdop=3.7 chars=12731 ck=340/0 wfix=0 locAge=-1ms sys=02:14:09 gps=02:14:11 aid=1x pos+time
+[gpsdbg t=23s] SRCH type=1 sats=0/9 snr=0 hdop=1.9 pdop=4.2 vdop=3.7 chars=13292 ck=355/0 wfix=0 locAge=-1ms sys=02:14:10 gps=02:14:12 aid=1x pos+time
+[gpsdbg t=24s] SRCH type=1 sats=0/9 snr=0 hdop=1.9 pdop=4.2 vdop=3.7 chars=13855 ck=370/0 wfix=0 locAge=-1ms sys=02:14:11 gps=02:14:13 aid=1x pos+time
+[02:14:12] gps searching: chars=14014 ck=375/0 sats=0/9 snr=0 hdop=1.9
+[gpsdbg t=25s] SRCH type=1 sats=0/9 snr=0 hdop=1.9 pdop=4.2 vdop=3.7 chars=14418 ck=385/0 wfix=0 locAge=-1ms sys=02:14:12 gps=02:14:14 aid=1x pos+time
+[gpsdbg t=26s] SRCH type=1 sats=0/9 snr=0 hdop=1.9 pdop=4.2 vdop=3.7 chars=14979 ck=400/0 wfix=0 locAge=-1ms sys=02:14:13 gps=02:14:15 aid=1x pos+time
+[gpsdbg t=27s] SRCH type=1 sats=0/9 snr=0 hdop=1.9 pdop=4.2 vdop=3.7 chars=15541 ck=415/0 wfix=0 locAge=-1ms sys=02:14:14 gps=02:14:16 aid=1x pos+time
+[gpsdbg t=28s] SRCH type=1 sats=0/9 snr=0 hdop=1.9 pdop=4.2 vdop=3.7 chars=16102 ck=430/0 wfix=0 locAge=-1ms sys=02:14:15 gps=02:14:17 aid=1x pos+time
+[gpsdbg t=29s] SRCH type=1 sats=0/9 snr=0 hdop=1.9 pdop=4.2 vdop=3.7 chars=16663 ck=445/0 wfix=0 locAge=-1ms sys=02:14:16 gps=02:14:18 aid=1x pos+time
+[gpsdbg t=30s] SRCH type=1 sats=0/9 snr=0 hdop=1.9 pdop=4.2 vdop=3.7 chars=17226 ck=460/0 wfix=0 locAge=-1ms sys=02:14:17 gps=02:14:19 aid=1x pos+time
+[gpsdbg t=31s] SRCH type=1 sats=0/9 snr=0 hdop=1.9 pdop=4.2 vdop=3.7 chars=17794 ck=475/0 wfix=0 locAge=-1ms sys=02:14:18 gps=02:14:20 aid=1x pos+time
+[gpsdbg t=32s] SRCH type=1 sats=0/9 snr=0 hdop=1.9 pdop=4.2 vdop=3.7 chars=18362 ck=490/0 wfix=0 locAge=-1ms sys=02:14:19 gps=02:14:21 aid=1x pos+time
+[gpsdbg t=33s] SRCH type=1 sats=0/9 snr=0 hdop=1.9 pdop=4.2 vdop=3.7 chars=18924 ck=505/0 wfix=0 locAge=-1ms sys=02:14:20 gps=02:14:22 aid=1x pos+time
+[gpsdbg t=34s] SRCH type=1 sats=0/10 snr=0 hdop=1.9 pdop=4.2 vdop=3.7 chars=19486 ck=520/0 wfix=0 locAge=-1ms sys=02:14:21 gps=02:14:23 aid=1x pos+time
+[gpsdbg t=35s] SRCH type=1 sats=0/10 snr=30 hdop=1.9 pdop=4.2 vdop=3.7 chars=20054 ck=535/0 wfix=0 locAge=-1ms sys=02:14:22 gps=02:14:24 aid=1x pos+time
+[gpsdbg t=36s] SRCH type=1 sats=0/10 snr=30 hdop=1.9 pdop=4.2 vdop=3.7 chars=20623 ck=550/0 wfix=0 locAge=-1ms sys=02:14:23 gps=02:14:25 aid=1x pos+time
+[gpsdbg t=37s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=21193 ck=566/0 wfix=0 locAge=-1ms sys=02:14:24 gps=02:14:26 aid=1x pos+time
+[gpsdbg t=38s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=21754 ck=581/0 wfix=0 locAge=-1ms sys=02:14:25 gps=02:14:27 aid=1x pos+time
+[gpsdbg t=39s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=22316 ck=596/0 wfix=0 locAge=-1ms sys=02:14:26 gps=02:14:28 aid=1x pos+time
+[02:14:27] gps searching: chars=22438 ck=600/0 sats=0/9 snr=29 hdop=1.9
+[gpsdbg t=40s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=22878 ck=611/0 wfix=0 locAge=-1ms sys=02:14:27 gps=02:14:29 aid=1x pos+time
+[gpsdbg t=41s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=23440 ck=626/0 wfix=0 locAge=-1ms sys=02:14:28 gps=02:14:30 aid=1x pos+time
+[gpsdbg t=42s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=24001 ck=641/0 wfix=0 locAge=-1ms sys=02:14:29 gps=02:14:31 aid=1x pos+time
+[gpsdbg t=43s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=24562 ck=656/0 wfix=0 locAge=-1ms sys=02:14:30 gps=02:14:32 aid=1x pos+time
+[gpsdbg t=44s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=25123 ck=671/0 wfix=0 locAge=-1ms sys=02:14:31 gps=02:14:33 aid=1x pos+time
+[gpsdbg t=45s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=25685 ck=686/0 wfix=0 locAge=-1ms sys=02:14:32 gps=02:14:34 aid=1x pos+time
+[gpsdbg t=46s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=26246 ck=701/0 wfix=0 locAge=-1ms sys=02:14:33 gps=02:14:35 aid=1x pos+time
+[gpsdbg t=47s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=26807 ck=716/0 wfix=0 locAge=-1ms sys=02:14:34 gps=02:14:36 aid=1x pos+time
+[gpsdbg t=48s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=27369 ck=731/0 wfix=0 locAge=-1ms sys=02:14:35 gps=02:14:37 aid=1x pos+time
+[gpsdbg t=49s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=27930 ck=746/0 wfix=0 locAge=-1ms sys=02:14:36 gps=02:14:38 aid=1x pos+time
+[gpsdbg t=50s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=28491 ck=761/0 wfix=0 locAge=-1ms sys=02:14:37 gps=02:14:39 aid=1x pos+time
+[gpsdbg t=51s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=29053 ck=776/0 wfix=0 locAge=-1ms sys=02:14:38 gps=02:14:40 aid=1x pos+time
+[gpsdbg t=52s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=29615 ck=792/0 wfix=0 locAge=-1ms sys=02:14:39 gps=02:14:41 aid=1x pos+time
+[gpsdbg t=53s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=30177 ck=807/0 wfix=0 locAge=-1ms sys=02:14:40 gps=02:14:42 aid=1x pos+time
+[gpsdbg t=54s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=30737 ck=822/0 wfix=0 locAge=-1ms sys=02:14:41 gps=02:14:43 aid=1x pos+time
+[02:14:43] gps searching: chars=30838 ck=825/0 sats=0/9 snr=29 hdop=1.9
+[gpsdbg t=55s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=31299 ck=837/0 wfix=0 locAge=-1ms sys=02:14:43 gps=02:14:44 aid=1x pos+time
+[gpsdbg t=56s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=31860 ck=852/0 wfix=0 locAge=-1ms sys=02:14:44 gps=02:14:45 aid=1x pos+time
+[gpsdbg t=57s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=32422 ck=867/0 wfix=0 locAge=-1ms sys=02:14:45 gps=02:14:46 aid=1x pos+time
+[gpsdbg t=58s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=32983 ck=882/0 wfix=0 locAge=-1ms sys=02:14:46 gps=02:14:47 aid=1x pos+time
+[gpsdbg t=59s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=33544 ck=897/0 wfix=0 locAge=-1ms sys=02:14:47 gps=02:14:48 aid=1x pos+time
+[gpsdbg t=60s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=34104 ck=912/0 wfix=0 locAge=-1ms sys=02:14:48 gps=02:14:49 aid=1x pos+time
+[gpsdbg t=61s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=34672 ck=927/0 wfix=0 locAge=-1ms sys=02:14:49 gps=02:14:50 aid=1x pos+time
+[gpsdbg t=62s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=35233 ck=942/0 wfix=0 locAge=-1ms sys=02:14:50 gps=02:14:51 aid=1x pos+time
+[gpsdbg t=63s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=35795 ck=957/0 wfix=0 locAge=-1ms sys=02:14:51 gps=02:14:52 aid=1x pos+time
+[gpsdbg t=64s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=36355 ck=972/0 wfix=0 locAge=-1ms sys=02:14:52 gps=02:14:53 aid=1x pos+time
+[gpsdbg t=65s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=36916 ck=987/0 wfix=0 locAge=-1ms sys=02:14:53 gps=02:14:54 aid=1x pos+time
+[gpsdbg t=66s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=37478 ck=1002/0 wfix=0 locAge=-1ms sys=02:14:54 gps=02:14:55 aid=1x pos+time
+[gpsdbg t=67s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=38039 ck=1017/0 wfix=0 locAge=-1ms sys=02:14:55 gps=02:14:56 aid=1x pos+time
+[gpsdbg t=68s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=38600 ck=1032/0 wfix=0 locAge=-1ms sys=02:14:56 gps=02:14:57 aid=1x pos+time
+[gpsdbg t=69s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=39161 ck=1047/0 wfix=0 locAge=-1ms sys=02:14:57 gps=02:14:58 aid=1x pos+time
+[02:14:58] gps searching: chars=39238 ck=1050/0 sats=0/9 snr=29 hdop=1.9
+[gpsdbg t=70s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=39723 ck=1062/0 wfix=0 locAge=-1ms sys=02:14:58 gps=02:14:59 aid=1x pos+time
+[gpsdbg t=71s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=40284 ck=1077/0 wfix=0 locAge=-1ms sys=02:14:59 gps=02:15:00 aid=1x pos+time
+[gpsdbg t=72s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=40868 ck=1093/0 wfix=0 locAge=-1ms sys=02:15:00 gps=02:15:01 aid=1x pos+time
+[gpsdbg t=73s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=41429 ck=1108/0 wfix=0 locAge=-1ms sys=02:15:01 gps=02:15:02 aid=1x pos+time
+[gpsdbg t=74s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=41990 ck=1123/0 wfix=0 locAge=-1ms sys=02:15:02 gps=02:15:03 aid=1x pos+time
+[gpsdbg t=75s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=42551 ck=1138/0 wfix=0 locAge=-1ms sys=02:15:03 gps=02:15:04 aid=1x pos+time
+[gpsdbg t=76s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=43113 ck=1153/0 wfix=0 locAge=-1ms sys=02:15:04 gps=02:15:05 aid=1x pos+time
+[gpsdbg t=77s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=43675 ck=1168/0 wfix=0 locAge=-1ms sys=02:15:05 gps=02:15:06 aid=1x pos+time
+[gpsdbg t=78s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=44236 ck=1183/0 wfix=0 locAge=-1ms sys=02:15:06 gps=02:15:07 aid=1x pos+time
+[gpsdbg t=79s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=44797 ck=1198/0 wfix=0 locAge=-1ms sys=02:15:07 gps=02:15:08 aid=1x pos+time
+[gpsdbg t=80s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=45358 ck=1213/0 wfix=0 locAge=-1ms sys=02:15:08 gps=02:15:09 aid=1x pos+time
+[gpsdbg t=81s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=45919 ck=1228/0 wfix=0 locAge=-1ms sys=02:15:09 gps=02:15:10 aid=1x pos+time
+[gpsdbg t=82s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=46480 ck=1243/0 wfix=0 locAge=-1ms sys=02:15:10 gps=02:15:11 aid=1x pos+time
+[gpsdbg t=83s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=47040 ck=1258/0 wfix=0 locAge=-1ms sys=02:15:11 gps=02:15:12 aid=1x pos+time
+[gpsdbg t=84s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=47602 ck=1273/0 wfix=0 locAge=-1ms sys=02:15:12 gps=02:15:13 aid=1x pos+time
+[02:15:13] gps searching: chars=47638 ck=1275/0 sats=0/9 snr=29 hdop=1.9
+[gpsdbg t=85s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=48168 ck=1289/0 wfix=0 locAge=-1ms sys=02:15:13 gps=02:15:14 aid=1x pos+time
+[gpsdbg t=86s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=48740 ck=1304/0 wfix=0 locAge=-1ms sys=02:15:14 gps=02:15:15 aid=1x pos+time
+[gpsdbg t=87s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=49318 ck=1320/0 wfix=0 locAge=-1ms sys=02:15:15 gps=02:15:16 aid=1x pos+time
+[gpsdbg t=88s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=49878 ck=1335/0 wfix=0 locAge=-1ms sys=02:15:16 gps=02:15:17 aid=1x pos+time
+[gpsdbg t=89s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=50438 ck=1350/0 wfix=0 locAge=-1ms sys=02:15:17 gps=02:15:18 aid=1x pos+time
+[gpsdbg t=90s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=50998 ck=1365/0 wfix=0 locAge=-1ms sys=02:15:18 gps=02:15:19 aid=1x pos+time
+[gpsdbg t=91s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=51558 ck=1380/0 wfix=0 locAge=-1ms sys=02:15:19 gps=02:15:20 aid=1x pos+time
+[gpsdbg t=92s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=52118 ck=1395/0 wfix=0 locAge=-1ms sys=02:15:20 gps=02:15:21 aid=1x pos+time
+[gpsdbg t=93s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=52678 ck=1410/0 wfix=0 locAge=-1ms sys=02:15:21 gps=02:15:22 aid=1x pos+time
+[gpsdbg t=94s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=53238 ck=1425/0 wfix=0 locAge=-1ms sys=02:15:22 gps=02:15:23 aid=1x pos+time
+[gpsdbg t=95s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=53798 ck=1440/0 wfix=0 locAge=-1ms sys=02:15:23 gps=02:15:24 aid=1x pos+time
+[gpsdbg t=96s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=54358 ck=1455/0 wfix=0 locAge=-1ms sys=02:15:24 gps=02:15:25 aid=1x pos+time
+[gpsdbg t=97s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=54918 ck=1470/0 wfix=0 locAge=-1ms sys=02:15:25 gps=02:15:26 aid=1x pos+time
+[gpsdbg t=98s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=55478 ck=1485/0 wfix=0 locAge=-1ms sys=02:15:26 gps=02:15:27 aid=1x pos+time
+[gpsdbg t=99s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=56038 ck=1500/0 wfix=0 locAge=-1ms sys=02:15:27 gps=02:15:28 aid=1x pos+time
+[02:15:28] gps searching: chars=56062 ck=1500/0 sats=0/9 snr=29 hdop=1.9
+[gpsdbg t=100s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=56598 ck=1515/0 wfix=0 locAge=-1ms sys=02:15:28 gps=02:15:29 aid=1x pos+time
+[gpsdbg t=101s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=57158 ck=1530/0 wfix=0 locAge=-1ms sys=02:15:29 gps=02:15:30 aid=1x pos+time
+[gpsdbg t=102s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=57718 ck=1545/0 wfix=0 locAge=-1ms sys=02:15:30 gps=02:15:31 aid=1x pos+time
+[gpsdbg t=103s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=58278 ck=1560/0 wfix=0 locAge=-1ms sys=02:15:31 gps=02:15:32 aid=1x pos+time
+[gpsdbg t=104s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=58838 ck=1575/0 wfix=0 locAge=-1ms sys=02:15:32 gps=02:15:33 aid=1x pos+time
+[gpsdbg t=105s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=59398 ck=1590/0 wfix=0 locAge=-1ms sys=02:15:33 gps=02:15:34 aid=1x pos+time
+[gpsdbg t=106s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=59958 ck=1605/0 wfix=0 locAge=-1ms sys=02:15:34 gps=02:15:35 aid=1x pos+time
+[gpsdbg t=107s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=60518 ck=1620/0 wfix=0 locAge=-1ms sys=02:15:35 gps=02:15:36 aid=1x pos+time
+[gpsdbg t=108s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=61078 ck=1635/0 wfix=0 locAge=-1ms sys=02:15:36 gps=02:15:37 aid=1x pos+time
+[gpsdbg t=109s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=61638 ck=1650/0 wfix=0 locAge=-1ms sys=02:15:37 gps=02:15:38 aid=1x pos+time
+[gpsdbg t=110s] SRCH type=1 sats=0/9 snr=29 hdop=1.9 pdop=4.2 vdop=3.7 chars=62198 ck=1665/0 wfix=0 locAge=-1ms sys=02:15:38 gps=02:15:39 aid=1x pos+time

@@ -95,8 +95,9 @@ void usbEvent(void*, esp_event_base_t base, int32_t id, void*) {
 namespace usb_storage {
 
 void begin() {
+    if (g_ready) return;        // late-mount path can call this a second time
     uint32_t sectors = SD.numSectors();
-    if (sectors == 0) return;   // no card
+    if (sectors == 0) return;   // no card — nothing to expose yet
     USB.onEvent(usbEvent);
     msc.vendorID("BikeGPS");
     msc.productID("SD Card");

@@ -14,8 +14,13 @@ namespace ui_dashboard {
 // for the several seconds setup() takes, which reads as a dead device.
 bool beginPanel();
 
-// Append a step to the boot screen and repaint. No-op before beginPanel() and
-// after begin() hands the panel to the dashboard.
+// Show a step as in-progress BEFORE running it, so a slow step (the SD mount)
+// shows what the device is waiting on instead of looking frozen. No-op before
+// beginPanel() and after begin() hands the panel to the dashboard.
+void bootStep(const char* step);
+
+// Resolve a step to a tick or a cross, updating the line bootStep() added (or
+// appending one if the step was never announced).
 void bootStatus(const char* step, bool ok);
 
 // Load the map and finish UI bring-up. Needs the SD card, so it runs after it.

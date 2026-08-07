@@ -27,6 +27,9 @@
 #include "usb_storage.h"
 #include "power_mgmt.h"
 #include "diag.h"
+#ifdef DEBUG_EARLY_USB
+#include "USB.h"
+#endif
 
 #if __has_include("esp_core_dump.h")
 #include "esp_core_dump.h"
@@ -295,6 +298,17 @@ void setup() {
     // without confirming octal-PSRAM stability first.
 
     Serial.begin(115200);
+#ifdef DEBUG_EARLY_USB
+    // Diagnostic only. Normally TinyUSB is not started until usb_storage::begin()
+    // calls USB.begin() (usb_storage.cpp), which happens LATE — from the UI task,
+    // after the SD mount — and is skipped entirely when the card reports zero
+    // sectors. So anything that hangs or panics at or before the SD step produces
+    // no USB device at all and therefore no log, which is exactly the case one
+    // needs the log for. Starting the stack here makes the port enumerate before
+    // the SD is touched. Cost: MSC is registered after USB.begin(), so the card
+    // does NOT appear as a USB drive in this build. Debug builds only.
+    USB.begin();
+#endif
     delay(200);
 #ifdef EPDC_BOOT_WAIT
     // Bring-up aid: hold here until a serial host attaches (DTR asserted), up to
@@ -384,6 +398,10 @@ void setup() {
     // interrupts; the map load stays in begin() below because it needs the SD.
     bool uiOk = ui_dashboard::beginPanel();
 
+    // Announced first: the mount can take a couple of seconds on a cold card,
+    // and until this repaint landed the glass sat on "Display" with nothing to
+    // say the device was busy — which is what read as a freeze.
+    ui_dashboard::bootStep("SD card");
     bool sdOk = ride_recorder::begin();
     ui_dashboard::bootStatus("SD card", sdOk);
     if (sdOk) {
@@ -413,6 +431,7 @@ void setup() {
     // NOTE: usb_storage::begin() is called from the UI task AFTER the boot-time
     // SD firmware-update check, so a firmware.bin dropped on the card always
     // flashes before the computer can mount (and grab) the SD.
+    ui_dashboard::bootStep("GPS");
     bool gpsOk = gps_service::begin();
     ui_dashboard::bootStatus("GPS", gpsOk);
     diag::log("gps module: %s", gps_service::moduleName());

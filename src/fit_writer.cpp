@@ -268,13 +268,24 @@ FitWriter::RepairResult FitWriter::repair(fs::FS& fs, const char* path) {
     double   distanceM = 0;
     uint32_t good = 0;
     uint8_t  rec[RECORD_BYTES];
+    // NO seek() in this loop. The prologue read above already left the handle at
+    // PROLOGUE_BYTES and every record is consumed in order, so seeking per record
+    // was redundant — and expensive: it made each 25-byte record a separate
+    // seek+read round-trip through FatFs to the card. A 2 h ride is ~7,200
+    // records, and with up to 32 files to repair that was enough to blow the
+    // interrupt watchdog and reboot the device mid-recovery, which then left one
+    // more torn file for the next boot to find. Straight sequential reads let
+    // FatFs serve most records from its sector cache.
     for (uint32_t i = 0; i < records; ++i) {
-        f.seek(PROLOGUE_BYTES + i * RECORD_BYTES);
         if (f.read(rec, RECORD_BYTES) != (int)RECORD_BYTES) break;
         if (rec[0] != L_RECORD) break;  // stream desynced — salvage what we have
         endUtc = utcFromFit(get32(&rec[REC_OFF_TIMESTAMP]));
         distanceM = get32(&rec[REC_OFF_DISTANCE]) / 100.0;
         good = i + 1;
+        // Let the scheduler breathe on a long file. Recovery can legitimately
+        // walk hundreds of thousands of records, and it must never be the reason
+        // a watchdog fires.
+        if ((i & 0x3FF) == 0x3FF) delay(0);
     }
 
     if (good == 0) {
