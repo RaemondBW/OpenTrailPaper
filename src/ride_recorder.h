@@ -24,6 +24,33 @@ const char* currentRideFile();
 // summary screen.
 RideSummary summary();
 
+// Re-mount the card: SD.end() then SD.begin(), under the SD lock, updating the
+// mount state. Refuses while a ride is recording — pulling the filesystem out
+// from under an open FIT file is the interrupted transaction that wedges a card.
+// `why` is logged. Returns the new mount state.
+bool remount(const char* why);
+
+// Call ~1 Hz from loop(). While the card is not mounted, retries it on a slow
+// cadence so a card that comes back — reseated, or recovered after a bad
+// transaction — works again without a reboot. Mounting used to happen exactly
+// once at boot, so any drop was permanent for the session.
+void retryMountIfNeeded();
+
+// Rebuild rides that a reset or power cut left half-written. MUST NOT be called
+// from setup(): the work is proportional to what is on the card and once blew
+// the interrupt watchdog, and a reset mid-recovery tears one more file, so the
+// next boot finds more work than the last — a boot loop with no escape short of
+// removing the card. The UI task calls this once it is running, before the SD
+// is offered to a USB host.
+void recoverRides();
+
+// True once after a card mounted later than boot did. Boot skips routes, the
+// map index and USB mass storage when the mount fails, and nothing used to
+// revisit that — so a card picked up by the retry above was mounted but
+// entirely unused (no maps, no routes) until the next reboot. The UI task
+// consumes this and re-runs that bring-up.
+bool consumeLateMount();
+
 // SD card info for the menu screen.
 bool sdMounted();
 int rideCount();

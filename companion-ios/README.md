@@ -11,6 +11,13 @@ settings and push routes.
   it on the map, and send it to the head unit. The route is exported as GPX
   and streamed over BLE; the device saves it to `/routes` (and rides it
   even without an SD card).
+- **The map style** — areas you've downloaded are drawn the way the head unit
+  will draw them: black ink on paper, roads by class, water as a dot screen
+  and parks as a diagonal hatch (the screentones in `src/map_view.cpp`).
+  Areas the device also has get a green check. Everywhere else is plain Apple
+  Maps, so the edge of your offline coverage is visible at a glance. Both the
+  Route and Maps screens use it; the geometry is decoded from the same `.ebm`
+  tiles that get streamed to the device (`EBMDecoder.swift`).
 - **Settings** — edit FTP and timezone, push them to the device (saved in
   the device's flash, persist across reboots).
 

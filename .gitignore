@@ -50,3 +50,15 @@ tools/map_test/roundtrip
 tools/fit_test/fit_test
 tools/fit_test/ascent_test
 tools/preview/preview
+
+# ESP-IDF build output and fetched components. Regenerable, ~750 MB, and not
+# used by the PlatformIO build that actually ships — leftovers from the parked
+# esp-idf port. These were committed once by an over-broad `git add`.
+build/
+managed_components/
+dependencies.lock
+sdkconfig
+sdkconfig.old
+
+# clangd background index (regenerable, binary churn)
+.cache/

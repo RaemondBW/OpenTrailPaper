@@ -7,22 +7,35 @@ import CoreLocation
 struct RouteView: View {
     @EnvironmentObject var ble: BLEManager
     @StateObject private var model = RouteModel()
+    @ObservedObject private var store = EInkTileStore.shared
     @State private var showSaved = false
+    @State private var visibleRegion: MKCoordinateRegion?
+    @State private var einkAreas: [EInkArea] = []
+    @State private var outlineHexes: [OutlineHex] = []
+    /// Whether the planned route leaves the downloaded coverage. Hexagons are
+    /// only worth showing when it does — see `visibleOutlines`.
+    @State private var routeLeavesCoverage = false
 
     var body: some View {
         NavigationStack {
             ZStack(alignment: .bottom) {
-                Map(position: $model.camera) {
-                    UserAnnotation()
-                    if let dest = model.destination {
-                        Marker(model.destinationName, coordinate: dest)
-                            .tint(Palette.accent)
-                    }
-                    if let route = model.route {
-                        MapPolyline(route.polyline)
-                            .stroke(Palette.accent, lineWidth: 5)
-                    }
-                }
+                // Same map as the Maps screen: the areas already downloaded are
+                // drawn as the head unit will draw them, so you can see at a
+                // glance whether a route you're planning is inside the coverage
+                // the device actually carries.
+                EInkMapView(
+                    areas: einkAreas,
+                    outlines: visibleOutlines,
+                    route: model.route?.polyline,
+                    destination: model.destination.map {
+                        MapDestination(name: model.destinationName, coordinate: $0)
+                    },
+                    camera: model.camera,
+                    showsUserLocation: ble.locationPermission.isGranted,
+                    onRegionChange: { r in
+                        visibleRegion = r
+                        refreshEInk()
+                    })
                 .ignoresSafeArea(edges: .top)
 
                 VStack(spacing: 12) {
@@ -75,10 +88,61 @@ struct RouteView: View {
             .onAppear {
                 if ProcessInfo.processInfo.arguments.contains("-demo-route") { model.demoRoute() }
                 else { model.requestLocation() }
+                store.refresh()
             }
             .onChange(of: model.destinationName) {
                 ble.routeSent = false; ble.routeReceived = false
             }
+            .onChange(of: store.version) { refreshEInk(); recomputeCoverage() }
+            .onChange(of: ble.deviceTileIds) { refreshEInk(); recomputeCoverage() }
+            // The route itself is the trigger that matters: a new route can walk
+            // straight off the downloaded area, and clearing one must take the
+            // hexagons away again.
+            .onChange(of: model.route) { recomputeCoverage() }
+        }
+    }
+
+    /// Bare hexagons are noise on this screen. Areas the phone can actually draw
+    /// still render in the device's ink; the outline fallback only earns its
+    /// place when it answers a question the user is asking — "will I ride off
+    /// the edge of my maps?" So it appears only once a route does exactly that,
+    /// and then it shows where the coverage ends. The Maps screen keeps its
+    /// outlines unconditionally: picking areas to download needs the grid.
+    private var visibleOutlines: [OutlineHex] {
+        routeLeavesCoverage ? outlineHexes : []
+    }
+
+    /// Ask the store what to draw for the region now on screen.
+    private func refreshEInk() {
+        guard let r = visibleRegion else { return }
+        let content = store.visibleContent(in: r, synced: ble.deviceTileIds)
+        einkAreas = content.areas
+        outlineHexes = content.outlines
+    }
+
+    /// Does the route pass through ground no downloaded area covers?
+    ///
+    /// Tested against the H3 cell of each route point rather than the hexes
+    /// currently on screen: coverage is a property of the whole route, not of
+    /// the part the camera happens to frame, so panning must not change the
+    /// answer. `store.ids` is what the phone holds, `deviceTileIds` what the
+    /// head unit holds — riding into either is covered, since the device draws
+    /// from its own card.
+    private func recomputeCoverage() {
+        guard let coords = model.route?.polyline.coordinates, !coords.isEmpty else {
+            routeLeavesCoverage = false   // no route, nothing to warn about
+            return
+        }
+        let covered = store.ids.union(ble.deviceTileIds)
+        guard !covered.isEmpty else {
+            // Nothing downloaded at all. There are no hexagons to reveal, so
+            // flagging this would only add a redundant state.
+            routeLeavesCoverage = false
+            return
+        }
+        routeLeavesCoverage = coords.contains { c in
+            guard let id = H3Tiles.id(at: c) else { return false }
+            return !covered.contains(id)
         }
     }
 
@@ -165,8 +229,11 @@ final class RouteModel: NSObject, ObservableObject {
     @Published var destinationName = ""
     @Published var route: MKRoute?
     @Published var routeMode = ""   // "Cycling" or "Walking"
-    @Published var camera: MapCameraPosition = .userLocation(
-        fallback: .region(MKCoordinateRegion(
+    // Starts on a fixed region and switches to following the user as soon as a
+    // fix exists (see requestLocation/recenter) — the map has no fallback mode
+    // of its own, so the camera is always something we chose.
+    @Published var camera: MapCameraCommand? = MapCameraCommand(
+        target: .region(MKCoordinateRegion(
             center: CLLocationCoordinate2D(latitude: 37.7764, longitude: -122.4346),
             span: MKCoordinateSpan(latitudeDelta: 0.08, longitudeDelta: 0.08))))
 
@@ -182,6 +249,13 @@ final class RouteModel: NSObject, ObservableObject {
 
     func requestLocation() {
         locManager.requestWhenInUseAuthorization()
+        // Frame the user as soon as we have them, instead of sitting on the
+        // fallback region until the first tap of "recenter".
+        if let loc = locManager.location {
+            camera = MapCameraCommand(target: .region(MKCoordinateRegion(
+                center: loc.coordinate,
+                span: MKCoordinateSpan(latitudeDelta: 0.08, longitudeDelta: 0.08))))
+        }
     }
 
     // Recenter/follow the user (replaces the default map location button, which
@@ -189,10 +263,10 @@ final class RouteModel: NSObject, ObservableObject {
     func recenter() {
         locManager.requestWhenInUseAuthorization()
         if let loc = locManager.location {
-            camera = .region(MKCoordinateRegion(center: loc.coordinate,
-                span: MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05)))
+            camera = MapCameraCommand(target: .region(MKCoordinateRegion(center: loc.coordinate,
+                span: MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05))))
         } else {
-            camera = .userLocation(fallback: .automatic)
+            camera = MapCameraCommand(target: .followUser)
         }
     }
 
@@ -276,7 +350,7 @@ final class RouteModel: NSObject, ObservableObject {
         // to edge, so the route ran into the screen borders and under the
         // search field and the route summary — hard to read, and impossible to
         // see what it passes near. 25% on each axis gives it room to breathe.
-        camera = .rect(r.polyline.boundingMapRect.paddedForDisplay())
+        camera = MapCameraCommand(target: .rect(r.polyline.boundingMapRect.paddedForDisplay()))
     }
 }
 

@@ -116,6 +116,7 @@ struct SettingsView: View {
 
                     if ble.state == .connected { diagnosticsCard }
 
+                    permissionsCard
                     tutorialCard
 
                     Text(ble.state == .connected
@@ -162,6 +163,98 @@ struct SettingsView: View {
         let n = ble.deviceTileIds.count
         if n == 0 { return "Download map areas to your device" }
         return "\(n) area\(n == 1 ? "" : "s") on device"
+    }
+
+    /// Permissions, and how to fix the ones that are missing.
+    ///
+    /// Once a permission has been refused the app can never prompt for it again
+    /// — iOS only ever asks once — so without a route to Settings a "no" tapped
+    /// during onboarding would be permanent and unexplained. Granted ones are
+    /// listed too, so this reads as the whole picture rather than only a list of
+    /// complaints.
+    @ViewBuilder private var permissionsCard: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Permissions").trackedLabel()
+                permissionRow(
+                    symbol: "dot.radiowaves.left.and.right",
+                    name: "Bluetooth",
+                    state: ble.bluetoothPermission,
+                    granted: ble.bluetoothPermission.isGranted && !ble.bluetoothPoweredOn
+                        ? "Allowed, but Bluetooth is switched off — turn it on in Control Centre."
+                        : "Allowed. This is how the app talks to your OpenTrailPaper.",
+                    missing: "Without it the app can't reach your device at all — no routes, maps, settings or ride downloads.",
+                    ask: { ble.enableBluetooth() })
+                Divider().overlay(Palette.hairline)
+                permissionRow(
+                    symbol: "location.fill",
+                    name: "Location",
+                    state: ble.locationPermission,
+                    granted: "Allowed while you're using the app.",
+                    missing: "The app still works: you lose your position on the map, the GPS warm-start that helps the device lock on faster, and the backup fix when it can't see the sky.",
+                    ask: { ble.requestLocationPermission() })
+
+                if needsPermissionFix {
+                    PrimaryButton(title: "Open Settings", systemImage: "arrow.up.forward.app",
+                                  enabled: true) { openAppSettings() }
+                    Text("Opens this app's page in Settings. Changes apply as soon as you come back.")
+                        .font(.system(size: 11)).foregroundStyle(Palette.muted)
+                }
+            }
+        }
+    }
+
+    /// True only when Settings can actually change something — a restricted
+    /// permission or a switched-off radio is not fixable there, and offering the
+    /// button anyway would send the user somewhere that can't help.
+    private var needsPermissionFix: Bool {
+        ble.bluetoothPermission.fixableInSettings || ble.locationPermission.fixableInSettings
+    }
+
+    private func permissionRow(symbol: String, name: String, state: PermissionState,
+                               granted: String, missing: String,
+                               ask: @escaping () -> Void) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: symbol)
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(state.isGranted ? Palette.good : Palette.accent)
+                .frame(width: 24)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(name).font(BarlowFont.text(15, .semibold)).foregroundStyle(Palette.ink)
+                    Text(statusLabel(state))
+                        .font(.system(size: 10, weight: .bold))
+                        .padding(.horizontal, 7).padding(.vertical, 3)
+                        .background(state.isGranted ? Palette.good : Palette.accent)
+                        .foregroundStyle(.white)
+                        .clipShape(Capsule())
+                }
+                Text(state.isGranted ? granted : missing)
+                    .font(.system(size: 12)).foregroundStyle(Palette.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+                // Never asked (skipped during the tutorial): iOS will still show
+                // the real prompt, so ask here rather than sending the user to
+                // Settings for something they were never offered.
+                if state == .notDetermined {
+                    Button(action: ask) {
+                        Text("Allow \(name.lowercased())")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Palette.accent)
+                    }
+                    .padding(.top, 2)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func statusLabel(_ state: PermissionState) -> String {
+        switch state {
+        case .granted:       return "ALLOWED"
+        case .denied:        return "NOT ALLOWED"
+        case .notDetermined: return "NOT ASKED"
+        case .unavailable:   return "RESTRICTED"
+        }
     }
 
     @ViewBuilder private var tutorialCard: some View {

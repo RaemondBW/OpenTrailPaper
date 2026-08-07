@@ -146,10 +146,14 @@ void ui_render_shutdown_screen(uint8_t* fb);
 // "Start navigation?" bottom sheet shown when a route with turn cues
 // arrives. Reuses the power-sheet button rects: kPowerShutdown = START,
 // kPowerCancel = LATER.
-// Boot progress. `lines`/`ok` are parallel arrays, one entry per step done so
-// far; ok[i] picks a tick or a cross. Drawn as setup() progresses.
+// Boot progress. `lines`/`state` are parallel arrays, one entry per step
+// started so far. state[i] is BOOT_PENDING while the step is still running,
+// then BOOT_OK (tick) or BOOT_FAIL (cross). A step is drawn as soon as it
+// STARTS, so a slow one (the SD mount can take seconds) shows what the device
+// is waiting on instead of leaving the screen frozen on the previous step.
+enum : int8_t { BOOT_FAIL = -1, BOOT_PENDING = 0, BOOT_OK = 1 };
 void ui_render_boot_screen(const char* version, const char* const* lines,
-                           const bool* ok, int count, uint8_t* fb);
+                           const int8_t* state, int count, uint8_t* fb);
 
 void ui_render_nav_prompt(const char* routeName, int turns, uint8_t* fb);
 

@@ -14,6 +14,10 @@ namespace {
 
 FitWriter fit;
 bool sdOk = false;
+// Set when a mount succeeds AFTER boot gave up. Everything gated on the boot
+// mount (routes, the map index, USB mass storage) was skipped in that case and
+// has to be re-run, or the card sits mounted and completely unused.
+bool lateMount = false;
 char ridePath[48];
 
 // The rider started a ride and hasn't stopped it. Deliberately NOT derived from
@@ -93,6 +97,13 @@ void recoverInterruptedRides() {
                 const char* nm = f.name();
                 const char* base = strrchr(nm, '/');
                 base = base ? base + 1 : nm;
+                // Skip our own quarantine markers — they are not rides, and
+                // repairing one would only breed a ".bad.bad".
+                size_t len = strlen(base);
+                if (len >= 4 && strcmp(base + len - 4, ".bad") == 0) {
+                    f.close();
+                    continue;
+                }
                 strncpy(names[nameCount], base, sizeof(names[0]) - 1);
                 names[nameCount][sizeof(names[0]) - 1] = 0;
                 nameCount++;
@@ -108,7 +119,23 @@ void recoverInterruptedRides() {
     for (int i = 0; i < nameCount; ++i) {
         char path[48];
         snprintf(path, sizeof(path), RIDE_DIR "/%.39s", names[i]);
+
+        // Quarantine before touching the file, clear it after. If we never get
+        // to the clear — watchdog, panic, power cut — the marker survives on the
+        // card and the next boot skips this file instead of dying on it again.
+        // Without this, one unrepairable ride is a permanent brick that only a
+        // card reader can undo.
+        char mark[56];
+        snprintf(mark, sizeof(mark), "%s.bad", path);
+        if (SD.exists(mark)) {
+            diag::log("ride skipped (previous recovery did not survive it): %s",
+                      path);
+            continue;
+        }
+        { File m = SD.open(mark, FILE_WRITE); if (m) m.close(); }
+
         FitWriter::RepairResult r = FitWriter::repair(SD, path);
+        SD.remove(mark);   // survived — this file is not the problem
         if (r.status == FitWriter::RepairResult::REPAIRED) {
             repaired++;
             diag::log("ride recovered: %s — %.2f km, %lu s (%d pts)", path,
@@ -227,6 +254,67 @@ float updateGrade(float altitudeM) {
 
 namespace ride_recorder {
 
+namespace {
+
+// Mount the card. Caller holds sdLock.
+//
+// Retry: the SPI card-init handshake is flaky right after power-on and can fail
+// the first time or two, especially if a prior session left the card
+// mid-transaction (only a clean re-init clears it). Stay at the library's proven
+// 4 MHz — the same clock the recorder has always used — and just give it a few
+// gentle attempts with a settle delay, dropping to 1 MHz last-ditch. (Do NOT
+// start high: a too-fast probe can wedge a marginal card so the slower retries
+// then also fail.)
+//
+// `logFailures` is off for the background retry, which would otherwise write
+// three lines every 30 s for as long as a card is simply absent.
+bool mountLocked(bool logFailures) {
+    // settleMs is waited BEFORE the attempt. The old schedule (three tries, 50 ms
+    // apart) gave the card ~100 ms to come up and then declared it absent, which
+    // on this board is simply too early: measured on a cold boot with a known-good
+    // 32 GB SDHC, every probe inside the first ~1.5 s failed and the mount only
+    // took at ~2 s (investigations/sd-boot-mount-2026-08-05.log). Boot therefore
+    // ALWAYS missed the card and left the device in its "no SD" state until the
+    // 30 s background retry rescued it — by which point map/route loading had
+    // already been skipped for the session.
+    //
+    // The cost is paid only on failure: a card that answers immediately still
+    // mounts on the first attempt with zero added delay, and a genuinely absent
+    // card costs ~2.3 s of settle on top of SD.begin()'s own timeouts. Boot is
+    // never blocked on the result — a failed mount just disables recording.
+    static const struct { uint32_t settleMs; uint32_t freq; } kAttempts[] = {
+        {0,    4000000},
+        {100,  4000000},
+        {400,  4000000},
+        {800,  4000000},
+        {1000, 1000000},   // last-ditch, slow clock for a marginal card
+    };
+    for (auto& a : kAttempts) {
+        uint32_t f = a.freq;
+        if (a.settleMs) delay(a.settleMs);   // let the card/bus settle first
+        // max_files: the library default is 5 open files for the WHOLE firmware,
+        // and a ride holds one of them open from start to finish. Ten leaves room
+        // for a map tile, a route, a diag flush and a BLE download at the same
+        // time without opens starting to fail mid-ride.
+        if (SD.begin(BOARD_SD_CS, SPI, f, "/sd", 10)) return true;
+        if (logFailures) {
+            // Deliberately NOT logging cardType()/cardSize() here. A previous
+            // version did, to tell "card not talking" from "bad filesystem", but
+            // that reading can never happen: SD.begin() unmounts, uninits and
+            // sets _pdrv = 0xFF itself before returning false, and both accessors
+            // early-return on that sentinel. They report NONE/0 unconditionally,
+            // so the line only ever looked like a dead card. (Arduino-esp32
+            // SD.cpp: begin() 38-42, cardType() 62, cardSize() 70.)
+            diag::log("[rec] SD.begin failed @%uMHz (settle %ums)",
+                      (unsigned)(f / 1000000), (unsigned)a.settleMs);
+        }
+        SD.end();
+    }
+    return false;
+}
+
+}  // namespace
+
 bool begin() {
     // SD and LoRa share the SPI bus; a floating LoRa CS corrupts SD traffic.
     pinMode(BOARD_LORA_CS, OUTPUT);
@@ -236,32 +324,7 @@ bool begin() {
 
     SPI.begin(BOARD_SPI_SCLK, BOARD_SPI_MISO, BOARD_SPI_MOSI);
     sdLock();
-    // Retry: the SPI card-init handshake is flaky right after power-on and can
-    // fail the first time or two, especially if a prior session left the card
-    // mid-transaction (only a clean re-init clears it). Stay at the library's
-    // proven 4 MHz — the same clock the recorder has always used — and just give
-    // it a few gentle attempts with a settle delay, dropping to 1 MHz last-ditch.
-    // (Do NOT start high: a too-fast probe can wedge a marginal card so the
-    // slower retries then also fail.)
-    const uint32_t freqs[] = {4000000, 4000000, 1000000};
-    for (int attempt = 0; attempt < 3 && !sdOk; ++attempt) {
-        uint32_t f = freqs[attempt];
-        if (attempt > 0) delay(50);   // let the card/bus settle before re-probing
-        sdOk = SD.begin(BOARD_SD_CS, SPI, f);
-        if (!sdOk) {
-            // Read cardType()/cardSize() BEFORE SD.end() — end() de-inits the
-            // card and would make both report NONE/0. cardType reflects the
-            // low-level SPI init (independent of the FAT mount): NONE => card not
-            // talking (bus/power/seating); a real type with begin() still failing
-            // => filesystem/format problem (e.g. exFAT).
-            uint8_t ct = SD.cardType();
-            const char* cn = ct == CARD_NONE ? "NONE" : ct == CARD_MMC ? "MMC"
-                           : ct == CARD_SD ? "SD" : ct == CARD_SDHC ? "SDHC" : "UNKNOWN";
-            diag::log("[rec] SD.begin failed @%uMHz cardType=%s size=%lluMB",
-                      (unsigned)(f / 1000000), cn, SD.cardSize() / (1024ULL * 1024ULL));
-            SD.end();
-        }
-    }
+    sdOk = mountLocked(true);
     if (sdOk && !SD.exists(RIDE_DIR)) SD.mkdir(RIDE_DIR);
     sdUnlock();
     if (!sdOk) {
@@ -270,7 +333,14 @@ bool begin() {
     }
     Serial.printf("[rec] SD ready, %llu MB free\n",
                   (SD.totalBytes() - SD.usedBytes()) / (1024ULL * 1024ULL));
-    recoverInterruptedRides();
+    // Recovery deliberately does NOT run here. It used to, and a card carrying
+    // interrupted rides could then take longer than the interrupt watchdog
+    // allows — the device reset mid-recovery, which tore one more file, and the
+    // next boot found strictly more work than the last. That is an unbreakable
+    // boot loop, and it is unbreakable from the device: the only escape was
+    // pulling the card. setup() must not contain unbounded card work. The UI
+    // task calls recoverRides() once it is running, still before usb_storage
+    // hands the card to a host.
     return true;
 }
 
@@ -288,7 +358,20 @@ void startRide() {
     bool opened = fit.begin(SD, ridePath, s.utc);
     sdUnlock();
     if (!opened) {
+        // The mount was only ever established at boot, so a card that dropped
+        // since then failed every ride for the rest of the session. One remount
+        // and one retry — cheap, and the difference between losing a ride and
+        // not. (rideActive is still false here, so remount() will proceed.)
+        diag::log("[rec] ride file open failed — remounting");
+        if (remount("ride file open failed")) {
+            sdLock();
+            opened = fit.begin(SD, ridePath, s.utc);
+            sdUnlock();
+        }
+    }
+    if (!opened) {
         Serial.printf("[rec] failed to open %s\n", ridePath);
+        diag::log("[rec] ride NOT started: cannot open %s", ridePath);
         return;
     }
 
@@ -364,6 +447,65 @@ RideSummary summary() {
     r.tzMin = g_state.snapshot().tzMin;
     r.useMiles = g_state.snapshot().useMiles;
     return r;
+}
+
+bool remount(const char* why) {
+    // Never mid-ride: SD.end() with the FIT file open leaves the card
+    // mid-transaction, which is the failure that makes it refuse CMD0 on every
+    // subsequent mount. Callers hold their request and retry once the ride ends.
+    if (rideActive) return sdOk;
+    sdLock();
+    SD.end();
+    sdOk = mountLocked(true);
+    if (sdOk && !SD.exists(RIDE_DIR)) SD.mkdir(RIDE_DIR);
+    sdUnlock();
+    diag::log("sd: remount (%s) -> %s", why, sdOk ? "ok" : "FAILED");
+    return sdOk;
+}
+
+void retryMountIfNeeded() {
+    // Nothing to do when it's mounted, and nothing we're allowed to do while a
+    // host computer owns the card over USB.
+    if (sdOk || rideActive || usb_storage::hostActive()) return;
+
+    static uint32_t lastTry = 0;
+    static uint16_t tries = 0;
+    uint32_t now = millis();
+    if (lastTry != 0 && now - lastTry < 30000) return;
+    lastTry = now;
+
+    sdLock();
+    bool ok = mountLocked(tries < 3);   // stop logging once it's clearly absent
+    if (ok && !SD.exists(RIDE_DIR)) SD.mkdir(RIDE_DIR);
+    sdUnlock();
+
+    if (ok) {
+        sdOk = true;
+        lateMount = true;   // boot ran without a card — see consumeLateMount()
+        diag::log("sd: card back after %u retr%s", (unsigned)tries + 1,
+                  tries ? "ies" : "y");
+        tries = 0;
+    } else {
+        if (tries == 3) diag::log("sd: still absent — retrying quietly from here");
+        if (tries < 0xFFFF) tries++;
+    }
+}
+
+// True once, on the first call after a card mounted later than boot. The caller
+// is expected to run the SD-dependent bring-up that setup() skipped. Consumed
+// (not just read) so the work happens exactly once per late mount.
+bool consumeLateMount() {
+    if (!lateMount) return false;
+    lateMount = false;
+    return true;
+}
+
+// Put interrupted rides back together. Called from the UI task, NOT from
+// setup() — see the note in begin(). Safe to call more than once; a ride that
+// is already finished is left alone.
+void recoverRides() {
+    if (!sdOk) return;
+    recoverInterruptedRides();
 }
 
 // SD is "unavailable" to the firmware while a host computer owns it over USB.
