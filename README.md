@@ -29,10 +29,11 @@ A candidate board needs, at minimum:
 
 - **ESP32-S3 with PSRAM.** The map tiles, elevation grids and the two 540×960
   framebuffers live in PSRAM — an S3 without PSRAM (or a plain ESP32) won't fit.
-- **An e-paper panel [epdiy](https://github.com/vroland/epdiy) can drive.** All
-  rendering goes through epdiy, so the panel needs an epdiy board definition (or
-  you add one). The layout assumes ~4.7" / 960×540; a different size means
-  reworking `src/ui_render.cpp`.
+- **A supported e-paper panel.** Drawing goes through `src/epd_compat.*`, which
+  has two backends: **EPD_Painter** (the shipping one — `pio run`) and
+  [epdiy](https://github.com/vroland/epdiy) (`pio run -e t5s3-pro`), so a panel
+  needs a board definition for whichever you use. The layout assumes ~4.7" /
+  960×540; a different size means reworking `src/ui_render.cpp`.
 - **A UART GPS.** Any NMEA receiver works; u-blox M10 and CASIC additionally get
   a binary warm-start path (see below).
 - **An SD card on SPI** — all maps, rides, routes and logs live there.
@@ -46,7 +47,7 @@ Porting is mostly re-pointing three things:
 - `src/board_power.*` — power rails and sleep. On the reference board the
   **GPS 3V3 rail is gated behind pin 0 of the XL9555 I²C expander**, so the
   receiver stays dark until that's switched on — an easy thing to miss on a port.
-- The epdiy board definition (via `platformio.ini`) — how the panel is driven.
+- The panel definition (via `platformio.ini`) — how the display is driven.
 
 The non-essential peripherals (RTC, fuel gauge, charger, frontlight) degrade
 gracefully if a board lacks them.
@@ -61,7 +62,7 @@ entirely.
 Instead, **elevation is baked into the map tiles.** When the app builds a tile it
 also fetches a coarse DEM (digital elevation model) for that area from
 [Open-Meteo](https://open-meteo.com/) and appends it as an `ELV1` block (~20×20
-samples, ≈350 m spacing — see [Tile format](#tile-format-ebm1--elv1-little-endian)).
+samples, ≈350 m spacing — see [Tile format](#tile-format-ebm2--elv1--wtr2--prk2-little-endian)).
 At runtime the device reads its altitude by bilinearly interpolating that grid at
 the current GPS position and accumulates climb from it — a smooth, real elevation
 profile that needs only a horizontal fix. The trade-off: elevation exists only
@@ -131,7 +132,7 @@ them:
 
 **iOS companion** — `companion-ios/`, four tabs (Ride / Route / Rides / Settings):
 
-| Ride (live BLE status) | Route (plan + tiles) | Settings |
+| Ride (live BLE status) | Route (plan + send) | Settings |
 |:---:|:---:|:---:|
 | ![ride](companion-ios/ride.png) | ![route](companion-ios/route.png) | ![settings](companion-ios/settings.png) |
 
@@ -151,7 +152,7 @@ on the phone and is pushed over BLE.
 |---|---|---|
 | **Owns** | GPS, sensors, ride recording, rendering, navigation | Map tile authoring, route planning, ride history, settings UI, OTA |
 | **Storage** | SD card (`/rides`, `/routes`, `/maps`, `/logs`) | transient — everything is streamed to/from the device |
-| **Maps** | renders H3 tiles from the SD card | fetches OSM + elevation, builds tiles, streams them |
+| **Maps** | renders H3 tiles from the SD card | fetches OSM + elevation, builds tiles, streams them (Settings → Maps) |
 | **Routes** | rides a `/routes/*.gpx`, draws it on the map | Apple Maps search → GPX → BLE |
 | **Settings** | source of truth, persisted in NVS | mirror + editor; the clock/USB/log/OTA controls appear once paired |
 | **Firmware** | applies updates from SD or BLE | bundles `firmware.bin`, pushes OTA over BLE |
@@ -174,7 +175,7 @@ remaining), and framed **route**, **map-tile**, **log** and **OTA** transfers.
   avg HR and climbing tracked for the summary (SAVE / DISCARD). Rides cut short
   by a crash or dead battery are repaired on the next boot.
 - **Offline maps** — H3 hexagonal tiles on the SD card, authored on the phone
-  or by `tools/maps/build_map.py`. 1-bit rendering, zoom 1–8 m/px, follows GPS,
+  or by `tools/maps/build_map.py`. 1-bit rendering, zoom 1–32 m/px, follows GPS,
   optional track-up rotation. See [Map tiles](#map-tiles).
 - **Map-cached elevation** — altitude and climb come from a DEM grid baked into
   each map tile, not the GPS chip's noisy barometric/ellipsoidal altitude.
@@ -189,73 +190,109 @@ remaining), and framed **route**, **map-tile**, **log** and **OTA** transfers.
 
 ### Controls
 
-- Tap the status bar → menu; tap elsewhere → dashboard ↔ map
-- Long-press (1.2 s) → start / stop ride
-- Map: +/− buttons zoom
+**Buttons**
+
+- **BOOT**, short press → start / stop ride (stopping opens SAVE / DISCARD)
+- **BOOT**, hold 1.5 s → power-off dialog
+- **Home** (capacitive key below the panel) → dashboard ↔ map; on any other
+  screen, back
+- **Side key**, short press → cycle the frontlight (Off / Low / Med / Bright)
+
+**Touch**
+
+- Status bar → menu
+- Map: the data strip along the bottom → dashboard; **+/−** → zoom
+  (1–32 m/px); the compass → toggle track-up
+- The body of the dashboard and map ignore taps deliberately — every stray
+  glove brush used to throw you off the screen you were reading
+- Settings: only the Home key leaves the screen, so a missed stepper can't
+  discard an edit
 
 ## Map tiles
 
 Maps are stored as small per-cell binaries on the SD card, one file per
-[Uber H3](https://h3geo.org/) **resolution-6 hexagon** (~36 km² each, ~3–4 km
+[Uber H3](https://h3geo.org/) **resolution-6 hexagon** (~36 km² each, ~5.6 km
 across). Hexagons tile the plane without the seams/overlap of a lat/lon square
 grid, and each cell is a stable global id, so a tile is downloaded once and
 reused forever.
 
 ```
-/maps/tiles/<h3id>.ebm     one hexagonal tile (vector roads + elevation grid)
-/maps/<name>.ebm           optional legacy whole-region blob (fallback)
+/maps/tiles/<first 6 of id>/<rest of id>.ebm   one hexagonal tile
+/maps/<name>.ebm                               optional whole-region blob (fallback)
 ```
 
-### Tile format (`EBM1` + `ELV1`, little-endian)
+Tiles are grouped into directories by the **first 6 characters of the H3 id**,
+and the filename carries the rest — `862830827ffffff` lives at
+`/maps/tiles/862830/827ffffff.ebm`. An H3 index is hierarchical, so a leading
+substring is a *geographic* key, not an arbitrary one: 6 characters is exactly
+the resolution-3 ancestor (~12,393 km², capped at 7³ = 343 res-6 children). One
+metro area therefore lands in a single directory, which is what keeps the boot
+scan cheap — FatFs directory lookup is linear, so a flat directory of thousands
+of tiles degrades as O(n²) in directory reads.
 
-Each tile is a self-contained blob carrying its own grid header:
+### Tile format (`EBM2` + `ELV1` + `WTR2` + `PRK2`, little-endian)
+
+Each tile is a self-contained blob carrying its own grid header, followed by up
+to three appended sections:
 
 ```
-magic 'EBM1'
+magic 'EBM2'
 f64   lat0, lon0        tile SW origin (deg)
 f64   tileDeg           tile size (deg)
 i32   nx, ny            sub-grid dimensions
 u32[2] index[nx*ny]     (offset, length) per sub-tile
 polylines:
-  u8  class             0 major road · 1 minor road · 2 path · 3 rail
+  u8  class             0 arterial · 1 primary · 2 secondary · 3 tertiary
+                        4 minor · 5 path
   u16 pointCount
   i16 x, y per point    metres east/north of the tile SW corner
-── appended elevation block ──
+── appended elevation block (optional) ──
 magic 'ELV1'
-i32   gw, gh            elevation grid dims (~20×20, ≈350 m spacing)
+i32   gw, gh            elevation grid dims (20×20, ≈350 m spacing)
 f64   s, w, n, e        grid bounds
 i16   elevation[gw*gh]  metres
+── appended fill sections (optional, in this order) ──
+magic 'WTR2'            water bodies — rendered as a dot screentone
+magic 'PRK2'            parks / green space — rendered as a diagonal hatch
+  u16 polygonCount
+  per polygon: u16 pointCount, then i16 x, y   metres E/N of the grid origin
 ```
 
-Roads are classified into 4 render classes that map to line widths/dash styles;
-geometry is simplified and delta-encoded as 16-bit metre offsets to keep tiles
-tiny. Parsing/projection lives in `src/map_tiles.cpp`.
+Roads are classified into **6 render classes** that map to line widths and dash
+styles, and that the renderer sheds progressively as you zoom out (paths at
+≥4 m/px, minor at ≥16, secondary/tertiary at ≥32; arterial and primary never
+shed, so they carry the overview). Geometry is simplified and delta-encoded as
+16-bit metre offsets to keep tiles tiny. Parsing/projection lives in
+`src/map_tiles.cpp`; the same `classify()` and encoder logic is mirrored
+byte-for-byte across `tools/maps/build_map.py`, `docs/mapgen.js` and
+`companion-ios/Sources/MapBuilder.swift`.
 
 ### Three ways to create tiles
 
-**1. On the phone (primary).** In the Route tab, draw a box over the area you
-want. The app (`companion-ios/Sources/`):
+**1. On the phone (primary).** Open **Settings → Maps** and drag a box over the
+area you want. The app (`companion-ios/Sources/`):
 
 1. `H3Tiles.coveringTiles()` computes every res-6 hexagon overlapping the box
    (you can deselect individual hexes before downloading).
 2. For each hex, `MapBuilder` fetches OSM ways from Overpass (multiple
    endpoints with retry + rate-limit handling), classifies and simplifies them,
-   and encodes an `EBM1` blob.
+   and encodes an `EBM2` blob.
 3. It fetches a `gw×gh` elevation grid from [Open-Meteo](https://open-meteo.com/)
    and appends the `ELV1` block.
 4. The tile streams to the device over BLE; the firmware writes it to
-   `/maps/tiles/<h3id>.ebm`. Downloads run in parallel, already-present tiles
-   are skipped, and finished hexes fill in green live on the map.
+   `/maps/tiles/<first 6 of id>/<rest>.ebm`. Downloads run in parallel,
+   already-present tiles are skipped, and finished hexes fill in green live on
+   the map.
 
 **2. On the desktop (region bake).** `tools/maps/build_map.py` fetches Overpass
-for a bounding box, clips it into a square grid, and writes a single `EBM1`
+for a bounding box, clips it into a square grid, and writes a single `EBM2`
 file you copy to `/maps/` — the legacy whole-map fallback used where no H3 tile
 covers the rider. See [`tools/README.md`](tools/README.md).
 
 **3. In the browser (region bake, no toolchain).** The
 [project site](https://raemondbw.github.io/OpenTrailPaper/#maps) has a
 *Generate an offline map* section: pick a bounding box on a map, and it fetches
-Overpass and encodes the same whole-region `EBM1` blob as `build_map.py`
+Overpass and encodes the same whole-region `EBM2` blob as `build_map.py`
 entirely client-side, then hands you a `<name>.ebm` to drop in `/maps/`. It's a
 JS port of `build_map.py` (`docs/mapgen.js`) — byte-for-byte identical output.
 No elevation grid (that's the phone's per-hex path), so it's the whole-map
@@ -263,10 +300,10 @@ fallback layer, not the primary tile layer.
 
 ### On-device handling
 
-`src/map_store.cpp` keeps a lightweight in-memory index of every
-`/maps/tiles/*.ebm` (`h3id` + bounding box). To draw a frame it projects **all**
+`src/map_store.cpp` keeps a lightweight in-memory index of every tile under
+`/maps/tiles/` (`h3id` + bounding box). To draw a frame it projects **all**
 tiles overlapping the current view through a rider-centred equirectangular
-transform, backed by a 20-tile LRU cache in PSRAM. Elevation for the current
+transform, backed by a 32-tile LRU cache in PSRAM. Elevation for the current
 position is read from the covering tile's `ELV1` grid. Where nothing covers the
 rider it falls back to a whole-map blob, and if there is no map at all it shows
 a **NO MAP HERE** screen rather than a blank panel.
@@ -320,9 +357,20 @@ pio device monitor -b 115200            # serial log
 ```
 
 The board runs in USB-OTG mode, so esptool's auto-reset can't enter the
-bootloader: to flash, hold **BOOT**, tap **RESET**, release **BOOT** (the port
-enumerates as `…usbmodem2101`), upload, then tap **RESET** to run. Alternatively
-copy `firmware.bin` to the SD card root and reboot, or push OTA from the app.
+bootloader. Three ways in:
+
+- **From the running firmware** (easiest): send `bootloader` on the serial
+  console. It calls `usb_persist_restart(RESTART_BOOTLOADER)`, so the port
+  reappears as `…usbmodem2101` with no button press. Flash with
+  `--after no_reset`, then tap **RESET** to run — esptool's own reset drives
+  GPIO0 low on that bridge and would land straight back in download mode.
+- **By hand**, when the firmware isn't running: hold **BOOT**, tap **RESET**,
+  release **BOOT**, upload, tap **RESET**.
+- **No USB at all**: copy `firmware.bin` to the SD card root and reboot, or push
+  OTA from the app.
+
+Note that the app's OTG console port only re-enumerates on a *physical* reset,
+so after any software restart the port stays away until you tap **RESET**.
 
 No toolchain? Flash a prebuilt `firmware.bin` (from CI artifacts or a release)
 straight from the [project site](https://raemondbw.github.io/OpenTrailPaper/#flash)
@@ -335,8 +383,8 @@ Requires Xcode 16+ and [XcodeGen](https://github.com/yonaskolb/XcodeGen)
 
 ```sh
 cd companion-ios
-xcodegen generate            # produces BikeGPSCompanion.xcodeproj
-open BikeGPSCompanion.xcodeproj
+xcodegen generate            # produces OpenTrailPaper.xcodeproj
+open OpenTrailPaper.xcodeproj
 ```
 
 Set your development team in Signing, then run on a real iPhone (BLE needs
@@ -347,12 +395,13 @@ and must match `src/config.h`'s `FIRMWARE_VERSION`.
 ## SD card layout
 
 ```
-/rides/YYYYMMDD-HHMMSS.fit   ride recordings (UTC timestamps)
-/routes/*.gpx                routes for the Navigate screen
-/maps/tiles/<h3id>.ebm       H3 hexagonal map tiles
-/maps/*.ebm                  optional whole-region fallback maps
-/logs/YYYYMMDD.log           per-day diagnostic logs
-/firmware.bin                dropped here → flashed on next boot
+/rides/YYYYMMDD-HHMMSS.fit          ride recordings (UTC timestamps)
+/routes/*.gpx                       routes for the Navigate screen
+/maps/tiles/<id 0-5>/<id 6->.ebm    H3 hexagonal map tiles
+    e.g. /maps/tiles/862830/827ffffff.ebm   for cell 862830827ffffff
+/maps/*.ebm                         optional whole-region fallback maps
+/logs/YYYYMMDD.log                  per-day diagnostic logs
+/firmware.bin                       dropped here → flashed on next boot
 ```
 
 ## Source layout
@@ -368,10 +417,14 @@ src/
   fit_writer.*       minimal FIT activity encoder + interrupted-ride repair
   ride_recorder.*    ride lifecycle, distance, SD writes, boot recovery
   map_store.*        SD tile index, LRU cache, elevation lookup, save/rescan
-  map_tiles.*        EBM1/ELV1 parsing + projection
+  map_tiles.*        EBM2/ELV1/WTR2/PRK2 parsing + projection
   map_view.*         map + route drawing
   ui_render.*        all screen layouts (host-compilable)
-  ui_dashboard.*     epdiy frame loop + GT911 touch + SD firmware update
+  ui_dashboard.*     frame loop + GT911 touch + boot screen + SD firmware update
+  epd_compat.*       panel backend shim (EPD_Painter, or epdiy via -e t5s3-pro)
+  power_mgmt.*       automatic CPU light sleep (needs a PM-enabled framework)
+  routes.*           GPX parsing, navigation, turn cues
+  rtc_clock.*        PCF8563 wall clock across power-off
   usb_storage.*      USB mass-storage: SD as a drive, host/device arbitration
   settings.*         NVS-backed settings
   diag.*             per-day SD logging + crash backtraces
@@ -381,7 +434,7 @@ companion-ios/
 tools/
   preview/           host renderer for the device screens (→ out/*.png)
   fit_test/          host FIT encoder + CRC validation
-  maps/              OSM → EBM1 region map builder
+  maps/              OSM → EBM2 region map builder
 vendor/              LilyGO board support (cloned, not committed)
 ```
 
