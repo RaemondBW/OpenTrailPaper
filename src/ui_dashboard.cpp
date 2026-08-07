@@ -1004,6 +1004,25 @@ void bootRepaint() {
     if (!fb) return;
     ui_render_boot_screen(FIRMWARE_VERSION, bootLines, bootState, bootCount, fb);
     epdc_paint();
+    // WAIT for the rows to finish clocking out. epdc_paint() is asynchronous on
+    // the EPD_Painter backend — it hands the frame to the driver's paint task
+    // and returns mid-drive — so leaving one in flight means the NEXT paint is
+    // issued into a panel that is still being driven, and the driver wedges:
+    // the glass keeps whatever was on it and never updates again.
+    //
+    // This bit when the "Maps" step moved the last boot repaint from main.cpp
+    // (where ~3 s of SD scan plus the whole BLE init happened to follow it, so
+    // the paint always landed first) to the end of ui_dashboard::begin(), a few
+    // hundred ms before the UI task's first frame. The panel then froze on the
+    // boot screen for the rest of the session while the firmware ran on
+    // perfectly happily behind it — console answering, GPS logging, 140 s uptime.
+    //
+    // Same rule shutdownDevice() already follows for the farewell screen. It
+    // belongs here rather than at the handover because EVERY boot repaint is a
+    // full-screen paint, and any of them can be the last one before something
+    // else drives the panel. Bounded at 6 s inside epdc_paint_wait(), so this
+    // cannot turn a slow panel into a hung boot.
+    epdc_paint_wait();
     if (shadowFb) memcpy(shadowFb, fb, fbSize);   // keep the delta engine honest
 }
 
