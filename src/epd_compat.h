@@ -71,6 +71,33 @@ void epdc_paint_wait();
 // the shutdown screen wants.
 void epdc_clear(int passes = 1);
 
+// Scrub ONLY the regions that differ between the glass and the frame about to
+// be painted, instead of the whole panel.
+//
+// WHY THIS EXISTS. The driver's delta engine never drives a black pixel black
+// again — the dark plane is masked to pixels the screenbuffer records as white
+// (EPD_Painter.S, epd_painter_ink_dual) — so residue never comes from
+// over-driving. It comes from the other direction: the same kernel records
+// "lightened pixels ... as white" the moment it issues one light pulse. If deep
+// black does not fully erase in that pulse, the leftover grey is now INVISIBLE
+// to the driver — its model says white, so no later frame will ever drive those
+// pixels again. That is the haze the dashboard used to leave under the map's
+// streets, and why only a clear fixed it: a clear is the one operation that
+// resyncs the driver's model to the glass.
+//
+// A whole-panel clear was a blunt way to buy that resync. This clears the
+// changed rectangles only (computeDirtyRects + a SOFT partial clear).
+//
+// `tolerance` is how many wasted pixels of clean area may sit inside one
+// rectangle before it is split — 0 gives tight rects, large values collapse
+// toward one full-screen rect. It matters because the driver caps the scan at
+// 32 rectangles and stops scanning once it hits that ceiling, leaving anything
+// below unscrubbed; merging generously keeps the count under it.
+//
+// Falls back to a whole-panel clear on the epdiy backend, which has no
+// dirty-rect machinery.
+void epdc_clear_dirty(int tolerance = 0);
+
 // Number of grey levels the driver is currently using (4 by default). Exposed
 // so the UI can decide between real greys and screentones.
 int epdc_grey_levels();

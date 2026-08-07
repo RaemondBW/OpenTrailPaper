@@ -277,17 +277,25 @@ void noteActivity() {
 // with no drift — which is what none of our epdiy schemes achieved.
 //
 // So the whole policy reduces to: skip identical frames, otherwise paint.
+// How much clean area one dirty rectangle may swallow before it is split, in
+// pixels. Deliberately generous: the driver stops scanning at 32 rectangles and
+// leaves everything past that unscrubbed, so a tolerance low enough to produce
+// tight rects would silently skip the bottom of a busy transition — the exact
+// residue this is here to remove. ~24 clean rows of the panel's 960 px width,
+// which merges a map's scattered street rows into a handful of bands while
+// still leaving an unchanged half-screen alone.
+constexpr int kDirtyClearTolerance = 24 * 960;
+
 bool refresh(bool screenChanged, bool fastInPage, bool listFast,
              bool forceClean = false, bool gc16 = false, bool fullFlash = false) {
-    // Every one of these parameters selected an epdiy waveform. The driver makes
-    // that choice itself now, so they survive only to keep the ~15 call sites
-    // unchanged. Notably fullFlash — the map<->dash transition scrub — is also a
-    // no-op: it existed because DU/GL16 could not restore a white pixel they had
-    // never driven, so the old screen bled through. A full paint() drives every
-    // changed pixel with a real waveform, which is the same guarantee the old
-    // two-phase flash bought at the cost of a 1.5 s white flash. If residue ever
-    // does show up on that transition, clearDirtyAreas() is the tool for it —
-    // scoped, not a whole-panel clear.
+    // screenChanged/fastInPage/listFast/forceClean/gc16 each selected an epdiy
+    // waveform. The driver makes that choice itself now, so they survive only to
+    // keep the ~15 call sites unchanged.
+    //
+    // fullFlash is the exception and IS still live — this comment used to claim
+    // it was inert while the code below acted on it, because the scrub was
+    // removed and then put back when residue showed up on the map, and only the
+    // code changed. See the epdc_clear_dirty() call for what it now does.
     (void)screenChanged; (void)fastInPage; (void)listFast;
     (void)forceClean; (void)gc16;
 
@@ -300,15 +308,23 @@ bool refresh(bool screenChanged, bool fastInPage, bool listFast,
     if (shadowFb) memcpy(shadowFb, fb, fbSize);
 
     const uint32_t tw0 = millis();
-    // Scrub the panel before painting the map. A map is nearly all fine dark
-    // lines on white; the dashboard it replaces is large filled blocks and heavy
-    // type. Driving straight from one to the other leaves the dashboard's
-    // residue sitting under the streets, and on this panel that reads as grey
-    // haze exactly where map detail needs contrast. One clear pass costs ~200 ms
-    // on a transition the rider already expects to take a moment, and it is only
-    // paid when ENTERING the map — not on the way out, not when the power sheet
-    // opens over it, and not on the 1 Hz map redraws.
-    if (fullFlash) epdc_clear();
+    // Scrub before painting the map. A map is nearly all fine dark lines on
+    // white; the dashboard it replaces is large filled blocks and heavy type.
+    // Driving straight from one to the other leaves the dashboard's residue
+    // sitting under the streets, and on this panel that reads as grey haze
+    // exactly where map detail needs contrast.
+    //
+    // The residue is NOT over-driven black — the driver's delta engine can't
+    // drive a black pixel black again (see epdc_clear_dirty). It is black that
+    // failed to fully erase in one light pulse, which the driver has already
+    // recorded as white, so no later frame will ever touch it again. A clear is
+    // what resyncs the driver's model to the glass.
+    //
+    // SCOPED, not the whole panel: only the rectangles that actually differ
+    // between the glass and this frame. Paid only when ENTERING the map — not
+    // on the way out, not when the power sheet opens over it, and not on the
+    // 1 Hz map redraws.
+    if (fullFlash) epdc_clear_dirty(kDirtyClearTolerance);
     epdc_paint();
 
     if (dbgTiming)

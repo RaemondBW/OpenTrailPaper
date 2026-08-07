@@ -642,10 +642,10 @@ uint8_t* epdc_framebuffer() { return g_fb4; }
 
 int epdc_grey_levels() { return g_painter ? g_painter->greyLevels() : 0; }
 
-void epdc_paint() {
-    if (!g_painter) return;
-    // Expand 4bpp -> 8bpp levels. Two output pixels per input byte, so this is
-    // one pass over 259200 bytes.
+// Expand 4bpp -> 8bpp levels. Two output pixels per input byte, so this is
+// one pass over 259200 bytes. Shared by paint and the dirty-rect scrub, which
+// needs the same 8bpp frame to diff the glass against.
+static void expandLevels() {
     const uint8_t* src = g_fb4;
     uint8_t* dst = g_levels;
     for (int y = 0; y < kNativeH; ++y) {
@@ -655,7 +655,22 @@ void epdc_paint() {
             *dst++ = g_lut[byte >> 4];     // odd x
         }
     }
+}
+
+void epdc_paint() {
+    if (!g_painter) return;
+    expandLevels();
     g_painter->paint(g_levels);
+}
+
+void epdc_clear_dirty(int tolerance) {
+    if (!g_painter) return;
+    // clearDirtyAreas() compacts this frame into the driver's paintbuffer to
+    // diff it against the screenbuffer, then whitens the rectangles that differ.
+    // It does NOT paint the new content — paint() recompacts the same frame, so
+    // the caller's usual epdc_paint() still follows.
+    expandLevels();
+    g_painter->clearDirtyAreas(g_levels, tolerance, EPD_Painter::ClearMode::SOFT);
 }
 
 void epdc_paint_wait() {
