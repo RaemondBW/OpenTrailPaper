@@ -389,22 +389,28 @@ int main(int argc, char** argv) {
 
     // Boot progress — mid-boot, and the failure case that matters most
     {
-        const char*  steps[] = {"Display", "SD card", "GPS"};
-        const int8_t allOk[] = {BOOT_OK, BOOT_OK, BOOT_OK};
-        const int8_t sdBad[] = {BOOT_OK, BOOT_FAIL, BOOT_OK};
+        const char*  steps[] = {"Display", "SD card", "GPS", "Maps"};
+        const int8_t allOk[] = {BOOT_OK, BOOT_OK, BOOT_OK, BOOT_OK};
+        const int8_t sdBad[] = {BOOT_OK, BOOT_FAIL, BOOT_OK, BOOT_OK};
         // Mid-mount: the SD step announced but not yet resolved. This is the
         // state the device sits in for a second or two on a cold card, so it is
         // worth eyeballing that the ring lines up with the ticks above it.
         const int8_t sdBusy[] = {BOOT_OK, BOOT_PENDING};
+        // Indexing the card: the LONGEST pending state of a boot (~4 s), and
+        // the one that used to show no pending step at all.
+        const int8_t mapBusy[] = {BOOT_OK, BOOT_OK, BOOT_OK, BOOT_PENDING};
         clearWhite(fb.data());
-        ui_render_boot_screen("v0.86", steps, allOk, 3, fb.data());
+        ui_render_boot_screen("v0.86", steps, allOk, 4, fb.data());
         emit("boot.png");
         clearWhite(fb.data());
-        ui_render_boot_screen("v0.86", steps, sdBad, 3, fb.data());
+        ui_render_boot_screen("v0.86", steps, sdBad, 4, fb.data());
         emit("boot_sd_failed.png");
         clearWhite(fb.data());
         ui_render_boot_screen("v0.86", steps, sdBusy, 2, fb.data());
         emit("boot_sd_mounting.png");
+        clearWhite(fb.data());
+        ui_render_boot_screen("v0.86", steps, mapBusy, 4, fb.data());
+        emit("boot_map_indexing.png");
     }
 
     // Menu (1h)

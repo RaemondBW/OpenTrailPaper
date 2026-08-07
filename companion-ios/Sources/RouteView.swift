@@ -11,10 +11,8 @@ struct RouteView: View {
     @State private var showSaved = false
     @State private var visibleRegion: MKCoordinateRegion?
     @State private var einkAreas: [EInkArea] = []
-    @State private var outlineHexes: [OutlineHex] = []
-    /// Whether the planned route leaves the downloaded coverage. Hexagons are
-    /// only worth showing when it does — see `visibleOutlines`.
-    @State private var routeLeavesCoverage = false
+    /// Hexes the planned route crosses that NOTHING covers — see `coverageGaps`.
+    @State private var gapHexes: [OutlineHex] = []
 
     var body: some View {
         NavigationStack {
@@ -25,7 +23,7 @@ struct RouteView: View {
                 // the device actually carries.
                 EInkMapView(
                     areas: einkAreas,
-                    outlines: visibleOutlines,
+                    outlines: gapHexes,
                     route: model.route?.polyline,
                     destination: model.destination.map {
                         MapDestination(name: model.destinationName, coordinate: $0)
@@ -102,25 +100,19 @@ struct RouteView: View {
         }
     }
 
-    /// Bare hexagons are noise on this screen. Areas the phone can actually draw
-    /// still render in the device's ink; the outline fallback only earns its
-    /// place when it answers a question the user is asking — "will I ride off
-    /// the edge of my maps?" So it appears only once a route does exactly that,
-    /// and then it shows where the coverage ends. The Maps screen keeps its
-    /// outlines unconditionally: picking areas to download needs the grid.
-    private var visibleOutlines: [OutlineHex] {
-        routeLeavesCoverage ? outlineHexes : []
-    }
-
     /// Ask the store what to draw for the region now on screen.
+    ///
+    /// Areas only. This screen deliberately drops the store's outline hexes: a
+    /// downloaded area already announces itself by being painted in the device's
+    /// ink, and outlining the ones that happen not to be drawable yet just put a
+    /// hex grid over ground that is fine. Hexagons here mean one thing —
+    /// coverage you do NOT have (`recomputeCoverage`).
     private func refreshEInk() {
         guard let r = visibleRegion else { return }
-        let content = store.visibleContent(in: r, synced: ble.deviceTileIds)
-        einkAreas = content.areas
-        outlineHexes = content.outlines
+        einkAreas = store.visibleContent(in: r, synced: ble.deviceTileIds).areas
     }
 
-    /// Does the route pass through ground no downloaded area covers?
+    /// The hexes the route crosses that neither the phone nor the device holds.
     ///
     /// Tested against the H3 cell of each route point rather than the hexes
     /// currently on screen: coverage is a property of the whole route, not of
@@ -130,19 +122,23 @@ struct RouteView: View {
     /// from its own card.
     private func recomputeCoverage() {
         guard let coords = model.route?.polyline.coordinates, !coords.isEmpty else {
-            routeLeavesCoverage = false   // no route, nothing to warn about
+            gapHexes = []          // no route, nothing to warn about
             return
         }
         let covered = store.ids.union(ble.deviceTileIds)
         guard !covered.isEmpty else {
-            // Nothing downloaded at all. There are no hexagons to reveal, so
-            // flagging this would only add a redundant state.
-            routeLeavesCoverage = false
+            // Nothing downloaded at all. Papering the whole route in hexagons
+            // would say only what the empty Maps screen already says.
+            gapHexes = []
             return
         }
-        routeLeavesCoverage = coords.contains { c in
-            guard let id = H3Tiles.id(at: c) else { return false }
-            return !covered.contains(id)
+        var seen = Set<String>()
+        gapHexes = coords.compactMap { c in
+            guard let id = H3Tiles.id(at: c), !covered.contains(id),
+                  seen.insert(id).inserted, let t = H3Tiles.tile(id: id)
+            else { return nil }
+            return OutlineHex(id: id, hexagon: t.hexagon, center: t.center,
+                              synced: false, missing: true)
         }
     }
 

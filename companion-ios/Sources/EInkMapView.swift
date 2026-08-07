@@ -32,6 +32,10 @@ struct OutlineHex: Identifiable {
     let hexagon: [CLLocationCoordinate2D]
     let center: CLLocationCoordinate2D
     let synced: Bool
+    /// Inverted meaning: ground with NO downloaded coverage at all. The Route
+    /// screen outlines the hexes a planned route crosses that nobody holds, so
+    /// the grid appears only where the maps run out.
+    var missing = false
 }
 
 /// A hex in the area the user is selecting for download.
@@ -173,7 +177,9 @@ struct EInkMapView: UIViewRepresentable {
     /// or a downloaded area's paper simply paints over it.
     private func signature() -> String {
         let a = areas.map { "\($0.id)\($0.synced ? "*" : "")" }.joined(separator: ",")
-        let o = outlines.map { "\($0.id)\($0.synced ? "*" : "")" }.joined(separator: ",")
+        let o = outlines.map {
+            "\($0.id)\($0.synced ? "*" : "")\($0.missing ? "!" : "")"
+        }.joined(separator: ",")
         let s = selection.map { "\($0.id)\($0.kind)" }.joined(separator: ",")
         let r = route.map { "\(ObjectIdentifier($0))" } ?? "-"
         return "\(a)|\(o)|\(s)|\(r)"
@@ -196,14 +202,19 @@ struct EInkMapView: UIViewRepresentable {
             var pts = hex.hexagon
             guard pts.count >= 3 else { continue }
             let poly = StyledPolygon(coordinates: &pts, count: pts.count)
-            poly.style = .downloadedOutline(synced: hex.synced)
+            poly.style = hex.missing ? .missingCoverage
+                                     : .downloadedOutline(synced: hex.synced)
             map.addOverlay(poly, level: .aboveRoads)
             if hex.synced { map.addAnnotation(SyncedCheckAnnotation(coordinate: hex.center)) }
         }
-        // .aboveLabels so Apple's road names don't print through the paper.
+        // .aboveRoads, NOT .aboveLabels: the paper covers Apple's roads (we draw
+        // our own) but its place and street names come back through on top of
+        // the screentones. Painting over them left downloaded areas as anonymous
+        // patches of ink — you could see the shape of the coverage but not read
+        // where it was.
         for area in areas {
             guard let overlay = EInkOverlay(area: area) else { continue }
-            map.addOverlay(overlay, level: .aboveLabels)
+            map.addOverlay(overlay, level: .aboveRoads)
             if area.synced { map.addAnnotation(SyncedCheckAnnotation(coordinate: area.center)) }
         }
         // Last, so the route always sits on top of the paper.
@@ -321,18 +332,24 @@ private final class SyncedCheckAnnotation: NSObject, MKAnnotation {
     /// came out plain black here, and the mark has to hold its colour over both
     /// paper and a dark water screentone. The white ring is what keeps it
     /// legible on the dark half.
+    /// 14 pt across. It is a status badge on a ~5.6 km hexagon, not a pin: at 22
+    /// it crowded the ink underneath and neighbouring checks nearly touched when
+    /// zoomed out. The geometry below is proportional, so `d` is the only knob.
     static let image: UIImage = {
-        let d: CGFloat = 22
+        let d: CGFloat = 14
+        let k = d / 22                     // the marks were drawn at 22
         return UIGraphicsImageRenderer(size: CGSize(width: d, height: d)).image { _ in
             UIColor.white.setFill()
             UIBezierPath(ovalIn: CGRect(x: 0, y: 0, width: d, height: d)).fill()
             UIColor(Palette.good).setFill()
-            UIBezierPath(ovalIn: CGRect(x: 1.5, y: 1.5, width: d - 3, height: d - 3)).fill()
+            let ring = 1.5 * k
+            UIBezierPath(ovalIn: CGRect(x: ring, y: ring,
+                                        width: d - ring * 2, height: d - ring * 2)).fill()
             let check = UIBezierPath()
-            check.move(to: CGPoint(x: 6.2, y: 11.4))
-            check.addLine(to: CGPoint(x: 9.6, y: 14.8))
-            check.addLine(to: CGPoint(x: 15.8, y: 7.4))
-            check.lineWidth = 2.4
+            check.move(to: CGPoint(x: 6.2 * k, y: 11.4 * k))
+            check.addLine(to: CGPoint(x: 9.6 * k, y: 14.8 * k))
+            check.addLine(to: CGPoint(x: 15.8 * k, y: 7.4 * k))
+            check.lineWidth = 2.4 * k
             check.lineCapStyle = .round
             check.lineJoinStyle = .round
             UIColor.white.setStroke()
@@ -356,12 +373,19 @@ private final class StyledPolygon: MKPolygon {
     enum Style {
         case selection(SelectionHex.Kind)
         case downloadedOutline(synced: Bool)
+        case missingCoverage
 
         var colors: (fill: UIColor, stroke: UIColor) {
             switch self {
             case .downloadedOutline(let synced):
                 let c = UIColor(synced ? Palette.good : Palette.faint)
                 return (c.withAlphaComponent(0.14), c)
+            // A gap in the maps, so it has to read as "look here" — the accent,
+            // barely tinted: these sit under the route line, which must stay
+            // the most legible thing on the screen.
+            case .missingCoverage:
+                let c = UIColor(Palette.accent)
+                return (c.withAlphaComponent(0.10), c.withAlphaComponent(0.7))
             case .selection(.done):
                 return (UIColor(Palette.good).withAlphaComponent(0.22), UIColor(Palette.good))
             case .selection(.excluded):

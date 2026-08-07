@@ -42,6 +42,14 @@ enum H3Tiles {
                        south: ts, west: tw, north: tn, east: te)
     }
 
+    // Geometry for an id we already know (a cell on the device, a gap in
+    // coverage) — the inverse of `id(at:)`. nil if the string isn't a cell.
+    static func tile(id: String) -> MapTile? {
+        let cell = h3_from_id(id)
+        guard cell != 0 else { return nil }
+        return tile(from: cell)
+    }
+
     // The res-6 H3 id containing a coordinate (for hit-testing map taps).
     static func id(at coord: CLLocationCoordinate2D) -> String? {
         let cell = h3_cell_at(coord.latitude, coord.longitude)
