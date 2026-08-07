@@ -53,7 +53,7 @@
 // Full (ghost-clearing) refresh every N fast refreshes.
 #define FULL_REFRESH_EVERY  60
 
-#define FIRMWARE_VERSION    "v0.88"
+#define FIRMWARE_VERSION    "v0.89"
 
 // Rider settings
 #define FTP_WATTS           250     // for the power zone bar (Coggan zones)

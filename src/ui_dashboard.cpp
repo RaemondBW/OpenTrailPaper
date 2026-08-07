@@ -30,6 +30,7 @@
 #include "settings.h"
 #include "diag.h"
 #include "smooth_epd.h"
+#include "power_mgmt.h"
 
 namespace {
 
@@ -122,6 +123,18 @@ void applyBacklight(int level) {
 }
 
 void shutdownDevice(uint8_t* fb, const char* reason) {
+    // Hold light sleep off for the whole shutdown, and never release it.
+    //
+    // LOAD-BEARING, not just a bus guard. Automatic light sleep re-arms the RTC
+    // timer wake source on EVERY tickless idle — esp_pm's vApplicationSleep
+    // calls esp_sleep_enable_timer_wakeup() before each nap — and that trigger
+    // lives in the same global sleep config esp_deep_sleep_start() later
+    // consumes. If an idle window lands between our disable-everything below
+    // and the deep-sleep call, the timer trigger comes back and deep sleep
+    // honours it: the device wakes seconds later and boots, "reset: wake from
+    // sleep". Taking the lock first means no idle can arm anything from here on.
+    power_mgmt::busyAcquire();   // deliberately never released — we don't return
+
     // Log WHY we're powering off and flush it to SD before deep sleep, so the
     // next boot's log distinguishes a user shutdown / auto-sleep from a reset
     // or a power loss (which leave no such line).
@@ -204,6 +217,13 @@ void shutdownDevice(uint8_t* fb, const char* reason) {
     rtc_gpio_pullup_en((gpio_num_t)BOARD_BOOT_BTN);
     rtc_gpio_pulldown_dis((gpio_num_t)BOARD_BOOT_BTN);
 
+    // Start from NO wake sources. The enabled-trigger set is global and sticky:
+    // anything enabled earlier in the boot — the PM tickless-idle timer above
+    // all, but also the optional GPS UART wakeup — is still armed here, and
+    // esp_deep_sleep_start() honours every one of it. That is why power-off kept
+    // "restarting by itself after ~10 s": the last light sleep's RTC alarm was
+    // simply re-armed for deep sleep. The button is the ONLY way back on.
+    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
     esp_sleep_enable_ext0_wakeup((gpio_num_t)BOARD_BOOT_BTN, 0);
     esp_deep_sleep_start();
 }
@@ -286,7 +306,8 @@ bool refresh(bool screenChanged, bool fastInPage, bool listFast,
     // residue sitting under the streets, and on this panel that reads as grey
     // haze exactly where map detail needs contrast. One clear pass costs ~200 ms
     // on a transition the rider already expects to take a moment, and it is only
-    // paid when entering or leaving the map — not on the 1 Hz map redraws.
+    // paid when ENTERING the map — not on the way out, not when the power sheet
+    // opens over it, and not on the 1 Hz map redraws.
     if (fullFlash) epdc_clear();
     epdc_paint();
 
@@ -512,8 +533,13 @@ void handleTap(int x, int y) {
         case SCREEN_SETTINGS: {
             int row = (y - kMenuRowTop) / kSettingsRowH;
             bool inRows = y >= kMenuRowTop && row >= 0 && row < 5;
-            bool toggleRow = row == kSettingsBacklightRow ||
-                             row == kSettingsUnitsRow || row == kSettingsUsbRow;
+            // BACKLIGHT is NOT a toggle row: ui_render_settings draws it with the
+            // -/+ stepper (four levels don't fit a switch), so it must be hit-
+            // tested like one. It used to be listed here, which meant only the
+            // toggle band — overlapping the + button — did anything: "-" fell
+            // through to the "tap anywhere else" branch and bounced the rider
+            // out to the menu instead of dimming the light.
+            bool toggleRow = row == kSettingsUnitsRow || row == kSettingsUsbRow;
             bool minus = x >= kSettingsMinusX && x < kSettingsMinusX + kSettingsBtn;
             bool plus = x >= kSettingsPlusX && x < kSettingsPlusX + kSettingsBtn;
             bool toggleHit = x >= kSettingsToggleX &&
@@ -523,12 +549,19 @@ void handleTap(int x, int y) {
                 int dir = plus ? 1 : -1;
                 if (row == 0) settings::setFtpWatts(settings::ftpWatts() + dir * 5);
                 if (row == 1) settings::setTzMinutes(settings::tzMinutes() + dir * 30);
+                if (row == kSettingsBacklightRow) {
+                    // Clamped, not wrapped: with a visible -/+ pair, "+" at
+                    // Bright wrapping round to Off would read as a fault. (The
+                    // side key still cycles — that one has nowhere else to go.)
+                    int bl = settings::backlight() + dir;
+                    if (bl < 0) bl = 0;
+                    if (bl > 3) bl = 3;
+                    settings::setBacklight(bl);
+                    applyBacklight(bl);
+                }
                 edited = true;
             } else if (inRows && toggleRow && toggleHit) {
-                if (row == kSettingsBacklightRow) {   // tap cycles off/low/med/bright
-                    settings::setBacklight((settings::backlight() + 1) & 3);
-                    applyBacklight(settings::backlight());
-                } else if (row == kSettingsUnitsRow) {
+                if (row == kSettingsUnitsRow) {
                     settings::setUseMiles(!settings::useMiles());
                 } else {   // USB drive
                     bool on = !settings::usbDrive();
@@ -547,9 +580,12 @@ void handleTap(int x, int y) {
                 ble_server::pushSettingsToPhone();   // mirror the edit to the app
             } else if (y >= kMenuRowTop && row == kSettingsGpsRow) {
                 screen = SCREEN_GPSDEBUG;
-            } else {
-                screen = SCREEN_MENU;
             }
+            // Anything else on this screen does NOTHING. Settings is the one
+            // place where a stray touch used to navigate away mid-edit — reach
+            // for a stepper, miss it by a few pixels, and you were back on the
+            // menu with the change unmade. The capacitive Home key (goBack())
+            // is the only way out.
             break;
         }
         case SCREEN_GPSDEBUG:
@@ -995,9 +1031,17 @@ void bootStatus(const char* step, bool ok) {
 bool begin() {
     // Load the best downloaded map for our last-known spot, else the embedded
     // default. New maps arrive from the phone over BLE (see map_store).
+    //
+    // ANNOUNCED, like the SD mount and for the same reason: indexing the tiles
+    // on the card is the longest thing left in setup() — ~4 s with 107 tiles,
+    // and it grows with the card — and it used to run with the glass showing a
+    // fully ticked list and an unmoving bar. Nothing said the device was still
+    // working, so the last four seconds of every boot looked like a hang.
+    bootStep("Maps");
     double mlat = DEFAULT_MAP_LAT, mlon = DEFAULT_MAP_LON;
     settings::lastPosition(mlat, mlon);
     map_store::begin(mlat, mlon);
+    bootStatus("Maps", true);
     EPDC_STEP("map loaded — begin() done");
     // Hand the panel over to the dashboard: further bootStatus() calls no-op,
     // and the task's first refresh() paints the real UI over the boot screen.
@@ -1594,8 +1638,15 @@ void task(void*) {
             bool fastInPage = screenIsFast(screen, powerOverlay) && !navPrompt;
             bool listFast = screenListFast(screen) && screenListFast(prevScreen) &&
                             !powerOverlay && !navPrompt;
-            bool mapTransition = screenChanged &&
-                (screen == SCREEN_MAP || prevScreen == SCREEN_MAP);
+            // ENTERING the map is the only transition that earns a scrub — see
+            // refresh(). Leaving it doesn't: what replaces the map is heavy type
+            // and filled blocks, which drive over fine map lines without any
+            // haze, so that flash bought nothing and just made every exit from
+            // the map feel slow. Deliberately NOT gated on screenChanged, which
+            // is also true when only the power sheet opened or closed: that is
+            // the popup flash, and staying on SCREEN_MAP now reads as no
+            // transition at all.
+            bool mapTransition = screen == SCREEN_MAP && prevScreen != SCREEN_MAP;
             refresh(screenChanged, fastInPage, listFast, wantClean,
                     navPromptAppearing, mapTransition);
         }

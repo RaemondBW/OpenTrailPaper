@@ -27,6 +27,8 @@
 #include "usb_storage.h"
 #include "power_mgmt.h"
 #include "diag.h"
+#include <esp_sleep.h>
+#include <soc/rtc_cntl_reg.h>
 #ifdef DEBUG_EARLY_USB
 #include "USB.h"
 #endif
@@ -260,6 +262,25 @@ static const char* resetReasonStr(esp_reset_reason_t r) {
     }
 }
 
+// Which wake source actually ended the last deep sleep. Only EXT0 (the BOOT
+// button) is ever armed by shutdownDevice(), so anything else in this log means
+// a stale trigger survived into deep sleep — the failure mode where the device
+// "turns itself back on" a few seconds after a power-off. Worth a line: without
+// it, every wake looks identical in the log ("reset: wake from sleep").
+static const char* wakeCauseStr(esp_sleep_wakeup_cause_t c) {
+    switch (c) {
+        case ESP_SLEEP_WAKEUP_EXT0:    return "BOOT button (ext0)";
+        case ESP_SLEEP_WAKEUP_EXT1:    return "ext1 UNEXPECTED";
+        case ESP_SLEEP_WAKEUP_TIMER:   return "RTC timer UNEXPECTED";
+        case ESP_SLEEP_WAKEUP_GPIO:    return "gpio UNEXPECTED";
+        case ESP_SLEEP_WAKEUP_UART:    return "uart UNEXPECTED";
+        case ESP_SLEEP_WAKEUP_TOUCHPAD:return "touchpad UNEXPECTED";
+        case ESP_SLEEP_WAKEUP_ULP:     return "ulp UNEXPECTED";
+        case ESP_SLEEP_WAKEUP_UNDEFINED: return "none (not a sleep wake)";
+        default:                       return "other UNEXPECTED";
+    }
+}
+
 // After a panic, the ESP32 auto-writes a full core dump to the `coredump`
 // flash partition (enabled in the Arduino sdkconfig). At the next boot we
 // summarize it — crashing task + program counter + backtrace — into the SD
@@ -328,6 +349,20 @@ void setup() {
     esp_reset_reason_t rr = esp_reset_reason();
     diag::log("boot firmware %s (reset: %s [%d])", FIRMWARE_VERSION,
               resetReasonStr(rr), (int)rr);
+    // Is the force-download-boot bit still set?
+    //
+    // The `bootloader` console command (usb_persist_restart) sets it and NOTHING
+    // in the Arduino core ever clears it — whether it survives depends on the
+    // ROM, which we can't read from the host. If this logs 1 on a normal app
+    // boot, the bit is sticky and the command strands the device in download
+    // mode until a real power cycle; if it logs 0, the command is safe to use
+    // for hands-free flashing and the physical BOOT/RST dance is unnecessary.
+    diag::log("force-download-boot bit: %d",
+              (int)((REG_READ(RTC_CNTL_OPTION1_REG) & RTC_CNTL_FORCE_DOWNLOAD_BOOT) != 0));
+    if (rr == ESP_RST_DEEPSLEEP) {
+        esp_sleep_wakeup_cause_t wc = esp_sleep_get_wakeup_cause();
+        diag::log("woke by: %s [%d]", wakeCauseStr(wc), (int)wc);
+    }
     if (rr == ESP_RST_PANIC || rr == ESP_RST_INT_WDT || rr == ESP_RST_TASK_WDT)
         logCoreDumpIfAny();          // save the backtrace to SD after a crash
     diag::log("cpu %d MHz", getCpuFrequencyMhz());

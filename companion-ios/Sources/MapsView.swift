@@ -154,14 +154,18 @@ struct MapsView: View {
             .onAppear {
                 ble.refreshDeviceMaps(); ble.refreshDeviceTiles(); locator.start()
                 store.refresh()
+                fitDownloadedHexes()
             }
             // Redraw when a tile finishes decoding, or when the device's own
-            // tile list arrives and flips areas to "synced".
-            .onChange(of: store.version) { refreshEInk() }
-            .onChange(of: ble.deviceTileIds) { refreshEInk() }
+            // tile list arrives and flips areas to "synced". Both are also the
+            // moment the coverage we want to frame becomes known.
+            .onChange(of: store.version) { refreshEInk(); fitDownloadedHexes() }
+            .onChange(of: ble.deviceTileIds) { refreshEInk(); fitDownloadedHexes() }
             // Center on the user's first fix, once, at our fixed tile-friendly
             // span. Only before any interaction so it never yanks the map away
-            // from a box the user is drawing.
+            // from a box the user is drawing — and only as the FALLBACK for
+            // someone with no coverage yet, since `fitDownloadedHexes` claims
+            // `didCenter` the moment it has hexes to frame.
             .onReceive(locator.$coordinate) { coord in
                 guard !didCenter, box == nil, !drawMode, let coord else { return }
                 didCenter = true
@@ -177,6 +181,35 @@ struct MapsView: View {
         let content = store.visibleContent(in: r, synced: ble.deviceTileIds)
         einkAreas = content.areas
         outlineHexes = content.outlines
+    }
+
+    /// Frame ALL the coverage — everything the phone holds plus everything the
+    /// device holds — the first time this screen has something to frame.
+    ///
+    /// Managing downloaded areas starts with seeing them, and the old opening
+    /// shot (a fixed ~22 km box on the user) showed one screenful of a
+    /// collection that can span a country: the rest was off-map with nothing to
+    /// say it existed. Runs once — `didCenter` is shared with the locate-the-
+    /// user fallback, so whichever gets there first wins and neither one ever
+    /// moves the camera under a box being drawn.
+    private func fitDownloadedHexes() {
+        guard !didCenter, box == nil, !drawMode else { return }
+        let ids = store.ids.union(ble.deviceTileIds)
+        guard !ids.isEmpty else { return }
+
+        var rect = MKMapRect.null
+        for id in ids {
+            guard let t = H3Tiles.tile(id: id) else { continue }
+            for c in t.hexagon {
+                let p = MKMapPoint(c)
+                rect = rect.union(MKMapRect(origin: p, size: MKMapSize(width: 0, height: 0)))
+            }
+        }
+        guard !rect.isNull, rect.size.width > 0, rect.size.height > 0 else { return }
+        didCenter = true
+        // Less padding than a route gets: the hexes ARE the subject here, and
+        // the bottom card already eats the lower edge of the map.
+        camera = MapCameraCommand(target: .rect(rect.paddedForDisplay(fraction: 0.12)))
     }
 
     private var header: some View {

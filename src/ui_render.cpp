@@ -929,10 +929,12 @@ void ui_render_boot_screen(const char* version, const char* const* lines,
     int done = 0;
     for (int i = 0; i < count; ++i)
         if (!state || state[i] != BOOT_PENDING) ++done;
-    if (done > 0) {
-        if (done > 4) done = 4;                            // 4 steps in a boot
-        epd_fill_rect({barX, barY, barW * done / 4, barH}, 0x00, fb);
-    }
+    // Display, SD card, GPS, Maps. Held as a floor rather than using `count`
+    // directly so the bar doesn't read full at 2 of 2 while step 3 is pending —
+    // and grown past it if a boot ever announces more, so it can't overflow the
+    // track either.
+    const int total = count > 4 ? count : 4;
+    if (done > 0) epd_fill_rect({barX, barY, barW * done / total, barH}, 0x00, fb);
     ui::text(&ArialBold_14, cx, 894, version, fb, EPD_DRAW_ALIGN_CENTER, 0x22);
 }
 
