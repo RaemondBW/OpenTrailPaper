@@ -469,7 +469,7 @@ int main(int argc, char** argv) {
     emit("routes.png");
 
     // Settings
-    SettingsInfo si{250, -420, 2, false, true};
+    SettingsInfo si{true, 250, -420, 2, false, true};
     clearWhite(fb.data());
     ui_render_settings(si, fb.data());
     emit("settings.png");

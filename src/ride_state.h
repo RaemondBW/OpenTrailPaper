@@ -74,6 +74,8 @@ struct RideState {
     int16_t  tzMin = -420;
     bool     useMiles = false;   // display units: false = km, true = miles
     bool     clock24h = true;    // status-bar clock: true = 24h, false = 12h
+    // Keep unpaired sensor fields on the dashboard instead of removing them.
+    bool     showOffline = false;
 };
 
 // End-of-ride stats for the summary screen (design 1g).

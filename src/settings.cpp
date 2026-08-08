@@ -14,6 +14,9 @@ int bl = 2;  // backlight level 0-3
 bool miles = false;  // false = km, true = miles
 bool clk24 = true;   // true = 24-hour clock, false = 12-hour
 bool usbDrv = true;  // true = expose SD as USB drive when plugged into a host
+// false = a field whose sensor is unpaired is dropped from the dashboard and
+// the rest re-pack; true = it stays, showing no data.
+bool showOff = false;
 char addrs[3][18] = {"", "", ""};
 char names[3][32] = {"", "", ""};   // remembered vendor/model per paired kind
 double lastLat = 0, lastLon = 0;
@@ -36,6 +39,7 @@ void begin() {
     // that had the old (default-ON) "usbdrv" value stored. OFF = the device
     // keeps the SD (logs/recording) when plugged in.
     usbDrv = prefs.getBool("usbdrv2", false);
+    showOff = prefs.getBool("showoff", false);
     for (int k = 0; k < 3; ++k) {
         prefs.getString(KEYS[k], addrs[k], sizeof(addrs[k]));
         prefs.getString(NAME_KEYS[k], names[k], sizeof(names[k]));
@@ -81,6 +85,12 @@ bool usbDrive() { return usbDrv; }
 void setUsbDrive(bool on) {
     usbDrv = on;
     prefs.putBool("usbdrv2", usbDrv);
+}
+
+bool showOffline() { return showOff; }
+void setShowOffline(bool on) {
+    showOff = on;
+    prefs.putBool("showoff", showOff);
 }
 
 const char* sensorAddr(int kind) {

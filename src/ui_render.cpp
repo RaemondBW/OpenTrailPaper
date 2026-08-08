@@ -596,6 +596,34 @@ void heroCell(const EpdRect& r, const char* labelStr, const char* value,
     if (zoneBar) drawPowerZoneBar(s, r.y + r.height - ui::CELL_PAD - 18, fb);
 }
 
+// The WIDEST string a field can ever produce, used to choose its type size.
+//
+// Sizing from the live value made the type resize mid-ride: distance goes
+// "0.0" -> "10.5" and ride time rolls past an hour, so the class stepped a face
+// and every cell in it visibly grew or shrank. On e-paper that is also a full
+// repaint of the row for no new information. Size for the worst case once and
+// the number stays put for the whole ride.
+const char* dashSizingHint(uint8_t field) {
+    switch (field) {
+        case DF_SPEED:       return "88.8";
+        case DF_POWER3S:
+        case DF_POWER:       return "888";
+        case DF_HEART_RATE:
+        case DF_CADENCE:     return "888";
+        case DF_DISTANCE:
+        case DF_ROUTE_LEFT:  return "888.8";
+        case DF_RIDE_TIME:
+        case DF_MOVING_TIME: return "88:88:88";
+        case DF_CLIMB:
+        case DF_ALTITUDE:    return "8888";
+        case DF_GRADE:       return "88.8";
+        case DF_BATTERY:     return "888";
+        case DF_SATELLITES:  return "88";
+        case DF_CLOCK:       return "88:88";
+        default:             return "888";
+    }
+}
+
 // One packed row: the items sharing it, and the height share it asked for.
 struct DashRow { int first, count, weight; };
 
@@ -756,7 +784,7 @@ void ui_render_dashboard(const RideState& s, bool navActive,
     // check at 30 km/h.
     DashLayout L;
     for (int i = 0; i < src.count; ++i)
-        if (dashFieldAvailable(src.items[i].field, s))
+        if (s.showOffline || dashFieldAvailable(src.items[i].field, s))
             L.items[L.count++] = src.items[i];
 
     // Everything configured is unavailable — a fresh device with a power-only
@@ -863,7 +891,8 @@ void ui_render_dashboard(const RideState& s, bool navActive,
                               ? ui::textWidth(&Arial_B, p.unit) + 6 : 0;
         const int valH = p.r.height - ui::CELL_PAD * 2 - Arial_B.ascender
                          - ui::HALF_STEP;
-        const int idx = ui::valueFontIndex(ui::kValueLadder, p.value, availW,
+        const int idx = ui::valueFontIndex(ui::kValueLadder,
+                                           dashSizingHint(p.field), availW,
                                            valH, unitW);
         const int wb = (p.r.width > ui::CONTENT_W * 3 / 4) ? 1 : 0;
         if (idx > classIdx[p.size][wb]) classIdx[p.size][wb] = idx;
@@ -1277,7 +1306,7 @@ void ui_render_settings(const SettingsInfo& si, uint8_t* fb) {
         char value[16];
         bool toggle;   // switch instead of a +/- stepper
         bool on;
-    } rows[5];
+    } rows[6];
     snprintf(rows[0].value, sizeof(rows[0].value), "%d", si.ftpW);
     rows[0].label = "FTP";
     rows[0].toggle = false;
@@ -1299,8 +1328,13 @@ void ui_render_settings(const SettingsInfo& si, uint8_t* fb) {
     rows[4].label = "USB DRIVE";
     rows[4].toggle = true;
     rows[4].on = si.usbDrive;
+    // Keep unpaired sensor fields on the dashboard rather than dropping them.
+    snprintf(rows[5].value, sizeof(rows[5].value), "%s", si.showOffline ? "On" : "Off");
+    rows[5].label = "SHOW OFFLINE";
+    rows[5].toggle = true;
+    rows[5].on = si.showOffline;
 
-    for (int i = 0; i < 5; ++i) {
+    for (int i = 0; i < 6; ++i) {
         const int y = kMenuRowTop + i * kSettingsRowH;
         const int midY = y + kSettingsRowH / 2;
 
@@ -1356,12 +1390,13 @@ void ui_render_settings(const SettingsInfo& si, uint8_t* fb) {
 
     // Navigation row, drawn with the LIST recipe so it reads as the same
     // component it is on every other screen.
-    const int ny = kMenuRowTop + 5 * kSettingsRowH;
-    ui::text(&Impact_T, ui::CONTENT_X + ui::CELL_PAD, ny + 52, "GPS DEBUG", fb);
-    ui::text(&Arial_B, ui::CONTENT_X + ui::CELL_PAD, ny + 88,
+    // Six rows leave less than a full dense row before the BACK strip, so the
+    // nav row takes exactly what is left rather than running under it.
+    const int ny = kMenuRowTop + 6 * kSettingsRowH;
+    ui::text(&Impact_T, ui::CONTENT_X + ui::CELL_PAD, ny + 40, "GPS DEBUG", fb);
+    ui::text(&Arial_B, ui::CONTENT_X + ui::CELL_PAD, ny + 72,
              "Receiver diagnostics", fb, EPD_DRAW_ALIGN_LEFT, ui::INK);
-    drawRowMarker(ny - (ui::ROW_H - kSettingsRowH) / 2, ui::INK, fb);
-    epd_fill_rect({0, ny + kSettingsRowH - ui::RULE, W, ui::RULE}, ui::INK, fb);
+    epd_fill_rect({0, kBackBar.y - ui::RULE, W, ui::RULE}, ui::INK, fb);
 
     ui_render_back_bar(fb);
 }
