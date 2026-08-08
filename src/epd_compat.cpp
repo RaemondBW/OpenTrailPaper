@@ -440,6 +440,19 @@ enum EpdDrawError epd_write_string(const EpdFont* font, const char* string,
     return EPD_DRAW_SUCCESS;
 }
 
+// Ink height of a digit in this font — the '0' glyph's bitmap height.
+//
+// The only honest answer to "how tall will this number be". epd_get_string_rect
+// cannot tell you: epdiy forces EPD_DRAW_BACKGROUND there, so its height is the
+// full ascender-to-descender band (103 px for Impact_40, whose digits are 58).
+// Sizing a value against that band rejects the big face in cells it fits fine,
+// and the alternative — a hardcoded cap height per font — is the guess that put
+// numbers through their own captions twice already.
+int epdc_digit_height(const EpdFont* font) {
+    const EpdGlyph* g = findGlyph(font, '0');
+    return g ? g->height : (font ? font->ascender : 0);
+}
+
 EpdRect epd_get_string_rect(const EpdFont* font, const char* string, int x, int y,
                             int margin, const EpdFontProperties* properties) {
     (void)properties;   // epdiy forces EPD_DRAW_BACKGROUND on here regardless

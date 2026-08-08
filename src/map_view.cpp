@@ -10,6 +10,10 @@
 #include "routes.h"
 #include "map_store.h"
 #include "ui_render.h"
+#include "fonts/arial_l.h"
+#include "fonts/arial_b.h"
+#include "fonts/impact_v.h"
+#include "fonts/impact_h.h"
 #include "fonts/arialbold_14.h"
 #include "fonts/arialbold_20.h"
 #include "fonts/impact_40.h"
@@ -272,7 +276,7 @@ void drawScaleBar(float metersPerPixel, bool miles, uint8_t* fb) {
     }
     int px = (int)(barM / metersPerPixel);
     epd_fill_rect({x, y, px, 4}, 0x00, fb);
-    ui::text(&ArialBold_20, x, y - 10, buf, fb);
+    ui::text(&Arial_B, x, y - 10, buf, fb);
 }
 
 void drawCompass(int cx, int cy, float northDeg, bool trackUp, uint8_t* fb) {
@@ -376,16 +380,16 @@ void ui_render_map(const MapScreenData& map, const RideState& s, uint8_t* fb) {
         epd_fill_rect({bx, by, bw, bh}, 0xFF, fb);
         for (int i = 0; i < 2; ++i)
             epd_draw_rect({bx - i, by - i, bw + 2 * i, bh + 2 * i}, 0x00, fb);
-        ui::text(&ArialBold_20, W / 2, by + 38, "NO MAP HERE", fb,
+        ui::text(&Arial_B, W / 2, by + 38, "NO MAP HERE", fb,
                  EPD_DRAW_ALIGN_CENTER, 0x00);
-        ui::text(&ArialBold_14, W / 2, by + 70, "Download this area from the app",
+        ui::text(&Arial_L, W / 2, by + 70, "Download this area from the app",
                  fb, EPD_DRAW_ALIGN_CENTER, 0x00);
     }
 
     // Label when the map is centered on the phone's position (device GPS cold).
     // No background box by request — just the text.
     if (map.phonePosition) {
-        ui::text(&ArialBold_14, 21, ui::STATUS_H + 28, "PHONE GPS", fb,
+        ui::text(&Arial_L, 21, ui::STATUS_H + 28, "PHONE GPS", fb,
                  EPD_DRAW_ALIGN_LEFT, 0x00);
     }
 
@@ -406,34 +410,55 @@ void ui_render_map(const MapScreenData& map, const RideState& s, uint8_t* fb) {
     epd_fill_rect({0, 0, W, ui::STATUS_H - 3}, 0xFF, fb);
     ui::statusBar(s, fb);
 
-    // Footer: SPEED | DISTANCE | TIME (design 1f)
-    epd_fill_rect({0, STRIP_TOP, W, H - STRIP_TOP}, 0xFF, fb);
-    epd_fill_rect({0, STRIP_TOP, W, 3}, 0x00, fb);
-    int colW = W / 3;
-    for (int i = 1; i < 3; ++i) {
-        epd_fill_rect({i * colW - 1, STRIP_TOP + 3, 3, H - STRIP_TOP - 3}, 0x00, fb);
-    }
+    // Footer: three cells drawn with the SAME primitive as the dashboard, so a
+    // rider glancing down sees the same object in both places — caption top-left
+    // at the shared size, value+unit centred as a pair.
+    epd_fill_rect({0, STRIP_TOP, W, H - STRIP_TOP}, ui::PAPER, fb);
+    epd_fill_rect({0, STRIP_TOP, W, ui::RULE_HEAVY}, ui::INK, fb);
 
-    // Short unit-less headers: a "SPEED KM/H" header is wider than the 180px
-    // column and overlaps its neighbours. Units are shown on the dashboard,
-    // summary, and (for distance) the scale bar; the map footer stays glanceable.
-    ui::label(colW / 2, STRIP_TOP + 36, "SPEED", fb);
-    snprintf(buf, sizeof(buf), "%.1f", units::speed(s.speedKmh, s.useMiles));
-    ui::valueWithUnit(&Impact_40, 6, colW - 6, H - 30, buf, "", fb);
+    const int fy = STRIP_TOP + ui::RULE_HEAVY;
+    const int fh = H - fy;
+    const int colW = W / 3;
 
-    ui::label(colW + colW / 2, STRIP_TOP + 36, "DIST", fb);
-    snprintf(buf, sizeof(buf), "%.1f", units::distM(s.distanceM, s.useMiles));
-    ui::valueWithUnit(&Impact_40, colW + 6, 2 * colW - 6, H - 30, buf, "", fb);
-
-    if (map.showRemaining) {
-        ui::label(2 * colW + colW / 2, STRIP_TOP + 36, "LEFT", fb);
-        snprintf(buf, sizeof(buf), "%.1f", units::dist(map.remainingKm, s.useMiles));
-    } else {
-        ui::label(2 * colW + colW / 2, STRIP_TOP + 36, "TIME", fb);
-        snprintf(buf, sizeof(buf), "%lu:%02lu", (unsigned long)(s.elapsedS / 3600),
+    char v0[24], v1[24], v2[24];
+    snprintf(v0, sizeof(v0), "%.1f", units::speed(s.speedKmh, s.useMiles));
+    snprintf(v1, sizeof(v1), "%.1f", units::distM(s.distanceM, s.useMiles));
+    const char* l2 = map.showRemaining ? "LEFT" : "TIME";
+    if (map.showRemaining)
+        snprintf(v2, sizeof(v2), "%.1f", units::dist(map.remainingKm, s.useMiles));
+    else
+        snprintf(v2, sizeof(v2), "%lu:%02lu", (unsigned long)(s.elapsedS / 3600),
                  (unsigned long)((s.elapsedS / 60) % 60));
+
+    // One caption size across the strip, as on the data page.
+    const char* labels[3] = {"SPEED", "DIST", l2};
+    const EpdFont* lf = ui::kLabelLadder[ui::LABEL_LADDER_N - 1];
+    for (int k = 0; k < ui::LABEL_LADDER_N; ++k) {
+        bool fits = true;
+        for (int c = 0; c < 3; ++c)
+            if (ui::labelWidth(ui::kLabelLadder[k], labels[c]) >
+                colW - 2 * ui::CELL_PAD) fits = false;
+        if (fits) { lf = ui::kLabelLadder[k]; break; }
     }
-    ui::valueWithUnit(&Impact_40, 2 * colW + 6, W - 6, H - 30, buf, "", fb);
+
+    const char* vals[3] = {v0, v1, v2};
+    const char* units3[3] = {units::speedLabel(s.useMiles),
+                             units::distLabel(s.useMiles),
+                             map.showRemaining ? units::distLabel(s.useMiles) : ""};
+    // Common value face across the three, so the strip reads as one row.
+    int vi = 0;
+    for (int c = 0; c < 3; ++c) {
+        const int uw = units3[c][0] ? ui::textWidth(&Arial_B, units3[c]) + 4 : 0;
+        const int idx = ui::valueFontIndex(ui::kValueLadder, vals[c],
+                                           colW - 2 * ui::CELL_PAD,
+                                           fh - 2 * ui::CELL_PAD - 20, uw);
+        if (idx > vi) vi = idx;
+    }
+    for (int c = 0; c < 3; ++c) {
+        EpdRect r = {c * colW, fy, colW, fh};
+        ui::cell(r, labels[c], vals[c], units3[c], fb, false,
+                 ui::kValueLadder[vi], lf);
+    }
 }
 
 // Whole-route preview for the "Start navigation?" accept page: fits the entire
@@ -444,9 +469,12 @@ void ui_render_route_preview(uint8_t* fb) {
     if (n < 2) return;
     const int W = epd_rotated_display_width();
 
-    // Viewport: below the status bar, above the accept sheet. The route name is
-    // shown by the nav-prompt band below, so there's no name band up here.
-    const int top = ui::STATUS_H + 8, bot = 600 - 16;
+
+    // Viewport: below the status bar, above the accept sheet. The sheet is 520 px
+    // tall now, so fitting to 600 put the lower third of the route behind it —
+    // the rider was asked to accept a route they could only half see.
+    const int H = epd_rotated_display_height();
+    const int top = ui::STATUS_H + 8, bot = (H - 520) - 16;
     const int left = 20, right = W - 20;
     const int vw = right - left, vh = bot - top;
 

@@ -100,6 +100,12 @@ void epdc_clear_dirty(int tolerance = 0);
 
 // Number of grey levels the driver is currently using (4 by default). Exposed
 // so the UI can decide between real greys and screentones.
+// Ink height of a digit ('0') in this font. Use this, not the height reported
+// by epd_get_string_rect, to decide whether a number fits a box: that rect is
+// the background band (ascender..descender), which is far taller than the
+// digits and rejects faces that would fit comfortably.
+int epdc_digit_height(const EpdFont* font);
+
 int epdc_grey_levels();
 
 // ---------------------------------------------------------------------------

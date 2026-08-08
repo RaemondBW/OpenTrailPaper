@@ -439,6 +439,12 @@ void setup() {
     ui_dashboard::bootStep("SD card");
     bool sdOk = ride_recorder::begin();
     ui_dashboard::bootStatus("SD card", sdOk);
+    if (sdOk)
+        ui_dashboard::bootDetailFor("SD card", "%lu MB free · %d rides",
+                                    (unsigned long)ride_recorder::sdFreeMB(),
+                                    ride_recorder::rideCount());
+    else
+        ui_dashboard::bootDetailFor("SD card", "no card — logging off");
     if (sdOk) {
         routes::begin();
     }
@@ -449,18 +455,24 @@ void setup() {
     // Only trust the RTC once GPS has written UTC to it at least once: from the
     // factory it can hold LOCAL time (observed 8 h off UTC), and seeding a
     // grossly wrong time into the receiver hurts acquisition rather than helps.
+    ui_dashboard::bootStep("RTC");
     if (rtc_clock::begin()) {
+        ui_dashboard::bootStatus("RTC", true);
         time_t rt;
         if (!settings::rtcTrusted()) {
             diag::log("rtc: present, not yet GPS-validated (ignoring for aiding)");
+            ui_dashboard::bootDetailFor("RTC", "present · not GPS-set");
         } else if (rtc_clock::read(rt)) {
             struct timeval tv = {rt, 0};
             settimeofday(&tv, nullptr);
             diag::log("rtc: clock restored (%ld)", (long)rt);
+            ui_dashboard::bootDetailFor("RTC", "clock restored");
         } else {
             diag::log("rtc: trusted but read invalid (VL set?)");
         }
     } else {
+        ui_dashboard::bootStatus("RTC", false);
+        ui_dashboard::bootDetailFor("RTC", "not found");
         diag::log("rtc: not found");
     }
     // NOTE: usb_storage::begin() is called from the UI task AFTER the boot-time
@@ -469,6 +481,8 @@ void setup() {
     ui_dashboard::bootStep("GPS");
     bool gpsOk = gps_service::begin();
     ui_dashboard::bootStatus("GPS", gpsOk);
+    ui_dashboard::bootDetailFor("GPS", "%s · %s", gps_service::moduleName(),
+                                gpsOk ? "aiding sent" : "no data");
     diag::log("gps module: %s", gps_service::moduleName());
     // Warm-start seed: hand the receiver the last-known position (and time if
     // the system clock survived deep sleep) so it doesn't cold-search the whole
@@ -504,6 +518,7 @@ void setup() {
     // it puts the panel up early, and boot now ends with ~124 KB internal spare.
     // The [epdc]/[main] heap lines exist to make any regression obvious.
     ui_dashboard::bootStatus("Display", uiOk);   // panel came up back at the top
+    ui_dashboard::bootDetailFor("Display", "epd_painter 540x960");
     ui_dashboard::begin();
 #ifdef EPDC_BOOT_WAIT
     // Bring-up trace. setup() now reaches "begin() done" and then stops before

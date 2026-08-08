@@ -31,6 +31,7 @@
 		5D72742ADF79FE45ED70CBEA /* MapBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = B784675A7E0FFAA781206855 /* MapBuilder.swift */; };
 		72A4059778F0676C0911C393 /* RideDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1B62C507D47EAD0BDDDD24F /* RideDetailView.swift */; };
 		79F918433F0C02EF0915A0EE /* RouteView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A26EB50B7E6CF1B4A63235CA /* RouteView.swift */; };
+		8885B18C0FC6E6E98283CD24 /* DashboardEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F99E928FB741D98CDD96ABA0 /* DashboardEditorView.swift */; };
 		8F39135FF7E1E777F4833280 /* Barlow-Medium.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 9D58367A52D10F5F1C035423 /* Barlow-Medium.ttf */; };
 		90BE2D6324721EC08C93E435 /* GPXExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05C73BCF289591ECA86720C6 /* GPXExporter.swift */; };
 		9A51A79216A6D77B6B223CE3 /* Barlow-SemiBold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 42632703DAE05E73F934FFE1 /* Barlow-SemiBold.ttf */; };
@@ -38,6 +39,7 @@
 		ABE6FDB260BAA3609F5C5516 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 756CD94A1C875E17A3321CC8 /* OnboardingView.swift */; };
 		B1BE7F5A245A3C270036C6E2 /* algos.c in Sources */ = {isa = PBXBuildFile; fileRef = ABBED3B34B25D9BCAFA3FDB5 /* algos.c */; };
 		BE0814223F037C69E39B93D7 /* RidesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F897B750389038E18EE9AC09 /* RidesView.swift */; };
+		BF7FEB57C05E17549C09CF25 /* DashLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9D6BB31E96DD85DBE9B68CA /* DashLayout.swift */; };
 		C462314C3BD9E277B9F451A9 /* MapsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7C77C595BBAE5BCBD82A004 /* MapsView.swift */; };
 		C7F7382D5542409C17015EFB /* SketchIcon.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73ECF60CAA9C73957BC40AC2 /* SketchIcon.swift */; };
 		CD0EDC65F5A9395EE7649CDE /* directedEdge.c in Sources */ = {isa = PBXBuildFile; fileRef = CC8F9A2A7C26F2C54766428B /* directedEdge.c */; };
@@ -108,6 +110,7 @@
 		A5CBCC5E20270A3D4DF70257 /* coordijk.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = coordijk.c; sourceTree = "<group>"; };
 		A7C77C595BBAE5BCBD82A004 /* MapsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapsView.swift; sourceTree = "<group>"; };
 		A97893E68863ECCF2D0D4400 /* BarlowCondensed-Medium.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "BarlowCondensed-Medium.ttf"; sourceTree = "<group>"; };
+		A9D6BB31E96DD85DBE9B68CA /* DashLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashLayout.swift; sourceTree = "<group>"; };
 		ABBED3B34B25D9BCAFA3FDB5 /* algos.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = algos.c; sourceTree = "<group>"; };
 		AD6BA4ACE6890EF09B9A8F6F /* H3Tiles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = H3Tiles.swift; sourceTree = "<group>"; };
 		B61D714603B1F9543D8049F1 /* vertex.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = vertex.h; sourceTree = "<group>"; };
@@ -133,6 +136,7 @@
 		F42E0A1FDF3C1CED966A8893 /* vertexGraph.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = vertexGraph.h; sourceTree = "<group>"; };
 		F897B750389038E18EE9AC09 /* RidesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RidesView.swift; sourceTree = "<group>"; };
 		F993B08CE32DB569E2279B90 /* BikeGPS-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "BikeGPS-Bridging-Header.h"; sourceTree = "<group>"; };
+		F99E928FB741D98CDD96ABA0 /* DashboardEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardEditorView.swift; sourceTree = "<group>"; };
 		FB4FCCF15F9E57B3747DD159 /* linkedGeo.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = linkedGeo.h; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -184,6 +188,8 @@
 				F993B08CE32DB569E2279B90 /* BikeGPS-Bridging-Header.h */,
 				37C3CA9775B956BC238BAA42 /* BikeGPSCompanionApp.swift */,
 				CBBFA5634178A1D43462F629 /* BLEManager.swift */,
+				F99E928FB741D98CDD96ABA0 /* DashboardEditorView.swift */,
+				A9D6BB31E96DD85DBE9B68CA /* DashLayout.swift */,
 				D66117B8CB78BBC0949D8DF3 /* demo.fit */,
 				336612AF0918144CAB1C1FCD /* DiagnosticsView.swift */,
 				18E924B930AF50BBF8472A7F /* EBMDecoder.swift */,
@@ -347,6 +353,8 @@
 			files = (
 				5BC98F4BF77D1A33EF8F546B /* BLEManager.swift in Sources */,
 				021E5D177FE3BCD463AA49BF /* BikeGPSCompanionApp.swift in Sources */,
+				BF7FEB57C05E17549C09CF25 /* DashLayout.swift in Sources */,
+				8885B18C0FC6E6E98283CD24 /* DashboardEditorView.swift in Sources */,
 				F71D1CFFCC25AD4A7A19D698 /* DiagnosticsView.swift in Sources */,
 				2896F748FD963A319E478447 /* EBMDecoder.swift in Sources */,
 				2593A42A317117DDFBAF716E /* EInkMapView.swift in Sources */,
@@ -448,7 +456,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 8;
+				CURRENT_PROJECT_VERSION = 10;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEVELOPMENT_TEAM = G5JFC849XY;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -516,7 +524,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 8;
+				CURRENT_PROJECT_VERSION = 10;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = G5JFC849XY;
 				ENABLE_NS_ASSERTIONS = NO;

@@ -15,12 +15,13 @@ EPDIY=$ROOT/vendor/T5S3-4.7-e-paper-PRO/lib/epdiy/src
 CXXFLAGS="-std=c++17 -O2 $EXTRA -I shim -I $EPDIY -I $ROOT/src"
 
 for f in preview_main.cpp "$ROOT/src/epd_compat.cpp" "$ROOT/src/ui_render.cpp" \
-         "$ROOT/src/map_view.cpp" "$ROOT/src/map_tiles.cpp"; do
+         "$ROOT/src/map_view.cpp" "$ROOT/src/map_tiles.cpp" \
+         "$ROOT/src/dash_layout.cpp"; do
     clang++ $CXXFLAGS -c "$f" -o "/tmp/$(basename "$f" .cpp)_host.o"
 done
 
 clang++ /tmp/preview_main_host.o /tmp/epd_compat_host.o /tmp/ui_render_host.o \
-    /tmp/map_view_host.o /tmp/map_tiles_host.o -lz -o preview
+    /tmp/map_view_host.o /tmp/map_tiles_host.o /tmp/dash_layout_host.o -lz -o preview
 
 mkdir -p out
 ./preview out

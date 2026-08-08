@@ -59,6 +59,12 @@ struct RideState {
     bool     gradeValid = false;
     float    climbedM = 0.0f;
 
+    // Loaded route progress, mirrored here (rather than read from routes::) so
+    // the dashboard's ROUTE LEFT field stays renderable on the host preview
+    // build, which has no routes module.
+    bool     routeActive = false;
+    float    routeRemainingKm = 0.0f;
+
     // Battery
     uint8_t  batteryPercent = 0;
     bool     charging = false;
