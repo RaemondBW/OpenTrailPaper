@@ -25,6 +25,11 @@ void setClock24h(bool h);
 bool usbDrive();          // true = expose SD as a USB drive when plugged in
 void setUsbDrive(bool on);
 
+// true = keep a field on the dashboard even when its sensor is not paired,
+// showing "no data" rather than removing it and re-packing the layout.
+bool showOffline();
+void setShowOffline(bool on);
+
 // kind: 0 HR, 1 Power, 2 Cadence (matches ble_sensors). "" = none saved.
 const char* sensorAddr(int kind);
 void setSensorAddr(int kind, const char* addr);

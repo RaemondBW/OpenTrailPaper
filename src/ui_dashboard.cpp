@@ -550,14 +550,15 @@ void handleTap(int x, int y) {
             break;
         case SCREEN_SETTINGS: {
             int row = (y - kMenuRowTop) / kSettingsRowH;
-            bool inRows = y >= kMenuRowTop && row >= 0 && row < 5;
+            bool inRows = y >= kMenuRowTop && row >= 0 && row < 6;
             // BACKLIGHT is NOT a toggle row: ui_render_settings draws it with the
             // -/+ stepper (four levels don't fit a switch), so it must be hit-
             // tested like one. It used to be listed here, which meant only the
             // toggle band — overlapping the + button — did anything: "-" fell
             // through to the "tap anywhere else" branch and bounced the rider
             // out to the menu instead of dimming the light.
-            bool toggleRow = row == kSettingsUnitsRow || row == kSettingsUsbRow;
+            bool toggleRow = row == kSettingsUnitsRow || row == kSettingsUsbRow ||
+                             row == kSettingsOfflineRow;
             bool minus = x >= kSettingsMinusX && x < kSettingsMinusX + kSettingsBtn;
             bool plus = x >= kSettingsPlusX && x < kSettingsPlusX + kSettingsBtn;
             bool toggleHit = x >= kSettingsToggleX &&
@@ -581,10 +582,12 @@ void handleTap(int x, int y) {
             } else if (inRows && toggleRow && toggleHit) {
                 if (row == kSettingsUnitsRow) {
                     settings::setUseMiles(!settings::useMiles());
-                } else {   // USB drive
+                } else if (row == kSettingsUsbRow) {
                     bool on = !settings::usbDrive();
                     settings::setUsbDrive(on);
                     usb_storage::setDriveEnabled(on);
+                } else {   // show offline sensor fields
+                    settings::setShowOffline(!settings::showOffline());
                 }
                 edited = true;
             }
@@ -594,6 +597,7 @@ void handleTap(int x, int y) {
                     st.tzMin = (int16_t)settings::tzMinutes();
                     st.useMiles = settings::useMiles();
                     st.clock24h = settings::clock24h();
+                    st.showOffline = settings::showOffline();
                 });
                 ble_server::pushSettingsToPhone();   // mirror the edit to the app
             } else if (y >= kMenuRowTop && row == kSettingsGpsRow) {
@@ -923,12 +927,15 @@ namespace ui_dashboard {
 // Boot progress state. Kept tiny and static — this runs before any allocation
 // we control, and a boot screen that can fail to allocate is worse than none.
 namespace {
-const char* bootLines[8];
-int8_t      bootState[8];
+const char* bootLines[16];
+int8_t      bootState[16];
 // Per-step detail ("30436 MB free", "CASIC", "107 tiles") and the millis() at
 // which it resolved — the boot log shows both.
-char        bootDetail[8][28];
-uint32_t    bootMs[8];
+char        bootDetail[16][28];
+uint32_t    bootMs[16];
+// Detail staged for the NEXT status line, so a resolve can print name,
+// finding and result together on one new line.
+char        bootPending[28] = "";
 int         bootCount = 0;
 bool        bootScreenLive = false;
 }
@@ -1048,7 +1055,7 @@ int bootFind(const char* step) {
 // Matters most for the SD mount, which can take seconds and used to look like a
 // freeze. Pair every bootStep() with a bootStatus() carrying the same literal.
 void bootStep(const char* step) {
-    if (!bootScreenLive || bootFind(step) >= 0) return;
+    if (!bootScreenLive) return;
     if (bootCount >= (int)(sizeof(bootLines) / sizeof(*bootLines))) return;
     bootLines[bootCount] = step;
     bootState[bootCount] = BOOT_PENDING;
@@ -1063,14 +1070,17 @@ void bootStep(const char* step) {
 // never announce still work).
 void bootStatus(const char* step, bool ok) {
     if (!bootScreenLive) return;
-    int i = bootFind(step);
-    if (i < 0) {
-        if (bootCount >= (int)(sizeof(bootLines) / sizeof(*bootLines))) return;
-        i = bootCount++;
-        bootLines[i] = step;
-    }
+    // APPEND, never rewrite. A log that goes back and edits a line it already
+    // printed is not a log — you cannot tell what the device knew and when. The
+    // announce line stays as it was; the result gets its own line, carrying
+    // whatever detail was staged for it.
+    if (bootCount >= (int)(sizeof(bootLines) / sizeof(*bootLines))) return;
+    const int i = bootCount++;
+    bootLines[i] = step;
     bootState[i] = ok ? BOOT_OK : BOOT_FAIL;
     bootMs[i] = millis();
+    snprintf(bootDetail[i], sizeof(bootDetail[i]), "%s", bootPending);
+    bootPending[0] = 0;
     bootRepaint();
 }
 
@@ -1078,13 +1088,12 @@ void bootStatus(const char* step, bool ok) {
 // boot log reports what each subsystem actually found rather than only that it
 // was looked at.
 void bootDetailFor(const char* step, const char* fmt, ...) {
-    int i = bootFind(step);
-    if (i < 0) return;
+    (void)step;   // staged for the next status line, not attached to a past one
+    if (!bootScreenLive) return;
     va_list ap;
     va_start(ap, fmt);
-    vsnprintf(bootDetail[i], sizeof(bootDetail[i]), fmt, ap);
+    vsnprintf(bootPending, sizeof(bootPending), fmt, ap);
     va_end(ap);
-    bootRepaint();
 }
 
 bool begin() {
@@ -1104,9 +1113,9 @@ bool begin() {
     double mlat = DEFAULT_MAP_LAT, mlon = DEFAULT_MAP_LON;
     settings::lastPosition(mlat, mlon);
     map_store::begin(mlat, mlon);
-    bootStatus("Maps", true);
     bootDetailFor("Maps", "%d tiles · %s", map_store::tileCount(),
                   map_store::tileCount() ? "indexed" : "none on card");
+    bootStatus("Maps", true);
     EPDC_STEP("map loaded — begin() done");
     // Hand the panel over to the dashboard: further bootStatus() calls no-op,
     // and the task's first refresh() paints the real UI over the boot screen.
@@ -1612,6 +1621,7 @@ void task(void*) {
             // Route progress for the ROUTE LEFT dashboard field. Mirrored onto
             // the snapshot rather than read inside the renderer, which is
             // host-compiled for the previews and has no routes module.
+            s.showOffline = settings::showOffline();
             s.routeActive = routes::active();
             s.routeRemainingKm = routes::remainingKm();
             // Swap to a downloaded map that covers where we are, if one exists.
@@ -1681,7 +1691,8 @@ void task(void*) {
                     renderListScreen(fb);
                     break;
                 case SCREEN_SETTINGS: {
-                    SettingsInfo si{settings::ftpWatts(), settings::tzMinutes(),
+                    SettingsInfo si{settings::showOffline(),
+                                    settings::ftpWatts(), settings::tzMinutes(),
                                     settings::backlight(), settings::useMiles(),
                                     settings::usbDrive()};
                     ui_render_settings(si, fb);

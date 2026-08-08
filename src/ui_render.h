@@ -186,6 +186,7 @@ constexpr int kSettingsToggleX =
     ui::CONTENT_X + ui::CONTENT_W - ui::CELL_PAD - kSettingsToggleW;
 constexpr int kSettingsRowH = ui::DENSE_ROW_H;
 struct SettingsInfo {
+    bool showOffline;
     int ftpW;
     int tzMin;
     int backlight;   // 0 off .. 3 bright
@@ -204,7 +205,8 @@ void ui_render_back_bar(uint8_t* fb);
 constexpr int kSettingsBacklightRow = 2;
 constexpr int kSettingsUnitsRow = 3;
 constexpr int kSettingsUsbRow = 4;
-constexpr int kSettingsGpsRow = 5;
+constexpr int kSettingsOfflineRow = 5;
+constexpr int kSettingsGpsRow = 6;
 
 // GPS diagnostics page (reached from Settings). Mirrors GpsDebug from
 // gps_service.h but stays host-safe for the preview harness.
