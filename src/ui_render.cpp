@@ -1,4 +1,5 @@
 #include "ui_render.h"
+#include "epd_compat.h"
 
 #include <cmath>
 #include <cstdio>
@@ -8,15 +9,49 @@
 
 #include "config.h"
 #include "ride_state.h"
+// Faces at the design system's ACTUAL sizes. The drop's specimens are drawn 1:1
+// with the panel, so its CSS px are device px — and the previously compiled
+// faces were 2.1-2.4x those sizes (Impact_40 rendered a 68 px cap where the
+// drop's 40 px Impact wants 29). Everything was therefore roughly double the
+// intended scale, which is why captions collided and rows had to be truncated.
+//
+//   Arial_L   label      = drop's arialbold_14   (cap 11)
+//   Arial_B   body       = drop's arialbold_20   (cap 15)
+//   Impact_S  clock      = drop's impact_28      (cap 20)
+//   Impact_T  row/button = drop's impact_40      (cap 29)
+//   Impact_V  cell value = drop's impact_64      (cap 46)
+//   Impact_H  hero       = drop's impact_128     (cap 95)
+#include "fonts/arial_l.h"
+#include "fonts/arial_b.h"
+#include "fonts/impact_s.h"
+#include "fonts/impact_t.h"
+#include "fonts/impact_m.h"
+#include "fonts/impact_v.h"
+#include "fonts/impact_h.h"
+#include "fonts/impact_a.h"
+#include "fonts/impact_b.h"
+#include "fonts/impact_c.h"
+#include "fonts/impact_xl.h"
 #include "fonts/arialbold_14.h"
 #include "fonts/arialbold_20.h"
 #include "fonts/impact_40.h"
 #include "fonts/impact_128.h"
 
 // Summary footer touch targets (design 1g: two 100+ px tall actions)
-const EpdRect kResumeButton = {0, 830, 180, 130};
-const EpdRect kSaveButton = {180, 830, 180, 130};
-const EpdRect kDiscardButton = {360, 830, 180, 130};
+// BUTTON — h 96, three across the content column with a 12 px gutter:
+// (492 - 2*12) / 3 = 156. Hit rects are the drawn rects here, both past the
+// 88 px minimum.
+// SHEET buttons: SAVE and DISCARD side by side (gap 12), RESUME full width
+// beneath them (gap 20). All 96 px tall, inset on the sheet's 24 px padding.
+const EpdRect kSaveButton    = {24, 700, 240, 96};
+const EpdRect kDiscardButton = {276, 700, 240, 96};
+const EpdRect kResumeButton  = {24, 816, 492, 96};
+
+namespace {
+// Defined further down with the other formatters; declared here so the status
+// bar and the CLOCK dashboard field share one implementation.
+void formatClock(char* out, size_t len, const RideState& s);
+}
 
 namespace ui {
 
@@ -36,9 +71,29 @@ int textWidth(const EpdFont* font, const char* str) {
 
 // Tracked-out label: draws characters individually with a few extra
 // pixels of letterspacing, matching the design. UTF-8 aware.
+// Rendered width of a tracked label. Same arithmetic as label() below, exposed
+// so callers can pick a font that FITS before drawing — tracking adds 3 px per
+// character, so a plain textWidth() underestimates by enough to overflow a
+// half-width cell on a long caption like "MOVING TIME".
+int labelWidth(const EpdFont* font, const char* str) {
+    if (!font) font = &Arial_L;
+    constexpr int TRACK = 3;
+    char ch[8];
+    int total = -TRACK;
+    for (const char* p = str; *p;) {
+        int len = 1;
+        if (*p & 0x80) { while ((p[len] & 0xC0) == 0x80) len++; }
+        memcpy(ch, p, len);
+        ch[len] = 0;
+        p += len;
+        total += textWidth(font, ch) + TRACK;
+    }
+    return total < 0 ? 0 : total;
+}
+
 void label(int cx, int y, const char* str, uint8_t* fb, uint8_t color,
            const EpdFont* font) {
-    if (!font) font = &ArialBold_14;
+    if (!font) font = &Arial_L;
     constexpr int TRACK = 3;
     char ch[8];
     auto nextChar = [&](const char*& p) {
@@ -69,12 +124,12 @@ void valueWithUnit(const EpdFont* valueFont, int x0, int x1, int baselineY,
                    const char* value, const char* unit, uint8_t* fb,
                    uint8_t color) {
     int vw = textWidth(valueFont, value);
-    int uw = unit && unit[0] ? textWidth(&ArialBold_14, unit) + 10 : 0;
+    int uw = unit && unit[0] ? textWidth(&Arial_L, unit) + 10 : 0;
     int startX = x0 + ((x1 - x0) - (vw + uw)) / 2;
     if (startX < x0) startX = x0;   // never spill past the left bound / screen edge
     text(valueFont, startX, baselineY, value, fb, EPD_DRAW_ALIGN_LEFT, color);
     if (uw) {
-        text(&ArialBold_14, startX + vw + 10, baselineY, unit, fb,
+        text(&Arial_L, startX + vw + 10, baselineY, unit, fb,
              EPD_DRAW_ALIGN_LEFT, color);
     }
 }
@@ -119,27 +174,15 @@ void statusBar(const RideState& s, uint8_t* fb) {
     const int W = epd_rotated_display_width();
 
     // Clock from GPS time (local), 24h or 12h per the setting.
-    char clock[10] = "--:--";
-    if (s.timeValid) {
-        time_t local = s.utc + (time_t)s.tzMin * 60;
-        struct tm tmv;
-        gmtime_r(&local, &tmv);
-        if (s.clock24h) {
-            snprintf(clock, sizeof(clock), "%d:%02d", tmv.tm_hour, tmv.tm_min);
-        } else {
-            int h = tmv.tm_hour % 12;
-            if (h == 0) h = 12;
-            snprintf(clock, sizeof(clock), "%d:%02d%c", h, tmv.tm_min,
-                     tmv.tm_hour < 12 ? 'a' : 'p');
-        }
-    }
+    char clock[10];
+    formatClock(clock, sizeof(clock), s);
     const int clockX = 16;
-    text(&ArialBold_14, clockX, 40, clock, fb);
+    text(&Impact_S, clockX, 41, clock, fb);
     // Lay the rest of the left cluster out FROM the clock's measured width. It
     // was hardcoded at x=96, which is fine for "14:25" but not for the 12-hour
     // format: "12:45p" is a character wider and ran straight into the phone
     // glyph. Widths differ per string ("1:05a" vs "12:45p"), so measure.
-    int leftX = clockX + textWidth(&ArialBold_14, clock) + 14;
+    int leftX = clockX + textWidth(&Impact_S, clock) + 14;
 
     // Companion-app connection: a small phone glyph just after the clock (on the
     // left, out of the crowded battery cluster). Absent = not connected.
@@ -167,12 +210,12 @@ void statusBar(const RideState& s, uint8_t* fb) {
     // The "· HR" / "· PWR" labels only appear when connected, so they need no
     // extra checkmark — keeping them text-only frees room for the battery %.
     if (s.hrConnected) {
-        text(&ArialBold_14, x, 40, " · HR", fb);
-        x += textWidth(&ArialBold_14, " · HR");
+        text(&Arial_L, x, 40, " · HR", fb);
+        x += textWidth(&Arial_L, " · HR");
     }
     if (s.powerConnected) {
-        text(&ArialBold_14, x, 40, " · PWR", fb);
-        x += textWidth(&ArialBold_14, " · PWR");
+        text(&Arial_L, x, 40, " · PWR", fb);
+        x += textWidth(&Arial_L, " · PWR");
     }
 
     batteryIcon(W - 12, 30, s.batteryPercent, s.charging, fb);
@@ -185,24 +228,204 @@ void statusBar(const RideState& s, uint8_t* fb) {
     if (s.batteryPercent == 0) snprintf(pct, sizeof(pct), "--%%");
     else snprintf(pct, sizeof(pct), "%u%%", s.batteryPercent);
     int pctRight = W - 62 - 8;
-    text(&ArialBold_14, pctRight, 40, pct, fb, EPD_DRAW_ALIGN_RIGHT);
+    text(&Impact_S, pctRight, 41, pct, fb, EPD_DRAW_ALIGN_RIGHT);
 
     // Lightning bolt left of the % when charging.
     if (s.charging) {
-        int pctLeft = pctRight - textWidth(&ArialBold_14, pct);
+        int pctLeft = pctRight - textWidth(&Impact_S, pct);
         drawBolt(pctLeft - 10, 30, 0x00, fb);
     }
 
     epd_fill_rect({0, STATUS_H - 3, W, 3}, 0x00, fb);
 }
 
+
+// --- Screentones ----------------------------------------------------------
+// Tone, not grey. A mid grey inside a 1 Hz region ghosts (the driver's model
+// loses lightened pixels), so anything that must read as "less than black"
+// while it changes is built from 1-bit pixels instead.
+void fillTone(const EpdRect& r, Tone t, uint8_t* fb) {
+    for (int y = r.y; y < r.y + r.height; ++y) {
+        for (int x = r.x; x < r.x + r.width; ++x) {
+            bool on = false;
+            switch (t) {
+                case TONE_25: on = (x % 4 == 0) && (y % 4 == 0); break;
+                case TONE_30: on = ((x + y) % 3) == 0; break;         // 45 deg
+                case TONE_50: on = ((x >> 1) + (y >> 1)) % 2 == 0; break;
+                case TONE_33: on = (y % 3) == 0; break;               // scanline
+            }
+            if (on) epd_fill_rect({x, y, 1, 1}, INK, fb);
+        }
+    }
+}
+
+// --- CELL -----------------------------------------------------------------
+// Specimen: 240 x 150, border 2, pad 16. Label top-LEFT (arialbold_14, tracked),
+// value left-aligned 10 px below it in impact, unit baseline-aligned 6 px along.
+// Nothing here is centred — the drop aligns the whole cell to its left padding.
+// Fine-grained on purpose: the rider asked for values as large as the box
+// allows, and a coarse ladder lands well under the ceiling (46 -> 69 -> 95 left
+// a 60 px gap where a 66 px face would have fitted).
+const EpdFont* const kValueLadder[VALUE_LADDER_N] = {
+    &Impact_XL, &Impact_H, &Impact_C, &Impact_B, &Impact_M,
+    &Impact_A,  &Impact_V, &Impact_T, &Arial_B};
+
+// Index of the largest ladder face that fits; 3 (the smallest) if none do.
+int valueFontIndex(const EpdFont* const* ladder, const char* value, int availW,
+                   int availH, int unitW) {
+    for (int i = 0; i < VALUE_LADDER_N; ++i) {
+        if (epdc_digit_height(ladder[i]) <= availH &&
+            textWidth(ladder[i], value) + unitW <= availW)
+            return i;
+    }
+    return VALUE_LADDER_N - 1;
+}
+
+const EpdFont* const kLabelLadder[LABEL_LADDER_N] = {&ArialBold_20, &Arial_B,
+                                                     &Arial_L};
+
+void cell(const EpdRect& r, const char* labelStr, const char* value,
+          const char* unit, uint8_t* fb, bool stale, const EpdFont* forced,
+          const EpdFont* forcedLabel) {
+    for (int b = 0; b < RULE; ++b)
+        epd_draw_rect({r.x + b, r.y + b, r.width - 2 * b, r.height - 2 * b}, INK, fb);
+
+    // NO DATA: scanline tone behind the VALUE only. Running it across the whole
+    // cell (as a 10%-opacity wash does on screen) buried the label here — this
+    // is 1-bit, so the tone is as black as the type sitting on it.
+    const bool toneValue = stale;
+
+    const int lx = r.x + CELL_PAD;
+    const int ly = r.y + CELL_PAD + Arial_B.ascender + 6;
+    // Labels step down too. "HEART RATE" at 20 pt is wider than a 240 px cell,
+    // and a caption that runs into its neighbour is worse than a smaller one.
+    const int labelAvail = r.width - 2 * CELL_PAD;
+    const EpdFont* lf = forcedLabel;
+    if (!lf) {
+        lf = kLabelLadder[LABEL_LADDER_N - 1];
+        for (int i = 0; i < LABEL_LADDER_N; ++i)
+            if (labelWidth(kLabelLadder[i], labelStr) <= labelAvail) {
+                lf = kLabelLadder[i];
+                break;
+            }
+    }
+    const int lw = labelWidth(lf, labelStr);
+    label(lx + lw / 2, ly, labelStr, fb, INK, lf);
+
+    // Value box: everything below the label, less the bottom padding.
+    const int top = ly + 10;
+    const int bot = r.y + r.height - CELL_PAD;
+    const int avail = r.width - 2 * CELL_PAD;
+    const int unitW = (unit && unit[0]) ? textWidth(&Arial_B, unit) + 4 : 0;
+
+    // Impact_M (the sheet face) is the top step: on real glass the drop's cell
+    // size read small, and a tall cell has the room for it.
+    const EpdFont* vf = forced;
+    if (!vf) {
+        const int idx = valueFontIndex(kValueLadder, value, avail, bot - top, unitW);
+        vf = kValueLadder[idx];
+    }
+    int vh = epdc_digit_height(vf);
+    // CENTRE the value in the space below the label. The specimen hangs it off
+    // the bottom padding, which is right in a 150 px cell where the number all
+    // but fills the box — but wrong the moment a cell is tall (a field left
+    // alone after its neighbours' sensors dropped out inherits the whole
+    // panel), where it stranded the value at the very bottom under a void.
+    const int baseline = top + ((bot - top) + vh) / 2;
+
+    // The value and its unit are ONE object, centred in the cell as a pair —
+    // centring the number alone would push it off-axis by half the unit's
+    // width. The label stays pinned top-left; only the figure is centred.
+    const int vw = textWidth(vf, value);
+    const int startX = r.x + (r.width - vw - unitW) / 2;
+    if (toneValue) {
+        // NO DATA is drawn, not typed. A hyphen's ink is a short thin bar
+        // whatever face it is set in, so "--" at the same font as its
+        // neighbours still rendered a fraction of their size and read as a
+        // typographic bug. A rule scaled to the digit height sits at the weight
+        // the number would have had, which is what makes the cell read as
+        // "no source" rather than "broken".
+        const int barW = vh * 5 / 8, barH = vh / 6 < 4 ? 4 : vh / 6;
+        const int gap = barW / 3;
+        const int totalW = barW * 2 + gap;
+        const int bx = r.x + (r.width - totalW - unitW) / 2;
+        const int by = baseline - vh / 2 - barH / 2;
+        epd_fill_rect({bx, by, barW, barH}, INK, fb);
+        epd_fill_rect({bx + barW + gap, by, barW, barH}, INK, fb);
+        if (unitW)
+            text(&Arial_B, bx + totalW + 4, baseline, unit, fb,
+                 EPD_DRAW_ALIGN_LEFT, INK);
+    } else {
+        text(vf, startX, baseline, value, fb, EPD_DRAW_ALIGN_LEFT, INK);
+        if (unitW)
+            text(&Arial_B, startX + vw + 4, baseline, unit, fb,
+                 EPD_DRAW_ALIGN_LEFT, INK);
+    }
+    (void)vh;
+}
+
 }  // namespace ui
 
 namespace {
 
+// Impact carries NO lowercase glyphs, so any caller-supplied string set in it
+// silently loses every lowercase character ("Turn left onto Valencia" drew as
+// "T V S"). Uppercase before drawing; this has bitten list titles, sheet heroes
+// and the nav banner in turn.
+void upperCopy(char* out, size_t len, const char* in) {
+    size_t n = 0;
+    for (; in[n] && n < len - 1; ++n)
+        out[n] = (in[n] >= 'a' && in[n] <= 'z') ? (char)(in[n] - 32) : in[n];
+    out[n] = 0;
+}
+
 void formatHms(char* out, size_t len, uint32_t secs) {
     snprintf(out, len, "%lu:%02lu:%02lu", (unsigned long)(secs / 3600),
              (unsigned long)((secs / 60) % 60), (unsigned long)(secs % 60));
+}
+
+// Local time of day, 24 h or 12 h per the rider's setting. Shared by the status
+// bar and the CLOCK dashboard field so the two can never disagree about the
+// format — they are inches apart on the same screen.
+void formatClock(char* out, size_t len, const RideState& s) {
+    snprintf(out, len, "--:--");
+    if (!s.timeValid) return;
+    time_t local = s.utc + (time_t)s.tzMin * 60;
+    struct tm tmv;
+    gmtime_r(&local, &tmv);
+    if (s.clock24h) {
+        snprintf(out, len, "%d:%02d", tmv.tm_hour, tmv.tm_min);
+    } else {
+        int h = tmv.tm_hour % 12;
+        if (h == 0) h = 12;
+        snprintf(out, len, "%d:%02d%c", h, tmv.tm_min, tmv.tm_hour < 12 ? 'a' : 'p');
+    }
+}
+
+// Both power fields drive the FTP zone bar and want the same hero treatment.
+bool isPowerField(uint8_t f) { return f == DF_POWER3S || f == DF_POWER; }
+
+// Seven FTP zone segments, filled up to the current zone. Only drawn under a
+// hero-sized power cell — at grid size the segments are too fine to read.
+void drawPowerZoneBar(const RideState& s, int y, uint8_t* fb) {
+    const int W = ui::CONTENT_W + 2 * ui::CONTENT_X;
+    uint16_t p = s.power3sW != 0xFFFF ? s.power3sW : s.powerW;
+    int ftp = s.ftpW;
+    int zone = 0;
+    if (p != 0xFFFF && ftp > 0) {
+        float pct = 100.0f * p / ftp;
+        zone = pct < 55 ? 1 : pct < 75 ? 2 : pct < 90 ? 3 : pct < 105 ? 4
+               : pct < 120 ? 5 : pct < 150 ? 6 : 7;
+    }
+    // Seven segments across the hero cell's inner width, on the 12 px step.
+    const int barX = ui::CONTENT_X + ui::CELL_PAD;
+    const int barW = ui::CONTENT_W - 2 * ui::CELL_PAD;
+    const int segW = (barW - 6 * ui::HALF_STEP) / 7;
+    for (int i = 0; i < 7; ++i) {
+        EpdRect seg = {barX + i * (segW + ui::HALF_STEP), y, segW, 18};
+        if (i < zone) epd_fill_rect(seg, 0x00, fb);
+        else epd_draw_rect(seg, 0x00, fb);
+    }
 }
 
 // One bordered grid cell: tracked label on top, big value below.
@@ -225,175 +448,520 @@ void cell(int x0, int y0, int x1, int y1, const char* labelStr,
     const int kValueCapH = 58;
     int minBaseline = labelY + 8 + kValueCapH;
     if (vBaseline < minBaseline) vBaseline = minBaseline;
-    ui::text(&Impact_40, cx, vBaseline, value, fb, EPD_DRAW_ALIGN_CENTER, 0x00);
+    ui::text(&Impact_T, cx, vBaseline, value, fb, EPD_DRAW_ALIGN_CENTER, 0x00);
     if (unit && unit[0]) {
-        ui::text(&ArialBold_14, cx, y1 - 12, unit, fb, EPD_DRAW_ALIGN_CENTER, 0x00);
+        ui::text(&Arial_L, cx, y1 - 12, unit, fb, EPD_DRAW_ALIGN_CENTER, 0x00);
     }
 }
 
 }  // namespace
 
-void ui_render_dashboard(const RideState& s, bool navActive, uint8_t* fb) {
+// Format one configurable field into value + unit text. Everything here reads
+// something the device already measures — a BLE sensor, the recorder, the GPS,
+// the map DEM — so a new field is a case here, not new plumbing.
+//
+// "--" for absent data rather than a zero: a rider glancing down must be able to
+// tell "no heart-rate strap paired" from "heart rate is 0".
+void dashFieldValue(uint8_t field, const RideState& s, char* val, size_t valCap,
+                    const char** unit) {
+    *unit = "";
+    switch (field) {
+        case DF_SPEED: {
+            double v = units::speed(s.speedKmh, s.useMiles);
+            snprintf(val, valCap, "%.1f", v);
+            *unit = units::speedLabel(s.useMiles);
+            break;
+        }
+        case DF_POWER3S:
+            if (s.power3sW != 0xFFFF) snprintf(val, valCap, "%u", s.power3sW);
+            else snprintf(val, valCap, "--");
+            *unit = "W";
+            break;
+        case DF_POWER:
+            if (s.powerW != 0xFFFF) snprintf(val, valCap, "%u", s.powerW);
+            else snprintf(val, valCap, "--");
+            *unit = "W";
+            break;
+        case DF_HEART_RATE:
+            if (s.heartRateBpm != 0xFF) snprintf(val, valCap, "%u", s.heartRateBpm);
+            else snprintf(val, valCap, "--");
+            *unit = "BPM";
+            break;
+        case DF_CADENCE:
+            if (s.cadenceRpm != 0xFF) snprintf(val, valCap, "%u", s.cadenceRpm);
+            else snprintf(val, valCap, "--");
+            *unit = "RPM";
+            break;
+        case DF_DISTANCE:
+            snprintf(val, valCap, "%.1f", units::distM(s.distanceM, s.useMiles));
+            *unit = units::distLabel(s.useMiles);
+            break;
+        case DF_RIDE_TIME:   formatHms(val, valCap, s.elapsedS); break;
+        case DF_MOVING_TIME: formatHms(val, valCap, s.movingS); break;
+        case DF_CLIMB:
+            snprintf(val, valCap, "%.0f", units::elev(s.climbedM, s.useMiles));
+            *unit = units::elevLabel(s.useMiles);
+            break;
+        case DF_GRADE:
+            if (s.gradeValid) snprintf(val, valCap, "%.1f", s.gradePercent);
+            else snprintf(val, valCap, "--");
+            *unit = "%";
+            break;
+        case DF_ALTITUDE:
+            // The map DEM, never the GPS chip's altitude — see the README's
+            // "Elevation without a barometer".
+            if (s.mapElevationValid)
+                snprintf(val, valCap, "%.0f", units::elev(s.mapElevationM, s.useMiles));
+            else snprintf(val, valCap, "--");
+            *unit = units::elevLabel(s.useMiles);
+            break;
+        case DF_BATTERY:
+            snprintf(val, valCap, "%u", s.batteryPercent);
+            *unit = "%";
+            break;
+        case DF_SATELLITES:
+            snprintf(val, valCap, "%u", s.satellites);
+            break;
+        case DF_CLOCK: {
+            char clk[16];
+            formatClock(clk, sizeof(clk), s);
+            snprintf(val, valCap, "%s", clk);
+            break;
+        }
+        case DF_ROUTE_LEFT:
+            if (s.routeActive)
+                snprintf(val, valCap, "%.1f", units::dist(s.routeRemainingKm, s.useMiles));
+            else snprintf(val, valCap, "--");
+            *unit = units::distLabel(s.useMiles);
+            break;
+        default:
+            snprintf(val, valCap, "--");
+            break;
+    }
+}
+
+// HERO cell — one per screen, never two.
+//
+// Its own path because impact_128 is not in the shared cell ladder and needs a
+// width fallback the grid cells do not: "1:47:12" at impact_128 is 684 px on a
+// 540 px panel, so an unchecked hero runs straight off both edges. Falls back
+// to impact_40 rather than clipping.
+void heroCell(const EpdRect& r, const char* labelStr, const char* value,
+              const char* unit, const RideState& s, bool zoneBar, bool isSpeed,
+              uint8_t* fb) {
+    epd_draw_rect(r, ui::INK, fb);
+    epd_draw_rect({r.x + 1, r.y + 1, r.width - 2, r.height - 2}, ui::INK, fb);
+
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%s", value);
+    // impact_128 holds about three glyphs, so a hero speed keeps its decimal
+    // only below 10 — "round numbers until the churn stops".
+    if (isSpeed) {
+        double v = units::speed(s.speedKmh, s.useMiles);
+        snprintf(buf, sizeof(buf), v < 10.0 ? "%.1f" : "%.0f", v);
+        unit = "";
+    }
+
+    const int cx = r.x + r.width / 2;
+    ui::label(cx, r.y + ui::CELL_PAD + Arial_B.ascender, labelStr, fb, ui::INK,
+              &Arial_B);
+
+    const int innerW = r.width - 2 * ui::CELL_PAD;
+    const int unitW = (unit && unit[0]) ? ui::textWidth(&Arial_B, unit) + 10 : 0;
+    // Largest face that fits the hero cell in both directions. Our hero cell is
+    // taller than the drop's hero region (the layout is rider-configurable), so
+    // impact_128 alone left it looking half-empty — step up when there is room.
+    const int barH = zoneBar ? 18 + ui::STEP : 0;
+    const int top = r.y + ui::CELL_PAD + Arial_B.ascender + ui::HALF_STEP;
+    const int bot = r.y + r.height - ui::CELL_PAD - barH;
+    static const EpdFont* const heroLadder[] = {&Impact_XL, &Impact_H, &Impact_M,
+                                                &Impact_V};
+    const EpdFont* vf = &Impact_V;
+    for (const EpdFont* f : heroLadder) {
+        if (ui::textWidth(f, buf) + unitW <= innerW &&
+            epdc_digit_height(f) <= bot - top) {
+            vf = f; break;
+        }
+    }
+
+    const int vh = epdc_digit_height(vf);
+    const int baseline = top + ((bot - top) + vh) / 2;
+
+    const int vw = ui::textWidth(vf, buf);
+    const int startX = r.x + (r.width - vw - unitW) / 2;
+    ui::text(vf, startX, baseline, buf, fb, EPD_DRAW_ALIGN_LEFT, ui::INK);
+    if (unitW)
+        ui::text(&Arial_B, startX + vw + 10, baseline, unit, fb,
+                 EPD_DRAW_ALIGN_LEFT, ui::INK);
+    if (zoneBar) drawPowerZoneBar(s, r.y + r.height - ui::CELL_PAD - 18, fb);
+}
+
+// One packed row: the items sharing it, and the height share it asked for.
+struct DashRow { int first, count, weight; };
+
+// Is there a source for this field right now?
+//
+// Only PAIRING-level state counts. A dashboard that reflows every time a value
+// goes momentarily invalid would be unreadable — and on e-paper each reflow is
+// a full repaint — so this asks "is the strap paired?", not "did a packet
+// arrive this second". Grade and altitude are deliberately NOT here even though
+// they can read "--": their source is the map DEM, whose validity flips as you
+// ride in and out of downloaded coverage, and a field that vanishes at a tile
+// boundary would be worse than one showing a dash.
+bool dashFieldAvailable(uint8_t field, const RideState& s) {
+    switch (field) {
+        case DF_POWER3S:
+        case DF_POWER:       return s.powerConnected;
+        case DF_HEART_RATE:  return s.hrConnected;
+        case DF_CADENCE:     return s.cadenceConnected || s.powerConnected;
+        case DF_ROUTE_LEFT:  return s.routeActive;
+        default:             return true;
+    }
+}
+
+// A dashboard cell that adapts to the height it is given.
+//
+// cell() above cannot: its label, value and unit sit at FIXED offsets tuned for
+// the old 256 px grid, so in a short cell the Impact_40 value grows straight
+// through both. A configurable layout hands out cells from ~90 px (a row of
+// `small` fields) to ~300 px, so the type has to be chosen for the box, and the
+// caption and unit dropped when there is genuinely no room rather than
+// overlapped. Measured cap heights, matching the constants cell() already uses.
+void dashCell(int x0, int y0, int x1, int y1, const char* labelStr,
+              const char* value, const char* unit, uint8_t* fb) {
+    const int cx = (x0 + x1) / 2;
+
+    // Bound the content band before laying anything out.
+    //
+    // The caption pins to the top of the cell and the unit to the bottom, which
+    // reads correctly at anything near the natural size. It falls apart when a
+    // cell is enormous: with sensors unpaired their fields are dropped and the
+    // survivors can inherit the whole panel, which left a value floating in the
+    // middle with its unit stranded 400 px beneath it. So a very tall cell gets
+    // a natural-height band centred inside it, and the surrounding space is
+    // simply left empty — deliberate air rather than stretched furniture.
+    constexpr int kMaxBand = 260;
+    if (y1 - y0 > kMaxBand) {
+        const int mid = (y0 + y1) / 2;
+        y0 = mid - kMaxBand / 2;
+        y1 = mid + kMaxBand / 2;
+    }
+    const int h = y1 - y0;
+
+    // Caption and unit bands, INCLUDING the air around them, scaled to the cell.
+    //
+    // Two failure modes to sit between. Reserving only the glyphs (the first
+    // pass) drew the caption at a fixed y0+24 and the unit at y1-8, welding both
+    // to the cell's rules. Reserving a fixed generous band instead then starved
+    // short cells: a `small` row could no longer afford a caption at all, and a
+    // battery reading "76" with no label above it says nothing.
+    //
+    // So the air is a fraction of the cell, clamped: tall cells get room to
+    // breathe, short ones keep their caption by giving up padding rather than
+    // meaning.
+    const int pad = h / 12 < 6 ? 6 : (h / 12 > 14 ? 14 : h / 12);
+
+    // Usable width. Everything below has to fit inside this, not just inside
+    // the height — a long value ("1:47:12") or a long caption ("MOVING TIME")
+    // in a half-width cell overflows sideways at a size the height alone would
+    // happily allow, and nothing was checking for it.
+    const int availW = (x1 - x0) - 20;
+
+    auto lineH = [](const EpdFont* f) { return f->ascender - f->descender; };
+
+    // Caption: step up to the larger face when the cell can afford it both
+    // ways. A big cell with a 14 pt caption looks unfinished next to its
+    // numerals.
+    const EpdFont* labelFont = &Arial_L;
+    if (h >= 200 && ui::labelWidth(&Arial_B, labelStr) <= availW &&
+        Arial_B.ascender + pad + 40 < h) {
+        labelFont = &Arial_B;
+    }
+
+    const int kLabelH = pad + labelFont->ascender;
+    const int kUnitH = pad + 20;     // unit glyphs + air
+    const int kLabelBase = pad + labelFont->ascender;
+    const int kUnitGap = pad;        // unit baseline, up from the cell bottom
+
+    // Drop the least important thing first when space runs out: the unit
+    // (usually inferable — BPM under a heart rate), then the caption.
+    const int floorH = Arial_L.ascender;
+    bool showLabel = h >= kLabelH + floorH + 4;
+    bool showUnit = unit && unit[0] && h >= kLabelH + floorH + kUnitH + 4;
+
+    int top = y0 + (showLabel ? kLabelH : 0);
+    int bottom = y1 - (showUnit ? kUnitH : 0);
+    int valueH = bottom - top;
+
+    // Largest face that fits the box in BOTH directions. Bitmap fonts, so this
+    // is a ladder rather than a scale factor — but it is the difference between
+    // a value sized for its cell and one that either wastes half of it or runs
+    // out the side.
+    // Largest face whose DIGITS fit the box, in both directions.
+    //
+    // Height is measured with epdc_digit_height (the '0' glyph's bitmap), not
+    // the font's line box and not epd_get_string_rect's height — both include
+    // the full ascender-to-descender band, which for Impact_40 is 103 px around
+    // 58 px of actual digits. Testing against the band rejected the big face in
+    // every cell under ~180 px and quietly dropped half the dashboard to 20 pt.
+    // Width matters just as much: "1:47:12" at Impact_40 is 214 px and a
+    // half-width cell has 250 px, so a longer value must step down or run out
+    // the side — nothing was checking that at all before.
+    static const EpdFont* const kLadder[] = {&Impact_V, &Impact_T, &Arial_B,
+                                            &Arial_L};
+    const EpdFont* valueFont = &Arial_L;
+    int vH = epdc_digit_height(&Arial_L);
+    for (const EpdFont* f : kLadder) {
+        const int ih = epdc_digit_height(f);
+        if (ih + 4 <= valueH && ui::textWidth(f, value) <= availW) {
+            valueFont = f;
+            vH = ih;
+            break;
+        }
+    }
+
+    if (showLabel) ui::label(cx, y0 + kLabelBase, labelStr, fb, 0x00, labelFont);
+    // Centre the ink box. Digits (and ':' and '.') have no descender, so the
+    // bottom of that box IS the baseline ui::text() wants.
+    int baseline = top + (valueH + vH) / 2;
+    if (baseline > bottom) baseline = bottom;
+    ui::text(valueFont, cx, baseline, value, fb, EPD_DRAW_ALIGN_CENTER, 0x00);
+    if (showUnit)
+        ui::text(&Arial_L, cx, y1 - kUnitGap, unit, fb, EPD_DRAW_ALIGN_CENTER, 0x00);
+}
+
+void ui_render_dashboard(const RideState& s, bool navActive,
+                         const DashLayout& layout, uint8_t* fb) {
     const int W = epd_rotated_display_width();
     const int H = epd_rotated_display_height();
     char buf[32];
 
     ui::statusBar(s, fb);
 
-    // --- Hero cell: 3 s power, or speed if no power meter --------------
-    const int heroBottom = 448;
-    bool powerHero = s.powerConnected;
-    char speedHdr[16];
-    snprintf(speedHdr, sizeof(speedHdr), "SPEED · %s", units::speedLabel(s.useMiles));
+    // The turn banner owns the 138 px under the status bar while navigating, so
+    // the fields pack into whatever is left rather than being drawn over it.
+    const int top = ui::STATUS_H + (navActive ? 138 : 0);
 
-    if (navActive) {
-        // The turn banner owns the top 138 px (STATUS_H .. STATUS_H+138), so
-        // draw a compact hero beneath it instead of the full-size one.
-        const int top = ui::STATUS_H + 138;   // 202
-        ui::label(W / 2, top + 34, powerHero ? "POWER · 3S" : speedHdr, fb);
-        if (powerHero) {
-            if (s.power3sW != 0xFFFF) snprintf(buf, sizeof(buf), "%u", s.power3sW);
-            else snprintf(buf, sizeof(buf), "--");
-            ui::valueWithUnit(&Impact_40, 10, W - 10, top + 150, buf, "W", fb);
-        } else {
-            snprintf(buf, sizeof(buf), "%.1f", units::speed(s.speedKmh, s.useMiles));
-            ui::valueWithUnit(&Impact_40, 10, W - 10, top + 150, buf, "", fb);
+    const DashLayout& src = layout.count > 0 ? layout : dashDefaultLayout();
+
+    // --- Drop fields with nothing behind them ----------------------------
+    // A configured field whose sensor is not paired is REMOVED, and what is
+    // left expands to fill the panel; it comes back, in its configured place,
+    // the moment the sensor connects.
+    //
+    // The alternative shipped briefly and was wrong: a hero POWER cell with no
+    // power meter quietly rendered SPEED instead. It kept the panel full, but a
+    // number that changes identity is a worse lie than a missing one — the
+    // caption is the only clue, and nobody reads the caption on a number they
+    // check at 30 km/h.
+    DashLayout L;
+    for (int i = 0; i < src.count; ++i)
+        if (dashFieldAvailable(src.items[i].field, s))
+            L.items[L.count++] = src.items[i];
+
+    // Everything configured is unavailable — a fresh device with a power-only
+    // layout and no sensors yet. Speed always has a source, so the panel shows
+    // something rather than going blank.
+    if (L.count == 0) {
+        L.items[0] = {DF_SPEED, DZ_HERO, false};
+        L.count = 1;
+    }
+
+    // --- Pack items into rows -------------------------------------------
+    // A `half` item pairs with the NEXT item if that one is also `half`;
+    // otherwise it takes the full width on its own. Note this runs AFTER the
+    // filter, so a pair whose partner dropped out becomes a full-width row on
+    // its own — which is the reflow the rider sees when a strap disconnects.
+    // Two per row is the limit: three columns of Impact digits on a 540 px
+    // panel is unreadable, and silently shrinking the font would break the
+    // alignment between rows that makes the grid scannable.
+    DashRow rows[DASH_MAX_ITEMS];
+    int rowCount = 0;
+    // Height share per size. Roughly the proportions of the original design:
+    // the hero was ~3x a grid cell.
+    static const int kWeight[DZ_COUNT] = {2, 3, 4, 8};
+    for (int i = 0; i < L.count && rowCount < DASH_MAX_ITEMS; ) {
+        int n = 1;
+        if (L.items[i].half && i + 1 < L.count && L.items[i + 1].half) n = 2;
+        int w = kWeight[L.items[i].size < DZ_COUNT ? L.items[i].size : DZ_MEDIUM];
+        if (n == 2) {
+            int w2 = kWeight[L.items[i + 1].size < DZ_COUNT ? L.items[i + 1].size
+                                                            : DZ_MEDIUM];
+            if (w2 > w) w = w2;   // a row is as tall as its tallest member
         }
-        epd_fill_rect({0, heroBottom, W, 3}, 0x00, fb);
-    } else {
-    ui::label(W / 2, ui::STATUS_H + 44, powerHero ? "POWER · 3S" : speedHdr, fb);
+        rows[rowCount++] = {i, n, w};
+        i += n;
+    }
+    if (rowCount == 0) return;
 
-    if (powerHero) {
-        if (s.power3sW != 0xFFFF) snprintf(buf, sizeof(buf), "%u", s.power3sW);
-        else snprintf(buf, sizeof(buf), "--");
-        ui::valueWithUnit(&Impact_128, 10, W - 10, 344, buf, "W", fb);
+    int totalWeight = 0;
+    for (int r = 0; r < rowCount; ++r) totalWeight += rows[r].weight;
 
-        // Power zone bar: 7 segments under the hero number
-        int ftp = s.ftpW;
-        int zone = 0;
-        if (s.power3sW != 0xFFFF && ftp > 0) {
-            float pct = 100.0f * s.power3sW / ftp;
-            zone = pct < 55 ? 1 : pct < 75 ? 2 : pct < 90 ? 3 : pct < 105 ? 4
-                   : pct < 120 ? 5 : pct < 150 ? 6 : 7;
-        }
-        const int segW = (W - 32 - 6 * 8) / 7;
-        for (int i = 0; i < 7; ++i) {
-            EpdRect seg = {16 + i * (segW + 8), 396, segW, 18};
-            if (i < zone) epd_fill_rect(seg, 0x00, fb);
-            else {
-                epd_draw_rect(seg, 0x00, fb);
+    // --- Lay out, then pick one face per size class, then draw --------------
+    // Two passes on purpose. A cell that fits its own value independently makes
+    // same-sized cells disagree: "1:47:12" is wider than "54.8", so it stepped
+    // down a face and rendered visibly smaller in an identical box. The size a
+    // rider CONFIGURED has to be the size they see, so every cell of a given
+    // size class uses the smallest face any of them needs.
+    struct Placed {
+        EpdRect r;
+        uint8_t field, size;
+        bool hero, stale;
+        char value[32];
+        const char* unit;
+    } placed[DASH_MAX_ITEMS];
+    int placedN = 0;
+
+    const int gutters = (rowCount - 1) * ui::GUTTER;
+    const int availH = (H - top - ui::MARGIN) - gutters;
+    int y = top + ui::MARGIN - ui::STEP;
+    for (int r = 0; r < rowCount; ++r) {
+        int rowH = (r == rowCount - 1) ? (H - ui::MARGIN - y)
+                                       : availH * rows[r].weight / totalWeight;
+        const DashRow& row = rows[r];
+        const int halfW = (ui::CONTENT_W - ui::GUTTER) / 2;
+        for (int c = 0; c < row.count; ++c) {
+            const DashItem& it = L.items[row.first + c];
+            Placed& p = placed[placedN++];
+            p.r.y = y;
+            p.r.height = rowH;
+            if (row.count == 2) {
+                p.r.x = c == 0 ? ui::CONTENT_X : ui::CONTENT_X + halfW + ui::GUTTER;
+                p.r.width = halfW;
+            } else {
+                p.r.x = ui::CONTENT_X;
+                p.r.width = ui::CONTENT_W;
             }
+            p.field = it.field;
+            p.size = it.size;
+            p.hero = (it.size == DZ_HERO && row.count == 1 && rowH >= 200);
+            p.unit = "";
+            dashFieldValue(p.field, s, p.value, sizeof(p.value), &p.unit);
+            p.stale = (p.value[0] == '-' && p.value[1] == '-');
         }
+        y += rowH + ui::GUTTER;
+    }
+
+    // Smallest face any cell of each (size class, width) needs.
+    //
+    // Keyed on WIDTH as well as size: a full-width cell and a half-width cell
+    // are not "fields of a similar size", and lumping them together let a long
+    // value in a narrow box ("0:00:00" in 240 px) hold down a full-width SPEED
+    // cell with twice the room — which is how the biggest cell on the panel
+    // ended up with the smallest type.
+    int classIdx[DZ_COUNT][2];
+    for (int i = 0; i < DZ_COUNT; ++i) classIdx[i][0] = classIdx[i][1] = 0;
+    // ONE caption size for the whole screen. Values scale with their cell —
+    // that is the hierarchy the rider configured — but captions are chrome, and
+    // a "SPEED" larger than "DISTANCE" reads as emphasis nobody asked for.
+    int labelIdx = 0;
+    for (int i = 0; i < placedN; ++i) {
+        const Placed& p = placed[i];
+        if (p.hero) continue;   // the hero has its own ladder
+        const int availW = p.r.width - 2 * ui::CELL_PAD;
+        const int unitW = (p.unit && p.unit[0])
+                              ? ui::textWidth(&Arial_B, p.unit) + 6 : 0;
+        const int valH = p.r.height - ui::CELL_PAD * 2 - Arial_B.ascender
+                         - ui::HALF_STEP;
+        const int idx = ui::valueFontIndex(ui::kValueLadder, p.value, availW,
+                                           valH, unitW);
+        const int wb = (p.r.width > ui::CONTENT_W * 3 / 4) ? 1 : 0;
+        if (idx > classIdx[p.size][wb]) classIdx[p.size][wb] = idx;
+        // Captions equalise the same way: "GRADE" fitted the 20 pt face while
+        // "ALTITUDE" did not, so two cells in one row wore different captions.
+        int li = ui::LABEL_LADDER_N - 1;
+        for (int k = 0; k < ui::LABEL_LADDER_N; ++k)
+            if (ui::labelWidth(ui::kLabelLadder[k], dashFieldLabel(p.field))
+                <= availW) { li = k; break; }
+        if (li > labelIdx) labelIdx = li;
+    }
+
+    for (int i = 0; i < placedN; ++i) {
+        const Placed& p = placed[i];
+        if (p.hero) {
+            heroCell(p.r, dashFieldLabel(p.field), p.value, p.unit, s,
+                     isPowerField(p.field), p.field == DF_SPEED, fb);
+        } else {
+            const int wb = (p.r.width > ui::CONTENT_W * 3 / 4) ? 1 : 0;
+            ui::cell(p.r, dashFieldLabel(p.field), p.value, p.unit, fb, p.stale,
+                     ui::kValueLadder[classIdx[p.size][wb]],
+                     ui::kLabelLadder[labelIdx]);
+        }
+    }
+}
+
+// Defined below with the list helpers; declared here so the sheet can clamp
+// its body lines to the content column.
+static void fitText(const EpdFont* font, const char* str, int maxW,
+                    char* out, size_t outSize);
+
+// Primary buttons are solid, secondary are outlined; one primary per screen.
+static void sheetButton(const EpdRect& r, const char* text, bool primary,
+                        uint8_t* fb) {
+    if (primary) {
+        epd_fill_rect(r, ui::INK, fb);
     } else {
-        // The huge Impact-128 hero only fits ~3 glyphs, so keep the decimal
-        // only for single-digit speeds; double digits show as a whole number.
-        double spd = units::speed(s.speedKmh, s.useMiles);
-        snprintf(buf, sizeof(buf), spd < 10.0 ? "%.1f" : "%.0f", spd);
-        ui::valueWithUnit(&Impact_128, 10, W - 10, 360, buf, "", fb);
+        for (int e = 0; e < 3; ++e)   // specimen: secondary border is 3 px
+            epd_draw_rect({r.x + e, r.y + e, r.width - 2 * e, r.height - 2 * e},
+                          ui::INK, fb);
     }
-    }
-
-    epd_fill_rect({0, heroBottom, W, 3}, 0x00, fb);
-
-    // --- 2 x 2 grid -----------------------------------------------------
-    // (Elevation/grade removed — GPS altitude with no barometer is unreliable.)
-    const int gridTop = heroBottom + 3;
-    const int rows[3] = {gridTop, (gridTop + H) / 2, H};
-    const int midX = W / 2;
-
-    // Row separator + center divider
-    epd_fill_rect({0, rows[1], W, 3}, 0x00, fb);
-    epd_fill_rect({midX - 1, rows[0], 3, H - rows[0]}, 0x00, fb);
-
-    if (s.heartRateBpm != 0xFF) snprintf(buf, sizeof(buf), "%u", s.heartRateBpm);
-    else snprintf(buf, sizeof(buf), "--");
-    cell(0, rows[0], midX, rows[1], "HEART RATE", buf, "BPM", fb);
-
-    if (powerHero) snprintf(buf, sizeof(buf), "%.1f",
-                            units::speed(s.speedKmh, s.useMiles));
-    else if (s.cadenceRpm != 0xFF) snprintf(buf, sizeof(buf), "%u", s.cadenceRpm);
-    else snprintf(buf, sizeof(buf), "--");
-    cell(midX, rows[0], W, rows[1], powerHero ? "SPEED" : "CADENCE", buf,
-         powerHero ? units::speedLabel(s.useMiles) : "RPM", fb);
-
-    formatHms(buf, sizeof(buf), s.elapsedS);
-    cell(0, rows[1], midX, rows[2], "RIDE TIME", buf, "", fb);
-
-    snprintf(buf, sizeof(buf), "%.1f", units::distM(s.distanceM, s.useMiles));
-    cell(midX, rows[1], W, rows[2], "DISTANCE", buf, units::distLabel(s.useMiles), fb);
+    // Specimen sets button text in impact_40; step down only if it will not fit.
+    const EpdFont* f = ui::textWidth(&Impact_T, text) <= r.width - 16
+                           ? &Impact_T : &Impact_T;
+    ui::text(f, r.x + r.width / 2, r.y + r.height / 2 + epdc_digit_height(f) / 2,
+             text, fb, EPD_DRAW_ALIGN_CENTER, primary ? ui::PAPER : ui::INK);
 }
 
 void ui_render_summary(const RideSummary& r, uint8_t* fb) {
     const int W = epd_rotated_display_width();
-    char buf[40];
+    const int H = epd_rotated_display_height();
+    char buf[64];
 
-    // Inverted header band
-    epd_fill_rect({0, 0, W, 150}, 0x00, fb);
-    ui::label(W / 2, 66, "RIDE COMPLETE", fb, 0xFF, &ArialBold_20);
-    struct tm t0, t1;
-    time_t a = r.startUtc + (time_t)r.tzMin * 60;
-    time_t b = r.endUtc + (time_t)r.tzMin * 60;
-    gmtime_r(&a, &t0);
-    gmtime_r(&b, &t1);
-    static const char* MON[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                                "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
-    snprintf(buf, sizeof(buf), "%d %s · %d:%02d - %d:%02d", t0.tm_mday,
-             MON[t0.tm_mon], t0.tm_hour, t0.tm_min, t1.tm_hour, t1.tm_min);
-    ui::text(&ArialBold_20, W / 2, 116, buf, fb, EPD_DRAW_ALIGN_CENTER, 0xFF);
+    // SHEET — a MODAL over whatever screen is behind it, not a page of its own.
+    // Specimen: the screen behind is scrimmed with a 2 px checker, then a
+    // 520 px panel is anchored to the bottom with a 6 px top rule and 40/24/24
+    // padding. The scrim is a 1-bit tone, never a grey: this sits over a live
+    // screen and a mid grey would ghost.
+    const int sheetY = H - 520;
+    ui::fillTone({0, 0, W, sheetY}, ui::TONE_50, fb);
+    epd_fill_rect({0, sheetY, W, H - sheetY}, ui::PAPER, fb);
+    epd_fill_rect({0, sheetY, W, 6}, ui::INK, fb);
 
-    // Distance hero
-    ui::label(W / 2, 180, "DISTANCE", fb);
-    snprintf(buf, sizeof(buf), "%.1f", units::distM(r.distanceM, r.useMiles));
-    ui::valueWithUnit(&Impact_128, 10, W - 10, 394, buf, units::distLabel(r.useMiles), fb);
-    epd_fill_rect({0, 408, W, 3}, 0x00, fb);
+    const int x = ui::MARGIN;                 // sheet padding: 24 sides
+    int y = sheetY + 6 + 40;                  // 6 px rule + 40 px top padding
 
-    // 3 x 2 stat grid
-    const int rows[4] = {411, 551, 691, 830};
-    const int midX = W / 2;
-    epd_fill_rect({0, rows[1], W, 3}, 0x00, fb);
-    epd_fill_rect({0, rows[2], W, 3}, 0x00, fb);
-    epd_fill_rect({midX - 1, rows[0], 3, rows[3] - rows[0]}, 0x00, fb);
+    // Tracked label, then the hero figure with its unit set INLINE in impact —
+    // the specimen reads "54.8 KM" as one line, not a value with a superscript.
+    const int lw = ui::labelWidth(&Arial_L, "END OF RIDE");
+    ui::label(x + lw / 2, y + Arial_L.ascender, "END OF RIDE", fb);
+    y += Arial_L.ascender + 8;
 
-    formatHms(buf, sizeof(buf), r.movingS);
-    cell(0, rows[0], midX, rows[1], "MOVING TIME", buf, "", fb);
-    snprintf(buf, sizeof(buf), "%.1f", units::speed(r.avgSpeedKmh, r.useMiles));
-    cell(midX, rows[0], W, rows[1], "AVG SPEED", buf, units::speedLabel(r.useMiles), fb);
+    snprintf(buf, sizeof(buf), "%.1f %s", units::distM(r.distanceM, r.useMiles),
+             units::distLabel(r.useMiles));
+    const int heroH = epdc_digit_height(&Impact_M);
+    ui::text(&Impact_M, x, y + heroH, buf, fb, EPD_DRAW_ALIGN_LEFT, ui::INK);
+    y += heroH + 12;
 
-    if (r.avgPowerW) snprintf(buf, sizeof(buf), "%u", r.avgPowerW);
-    else snprintf(buf, sizeof(buf), "--");
-    cell(0, rows[1], midX, rows[2], "AVG POWER", buf, "W", fb);
-    if (r.normPowerW) snprintf(buf, sizeof(buf), "%u", r.normPowerW);
-    else snprintf(buf, sizeof(buf), "--");
-    cell(midX, rows[1], W, rows[2], "NORM. POWER", buf, "W", fb);
+    char moving[16];
+    snprintf(moving, sizeof(moving), "%lu:%02lu",
+             (unsigned long)(r.movingS / 3600),
+             (unsigned long)((r.movingS / 60) % 60));
+    if (r.avgPowerW > 0)
+        snprintf(buf, sizeof(buf), "%s moving · %.0f %s ascent · %d W avg", moving,
+                 units::elev(r.climbedM, r.useMiles), r.useMiles ? "ft" : "m",
+                 r.avgPowerW);
+    else
+        snprintf(buf, sizeof(buf), "%s moving · %.0f %s ascent · %d bpm", moving,
+                 units::elev(r.climbedM, r.useMiles), r.useMiles ? "ft" : "m",
+                 r.avgHrBpm);
+    char line[72];
+    fitText(&Arial_B, buf, W - 2 * ui::MARGIN, line, sizeof(line));
+    ui::text(&Arial_B, x, y + Arial_B.ascender, line, fb, EPD_DRAW_ALIGN_LEFT,
+             ui::INK);
 
-    if (r.avgHrBpm) snprintf(buf, sizeof(buf), "%u", r.avgHrBpm);
-    else snprintf(buf, sizeof(buf), "--");
-    cell(0, rows[2], midX, rows[3], "AVG HR", buf, "BPM", fb);
-    // Ascent from the map DEM (accurate, unlike GPS altitude).
-    snprintf(buf, sizeof(buf), "%.0f", units::elev(r.climbedM, r.useMiles));
-    cell(midX, rows[2], W, rows[3], "ASCENT", buf, units::elevLabel(r.useMiles), fb);
-
-    // Footer actions: RESUME bordered, SAVE inverted (primary), DISCARD bordered.
-    // Top border across the whole footer row, plus dividers between the three.
-    epd_fill_rect({0, kResumeButton.y, W, 3}, 0x00, fb);
-    epd_fill_rect({kSaveButton.x - 1, kResumeButton.y, 3, kResumeButton.height}, 0x00, fb);
-    epd_fill_rect({kDiscardButton.x - 1, kResumeButton.y, 3, kResumeButton.height}, 0x00, fb);
-
-    // ArialBold_14 (not _20): "RESUME"/"DISCARD" in _20 are wider than the
-    // 180px columns and overlap into neighbouring buttons.
-    ui::label(kResumeButton.x + kResumeButton.width / 2,
-              kResumeButton.y + kResumeButton.height / 2 + 6, "RESUME", fb,
-              0x00, &ArialBold_14);
-
-    epd_fill_rect({kSaveButton.x, kSaveButton.y, kSaveButton.width,
-                   kSaveButton.height}, 0x00, fb);
-    ui::label(kSaveButton.x + kSaveButton.width / 2,
-              kSaveButton.y + kSaveButton.height / 2 + 6, "SAVE", fb, 0xFF,
-              &ArialBold_14);
-
-    ui::label(kDiscardButton.x + kDiscardButton.width / 2,
-              kDiscardButton.y + kDiscardButton.height / 2 + 6, "DISCARD", fb,
-              0x00, &ArialBold_14);
+    sheetButton(kSaveButton, "SAVE", true, fb);
+    sheetButton(kDiscardButton, "DISCARD", false, fb);
+    sheetButton(kResumeButton, "RESUME", false, fb);
 }
 
 void ui_render_update_overlay(const char* phase, int pct, uint8_t* fb) {
@@ -409,7 +977,7 @@ void ui_render_update_overlay(const char* phase, int pct, uint8_t* fb) {
 
     // Pick the largest font that keeps a centered string inside the card.
     auto fitFont = [&](const char* s) -> const EpdFont* {
-        return ui::textWidth(&ArialBold_20, s) <= innerW ? &ArialBold_20 : &ArialBold_14;
+        return ui::textWidth(&Arial_B, s) <= innerW ? &Arial_B : &Arial_L;
     };
 
     // Inverted title band
@@ -430,9 +998,9 @@ void ui_render_update_overlay(const char* phase, int pct, uint8_t* fb) {
     int fillw = (pbw - 8) * pct / 100;
     if (fillw > 0) epd_fill_rect({pbx + 4, pby + 4, fillw, pbh - 8}, 0x00, fb);
 
-    ui::text(&ArialBold_14, W / 2, by + 270, "Keep the app open and the", fb,
+    ui::text(&Arial_L, W / 2, by + 270, "Keep the app open and the", fb,
              EPD_DRAW_ALIGN_CENTER, 0x00);
-    ui::text(&ArialBold_14, W / 2, by + 300, "device nearby until it finishes.", fb,
+    ui::text(&Arial_L, W / 2, by + 300, "device nearby until it finishes.", fb,
              EPD_DRAW_ALIGN_CENTER, 0x00);
 }
 
@@ -456,17 +1024,50 @@ static void fitText(const EpdFont* font, const char* str, int maxW,
     snprintf(out, outSize, "..");
 }
 
+// LIST ROW internals, straight off the specimen: 492 x 148, padding 24/16, the
+// title/subtitle block vertically centred, and a solid right-pointing triangle
+// (20 wide, 28 tall) as the affordance. The block is centred as a unit — the
+// specimen uses align-items:center on a flex row, not fixed baselines.
+static void drawListRowText(int x, int rowY, const char* title, const char* sub,
+                            uint8_t fg, uint8_t* fb) {
+    // "No lowercase in impact. Ever." — the face carries no lowercase glyphs at
+    // all, so a title like "Start Ride" silently drew as "S R". Uppercasing here
+    // rather than at each call site means no caller can reintroduce it, and the
+    // titles come from data (sensor names, route filenames) that we do not own.
+    char up[48];
+    size_t n = 0;
+    for (const char* p = title; *p && n < sizeof(up) - 1; ++p, ++n)
+        up[n] = (*p >= 'a' && *p <= 'z') ? (char)(*p - 32) : *p;
+    up[n] = 0;
+    title = up;
+
+    const int titleH = epdc_digit_height(&Impact_T);
+    const int gap = 8;
+    const int subH = Arial_B.ascender;
+    const int blockH = titleH + gap + subH;
+    const int top = rowY + (ui::ROW_H - blockH) / 2;
+    ui::text(&Impact_T, x, top + titleH, title, fb, EPD_DRAW_ALIGN_LEFT, fg);
+    ui::text(&Arial_B, x, top + titleH + gap + subH, sub, fb,
+             EPD_DRAW_ALIGN_LEFT, fg);
+}
+
+static void drawRowMarker(int rowY, uint8_t fg, uint8_t* fb) {
+    const int x = ui::CONTENT_X + ui::CONTENT_W - ui::CELL_PAD - 20;
+    const int cy = rowY + ui::ROW_H / 2;
+    epd_fill_triangle(x, cy - 14, x, cy + 14, x + 20, cy, fg, fb);
+}
+
 void ui_render_menu(const MenuInfo& m, uint8_t* fb) {
     const int W = epd_rotated_display_width();
     const int H = epd_rotated_display_height();
     char sub[64];
 
     // Header: MENU left (inset to match the rows), battery percent right
-    ui::text(&ArialBold_20, 44, 60, "MENU", fb, EPD_DRAW_ALIGN_LEFT, 0x00);
+    ui::text(&Impact_T, ui::MARGIN, 56, "MENU", fb, EPD_DRAW_ALIGN_LEFT, ui::INK);
     char pct[8];
     snprintf(pct, sizeof(pct), "%d%%", m.batteryPercent);
-    ui::text(&ArialBold_14, W - 16, 54, pct, fb, EPD_DRAW_ALIGN_RIGHT);
-    epd_fill_rect({0, kMenuRowTop - 3, W, 3}, 0x00, fb);
+    ui::label(W - ui::MARGIN - ui::textWidth(&Arial_L, pct) / 2, 54, pct, fb);
+    epd_fill_rect({0, kMenuRowTop - ui::RULE_HEAVY, W, ui::RULE_HEAVY}, ui::INK, fb);
 
     struct Row {
         const char* title;
@@ -500,26 +1101,27 @@ void ui_render_menu(const MenuInfo& m, uint8_t* fb) {
         {"Settings", settingsSub, false},
     };
 
+    // Same LIST row recipe as ui_render_list: 492 x 148 inset on the margin,
+    // condensed_28 title over a sentence-case subtitle, 2 px rule below, and a
+    // full invert for the selected row.
+    const int tx = ui::CONTENT_X + ui::CELL_PAD;
+    // Reserve the row marker: the specimen's 20 px triangle plus a 16 px gap.
+    const int textW = ui::CONTENT_W - 2 * ui::CELL_PAD - 36;
     for (int i = 0; i < kMenuRowCount; ++i) {
-        int y = kMenuRowTop + i * kMenuRowH;
-        uint8_t fg = 0x00;
+        int y = kMenuRowTop + i * ui::ROW_H;
+        uint8_t fg = ui::INK;
         if (rows[i].inverted) {
-            epd_fill_rect({0, y, W, kMenuRowH}, 0x00, fb);
-            fg = 0xFF;
+            // Full-bleed: a selected row is dark all the way across.
+            epd_fill_rect({0, y, W, ui::ROW_H}, ui::INK, fb);
+            fg = ui::PAPER;
         }
-        // Left inset for breathing room; pure-contrast subtitle (gray is
-        // unreadable on the e-paper panel); truncate so text clears the arrow.
         char mt[48], ms[64];
-        fitText(&ArialBold_20, rows[i].title, W - 44 - 44, mt, sizeof(mt));
-        fitText(&ArialBold_14, rows[i].subtitle, W - 44 - 44, ms, sizeof(ms));
-        ui::text(&ArialBold_20, 44, y + 66, mt, fb, EPD_DRAW_ALIGN_LEFT, fg);
-        ui::text(&ArialBold_14, 44, y + 108, ms, fb,
-                 EPD_DRAW_ALIGN_LEFT, fg == 0xFF ? 0xFF : 0x00);
-        ui::text(&ArialBold_20, W - 28, y + 84, ">", fb,
-                 EPD_DRAW_ALIGN_RIGHT, fg);
-        if (!rows[i].inverted) {
-            epd_fill_rect({0, y + kMenuRowH - 1, W, 1}, 0x00, fb);
-        }
+        fitText(&Impact_T, rows[i].title, textW, mt, sizeof(mt));
+        fitText(&Arial_B, rows[i].subtitle, textW, ms, sizeof(ms));
+        drawListRowText(tx, y, mt, ms, fg, fb);
+        drawRowMarker(y, fg, fb);
+        if (!rows[i].inverted)
+            epd_fill_rect({0, y + ui::ROW_H - ui::RULE, W, ui::RULE}, ui::INK, fb);
     }
 
     // Footer status line
@@ -530,169 +1132,236 @@ void ui_render_menu(const MenuInfo& m, uint8_t* fb) {
         snprintf(sub, sizeof(sub), FIRMWARE_VERSION " · no SD card · %s",
                  m.gpsReady ? "GPS lock" : "no GPS");
     }
-    ui::text(&ArialBold_14, W / 2, H - 24, sub, fb, EPD_DRAW_ALIGN_CENTER, 0x00);
+    ui::text(&Arial_L, W / 2, H - 24, sub, fb, EPD_DRAW_ALIGN_CENTER, 0x00);
+}
+
+// A turn arrow read from the instruction text: left, right, straight or
+// U-turn. Drawn as a shaft plus a solid head — no glyph exists for these, and
+// the system prefers a drawn mark to an icon font.
+static void drawTurnArrow(int cx, int cy, const char* instruction, uint8_t fg,
+                          uint8_t* fb) {
+    bool left = false, right = false, uturn = false;
+    for (const char* p = instruction; *p; ++p) {
+        if (strncasecmp(p, "left", 4) == 0) left = true;
+        if (strncasecmp(p, "right", 5) == 0) right = true;
+        if (strncasecmp(p, "u-turn", 6) == 0 || strncasecmp(p, "uturn", 5) == 0)
+            uturn = true;
+    }
+    const int t = 6;
+
+    // Centre the SHAPE, not the shaft. A right turn draws its elbow and head
+    // entirely to one side, so anchoring on the shaft left the glyph hard
+    // against the text with a column of empty space on the other side — every
+    // arrow appeared to hang at a different offset.
+    if (left || right) {
+        const int dir = left ? -1 : 1;
+        const int elbow = 20, head = 14;
+        // Extent runs from the shaft edge to the head tip on the turn side.
+        const int lo = dir < 0 ? -(elbow + head) : -t / 2;
+        const int hi = dir < 0 ? t / 2 : (elbow + head);
+        const int ox = cx - (lo + hi) / 2;
+        epd_fill_rect({ox - t / 2, cy - 4, t, 22}, fg, fb);              // shaft
+        epd_fill_rect({dir < 0 ? ox - elbow : ox, cy - 4, elbow, t}, fg, fb);
+        const int hx = ox + dir * elbow;
+        epd_fill_triangle(hx, cy - 16, hx, cy + 12, hx + dir * head, cy - 2, fg, fb);
+    } else if (uturn) {
+        const int lo = -18, hi = 18;
+        const int ox = cx - (lo + hi) / 2;
+        epd_fill_rect({ox - 12, cy - 18, t, 30}, fg, fb);
+        epd_fill_rect({ox - 12, cy - 18, 24, t}, fg, fb);
+        epd_fill_rect({ox + 12 - t, cy - 18, t, 18}, fg, fb);
+        epd_fill_triangle(ox + 12 - t - 8, cy, ox + 12 + 8, cy, ox + 12 - t / 2,
+                          cy + 16, fg, fb);
+    } else {
+        epd_fill_rect({cx - t / 2, cy - 2, t, 22}, fg, fb);
+        epd_fill_triangle(cx - 12, cy - 2, cx + 12, cy - 2, cx, cy - 20, fg, fb);
+    }
 }
 
 void ui_render_list(const char* title, const ListRow* rows, int count,
-                    const char* footer, uint8_t* fb) {
+                    const char* footer, uint8_t* fb, bool turnArrows) {
     const int W = epd_rotated_display_width();
-    const int H = epd_rotated_display_height();
 
-    ui::text(&ArialBold_20, 28, 60, title, fb);
-    ui::text(&ArialBold_14, W - 16, 54, "< BACK", fb, EPD_DRAW_ALIGN_RIGHT,
-             0x00);
-    epd_fill_rect({0, kMenuRowTop - 3, W, 3}, 0x00, fb);
+    // LIST template: title in the status band, rows on the 24 px margin, one
+    // 96 px BACK strip as the single exit. Rows are 148 px with a 2 px rule
+    // below — the rule is chrome and is drawn once, never inside a fast region.
+    ui::text(&Impact_T, ui::MARGIN, 56, title, fb);
+    epd_fill_rect({0, kMenuRowTop - ui::RULE_HEAVY, W, ui::RULE_HEAVY}, ui::INK, fb);
 
+    const int textW = ui::CONTENT_W - 2 * ui::CELL_PAD - (turnArrows ? 64 : 36);
     for (int i = 0; i < count && i < kMenuRowCount; ++i) {
-        int y = kMenuRowTop + i * kMenuRowH;
-        uint8_t fg = 0x00;
+        int y = kMenuRowTop + i * ui::ROW_H;
+        uint8_t fg = ui::INK;
         if (rows[i].inverted) {
-            epd_fill_rect({0, y, W, kMenuRowH}, 0x00, fb);
-            fg = 0xFF;
+            // Selected state is a full invert of the rectangle — the system's
+            // one way to show state, and the only one a DU pass renders cleanly.
+            // Full-bleed: a selected row is dark all the way across.
+            epd_fill_rect({0, y, W, ui::ROW_H}, ui::INK, fb);
+            fg = ui::PAPER;
         }
-        // Truncate long names/subtitles so they can't run off the row. PURE
-        // black/white — grays reproduce poorly on the physical e-paper (fine in
-        // previews, faint on the panel); hierarchy comes from the smaller font.
-        char t[40], s[64];
-        fitText(&ArialBold_20, rows[i].title, W - 28 - 20, t, sizeof(t));
-        fitText(&ArialBold_14, rows[i].subtitle, W - 28 - 20, s, sizeof(s));
-        ui::text(&ArialBold_20, 28, y + 64, t, fb, EPD_DRAW_ALIGN_LEFT, fg);
-        ui::text(&ArialBold_14, 28, y + 106, s, fb,
-                 EPD_DRAW_ALIGN_LEFT, fg == 0xFF ? 0xFF : 0x00);
-        if (!rows[i].inverted) {
-            epd_fill_rect({0, y + kMenuRowH - 1, W, 1}, 0x00, fb);
-        }
+        char t[40], sub[64];
+        fitText(&Impact_T, rows[i].title, textW, t, sizeof(t));
+        fitText(&Arial_B, rows[i].subtitle, textW, sub, sizeof(sub));
+        // Title on the row's own 24 px inset, subtitle a step below it. Two
+        // faces, one voice each: condensed_28 titles, sentence-case body.
+        // Text sits on the row's own padding, so an inverted row keeps an even
+        // black border around its content instead of bleeding to the panel edge.
+        // With arrows the text starts clear of them, and the right-edge marker
+        // goes away — a row that already shows its turn does not need a second
+        // affordance pointing at nothing.
+        const int tx = ui::CONTENT_X + ui::CELL_PAD + (turnArrows ? 64 : 0);
+        drawListRowText(tx, y, t, sub, fg, fb);
+        if (turnArrows)
+            drawTurnArrow(ui::CONTENT_X + ui::CELL_PAD + 24, y + ui::ROW_H / 2,
+                          rows[i].title, fg, fb);
+        else
+            drawRowMarker(y, fg, fb);
+        if (!rows[i].inverted)
+            epd_fill_rect({0, y + ui::ROW_H - ui::RULE, W, ui::RULE}, ui::INK, fb);
     }
     if (count == 0) {
-        ui::text(&ArialBold_14, W / 2, kMenuRowTop + 80, "nothing found", fb,
-                 EPD_DRAW_ALIGN_CENTER, 0x00);
+        // Say what is absent, never leave the field empty.
+        ui::text(&Arial_B, W / 2, kMenuRowTop + 80, "Nothing found", fb,
+                 EPD_DRAW_ALIGN_CENTER, ui::INK);
     }
 
     if (footer && footer[0]) {
-        ui::text(&ArialBold_14, W / 2, kBackBar.y - 16, footer, fb,
-                 EPD_DRAW_ALIGN_CENTER, 0x00);
+        ui::text(&Arial_L, W / 2, kBackBar.y - ui::STEP, footer, fb,
+                 EPD_DRAW_ALIGN_CENTER, ui::INK);
     }
     ui_render_back_bar(fb);
 }
 
 // Full-width BACK strip along the bottom.
-const EpdRect kBackBar = {0, 878, 540, 82};
+// 96 px per the system (was 82) — the single exit on every sub-screen,
+// comfortably past the 88 px minimum target.
+const EpdRect kBackBar = {0, 960 - ui::BACK_BAR_H, 540, ui::BACK_BAR_H};
 
 void ui_render_back_bar(uint8_t* fb) {
     const int W = epd_rotated_display_width();
-    epd_fill_rect({0, kBackBar.y, W, 3}, 0x00, fb);
-    ui::text(&ArialBold_20, W / 2, kBackBar.y + 54, "< BACK", fb,
-             EPD_DRAW_ALIGN_CENTER);
+    epd_fill_rect({0, kBackBar.y, W, ui::RULE_HEAVY}, ui::INK, fb);
+    ui::label(W / 2, kBackBar.y + 60, "BACK", fb, ui::INK, &Arial_B);
 }
 
 // iOS-style pill switch: black filled pill with a white knob on the right
 // when on; white outlined pill with a black knob on the left when off.
-static void settingsToggle(int x, int y, int w, int h, bool on, uint8_t* fb) {
-    const int r = h / 2;
-    const int lcx = x + r;          // left cap center
-    const int rcx = x + w - r;      // right cap center
-    const int cy = y + r;
-    const int knobR = r - 6;
-    // Solid black pill (rounded rect = middle band + two end caps).
-    epd_fill_rect({lcx, y, w - h, h}, 0x00, fb);
-    epd_fill_circle(lcx, cy, r, 0x00, fb);
-    epd_fill_circle(rcx, cy, r, 0x00, fb);
-    if (on) {
-        epd_fill_circle(rcx, cy, knobR, 0xFF, fb);   // white knob, right
-    } else {
-        // Hollow the pill to a thin outline, then a black knob on the left.
-        const int t = 3;
-        epd_fill_rect({lcx, y + t, w - h, h - 2 * t}, 0xFF, fb);
-        epd_fill_circle(lcx, cy, r - t, 0xFF, fb);
-        epd_fill_circle(rcx, cy, r - t, 0xFF, fb);
-        epd_fill_circle(lcx, cy, knobR, 0x00, fb);
-    }
+// SWITCH — drawn 120 x 52, no radii (the system forbids them, and the driver
+// has no antialiasing to make a curve read as one anyway). State is the whole
+// rectangle inverted, which is the one state cue a DU pass renders cleanly.
+// The hit rect is 120 x 88; only the drawn shape is this size.
+// SWITCH — 120 x 52, border 2, split into two halves; the ACTIVE half is filled
+// and carries its word in reverse. Not a single filled rectangle: the specimen
+// shows position, so "off" is still a legible state rather than an empty box.
+static void settingsToggle(int x, int y, int w, int h, bool on, uint8_t* fb,
+                           const char* onText = "ON",
+                           const char* offText = "OFF") {
+    for (int b = 0; b < ui::RULE; ++b)
+        epd_draw_rect({x + b, y + b, w - 2 * b, h - 2 * b}, ui::INK, fb);
+    const int half = w / 2;
+    const int fx = on ? x : x + half;      // ON fills the left half, OFF the right
+    epd_fill_rect({fx + ui::RULE, y + ui::RULE, half - ui::RULE,
+                   h - 2 * ui::RULE}, ui::INK, fb);
+    // Only the filled half is labelled — the empty half is left blank, which is
+    // what makes the switch read as a position rather than two competing words.
+    ui::label(fx + half / 2, y + h / 2 + 6, on ? onText : offText, fb, ui::PAPER);
 }
 
 void ui_render_settings(const SettingsInfo& si, uint8_t* fb) {
     const int W = epd_rotated_display_width();
 
-    ui::text(&ArialBold_20, 28, 60, "SETTINGS", fb);
-    epd_fill_rect({0, kMenuRowTop - 3, W, 3}, 0x00, fb);
+    ui::text(&Impact_T, ui::MARGIN, 56, "SETTINGS", fb);
+    epd_fill_rect({0, kMenuRowTop - ui::RULE_HEAVY, W, ui::RULE_HEAVY}, ui::INK, fb);
 
     struct Row {
         const char* label;
         char value[16];
-        bool toggle;   // switch instead of +/- stepper
-        bool on;       // switch position when toggle
+        bool toggle;   // switch instead of a +/- stepper
+        bool on;
     } rows[5];
-    snprintf(rows[0].value, sizeof(rows[0].value), "%d W", si.ftpW);
+    snprintf(rows[0].value, sizeof(rows[0].value), "%d", si.ftpW);
     rows[0].label = "FTP";
     rows[0].toggle = false;
     int tzH = si.tzMin / 60, tzM = abs(si.tzMin % 60);
-    if (tzM) snprintf(rows[1].value, sizeof(rows[1].value), "%+d:%02d", tzH, tzM);
-    else snprintf(rows[1].value, sizeof(rows[1].value), "UTC%+d", tzH);
+    snprintf(rows[1].value, sizeof(rows[1].value), "%+d:%02d", tzH, tzM);
     rows[1].label = "TIMEZONE";
     rows[1].toggle = false;
-    static const char* BL[] = {"Off", "Low", "Med", "Bright"};
+    // UPPERCASE: impact carries no lowercase glyphs, so "Med" drew as "M".
+    static const char* BL[] = {"OFF", "LOW", "MED", "BRIGHT"};
     snprintf(rows[2].value, sizeof(rows[2].value), "%s",
              BL[si.backlight < 0 ? 0 : si.backlight > 3 ? 3 : si.backlight]);
     rows[2].label = "BACKLIGHT";
-    // Four levels, so show which one is selected rather than a switch: a toggle
-    // renders on/off and hides the fact that tapping cycles Off->Low->Med->Bright.
     rows[2].toggle = false;
-    snprintf(rows[3].value, sizeof(rows[3].value), "%s",
-             si.useMiles ? "Miles" : "Km");
+    snprintf(rows[3].value, sizeof(rows[3].value), "%s", si.useMiles ? "Miles" : "Km");
     rows[3].label = "UNITS";
     rows[3].toggle = true;
     rows[3].on = si.useMiles;
-    snprintf(rows[4].value, sizeof(rows[4].value), "%s",
-             si.usbDrive ? "On" : "Off");
+    snprintf(rows[4].value, sizeof(rows[4].value), "%s", si.usbDrive ? "On" : "Off");
     rows[4].label = "USB DRIVE";
     rows[4].toggle = true;
     rows[4].on = si.usbDrive;
 
     for (int i = 0; i < 5; ++i) {
-        int y = kMenuRowTop + i * kSettingsRowH;
-        ui::text(&ArialBold_14, 28, y + kSettingsRowH / 2 + 5, rows[i].label, fb);
+        const int y = kMenuRowTop + i * kSettingsRowH;
+        const int midY = y + kSettingsRowH / 2;
+
+        // Label: tracked uppercase arialbold_14, left-aligned on the content
+        // column. label() centres, so anchor it at its own half width.
+        // Specimen: the row label is arialbold_20 sentence-weight, left-aligned
+        // on the 16 px padding — not a tracked 14 pt label.
+        const int labelRoom = (rows[i].toggle ? kSettingsToggleX : kSettingsMinusX)
+                              - (ui::CONTENT_X + ui::CELL_PAD) - ui::HALF_STEP;
+        char lab[24];
+        fitText(&Arial_B, rows[i].label, labelRoom, lab, sizeof(lab));
+        ui::text(&Arial_B, ui::CONTENT_X + ui::CELL_PAD, midY + 8, lab, fb,
+                 EPD_DRAW_ALIGN_LEFT, ui::INK);
 
         if (rows[i].toggle) {
-            // current value to the left, switch on the right
-            int vx = (kSettingsMinusX + kSettingsToggleX) / 2;
-            ui::text(&ArialBold_20, vx, y + kSettingsRowH / 2 + 8, rows[i].value,
-                     fb, EPD_DRAW_ALIGN_CENTER);
-            int ty = y + (kSettingsRowH - kSettingsToggleH) / 2;
-            settingsToggle(kSettingsToggleX, ty, kSettingsToggleW,
-                           kSettingsToggleH, rows[i].on, fb);
+            // Switch only. The row previously showed BOTH a value ("Km") and a
+            // switch reading OFF, which said the same thing twice and disagreed
+            // about which way round it was. The system's switch component is a
+            // label and the state, nothing else.
+            // A switch reading ON/OFF beside "UNITS" says nothing — on what?
+            // The two positions ARE the choice, so they carry the unit names.
+            const bool isUnits = (i == kSettingsUnitsRow);
+            settingsToggle(kSettingsToggleX, midY - kSettingsToggleH / 2,
+                           kSettingsToggleW, kSettingsToggleH, rows[i].on, fb,
+                           isUnits ? "MILES" : "ON", isUnits ? "KM" : "OFF");
         } else {
-            // minus / plus buttons with the value between
+            // STEPPER: 88 x 88 targets, value centred in the 88 px between them.
+            // The old layout drew the value from the row centre, so "250 W" and
+            // "UTC-7" ran straight through both buttons.
             for (int b = 0; b < 2; ++b) {
-                int bx = b == 0 ? kSettingsMinusX : kSettingsPlusX;
-                EpdRect r = {bx, y + (kSettingsRowH - kSettingsBtn) / 2,
-                             kSettingsBtn, kSettingsBtn};
-                epd_draw_rect(r, 0x00, fb);
-                EpdRect r2 = {r.x + 1, r.y + 1, r.width - 2, r.height - 2};
-                epd_draw_rect(r2, 0x00, fb);
-                int cx = r.x + r.width / 2, cy = r.y + r.height / 2;
-                epd_fill_rect({cx - 12, cy - 2, 24, 5}, 0x00, fb);
-                if (b == 1) epd_fill_rect({cx - 2, cy - 12, 5, 24}, 0x00, fb);
+                const int bx = b == 0 ? kSettingsMinusX : kSettingsPlusX;
+                const EpdRect r = {bx, midY - kSettingsBtn / 2, kSettingsBtn,
+                                   kSettingsBtn};
+                for (int e = 0; e < ui::RULE; ++e)
+                    epd_draw_rect({r.x + e, r.y + e, r.width - 2 * e,
+                                   r.height - 2 * e}, ui::INK, fb);
+                // impact_40 weight glyphs, drawn as bars so they match the
+                // face's stroke rather than sitting thin inside an 88 px box.
+                const int cx = r.x + r.width / 2, cy = r.y + r.height / 2;
+                epd_fill_rect({cx - 18, cy - 3, 36, 7}, ui::INK, fb);
+                if (b == 1) epd_fill_rect({cx - 3, cy - 18, 7, 36}, ui::INK, fb);
             }
-            int vx = (kSettingsMinusX + kSettingsBtn + kSettingsPlusX) / 2;
-            ui::text(&ArialBold_20, vx, y + kSettingsRowH / 2 + 8, rows[i].value,
-                     fb, EPD_DRAW_ALIGN_CENTER);
+            const int vx = kSettingsMinusX + kSettingsBtn + kSettingsGap
+                           + kSettingsValueW / 2;
+            const EpdFont* vf =
+                ui::textWidth(&Impact_T, rows[i].value) <= kSettingsValueW
+                    ? &Impact_T : &Impact_T;
+            ui::text(vf, vx, midY + epdc_digit_height(vf) / 2, rows[i].value, fb,
+                     EPD_DRAW_ALIGN_CENTER, ui::INK);
         }
-        epd_fill_rect({0, y + kSettingsRowH - 1, W, 1}, 0x00, fb);
+        epd_fill_rect({0, y + kSettingsRowH - ui::RULE, W, ui::RULE}, ui::INK, fb);
     }
 
-    // Navigation rows below the adjustable settings. (Sensors is on the main
-    // menu, not duplicated here.)
-    struct NavRow { const char* title; const char* sub; };
-    const NavRow navs[1] = {
-        {"GPS Debug", "receiver diagnostics"},
-    };
-    for (int i = 0; i < 1; ++i) {
-        int y = kMenuRowTop + (5 + i) * kSettingsRowH;
-        ui::text(&ArialBold_20, 28, y + 40, navs[i].title, fb);
-        ui::text(&ArialBold_14, 28, y + 70, navs[i].sub, fb,
-                 EPD_DRAW_ALIGN_LEFT, 0x00);
-        ui::text(&ArialBold_20, W - 28, y + 54, ">", fb, EPD_DRAW_ALIGN_RIGHT);
-        epd_fill_rect({0, y + kSettingsRowH - 1, W, 1}, 0x00, fb);
-    }
+    // Navigation row, drawn with the LIST recipe so it reads as the same
+    // component it is on every other screen.
+    const int ny = kMenuRowTop + 5 * kSettingsRowH;
+    ui::text(&Impact_T, ui::CONTENT_X + ui::CELL_PAD, ny + 52, "GPS DEBUG", fb);
+    ui::text(&Arial_B, ui::CONTENT_X + ui::CELL_PAD, ny + 88,
+             "Receiver diagnostics", fb, EPD_DRAW_ALIGN_LEFT, ui::INK);
+    drawRowMarker(ny - (ui::ROW_H - kSettingsRowH) / 2, ui::INK, fb);
+    epd_fill_rect({0, ny + kSettingsRowH - ui::RULE, W, ui::RULE}, ui::INK, fb);
 
     ui_render_back_bar(fb);
 }
@@ -700,8 +1369,8 @@ void ui_render_settings(const SettingsInfo& si, uint8_t* fb) {
 void ui_render_gps_debug(const GpsDebugView& g, uint8_t* fb) {
     const int W = epd_rotated_display_width();
 
-    ui::text(&ArialBold_20, 28, 60, "GPS DEBUG", fb);
-    epd_fill_rect({0, kMenuRowTop - 3, W, 3}, 0x00, fb);
+    ui::text(&Impact_T, ui::MARGIN, 56, "GPS DEBUG", fb);
+    epd_fill_rect({0, kMenuRowTop - ui::RULE_HEAVY, W, ui::RULE_HEAVY}, ui::INK, fb);
 
     struct Line {
         const char* label;
@@ -717,9 +1386,9 @@ void ui_render_gps_debug(const GpsDebugView& g, uint8_t* fb) {
 
     DBG_LINE("MODULE", "%s", g.moduleDetected ? g.module : "NOT DETECTED");
     DBG_LINE("NMEA BYTES", "%lu", (unsigned long)g.chars);
-    DBG_LINE("CHECKSUM OK / FAIL", "%lu / %lu", (unsigned long)g.passedCksum,
+    DBG_LINE("CHECKSUM", "%lu / %lu", (unsigned long)g.passedCksum,
              (unsigned long)g.failedCksum);
-    DBG_LINE("SENTENCES W/ FIX", "%lu", (unsigned long)g.withFix);
+    DBG_LINE("WITH FIX", "%lu", (unsigned long)g.withFix);
     DBG_LINE("SATS IN VIEW", "%d", g.satsInView);
     DBG_LINE("SATS IN USE", "%d", g.satsInUse);
     if (g.bestSnr > 0) DBG_LINE("BEST SIGNAL", "%d dB-Hz", g.bestSnr);
@@ -745,62 +1414,109 @@ void ui_render_gps_debug(const GpsDebugView& g, uint8_t* fb) {
     // This page repaints every second via the fast 1-bit DU refresh, which
     // snaps any gray to white — so every mark here must be pure black.
     // Spacing is derived so all rows fit between the header and back bar.
-    int y0 = kMenuRowTop + 38;
-    int step = n > 0 ? (kBackBar.y - 6 - y0) / n : 40;
+    // Label left, value right, on the content column — the same left/right
+    // cluster the status bar uses. Tracked uppercase labels, values in the body
+    // face; rules inset to 492 like every other row on the device.
+    const int y0 = kMenuRowTop + ui::STEP;
+    const int step = n > 0 ? (kBackBar.y - ui::STEP - y0) / n : 40;
+    const int lx = ui::CONTENT_X + ui::CELL_PAD;
+    const int rx = ui::CONTENT_X + ui::CONTENT_W - ui::CELL_PAD;
     for (int i = 0; i < n; ++i) {
-        int y = y0 + i * step + step - 20;
-        ui::text(&ArialBold_14, 28, y, lines[i].label, fb,
-                 EPD_DRAW_ALIGN_LEFT, 0x00);
-        ui::text(&ArialBold_20, W - 28, y, lines[i].value, fb,
-                 EPD_DRAW_ALIGN_RIGHT, 0x00);
-        if (i > 0) epd_fill_rect({0, y0 + i * step, W, 1}, 0x00, fb);
+        const int y = y0 + i * step + step - ui::STEP;
+        // Fit the label to whatever the value leaves — a long label and a long
+        // value previously overlapped in the middle of the row.
+        const int room = rx - ui::textWidth(&Arial_B, lines[i].value)
+                         - ui::STEP - lx;
+        char lab[32];
+        fitText(&Arial_L, lines[i].label, room, lab, sizeof(lab));
+        ui::label(lx + ui::labelWidth(&Arial_L, lab) / 2, y, lab, fb);
+        ui::text(&Arial_B, rx, y, lines[i].value, fb, EPD_DRAW_ALIGN_RIGHT,
+                 ui::INK);
+        if (i > 0) epd_fill_rect({0, y0 + i * step, W, 1}, ui::INK, fb);
     }
 
     ui_render_back_bar(fb);
 }
 
 // Bottom sheet: ~360 px tall, drawn over the live screen behind it.
-const EpdRect kPowerSheet = {0, 600, 540, 360};
-const EpdRect kPowerShutdown = {30, 720, 480, 92};
-const EpdRect kPowerCancel = {30, 836, 480, 92};
+// SHEET geometry, shared with the end-of-ride modal: a 520 px panel anchored to
+// the bottom with a 6 px top rule and 24 px side padding. The buttons sit on the
+// same rows the summary uses, so all three modals are the same object.
+const EpdRect kPowerSheet = {0, 440, 540, 520};
+const EpdRect kPowerShutdown = {24, 700, 492, 96};
+const EpdRect kPowerCancel = {24, 816, 492, 96};
+
+// Draws the shared modal shell: scrim over the live screen, bottom panel, rule.
+// The end-of-ride sheet, the power dialog and the navigation prompt are ONE
+// component with different words in it.
+static void sheetShell(uint8_t* fb) {
+    const int W = epd_rotated_display_width();
+    const int H = epd_rotated_display_height();
+    const int y = H - 520;
+    // Scrim the BODY only. Toning the status band as well made the clock and
+    // battery unreadable behind the checker — that row is chrome the rider
+    // still needs while a modal is up.
+    fillTone({0, ui::STATUS_H, W, y - ui::STATUS_H}, ui::TONE_50, fb);
+    epd_fill_rect({0, y, W, H - y}, ui::PAPER, fb);
+    epd_fill_rect({0, y, W, 6}, ui::INK, fb);
+}
+
+// Title + hero line + one detail line, at the summary's sizes exactly.
+static void sheetHead(const char* label, const char* hero, const char* detail,
+                      uint8_t* fb) {
+    const int W = epd_rotated_display_width();
+    const int H = epd_rotated_display_height();
+    const int x = ui::MARGIN;
+    int y = (H - 520) + 6 + 40;
+
+    const int lw = ui::labelWidth(&Arial_L, label);
+    ui::label(x + lw / 2, y + Arial_L.ascender, label, fb);
+    y += Arial_L.ascender + 8;
+
+    // Impact carries no lowercase, no '_' and no '.' beyond its ASCII run, so a
+    // route filename ("mission_dolores.gpx") drew as a row of blanks. Uppercase
+    // it, turn separators into spaces and drop the extension — which is also
+    // how a rider would read the name aloud.
+    char clean[48];
+    size_t n = 0;
+    for (const char* p = hero; *p && n < sizeof(clean) - 1; ++p) {
+        char c = *p;
+        if (c == '.' && (strcasecmp(p, ".gpx") == 0)) break;
+        if (c == '_' || c == '-' || c == '.') c = ' ';
+        if (c >= 'a' && c <= 'z') c -= 32;
+        if (c < ' ' || c > 'Z') continue;      // outside the compiled charset
+        clean[n++] = c;
+    }
+    clean[n] = 0;
+
+    // Step the hero DOWN to fit rather than truncating it: a route called
+    // "MISSION DOL.." tells the rider less than the same name a size smaller.
+    static const EpdFont* const heroSteps[] = {&Impact_M, &Impact_B, &Impact_T};
+    const EpdFont* hf = &Impact_T;
+    for (const EpdFont* f : heroSteps)
+        if (ui::textWidth(f, clean) <= W - 2 * ui::MARGIN) { hf = f; break; }
+    char fit[48];
+    fitText(hf, clean, W - 2 * ui::MARGIN, fit, sizeof(fit));
+    const int heroH = epdc_digit_height(hf);
+    ui::text(hf, x, y + heroH, fit, fb, EPD_DRAW_ALIGN_LEFT, ui::INK);
+    y += heroH + 12;
+
+    if (detail && detail[0]) {
+        char line[72];
+        fitText(&Arial_B, detail, W - 2 * ui::MARGIN, line, sizeof(line));
+        ui::text(&Arial_B, x, y + Arial_B.ascender, line, fb,
+                 EPD_DRAW_ALIGN_LEFT, ui::INK);
+    }
+}
 
 void ui_render_power_sheet(bool recording, uint8_t* fb) {
-    const int W = epd_rotated_display_width();
-
-    // Solid white card so the screen behind stays legible above it, with
-    // a heavy top rule to separate the sheet from the content.
-    epd_fill_rect({kPowerSheet.x, kPowerSheet.y, kPowerSheet.width,
-                   kPowerSheet.height}, 0xFF, fb);
-    epd_fill_rect({0, kPowerSheet.y, W, 4}, 0x00, fb);
-
-    // Small power glyph on the left of the title
-    int gx = 70, gy = kPowerSheet.y + 66;
-    for (int r = 26; r <= 30; ++r) epd_draw_circle(gx, gy, r, 0x00, fb);
-    epd_fill_rect({gx - 9, gy - 38, 18, 34}, 0xFF, fb);
-    epd_fill_rect({gx - 3, gy - 34, 6, 32}, 0x00, fb);
-
-    ui::text(&ArialBold_20, 118, kPowerSheet.y + 58, "Shut down?", fb);
-    ui::text(&ArialBold_14, 118, kPowerSheet.y + 98,
-             recording ? "your ride will be saved first"
-                       : "press BOOT to wake up again",
-             fb, EPD_DRAW_ALIGN_LEFT, 0x33);   // 0x33 = darkest grey the panel shows
-
-    // SHUT DOWN — inverted
-    epd_fill_rect({kPowerShutdown.x, kPowerShutdown.y, kPowerShutdown.width,
-                   kPowerShutdown.height}, 0x00, fb);
-    ui::text(&ArialBold_20, kPowerShutdown.x + kPowerShutdown.width / 2,
-             kPowerShutdown.y + kPowerShutdown.height / 2 + 10, "SHUT DOWN", fb,
-             EPD_DRAW_ALIGN_CENTER, 0xFF);
-
-    // CANCEL — bordered
-    for (int i = 0; i < 3; ++i) {
-        EpdRect r = {kPowerCancel.x + i, kPowerCancel.y + i,
-                     kPowerCancel.width - i * 2, kPowerCancel.height - i * 2};
-        epd_draw_rect(r, 0x00, fb);
-    }
-    ui::text(&ArialBold_20, kPowerCancel.x + kPowerCancel.width / 2,
-             kPowerCancel.y + kPowerCancel.height / 2 + 10, "CANCEL", fb,
-             EPD_DRAW_ALIGN_CENTER);
+    sheetShell(fb);
+    sheetHead("POWER", "SHUT DOWN?",
+              recording ? "A ride is recording — it will be saved first."
+                        : "The device sleeps until you press the button.",
+              fb);
+    sheetButton(kPowerShutdown, "SHUT DOWN", true, fb);
+    sheetButton(kPowerCancel, "CANCEL", false, fb);
 }
 
 void ui_render_shutdown_screen(uint8_t* fb) {
@@ -810,8 +1526,8 @@ void ui_render_shutdown_screen(uint8_t* fb) {
     epd_fill_rect({0, bandY, W, bandH}, 0x00, fb);
     epd_fill_rect({0, bandY - 3, W, 3}, 0xFF, fb);
     epd_fill_rect({0, bandY + bandH, W, 3}, 0xFF, fb);
-    ui::label(W / 2, bandY + 50, "POWERED OFF", fb, 0xFF, &ArialBold_20);
-    ui::text(&ArialBold_14, W / 2, bandY + 90, "press the BOOT button to wake", fb,
+    ui::label(W / 2, bandY + 50, "POWERED OFF", fb, 0xFF, &Arial_B);
+    ui::text(&Arial_L, W / 2, bandY + 90, "press the BOOT button to wake", fb,
              EPD_DRAW_ALIGN_CENTER, 0xFF);   // white on the black band
 }
 
@@ -875,132 +1591,74 @@ static void drawAppIcon(int cx, int topY, int height, uint8_t* fb) {
 // Composition: the mark and wordmark sit on the upper third, the step list runs
 // from the optical centre, and the version anchors the foot. Only 0x00 and the
 // 0x22/0x33 greys are used — this panel renders 0x44 and lighter as plain white.
+static void drawAppIcon(int cx, int topY, int height, uint8_t* fb);
+
 void ui_render_boot_screen(const char* version, const char* const* lines,
-                           const int8_t* state, int count, uint8_t* fb) {
+                           const int8_t* state, const char (*detail)[28],
+                           const uint32_t* ms, int count, uint8_t* fb) {
     const int W = epd_rotated_display_width();
     const int H = epd_rotated_display_height();
-    epd_fill_rect({0, 0, W, H}, 0xFF, fb);
+    epd_fill_rect({0, 0, W, H}, ui::PAPER, fb);
+
+    // Kernel-style boot log. The rider cannot fix a boot problem, but they can
+    // SEE one — which step is slow, which subsystem failed, how long the card
+    // took. That is worth more on a device with no console than a progress bar
+    // is, and it is why the timings are on the glass rather than only in the
+    // diag file.
+    // Mark and wordmark first — this is still the device's front door, and the
+    // log is what it is doing, not what it is. Both sized to leave the log the
+    // lower two thirds.
     const int cx = W / 2;
+    drawAppIcon(cx, ui::MARGIN + ui::STEP, 168, fb);
+    ui::label(cx, 268, "OPEN TRAIL PAPER", fb, ui::INK, &Impact_T);
+    char hdr[64];
+    snprintf(hdr, sizeof(hdr), "firmware %s · esp32-s3 · 540x960 epd", version);
+    ui::text(&Arial_L, cx, 296, hdr, fb, EPD_DRAW_ALIGN_CENTER, ui::INK);
 
-    drawAppIcon(cx, 152, 248, fb);
+    int y = 320;
+    epd_fill_rect({0, y, W, ui::RULE}, ui::INK, fb);
+    y += ui::STEP + Arial_L.ascender + 6;
 
-    // Wordmark.
-    ui::label(cx, 462, "OPEN TRAIL PAPER", fb, 0x00, &ArialBold_20);
-    epd_fill_rect({cx - 150, 484, 300, 3}, 0x00, fb);
-
-    // Steps. One line each, ticked or crossed, from the optical centre.
-    int y = 572;
+    const int lineH = Arial_L.ascender + 14;
+    const int statusX = W - ui::MARGIN;
     for (int i = 0; i < count; ++i) {
-        const int x = 132;
-        const int8_t st = state ? state[i] : BOOT_OK;
-        if (st == BOOT_OK) {
-            for (int t = 0; t < 3; ++t) {                  // tick
-                epd_draw_line(x, y - 7 + t, x + 7, y + t, 0x00, fb);
-                epd_draw_line(x + 7, y + t, x + 21, y - 20 + t, 0x00, fb);
-            }
-        } else if (st == BOOT_FAIL) {
-            for (int t = 0; t < 3; ++t) {                  // cross
-                epd_draw_line(x + t, y - 18, x + 18 + t, y, 0x00, fb);
-                epd_draw_line(x + 18 + t, y - 18, x + t, y, 0x00, fb);
-            }
-        } else {
-            // In progress: a hollow ring, sized and seated to occupy the same
-            // box as the tick/cross so the label never shifts when it resolves.
-            // Grey rather than black — it reads as "not done yet" next to the
-            // solid black marks, and 0x22 is one of the four greys this panel
-            // actually renders.
-            // Three concentric rings, matching the 3 px stroke the tick and
-            // cross are built from — at 2 px it read noticeably lighter than the
-            // marks above it.
-            const int cxm = x + 10, cym = y - 9, r = 11;
-            for (int t = 0; t < 3; ++t)
-                epd_draw_circle(cxm, cym, r - t, 0x22, fb);
-        }
-        ui::text(&ArialBold_20, x + 44, y, lines[i], fb, EPD_DRAW_ALIGN_LEFT,
-                 st == BOOT_FAIL ? 0x00 : 0x22);
-        y += 56;
+        char stamp[16];
+        snprintf(stamp, sizeof(stamp), "[%3lu.%02lu]",
+                 (unsigned long)(ms[i] / 1000), (unsigned long)((ms[i] % 1000) / 10));
+        ui::text(&Arial_L, ui::MARGIN, y, stamp, fb, EPD_DRAW_ALIGN_LEFT, ui::INK);
+
+        char body[64];
+        if (detail && detail[i] && detail[i][0])
+            snprintf(body, sizeof(body), "%s  %s", lines[i], detail[i]);
+        else
+            snprintf(body, sizeof(body), "%s", lines[i]);
+        ui::text(&Arial_B, ui::MARGIN + 82, y, body, fb, EPD_DRAW_ALIGN_LEFT,
+                 ui::INK);
+
+        // Status bracket, right-aligned: the column the eye scans.
+        const char* st = state[i] == BOOT_OK ? "[ OK ]"
+                       : state[i] == BOOT_FAIL ? "[FAIL]" : "[ .. ]";
+        ui::text(&Arial_B, statusX, y, st, fb, EPD_DRAW_ALIGN_RIGHT, ui::INK);
+        y += lineH;
     }
 
-    // Foot: a track of steps done, then the version.
-    const int barW = 300, barH = 6, barX = cx - barW / 2, barY = 846;
-    epd_fill_rect({barX, barY, barW, barH}, 0x33, fb);
-    // Count only RESOLVED steps — a step that has merely started is what the bar
-    // is currently waiting on, so filling for it would race ahead of the truth.
-    int done = 0;
-    for (int i = 0; i < count; ++i)
-        if (!state || state[i] != BOOT_PENDING) ++done;
-    // Display, SD card, GPS, Maps. Held as a floor rather than using `count`
-    // directly so the bar doesn't read full at 2 of 2 while step 3 is pending —
-    // and grown past it if a boot ever announces more, so it can't overflow the
-    // track either.
-    const int total = count > 4 ? count : 4;
-    if (done > 0) epd_fill_rect({barX, barY, barW * done / total, barH}, 0x00, fb);
-    ui::text(&ArialBold_14, cx, 894, version, fb, EPD_DRAW_ALIGN_CENTER, 0x22);
+    // Cursor block on the line still running, so a long step reads as busy
+    // rather than as a frozen list.
+    if (count > 0 && state[count - 1] == BOOT_PENDING)
+        epd_fill_rect({ui::MARGIN, y - Arial_L.ascender, 10, Arial_L.ascender},
+                      ui::INK, fb);
 }
 
 void ui_render_nav_prompt(const char* routeName, int turns, uint8_t* fb) {
-    const int W = epd_rotated_display_width();
-
-    epd_fill_rect({kPowerSheet.x, kPowerSheet.y, kPowerSheet.width,
-                   kPowerSheet.height}, 0xFF, fb);
-    epd_fill_rect({0, kPowerSheet.y, W, 4}, 0x00, fb);
-
-    // Signpost glyph (aligned with the title line)
-    int gx = 70, gy = kPowerSheet.y + 34;
-    epd_fill_rect({gx - 4, gy - 28, 8, 46}, 0x00, fb);
-    epd_fill_triangle(gx + 34, gy - 18, gx - 2, gy - 28, gx - 2, gy - 8, 0x00, fb);
-
-    ui::text(&ArialBold_20, 118, kPowerSheet.y + 42, "Start navigation?", fb);
-
-    // Destination: the route name set as the main line, with the turn count as
-    // a quieter line beneath it.
-    //
-    // This used to be white-on-black in a solid inverted band. On a sheet that
-    // is otherwise white, a full-width slab of black is the heaviest thing on
-    // screen — it pulled the eye away from the START/LATER buttons and read as
-    // a warning rather than as information. Black-on-white with a rule above it
-    // gives the same separation with none of the shouting, and it matches how
-    // the rest of the UI presents content.
-    char name[48];
-    snprintf(name, sizeof(name), "%s", routeName);
-    size_t nl = strlen(name);   // drop a trailing ".gpx" for a cleaner label
-    if (nl > 4 && strcmp(name + nl - 4, ".gpx") == 0) name[nl - 4] = 0;
-
-    // Only ~120 px between the sheet top (600) and the START button (720), so
-    // this is one line, not two — a stacked name + turn count collided with the
-    // button.
-    const int bandX = 30, bandW = 480;
-    const int ruleY = kPowerSheet.y + 64;
-    epd_fill_rect({bandX, ruleY, bandW, 2}, 0x00, fb);
-
-    // Fit the NAME to whatever is left after the turn count, rather than
-    // fitting the whole string — otherwise a long route name eats the count and
-    // it truncates to something like "8 t..", which is worse than a shortened
-    // name.
-    char tail[24];
-    snprintf(tail, sizeof(tail), " · %d turns", turns);
-    const int tailW = ui::textWidth(&ArialBold_20, tail);
-    char fittedName[64];
-    fitText(&ArialBold_20, name, bandW - 28 - tailW, fittedName,
-            sizeof(fittedName));
-    char sub[80];
-    snprintf(sub, sizeof(sub), "%s%s", fittedName, tail);
-    ui::text(&ArialBold_20, bandX + bandW / 2, ruleY + 36, sub, fb,
-             EPD_DRAW_ALIGN_CENTER);
-
-    epd_fill_rect({kPowerShutdown.x, kPowerShutdown.y, kPowerShutdown.width,
-                   kPowerShutdown.height}, 0x00, fb);
-    ui::text(&ArialBold_20, kPowerShutdown.x + kPowerShutdown.width / 2,
-             kPowerShutdown.y + kPowerShutdown.height / 2 + 10, "START", fb,
-             EPD_DRAW_ALIGN_CENTER, 0xFF);
-    for (int i = 0; i < 3; ++i) {
-        EpdRect r = {kPowerCancel.x + i, kPowerCancel.y + i,
-                     kPowerCancel.width - i * 2, kPowerCancel.height - i * 2};
-        epd_draw_rect(r, 0x00, fb);
-    }
-    ui::text(&ArialBold_20, kPowerCancel.x + kPowerCancel.width / 2,
-             kPowerCancel.y + kPowerCancel.height / 2 + 10, "LATER", fb,
-             EPD_DRAW_ALIGN_CENTER);
+    char sub[64];
+    snprintf(sub, sizeof(sub), "%d turn%s · tap START to follow it", turns,
+             turns == 1 ? "" : "s");
+    sheetShell(fb);
+    // The route name is the hero line here, at impact_96 like the summary's
+    // distance — it was previously set at body size and unreadable at a glance.
+    sheetHead("NAVIGATE", routeName, sub, fb);
+    sheetButton(kPowerShutdown, "START", true, fb);
+    sheetButton(kPowerCancel, "LATER", false, fb);
 }
 
 void ui_render_nav_banner(const char* instruction, float distanceM,
@@ -1064,10 +1722,66 @@ void ui_render_nav_banner(const char* instruction, float distanceM,
                           ax + headHalf, ay - 4, 0xFF, fb);
     }
 
-    char d[16];
-    units::navDist(d, sizeof(d), distanceM, useMiles);
-    ui::text(&ArialBold_20, 108, top + 52, d, fb, EPD_DRAW_ALIGN_LEFT, 0xFF);
-    char instr[48];
-    fitText(&ArialBold_14, instruction, W - 24 - 12, instr, sizeof(instr));
-    ui::text(&ArialBold_14, 24, top + 112, instr, fb, EPD_DRAW_ALIGN_LEFT, 0xFF);
+    // Arrow and distance form the left cluster; the INSTRUCTION sits to their
+    // right at the largest size that fits. It used to run full-width along the
+    // bottom of the band in the 14 pt label face — the one thing the rider needs
+    // to read at speed, set smaller than everything around it.
+    char draw[16], d[16];
+    units::navDist(draw, sizeof(draw), distanceM, useMiles);
+    upperCopy(d, sizeof(d), draw);
+    const int distX = 104;
+    ui::text(&Impact_T, distX, top + 78, d, fb, EPD_DRAW_ALIGN_LEFT, 0xFF);
+
+    const int textX = distX + ui::textWidth(&Impact_T, d) + 28;
+    const int textW = W - textX - ui::MARGIN;
+
+    // Two lines if one will not do: a turn instruction is a phrase, and
+    // shrinking it to a single line costs more legibility than wrapping does.
+    char instrU[80];
+    upperCopy(instrU, sizeof(instrU), instruction);
+
+    // Prefer the LARGEST face that fits in at most two lines, not the largest
+    // that fits on one. Choosing by single-line fit dropped a turn instruction
+    // to the 14 pt label face while a 40 pt one would have fitted across two —
+    // and this is the single most important string on the screen.
+    auto wrapAt = [&](const EpdFont* f, const char* t, char* a, size_t an,
+                      char* b, size_t bn) -> bool {
+        const size_t n = strlen(t);
+        if (ui::textWidth(f, t) <= textW) { snprintf(a, an, "%s", t); b[0] = 0; return true; }
+        size_t cut = 0;
+        for (size_t i = 0; i < n; ++i) {
+            char probe[96];
+            if (i + 1 >= sizeof(probe)) break;
+            memcpy(probe, t, i + 1);
+            probe[i + 1] = 0;
+            if (ui::textWidth(f, probe) > textW) break;
+            if (t[i] == ' ') cut = i;
+        }
+        if (!cut) return false;                       // no break point that fits
+        snprintf(a, an, "%.*s", (int)cut, t);
+        snprintf(b, bn, "%s", t + cut + 1);
+        return ui::textWidth(f, b) <= textW;          // tail must fit too
+    };
+
+    static const EpdFont* const steps[] = {&Impact_T, &Arial_B, &Arial_L};
+    const EpdFont* f = &Arial_L;
+    char l1[96] = "", l2[96] = "";
+    for (const EpdFont* c : steps) {
+        const char* t = (c == &Impact_T) ? instrU : instruction;
+        char a[96], b[96];
+        if (wrapAt(c, t, a, sizeof(a), b, sizeof(b))) {
+            f = c;
+            snprintf(l1, sizeof(l1), "%s", a);
+            snprintf(l2, sizeof(l2), "%s", b);
+            break;
+        }
+    }
+    if (!l1[0]) fitText(f, instruction, textW, l1, sizeof(l1));
+
+    if (l2[0]) {
+        ui::text(f, textX, top + 58, l1, fb, EPD_DRAW_ALIGN_LEFT, 0xFF);
+        ui::text(f, textX, top + 108, l2, fb, EPD_DRAW_ALIGN_LEFT, 0xFF);
+    } else {
+        ui::text(f, textX, top + 82, l1, fb, EPD_DRAW_ALIGN_LEFT, 0xFF);
+    }
 }

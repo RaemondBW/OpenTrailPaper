@@ -17,6 +17,7 @@
 #include "map_store.h"
 #include "sd_bus.h"
 #include "usb_storage.h"
+#include "dash_config.h"
 #include "diag.h"
 
 namespace {
@@ -31,6 +32,7 @@ const char* CHR_OTA       = "b1c50005-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
 const char* CHR_SENSORS   = "b1c50006-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
 const char* CHR_MAP       = "b1c50007-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
 const char* CHR_AGNSS     = "b1c50008-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
+const char* CHR_DASH      = "b1c50009-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
 
 NimBLECharacteristic* statusChr = nullptr;
 NimBLECharacteristic* sensorsChr = nullptr;
@@ -57,6 +59,8 @@ void writeSettingsValue(NimBLECharacteristic* c) {
 
 // Set when a device-side settings change should be pushed to the phone.
 volatile bool settingsDirty = false;
+// Set when the layout changed, so the UI task repaints with it.
+volatile bool dashDirty = false;
 
 class SettingsCb : public NimBLECharacteristicCallbacks {
     void onRead(NimBLECharacteristic* c, NimBLEConnInfo&) override {
@@ -88,6 +92,52 @@ class SettingsCb : public NimBLECharacteristicCallbacks {
                           settings::ftpWatts(), settings::tzMinutes(),
                           settings::useMiles(), settings::backlight());
         }
+    }
+};
+
+// Dashboard layout. The value IS the config file's text — the same bytes that
+// sit at /config/dashboard.cfg — so the app, the card and the panel can never
+// drift into three different ideas of the layout. It is small enough (~300
+// bytes) to move in a single read/write at the 247-byte MTU we negotiate, which
+// is why this needs none of the chunked framing the route and map transfers use.
+NimBLECharacteristic* dashChr = nullptr;
+
+// Staged here by the write callback and applied by the server task.
+//
+// LOAD-BEARING, twice over. The first version did the work inline in onWrite()
+// and reset the device on every send:
+//
+//   * it put two 1 KB buffers on the NimBLE callback stack, which is nowhere
+//     near big enough for them — that alone is the reset;
+//   * and it wrote the SD card from inside a BLE callback, which this file
+//     already knows not to do. otaCommit and mapCommit are deferred to the task
+//     for exactly this reason, and the deferral is also what keeps a write off
+//     the card while the recorder or a USB host owns it.
+//
+// So: copy the bytes, set a flag, get out. Static rather than stack because
+// this is a BLE callback, and sized for DASH_MAX_ITEMS worth of text.
+constexpr size_t DASH_TEXT_MAX = 640;
+char dashPendingText[DASH_TEXT_MAX];
+volatile bool dashApplyPending = false;
+
+// Serialize the CURRENT layout into the characteristic. Static buffer, same
+// reason — onRead runs on the BLE task too.
+void writeDashValue(NimBLECharacteristic* c) {
+    static char text[DASH_TEXT_MAX];
+    size_t n = dash_config::currentText(text, sizeof(text));
+    c->setValue((const uint8_t*)text, n);
+}
+
+class DashCb : public NimBLECharacteristicCallbacks {
+    void onRead(NimBLECharacteristic* c, NimBLEConnInfo&) override {
+        writeDashValue(c);
+    }
+    void onWrite(NimBLECharacteristic* c, NimBLEConnInfo&) override {
+        std::string v = c->getValue();
+        if (v.empty() || v.size() >= DASH_TEXT_MAX) return;
+        memcpy(dashPendingText, v.data(), v.size());
+        dashPendingText[v.size()] = 0;
+        dashApplyPending = true;
     }
 };
 
@@ -1015,6 +1065,12 @@ void begin() {
         NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::NOTIFY);
     agnssChr->setCallbacks(new AgnssCb());
 
+    dashChr = svc->createCharacteristic(
+        CHR_DASH,
+        NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::NOTIFY);
+    dashChr->setCallbacks(new DashCb());
+    writeDashValue(dashChr);
+
     svc->start();
 
     NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
@@ -1029,6 +1085,12 @@ void begin() {
 void pushSettingsToPhone() { settingsDirty = true; }
 
 bool isPhoneConnected() { return phoneConnected; }
+
+bool takeDashChanged() {
+    if (!dashDirty) return false;
+    dashDirty = false;
+    return true;
+}
 
 bool updateInProgress() { return otaPhase != 0; }
 int updatePercent() {
@@ -1051,6 +1113,22 @@ void task(void*) {
         if (otaCommitPending && sdFree) {
             otaCommitPending = false;    // write staged firmware to SD (off BLE
             otaCommit();                 // host, and not while the recorder owns SD)
+        }
+        if (dashApplyPending && sdFree) {
+            dashApplyPending = false;
+            const char* reason = nullptr;
+            if (dash_config::applyText(dashPendingText, &reason)) {
+                dashDirty = true;            // repaint with the new layout
+            } else {
+                diag::log("dash: app layout rejected (%s)", reason ? reason : "?");
+            }
+            // Notify what the device ACTUALLY holds, whether the write took or
+            // not, so the app's editor cannot sit showing a layout that was
+            // rejected — and so a send that silently failed is visible.
+            if (dashChr) {
+                writeDashValue(dashChr);
+                dashChr->notify();
+            }
         }
         if (mapCommitPending && sdFree) {
             mapCommitPending = false;    // write staged map to SD (off BLE host,

@@ -1,6 +1,7 @@
 #include "ui_dashboard.h"
 
 #include <Arduino.h>
+#include <stdarg.h>
 #include <SD.h>
 #include <Update.h>
 #include <Wire.h>
@@ -31,6 +32,7 @@
 #include "diag.h"
 #include "smooth_epd.h"
 #include "power_mgmt.h"
+#include "dash_config.h"
 
 namespace {
 
@@ -896,7 +898,8 @@ void renderListScreen(uint8_t* fb) {
         default:
             break;
     }
-    ui_render_list(title, rows, count, footer, fb);
+    // Directions rows ARE turns, so each one leads with its maneuver arrow.
+    ui_render_list(title, rows, count, footer, fb, screen == SCREEN_DIRECTIONS);
 }
 
 }  // namespace
@@ -920,8 +923,12 @@ namespace ui_dashboard {
 // Boot progress state. Kept tiny and static — this runs before any allocation
 // we control, and a boot screen that can fail to allocate is worse than none.
 namespace {
-const char* bootLines[6];
-int8_t      bootState[6];
+const char* bootLines[8];
+int8_t      bootState[8];
+// Per-step detail ("30436 MB free", "CASIC", "107 tiles") and the millis() at
+// which it resolved — the boot log shows both.
+char        bootDetail[8][28];
+uint32_t    bootMs[8];
 int         bootCount = 0;
 bool        bootScreenLive = false;
 }
@@ -1002,7 +1009,8 @@ void bootRepaint() {
     if (!bootScreenLive) return;
     uint8_t* fb = epdc_framebuffer();
     if (!fb) return;
-    ui_render_boot_screen(FIRMWARE_VERSION, bootLines, bootState, bootCount, fb);
+    ui_render_boot_screen(FIRMWARE_VERSION, bootLines, bootState, bootDetail,
+                          bootMs, bootCount, fb);
     epdc_paint();
     // WAIT for the rows to finish clocking out. epdc_paint() is asynchronous on
     // the EPD_Painter backend — it hands the frame to the driver's paint task
@@ -1044,6 +1052,8 @@ void bootStep(const char* step) {
     if (bootCount >= (int)(sizeof(bootLines) / sizeof(*bootLines))) return;
     bootLines[bootCount] = step;
     bootState[bootCount] = BOOT_PENDING;
+    bootDetail[bootCount][0] = 0;
+    bootMs[bootCount] = millis();
     ++bootCount;
     bootRepaint();
 }
@@ -1060,6 +1070,20 @@ void bootStatus(const char* step, bool ok) {
         bootLines[i] = step;
     }
     bootState[i] = ok ? BOOT_OK : BOOT_FAIL;
+    bootMs[i] = millis();
+    bootRepaint();
+}
+
+// Attach detail to a step already announced ("30436 MB free", "CASIC"), so the
+// boot log reports what each subsystem actually found rather than only that it
+// was looked at.
+void bootDetailFor(const char* step, const char* fmt, ...) {
+    int i = bootFind(step);
+    if (i < 0) return;
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(bootDetail[i], sizeof(bootDetail[i]), fmt, ap);
+    va_end(ap);
     bootRepaint();
 }
 
@@ -1072,11 +1096,17 @@ bool begin() {
     // and it grows with the card — and it used to run with the glass showing a
     // fully ticked list and an unmoving bar. Nothing said the device was still
     // working, so the last four seconds of every boot looked like a hang.
+    // Read the rider's dashboard layout off the card before the first frame, so
+    // the panel never flashes the default and then rearrange itself.
+    dash_config::begin();
+
     bootStep("Maps");
     double mlat = DEFAULT_MAP_LAT, mlon = DEFAULT_MAP_LON;
     settings::lastPosition(mlat, mlon);
     map_store::begin(mlat, mlon);
     bootStatus("Maps", true);
+    bootDetailFor("Maps", "%d tiles · %s", map_store::tileCount(),
+                  map_store::tileCount() ? "indexed" : "none on card");
     EPDC_STEP("map loaded — begin() done");
     // Hand the panel over to the dashboard: further bootStatus() calls no-op,
     // and the task's first refresh() paints the real UI over the boot screen.
@@ -1422,7 +1452,7 @@ void task(void*) {
                 s.phoneConnected = ble_server::isPhoneConnected();
                 uint8_t* fb = epdc_framebuffer();
                 memset(fb, 0xFF, fbSize);
-                ui_render_dashboard(s, routes::navActive(), fb);   // backdrop
+                ui_render_dashboard(s, routes::navActive(), dash_config::current(), fb);   // backdrop
                 ui_render_update_overlay(phase, pct, fb);          // modal on top
                 refresh(phaseChanged, !phaseChanged, false);   // GL16 on phase change, else DU
             }
@@ -1554,6 +1584,10 @@ void task(void*) {
 
         pollSerialCommands();   // serial-driven button presses (testing/profiling)
 
+        // A layout the rider just changed in the app should land on the panel
+        // now, not up to a second later — they are looking at both screens.
+        if (ble_server::takeDashChanged()) forceDraw = true;
+
         bool navPrompt = routes::navPending();
         if (navPrompt && !lastNavPrompt) navPromptShownAt = millis();
         bool screenChanged = screen != lastScreen || powerOverlay != lastOverlay
@@ -1569,11 +1603,17 @@ void task(void*) {
             lastDraw = millis();
             forceDraw = false;
             Screen prevScreen = lastScreen;
+            const bool prevOverlay = lastOverlay, prevNav = lastNavPrompt;
             lastScreen = screen;
             lastOverlay = powerOverlay;
             lastNavPrompt = navPrompt;
             RideState s = g_state.snapshot();
             s.phoneConnected = ble_server::isPhoneConnected();   // for the status bar
+            // Route progress for the ROUTE LEFT dashboard field. Mirrored onto
+            // the snapshot rather than read inside the renderer, which is
+            // host-compiled for the previews and has no routes module.
+            s.routeActive = routes::active();
+            s.routeRemainingKm = routes::remainingKm();
             // Swap to a downloaded map that covers where we are, if one exists.
             // Not while a host computer owns the SD card.
             if (s.everHadFix && !usb_storage::hostActive())
@@ -1586,17 +1626,29 @@ void task(void*) {
               // Preview first (its road context projects full-screen), then the
               // status bar + accept sheet on top to mask any road spill.
               ui_render_route_preview(fb);
+              // Clear the band AFTER the map, not before: the renderer has no
+              // clipping, so the road and water fills paint over anything drawn
+              // earlier. Clearing first (as I first wrote it) left the water
+              // dither sitting on top of the clock.
+              epd_fill_rect({0, 0, epd_rotated_display_width(), ui::STATUS_H},
+                            0xFF, fb);
               ui::statusBar(s, fb);
               ui_render_nav_prompt(routes::activeName(),
                                    routes::maneuverCount(), fb);
             } else {
             switch (screen) {
                 case SCREEN_DASH:
-                    ui_render_dashboard(s, routes::navActive(), fb);
+                    ui_render_dashboard(s, routes::navActive(),
+                                        dash_config::current(), fb);
                     drawNavBanner(fb);  // turn cue on the data page too
                     break;
                 case SCREEN_MAP: renderMapScreen(s, fb); break;
-                case SCREEN_SUMMARY: ui_render_summary(pendingSummary, fb); break;
+                case SCREEN_SUMMARY:
+                    // Modal: the ride screen stays behind the sheet, scrimmed.
+                    ui_render_dashboard(s, routes::navActive(),
+                                        dash_config::current(), fb);
+                    ui_render_summary(pendingSummary, fb);
+                    break;
                 case SCREEN_MENU: {
                     MenuInfo m;
                     m.recording = s.recording;
@@ -1681,7 +1733,14 @@ void task(void*) {
             // is also true when only the power sheet opened or closed: that is
             // the popup flash, and staying on SCREEN_MAP now reads as no
             // transition at all.
-            bool mapTransition = screen == SCREEN_MAP && prevScreen != SCREEN_MAP;
+            // A dismissed modal also needs the scrub. Its scrim tones the whole
+            // map body, and closing it does NOT change `screen` — so without
+            // this the checker stayed ghosted over the map until something else
+            // happened to force a clear.
+            const bool modalClosed = (prevOverlay && !powerOverlay) ||
+                                     (prevNav && !navPrompt);
+            bool mapTransition = screen == SCREEN_MAP &&
+                                 (prevScreen != SCREEN_MAP || modalClosed);
             refresh(screenChanged, fastInPage, listFast, wantClean,
                     navPromptAppearing, mapTransition);
         }

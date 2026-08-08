@@ -32,6 +32,9 @@ void ensureForPosition(double lat, double lon);
 // host computer releases the SD after mounting it over USB.
 void rescanCard();
 
+// Number of H3 tiles currently indexed (shown on the boot log).
+int tileCount();
+
 // Render the map around (lat, lon) into `out`: projects every H3 tile that
 // overlaps the viewport (loading them from SD on demand), falling back to the
 // whole-map / embedded blob where no tiles cover. Replaces a direct

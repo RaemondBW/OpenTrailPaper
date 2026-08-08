@@ -19,6 +19,9 @@ bool beginPanel();
 // beginPanel() and after begin() hands the panel to the dashboard.
 void bootStep(const char* step);
 
+// Attach detail to an announced step, shown in the boot log.
+void bootDetailFor(const char* step, const char* fmt, ...);
+
 // Resolve a step to a tick or a cross, updating the line bootStep() added (or
 // appending one if the step was never announced).
 void bootStatus(const char* step, bool ok);

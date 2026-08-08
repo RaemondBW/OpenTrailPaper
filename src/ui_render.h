@@ -10,6 +10,7 @@
 #include <cstdint>
 
 #include "epdiy.h"
+#include "dash_layout.h"
 
 struct RideState;
 struct RideSummary;
@@ -17,15 +18,92 @@ struct RideSummary;
 // Shared design-system pieces (also used by map_view.cpp)
 namespace ui {
 
-constexpr int STATUS_H = 64;   // status bar height incl. 3 px rule
+// ---------------------------------------------------------------------------
+// Design system v0.1 (docs/dashboard-design-brief.md -> "Device UI System")
+//
+// One 12 px step, three fixed bands. The screen is always status / body /
+// footer; only the body changes between screens, which is what keeps the
+// fast-refresh dirty rectangles small and predictable.
+// ---------------------------------------------------------------------------
+constexpr int STEP = 12;            // base step; every edge is a multiple
+constexpr int HALF_STEP = 6;        // rules, insets
+constexpr int MARGIN = 24;          // screen margin (2 steps)
+constexpr int GUTTER = 12;          // between cells
+constexpr int CELL_PAD = 16;        // inside a cell
+constexpr int CONTENT_W = 492;      // 540 - 2*MARGIN
+constexpr int CONTENT_X = MARGIN;   // body runs x: 24 -> 516
+
+constexpr int STATUS_H = 64;   // status band, incl. its 3 px rule
+constexpr int FOOTER_H = 150;  // footer band
 constexpr int MAP_STRIP_TOP = 810;  // map viewport is [STATUS_H, MAP_STRIP_TOP);
                                     // the 3-cell data footer sits below it
+constexpr int BODY_TOP = STATUS_H;
+constexpr int BODY_BOTTOM = MAP_STRIP_TOP;
+
+constexpr int ROW_H = 148;       // list row
+constexpr int DENSE_ROW_H = 111; // settings row
+constexpr int BACK_BAR_H = 96;   // back strip
+constexpr int TOUCH_MIN = 88;    // minimum hit rect, one gloved thumb
+
+// Ink. Four levels exist, but only INK and PAPER survive a fast DU pass — mid
+// greys are where ghosting settles. So DARK/LIGHT are STATIC CHROME ONLY: legal
+// on a GC16 frame, never inside a 1 Hz region. Anything that must express tone
+// while changing uses a screentone instead (see tone.. below).
+//
+// NOTE: the byte holds two pixels, so a "colour" here is a doubled nibble —
+// 0x22 is nibble 2, not 34/255. This project has previously observed that
+// nibbles at or above 4 read close to white on this panel; the system's DARK is
+// therefore the value most in need of checking on real glass.
+constexpr uint8_t INK = 0x00;
+constexpr uint8_t DARK = 0x22;    // secondary chrome (system calls this 0x55)
+constexpr uint8_t LIGHT = 0x33;   // disabled rows (system calls this 0xAA)
+constexpr uint8_t PAPER = 0xFF;   // absence of drive, never a "background"
+
+constexpr int RULE = 2;           // standard rule / border weight
+constexpr int RULE_HEAVY = 3;     // band separators
+
+// 1-bit screentones, for tone inside a region that changes.
+enum Tone : uint8_t {
+    TONE_25,   // 4 px dot     — water
+    TONE_30,   // 45 deg hatch — parks
+    TONE_50,   // 2 px checker — selected row, pressed button, scrim
+    TONE_33,   // scanline     — stale / no-signal values
+};
+void fillTone(const EpdRect& r, Tone t, uint8_t* fb);
+
+// The CELL primitive: border + padding + label over value with a baseline
+// aligned unit. `unit` may be empty; `stale` swaps the value for a dash on a
+// scanline tone, which is how "no data" is said (never an empty field).
+// `forced` pins the value face. Cells of the same configured size must render
+// at the same size — otherwise a wide value like "1:47:12" quietly drops a step
+// and sits smaller than "54.8" in an identical box. Pass nullptr to let the
+// cell fit its own value (used where there is only one).
+void cell(const EpdRect& r, const char* label, const char* value,
+          const char* unit, uint8_t* fb, bool stale = false,
+          const EpdFont* forced = nullptr,
+          const EpdFont* forcedLabel = nullptr);
+
+// Label faces, largest first — same idea as kValueLadder, so a caller can pin
+// one caption size across a group of matching cells.
+constexpr int LABEL_LADDER_N = 3;
+extern const EpdFont* const kLabelLadder[LABEL_LADDER_N];
+
+// The ladder cells step down through, largest first. Exposed so a caller can
+// pick one face for a whole group of same-sized cells. It reaches the hero
+// sizes at the top: a cell occupying a third of the panel must be able to fill
+// it, not stop at the same face a quarter-height cell uses.
+constexpr int VALUE_LADDER_N = 9;
+extern const EpdFont* const kValueLadder[VALUE_LADDER_N];
+int valueFontIndex(const EpdFont* const* ladder, const char* value, int availW,
+                   int availH, int unitW);
 
 void statusBar(const RideState& s, uint8_t* fb);
 
 void text(const EpdFont* font, int x, int y, const char* str, uint8_t* fb,
           EpdFontFlags align = EPD_DRAW_ALIGN_LEFT, uint8_t color = 0x00);
 int textWidth(const EpdFont* font, const char* str);
+// Width of the same string as label() would draw it (textWidth + tracking).
+int labelWidth(const EpdFont* font, const char* str);
 
 // Tracked-out uppercase label, e.g. "POWER · 3S" (design letterspacing).
 // font = nullptr uses the standard 14 pt label font; pass a bigger font
@@ -40,10 +118,12 @@ void valueWithUnit(const EpdFont* valueFont, int x0, int x1, int baselineY,
 
 }  // namespace ui
 
-// Main ride screen (design 1a: power hero + grid; falls back to a speed
-// hero when no power meter is connected). When navActive, the top turn
-// banner is showing, so the hero is drawn smaller and below it.
-void ui_render_dashboard(const RideState& s, bool navActive, uint8_t* fb);
+// Main ride screen. The fields, their order and their sizes come from `layout`
+// (see dash_layout.h) rather than being baked in; dashDefaultLayout() reproduces
+// the original power-hero-over-2x2-grid design exactly. When navActive, the top
+// turn banner is showing, so the fields are packed into the space below it.
+void ui_render_dashboard(const RideState& s, bool navActive,
+                         const DashLayout& layout, uint8_t* fb);
 
 // Ride summary (design 1g) with SAVE RIDE / DISCARD touch targets.
 extern const EpdRect kResumeButton;
@@ -55,7 +135,7 @@ void ui_render_summary(const RideSummary& r, uint8_t* fb);
 // row 0 (Start/Stop Ride) is the only action today, the rest show live
 // status. Tapping outside the rows returns to the ride screen.
 constexpr int kMenuRowTop = 96;
-constexpr int kMenuRowH = 148;
+constexpr int kMenuRowH = ui::ROW_H;
 constexpr int kMenuRowCount = 5;
 
 struct MenuInfo {
@@ -79,21 +159,32 @@ struct ListRow {
     char subtitle[64];
     bool inverted;
 };
+// `turnArrows` puts a maneuver arrow at the head of every row and drops the
+// right-edge marker — used by the directions list, where each row IS a turn.
 void ui_render_list(const char* title, const ListRow* rows, int count,
-                    const char* footer, uint8_t* fb);
+                    const char* footer, uint8_t* fb, bool turnArrows = false);
 
 // Settings editor: +/- touch targets per row, geometry exported for the
 // touch handler.
-constexpr int kSettingsMinusX = 220;
-constexpr int kSettingsPlusX = 440;
-constexpr int kSettingsBtn = 84;
-// The settings screen packs more rows than the menu, so it uses a shorter row.
-constexpr int kSettingsRowH = 111;
-// On/off (and level) rows are switches rather than +/- steppers: a single
-// toggle target on the right, right-aligned with the old plus button.
+// STEPPER — two 88 x 88 targets with the value centred between them, the block
+// right-aligned in the content column. 88 is the system's minimum target for a
+// gloved thumb; 3 x 88 = 264 keeps every edge on the 12 px step.
+constexpr int kSettingsBtn = 88;
+constexpr int kSettingsPlusX =
+    ui::CONTENT_X + ui::CONTENT_W - ui::CELL_PAD - kSettingsBtn;
+// Specimen: [88 target] gap16 [100 px value well] gap16 [88 target], the group
+// right-aligned in the row's 16 px padding.
+constexpr int kSettingsValueW = 100;
+constexpr int kSettingsGap = 16;
+constexpr int kSettingsMinusX =
+    kSettingsPlusX - kSettingsGap - kSettingsValueW - kSettingsGap - kSettingsBtn;
+// SWITCH — drawn 120 x 52, hit rect 120 x 88. The drawn shape stays small; the
+// target does not.
 constexpr int kSettingsToggleW = 120;
 constexpr int kSettingsToggleH = 52;
-constexpr int kSettingsToggleX = kSettingsPlusX + kSettingsBtn - kSettingsToggleW;
+constexpr int kSettingsToggleX =
+    ui::CONTENT_X + ui::CONTENT_W - ui::CELL_PAD - kSettingsToggleW;
+constexpr int kSettingsRowH = ui::DENSE_ROW_H;
 struct SettingsInfo {
     int ftpW;
     int tzMin;
@@ -152,8 +243,13 @@ void ui_render_shutdown_screen(uint8_t* fb);
 // STARTS, so a slow one (the SD mount can take seconds) shows what the device
 // is waiting on instead of leaving the screen frozen on the previous step.
 enum : int8_t { BOOT_FAIL = -1, BOOT_PENDING = 0, BOOT_OK = 1 };
+// Technical boot log: one line per step, kernel-style.
+//   [  1.87] SD CARD  30436 MB free            [ OK ]
+// `detail` and `ms` are parallel to `lines`/`state`; detail may hold "" and ms
+// is the millis() at which the step resolved (0 while it is still running).
 void ui_render_boot_screen(const char* version, const char* const* lines,
-                           const int8_t* state, int count, uint8_t* fb);
+                           const int8_t* state, const char (*detail)[28],
+                           const uint32_t* ms, int count, uint8_t* fb);
 
 void ui_render_nav_prompt(const char* routeName, int turns, uint8_t* fb);
 

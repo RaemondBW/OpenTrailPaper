@@ -5,6 +5,7 @@ import SwiftUI
 struct RideView: View {
     @EnvironmentObject var ble: BLEManager
     @AppStorage(UnitPref.key) private var useMiles = false
+    @State private var showDashEditor = false
 
     var body: some View {
         NavigationStack {
@@ -21,6 +22,7 @@ struct RideView: View {
                                    sensor: ble.connectedSensor(kind: 2))
                     }
                     if s.hasRoute { routeCard(s) }
+                    dashboardCard
                     Spacer(minLength: 8)
                     if ble.state != .connected {
                         PrimaryButton(title: primaryTitle,
@@ -33,9 +35,47 @@ struct RideView: View {
             }
             .background(Palette.paper.ignoresSafeArea())
             .navigationBarHidden(true)
+            .sheet(isPresented: $showDashEditor) { DashboardEditorView() }
             .onAppear { ble.refreshSensors() }
             .onChange(of: ble.state) { _, st in if st == .connected { ble.refreshSensors() } }
         }
+    }
+
+    // The head unit's own dashboard, and the way in to rearranging it.
+    //
+    // Here rather than in Settings because it belongs beside the numbers it is
+    // about: the fields above are what the device is showing, and this is where
+    // you decide which of them deserve the big type. The thumbnail is a real
+    // preview of the panel layout, so the card says what it does without being
+    // opened.
+    private var dashboardCard: some View {
+        Button { showDashEditor = true } label: {
+            Card {
+                HStack(spacing: 14) {
+                    if let l = ble.dashLayout, !l.items.isEmpty {
+                        DashPreview(layout: l)
+                            .frame(width: 62, height: 110)
+                    } else {
+                        RoundedRectangle(cornerRadius: 4)
+                            .stroke(Palette.hairline, lineWidth: 1)
+                            .frame(width: 62, height: 110)
+                            .overlay(Image(systemName: "rectangle.3.group")
+                                .foregroundStyle(Palette.faint))
+                    }
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Dashboard").font(TypeScale.title).foregroundStyle(Palette.ink)
+                        Text(ble.dashLayout == nil
+                             ? "Connect to change which fields the device shows"
+                             : "Reorder and resize the fields on the device")
+                            .font(TypeScale.body).foregroundStyle(Palette.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right").foregroundStyle(Palette.faint)
+                }
+            }
+        }
+        .buttonStyle(.plain)
     }
 
     // "Ride" title + a compact device-status pill (green dot + name + battery).

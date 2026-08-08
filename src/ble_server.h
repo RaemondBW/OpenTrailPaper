@@ -23,6 +23,10 @@ void pushSettingsToPhone();
 // auto-sleep during transfers.
 bool isPhoneConnected();
 
+// True once (and cleared) when the phone has written a new dashboard layout, so
+// the UI task can repaint immediately instead of waiting for the next 1 Hz tick.
+bool takeDashChanged();
+
 // Firmware-update status, for the on-device "Updating firmware" popup.
 bool updateInProgress();      // true while receiving or flashing an OTA image
 int  updatePercent();         // 0..100

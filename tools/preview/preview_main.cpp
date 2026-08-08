@@ -253,7 +253,7 @@ int main(int argc, char** argv) {
 
     // Dashboard (1a)
     clearWhite(fb.data());
-    ui_render_dashboard(s, false, fb.data());
+    ui_render_dashboard(s, false, dashDefaultLayout(), fb.data());
     emit("dashboard.png");
 
     // Dashboard in imperial units, no power meter (speed hero)
@@ -262,13 +262,13 @@ int main(int argc, char** argv) {
         sm.useMiles = true;
         sm.powerConnected = false;
         clearWhite(fb.data());
-        ui_render_dashboard(sm, false, fb.data());
+        ui_render_dashboard(sm, false, dashDefaultLayout(), fb.data());
         emit("dashboard_mph.png");
     }
 
     // Dashboard while navigating: compact hero under the turn banner.
     clearWhite(fb.data());
-    ui_render_dashboard(s, true, fb.data());
+    ui_render_dashboard(s, true, dashDefaultLayout(), fb.data());
     ui_render_nav_banner("Turn left onto Valencia St", 180, false, fb.data());
     emit("dashboard_nav.png");
 
@@ -362,6 +362,8 @@ int main(int argc, char** argv) {
 
     // Ride summary (1g)
     clearWhite(fb.data());
+    // Modal: draw the ride screen behind it, as the device does.
+    ui_render_dashboard(s, false, dashDefaultLayout(), fb.data());
     ui_render_summary(sampleSummary(), fb.data());
     emit("summary.png");
 
@@ -379,37 +381,41 @@ int main(int argc, char** argv) {
         sb.powerConnected = true;
         sb.clock24h = false;
         clearWhite(fb.data());
-        ui_render_dashboard(sb, false, fb.data());
+        ui_render_dashboard(sb, false, dashDefaultLayout(), fb.data());
         emit("statusbar_12h.png");
         sb.clock24h = true;
         clearWhite(fb.data());
-        ui_render_dashboard(sb, false, fb.data());
+        ui_render_dashboard(sb, false, dashDefaultLayout(), fb.data());
         emit("statusbar_24h.png");
     }
 
     // Boot progress — mid-boot, and the failure case that matters most
     {
-        const char*  steps[] = {"Display", "SD card", "GPS", "Maps"};
-        const int8_t allOk[] = {BOOT_OK, BOOT_OK, BOOT_OK, BOOT_OK};
-        const int8_t sdBad[] = {BOOT_OK, BOOT_FAIL, BOOT_OK, BOOT_OK};
+        const char*  steps[] = {"DISPLAY", "SD CARD", "RTC", "GPS", "MAPS"};
+        const char det[][28] = {"epd_painter 540x960", "30436 MB free · 42 rides",
+                                "clock restored", "CASIC · aiding sent",
+                                "107 tiles · indexed"};
+        const uint32_t ms[] = {420, 1870, 2240, 4910, 8020};
+        const int8_t allOk[] = {BOOT_OK, BOOT_OK, BOOT_OK, BOOT_OK, BOOT_OK};
+        const int8_t sdBad[] = {BOOT_OK, BOOT_FAIL, BOOT_OK, BOOT_OK, BOOT_OK};
         // Mid-mount: the SD step announced but not yet resolved. This is the
         // state the device sits in for a second or two on a cold card, so it is
         // worth eyeballing that the ring lines up with the ticks above it.
         const int8_t sdBusy[] = {BOOT_OK, BOOT_PENDING};
         // Indexing the card: the LONGEST pending state of a boot (~4 s), and
         // the one that used to show no pending step at all.
-        const int8_t mapBusy[] = {BOOT_OK, BOOT_OK, BOOT_OK, BOOT_PENDING};
+        const int8_t mapBusy[] = {BOOT_OK, BOOT_OK, BOOT_OK, BOOT_OK, BOOT_PENDING};
         clearWhite(fb.data());
-        ui_render_boot_screen("v0.86", steps, allOk, 4, fb.data());
+        ui_render_boot_screen("v0.91", steps, allOk, det, ms, 5, fb.data());
         emit("boot.png");
         clearWhite(fb.data());
-        ui_render_boot_screen("v0.86", steps, sdBad, 4, fb.data());
+        ui_render_boot_screen("v0.91", steps, sdBad, det, ms, 5, fb.data());
         emit("boot_sd_failed.png");
         clearWhite(fb.data());
-        ui_render_boot_screen("v0.86", steps, sdBusy, 2, fb.data());
+        ui_render_boot_screen("v0.91", steps, sdBusy, det, ms, 2, fb.data());
         emit("boot_sd_mounting.png");
         clearWhite(fb.data());
-        ui_render_boot_screen("v0.86", steps, mapBusy, 4, fb.data());
+        ui_render_boot_screen("v0.91", steps, mapBusy, det, ms, 5, fb.data());
         emit("boot_map_indexing.png");
     }
 
@@ -486,11 +492,69 @@ int main(int argc, char** argv) {
     ui_render_gps_debug(g, fb.data());
     emit("gpsdebug.png");
 
+    // Directions list: every row leads with a drawn maneuver arrow.
+    {
+        ListRow dirs[4] = {};
+        snprintf(dirs[0].title, sizeof(dirs[0].title), "Turn left onto Valencia");
+        snprintf(dirs[0].subtitle, sizeof(dirs[0].subtitle), "in 240 m");
+        snprintf(dirs[1].title, sizeof(dirs[1].title), "Turn right onto 24th");
+        snprintf(dirs[1].subtitle, sizeof(dirs[1].subtitle), "in 1.2 km");
+        snprintf(dirs[2].title, sizeof(dirs[2].title), "Continue straight");
+        snprintf(dirs[2].subtitle, sizeof(dirs[2].subtitle), "for 3.4 km");
+        snprintf(dirs[3].title, sizeof(dirs[3].title), "Make a U-turn");
+        snprintf(dirs[3].subtitle, sizeof(dirs[3].subtitle), "in 80 m");
+        clearWhite(fb.data());
+        ui_render_list("DIRECTIONS", dirs, 4, "4 turns", fb.data(), true);
+        emit("directions.png");
+    }
+
     // Power sheet drawn over the dashboard (overlay behavior)
     clearWhite(fb.data());
-    ui_render_dashboard(s, false, fb.data());
+    ui_render_dashboard(s, false, dashDefaultLayout(), fb.data());
     ui_render_power_sheet(true, fb.data());
     emit("power.png");
+
+    // Unavailable sensors vanish and the rest expand: the SAME layout with and
+    // without a power meter and strap. This is the behaviour to eyeball — a
+    // configured field with nothing behind it must not leave a hole, and must
+    // not quietly become a different field either.
+    {
+        RideState noSensors = s;
+        noSensors.powerConnected = false;
+        noSensors.cadenceConnected = false;
+        noSensors.hrConnected = false;
+        noSensors.power3sW = 0xFFFF;
+        noSensors.heartRateBpm = 0xFF;
+        noSensors.cadenceRpm = 0xFF;
+        clearWhite(fb.data());
+        ui_render_dashboard(noSensors, false, dashDefaultLayout(), fb.data());
+        emit("dashboard_no_sensors.png");
+    }
+
+    // Configurable dashboard: a layout NOT expressible before, exercising the
+    // packer's awkward cases — a non-power hero, an odd number of half fields
+    // (the last one spans), and a small row. Parsed from the config text rather
+    // than built struct-by-struct so the file format is covered too.
+    {
+        const char* cfg =
+            "speed     large\n"      // full width, plenty of room
+            "distance  large  half\n"
+            "ridetime  large  half\n" // long value in a narrow box
+            "grade     large  half\n" // no data -> dash on tone
+            "altitude  large  half\n";
+        DashLayout custom;
+        if (dashParse(cfg, custom)) {
+            RideState st = s;
+            st.gradeValid = false;          // GRADE reads "--"
+            st.mapElevationValid = false;   // ALTITUDE reads "--"
+            st.speedKmh = 0.0f;
+            st.distanceM = 0;
+            st.elapsedS = 0;
+            clearWhite(fb.data());
+            ui_render_dashboard(st, false, custom, fb.data());
+            emit("dashboard_custom.png");
+        }
+    }
 
     // Nav prompt over the map
     clearWhite(fb.data());

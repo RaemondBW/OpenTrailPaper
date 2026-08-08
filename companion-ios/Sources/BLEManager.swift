@@ -15,6 +15,8 @@ enum BikeUUID {
     static let ota      = CBUUID(string: "B1C50005-9E0F-4B7A-9C6D-1F2E3A4B5C6D")
     static let sensors  = CBUUID(string: "B1C50006-9E0F-4B7A-9C6D-1F2E3A4B5C6D")
     static let map      = CBUUID(string: "B1C50007-9E0F-4B7A-9C6D-1F2E3A4B5C6D")
+    static let agnss    = CBUUID(string: "B1C50008-9E0F-4B7A-9C6D-1F2E3A4B5C6D")
+    static let dash     = CBUUID(string: "B1C50009-9E0F-4B7A-9C6D-1F2E3A4B5C6D")
 }
 
 // A cycling sensor known to the head unit (HR / power / cadence).
@@ -143,7 +145,7 @@ final class BLEManager: NSObject, ObservableObject {
     // "is newer", so a stale value here does not just mislabel things: the app
     // offers an "update" that silently downgrades the device to whatever binary
     // is bundled. This sat at v0.84 while devices ran v0.85/v0.86.
-    static let bundledFirmwareVersion = "v0.89"
+    static let bundledFirmwareVersion = "v1.04"
 
     // Saved routes on the device
     @Published var deviceRoutes: [String] = []
@@ -182,6 +184,12 @@ final class BLEManager: NSObject, ObservableObject {
     private var central: CBCentralManager!
     private var peripheral: CBPeripheral?
     private var settingsChar: CBCharacteristic?
+    private var dashChar: CBCharacteristic?
+    /// The device's dashboard layout, as the text of /config/dashboard.cfg.
+    /// nil until the device has been read, which is how the editor knows to
+    /// show "connect to edit" rather than an invented default that would
+    /// overwrite the rider's real one the moment they touched a control.
+    @Published var dashLayout: DashLayout?
     private var statusChar: CBCharacteristic?
     private var routeChar: CBCharacteristic?
     private var ridesChar: CBCharacteristic?
@@ -1155,6 +1163,11 @@ extension BLEManager: CBPeripheralDelegate {
                     p.readValue(for: ch)
                     p.setNotifyValue(true, for: ch)   // live device-side edits
 
+                case BikeUUID.dash:
+                    dashChar = ch
+                    p.readValue(for: ch)              // pull the device's layout
+                    p.setNotifyValue(true, for: ch)
+
                 case BikeUUID.status:
                     statusChar = ch; p.setNotifyValue(true, for: ch)
                 case BikeUUID.route:
@@ -1210,9 +1223,26 @@ extension BLEManager: CBPeripheralDelegate {
             case BikeUUID.ota: handleOtaNotify(data)
             case BikeUUID.sensors: handleSensorsNotify(data)
             case BikeUUID.map: handleMapNotify(data)
+            case BikeUUID.dash: parseDashLayout(data)
             default: break
             }
         }
+    }
+
+    // MARK: - Dashboard layout
+
+    private func parseDashLayout(_ d: Data) {
+        guard let text = String(data: d, encoding: .utf8) else { return }
+        dashLayout = DashLayout(text: text)
+    }
+
+    /// Push a layout to the device. It writes the file, applies it to the panel,
+    /// and notifies back what it actually stored — so a rejected layout corrects
+    /// the editor instead of leaving it out of step.
+    func sendDashLayout(_ layout: DashLayout) {
+        guard let ch = dashChar, let p = peripheral else { return }
+        guard let data = layout.configText.data(using: .utf8) else { return }
+        p.writeValue(data, for: ch, type: .withResponse)
     }
 
     private func parseStatus(_ d: Data) {
