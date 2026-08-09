@@ -425,14 +425,9 @@ void handleTap(int x, int y) {
         return;
     }
 
-    // Bottom BACK strip on every sub-screen.
-    if ((screen == SCREEN_SETTINGS || screen == SCREEN_SENSORS ||
-         screen == SCREEN_ROUTES || screen == SCREEN_HISTORY ||
-         screen == SCREEN_GPSDEBUG || screen == SCREEN_DIRECTIONS) &&
-        inRect(kBackBar, x, y)) {
-        goBack();
-        return;
-    }
+    // No BACK strip to hit-test: the Home button below the glass goes back from
+    // every sub-screen, so the strip was a full-width control duplicating a key
+    // the rider's thumb is already on, for 96 px of every page.
 
     // Tapping the turn banner opens the rest of the route's directions. It used
     // to end navigation, which is a destructive action on the one control a

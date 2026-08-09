@@ -1304,21 +1304,9 @@ void ui_render_list(const char* title, const ListRow* rows, int count,
     }
 
     if (footer && footer[0]) {
-        ui::text(&Arial_L, W / 2, kBackBar.y - ui::STEP, footer, fb,
+        ui::text(&Arial_L, W / 2, kContentBottom, footer, fb,
                  EPD_DRAW_ALIGN_CENTER, ui::INK);
     }
-    ui_render_back_bar(fb);
-}
-
-// Full-width BACK strip along the bottom.
-// 96 px per the system (was 82) — the single exit on every sub-screen,
-// comfortably past the 88 px minimum target.
-const EpdRect kBackBar = {0, 960 - ui::BACK_BAR_H, 540, ui::BACK_BAR_H};
-
-void ui_render_back_bar(uint8_t* fb) {
-    const int W = epd_rotated_display_width();
-    epd_fill_rect({0, kBackBar.y, W, ui::RULE_HEAVY}, ui::INK, fb);
-    ui::label(W / 2, kBackBar.y + 60, "BACK", fb, ui::INK, &Arial_B);
 }
 
 // iOS-style pill switch: black filled pill with a white knob on the right
@@ -1437,16 +1425,16 @@ void ui_render_settings(const SettingsInfo& si, uint8_t* fb) {
     }
 
     // Navigation row, drawn with the LIST recipe so it reads as the same
-    // component it is on every other screen.
-    // Six rows leave less than a full dense row before the BACK strip, so the
-    // nav row takes exactly what is left rather than running under it.
+    // component it is on every other screen — and kept to ONE dense row. With
+    // the BACK strip gone there is 174 px left at the foot of the page, but
+    // stretching the row to fill it made a single tappable line as tall as two
+    // settings rows, with its text stranded at the top. The page just ends
+    // instead; rows are a fixed height in this system.
     const int ny = kMenuRowTop + 6 * kSettingsRowH;
     ui::text(&Impact_T, ui::CONTENT_X + ui::CELL_PAD, ny + 40, "GPS DEBUG", fb);
     ui::text(&Arial_B, ui::CONTENT_X + ui::CELL_PAD, ny + 72,
              "Receiver diagnostics", fb, EPD_DRAW_ALIGN_LEFT, ui::INK);
-    epd_fill_rect({0, kBackBar.y - ui::RULE, W, ui::RULE}, ui::INK, fb);
-
-    ui_render_back_bar(fb);
+    epd_fill_rect({0, ny + kSettingsRowH - ui::RULE, W, ui::RULE}, ui::INK, fb);
 }
 
 void ui_render_gps_debug(const GpsDebugView& g, uint8_t* fb) {
@@ -1495,12 +1483,12 @@ void ui_render_gps_debug(const GpsDebugView& g, uint8_t* fb) {
 
     // This page repaints every second via the fast 1-bit DU refresh, which
     // snaps any gray to white — so every mark here must be pure black.
-    // Spacing is derived so all rows fit between the header and back bar.
+    // Spacing is derived so all rows fit between the header and the bottom.
     // Label left, value right, on the content column — the same left/right
     // cluster the status bar uses. Tracked uppercase labels, values in the body
     // face; rules inset to 492 like every other row on the device.
     const int y0 = kMenuRowTop + ui::STEP;
-    const int step = n > 0 ? (kBackBar.y - ui::STEP - y0) / n : 40;
+    const int step = n > 0 ? (kContentBottom - ui::STEP - y0) / n : 40;
     const int lx = ui::CONTENT_X + ui::CELL_PAD;
     const int rx = ui::CONTENT_X + ui::CONTENT_W - ui::CELL_PAD;
     for (int i = 0; i < n; ++i) {
@@ -1516,8 +1504,6 @@ void ui_render_gps_debug(const GpsDebugView& g, uint8_t* fb) {
                  ui::INK);
         if (i > 0) epd_fill_rect({0, y0 + i * step, W, 1}, ui::INK, fb);
     }
-
-    ui_render_back_bar(fb);
 }
 
 // Bottom sheet: ~360 px tall, drawn over the live screen behind it.
