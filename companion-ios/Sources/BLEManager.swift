@@ -198,6 +198,9 @@ final class BLEManager: NSObject, ObservableObject {
     // near the phone instead of cold-searching the whole sky.
     private let locationManager = CLLocationManager()
     private var wantsAiding = false
+    /// Whether the device has told us its state since this connection came up.
+    /// The first status is special: see syncLocationStreamToDeviceFix().
+    private var sawStatusSinceConnect = false
     private var fixStableTask: Task<Void, Never>?   // debounce stopping the stream
     @Published var lastAidingSent: Date? = nil
 
@@ -1161,6 +1164,7 @@ extension BLEManager: CBCentralManagerDelegate {
                 finishTileJob(message: "Interrupted — reconnect to resume")
             }
             status = DeviceStatus()
+            sawStatusSinceConnect = false
             rides = []; loadingRides = false; downloadingName = nil
             deviceRoutes = []; loadingRoutes = false
             lastUploadProgress = nil; routeSent = false; routeReceived = false
@@ -1313,7 +1317,20 @@ extension BLEManager: CBPeripheralDelegate {
     // loses the fix. Debounced so a brief dropout doesn't flap the stream.
     private func syncLocationStreamToDeviceFix() {
         guard state == .connected, routeChar != nil else { return }
+        let firstStatus = !sawStatusSinceConnect
+        sawStatusSinceConnect = true
         if status.gpsFix {
+            // The device was ALREADY locked when we connected. We start the
+            // stream the moment the route characteristic shows up, before the
+            // device has told us anything about itself, so this is the first
+            // chance to know it was never needed — drop it now rather than
+            // running the phone's GPS through the debounce window. That window
+            // exists to ride out a DROPOUT mid-ride, not to delay this.
+            if firstStatus {
+                fixStableTask?.cancel(); fixStableTask = nil
+                if wantsAiding { stopLocationStream() }
+                return
+            }
             if wantsAiding && fixStableTask == nil {
                 fixStableTask = Task { @MainActor in
                     try? await Task.sleep(nanoseconds: 8_000_000_000)   // fix held 8 s
