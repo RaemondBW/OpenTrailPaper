@@ -49,6 +49,11 @@ struct RideState {
     bool     powerConnected = false;
     bool     cadenceConnected = false;
     bool     phoneConnected = false;   // companion app is connected over BLE
+    // millis() of the last reading from each sensor. A link can stay nominally
+    // up long after the sensor has stopped talking (a power meter that sleeps,
+    // or one that has rolled out of range), so "connected" is judged by DATA
+    // arriving, not by the stack's opinion of the link — see ui_dashboard.
+    uint32_t hrMs = 0, powerMs = 0, cadenceMs = 0;
 
     // Ride accumulation (owned by the recorder)
     bool     recording = false;

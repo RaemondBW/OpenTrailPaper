@@ -46,9 +46,9 @@
 		D017F03AE055F1971F5815BA /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79F3F907C8247AC1B8A63959 /* Theme.swift */; };
 		D18324D7B11DC7874A2252C3 /* mathExtensions.c in Sources */ = {isa = PBXBuildFile; fileRef = C79A61A359DA1F3938DE464C /* mathExtensions.c */; };
 		D51119ACFAB6419E07143355 /* EInkTileStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = CDD609424C1648F1D8704550 /* EInkTileStore.swift */; };
-		D6593DA4DB2D54C490D89D63 /* firmware.bin in Resources */ = {isa = PBXBuildFile; fileRef = 8573B3F08B3AD8A472D61A2D /* firmware.bin */; };
 		DA77B28069DBB60831A903C9 /* h3shim.c in Sources */ = {isa = PBXBuildFile; fileRef = 158AB26E91BB4024B25490AD /* h3shim.c */; };
 		E1BBBE95FA5BC48203720329 /* baseCells.c in Sources */ = {isa = PBXBuildFile; fileRef = CB4C7FC4CD9B1C363CD59A20 /* baseCells.c */; };
+		E2849FECF35C56ECDF172183 /* FirmwareRelease.swift in Sources */ = {isa = PBXBuildFile; fileRef = BFEB166F13A60DC2EDA5E981 /* FirmwareRelease.swift */; };
 		E30ADD326442FABF6002866E /* demo.fit in Resources */ = {isa = PBXBuildFile; fileRef = D66117B8CB78BBC0949D8DF3 /* demo.fit */; };
 		E3824F33E70991FAC6B09EBF /* h3Assert.c in Sources */ = {isa = PBXBuildFile; fileRef = 89FCEFD5F2F255C490F8E615 /* h3Assert.c */; };
 		E53264DC25E80F7DA0499687 /* localij.c in Sources */ = {isa = PBXBuildFile; fileRef = B8D421E4B1C588F4073BC375 /* localij.c */; };
@@ -96,7 +96,6 @@
 		8023062657D19B0163482E22 /* baseCells.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = baseCells.h; sourceTree = "<group>"; };
 		82FADE55692F39B30C21D313 /* vec2d.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = vec2d.h; sourceTree = "<group>"; };
 		85064AEE7F2DEAD8495F5FDC /* vec3d.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = vec3d.c; sourceTree = "<group>"; };
-		8573B3F08B3AD8A472D61A2D /* firmware.bin */ = {isa = PBXFileReference; lastKnownFileType = archive.macbinary; path = firmware.bin; sourceTree = "<group>"; };
 		861D40F3D0D6EE123389E135 /* vertex.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = vertex.c; sourceTree = "<group>"; };
 		878E3C8F7719672814B9A1C2 /* linkedGeo.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = linkedGeo.c; sourceTree = "<group>"; };
 		89FCEFD5F2F255C490F8E615 /* h3Assert.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = h3Assert.c; sourceTree = "<group>"; };
@@ -118,6 +117,7 @@
 		B8D421E4B1C588F4073BC375 /* localij.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = localij.c; sourceTree = "<group>"; };
 		BE5C27C920995C9292457A9C /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		BE9D3D566A0847CF4753797F /* vec2d.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = vec2d.c; sourceTree = "<group>"; };
+		BFEB166F13A60DC2EDA5E981 /* FirmwareRelease.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FirmwareRelease.swift; sourceTree = "<group>"; };
 		C1BEEC4DAFA43A7B290097DE /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		C4E83FB3A70437DD5D0F8629 /* RideView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RideView.swift; sourceTree = "<group>"; };
 		C79A61A359DA1F3938DE464C /* mathExtensions.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = mathExtensions.c; sourceTree = "<group>"; };
@@ -195,7 +195,7 @@
 				18E924B930AF50BBF8472A7F /* EBMDecoder.swift */,
 				062C37A066E27E1DEC3AF253 /* EInkMapView.swift */,
 				CDD609424C1648F1D8704550 /* EInkTileStore.swift */,
-				8573B3F08B3AD8A472D61A2D /* firmware.bin */,
+				BFEB166F13A60DC2EDA5E981 /* FirmwareRelease.swift */,
 				590A2666A030966B6741EDAF /* FITDecoder.swift */,
 				05C73BCF289591ECA86720C6 /* GPXExporter.swift */,
 				AD6BA4ACE6890EF09B9A8F6F /* H3Tiles.swift */,
@@ -340,7 +340,6 @@
 				05EFA1438A835BB33D929DF4 /* BarlowCondensed-Medium.ttf in Resources */,
 				42D2FCE22B005258F3DFCE9C /* BarlowCondensed-SemiBold.ttf in Resources */,
 				E30ADD326442FABF6002866E /* demo.fit in Resources */,
-				D6593DA4DB2D54C490D89D63 /* firmware.bin in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -360,6 +359,7 @@
 				2593A42A317117DDFBAF716E /* EInkMapView.swift in Sources */,
 				D51119ACFAB6419E07143355 /* EInkTileStore.swift in Sources */,
 				A44F34DFEC944328672D82B2 /* FITDecoder.swift in Sources */,
+				E2849FECF35C56ECDF172183 /* FirmwareRelease.swift in Sources */,
 				90BE2D6324721EC08C93E435 /* GPXExporter.swift in Sources */,
 				431EACF518E6E7F25D9682EC /* H3Tiles.swift in Sources */,
 				5D72742ADF79FE45ED70CBEA /* MapBuilder.swift in Sources */,

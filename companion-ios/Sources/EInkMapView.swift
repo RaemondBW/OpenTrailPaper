@@ -175,14 +175,17 @@ struct EInkMapView: UIViewRepresentable {
     /// is in here because overlays at the same level draw in insertion order —
     /// it has to be re-added on top whenever the areas underneath are rebuilt,
     /// or a downloaded area's paper simply paints over it.
-    private func signature() -> String {
-        let a = areas.map { "\($0.id)\($0.synced ? "*" : "")" }.joined(separator: ",")
-        let o = outlines.map {
-            "\($0.id)\($0.synced ? "*" : "")\($0.missing ? "!" : "")"
-        }.joined(separator: ",")
-        let s = selection.map { "\($0.id)\($0.kind)" }.joined(separator: ",")
-        let r = route.map { "\(ObjectIdentifier($0))" } ?? "-"
-        return "\(a)|\(o)|\(s)|\(r)"
+    private func signature() -> Int {
+        // A HASH, not a concatenated string. This runs on every SwiftUI update
+        // of the host view, and building a comma-joined list of several hundred
+        // hex ids each time was itself a measurable part of the Maps page's
+        // stutter during a large download.
+        var h = Hasher()
+        for a in areas { h.combine(a.id); h.combine(a.synced) }
+        for o in outlines { h.combine(o.id); h.combine(o.synced); h.combine(o.missing) }
+        for s in selection { h.combine(s.id); h.combine(String(describing: s.kind)) }
+        if let r = route { h.combine(ObjectIdentifier(r)) }
+        return h.finalize()
     }
 
     private func rebuildContent(_ map: MKMapView, coordinator c: Coordinator) {
@@ -248,7 +251,7 @@ struct EInkMapView: UIViewRepresentable {
         var onTap: ((CLLocationCoordinate2D) -> Void)?
         var onLongPress: ((CLLocationCoordinate2D) -> Void)?
         var onRegionChange: ((MKCoordinateRegion) -> Void)?
-        var contentKey = "\u{0}"          // never equal to a real signature
+        var contentKey = 0                // 0 is never a real signature here
         var route: MKPolyline?
         var destination: MapDestination?
         var lastCamera: MapCameraCommand?

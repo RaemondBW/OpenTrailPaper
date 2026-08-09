@@ -32,7 +32,13 @@ struct Maneuver {
     char instr[routes::MANEUVER_TEXT];
 };
 Maneuver maneuvers[MAX_MANEUVERS];
-int maneuverIdx[MAX_MANEUVERS];   // nearest route-point index for each maneuver
+// Along-route distance (m) of each maneuver, from projecting it onto the route
+// polyline. Continuous, NOT a vertex index: a real router puts maneuvers at
+// road intersections, and a route polyline only carries a vertex where the road
+// BENDS — so "continue onto X" (a name change with no bend) has no vertex
+// anywhere near it, and on a sparse polyline the nearest vertex can be hundreds
+// of metres away. Snapping to it moved the turn that far up or down the route.
+float maneuverAlongM[MAX_MANEUVERS];
 int nManeuvers = 0;
 int curManeuver = 0;       // next maneuver ahead of the rider
 bool pendingNav = false;
@@ -112,41 +118,71 @@ int nearestSegment(double lat, double lon, int from, int to, float& outT,
     return bestI;
 }
 
-// Snap each maneuver to its nearest point on the loaded route so turns can be
-// tracked by along-route distance (robust) instead of GPS proximity.
+// Place each maneuver on the loaded route as an along-route distance, so turns
+// can be tracked by distance travelled (robust) instead of GPS proximity.
 //
-// Maneuvers arrive in route order, so we snap them monotonically: each search
-// starts at the previous maneuver's snapped index and runs forward. Without
+// PROJECTED onto the route's segments, not snapped to the nearest vertex. A
+// router puts maneuvers at road intersections and a route polyline carries a
+// vertex only where the road bends, so a "continue onto X" (name change, no
+// bend) has no vertex near it at all — snapping put it at whatever vertex
+// happened to be closest, which on the sparse polylines MapKit returns can be
+// hundreds of metres up or down the route. That alone announced the wrong turn.
+//
+// Maneuvers arrive in route order, so we place them monotonically: each search
+// starts at the segment holding the previous maneuver and runs forward. Without
 // this, a maneuver on a returning/overlapping leg (out-and-backs, lollipop
-// loops, routes that cross themselves) could snap onto an *earlier* leg that
-// passes nearby, giving it too small a cumM[] and making advanceManeuverCursor
-// skip several turns at once.
+// loops, routes that cross themselves) could land on an *earlier* leg that
+// passes nearby, giving it too small a distance and making
+// advanceManeuverCursor skip several turns at once.
 void mapManeuversToRoute() {
-    int from = 0;
+    int fromIdx = 0;
+    float prevAlong = -1.0f;
     for (int i = 0; i < nManeuvers; ++i) {
-        float d2;
-        int idx = nPts > 0 ? nearestRouteIdx(maneuvers[i].lat, maneuvers[i].lon,
-                                             from, nPts, d2) : 0;
-        if (idx < 0) idx = from;
-        // STRICTLY increasing, not just non-decreasing. Two maneuvers close
-        // together relative to the point spacing — a slip road, a quick
-        // left-then-right, anything tighter than the decimated route resolution
-        // — otherwise snap to the SAME index, share a cumM, and get consumed
-        // together by advanceManeuverCursor(), silently dropping the second
-        // instruction. Covered by testCloselySpacedTurns.
-        if (i > 0 && idx <= maneuverIdx[i - 1])
-            idx = maneuverIdx[i - 1] + 1;
-        if (idx >= nPts) idx = nPts - 1;      // clamp; a tail of maneuvers on a
-        maneuverIdx[i] = idx;                 // very short route can run off it
-        from = idx;   // the next maneuver is at or after this one on the route
+        float t = 0, d2;
+        int seg = nPts >= 2 ? nearestSegment(maneuvers[i].lat, maneuvers[i].lon,
+                                             fromIdx, nPts, t, d2)
+                            : -1;
+        float along = seg >= 0
+                          ? cumM[seg] + t * (cumM[seg + 1] - cumM[seg])
+                          : (prevAlong > 0 ? prevAlong : 0.0f);
+        // STRICTLY increasing. Two maneuvers that project to the same spot — a
+        // slip road, a quick left-then-right — would otherwise share a distance
+        // and be consumed together by advanceManeuverCursor(), silently
+        // dropping the second instruction. Covered by testCloselySpacedTurns.
+        if (i > 0 && along <= prevAlong) along = prevAlong + 1.0f;
+        if (nPts >= 2 && along > cumM[nPts - 1]) along = cumM[nPts - 1];
+        maneuverAlongM[i] = along;
+        prevAlong = along;
+        if (seg >= 0) fromIdx = seg;   // the next maneuver is at or after this one
     }
 }
 
-// Move the cursor past any maneuver we've already ridden through (its route
-// position is behind us, with a small margin).
+// Move the cursor past any maneuver we've already ridden through.
+//
+// The margin has to clear GPS noise. It used to be 5 m, which is inside the
+// error of any bike GPS: a single noisy fix near a corner projects a few metres
+// onto the leg AFTER the turn, the turn is consumed while the rider is still
+// short of the junction, and — because the cursor only ever moves forward — the
+// banner then shows the NEXT turn for the whole intersection. That is the
+// "shows the turn one or two beyond" report. 20 m is past the noise and still
+// well inside a city block; the completed turn simply stays on screen for a few
+// seconds after you take it, which is what a rider wants anyway.
+//
+// Capped at 45% of the gap to the next maneuver so a staggered junction (two
+// turns 20-30 m apart) still hands over at the midpoint instead of holding the
+// first one until the rider is past the second.
+constexpr float kManeuverPastM = 20.0f;
+
 void advanceManeuverCursor() {
-    while (curManeuver < nManeuvers &&
-           cumM[maneuverIdx[curManeuver]] <= progAlongM - 5.0f) {
+    while (curManeuver < nManeuvers) {
+        float along = maneuverAlongM[curManeuver];
+        float margin = kManeuverPastM;
+        if (curManeuver + 1 < nManeuvers) {
+            float half = (maneuverAlongM[curManeuver + 1] - along) * 0.45f;
+            if (half < margin) margin = half;
+        }
+        if (margin < 2.0f) margin = 2.0f;
+        if (progAlongM < along + margin) break;
         curManeuver++;
     }
 }
@@ -477,7 +513,7 @@ bool navActive() { return activeNav; }
 bool nextTurn(char* instruction, int textLen, float& distanceM) {
     if (!activeNav || curManeuver >= nManeuvers || nPts == 0) return false;
     // Along-route distance from the rider's projected position to the turn.
-    float along = cumM[maneuverIdx[curManeuver]] - progAlongM;
+    float along = maneuverAlongM[curManeuver] - progAlongM;
     if (along < 0) along = 0;
     distanceM = along;
     snprintf(instruction, textLen, "%s", maneuvers[curManeuver].instr);
@@ -492,7 +528,7 @@ int upcomingCount() {
 bool upcomingTurn(int i, char* instruction, int textLen, float& distanceM) {
     int m = curManeuver + i;
     if (!activeNav || i < 0 || m >= nManeuvers || nPts == 0) return false;
-    float along = cumM[maneuverIdx[m]] - progAlongM;
+    float along = maneuverAlongM[m] - progAlongM;
     if (along < 0) along = 0;
     distanceM = along;
     snprintf(instruction, textLen, "%s", maneuvers[m].instr);

@@ -97,7 +97,10 @@ extern const EpdFont* const kValueLadder[VALUE_LADDER_N];
 int valueFontIndex(const EpdFont* const* ladder, const char* value, int availW,
                    int availH, int unitW);
 
-void statusBar(const RideState& s, uint8_t* fb);
+// `title` is drawn centred in the band — menu, settings and the list screens
+// wear the SAME status bar as the ride and map screens, with their name in it,
+// rather than each inventing a header of its own.
+void statusBar(const RideState& s, uint8_t* fb, const char* title = nullptr);
 
 void text(const EpdFont* font, int x, int y, const char* str, uint8_t* fb,
           EpdFontFlags align = EPD_DRAW_ALIGN_LEFT, uint8_t color = 0x00);
