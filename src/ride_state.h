@@ -77,6 +77,17 @@ struct RideState {
     bool     routeActive = false;
     float    routeRemainingKm = 0.0f;
 
+    // Optional Qwiic sensors (aux_sensors.h). All absent-safe: baroValid and
+    // compassValid stay false when the chips are not fitted, and every consumer
+    // falls back to what it did before.
+    bool     baroValid = false;
+    float    baroAltM = 0.0f;      // barometric altitude, m
+    float    pressurePa = 0.0f;
+    float    baroTempC = 0.0f;     // the barometer's own die, NOT air temp
+    bool     compassValid = false; // false until the magnetometer has calibrated
+    float    compassDeg = 0.0f;    // magnetic heading, degrees clockwise
+    bool     deviceMoving = false; // from the accelerometer, independent of GPS
+
     // Battery
     uint8_t  batteryPercent = 0;
     bool     charging = false;

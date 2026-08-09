@@ -29,6 +29,7 @@
 #include "ble_server.h"
 #include "routes.h"
 #include "settings.h"
+#include "aux_sensors.h"
 #include "diag.h"
 #include "smooth_epd.h"
 #include "power_mgmt.h"
@@ -638,8 +639,15 @@ void buildMapScreenData(const RideState& s, MapScreenData& map) {
     map.riderY = 430;
     // Track-up: the world rotates so travel direction is up; the rider
     // arrow points up and the compass needle shows where north went.
-    float rot = mapTrackUp ? -s.courseDeg : 0.0f;
-    map.headingDeg = mapTrackUp ? 0.0f : s.courseDeg;
+    // Which way the device is pointing. Course-over-ground is a DIRECTION OF
+    // TRAVEL: it is meaningless standing still and jittery at walking pace,
+    // which is why a track-up map used to spin while the rider waited at a
+    // light. The compass has no such problem and is used below 5 km/h, if one
+    // is fitted and has finished calibrating.
+    const bool useCompass = s.compassValid && s.speedKmh < 5.0f;
+    const float heading = useCompass ? s.compassDeg : s.courseDeg;
+    float rot = mapTrackUp ? -heading : 0.0f;
+    map.headingDeg = mapTrackUp ? 0.0f : heading;
     map.northDeg = rot;
     map.trackUp = mapTrackUp;
     // Tell the map renderer to drop the compass below the turn banner when one
@@ -1200,6 +1208,7 @@ static void printConsoleHelp() {
     Serial.println("  sd                   SD mount state + cardType (NONE = card not answering)");
     Serial.println("  usbdrive [on|off]    expose the SD to a host; off takes the card back");
     Serial.println("  power                battery voltage + draw (mA) + full fuel-gauge state");
+    Serial.println("  aux                  optional Qwiic sensors: baro / accel / compass");
     Serial.println("  bootloader           reboot into download mode for flashing");
     Serial.println("  reboot               restart the device");
     Serial.println("  timing               toggle frame-timing logs");
@@ -1257,6 +1266,10 @@ static void runConsoleLine(char* line) {
         char rep[200];
         board_gauge_report(rep, sizeof(rep));
         Serial.printf("[gauge] %s\n", rep);
+    } else if (!strcasecmp(cmd, "aux")) {
+        char line[160];
+        aux_sensors::report(line, sizeof(line));
+        Serial.printf("[cmd] %s\n", line);
     } else if (!strcasecmp(cmd, "sd")) {
         // SD status without needing a boot log. The mount happens ~1.4 s into
         // boot, long before a USB-CDC host can attach, so for a long time the
@@ -1471,6 +1484,11 @@ void task(void*) {
         {
             RideState now = g_state.snapshot();
             if (now.gpsFix && now.speedKmh > 3.0f) lastActivityMs = millis();
+            // And without a fix: an accelerometer knows the bike is moving in a
+            // tunnel, under trees, or before the receiver has locked — all
+            // places the idle timeout could otherwise switch the device off
+            // underneath a rider who is very much still riding.
+            if (now.deviceMoving) lastActivityMs = millis();
         }
 
         // Auto-sleep after a quiet period to save battery — a bike computer

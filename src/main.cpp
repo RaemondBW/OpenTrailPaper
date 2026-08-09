@@ -26,6 +26,7 @@
 #include "sd_bus.h"
 #include "usb_storage.h"
 #include "power_mgmt.h"
+#include "aux_sensors.h"
 #include "diag.h"
 #include <esp_sleep.h>
 #include <soc/rtc_cntl_reg.h>
@@ -555,6 +556,10 @@ void setup() {
     ble_sensors::begin();
     BOOT_STEP("ble_sensors done -> ble_server::begin()");
     ble_server::begin();   // GATT server for the iOS companion app
+    // Optional Qwiic sensors. Probed AFTER the panel and the other I2C devices
+    // so a chip that is not there cannot delay anything that is.
+    const bool auxOk = aux_sensors::begin();
+
     BOOT_STEP("ble_server done -> power_mgmt::begin()");
 
     // Enable automatic light sleep now that every peripheral (GPS UART, BLE, EPD)
@@ -567,6 +572,10 @@ void setup() {
     xTaskCreatePinnedToCore(ble_server::task, "srv", 4096, nullptr, 1, nullptr, 0);
     xTaskCreatePinnedToCore(ride_recorder::task, "rec", 6144, nullptr, 3, nullptr, 1);
     xTaskCreatePinnedToCore(batteryTask, "bat", 3072, nullptr, 1, nullptr, 1);
+    // No task at all when nothing is fitted — the whole feature costs an absent
+    // device exactly one bus probe at boot.
+    if (auxOk)
+        xTaskCreatePinnedToCore(aux_sensors::task, "aux", 3072, nullptr, 1, nullptr, 1);
     xTaskCreatePinnedToCore(ui_dashboard::task, "ui", 8192, nullptr, 2, nullptr, 1);
 
     Serial.println("[main] all tasks started");
