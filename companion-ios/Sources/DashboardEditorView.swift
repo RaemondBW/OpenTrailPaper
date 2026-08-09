@@ -42,7 +42,18 @@ struct DashboardEditorView: View {
                         ble.sendDashLayout(layout)
                         dirty = false
                     }
-                    .disabled(!dirty || layout.items.isEmpty)
+                    // Enabled whenever this layout is not what the device is
+                    // holding — a comparison, not a flag someone has to
+                    // remember to set.
+                    //
+                    // The flag version cleared itself the moment Send was
+                    // tapped, so if the write never landed the button was dead
+                    // and the only way to retry was to close the sheet and edit
+                    // something. Against the device's own copy it stays live
+                    // until the device reports the layout back, and it goes
+                    // quiet by itself once it matches — including when the
+                    // rider edits their way back to what is already on there.
+                    .disabled(layout.items.isEmpty || layout == ble.dashLayout)
                 }
             }
             .onAppear { if let l = ble.dashLayout { layout = l } }
