@@ -535,6 +535,21 @@ int main(int argc, char** argv) {
         emit("dashboard_no_sensors.png");
     }
 
+    // Show-offline ON with the power meter gone: the HERO field must grey out
+    // like any other cell. It did not — the hero path had no stale handling at
+    // all, so the biggest number on the panel kept looking live after the meter
+    // dropped out.
+    {
+        RideState heroOff = s;
+        heroOff.showOffline = true;
+        heroOff.powerConnected = false;
+        heroOff.power3sW = 0xFFFF;
+        heroOff.powerW = 0xFFFF;
+        clearWhite(fb.data());
+        ui_render_dashboard(heroOff, false, dashDefaultLayout(), fb.data());
+        emit("dashboard_offline_hero.png");
+    }
+
     // Configurable dashboard: a layout NOT expressible before, exercising the
     // packer's awkward cases — a non-power hero, an odd number of half fields
     // (the last one spans), and a small row. Parsed from the config text rather
