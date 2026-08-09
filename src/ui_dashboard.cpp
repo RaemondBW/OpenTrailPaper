@@ -1612,7 +1612,26 @@ void task(void*) {
         // argument.
         const bool wantClean = false;
         bool navPromptAppearing = navPrompt && !lastNavPrompt;
-        if (screenChanged || forceDraw || millis() - lastDraw >= 1000) {
+
+        // A modal does not tick. Its own content is fixed — "SHUT DOWN?" and two
+        // buttons, or a route name and two buttons — and what is behind it is
+        // scrimmed or is a static route preview, so the 1 Hz redraw was spending
+        // a full-frame render plus a compaction every second to change nothing
+        // the rider can read.
+        //
+        // That is what made the on-screen SHUT DOWN button take two goes. Touch
+        // is sampled BETWEEN loop passes, so while a pass is busy rendering and
+        // handing a frame to the paint task, a press-and-release that begins and
+        // ends inside that window is never observed at all — the controller has
+        // nothing to report by the time we next ask it. Everywhere else the loop
+        // is parked on its semaphore and the touch interrupt wakes it at once,
+        // which is why every other tap felt instant. Nothing is lost by holding
+        // still: a real change (the modal opening or closing, a button press)
+        // comes through screenChanged/forceDraw, and lastDraw is left stale so
+        // the frame after the modal closes paints immediately.
+        const bool modalHoldsStill = powerOverlay || navPrompt;
+        if (screenChanged || forceDraw ||
+            (!modalHoldsStill && millis() - lastDraw >= 1000)) {
             lastDraw = millis();
             forceDraw = false;
             Screen prevScreen = lastScreen;
