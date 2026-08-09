@@ -42,7 +42,6 @@ constexpr int BODY_BOTTOM = MAP_STRIP_TOP;
 
 constexpr int ROW_H = 148;       // list row
 constexpr int DENSE_ROW_H = 111; // settings row
-constexpr int BACK_BAR_H = 96;   // back strip
 constexpr int TOUCH_MIN = 88;    // minimum hit rect, one gloved thumb
 
 // Ink. Four levels exist, but only INK and PAPER survive a fast DU pass — mid
@@ -207,9 +206,11 @@ struct SettingsInfo {
 };
 void ui_render_settings(const SettingsInfo& si, uint8_t* fb);
 
-// Full-width tappable BACK strip along the bottom of every sub-screen.
-extern const EpdRect kBackBar;
-void ui_render_back_bar(uint8_t* fb);
+// Sub-screens run their content to here. There is no BACK strip: the capacitive
+// Home button below the glass already goes back from every one of them, so a
+// full-width control repeating it cost 96 px on every list and settings page to
+// duplicate a key the rider's thumb is already on.
+constexpr int kContentBottom = 960 - ui::MARGIN;
 
 // Settings sub-page row hit-testing. Rows 0-1 are +/- adjusters (FTP,
 // timezone); rows 2-4 are toggle switches (backlight, units, USB drive);
