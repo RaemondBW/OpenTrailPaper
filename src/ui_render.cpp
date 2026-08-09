@@ -277,8 +277,18 @@ void fillTone(const EpdRect& r, Tone t, uint8_t* fb) {
 // Fine-grained on purpose: the rider asked for values as large as the box
 // allows, and a coarse ladder lands well under the ceiling (46 -> 69 -> 95 left
 // a 60 px gap where a 66 px face would have fitted).
+//
+// STRICTLY DESCENDING by digit height, and it has to stay that way — the two
+// things that read this ladder both assume it. valueFontIndex() returns the
+// FIRST face that fits, so an out-of-order entry hands back a smaller face than
+// the cell could have taken; worse, the dashboard equalises a size class by
+// keeping the LARGEST INDEX any of its cells needed, which is only "the
+// smallest face" if the order holds — otherwise a class renders at a face too
+// big for one of its cells and the value overflows the box. Impact_H (95) sat
+// ahead of Impact_C (120), so both happened at once.
+// Heights: 158, 120, 95, 81, 69, 58, 46, 30, 15.
 const EpdFont* const kValueLadder[VALUE_LADDER_N] = {
-    &Impact_XL, &Impact_H, &Impact_C, &Impact_B, &Impact_M,
+    &Impact_XL, &Impact_C, &Impact_H, &Impact_B, &Impact_M,
     &Impact_A,  &Impact_V, &Impact_T, &Arial_B};
 
 // Index of the largest ladder face that fits; 3 (the smallest) if none do.
@@ -1555,7 +1565,10 @@ static void sheetHead(const char* label, const char* hero, const char* detail,
 
     // Step the hero DOWN to fit rather than truncating it: a route called
     // "MISSION DOL.." tells the rider less than the same name a size smaller.
-    static const EpdFont* const heroSteps[] = {&Impact_M, &Impact_B, &Impact_T};
+    // Descending, like every other step-down ladder here: Impact_B (81) is
+    // TALLER than Impact_M (69), so listing M first stepped a name that would
+    // have fitted the bigger face straight down to it.
+    static const EpdFont* const heroSteps[] = {&Impact_B, &Impact_M, &Impact_T};
     const EpdFont* hf = &Impact_T;
     for (const EpdFont* f : heroSteps)
         if (ui::textWidth(f, clean) <= W - 2 * ui::MARGIN) { hf = f; break; }
