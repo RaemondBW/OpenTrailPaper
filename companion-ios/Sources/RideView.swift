@@ -36,7 +36,16 @@ struct RideView: View {
             .background(Palette.paper.ignoresSafeArea())
             .navigationBarHidden(true)
             .sheet(isPresented: $showDashEditor) { DashboardEditorView() }
-            .onAppear { ble.refreshSensors() }
+            .onAppear {
+                ble.refreshSensors()
+                // Screenshot hook, alongside -tab-*/-demo-* in
+                // BikeGPSCompanionApp: opens the layout editor straight away so
+                // the dashboard preview can be captured and compared against
+                // the panel render from tools/preview.
+                if ProcessInfo.processInfo.arguments.contains("-demo-dash") {
+                    showDashEditor = true
+                }
+            }
             .onChange(of: ble.state) { _, st in if st == .connected { ble.refreshSensors() } }
         }
     }

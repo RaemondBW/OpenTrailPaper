@@ -101,6 +101,28 @@ float projectOnSegment(double lat, double lon, int i, float cosL, float& outT) {
     return px * px + py * py;
 }
 
+// Search window around the rider's last known along-route position, in metres.
+// Forward is generous because it is not a speed limit — you can join a route
+// mid-way, or come out of a tunnel — while backward only has to be able to
+// undo a bad fix.
+constexpr float WINDOW_BACK_M = 300.0f;
+constexpr float WINDOW_FWD_M = 2000.0f;
+
+// First route index at or past `m` metres along. cumM is monotonic, so binary
+// search. Clamped to a valid index.
+int indexAtAlong(float m) {
+    if (nPts <= 1) return 0;
+    if (m <= 0) return 0;
+    if (m >= cumM[nPts - 1]) return nPts - 1;
+    int lo = 0, hi = nPts - 1;
+    while (lo < hi) {
+        int mid = (lo + hi) / 2;
+        if (cumM[mid] < m) lo = mid + 1;
+        else hi = mid;
+    }
+    return lo;
+}
+
 // Nearest segment to (lat,lon) over points [from,to). Returns the segment's
 // start index (or -1), with the along-segment fraction and squared distance.
 int nearestSegment(double lat, double lon, int from, int to, float& outT,
@@ -157,34 +179,44 @@ void mapManeuversToRoute() {
     }
 }
 
-// Move the cursor past any maneuver we've already ridden through.
-//
-// The margin has to clear GPS noise. It used to be 5 m, which is inside the
-// error of any bike GPS: a single noisy fix near a corner projects a few metres
-// onto the leg AFTER the turn, the turn is consumed while the rider is still
-// short of the junction, and — because the cursor only ever moves forward — the
-// banner then shows the NEXT turn for the whole intersection. That is the
-// "shows the turn one or two beyond" report. 20 m is past the noise and still
-// well inside a city block; the completed turn simply stays on screen for a few
-// seconds after you take it, which is what a rider wants anyway.
+// How far past a maneuver the rider must be before it stops being "the next
+// turn". Purely a display rule — nothing is remembered — but it has to clear
+// GPS noise: at 5 m (what this used to be) a single noisy fix near a corner
+// projects onto the leg AFTER the turn and the cue jumps ahead while the rider
+// is still short of the junction. 20 m is past the noise and still well inside
+// a city block, so a completed turn simply stays up for a few seconds after you
+// take it, which is what a rider wants anyway.
 //
 // Capped at 45% of the gap to the next maneuver so a staggered junction (two
 // turns 20-30 m apart) still hands over at the midpoint instead of holding the
 // first one until the rider is past the second.
 constexpr float kManeuverPastM = 20.0f;
 
-void advanceManeuverCursor() {
-    while (curManeuver < nManeuvers) {
-        float along = maneuverAlongM[curManeuver];
-        float margin = kManeuverPastM;
-        if (curManeuver + 1 < nManeuvers) {
-            float half = (maneuverAlongM[curManeuver + 1] - along) * 0.45f;
-            if (half < margin) margin = half;
-        }
-        if (margin < 2.0f) margin = 2.0f;
-        if (progAlongM < along + margin) break;
-        curManeuver++;
+float maneuverPastMargin(int i) {
+    float margin = kManeuverPastM;
+    if (i + 1 < nManeuvers) {
+        float half = (maneuverAlongM[i + 1] - maneuverAlongM[i]) * 0.45f;
+        if (half < margin) margin = half;
     }
+    return margin < 2.0f ? 2.0f : margin;
+}
+
+// The next turn is DERIVED from where the rider is, every fix. It is not
+// tracked, advanced or remembered.
+//
+// It used to be a cursor that only ever moved forward, and that is what made
+// the turn cues untrustworthy: one bad fix consumed the turn the rider was
+// still riding towards, and no later fix could undo it. Standing still with a
+// wandering fix, the cues walked through the route one maneuver at a time,
+// which looks exactly like a countdown driven by time rather than by distance.
+//
+// Being a pure function of position means the readout is always the real
+// distance from where the rider is now to the turn ahead of them. A bad fix is
+// wrong for exactly one fix and then corrects itself.
+int maneuverAheadOf(float alongM) {
+    int i = 0;
+    while (i < nManeuvers && alongM > maneuverAlongM[i] + maneuverPastMargin(i)) i++;
+    return i;
 }
 
 bool ensureBuffers() {
@@ -404,11 +436,22 @@ void updateProgress(double lat, double lon) {
     if (!active()) return;
     int prev = progIdx;
 
-    // Project the rider onto the route. Look in a forward window (with a small
-    // backward allowance) for smooth, monotonic tracking that is immune to the
-    // route passing near itself (loops, out-and-backs, self-crossings).
-    int from = progIdx - 8;   if (from < 0) from = 0;
-    int to   = progIdx + 120; if (to > nPts) to = nPts;
+    // Project the rider onto the route, searching a window around where they
+    // were. The window exists only to disambiguate a route that passes near
+    // ITSELF (out-and-backs, lollipop loops, self-crossings) — position alone
+    // genuinely cannot say which leg you are on there.
+    //
+    // Measured in METRES, and symmetric enough to be undone. It used to be
+    // "8 points back, 120 points forward", but a route's points are not evenly
+    // spaced — a router's polyline is dense through curves and can run a
+    // kilometre of straight on two points — so that was a 16 m window on one
+    // stretch and a 20 km one on the next. Where the backward allowance was
+    // small, the match could move forward and never come back, and the position
+    // ratcheted down the route while the rider stood still.
+    int from = indexAtAlong(progAlongM - WINDOW_BACK_M);
+    int to   = indexAtAlong(progAlongM + WINDOW_FWD_M) + 2;   // exclusive
+    if (from > 0) from--;              // include the segment spanning the bound
+    if (to > nPts) to = nPts;
     float d2, segT;
     int seg = nearestSegment(lat, lon, from, to, segT, d2);
     // Single-point route (or a window with no segment): fall back to the vertex.
@@ -456,9 +499,8 @@ void updateProgress(double lat, double lon) {
         curManeuver = 0;
     }
 
-    // The upcoming turn is simply the first maneuver still ahead of us on the
-    // route — no fragile GPS-proximity test.
-    if (activeNav) advanceManeuverCursor();
+    // Recomputed from the rider's position, not advanced from its old value.
+    if (activeNav) curManeuver = maneuverAheadOf(progAlongM);
 }
 
 // --- Maneuvers / navigation ---------------------------------------------
@@ -496,8 +538,9 @@ void startNav() {
         mapManeuversToRoute();
         activeNav = true;
         navDismissed = false;
-        curManeuver = 0;
-        advanceManeuverCursor();    // skip any turns already behind us
+        // From the rider's current position, so turns already behind them are
+        // not announced when navigation starts mid-route.
+        curManeuver = maneuverAheadOf(progAlongM);
     }
     pendingNav = false;
 }

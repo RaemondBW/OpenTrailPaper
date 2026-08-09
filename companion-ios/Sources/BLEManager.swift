@@ -217,9 +217,16 @@ final class BLEManager: NSObject, ObservableObject {
     // update-pending UI shows, without touching real Bluetooth.
     private let isDemoUpdate = ProcessInfo.processInfo.arguments.contains("-demo-update")
 
+    // Screenshot demo: hold the device's default layout so the dashboard editor
+    // and its preview can be captured without a head unit attached. The editor
+    // reads the layout FROM the device, so without this it can only show its
+    // "connect first" empty state.
+    private let isDemoDash = ProcessInfo.processInfo.arguments.contains("-demo-dash")
+
     override init() {
         super.init()
         if isDemoUpdate { state = .connected; deviceFirmware = "v0.83" }
+        if isDemoDash { state = .connected; dashLayout = .deviceDefault }
         locationManager.delegate = self
         locationManager.desiredAccuracy = kCLLocationAccuracyHundredMeters
         let a = locationManager.authorizationStatus
@@ -1071,7 +1078,7 @@ final class BLEManager: NSObject, ObservableObject {
 
 extension BLEManager: CBCentralManagerDelegate {
     nonisolated func centralManagerDidUpdateState(_ c: CBCentralManager) {
-        if isDemoUpdate { return }   // demo holds a fake connected state
+        if isDemoUpdate || isDemoDash { return }   // demo holds a fake connected state
         MainActor.assumeIsolated {
             bluetoothReady = (c.state == .poweredOn)
             bluetoothPoweredOn = (c.state == .poweredOn)

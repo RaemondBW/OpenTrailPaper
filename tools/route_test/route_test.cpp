@@ -434,6 +434,69 @@ void testNoiseNearACornerDoesNotSkipTheTurn() {
     checkNear(t.distM, 240.0f, 30.0f, "distance to the second corner");
 }
 
+// Standing still must not walk through the route. The turn cursor used to move
+// forward ONLY, so a single wandering fix consumed the turn the rider was still
+// riding towards and nothing could bring it back — park with a weak fix and the
+// cues stepped through maneuver after maneuver, looking like a countdown driven
+// by time. The announced turn is now a pure function of position, so a bad fix
+// is wrong for one fix and then corrects itself.
+void testStationaryRiderDoesNotWalkTheRoute() {
+    begin("stationary rider: cues do not cycle, even on a wandering fix");
+    // 2 km straight, corners-only polyline, cross streets every 200 m.
+    std::vector<Pt> corners = {at(0, 0), at(2000, 0)};
+    check(loadRoute(corners), "route loaded");
+    for (int i = 1; i <= 8; ++i) {
+        char t[24];
+        snprintf(t, sizeof(t), "Turn %d", i);
+        routes::addManeuver(at(i * 200.0, 0).lat, at(i * 200.0, 0).lon, t);
+    }
+    routes::finishManeuvers();
+    routes::startNav();
+
+    // Parked at 100 m. The fix wanders +/-150 m, as it does indoors or in a
+    // canyon — well past the first turn and back again.
+    routes::updateProgress(at(100, 0).lat, at(100, 0).lon);
+    check(turnNow().instr == "Turn 1", "parked, the first turn is next");
+
+    const double wander[] = {140, -90, 160, -120, 40, 175, -60, 130, -150, 95};
+    for (double w : wander) {
+        routes::updateProgress(at(100 + w, w * 0.2).lat, at(100 + w, w * 0.2).lon);
+        // Back to the true position after each excursion.
+        routes::updateProgress(at(100, 0).lat, at(100, 0).lon);
+        Turn t = turnNow();
+        char what[96];
+        snprintf(what, sizeof(what),
+                 "after a %.0f m excursion, still 'Turn 1' at the true position", w);
+        check(t.have && t.instr == "Turn 1", what);
+        snprintf(what, sizeof(what), "and the distance is the real 100 m (%.0f)", t.distM);
+        checkNear(t.distM, 100.0f, 10.0f, what);
+    }
+}
+
+// Riding back down a route you just rode up must bring the turn back, not leave
+// the cue stuck on a maneuver that is ahead of you again.
+void testBackwardsProgressRestoresTheTurn() {
+    begin("progress rewinds: the turn ahead of you is the one announced");
+    std::vector<Pt> corners = {at(0, 0), at(1000, 0), at(1000, 500)};
+    check(loadRoute(densify(corners, 25.0)), "route loaded");
+    routes::addManeuver(at(1000, 0).lat, at(1000, 0).lon, "Left onto A");
+    routes::finishManeuvers();
+    routes::startNav();
+
+    routes::updateProgress(at(900, 0).lat, at(900, 0).lon);
+    check(turnNow().instr == "Left onto A", "approaching the turn");
+
+    // Past it, onto the next leg: it is behind us now.
+    routes::updateProgress(at(1000, 120).lat, at(1000, 120).lon);
+    check(!turnNow().have, "no turn left once past the only maneuver");
+
+    // Turn around and ride back: the maneuver is ahead again.
+    routes::updateProgress(at(900, 0).lat, at(900, 0).lon);
+    Turn t = turnNow();
+    check(t.have && t.instr == "Left onto A", "the turn is announced again");
+    checkNear(t.distM, 100.0f, 20.0f, "with the real distance to it");
+}
+
 }  // namespace
 
 int main() {
@@ -450,6 +513,8 @@ int main() {
     testDistanceTracksPositionBetweenVertices();
     testManeuverOnSparseStraight();
     testNoiseNearACornerDoesNotSkipTheTurn();
+    testStationaryRiderDoesNotWalkTheRoute();
+    testBackwardsProgressRestoresTheTurn();
 
     if (g_fail == 0) {
         printf("all route tests passed\n");

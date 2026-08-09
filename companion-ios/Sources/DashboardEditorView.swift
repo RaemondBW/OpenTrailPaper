@@ -168,89 +168,264 @@ private struct FieldPicker: View {
 
 // A scaled likeness of the panel, drawn to the SAME rules ui_render.cpp uses.
 //
-// It had drifted badly: centred captions, no cell borders, no margins, and a
-// value size picked per cell. The device now draws bordered cells inset on a
-// 24 px margin with a 12 px gutter, captions top-left at ONE size for the whole
-// screen, and the value+unit centred as a pair with its size scaling by cell.
-// A preview that does not match is worse than none — it is what the rider is
-// deciding against.
+// The rider is choosing a layout against this picture, so anywhere it differs
+// from the panel it is actively misleading. It kept drifting because it was an
+// impression of the device rather than a port of it — a value size guessed per
+// cell from a character count, no hero treatment at all, no zone bar.
+//
+// So it now runs the firmware's actual algorithm, in DEVICE PIXELS, and scales
+// the result once at the end:
+//   - the same type ladders, with the real font metrics baked in below;
+//   - one value face per (size class, cell width), the smallest any cell of
+//     that class needs, which is what stops two same-sized cells disagreeing;
+//   - one caption face for the whole screen;
+//   - the hero on its own ladder, caption centred, with the FTP zone bar.
+
+// One face from the firmware's ladders. Sizes are device pixels: `cap` is the
+// digit height ui_render measures against, and the advances are what its
+// textWidth() returns. Printed straight out of the host build's font tables —
+// guessing these is how the preview drifted last time.
+private struct Face {
+    let cap: CGFloat
+    let w8, w1, wDot, wColon: CGFloat
+
+    func width(_ s: String) -> CGFloat {
+        s.reduce(0) { acc, c in
+            switch c {
+            case ".": return acc + wDot
+            case ":": return acc + wColon
+            case "1": return acc + w1
+            default:  return acc + w8
+            }
+        }
+    }
+}
+
+// kValueLadder, strictly descending — the firmware relies on that order and so
+// does the "smallest face any cell needs" pass below.
+private let kValueLadder: [Face] = [
+    Face(cap: 158, w8: 103, w1: 73, wDot: 35, wColon: 39),   // Impact_XL
+    Face(cap: 120, w8: 78,  w1: 56, wDot: 27, wColon: 30),   // Impact_C
+    Face(cap: 95,  w8: 61,  w1: 44, wDot: 21, wColon: 23),   // Impact_H
+    Face(cap: 81,  w8: 53,  w1: 38, wDot: 18, wColon: 20),   // Impact_B
+    Face(cap: 69,  w8: 45,  w1: 32, wDot: 16, wColon: 17),   // Impact_M
+    Face(cap: 58,  w8: 38,  w1: 27, wDot: 13, wColon: 14),   // Impact_A
+    Face(cap: 46,  w8: 30,  w1: 21, wDot: 10, wColon: 11),   // Impact_V
+    Face(cap: 30,  w8: 20,  w1: 14, wDot: 7,  wColon: 8),    // Impact_T
+    Face(cap: 15,  w8: 12,  w1: 12, wDot: 6,  wColon: 7),    // Arial_B
+]
+
+/// The hero steps through its own ladder: XL, H, M, V.
+private let kHeroLadder: [Face] = [kValueLadder[0], kValueLadder[2],
+                                   kValueLadder[4], kValueLadder[6]]
+
+/// kLabelLadder. `perChar` is the tracked caption's average advance, taken from
+/// the width of "HEART RATE" in each face.
+private struct LabelFace { let cap: CGFloat; let ascender: CGFloat; let perChar: CGFloat }
+private let kLabelLadder: [LabelFace] = [
+    LabelFace(cap: 28, ascender: 38, perChar: 30.1),   // ArialBold_20
+    LabelFace(cap: 15, ascender: 19, perChar: 16.6),   // Arial_B
+    LabelFace(cap: 11, ascender: 14, perChar: 12.4),   // Arial_L
+]
+
+/// Arial_B, the face the unit caption is set in.
+private let kUnitFace = LabelFace(cap: 15, ascender: 19, perChar: 13.5)
+
 struct DashPreview: View {
     let layout: DashLayout
 
-    // Device geometry, in device pixels; everything below scales from these.
+    // Device geometry (ui_render.h). Everything is computed in these units.
     private let panelW: CGFloat = 540, panelH: CGFloat = 960
     private let margin: CGFloat = 24, gutter: CGFloat = 12, pad: CGFloat = 16
-    private let statusH: CGFloat = 64
+    private let statusH: CGFloat = 64, step: CGFloat = 12, halfStep: CGFloat = 6
+    private let rule: CGFloat = 2
+    private var contentW: CGFloat { panelW - 2 * margin }
+    private var bodyH: CGFloat { panelH - statusH }
+
+    /// Barlow's cap height is 0.72 em, so this converts a device cap height into
+    /// the point size that draws the same-sized capital.
+    private let capRatio: CGFloat = 0.72
+
+    private struct Placed {
+        var x, y, w, h: CGFloat
+        var item: DashItem
+        var hero: Bool
+        var value: Face
+        var label: LabelFace
+    }
 
     var body: some View {
         GeometryReader { geo in
-            let k = geo.size.width / panelW           // one scale factor
-            let rows = layout.rows
-            let total = max(rows.reduce(0) { $0 + rowWeight($1) }, 1)
-            let bodyH = panelH - statusH - margin
-            let gaps = CGFloat(max(rows.count - 1, 0)) * gutter
-            let avail = bodyH - gaps
-
-            // One caption size for the whole screen, as the device does.
-            let capSize = captionSize()
-
-            VStack(spacing: gutter * k) {
-                ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
-                    let h = avail * CGFloat(rowWeight(row)) / CGFloat(total)
-                    HStack(spacing: gutter * k) {
-                        ForEach(row) { item in
-                            cell(item, k: k,
-                                 w: row.count == 2 ? (panelW - 2 * margin - gutter) / 2
-                                                   : panelW - 2 * margin,
-                                 h: h, capSize: capSize)
-                        }
-                    }
-                    .frame(height: h * k)
+            let k = geo.size.width / panelW
+            ZStack(alignment: .topLeading) {
+                ForEach(Array(place().enumerated()), id: \.offset) { _, p in
+                    cell(p, k: k)
+                        .frame(width: p.w * k, height: p.h * k)
+                        .offset(x: p.x * k, y: (p.y - statusH) * k)
                 }
             }
-            .frame(width: geo.size.width, alignment: .top)
+            .frame(width: geo.size.width, height: bodyH * k, alignment: .topLeading)
         }
-        .aspectRatio(panelW / (panelH - statusH), contentMode: .fit)
-    }
-
-    private func rowWeight(_ row: [DashItem]) -> Int { row.map(\.size.weight).max() ?? 1 }
-
-    /// Largest caption that fits every label — the device picks one size for all.
-    private func captionSize() -> CGFloat {
-        let longest = layout.items.map(\.fieldLabel.count).max() ?? 0
-        return longest > 10 ? 9 : (longest > 7 ? 10 : 11)
-    }
-
-    private func cell(_ item: DashItem, k: CGFloat, w: CGFloat, h: CGFloat,
-                      capSize: CGFloat) -> some View {
-        // Value size scales with the cell, then clamps to the width — the same
-        // two constraints the firmware's ladder applies.
-        let byHeight = (h - pad * 2 - 22) * 0.62
-        let byWidth = w / CGFloat(max(sample(item.field).count, 1)) * 1.5
-        let vSize = max(min(byHeight, byWidth), 11)
-
-        return ZStack(alignment: .topLeading) {
-            Rectangle().stroke(Color.black, lineWidth: 2 * k)
-            Text(item.fieldLabel.uppercased())
-                .font(.system(size: capSize, weight: .bold))
-                .tracking(capSize * 0.16)
-                .lineLimit(1)
-                .padding(.leading, pad * k)
-                .padding(.top, pad * k)
-            HStack(alignment: .lastTextBaseline, spacing: 2 * k) {
-                Text(sample(item.field))
-                    .font(.system(size: vSize * k, weight: .heavy))
-                    .lineLimit(1).minimumScaleFactor(0.4)
-                if let u = unit(item.field) {
-                    Text(u).font(.system(size: capSize * 0.85, weight: .bold))
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)   // centred pair
-        }
-        .frame(width: w * k, height: h * k)
+        .aspectRatio(panelW / bodyH, contentMode: .fit)
         .background(Color(hex: 0xF7F5EF))
         .foregroundStyle(.black)
     }
+
+    // MARK: layout — ui_render.cpp's packer, verbatim in device pixels
+
+    private func place() -> [Placed] {
+        let rows = layout.rows
+        guard !rows.isEmpty else { return [] }
+        let weights = rows.map { $0.map(\.size.weight).max() ?? 1 }
+        let total = max(weights.reduce(0, +), 1)
+        let gutters = CGFloat(rows.count - 1) * gutter
+        let availH = (panelH - statusH - margin) - gutters
+        let halfW = (contentW - gutter) / 2
+
+        var out: [Placed] = []
+        var y = statusH + margin - step
+        for (r, row) in rows.enumerated() {
+            let rowH = r == rows.count - 1 ? panelH - margin - y
+                                           : availH * CGFloat(weights[r]) / CGFloat(total)
+            for (c, item) in row.enumerated() {
+                let w = row.count == 2 ? halfW : contentW
+                let x = row.count == 2 ? (c == 0 ? margin : margin + halfW + gutter)
+                                       : margin
+                // The hero only gets hero treatment when it is alone on a row
+                // with the height to carry it, exactly as the device decides.
+                let hero = item.size == .hero && row.count == 1 && rowH >= 200
+                out.append(Placed(x: x, y: y, w: w, h: rowH, item: item, hero: hero,
+                                  value: kValueLadder[kValueLadder.count - 1],
+                                  label: kLabelLadder[kLabelLadder.count - 1]))
+            }
+            y += rowH + gutter
+        }
+        return sized(out)
+    }
+
+    /// Second pass: equalise type across each size class, as the device does.
+    /// A cell that sizes itself independently makes identical boxes disagree.
+    private func sized(_ input: [Placed]) -> [Placed] {
+        var out = input
+        var classIdx: [String: Int] = [:]
+        var labelIdx = 0
+
+        for p in out where !p.hero {
+            let availW = p.w - 2 * pad
+            let unitW = unit(p.item.field).map { kUnitFace.perChar * CGFloat($0.count) + 6 } ?? 0
+            let valH = p.h - pad * 2 - kLabelLadder[1].ascender - halfStep
+            let idx = valueFaceIndex(kValueLadder, hint(p.item.field), availW, valH, unitW)
+            let bucket = p.w > contentW * 3 / 4 ? "wide" : "narrow"
+            let key = "\(p.item.size.rawValue)-\(bucket)"
+            classIdx[key] = max(classIdx[key] ?? 0, idx)
+
+            let li = kLabelLadder.firstIndex { $0.perChar * CGFloat(p.item.panelLabel.count) <= availW }
+                ?? kLabelLadder.count - 1
+            labelIdx = max(labelIdx, li)
+        }
+
+        for i in out.indices {
+            out[i].label = kLabelLadder[labelIdx]
+            if out[i].hero {
+                out[i].value = heroFace(out[i])
+            } else {
+                let bucket = out[i].w > contentW * 3 / 4 ? "wide" : "narrow"
+                out[i].value = kValueLadder[classIdx["\(out[i].item.size.rawValue)-\(bucket)"] ?? 0]
+            }
+        }
+        return out
+    }
+
+    private func valueFaceIndex(_ ladder: [Face], _ text: String,
+                                _ availW: CGFloat, _ availH: CGFloat,
+                                _ unitW: CGFloat) -> Int {
+        ladder.firstIndex { $0.cap <= availH && $0.width(text) + unitW <= availW }
+            ?? ladder.count - 1
+    }
+
+    private func heroFace(_ p: Placed) -> Face {
+        let innerW = p.w - 2 * pad
+        let unitW = unit(p.item.field).map { kUnitFace.perChar * CGFloat($0.count) + 10 } ?? 0
+        let barH = isPower(p.item.field) ? 18 + step : 0
+        let top = pad + kLabelLadder[1].ascender + halfStep
+        let bot = p.h - pad - barH
+        return kHeroLadder.first {
+            $0.width(sample(p.item.field)) + unitW <= innerW && $0.cap <= bot - top
+        } ?? kHeroLadder[kHeroLadder.count - 1]
+    }
+
+    // MARK: drawing
+
+    @ViewBuilder
+    private func cell(_ p: Placed, k: CGFloat) -> some View {
+        ZStack(alignment: .topLeading) {
+            Rectangle()
+                .strokeBorder(Color.black, lineWidth: rule * k)
+
+            if p.hero {
+                VStack(spacing: 0) {
+                    caption(p, k: k)
+                        .frame(maxWidth: .infinity)            // hero caption centres
+                        .padding(.top, pad * k)
+                    value(p, k: k)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    if isPower(p.item.field) {
+                        zoneBar(k: k, width: p.w - 2 * pad)
+                            .padding(.bottom, pad * k)
+                    }
+                }
+                .padding(.horizontal, pad * k)
+            } else {
+                caption(p, k: k)
+                    .padding(.leading, pad * k)                // grid caption top-left
+                    .padding(.top, pad * k)
+                value(p, k: k)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding(.top, (pad + p.label.ascender) * k)
+            }
+        }
+    }
+
+    private func caption(_ p: Placed, k: CGFloat) -> some View {
+        Text(p.item.panelLabel)
+            .font(.custom("Barlow-SemiBold", size: p.label.cap / capRatio * k))
+            .tracking(p.label.cap * 0.18 * k)
+            .lineLimit(1)
+    }
+
+    /// Value and unit are ONE object, centred as a pair — centring the number
+    /// alone pushes it off-axis by half the unit's width.
+    private func value(_ p: Placed, k: CGFloat) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 5 * k) {
+            Text(sample(p.item.field))
+                .font(.custom("BarlowCondensed-Bold", size: p.value.cap / capRatio * k))
+                .lineLimit(1)
+                .minimumScaleFactor(0.5)
+            if let u = unit(p.item.field) {
+                Text(u)
+                    .font(.custom("Barlow-SemiBold", size: kUnitFace.cap / capRatio * k))
+                    .lineLimit(1)
+            }
+        }
+    }
+
+    /// Seven FTP zone segments, filled to the current zone — the sample power
+    /// against the default 250 W FTP lands in zone 4.
+    private func zoneBar(k: CGFloat, width: CGFloat) -> some View {
+        let segW = (width - 6 * halfStep) / 7
+        return HStack(spacing: halfStep * k) {
+            ForEach(0..<7, id: \.self) { i in
+                Rectangle()
+                    .strokeBorder(Color.black, lineWidth: 1 * k)
+                    .background(i < 4 ? Color.black : Color.clear)
+                    .frame(width: segW * k, height: 18 * k)
+            }
+        }
+    }
+
+    // MARK: field data
+
+    private func isPower(_ f: String) -> Bool { f == "power3s" || f == "power" }
 
     private func unit(_ f: String) -> String? {
         switch f {
@@ -265,7 +440,22 @@ struct DashPreview: View {
         }
     }
 
-    // Plausible values: real digit counts drive the size the device will pick.
+    /// dashSizingHint(): the WIDEST string a field can produce. The device sizes
+    /// type for the worst case so the number never resizes mid-ride, and the
+    /// preview has to size for the same string or it shows the wrong face.
+    private func hint(_ f: String) -> String {
+        switch f {
+        case "speed", "grade": return "88.8"
+        case "distance", "routeleft": return "888.8"
+        case "ridetime", "movingtime": return "88:88:88"
+        case "climb", "altitude": return "8888"
+        case "sats": return "88"
+        case "clock": return "88:88"
+        default: return "888"
+        }
+    }
+
+    /// Plausible live values, so the preview reads like a ride in progress.
     private func sample(_ field: String) -> String {
         switch field {
         case "speed": return "32.4"

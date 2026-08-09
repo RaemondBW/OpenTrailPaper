@@ -72,6 +72,14 @@ struct DashItem: Identifiable, Hashable {
     var half: Bool
 
     var fieldLabel: String { DashField.named(field)?.label ?? field }
+
+    /// The caption the DEVICE draws above this field — kFields in
+    /// dash_layout.cpp. Uppercasing the picker label matches every entry except
+    /// the 3 s power average, whose panel caption uses a middot, and the layout
+    /// preview has to show what the panel will show.
+    var panelLabel: String {
+        field == "power3s" ? "POWER · 3S" : fieldLabel.uppercased()
+    }
 }
 
 struct DashLayout: Equatable {
