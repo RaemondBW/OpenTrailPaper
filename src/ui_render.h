@@ -128,6 +128,15 @@ void valueWithUnit(const EpdFont* valueFont, int x0, int x1, int baselineY,
 void ui_render_dashboard(const RideState& s, bool navActive,
                          const DashLayout& layout, uint8_t* fb);
 
+// Did the last ui_render_dashboard() grey out any cell?
+//
+// The caller needs this to know whether the panel wants a scrub. The greyed-out
+// tone is a 25% dot — fine alternating pixels — and the driver's delta engine
+// records a black that only half-erased as white, so residue under a newly
+// toned area is never touched again and the cell reads as dirty rather than
+// inactive. Same problem the map transition already scrubs for.
+bool ui_render_dashboard_toned();
+
 // Ride summary (design 1g) with SAVE RIDE / DISCARD touch targets.
 extern const EpdRect kResumeButton;
 extern const EpdRect kSaveButton;

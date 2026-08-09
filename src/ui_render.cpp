@@ -799,11 +799,16 @@ void dashCell(int x0, int y0, int x1, int y1, const char* labelStr,
         ui::text(&Arial_L, cx, y1 - kUnitGap, unit, fb, EPD_DRAW_ALIGN_CENTER, 0x00);
 }
 
+// Set while laying the fields out, read by ui_render_dashboard_toned(). A
+// plain file-static because only the UI task ever renders.
+bool g_dashToned = false;
+
 void ui_render_dashboard(const RideState& s, bool navActive,
                          const DashLayout& layout, uint8_t* fb) {
     const int W = epd_rotated_display_width();
     const int H = epd_rotated_display_height();
     char buf[32];
+    g_dashToned = false;
 
     ui::statusBar(s, fb);
 
@@ -912,6 +917,7 @@ void ui_render_dashboard(const RideState& s, bool navActive,
             // is inactive the moment its source is gone, whatever it last said.
             p.stale = !dashFieldAvailable(p.field, s) ||
                       (p.value[0] == '-' && p.value[1] == '-');
+            if (p.stale) g_dashToned = true;
         }
         y += rowH + ui::GUTTER;
     }
@@ -964,6 +970,8 @@ void ui_render_dashboard(const RideState& s, bool navActive,
         }
     }
 }
+
+bool ui_render_dashboard_toned() { return g_dashToned; }
 
 // Defined below with the list helpers; declared here so the sheet can clamp
 // its body lines to the content column.
