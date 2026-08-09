@@ -567,9 +567,17 @@ void dashFieldValue(uint8_t field, const RideState& s, char* val, size_t valCap,
 // to impact_40 rather than clipping.
 void heroCell(const EpdRect& r, const char* labelStr, const char* value,
               const char* unit, const RideState& s, bool zoneBar, bool isSpeed,
-              uint8_t* fb) {
+              bool stale, uint8_t* fb) {
     epd_draw_rect(r, ui::INK, fb);
     epd_draw_rect({r.x + 1, r.y + 1, r.width - 2, r.height - 2}, ui::INK, fb);
+
+    // Greyed out exactly like a grid cell when its sensor is gone — the hero
+    // used to skip this entirely, so a dropped-out power meter kept the biggest,
+    // most authoritative number on the panel looking live. Tone first, content
+    // over the top. The zone bar needs no special case: with no power it
+    // computes zone 0 and draws seven empty outlines.
+    if (stale)
+        fillTone({r.x + 2, r.y + 2, r.width - 4, r.height - 4}, ui::TONE_25, fb);
 
     char buf[32];
     snprintf(buf, sizeof(buf), "%s", value);
@@ -937,7 +945,7 @@ void ui_render_dashboard(const RideState& s, bool navActive,
         const Placed& p = placed[i];
         if (p.hero) {
             heroCell(p.r, dashFieldLabel(p.field), p.value, p.unit, s,
-                     isPowerField(p.field), p.field == DF_SPEED, fb);
+                     isPowerField(p.field), p.field == DF_SPEED, p.stale, fb);
         } else {
             const int wb = (p.r.width > ui::CONTENT_W * 3 / 4) ? 1 : 0;
             ui::cell(p.r, dashFieldLabel(p.field), p.value, p.unit, fb, p.stale,
