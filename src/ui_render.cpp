@@ -1517,14 +1517,20 @@ const EpdRect kPowerCancel = {24, 816, 492, 96};
 // Draws the shared modal shell: scrim over the live screen, bottom panel, rule.
 // The end-of-ride sheet, the power dialog and the navigation prompt are ONE
 // component with different words in it.
-static void sheetShell(uint8_t* fb) {
+// `scrim` tones what is behind the sheet, to push it back and say the modal has
+// the input. Pass false when what is behind IS the thing being decided about —
+// the route preview under the NAVIGATE prompt, where a 50% checker over fine map
+// lines is exactly what stops the rider recognising the route they are being
+// asked to accept.
+static void sheetShell(uint8_t* fb, bool scrim = true) {
     const int W = epd_rotated_display_width();
     const int H = epd_rotated_display_height();
     const int y = H - 520;
     // Scrim the BODY only. Toning the status band as well made the clock and
     // battery unreadable behind the checker — that row is chrome the rider
     // still needs while a modal is up.
-    fillTone({0, ui::STATUS_H, W, y - ui::STATUS_H}, ui::TONE_50, fb);
+    if (scrim)
+        fillTone({0, ui::STATUS_H, W, y - ui::STATUS_H}, ui::TONE_50, fb);
     epd_fill_rect({0, y, W, H - y}, ui::PAPER, fb);
     epd_fill_rect({0, y, W, 6}, ui::INK, fb);
 }
@@ -1724,7 +1730,7 @@ void ui_render_nav_prompt(const char* routeName, int turns, uint8_t* fb) {
     char sub[64];
     snprintf(sub, sizeof(sub), "%d turn%s · tap START to follow it", turns,
              turns == 1 ? "" : "s");
-    sheetShell(fb);
+    sheetShell(fb, /*scrim=*/false);   // the route preview must stay readable
     // The route name is the hero line here, at impact_96 like the summary's
     // distance — it was previously set at body size and unreadable at a glance.
     sheetHead("NAVIGATE", routeName, sub, fb);
