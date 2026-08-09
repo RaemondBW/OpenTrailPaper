@@ -606,10 +606,44 @@ bool board_gauge_report(char* out, size_t n) {
     return fuelGaugeOk;
 }
 
+// TWO agreeing reads, not one — this is the only button whose state arrives
+// over I2C, and a failed I2C read is indistinguishable from a press.
+//
+// SensorLib's digitalRead() ends in getRegisterBit(), which returns FALSE when
+// the transaction fails (readRegister == DEV_WIRE_ERR). False is LOW, and LOW
+// is exactly what this button reads when it is held down — so any glitched read
+// looked like a press, and since the UI acts on the RELEASE, the very next good
+// read fired the backlight. One corrupted transaction, one phantom press.
+//
+// Glitched reads are not hypothetical on this bus. i2c_bus.h says it plainly:
+// concurrent transactions from different tasks corrupt each other. The panel
+// driver power-cycles this same XL9555 (its rails are pins 8-13, ours is 10)
+// every time the display sleeps and wakes, and it does that on its own private
+// mutex without taking i2cLock() — so its transactions can and do land in the
+// middle of somebody else's. The expander's INT line makes it worse: it fires
+// on ANY input change, including the two TPS power-good pins the driver watches,
+// so the button gets polled every time the panel cycles, not just when a finger
+// touches it.
+//
+// A 3 ms gap between the two reads is enough to be past a colliding transaction
+// (a byte at 400 kHz is ~25 us) while still being a single glance at the pin.
 bool board_side_button_pressed() {
     if (!ioExpanderOk) return false;
     i2cLock();
-    bool pressed = ioExpander.digitalRead(IOEXP_PIN_SIDE_BUTTON) == LOW;
+    bool first = ioExpander.digitalRead(IOEXP_PIN_SIDE_BUTTON) == LOW;
+    bool second = false;
+    if (first) {
+        delayMicroseconds(3000);
+        second = ioExpander.digitalRead(IOEXP_PIN_SIDE_BUTTON) == LOW;
+    }
     i2cUnlock();
-    return pressed;
+    if (first && !second) {
+        // Rate-limited so a noisy bus can't flood the log.
+        static uint32_t lastLog = 0;
+        if (millis() - lastLog > 30000) {
+            lastLog = millis();
+            diag::log("side btn: glitched read ignored (I2C contention)");
+        }
+    }
+    return first && second;
 }

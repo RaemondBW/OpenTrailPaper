@@ -140,12 +140,8 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var deviceLogs: [LogFile] = []        // per-day log files on the device
     @Published var loadingLogs = false
     private var logsBuilding: [LogFile] = []
-    // MUST match FIRMWARE_VERSION in src/config.h *and* the Sources/firmware.bin
-    // sitting next to this file — updateAvailable below compares with !=, not
-    // "is newer", so a stale value here does not just mislabel things: the app
-    // offers an "update" that silently downgrades the device to whatever binary
-    // is bundled. This sat at v0.84 while devices ran v0.85/v0.86.
-    static let bundledFirmwareVersion = "v1.05"
+    // Firmware now comes from GitHub Releases at runtime (FirmwareRelease), not
+    // from a copy baked into the app. See that file for why the bundle went.
 
     // Saved routes on the device
     @Published var deviceRoutes: [String] = []
@@ -190,6 +186,9 @@ final class BLEManager: NSObject, ObservableObject {
     /// show "connect to edit" rather than an invented default that would
     /// overwrite the rider's real one the moment they touched a control.
     @Published var dashLayout: DashLayout?
+    /// Version we are flashing, so the success check compares against what
+    /// was actually sent rather than a compile-time constant.
+    private var otaTargetVersion = ""
     private var statusChar: CBCharacteristic?
     private var routeChar: CBCharacteristic?
     private var ridesChar: CBCharacteristic?
@@ -455,8 +454,12 @@ final class BLEManager: NSObject, ObservableObject {
 
     // MARK: firmware / OTA
 
+    /// True when the device is running something other than the newest release.
+    /// Still a string compare, but now against ONE source of truth rather than a
+    /// hand-maintained constant that could disagree with the bytes beside it.
     var updateAvailable: Bool {
-        !deviceFirmware.isEmpty && deviceFirmware != BLEManager.bundledFirmwareVersion
+        guard let tag = FirmwareRelease.shared.latest?.tag else { return false }
+        return !deviceFirmware.isEmpty && deviceFirmware != tag
     }
 
     func queryDeviceFirmware() {
@@ -477,11 +480,28 @@ final class BLEManager: NSObject, ObservableObject {
         guard let c = otaChar, let p = peripheral else {
             otaMessage = "Not connected"; return
         }
-        keepAwake(true)
-        guard let url = Bundle.main.url(forResource: "firmware", withExtension: "bin"),
-              let data = try? Data(contentsOf: url) else {
-            otaMessage = "Bundled firmware missing"; return
+        guard let release = FirmwareRelease.shared.latest else {
+            otaMessage = "No release found — check for updates first"; return
         }
+        keepAwake(true)
+        otaMessage = "Downloading \(release.tag)…"
+        Task { @MainActor in
+            do {
+                let data = try await FirmwareRelease.shared.image(for: release)
+                startFirmwareUpload(data, tag: release.tag)
+            } catch {
+                keepAwake(false)
+                otaMessage = "Download failed — check your connection"
+            }
+        }
+    }
+
+    /// Second half of startFirmwareUpdate, once the image is in hand.
+    private func startFirmwareUpload(_ data: Data, tag: String) {
+        guard let c = otaChar, let p = peripheral else {
+            keepAwake(false); otaMessage = "Not connected"; return
+        }
+        otaTargetVersion = tag
         otaData = data
         otaOffset = 0
         otaCommitSent = false
@@ -548,7 +568,7 @@ final class BLEManager: NSObject, ObservableObject {
         switch op {
         case 0xA3:                                   // running version
             deviceFirmware = String(decoding: d[1...], as: UTF8.self)
-            if deviceFirmware == BLEManager.bundledFirmwareVersion {
+            if !otaTargetVersion.isEmpty && deviceFirmware == otaTargetVersion {
                 // Now on the new version — success (clears any earlier transient
                 // failure state too, e.g. a reconnect seen mid-flash).
                 if otaInProgress {

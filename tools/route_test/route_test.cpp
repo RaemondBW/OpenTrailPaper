@@ -367,6 +367,73 @@ void testDistanceTracksPositionBetweenVertices() {
     }
 }
 
+// A real router's polyline carries a vertex only where the road BENDS, so a
+// "continue onto X" step (a name change mid-straight) has no vertex near it.
+// Maneuvers used to snap to the nearest vertex, which on a sparse polyline put
+// that turn hundreds of metres from where it happens — the wrong instruction
+// showed at the intersection.
+void testManeuverOnSparseStraight() {
+    begin("sparse polyline: a maneuver mid-straight lands where it happens");
+    // Corners only: three points for a 1.2 km straight and a left at the end.
+    std::vector<Pt> corners = {at(0, 0), at(1200, 0), at(1200, 400)};
+    check(loadRoute(corners), "route loaded (corners only)");
+    check(routes::pointCount() == 3, "route really is 3 points");
+    routes::addManeuver(at(600, 0).lat,  at(600, 0).lon,  "Continue onto Oak");
+    routes::addManeuver(at(1200, 0).lat, at(1200, 0).lon, "Left onto Elm");
+    routes::finishManeuvers();
+    routes::startNav();
+
+    routes::updateProgress(at(100, 0).lat, at(100, 0).lon);
+    Turn t = turnNow();
+    check(t.have && t.instr == "Continue onto Oak", "mid-straight maneuver is next");
+    checkNear(t.distM, 500.0f, 20.0f, "distance to the mid-straight maneuver");
+
+    routes::updateProgress(at(595, 0).lat, at(595, 0).lon);
+    t = turnNow();
+    check(t.have && t.instr == "Continue onto Oak", "still it, right up to the spot");
+    checkNear(t.distM, 5.0f, 15.0f, "counts down to zero at the right place");
+
+    routes::updateProgress(at(1150, 0).lat, at(1150, 0).lon);
+    t = turnNow();
+    check(t.have && t.instr == "Left onto Elm", "handed over to the next turn");
+    checkNear(t.distM, 50.0f, 20.0f, "distance to the corner");
+}
+
+// THE "wrong turn at the intersection" bug: the cursor consumed a maneuver as
+// soon as the projected position passed it by 5 m. Near a corner a noisy fix
+// projects onto the leg AFTER the turn, so the turn was eaten while the rider
+// was still short of it — and since the cursor only moves forward, the banner
+// showed the NEXT turn for the whole junction.
+void testNoiseNearACornerDoesNotSkipTheTurn() {
+    begin("GPS noise at a corner: the turn is not consumed early");
+    std::vector<Pt> corners = {at(0, 0), at(300, 0), at(300, 300), at(700, 300)};
+    check(loadRoute(corners), "route loaded (corners only)");
+    routes::addManeuver(at(300, 0).lat,   at(300, 0).lon,   "Left onto A");
+    routes::addManeuver(at(300, 300).lat, at(300, 300).lon, "Right onto B");
+    routes::finishManeuvers();
+    routes::startNav();
+
+    // Approach the corner in 5 m steps with +/-9 m of noise in both axes, the
+    // sort of scatter a bike GPS produces between buildings.
+    const double nx[] = {9, -7, 6, -9, 8, -4, 9, -8, 5, -9, 7, -6};
+    int k = 0;
+    for (double e = 240; e <= 295; e += 5) {
+        double j1 = nx[k % 12], j2 = nx[(k + 5) % 12];
+        k++;
+        routes::updateProgress(at(e + j1, j2).lat, at(e + j1, j2).lon);
+        Turn t = turnNow();
+        char what[96];
+        snprintf(what, sizeof(what), "at %.0f m the turn is still 'Left onto A'", e);
+        check(t.have && t.instr == "Left onto A", what);
+    }
+
+    // Past the corner and clearly onto the next leg, it hands over.
+    routes::updateProgress(at(300, 60).lat, at(300, 60).lon);
+    Turn t = turnNow();
+    check(t.have && t.instr == "Right onto B", "next turn once genuinely past");
+    checkNear(t.distM, 240.0f, 30.0f, "distance to the second corner");
+}
+
 }  // namespace
 
 int main() {
@@ -381,6 +448,8 @@ int main() {
     testCloselySpacedTurns();
     testManeuversSlightlyOffTrack();
     testDistanceTracksPositionBetweenVertices();
+    testManeuverOnSparseStraight();
+    testNoiseNearACornerDoesNotSkipTheTurn();
 
     if (g_fail == 0) {
         printf("all route tests passed\n");

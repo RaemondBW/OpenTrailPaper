@@ -170,7 +170,7 @@ void drawBolt(int cx, int cy, uint8_t color, uint8_t* fb) {
 
 }  // namespace
 
-void statusBar(const RideState& s, uint8_t* fb) {
+void statusBar(const RideState& s, uint8_t* fb, const char* title) {
     const int W = epd_rotated_display_width();
 
     // Clock from GPS time (local), 24h or 12h per the setting.
@@ -197,24 +197,28 @@ void statusBar(const RideState& s, uint8_t* fb) {
     // "GPS" text label is dropped — the dots read as signal strength and the
     // saved width keeps "· PWR" clear of the battery %.
     if (s.phoneConnected) leftX += 15 + 14;   // phone glyph width + gap
-    int dotsW = 4 * 16;
+    // With a page title the band is clock | TITLE | battery: the GPS dots are
+    // dropped so the name has the middle to itself. They are ride status, not
+    // something a menu needs.
+    int dotsW = title ? 0 : 4 * 16;
     int x = leftX;
     int bars = s.gpsFix ? (s.satellites >= 9 ? 4 : s.satellites >= 6 ? 3
                            : s.satellites >= 4 ? 2 : 1)
                         : 0;
-    for (int i = 0; i < 4; ++i) {
-        if (i < bars) epd_fill_circle(x + i * 16, 32, 5, 0x00, fb);
-        else epd_draw_circle(x + i * 16, 32, 5, 0x00, fb);
-    }
+    if (!title)
+        for (int i = 0; i < 4; ++i) {
+            if (i < bars) epd_fill_circle(x + i * 16, 32, 5, 0x00, fb);
+            else epd_draw_circle(x + i * 16, 32, 5, 0x00, fb);
+        }
     x += dotsW;
     // The "· HR" / "· PWR" labels only appear when connected, so they need no
     // extra checkmark — keeping them text-only frees room for the battery %.
     if (s.hrConnected) {
-        text(&Arial_L, x, 40, " · HR", fb);
+        if (!title) text(&Arial_L, x, 40, " · HR", fb);
         x += textWidth(&Arial_L, " · HR");
     }
     if (s.powerConnected) {
-        text(&Arial_L, x, 40, " · PWR", fb);
+        if (!title) text(&Arial_L, x, 40, " · PWR", fb);
         x += textWidth(&Arial_L, " · PWR");
     }
 
@@ -237,6 +241,10 @@ void statusBar(const RideState& s, uint8_t* fb) {
     }
 
     epd_fill_rect({0, STATUS_H - 3, W, 3}, 0x00, fb);
+    // Centred title, drawn last. The clusters are short (clock left, battery
+    // right), so a page name fits between them.
+    if (title && title[0])
+        label(epd_rotated_display_width() / 2, 41, title, fb, INK, &Impact_S);
 }
 
 
@@ -249,7 +257,10 @@ void fillTone(const EpdRect& r, Tone t, uint8_t* fb) {
         for (int x = r.x; x < r.x + r.width; ++x) {
             bool on = false;
             switch (t) {
-                case TONE_25: on = (x % 4 == 0) && (y % 4 == 0); break;
+                // 25%: one pixel in every 2x2. This was one in every 4x4 —
+                // 6.25%, four times lighter than the name says, which is why a
+                // greyed-out cell barely read as greyed out at all.
+                case TONE_25: on = ((x & 1) == 0) && ((y & 1) == 0); break;
                 case TONE_30: on = ((x + y) % 3) == 0; break;         // 45 deg
                 case TONE_50: on = ((x >> 1) + (y >> 1)) % 2 == 0; break;
                 case TONE_33: on = (y % 3) == 0; break;               // scanline
@@ -293,7 +304,15 @@ void cell(const EpdRect& r, const char* labelStr, const char* value,
     // NO DATA: scanline tone behind the VALUE only. Running it across the whole
     // cell (as a 10%-opacity wash does on screen) buried the label here — this
     // is 1-bit, so the tone is as black as the type sitting on it.
-    const bool toneValue = stale;
+    // A field whose sensor is not connected is GREYED OUT: the system's dot tone
+    // across the whole cell, drawn first so the caption and the no-data rule sit
+    // on top of it in ink. The dot (25%, 4 px pitch) rather than the scanline —
+    // the scanline is dense enough to bury a caption at this size, and the point
+    // is to read as inactive, not as damaged.
+    if (stale)
+        fillTone({r.x + RULE, r.y + RULE, r.width - 2 * RULE, r.height - 2 * RULE},
+                 TONE_25, fb);
+    const bool toneValue = false;
 
     const int lx = r.x + CELL_PAD;
     const int ly = r.y + CELL_PAD + Arial_B.ascender + 6;
@@ -641,7 +660,11 @@ bool dashFieldAvailable(uint8_t field, const RideState& s) {
         case DF_POWER3S:
         case DF_POWER:       return s.powerConnected;
         case DF_HEART_RATE:  return s.hrConnected;
-        case DF_CADENCE:     return s.cadenceConnected || s.powerConnected;
+        // Just the flag now: cadence from a power meter's crank data sets it
+        // too. The old "or powerConnected" guessed that any meter implies
+        // cadence, which showed an empty CADENCE cell for meters that send no
+        // crank revolutions.
+        case DF_CADENCE:     return s.cadenceConnected;
         case DF_ROUTE_LEFT:  return s.routeActive;
         default:             return true;
     }
@@ -865,7 +888,12 @@ void ui_render_dashboard(const RideState& s, bool navActive,
             p.hero = (it.size == DZ_HERO && row.count == 1 && rowH >= 200);
             p.unit = "";
             dashFieldValue(p.field, s, p.value, sizeof(p.value), &p.unit);
-            p.stale = (p.value[0] == '-' && p.value[1] == '-');
+            // Grey on the SENSOR, not on the text. Keying off a "--" value meant
+            // a power meter that dropped out while its last reading lingered in
+            // the shared state kept rendering a live-looking number. The field
+            // is inactive the moment its source is gone, whatever it last said.
+            p.stale = !dashFieldAvailable(p.field, s) ||
+                      (p.value[0] == '-' && p.value[1] == '-');
         }
         y += rowH + ui::GUTTER;
     }
@@ -1092,10 +1120,6 @@ void ui_render_menu(const MenuInfo& m, uint8_t* fb) {
     char sub[64];
 
     // Header: MENU left (inset to match the rows), battery percent right
-    ui::text(&Impact_T, ui::MARGIN, 56, "MENU", fb, EPD_DRAW_ALIGN_LEFT, ui::INK);
-    char pct[8];
-    snprintf(pct, sizeof(pct), "%d%%", m.batteryPercent);
-    ui::label(W - ui::MARGIN - ui::textWidth(&Arial_L, pct) / 2, 54, pct, fb);
     epd_fill_rect({0, kMenuRowTop - ui::RULE_HEAVY, W, ui::RULE_HEAVY}, ui::INK, fb);
 
     struct Row {
@@ -1214,7 +1238,6 @@ void ui_render_list(const char* title, const ListRow* rows, int count,
     // LIST template: title in the status band, rows on the 24 px margin, one
     // 96 px BACK strip as the single exit. Rows are 148 px with a 2 px rule
     // below — the rule is chrome and is drawn once, never inside a fast region.
-    ui::text(&Impact_T, ui::MARGIN, 56, title, fb);
     epd_fill_rect({0, kMenuRowTop - ui::RULE_HEAVY, W, ui::RULE_HEAVY}, ui::INK, fb);
 
     const int textW = ui::CONTENT_W - 2 * ui::CELL_PAD - (turnArrows ? 64 : 36);
@@ -1298,7 +1321,6 @@ static void settingsToggle(int x, int y, int w, int h, bool on, uint8_t* fb,
 void ui_render_settings(const SettingsInfo& si, uint8_t* fb) {
     const int W = epd_rotated_display_width();
 
-    ui::text(&Impact_T, ui::MARGIN, 56, "SETTINGS", fb);
     epd_fill_rect({0, kMenuRowTop - ui::RULE_HEAVY, W, ui::RULE_HEAVY}, ui::INK, fb);
 
     struct Row {
@@ -1404,7 +1426,6 @@ void ui_render_settings(const SettingsInfo& si, uint8_t* fb) {
 void ui_render_gps_debug(const GpsDebugView& g, uint8_t* fb) {
     const int W = epd_rotated_display_width();
 
-    ui::text(&Impact_T, ui::MARGIN, 56, "GPS DEBUG", fb);
     epd_fill_rect({0, kMenuRowTop - ui::RULE_HEAVY, W, ui::RULE_HEAVY}, ui::INK, fb);
 
     struct Line {

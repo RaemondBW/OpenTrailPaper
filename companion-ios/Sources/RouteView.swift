@@ -10,7 +10,6 @@ struct RouteView: View {
     @ObservedObject private var store = EInkTileStore.shared
     @State private var showSaved = false
     @State private var visibleRegion: MKCoordinateRegion?
-    @State private var einkAreas: [EInkArea] = []
     /// Hexes the planned route crosses that NOTHING covers — see `coverageGaps`.
     @State private var gapHexes: [OutlineHex] = []
 
@@ -22,7 +21,14 @@ struct RouteView: View {
                 // glance whether a route you're planning is inside the coverage
                 // the device actually carries.
                 EInkMapView(
-                    areas: einkAreas,
+                    // NO e-ink areas here: this page is for finding a
+                    // destination and building a route, and plain Apple Maps
+                    // reads better for that than the device's 1-bit rendering.
+                    // It also stops the page decoding tile geometry it never
+                    // shows, which is what made it stutter while panning.
+                    // The gap hexes stay — they answer a question the rider is
+                    // actually asking here ("will I ride off my maps?").
+                    areas: [],
                     outlines: gapHexes,
                     route: model.route?.polyline,
                     destination: model.destination.map {
@@ -108,8 +114,8 @@ struct RouteView: View {
     /// hex grid over ground that is fine. Hexagons here mean one thing —
     /// coverage you do NOT have (`recomputeCoverage`).
     private func refreshEInk() {
-        guard let r = visibleRegion else { return }
-        einkAreas = store.visibleContent(in: r, synced: ble.deviceTileIds).areas
+        // Nothing to refresh: the route map draws plain Apple Maps. Kept as a
+        // no-op so the region-change plumbing stays in one shape with MapsView.
     }
 
     /// The hexes the route crosses that neither the phone nor the device holds.

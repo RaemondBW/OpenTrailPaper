@@ -45,6 +45,10 @@ struct MapsView: View {
     // sync talks in.
     @State private var inspected: (id: String, onDevice: Bool)?
     @State private var converted: Set<String> = []  // hexes downloaded + built this run
+    // Hexes the run could not produce (no OSM data returned, or nothing to
+    // encode). Tracked so the run can say what is missing instead of reporting
+    // a clean finish over a hole in the map.
+    @State private var failedHexes: Set<String> = []
     @State private var downloadTotal = 0            // hexes targeted this run
     @State private var downloadTask: Task<Void, Never>?
 
@@ -160,7 +164,10 @@ struct MapsView: View {
             // tile list arrives and flips areas to "synced". Both are also the
             // moment the coverage we want to frame becomes known.
             .onChange(of: store.version) { refreshEInk(); fitDownloadedHexes() }
-            .onChange(of: ble.deviceTileIds) { refreshEInk(); fitDownloadedHexes() }
+            // The device's tile list also arrives tile-by-tile during an upload,
+            // and each change re-derives selectionHexes and rebuilds every
+            // overlay. Coalesced for the same reason the store's version is.
+            .onChange(of: ble.deviceTileIds) { scheduleRefresh() }
             // Center on the user's first fix, once, at our fixed tile-friendly
             // span. Only before any interaction so it never yanks the map away
             // from a box the user is drawing — and only as the FALLBACK for
@@ -172,6 +179,21 @@ struct MapsView: View {
                 camera = MapCameraCommand(target: .region(MKCoordinateRegion(center: coord,
                     span: MKCoordinateSpan(latitudeDelta: 0.25, longitudeDelta: 0.25))))
             }
+        }
+    }
+
+    /// Coalesce redraws driven by the device's tile list. Without this, a large
+    /// download rebuilds the whole overlay set once per tile and the page
+    /// stutters badly by the time a few hundred hexes are on screen.
+    @State private var refreshPending = false
+    private func scheduleRefresh() {
+        guard !refreshPending else { return }
+        refreshPending = true
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            refreshPending = false
+            refreshEInk()
+            fitDownloadedHexes()
         }
     }
 
@@ -359,6 +381,7 @@ struct MapsView: View {
         guard !missing.isEmpty else { return }
         building = true
         converted = []
+        failedHexes = []
         downloadTotal = missing.count
         status = "Fetching map data…"
 
@@ -465,7 +488,20 @@ struct MapsView: View {
                            MapBuilder.isEmpty(p.data, tile: t) { continue }
                         withElev.append(p)
                     }
-                    converted.formUnion(batch.map(\.id))   // fill these hexes in live
+                    // Mark ONLY what was actually produced.
+                    //
+                    // This used to mark every id in the batch, including tiles
+                    // that encodeTiles never returned and tiles dropped as empty
+                    // just above — so the map filled them in as downloaded and
+                    // the run reported success while nothing had been sent or
+                    // stored. A rider then finds a hole in their coverage, with
+                    // no clue which hex is missing or that anything went wrong,
+                    // and it survives reboots because the tile genuinely is not
+                    // on the card.
+                    let produced = Set(withElev.map(\.id))
+                    converted.formUnion(produced)
+                    let missed = batch.map(\.id).filter { !produced.contains($0) }
+                    if !missed.isEmpty { failedHexes.formUnion(missed) }
                     if !withElev.isEmpty { anyBuilt = true }
                     // Cache BEFORE sending: if the link drops mid-transfer the
                     // expensive work survives and the retry is instant.
@@ -477,7 +513,11 @@ struct MapsView: View {
                 }
                 building = false
                 ble.finishTileStream()                     // let the queue drain
-                status = anyBuilt ? nil : "No roads found in that area."
+                if !failedHexes.isEmpty {
+                    status = "\(failedHexes.count) hex\(failedHexes.count == 1 ? "" : "es") had no map data — tap Select area and retry them."
+                } else {
+                    status = anyBuilt ? nil : "No roads found in that area."
+                }
             } catch is CancellationError {
                 building = false
                 ble.cancelTileUpload()

@@ -8,6 +8,7 @@
 
 #include <esp_bt.h>
 
+#include "ble_sensors.h"
 #include "ble_server.h"
 #include "diag.h"
 
@@ -135,7 +136,24 @@ void tick() {
     // actual connection by up to two seconds — long enough for the link to time
     // out before sleep was ever suppressed.
     bool phone = ble_server::isPhoneConnected();
-    bool usb = (millis() < USB_GRACE_MS) || (bool)Serial || phone;
+    // The SAME suppression the phone gets, for the same reason, extended to the
+    // sensor hunt.
+    //
+    // Sleep does not just cost packets on an established link — it costs
+    // DISCOVERY. Scanning only hears an advertisement if the controller is awake
+    // in its scan window, and with BT modem sleep waking on that ~5%-drift
+    // 150 kHz RC the windows land off-target, so a sensor that dropped out mid
+    // ride (a power meter that slept through a coffee stop, a strap that lost
+    // contact) advertised into a radio that was not listening and never came
+    // back. Symptom from the road, 2026-08-08: sensors would not reconnect after
+    // a break UNLESS the phone app was connected — because a connected phone is
+    // exactly what used to hold this off.
+    //
+    // Costs nothing in the steady state: radioBusy() is only true while a PAIRED
+    // sensor is missing and the device is actually looking for it. Once
+    // everything is connected the hunt stops and the CPU sleeps again.
+    bool hunting = ble_sensors::radioBusy();
+    bool usb = (millis() < USB_GRACE_MS) || (bool)Serial || phone || hunting;
 
     // Suppressing CPU light sleep is NOT enough on its own. The BT controller
     // has its own modem sleep, and with CONFIG_BT_CTRL_LPCLK_SEL_RTC_SLOW it
@@ -146,13 +164,14 @@ void tick() {
     // Stop the controller sleeping while the phone is attached; let it sleep
     // again when it goes away, since that is the state a ride spends its time in.
     static int btSleep = -1;                 // -1 unknown, 0 disabled, 1 enabled
-    int wantBtSleep = phone ? 0 : 1;
+    int wantBtSleep = (phone || hunting) ? 0 : 1;
     if (btSleep != wantBtSleep) {
         esp_err_t e = wantBtSleep ? esp_bt_sleep_enable() : esp_bt_sleep_disable();
         if (e == ESP_OK || e == ESP_ERR_INVALID_STATE) btSleep = wantBtSleep;
         if (e == ESP_OK)
-            diag::log("pm: BT modem sleep %s (phone %s)",
-                      wantBtSleep ? "on" : "OFF", phone ? "connected" : "gone");
+            diag::log("pm: BT modem sleep %s (phone %s, sensor hunt %s)",
+                      wantBtSleep ? "on" : "OFF", phone ? "connected" : "gone",
+                      hunting ? "ON" : "off");
     }
     if (usb && !s_usbHeld) {
         esp_pm_lock_acquire(s_usbLock);

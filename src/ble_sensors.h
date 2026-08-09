@@ -36,4 +36,10 @@ void pairCandidate(const char* addr);   // saves for every kind it advertises
 void forget(const char* addr);          // clear one paired address
 void forgetAll();
 
+// True while a paired-but-missing sensor is being hunted — a scan is running or
+// a connect attempt is in flight. power_mgmt keeps the radio out of sleep for
+// the duration; without that the hunt does not find anything (see the note in
+// power_mgmt.cpp).
+bool radioBusy();
+
 }

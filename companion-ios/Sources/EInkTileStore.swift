@@ -20,7 +20,26 @@ final class EInkTileStore: ObservableObject {
     static let shared = EInkTileStore()
 
     /// Bumps whenever the drawable set changes, so views re-diff their overlays.
+    ///
+    /// COALESCED — see bump(). A downloading run finishes tiles continuously and
+    /// each one used to publish immediately, so the map rebuilt every overlay it
+    /// had, several times a second. With a few hundred hexes on screen that is
+    /// O(n) MapKit teardown per tile and the page visibly stutters.
     @Published private(set) var version = 0
+
+    private var bumpPending = false
+
+    /// Publish at most ~4x/sec. Tiles land far faster than that and no rider can
+    /// see the difference, but MapKit certainly can.
+    private func bump() {
+        guard !bumpPending else { return }
+        bumpPending = true
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            bumpPending = false
+            version &+= 1
+        }
+    }
 
     /// Areas we hold data for on disk.
     private(set) var ids: Set<String> = []
@@ -43,7 +62,7 @@ final class EInkTileStore: ObservableObject {
             ids = disk
             // Drop geometry for areas that vanished (cache cleared).
             for gone in loaded.keys where !disk.contains(gone) { evict(gone) }
-            version += 1
+            bump()
         }
     }
 
@@ -104,7 +123,12 @@ final class EInkTileStore: ObservableObject {
         return (areas, outlines)
     }
 
-    private let previewLimit = 80
+    // Fewer tiles drawn in full at once. Each one decodes off-main and then
+    // publishes, and at 80 a large download kept a continuous stream of decodes
+    // and overlay rebuilds running — which is what the Maps page stutter was.
+    // Beyond ~24 hexes on screen the ink is too small to read anyway; the rest
+    // outline, which costs nothing to draw.
+    private let previewLimit = 24
 
     /// H3 id -> hexagon, memoised. Every id is a fixed cell on the globe, so
     /// this never needs invalidating.
@@ -140,7 +164,7 @@ final class EInkTileStore: ObservableObject {
         // Re-decode rather than trusting a stale in-memory copy: a rebuilt area
         // can legitimately differ from the one we already drew.
         for id in newIds { evict(id) }
-        version += 1
+        bump()
     }
 
     private func finishLoad(_ id: String, _ tile: EBM.Tile?) {
@@ -149,14 +173,14 @@ final class EInkTileStore: ObservableObject {
             // Undecodable (truncated write, format drift): forget it so we
             // don't retry every pan, and so it draws as plain Apple Maps.
             ids.remove(id)
-            version += 1
+            bump()
             return
         }
         loaded[id] = tile
         heldPoints += tile.pointCount
         touch(id)
         trim()
-        version += 1
+        bump()
     }
 
     private func touch(_ id: String) {

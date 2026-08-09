@@ -1513,16 +1513,25 @@ void task(void*) {
                 bootPoll = millis();
                 if (digitalRead(BOARD_BOOT_BTN) == LOW) {
                     if (bootLow < 200) bootLow++;
-                    if (bootLow == 2) {            // debounced press start
+                    if (bootLow == 1) {            // press start
                         bootDownAt = millis();
                         bootLong = false;
-                    } else if (bootLow > 2 && !bootLong && !powerOverlay &&
+                    } else if (bootLow > 1 && !bootLong && !powerOverlay &&
                                millis() - bootDownAt > 1500) {
                         bootLong = true;
                         powerOverlay = true;       // hold -> power dialog
                     }
                 } else {
-                    if (bootLow >= 2 && !bootLong) { noteActivity(); toggleRide(); }
+                    // ONE confirmed LOW read is enough to count as a press.
+                    //
+                    // It used to need two consecutive lows, and the second poll
+                    // only happens on the next pass of this loop — which can be
+                    // several hundred ms away while a map frame is projected and
+                    // painted. Release before then and the press was discarded
+                    // silently, which is why a quick tap sometimes did nothing.
+                    // The edge interrupt that woke us is already independent
+                    // evidence, so a single debounced read is not noise.
+                    if (bootLow >= 1 && !bootLong) { noteActivity(); toggleRide(); }
                     bootLow = 0;
                 }
             }
@@ -1534,7 +1543,7 @@ void task(void*) {
                 if (board_side_button_pressed()) {
                     if (sideLow < 200) sideLow++;
                 } else {
-                    if (sideLow >= 2) { noteActivity(); cycleBacklight(); }
+                    if (sideLow >= 1) { noteActivity(); cycleBacklight(); }  // see above
                     sideLow = 0;
                 }
             }
@@ -1621,6 +1630,19 @@ void task(void*) {
             // Route progress for the ROUTE LEFT dashboard field. Mirrored onto
             // the snapshot rather than read inside the renderer, which is
             // host-compiled for the previews and has no routes module.
+            // A sensor counts as connected only while its data is fresh. The
+            // BLE link flag alone said "connected" for a power meter that had
+            // stopped transmitting, so the field neither hid nor greyed and the
+            // rider saw a live-looking number from a sensor that was gone.
+            // Generous window: power meters are quiet when you stop pedalling.
+            constexpr uint32_t kSensorStaleMs = 15000;
+            const uint32_t nowMs = millis();
+            if (s.powerConnected && nowMs - s.powerMs > kSensorStaleMs)
+                s.powerConnected = false;
+            if (s.hrConnected && nowMs - s.hrMs > kSensorStaleMs)
+                s.hrConnected = false;
+            if (s.cadenceConnected && nowMs - s.cadenceMs > kSensorStaleMs)
+                s.cadenceConnected = false;
             s.showOffline = settings::showOffline();
             s.routeActive = routes::active();
             s.routeRemainingKm = routes::remainingKm();
@@ -1682,6 +1704,7 @@ void task(void*) {
                                  "no route loaded");
                     }
                     ui_render_menu(m, fb);
+                    ui::statusBar(s, fb, "MENU");
                     break;
                 }
                 case SCREEN_SENSORS:
@@ -1689,6 +1712,11 @@ void task(void*) {
                 case SCREEN_HISTORY:
                 case SCREEN_DIRECTIONS:
                     renderListScreen(fb);
+                    ui::statusBar(s, fb,
+                                  screen == SCREEN_SENSORS    ? "SENSORS"
+                                  : screen == SCREEN_ROUTES   ? "NAVIGATE"
+                                  : screen == SCREEN_HISTORY  ? "RIDES"
+                                                              : "DIRECTIONS");
                     break;
                 case SCREEN_SETTINGS: {
                     SettingsInfo si{settings::showOffline(),
@@ -1696,6 +1724,7 @@ void task(void*) {
                                     settings::backlight(), settings::useMiles(),
                                     settings::usbDrive()};
                     ui_render_settings(si, fb);
+                    ui::statusBar(s, fb, "SETTINGS");
                     break;
                 }
                 case SCREEN_GPSDEBUG: {
@@ -1723,6 +1752,7 @@ void task(void*) {
                     v.second = d.second;
                     v.useMiles = settings::useMiles();
                     ui_render_gps_debug(v, fb);
+                    ui::statusBar(s, fb, "GPS DEBUG");
                     break;
                 }
             }

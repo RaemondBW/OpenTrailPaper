@@ -73,6 +73,7 @@ void onHrNotify(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool) {
     uint16_t hr = (flags & 0x01) ? (uint16_t)(data[1] | (data[2] << 8)) : data[1];
     g_state.with([&](RideState& s) {
         s.heartRateBpm = hr > 254 ? 254 : (uint8_t)hr;
+        s.hrMs = millis();
     });
 }
 
@@ -127,10 +128,23 @@ void onPowerNotify(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool)
     if (flags & 0x0004) off += 2;   // accumulated torque
     if (flags & 0x0010) off += 6;   // wheel revolution data (u32 + u16)
     uint8_t cad = 0xFF;
-    if ((flags & 0x0020) && len >= off + 4) {  // crank revolution data
+    // The crank-data FLAG is what makes this meter a cadence source — not
+    // whether a number can be derived right now. A stationary crank sends
+    // revs=0 and time=0 forever (observed: "20 00 00 00 00 00 00 00"), so
+    // cadenceFromCrank correctly returns nothing and the sensor was never
+    // marked connected until the rider happened to be pedalling.
+    const bool hasCrank = (flags & 0x0020) && len >= off + 4;
+    static uint16_t lastRevs = 0;
+    static bool haveLastRevs = false;
+    bool crankStopped = false;
+    if (hasCrank) {
         uint16_t revs = data[off] | (data[off + 1] << 8);
         uint16_t t = data[off + 2] | (data[off + 3] << 8);
         cad = cadenceFromCrank(crankFromPower, revs, t);
+        // Not turning: report a real zero rather than holding the last value.
+        crankStopped = haveLastRevs && revs == lastRevs;
+        lastRevs = revs;
+        haveLastRevs = true;
     }
 
     uint16_t w = watts < 0 ? 0 : (uint16_t)watts;
@@ -139,7 +153,18 @@ void onPowerNotify(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool)
     g_state.with([&](RideState& s) {
         s.powerW = w;
         s.power3sW = w3s;
-        if (cad != 0xFF) s.cadenceRpm = cad;
+        s.powerMs = millis();
+        // A power meter with crank data IS a cadence sensor. Marking it
+        // connected here is what makes the rest of the device agree: the
+        // dashboard field, the menu's sensor line and the status bar all read
+        // cadenceConnected, so without this a meter supplying cadence still
+        // reported "Cadence --" and the field never counted as live.
+        if (hasCrank) {
+            s.cadenceConnected = true;
+            s.cadenceMs = millis();
+            if (cad != 0xFF) s.cadenceRpm = cad;
+            else if (crankStopped) s.cadenceRpm = 0;
+        }
     });
 }
 
@@ -153,7 +178,11 @@ void onCscNotify(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool) {
         uint16_t t = data[off + 2] | (data[off + 3] << 8);
         uint8_t cad = cadenceFromCrank(crankFromCsc, revs, t);
         if (cad != 0xFF) {
-            g_state.with([&](RideState& s) { s.cadenceRpm = cad; });
+            g_state.with([&](RideState& s) {
+                s.cadenceRpm = cad;
+                s.cadenceMs = millis();
+                s.cadenceConnected = true;   // any CSC device is a cadence source
+            });
         }
     }
 }
@@ -165,6 +194,9 @@ int candidateCount = 0;
 SemaphoreHandle_t candMutex = nullptr;
 bool scanAlways = false;
 uint32_t lastActivityMs = 0;
+// Set by the task whenever it is hunting for a paired sensor that isn't
+// connected. Read by power_mgmt at 1 Hz — see radioBusy() in the header.
+volatile bool huntingRadio = false;
 
 void noteCandidate(const NimBLEAdvertisedDevice* dev, uint8_t kindsMask) {
     xSemaphoreTake(candMutex, portMAX_DELAY);
@@ -249,8 +281,12 @@ class ClientCallbacks : public NimBLEClientCallbacks {
 public:
     explicit ClientCallbacks(SensorKind kind) : kind_(kind) {}
     void onDisconnect(NimBLEClient*, int reason) override {
-        Serial.printf("[ble] %s disconnected (reason %d)\n",
-                      sensors[kind_].name, reason);
+        // diag::log, not Serial: a drop happens mid-ride with no console
+        // attached, and the SD log is the only place it can be read afterwards.
+        // reason 520 (0x208) is an HCI supervision timeout — the sensor stopped
+        // answering (asleep, out of range) rather than closing the link.
+        diag::log("%s sensor disconnected (reason %d)", sensors[kind_].name,
+                  reason);
         sensors[kind_].connected = false;
         sensors[kind_].found = false;  // rediscover on next scan
         markDisconnected(kind_);
@@ -371,9 +407,34 @@ void task(void*) {
         bool wantScan = !allConnected &&
                         (scanAlways || ride_recorder::isRecording() ||
                          millis() - lastActivityMs < 30000);
-        if (wantScan && !scan->isScanning()) {
+
+        // A sensor that is actually coming back — the meter waking on the first
+        // pedal stroke, a strap re-wetting — starts advertising within seconds,
+        // so the first minute of a hunt looks continuously. After that the
+        // missing sensor probably isn't coming back this ride (left at home,
+        // flat cell) and holding the radio awake for hours would cost the ~25%
+        // that light sleep saves, so drop to a 5 s look every 10 s: still
+        // reconnects within about ten seconds of the sensor reappearing.
+        static uint32_t huntStartMs = 0;
+        if (!wantScan) huntStartMs = 0;
+        else if (!huntStartMs) huntStartMs = millis();
+        uint32_t hunted = huntStartMs ? millis() - huntStartMs : 0;
+        // scanAlways means the user is sitting on a Sensors screen watching the
+        // list fill in — never duty-cycle that.
+        bool lookNow = wantScan &&
+                       (scanAlways || hunted < 60000 || (hunted / 5000) % 2 == 0);
+
+        bool pendingConnect = false;
+        for (int k = 0; k < KIND_COUNT; ++k)
+            if (sensors[k].found && !sensors[k].connected) pendingConnect = true;
+
+        // Keep the radio awake for the whole hunt — the scan AND the connect
+        // attempts that follow it. Both need the controller listening on time.
+        huntingRadio = lookNow || pendingConnect;
+
+        if (lookNow && !scan->isScanning()) {
             scan->start(5000, false, true);
-        } else if (!wantScan && scan->isScanning()) {
+        } else if (!lookNow && scan->isScanning()) {
             scan->stop();
         }
 
@@ -400,6 +461,7 @@ void task(void*) {
 
 void setScanAlways(bool on) { scanAlways = on; }
 void noteActivity() { lastActivityMs = millis(); }
+bool radioBusy() { return huntingRadio; }
 
 // The "Manufacturer Model" read from a connected sensor's Device Info Service,
 // or nullptr if that address isn't a connected sensor / had no DIS.

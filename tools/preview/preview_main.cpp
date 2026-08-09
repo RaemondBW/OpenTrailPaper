@@ -432,6 +432,7 @@ int main(int argc, char** argv) {
     snprintf(menu.routeLine, sizeof(menu.routeLine), "coastal.gpx · 26.4 km left");
     clearWhite(fb.data());
     ui_render_menu(menu, fb.data());
+    ui::statusBar(s, fb.data(), "MENU");
     emit("menu.png");
 
     // Sensors list
@@ -472,6 +473,7 @@ int main(int argc, char** argv) {
     SettingsInfo si{true, 250, -420, 2, false, true};
     clearWhite(fb.data());
     ui_render_settings(si, fb.data());
+    ui::statusBar(s, fb.data(), "SETTINGS");
     emit("settings.png");
 
     // GPS debug: the "sees satellites but no fix" case
@@ -490,6 +492,7 @@ int main(int argc, char** argv) {
     g.second = 12;
     clearWhite(fb.data());
     ui_render_gps_debug(g, fb.data());
+    ui::statusBar(s, fb.data(), "GPS DEBUG");
     emit("gpsdebug.png");
 
     // Directions list: every row leads with a drawn maneuver arrow.
@@ -505,6 +508,7 @@ int main(int argc, char** argv) {
         snprintf(dirs[3].subtitle, sizeof(dirs[3].subtitle), "in 80 m");
         clearWhite(fb.data());
         ui_render_list("DIRECTIONS", dirs, 4, "4 turns", fb.data(), true);
+        ui::statusBar(s, fb.data(), "DIRECTIONS");
         emit("directions.png");
     }
 

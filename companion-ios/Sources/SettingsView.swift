@@ -3,6 +3,7 @@ import SwiftUI
 // Edit device settings (FTP, timezone) and push them over BLE.
 struct SettingsView: View {
     @EnvironmentObject var ble: BLEManager
+    @ObservedObject private var release = FirmwareRelease.shared
     @EnvironmentObject var appState: AppState
     @AppStorage(UnitPref.key) private var useMiles = false
     @State private var confirmUpdate = false
@@ -376,8 +377,19 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Device: \(ble.deviceFirmware.isEmpty ? "…" : ble.deviceFirmware)")
                             .font(TypeScale.body).foregroundStyle(Palette.ink)
-                        Text("App bundle: \(BLEManager.bundledFirmwareVersion)")
-                            .font(.system(size: 12)).foregroundStyle(Palette.muted)
+                        // Latest comes from GitHub now, so it can be ahead of
+                        // the installed app — shipping firmware no longer means
+                        // shipping an app build.
+                        if let r = release.latest {
+                            Text("Latest: \(r.tag)")
+                                .font(.system(size: 12)).foregroundStyle(Palette.muted)
+                        } else if release.checking {
+                            Text("Checking GitHub…")
+                                .font(.system(size: 12)).foregroundStyle(Palette.muted)
+                        } else {
+                            Text(release.error ?? "Latest: unknown")
+                                .font(.system(size: 12)).foregroundStyle(Palette.muted)
+                        }
                     }
                     Spacer()
                     if ble.updateAvailable {
@@ -407,21 +419,31 @@ struct SettingsView: View {
                         Text(ble.otaMessage ?? "Up to date").font(.system(size: 12))
                             .foregroundStyle(Palette.good)
                     }
-                } else if ble.updateAvailable {
-                    PrimaryButton(title: "Install \(BLEManager.bundledFirmwareVersion)",
+                } else if let p = release.downloadProgress {
+                    ProgressView(value: p) {
+                        Text("Downloading firmware…").font(.system(size: 12))
+                            .foregroundStyle(Palette.muted)
+                    }
+                } else if ble.updateAvailable, let r = release.latest {
+                    PrimaryButton(title: "Install \(r.tag)",
                                   systemImage: "arrow.down.circle",
                                   enabled: true) { confirmUpdate = true }
-                } else if !ble.deviceFirmware.isEmpty {
+                } else if !ble.deviceFirmware.isEmpty && release.latest != nil {
                     Text("Up to date.").font(.system(size: 12)).foregroundStyle(Palette.muted)
+                } else if release.latest == nil && !release.checking {
+                    Button("Check for updates") { Task { await release.check() } }
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Palette.accent)
                 }
             }
         }
-        .alert("Install firmware \(BLEManager.bundledFirmwareVersion)?",
+        .task { await release.check() }
+        .alert("Install firmware \(release.latest?.tag ?? "")?",
                isPresented: $confirmUpdate) {
             Button("Cancel", role: .cancel) {}
             Button("Install") { ble.startFirmwareUpdate() }
         } message: {
-            Text("This sends the new firmware to your OpenTrailPaper and restarts it. It takes a few minutes — keep the app open and the device close. If anything goes wrong, the device keeps running its current firmware.")
+            Text("The app downloads this release from GitHub, sends it to your OpenTrailPaper and restarts it. It takes a few minutes — keep the app open and the device close. If anything goes wrong, the device keeps running its current firmware.")
         }
     }
 
