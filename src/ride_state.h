@@ -33,6 +33,13 @@ struct RideState {
     double   phoneLon = 0.0;
     float    phoneAltM = 0.0f;
     uint32_t phoneFixMs = 0;
+    // Horizontal accuracy the phone reported, in metres (0 = it didn't say).
+    // The recorder will only put a phone position in the ride file if this is
+    // good enough, so a cell-tower-grade fix cannot quietly become track data.
+    float    phoneAccM = 0.0f;
+    // The phone's own clock at that fix. Better than ours for stamping a
+    // record: with no GPS lock our time comes from the RTC, which drifts.
+    time_t   phoneUtc = 0;
 
     // Terrain elevation at the current position, from the DEM baked into the
     // map tiles (set by the UI task). Used for ascent/grade instead of the

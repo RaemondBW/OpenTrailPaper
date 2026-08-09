@@ -224,7 +224,15 @@ void FitWriter::writeRecord(const Record& r) {
                         ? 0xFFFF
                         : (uint16_t)lround((r.altitudeM + 500.0f) * 5.0f));
     put32(&buf[15], (uint32_t)llround(r.distanceM * 100.0));
-    put16(&buf[19], (uint16_t)lround(r.speedMs * 1000.0f));
+    // Speed gets the same invalid marker as altitude, and for a stronger reason:
+    // lround(NAN) is undefined, so a point whose speed is genuinely unknown —
+    // the first position after the receiver loses its fix and the phone takes
+    // over — would otherwise encode as whatever the conversion happened to
+    // produce. 0xFFFF is skipped by readers; 0 would be a claim that the rider
+    // had stopped.
+    put16(&buf[19], isnan(r.speedMs)
+                        ? 0xFFFF
+                        : (uint16_t)lround(r.speedMs * 1000.0f));
     put16(&buf[21], r.powerW);
     buf[23] = r.heartRate;
     buf[24] = r.cadence;
