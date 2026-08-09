@@ -1782,8 +1782,25 @@ void task(void*) {
                                      (prevNav && !navPrompt);
             bool mapTransition = screen == SCREEN_MAP &&
                                  (prevScreen != SCREEN_MAP || modalClosed);
+
+            // A greyed-out dashboard cell earns the same scrub, for the same
+            // reason: the tone is a 25% dot, and whatever was on the glass
+            // under it only half-erases in one pulse. The driver has already
+            // recorded those pixels as white, so nothing later will touch them
+            // and the cell reads as dirty rather than inactive.
+            //
+            // Fires when arriving on the data page with cells already toned,
+            // and when one greys out IN PLACE — a sensor dropping mid-ride does
+            // not change `screen`, so entry alone would miss it.
+            static bool prevToned = false;
+            const bool toned = screen == SCREEN_DASH && !powerOverlay &&
+                               ui_render_dashboard_toned();
+            const bool tonedTransition =
+                toned && (prevScreen != SCREEN_DASH || modalClosed || !prevToned);
+            prevToned = toned;
+
             refresh(screenChanged, fastInPage, listFast, wantClean,
-                    navPromptAppearing, mapTransition);
+                    navPromptAppearing, mapTransition || tonedTransition);
         }
 
         // The epdiy path managed panel rails by hand here — poweron before an
