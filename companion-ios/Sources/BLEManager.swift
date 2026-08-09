@@ -334,8 +334,20 @@ final class BLEManager: NSObject, ObservableObject {
         // drain or blue bar while idle. See updateBackgroundLocationMode().
         locationManager.allowsBackgroundLocationUpdates = status.recording
         locationManager.pausesLocationUpdatesAutomatically = !status.recording
+        applyAidingAccuracy()
         locationManager.startUpdatingLocation()
         locationManager.requestLocation()   // nudge an immediate first fix
+    }
+
+    /// Seeding the receiver needs a rough position; being the RECORDED position
+    /// while the head unit has no fix needs a real one. The device throws away
+    /// any phone fix it is told is worse than 50 m, which is most of what
+    /// `kCLLocationAccuracyHundredMeters` produces, so a recording ride asks for
+    /// the good one. Only while recording: full accuracy in the background is
+    /// what actually costs the phone's battery.
+    private func applyAidingAccuracy() {
+        locationManager.desiredAccuracy = status.recording
+            ? kCLLocationAccuracyBest : kCLLocationAccuracyHundredMeters
     }
 
     // Tie background location to the ride state: only a recording ride warrants
@@ -344,6 +356,7 @@ final class BLEManager: NSObject, ObservableObject {
         guard wantsAiding else { return }
         locationManager.allowsBackgroundLocationUpdates = status.recording
         locationManager.pausesLocationUpdatesAutomatically = !status.recording
+        applyAidingAccuracy()
     }
 
     func stopLocationStream() {
@@ -354,8 +367,12 @@ final class BLEManager: NSObject, ObservableObject {
 
     private func transmitAiding(_ loc: CLLocation) {
         guard let c = routeChar, let p = peripheral else { return }
-        // Throttle to ~3 s so we don't flood BLE with position updates.
-        if let last = lastAidingSent, Date().timeIntervalSince(last) < 3 { return }
+        // Throttle so we don't flood BLE with position updates. 3 s is plenty to
+        // keep the receiver seeded, but while a ride is recording these fixes are
+        // the head unit's fallback TRACK whenever its own receiver has nothing —
+        // and a track sampled every 3 s cuts corners. 1 s while recording.
+        let minGap: TimeInterval = status.recording ? 1 : 3
+        if let last = lastAidingSent, Date().timeIntervalSince(last) < minGap { return }
         var payload = Data([0x08])
         payload.appendLE(Int32((loc.coordinate.latitude * 1e7).rounded()))
         payload.appendLE(Int32((loc.coordinate.longitude * 1e7).rounded()))

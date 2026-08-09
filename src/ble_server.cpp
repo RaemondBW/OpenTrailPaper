@@ -228,6 +228,11 @@ class RouteCb : public NimBLECharacteristicCallbacks {
             int16_t altM = 0;
             bool haveAlt = false;
             if (plen >= 14) { memcpy(&altM, payload + 12, 2); haveAlt = true; }
+            // The app has always sent its horizontal accuracy here; we used to
+            // stop parsing before it. The recorder needs it to decide whether a
+            // phone position is good enough to go in the ride file.
+            int16_t accM = 0;
+            if (plen >= 16) memcpy(&accM, payload + 14, 2);
             double lat = latE7 / 1e7, lon = lonE7 / 1e7;
             // Warm-start the receiver (throttled + no-fix-only inside the task).
             gps_service::seedPosition(lat, lon, (time_t)utc, haveTime, 5000.0f);
@@ -238,6 +243,8 @@ class RouteCb : public NimBLECharacteristicCallbacks {
                 st.phoneLat = lat;
                 st.phoneLon = lon;
                 if (haveAlt) st.phoneAltM = (float)altM;
+                st.phoneAccM = accM > 0 ? (float)accM : 0.0f;
+                st.phoneUtc = haveTime ? (time_t)utc : 0;
                 st.phoneFixValid = true;
                 st.phoneFixMs = nowMs;
             });

@@ -29,6 +29,13 @@ bool loggedFileLost = false;   // so a lost handle logs once, not once a second
 
 double lastLat = 0, lastLon = 0;
 bool havePrevFix = false;
+// millis() of the last position written. The phone path needs the real gap
+// between points to derive speed; the device path is a steady 1 Hz.
+uint32_t lastFixMs = 0;
+// The phone fix already written, so a position that arrives every ~1 s is not
+// re-stamped on every 1 s tick, and which source the log last reported.
+uint32_t lastPhoneFixMs = 0;
+bool phoneSourceLogged = false;
 double distanceM = 0;
 uint32_t timerS = 0;
 uint32_t lastFlushS = 0;
@@ -161,6 +168,9 @@ void resetStats() {
     movingS = 0;
     lastFlushS = 0;
     havePrevFix = false;
+    lastFixMs = 0;
+    lastPhoneFixMs = 0;
+    phoneSourceLogged = false;
     powerSum = powerCount = 0;
     hrSum = hrCount = 0;
     climbedM = 0;
@@ -556,22 +566,84 @@ void task(void*) {
         timerS++;
         accumulateStats(s);
 
+        // Position for this record. The device's own receiver first; the phone's
+        // location only while we have no fix of our own.
+        //
+        // The phone is a fallback, not a peer, and it is gated hard: its fix has
+        // to be recent, it has to have told us an accuracy good enough to be
+        // track data (a cell/wifi fix is hundreds of metres and would draw a
+        // ride through the middle of blocks), and each one is written ONCE. The
+        // app only sends every ~3 s, so writing the same coordinates on every 1 s
+        // tick would stamp a stationary rider into the file three times over and
+        // then jump.
+        //
+        // Without this the file simply had a hole: no fix meant no record and no
+        // distance, so the opening minutes of a ride — exactly when the receiver
+        // is coldest and the phone is right there in a pocket — went unrecorded.
+        constexpr uint32_t kPhoneFixMaxAgeMs = 10000;
+        constexpr float kPhoneFixMaxAccM = 50.0f;
+
+        const bool phoneUsable = s.phoneFixValid &&
+                                 millis() - s.phoneFixMs < kPhoneFixMaxAgeMs &&
+                                 s.phoneAccM > 0 && s.phoneAccM <= kPhoneFixMaxAccM;
+        // Which source the ride is running on — NOT whether this particular tick
+        // writes a point. Between the phone's ~1 s updates there is nothing new
+        // to write, and logging off that would flap the source line every tick.
+        const bool phoneMode = !s.gpsFix && phoneUsable;
+        const bool usePhone = phoneMode && s.phoneFixMs != lastPhoneFixMs;
+
+        if (phoneMode != phoneSourceLogged) {
+            phoneSourceLogged = phoneMode;
+            diag::log("rec: position source -> %s", phoneMode
+                          ? "PHONE (own receiver has no fix)" : "device GPS");
+        }
+
         float grade = NAN;
-        if (s.gpsFix) {
+        if (s.gpsFix || usePhone) {
+            const double lat = s.gpsFix ? s.latitude : s.phoneLat;
+            const double lon = s.gpsFix ? s.longitude : s.phoneLon;
+            // Seconds since the last recorded point. The phone path needs the
+            // real gap: its updates are ~1 s while recording but 3 s otherwise,
+            // and iOS can deliver later still, so assuming the tick interval
+            // would put both the speed and the jitter window out.
+            const uint32_t nowMs = millis();
+            const float dtSec = havePrevFix && lastFixMs
+                                    ? (nowMs - lastFixMs) / 1000.0f
+                                    : (RECORD_INTERVAL_MS / 1000.0f);
+            float phoneSpeedMs = NAN;
+
             if (havePrevFix) {
-                double d = haversineM(lastLat, lastLon, s.latitude, s.longitude);
-                // Reject jitter when stationary and jumps from bad fixes.
-                if (d > 0.5 && d < 100.0) distanceM += d;
+                double d = haversineM(lastLat, lastLon, lat, lon);
+                if (s.gpsFix) {
+                    // Reject jitter when stationary and jumps from bad fixes.
+                    if (d > 0.5 && d < 100.0) distanceM += d;
+                } else if (d < 0.5) {
+                    // Below the jitter floor: the rider is stopped. Say zero —
+                    // leaving it unknown would let a reader interpolate a speed
+                    // across the stop.
+                    phoneSpeedMs = 0.0f;
+                } else if (d < 40.0 * dtSec) {
+                    // Same jitter idea as the device path, scaled to the real
+                    // gap: 40 m/s is 144 km/h, so anything past it is a fix
+                    // jumping, not a rider. No distance and no speed claim.
+                    distanceM += d;
+                    if (dtSec > 0.1f) phoneSpeedMs = (float)(d / dtSec);
+                }
             }
-            lastLat = s.latitude;
-            lastLon = s.longitude;
+            lastLat = lat;
+            lastLon = lon;
+            lastFixMs = nowMs;
             havePrevFix = true;
+            if (usePhone) lastPhoneFixMs = s.phoneFixMs;
             if (s.mapElevationValid) grade = updateGrade(s.mapElevationM);
 
             FitWriter::Record r;
-            r.utc = s.utc;
-            r.latitudeDeg = s.latitude;
-            r.longitudeDeg = s.longitude;
+            // With no lock of our own, s.utc is whatever the last fix left
+            // behind. The phone sent its own clock with the position; prefer it.
+            r.utc = s.gpsFix ? s.utc
+                             : (s.phoneUtc ? s.phoneUtc : (uint32_t)time(nullptr));
+            r.latitudeDeg = lat;
+            r.longitudeDeg = lon;
             // Record the map DEM elevation so the ride profile is accurate.
             // The raw GPS altitude is deliberately NOT used as a fallback: it's
             // far too noisy (the summary's ascent ignores it for the same
@@ -579,7 +651,11 @@ void task(void*) {
             // makes phone-side ascent totals disagree with the device. Mark the
             // point's altitude invalid instead when the DEM has no value.
             r.altitudeM = s.mapElevationValid ? s.mapElevationM : NAN;
-            r.speedMs = s.speedKmh / 3.6f;
+            // s.speedKmh comes from the receiver, so on the phone path it is
+            // whatever the last device fix left behind — stale, and usually the
+            // speed the rider was doing before the signal went. Derive it from
+            // the ground actually covered instead.
+            r.speedMs = s.gpsFix ? s.speedKmh / 3.6f : phoneSpeedMs;
             r.distanceM = distanceM;
             r.powerW = s.powerW;
             r.heartRate = s.heartRateBpm;
