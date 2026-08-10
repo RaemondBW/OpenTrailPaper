@@ -10,13 +10,18 @@
 //   - menu rows: top 96, height 148 (row centres ~18%, ~33%, ~48.5%, ~64%, ~79%)
 //   - ride-summary buttons sit at y 830..960 (~93%)
 //   - the nav prompt's START button sits at ~79%
-// negative x taps point just off the left edge, at the physical side button.
+// Coordinates outside 0–100% point at the hardware: negative x is the side
+// button on the left edge, and y ≈ 109% is the Home key below the glass.
 const steps = [
   {
-    from: "dashboard", to: "map", tap: [50, 55],
+    // Tapping the dashboard used to flip to the map; that gesture is gone —
+    // "the flip now has deliberate targets — that strip, and the Home key"
+    // (ui_dashboard.cpp). Teaching the old gesture left a first-time rider
+    // prodding a screen that does nothing.
+    from: "dashboard", to: "map", tap: [50, 109],
     title: "The dashboard",
-    text: "Power, heart rate, speed, distance and ride time — big enough to read mid-pedal. Tap the screen to switch to the map.",
-    hint: "Tap the screen",
+    text: "Power, heart rate, speed, distance and ride time — big enough to read mid-pedal. Press the Home button below the screen to toggle between the dashboard and the map.",
+    hint: "Press the Home button",
   },
   {
     from: "map", to: "menu", tap: [50, 3.5],
@@ -63,6 +68,22 @@ function init() {
   const stepsEl = $("emu-steps"), dotsEl = $("emu-dots"), root = $("emu");
   let i = 0, advanceTimer = null, tapTimer = null, resultTimer = null;
 
+  // The dashboard step gets the live panel rather than its screenshot: it is
+  // the one screen in the tour whose whole point is that the numbers are
+  // moving, and "the dashboard" illustrated by a frozen 247 W argues against
+  // itself. Every other screen stays a real capture from the firmware.
+  const panel = $("emu-panel");
+  const live = panel && window.OTPPanel ? window.OTPPanel.live(panel) : null;
+  if (panel && !live) panel.hidden = true;
+
+  function show(name) {
+    img.src = "img/" + name + ".png";
+    if (!live) return;
+    const isDash = name === "dashboard";
+    panel.hidden = !isDash;
+    if (isDash) live.paint();
+  }
+
   // Build the always-visible step list (an accordion; the active row expands).
   steps.forEach((s, k) => {
     const li = document.createElement("li");
@@ -107,7 +128,7 @@ function init() {
   function select(k, manual) {
     i = (k + steps.length) % steps.length;
     const s = steps[i];
-    img.src = "img/" + s.from + ".png";
+    show(s.from);
     glow.classList.remove("on");
     items.forEach((li, k2) => li.classList.toggle("on", k2 === i));
     dots.forEach((d, k2) => d.classList.toggle("on", k2 === i));
@@ -124,7 +145,7 @@ function init() {
       if (s.backlight) {
         glow.classList.add("on");        // the backlight comes on, screen unchanged
       } else {
-        img.src = "img/" + s.to + ".png";
+        show(s.to);
         replay(flash, "go");             // brief e-paper-style refresh flash
       }
     }, RESULT_AT);
