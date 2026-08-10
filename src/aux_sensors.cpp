@@ -239,6 +239,7 @@ bool begin() {
 
 bool haveBaro() { return baroOk; }
 bool haveCompass() { return magOk; }
+bool haveMotion() { return accOk; }
 float seaLevelPa() { return seaLevel; }
 bool seaLevelCalibrated() { return seaLevelFromDem; }
 

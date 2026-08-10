@@ -558,7 +558,25 @@ void setup() {
     ble_server::begin();   // GATT server for the iOS companion app
     // Optional Qwiic sensors. Probed AFTER the panel and the other I2C devices
     // so a chip that is not there cannot delay anything that is.
+    //
+    // Reported on the boot screen like every other subsystem. "Optional" is not
+    // a reason to stay silent — the opposite: a plugged-in board that did not
+    // answer is exactly the thing a rider needs told, and with no line at all
+    // the only way to find out was the serial console.
+    ui_dashboard::bootStep("Qwiic");
     const bool auxOk = aux_sensors::begin();
+    if (auxOk) {
+        ui_dashboard::bootDetailFor("Qwiic", "%s%s%s",
+                                    aux_sensors::haveBaro() ? "baro " : "",
+                                    aux_sensors::haveCompass() ? "compass " : "",
+                                    aux_sensors::haveMotion() ? "motion" : "");
+    } else {
+        ui_dashboard::bootDetailFor("Qwiic", "none attached");
+    }
+    // Not a failure when nothing is plugged in: the device is complete without
+    // them, and a red line for a board the rider never fitted is a bug report
+    // waiting to happen.
+    ui_dashboard::bootStatus("Qwiic", true);
 
     BOOT_STEP("ble_server done -> power_mgmt::begin()");
 

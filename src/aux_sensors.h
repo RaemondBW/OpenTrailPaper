@@ -24,6 +24,7 @@ void task(void* arg);
 
 bool haveBaro();
 bool haveCompass();
+bool haveMotion();   // accelerometer, i.e. movement detection
 
 // Sea-level reference the altimeter is currently working against, in pascals,
 // and whether it has been calibrated from a known elevation rather than left at
