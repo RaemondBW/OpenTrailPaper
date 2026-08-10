@@ -537,9 +537,18 @@ void dashFieldValue(uint8_t field, const RideState& s, char* val, size_t valCap,
             *unit = "%";
             break;
         case DF_ALTITUDE:
-            // The map DEM, never the GPS chip's altitude — see the README's
-            // "Elevation without a barometer".
-            if (s.mapElevationValid)
+            // The barometer when one is fitted, else the map DEM — and never
+            // the GPS chip's altitude, which is far too noisy (see the README's
+            // "Elevation without a barometer").
+            //
+            // These are not two rival readings: the DEM is what CALIBRATES the
+            // barometer's sea-level reference (aux_sensors), so the barometric
+            // number starts from the map's idea of the ground and then resolves
+            // the metre-by-metre change the grid cannot — a bridge, an
+            // overpass, the climb between two grid posts.
+            if (s.baroValid)
+                snprintf(val, valCap, "%.0f", units::elev(s.baroAltM, s.useMiles));
+            else if (s.mapElevationValid)
                 snprintf(val, valCap, "%.0f", units::elev(s.mapElevationM, s.useMiles));
             else snprintf(val, valCap, "--");
             *unit = units::elevLabel(s.useMiles);

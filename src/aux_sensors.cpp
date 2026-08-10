@@ -87,17 +87,37 @@ bool writeReg(uint8_t addr, uint8_t reg, uint8_t val) {
     return ok;
 }
 
+// Three goes before calling a chip absent.
+//
+// This bus is shared with a panel driver that does its own I2C on a private
+// mutex, outside i2cLock() (see board_side_button_pressed for the same fault
+// biting a button read). A collision during a single probe would brand a
+// perfectly good sensor "not found" for the whole session, and boot is exactly
+// when the panel is busiest. A retry costs a few hundred microseconds.
 bool probe(uint8_t addr, uint8_t whoReg, uint8_t expect) {
-    uint8_t v = 0;
-    return readRegs(addr, whoReg, &v, 1) && v == expect;
+    for (int i = 0; i < 3; ++i) {
+        uint8_t v = 0;
+        if (readRegs(addr, whoReg, &v, 1) && v == expect) return true;
+        delay(2);
+    }
+    return false;
 }
 
 // --- BME280 ---------------------------------------------------------------
 
 bool baroBegin(uint8_t addr) {
+    // Same retry as probe(): one unlucky read must not cost the barometer.
     uint8_t id = 0;
-    if (!readRegs(addr, BME280_REG_ID, &id, 1)) return false;
-    if (id != BME280_CHIP_ID && id != BMP280_CHIP_ID) return false;
+    bool got = false;
+    for (int i = 0; i < 3 && !got; ++i) {
+        if (readRegs(addr, BME280_REG_ID, &id, 1) &&
+            (id == BME280_CHIP_ID || id == BMP280_CHIP_ID)) {
+            got = true;
+        } else {
+            delay(2);
+        }
+    }
+    if (!got) return false;
 
     uint8_t c[24];
     if (!readRegs(addr, BME280_REG_CALIB, c, sizeof(c))) return false;
