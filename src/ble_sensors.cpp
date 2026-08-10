@@ -67,10 +67,46 @@ uint8_t cadenceFromCrank(CrankState& cs, uint16_t revs, uint16_t eventTime) {
     return rpm > 254 ? 254 : (uint8_t)rpm;
 }
 
+// Last HR measurement payload, for the `sensors` console command.
+ble_sensors::HrPacket lastHr{};
+
 void onHrNotify(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool) {
     if (len < 2) return;
     uint8_t flags = data[0];
-    uint16_t hr = (flags & 0x01) ? (uint16_t)(data[1] | (data[2] << 8)) : data[1];
+    const bool wide = flags & 0x01;
+    // A 16-bit value lives in data[1..2]; the old `len < 2` guard alone let a
+    // 2-byte packet with the wide bit set read one byte past the payload.
+    if (wide && len < 3) return;
+    uint16_t hr = wide ? (uint16_t)(data[1] | (data[2] << 8)) : data[1];
+
+    lastHr.flags = flags;
+    lastHr.len = (uint8_t)len;
+    lastHr.bpm = hr;
+    lastHr.atMs = millis();
+
+    // Diagnostic: the raw payload, so "a heart rate shows when I'm not wearing
+    // the strap" is settled from the bytes instead of guessed at. Flags bit 2
+    // says the strap supports contact detection, bit 1 says whether it has
+    // contact right now.
+    //
+    // Do not trust bit 1 to catch an unworn strap: a damp one conducts, reports
+    // contact=yes, and invents a plausible heart rate that decays as it dries
+    // (observed: a strap on the bench sliding 165 -> 125 bpm over six minutes).
+    // The RR intervals do not corroborate it either — the strap derives the BPM
+    // from them, so phantom beats give a perfectly self-consistent pair.
+    static uint32_t lastLog = 0;
+    if (millis() - lastLog > 2000) {
+        lastLog = millis();
+        char hex[40];
+        int p = 0;
+        for (size_t i = 0; i < len && i < 12 && p < (int)sizeof(hex) - 3; ++i)
+            p += snprintf(hex + p, sizeof(hex) - p, "%02X ", data[i]);
+        diag::log("hr: len=%u flags=0x%02X contact=%s bpm=%u [%s]", (unsigned)len,
+                  flags,
+                  (flags & 0x04) ? ((flags & 0x02) ? "yes" : "NO") : "unsupported",
+                  hr, hex);
+    }
+
     g_state.with([&](RideState& s) {
         s.heartRateBpm = hr > 254 ? 254 : (uint8_t)hr;
         s.hrMs = millis();
@@ -446,6 +482,29 @@ void task(void*) {
             }
         }
 
+        // Invalidate a reading whose packets have stopped arriving. Nothing
+        // else does this while the LINK is still up: markDisconnected only runs
+        // from the BLE disconnect callback, and ui_dashboard's staleness sweep
+        // operates on its own render snapshot (g_state.snapshot()), so the
+        // recorder and the phone never saw it. A strap that is connected but
+        // off-body therefore left its last BPM in RideState forever — frozen on
+        // the dashboard, and written into every FIT record and the ride's HR
+        // average as if the rider were still wearing it.
+        //
+        // Only the VALUES are cleared, not the connected flags: onHrNotify does
+        // not re-raise hrConnected, so clearing that here would grey the field
+        // until the next full reconnect.
+        constexpr uint32_t kStaleMs = 15000;   // ui_dashboard greys out at the same age
+        g_state.with([&](RideState& s) {
+            uint32_t now = millis();
+            if (s.heartRateBpm != 0xFF && now - s.hrMs > kStaleMs)
+                s.heartRateBpm = 0xFF;
+            if (s.powerW != 0xFFFF && now - s.powerMs > kStaleMs)
+                s.powerW = s.power3sW = 0xFFFF;
+            if (s.cadenceRpm != 0xFF && now - s.cadenceMs > kStaleMs)
+                s.cadenceRpm = 0xFF;
+        });
+
         // Keep the 3 s power average current even between notifications so it
         // decays within 3 s when you stop pedaling (not "much longer").
         if (sensors[KIND_POWER].connected) {
@@ -462,6 +521,36 @@ void task(void*) {
 void setScanAlways(bool on) { scanAlways = on; }
 void noteActivity() { lastActivityMs = millis(); }
 bool radioBusy() { return huntingRadio; }
+
+HrPacket lastHrPacket() { return lastHr; }
+
+void links(Link* out) {
+    for (int k = 0; k < KIND_COUNT; ++k) {
+        Link& l = out[k];
+        memset(&l, 0, sizeof(l));
+        snprintf(l.kind, sizeof(l.kind), "%s", sensors[k].name);
+        snprintf(l.pairedAddr, sizeof(l.pairedAddr), "%s", settings::sensorAddr(k));
+        l.connected = sensors[k].connected;
+        if (l.connected) {
+            snprintf(l.liveAddr, sizeof(l.liveAddr), "%s",
+                     sensors[k].addr.toString().c_str());
+        }
+        const char* nm = sensors[k].make[0]         ? sensors[k].make
+                       : settings::sensorName(k)[0] ? settings::sensorName(k)
+                       : sensors[k].advName[0]      ? sensors[k].advName
+                                                    : "";
+        snprintf(l.name, sizeof(l.name), "%s", nm);
+    }
+}
+
+bool disconnect(int kind) {
+    if (kind < 0 || kind >= KIND_COUNT) return false;
+    if (!sensors[kind].connected || !sensors[kind].client) return false;
+    // connected/found are cleared by ClientCallbacks::onDisconnect, which also
+    // blanks the displayed value — don't duplicate that here.
+    sensors[kind].client->disconnect();
+    return true;
+}
 
 // The "Manufacturer Model" read from a connected sensor's Device Info Service,
 // or nullptr if that address isn't a connected sensor / had no DIS.

@@ -8,9 +8,12 @@
 //                        when the meter reports crank revolutions)
 //   Speed & Cadence      0x1816 / measurement 0x2A5B
 //
-// Pairing: addresses saved via settings are preferred; with nothing
-// saved, the first device advertising each service is used. The Sensors
-// screen lists scan candidates and pairs/forgets explicitly.
+// Pairing: we connect ONLY to the address saved for a kind. With nothing
+// saved for a kind, that kind never connects — no device is ever adopted
+// automatically. The Sensors screen (and the phone) list scan candidates and
+// pair/forget explicitly. Note that this is a saved MAC, not a BLE bond:
+// these profiles are unauthenticated, so the address is the only thing
+// keeping us off someone else's strap.
 
 namespace ble_sensors {
 
@@ -25,8 +28,39 @@ struct Candidate {
     bool paired;        // saved in settings
 };
 
+// One kind's pairing/link state, for the `sensors` console command. The UI
+// shows a sensor by name once it knows one, so the saved MAC — the only thing
+// that actually decides what we connect to — is otherwise invisible.
+struct Link {
+    char kind[12];         // "HR" / "Power" / "Cadence"
+    char pairedAddr[18];   // saved in NVS; "" when nothing is paired
+    char liveAddr[18];     // address of the live link; "" when not connected
+    char name[32];         // best identity known: DIS make > NVS > advertised
+    bool connected;
+};
+
+// The last Heart Rate Measurement (0x2A37) payload we received. Flags bit 0 is
+// the 8/16-bit value format, bit 1 is "contact detected", bit 2 is "contact
+// detection supported" — the pair that says whether an unworn strap's number
+// means anything.
+struct HrPacket {
+    uint8_t  flags;
+    uint8_t  len;
+    uint16_t bpm;
+    uint32_t atMs;   // millis() on arrival; 0 = nothing received yet
+};
+HrPacket lastHrPacket();
+
 void begin();
 void task(void* arg);
+
+// Fills KIND_COUNT entries, one per kind, in Kind order.
+void links(Link* out);
+
+// Drop the live link for one kind. The pairing is untouched, so the task will
+// re-hunt and reconnect within seconds — use forget() to make it stick.
+// Returns false if that kind wasn't connected.
+bool disconnect(int kind);
 
 // Sensors screen support
 void setScanAlways(bool on);            // keep scanning while the UI is open

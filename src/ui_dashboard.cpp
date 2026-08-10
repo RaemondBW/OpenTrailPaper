@@ -1198,6 +1198,80 @@ static void rebootToBootloader() {
 // ephemeris (not console text) piped straight into the GPS inject stream.
 static long agnssRxRemaining = 0;
 
+// Console word -> sensor kind. KIND_ALL for "all", KIND_BAD for anything else
+// (which the caller then treats as a MAC address).
+constexpr int KIND_ALL = -1, KIND_BAD = -2;
+static int sensorKindArg(const char* a) {
+    if (!a) return KIND_BAD;
+    if (!strcasecmp(a, "all")) return KIND_ALL;
+    if (!strcasecmp(a, "hr") || !strcasecmp(a, "heart")) return ble_sensors::KIND_HR;
+    if (!strcasecmp(a, "power") || !strcasecmp(a, "pwr")) return ble_sensors::KIND_POWER;
+    if (!strcasecmp(a, "cadence") || !strcasecmp(a, "cad")) return ble_sensors::KIND_CSC;
+    return KIND_BAD;
+}
+
+// `sensors` — the saved MAC per kind, the MAC of each live link, and every
+// device seen this session. The Sensors screen labels a row with the sensor's
+// name (upgraded to the DIS "Manufacturer Model" on first connect and kept in
+// NVS), so two identical straps are indistinguishable there: this is the only
+// place you can check that the thing feeding the dashboard is actually yours.
+static void printSensorReport() {
+    ble_sensors::Link ls[ble_sensors::KIND_COUNT];
+    ble_sensors::links(ls);
+    Serial.println("[sensors] saved pairings (we connect to these MACs and nothing else):");
+    for (int k = 0; k < ble_sensors::KIND_COUNT; ++k) {
+        const ble_sensors::Link& l = ls[k];
+        if (!l.pairedAddr[0] && !l.connected) {
+            Serial.printf("  %-8s (not paired)\n", l.kind);
+            continue;
+        }
+        Serial.printf("  %-8s %-17s %-13s %s\n", l.kind,
+                      l.pairedAddr[0] ? l.pairedAddr : "(not paired)",
+                      l.connected ? "CONNECTED" : "not connected", l.name);
+        // A live link to an address we never saved cannot happen through the
+        // scan path — if it ever prints, that IS the bug, so say so loudly
+        // rather than folding it into the line above.
+        if (l.connected && strcasecmp(l.liveAddr, l.pairedAddr) != 0)
+            Serial.printf("  %-8s ** live link is %s, NOT the saved address **\n",
+                          "", l.liveAddr);
+    }
+
+    // The live packet. "A number shows when I'm not wearing the strap" is
+    // decided by these bytes: whether packets are still arriving, and whether
+    // the strap admits it has no skin contact while sending them.
+    ble_sensors::HrPacket hp = ble_sensors::lastHrPacket();
+    if (!hp.atMs) {
+        Serial.println("[sensors] no HR packet received this session");
+    } else {
+        const char* contact = (hp.flags & 0x04) ? ((hp.flags & 0x02) ? "yes" : "NO")
+                                                : "unsupported";
+        Serial.printf("[sensors] last HR packet: %u bpm, %.1f s ago, "
+                      "flags=0x%02X (contact %s) len=%u\n",
+                      hp.bpm, (millis() - hp.atMs) / 1000.0f, hp.flags, contact,
+                      hp.len);
+    }
+
+    ble_sensors::Candidate cs[12];
+    int n = ble_sensors::getCandidates(cs, 12);
+    // Both reasons the rssi column lies are worth printing, because reading it
+    // as a live distance sends you off after the wrong sensor: a CONNECTED
+    // device has stopped advertising, so its number is frozen at whatever it
+    // measured just before the link came up, and nothing is ever dropped from
+    // the list, so a device that has since left still shows its last reading.
+    // To measure where a connected sensor actually is, `disconnect` it first.
+    Serial.printf("[sensors] %d device(s) seen this session (rssi is frozen while "
+                  "CONNECTED, and nothing is ever pruned):\n", n);
+    for (int i = 0; i < n; ++i) {
+        Serial.printf("  %-17s %4d dBm  %-13s %s%s%s\n", cs[i].addr, cs[i].rssi,
+                      shortKinds(cs[i].kindsMask),
+                      cs[i].paired ? "PAIRED " : "",
+                      cs[i].connected ? "CONNECTED " : "",
+                      cs[i].name);
+    }
+    Serial.println("[sensors] 'disconnect <hr|power|cadence|all>' drops a link, "
+                   "'forget <kind|mac|all>' unpairs for good");
+}
+
 static void printConsoleHelp() {
     Serial.println("commands:");
     Serial.println("  help                 this list");
@@ -1209,6 +1283,9 @@ static void printConsoleHelp() {
     Serial.println("  usbdrive [on|off]    expose the SD to a host; off takes the card back");
     Serial.println("  power                battery voltage + draw (mA) + full fuel-gauge state");
     Serial.println("  aux                  optional Qwiic sensors: baro / accel / compass");
+    Serial.println("  sensors              paired/connected MACs + everything seen this session");
+    Serial.println("  disconnect <kind>    drop the link (hr|power|cadence|all); stays paired");
+    Serial.println("  forget <kind|mac>    unpair and drop (hr|power|cadence|all|aa:bb:..)");
     Serial.println("  bootloader           reboot into download mode for flashing");
     Serial.println("  reboot               restart the device");
     Serial.println("  timing               toggle frame-timing logs");
@@ -1270,6 +1347,45 @@ static void runConsoleLine(char* line) {
         char line[160];
         aux_sensors::report(line, sizeof(line));
         Serial.printf("[cmd] %s\n", line);
+    } else if (!strcasecmp(cmd, "sensors")) {
+        printSensorReport();
+    } else if (!strcasecmp(cmd, "disconnect")) {
+        int want = sensorKindArg(arg);
+        if (want == KIND_BAD) {
+            Serial.println("[cmd] disconnect <hr|power|cadence|all>");
+            return;
+        }
+        ble_sensors::Link ls[ble_sensors::KIND_COUNT];
+        ble_sensors::links(ls);
+        int dropped = 0;
+        for (int k = 0; k < ble_sensors::KIND_COUNT; ++k) {
+            if (want != KIND_ALL && k != want) continue;
+            if (!ble_sensors::disconnect(k)) continue;
+            Serial.printf("[sensors] dropped %s (%s)\n", ls[k].kind, ls[k].liveAddr);
+            dropped++;
+        }
+        if (!dropped) Serial.println("[sensors] nothing connected to drop");
+        else Serial.println("[sensors] still paired — it will reconnect within "
+                            "seconds; use 'forget' to stop that");
+    } else if (!strcasecmp(cmd, "forget")) {
+        int want = sensorKindArg(arg);
+        if (!arg) {
+            Serial.println("[cmd] forget <hr|power|cadence|all|aa:bb:cc:dd:ee:ff>");
+        } else if (want == KIND_ALL) {
+            ble_sensors::forgetAll();
+            Serial.println("[sensors] every pairing cleared");
+        } else if (want == KIND_BAD) {
+            // Not a kind word, so treat it as a MAC. forget() clears every kind
+            // paired to that address (a power meter is usually cadence too).
+            ble_sensors::forget(arg);
+        } else {
+            ble_sensors::Link ls[ble_sensors::KIND_COUNT];
+            ble_sensors::links(ls);
+            if (!ls[want].pairedAddr[0])
+                Serial.printf("[sensors] %s is not paired\n", ls[want].kind);
+            else
+                ble_sensors::forget(ls[want].pairedAddr);
+        }
     } else if (!strcasecmp(cmd, "sd")) {
         // SD status without needing a boot log. The mount happens ~1.4 s into
         // boot, long before a USB-CDC host can attach, so for a long time the
