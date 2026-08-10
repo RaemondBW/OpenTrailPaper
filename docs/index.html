@@ -55,7 +55,10 @@
     <div class="device-mock" aria-hidden="true">
       <div class="device">
         <div class="screen">
+          <!-- The still is the fallback; panel.js draws the live panel over it
+               and only then fades the still out. -->
           <img src="img/dashboard.png" alt="">
+          <canvas id="hero-panel" class="live-panel" width="540" height="960"></canvas>
         </div>
         <span class="home"></span>
       </div>
@@ -83,6 +86,8 @@
           <div class="screen">
             <div class="emu-screen">
               <img id="emu-img" src="img/dashboard.png" alt="Device screen">
+              <canvas id="emu-panel" class="live-panel" width="540" height="960"
+                      aria-hidden="true"></canvas>
               <span id="emu-glow" class="emu-glow"></span>
               <span id="emu-flash" class="emu-flash"></span>
               <span id="emu-tap" class="tap-pulse"></span>
@@ -236,6 +241,7 @@
   </div>
 </footer>
 
+<script src="panel.js"></script>
 <script type="module" src="emulator.js"></script>
 </body>
 </html>
