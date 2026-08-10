@@ -141,6 +141,62 @@ void testHeadingDelta() {
     checkNear(aux_math::headingDelta(90, 90), 0.0f, 0.01f, "same bearing");
 }
 
+// --- Mounting-yaw offset ----------------------------------------------------
+
+// The whole point: a board taped on at some arbitrary angle must still give a
+// heading that means "the way the bike is pointing".
+void testHeadingOffsetLearnsMounting() {
+    begin("mounting yaw: learned from GPS course while riding");
+    aux_math::HeadingOffset off;
+    check(!off.ready(), "not ready before it has seen any riding");
+    // The board is rotated 37 deg from forward, so it reads 37 low.
+    const float mounting = 37.0f;
+    for (int i = 0; i < 200; ++i) {
+        float trueCourse = fmodf(20.0f + i * 1.3f, 360.0f);   // riding a curve
+        float compass = fmodf(trueCourse - mounting + 360.0f, 360.0f);
+        off.observe(compass, trueCourse);
+    }
+    check(off.ready(), "ready after riding");
+    checkNear(off.offsetDeg(), mounting, 3.0f, "offset recovered");
+    // And applying it turns a sensor-frame reading into a real bearing.
+    checkNear(off.apply(fmodf(90.0f - mounting + 360.0f, 360.0f)), 90.0f, 3.0f,
+              "corrected heading points where the bike does");
+}
+
+// A mounting angle that straddles the 0/360 wrap is where an angle-averaging
+// version falls over: the mean of 359 and 1 is 0, not 180.
+void testHeadingOffsetAcrossWrap() {
+    begin("mounting yaw: survives the 0/360 wrap");
+    aux_math::HeadingOffset off;
+    const float mounting = 358.0f;
+    for (int i = 0; i < 200; ++i) {
+        float trueCourse = fmodf(i * 2.7f, 360.0f);
+        float compass = fmodf(trueCourse - mounting + 720.0f, 360.0f);
+        off.observe(compass, trueCourse);
+    }
+    check(fabsf(aux_math::headingDelta(off.offsetDeg(), mounting)) < 3.0f,
+          "offset near 360 recovered without wrapping to the middle");
+}
+
+// Until it has learned anything, it must pass the reading straight through
+// rather than applying half an opinion.
+void testHeadingOffsetPassesThroughUntilReady() {
+    begin("mounting yaw: no correction before it is trusted");
+    aux_math::HeadingOffset off;
+    for (int i = 0; i < 5; ++i) off.observe(100.0f, 140.0f);
+    check(!off.ready(), "five samples is not a calibration");
+    checkNear(off.apply(123.0f), 123.0f, 0.01f, "reading passes through");
+}
+
+// A stored offset from a previous ride applies immediately.
+void testHeadingOffsetSeed() {
+    begin("mounting yaw: a stored offset applies from the first second");
+    aux_math::HeadingOffset off;
+    off.seed(90.0f);
+    check(off.ready(), "seeded is ready");
+    checkNear(off.apply(0.0f), 90.0f, 0.01f, "seeded offset applied");
+}
+
 // --- Hard-iron calibration --------------------------------------------------
 
 void testMagCal() {
@@ -194,6 +250,10 @@ int main() {
     testHeadingFlat();
     testHeadingSurvivesPitch();
     testHeadingDelta();
+    testHeadingOffsetLearnsMounting();
+    testHeadingOffsetAcrossWrap();
+    testHeadingOffsetPassesThroughUntilReady();
+    testHeadingOffsetSeed();
     testMagCal();
     testMovement();
 

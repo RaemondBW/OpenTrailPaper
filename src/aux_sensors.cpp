@@ -9,6 +9,7 @@
 #include "diag.h"
 #include "i2c_bus.h"
 #include "ride_state.h"
+#include "settings.h"
 
 // Hand-rolled drivers rather than pulling in two more libraries: both chips are
 // a handful of registers, the vendored SensorLib covers neither, and every
@@ -52,6 +53,8 @@ int32_t tFine = 0;
 
 aux_math::MagCal magCal;
 aux_math::MovementDetector movement;
+aux_math::HeadingOffset mountOffset;
+float savedOffset = NAN;
 
 // The altimeter's reference. Starts at the ISA standard — good enough to be a
 // plausible number — and is re-solved from the map's elevation grid the first
@@ -218,6 +221,12 @@ bool begin() {
     accOk = accBegin();
     magOk = accOk && magBegin();   // no compass without gravity to level it
 
+    // Last ride's mounting yaw. The board has not moved since, so the compass
+    // is correct from the first second instead of after enough riding to learn
+    // it again — and if it HAS been re-mounted, a minute of riding overrides it.
+    savedOffset = settings::compassOffsetDeg();
+    if (magOk && !isnan(savedOffset)) mountOffset.seed(savedOffset);
+
     if (!baroOk && !accOk) {
         diag::log("aux: no Qwiic sensors found (BME280 0x76/0x77, LSM303AGR 0x19/0x1E)");
         return false;
@@ -280,14 +289,35 @@ void task(void*) {
             if (magRead(mx, my, mz)) {
                 magCal.observe(mx, my, mz);
                 if (magCal.ready()) {
-                    float h = aux_math::tiltCompensatedHeading(
+                    float raw = aux_math::tiltCompensatedHeading(
                         ax, ay, az, mx - magCal.offsetX(), my - magCal.offsetY(),
                         mz - magCal.offsetZ());
-                    if (!isnan(h)) {
+                    if (!isnan(raw)) {
+                        // Riding is what teaches the mounting yaw: above 8 km/h
+                        // with a fix, course-over-ground IS the way the bike
+                        // points, so the gap between the two is how the board
+                        // sits — plus the local magnetic declination, which
+                        // lands in the same number for free.
+                        if (s.gpsFix && s.speedKmh > 8.0f)
+                            mountOffset.observe(raw, s.courseDeg);
+
+                        const float h = mountOffset.apply(raw);
                         g_state.with([&](RideState& st) {
                             st.compassDeg = h;
                             st.compassValid = true;
                         });
+
+                        // Persist once it has drifted enough to be worth a write
+                        // — this is a slowly-learned constant and NVS has a
+                        // finite erase budget.
+                        if (mountOffset.ready()) {
+                            const float now = mountOffset.offsetDeg();
+                            if (isnan(savedOffset) ||
+                                fabsf(aux_math::headingDelta(now, savedOffset)) > 5.0f) {
+                                savedOffset = now;
+                                settings::setCompassOffsetDeg(now);
+                            }
+                        }
                     }
                 }
             }
@@ -303,6 +333,12 @@ void report(char* out, size_t n) {
              seaLevel / 100.0f, seaLevelFromDem ? " from DEM" : " default",
              accOk ? "on" : "off", s.deviceMoving ? " MOVING" : "",
              !magOk ? "off" : (s.compassValid ? "ready" : "calibrating"));
+    if (magOk) {
+        const size_t used = strlen(out);
+        snprintf(out + used, n > used ? n - used : 0, " (mount %+.0f deg, %s)",
+                 mountOffset.offsetDeg(),
+                 mountOffset.ready() ? "learned" : "learning — ride to set it");
+    }
 }
 
 }  // namespace aux_sensors

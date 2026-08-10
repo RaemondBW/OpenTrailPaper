@@ -50,4 +50,11 @@ void setLastPosition(double lat, double lon);
 bool rtcTrusted();
 void setRtcTrusted(bool ok);
 
+// Compass mounting yaw, in degrees, learned from GPS course while riding (see
+// aux_math::HeadingOffset). Persisted because the board does not move between
+// rides, so re-learning it every time would leave the compass wrong for the
+// first minutes of every ride. NAN when nothing has been learned yet.
+float compassOffsetDeg();
+void setCompassOffsetDeg(float deg);
+
 }

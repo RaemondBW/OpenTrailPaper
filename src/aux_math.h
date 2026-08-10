@@ -137,6 +137,71 @@ inline float headingDelta(float a, float b) {
     return d;
 }
 
+// Learns the fixed yaw between what the magnetometer calls heading and the
+// direction the bike is actually travelling.
+//
+// The compass reads in the SENSOR's frame, so it is only "forward" if the board
+// happens to be mounted with its y axis down the top tube. Ours is on a Qwiic
+// lead — it can be at any angle, on either side, upside down, and it will move
+// the next time it is re-taped. Asking the rider to align it, or to enter an
+// offset, is asking them to do arithmetic on a bike.
+//
+// GPS course-over-ground already knows the answer whenever the rider is moving:
+// it IS the direction of travel. The difference between the two is the mounting
+// yaw, and it is constant, so it can be averaged out of a noisy signal while
+// riding and then applied when stopped — which is exactly when the compass is
+// needed and course-over-ground is useless.
+//
+// It absorbs magnetic declination in the same number for free: GPS course is
+// referenced to TRUE north and the magnetometer to magnetic, so whatever the
+// local difference is, it lands in this offset without anyone shipping a
+// declination table or knowing where in the world the bike is.
+//
+// Averaged as a unit vector rather than as an angle, because the mean of 359
+// and 1 degrees is 0, not 180 — the bug every heading average has.
+struct HeadingOffset {
+    float sinAcc = 0.0f, cosAcc = 0.0f;
+    int samples = 0;
+
+    // `alpha` is the weight of each new sample: at 5 Hz, 0.05 settles in a few
+    // seconds of riding and still ignores a single bad course.
+    void observe(float compassDeg, float courseDeg, float alpha = 0.05f) {
+        const float d = headingDelta(courseDeg, compassDeg) * 0.01745329f;
+        sinAcc += alpha * (sinf(d) - sinAcc);
+        cosAcc += alpha * (cosf(d) - cosAcc);
+        if (samples < 1000000) samples++;
+    }
+
+    // Enough riding to trust it. Below this the offset is one noisy fix's
+    // opinion, and applying that would make the compass worse than leaving it
+    // in the sensor's own frame.
+    bool ready(int minSamples = 50) const { return samples >= minSamples; }
+
+    float offsetDeg() const {
+        if (sinAcc == 0.0f && cosAcc == 0.0f) return 0.0f;
+        float d = atan2f(sinAcc, cosAcc) * 57.29577951f;
+        return d < 0.0f ? d + 360.0f : d;
+    }
+
+    // The corrected heading: what the rider is actually pointing at.
+    float apply(float compassDeg) const {
+        if (!ready()) return compassDeg;
+        float h = fmodf(compassDeg + offsetDeg(), 360.0f);
+        return h < 0.0f ? h + 360.0f : h;
+    }
+
+    // Seed from a value learned on a previous ride, so the compass is right
+    // from the first second rather than after the rider has ridden far enough
+    // to teach it again. Counted as just-ready: a real ride overrides it within
+    // seconds if the device has been re-mounted since.
+    void seed(float offDeg, int asSamples = 50) {
+        const float r = offDeg * 0.01745329f;
+        sinAcc = sinf(r);
+        cosAcc = cosf(r);
+        samples = asSamples;
+    }
+};
+
 // --- Movement ---------------------------------------------------------------
 
 // Is the device moving, from the spread of recent acceleration magnitudes?
