@@ -17,6 +17,13 @@ struct OnboardingView: View {
 
     @State private var step = OnboardingView.initialStep
 
+    /// Which screen the welcome's live head unit is showing.
+    @State private var heroFace: DeviceFace = .dashboard
+    /// Which of the three jobs the overview is demonstrating, and whether the
+    /// rider has taken the wheel — after the first tap the demo stops cycling.
+    @State private var feature = 0
+    @State private var drivingOverview = false
+
     private let lastStep = 5
 
     // Screenshot support: `-onboarding-step N` opens the tutorial on a page.
@@ -109,46 +116,130 @@ struct OnboardingView: View {
         page(
             art: AnyView(deviceHero),
             title: "Welcome to OpenTrailPaper",
-            body: "This is the companion for the OpenTrailPaper head unit — a sunlight-readable e-paper bike computer you build yourself. The phone does the fiddly bits; the device does the riding."
+            body: "This is the companion for the OpenTrailPaper head unit — a sunlight-readable e-paper bike computer you build yourself. The phone does the fiddly bits; the device does the riding.",
+            note: AnyView(tapHint)
         )
     }
 
-    // A product shot of the head unit so it's obvious from the first screen
-    // what this app pairs with — the map screen tucked behind the dashboard.
+    // The head unit, running. It was a pair of product shots, which told a
+    // first-time rider nothing a photo of a brick wouldn't: the whole pitch of
+    // this device is numbers that hold steady in sunlight and a map that moves
+    // under you, and neither survives being frozen. So the front unit is live —
+    // ride time counting, power and speed working, the ground scrolling on the
+    // map — and tapping it switches screens with the e-paper flash the real
+    // button produces. The one behind shows the other screen, held still so the
+    // eye knows which of the two it is meant to be watching.
     private var deviceHero: some View {
         ZStack {
-            Image("DeviceMap")
-                .resizable().scaledToFit()
-                .frame(width: 148)
+            // Widths are the SCREEN's; the case adds about 11% around it. These
+            // land the two bodies at the same sizes the product shots occupied,
+            // so the composition is the one that was already signed off.
+            EInkDevice(face: heroFace.counterpart, width: 110, live: false)
                 .rotationEffect(.degrees(-9))
                 .offset(x: -84, y: 12)
-            Image("DeviceDashboard")
-                .resizable().scaledToFit()
-                .frame(width: 182)
+                .opacity(0.9)
+            EInkDevice(face: heroFace, width: 135)
                 .rotationEffect(.degrees(5))
                 .offset(x: 26)
+                .onTapGesture { withAnimation { heroFace = heroFace.counterpart } }
+                .accessibilityAddTraits(.isButton)
+                .accessibilityLabel(heroFace == .dashboard
+                                    ? "Head unit showing the dashboard"
+                                    : "Head unit showing the map")
+                .accessibilityHint("Switches the screen")
         }
         .frame(height: 300)
     }
 
+    private var tapHint: some View {
+        Label(heroFace == .dashboard ? "Tap the device to see the map"
+                                     : "Tap the device to see the numbers",
+              systemImage: "hand.tap")
+            .font(TypeScale.bodyStrong)
+            .foregroundStyle(Palette.muted)
+    }
+
+    // What the APP is for, demonstrated on a phone rather than listed.
+    //
+    // Three bullet points describing a route upload, a map build and a ride
+    // readback are three sentences a newcomer has no picture for. Each one owns
+    // a screen of this app, so selecting it shows that screen doing that job —
+    // the route drawing itself along the streets, tiles landing on the card, a
+    // ride read back with today's still counting. It demonstrates itself on a
+    // timer until the first tap, then hands over and stays where it's put: a
+    // screen that keeps moving under someone reading it is fighting them.
+    //
+    // A phone, not the head unit: all three are things you do here, in your
+    // hand, and showing the bike computer doing them put the work on the wrong
+    // device. The head unit gets the welcome screen, which is about the device.
     private var overview: some View {
         VStack(spacing: 0) {
-            Spacer(minLength: 0)
-            VStack(alignment: .leading, spacing: 18) {
-                Text("What you'll do here")
-                    .font(TypeScale.screenTitle)
-                    .foregroundStyle(Palette.ink)
-                    .padding(.bottom, 4)
-                featureRow("map", "Plan routes", "Search a destination and send the route to your device as GPX.")
-                featureRow("square.and.arrow.down.on.square", "Build offline maps", "Pick an area; the app bakes map tiles onto the device's SD card.")
-                featureRow("list.bullet.rectangle", "Review rides", "Pull recorded rides off the device and see distance, power and climb.")
+            Text("What you'll do here")
+                .font(TypeScale.screenTitle)
+                .foregroundStyle(Palette.ink)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 8)
+
+            Spacer(minLength: 8)
+
+            PhoneMock(face: OnboardingView.features[feature].face, width: 118)
+                .accessibilityLabel("Phone showing \(OnboardingView.features[feature].title.lowercased())")
+
+            Spacer(minLength: 12)
+
+            // Short phones lose the two descriptions nobody is reading — the
+            // selected row keeps its text, because that one is explaining what
+            // the device above it is doing. Clipping the last row against the
+            // footer, which is what a fixed layout did here, loses the same
+            // words without admitting to it.
+            ViewThatFits(in: .vertical) {
+                rows(full: true)
+                rows(full: false)
             }
-            .padding(28)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            Spacer(minLength: 0)
         }
         .padding(.horizontal, 20)
+        .padding(.vertical, 12)
+        // Keyed so leaving the page or taking over cancels the demo rather than
+        // leaving a timer running behind the rest of the tutorial.
+        .task(id: "\(step)-\(drivingOverview)") {
+            guard step == 1, !drivingOverview else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(6.5))
+                guard !Task.isCancelled else { return }
+                withAnimation { feature = (feature + 1) % OnboardingView.features.count }
+            }
+        }
     }
+
+    private func rows(full: Bool) -> some View {
+        VStack(spacing: 6) {
+            ForEach(Array(OnboardingView.features.enumerated()), id: \.offset) { i, f in
+                featureRow(f, selected: i == feature, showBody: full || i == feature) {
+                    drivingOverview = true
+                    withAnimation { feature = i }
+                }
+            }
+        }
+    }
+
+    private struct Feature {
+        let symbol: String
+        let title: String
+        let body: String
+        let face: AppFace
+    }
+
+    private static let features: [Feature] = [
+        .init(symbol: "map", title: "Plan routes",
+              body: "Search a destination and send the route to your device as GPX.",
+              face: .route),
+        .init(symbol: "square.and.arrow.down.on.square", title: "Build offline maps",
+              body: "Pick an area; the app bakes map tiles onto the device's SD card.",
+              face: .maps),
+        .init(symbol: "list.bullet.rectangle", title: "Review rides",
+              body: "Pull recorded rides off the device and see distance, power and climb.",
+              face: .rides),
+    ]
 
     private var locationStep: some View {
         page(
@@ -314,22 +405,41 @@ struct OnboardingView: View {
         .frame(maxWidth: .infinity)
     }
 
-    private func featureRow(_ symbol: String, _ title: String, _ body: String) -> some View {
-        HStack(alignment: .top, spacing: 16) {
-            Image(systemName: symbol)
-                .font(.system(size: 22, weight: .semibold))
-                .foregroundStyle(Palette.accent)
-                .frame(width: 30, height: 30)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .font(TypeScale.title)
-                    .foregroundStyle(Palette.ink)
-                Text(body)
-                    .font(TypeScale.body)
-                    .foregroundStyle(Palette.muted)
-                    .fixedSize(horizontal: false, vertical: true)
+    /// One of the three, as a button. The unselected rows keep their full text
+    /// rather than collapsing: this is still the screen that says what the app
+    /// does, and a list that hides two thirds of itself to look tidy has stopped
+    /// doing that job.
+    private func featureRow(_ f: Feature, selected: Bool, showBody: Bool,
+                            tap: @escaping () -> Void) -> some View {
+        Button(action: tap) {
+            HStack(alignment: .top, spacing: 14) {
+                Image(systemName: f.symbol)
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(selected ? Palette.accent : Palette.faint)
+                    .frame(width: 28, height: 26)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(f.title)
+                        .font(TypeScale.title)
+                        .foregroundStyle(Palette.ink)
+                    if showBody {
+                        Text(f.body)
+                            .font(BarlowFont.text(13.5))
+                            .foregroundStyle(Palette.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .multilineTextAlignment(.leading)
+                    }
+                }
+                Spacer(minLength: 0)
             }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(selected ? Palette.accentWash : .clear)
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(selected ? Palette.accent.opacity(0.35) : .clear, lineWidth: 1))
         }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
     }
 
 

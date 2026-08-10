@@ -245,6 +245,17 @@ private let kUnitFace = LabelFace(cap: 15, ascender: 19, perChar: 13.5)
 struct DashPreview: View {
     let layout: DashLayout
 
+    /// A ride to read the numbers off, for the tutorial's live head unit. The
+    /// editor leaves it nil and keeps the fixed samples: someone choosing a
+    /// layout is comparing box sizes, and numbers changing under them is noise.
+    ///
+    /// Only the DRAWN text comes from here. Type sizing still runs off the
+    /// samples and the worst-case hints below, so a live panel picks exactly the
+    /// faces the editor showed and no value can resize its own cell mid-ride —
+    /// which is the device's behaviour, and the whole reason this preview sizes
+    /// in two passes.
+    var live: RideSim? = nil
+
     // Device geometry (ui_render.h). Everything is computed in these units.
     private let panelW: CGFloat = 540, panelH: CGFloat = 960
     private let margin: CGFloat = 24, gutter: CGFloat = 12, pad: CGFloat = 16
@@ -381,7 +392,7 @@ struct DashPreview: View {
                     value(p, k: k)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     if isPower(p.item.field) {
-                        zoneBar(k: k, width: p.w - 2 * pad)
+                        zoneBar(k: k, width: p.w - 2 * pad, filled: zone(p.item.field))
                             .padding(.bottom, pad * k)
                     }
                 }
@@ -408,7 +419,7 @@ struct DashPreview: View {
     /// alone pushes it off-axis by half the unit's width.
     private func value(_ p: Placed, k: CGFloat) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 5 * k) {
-            Text(sample(p.item.field))
+            Text(live?.text(for: p.item.field) ?? sample(p.item.field))
                 .font(.custom("BarlowCondensed-Bold", size: p.value.cap / capRatio * k))
                 .lineLimit(1)
                 .minimumScaleFactor(0.5)
@@ -420,17 +431,34 @@ struct DashPreview: View {
         }
     }
 
-    /// Seven FTP zone segments, filled to the current zone — the sample power
-    /// against the default 250 W FTP lands in zone 4.
-    private func zoneBar(k: CGFloat, width: CGFloat) -> some View {
+    /// Seven FTP zone segments, filled to the current zone.
+    private func zoneBar(k: CGFloat, width: CGFloat, filled: Int) -> some View {
         let segW = (width - 6 * halfStep) / 7
         return HStack(spacing: halfStep * k) {
             ForEach(0..<7, id: \.self) { i in
                 Rectangle()
                     .strokeBorder(Color.black, lineWidth: 1 * k)
-                    .background(i < 4 ? Color.black : Color.clear)
+                    .background(i < filled ? Color.black : Color.clear)
                     .frame(width: segW * k, height: 18 * k)
             }
+        }
+    }
+
+    /// Which zone the power field is in, against the device's default 250 W FTP
+    /// — Coggan's boundaries, the ones ui_render.cpp fills the bar by. The fixed
+    /// sample of 247 W sits at 99% of FTP, which is zone 4, so a static preview
+    /// looks exactly as it always did.
+    private func zone(_ field: String) -> Int {
+        let watts = live.map { field == "power" ? $0.power : $0.power3s } ?? 247
+        let pct = watts / 250 * 100
+        switch pct {
+        case ..<55:   return 1
+        case ..<75:   return 2
+        case ..<90:   return 3
+        case ..<105:  return 4
+        case ..<120:  return 5
+        case ..<150:  return 6
+        default:      return 7
         }
     }
 
