@@ -563,20 +563,40 @@ void setup() {
     // a reason to stay silent — the opposite: a plugged-in board that did not
     // answer is exactly the thing a rider needs told, and with no line at all
     // the only way to find out was the serial console.
-    ui_dashboard::bootStep("Qwiic");
     const bool auxOk = aux_sensors::begin();
-    if (auxOk) {
-        ui_dashboard::bootDetailFor("Qwiic", "%s%s%s",
-                                    aux_sensors::haveBaro() ? "baro " : "",
-                                    aux_sensors::haveCompass() ? "compass " : "",
-                                    aux_sensors::haveMotion() ? "motion" : "");
-    } else {
+    if (!auxOk) {
+        // Nothing on the connector: ONE quiet line. Three "absent" rows on
+        // every boot of every device that never had these fitted is noise, and
+        // the boot log is read by someone looking for what went wrong.
+        ui_dashboard::bootStep("Qwiic");
         ui_dashboard::bootDetailFor("Qwiic", "none attached");
+        ui_dashboard::bootStatus("Qwiic", true);
+    } else {
+        // Something IS attached, so show the full roster — one line each. This
+        // is the case where the rider wants detail: a board that is plugged in
+        // and half answering is a real fault (a bad lead, the wrong address,
+        // a chip that needs a power cycle), and it is only visible if the thing
+        // that did NOT come up gets a line of its own saying so.
+        ui_dashboard::bootStep("Baro");
+        if (aux_sensors::haveBaro())
+            ui_dashboard::bootDetailFor("Baro", "BME280 @0x%02X",
+                                        aux_sensors::baroAddress());
+        else
+            ui_dashboard::bootDetailFor("Baro", "not found @0x76/0x77");
+        ui_dashboard::bootStatus("Baro", aux_sensors::haveBaro());
+
+        ui_dashboard::bootStep("Motion");
+        ui_dashboard::bootDetailFor("Motion", aux_sensors::haveMotion()
+                                                  ? "LSM303AGR @0x19"
+                                                  : "not found @0x19");
+        ui_dashboard::bootStatus("Motion", aux_sensors::haveMotion());
+
+        ui_dashboard::bootStep("Compass");
+        ui_dashboard::bootDetailFor("Compass", aux_sensors::haveCompass()
+                                                   ? "LSM303AGR @0x1E"
+                                                   : "not found @0x1E");
+        ui_dashboard::bootStatus("Compass", aux_sensors::haveCompass());
     }
-    // Not a failure when nothing is plugged in: the device is complete without
-    // them, and a red line for a board the rider never fitted is a bug report
-    // waiting to happen.
-    ui_dashboard::bootStatus("Qwiic", true);
 
     BOOT_STEP("ble_server done -> power_mgmt::begin()");
 

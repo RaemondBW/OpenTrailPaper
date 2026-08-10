@@ -1709,12 +1709,20 @@ void ui_render_boot_screen(const char* version, const char* const* lines,
             snprintf(body, sizeof(body), "%s  %s", lines[i], detail[i]);
         else
             snprintf(body, sizeof(body), "%s", lines[i]);
-        ui::text(&Arial_B, ui::MARGIN + 82, y, body, fb, EPD_DRAW_ALIGN_LEFT,
-                 ui::INK);
 
         // Status bracket, right-aligned: the column the eye scans.
         const char* st = state[i] == BOOT_OK ? "[ OK ]"
                        : state[i] == BOOT_FAIL ? "[FAIL]" : "[ .. ]";
+
+        // Clamp the body to what is left before that column. A long detail used
+        // to run straight under the bracket — "42 rides[ OK ]" with no gap —
+        // and the status is the part that has to stay readable, because it is
+        // the whole reason someone is looking at this screen.
+        const int bodyX = ui::MARGIN + 82;
+        const int bodyMax = statusX - ui::textWidth(&Arial_B, st) - ui::STEP - bodyX;
+        char fitted[64];
+        fitText(&Arial_B, body, bodyMax, fitted, sizeof(fitted));
+        ui::text(&Arial_B, bodyX, y, fitted, fb, EPD_DRAW_ALIGN_LEFT, ui::INK);
         ui::text(&Arial_B, statusX, y, st, fb, EPD_DRAW_ALIGN_RIGHT, ui::INK);
         y += lineH;
     }

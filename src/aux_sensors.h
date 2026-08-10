@@ -26,6 +26,11 @@ bool haveBaro();
 bool haveCompass();
 bool haveMotion();   // accelerometer, i.e. movement detection
 
+// I2C address the barometer answered on (0x76 or 0x77), 0 if absent. For the
+// boot line — which of the two it is, is the first thing worth knowing when a
+// board does not come up.
+uint8_t baroAddress();
+
 // Sea-level reference the altimeter is currently working against, in pascals,
 // and whether it has been calibrated from a known elevation rather than left at
 // the ISA default. For the diagnostics screen.

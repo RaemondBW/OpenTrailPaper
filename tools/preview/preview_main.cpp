@@ -391,16 +391,21 @@ int main(int argc, char** argv) {
 
     // Boot progress — mid-boot, and the failure case that matters most
     {
-        // Six steps now: the optional Qwiic sensors report like everything
-        // else. This is also the longest the list gets, so it is what says
-        // whether the boot screen still fits.
-        const char*  steps[] = {"DISPLAY", "SD CARD", "RTC", "GPS", "MAPS", "QWIIC"};
+        // Eight steps: the Qwiic sensors get a line each when a board is
+        // attached. This is the longest the list gets, so it is what says
+        // whether the boot screen still fits — and the COMPASS row is the
+        // not-found case, which is the one worth being able to read.
+        const char*  steps[] = {"DISPLAY", "SD CARD", "RTC", "GPS", "MAPS",
+                                "BARO", "MOTION", "COMPASS"};
         const char det[][28] = {"epd_painter 540x960", "30436 MB free · 42 rides",
                                 "clock restored", "CASIC · aiding sent",
-                                "107 tiles · indexed", "baro compass motion"};
-        const uint32_t ms[] = {420, 1870, 2240, 4910, 8020, 8090};
-        const int8_t allOk[] = {BOOT_OK, BOOT_OK, BOOT_OK, BOOT_OK, BOOT_OK, BOOT_OK};
-        const int8_t sdBad[] = {BOOT_OK, BOOT_FAIL, BOOT_OK, BOOT_OK, BOOT_OK, BOOT_OK};
+                                "107 tiles · indexed", "BME280 @0x77",
+                                "LSM303AGR @0x19", "not found @0x1E"};
+        const uint32_t ms[] = {420, 1870, 2240, 4910, 8020, 8090, 8110, 8130};
+        const int8_t allOk[] = {BOOT_OK, BOOT_OK, BOOT_OK, BOOT_OK, BOOT_OK,
+                                BOOT_OK, BOOT_OK, BOOT_FAIL};
+        const int8_t sdBad[] = {BOOT_OK, BOOT_FAIL, BOOT_OK, BOOT_OK, BOOT_OK,
+                                BOOT_OK, BOOT_OK, BOOT_OK};
         // Mid-mount: the SD step announced but not yet resolved. This is the
         // state the device sits in for a second or two on a cold card, so it is
         // worth eyeballing that the ring lines up with the ticks above it.
@@ -409,10 +414,10 @@ int main(int argc, char** argv) {
         // the one that used to show no pending step at all.
         const int8_t mapBusy[] = {BOOT_OK, BOOT_OK, BOOT_OK, BOOT_OK, BOOT_PENDING};
         clearWhite(fb.data());
-        ui_render_boot_screen("v0.91", steps, allOk, det, ms, 6, fb.data());
+        ui_render_boot_screen("v0.91", steps, allOk, det, ms, 8, fb.data());
         emit("boot.png");
         clearWhite(fb.data());
-        ui_render_boot_screen("v0.91", steps, sdBad, det, ms, 6, fb.data());
+        ui_render_boot_screen("v0.91", steps, sdBad, det, ms, 8, fb.data());
         emit("boot_sd_failed.png");
         clearWhite(fb.data());
         ui_render_boot_screen("v0.91", steps, sdBusy, det, ms, 2, fb.data());

@@ -240,6 +240,7 @@ bool begin() {
 bool haveBaro() { return baroOk; }
 bool haveCompass() { return magOk; }
 bool haveMotion() { return accOk; }
+uint8_t baroAddress() { return baroOk ? baroAddr : 0; }
 float seaLevelPa() { return seaLevel; }
 bool seaLevelCalibrated() { return seaLevelFromDem; }
 
