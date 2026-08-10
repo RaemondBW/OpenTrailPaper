@@ -9,9 +9,11 @@
 /* Begin PBXBuildFile section */
 		021E5D177FE3BCD463AA49BF /* BikeGPSCompanionApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37C3CA9775B956BC238BAA42 /* BikeGPSCompanionApp.swift */; };
 		05EFA1438A835BB33D929DF4 /* BarlowCondensed-Medium.ttf in Resources */ = {isa = PBXBuildFile; fileRef = A97893E68863ECCF2D0D4400 /* BarlowCondensed-Medium.ttf */; };
+		0F07C59EAB533AC46B37D7ED /* DeviceMock.swift in Sources */ = {isa = PBXBuildFile; fileRef = E467F3BA417A6A968F920F77 /* DeviceMock.swift */; };
 		1E84B7CD7869CDE2FAD486B0 /* BarlowCondensed-Bold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 08F073C2FF3FF2C629AFE7E8 /* BarlowCondensed-Bold.ttf */; };
 		206AAAF21E4BC20EAB8D7C79 /* vertex.c in Sources */ = {isa = PBXBuildFile; fileRef = 861D40F3D0D6EE123389E135 /* vertex.c */; };
 		2593A42A317117DDFBAF716E /* EInkMapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 062C37A066E27E1DEC3AF253 /* EInkMapView.swift */; };
+		27D3072E86C963D6934C56BA /* RideSim.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B38F0A13FA33BFE4E04416 /* RideSim.swift */; };
 		2896F748FD963A319E478447 /* EBMDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18E924B930AF50BBF8472A7F /* EBMDecoder.swift */; };
 		292571D164EEF9C5316E8BAB /* linkedGeo.c in Sources */ = {isa = PBXBuildFile; fileRef = 878E3C8F7719672814B9A1C2 /* linkedGeo.c */; };
 		2A3194F4903302F4B2C27D19 /* polygon.c in Sources */ = {isa = PBXBuildFile; fileRef = 0CBC93C157DBF69D2E2C1823 /* polygon.c */; };
@@ -23,6 +25,7 @@
 		42D0BA08D929EAF01939F014 /* bbox.c in Sources */ = {isa = PBXBuildFile; fileRef = 2E449077B1E39DF8A349A23D /* bbox.c */; };
 		42D2FCE22B005258F3DFCE9C /* BarlowCondensed-SemiBold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = F14CD69E3959EF829E9F0717 /* BarlowCondensed-SemiBold.ttf */; };
 		431EACF518E6E7F25D9682EC /* H3Tiles.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD6BA4ACE6890EF09B9A8F6F /* H3Tiles.swift */; };
+		43AAF30082DA51F92552EE19 /* PhoneMock.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B4C752C73B32E5B3E92EAE4 /* PhoneMock.swift */; };
 		4608B467E047801D5219DD54 /* faceijk.c in Sources */ = {isa = PBXBuildFile; fileRef = 21F000263728C013838D0605 /* faceijk.c */; };
 		50C29F659BE2ACD7B9B29D73 /* Barlow-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = F21BF62E40922CF797D8119D /* Barlow-Regular.ttf */; };
 		59AED5C1500B37FB3E7E3010 /* vec3d.c in Sources */ = {isa = PBXBuildFile; fileRef = 85064AEE7F2DEAD8495F5FDC /* vec3d.c */; };
@@ -79,6 +82,7 @@
 		37C3CA9775B956BC238BAA42 /* BikeGPSCompanionApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BikeGPSCompanionApp.swift; sourceTree = "<group>"; };
 		403E838590B5304D34C70F23 /* mathExtensions.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = mathExtensions.h; sourceTree = "<group>"; };
 		42632703DAE05E73F934FFE1 /* Barlow-SemiBold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Barlow-SemiBold.ttf"; sourceTree = "<group>"; };
+		4B4C752C73B32E5B3E92EAE4 /* PhoneMock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneMock.swift; sourceTree = "<group>"; };
 		4D6D4D7CC3D2F7CA7F2BB14A /* vec3d.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = vec3d.h; sourceTree = "<group>"; };
 		590A2666A030966B6741EDAF /* FITDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FITDecoder.swift; sourceTree = "<group>"; };
 		61E9FB68F94751F3E5B65B66 /* h3Index.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = h3Index.c; sourceTree = "<group>"; };
@@ -105,6 +109,7 @@
 		983A6286E04A3B9DE101DF7E /* localij.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = localij.h; sourceTree = "<group>"; };
 		9D58367A52D10F5F1C035423 /* Barlow-Medium.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Barlow-Medium.ttf"; sourceTree = "<group>"; };
 		A0306F2F39F6FD2D70319F80 /* latLng.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = latLng.c; sourceTree = "<group>"; };
+		A1B38F0A13FA33BFE4E04416 /* RideSim.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RideSim.swift; sourceTree = "<group>"; };
 		A26EB50B7E6CF1B4A63235CA /* RouteView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RouteView.swift; sourceTree = "<group>"; };
 		A5CBCC5E20270A3D4DF70257 /* coordijk.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = coordijk.c; sourceTree = "<group>"; };
 		A7C77C595BBAE5BCBD82A004 /* MapsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapsView.swift; sourceTree = "<group>"; };
@@ -130,6 +135,7 @@
 		E15692F37161BEC610966D47 /* TileCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TileCache.swift; sourceTree = "<group>"; };
 		E1B62C507D47EAD0BDDDD24F /* RideDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RideDetailView.swift; sourceTree = "<group>"; };
 		E284B25E233005D7FEF20F6F /* coordijk.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = coordijk.h; sourceTree = "<group>"; };
+		E467F3BA417A6A968F920F77 /* DeviceMock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceMock.swift; sourceTree = "<group>"; };
 		F14CD69E3959EF829E9F0717 /* BarlowCondensed-SemiBold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "BarlowCondensed-SemiBold.ttf"; sourceTree = "<group>"; };
 		F21BF62E40922CF797D8119D /* Barlow-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Barlow-Regular.ttf"; sourceTree = "<group>"; };
 		F2E1BEE825D22D8612B19893 /* iterators.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = iterators.c; sourceTree = "<group>"; };
@@ -191,6 +197,7 @@
 				F99E928FB741D98CDD96ABA0 /* DashboardEditorView.swift */,
 				A9D6BB31E96DD85DBE9B68CA /* DashLayout.swift */,
 				D66117B8CB78BBC0949D8DF3 /* demo.fit */,
+				E467F3BA417A6A968F920F77 /* DeviceMock.swift */,
 				336612AF0918144CAB1C1FCD /* DiagnosticsView.swift */,
 				18E924B930AF50BBF8472A7F /* EBMDecoder.swift */,
 				062C37A066E27E1DEC3AF253 /* EInkMapView.swift */,
@@ -203,7 +210,9 @@
 				B784675A7E0FFAA781206855 /* MapBuilder.swift */,
 				A7C77C595BBAE5BCBD82A004 /* MapsView.swift */,
 				756CD94A1C875E17A3321CC8 /* OnboardingView.swift */,
+				4B4C752C73B32E5B3E92EAE4 /* PhoneMock.swift */,
 				E1B62C507D47EAD0BDDDD24F /* RideDetailView.swift */,
+				A1B38F0A13FA33BFE4E04416 /* RideSim.swift */,
 				F897B750389038E18EE9AC09 /* RidesView.swift */,
 				C4E83FB3A70437DD5D0F8629 /* RideView.swift */,
 				A26EB50B7E6CF1B4A63235CA /* RouteView.swift */,
@@ -354,6 +363,7 @@
 				021E5D177FE3BCD463AA49BF /* BikeGPSCompanionApp.swift in Sources */,
 				BF7FEB57C05E17549C09CF25 /* DashLayout.swift in Sources */,
 				8885B18C0FC6E6E98283CD24 /* DashboardEditorView.swift in Sources */,
+				0F07C59EAB533AC46B37D7ED /* DeviceMock.swift in Sources */,
 				F71D1CFFCC25AD4A7A19D698 /* DiagnosticsView.swift in Sources */,
 				2896F748FD963A319E478447 /* EBMDecoder.swift in Sources */,
 				2593A42A317117DDFBAF716E /* EInkMapView.swift in Sources */,
@@ -365,7 +375,9 @@
 				5D72742ADF79FE45ED70CBEA /* MapBuilder.swift in Sources */,
 				C462314C3BD9E277B9F451A9 /* MapsView.swift in Sources */,
 				ABE6FDB260BAA3609F5C5516 /* OnboardingView.swift in Sources */,
+				43AAF30082DA51F92552EE19 /* PhoneMock.swift in Sources */,
 				72A4059778F0676C0911C393 /* RideDetailView.swift in Sources */,
+				27D3072E86C963D6934C56BA /* RideSim.swift in Sources */,
 				2D50FCD8D5DDF2010C20E161 /* RideView.swift in Sources */,
 				BE0814223F037C69E39B93D7 /* RidesView.swift in Sources */,
 				79F918433F0C02EF0915A0EE /* RouteView.swift in Sources */,
