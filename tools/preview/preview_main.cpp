@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <utility>
 #include <vector>
 #include <zlib.h>
 
@@ -19,12 +20,20 @@
 #include "map_view.h"
 #include "map_tiles.h"
 
-// Stubs for the routes:: symbols map_view.cpp references (route preview). The
-// preview never has an active route, so an empty route is fine.
+// The routes:: symbols map_view.cpp references for the route preview. These
+// used to be empty stubs on the grounds that "the preview never has an active
+// route" — which quietly made the accept page a lie: ui_render_route_preview
+// returns immediately without points, so nav_prompt.png was rendered over the
+// ordinary map view and showed the rider's own neighbourhood rather than the
+// route they were being asked to accept. The screen sets a real one.
 namespace routes {
-int pointCount() { return 0; }
-void point(int, double& lat, double& lon) { lat = 0; lon = 0; }
-const char* activeName() { return ""; }
+std::vector<std::pair<double, double>> gRoute;
+int pointCount() { return (int)gRoute.size(); }
+void point(int i, double& lat, double& lon) {
+    lat = gRoute[i].first;
+    lon = gRoute[i].second;
+}
+const char* activeName() { return "mission_dolores.gpx"; }
 }
 
 // map_store is device-only (SD-backed tile store). On the host, forward the
@@ -458,6 +467,10 @@ int main(int argc, char** argv) {
     clearWhite(fb.data());
     ui_render_list("SENSORS", sensors, 3, "tap a sensor to pair it · scanning...",
                    fb.data());
+    // ui_render_list does NOT draw the title it is handed — the header is the
+    // status bar, which ui_dashboard draws over every list screen. Leaving it
+    // out here is why these screens looked headerless on the site.
+    ui::statusBar(s, fb.data(), "SENSORS");
     emit("sensors.png");
 
     // Routes list
@@ -475,6 +488,7 @@ int main(int argc, char** argv) {
     clearWhite(fb.data());
     ui_render_list("NAVIGATE", routes, 3,
                    "put .gpx files in /routes on the SD card", fb.data());
+    ui::statusBar(s, fb.data(), "NAVIGATE");
     emit("routes.png");
 
     // Settings
@@ -584,10 +598,6 @@ int main(int argc, char** argv) {
     }
 
     // Nav prompt over the map
-    clearWhite(fb.data());
-    ui_render_map(map, s, fb.data());
-    ui_render_nav_prompt("mission_dolores.gpx", 8, fb.data());
-    emit("nav_prompt.png");
 
     // Turn-by-turn banner over the map. navBannerVisible must move the compass
     // clear of the banner — it used to be drawn underneath it and invisible.
@@ -597,6 +607,32 @@ int main(int argc, char** argv) {
     ui_render_nav_banner("Turn left onto Valencia St", 180, false, fb.data());
     emit("nav_banner.png");
     map.navBannerVisible = false;
+
+    // LAST on purpose. `map` holds POINTERS into map_tiles' projected buffers
+    // and the route preview re-projects them for its own viewport, so any map
+    // screen rendered after this one would silently inherit the preview's
+    // framing rather than its own.
+    // The accept page, composed exactly as ui_dashboard.cpp composes it: the
+    // WHOLE route fitted so it can be recognized before accepting, then the
+    // status band cleared and redrawn over it (the map renderer does not clip,
+    // so its road and water fills would otherwise paint over the clock), then
+    // the sheet. Rendering it over the live map instead — which is what this
+    // did — showed a route preview containing no route.
+    //
+    // Alamo Square down to Mission Dolores, the route the sheet names.
+    ::routes::gRoute = {
+        {37.7764, -122.4346}, {37.7742, -122.4344}, {37.7712, -122.4341},
+        {37.7690, -122.4297}, {37.7668, -122.4293}, {37.7641, -122.4288},
+        {37.7618, -122.4275}, {37.7596, -122.4269},
+    };
+    clearWhite(fb.data());
+    ui_render_route_preview(fb.data());
+    epd_fill_rect({0, 0, epd_rotated_display_width(), ui::STATUS_H}, 0xFF,
+                  fb.data());
+    ui::statusBar(s, fb.data());
+    ui_render_nav_prompt(::routes::activeName(), 8, fb.data());
+    emit("nav_prompt.png");
+    ::routes::gRoute.clear();
 
     return 0;
 }
