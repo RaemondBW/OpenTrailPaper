@@ -62,3 +62,4 @@ sdkconfig.old
 
 # clangd background index (regenerable, binary churn)
 .cache/
+tools/aux_test/aux_test

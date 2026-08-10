@@ -26,6 +26,7 @@
 #include "sd_bus.h"
 #include "usb_storage.h"
 #include "power_mgmt.h"
+#include "aux_sensors.h"
 #include "diag.h"
 #include <esp_sleep.h>
 #include <soc/rtc_cntl_reg.h>
@@ -486,6 +487,49 @@ void setup() {
                                 gpsOk ? "aiding sent" : "no data");
     ui_dashboard::bootStatus("GPS", gpsOk);
     diag::log("gps module: %s", gps_service::moduleName());
+
+    // Optional Qwiic sensors, probed HERE — inside the window where the boot
+    // screen is live.
+    //
+    // bootScreenLive goes false at the end of ui_dashboard::begin(), so the
+    // first version of this ran after the handover and every bootStep() it made
+    // was a silent no-op: the lines existed in the code and never once reached
+    // the glass. Sitting ahead of the map index (the longest step of a boot)
+    // also means they stay readable for a few seconds rather than flashing past.
+    const bool auxOk = aux_sensors::begin();
+    if (!auxOk) {
+        // Nothing on the connector: ONE quiet line. Three "absent" rows on
+        // every boot of every device that never had these fitted is noise, and
+        // the boot log is read by someone looking for what went wrong.
+        ui_dashboard::bootStep("Qwiic");
+        ui_dashboard::bootDetailFor("Qwiic", "none attached");
+        ui_dashboard::bootStatus("Qwiic", true);
+    } else {
+        // Something IS attached, so show the full roster — one line each. This
+        // is the case where the rider wants detail: a board that is plugged in
+        // and half answering is a real fault (a bad lead, the wrong address,
+        // a chip that needs a power cycle), and it is only visible if the thing
+        // that did NOT come up gets a line of its own saying so.
+        ui_dashboard::bootStep("Baro");
+        if (aux_sensors::haveBaro())
+            ui_dashboard::bootDetailFor("Baro", "BME280 @0x%02X",
+                                        aux_sensors::baroAddress());
+        else
+            ui_dashboard::bootDetailFor("Baro", "not found @0x76/0x77");
+        ui_dashboard::bootStatus("Baro", aux_sensors::haveBaro());
+
+        ui_dashboard::bootStep("Motion");
+        ui_dashboard::bootDetailFor("Motion", aux_sensors::haveMotion()
+                                                  ? "LSM303AGR @0x19"
+                                                  : "not found @0x19");
+        ui_dashboard::bootStatus("Motion", aux_sensors::haveMotion());
+
+        ui_dashboard::bootStep("Compass");
+        ui_dashboard::bootDetailFor("Compass", aux_sensors::haveCompass()
+                                                   ? "LSM303AGR @0x1E"
+                                                   : "not found @0x1E");
+        ui_dashboard::bootStatus("Compass", aux_sensors::haveCompass());
+    }
     // Warm-start seed: hand the receiver the last-known position (and time if
     // the system clock survived deep sleep) so it doesn't cold-search the whole
     // sky. Position alone still narrows the search; time is added when valid.
@@ -555,6 +599,7 @@ void setup() {
     ble_sensors::begin();
     BOOT_STEP("ble_sensors done -> ble_server::begin()");
     ble_server::begin();   // GATT server for the iOS companion app
+
     BOOT_STEP("ble_server done -> power_mgmt::begin()");
 
     // Enable automatic light sleep now that every peripheral (GPS UART, BLE, EPD)
@@ -567,6 +612,10 @@ void setup() {
     xTaskCreatePinnedToCore(ble_server::task, "srv", 4096, nullptr, 1, nullptr, 0);
     xTaskCreatePinnedToCore(ride_recorder::task, "rec", 6144, nullptr, 3, nullptr, 1);
     xTaskCreatePinnedToCore(batteryTask, "bat", 3072, nullptr, 1, nullptr, 1);
+    // No task at all when nothing is fitted — the whole feature costs an absent
+    // device exactly one bus probe at boot.
+    if (auxOk)
+        xTaskCreatePinnedToCore(aux_sensors::task, "aux", 3072, nullptr, 1, nullptr, 1);
     xTaskCreatePinnedToCore(ui_dashboard::task, "ui", 8192, nullptr, 2, nullptr, 1);
 
     Serial.println("[main] all tasks started");

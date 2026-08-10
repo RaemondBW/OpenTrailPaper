@@ -2,12 +2,14 @@
 
 #include <Arduino.h>
 #include <Preferences.h>
+#include <cmath>
 
 #include "config.h"
 
 namespace {
 
 Preferences prefs;
+float compassOff = NAN;
 int ftp = FTP_WATTS;
 int tz = TIMEZONE_OFFSET_MINUTES;
 int bl = 2;  // backlight level 0-3
@@ -30,6 +32,7 @@ namespace settings {
 
 void begin() {
     prefs.begin("bike", false);
+    compassOff = prefs.getFloat("cmpoff", NAN);
     ftp = prefs.getInt("ftp", FTP_WATTS);
     tz = prefs.getInt("tz", TIMEZONE_OFFSET_MINUTES);
     bl = prefs.getInt("bl", 2);
@@ -125,6 +128,15 @@ void setLastPosition(double lat, double lon) {
     lastLon = lon;
     prefs.putDouble("lastlat", lat);
     prefs.putDouble("lastlon", lon);
+}
+
+float compassOffsetDeg() { return compassOff; }
+void setCompassOffsetDeg(float deg) {
+    // Written rarely on purpose — NVS has a finite erase budget and this is a
+    // slowly-learned constant, not a live value. aux_sensors only calls this
+    // when the learned offset has actually drifted a few degrees.
+    compassOff = deg;
+    prefs.putFloat("cmpoff", deg);
 }
 
 bool rtcTrusted() { return rtcSynced; }

@@ -537,9 +537,18 @@ void dashFieldValue(uint8_t field, const RideState& s, char* val, size_t valCap,
             *unit = "%";
             break;
         case DF_ALTITUDE:
-            // The map DEM, never the GPS chip's altitude — see the README's
-            // "Elevation without a barometer".
-            if (s.mapElevationValid)
+            // The barometer when one is fitted, else the map DEM — and never
+            // the GPS chip's altitude, which is far too noisy (see the README's
+            // "Elevation without a barometer").
+            //
+            // These are not two rival readings: the DEM is what CALIBRATES the
+            // barometer's sea-level reference (aux_sensors), so the barometric
+            // number starts from the map's idea of the ground and then resolves
+            // the metre-by-metre change the grid cannot — a bridge, an
+            // overpass, the climb between two grid posts.
+            if (s.baroValid)
+                snprintf(val, valCap, "%.0f", units::elev(s.baroAltM, s.useMiles));
+            else if (s.mapElevationValid)
                 snprintf(val, valCap, "%.0f", units::elev(s.mapElevationM, s.useMiles));
             else snprintf(val, valCap, "--");
             *unit = units::elevLabel(s.useMiles);
@@ -1709,12 +1718,20 @@ void ui_render_boot_screen(const char* version, const char* const* lines,
             snprintf(body, sizeof(body), "%s  %s", lines[i], detail[i]);
         else
             snprintf(body, sizeof(body), "%s", lines[i]);
-        ui::text(&Arial_B, ui::MARGIN + 82, y, body, fb, EPD_DRAW_ALIGN_LEFT,
-                 ui::INK);
 
         // Status bracket, right-aligned: the column the eye scans.
         const char* st = state[i] == BOOT_OK ? "[ OK ]"
                        : state[i] == BOOT_FAIL ? "[FAIL]" : "[ .. ]";
+
+        // Clamp the body to what is left before that column. A long detail used
+        // to run straight under the bracket — "42 rides[ OK ]" with no gap —
+        // and the status is the part that has to stay readable, because it is
+        // the whole reason someone is looking at this screen.
+        const int bodyX = ui::MARGIN + 82;
+        const int bodyMax = statusX - ui::textWidth(&Arial_B, st) - ui::STEP - bodyX;
+        char fitted[64];
+        fitText(&Arial_B, body, bodyMax, fitted, sizeof(fitted));
+        ui::text(&Arial_B, bodyX, y, fitted, fb, EPD_DRAW_ALIGN_LEFT, ui::INK);
         ui::text(&Arial_B, statusX, y, st, fb, EPD_DRAW_ALIGN_RIGHT, ui::INK);
         y += lineH;
     }

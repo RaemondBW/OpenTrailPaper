@@ -205,10 +205,13 @@ void accumulateStats(const RideState& s) {
         hrCount++;
     }
 
-    // Climb from the map DEM elevation (the GPS chip's altitude is intentionally
-    // unused — it's far too noisy). 3 m hysteresis smooths the accumulation.
-    if (s.mapElevationValid) {
-        float elev = s.mapElevationM;
+    // Climb from the barometer when one is fitted, else the map DEM elevation.
+    // (The GPS chip's altitude is intentionally unused either way — far too
+    // noisy.) 3 m hysteresis smooths the accumulation; the barometer is smooth
+    // enough not to need it, but keeping one path means ascent totals do not
+    // change character depending on what is plugged in.
+    if (s.baroValid || s.mapElevationValid) {
+        float elev = s.baroValid ? s.baroAltM : s.mapElevationM;
         if (!climbBaseValid) {
             climbBaseAlt = elev;
             climbBaseValid = true;
@@ -635,7 +638,8 @@ void task(void*) {
             lastFixMs = nowMs;
             havePrevFix = true;
             if (usePhone) lastPhoneFixMs = s.phoneFixMs;
-            if (s.mapElevationValid) grade = updateGrade(s.mapElevationM);
+            if (s.baroValid) grade = updateGrade(s.baroAltM);
+            else if (s.mapElevationValid) grade = updateGrade(s.mapElevationM);
 
             FitWriter::Record r;
             // With no lock of our own, s.utc is whatever the last fix left
@@ -650,7 +654,13 @@ void task(void*) {
             // reason), and mixing it into the record stream with DEM values
             // makes phone-side ascent totals disagree with the device. Mark the
             // point's altitude invalid instead when the DEM has no value.
-            r.altitudeM = s.mapElevationValid ? s.mapElevationM : NAN;
+            // A barometer beats the elevation grid for a ride profile: the DEM
+            // is quantised to its own grid and knows nothing about a bridge or
+            // an overpass, while pressure resolves a metre and follows the road
+            // the rider is actually on. The DEM stays the fallback, and stays
+            // the thing that CALIBRATES the barometer (aux_sensors).
+            r.altitudeM = s.baroValid ? s.baroAltM
+                        : s.mapElevationValid ? s.mapElevationM : NAN;
             // s.speedKmh comes from the receiver, so on the phone path it is
             // whatever the last device fix left behind — stale, and usually the
             // speed the rider was doing before the signal went. Derive it from
