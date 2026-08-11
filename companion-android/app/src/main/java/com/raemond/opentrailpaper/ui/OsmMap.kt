@@ -1,0 +1,441 @@
+package com.raemond.opentrailpaper.ui
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import com.raemond.opentrailpaper.data.BoundingBox
+import com.raemond.opentrailpaper.data.LatLon
+import com.raemond.opentrailpaper.map.EInkArea
+import com.raemond.opentrailpaper.map.EInkOverlay
+import com.raemond.opentrailpaper.map.HexOverlay
+import com.raemond.opentrailpaper.map.MapMarkers
+import com.raemond.opentrailpaper.map.MapStyle
+import com.raemond.opentrailpaper.map.OutlineHex
+import com.raemond.opentrailpaper.map.SelectionHex
+import org.osmdroid.events.MapEventsReceiver
+import org.osmdroid.events.MapListener
+import org.osmdroid.events.ScrollEvent
+import org.osmdroid.events.ZoomEvent
+import org.osmdroid.tileprovider.MapTileProviderBasic
+import org.osmdroid.util.GeoPoint
+import org.osmdroid.views.CustomZoomButtonsController
+import org.osmdroid.views.MapView
+import org.osmdroid.views.overlay.MapEventsOverlay
+import org.osmdroid.views.overlay.Marker
+import org.osmdroid.views.overlay.TilesOverlay
+import org.osmdroid.views.overlay.Polyline
+import org.osmdroid.views.overlay.mylocation.GpsMyLocationProvider
+import org.osmdroid.views.overlay.mylocation.MyLocationNewOverlay
+import java.util.UUID
+
+/**
+ * A one-shot camera move. Identity is the token, so re-issuing the same target
+ * (tapping "recenter" twice) still moves the map.
+ */
+class MapCamera private constructor(val target: Target) {
+    sealed interface Target {
+        data class Region(val center: LatLon, val spanDeg: Double) : Target
+        data class Box(val box: BoundingBox, val paddingPx: Int) : Target
+        data object FollowUser : Target
+    }
+
+    val token: UUID = UUID.randomUUID()
+
+    override fun equals(other: Any?) = other is MapCamera && other.token == token
+    override fun hashCode() = token.hashCode()
+
+    companion object {
+        fun region(center: LatLon, spanDeg: Double) = MapCamera(Target.Region(center, spanDeg))
+        fun box(box: BoundingBox, paddingPx: Int = 48) = MapCamera(Target.Box(box, paddingPx))
+        fun followUser() = MapCamera(Target.FollowUser)
+    }
+}
+
+/**
+ * Screen point -> coordinate, for the gestures Compose still owns (the
+ * drag-a-box selection on the Maps screen). Handed the live map by [OsmMap].
+ */
+class MapProjector {
+    internal var map: MapView? = null
+
+    fun coordinate(x: Float, y: Float): LatLon? {
+        val m = map ?: return null
+        if (m.width == 0) return null
+        val geo = m.projection.fromPixels(x.toInt(), y.toInt())
+        return LatLon(geo.latitude, geo.longitude)
+    }
+}
+
+/** A pin the Route screen drops on the chosen destination. */
+data class MapDestination(val name: String, val coordinate: LatLon)
+
+/**
+ * The map both the Route and Maps screens draw on: standard OSM everywhere,
+ * except the areas this phone has downloaded — those are painted as the head unit
+ * will render them (see [EInkOverlay]). Areas the device also has get a green
+ * check.
+ *
+ * A real `MapView` behind `AndroidView`, for the same reason iOS wraps `MKMapView`
+ * in a `UIViewRepresentable` rather than using SwiftUI's `Map`: the e-ink areas
+ * have to be drawn inside the map's own draw pass to stay pinned to the ground
+ * while panning.
+ */
+@Composable
+fun OsmMap(
+    modifier: Modifier = Modifier,
+    areas: List<EInkArea> = emptyList(),
+    outlines: List<OutlineHex> = emptyList(),
+    selection: List<SelectionHex> = emptyList(),
+    route: List<LatLon>? = null,
+    destination: MapDestination? = null,
+    camera: MapCamera? = null,
+    showUserLocation: Boolean = false,
+    projector: MapProjector? = null,
+    onTap: ((LatLon) -> Unit)? = null,
+    onLongPress: ((LatLon) -> Unit)? = null,
+    onRegionChange: ((BoundingBox) -> Unit)? = null,
+) {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    val mapView = remember {
+        MapView(context).apply {
+            setTileSource(MapStyle.base)
+            setMultiTouchControls(true)
+            zoomController.setVisibility(CustomZoomButtonsController.Visibility.NEVER)
+            // osmdroid repeats the world sideways by default, which puts a second
+            // copy of every downloaded hexagon on screen at low zoom.
+            isHorizontalMapRepetitionEnabled = false
+            isVerticalMapRepetitionEnabled = false
+            setBackgroundColor(Palette.paper.toArgb())
+            // Tiles that haven't arrived show paper rather than osmdroid's grey
+            // graph-paper grid, so a map loading looks like a map, not a fault.
+            overlayManager.tilesOverlay.loadingBackgroundColor = Palette.paper.toArgb()
+            overlayManager.tilesOverlay.loadingLineColor = Palette.hairline.toArgb()
+            controller.setZoom(12.0)
+        }
+    }
+
+    // Held across recompositions so each update can diff rather than rebuild.
+    val state = remember { MapState() }
+
+    // Place names, as their own transparent layer. See MapStyle: this is what
+    // lets a downloaded area stay readable once it is painted in the device's ink.
+    val labelsOverlay = remember {
+        TilesOverlay(MapTileProviderBasic(context, MapStyle.labels), context).apply {
+            loadingBackgroundColor = android.graphics.Color.TRANSPARENT
+            loadingLineColor = android.graphics.Color.TRANSPARENT
+        }
+    }
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> mapView.onResume()
+                Lifecycle.Event.ON_PAUSE -> mapView.onPause()
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            state.locationOverlay?.disableMyLocation()
+            labelsOverlay.onDetach(mapView)
+            mapView.onDetach()
+        }
+    }
+
+    Box(modifier) {
+    AndroidView(
+        modifier = Modifier.matchParentSize(),
+        factory = { mapView },
+        update = { map ->
+            state.onTap = onTap
+            state.onLongPress = onLongPress
+            state.onRegionChange = onRegionChange
+            projector?.map = map
+
+            if (!state.wired) {
+                state.wired = true
+                map.overlays.add(
+                    MapEventsOverlay(object : MapEventsReceiver {
+                        override fun singleTapConfirmedHelper(p: GeoPoint?): Boolean {
+                            p ?: return false
+                            state.onTap?.invoke(LatLon(p.latitude, p.longitude))
+                            return state.onTap != null
+                        }
+
+                        override fun longPressHelper(p: GeoPoint?): Boolean {
+                            p ?: return false
+                            state.onLongPress?.invoke(LatLon(p.latitude, p.longitude))
+                            return state.onLongPress != null
+                        }
+                    }),
+                )
+                map.addMapListener(object : MapListener {
+                    override fun onScroll(event: ScrollEvent?): Boolean {
+                        state.publishRegion(map)
+                        return false
+                    }
+
+                    override fun onZoom(event: ZoomEvent?): Boolean {
+                        state.publishRegion(map)
+                        return false
+                    }
+                })
+            }
+
+            if (showUserLocation && state.locationOverlay == null) {
+                val overlay = MyLocationNewOverlay(GpsMyLocationProvider(context), map)
+                // osmdroid's stock marker is a large arrow-and-person sprite that
+                // belongs to a different decade of map design. The blue dot is
+                // what "you are here" looks like on both phones.
+                val dot = MapMarkers.locationDot(map.resources.displayMetrics.density)
+                overlay.setPersonIcon(dot)
+                overlay.setDirectionIcon(dot)
+                overlay.setPersonAnchor(0.5f, 0.5f)
+                overlay.setDirectionAnchor(0.5f, 0.5f)
+                overlay.enableMyLocation()
+                state.locationOverlay = overlay
+                map.overlays.add(overlay)
+            } else if (!showUserLocation) {
+                state.locationOverlay?.let {
+                    it.disableMyLocation()
+                    map.overlays.remove(it)
+                }
+                state.locationOverlay = null
+            }
+
+            // Overlays are expensive to rebuild, and Compose calls this for any
+            // state change on the host screen (a progress string, a text field).
+            // Only touch the map when what's actually drawn has changed.
+            val signature = contentSignature(areas, outlines, selection, route, destination)
+            if (signature != state.contentKey) {
+                state.contentKey = signature
+                rebuildContent(
+                    map,
+                    state,
+                    map.resources.displayMetrics.density,
+                    labelsOverlay,
+                    areas,
+                    outlines,
+                    selection,
+                    route,
+                    destination,
+                )
+            }
+
+            if (camera != null && camera != state.lastCamera) {
+                state.lastCamera = camera
+                apply(map, state, camera)
+            }
+            map.invalidate()
+        },
+    )
+
+    // Required by OpenStreetMap and by CARTO, and quiet enough to live under the
+    // screen's own title without competing with it. Bottom-left is where a map
+    // would normally put this and where every screen here has its controls.
+    Text(
+        MapStyle.attribution,
+        style = barlow(9.sp),
+        color = Palette.muted,
+        maxLines = 1,
+        modifier = Modifier
+            .align(Alignment.TopStart)
+            .windowInsetsPadding(WindowInsets.statusBars)
+            .padding(start = 18.dp, top = 66.dp)
+            .background(Palette.paper.copy(alpha = 0.72f), RoundedCornerShape(4.dp))
+            .padding(horizontal = 5.dp, vertical = 2.dp),
+    )
+    }
+}
+
+/**
+ * Everything that changes what's drawn, and nothing that doesn't. The route is in
+ * here because overlays draw in list order — it has to be re-added on top
+ * whenever the areas underneath are rebuilt, or a downloaded area's paper simply
+ * paints over it.
+ */
+private fun contentSignature(
+    areas: List<EInkArea>,
+    outlines: List<OutlineHex>,
+    selection: List<SelectionHex>,
+    route: List<LatLon>?,
+    destination: MapDestination?,
+): Int {
+    // A hash, not a joined string. This runs on every Compose update of the host
+    // screen, and building a comma-joined list of several hundred hex ids each
+    // time was itself a measurable part of the Maps page's stutter during a
+    // large download.
+    var h = 17
+    for (a in areas) h = h * 31 + a.id.hashCode() + if (a.synced) 1 else 0
+    for (o in outlines) {
+        h = h * 31 + o.id.hashCode() + (if (o.synced) 2 else 0) + (if (o.missing) 4 else 0)
+    }
+    for (s in selection) h = h * 31 + s.id.hashCode() + s.kind.ordinal
+    h = h * 31 + (route?.size ?: 0)
+    route?.firstOrNull()?.let { h = h * 31 + it.hashCode() }
+    route?.lastOrNull()?.let { h = h * 31 + it.hashCode() }
+    h = h * 31 + (destination?.hashCode() ?: 0)
+    return h
+}
+
+private fun rebuildContent(
+    map: MapView,
+    state: MapState,
+    density: Float,
+    labelsOverlay: TilesOverlay,
+    areas: List<EInkArea>,
+    outlines: List<OutlineHex>,
+    selection: List<SelectionHex>,
+    route: List<LatLon>?,
+    destination: MapDestination?,
+) {
+    state.contentOverlays.forEach { map.overlays.remove(it) }
+    state.contentOverlays.clear()
+
+    fun add(overlay: org.osmdroid.views.overlay.Overlay) {
+        // Below the location overlay, which must stay on top of everything.
+        val insertAt = state.locationOverlay?.let { map.overlays.indexOf(it) } ?: -1
+        if (insertAt >= 0) map.overlays.add(insertAt, overlay) else map.overlays.add(overlay)
+        state.contentOverlays.add(overlay)
+    }
+
+    // Selection sits UNDER the e-ink areas: a hex already downloaded should read
+    // as downloaded, not as a pending selection tint.
+    val flats = ArrayList<HexOverlay.Hex>(selection.size + outlines.size)
+    for (hex in selection) {
+        flats.add(
+            HexOverlay.Hex(
+                hex.hexagon,
+                when (hex.kind) {
+                    SelectionHex.Kind.PENDING -> HexOverlay.Style.SELECTION_PENDING
+                    SelectionHex.Kind.DONE -> HexOverlay.Style.SELECTION_DONE
+                    SelectionHex.Kind.EXCLUDED -> HexOverlay.Style.SELECTION_EXCLUDED
+                },
+            ),
+        )
+    }
+    for (hex in outlines) {
+        flats.add(
+            HexOverlay.Hex(
+                hex.hexagon,
+                when {
+                    hex.missing -> HexOverlay.Style.MISSING
+                    hex.synced -> HexOverlay.Style.OUTLINE_SYNCED
+                    else -> HexOverlay.Style.OUTLINE_PHONE
+                },
+                check = hex.synced && !hex.missing,
+            ),
+        )
+    }
+    if (flats.isNotEmpty()) add(HexOverlay(flats, density))
+
+    for (area in areas) add(EInkOverlay(area, density))
+
+    // Labels last of the ground layers, so street and place names read back
+    // through the screentones instead of being buried under them.
+    add(labelsOverlay)
+    // The check marks for painted areas ride on their own flat overlay, so they
+    // land above every hexagon's ink rather than under the next one drawn.
+    val checks = areas.filter { it.synced }
+        .map { HexOverlay.Hex(it.hexagon, HexOverlay.Style.OUTLINE_SYNCED, check = true) }
+    if (checks.isNotEmpty()) add(HexOverlay(checks, density))
+
+    // Last, so the route always sits on top of the paper.
+    if (route != null && route.size > 1) {
+        val line = Polyline(map)
+        line.setPoints(route.map { GeoPoint(it.lat, it.lon) })
+        line.outlinePaint.color = Palette.accent.toArgb()
+        line.outlinePaint.strokeWidth = 5f * density
+        line.outlinePaint.strokeCap = android.graphics.Paint.Cap.ROUND
+        line.outlinePaint.strokeJoin = android.graphics.Paint.Join.ROUND
+        add(line)
+    }
+
+    if (destination != null) {
+        val marker = Marker(map)
+        marker.position = GeoPoint(destination.coordinate.lat, destination.coordinate.lon)
+        marker.title = destination.name
+        marker.icon = android.graphics.drawable.BitmapDrawable(
+            map.resources,
+            MapMarkers.destinationPin(density),
+        )
+        marker.setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
+        add(marker)
+    }
+}
+
+private fun apply(map: MapView, state: MapState, camera: MapCamera) {
+    // Only break follow mode if it is actually engaged.
+    fun stopFollowing() {
+        state.locationOverlay?.disableFollowLocation()
+    }
+    when (val target = camera.target) {
+        is MapCamera.Target.Region -> {
+            stopFollowing()
+            map.controller.setCenter(GeoPoint(target.center.lat, target.center.lon))
+            // osmdroid zooms by level, so a degree span becomes the level whose
+            // world is that many degrees wide across the view.
+            val zoom = zoomForSpan(target.spanDeg, map.width)
+            map.controller.setZoom(zoom)
+        }
+
+        is MapCamera.Target.Box -> {
+            stopFollowing()
+            val b = target.box
+            map.zoomToBoundingBox(
+                org.osmdroid.util.BoundingBox(b.north, b.east, b.south, b.west),
+                true,
+                target.paddingPx,
+            )
+        }
+
+        MapCamera.Target.FollowUser -> state.locationOverlay?.enableFollowLocation()
+    }
+}
+
+/** The zoom level at which [spanDeg] of longitude fills [widthPx]. */
+private fun zoomForSpan(spanDeg: Double, widthPx: Int): Double {
+    val width = if (widthPx > 0) widthPx else 1080
+    val tile = MapStyle.TILE_SIZE.toDouble()
+    val z = kotlin.math.ln(width * 360.0 / (tile * spanDeg)) / kotlin.math.ln(2.0)
+    return z.coerceIn(2.0, 19.0)
+}
+
+private class MapState {
+    var wired = false
+    var contentKey = 0
+    var lastCamera: MapCamera? = null
+    var locationOverlay: MyLocationNewOverlay? = null
+    val contentOverlays = ArrayList<org.osmdroid.views.overlay.Overlay>()
+
+    var onTap: ((LatLon) -> Unit)? = null
+    var onLongPress: ((LatLon) -> Unit)? = null
+    var onRegionChange: ((BoundingBox) -> Unit)? = null
+
+    fun publishRegion(map: MapView) {
+        val cb = onRegionChange ?: return
+        val b = map.boundingBox
+        cb(BoundingBox(b.latSouth, b.lonWest, b.latNorth, b.lonEast))
+    }
+}

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- Downloaded rides (files/rides) and device logs (cache/logs), the two
+         things the app hands to other apps. -->
+    <files-path
+        name="rides"
+        path="rides/" />
+    <cache-path
+        name="logs"
+        path="logs/" />
+</paths>

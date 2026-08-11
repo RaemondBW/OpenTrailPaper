@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Themed-icon silhouette: the hexagon the whole map scheme is built on, with
+     a route running through it. A tinted copy of the full mark reads as mud at
+     launcher size, so the monochrome layer is drawn rather than derived. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#000000"
+        android:pathData="M54,24 L79,38.5 L79,69.5 L54,84 L29,69.5 L29,38.5 Z"
+        android:fillAlpha="0.18" />
+    <path
+        android:strokeColor="#000000"
+        android:strokeWidth="4"
+        android:strokeLineJoin="round"
+        android:pathData="M54,24 L79,38.5 L79,69.5 L54,84 L29,69.5 L29,38.5 Z" />
+    <path
+        android:strokeColor="#000000"
+        android:strokeWidth="5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M38,72 L38,58 L54,58 L54,44 L70,44" />
+</vector>
