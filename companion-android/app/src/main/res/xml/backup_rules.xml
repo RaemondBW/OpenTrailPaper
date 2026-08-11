@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!-- Built map tiles are large and refetchable; rides are not, so they stay
+         in the backup. Mirrors the iOS cache being excluded from iCloud. -->
+    <exclude
+        domain="file"
+        path="tiles/" />
+    <exclude
+        domain="external"
+        path="osmdroid/" />
+</full-backup-content>

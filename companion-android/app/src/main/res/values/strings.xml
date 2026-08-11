@@ -1,0 +1,6 @@
+<resources>
+    <string name="app_name">OpenTrailPaper</string>
+    <string name="ride_service_channel">Ride recording</string>
+    <string name="ride_service_title">Ride in progress</string>
+    <string name="ride_service_text">Sending your position to the head unit as a backup fix.</string>
+</resources>

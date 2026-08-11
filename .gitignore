@@ -74,3 +74,11 @@ sdkconfig.old
 tools/aux_test/aux_test
 
 private_keys/*
+
+# Android companion build output and machine-local SDK path
+companion-android/build/
+companion-android/app/build/
+companion-android/app/.cxx/
+companion-android/.gradle/
+companion-android/local.properties
+companion-android/.idea/

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Mirrors Palette in ui/Theme.kt (and companion-ios Theme.swift). Only the
+         few the platform theme itself needs live here. -->
+    <color name="paper">#FFEDEAE1</color>
+    <color name="ink">#FF1A1A1A</color>
+    <color name="accent">#FFF4501E</color>
+</resources>

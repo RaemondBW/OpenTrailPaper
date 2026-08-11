@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The shared 1024 px app mark, inset to clear the adaptive icon's safe zone
+     (the outer ~18% of an adaptive foreground can be masked away). -->
+<inset xmlns:android="http://schemas.android.com/apk/res/android"
+    android:drawable="@mipmap/ic_launcher_image"
+    android:inset="17%" />
