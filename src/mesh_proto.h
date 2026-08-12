@@ -88,6 +88,24 @@ struct User {
 size_t encodeUser(const User& u, uint8_t* out, size_t cap);
 bool decodeUser(const uint8_t* in, size_t len, User& u);
 
+// meshtastic.Position — where a node says it is. Decoded only; this firmware
+// never sends one (see docs/meshtastic.md).
+struct Position {
+    bool     valid = false;    // false when the node sent no usable fix
+    double   latitude = 0;
+    double   longitude = 0;
+    int32_t  altitudeM = 0;
+    uint32_t utc = 0;          // 0 if the sender did not stamp it
+    uint8_t  satsInView = 0;
+    // How much of the coordinate the sender chose to publish. Meshtastic lets a
+    // node blur its position deliberately, and 32 (or absent) means full
+    // precision — anything less is a deliberately coarse fix, which is worth
+    // showing rather than presenting as exact.
+    uint8_t  precisionBits = 32;
+};
+
+bool decodePosition(const uint8_t* in, size_t len, Position& p);
+
 // meshtastic.Routing, error_reason field only — which is all an ack is.
 // NONE (0) is an ACK; anything else is a NAK carrying the reason.
 size_t encodeRouting(uint32_t errorReason, uint8_t* out, size_t cap);

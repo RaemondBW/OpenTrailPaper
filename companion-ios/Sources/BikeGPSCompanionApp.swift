@@ -119,7 +119,8 @@ struct RootView: View {
         if a.contains(where: { $0.hasPrefix("-onboarding") }) { return true }
         let demoFlags = ["-tab-route", "-tab-rides", "-tab-mesh", "-tab-settings",
                          "-demo-route", "-demo-rides", "-demo-update", "-demo-dash",
-                         "-demo-mesh", "-demo-mesh-settings"]
+                         "-demo-mesh", "-demo-mesh-settings", "-demo-mesh-map",
+                         "-demo-mesh-nodes"]
         if demoFlags.contains(where: a.contains) { return false }
         return !UserDefaults.standard.bool(forKey: BLEManager.onboardedKey)
     }

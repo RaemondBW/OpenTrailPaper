@@ -54,6 +54,17 @@ struct Node {
     int8_t   snr = 0;
     int8_t   rssi = 0;
     uint8_t  hops = 0;
+
+    // Where the node last said it was. Nodes broadcast POSITION_APP on their own
+    // schedule, so plenty of neighbours are known without ever having one —
+    // hasPosition is the difference between "has not told us" and "is at 0,0".
+    bool     hasPosition = false;
+    double   latitude = 0;
+    double   longitude = 0;
+    int32_t  altitudeM = 0;
+    uint32_t positionMs = 0;    // millis() when it arrived, for staleness
+    uint8_t  satsInView = 0;
+    uint8_t  precisionBits = 32;   // < 32 = the sender blurred it deliberately
 };
 
 struct Stats {

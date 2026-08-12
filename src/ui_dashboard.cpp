@@ -1400,6 +1400,12 @@ static void printMeshReport() {
                       n.longName[0] ? n.longName : "(no NodeInfo yet)",
                       n.shortName, n.rssi, n.snr, n.hops, n.hops == 1 ? "" : "s",
                       (unsigned long)((millis() - n.lastHeardMs) / 1000));
+        if (n.hasPosition) {
+            Serial.printf("             %.5f,%.5f  %dm  %u sats%s  (%lus ago)\n",
+                          n.latitude, n.longitude, (int)n.altitudeM, n.satsInView,
+                          n.precisionBits < 32 ? "  IMPRECISE" : "",
+                          (unsigned long)((millis() - n.positionMs) / 1000));
+        }
     }
 
     const int mc = mesh_service::messageCount();

@@ -292,6 +292,118 @@ static void testUserProto() {
           "over-long name is truncated to the field size");
 }
 
+// meshtastic.Position. The coordinates are sfixed32 — wire type 5, little-endian
+// two's complement — which is the one place this codec reads a fixed-width field
+// rather than a varint, and getting it wrong turns a west longitude into four
+// billion rather than failing visibly.
+//
+// Note putTag(): field numbers above 15 need a multi-byte varint tag (sats_in_view
+// is field 19, so 19<<3 = 152 does NOT fit in one byte). Writing those by hand is
+// how the first version of this test managed to fail against a correct decoder.
+static void putTag(uint8_t* buf, size_t& n, uint32_t field, uint8_t wire) {
+    uint64_t v = ((uint64_t)field << 3) | wire;
+    while (v >= 0x80) { buf[n++] = (uint8_t)(v | 0x80); v >>= 7; }
+    buf[n++] = (uint8_t)v;
+}
+
+static void testPosition() {
+    // San Francisco: 37.7764, -122.4346. The negative longitude is the point.
+    const int32_t latE7 = 377764000;
+    const int32_t lonE7 = -1224346000;
+    uint8_t buf[64];
+    size_t n = 0;
+    putTag(buf, n, 1, 5);               // latitude_i, sfixed32
+    memcpy(buf + n, &latE7, 4); n += 4;
+    putTag(buf, n, 2, 5);               // longitude_i, sfixed32
+    memcpy(buf + n, &lonE7, 4); n += 4;
+    putTag(buf, n, 3, 0);               // altitude, varint
+    buf[n++] = 52;
+    putTag(buf, n, 19, 0);              // sats_in_view
+    buf[n++] = 9;
+
+    mesh::Position pos;
+    check(mesh::decodePosition(buf, n, pos), "Position decodes");
+    check(pos.valid, "Position is valid");
+    printf("      %.5f, %.5f  %dm  %u sats  %u bits\n", pos.latitude,
+           pos.longitude, (int)pos.altitudeM, pos.satsInView, pos.precisionBits);
+    check(std::fabs(pos.latitude - 37.7764) < 1e-6, "latitude decodes");
+    check(std::fabs(pos.longitude - (-122.4346)) < 1e-6,
+          "a negative longitude decodes as negative");
+    check(pos.altitudeM == 52, "altitude decodes");
+    check(pos.satsInView == 9, "satellite count decodes");
+    check(pos.precisionBits == 32, "precision defaults to full when absent");
+
+    // A node with no fix broadcasts zeroes, and "0,0" must not read as a place.
+    uint8_t zero[16];
+    size_t zn = 0;
+    const int32_t z = 0;
+    putTag(zero, zn, 1, 5);
+    memcpy(zero + zn, &z, 4); zn += 4;
+    putTag(zero, zn, 2, 5);
+    memcpy(zero + zn, &z, 4); zn += 4;
+    mesh::Position nofix;
+    check(mesh::decodePosition(zero, zn, nofix) && !nofix.valid,
+          "0,0 is treated as no fix rather than the null island");
+
+    // A Position carrying only a satellite count is not a location.
+    uint8_t noCoords[8];
+    size_t ncn = 0;
+    putTag(noCoords, ncn, 19, 0);
+    noCoords[ncn++] = 7;
+    mesh::Position bare;
+    check(mesh::decodePosition(noCoords, ncn, bare) && !bare.valid,
+          "a Position with no coordinates is not valid");
+
+    // A deliberately blurred position still decodes, and says so.
+    uint8_t blurred[32];
+    size_t bn = 0;
+    putTag(blurred, bn, 1, 5);
+    memcpy(blurred + bn, &latE7, 4); bn += 4;
+    putTag(blurred, bn, 2, 5);
+    memcpy(blurred + bn, &lonE7, 4); bn += 4;
+    putTag(blurred, bn, 23, 0);         // precision_bits
+    blurred[bn++] = 13;
+    mesh::Position coarse;
+    check(mesh::decodePosition(blurred, bn, coarse) && coarse.valid &&
+              coarse.precisionBits == 13,
+          "a reduced-precision position decodes and reports its precision");
+
+    // Truncated fixed32 must be refused, not read past the end.
+    const uint8_t truncated[] = {(1 << 3) | 5, 0x01, 0x02};
+    mesh::Position cut;
+    check(!mesh::decodePosition(truncated, sizeof(truncated), cut),
+          "a truncated coordinate is rejected");
+
+    // An out-of-range coordinate that still passed CRC must not plot.
+    uint8_t insane[16];
+    size_t inN = 0;
+    const int32_t hugeLat = 2000000000;   // 200 degrees
+    putTag(insane, inN, 1, 5);
+    memcpy(insane + inN, &hugeLat, 4); inN += 4;
+    putTag(insane, inN, 2, 5);
+    memcpy(insane + inN, &lonE7, 4); inN += 4;
+    mesh::Position bogus;
+    check(mesh::decodePosition(insane, inN, bogus) && !bogus.valid,
+          "an out-of-range latitude is rejected");
+
+    // A real node sends fields we do not read, including some above field 15 with
+    // two-byte tags. Those must be skipped without disturbing the coordinates.
+    uint8_t withExtras[64];
+    size_t en = 0;
+    putTag(withExtras, en, 12, 0);      // HDOP
+    withExtras[en++] = 120;
+    putTag(withExtras, en, 1, 5);
+    memcpy(withExtras + en, &latE7, 4); en += 4;
+    putTag(withExtras, en, 16, 0);      // ground_track
+    withExtras[en++] = 90;
+    putTag(withExtras, en, 2, 5);
+    memcpy(withExtras + en, &lonE7, 4); en += 4;
+    mesh::Position mixed;
+    check(mesh::decodePosition(withExtras, en, mixed) && mixed.valid &&
+              std::fabs(mixed.latitude - 37.7764) < 1e-6,
+          "unread fields with multi-byte tags are skipped correctly");
+}
+
 // The full send path, decoded back the way a peer would: header in the clear,
 // payload decrypted with the channel key, Data parsed out of it.
 static void testEndToEnd() {
@@ -362,6 +474,7 @@ int main() {
     testHeader();
     testDataProto();
     testUserProto();
+    testPosition();
     testEndToEnd();
     printf("\n%s (%d failure%s)\n", failures ? "FAILED" : "all passed",
            failures, failures == 1 ? "" : "s");

@@ -945,7 +945,7 @@ class AgnssCb : public NimBLECharacteristicCallbacks {
 //     [0x90] state    flags, node number, frequency, channel, our names
 //     [0x91] message  one per message, oldest first
 //     [0x92]          end of history
-//     [0x93] node     one per known neighbour
+//     [0x93] node     one per known neighbour, with its position if it has sent one
 //     [0x94]          end of node list
 //     [0x95] stats    packet counters
 //     [0x96]          something changed — ask again
@@ -1060,7 +1060,8 @@ void sendMeshNodes() {
     for (int i = 0; i < n; ++i) {
         mesh_service::Node nd;
         if (!mesh_service::nodeAt(i, nd)) continue;
-        uint8_t pkt[80];
+        // 12 fixed + 8 short + 40 long + 17 position = 77 worst case.
+        uint8_t pkt[112];
         int p = 0;
         pkt[p++] = 0x93;
         memcpy(pkt + p, &nd.num, 4); p += 4;
@@ -1071,6 +1072,24 @@ void sendMeshNodes() {
         pkt[p++] = nd.hops;
         p += (int)putStr(pkt + p, nd.shortName, 7);
         p += (int)putStr(pkt + p, nd.longName, 39);
+        // Position, appended so the layout above stays put. A node that has never
+        // broadcast one sends the flag and nothing else: "has not told us" and
+        // "is at 0,0" have to stay distinguishable.
+        pkt[p++] = nd.hasPosition ? 1 : 0;
+        if (nd.hasPosition) {
+            const int32_t latE7 = (int32_t)(nd.latitude * 1e7);
+            const int32_t lonE7 = (int32_t)(nd.longitude * 1e7);
+            memcpy(pkt + p, &latE7, 4); p += 4;
+            memcpy(pkt + p, &lonE7, 4); p += 4;
+            const int16_t alt = (int16_t)(nd.altitudeM < -32000 ? -32000
+                                          : nd.altitudeM > 32000 ? 32000
+                                                                 : nd.altitudeM);
+            memcpy(pkt + p, &alt, 2); p += 2;
+            pkt[p++] = nd.satsInView;
+            pkt[p++] = nd.precisionBits;
+            const uint32_t posAge = millis() - nd.positionMs;
+            memcpy(pkt + p, &posAge, 4); p += 4;
+        }
         sendChunk(meshChr, pkt, p);
     }
     uint8_t end = 0x94;

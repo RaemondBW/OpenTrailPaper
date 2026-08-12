@@ -370,9 +370,25 @@ void handleFrame(const uint8_t* frame, size_t len, float rssi, float snr) {
         }
         break;
     }
+    case mesh::PORT_POSITION: {
+        // Decoded but never sent: we show where other people are, and do not tell
+        // the mesh where we are (docs/meshtastic.md).
+        mesh::Position pos;
+        if (mesh::decodePosition(d.payload, d.payloadLen, pos) && pos.valid) {
+            n->hasPosition = true;
+            n->latitude = pos.latitude;
+            n->longitude = pos.longitude;
+            n->altitudeM = pos.altitudeM;
+            n->satsInView = pos.satsInView;
+            n->precisionBits = pos.precisionBits;
+            n->positionMs = millis();
+            changed = true;
+        }
+        break;
+    }
     default:
-        // Some other app (position, telemetry, …). The node is now known to be
-        // out there and that is all we take from it.
+        // Some other app (telemetry, neighbour info, …). The node is now known to
+        // be out there and that is all we take from it.
         break;
     }
     give();

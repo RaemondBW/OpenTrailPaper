@@ -113,6 +113,10 @@ struct MeshNode: Identifiable, Equatable {
     let rssi: Int
     let snr: Int
     let hops: Int
+    /// Where it last said it was. nil is the common case and means "has not sent a
+    /// position", which is different from being at 0,0 — nodes broadcast position
+    /// on their own schedule, and many never do.
+    let position: MeshNodePosition?
 
     var id: UInt32 { num }
     /// "!a4c1380c" — how Meshtastic writes a node number everywhere.
@@ -141,6 +145,35 @@ struct MeshState: Equatable {
     var frequencyMHz: Double { Double(frequencyHz) / 1_000_000 }
     /// Nothing has been heard from the device yet.
     var isUnknown: Bool { nodeNum == 0 }
+}
+
+/// A position a node broadcast over the mesh.
+struct MeshNodePosition: Equatable {
+    let latitude: Double
+    let longitude: Double
+    let altitudeM: Int
+    let satsInView: Int
+    /// How much of the coordinate the sender chose to publish; 32 is full
+    /// precision. Meshtastic lets a node blur its position on purpose, so a
+    /// coarse fix must not be drawn as though it were exact.
+    let precisionBits: Int
+    let received: Date
+
+    var coordinate: CLLocationCoordinate2D {
+        CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+    }
+    var isImprecise: Bool { precisionBits < 32 }
+    /// Rough radius the sender's blurring leaves, for describing the uncertainty.
+    /// Each bit dropped from a coordinate doubles the box it could be in.
+    var uncertaintyM: Double? {
+        guard isImprecise else { return nil }
+        // 2^(32 - bits) steps of ~360/2^32 degrees, taken at the equator.
+        let steps = pow(2.0, Double(32 - precisionBits))
+        return steps * (40_075_000 / pow(2.0, 32))
+    }
+    var shortText: String {
+        String(format: "%.5f, %.5f", latitude, longitude)
+    }
 }
 
 /// A modem preset the device supports: how fast it talks, as opposed to the
@@ -1132,11 +1165,22 @@ final class BLEManager: NSObject, ObservableObject {
         let now = Date()
         meshNodes = [
             MeshNode(num: 0x7b2e91aa, shortName: "ALEX", longName: "Alex",
-                     lastHeard: now.addingTimeInterval(-90), rssi: -84, snr: 6, hops: 0),
+                     lastHeard: now.addingTimeInterval(-90), rssi: -84, snr: 6, hops: 0,
+                     position: MeshNodePosition(latitude: 37.7955, longitude: -122.4380,
+                                                altitudeM: 112, satsInView: 9,
+                                                precisionBits: 32,
+                                                received: now.addingTimeInterval(-120))),
             MeshNode(num: 0x3fd10c55, shortName: "SAM", longName: "Sam's T-Beam",
-                     lastHeard: now.addingTimeInterval(-600), rssi: -108, snr: -4, hops: 2),
+                     lastHeard: now.addingTimeInterval(-600), rssi: -108, snr: -4, hops: 2,
+                     position: MeshNodePosition(latitude: 37.7699, longitude: -122.4103,
+                                                altitudeM: 34, satsInView: 7,
+                                                precisionBits: 13,
+                                                received: now.addingTimeInterval(-900))),
+            // No position: the common case, and the one the list has to say
+            // something honest about.
             MeshNode(num: 0x11aa4402, shortName: "GATE", longName: "Trailhead Gate",
-                     lastHeard: now.addingTimeInterval(-2400), rssi: -97, snr: 1, hops: 1),
+                     lastHeard: now.addingTimeInterval(-2400), rssi: -97, snr: 1, hops: 1,
+                     position: nil),
         ]
         let bc = MeshState.broadcastAddr
         meshMessages = [
@@ -1166,6 +1210,16 @@ final class BLEManager: NSObject, ObservableObject {
             MeshPreset(index: 4, name: "ShortFast", sf: 7, bandwidthKhz: 250, codingRate: 5),
             MeshPreset(index: 5, name: "ShortTurbo", sf: 7, bandwidthKhz: 500, codingRate: 5),
         ]
+    }
+
+    /// Straight-line distance from the phone to a coordinate, or nil when we have
+    /// no location to measure from. Reads CoreLocation's cached fix rather than
+    /// starting a stream: the mesh screens are not worth turning the GPS on for,
+    /// and the device's own position is in the same pocket anyway.
+    func distanceMeters(to coord: CLLocationCoordinate2D) -> Double? {
+        guard locationAuthorized, let here = locationManager.location else { return nil }
+        let there = CLLocation(latitude: coord.latitude, longitude: coord.longitude)
+        return here.distance(from: there)
     }
 
     private func handleMeshNotify(_ d: Data) {
@@ -1223,6 +1277,21 @@ final class BLEManager: NSObject, ObservableObject {
             let short = d.lenString(at: &i)
             let long = d.lenString(at: &i)
             let age = TimeInterval(d.le32(at: 5)) / 1000
+            // Position is appended and optional: one flag byte, then the fields
+            // only if the node has actually broadcast one.
+            var pos: MeshNodePosition? = nil
+            if i < d.count, d[i] != 0, d.count >= i + 1 + 16 {
+                let base = i + 1
+                let posAge = TimeInterval(d.le32(at: base + 12)) / 1000
+                pos = MeshNodePosition(
+                    latitude: Double(Int32(bitPattern: d.le32(at: base))) / 1e7,
+                    longitude: Double(Int32(bitPattern: d.le32(at: base + 4))) / 1e7,
+                    altitudeM: Int(Int16(bitPattern: UInt16(d[base + 8]) |
+                                         (UInt16(d[base + 9]) << 8))),
+                    satsInView: Int(d[base + 10]),
+                    precisionBits: Int(d[base + 11]),
+                    received: Date().addingTimeInterval(-posAge))
+            }
             meshNodesBuilding.append(MeshNode(
                 num: d.le32(at: 1),
                 shortName: short,
@@ -1230,7 +1299,8 @@ final class BLEManager: NSObject, ObservableObject {
                 lastHeard: Date().addingTimeInterval(-age),
                 rssi: Int(Int8(bitPattern: d[10])),
                 snr: Int(Int8(bitPattern: d[9])),
-                hops: Int(d[11])))
+                hops: Int(d[11]),
+                position: pos))
 
         case 0x94:  // end of node list — most recently heard first
             meshNodes = meshNodesBuilding.sorted { $0.lastHeard > $1.lastHeard }

@@ -21,6 +21,10 @@ implementation follows the real wire format rather than inventing a private one.
   arrives.
 - Learns neighbour names from `NODEINFO_APP` and announces its own, so messages
   read as "Alex" rather than `!a4c1380c`.
+- Records positions from `POSITION_APP`, so the app can show which neighbours have
+  reported where they are, how far away they are, and plot them on a map. A node
+  that blurred its position (Meshtastic's `precision_bits`) is shown as coarse
+  rather than exact.
 - Keeps the last 48 messages and 32 neighbours on the device, so a phone that
   was away still sees what arrived while it was gone.
 
@@ -31,7 +35,8 @@ implementation follows the real wire format rather than inventing a private one.
   a real cost in battery and airtime on something whose day job is a bike
   computer.
 - **Send position or telemetry.** The device knows exactly where you are; it does
-  not tell the mesh.
+  not tell the mesh. The asymmetry is deliberate — it reads other nodes' positions
+  and broadcasts none of its own.
 - **PKI-encrypted direct messages** (Meshtastic 2.5+). The device publishes no
   public key, which is what makes peers fall back to the shared channel key when
   they message it — so direct messages still work, they are just channel-
@@ -173,7 +178,7 @@ Source map:
 
 | File | Role |
 |---|---|
-| `src/mesh_proto.{h,cpp}` | wire format, protobufs, AES-CTR, both channel hashes |
+| `src/mesh_proto.{h,cpp}` | wire format, protobufs (Data / User / Routing / Position), AES-CTR, both channel hashes |
 | `src/lora_radio.{h,cpp}` | SX1262 via RadioLib, non-blocking, bus-shared |
 | `src/mesh_service.{h,cpp}` | node identity, dedup, message ring, outbox, NodeDB |
 | `src/ble_server.cpp` | the `b1c5000a-…` characteristic bridging it to the phone |
@@ -212,6 +217,13 @@ Device → phone (notify): `0x90` state, `0x91` one message, `0x92` end of
 history, `0x93` one node, `0x94` end of node list, `0x95` counters, `0x96`
 something changed (ask again), `0x97` queued with the packet id, `0x98` refused,
 `0x99` one modem preset, `0x9a` end of the preset list.
+
+A `0x93` node record carries its position when it has one: a flag byte, then
+latitude and longitude as 1e7 fixed-point (the same representation used on the
+air, so neither end parses a float), altitude, satellite count, `precision_bits`
+and the age of the fix. A node that has never broadcast a position sends the flag
+and nothing more — "has not told us" and "is at 0,0" have to stay distinguishable,
+and 0,0 is a real place in the Atlantic.
 
 `0x96` exists so a new message costs one byte rather than a re-stream of the
 whole history the app usually already has. Messages are keyed on packet id

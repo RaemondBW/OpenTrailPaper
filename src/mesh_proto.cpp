@@ -9,8 +9,9 @@ namespace {
 // Protobuf wire primitives
 // ---------------------------------------------------------------------------
 //
-// Only the two wire types the messages below use: varint (0) and
-// length-delimited (2). A writer that runs out of room sets `overflow` and stops
+// Only the wire types the messages below use: varint (0), length-delimited (2)
+// and — for Position's coordinates — fixed 32-bit (5). Anything else is skipped by
+// its wire type. A writer that runs out of room sets `overflow` and stops
 // writing rather than truncating a field in half, so a caller that ignores the
 // return value cannot emit a packet that decodes as something else.
 
@@ -99,6 +100,17 @@ struct Reader {
         n = (size_t)want;
         pos += n;
         return true;
+    }
+    // Wire type 5. Signed because that is how Meshtastic stores coordinates
+    // (sfixed32), and a two's-complement read is what makes a west longitude
+    // come back negative rather than as four billion.
+    int32_t fixed32() {
+        if (pos + 4 > len) { bad = true; return 0; }
+        const uint32_t v = (uint32_t)buf[pos] | ((uint32_t)buf[pos + 1] << 8) |
+                           ((uint32_t)buf[pos + 2] << 16) |
+                           ((uint32_t)buf[pos + 3] << 24);
+        pos += 4;
+        return (int32_t)v;
     }
     void copyStr(char* out, size_t cap) {
         const uint8_t* p;
@@ -326,6 +338,57 @@ bool decodeUser(const uint8_t* in, size_t len, User& u) {
         }
         if (r.bad) return false;
     }
+    return true;
+}
+
+bool decodePosition(const uint8_t* in, size_t len, Position& p) {
+    Reader r{in, len};
+    bool haveLat = false, haveLon = false;
+    while (!r.done()) {
+        const uint64_t t = r.varint();
+        if (r.bad) return false;
+        const uint32_t field = (uint32_t)(t >> 3);
+        const uint8_t wire = (uint8_t)(t & 7);
+        switch (field) {
+        case 1:                                   // latitude_i, 1e-7 degrees
+            if (wire != 5) { r.skip(wire); break; }
+            p.latitude = r.fixed32() / 1e7;
+            haveLat = true;
+            break;
+        case 2:                                   // longitude_i
+            if (wire != 5) { r.skip(wire); break; }
+            p.longitude = r.fixed32() / 1e7;
+            haveLon = true;
+            break;
+        case 3:                                   // altitude, metres MSL
+            if (wire != 0) { r.skip(wire); break; }
+            p.altitudeM = (int32_t)(uint32_t)r.varint();
+            break;
+        case 4:                                   // time the fix was taken
+            if (wire != 5) { r.skip(wire); break; }
+            p.utc = (uint32_t)r.fixed32();
+            break;
+        case 19:                                  // sats_in_view
+            if (wire != 0) { r.skip(wire); break; }
+            p.satsInView = (uint8_t)r.varint();
+            break;
+        case 23:                                  // precision_bits
+            if (wire != 0) { r.skip(wire); break; }
+            p.precisionBits = (uint8_t)r.varint();
+            break;
+        default:
+            r.skip(wire);
+            break;
+        }
+        if (r.bad) return false;
+    }
+    // A Position with no coordinates, or the null island, is a node telling us it
+    // has no fix — not a node at 0,0 off the coast of Africa. Range-checked too,
+    // because a garbled field that still passes CRC would otherwise plot.
+    p.valid = haveLat && haveLon &&
+              !(p.latitude == 0.0 && p.longitude == 0.0) &&
+              p.latitude >= -90.0 && p.latitude <= 90.0 &&
+              p.longitude >= -180.0 && p.longitude <= 180.0;
     return true;
 }
 

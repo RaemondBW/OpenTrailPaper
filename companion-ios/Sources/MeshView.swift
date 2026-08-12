@@ -1,4 +1,5 @@
 import SwiftUI
+import MapKit
 
 // Mesh text messaging over the head unit's LoRa radio.
 //
@@ -19,6 +20,7 @@ struct MeshView: View {
     @State private var recipientNum: UInt32? = nil    // nil = the whole channel
     @State private var showNodes = false
     @State private var showSettings = false
+    @State private var showNodeMap = false
     /// Owned here rather than left to the system so a tap anywhere on the
     /// conversation can put the keyboard away — on a phone held one-handed on a
     /// handlebar, the keyboard covers most of the thread you are trying to read.
@@ -78,13 +80,20 @@ struct MeshView: View {
         .sheet(isPresented: $showSettings) {
             MeshSettingsSheet()
         }
+        // Reachable in the app through Nodes -> "N on map"; the flag is only so a
+        // screenshot can land on it directly.
+        .sheet(isPresented: $showNodeMap) { MeshMapSheet() }
         .onAppear {
             let args = ProcessInfo.processInfo.arguments
-            if args.contains("-demo-mesh") || args.contains("-demo-mesh-settings") {
+            // Prefix match, so every -demo-mesh* variant seeds the data. Listing
+            // them individually is how -demo-mesh-map first shipped doing nothing.
+            if args.contains(where: { $0.hasPrefix("-demo-mesh") }) {
                 ble.seedDemoMesh()      // screenshots / design review, no device
                 // The radio/modem sheet is where the settable parts live, so it
                 // gets its own flag rather than needing a tap to reach.
                 if args.contains("-demo-mesh-settings") { showSettings = true }
+                if args.contains("-demo-mesh-map") { showNodeMap = true }
+                if args.contains("-demo-mesh-nodes") { showNodes = true }
                 return
             }
             ble.refreshMesh()
@@ -345,6 +354,9 @@ private struct MeshNodesSheet: View {
     @EnvironmentObject var ble: BLEManager
     @Environment(\.dismiss) private var dismiss
     @Binding var selected: UInt32?
+    @State private var showMap = false
+
+    private var positioned: [MeshNode] { ble.meshNodes.filter { $0.position != nil } }
 
     var body: some View {
         NavigationStack {
@@ -384,8 +396,23 @@ private struct MeshNodesSheet: View {
                     }
                     .buttonStyle(.plain)
 
-                    Text("Heard recently").trackedLabel()
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    HStack {
+                        Text("Heard recently").trackedLabel()
+                        Spacer()
+                        // Only offered when there is something to plot: a map of
+                        // nothing is worse than no map button.
+                        if !positioned.isEmpty {
+                            Button { showMap = true } label: {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "map")
+                                    Text("\(positioned.count) on map")
+                                        .font(BarlowFont.condensed(15, .semibold))
+                                }
+                                .foregroundStyle(Palette.accent)
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
                     if ble.meshNodes.isEmpty {
                         Text("No neighbours yet. Nodes appear as they transmit — it can take a few minutes on a quiet mesh.")
@@ -401,11 +428,30 @@ private struct MeshNodesSheet: View {
                             Card {
                                 HStack {
                                     VStack(alignment: .leading, spacing: 2) {
-                                        Text(n.displayName)
-                                            .font(TypeScale.title).foregroundStyle(Palette.ink)
+                                        HStack(spacing: 5) {
+                                            Text(n.displayName)
+                                                .font(TypeScale.title)
+                                                .foregroundStyle(Palette.ink)
+                                            // The whole point of the glyph: which
+                                            // of these has told us where it is.
+                                            if let p = n.position {
+                                                Image(systemName: p.isImprecise
+                                                      ? "location.circle"
+                                                      : "location.fill")
+                                                    .font(.system(size: 13))
+                                                    .foregroundStyle(p.isImprecise
+                                                                     ? Palette.faint
+                                                                     : Palette.good)
+                                            }
+                                        }
                                         Text(detail(n))
                                             .font(BarlowFont.text(15))
                                             .foregroundStyle(Palette.muted)
+                                        if let line = meshPositionLine(n, ble: ble) {
+                                            Text(line)
+                                                .font(BarlowFont.text(14))
+                                                .foregroundStyle(Palette.good)
+                                        }
                                     }
                                     Spacer()
                                     if selected == n.num {
@@ -427,6 +473,7 @@ private struct MeshNodesSheet: View {
                     Button("Done") { dismiss() }
                 }
             }
+            .sheet(isPresented: $showMap) { MeshMapSheet() }
         }
     }
 
@@ -437,6 +484,113 @@ private struct MeshNodesSheet: View {
         parts.append(RelativeDateTimeFormatter().localizedString(for: n.lastHeard,
                                                                 relativeTo: Date()))
         return parts.joined(separator: " · ")
+    }
+}
+
+/// Where a node says it is, as a line of text. Separate from the pin's callout so
+/// the list and the map say the same thing.
+@MainActor
+func meshPositionLine(_ n: MeshNode, ble: BLEManager) -> String? {
+    guard let p = n.position else { return nil }
+    var parts: [String] = []
+    if let d = ble.distanceMeters(to: p.coordinate) {
+        parts.append(d < 1000 ? String(format: "%.0f m away", d)
+                              : String(format: "%.1f km away", d / 1000))
+    } else {
+        parts.append(p.shortText)
+    }
+    if let u = p.uncertaintyM {
+        // Say how coarse it is rather than implying the coordinate is exact.
+        parts.append(u < 1000 ? String(format: "±%.0f m", u)
+                              : String(format: "±%.0f km", u / 1000))
+    }
+    if p.satsInView > 0 { parts.append("\(p.satsInView) sats") }
+    return parts.joined(separator: " · ")
+}
+
+/// Every node that has broadcast a position, on a map. Nodes without one are
+/// listed underneath instead of being silently dropped — "we have not heard where
+/// it is" is information too.
+struct MeshMapSheet: View {
+    @EnvironmentObject var ble: BLEManager
+    @Environment(\.dismiss) private var dismiss
+    @State private var camera: MapCameraCommand? = nil
+
+    private var positioned: [MeshNode] { ble.meshNodes.filter { $0.position != nil } }
+    private var unpositioned: [MeshNode] { ble.meshNodes.filter { $0.position == nil } }
+
+    private var pins: [MeshNodePin] {
+        positioned.compactMap { n in
+            guard let p = n.position else { return nil }
+            return MeshNodePin(
+                id: n.num,
+                label: n.displayName,
+                detail: meshPositionLine(n, ble: ble) ?? p.shortText,
+                coordinate: p.coordinate,
+                imprecise: p.isImprecise)
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                EInkMapView(meshNodes: pins,
+                            camera: camera,
+                            showsUserLocation: ble.locationAuthorized,
+                            showsTrackingButton: ble.locationAuthorized)
+                    .ignoresSafeArea(edges: .horizontal)
+
+                if !unpositioned.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("No position reported").trackedLabel()
+                        Text(unpositioned.map(\.displayName).joined(separator: ", "))
+                            .font(BarlowFont.text(14))
+                            .foregroundStyle(Palette.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Text("Nodes broadcast their position on their own schedule, and many are configured never to.")
+                            .font(BarlowFont.text(13))
+                            .foregroundStyle(Palette.faint)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(16)
+                    .background(Palette.paper)
+                }
+            }
+            .background(Palette.paper.ignoresSafeArea())
+            .navigationTitle("Node map")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .onAppear { fitPins() }
+        }
+    }
+
+    /// Opens on everything at once. A map centred on one node with the rest off
+    /// screen is the wrong first impression when the point is who is out there.
+    private func fitPins() {
+        let coords = pins.map(\.coordinate)
+        guard !coords.isEmpty else { return }
+        if coords.count == 1 {
+            camera = MapCameraCommand(target: .region(MKCoordinateRegion(
+                center: coords[0],
+                span: MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05))))
+            return
+        }
+        let lats = coords.map(\.latitude), lons = coords.map(\.longitude)
+        let centre = CLLocationCoordinate2D(
+            latitude: (lats.min()! + lats.max()!) / 2,
+            longitude: (lons.min()! + lons.max()!) / 2)
+        // 1.6x so the outermost pins are not pressed against the screen edge,
+        // with a floor for the case where every node is in the same street.
+        let span = MKCoordinateSpan(
+            latitudeDelta: max((lats.max()! - lats.min()!) * 1.6, 0.01),
+            longitudeDelta: max((lons.max()! - lons.min()!) * 1.6, 0.01))
+        camera = MapCameraCommand(target: .region(MKCoordinateRegion(center: centre,
+                                                                    span: span)))
     }
 }
 
