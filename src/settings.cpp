@@ -23,6 +23,13 @@ char addrs[3][18] = {"", "", ""};
 char names[3][32] = {"", "", ""};   // remembered vendor/model per paired kind
 double lastLat = 0, lastLon = 0;
 bool rtcSynced = false;  // has GPS ever written UTC to the coin-cell RTC?
+// Mesh messaging. Default ON with the default channel, which is what makes a
+// device out of the box able to hear the public mesh around it.
+bool meshOn = true;
+char meshChan[16] = MESH_PRESET_NAME;
+uint8_t meshKey = 1;
+char meshLong[40] = "";
+char meshShort[8] = "";
 const char* KEYS[3] = {"sens_hr", "sens_pwr", "sens_cad"};
 const char* NAME_KEYS[3] = {"snm_hr", "snm_pwr", "snm_cad"};
 
@@ -50,6 +57,12 @@ void begin() {
     lastLat = prefs.getDouble("lastlat", 0);
     lastLon = prefs.getDouble("lastlon", 0);
     rtcSynced = prefs.getBool("rtcok", false);
+    meshOn = prefs.getBool("meshon", true);
+    if (!prefs.getString("meshchan", meshChan, sizeof(meshChan)) || !meshChan[0])
+        snprintf(meshChan, sizeof(meshChan), MESH_PRESET_NAME);
+    meshKey = (uint8_t)constrain(prefs.getUChar("meshkey", 1), 1, 10);
+    prefs.getString("meshlong", meshLong, sizeof(meshLong));
+    prefs.getString("meshshort", meshShort, sizeof(meshShort));
     Serial.printf("[cfg] ftp=%dW tz=%dmin sensors=[%s|%s|%s]\n", ftp, tz,
                   addrs[0], addrs[1], addrs[2]);
 }
@@ -137,6 +150,38 @@ void setCompassOffsetDeg(float deg) {
     // when the learned offset has actually drifted a few degrees.
     compassOff = deg;
     prefs.putFloat("cmpoff", deg);
+}
+
+bool meshEnabled() { return meshOn; }
+void setMeshEnabled(bool on) {
+    if (meshOn == on) return;
+    meshOn = on;
+    prefs.putBool("meshon", on);
+}
+
+const char* meshChannel() { return meshChan; }
+uint8_t meshChannelKey() { return meshKey; }
+
+void setMeshChannel(const char* name, uint8_t keyIndex) {
+    if (!name || !name[0]) return;
+    snprintf(meshChan, sizeof(meshChan), "%s", name);
+    meshKey = (uint8_t)constrain((int)keyIndex, 1, 10);
+    prefs.putString("meshchan", meshChan);
+    prefs.putUChar("meshkey", meshKey);
+}
+
+const char* meshLongName() { return meshLong; }
+const char* meshShortName() { return meshShort; }
+
+void setMeshNames(const char* longName, const char* shortName) {
+    if (longName && longName[0]) {
+        snprintf(meshLong, sizeof(meshLong), "%s", longName);
+        prefs.putString("meshlong", meshLong);
+    }
+    if (shortName && shortName[0]) {
+        snprintf(meshShort, sizeof(meshShort), "%s", shortName);
+        prefs.putString("meshshort", meshShort);
+    }
 }
 
 bool rtcTrusted() { return rtcSynced; }

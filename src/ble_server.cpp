@@ -19,6 +19,7 @@
 #include "sd_bus.h"
 #include "usb_storage.h"
 #include "dash_config.h"
+#include "mesh_service.h"
 #include "diag.h"
 
 namespace {
@@ -34,6 +35,7 @@ const char* CHR_SENSORS   = "b1c50006-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
 const char* CHR_MAP       = "b1c50007-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
 const char* CHR_AGNSS     = "b1c50008-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
 const char* CHR_DASH      = "b1c50009-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
+const char* CHR_MESH      = "b1c5000a-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
 
 NimBLECharacteristic* statusChr = nullptr;
 NimBLECharacteristic* sensorsChr = nullptr;
@@ -917,6 +919,271 @@ class AgnssCb : public NimBLECharacteristicCallbacks {
     }
 };
 
+// ---------------------------------------------------------------------------
+// Meshtastic messaging bridge (phone <-> device <-> LoRa mesh)
+// ---------------------------------------------------------------------------
+//
+// The device is the radio; the app is the keyboard and the screen. Everything
+// here is small and text-shaped, so unlike the ride/map transfers it needs no
+// windowing — one notification per message, each inside the 247-byte MTU.
+//
+//   Phone -> device:
+//     [0x01]                                   send me the state
+//     [0x02][u32 dest][utf8 text]              send a message (dest ffffffff =
+//                                              broadcast to the channel)
+//     [0x03]                                   send me the message history
+//     [0x04]                                   send me the node list
+//     [0x05][u8 longLen][long…][short…]        rename this node
+//     [0x06][u8 on]                            radio on / off
+//     [0x07][u8 keyIndex][utf8 channel name]   switch channel
+//     [0x08]                                   mark everything read
+//     [0x09]                                   send me the packet counters
+//
+//   Device -> phone (notify):
+//     [0x90] state    flags, node number, frequency, channel, our names
+//     [0x91] message  one per message, oldest first
+//     [0x92]          end of history
+//     [0x93] node     one per known neighbour
+//     [0x94]          end of node list
+//     [0x95] stats    packet counters
+//     [0x96]          something changed — ask again
+//     [0x97][u32 id]  a message was queued, with the id its acks will quote
+//     [0x98]          the device refused to queue it (radio off, or outbox full)
+NimBLECharacteristic* meshChr = nullptr;
+
+// Requests staged by the write callback, serviced in the task. A bitmask rather
+// than an enum because the app asks for several of these at once when its
+// Messages screen opens, and one flag per request cannot lose the others.
+constexpr uint8_t MREQ_STATE   = 0x01;
+constexpr uint8_t MREQ_HISTORY = 0x02;
+constexpr uint8_t MREQ_NODES   = 0x04;
+constexpr uint8_t MREQ_STATS   = 0x08;
+volatile uint8_t meshReq = 0;
+
+// Outgoing text, staged the same way. queueText() is cheap enough to call from a
+// BLE callback, but the reply (the packet id, or a refusal) has to be notified,
+// and notify() from inside onWrite is what the rest of this file exists to avoid.
+constexpr int MESH_SEND_QUEUE = 4;
+struct StagedText {
+    uint32_t dest;
+    char text[mesh::MAX_TEXT_LEN + 1];
+};
+StagedText meshSendQ[MESH_SEND_QUEUE];
+volatile int meshSendCount = 0;
+
+// Staged config edits.
+char meshSetLong[40], meshSetShort[8];
+volatile bool meshNamesPending = false;
+char meshSetChan[16];
+volatile uint8_t meshSetKey = 1;
+volatile bool meshChanPending = false;
+volatile int8_t meshEnablePending = -1;   // -1 nothing, 0 off, 1 on
+
+void meshNotify(const uint8_t* d, size_t n) {
+    if (!meshChr) return;
+    meshChr->setValue(d, n);
+    meshChr->notify();
+}
+
+// Appends a length-prefixed UTF-8 string. Used for every name in this protocol
+// so the app never has to guess where one field ends.
+size_t putStr(uint8_t* p, const char* s, size_t maxLen) {
+    size_t n = strnlen(s ? s : "", maxLen);
+    p[0] = (uint8_t)n;
+    memcpy(p + 1, s, n);
+    return 1 + n;
+}
+
+void sendMeshState() {
+    uint8_t pkt[96];
+    int p = 0;
+    pkt[p++] = 0x90;
+    pkt[p++] = (uint8_t)((mesh_service::enabled() ? 1 : 0) |
+                         (mesh_service::radioOk() ? 2 : 0));
+    uint32_t num = mesh_service::nodeNum();
+    memcpy(pkt + p, &num, 4); p += 4;
+    // Hz rather than MHz so the app has no float to parse — 906875000 fits a u32.
+    uint32_t hz = (uint32_t)(mesh_service::frequencyMHz() * 1e6f + 0.5f);
+    memcpy(pkt + p, &hz, 4); p += 4;
+    pkt[p++] = mesh_service::channelPskIndex();
+    pkt[p++] = (uint8_t)mesh_service::nodeCount();   // capped at MESH_NODE_MAX
+    // Clamped, not truncated: 256 unread would otherwise arrive as 0 and clear
+    // the app's badge at exactly the moment it matters most.
+    const int un = mesh_service::unreadCount();
+    pkt[p++] = (uint8_t)(un > 255 ? 255 : un);
+    p += putStr(pkt + p, mesh_service::channelName(), 15);
+    p += putStr(pkt + p, mesh_service::shortName(), 7);
+    p += putStr(pkt + p, mesh_service::longName(), 39);
+    meshNotify(pkt, p);
+}
+
+void sendMeshHistory() {
+    const int n = mesh_service::messageCount();
+    for (int i = 0; i < n; ++i) {
+        mesh_service::Message m;
+        if (!mesh_service::messageAt(i, m)) continue;
+        uint8_t pkt[240];
+        int p = 0;
+        pkt[p++] = 0x91;
+        memcpy(pkt + p, &m.id, 4); p += 4;
+        memcpy(pkt + p, &m.from, 4); p += 4;
+        memcpy(pkt + p, &m.to, 4); p += 4;
+        memcpy(pkt + p, &m.utc, 4); p += 4;
+        // Age, not a timestamp: until GPS has set the clock the device has no
+        // idea what time it is, and the phone always does.
+        uint32_t age = millis() - m.ms;
+        memcpy(pkt + p, &age, 4); p += 4;
+        pkt[p++] = (uint8_t)m.rssi;
+        pkt[p++] = (uint8_t)m.snr;
+        pkt[p++] = m.hops;
+        pkt[p++] = (uint8_t)((m.outgoing ? 1 : 0) | (m.status << 4));
+        size_t tn = strnlen(m.text, mesh::MAX_TEXT_LEN);
+        pkt[p++] = (uint8_t)tn;
+        memcpy(pkt + p, m.text, tn); p += (int)tn;
+        sendChunk(meshChr, pkt, p);
+    }
+    uint8_t end = 0x92;
+    sendChunk(meshChr, &end, 1);
+}
+
+void sendMeshNodes() {
+    const int n = mesh_service::nodeCount();
+    for (int i = 0; i < n; ++i) {
+        mesh_service::Node nd;
+        if (!mesh_service::nodeAt(i, nd)) continue;
+        uint8_t pkt[80];
+        int p = 0;
+        pkt[p++] = 0x93;
+        memcpy(pkt + p, &nd.num, 4); p += 4;
+        uint32_t age = millis() - nd.lastHeardMs;
+        memcpy(pkt + p, &age, 4); p += 4;
+        pkt[p++] = (uint8_t)nd.snr;
+        pkt[p++] = (uint8_t)nd.rssi;
+        pkt[p++] = nd.hops;
+        p += (int)putStr(pkt + p, nd.shortName, 7);
+        p += (int)putStr(pkt + p, nd.longName, 39);
+        sendChunk(meshChr, pkt, p);
+    }
+    uint8_t end = 0x94;
+    sendChunk(meshChr, &end, 1);
+}
+
+void sendMeshStats() {
+    mesh_service::Stats s = mesh_service::stats();
+    uint8_t pkt[1 + 7 * 4];
+    int p = 0;
+    pkt[p++] = 0x95;
+    const uint32_t vals[7] = {s.rx, s.rxDropped, s.rxOtherChannel, s.rxDuplicate,
+                              s.tx, s.txFailed, s.acksRx};
+    for (uint32_t v : vals) { memcpy(pkt + p, &v, 4); p += 4; }
+    meshNotify(pkt, p);
+}
+
+class MeshCb : public NimBLECharacteristicCallbacks {
+    void onWrite(NimBLECharacteristic* c, NimBLEConnInfo&) override {
+        std::string v = c->getValue();
+        if (v.empty()) return;
+        const uint8_t* p = (const uint8_t*)v.data();
+        const size_t n = v.size();
+        switch (p[0]) {
+        case 0x01: meshReq |= MREQ_STATE; break;
+        case 0x03: meshReq |= MREQ_HISTORY; break;
+        case 0x04: meshReq |= MREQ_NODES; break;
+        case 0x09: meshReq |= MREQ_STATS; break;
+        case 0x02: {                                   // send a text message
+            if (n < 5) return;
+            if (meshSendCount >= MESH_SEND_QUEUE) return;   // task is behind
+            StagedText& s = meshSendQ[meshSendCount];
+            memcpy(&s.dest, p + 1, 4);
+            size_t tn = n - 5;
+            if (tn > mesh::MAX_TEXT_LEN) tn = mesh::MAX_TEXT_LEN;
+            memcpy(s.text, p + 5, tn);
+            s.text[tn] = 0;
+            meshSendCount++;
+            break;
+        }
+        case 0x05: {                                   // rename this node
+            if (n < 2) return;
+            const size_t ln = p[1];
+            if (1 + 1 + ln > n) return;
+            size_t keep = ln < sizeof(meshSetLong) - 1 ? ln : sizeof(meshSetLong) - 1;
+            memcpy(meshSetLong, p + 2, keep);
+            meshSetLong[keep] = 0;
+            size_t sn = n - 2 - ln;
+            if (sn > sizeof(meshSetShort) - 1) sn = sizeof(meshSetShort) - 1;
+            memcpy(meshSetShort, p + 2 + ln, sn);
+            meshSetShort[sn] = 0;
+            meshNamesPending = true;
+            break;
+        }
+        case 0x06:                                     // radio on / off
+            if (n >= 2) meshEnablePending = p[1] ? 1 : 0;
+            break;
+        case 0x07: {                                   // switch channel
+            if (n < 3) return;
+            meshSetKey = p[1];
+            size_t cn = n - 2;
+            if (cn > sizeof(meshSetChan) - 1) cn = sizeof(meshSetChan) - 1;
+            memcpy(meshSetChan, p + 2, cn);
+            meshSetChan[cn] = 0;
+            meshChanPending = true;
+            break;
+        }
+        case 0x08:                                     // mark read
+            mesh_service::markAllRead();
+            meshReq |= MREQ_STATE;
+            break;
+        }
+    }
+};
+
+// Everything the phone asked of the mesh, run off the BLE host task. Called once
+// per server-loop pass.
+void serviceMeshRequests() {
+    while (meshSendCount > 0) {
+        // Copy first, then shrink the queue: a write callback can land between
+        // these two statements, and it appends at meshSendCount.
+        StagedText s = meshSendQ[0];
+        for (int i = 1; i < meshSendCount; ++i) meshSendQ[i - 1] = meshSendQ[i];
+        meshSendCount--;
+        const uint32_t id = mesh_service::queueText(s.dest, s.text);
+        if (id) {
+            uint8_t pkt[5] = {0x97};
+            memcpy(pkt + 1, &id, 4);
+            meshNotify(pkt, 5);
+        } else {
+            uint8_t nak = 0x98;
+            meshNotify(&nak, 1);
+        }
+        meshReq |= MREQ_HISTORY | MREQ_STATE;   // show it in the app's list
+    }
+    if (meshNamesPending) {
+        meshNamesPending = false;
+        mesh_service::setNames(meshSetLong, meshSetShort);
+        meshReq |= MREQ_STATE;
+    }
+    if (meshChanPending) {
+        meshChanPending = false;
+        mesh_service::setChannel(meshSetChan, meshSetKey);
+        meshReq |= MREQ_STATE | MREQ_HISTORY | MREQ_NODES;
+    }
+    if (meshEnablePending >= 0) {
+        mesh_service::setEnabled(meshEnablePending != 0);
+        meshEnablePending = -1;
+        meshReq |= MREQ_STATE;
+    }
+    // Taken and cleared in one pass, before any of the streaming below: each
+    // send yields for tens of milliseconds, and clearing a bit after that window
+    // would drop a request the phone made during it.
+    const uint8_t req = meshReq;
+    if (!req) return;
+    meshReq = (uint8_t)(meshReq & ~req);
+    if (req & MREQ_STATE)   sendMeshState();
+    if (req & MREQ_HISTORY) sendMeshHistory();
+    if (req & MREQ_NODES)   sendMeshNodes();
+    if (req & MREQ_STATS)   sendMeshStats();
+}
+
 // Stream the device's map coverage to the phone (bounds of the embedded map +
 // each downloaded /maps/*.ebm). Reads SD, so runs in the server task.
 void sendMapList() {
@@ -1100,6 +1367,11 @@ void begin() {
     dashChr->setCallbacks(new DashCb());
     writeDashValue(dashChr);
 
+    meshChr = svc->createCharacteristic(
+        CHR_MESH,
+        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::NOTIFY);
+    meshChr->setCallbacks(new MeshCb());
+
     svc->start();
 
     NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
@@ -1219,6 +1491,20 @@ void task(void*) {
         if (routeChr && pendingRouteAck) {
             int a = pendingRouteAck; pendingRouteAck = 0;
             notifyByte2(a == 1 ? 0x23 : 0x24);
+        }
+        // Mesh messaging. Touches no SD and no flash, so it runs regardless of
+        // who owns the card. A message that arrived (or a send that changed
+        // state) raises 0x96 and the app asks for what it needs — pushing the
+        // whole history on every packet would spend the link on data the app
+        // usually already has.
+        if (meshChr) {
+            // phoneConnected first: takeChanged() CLEARS the flag, and consuming
+            // it with nobody listening would throw the notification away.
+            if (phoneConnected && mesh_service::takeChanged()) {
+                uint8_t b = 0x96;
+                meshNotify(&b, 1);
+            }
+            serviceMeshRequests();
         }
 
         vTaskDelay(pdMS_TO_TICKS(100));

@@ -31,6 +31,15 @@
 #define BOARD_SPI_SCLK      14
 #define BOARD_SD_CS         12
 #define BOARD_LORA_CS       46
+// SX1262 control lines (the data path is the shared SPI bus above). Every radio
+// SPI transaction must be wrapped in sdLock()/sdUnlock() — see sd_bus.h; a LoRa
+// transfer landing in the middle of an SD command corrupts the card.
+#define BOARD_LORA_IRQ      10
+#define BOARD_LORA_RST      1
+#define BOARD_LORA_BUSY     47
+// The module carries a TCXO on DIO3 and uses DIO2 to drive the RF switch
+// (LilyGO's own examples: examples/lora_send, examples/sx1262_recv_mic_fcc).
+#define BOARD_LORA_TCXO_V   2.4f
 
 #define BOARD_PCA9535_INT   38
 #define BOARD_BOOT_BTN      0
@@ -63,6 +72,36 @@
 // Alamo Square, San Francisco.
 #define DEFAULT_MAP_LAT     37.7764
 #define DEFAULT_MAP_LON     (-122.4346)
+
+// Meshtastic mesh messaging (see docs/meshtastic.md).
+//
+// The region is a COMPILE-TIME choice because it is a legal one, not a
+// preference: US_915 is 902-928 MHz and shipping a device that can be switched
+// onto EU_868 from the phone would put it outside its certification. Change it
+// here (and rebuild) for another region.
+#define MESH_REGION_NAME    "US"
+#define MESH_FREQ_START_MHZ 902.0f
+#define MESH_FREQ_END_MHZ   928.0f
+#define MESH_SPACING_MHZ    0.0f
+// Region power limit is 30 dBm; the SX1262 tops out at 22, which is the cap that
+// actually binds. Meshtastic's own US default is the same.
+#define MESH_TX_DBM         22
+// LongFast — Meshtastic's default modem preset, and the one an out-of-the-box
+// node on the public mesh is listening with.
+#define MESH_PRESET_NAME    "LongFast"
+#define MESH_BW_KHZ         250.0f
+#define MESH_SF             11
+#define MESH_CR             5
+// Fixed by the protocol, not tunable: every Meshtastic node uses this sync word
+// and preamble, so a mismatch here means silence in both directions.
+#define MESH_SYNC_WORD      0x2B
+#define MESH_PREAMBLE_LEN   16
+// Hops a message we originate may take across the mesh.
+#define MESH_HOP_LIMIT      3
+// How many received/sent messages the device keeps for the phone to pull.
+#define MESH_MSG_HISTORY    48
+// How many mesh neighbours we remember names for.
+#define MESH_NODE_MAX       32
 
 // Ride recording
 #define RIDE_DIR            "/rides"

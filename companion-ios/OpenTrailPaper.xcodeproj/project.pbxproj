@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		021E5D177FE3BCD463AA49BF /* BikeGPSCompanionApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37C3CA9775B956BC238BAA42 /* BikeGPSCompanionApp.swift */; };
 		05EFA1438A835BB33D929DF4 /* BarlowCondensed-Medium.ttf in Resources */ = {isa = PBXBuildFile; fileRef = A97893E68863ECCF2D0D4400 /* BarlowCondensed-Medium.ttf */; };
+		0C42D2727BDA16264307140C /* MeshView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0641658A779893A7975FA99F /* MeshView.swift */; };
 		0F07C59EAB533AC46B37D7ED /* DeviceMock.swift in Sources */ = {isa = PBXBuildFile; fileRef = E467F3BA417A6A968F920F77 /* DeviceMock.swift */; };
 		1E84B7CD7869CDE2FAD486B0 /* BarlowCondensed-Bold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 08F073C2FF3FF2C629AFE7E8 /* BarlowCondensed-Bold.ttf */; };
 		206AAAF21E4BC20EAB8D7C79 /* vertex.c in Sources */ = {isa = PBXBuildFile; fileRef = 861D40F3D0D6EE123389E135 /* vertex.c */; };
@@ -65,6 +66,7 @@
 /* Begin PBXFileReference section */
 		05C73BCF289591ECA86720C6 /* GPXExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GPXExporter.swift; sourceTree = "<group>"; };
 		062C37A066E27E1DEC3AF253 /* EInkMapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EInkMapView.swift; sourceTree = "<group>"; };
+		0641658A779893A7975FA99F /* MeshView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshView.swift; sourceTree = "<group>"; };
 		08F073C2FF3FF2C629AFE7E8 /* BarlowCondensed-Bold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "BarlowCondensed-Bold.ttf"; sourceTree = "<group>"; };
 		0CBC93C157DBF69D2E2C1823 /* polygon.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = polygon.c; sourceTree = "<group>"; };
 		0D0FC030F1FACFFD44C96837 /* SensorsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SensorsView.swift; sourceTree = "<group>"; };
@@ -206,6 +208,7 @@
 				2A59688151174F730E1FDAD4 /* Info.plist */,
 				B784675A7E0FFAA781206855 /* MapBuilder.swift */,
 				A7C77C595BBAE5BCBD82A004 /* MapsView.swift */,
+				0641658A779893A7975FA99F /* MeshView.swift */,
 				756CD94A1C875E17A3321CC8 /* OnboardingView.swift */,
 				4B4C752C73B32E5B3E92EAE4 /* PhoneMock.swift */,
 				E1B62C507D47EAD0BDDDD24F /* RideDetailView.swift */,
@@ -370,6 +373,7 @@
 				431EACF518E6E7F25D9682EC /* H3Tiles.swift in Sources */,
 				5D72742ADF79FE45ED70CBEA /* MapBuilder.swift in Sources */,
 				C462314C3BD9E277B9F451A9 /* MapsView.swift in Sources */,
+				0C42D2727BDA16264307140C /* MeshView.swift in Sources */,
 				ABE6FDB260BAA3609F5C5516 /* OnboardingView.swift in Sources */,
 				43AAF30082DA51F92552EE19 /* PhoneMock.swift in Sources */,
 				72A4059778F0676C0911C393 /* RideDetailView.swift in Sources */,
