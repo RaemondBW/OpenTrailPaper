@@ -27,6 +27,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelUuid
+import android.os.SystemClock
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -39,6 +40,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.File
 import java.security.MessageDigest
@@ -98,6 +100,12 @@ class BleManager(private val app: Application) {
     var downloadingName by mutableStateOf<String?>(null); private set
     var downloadProgress by mutableStateOf(0.0); private set
     var downloadedFile by mutableStateOf<File?>(null)
+
+    /**
+     * Names waiting their turn behind the running transfer, so a row can show
+     * "Queued" instead of looking like the tap did nothing.
+     */
+    var queuedDownloads by mutableStateOf<List<String>>(emptyList()); private set
 
     // Firmware / OTA
     var deviceFirmware by mutableStateOf(""); private set
@@ -200,6 +208,36 @@ class BleManager(private val app: Application) {
     private var dlExpected = 0
     private var dlName = ""
     private var dlNextSeq = 0
+
+    /**
+     * Ride and log transfers share ONE device-side streamer and one receive
+     * buffer here, so exactly one may be in flight. Asking for a second file
+     * mid-transfer used to reset the buffer under the running stream: the tail
+     * of file A landed in the buffer and was then written out under file B's
+     * name, so B was saved corrupt (and cached, so it never re-downloaded) and
+     * A was never saved at all. Requests are queued and run strictly serially.
+     */
+    private sealed interface Transfer {
+        val displayName: String
+
+        data class Ride(val name: String) : Transfer {
+            override val displayName get() = name
+        }
+
+        /** [name] empty = today's rolling diag.log. */
+        data class Log(val name: String) : Transfer {
+            override val displayName get() = name.ifEmpty { "diag" }
+        }
+    }
+
+    private val dlQueue = ArrayDeque<Transfer>()
+    private var dlActive: Transfer? = null
+    private var dlWatchdog: Job? = null
+    private var dlLastActivity = 0L
+    // List commands share the device's one request slot with transfers, so they
+    // wait for the queue to drain rather than clobbering it.
+    private var listRefreshPending = false
+    private var logListPending = false
 
     // Location aiding
     private val locationManager =
@@ -529,7 +567,12 @@ class BleManager(private val app: Application) {
 
         status = DeviceStatus()
         sawStatusSinceConnect = false
-        rides = emptyList(); loadingRides = false; downloadingName = null
+        rides = emptyList(); loadingRides = false
+        // Nothing queued can proceed without a link, and a half-received file
+        // must not be mistaken for a complete one on reconnect.
+        if (dlActive != null || dlQueue.isNotEmpty()) {
+            cancelAllTransfers("Connection dropped mid-download — try again")
+        }
         deviceRoutes = emptyList(); loadingRoutes = false
         lastUploadProgress = null; routeSent = false; routeReceived = false
         sensors = emptyList(); scanningSensors = false
@@ -663,6 +706,12 @@ class BleManager(private val app: Application) {
 
     fun refreshRides() {
         if (ridesChar == null) return
+        // The device holds ONE pending request: a list command written while a
+        // transfer is in flight is overwritten by (or overwrites) the next
+        // queued download, and whichever loses is silently dropped — leaving the
+        // list spinning forever or the download waiting on its watchdog. Wait
+        // for the line instead.
+        if (dlActive != null || dlQueue.isNotEmpty()) { listRefreshPending = true; return }
         rides = emptyList()
         loadingRides = true
         writeChar(ridesChar, byteArrayOf(0x01))
@@ -670,6 +719,10 @@ class BleManager(private val app: Application) {
 
     fun deleteRide(name: String) {
         rides = rides.filterNot { it.name == name }
+        // Drop it from the download queue too, so a deleted ride doesn't get
+        // fetched (and re-cached) moments later.
+        dlQueue.removeAll { it == Transfer.Ride(name) }
+        publishQueue()
         cachedRideFile(name).delete()
         // Offline: just drop the local cache. Connected: also delete on device.
         if (ridesChar == null) return
@@ -678,25 +731,19 @@ class BleManager(private val app: Application) {
 
     fun downloadRide(name: String) {
         if (ridesChar == null) return
-        dlBuffer = java.io.ByteArrayOutputStream()
-        dlExpected = 0
-        dlName = name
-        downloadingName = name
-        downloadProgress = 0.0
-        downloadedFile = null
-        writeChar(ridesChar, byteArrayOf(0x02) + name.toByteArray())
+        enqueueTransfer(Transfer.Ride(name))
     }
 
     /** Pull today's log off the device (reuses the reliable ride-transfer path). */
     fun downloadLog() {
         if (ridesChar == null) { lastMessage = "Not connected"; return }
-        beginLogDownload("diag")
-        writeChar(ridesChar, byteArrayOf(0x05))
+        enqueueTransfer(Transfer.Log(""))
     }
 
     /** List the per-day log files on the device (reply parsed via 0x30/0x31). */
     fun requestLogList() {
         if (ridesChar == null) return
+        if (dlActive != null || dlQueue.isNotEmpty()) { logListPending = true; return }
         logsBuilding = mutableListOf()
         loadingLogs = true
         writeChar(ridesChar, byteArrayOf(0x06))
@@ -705,17 +752,113 @@ class BleManager(private val app: Application) {
     /** Download one specific day's log file. */
     fun downloadLogFile(name: String) {
         if (ridesChar == null) { lastMessage = "Not connected"; return }
-        beginLogDownload(name)
-        writeChar(ridesChar, byteArrayOf(0x07) + name.toByteArray())
+        enqueueTransfer(Transfer.Log(name))
     }
 
-    private fun beginLogDownload(name: String) {
+    // MARK: serialized transfer queue
+
+    private fun enqueueTransfer(t: Transfer) {
+        // Tapping the same file twice queues it once.
+        if (dlActive == t || dlQueue.contains(t)) return
+        dlQueue.addLast(t)
+        startNextTransfer()
+    }
+
+    /**
+     * Sends the next queued request, but only when the line is free — the device
+     * streams one file at a time and we hold one receive buffer.
+     */
+    private fun startNextTransfer() {
+        publishQueue()
+        if (dlActive != null) return
+        if (dlQueue.isEmpty()) { runDeferredListRequests(); return }
+        if (ridesChar == null) {          // link gone; nothing can be fetched
+            dlQueue.clear()
+            publishQueue()
+            return
+        }
+        val t = dlQueue.removeFirst()
+        dlActive = t
         dlBuffer = java.io.ByteArrayOutputStream()
         dlExpected = 0
-        downloadingLog = true
-        downloadingName = name
+        dlNextSeq = 0
         downloadProgress = 0.0
-        logFile = null
+        downloadingLog = t is Transfer.Log
+        downloadingName = t.displayName
+        when (t) {
+            is Transfer.Ride -> {
+                dlName = t.name
+                downloadedFile = null
+                writeChar(ridesChar, byteArrayOf(0x02) + t.name.toByteArray())
+            }
+            is Transfer.Log -> {
+                dlName = t.name
+                logFile = null
+                if (t.name.isEmpty()) writeChar(ridesChar, byteArrayOf(0x05))
+                else writeChar(ridesChar, byteArrayOf(0x07) + t.name.toByteArray())
+            }
+        }
+        publishQueue()
+        armDownloadWatchdog()
+    }
+
+    /**
+     * The active transfer ended (either way) — release the line and run the next
+     * request. Always the single exit point, so the queue can't jam.
+     */
+    private fun endActiveTransfer() {
+        dlWatchdog?.cancel()
+        dlWatchdog = null
+        dlActive = null
+        downloadingName = null
+        downloadingLog = false
+        dlBuffer = java.io.ByteArrayOutputStream()   // don't hold a ride's bytes
+        dlExpected = 0
+        startNextTransfer()
+    }
+
+    /**
+     * Abandon everything queued (device busy, disconnected) with one message
+     * rather than one failure toast per queued file.
+     */
+    private fun cancelAllTransfers(message: String?) {
+        dlQueue.clear()
+        if (message != null) lastMessage = message
+        endActiveTransfer()
+    }
+
+    private fun publishQueue() {
+        val names = dlQueue.map { it.displayName }
+        if (names != queuedDownloads) queuedDownloads = names
+    }
+
+    /**
+     * Run whatever asked for the line while it was busy. Called once the queue is
+     * empty, so these never race a transfer for the device's request slot.
+     */
+    private fun runDeferredListRequests() {
+        if (listRefreshPending) { listRefreshPending = false; refreshRides() }
+        if (logListPending) { logListPending = false; requestLogList() }
+    }
+
+    /**
+     * A device that stops mid-stream (or never answers) must not strand the queue
+     * behind a transfer that will never finish.
+     */
+    private fun armDownloadWatchdog() {
+        dlWatchdog?.cancel()
+        dlLastActivity = SystemClock.elapsedRealtime()
+        dlWatchdog = scope.launch {
+            while (isActive) {
+                delay(2_000)
+                if (dlActive == null) return@launch
+                if (SystemClock.elapsedRealtime() - dlLastActivity > 20_000) {
+                    lastMessage = "${dlActive?.displayName ?: "Transfer"} timed out — try again"
+                    endActiveTransfer()
+                    return@launch
+                }
+            }
+        }
     }
 
     private fun handleRidesNotify(d: ByteArray) {
@@ -746,13 +889,19 @@ class BleManager(private val app: Application) {
             }
 
             0x10 -> {   // download start: [u32 total]
+                // Ignore a stream we didn't ask for: after a timeout or a
+                // dropped link the device can still be pushing an abandoned
+                // file, and those bytes must not land in the next buffer.
+                if (dlActive == null || d.size <= 4) return
+                dlLastActivity = SystemClock.elapsedRealtime()
                 dlExpected = le32(d, 1)
                 dlBuffer = java.io.ByteArrayOutputStream(max(dlExpected, 1024))
                 dlNextSeq = 0
             }
 
             0x11 -> {   // chunk: [u16 seq][payload]
-                if (d.size <= 3) return
+                if (dlActive == null || dlExpected <= 0 || d.size <= 3) return
+                dlLastActivity = SystemClock.elapsedRealtime()
                 val seq = le16(d, 1)
                 // Strict in-order: only append the chunk we're expecting next.
                 // Anything else (a duplicate from a resend, or a chunk that
@@ -761,48 +910,59 @@ class BleManager(private val app: Application) {
                 if (seq == dlNextSeq) {
                     dlBuffer.write(d, 3, d.size - 3)
                     dlNextSeq = (dlNextSeq + 1) and 0xFFFF
-                    if (dlExpected > 0) {
-                        downloadProgress = min(1.0, dlBuffer.size().toDouble() / dlExpected)
-                    }
+                    downloadProgress = min(1.0, dlBuffer.size().toDouble() / dlExpected)
                 }
             }
 
             0x14 -> {   // window end — tell the device the next seq we need
+                // Only ack a stream we're actually collecting — one we asked for
+                // AND whose [0x10] header we saw. Acking anything else would
+                // answer an abandoned transfer with our seq 0 and make the
+                // device resend that whole file. Staying quiet lets its 5s ack
+                // timeout drop the stale stream and pick up our request instead.
+                if (dlActive == null || dlExpected <= 0) return
+                dlLastActivity = SystemClock.elapsedRealtime()
                 writeChar(
                     ridesChar,
                     byteArrayOf(0x04, (dlNextSeq and 0xFF).toByte(), (dlNextSeq shr 8).toByte()),
                 )
             }
 
-            0x12 -> finishDownload()
+            0x12 -> { if (dlActive != null) finishDownload() }
             0x13 -> Unit   // delete ack (already removed locally)
 
             0x1F -> {   // error (e.g. recording in progress)
                 // Only surface a toast if the user was actively downloading; the
                 // routine list-refresh fails silently mid-ride (the Rides tab
                 // shows an "in progress" banner + the already-synced rides).
-                val wasDownloading = downloadingName != null
-                downloadingName = null
                 loadingRides = false
-                if (wasDownloading) lastMessage = "Device busy — stop the ride first"
+                if (dlActive == null) return
+                // A recording device refuses every file, so drop the whole queue
+                // rather than failing each one in turn with its own toast.
+                cancelAllTransfers("Device busy — stop the ride first")
             }
         }
     }
 
     private fun finishDownload() {
         val bytes = dlBuffer.toByteArray()
-        // A short transfer means packets were lost — surface it instead of
-        // handing a truncated file to the parser.
-        if (dlExpected > 0 && bytes.size != dlExpected) {
-            lastMessage = "Transfer incomplete (${bytes.size}/$dlExpected bytes) — try again"
-            downloadingName = null
-            downloadingLog = false
+        // A short transfer means packets were lost, and a zero-length one means
+        // no [0x10] header ever arrived. Either way the bytes in hand aren't the
+        // file — never write them out, least of all under the requested name.
+        if (dlExpected <= 0 || bytes.size != dlExpected) {
+            lastMessage = if (dlExpected <= 0) "Transfer failed — try again"
+                          else "Transfer incomplete (${bytes.size}/$dlExpected bytes) — try again"
+            endActiveTransfer()
             return
         }
-        if (downloadingLog) {
-            downloadingLog = false
-            var fname = (downloadingName ?: "diag").replace("/", "_")
-            downloadingName = null
+        // Take the name BEFORE releasing the line — starting the next queued
+        // transfer clears it (`bytes` is already a copy).
+        val wasLog = downloadingLog
+        val name = if (wasLog) (downloadingName ?: "diag") else dlName
+        endActiveTransfer()
+
+        if (wasLog) {
+            var fname = name.replace("/", "_")
             if (!fname.endsWith(".log")) fname += ".log"
             runCatching {
                 val dir = File(app.cacheDir, "logs").apply { mkdirs() }
@@ -814,12 +974,11 @@ class BleManager(private val app: Application) {
         }
         // Persist to the cache so it's available offline and never re-fetched.
         runCatching {
-            val out = cachedRideFile(dlName)
+            val out = cachedRideFile(name)
             out.writeBytes(bytes)
             downloadedFile = out
-            lastMessage = "$dlName ready"
+            lastMessage = "$name ready"
         }.onFailure { lastMessage = "Save failed: ${it.message}" }
-        downloadingName = null
     }
 
     // Downloaded rides are cached here so they never need re-downloading.

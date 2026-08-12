@@ -16,6 +16,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Icon
@@ -183,7 +184,12 @@ fun Stat(
  * .fit so it can be inspected.
  */
 @Composable
-fun RideParseErrorSheet(file: File, onDismiss: () -> Unit) {
+fun RideParseErrorSheet(
+    file: File,
+    canRetry: Boolean = false,
+    onRetry: () -> Unit = {},
+    onDismiss: () -> Unit,
+) {
     val context = LocalContext.current
     FullScreenSheet(title = "Ride", onDismiss = onDismiss, confirmLabel = "Close") {
         Column(
@@ -200,14 +206,26 @@ fun RideParseErrorSheet(file: File, onDismiss: () -> Unit) {
             )
             Text("Couldn't read this ride", style = TypeScale.title, color = Palette.ink)
             Text(
-                "The full file downloaded but the app couldn't parse it. Share the raw .fit " +
-                    "file so it can be analyzed.",
+                if (canRetry) {
+                    "The app couldn't parse this file. Download it again from the device, " +
+                        "or share the raw .fit so it can be analyzed."
+                } else {
+                    "The full file downloaded but the app couldn't parse it. Share the raw " +
+                        ".fit file so it can be analyzed."
+                },
                 style = TypeScale.body,
                 color = Palette.muted,
                 textAlign = TextAlign.Center,
             )
-            PrimaryButton("Share .fit file", icon = Icons.Filled.Share) {
-                Share.fit(context, file)
+            if (canRetry) {
+                PrimaryButton("Download again", icon = Icons.Filled.Refresh, onClick = onRetry)
+                TextButton(onClick = { Share.fit(context, file) }) {
+                    Text("Share .fit file", color = Palette.ink, style = barlow(14.sp))
+                }
+            } else {
+                PrimaryButton("Share .fit file", icon = Icons.Filled.Share) {
+                    Share.fit(context, file)
+                }
             }
             TextButton(onClick = onDismiss) {
                 Text("Close", color = Palette.muted, style = barlow(14.sp))

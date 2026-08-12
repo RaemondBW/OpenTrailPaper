@@ -480,6 +480,22 @@ private fun DiagnosticsCard(ble: BleManager) {
             color = Palette.muted,
             modifier = Modifier.padding(vertical = 8.dp),
         )
+        // Logs share the one transfer channel with rides, so a tap while
+        // something else is downloading waits its turn — say so, rather than
+        // looking like the button did nothing.
+        val queuedLogs = ble.queuedDownloads.filter { it == "diag" || it.endsWith(".log") }
+        if (queuedLogs.isNotEmpty()) {
+            Text(
+                if (queuedLogs.size == 1) {
+                    "${logDayLabel(queuedLogs[0])} queued — starts after the current download"
+                } else {
+                    "${queuedLogs.size} logs queued — they start after the current download"
+                },
+                style = barlow(12.sp),
+                color = Palette.muted,
+                modifier = Modifier.padding(bottom = 8.dp),
+            )
+        }
         if (ble.downloadingLog) {
             Text(
                 "Downloading ${logDayLabel(ble.downloadingName ?: "log")}…",
