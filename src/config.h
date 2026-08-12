@@ -86,9 +86,40 @@
 // Region power limit is 30 dBm; the SX1262 tops out at 22, which is the cap that
 // actually binds. Meshtastic's own US default is the same.
 #define MESH_TX_DBM         22
-// LongFast — Meshtastic's default modem preset, and the one an out-of-the-box
-// node on the public mesh is listening with.
-#define MESH_PRESET_NAME    "LongFast"
+// --- Channel name, and the modem it is spoken with -------------------------
+//
+// These are TWO INDEPENDENT settings and conflating them is a trap worth
+// spelling out, because it costs a completely silent radio.
+//
+// The channel NAME decides where to listen. It feeds two hashes: djb2(name) picks
+// the frequency slot, and xor(name) ^ xor(key) is the channel byte stamped on
+// every packet. Nothing about the name says how fast to talk.
+//
+// The MODEM (spreading factor / bandwidth / coding rate) decides how. In the
+// Meshtastic app it is chosen as a named "preset", and on a node whose channel
+// name is EMPTY that preset name is also used as the channel name — which is why
+// the two look like one setting until you meet a node where they differ. A
+// channel called "MediumFast" running the LongFast modem is perfectly normal, and
+// matching only one of the two leaves you deaf: same frequency but the wrong
+// spreading factor demodulates nothing at all.
+//
+// So set the name to match the other node's CHANNEL, and the modem to match its
+// PRESET. Ask the device what it ended up with over the serial console: `mesh`.
+//
+//   name          slot  frequency (US)   channel hash (default key)
+//   LongFast        19    906.875 MHz        0x08
+//   MediumFast      44    913.125 MHz        0x1f   <- current
+#define MESH_CHANNEL_NAME   "MediumFast"
+
+//   preset        SF   BW    CR   relative air time
+//   LongFast      11   250    5   1x     (Meshtastic's default modem)  <- current
+//   MediumSlow    10   250    5   ~0.5x
+//   MediumFast     9   250    5   ~0.25x
+//   ShortFast      7   250    5   ~0.07x
+//
+// Faster is less time occupying the channel and less energy per message, at the
+// cost of sensitivity and therefore range.
+#define MESH_MODEM_NAME     "LongFast"
 #define MESH_BW_KHZ         250.0f
 #define MESH_SF             11
 #define MESH_CR             5

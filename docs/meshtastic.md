@@ -12,8 +12,8 @@ implementation follows the real wire format rather than inventing a private one.
 
 **Does**
 
-- Joins a Meshtastic channel (default: `LongFast`, key 1 — what a stock node
-  uses) and sends/receives `TEXT_MESSAGE_APP` messages.
+- Joins a Meshtastic channel (currently `MediumFast`, key 1 — see
+  [Modem preset](#modem-preset)) and sends/receives `TEXT_MESSAGE_APP` messages.
 - Broadcasts to the channel, or direct-messages one node.
 - Acknowledges direct messages addressed to it, so the sender's app shows a
   delivery tick, and marks its own direct messages acknowledged when the reply
@@ -77,8 +77,36 @@ feeds two different hashes:
 So renaming the channel *retunes the radio*. A device on `LongFast` and one on
 `MyTrail` are not on the same frequency at all, let alone the same key.
 
-Both hashes, and the modem preset (LongFast = SF11 / BW250 / CR4:5, sync word
-`0x2B`, 16-symbol preamble), are checked against known-good values by
+## Modem preset
+
+The catch: a node with no explicit channel name uses the **preset name** as its
+channel name. So the preset is not just a speed setting — it picks the frequency
+and the channel byte too.
+
+| Preset | SF | BW | Slot | Frequency (US) | Channel hash |
+|---|---|---|---|---|---|
+| `LongFast` | 11 | 250 | 19 | 906.875 MHz | `0x08` |
+| `MediumFast` | 9 | 250 | 44 | **913.125 MHz** | `0x1f` |
+
+`MESH_PRESET_NAME`, `MESH_SF`, `MESH_BW_KHZ` and `MESH_CR` in `src/config.h` move
+together and must match the preset name exactly as Meshtastic spells it.
+
+This firmware currently ships **MediumFast**. It is roughly 4x faster on the air
+than LongFast, so a message occupies the channel for a fraction as long and costs
+less battery to send, at the price of sensitivity and therefore range.
+
+**Every node you want to talk to must be on the same preset.** A LongFast node is
+not merely slower to reach — it is on a different frequency and cannot hear this
+one at all.
+
+Because the preset name is the default channel name, the device deliberately does
+**not** persist it: `settings::meshChannel()` returns the compiled preset unless
+the phone set an explicit channel. Storing a copy would pin a unit to whatever
+preset it first booted with, and a firmware built for MediumFast would keep
+talking LongFast on the wrong frequency with nothing in the log to explain it.
+
+Both hashes and the modem parameters (sync word `0x2B`, 16-symbol preamble) are
+checked against known-good values by
 `tools/mesh_test/run_mesh_test.sh`. Run it after touching `src/mesh_proto.cpp` —
 every value it covers fails *silently* on real hardware, as a radio that hears
 nothing and is heard by nobody.

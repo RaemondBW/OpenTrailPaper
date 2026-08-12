@@ -125,6 +125,23 @@ static void testChannelPlacement() {
     check(mesh::channelHash("LongFast", psk, 16) !=
               mesh::channelHash("LongSlow", psk, 16),
           "a different channel name gives a different hash");
+
+    // MediumFast, the preset this firmware currently ships (see config.h). Pinned
+    // here because switching preset is the one change that silently moves the
+    // radio: the preset name IS the default channel name, so it changes the
+    // frequency slot and the channel byte as well as the spreading factor.
+    const uint32_t mfSlot = mesh::nameHash("MediumFast") % n;
+    const float mf = mesh::channelFrequencyMHz("MediumFast", 250.0f, 902.0f,
+                                               928.0f, 0.0f);
+    printf("      MediumFast slot=%u frequency=%.4f MHz hash=0x%02x\n", mfSlot, mf,
+           mesh::channelHash("MediumFast", psk, 16));
+    check(mfSlot == 44, "MediumFast hashes to slot 44");
+    check(std::fabs(mf - 913.125f) < 0.0005f, "MediumFast centre is 913.125 MHz");
+    check(mesh::channelHash("MediumFast", psk, 16) == 0x1f,
+          "MediumFast channel hash is 0x1f");
+    // The two presets are genuinely different radios, not just different speeds.
+    check(std::fabs(mf - f) > 1.0f,
+          "changing preset moves the frequency, so presets cannot interoperate");
 }
 
 static void testHeader() {

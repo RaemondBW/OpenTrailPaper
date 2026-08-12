@@ -26,7 +26,11 @@ bool rtcSynced = false;  // has GPS ever written UTC to the coin-cell RTC?
 // Mesh messaging. Default ON with the default channel, which is what makes a
 // device out of the box able to hear the public mesh around it.
 bool meshOn = true;
-char meshChan[16] = MESH_PRESET_NAME;
+// EMPTY means "follow MESH_CHANNEL_NAME", and that is deliberate: storing a copy
+// would pin a device to whatever channel it first booted with, so a firmware
+// rebuilt for a different channel would keep listening on the old frequency with
+// nothing in the log to say why. Only an explicit choice from the phone is written.
+char meshChan[16] = "";
 uint8_t meshKey = 1;
 char meshLong[40] = "";
 char meshShort[8] = "";
@@ -58,8 +62,7 @@ void begin() {
     lastLon = prefs.getDouble("lastlon", 0);
     rtcSynced = prefs.getBool("rtcok", false);
     meshOn = prefs.getBool("meshon", true);
-    if (!prefs.getString("meshchan", meshChan, sizeof(meshChan)) || !meshChan[0])
-        snprintf(meshChan, sizeof(meshChan), MESH_PRESET_NAME);
+    prefs.getString("meshchan", meshChan, sizeof(meshChan));   // "" = use the preset
     meshKey = (uint8_t)constrain(prefs.getUChar("meshkey", 1), 1, 10);
     prefs.getString("meshlong", meshLong, sizeof(meshLong));
     prefs.getString("meshshort", meshShort, sizeof(meshShort));
@@ -159,7 +162,10 @@ void setMeshEnabled(bool on) {
     prefs.putBool("meshon", on);
 }
 
-const char* meshChannel() { return meshChan; }
+const char* meshChannel() {
+    // No stored choice means follow the compiled channel — see the note above.
+    return meshChan[0] ? meshChan : MESH_CHANNEL_NAME;
+}
 uint8_t meshChannelKey() { return meshKey; }
 
 void setMeshChannel(const char* name, uint8_t keyIndex) {

@@ -50,7 +50,7 @@ char myShortName[8] = {};
 
 // Channel identity. The name feeds two different hashes: the frequency slot and
 // the byte that stamps each packet.
-char chanName[16] = MESH_PRESET_NAME;
+char chanName[16] = MESH_CHANNEL_NAME;
 uint8_t chanPskIndex = 1;
 uint8_t chanPsk[16] = {};
 uint8_t chanHash = 0;

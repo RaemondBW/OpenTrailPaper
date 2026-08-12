@@ -19,6 +19,10 @@ struct MeshView: View {
     @State private var recipientNum: UInt32? = nil    // nil = the whole channel
     @State private var showNodes = false
     @State private var showSettings = false
+    /// Owned here rather than left to the system so a tap anywhere on the
+    /// conversation can put the keyboard away — on a phone held one-handed on a
+    /// handlebar, the keyboard covers most of the thread you are trying to read.
+    @FocusState private var composerFocused: Bool
 
     /// Whether there is a device to talk to — or seeded demo data standing in
     /// for one.
@@ -56,7 +60,12 @@ struct MeshView: View {
                 } else if !ble.meshState.radioOk {
                     radioMissing
                 } else {
+                    // contentShape so the empty space below the last bubble is
+                    // tappable too — that is most of the screen in a short
+                    // thread, and it is where a thumb naturally lands.
                     thread
+                        .contentShape(Rectangle())
+                        .onTapGesture { composerFocused = false }
                     composer
                 }
             }
@@ -85,7 +94,11 @@ struct MeshView: View {
         HStack(alignment: .firstTextBaseline) {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Mesh").font(TypeScale.screenTitle).foregroundStyle(Palette.ink)
-                Text(subtitle).trackedLabel()
+                Text(subtitle)
+                    .font(BarlowFont.condensed(16, .medium))
+                    .tracking(1.2)
+                    .textCase(.uppercase)
+                    .foregroundStyle(Palette.muted)
             }
             Spacer()
             Button { showNodes = true } label: {
@@ -184,6 +197,9 @@ struct MeshView: View {
                 .padding(.horizontal, 16)
                 .padding(.bottom, 8)
             }
+            // Dragging the thread also puts the keyboard away, which is the
+            // gesture most people reach for before they think to tap.
+            .scrollDismissesKeyboard(.interactively)
             .onChange(of: messages.count) { _, _ in
                 // Follow the conversation, the way any chat does.
                 if let last = messages.last {
@@ -219,6 +235,7 @@ struct MeshView: View {
                           text: $draft, axis: .vertical)
                     .font(BarlowFont.text(16))
                     .foregroundStyle(Palette.ink)
+                    .focused($composerFocused)
                     .lineLimit(1...4)
                     .padding(.horizontal, 14).padding(.vertical, 10)
                     .background(Palette.surface)
@@ -240,7 +257,7 @@ struct MeshView: View {
             // rather than enforced by a silent truncation.
             if bytes > 140 {
                 Text("\(bytes)/200 bytes")
-                    .font(BarlowFont.condensed(12, .medium))
+                    .font(BarlowFont.condensed(14, .medium))
                     .foregroundStyle(bytes > 200 ? Palette.accent : Palette.faint)
                     .frame(maxWidth: .infinity, alignment: .trailing)
             }
@@ -275,7 +292,7 @@ private struct MeshBubble: View {
             VStack(alignment: message.outgoing ? .trailing : .leading, spacing: 3) {
                 if !message.outgoing {
                     Text(senderName)
-                        .font(BarlowFont.condensed(13, .semibold))
+                        .font(BarlowFont.condensed(16, .semibold))
                         .foregroundStyle(Palette.accent)
                 }
                 Text(message.text)
@@ -293,7 +310,7 @@ private struct MeshBubble: View {
                     }
                     if message.outgoing { statusMark }
                 }
-                .font(BarlowFont.condensed(12, .medium))
+                .font(BarlowFont.condensed(15, .medium))
                 .foregroundStyle(message.outgoing ? Palette.accentWash : Palette.faint)
             }
             .padding(.horizontal, 14).padding(.vertical, 10)
@@ -336,7 +353,7 @@ private struct MeshNodesSheet: View {
                                                                 : ble.meshState.longName)
                                 .font(TypeScale.title).foregroundStyle(Palette.ink)
                             Text("\(ble.meshState.nodeId) · \(ble.meshState.shortName)")
-                                .font(BarlowFont.text(13)).foregroundStyle(Palette.muted)
+                                .font(BarlowFont.text(15)).foregroundStyle(Palette.muted)
                         }
                     }
 
@@ -383,7 +400,7 @@ private struct MeshNodesSheet: View {
                                         Text(n.displayName)
                                             .font(TypeScale.title).foregroundStyle(Palette.ink)
                                         Text(detail(n))
-                                            .font(BarlowFont.text(13))
+                                            .font(BarlowFont.text(15))
                                             .foregroundStyle(Palette.muted)
                                     }
                                     Spacer()
