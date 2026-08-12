@@ -701,6 +701,23 @@ void epdc_paint_wait() {
         Serial.println("[epdc] paint did not finish within 6 s; powering off anyway");
 }
 
+// The driver's idle timer re-arms to `_idle_timeout_s` on every paint, so
+// shortening it here means the farewell paint that follows arms one second rather
+// than five.
+void epdc_power_off_soon() {
+    if (g_painter) g_painter->setIdleTimeout(1);
+}
+
+void epdc_power_off_wait() {
+    if (!g_painter) return;
+    // A blind wait, deliberately: the driver exposes no rail-state getter, so
+    // there is nothing to poll. Its `panel_idle_off` task ticks at 1 Hz and powers
+    // off when the count armed above reaches zero, which is two ticks away worst
+    // case. That task runs at priority 1 and this is the UI task at 2, so the
+    // delay is what lets it be scheduled at all.
+    vTaskDelay(pdMS_TO_TICKS(2400));
+}
+
 void epdc_clear(int passes) {
     if (!g_painter) return;
     if (passes < 1) passes = 1;
