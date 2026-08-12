@@ -23,7 +23,8 @@ struct RidesView: View {
         return out.sorted { $0.name > $1.name }
     }
 
-    // Show a cached ride immediately; otherwise pull it over BLE.
+    // Show a cached ride immediately; otherwise pull it over BLE. Downloads are
+    // queued by BLEManager, so tapping a second ride mid-transfer is safe.
     private func open(_ ride: RideFile) {
         let url = BLEManager.cachedURL(for: ride.name)
         if let data = try? Data(contentsOf: url) {
@@ -35,6 +36,14 @@ struct RidesView: View {
         } else {
             ble.downloadRide(ride.name)
         }
+    }
+
+    // Throw away a cached file that won't parse and fetch it again — the way
+    // out for rides left corrupt on disk by an interrupted transfer.
+    private func redownload(_ name: String) {
+        try? FileManager.default.removeItem(at: BLEManager.cachedURL(for: name))
+        previews.forget(name)
+        ble.downloadRide(name)
     }
 
     // Big title + sync status + refresh (mockup 2c).
@@ -157,6 +166,7 @@ struct RidesView: View {
                                     cached: BLEManager.isCached(ride.name),
                                     preview: previews.preview(for: ride.name),
                                     downloading: ble.downloadingName == ride.name,
+                                    queued: ble.queuedDownloads.contains(ride.name),
                                     progress: ble.downloadProgress,
                                     onTap: { open(ride) },
                                     onDelete: {
@@ -203,10 +213,14 @@ struct RidesView: View {
             }
             .onChange(of: ble.downloadedFileURL) { _, url in
                 guard let url, let data = try? Data(contentsOf: url) else { return }
+                // A queued ride that lands while the rider is looking at an
+                // earlier one fills in its row rather than yanking the sheet
+                // out from under them.
+                let busy = detail != nil || failedURL != nil
                 if let preview = FITDecoder.decode(data) {
-                    detail = RideDetailData(url: url, preview: preview)
                     previews.store(preview, for: url.lastPathComponent)  // fill the row thumbnail
-                } else {
+                    if !busy { detail = RideDetailData(url: url, preview: preview) }
+                } else if !busy {
                     failedURL = url
                 }
             }
@@ -214,7 +228,9 @@ struct RidesView: View {
                 RideDetailView(fileURL: d.url, preview: d.preview)
             }
             .sheet(item: $failedURL) { url in
-                RideParseErrorView(url: url)
+                RideParseErrorView(url: url,
+                                   canRetry: ble.state == .connected,
+                                   onRetry: { redownload(url.lastPathComponent) })
             }
         }
     }
@@ -231,6 +247,7 @@ private struct RideRow: View {
     let cached: Bool
     let preview: RidePreview?
     let downloading: Bool
+    let queued: Bool
     let progress: Double
     let onTap: () -> Void
     let onDelete: () -> Void
@@ -286,6 +303,15 @@ private struct RideRow: View {
                     Text("Downloading…").font(.system(size: 12))
                         .foregroundStyle(Palette.muted)
                 }
+            } else if queued {
+                VStack(spacing: 8) {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .font(.system(size: 30)).foregroundStyle(Palette.muted)
+                    Text("Queued — starts after the current download")
+                        .font(.system(size: 12)).foregroundStyle(Palette.muted)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 16)
+                }
             } else {
                 VStack(spacing: 8) {
                     Image(systemName: cached ? "map" : "arrow.down.circle")
@@ -324,6 +350,10 @@ private struct RideRow: View {
     @ViewBuilder private var trailing: some View {
         if downloading {
             ProgressView(value: progress).frame(width: 54)
+        } else if queued {
+            Image(systemName: "clock")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(Palette.muted)
         } else if cached {
             Image(systemName: "chevron.right")
                 .font(.system(size: 14, weight: .semibold))
@@ -360,6 +390,8 @@ private struct RideRow: View {
 // raw .fit so it can be inspected.
 private struct RideParseErrorView: View {
     let url: URL
+    let canRetry: Bool
+    let onRetry: () -> Void
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -369,17 +401,35 @@ private struct RideParseErrorView: View {
                 .foregroundStyle(Palette.accent)
             Text("Couldn't read this ride")
                 .font(TypeScale.title).foregroundStyle(Palette.ink)
-            Text("The full file downloaded but the app couldn't parse it. Share the raw .fit file so it can be analyzed.")
+            Text(canRetry
+                 ? "The app couldn't parse this file. Download it again from the device, or share the raw .fit so it can be analyzed."
+                 : "The full file downloaded but the app couldn't parse it. Share the raw .fit file so it can be analyzed.")
                 .font(TypeScale.body).foregroundStyle(Palette.muted)
                 .multilineTextAlignment(.center)
+            if canRetry {
+                Button {
+                    dismiss()
+                    onRetry()
+                } label: {
+                    Label("Download again", systemImage: "arrow.clockwise")
+                        .font(.system(size: 17, weight: .semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(Palette.accent)
+                        .foregroundStyle(.white)
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                }
+            }
             ShareLink(item: url) {
                 Label("Share .fit file", systemImage: "square.and.arrow.up")
                     .font(.system(size: 17, weight: .semibold))
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 14)
-                    .background(Palette.accent)
-                    .foregroundStyle(.white)
+                    .background(canRetry ? Palette.surface : Palette.accent)
+                    .foregroundStyle(canRetry ? Palette.ink : .white)
                     .clipShape(RoundedRectangle(cornerRadius: 14))
+                    .overlay(RoundedRectangle(cornerRadius: 14)
+                        .strokeBorder(canRetry ? Palette.hairline : .clear, lineWidth: 1))
             }
             Button("Close") { dismiss() }
                 .foregroundStyle(Palette.muted)

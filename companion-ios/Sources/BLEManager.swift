@@ -210,6 +210,36 @@ final class BLEManager: NSObject, ObservableObject {
     private var dlNextSeq: UInt16 = 0
     @Published private(set) var downloadingLog = false
 
+    // Ride and log transfers share ONE device-side streamer and one receive
+    // buffer here, so exactly one may be in flight. Asking for a second file
+    // mid-transfer used to reset the buffer under the running stream: the tail
+    // of file A landed in the buffer and was then written out under file B's
+    // name, so B was saved corrupt (and cached, so it never re-downloaded) and
+    // A was never saved at all. Requests are queued and run strictly serially.
+    private enum Transfer: Equatable {
+        case ride(String)
+        case log(String)        // "" = today's rolling diag.log
+
+        var isLog: Bool { if case .log = self { return true }; return false }
+        var displayName: String {
+            switch self {
+            case .ride(let n): return n
+            case .log(let n):  return n.isEmpty ? "diag" : n
+            }
+        }
+    }
+    private var dlQueue: [Transfer] = []
+    private var dlActive: Transfer? = nil
+    /// List commands share the device's one request slot with transfers, so they
+    /// wait for the queue to drain rather than clobbering it.
+    private var listRefreshPending = false
+    private var logListPending = false
+    private var dlWatchdog: Task<Void, Never>?
+    private var dlLastActivity = Date()
+    /// Names waiting their turn, so a row can show "Queued" instead of looking
+    /// like the tap did nothing.
+    @Published private(set) var queuedDownloads: [String] = []
+
     // OTA transfer state
     private var otaData = Data()
     private var otaOffset = 0
@@ -430,6 +460,12 @@ final class BLEManager: NSObject, ObservableObject {
 
     func refreshRides() {
         guard let c = ridesChar, let p = peripheral else { return }
+        // The device holds ONE pending request: a list command written while a
+        // transfer is in flight is overwritten by (or overwrites) the next
+        // queued download, and whichever loses is silently dropped — leaving the
+        // list spinning forever or the download waiting on its watchdog. Wait
+        // for the line instead.
+        guard dlActive == nil, dlQueue.isEmpty else { listRefreshPending = true; return }
         rides = []
         loadingRides = true
         p.writeValue(Data([0x01]), for: c, type: .withResponse)
@@ -437,6 +473,10 @@ final class BLEManager: NSObject, ObservableObject {
 
     func deleteRide(_ name: String) {
         rides.removeAll { $0.name == name }
+        // Drop it from the download queue too, so a deleted ride doesn't get
+        // fetched (and re-cached) moments later.
+        dlQueue.removeAll { $0 == .ride(name) }
+        publishQueue()
         try? FileManager.default.removeItem(at: BLEManager.cachedURL(for: name))
         // Offline: just drop the local cache. Connected: also delete on device.
         guard let c = ridesChar, let p = peripheral else { return }
@@ -446,21 +486,16 @@ final class BLEManager: NSObject, ObservableObject {
 
     // Pull /diag.log off the device (reuses the reliable ride-transfer path).
     func downloadLog() {
-        guard let c = ridesChar, let p = peripheral else {
+        guard ridesChar != nil, peripheral != nil else {
             lastMessage = "Not connected"; return
         }
-        dlBuffer = Data()
-        dlExpected = 0
-        downloadingLog = true
-        downloadingName = "diag"
-        downloadProgress = 0
-        logFileURL = nil
-        p.writeValue(Data([0x05]), for: c, type: .withResponse)
+        enqueueTransfer(.log(""))
     }
 
     // List the per-day log files on the device (reply parsed via 0x30/0x31).
     func requestLogList() {
         guard let c = ridesChar, let p = peripheral else { return }
+        guard dlActive == nil, dlQueue.isEmpty else { logListPending = true; return }
         logsBuilding = []
         loadingLogs = true
         p.writeValue(Data([0x06]), for: c, type: .withResponse)
@@ -468,15 +503,8 @@ final class BLEManager: NSObject, ObservableObject {
 
     // Download one specific day's log file.
     func downloadLogFile(_ name: String) {
-        guard let c = ridesChar, let p = peripheral else { lastMessage = "Not connected"; return }
-        dlBuffer = Data()
-        dlExpected = 0
-        downloadingLog = true
-        downloadingName = name
-        downloadProgress = 0
-        logFileURL = nil
-        var cmd = Data([0x07]); cmd.append(Data(name.utf8))
-        p.writeValue(cmd, for: c, type: .withResponse)
+        guard ridesChar != nil, peripheral != nil else { lastMessage = "Not connected"; return }
+        enqueueTransfer(.log(name))
     }
 
     // MARK: firmware / OTA
@@ -895,16 +923,109 @@ final class BLEManager: NSObject, ObservableObject {
     }
 
     func downloadRide(_ name: String) {
-        guard let c = ridesChar, let p = peripheral else { return }
+        guard ridesChar != nil, peripheral != nil else { return }
+        enqueueTransfer(.ride(name))
+    }
+
+    // MARK: serialized transfer queue
+
+    private func enqueueTransfer(_ t: Transfer) {
+        // Tapping the same file twice queues it once.
+        guard dlActive != t, !dlQueue.contains(t) else { return }
+        dlQueue.append(t)
+        startNextTransfer()
+    }
+
+    /// Sends the next queued request, but only when the line is free — the
+    /// device streams one file at a time and we hold one receive buffer.
+    private func startNextTransfer() {
+        publishQueue()
+        guard dlActive == nil else { return }
+        guard !dlQueue.isEmpty else { runDeferredListRequests(); return }
+        guard let c = ridesChar, let p = peripheral else {
+            dlQueue = []          // link gone; nothing can be fetched
+            publishQueue()
+            return
+        }
+        let t = dlQueue.removeFirst()
+        dlActive = t
         dlBuffer = Data()
         dlExpected = 0
-        dlName = name
-        downloadingName = name
+        dlNextSeq = 0
         downloadProgress = 0
-        downloadedFileURL = nil
-        var cmd = Data([0x02])
-        cmd.append(Data(name.utf8))
-        p.writeValue(cmd, for: c, type: .withResponse)
+        downloadingLog = t.isLog
+        downloadingName = t.displayName
+        switch t {
+        case .ride(let name):
+            dlName = name
+            downloadedFileURL = nil
+            var cmd = Data([0x02])
+            cmd.append(Data(name.utf8))
+            p.writeValue(cmd, for: c, type: .withResponse)
+        case .log(let name):
+            dlName = name
+            logFileURL = nil
+            if name.isEmpty {
+                p.writeValue(Data([0x05]), for: c, type: .withResponse)
+            } else {
+                var cmd = Data([0x07])
+                cmd.append(Data(name.utf8))
+                p.writeValue(cmd, for: c, type: .withResponse)
+            }
+        }
+        publishQueue()
+        armDownloadWatchdog()
+    }
+
+    /// The active transfer ended (either way) — release the line and run the
+    /// next request. Always the single exit point, so the queue can't jam.
+    private func endActiveTransfer() {
+        dlWatchdog?.cancel()
+        dlWatchdog = nil
+        dlActive = nil
+        downloadingName = nil
+        downloadingLog = false
+        dlBuffer = Data()          // don't hold a ride's bytes after it's saved
+        dlExpected = 0
+        startNextTransfer()
+    }
+
+    /// Abandon everything queued (device busy, disconnected) with one message
+    /// rather than one failure toast per queued file.
+    private func cancelAllTransfers(_ message: String?) {
+        dlQueue = []
+        if let message { lastMessage = message }
+        endActiveTransfer()
+    }
+
+    private func publishQueue() {
+        let names = dlQueue.map(\.displayName)
+        if names != queuedDownloads { queuedDownloads = names }
+    }
+
+    /// Run whatever asked for the line while it was busy. Called once the queue
+    /// is empty, so these never race a transfer for the device's request slot.
+    private func runDeferredListRequests() {
+        if listRefreshPending { listRefreshPending = false; refreshRides() }
+        if logListPending { logListPending = false; requestLogList() }
+    }
+
+    /// A device that stops mid-stream (or never answers) must not strand the
+    /// queue behind a transfer that will never finish.
+    private func armDownloadWatchdog() {
+        dlWatchdog?.cancel()
+        dlLastActivity = Date()
+        dlWatchdog = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                guard !Task.isCancelled, let self, self.dlActive != nil else { return }
+                if Date().timeIntervalSince(self.dlLastActivity) > 20 {
+                    self.lastMessage = "\(self.dlActive?.displayName ?? "Transfer") timed out — try again"
+                    self.endActiveTransfer()
+                    return
+                }
+            }
+        }
     }
 
     private func handleRidesNotify(_ d: Data) {
@@ -926,11 +1047,17 @@ final class BLEManager: NSObject, ObservableObject {
             loadingLogs = false
             deviceLogs = logsBuilding.sorted { $0.name > $1.name }   // newest day first
         case 0x10:  // download start: [u32 total]
+            // Ignore a stream we didn't ask for: after a timeout or a dropped
+            // link the device can still be pushing an abandoned file, and those
+            // bytes must not land in the next transfer's buffer.
+            guard dlActive != nil, d.count > 4 else { return }
+            dlLastActivity = Date()
             dlExpected = Int(d[1]) | (Int(d[2]) << 8) | (Int(d[3]) << 16) | (Int(d[4]) << 24)
             dlBuffer = Data(capacity: dlExpected)
             dlNextSeq = 0
         case 0x11:  // chunk: [u16 seq][payload]
-            guard d.count > 3 else { return }
+            guard dlActive != nil, dlExpected > 0, d.count > 3 else { return }
+            dlLastActivity = Date()
             let seq = UInt16(d[1]) | (UInt16(d[2]) << 8)
             // Strict in-order: only append the chunk we're expecting next.
             // Anything else (a duplicate from a resend, or a chunk that arrived
@@ -938,11 +1065,16 @@ final class BLEManager: NSObject, ObservableObject {
             if seq == dlNextSeq {
                 dlBuffer.append(d[3...])
                 dlNextSeq = seq &+ 1
-                if dlExpected > 0 {
-                    downloadProgress = min(1, Double(dlBuffer.count) / Double(dlExpected))
-                }
+                downloadProgress = min(1, Double(dlBuffer.count) / Double(dlExpected))
             }
         case 0x14:  // window end — tell the device the next seq we need
+            // Only ack a stream we're actually collecting — one we asked for AND
+            // whose [0x10] header we saw. Acking anything else would answer an
+            // abandoned transfer with our seq 0 and make the device resend that
+            // whole file. Staying quiet lets its 5s ack timeout drop the stale
+            // stream and pick up our request instead.
+            guard dlActive != nil, dlExpected > 0 else { return }
+            dlLastActivity = Date()
             var ack = Data([0x04])
             ack.append(UInt8(dlNextSeq & 0xFF))
             ack.append(UInt8(dlNextSeq >> 8))
@@ -950,16 +1082,18 @@ final class BLEManager: NSObject, ObservableObject {
                 p.writeValue(ack, for: c, type: .withResponse)
             }
         case 0x12:  // done
+            guard dlActive != nil else { return }
             finishDownload()
         case 0x13: break  // delete ack (already removed locally)
         case 0x1F:  // error (e.g. recording in progress)
             // Only surface a toast if the user was actively downloading; the
             // routine list-refresh fails silently mid-ride (the Rides tab shows
             // an "in progress" banner + the already-synced rides instead).
-            let wasDownloading = downloadingName != nil
-            downloadingName = nil
             loadingRides = false
-            if wasDownloading { lastMessage = "Device busy — stop the ride first" }
+            guard dlActive != nil else { return }
+            // A recording device refuses every file, so drop the whole queue
+            // rather than failing each one in turn with its own toast.
+            cancelAllTransfers("Device busy — stop the ride first")
         default: break
         }
     }
@@ -1010,23 +1144,30 @@ final class BLEManager: NSObject, ObservableObject {
     }
 
     private func finishDownload() {
-        // A short transfer means packets were lost — surface it instead of
-        // handing a truncated file to the parser.
-        if dlExpected > 0 && dlBuffer.count != dlExpected {
-            lastMessage = "Transfer incomplete (\(dlBuffer.count)/\(dlExpected) bytes) — try again"
-            downloadingName = nil
-            downloadingLog = false
+        // A short transfer means packets were lost, and a zero-length one means
+        // no [0x10] header ever arrived. Either way the bytes in hand aren't the
+        // file — never write them out, least of all under the requested name.
+        if dlExpected == 0 || dlBuffer.count != dlExpected {
+            lastMessage = dlExpected == 0
+                ? "Transfer failed — try again"
+                : "Transfer incomplete (\(dlBuffer.count)/\(dlExpected) bytes) — try again"
+            endActiveTransfer()
             return
         }
-        if downloadingLog {                    // diagnostics log, not a ride
-            downloadingLog = false
-            var fname = (downloadingName ?? "diag").replacingOccurrences(of: "/", with: "_")
-            downloadingName = nil
+        // Take the payload and the name BEFORE releasing the line — starting the
+        // next queued transfer clears both.
+        let payload = dlBuffer
+        let wasLog = downloadingLog
+        let name = wasLog ? (downloadingName ?? "diag") : dlName
+        endActiveTransfer()
+
+        if wasLog {                            // diagnostics log, not a ride
+            var fname = name.replacingOccurrences(of: "/", with: "_")
             if !fname.hasSuffix(".log") { fname += ".log" }
             let url = FileManager.default.temporaryDirectory
                 .appendingPathComponent("bikegps-\(fname)")
             do {
-                try dlBuffer.write(to: url)
+                try payload.write(to: url)
                 logFileURL = url
             } catch {
                 lastMessage = "Log save failed: \(error.localizedDescription)"
@@ -1034,15 +1175,14 @@ final class BLEManager: NSObject, ObservableObject {
             return
         }
         // Persist to the cache so it's available offline and never re-fetched.
-        let url = BLEManager.cachedURL(for: dlName)
+        let url = BLEManager.cachedURL(for: name)
         do {
-            try dlBuffer.write(to: url)
+            try payload.write(to: url)
             downloadedFileURL = url
-            lastMessage = "\(dlName) ready"
+            lastMessage = "\(name) ready"
         } catch {
             lastMessage = "Save failed: \(error.localizedDescription)"
         }
-        downloadingName = nil
     }
 
     // MARK: route upload (chunked with a 1-byte opcode per packet)
@@ -1165,7 +1305,12 @@ extension BLEManager: CBCentralManagerDelegate {
             }
             status = DeviceStatus()
             sawStatusSinceConnect = false
-            rides = []; loadingRides = false; downloadingName = nil
+            rides = []; loadingRides = false
+            // Nothing queued can proceed without a link, and a half-received
+            // file must not be mistaken for a complete one on reconnect.
+            if dlActive != nil || !dlQueue.isEmpty {
+                cancelAllTransfers("Connection dropped mid-download — try again")
+            }
             deviceRoutes = []; loadingRoutes = false
             lastUploadProgress = nil; routeSent = false; routeReceived = false
             sensors = []; scanningSensors = false

@@ -314,6 +314,20 @@ struct SettingsView: View {
                 Text("Diagnostics").trackedLabel()
                 Text("The device keeps a daily log (boot, GPS, BLE, OTA, errors). Grab today's, or pick a specific day.")
                     .font(.system(size: 12)).foregroundStyle(Palette.muted)
+                // Logs share the one transfer channel with rides, so a tap while
+                // something else is downloading waits its turn — say so, rather
+                // than looking like the button did nothing.
+                if !queuedLogs.isEmpty {
+                    HStack(alignment: .top, spacing: 6) {
+                        Image(systemName: "clock")
+                        Text(queuedLogs.count == 1
+                             ? "\(logDayLabel(queuedLogs[0])) queued — starts after the current download"
+                             : "\(queuedLogs.count) logs queued — they start after the current download")
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 0)
+                    }
+                    .font(.system(size: 12)).foregroundStyle(Palette.muted)
+                }
                 if ble.downloadingLog {
                     ProgressView(value: ble.downloadProgress) {
                         Text("Downloading \(logDayLabel(ble.downloadingName ?? "log"))…")
@@ -347,6 +361,11 @@ struct SettingsView: View {
                 }
             }
         }
+    }
+
+    // Queued entries that are logs (rides are ".fit", today's log is "diag").
+    private var queuedLogs: [String] {
+        ble.queuedDownloads.filter { $0 == "diag" || $0.hasSuffix(".log") }
     }
 
     // "20260716.log" -> "Jul 16, 2026"; "pending.log" -> "Before first GPS fix".
