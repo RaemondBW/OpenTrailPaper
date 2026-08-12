@@ -60,6 +60,32 @@ void epdc_paint();
 // No-op on the epdiy backend, whose epd_hl_update_screen() already blocks.
 void epdc_paint_wait();
 
+// Cut the panel's high-voltage rails (VPOS/VNEG/VGH/VGL/VCOM) before deep sleep.
+//
+// Without this the TPS65185 keeps generating rails for the whole sleep. The
+// EPD_Painter backend does drop them on its own — but on a 5-second idle timer
+// run by its own `panel_idle_off` task, and shutdownDevice() stops the CPU long
+// inside that window, so the timer never fires. The enables are latched in the
+// XL9555 expander, which sits on the always-on 3V3, so nothing else drops them
+// either. (The epdiy backend powered the rails down around every paint, which is
+// why this only became a problem with the EPD_Painter port.)
+//
+// Two calls because of how that timer works: it is armed at paint time, so the
+// countdown has to be shortened BEFORE the last paint, and waited for after it.
+//
+//   epdc_power_off_soon();   // then paint the farewell screen
+//   epdc_paint_wait();
+//   epdc_power_off_wait();
+//
+// powerOff() itself is private to the driver, and reproducing it here would mean
+// duplicating its TPS-register-then-expander sequencing — so this drives the
+// driver's own path instead of reimplementing it.
+//
+// Safe for the image: e-paper holds its last frame with no power at all, which is
+// the whole premise of the farewell screen.
+void epdc_power_off_soon();
+void epdc_power_off_wait();
+
 // Drive the whole panel to white. `passes` > 1 repeats it: e-paper keeps its
 // image through power-off, so the first boot after a different firmware needs
 // several passes to shift what is physically on the glass (one was not enough,

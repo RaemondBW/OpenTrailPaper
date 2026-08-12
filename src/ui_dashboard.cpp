@@ -147,6 +147,11 @@ void shutdownDevice(uint8_t* fb, const char* reason) {
     }
     diag::flushToSD();
 
+    // Shorten the panel's idle power-off before painting, so the farewell frame
+    // arms a one-second countdown instead of the default five. The rails cannot be
+    // dropped directly — see epd_compat.h.
+    epdc_power_off_soon();
+
     // Leave a static farewell on the glass — e-paper keeps it for free.
     // Full-screen map backdrop (last known position) with a POWERED OFF plate.
     // Force the widest zoom so the farewell shows the broadest area overview
@@ -182,6 +187,15 @@ void shutdownDevice(uint8_t* fb, const char* reason) {
     // and left the farewell screen half-written. (The epdiy backend painted
     // inline, which is why this never used to be needed.)
     epdc_paint_wait();
+
+    // Then let the panel's rails come down. Without this the TPS65185 sits
+    // generating VPOS/VNEG/VGH/VGL for the entire sleep — the enables are latched
+    // in the expander, which is on the always-on 3V3, and the driver's own
+    // power-off timer never gets to run because we stop the CPU first. Armed
+    // before the paint above; see epd_compat.h. The image survives regardless:
+    // e-paper needs no power to hold a frame, which is the whole premise of the
+    // farewell screen.
+    epdc_power_off_wait();
 
     // Close the SD cleanly before the card loses its host. An interrupted SD
     // transaction leaves the card's controller refusing CMD0 on the next boot —
