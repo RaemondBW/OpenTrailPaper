@@ -79,8 +79,12 @@ struct MeshView: View {
             MeshSettingsSheet()
         }
         .onAppear {
-            if ProcessInfo.processInfo.arguments.contains("-demo-mesh") {
+            let args = ProcessInfo.processInfo.arguments
+            if args.contains("-demo-mesh") || args.contains("-demo-mesh-settings") {
                 ble.seedDemoMesh()      // screenshots / design review, no device
+                // The radio/modem sheet is where the settable parts live, so it
+                // gets its own flag rather than needing a tap to reach.
+                if args.contains("-demo-mesh-settings") { showSettings = true }
                 return
             }
             ble.refreshMesh()
@@ -447,6 +451,10 @@ private struct MeshSettingsSheet: View {
     @State private var channel = ""
     @State private var channelKey: UInt8 = 1
     @State private var confirmChannel = false
+    /// Set while the "switch modem?" alert is up. Confirmed rather than applied
+    /// on tap because it retunes the radio, and on a bandwidth change it moves
+    /// the frequency too — not something to do on a mis-tap.
+    @State private var pendingPreset: MeshPreset? = nil
 
     var body: some View {
         NavigationStack {
@@ -463,8 +471,43 @@ private struct MeshSettingsSheet: View {
                             row("Node", ble.meshState.nodeId)
                             row("Frequency",
                                 String(format: "%.3f MHz", ble.meshState.frequencyMHz))
-                            row("Preset", "LongFast")
                             row("Status", ble.meshState.radioOk ? "up" : "not found")
+                        }
+                    }
+
+                    Card {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Modem").trackedLabel()
+                            // Listed from the device, not from a table in the app:
+                            // the firmware decides which modems exist.
+                            if ble.meshPresets.isEmpty {
+                                Text("Ask the device for its modem list by reconnecting.")
+                                    .font(BarlowFont.text(15))
+                                    .foregroundStyle(Palette.muted)
+                            }
+                            ForEach(ble.meshPresets) { p in
+                                Button { pendingPreset = p } label: {
+                                    HStack {
+                                        VStack(alignment: .leading, spacing: 1) {
+                                            Text(p.name)
+                                                .font(BarlowFont.condensed(19, .semibold))
+                                                .foregroundStyle(Palette.ink)
+                                            Text(p.detail)
+                                                .font(BarlowFont.text(14))
+                                                .foregroundStyle(Palette.muted)
+                                        }
+                                        Spacer()
+                                        if p.index == ble.meshState.presetIndex {
+                                            Image(systemName: "checkmark")
+                                                .foregroundStyle(Palette.accent)
+                                        }
+                                    }
+                                    .padding(.vertical, 3)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            Text("How fast the radio talks. Lower spreading factors are quicker and cheaper on battery but carry less far. Every node you want to reach must use the same modem — a mismatch is silent, not just slow.")
+                                .font(BarlowFont.text(14)).foregroundStyle(Palette.muted)
                         }
                     }
 
@@ -534,6 +577,19 @@ private struct MeshSettingsSheet: View {
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("The device retunes its radio and clears the messages and neighbours it learned on the old channel.")
+            }
+            .alert("Switch modem?", isPresented: Binding(
+                get: { pendingPreset != nil },
+                set: { if !$0 { pendingPreset = nil } })) {
+                Button("Switch") {
+                    if let p = pendingPreset { ble.setMeshPreset(p.index) }
+                    pendingPreset = nil
+                }
+                Button("Cancel", role: .cancel) { pendingPreset = nil }
+            } message: {
+                Text(pendingPreset.map { p in
+                    "Switch to \(p.name) (\(p.detail))? Every node you want to talk to has to use the same modem, and a mismatch means hearing nothing at all rather than hearing it slowly."
+                } ?? "")
             }
             .onAppear {
                 longName = ble.meshState.longName

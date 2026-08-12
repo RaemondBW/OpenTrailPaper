@@ -5,6 +5,7 @@
 #include <cmath>
 
 #include "config.h"
+#include "mesh_proto.h"
 
 namespace {
 
@@ -32,6 +33,9 @@ bool meshOn = true;
 // nothing in the log to say why. Only an explicit choice from the phone is written.
 char meshChan[16] = "";
 uint8_t meshKey = 1;
+// Modem preset index into mesh::kPresets. Unlike the channel name this IS stored
+// as a plain value: it is a user choice with no compile-time twin to follow.
+uint8_t meshPresetIdx = MESH_PRESET_DEFAULT;
 char meshLong[40] = "";
 char meshShort[8] = "";
 const char* KEYS[3] = {"sens_hr", "sens_pwr", "sens_cad"};
@@ -64,6 +68,10 @@ void begin() {
     meshOn = prefs.getBool("meshon", true);
     prefs.getString("meshchan", meshChan, sizeof(meshChan));   // "" = use the preset
     meshKey = (uint8_t)constrain(prefs.getUChar("meshkey", 1), 1, 10);
+    meshPresetIdx = prefs.getUChar("meshpreset", MESH_PRESET_DEFAULT);
+    // A preset written by a newer firmware that knew more of them must not leave
+    // this build driving the radio with garbage.
+    if (meshPresetIdx >= mesh::PRESET_COUNT) meshPresetIdx = MESH_PRESET_DEFAULT;
     prefs.getString("meshlong", meshLong, sizeof(meshLong));
     prefs.getString("meshshort", meshShort, sizeof(meshShort));
     Serial.printf("[cfg] ftp=%dW tz=%dmin sensors=[%s|%s|%s]\n", ftp, tz,
@@ -174,6 +182,13 @@ void setMeshChannel(const char* name, uint8_t keyIndex) {
     meshKey = (uint8_t)constrain((int)keyIndex, 1, 10);
     prefs.putString("meshchan", meshChan);
     prefs.putUChar("meshkey", meshKey);
+}
+
+uint8_t meshPreset() { return meshPresetIdx; }
+void setMeshPreset(uint8_t index) {
+    if (index >= mesh::PRESET_COUNT) return;
+    meshPresetIdx = index;
+    prefs.putUChar("meshpreset", index);
 }
 
 const char* meshLongName() { return meshLong; }

@@ -360,6 +360,38 @@ bool decodeRoutingError(const uint8_t* in, size_t len, uint32_t& err) {
     return true;
 }
 
+// Index 0 is LongFast because it is Meshtastic's default: an unconfigured node,
+// and every node bought off a shelf, is on it.
+const ModemPreset kPresets[PRESET_COUNT] = {
+    {"LongFast",   11, 250.0f, 5},
+    {"MediumSlow", 10, 250.0f, 5},
+    {"MediumFast",  9, 250.0f, 5},
+    {"ShortSlow",   8, 250.0f, 5},
+    {"ShortFast",   7, 250.0f, 5},
+    {"ShortTurbo",  7, 500.0f, 5},
+};
+
+int presetIndexByName(const char* name) {
+    if (!name || !*name) return -1;
+    for (int i = 0; i < PRESET_COUNT; ++i) {
+        const char* a = kPresets[i].name;
+        const char* b = name;
+        while (*a && *b) {
+            const char ca = (*a >= 'A' && *a <= 'Z') ? (char)(*a + 32) : *a;
+            const char cb = (*b >= 'A' && *b <= 'Z') ? (char)(*b + 32) : *b;
+            if (ca != cb) break;
+            ++a; ++b;
+        }
+        if (!*a && !*b) return i;
+    }
+    return -1;
+}
+
+const ModemPreset& preset(int index) {
+    if (index < 0 || index >= PRESET_COUNT) return kPresets[0];
+    return kPresets[index];
+}
+
 uint8_t channelHash(const char* name, const uint8_t* psk, size_t pskLen) {
     uint8_t h = 0;
     for (const char* p = name; p && *p; ++p) h ^= (uint8_t)*p;

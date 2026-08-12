@@ -12,8 +12,9 @@ implementation follows the real wire format rather than inventing a private one.
 
 **Does**
 
-- Joins a Meshtastic channel (currently `MediumFast`, key 1 — see
-  [Modem preset](#modem-preset)) and sends/receives `TEXT_MESSAGE_APP` messages.
+- Joins a Meshtastic channel (default `LongFast`, key 1 — what a stock node uses)
+  and sends/receives `TEXT_MESSAGE_APP` messages. Channel and modem are both
+  settable from the app.
 - Broadcasts to the channel, or direct-messages one node.
 - Acknowledges direct messages addressed to it, so the sender's app shows a
   delivery tick, and marks its own direct messages acknowledged when the reply
@@ -77,33 +78,50 @@ feeds two different hashes:
 So renaming the channel *retunes the radio*. A device on `LongFast` and one on
 `MyTrail` are not on the same frequency at all, let alone the same key.
 
-## Modem preset
+## Channel and modem are two settings
 
-The catch: a node with no explicit channel name uses the **preset name** as its
-channel name. So the preset is not just a speed setting — it picks the frequency
-and the channel byte too.
+Both are set from the app (Mesh tab → antenna button), and getting this
+distinction wrong costs a radio that hears nothing:
 
-| Preset | SF | BW | Slot | Frequency (US) | Channel hash |
-|---|---|---|---|---|---|
-| `LongFast` | 11 | 250 | 19 | 906.875 MHz | `0x08` |
-| `MediumFast` | 9 | 250 | 44 | **913.125 MHz** | `0x1f` |
+- The **channel name** decides *where*: `djb2(name)` picks the frequency slot and
+  `xor(name) ^ xor(key)` is the channel byte on every packet.
+- The **modem preset** decides *how fast*: spreading factor, bandwidth, coding
+  rate. It says nothing about frequency.
 
-`MESH_PRESET_NAME`, `MESH_SF`, `MESH_BW_KHZ` and `MESH_CR` in `src/config.h` move
-together and must match the preset name exactly as Meshtastic spells it.
+They look like one setting because a node whose channel name is **empty** uses its
+preset's name as the channel name — so out of the box, "LongFast" is both. Meet a
+node whose channel is called `MediumFast` while its modem preset is `LongFast`
+(a perfectly ordinary configuration) and the two come apart. Matching only one of
+them leaves you deaf, not slow.
 
-This firmware currently ships **MediumFast**. It is roughly 4x faster on the air
-than LongFast, so a message occupies the channel for a fraction as long and costs
-less battery to send, at the price of sensitivity and therefore range.
+| Modem preset | SF | BW | Relative air time |
+|---|---|---|---|
+| `LongFast` | 11 | 250 kHz | 1x (Meshtastic's default) |
+| `MediumSlow` | 10 | 250 kHz | ~0.5x |
+| `MediumFast` | 9 | 250 kHz | ~0.25x |
+| `ShortSlow` | 8 | 250 kHz | ~0.12x |
+| `ShortFast` | 7 | 250 kHz | ~0.07x |
+| `ShortTurbo` | 7 | 500 kHz | ~0.035x |
 
-**Every node you want to talk to must be on the same preset.** A LongFast node is
-not merely slower to reach — it is on a different frequency and cannot hear this
-one at all.
+Faster means less time occupying the channel and less energy per message, at the
+cost of sensitivity and range. `LongModerate` and `LongSlow` are absent: they use
+125 kHz with a different coding rate, and shipping a guess at their exact
+parameters would produce exactly the silent failure the table exists to prevent.
 
-Because the preset name is the default channel name, the device deliberately does
-**not** persist it: `settings::meshChannel()` returns the compiled preset unless
-the phone set an explicit channel. Storing a copy would pin a unit to whatever
-preset it first booted with, and a firmware built for MediumFast would keep
-talking LongFast on the wrong frequency with nothing in the log to explain it.
+One wrinkle: **bandwidth also moves the frequency.** Slots are bandwidth-wide, so
+`ShortTurbo` (500 kHz) halves the slot count and lands the same channel name
+somewhere else. Switching modem can therefore retune the radio.
+
+The preset list is streamed to the app from `mesh::kPresets` rather than
+duplicated in Swift — the firmware owns which modems exist. Preset indices are
+persisted in NVS and sent over BLE, so entries may be appended but never
+reordered.
+
+`MESH_CHANNEL_NAME` and `MESH_PRESET_DEFAULT` in `src/config.h` are only the
+defaults for a device that has never been configured. The channel name is
+deliberately **not** persisted until the phone sets one explicitly, so a rebuild
+with a different default takes effect instead of a device silently sticking to
+the channel it first booted with.
 
 Both hashes and the modem parameters (sync word `0x2B`, 16-symbol preamble) are
 checked against known-good values by
@@ -161,6 +179,13 @@ Source map:
 | `src/ble_server.cpp` | the `b1c5000a-…` characteristic bridging it to the phone |
 | `tools/mesh_test/` | host tests for everything interop depends on |
 
+Diagnose over USB serial with `mesh` (state, counters, neighbours, messages),
+`mesh preset [name]`, `mesh channel <name> [key]` and `mesh send <text>`. The
+counters are the diagnosis when nothing arrives: `rxOther` climbing while `rx`
+stays flat means the band is busy but nothing is on our channel (wrong name or
+key); everything flat means the radio is not hearing the band at all (wrong
+frequency or modem).
+
 ## Phone protocol
 
 One characteristic, `b1c5000a-9e0f-4b7a-9c6d-1f2e3a4b5c6d`. Small and
@@ -180,10 +205,13 @@ Phone → device:
 | `0x07` | `u8 keyIndex` + name | switch channel (retunes the radio) |
 | `0x08` | — | mark everything read |
 | `0x09` | — | send me the packet counters |
+| `0x0a` | — | send me the modem preset list |
+| `0x0b` | `u8 index` | set the modem preset |
 
 Device → phone (notify): `0x90` state, `0x91` one message, `0x92` end of
 history, `0x93` one node, `0x94` end of node list, `0x95` counters, `0x96`
-something changed (ask again), `0x97` queued with the packet id, `0x98` refused.
+something changed (ask again), `0x97` queued with the packet id, `0x98` refused,
+`0x99` one modem preset, `0x9a` end of the preset list.
 
 `0x96` exists so a new message costs one byte rather than a re-stream of the
 whole history the app usually already has. Messages are keyed on packet id

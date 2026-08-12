@@ -1380,8 +1380,9 @@ static void printMeshReport() {
                   mesh_service::channelName(), mesh_service::channelPskIndex(),
                   mesh_service::frequencyMHz(),
                   mesh::channelHash(mesh_service::channelName(), psk, sizeof(psk)));
-    Serial.printf("[mesh] modem %s: SF%d BW%.0f CR4/%d\n", MESH_MODEM_NAME, MESH_SF,
-                  MESH_BW_KHZ, MESH_CR);
+    const mesh::ModemPreset& mp = mesh::preset(mesh_service::presetIndex());
+    Serial.printf("[mesh] modem %s: SF%u BW%.0f CR4/%u\n", mp.name, mp.sf, mp.bwKhz,
+                  mp.cr);
 
     mesh_service::Stats s = mesh_service::stats();
     Serial.printf("[mesh] rx=%u dropped=%u rxOther=%u dup=%u | tx=%u txFail=%u acks=%u\n",
@@ -1484,7 +1485,11 @@ static void printConsoleHelp() {
     Serial.println("  power                battery voltage + draw (mA) + full fuel-gauge state");
     Serial.println("  aux                  optional Qwiic sensors: baro / accel / compass");
     Serial.println("  sensors              paired/connected MACs + everything seen this session");
-    Serial.println("  mesh [send <text>|on|off]   mesh node state, neighbours, messages");
+    Serial.println("  mesh                 node state, neighbours, messages, counters");
+    Serial.println("  mesh send <text>     broadcast a message to the channel");
+    Serial.println("  mesh preset [name]   list / set the modem preset (how fast)");
+    Serial.println("  mesh channel <name> [key]   set the channel (where — retunes)");
+    Serial.println("  mesh <on|off>        power the LoRa radio");
     Serial.println("  disconnect <kind>    drop the link (hr|power|cadence|all); stays paired");
     Serial.println("  forget <kind|mac>    unpair and drop (hr|power|cadence|all|aa:bb:..)");
     Serial.println("  bootloader           reboot into download mode for flashing");
@@ -1562,6 +1567,30 @@ static void runConsoleLine(char* line) {
             const uint32_t id = mesh_service::queueText(mesh::BROADCAST_ADDR, text);
             if (id) Serial.printf("[cmd] queued packet 0x%08x: %s\n", (unsigned)id, text);
             else    Serial.println("[cmd] NOT queued (radio off, or outbox full)");
+        } else if (arg && !strcasecmp(arg, "preset")) {
+            char* want = strtok(nullptr, " \t");
+            if (!want) {
+                Serial.println("[cmd] mesh preset <name>. Available:");
+                for (int i = 0; i < mesh::PRESET_COUNT; ++i) {
+                    const mesh::ModemPreset& p = mesh::kPresets[i];
+                    Serial.printf("  %-11s SF%-2u %3.0f kHz%s\n", p.name, p.sf,
+                                  p.bwKhz,
+                                  i == mesh_service::presetIndex() ? "  <- current" : "");
+                }
+                return;
+            }
+            const int idx = mesh::presetIndexByName(want);
+            if (idx < 0) { Serial.printf("[cmd] unknown preset '%s'\n", want); return; }
+            mesh_service::setPreset((uint8_t)idx);
+        } else if (arg && !strcasecmp(arg, "channel")) {
+            char* want = strtok(nullptr, " \t");
+            if (!want) {
+                Serial.println("[cmd] mesh channel <name> [key 1-10]");
+                return;
+            }
+            char* key = strtok(nullptr, " \t");
+            mesh_service::setChannel(want, key ? (uint8_t)atoi(key)
+                                              : mesh_service::channelPskIndex());
         } else if (arg && !strcasecmp(arg, "on")) {
             mesh_service::setEnabled(true);
         } else if (arg && !strcasecmp(arg, "off")) {

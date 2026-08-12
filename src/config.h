@@ -106,23 +106,18 @@
 // So set the name to match the other node's CHANNEL, and the modem to match its
 // PRESET. Ask the device what it ended up with over the serial console: `mesh`.
 //
-//   name          slot  frequency (US)   channel hash (default key)
-//   LongFast        19    906.875 MHz        0x08
-//   MediumFast      44    913.125 MHz        0x1f   <- current
-#define MESH_CHANNEL_NAME   "MediumFast"
-
-//   preset        SF   BW    CR   relative air time
-//   LongFast      11   250    5   1x     (Meshtastic's default modem)  <- current
-//   MediumSlow    10   250    5   ~0.5x
-//   MediumFast     9   250    5   ~0.25x
-//   ShortFast      7   250    5   ~0.07x
+// Both are DEFAULTS ONLY — the phone can change either at runtime (Mesh tab ->
+// antenna button), and once it has, the stored choice wins. These are what a
+// device that has never been configured comes up on, so they are Meshtastic's
+// own defaults: a node fresh out of a box is on exactly this, which is what makes
+// two unconfigured devices able to find each other.
 //
-// Faster is less time occupying the channel and less energy per message, at the
-// cost of sensitivity and therefore range.
-#define MESH_MODEM_NAME     "LongFast"
-#define MESH_BW_KHZ         250.0f
-#define MESH_SF             11
-#define MESH_CR             5
+//   name          slot  frequency (US)   channel hash (default key)
+//   LongFast        19    906.875 MHz        0x08   <- default
+//   MediumFast      44    913.125 MHz        0x1f
+#define MESH_CHANNEL_NAME   "LongFast"
+// Index into mesh::kPresets (mesh_proto.cpp). 0 = LongFast, SF11 / 250 kHz.
+#define MESH_PRESET_DEFAULT 0
 // Fixed by the protocol, not tunable: every Meshtastic node uses this sync word
 // and preamble, so a mismatch here means silence in both directions.
 #define MESH_SYNC_WORD      0x2B

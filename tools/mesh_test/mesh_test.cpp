@@ -126,10 +126,10 @@ static void testChannelPlacement() {
               mesh::channelHash("LongSlow", psk, 16),
           "a different channel name gives a different hash");
 
-    // MediumFast, the preset this firmware currently ships (see config.h). Pinned
-    // here because switching preset is the one change that silently moves the
-    // radio: the preset name IS the default channel name, so it changes the
-    // frequency slot and the channel byte as well as the spreading factor.
+    // A second named channel, pinned because "MediumFast" is a name people
+    // actually use — Meshtastic offers a preset by that name, and a channel named
+    // after it is a different frequency from the default, not a faster version of
+    // it. (The MODEM of the same name is a separate setting; see testPresets.)
     const uint32_t mfSlot = mesh::nameHash("MediumFast") % n;
     const float mf = mesh::channelFrequencyMHz("MediumFast", 250.0f, 902.0f,
                                                928.0f, 0.0f);
@@ -139,9 +139,42 @@ static void testChannelPlacement() {
     check(std::fabs(mf - 913.125f) < 0.0005f, "MediumFast centre is 913.125 MHz");
     check(mesh::channelHash("MediumFast", psk, 16) == 0x1f,
           "MediumFast channel hash is 0x1f");
-    // The two presets are genuinely different radios, not just different speeds.
+    // Two channel names are two frequencies — nodes on them cannot hear each
+    // other at all, however well their modems match.
     check(std::fabs(mf - f) > 1.0f,
-          "changing preset moves the frequency, so presets cannot interoperate");
+          "two channel names land on different frequencies");
+}
+
+// The modem preset table. Index 0 must stay LongFast (it is the default a device
+// with no stored choice comes up on), and the indices are persisted in NVS and
+// sent over BLE, so the order is a contract.
+static void testPresets() {
+    check(mesh::PRESET_COUNT >= 1, "there is at least one preset");
+    check(strcmp(mesh::kPresets[0].name, "LongFast") == 0,
+          "preset 0 is LongFast (the Meshtastic default)");
+    check(mesh::kPresets[0].sf == 11 && mesh::kPresets[0].bwKhz == 250.0f &&
+              mesh::kPresets[0].cr == 5,
+          "LongFast is SF11 / 250 kHz / CR4:5");
+    check(mesh::presetIndexByName("MediumFast") == 2, "MediumFast is index 2");
+    check(mesh::presetIndexByName("mediumfast") == 2, "preset lookup ignores case");
+    check(mesh::presetIndexByName("Nonsense") < 0, "an unknown preset is rejected");
+    check(mesh::presetIndexByName("Medium") < 0,
+          "a prefix is not a match (Medium is not MediumFast)");
+    // An index from a newer firmware must not drive the radio with garbage.
+    check(strcmp(mesh::preset(99).name, "LongFast") == 0,
+          "an out-of-range preset falls back to LongFast");
+    check(strcmp(mesh::preset(-1).name, "LongFast") == 0,
+          "a negative preset falls back to LongFast");
+
+    // Bandwidth is part of a preset, and slots are bandwidth-wide — so a preset
+    // that changes the bandwidth moves the frequency even on the same channel.
+    const float at250 = mesh::channelFrequencyMHz("LongFast", 250.0f, 902.0f,
+                                                  928.0f, 0.0f);
+    const float at500 = mesh::channelFrequencyMHz("LongFast", 500.0f, 902.0f,
+                                                  928.0f, 0.0f);
+    printf("      LongFast at 250 kHz = %.4f, at 500 kHz = %.4f MHz\n", at250, at500);
+    check(at250 != at500,
+          "bandwidth changes the frequency slot, so the preset can retune too");
 }
 
 static void testHeader() {
@@ -325,6 +358,7 @@ int main() {
     testCtrRoundTrip();
     testDefaultPsk();
     testChannelPlacement();
+    testPresets();
     testHeader();
     testDataProto();
     testUserProto();

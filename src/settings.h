@@ -67,6 +67,11 @@ const char* meshChannel();
 uint8_t meshChannelKey();
 void setMeshChannel(const char* name, uint8_t keyIndex);
 
+// Modem preset: an index into mesh::kPresets, deciding how fast the radio talks.
+// Separate from the channel, which decides where. MESH_PRESET_DEFAULT until set.
+uint8_t meshPreset();
+void setMeshPreset(uint8_t index);
+
 // How this node introduces itself on the mesh. Empty until first set, at which
 // point mesh_service derives a default from the node number.
 const char* meshLongName();

@@ -95,6 +95,13 @@ void setNames(const char* longName, const char* shortName);
 void setChannel(const char* name, uint8_t pskIndex);
 uint8_t channelPskIndex();
 
+// Modem preset: an index into mesh::kPresets, deciding how fast we talk rather
+// than where. Changing it restarts the radio, and because bandwidth is part of a
+// preset it can move the frequency too. Persisted.
+uint8_t presetIndex();
+const char* presetName();
+void setPreset(uint8_t index);
+
 // Queues a text message and returns its packet id (0 if the outbox is full, the
 // text is empty, or the radio is down). Safe to call from another task.
 uint32_t queueText(uint32_t dest, const char* text);

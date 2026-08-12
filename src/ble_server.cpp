@@ -938,6 +938,8 @@ class AgnssCb : public NimBLECharacteristicCallbacks {
 //     [0x07][u8 keyIndex][utf8 channel name]   switch channel
 //     [0x08]                                   mark everything read
 //     [0x09]                                   send me the packet counters
+//     [0x0a]                                   send me the modem preset list
+//     [0x0b][u8 index]                         set the modem preset
 //
 //   Device -> phone (notify):
 //     [0x90] state    flags, node number, frequency, channel, our names
@@ -949,6 +951,8 @@ class AgnssCb : public NimBLECharacteristicCallbacks {
 //     [0x96]          something changed — ask again
 //     [0x97][u32 id]  a message was queued, with the id its acks will quote
 //     [0x98]          the device refused to queue it (radio off, or outbox full)
+//     [0x99] preset   one modem preset the device supports
+//     [0x9a]          end of the preset list
 NimBLECharacteristic* meshChr = nullptr;
 
 // Requests staged by the write callback, serviced in the task. A bitmask rather
@@ -958,6 +962,7 @@ constexpr uint8_t MREQ_STATE   = 0x01;
 constexpr uint8_t MREQ_HISTORY = 0x02;
 constexpr uint8_t MREQ_NODES   = 0x04;
 constexpr uint8_t MREQ_STATS   = 0x08;
+constexpr uint8_t MREQ_PRESETS = 0x10;
 volatile uint8_t meshReq = 0;
 
 // Outgoing text, staged the same way. queueText() is cheap enough to call from a
@@ -978,6 +983,7 @@ char meshSetChan[16];
 volatile uint8_t meshSetKey = 1;
 volatile bool meshChanPending = false;
 volatile int8_t meshEnablePending = -1;   // -1 nothing, 0 off, 1 on
+volatile int8_t meshPresetPending = -1;   // -1 nothing, else a preset index
 
 void meshNotify(const uint8_t* d, size_t n) {
     if (!meshChr) return;
@@ -1014,6 +1020,9 @@ void sendMeshState() {
     p += putStr(pkt + p, mesh_service::channelName(), 15);
     p += putStr(pkt + p, mesh_service::shortName(), 7);
     p += putStr(pkt + p, mesh_service::longName(), 39);
+    // Appended last so the layout above stays stable: the modem is a second,
+    // independent axis from the channel and the app shows both.
+    pkt[p++] = mesh_service::presetIndex();
     meshNotify(pkt, p);
 }
 
@@ -1068,6 +1077,25 @@ void sendMeshNodes() {
     sendChunk(meshChr, &end, 1);
 }
 
+void sendMeshPresets() {
+    for (int i = 0; i < mesh::PRESET_COUNT; ++i) {
+        const mesh::ModemPreset& mp = mesh::kPresets[i];
+        uint8_t pkt[32];
+        int p = 0;
+        pkt[p++] = 0x99;
+        pkt[p++] = (uint8_t)i;
+        pkt[p++] = mp.sf;
+        const uint16_t bw10 = (uint16_t)(mp.bwKhz * 10.0f + 0.5f);   // 250.0 -> 2500
+        pkt[p++] = (uint8_t)(bw10 & 0xFF);
+        pkt[p++] = (uint8_t)(bw10 >> 8);
+        pkt[p++] = mp.cr;
+        p += (int)putStr(pkt + p, mp.name, 15);
+        sendChunk(meshChr, pkt, p);
+    }
+    uint8_t end = 0x9a;
+    sendChunk(meshChr, &end, 1);
+}
+
 void sendMeshStats() {
     mesh_service::Stats s = mesh_service::stats();
     uint8_t pkt[1 + 7 * 4];
@@ -1090,6 +1118,10 @@ class MeshCb : public NimBLECharacteristicCallbacks {
         case 0x03: meshReq |= MREQ_HISTORY; break;
         case 0x04: meshReq |= MREQ_NODES; break;
         case 0x09: meshReq |= MREQ_STATS; break;
+        case 0x0a: meshReq |= MREQ_PRESETS; break;
+        case 0x0b:                                     // set the modem preset
+            if (n >= 2) meshPresetPending = (int8_t)p[1];
+            break;
         case 0x02: {                                   // send a text message
             if (n < 5) return;
             if (meshSendCount >= MESH_SEND_QUEUE) return;   // task is behind
@@ -1172,6 +1204,12 @@ void serviceMeshRequests() {
         meshEnablePending = -1;
         meshReq |= MREQ_STATE;
     }
+    if (meshPresetPending >= 0) {
+        mesh_service::setPreset((uint8_t)meshPresetPending);
+        meshPresetPending = -1;
+        // The frequency moves with the bandwidth, so the app needs the new state.
+        meshReq |= MREQ_STATE;
+    }
     // Taken and cleared in one pass, before any of the streaming below: each
     // send yields for tens of milliseconds, and clearing a bit after that window
     // would drop a request the phone made during it.
@@ -1182,6 +1220,7 @@ void serviceMeshRequests() {
     if (req & MREQ_HISTORY) sendMeshHistory();
     if (req & MREQ_NODES)   sendMeshNodes();
     if (req & MREQ_STATS)   sendMeshStats();
+    if (req & MREQ_PRESETS) sendMeshPresets();
 }
 
 // Stream the device's map coverage to the phone (bounds of the embedded map +

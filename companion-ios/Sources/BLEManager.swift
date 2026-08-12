@@ -134,11 +134,30 @@ struct MeshState: Equatable {
     var shortName = ""
     var nodeCount = 0
     var unread = 0
+    /// Index into `BLEManager.meshPresets`.
+    var presetIndex: UInt8 = 0
 
     var nodeId: String { "!" + String(format: "%08x", nodeNum) }
     var frequencyMHz: Double { Double(frequencyHz) / 1_000_000 }
     /// Nothing has been heard from the device yet.
     var isUnknown: Bool { nodeNum == 0 }
+}
+
+/// A modem preset the device supports: how fast it talks, as opposed to the
+/// channel, which is where. Streamed from the device rather than hard-coded here,
+/// because the firmware owns which modems exist (`mesh::kPresets`) and a copy of
+/// that table on the phone is a copy that drifts.
+struct MeshPreset: Identifiable, Equatable {
+    let index: UInt8
+    let name: String
+    let sf: Int
+    let bandwidthKhz: Double
+    let codingRate: Int
+
+    var id: UInt8 { index }
+    var detail: String {
+        String(format: "SF%d · %.0f kHz", sf, bandwidthKhz)
+    }
 }
 
 /// Packet counters, for the diagnostics view.
@@ -275,6 +294,8 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var meshMessages: [MeshMessage] = []
     @Published var meshNodes: [MeshNode] = []
     @Published var meshStats = MeshStats()
+    @Published var meshPresets: [MeshPreset] = []
+    private var meshPresetsBuilding: [MeshPreset] = []
     /// Set when the device refuses a message (radio off, or its outbox is full),
     /// so the compose field can say so instead of silently losing the text.
     @Published var meshSendRejected = false
@@ -1022,6 +1043,18 @@ final class BLEManager: NSObject, ObservableObject {
         p.writeValue(Data([0x01]), for: c, type: .withResponse)   // state
         p.writeValue(Data([0x03]), for: c, type: .withResponse)   // history
         p.writeValue(Data([0x04]), for: c, type: .withResponse)   // nodes
+        if meshPresets.isEmpty {
+            // Fixed for the life of the firmware, so once is enough.
+            p.writeValue(Data([0x0a]), for: c, type: .withResponse)
+        }
+    }
+
+    /// Switches the modem. Note this can move the frequency as well as the speed:
+    /// bandwidth is part of a preset, and the channel's frequency slot is
+    /// bandwidth-wide.
+    func setMeshPreset(_ index: UInt8) {
+        guard let c = meshChar, let p = peripheral else { return }
+        p.writeValue(Data([0x0b, index]), for: c, type: .withResponse)
     }
 
     func requestMeshStats() {
@@ -1125,6 +1158,14 @@ final class BLEManager: NSObject, ObservableObject {
         ]
         meshStats = MeshStats(rx: 214, rxDropped: 11, rxOtherChannel: 63,
                               rxDuplicate: 88, tx: 19, txFailed: 1, acksRx: 12)
+        meshPresets = [
+            MeshPreset(index: 0, name: "LongFast", sf: 11, bandwidthKhz: 250, codingRate: 5),
+            MeshPreset(index: 1, name: "MediumSlow", sf: 10, bandwidthKhz: 250, codingRate: 5),
+            MeshPreset(index: 2, name: "MediumFast", sf: 9, bandwidthKhz: 250, codingRate: 5),
+            MeshPreset(index: 3, name: "ShortSlow", sf: 8, bandwidthKhz: 250, codingRate: 5),
+            MeshPreset(index: 4, name: "ShortFast", sf: 7, bandwidthKhz: 250, codingRate: 5),
+            MeshPreset(index: 5, name: "ShortTurbo", sf: 7, bandwidthKhz: 500, codingRate: 5),
+        ]
     }
 
     private func handleMeshNotify(_ d: Data) {
@@ -1144,6 +1185,7 @@ final class BLEManager: NSObject, ObservableObject {
             s.channel = d.lenString(at: &i)
             s.shortName = d.lenString(at: &i)
             s.longName = d.lenString(at: &i)
+            if i < d.count { s.presetIndex = d[i] }
             meshState = s
 
         case 0x91:  // one message
@@ -1201,6 +1243,19 @@ final class BLEManager: NSObject, ObservableObject {
                 rxOtherChannel: Int(d.le32(at: 9)), rxDuplicate: Int(d.le32(at: 13)),
                 tx: Int(d.le32(at: 17)), txFailed: Int(d.le32(at: 21)),
                 acksRx: Int(d.le32(at: 25)))
+
+        case 0x99:  // one modem preset
+            guard d.count >= 6 else { return }
+            var i = 6
+            let name = d.lenString(at: &i)
+            let bw10 = Int(d[3]) | (Int(d[4]) << 8)
+            meshPresetsBuilding.append(MeshPreset(
+                index: d[1], name: name, sf: Int(d[2]),
+                bandwidthKhz: Double(bw10) / 10, codingRate: Int(d[5])))
+
+        case 0x9a:  // end of the preset list
+            meshPresets = meshPresetsBuilding
+            meshPresetsBuilding = []
 
         case 0x96:  // something changed — pull it
             refreshMesh()
@@ -1573,7 +1628,7 @@ extension BLEManager: CBCentralManagerDelegate {
             settingsChar = nil; statusChar = nil; routeChar = nil; ridesChar = nil
             sensorsChar = nil; mapChar = nil; otaChar = nil; meshChar = nil
             // A half-received mesh stream must not be published on reconnect.
-            meshBuilding = []; meshNodesBuilding = []
+            meshBuilding = []; meshNodesBuilding = []; meshPresetsBuilding = []
             stopLocationStream()   // no device to send the phone's position to
             // If we disconnect mid-update: after the data is sent + commit
             // requested, a disconnect is EXPECTED (the device reboots into the

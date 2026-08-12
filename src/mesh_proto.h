@@ -94,6 +94,43 @@ size_t encodeRouting(uint32_t errorReason, uint8_t* out, size_t cap);
 bool decodeRoutingError(const uint8_t* in, size_t len, uint32_t& err);
 
 // ---------------------------------------------------------------------------
+// Modem presets
+// ---------------------------------------------------------------------------
+//
+// How fast to talk. Independent of the channel name, which is what decides WHERE
+// to talk — see the note in config.h. Both ends must match on both, and matching
+// only one leaves the radio silent in a way nothing in a log will explain.
+//
+// Note that bandwidth feeds the frequency too: slots are bandwidth-wide, so a
+// 500 kHz preset halves the number of slots and lands the same channel name on a
+// different frequency. channelFrequencyMHz() takes the bandwidth for that reason.
+struct ModemPreset {
+    const char* name;    // spelled exactly as Meshtastic spells it — it is
+                         // also the channel name on a node that has not set one
+    uint8_t sf;
+    float   bwKhz;
+    uint8_t cr;
+};
+
+// ORDER IS A CONTRACT. The index is persisted in NVS and sent over BLE, so
+// entries may be appended but never reordered or removed.
+//
+// Only the 250/500 kHz ladder is here. Meshtastic's LongModerate and LongSlow
+// use 125 kHz with a different coding rate, and shipping a guess at their exact
+// parameters would produce precisely the silent failure this whole table exists
+// to prevent — so they are absent until they can be confirmed against the
+// reference implementation.
+constexpr int PRESET_COUNT = 6;
+extern const ModemPreset kPresets[PRESET_COUNT];
+
+// Index of a preset by name, or -1. Case-insensitive.
+int presetIndexByName(const char* name);
+
+// Always returns a usable preset, falling back to LongFast (index 0) for an
+// index that a newer firmware wrote and this one does not know.
+const ModemPreset& preset(int index);
+
+// ---------------------------------------------------------------------------
 // Channel identity
 // ---------------------------------------------------------------------------
 

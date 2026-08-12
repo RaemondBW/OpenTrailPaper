@@ -54,6 +54,10 @@ char chanName[16] = MESH_CHANNEL_NAME;
 uint8_t chanPskIndex = 1;
 uint8_t chanPsk[16] = {};
 uint8_t chanHash = 0;
+// Which modem we speak it with. Separate setting, separate meaning — see the
+// note in config.h. Bandwidth comes from here too, so the preset also moves the
+// frequency whenever it changes the bandwidth.
+uint8_t presetIdx = MESH_PRESET_DEFAULT;
 
 // Recently seen (sender, id) pairs. The mesh floods, so the same packet arrives
 // more than once whenever anyone rebroadcasts it; without this the phone shows
@@ -127,16 +131,18 @@ void applyChannel() {
 }
 
 float channelFreq() {
-    return mesh::channelFrequencyMHz(chanName, MESH_BW_KHZ, MESH_FREQ_START_MHZ,
-                                     MESH_FREQ_END_MHZ, MESH_SPACING_MHZ);
+    return mesh::channelFrequencyMHz(chanName, mesh::preset(presetIdx).bwKhz,
+                                     MESH_FREQ_START_MHZ, MESH_FREQ_END_MHZ,
+                                     MESH_SPACING_MHZ);
 }
 
 bool startRadio() {
+    const mesh::ModemPreset& p = mesh::preset(presetIdx);
     lora_radio::Config c;
     c.freqMHz = channelFreq();
-    c.bwKhz = MESH_BW_KHZ;
-    c.sf = MESH_SF;
-    c.cr = MESH_CR;
+    c.bwKhz = p.bwKhz;
+    c.sf = p.sf;
+    c.cr = p.cr;
     c.syncWord = MESH_SYNC_WORD;
     c.preambleLen = MESH_PREAMBLE_LEN;
     c.powerDbm = MESH_TX_DBM;
@@ -483,6 +489,7 @@ bool begin() {
     myNodeNum = deriveNodeNum();
     meshEnabled = settings::meshEnabled();
     chanPskIndex = settings::meshChannelKey();
+    presetIdx = settings::meshPreset();
     snprintf(chanName, sizeof(chanName), "%s", settings::meshChannel());
     snprintf(myLongName, sizeof(myLongName), "%s", settings::meshLongName());
     snprintf(myShortName, sizeof(myShortName), "%s", settings::meshShortName());
@@ -499,8 +506,10 @@ bool begin() {
 
     char id[16];
     mesh::nodeIdString(myNodeNum, id, sizeof(id));
-    diag::log("mesh: node %s '%s' (%s) channel '%s' hash 0x%02x", id, myLongName,
-              myShortName, chanName, chanHash);
+    diag::log("mesh: node %s '%s' (%s) channel '%s' hash 0x%02x, modem %s "
+              "(SF%u BW%.0f)", id, myLongName, myShortName, chanName, chanHash,
+              mesh::preset(presetIdx).name, mesh::preset(presetIdx).sf,
+              mesh::preset(presetIdx).bwKhz);
 
     if (!meshEnabled) {
         diag::log("mesh: disabled in settings — radio left off");
@@ -576,6 +585,31 @@ const char* channelName() { return chanName; }
 const char* longName() { return myLongName; }
 const char* shortName() { return myShortName; }
 uint8_t channelPskIndex() { return chanPskIndex; }
+uint8_t presetIndex() { return presetIdx; }
+const char* presetName() { return mesh::preset(presetIdx).name; }
+
+void setPreset(uint8_t index) {
+    if (index >= mesh::PRESET_COUNT || index == presetIdx) return;
+    presetIdx = index;
+    settings::setMeshPreset(index);
+    const mesh::ModemPreset& p = mesh::preset(presetIdx);
+    // Neighbours and messages are not cleared the way a channel change clears
+    // them: this is the same conversation with the same people, just spoken at a
+    // different rate. But anything queued was encrypted for a frame we are about
+    // to stop sending, so the outbox goes.
+    take();
+    outboxCount = 0;
+    changed = true;
+    give();
+    diag::log("mesh: modem %s (SF%u BW%.0f CR4/%u) -> %.4f MHz", p.name, p.sf,
+              p.bwKhz, p.cr, channelFreq());
+    if (meshEnabled) {
+        // Restarted rather than tweaked: bandwidth is part of a preset, and a
+        // bandwidth change moves the frequency slot as well as the modem.
+        radioUp = startRadio();
+        nextNodeInfoMs = millis() + 5000;
+    }
+}
 
 void setNames(const char* longName, const char* shortName) {
     if (longName && longName[0])
