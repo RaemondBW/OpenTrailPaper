@@ -25,6 +25,7 @@ import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.FiberManualRecord
 import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -49,6 +50,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -109,10 +111,13 @@ fun RidesScreen(ble: BleManager) {
             runCatching { FitDecoder.decode(file.readBytes()) }.getOrNull()
         }
         cachedNames = ble.cachedRides()
+        // A queued ride that lands while the rider is looking at an earlier one
+        // fills in its row rather than yanking the sheet out from under them.
+        val busy = detail != null || failedFile != null
         if (decoded != null) {
             previews[file.name] = decoded
-            detail = file to decoded
-        } else {
+            if (!busy) detail = file to decoded
+        } else if (!busy) {
             failedFile = file
         }
     }
@@ -185,6 +190,7 @@ fun RidesScreen(ble: BleManager) {
                         cached = cached,
                         preview = previews[ride.name],
                         downloading = ble.downloadingName == ride.name,
+                        queued = ride.name in ble.queuedDownloads,
                         progress = ble.downloadProgress,
                         useMiles = ble.useMiles,
                         onTap = {
@@ -216,7 +222,19 @@ fun RidesScreen(ble: BleManager) {
         RideDetailSheet(file, preview, ble.useMiles) { detail = null }
     }
     failedFile?.let { file ->
-        RideParseErrorSheet(file) { failedFile = null }
+        RideParseErrorSheet(
+            file = file,
+            canRetry = ble.state == BleManager.ConnState.CONNECTED,
+            onRetry = {
+                // Throw away a cached file that won't parse and fetch it again —
+                // the way out for rides left corrupt by an interrupted transfer.
+                failedFile = null
+                file.delete()
+                previews.remove(file.name)
+                cachedNames = ble.cachedRides()
+                ble.downloadRide(file.name)
+            },
+        ) { failedFile = null }
     }
 }
 
@@ -327,13 +345,14 @@ private fun RideRow(
     cached: Boolean,
     preview: RidePreview?,
     downloading: Boolean,
+    queued: Boolean,
     progress: Double,
     useMiles: Boolean,
     onTap: () -> Unit,
     onDelete: () -> Unit,
 ) {
     Card(Modifier.combinedClickable(onClick = onTap, onLongClick = onDelete)) {
-        RideBanner(ride, cached, preview, downloading, progress)
+        RideBanner(ride, cached, preview, downloading, queued, progress)
         Spacer(Modifier.size(12.dp))
         Row(verticalAlignment = Alignment.Top) {
             Column(Modifier.weight(1f)) {
@@ -386,7 +405,9 @@ private fun RideRow(
                     )
                 }
             }
-            if (!cached && !downloading) {
+            if (queued) {
+                Icon(Icons.Filled.Schedule, contentDescription = null, tint = Palette.muted)
+            } else if (!cached && !downloading) {
                 Icon(Icons.Filled.Download, contentDescription = null, tint = Palette.accent)
             }
         }
@@ -411,6 +432,7 @@ private fun RideBanner(
     cached: Boolean,
     preview: RidePreview?,
     downloading: Boolean,
+    queued: Boolean,
     progress: Double,
 ) {
     Box(
@@ -434,6 +456,23 @@ private fun RideBanner(
                 )
                 Spacer(Modifier.size(8.dp))
                 Text("Downloading…", style = barlow(12.sp), color = Palette.muted)
+            }
+
+            queued -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Icon(
+                    Icons.Filled.Schedule,
+                    contentDescription = null,
+                    tint = Palette.muted,
+                    modifier = Modifier.size(30.dp),
+                )
+                Spacer(Modifier.size(8.dp))
+                Text(
+                    "Queued — starts after the current download",
+                    style = barlow(12.sp),
+                    color = Palette.muted,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                )
             }
 
             else -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
