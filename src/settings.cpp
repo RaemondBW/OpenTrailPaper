@@ -176,7 +176,12 @@ const char* meshChannel() { return meshChan; }
 uint8_t meshChannelKey() { return meshKey; }
 
 void setMeshChannel(const char* name, uint8_t keyIndex) {
-    if (!name || !name[0]) return;
+    // An EMPTY name is a real value here — it means "no pinned channel, follow the
+    // modem preset" — so it must be STORED, not rejected. This guard existed in
+    // three layers (here, mesh_service::setChannel and applyChannelChange) and
+    // this was the last one: clearing the channel worked in RAM and silently came
+    // back on the next boot, because the empty string never reached NVS.
+    if (!name) return;
     snprintf(meshChan, sizeof(meshChan), "%s", name);
     meshKey = (uint8_t)constrain((int)keyIndex, 1, 10);
     prefs.putString("meshchan", meshChan);
