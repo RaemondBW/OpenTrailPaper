@@ -67,6 +67,15 @@ bool channelBusy();
 // the 3V3 rail — that pin also powers the GPS.
 void sleep();
 
+// Instantaneous RSSI in dBm — the noise floor, not a packet's signal.
+//
+// The one measurement that separates "nothing is transmitting" from "the receiver
+// is not working", which are otherwise identical from the outside: both are a
+// silent radio. A live SX1262 listening on 915 MHz reads roughly -95 to -125 dBm
+// and jitters by a few dB between samples. A stuck value, 0, or a wild number
+// means the receive chain is not running, whatever the counters say.
+float instantRssi();
+
 // Rough time-on-air for a packet of `len` bytes at the configured modem
 // settings, used for transmit timeouts and the duty-cycle log.
 uint32_t airtimeMs(size_t len);

@@ -26,6 +26,7 @@
 #include "i2c_bus.h"
 #include "usb_storage.h"
 #include "ble_sensors.h"
+#include "lora_radio.h"
 #include "mesh_service.h"
 #include "ble_server.h"
 #include "routes.h"
@@ -1495,6 +1496,7 @@ static void printConsoleHelp() {
     Serial.println("  mesh                 node state, neighbours, messages, counters");
     Serial.println("  mesh send <text>     broadcast a message to the channel");
     Serial.println("  mesh preset [name]   list / set the modem preset (how fast)");
+    Serial.println("  mesh rssi            sample the noise floor (is RX alive?)");
     Serial.println("  mesh channel <name> [key]   set the channel (where — retunes)");
     Serial.println("  mesh <on|off>        power the LoRa radio");
     Serial.println("  disconnect <kind>    drop the link (hr|power|cadence|all); stays paired");
@@ -1574,6 +1576,32 @@ static void runConsoleLine(char* line) {
             const uint32_t id = mesh_service::queueText(mesh::BROADCAST_ADDR, text);
             if (id) Serial.printf("[cmd] queued packet 0x%08x: %s\n", (unsigned)id, text);
             else    Serial.println("[cmd] NOT queued (radio off, or outbox full)");
+        } else if (arg && !strcasecmp(arg, "rssi")) {
+            // Is the receiver actually running? Counters cannot tell a quiet band
+            // from a dead receive chain — both are silence. A live SX1262 in RX
+            // reads a noise floor around -95..-125 dBm and moves a few dB between
+            // samples; a stuck or absurd value says the radio is not listening.
+            if (!mesh_service::radioOk()) {
+                Serial.println("[cmd] radio is not up");
+                return;
+            }
+            Serial.printf("[cmd] sampling the noise floor on %.4f MHz...\n",
+                          mesh_service::frequencyMHz());
+            float lo = 999, hi = -999, sum = 0;
+            constexpr int N = 20;
+            for (int i = 0; i < N; ++i) {
+                const float v = lora_radio::instantRssi();
+                if (v < lo) lo = v;
+                if (v > hi) hi = v;
+                sum += v;
+                Serial.printf("  %6.1f dBm\n", v);
+                delay(100);
+            }
+            Serial.printf("[cmd] min %.1f  max %.1f  mean %.1f dBm (spread %.1f)\n",
+                          lo, hi, sum / N, hi - lo);
+            Serial.println("      a plausible floor that MOVES = receiver listening, "
+                           "band simply quiet");
+            Serial.println("      stuck or absurd = the receive chain is not running");
         } else if (arg && !strcasecmp(arg, "preset")) {
             char* want = strtok(nullptr, " \t");
             if (!want) {

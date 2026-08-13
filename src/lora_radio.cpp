@@ -198,6 +198,16 @@ void abortSend() {
     listen();
 }
 
+float instantRssi() {
+    if (!radioOk) return 0.0f;
+    sdLock();
+    // packet=false is the live RssiInst register rather than the last packet's
+    // signal, which is what makes this a noise-floor reading.
+    const float v = radio.getRSSI(false);
+    sdUnlock();
+    return v;
+}
+
 uint32_t airtimeMs(size_t len) {
     // Semtech's LoRa time-on-air, explicit header, low-data-rate optimisation on
     // for SF11/SF12 (which is what the SX1262 does automatically at these
