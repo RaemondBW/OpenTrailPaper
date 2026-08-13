@@ -586,6 +586,14 @@ uint8_t channelHash(const char* name, const uint8_t* psk, size_t pskLen) {
     return h;
 }
 
+uint8_t channelHashFor(const char* name, const uint8_t* storedPsk, size_t pskLen) {
+    uint8_t key[MAX_PSK_LEN];
+    const size_t keyLen = expandPsk(storedPsk, pskLen, key);
+    // Meshtastic gives an unencrypted channel a hash of 0.
+    if (keyLen == 0) return 0;
+    return channelHash(name, key, keyLen);
+}
+
 uint32_t nameHash(const char* s) {
     uint32_t h = 5381;
     for (const char* p = s; p && *p; ++p)

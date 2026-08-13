@@ -182,11 +182,17 @@ struct MeshView: View {
     /// shown once there is more than the primary — a single-channel device has no
     /// choice to make and the row would be noise.
     @ViewBuilder private var channelBar: some View {
-        if ble.meshChannels.count > 1 || !ble.meshChannels.isEmpty {
+        if !ble.meshChannels.isEmpty {
+            HStack(spacing: 8) {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
                     ForEach(ble.meshChannels) { c in
-                        Button { channel = c.index } label: {
+                        // Tapping the channel you are already reading opens its
+                        // details, so a chip is also the way back to the QR.
+                        Button {
+                            if channel == c.index { showChannels = true }
+                            else { channel = c.index }
+                        } label: {
                             HStack(spacing: 5) {
                                 if c.isPrivate {
                                     Image(systemName: "lock.fill")
@@ -207,20 +213,23 @@ struct MeshView: View {
                         }
                         .buttonStyle(.plain)
                     }
-                    Button { showChannels = true } label: {
-                        Image(systemName: "plus")
-                            .font(.system(size: 13, weight: .semibold))
-                            .padding(.horizontal, 12).padding(.vertical, 8)
-                            .foregroundStyle(Palette.accent)
-                            .background(Palette.surface)
-                            .clipShape(Capsule())
-                            .overlay(Capsule().strokeBorder(Palette.hairline,
-                                                            lineWidth: 1))
-                    }
                 }
-                .padding(.horizontal, 16)
-                .padding(.bottom, 10)
+                .padding(.leading, 16)
             }
+            // Pinned, not part of the scroll: with a few channels the trailing
+            // chip is exactly what slides out of reach.
+            Button { showChannels = true } label: {
+                Image(systemName: "slider.horizontal.3")
+                    .font(.system(size: 13, weight: .semibold))
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .foregroundStyle(Palette.accent)
+                    .background(Palette.surface)
+                    .clipShape(Capsule())
+                    .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))
+            }
+            .padding(.trailing, 16)
+            }
+            .padding(.bottom, 10)
         }
     }
 

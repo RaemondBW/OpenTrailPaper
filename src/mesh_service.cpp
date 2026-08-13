@@ -188,9 +188,11 @@ const char* effectiveChan() {
 // Recomputes one channel's key and hash from its stored name and psk.
 void deriveChan(Chan& c, const char* name) {
     c.keyLen = mesh::expandPsk(c.psk, c.pskLen, c.key);
-    // The hash is over the STORED psk, not the expansion — a single-byte
-    // well-known key hashes as that byte, which is what stock nodes do.
-    c.hash = mesh::channelHash(name, c.psk, c.pskLen);
+    // channelHashFor expands before hashing, which is what Meshtastic does. An
+    // earlier version hashed the stored psk here and produced 0x1c for the default
+    // channel where every other node uses 0x1f — deaf on the primary, and visible
+    // only because the console prints this next to the independently-computed one.
+    c.hash = mesh::channelHashFor(name, c.psk, c.pskLen);
 }
 
 // The private channels, stored as a ChannelSet — the same encoding a share URL
@@ -198,7 +200,13 @@ void deriveChan(Chan& c, const char* name) {
 // disagree. Slot 0 is not in here: it is derived from the preset and the channel
 // name, which have their own settings.
 void savePrivateChannels() {
-    mesh::ChannelSettings set[mesh::MAX_CHANNELS];
+    // STATIC, not stack. Together these are about a kilobyte, and they sat on the
+    // mesh task's 4 KB stack underneath an NVS write that wants a few hundred
+    // bytes of its own — the most likely reason creating a channel took the device
+    // down. Only this task touches them, so static costs nothing but BSS.
+    static mesh::ChannelSettings set[mesh::MAX_CHANNELS];
+    static uint8_t buf[mesh::MAX_CHANNELS * 80];
+    for (auto& c : set) c = mesh::ChannelSettings();
     int n = 0;
     for (int i = 1; i < mesh::MAX_CHANNELS; ++i) {
         if (!chans[i].used) continue;
@@ -209,16 +217,17 @@ void savePrivateChannels() {
         // ones after it. That is fine: the phone re-reads the table after any edit.
         n++;
     }
-    uint8_t buf[mesh::MAX_CHANNELS * 80];
     const size_t len = n ? mesh::encodeChannelSet(set, n, buf, sizeof(buf)) : 0;
     settings::setMeshPrivateChannels(buf, len);
 }
 
 void loadPrivateChannels() {
-    uint8_t buf[mesh::MAX_CHANNELS * 80];
+    // Static for the same reason as savePrivateChannels, though this one runs at
+    // boot where the stack is quieter.
+    static uint8_t buf[mesh::MAX_CHANNELS * 80];
     const size_t len = settings::meshPrivateChannels(buf, sizeof(buf));
     if (!len) return;
-    mesh::ChannelSettings set[mesh::MAX_CHANNELS];
+    static mesh::ChannelSettings set[mesh::MAX_CHANNELS];
     int n = 0;
     if (!mesh::decodeChannelSet(buf, len, set, mesh::MAX_CHANNELS, n)) {
         diag::log("mesh: stored channel set is corrupt — ignoring it");

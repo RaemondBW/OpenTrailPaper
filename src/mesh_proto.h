@@ -195,7 +195,16 @@ bool decodeChannelSettings(const uint8_t* in, size_t len, ChannelSettings& c);
 // The byte in the header that says "this packet is on that channel". Receivers
 // use it to pick a decryption key without trying them all. Note that it mixes
 // the key in, so two channels sharing a name but not a key do not collide.
+//
+// Takes the key the CIPHER uses, i.e. after expansion. Prefer channelHashFor()
+// below, which does the expansion itself — Meshtastic hashes the expanded key
+// (Channels::generateHash calls getKey()), and hashing the stored form instead
+// gives a byte no other node uses, which is silent deafness rather than an error.
 uint8_t channelHash(const char* name, const uint8_t* psk, size_t pskLen);
+
+// The channel byte for a channel as it is STORED, doing the expansion itself.
+// One function so there is no per-call decision to get wrong.
+uint8_t channelHashFor(const char* name, const uint8_t* storedPsk, size_t pskLen);
 
 // djb2 over the channel name — Meshtastic uses this one (NOT channelHash) to
 // pick the frequency slot, so a channel name change moves the radio.

@@ -21,6 +21,7 @@ struct MeshChannelsSheet: View {
     @State private var scanning = false
     @State private var scanError: String? = nil
     @State private var confirmForget: MeshChannel? = nil
+    @State private var joined: String? = nil
     /// Screenshot hook only: opens the invite sheet for the first private channel.
     var autoShareForDemo = false
 
@@ -92,6 +93,12 @@ struct MeshChannelsSheet: View {
                             }
                         }
                 }
+            }
+            .alert("Joined", isPresented: Binding(
+                get: { joined != nil }, set: { if !$0 { joined = nil } })) {
+                Button("OK", role: .cancel) { joined = nil }
+            } message: {
+                Text("You are now on \(joined ?? ""). It may take a moment to appear while the device stores the key.")
             }
             .alert("Could not join", isPresented: Binding(
                 get: { scanError != nil }, set: { if !$0 { scanError = nil } })) {
@@ -169,11 +176,16 @@ struct MeshChannelsSheet: View {
             scanError = "Could not generate a secure key on this device."
             return
         }
-        ble.setMeshPrivateChannel(index: slot,
-                                  name: newName.trimmingCharacters(in: .whitespaces),
-                                  psk: key)
+        let name = newName.trimmingCharacters(in: .whitespaces)
+        ble.setMeshPrivateChannel(index: slot, name: name, psk: key)
         newName = ""
         selected = slot
+        // Optimistic: the device stages the change and reports the real entry back
+        // a moment later, and waiting for that round trip to show the QR made a
+        // freshly created channel look like it had gone nowhere. The invite only
+        // needs the name and key, both of which we just chose.
+        sharing = MeshChannel(index: slot, name: name, hash: 0, psk: key,
+                              sharesLocation: false)
     }
 
     private func scanned(_ text: String) {
@@ -198,6 +210,7 @@ struct MeshChannelsSheet: View {
         let name = first.name.isEmpty ? "Shared" : first.name
         ble.setMeshPrivateChannel(index: slot, name: name, psk: first.psk)
         selected = slot
+        joined = name
     }
 }
 

@@ -304,13 +304,29 @@ static void testChannelSet() {
     check(mesh::expandPsk(priv.psk, 32, key) == 32, "a 32-byte psk passes through");
     check(mesh::expandPsk(priv.psk, 0, key) == 0, "an empty psk is unencrypted");
 
-    // The channel hash is computed over the STORED psk, not the expansion —
-    // getting that wrong would put a default channel on the wrong hash.
+    // The channel hash is computed over the EXPANDED key, which is what
+    // Meshtastic's generateHash does (it calls getKey first). Hashing the stored
+    // one-byte form instead gives a byte nobody else uses — a silently deaf node,
+    // not an error — so channelHashFor() does the expansion and this pins it.
     uint8_t expanded[16];
     mesh::defaultPsk(1, expanded);
     check(mesh::channelHash("LongFast", def.psk, 1) !=
               mesh::channelHash("LongFast", expanded, 16),
-          "stored and expanded keys hash differently, so the choice matters");
+          "the stored and expanded forms really do hash differently");
+    check(mesh::channelHashFor("LongFast", def.psk, 1) ==
+              mesh::channelHash("LongFast", expanded, 16),
+          "channelHashFor expands before hashing");
+    check(mesh::channelHashFor("LongFast", def.psk, 1) == 0x08,
+          "a stored well-known key still gives LongFast's real hash 0x08");
+    check(mesh::channelHashFor("MediumFast", def.psk, 1) == 0x1f,
+          "and MediumFast's real hash 0x1f");
+    // A 32-byte key passes through the expansion untouched.
+    check(mesh::channelHashFor("Trail", priv.psk, 32) ==
+              mesh::channelHash("Trail", priv.psk, 32),
+          "a real key hashes the same either way");
+    // Unencrypted channels get hash 0, as Meshtastic defines.
+    check(mesh::channelHashFor("Open", def.psk, 0) == 0,
+          "an unencrypted channel hashes to 0");
 }
 
 static void testHeader() {
