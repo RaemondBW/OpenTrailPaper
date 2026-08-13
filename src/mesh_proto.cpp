@@ -455,6 +455,99 @@ const ModemPreset& preset(int index) {
     return kPresets[index];
 }
 
+// meshtastic.ChannelSettings: psk = 2 (bytes), name = 3 (string). The other
+// fields (channel_num, id, uplink/downlink, module settings) are not written —
+// proto3 omits defaults, and a receiver fills them in itself.
+size_t encodeChannelSettings(const ChannelSettings& c, uint8_t* out, size_t cap) {
+    Writer w{out, cap};
+    w.bytes(2, c.psk, c.pskLen);
+    w.str(3, c.name);
+    return w.overflow ? 0 : w.len;
+}
+
+bool decodeChannelSettings(const uint8_t* in, size_t len, ChannelSettings& c) {
+    Reader r{in, len};
+    while (!r.done()) {
+        const uint64_t t = r.varint();
+        if (r.bad) return false;
+        const uint32_t field = (uint32_t)(t >> 3);
+        const uint8_t wire = (uint8_t)(t & 7);
+        switch (field) {
+        case 2: {                                 // psk
+            const uint8_t* p;
+            size_t n;
+            if (!r.slice(p, n)) return false;
+            if (n > MAX_PSK_LEN) return false;    // not a key we could ever use
+            memcpy(c.psk, p, n);
+            c.pskLen = n;
+            break;
+        }
+        case 3:                                   // name
+            r.copyStr(c.name, sizeof(c.name));
+            break;
+        default:
+            r.skip(wire);
+            break;
+        }
+        if (r.bad) return false;
+    }
+    return true;
+}
+
+size_t encodeChannelSet(const ChannelSettings* chans, int n, uint8_t* out,
+                        size_t cap) {
+    Writer w{out, cap};
+    for (int i = 0; i < n; ++i) {
+        // Each entry is a length-delimited submessage, so it has to be encoded
+        // before its length is known.
+        uint8_t body[80];
+        const size_t bn = encodeChannelSettings(chans[i], body, sizeof(body));
+        if (bn == 0 && chans[i].name[0]) return 0;   // did not fit
+        w.bytes(1, body, bn);
+    }
+    return w.overflow ? 0 : w.len;
+}
+
+bool decodeChannelSet(const uint8_t* in, size_t len, ChannelSettings* out, int max,
+                      int& count) {
+    count = 0;
+    Reader r{in, len};
+    while (!r.done()) {
+        const uint64_t t = r.varint();
+        if (r.bad) return false;
+        const uint32_t field = (uint32_t)(t >> 3);
+        const uint8_t wire = (uint8_t)(t & 7);
+        if (field == 1 && wire == 2) {
+            const uint8_t* p;
+            size_t n;
+            if (!r.slice(p, n)) return false;
+            if (count < max) {
+                out[count] = ChannelSettings();
+                if (!decodeChannelSettings(p, n, out[count])) return false;
+                count++;
+            }
+            // A set with more channels than we hold is not an error; the extras
+            // are simply dropped, which is better than refusing the whole QR.
+        } else {
+            r.skip(wire);
+        }
+        if (r.bad) return false;
+    }
+    return true;
+}
+
+size_t expandPsk(const uint8_t* psk, size_t pskLen, uint8_t out[MAX_PSK_LEN]) {
+    if (pskLen == 1) {
+        defaultPsk(psk[0], out);
+        return 16;
+    }
+    if (pskLen == 16 || pskLen == 32) {
+        memcpy(out, psk, pskLen);
+        return pskLen;
+    }
+    return 0;      // 0 = unencrypted, anything else is not a key we can use
+}
+
 uint8_t channelHash(const char* name, const uint8_t* psk, size_t pskLen) {
     uint8_t h = 0;
     for (const char* p = name; p && *p; ++p) h ^= (uint8_t)*p;

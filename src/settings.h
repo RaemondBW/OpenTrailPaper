@@ -3,6 +3,7 @@
 // NVS-backed persistent settings: rider config + paired sensor addresses.
 // config.h values are the first-boot defaults.
 
+#include <cstddef>
 #include <cstdint>
 
 namespace settings {
@@ -66,6 +67,12 @@ const char* meshChannel();
 // channel's ("AQ==").
 uint8_t meshChannelKey();
 void setMeshChannel(const char* name, uint8_t keyIndex);
+
+// The private channels, as meshtastic.ChannelSet bytes — the same encoding a
+// share QR carries, so a channel has one representation rather than two.
+// Returns the length written, 0 if none stored.
+size_t meshPrivateChannels(uint8_t* out, size_t cap);
+void setMeshPrivateChannels(const uint8_t* data, size_t len);
 
 // Modem preset: an index into mesh::kPresets, deciding how fast the radio talks.
 // Separate from the channel, which decides where. MESH_PRESET_DEFAULT until set.

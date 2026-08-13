@@ -188,6 +188,17 @@ void setMeshChannel(const char* name, uint8_t keyIndex) {
     prefs.putUChar("meshkey", meshKey);
 }
 
+size_t meshPrivateChannels(uint8_t* out, size_t cap) {
+    return prefs.getBytes("meshchans", out, cap);
+}
+
+void setMeshPrivateChannels(const uint8_t* data, size_t len) {
+    // An empty set removes the key rather than storing zero bytes, so a device
+    // with no private channels reads back cleanly.
+    if (!data || len == 0) prefs.remove("meshchans");
+    else prefs.putBytes("meshchans", data, len);
+}
+
 uint8_t meshPreset() { return meshPresetIdx; }
 void setMeshPreset(uint8_t index) {
     if (index >= mesh::PRESET_COUNT) return;

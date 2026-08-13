@@ -48,8 +48,22 @@ uint32_t myNodeNum = 0;
 char myLongName[40] = {};
 char myShortName[8] = {};
 
-// Channel identity. The name feeds two different hashes: the frequency slot and
-// the byte that stamps each packet.
+// Channels. Slot 0 is PRIMARY: its name sets the frequency slot, so it is the one
+// that decides which mesh this device is on. Slots 1.. are private channels,
+// riding the same RF and told apart by the header's channel-hash byte plus their
+// own key. Two people can therefore share a private channel only if their
+// primaries agree — otherwise they are not even on the same frequency.
+struct Chan {
+    bool     used = false;
+    char     name[16] = {};
+    uint8_t  psk[mesh::MAX_PSK_LEN] = {};   // as stored/shared: 0, 1, 16 or 32 bytes
+    size_t   pskLen = 0;
+    uint8_t  key[mesh::MAX_PSK_LEN] = {};   // the expansion the cipher uses
+    size_t   keyLen = 0;
+    uint8_t  hash = 0;
+};
+Chan chans[mesh::MAX_CHANNELS];
+
 // The channel name the rider explicitly chose, or "" for "follow the modem".
 //
 // Empty is the normal state and is what makes this interoperate. On a stock
@@ -114,6 +128,11 @@ volatile int8_t reqEnable = -1;        // -1 = nothing, 0 = off, 1 = on
 char reqChanName[16] = {};
 volatile uint8_t reqChanKey = 0;
 volatile bool reqChan = false;
+// Private-channel edits, staged the same way. pskLen 0xFF means "delete".
+volatile int8_t reqPrivIdx = -1;
+char reqPrivName[16] = {};
+uint8_t reqPrivPsk[mesh::MAX_PSK_LEN] = {};
+volatile uint8_t reqPrivPskLen = 0;
 
 // Politeness gap between our own transmissions. The US band has no duty-cycle
 // ceiling, but a node that answers instantly and repeatedly is the one that
@@ -158,9 +177,81 @@ const char* effectiveChan() {
     return chanExplicit[0] ? chanExplicit : mesh::preset(presetIdx).name;
 }
 
+// Recomputes one channel's key and hash from its stored name and psk.
+void deriveChan(Chan& c, const char* name) {
+    c.keyLen = mesh::expandPsk(c.psk, c.pskLen, c.key);
+    // The hash is over the STORED psk, not the expansion — a single-byte
+    // well-known key hashes as that byte, which is what stock nodes do.
+    c.hash = mesh::channelHash(name, c.psk, c.pskLen);
+}
+
+// The private channels, stored as a ChannelSet — the same encoding a share URL
+// uses, so there is one representation of a channel rather than two that can
+// disagree. Slot 0 is not in here: it is derived from the preset and the channel
+// name, which have their own settings.
+void savePrivateChannels() {
+    mesh::ChannelSettings set[mesh::MAX_CHANNELS];
+    int n = 0;
+    for (int i = 1; i < mesh::MAX_CHANNELS; ++i) {
+        if (!chans[i].used) continue;
+        snprintf(set[n].name, sizeof(set[n].name), "%s", chans[i].name);
+        memcpy(set[n].psk, chans[i].psk, chans[i].pskLen);
+        set[n].pskLen = chans[i].pskLen;
+        // The slot is implied by order, so a deleted middle channel renumbers the
+        // ones after it. That is fine: the phone re-reads the table after any edit.
+        n++;
+    }
+    uint8_t buf[mesh::MAX_CHANNELS * 80];
+    const size_t len = n ? mesh::encodeChannelSet(set, n, buf, sizeof(buf)) : 0;
+    settings::setMeshPrivateChannels(buf, len);
+}
+
+void loadPrivateChannels() {
+    uint8_t buf[mesh::MAX_CHANNELS * 80];
+    const size_t len = settings::meshPrivateChannels(buf, sizeof(buf));
+    if (!len) return;
+    mesh::ChannelSettings set[mesh::MAX_CHANNELS];
+    int n = 0;
+    if (!mesh::decodeChannelSet(buf, len, set, mesh::MAX_CHANNELS, n)) {
+        diag::log("mesh: stored channel set is corrupt — ignoring it");
+        return;
+    }
+    for (int i = 0; i < n && i + 1 < mesh::MAX_CHANNELS; ++i) {
+        Chan& c = chans[i + 1];
+        c = Chan();
+        c.used = true;
+        snprintf(c.name, sizeof(c.name), "%s", set[i].name);
+        memcpy(c.psk, set[i].psk, set[i].pskLen);
+        c.pskLen = set[i].pskLen;
+    }
+}
+
 void applyChannel() {
-    mesh::defaultPsk(chanPskIndex, chanPsk);
-    chanHash = mesh::channelHash(effectiveChan(), chanPsk, sizeof(chanPsk));
+    // Slot 0 tracks the primary channel's name (which may come from the modem)
+    // and the well-known key index chosen for it.
+    Chan& p = chans[0];
+    p.used = true;
+    snprintf(p.name, sizeof(p.name), "%s", effectiveChan());
+    p.psk[0] = chanPskIndex;
+    p.pskLen = 1;
+    deriveChan(p, p.name);
+
+    // Kept for everything that still asks the primary directly.
+    memcpy(chanPsk, p.key, sizeof(chanPsk));
+    chanHash = p.hash;
+
+    for (int i = 1; i < mesh::MAX_CHANNELS; ++i)
+        if (chans[i].used) deriveChan(chans[i], chans[i].name);
+}
+
+// Which channel a received packet belongs to, by its header hash. -1 if none of
+// ours. Slot 0 is checked first so the primary always wins a collision: an 8-bit
+// hash over a handful of channels will collide eventually, and the primary is the
+// one whose traffic must not be misattributed.
+int chanForHash(uint8_t h) {
+    for (int i = 0; i < mesh::MAX_CHANNELS; ++i)
+        if (chans[i].used && chans[i].hash == h) return i;
+    return -1;
 }
 
 float channelFreq() {
@@ -229,8 +320,10 @@ mesh_service::Node* nodeFor(uint32_t num) {
 
 // Builds a frame and puts it in the outbox. Caller holds the lock.
 uint32_t enqueue(uint32_t dest, uint8_t portnum, const uint8_t* payload,
-                 size_t payloadLen, bool wantAck, uint32_t requestId) {
+                 size_t payloadLen, bool wantAck, uint32_t requestId,
+                 uint8_t channel) {
     if (outboxCount >= OUTBOX_MAX) return 0;
+    if (channel >= mesh::MAX_CHANNELS || !chans[channel].used) return 0;
 
     mesh::Data d;
     d.portnum = portnum;
@@ -251,7 +344,7 @@ uint32_t enqueue(uint32_t dest, uint8_t portnum, const uint8_t* payload,
     h.hopLimit = MESH_HOP_LIMIT;
     h.hopStart = MESH_HOP_LIMIT;
     h.wantAck = wantAck;
-    h.channelHash = chanHash;
+    h.channelHash = chans[channel].hash;
     mesh::encodeHeader(h, o.frame);
 
     const size_t n = mesh::encodeData(d, o.frame + mesh::HEADER_LEN,
@@ -260,7 +353,7 @@ uint32_t enqueue(uint32_t dest, uint8_t portnum, const uint8_t* payload,
     // Encrypted here rather than at send time: the nonce is (sender, packet id),
     // both already fixed, so there is nothing to gain by waiting — and a retry
     // must send the identical bytes.
-    mesh::ctrCrypt(chanPsk, sizeof(chanPsk), myNodeNum, o.id, 0,
+    mesh::ctrCrypt(chans[channel].key, chans[channel].keyLen, myNodeNum, o.id, 0,
                    o.frame + mesh::HEADER_LEN, n);
     o.len = mesh::HEADER_LEN + n;
 
@@ -269,7 +362,7 @@ uint32_t enqueue(uint32_t dest, uint8_t portnum, const uint8_t* payload,
 }
 
 // Caller holds the lock.
-void queueNodeInfo(uint32_t dest) {
+void queueNodeInfo(uint32_t dest, uint8_t channel) {
     mesh::User u;
     mesh::nodeIdString(myNodeNum, u.id, sizeof(u.id));
     snprintf(u.longName, sizeof(u.longName), "%s", myLongName);
@@ -278,14 +371,14 @@ void queueNodeInfo(uint32_t dest) {
     // and claiming a model we are not would mislead anything that acts on it.
     uint8_t buf[128];
     const size_t n = mesh::encodeUser(u, buf, sizeof(buf));
-    if (n) enqueue(dest, mesh::PORT_NODEINFO, buf, n, false, 0);
+    if (n) enqueue(dest, mesh::PORT_NODEINFO, buf, n, false, 0, channel);
 }
 
 // Caller holds the lock.
-void queueAck(uint32_t dest, uint32_t requestId) {
+void queueAck(uint32_t dest, uint32_t requestId, uint8_t channel) {
     uint8_t buf[8];
     const size_t n = mesh::encodeRouting(0, buf, sizeof(buf));   // NONE = ACK
-    if (n) enqueue(dest, mesh::PORT_ROUTING, buf, n, false, requestId);
+    if (n) enqueue(dest, mesh::PORT_ROUTING, buf, n, false, requestId, channel);
 }
 
 // ---------------------------------------------------------------------------
@@ -299,9 +392,10 @@ void handleFrame(const uint8_t* frame, size_t len, float rssi, float snr) {
         return;
     }
     if (h.sender == myNodeNum) return;          // our own packet, echoed back
-    if (h.channelHash != chanHash) {
-        // Another channel (or an unencrypted packet, which stamps 0). Nothing to
-        // do with it: without the key it is noise, and it is not ours to relay.
+    const int ch = chanForHash(h.channelHash);
+    if (ch < 0) {
+        // A channel we do not hold (or an unencrypted packet, which stamps 0).
+        // Without the key it is noise, and it is not ours to relay.
         st.rxOtherChannel++;
         return;
     }
@@ -317,7 +411,8 @@ void handleFrame(const uint8_t* frame, size_t len, float rssi, float snr) {
         return;
     }
     memcpy(payload, frame + mesh::HEADER_LEN, plen);
-    mesh::ctrCrypt(chanPsk, sizeof(chanPsk), h.sender, h.id, 0, payload, plen);
+    mesh::ctrCrypt(chans[ch].key, chans[ch].keyLen, h.sender, h.id, 0, payload,
+                   plen);
 
     mesh::Data d;
     if (!mesh::decodeData(payload, plen, d)) {
@@ -359,6 +454,7 @@ void handleFrame(const uint8_t* frame, size_t len, float rssi, float snr) {
         m->snr = (int8_t)snr;
         m->hops = hops;
         m->outgoing = false;
+        m->channel = (uint8_t)ch;
         size_t tn = d.payloadLen;
         if (tn > mesh::MAX_TEXT_LEN) tn = mesh::MAX_TEXT_LEN;
         memcpy(m->text, d.payload, tn);
@@ -366,10 +462,10 @@ void handleFrame(const uint8_t* frame, size_t len, float rssi, float snr) {
         unread++;
         // Only a direct message is acknowledged. Acking a broadcast would put
         // one packet on the air per node that heard it.
-        if (forUs && h.wantAck) queueAck(h.sender, h.id);
-        diag::log("mesh: msg from !%08x (%d dBm, %d hop%s): %.60s",
-                  (unsigned)h.sender, (int)rssi, hops, hops == 1 ? "" : "s",
-                  m->text);
+        if (forUs && h.wantAck) queueAck(h.sender, h.id, (uint8_t)ch);
+        diag::log("mesh: msg from !%08x on '%s' (%d dBm, %d hop%s): %.60s",
+                  (unsigned)h.sender, chans[ch].name, (int)rssi, hops,
+                  hops == 1 ? "" : "s", m->text);
         break;
     }
     case mesh::PORT_NODEINFO: {
@@ -383,7 +479,7 @@ void handleFrame(const uint8_t* frame, size_t len, float rssi, float snr) {
         }
         // A node asking who is out there gets an answer, which is how our name
         // reaches a phone that just joined the mesh.
-        if (d.wantResponse) queueNodeInfo(h.sender);
+        if (d.wantResponse) queueNodeInfo(h.sender, (uint8_t)ch);
         break;
     }
     case mesh::PORT_ROUTING: {
@@ -551,6 +647,7 @@ bool begin() {
     if (!myShortName[0])
         snprintf(myShortName, sizeof(myShortName), "%03x",
                  (unsigned)(myNodeNum & 0xFFF));
+    loadPrivateChannels();
     applyChannel();
 
     char id[16];
@@ -572,6 +669,8 @@ bool begin() {
 
 void applyEnabled(bool on);
 void applyPreset(uint8_t index);
+void applyPrivateChannel(uint8_t index, const char* name, const uint8_t* psk,
+                         size_t pskLen, bool remove);
 void applyChannelChange(const char* name, uint8_t pskIndex);
 
 // Anything another task asked for, applied here where the radio is owned. Runs
@@ -596,6 +695,18 @@ void applyPendingConfig() {
         const uint8_t idx = (uint8_t)reqPreset;
         reqPreset = -1;
         applyPreset(idx);
+    }
+    if (reqPrivIdx >= 0) {
+        char name[sizeof(reqPrivName)];
+        uint8_t psk[mesh::MAX_PSK_LEN];
+        take();
+        snprintf(name, sizeof(name), "%s", reqPrivName);
+        memcpy(psk, reqPrivPsk, sizeof(psk));
+        const uint8_t len = reqPrivPskLen;
+        const uint8_t idx = (uint8_t)reqPrivIdx;
+        reqPrivIdx = -1;
+        give();
+        applyPrivateChannel(idx, name, psk, len == 0xFF ? 0 : len, len == 0xFF);
     }
 }
 
@@ -629,7 +740,7 @@ void task(void*) {
         if (millis() >= nextNodeInfoMs) {
             nextNodeInfoMs = millis() + NODEINFO_EVERY_MS;
             take();
-            queueNodeInfo(BROADCAST_ADDR);
+            queueNodeInfo(BROADCAST_ADDR, 0);
             give();
         }
     }
@@ -668,6 +779,96 @@ const char* longName() { return myLongName; }
 const char* shortName() { return myShortName; }
 uint8_t channelPskIndex() { return chanPskIndex; }
 uint8_t presetIndex() { return presetIdx; }
+
+int channelCount() {
+    int n = 0;
+    take();
+    for (int i = 0; i < mesh::MAX_CHANNELS; ++i) if (chans[i].used) n++;
+    give();
+    return n;
+}
+
+bool channelAt(int index, ChannelInfo& out) {
+    if (index < 0 || index >= mesh::MAX_CHANNELS) return false;
+    take();
+    const bool ok = chans[index].used;
+    if (ok) {
+        out.index = (uint8_t)index;
+        out.used = true;
+        snprintf(out.name, sizeof(out.name), "%s", chans[index].name);
+        memcpy(out.psk, chans[index].psk, chans[index].pskLen);
+        out.pskLen = (uint8_t)chans[index].pskLen;
+        out.hash = chans[index].hash;
+    }
+    give();
+    return ok;
+}
+
+int firstFreeChannel() {
+    take();
+    int free = -1;
+    for (int i = 1; i < mesh::MAX_CHANNELS; ++i) {
+        if (!chans[i].used) { free = i; break; }
+    }
+    give();
+    return free;
+}
+
+// Applies a staged private-channel edit. Mesh task only.
+void applyPrivateChannel(uint8_t index, const char* name, const uint8_t* psk,
+                         size_t pskLen, bool remove) {
+    if (index == 0 || index >= mesh::MAX_CHANNELS) return;
+    take();
+    if (remove) {
+        // Drop the messages that arrived on it too — leaving them readable after
+        // the key is gone would be a surprising kind of "deleted".
+        for (int i = 0; i < msgCount; ++i) {
+            if (msgs[i].channel == index) msgs[i] = Message();
+        }
+        chans[index] = Chan();
+        diag::log("mesh: forgot private channel %u", index);
+    } else {
+        Chan& c = chans[index];
+        c = Chan();
+        c.used = true;
+        snprintf(c.name, sizeof(c.name), "%s", name);
+        if (pskLen > mesh::MAX_PSK_LEN) pskLen = mesh::MAX_PSK_LEN;
+        memcpy(c.psk, psk, pskLen);
+        c.pskLen = pskLen;
+        deriveChan(c, c.name);
+        diag::log("mesh: private channel %u '%s' hash 0x%02x, %u-byte key", index,
+                  c.name, c.hash, (unsigned)c.pskLen);
+    }
+    changed = true;
+    give();
+    savePrivateChannels();
+}
+
+bool setPrivateChannel(uint8_t index, const char* name, const uint8_t* psk,
+                       size_t pskLen) {
+    // Slot 0 is the primary and decides the frequency; it is changed through
+    // setChannel()/setPreset(), never here.
+    if (index == 0 || index >= mesh::MAX_CHANNELS || !name) return false;
+    if (pskLen > mesh::MAX_PSK_LEN) return false;
+    take();
+    snprintf(reqPrivName, sizeof(reqPrivName), "%s", name);
+    memcpy(reqPrivPsk, psk, pskLen);
+    reqPrivPskLen = (uint8_t)pskLen;
+    reqPrivIdx = (int8_t)index;
+    give();
+    if (wake) xSemaphoreGive(wake);
+    return true;
+}
+
+bool deletePrivateChannel(uint8_t index) {
+    if (index == 0 || index >= mesh::MAX_CHANNELS) return false;
+    take();
+    reqPrivPskLen = 0xFF;          // the delete marker
+    reqPrivIdx = (int8_t)index;
+    give();
+    if (wake) xSemaphoreGive(wake);
+    return true;
+}
 
 // The three setters below only STAGE the change; the mesh task applies it within
 // a tick. Callers are the BLE server task and the console, neither of which may
@@ -743,7 +944,7 @@ void setNames(const char* longName, const char* shortName) {
     diag::log("mesh: renamed to '%s' (%s)", myLongName, myShortName);
     if (radioUp && meshEnabled) {
         take();
-        queueNodeInfo(BROADCAST_ADDR);
+        queueNodeInfo(BROADCAST_ADDR, 0);
         give();
         if (wake) xSemaphoreGive(wake);
     }
@@ -782,8 +983,9 @@ void applyChannelChange(const char* name, uint8_t pskIndex) {
     }
 }
 
-uint32_t queueText(uint32_t dest, const char* text) {
+uint32_t queueText(uint32_t dest, const char* text, uint8_t channel) {
     if (!radioUp || !meshEnabled || !text || !text[0]) return 0;
+    if (channel >= mesh::MAX_CHANNELS) return 0;
     size_t n = strnlen(text, mesh::MAX_TEXT_LEN + 1);
     if (n > mesh::MAX_TEXT_LEN) n = mesh::MAX_TEXT_LEN;
 
@@ -791,7 +993,7 @@ uint32_t queueText(uint32_t dest, const char* text) {
     // A direct message asks for an acknowledgement; a broadcast cannot have one.
     const bool wantAck = (dest != BROADCAST_ADDR);
     const uint32_t id = enqueue(dest, mesh::PORT_TEXT, (const uint8_t*)text, n,
-                                wantAck, 0);
+                                wantAck, 0, channel);
     if (id) {
         Message* m = pushMessage();
         m->id = id;
@@ -800,6 +1002,7 @@ uint32_t queueText(uint32_t dest, const char* text) {
         m->utc = nowUtc();
         m->ms = millis();
         m->outgoing = true;
+        m->channel = channel;
         m->status = TX_PENDING;
         memcpy(m->text, text, n);
         m->text[n] = 0;

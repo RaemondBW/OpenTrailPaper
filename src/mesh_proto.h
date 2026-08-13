@@ -149,6 +149,41 @@ int presetIndexByName(const char* name);
 const ModemPreset& preset(int index);
 
 // ---------------------------------------------------------------------------
+// Channels
+// ---------------------------------------------------------------------------
+//
+// Meshtastic carries several channels on ONE radio configuration. The primary
+// channel's name sets the frequency slot; every other channel rides the same RF
+// and is told apart by the channel-hash byte in the header plus its own key. That
+// is what makes a private group possible without a second radio — and also why
+// two people can only share a channel if their PRIMARY channels agree, since that
+// is what decides the frequency they are both listening on.
+constexpr int MAX_CHANNELS = 8;
+constexpr size_t MAX_PSK_LEN = 32;
+
+struct ChannelSettings {
+    char    name[16] = {};
+    // As stored and as shared: 0 bytes = unencrypted, 1 byte = one of the ten
+    // well-known keys (see defaultPsk), 16 or 32 bytes = a real key. Kept in that
+    // form rather than expanded because it is what goes in a share URL, and
+    // because the channel hash is computed over these bytes, not the expansion.
+    uint8_t psk[MAX_PSK_LEN] = {};
+    size_t  pskLen = 0;
+};
+
+// meshtastic.ChannelSet — `repeated ChannelSettings settings = 1`. This is the
+// payload of a channel-share QR code: base64url of this, after
+// "https://meshtastic.org/e/#".
+size_t encodeChannelSet(const ChannelSettings* chans, int n, uint8_t* out,
+                        size_t cap);
+bool decodeChannelSet(const uint8_t* in, size_t len, ChannelSettings* out, int max,
+                      int& count);
+
+// One ChannelSettings on its own, for storing a table.
+size_t encodeChannelSettings(const ChannelSettings& c, uint8_t* out, size_t cap);
+bool decodeChannelSettings(const uint8_t* in, size_t len, ChannelSettings& c);
+
+// ---------------------------------------------------------------------------
 // Channel identity
 // ---------------------------------------------------------------------------
 
@@ -173,6 +208,11 @@ float channelFrequencyMHz(const char* channelName, float bwKhz,
 // default channel's "AQ==" is byte 1). Byte N means the 16-byte default key
 // with its last byte advanced by N-1. Writes 16 bytes.
 void defaultPsk(uint8_t index, uint8_t out[16]);
+
+// Turns a stored PSK into the key the cipher actually uses: a single byte is
+// expanded through defaultPsk, 16 and 32 bytes pass through, anything else is
+// refused. Returns the key length, or 0 for "unencrypted / not usable".
+size_t expandPsk(const uint8_t* psk, size_t pskLen, uint8_t out[MAX_PSK_LEN]);
 
 // AES-CTR over `data` in place, with Meshtastic's nonce construction:
 // [packetId as u64 LE][fromNode as u32 LE][extraNonce as u32 LE]. Encryption and

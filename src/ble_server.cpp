@@ -940,6 +940,9 @@ class AgnssCb : public NimBLECharacteristicCallbacks {
 //     [0x09]                                   send me the packet counters
 //     [0x0a]                                   send me the modem preset list
 //     [0x0b][u8 index]                         set the modem preset
+//     [0x0c]                                   send me the channel list
+//     [0x0d][u8 idx][u8 nameLen][name][psk]    add / replace a private channel
+//     [0x0e][u8 idx]                           forget a private channel
 //
 //   Device -> phone (notify):
 //     [0x90] state    flags, node number, frequency, channel, our names
@@ -953,6 +956,9 @@ class AgnssCb : public NimBLECharacteristicCallbacks {
 //     [0x98]          the device refused to queue it (radio off, or outbox full)
 //     [0x99] preset   one modem preset the device supports
 //     [0x9a]          end of the preset list
+//     [0x9b] channel  one channel, WITH its key — the phone needs it to build a
+//                     share QR, and this link is already the trusted one
+//     [0x9c]          end of the channel list
 NimBLECharacteristic* meshChr = nullptr;
 
 // Requests staged by the write callback, serviced in the task. A bitmask rather
@@ -963,6 +969,7 @@ constexpr uint8_t MREQ_HISTORY = 0x02;
 constexpr uint8_t MREQ_NODES   = 0x04;
 constexpr uint8_t MREQ_STATS   = 0x08;
 constexpr uint8_t MREQ_PRESETS = 0x10;
+constexpr uint8_t MREQ_CHANNELS = 0x20;
 volatile uint8_t meshReq = 0;
 
 // Outgoing text, staged the same way. queueText() is cheap enough to call from a
@@ -971,6 +978,7 @@ volatile uint8_t meshReq = 0;
 constexpr int MESH_SEND_QUEUE = 4;
 struct StagedText {
     uint32_t dest;
+    uint8_t channel;
     char text[mesh::MAX_TEXT_LEN + 1];
 };
 StagedText meshSendQ[MESH_SEND_QUEUE];
@@ -984,6 +992,12 @@ volatile uint8_t meshSetKey = 1;
 volatile bool meshChanPending = false;
 volatile int8_t meshEnablePending = -1;   // -1 nothing, 0 off, 1 on
 volatile int8_t meshPresetPending = -1;   // -1 nothing, else a preset index
+
+// Staged private-channel edits. pskLen 0xFF is the delete marker.
+volatile int8_t meshChanIdxPending = -1;
+char meshChanNamePending[16];
+uint8_t meshChanPskPending[mesh::MAX_PSK_LEN];
+volatile uint8_t meshChanPskLenPending = 0;
 
 void meshNotify(const uint8_t* d, size_t n) {
     if (!meshChr) return;
@@ -1053,6 +1067,10 @@ void sendMeshHistory() {
         size_t tn = strnlen(m.text, mesh::MAX_TEXT_LEN);
         pkt[p++] = (uint8_t)tn;
         memcpy(pkt + p, m.text, tn); p += (int)tn;
+        // Appended after the text so the layout above is untouched: which channel
+        // a message belongs to is what separates a private thread from the public
+        // one, so the app cannot group them without it.
+        pkt[p++] = m.channel;
         sendChunk(meshChr, pkt, p);
     }
     uint8_t end = 0x92;
@@ -1100,6 +1118,26 @@ void sendMeshNodes() {
     sendChunk(meshChr, &end, 1);
 }
 
+void sendMeshChannels() {
+    for (int i = 0; i < mesh::MAX_CHANNELS; ++i) {
+        mesh_service::ChannelInfo ci;
+        if (!mesh_service::channelAt(i, ci)) continue;
+        uint8_t pkt[64];
+        int p = 0;
+        pkt[p++] = 0x9b;
+        pkt[p++] = ci.index;
+        pkt[p++] = ci.hash;
+        p += (int)putStr(pkt + p, ci.name, 15);
+        // The key goes to the phone because building a share QR needs it. The BLE
+        // link is the one the rider already trusts with everything else here.
+        pkt[p++] = ci.pskLen;
+        memcpy(pkt + p, ci.psk, ci.pskLen); p += ci.pskLen;
+        sendChunk(meshChr, pkt, p);
+    }
+    uint8_t end = 0x9c;
+    sendChunk(meshChr, &end, 1);
+}
+
 void sendMeshPresets() {
     for (int i = 0; i < mesh::PRESET_COUNT; ++i) {
         const mesh::ModemPreset& mp = mesh::kPresets[i];
@@ -1142,17 +1180,43 @@ class MeshCb : public NimBLECharacteristicCallbacks {
         case 0x04: meshReq |= MREQ_NODES; break;
         case 0x09: meshReq |= MREQ_STATS; break;
         case 0x0a: meshReq |= MREQ_PRESETS; break;
+        case 0x0c: meshReq |= MREQ_CHANNELS; break;
+        case 0x0d: {                                   // add / replace a channel
+            if (n < 3) return;
+            const uint8_t idx = p[1];
+            const size_t nameLen = p[2];
+            if (3 + nameLen + 1 > n) return;
+            size_t keep = nameLen < sizeof(meshChanNamePending) - 1
+                              ? nameLen : sizeof(meshChanNamePending) - 1;
+            memcpy(meshChanNamePending, p + 3, keep);
+            meshChanNamePending[keep] = 0;
+            size_t pskLen = p[3 + nameLen];
+            if (pskLen > mesh::MAX_PSK_LEN) return;
+            if (3 + nameLen + 1 + pskLen > n) return;
+            memcpy(meshChanPskPending, p + 3 + nameLen + 1, pskLen);
+            meshChanPskLenPending = (uint8_t)pskLen;
+            meshChanIdxPending = (int8_t)idx;
+            break;
+        }
+        case 0x0e:                                     // forget a channel
+            if (n >= 2) {
+                meshChanPskLenPending = 0xFF;          // delete marker
+                meshChanIdxPending = (int8_t)p[1];
+            }
+            break;
         case 0x0b:                                     // set the modem preset
             if (n >= 2) meshPresetPending = (int8_t)p[1];
             break;
         case 0x02: {                                   // send a text message
-            if (n < 5) return;
+            // [op][u32 dest][u8 channel][utf8]
+            if (n < 6) return;
             if (meshSendCount >= MESH_SEND_QUEUE) return;   // task is behind
             StagedText& s = meshSendQ[meshSendCount];
             memcpy(&s.dest, p + 1, 4);
-            size_t tn = n - 5;
+            s.channel = p[5];
+            size_t tn = n - 6;
             if (tn > mesh::MAX_TEXT_LEN) tn = mesh::MAX_TEXT_LEN;
-            memcpy(s.text, p + 5, tn);
+            memcpy(s.text, p + 6, tn);
             s.text[tn] = 0;
             meshSendCount++;
             break;
@@ -1204,7 +1268,7 @@ void serviceMeshRequests() {
         StagedText s = meshSendQ[0];
         for (int i = 1; i < meshSendCount; ++i) meshSendQ[i - 1] = meshSendQ[i];
         meshSendCount--;
-        const uint32_t id = mesh_service::queueText(s.dest, s.text);
+        const uint32_t id = mesh_service::queueText(s.dest, s.text, s.channel);
         if (id) {
             uint8_t pkt[5] = {0x97};
             memcpy(pkt + 1, &id, 4);
@@ -1230,6 +1294,17 @@ void serviceMeshRequests() {
         meshEnablePending = -1;
         meshReq |= MREQ_STATE;
     }
+    if (meshChanIdxPending >= 0) {
+        const uint8_t idx = (uint8_t)meshChanIdxPending;
+        const uint8_t len = meshChanPskLenPending;
+        meshChanIdxPending = -1;
+        if (len == 0xFF) mesh_service::deletePrivateChannel(idx);
+        else mesh_service::setPrivateChannel(idx, meshChanNamePending,
+                                             meshChanPskPending, len);
+        // The edit is staged again inside mesh_service and applied by the mesh
+        // task, so the list the phone reads back is the one that took effect.
+        meshReq |= MREQ_CHANNELS | MREQ_STATE | MREQ_HISTORY;
+    }
     if (meshPresetPending >= 0) {
         mesh_service::setPreset((uint8_t)meshPresetPending);
         meshPresetPending = -1;
@@ -1247,6 +1322,7 @@ void serviceMeshRequests() {
     if (req & MREQ_NODES)   sendMeshNodes();
     if (req & MREQ_STATS)   sendMeshStats();
     if (req & MREQ_PRESETS) sendMeshPresets();
+    if (req & MREQ_CHANNELS) sendMeshChannels();
 }
 
 // Stream the device's map coverage to the phone (bounds of the embedded map +

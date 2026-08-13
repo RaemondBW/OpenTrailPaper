@@ -26,6 +26,8 @@
 #include "i2c_bus.h"
 #include "usb_storage.h"
 #include "ble_sensors.h"
+#include <esp_random.h>
+
 #include "lora_radio.h"
 #include "mesh_service.h"
 #include "ble_server.h"
@@ -1386,6 +1388,22 @@ static void printMeshReport() {
     Serial.printf("[mesh] modem %s: SF%u BW%.0f CR4/%u\n", mp.name, mp.sf, mp.bwKhz,
                   mp.cr);
 
+    // Every channel we can decrypt. All share the frequency above — only the
+    // primary's name decides that; the rest are told apart by their hash.
+    for (int i = 0; i < mesh::MAX_CHANNELS; ++i) {
+        mesh_service::ChannelInfo ci;
+        if (!mesh_service::channelAt(i, ci)) continue;
+        char keydesc[24];
+        if (ci.pskLen == 0)      snprintf(keydesc, sizeof(keydesc), "unencrypted");
+        else if (ci.pskLen == 1) snprintf(keydesc, sizeof(keydesc), "well-known #%u",
+                                          ci.psk[0]);
+        else                     snprintf(keydesc, sizeof(keydesc), "%u-byte key",
+                                          (unsigned)ci.pskLen);
+        Serial.printf("[mesh] ch%d %-14s hash 0x%02x  %s%s\n", i,
+                      ci.name[0] ? ci.name : "(unnamed)", ci.hash, keydesc,
+                      i == 0 ? "  <- primary, sets the frequency" : "");
+    }
+
     mesh_service::Stats s = mesh_service::stats();
     Serial.printf("[mesh] rx=%u dropped=%u rxOther=%u dup=%u | tx=%u txFail=%u acks=%u\n",
                   (unsigned)s.rx, (unsigned)s.rxDropped,
@@ -1497,6 +1515,8 @@ static void printConsoleHelp() {
     Serial.println("  mesh send <text>     broadcast a message to the channel");
     Serial.println("  mesh preset [name]   list / set the modem preset (how fast)");
     Serial.println("  mesh rssi            sample the noise floor (is RX alive?)");
+    Serial.println("  mesh private <name>  new private channel, random 256-bit key");
+    Serial.println("  mesh forget <slot>   delete a private channel");
     Serial.println("  mesh channel <name> [key]   set the channel (where — retunes)");
     Serial.println("  mesh <on|off>        power the LoRa radio");
     Serial.println("  disconnect <kind>    drop the link (hr|power|cadence|all); stays paired");
@@ -1576,6 +1596,37 @@ static void runConsoleLine(char* line) {
             const uint32_t id = mesh_service::queueText(mesh::BROADCAST_ADDR, text);
             if (id) Serial.printf("[cmd] queued packet 0x%08x: %s\n", (unsigned)id, text);
             else    Serial.println("[cmd] NOT queued (radio off, or outbox full)");
+        } else if (arg && !strcasecmp(arg, "private")) {
+            // Create a private channel with a random 256-bit key. The same thing
+            // the app's QR flow does, reachable without a phone.
+            char* want = strtok(nullptr, " \t");
+            if (!want) {
+                Serial.println("[cmd] mesh private <name>   (new random 256-bit key)");
+                Serial.println("      mesh forget <slot>    (delete one)");
+                return;
+            }
+            const int slot = mesh_service::firstFreeChannel();
+            if (slot < 0) { Serial.println("[cmd] no free channel slots"); return; }
+            uint8_t key[32];
+            for (int i = 0; i < 32; i += 4) {
+                const uint32_t r = esp_random();
+                memcpy(key + i, &r, 4);
+            }
+            if (!mesh_service::setPrivateChannel((uint8_t)slot, want, key, sizeof(key))) {
+                Serial.println("[cmd] could not create the channel");
+                return;
+            }
+            Serial.printf("[cmd] creating '%s' in slot %d with a random 256-bit key\n",
+                          want, slot);
+            Serial.println("      share it from the app to let someone join");
+        } else if (arg && !strcasecmp(arg, "forget")) {
+            char* want = strtok(nullptr, " \t");
+            if (!want) { Serial.println("[cmd] mesh forget <slot>"); return; }
+            const int slot = atoi(want);
+            if (!mesh_service::deletePrivateChannel((uint8_t)slot))
+                Serial.println("[cmd] slot 0 is the primary and cannot be forgotten");
+            else
+                Serial.printf("[cmd] forgetting channel %d and its messages\n", slot);
         } else if (arg && !strcasecmp(arg, "rssi")) {
             // Is the receiver actually running? Counters cannot tell a quiet band
             // from a dead receive chain — both are silence. A live SX1262 in RX

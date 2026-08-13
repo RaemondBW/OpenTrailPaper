@@ -229,6 +229,90 @@ static void testBayMeshSettings() {
     check(MESH_HOP_LIMIT == 6, "BayMesh: hop limit is their personal-node value");
 }
 
+// meshtastic.ChannelSet — the payload of a channel-share QR code.
+//
+// The bytes below are pinned rather than round-tripped, because round-tripping
+// only proves this file agrees with itself. base64url of 0a 03 12 01 01 is
+// "CgMSAQE", and https://meshtastic.org/e/#CgMSAQE is Meshtastic's own share URL
+// for an unconfigured default channel — so matching these bytes is matching the
+// real thing. (Cross-checked with Python's base64.urlsafe_b64encode.)
+static void testChannelSet() {
+    mesh::ChannelSettings def;
+    def.psk[0] = 0x01;          // the single-byte well-known key, "AQ=="
+    def.pskLen = 1;
+
+    uint8_t buf[128];
+    size_t n = mesh::encodeChannelSet(&def, 1, buf, sizeof(buf));
+    const uint8_t want[] = {0x0a, 0x03, 0x12, 0x01, 0x01};
+    check(n == sizeof(want), "ChannelSet for the default channel is 5 bytes");
+    if (n == sizeof(want)) checkHex(buf, want, n, "ChannelSet matches meshtastic.org/e/#CgMSAQE");
+
+    // A private channel: a name and a real 256-bit key.
+    mesh::ChannelSettings priv;
+    snprintf(priv.name, sizeof(priv.name), "Trail");
+    for (int i = 0; i < 32; ++i) priv.psk[i] = (uint8_t)i;
+    priv.pskLen = 32;
+    n = mesh::encodeChannelSet(&priv, 1, buf, sizeof(buf));
+    check(n == 43, "ChannelSet with a 32-byte key and a 5-char name is 43 bytes");
+    check(buf[0] == 0x0a && buf[1] == 41 && buf[2] == 0x12 && buf[3] == 32,
+          "private channel encodes psk before name, as Meshtastic does");
+
+    mesh::ChannelSettings back[mesh::MAX_CHANNELS];
+    int count = 0;
+    check(mesh::decodeChannelSet(buf, n, back, mesh::MAX_CHANNELS, count),
+          "ChannelSet decodes");
+    check(count == 1, "one channel came back");
+    check(strcmp(back[0].name, "Trail") == 0, "channel name round-trips");
+    check(back[0].pskLen == 32 && back[0].psk[31] == 31, "32-byte key round-trips");
+
+    // Several channels in one set, which is what sharing a whole config looks like.
+    mesh::ChannelSettings many[3];
+    many[0] = def;
+    many[1] = priv;
+    snprintf(many[2].name, sizeof(many[2].name), "Second");
+    many[2].psk[0] = 0x02;
+    many[2].pskLen = 1;
+    n = mesh::encodeChannelSet(many, 3, buf, sizeof(buf));
+    check(n > 0, "a three-channel set encodes");
+    count = 0;
+    check(mesh::decodeChannelSet(buf, n, back, mesh::MAX_CHANNELS, count) &&
+              count == 3 && strcmp(back[2].name, "Second") == 0,
+          "a three-channel set round-trips in order");
+
+    // More channels than we hold must drop the extras rather than fail: a QR from
+    // someone with a fuller config should still give us the ones we can keep.
+    count = 0;
+    check(mesh::decodeChannelSet(buf, n, back, 2, count) && count == 2,
+          "a set larger than our table keeps what fits");
+
+    // A key length we cannot use must be refused outright, not silently truncated
+    // into a different key.
+    uint8_t bad[64];
+    size_t bn = 0;
+    bad[bn++] = 0x0a; bad[bn++] = 12;
+    bad[bn++] = 0x12; bad[bn++] = 10;
+    for (int i = 0; i < 10; ++i) bad[bn++] = 0xAA;
+    mesh::ChannelSettings one;
+    check(mesh::decodeChannelSettings(bad + 2, 12, one) && one.pskLen == 10,
+          "a 10-byte psk decodes (length is checked when it is expanded)");
+    uint8_t key[mesh::MAX_PSK_LEN];
+    check(mesh::expandPsk(one.psk, one.pskLen, key) == 0,
+          "a 10-byte psk expands to nothing usable");
+
+    // The three lengths that are usable.
+    check(mesh::expandPsk(def.psk, 1, key) == 16, "a 1-byte psk expands to 16");
+    check(mesh::expandPsk(priv.psk, 32, key) == 32, "a 32-byte psk passes through");
+    check(mesh::expandPsk(priv.psk, 0, key) == 0, "an empty psk is unencrypted");
+
+    // The channel hash is computed over the STORED psk, not the expansion —
+    // getting that wrong would put a default channel on the wrong hash.
+    uint8_t expanded[16];
+    mesh::defaultPsk(1, expanded);
+    check(mesh::channelHash("LongFast", def.psk, 1) !=
+              mesh::channelHash("LongFast", expanded, 16),
+          "stored and expanded keys hash differently, so the choice matters");
+}
+
 static void testHeader() {
     mesh::Header h;
     h.dest = mesh::BROADCAST_ADDR;
@@ -524,6 +608,7 @@ int main() {
     testChannelPlacement();
     testPresets();
     testBayMeshSettings();
+    testChannelSet();
     testHeader();
     testDataProto();
     testUserProto();

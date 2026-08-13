@@ -40,6 +40,7 @@ struct Message {
     int8_t   rssi = 0;
     int8_t   snr = 0;
     bool     outgoing = false;
+    uint8_t  channel = 0;    // which channel it belongs to; 0 = primary
     uint8_t  status = TX_PENDING;
     uint8_t  hops = 0;       // hops taken to reach us (0 = heard directly)
     char     text[mesh::MAX_TEXT_LEN + 1] = {};
@@ -129,8 +130,44 @@ const char* presetName();
 void setPreset(uint8_t index);
 
 // Queues a text message and returns its packet id (0 if the outbox is full, the
-// text is empty, or the radio is down). Safe to call from another task.
-uint32_t queueText(uint32_t dest, const char* text);
+// text is empty, the channel is not one we hold, or the radio is down). Safe to
+// call from another task. `channel` 0 is the primary; 1.. are private channels.
+uint32_t queueText(uint32_t dest, const char* text, uint8_t channel = 0);
+
+// ---------------------------------------------------------------------------
+// Channels
+// ---------------------------------------------------------------------------
+//
+// Slot 0 is the primary — the one whose name sets the frequency, i.e. which mesh
+// this device is on. Slots 1.. are private channels sharing that frequency,
+// distinguished by their hash and key, which is how a private group works without
+// a second radio. Two people can only share one if their PRIMARIES agree.
+
+struct ChannelInfo {
+    uint8_t index = 0;
+    bool    used = false;
+    char    name[16] = {};
+    // The key AS SHARED: 0 bytes unencrypted, 1 byte a well-known index, 16 or 32
+    // a real key. This is what goes in a share URL, so the phone needs it.
+    uint8_t psk[mesh::MAX_PSK_LEN] = {};
+    uint8_t pskLen = 0;
+    uint8_t hash = 0;
+};
+
+int channelCount();                                  // how many slots are in use
+bool channelAt(int index, ChannelInfo& out);         // by SLOT, not by position
+
+// Adds or replaces a private channel. Slot 0 is refused — the primary is set
+// through setChannel()/setPreset(), because it decides the frequency. Persisted.
+// Staged like the other radio-touching setters; applied by the mesh task.
+bool setPrivateChannel(uint8_t index, const char* name, const uint8_t* psk,
+                       size_t pskLen);
+
+// Forgets a private channel, and the messages that arrived on it.
+bool deletePrivateChannel(uint8_t index);
+
+// First unused private slot, or -1 when full.
+int firstFreeChannel();
 
 // Copy out state one entry at a time, index 0 = oldest. Deliberately not a
 // bulk snapshot: the whole message ring is ~11 KB, far more than the BLE server
