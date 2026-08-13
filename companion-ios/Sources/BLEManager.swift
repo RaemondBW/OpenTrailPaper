@@ -91,6 +91,9 @@ struct MeshMessage: Identifiable, Equatable {
     let from: UInt32
     let to: UInt32
     let outgoing: Bool
+    /// Which channel it belongs to. 0 is the primary (public) channel; anything
+    /// else is a private one, and this is what keeps those threads apart.
+    let channel: UInt8
     let status: Status
     let text: String
     /// When it happened, worked out from the age the device reported. The device
@@ -332,6 +335,8 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var meshStats = MeshStats()
     @Published var meshPresets: [MeshPreset] = []
     private var meshPresetsBuilding: [MeshPreset] = []
+    @Published var meshChannels: [MeshChannel] = []
+    private var meshChannelsBuilding: [MeshChannel] = []
     /// Set when the device refuses a message (radio off, or its outbox is full),
     /// so the compose field can say so instead of silently losing the text.
     @Published var meshSendRejected = false
@@ -1079,10 +1084,35 @@ final class BLEManager: NSObject, ObservableObject {
         p.writeValue(Data([0x01]), for: c, type: .withResponse)   // state
         p.writeValue(Data([0x03]), for: c, type: .withResponse)   // history
         p.writeValue(Data([0x04]), for: c, type: .withResponse)   // nodes
+        p.writeValue(Data([0x0c]), for: c, type: .withResponse)   // channels
         if meshPresets.isEmpty {
             // Fixed for the life of the firmware, so once is enough.
             p.writeValue(Data([0x0a]), for: c, type: .withResponse)
         }
+    }
+
+    /// Adds or replaces a private channel on the device. Slot 0 is the primary and
+    /// is refused by the firmware — it decides the frequency.
+    func setMeshPrivateChannel(index: UInt8, name: String, psk: Data) {
+        guard let c = meshChar, let p = peripheral else { return }
+        let n = Data(String(name.prefix(15)).utf8)
+        var cmd = Data([0x0d, index, UInt8(n.count)])
+        cmd.append(n)
+        cmd.append(UInt8(psk.count))
+        cmd.append(psk)
+        p.writeValue(cmd, for: c, type: .withResponse)
+    }
+
+    func forgetMeshChannel(index: UInt8) {
+        guard let c = meshChar, let p = peripheral, index != 0 else { return }
+        p.writeValue(Data([0x0e, index]), for: c, type: .withResponse)
+    }
+
+    /// The lowest free private slot, or nil when the device is full.
+    var firstFreeMeshChannel: UInt8? {
+        let used = Set(meshChannels.map(\.index))
+        for i in UInt8(1)..<UInt8(8) where !used.contains(i) { return i }
+        return nil
     }
 
     /// Switches the modem. Note this can move the frequency as well as the speed:
@@ -1099,7 +1129,7 @@ final class BLEManager: NSObject, ObservableObject {
     }
 
     /// Sends a message to one node, or to the whole channel when `to` is nil.
-    func sendMeshText(_ text: String, to: UInt32? = nil) {
+    func sendMeshText(_ text: String, to: UInt32? = nil, channel: UInt8 = 0) {
         guard let c = meshChar, let p = peripheral else { return }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
@@ -1114,6 +1144,7 @@ final class BLEManager: NSObject, ObservableObject {
         meshSendRejected = false
         var cmd = Data([0x02])
         cmd.appendLE(to ?? MeshState.broadcastAddr)
+        cmd.append(channel)
         cmd.append(body)
         p.writeValue(cmd, for: c, type: .withResponse)
     }
@@ -1164,9 +1195,10 @@ final class BLEManager: NSObject, ObservableObject {
         demoMesh = true
         meshState = MeshState(enabled: true, radioOk: true,
                               channelFollowsPreset: true, nodeNum: 0xa4c1380c,
-                              frequencyHz: 906_875_000, channel: "LongFast",
+                              frequencyHz: 913_125_000, channel: "MediumFast",
                               channelKey: 1, longName: "OpenTrail 380c",
-                              shortName: "380c", nodeCount: 3, unread: 0)
+                              shortName: "380c", nodeCount: 3, unread: 0,
+                              presetIndex: 2)
         let now = Date()
         meshNodes = [
             MeshNode(num: 0x7b2e91aa, shortName: "ALEX", longName: "Alex",
@@ -1189,24 +1221,29 @@ final class BLEManager: NSObject, ObservableObject {
         ]
         let bc = MeshState.broadcastAddr
         meshMessages = [
-            MeshMessage(id: 1, from: 0x7b2e91aa, to: bc, outgoing: false,
+            MeshMessage(id: 1, from: 0x7b2e91aa, to: bc, outgoing: false, channel: 0,
                         status: .sent, text: "Heading up the fire road now, should be at the saddle in 40.",
                         date: now.addingTimeInterval(-2100), rssi: -84, snr: 6, hops: 0),
-            MeshMessage(id: 2, from: 0xa4c1380c, to: bc, outgoing: true,
+            MeshMessage(id: 2, from: 0xa4c1380c, to: bc, outgoing: true, channel: 0,
                         status: .sent, text: "Copy. I'm still at the creek crossing, water is high.",
                         date: now.addingTimeInterval(-1800), rssi: 0, snr: 0, hops: 0),
-            MeshMessage(id: 3, from: 0x3fd10c55, to: bc, outgoing: false,
+            MeshMessage(id: 3, from: 0x3fd10c55, to: bc, outgoing: false, channel: 1,
                         status: .sent, text: "Same, went around on the north side. Bridge is out.",
                         date: now.addingTimeInterval(-1500), rssi: -108, snr: -4, hops: 2),
-            MeshMessage(id: 4, from: 0xa4c1380c, to: 0x7b2e91aa, outgoing: true,
+            MeshMessage(id: 4, from: 0xa4c1380c, to: 0x7b2e91aa, outgoing: true, channel: 1,
                         status: .acked, text: "Taking the north detour, add 20 min.",
                         date: now.addingTimeInterval(-900), rssi: 0, snr: 0, hops: 0),
-            MeshMessage(id: 5, from: 0x7b2e91aa, to: bc, outgoing: false,
+            MeshMessage(id: 5, from: 0x7b2e91aa, to: bc, outgoing: false, channel: 0,
                         status: .sent, text: "Got it. Waiting at the saddle, no rush.",
                         date: now.addingTimeInterval(-120), rssi: -84, snr: 6, hops: 0),
         ]
         meshStats = MeshStats(rx: 214, rxDropped: 11, rxOtherChannel: 63,
                               rxDuplicate: 88, tx: 19, txFailed: 1, acksRx: 12)
+        meshChannels = [
+            MeshChannel(index: 0, name: "MediumFast", hash: 0x1f, psk: Data([0x01])),
+            MeshChannel(index: 1, name: "Saturday Ride", hash: 0x8c,
+                        psk: Data((0..<32).map { UInt8($0 &* 7 &+ 3) })),
+        ]
         meshPresets = [
             MeshPreset(index: 0, name: "LongFast", sf: 11, bandwidthKhz: 250, codingRate: 5),
             MeshPreset(index: 1, name: "MediumSlow", sf: 10, bandwidthKhz: 250, codingRate: 5),
@@ -1253,6 +1290,8 @@ final class BLEManager: NSObject, ObservableObject {
             let textLen = Int(d[25])
             guard d.count >= 26 + textLen else { return }
             let flags = d[24]
+            // The channel byte is appended after the text.
+            let channel = d.count > 26 + textLen ? d[26 + textLen] : 0
             // The device sends both a UTC stamp and an age. Prefer the stamp —
             // it came from GPS and is exact — but it is 0 until the device has a
             // fix, and then the phone's clock minus the age is all there is.
@@ -1265,6 +1304,7 @@ final class BLEManager: NSObject, ObservableObject {
                 from: d.le32(at: 5),
                 to: d.le32(at: 9),
                 outgoing: flags & 1 != 0,
+                channel: channel,
                 status: MeshMessage.Status(rawValue: flags >> 4) ?? .pending,
                 text: String(data: d.subdata(in: 26..<(26 + textLen)),
                              encoding: .utf8) ?? "",
@@ -1332,6 +1372,21 @@ final class BLEManager: NSObject, ObservableObject {
         case 0x9a:  // end of the preset list
             meshPresets = meshPresetsBuilding
             meshPresetsBuilding = []
+
+        case 0x9b:  // one channel, with its key
+            guard d.count >= 3 else { return }
+            var i = 3
+            let name = d.lenString(at: &i)
+            guard i < d.count else { return }
+            let pskLen = Int(d[i]); i += 1
+            guard i + pskLen <= d.count else { return }
+            meshChannelsBuilding.append(MeshChannel(
+                index: d[1], name: name, hash: d[2],
+                psk: d.subdata(in: i..<(i + pskLen))))
+
+        case 0x9c:  // end of the channel list
+            meshChannels = meshChannelsBuilding.sorted { $0.index < $1.index }
+            meshChannelsBuilding = []
 
         case 0x96:  // something changed — pull it
             refreshMesh()
@@ -1705,6 +1760,7 @@ extension BLEManager: CBCentralManagerDelegate {
             sensorsChar = nil; mapChar = nil; otaChar = nil; meshChar = nil
             // A half-received mesh stream must not be published on reconnect.
             meshBuilding = []; meshNodesBuilding = []; meshPresetsBuilding = []
+            meshChannelsBuilding = []
             stopLocationStream()   // no device to send the phone's position to
             // If we disconnect mid-update: after the data is sent + commit
             // requested, a disconnect is EXPECTED (the device reboots into the

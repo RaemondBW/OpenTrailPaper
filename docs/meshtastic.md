@@ -42,9 +42,10 @@ implementation follows the real wire format rather than inventing a private one.
   they message it — so direct messages still work, they are just channel-
   encrypted rather than end-to-end. A PKC packet meant for somebody else is
   counted as dropped and ignored.
-- **Custom 32-byte channel keys.** Only Meshtastic's ten well-known keys (1–10)
-  are selectable. A named channel with key 1 is the usual "separate channel on
-  the same mesh" setup and that does work.
+- **End-to-end encryption per person.** Meshtastic 2.5 gives each node an X25519
+  key pair and encrypts direct messages to it; this firmware does not implement
+  that. Privacy here is a shared channel key — see [Private channels](#private-channels)
+  — which is exactly as private as the group holding it.
 
 ## Region
 
@@ -169,6 +170,45 @@ whichever mesh you are on, not a preference. And Client Mute ("best for vehicles
 and any time you have more than 2 nodes in the same place") is what this firmware
 does by construction: it hears everything and rebroadcasts nothing.
 
+## Private channels
+
+A private group is a Meshtastic **channel** with a random 256-bit key, shared as a
+QR code. Everyone else on the mesh sees the packets go past and cannot read a byte
+of them. A two-person channel is a private conversation; a five-person one is a
+private group — the same mechanism at different sizes.
+
+Create or join from the app: **Mesh → the `+` chip → New private channel**, then
+*Share* to show its QR, or *Scan someone's code* to join theirs. From the console,
+`mesh private <name>` creates one and `mesh forget <slot>` deletes it.
+
+The QR is the standard `https://meshtastic.org/e/#<base64 ChannelSet>` URL, so the
+other person does **not** need this app — the official Meshtastic app imports it,
+and codes it produces can be scanned here.
+
+Three things worth understanding:
+
+- **Channels are free.** All of them share one radio configuration, so a private
+  channel costs no range, no battery and no extra airtime. Only the primary
+  channel's name sets the frequency; the rest ride it, told apart by the
+  channel-hash byte in the header plus their key.
+- **Both ends need the same primary.** Since the primary decides the frequency, two
+  people can only use a shared channel if they are also on the same public channel.
+  On BayMesh that means both on MediumFast. A code that "does not work" is usually
+  this.
+- **A scanned channel is always added as private, never as the primary.** Importing
+  someone's primary would move this device onto their frequency and off the mesh
+  it was on, so a scan adds a channel alongside yours rather than replacing it.
+
+The key is the whole secret. Anyone who gets the code can read everything on that
+channel, including messages sent before they joined, and there is no way to revoke
+it short of everyone moving to a new channel. It comes from `SecRandomCopyBytes`,
+and a CSPRNG failure refuses to create the channel rather than falling back to
+something weaker — a predictable key would look private without being private.
+
+This is **not** end-to-end encryption per person. Meshtastic 2.5 has that
+(X25519 per node), and this firmware does not implement it; see the "does not" list
+above. A shared key is exactly as private as the group holding it.
+
 ## Wire format
 
 A packet is a 16-byte plaintext header followed by an AES-CTR encrypted payload:
@@ -247,11 +287,15 @@ Phone → device:
 | `0x09` | — | send me the packet counters |
 | `0x0a` | — | send me the modem preset list |
 | `0x0b` | `u8 index` | set the modem preset |
+| `0x0c` | — | send me the channel list |
+| `0x0d` | `u8 idx`, name, psk | add / replace a private channel |
+| `0x0e` | `u8 idx` | forget a private channel |
 
 Device → phone (notify): `0x90` state, `0x91` one message, `0x92` end of
 history, `0x93` one node, `0x94` end of node list, `0x95` counters, `0x96`
 something changed (ask again), `0x97` queued with the packet id, `0x98` refused,
-`0x99` one modem preset, `0x9a` end of the preset list.
+`0x99` one modem preset, `0x9a` end of the preset list, `0x9b` one channel (with
+its key — the phone needs it to build a share QR), `0x9c` end of the channel list.
 
 A `0x93` node record carries its position when it has one: a flag byte, then
 latitude and longitude as 1e7 fixed-point (the same representation used on the

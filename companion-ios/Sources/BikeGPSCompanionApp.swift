@@ -120,7 +120,8 @@ struct RootView: View {
         let demoFlags = ["-tab-route", "-tab-rides", "-tab-mesh", "-tab-settings",
                          "-demo-route", "-demo-rides", "-demo-update", "-demo-dash",
                          "-demo-mesh", "-demo-mesh-settings", "-demo-mesh-map",
-                         "-demo-mesh-nodes"]
+                         "-demo-mesh-nodes", "-demo-mesh-channels",
+                         "-demo-mesh-share"]
         if demoFlags.contains(where: a.contains) { return false }
         return !UserDefaults.standard.bool(forKey: BLEManager.onboardedKey)
     }

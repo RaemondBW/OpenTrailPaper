@@ -21,6 +21,9 @@ struct MeshView: View {
     @State private var showNodes = false
     @State private var showSettings = false
     @State private var showNodeMap = false
+    @State private var showChannels = false
+    /// Which channel's thread is on screen. 0 is the public/primary one.
+    @State private var channel: UInt8 = 0
     /// Owned here rather than left to the system so a tap anywhere on the
     /// conversation can put the keyboard away — on a phone held one-handed on a
     /// handlebar, the keyboard covers most of the thread you are trying to read.
@@ -42,13 +45,17 @@ struct MeshView: View {
         return recipient?.displayName ?? "!" + String(format: "%08x", n)
     }
 
+    /// Messages on the channel being viewed. Channels are separated first and
+    /// hard: a private channel exists precisely so its traffic is not mixed in
+    /// with the public one.
     private var messages: [MeshMessage] {
-        guard let n = recipientNum else {
-            // The channel view: broadcasts, plus anything we exchanged directly
-            // with anyone (a reply to a DM belongs where you can find it).
-            return ble.meshMessages
-        }
-        return ble.meshMessages.filter { $0.from == n || $0.to == n }
+        let onChannel = ble.meshMessages.filter { $0.channel == channel }
+        guard let n = recipientNum else { return onChannel }
+        return onChannel.filter { $0.from == n || $0.to == n }
+    }
+
+    private var currentChannel: MeshChannel? {
+        ble.meshChannels.first { $0.index == channel }
     }
 
     var body: some View {
@@ -65,6 +72,7 @@ struct MeshView: View {
                     // contentShape so the empty space below the last bubble is
                     // tappable too — that is most of the screen in a short
                     // thread, and it is where a thumb naturally lands.
+                    channelBar
                     thread
                         .contentShape(Rectangle())
                         .onTapGesture { composerFocused = false }
@@ -83,6 +91,17 @@ struct MeshView: View {
         // Reachable in the app through Nodes -> "N on map"; the flag is only so a
         // screenshot can land on it directly.
         .sheet(isPresented: $showNodeMap) { MeshMapSheet() }
+        .sheet(isPresented: $showChannels) {
+            MeshChannelsSheet(
+                selected: $channel,
+                autoShareForDemo: ProcessInfo.processInfo.arguments
+                    .contains("-demo-mesh-share"))
+        }
+        .onChange(of: ble.meshChannels) { _, list in
+            // Forgetting the channel you were reading should not leave a thread
+            // on screen that no longer exists.
+            if !list.contains(where: { $0.index == channel }) { channel = 0 }
+        }
         .onAppear {
             let args = ProcessInfo.processInfo.arguments
             // Prefix match, so every -demo-mesh* variant seeds the data. Listing
@@ -94,6 +113,8 @@ struct MeshView: View {
                 if args.contains("-demo-mesh-settings") { showSettings = true }
                 if args.contains("-demo-mesh-map") { showNodeMap = true }
                 if args.contains("-demo-mesh-nodes") { showNodes = true }
+                if args.contains("-demo-mesh-channels") ||
+                   args.contains("-demo-mesh-share") { showChannels = true }
                 return
             }
             ble.refreshMesh()
@@ -145,6 +166,9 @@ struct MeshView: View {
         if !attached { return "not connected" }
         if !ble.meshState.enabled { return "radio off" }
         if recipientNum != nil { return "direct to \(recipientName)" }
+        if let c = currentChannel, c.isPrivate {
+            return "\(c.displayName) · private"
+        }
         let f = ble.meshState.frequencyMHz
         // Channel, modem, frequency: the three things that have to match another
         // node, in one line.
@@ -152,6 +176,52 @@ struct MeshView: View {
             return String(format: "%@ · SF%d · %.3f MHz", ble.meshState.channel, p.sf, f)
         }
         return String(format: "%@ · %.3f MHz", ble.meshState.channel, f)
+    }
+
+    /// One chip per channel, plus the way in to creating or joining one. Only
+    /// shown once there is more than the primary — a single-channel device has no
+    /// choice to make and the row would be noise.
+    @ViewBuilder private var channelBar: some View {
+        if ble.meshChannels.count > 1 || !ble.meshChannels.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(ble.meshChannels) { c in
+                        Button { channel = c.index } label: {
+                            HStack(spacing: 5) {
+                                if c.isPrivate {
+                                    Image(systemName: "lock.fill")
+                                        .font(.system(size: 10))
+                                }
+                                Text(c.isPrimary ? "Public" : c.displayName)
+                                    .font(BarlowFont.condensed(16, .semibold))
+                            }
+                            .padding(.horizontal, 12).padding(.vertical, 6)
+                            .foregroundStyle(channel == c.index ? Palette.accentInk
+                                                                : Palette.ink)
+                            .background(channel == c.index ? Palette.accent
+                                                           : Palette.surface)
+                            .clipShape(Capsule())
+                            .overlay(Capsule().strokeBorder(
+                                channel == c.index ? .clear : Palette.hairline,
+                                lineWidth: 1))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    Button { showChannels = true } label: {
+                        Image(systemName: "plus")
+                            .font(.system(size: 13, weight: .semibold))
+                            .padding(.horizontal, 12).padding(.vertical, 8)
+                            .foregroundStyle(Palette.accent)
+                            .background(Palette.surface)
+                            .clipShape(Capsule())
+                            .overlay(Capsule().strokeBorder(Palette.hairline,
+                                                            lineWidth: 1))
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 10)
+            }
+        }
     }
 
     // MARK: - States where there is nothing to show
@@ -200,9 +270,11 @@ struct MeshView: View {
             ScrollView {
                 LazyVStack(spacing: 10) {
                     if messages.isEmpty {
-                        Text(recipientNum == nil
-                             ? "Nothing heard yet. Messages from anyone on this channel show up here."
-                             : "No messages with this node yet.")
+                        Text(recipientNum != nil
+                             ? "No messages with this node yet."
+                             : (currentChannel?.isPrivate == true
+                                ? "Nothing here yet. Only people you have shared this channel's code with can read it."
+                                : "Nothing heard yet. Messages from anyone on this channel show up here."))
                             .font(BarlowFont.text(15)).foregroundStyle(Palette.muted)
                             .multilineTextAlignment(.center)
                             .padding(.horizontal, 30).padding(.top, 40)
@@ -293,7 +365,7 @@ struct MeshView: View {
     }
 
     private func send() {
-        ble.sendMeshText(draft, to: recipientNum)
+        ble.sendMeshText(draft, to: recipientNum, channel: channel)
         draft = ""
     }
 }
