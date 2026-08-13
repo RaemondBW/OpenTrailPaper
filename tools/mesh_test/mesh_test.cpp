@@ -10,6 +10,7 @@
 #include <cstring>
 #include <cmath>
 
+#include "config.h"
 #include "mesh_proto.h"
 
 static int failures = 0;
@@ -191,6 +192,41 @@ static void testPresets() {
     printf("      LongFast at 250 kHz = %.4f, at 500 kHz = %.4f MHz\n", at250, at500);
     check(at250 != at500,
           "bandwidth changes the frequency slot, so the preset can retune too");
+}
+
+// The Bay Area Mesh's published settings, pinned so a change here cannot quietly
+// take the device off a real mesh someone is using.
+//   https://bayme.sh/docs/getting-started/recommended-settings/
+//
+// Their recommendation is: region US, preset "Medium Range Fast", primary channel
+// name blank, key AQ==, frequency slot 45. The slot is marked optional there, and
+// this is why — a blank channel name takes the preset's name, and "MediumFast"
+// hashes to exactly that slot, so the default lands on it without being told.
+static void testBayMeshSettings() {
+    const int idx = mesh::presetIndexByName("MediumFast");
+    check(idx >= 0, "BayMesh: the MediumFast preset exists");
+    const mesh::ModemPreset& p = mesh::preset(idx);
+    check(p.sf == 9 && p.bwKhz == 250.0f, "BayMesh: MediumFast is SF9 / 250 kHz");
+
+    // Slot numbers in the Meshtastic UI are 1-based; the code uses slot - 1.
+    const uint32_t slot = mesh::nameHash(p.name) %
+                          mesh::channelCount(p.bwKhz, 902.0f, 928.0f, 0.0f);
+    printf("      BayMesh: slot %u (UI slot %u)\n", slot, slot + 1);
+    check(slot + 1 == 45, "BayMesh: a blank channel on MediumFast is UI slot 45");
+
+    const float f = mesh::channelFrequencyMHz(p.name, p.bwKhz, 902.0f, 928.0f, 0.0f);
+    check(std::fabs(f - 913.125f) < 0.0005f, "BayMesh: slot 45 is 913.125 MHz");
+
+    // Key AQ== is the single-byte default PSK, index 1.
+    uint8_t psk[16];
+    mesh::defaultPsk(1, psk);
+    const uint8_t h = mesh::channelHash(p.name, psk, 16);
+    printf("      BayMesh: channel hash 0x%02x\n", h);
+    check(h == 0x1f, "BayMesh: channel hash is 0x1f");
+
+    // Their personal/chat recommendation is 6, and the header field is 3 bits.
+    check(MESH_HOP_LIMIT <= 7, "BayMesh: hop limit fits the 3-bit header field");
+    check(MESH_HOP_LIMIT == 6, "BayMesh: hop limit is their personal-node value");
 }
 
 static void testHeader() {
@@ -487,6 +523,7 @@ int main() {
     testDefaultPsk();
     testChannelPlacement();
     testPresets();
+    testBayMeshSettings();
     testHeader();
     testDataProto();
     testUserProto();

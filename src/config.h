@@ -129,8 +129,14 @@
 // and preamble, so a mismatch here means silence in both directions.
 #define MESH_SYNC_WORD      0x2B
 #define MESH_PREAMBLE_LEN   16
-// Hops a message we originate may take across the mesh.
-#define MESH_HOP_LIMIT      3
+// Hops a message we originate may take across the mesh. Meshtastic's own default
+// is 3; the Bay Area Mesh asks personal/chat nodes for 6 ("up to 7 is ok if
+// desired"), which is what this is set to. It costs other people's airtime rather
+// than ours — we do not relay — so it is a community norm, not a preference, and
+// worth checking against the mesh you are actually on. The field is 3 bits, so 7
+// is the ceiling.
+//   https://bayme.sh/docs/getting-started/recommended-settings/
+#define MESH_HOP_LIMIT      6
 // How many received/sent messages the device keeps for the phone to pull.
 #define MESH_MSG_HISTORY    48
 // How many mesh neighbours we remember names for.

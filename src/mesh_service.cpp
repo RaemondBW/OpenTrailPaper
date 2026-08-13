@@ -120,11 +120,14 @@ volatile bool reqChan = false;
 // collides with everybody; Meshtastic spaces its own traffic for the same reason.
 constexpr uint32_t MIN_TX_GAP_MS = 1500;
 
-// How long after boot to announce ourselves, then how often to repeat it. The
-// repeat matches Meshtastic's default node_info_broadcast_secs (3 h) — often
-// enough that a neighbour learns our name, rare enough to be invisible on air.
+// How long after boot to announce ourselves, then how often to repeat it. Six
+// hours rather than Meshtastic's 3 h default: the Bay Area Mesh asks for "6 hour
+// +" on automatic beacons, and this is the only thing this firmware puts on the
+// air unprompted, so it is the only interval there is to be a good citizen about.
+// Still often enough that a neighbour learns our name within a ride.
+//   https://bayme.sh/docs/getting-started/recommended-settings/
 constexpr uint32_t NODEINFO_FIRST_MS = 20000;
-constexpr uint32_t NODEINFO_EVERY_MS = 3UL * 60UL * 60UL * 1000UL;
+constexpr uint32_t NODEINFO_EVERY_MS = 6UL * 60UL * 60UL * 1000UL;
 uint32_t nextNodeInfoMs = NODEINFO_FIRST_MS;
 
 // ---------------------------------------------------------------------------

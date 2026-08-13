@@ -134,6 +134,41 @@ checked against known-good values by
 every value it covers fails *silently* on real hardware, as a radio that hears
 nothing and is heard by nobody.
 
+## Joining a local mesh: Bay Area Mesh
+
+[BayMesh](https://bayme.sh/docs/getting-started/recommended-settings/) publishes
+recommended settings, and this firmware's defaults now match them:
+
+| Their setting | Value | Here |
+|---|---|---|
+| Region | US | `MESH_REGION_NAME`, compile-time |
+| Preset | Medium Range Fast | pick **MediumFast** in the app |
+| Primary channel name | blank (default) | leave the channel field empty |
+| Encryption key | `AQ==` | key 1, the default |
+| Frequency slot | 45 | falls out automatically — see below |
+| Hops (personal/chat node) | 6 | `MESH_HOP_LIMIT` |
+| Role | Client Mute for vehicles | what this device already is |
+| Position broadcasting | optional to disable | never sent |
+| Automatic beacons | 6 hour + | NodeInfo every 6 h |
+
+So the only thing to do on a fresh device is **choose the MediumFast modem in the
+app and leave the channel name blank.** Everything else is already the default.
+
+Their frequency slot is marked "you may or may not need to set this", and this is
+why: slots in the Meshtastic UI are 1-based, so slot 45 is index 44, and
+`902.0 + 250/2000 + 44 × 0.25 = 913.125 MHz`. A blank channel name takes the
+preset's name, and `djb2("MediumFast") % 104` is 44 — the same slot. Setting it
+explicitly would only pin what the default already computes.
+
+`tools/mesh_test` pins all of it, so a future change cannot quietly move the
+device off a mesh people are actually using.
+
+Two notes on being a good neighbour there. The hop limit costs *other people's*
+airtime, not ours — we never relay — so 6 is a community norm to check against
+whichever mesh you are on, not a preference. And Client Mute ("best for vehicles
+and any time you have more than 2 nodes in the same place") is what this firmware
+does by construction: it hears everything and rebroadcasts nothing.
+
 ## Wire format
 
 A packet is a 16-byte plaintext header followed by an AES-CTR encrypted payload:
