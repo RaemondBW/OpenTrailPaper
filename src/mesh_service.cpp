@@ -12,6 +12,7 @@
 #include "config.h"
 #include "diag.h"
 #include "lora_radio.h"
+#include "ride_state.h"
 #include "settings.h"
 
 namespace {
@@ -148,6 +149,13 @@ constexpr uint32_t MIN_TX_GAP_MS = 1500;
 constexpr uint32_t NODEINFO_FIRST_MS = 20000;
 constexpr uint32_t NODEINFO_EVERY_MS = 6UL * 60UL * 60UL * 1000UL;
 uint32_t nextNodeInfoMs = NODEINFO_FIRST_MS;
+
+// Position sharing. A bitmask over channel slots, and the last position actually
+// broadcast, so the distance trigger has something to measure against.
+uint8_t posMask = 0;
+bool posEverSent = false;
+double lastPosLat = 0, lastPosLon = 0;
+uint32_t lastPosMs = 0;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -379,6 +387,64 @@ void queueAck(uint32_t dest, uint32_t requestId, uint8_t channel) {
     uint8_t buf[8];
     const size_t n = mesh::encodeRouting(0, buf, sizeof(buf));   // NONE = ACK
     if (n) enqueue(dest, mesh::PORT_ROUTING, buf, n, false, requestId, channel);
+}
+
+// Metres between two coordinates. Equirectangular rather than haversine: over the
+// ~100 m this is compared against, the error is millimetres, and it is a distance
+// trigger rather than a navigation fix.
+float metresBetween(double lat1, double lon1, double lat2, double lon2) {
+    constexpr double kDegLat = 111320.0;
+    const double dLat = (lat2 - lat1) * kDegLat;
+    const double dLon = (lon2 - lon1) * kDegLat * cos(lat1 * M_PI / 180.0);
+    return (float)sqrt(dLat * dLat + dLon * dLon);
+}
+
+// Broadcasts our position on every channel that asked for it, if the triggers say
+// so. Called from the task; takes the lock itself.
+void servicePositionShare() {
+    if (!posMask) return;
+
+    const RideState s = g_state.snapshot();
+    // No fix, no claim. Sending a stale or invented position to people who are
+    // using it to find each other is worse than sending nothing.
+    if (!s.gpsFix) return;
+
+    const uint32_t now = millis();
+    const bool moved = posEverSent &&
+                       metresBetween(lastPosLat, lastPosLon, s.latitude,
+                                     s.longitude) >= MESH_POS_MIN_MOVE_M;
+    const bool interval = !posEverSent ||
+                          (now - lastPosMs >= MESH_POS_MIN_INTERVAL_MS && moved);
+    const bool heartbeat = posEverSent && (now - lastPosMs >= MESH_POS_HEARTBEAT_MS);
+    if (!interval && !heartbeat) return;
+
+    mesh::Position p;
+    p.latitude = s.latitude;
+    p.longitude = s.longitude;
+    p.altitudeM = (int32_t)s.altitudeM;
+    p.utc = nowUtc();
+    p.satsInView = s.satellites;
+
+    uint8_t buf[64];
+    const size_t n = mesh::encodePosition(p, buf, sizeof(buf));
+    if (!n) return;
+
+    int sent = 0;
+    take();
+    for (int i = 0; i < mesh::MAX_CHANNELS; ++i) {
+        if (!(posMask & (1 << i)) || !chans[i].used) continue;
+        if (enqueue(BROADCAST_ADDR, mesh::PORT_POSITION, buf, n, false, 0,
+                    (uint8_t)i)) sent++;
+    }
+    give();
+    if (!sent) return;                       // outbox full; try again next tick
+
+    lastPosLat = s.latitude;
+    lastPosLon = s.longitude;
+    lastPosMs = now;
+    posEverSent = true;
+    diag::log("mesh: shared position %.5f,%.5f on %d channel%s", s.latitude,
+              s.longitude, sent, sent == 1 ? "" : "s");
 }
 
 // ---------------------------------------------------------------------------
@@ -635,6 +701,7 @@ bool begin() {
     meshEnabled = settings::meshEnabled();
     chanPskIndex = settings::meshChannelKey();
     presetIdx = settings::meshPreset();
+    posMask = settings::meshPositionChannels();
     snprintf(chanExplicit, sizeof(chanExplicit), "%s", settings::meshChannel());
     snprintf(myLongName, sizeof(myLongName), "%s", settings::meshLongName());
     snprintf(myShortName, sizeof(myShortName), "%s", settings::meshShortName());
@@ -735,6 +802,7 @@ void task(void*) {
         }
 
         serviceOutbox();
+        servicePositionShare();
 
         // Announce ourselves so neighbours can put a name to our messages.
         if (millis() >= nextNodeInfoMs) {
@@ -799,9 +867,29 @@ bool channelAt(int index, ChannelInfo& out) {
         memcpy(out.psk, chans[index].psk, chans[index].pskLen);
         out.pskLen = (uint8_t)chans[index].pskLen;
         out.hash = chans[index].hash;
+        out.sharesLocation = (posMask & (1 << index)) != 0;
     }
     give();
     return ok;
+}
+
+bool sharesLocation(uint8_t index) {
+    if (index >= mesh::MAX_CHANNELS) return false;
+    return (posMask & (1 << index)) != 0;
+}
+
+void setSharesLocation(uint8_t index, bool on) {
+    if (index >= mesh::MAX_CHANNELS) return;
+    const uint8_t before = posMask;
+    if (on) posMask |= (uint8_t)(1 << index);
+    else    posMask &= (uint8_t)~(1 << index);
+    if (posMask == before) return;
+    settings::setMeshPositionChannels(posMask);
+    // Send on the next tick rather than waiting out the interval: turning this on
+    // and seeing nothing happen for ten minutes reads as broken.
+    if (on) posEverSent = false;
+    changed = true;
+    diag::log("mesh: position sharing %s on channel %u", on ? "ON" : "off", index);
 }
 
 int firstFreeChannel() {
@@ -826,6 +914,8 @@ void applyPrivateChannel(uint8_t index, const char* name, const uint8_t* psk,
             if (msgs[i].channel == index) msgs[i] = Message();
         }
         chans[index] = Chan();
+        posMask &= (uint8_t)~(1 << index);
+        settings::setMeshPositionChannels(posMask);
         diag::log("mesh: forgot private channel %u", index);
     } else {
         Chan& c = chans[index];

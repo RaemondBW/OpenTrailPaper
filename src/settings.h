@@ -74,6 +74,11 @@ void setMeshChannel(const char* name, uint8_t keyIndex);
 size_t meshPrivateChannels(uint8_t* out, size_t cap);
 void setMeshPrivateChannels(const uint8_t* data, size_t len);
 
+// Which channels we broadcast our own position on, as a bitmask over channel
+// slots. 0 (the default) means we tell the mesh nothing about where we are.
+uint8_t meshPositionChannels();
+void setMeshPositionChannels(uint8_t mask);
+
 // Modem preset: an index into mesh::kPresets, deciding how fast the radio talks.
 // Separate from the channel, which decides where. MESH_PRESET_DEFAULT until set.
 uint8_t meshPreset();

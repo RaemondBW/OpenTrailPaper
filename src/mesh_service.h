@@ -152,7 +152,14 @@ struct ChannelInfo {
     uint8_t psk[mesh::MAX_PSK_LEN] = {};
     uint8_t pskLen = 0;
     uint8_t hash = 0;
+    bool    sharesLocation = false;
 };
+
+// Whether we broadcast our own position on a channel. Off everywhere by default:
+// this is the only thing the firmware says about the rider's location, and on a
+// public channel it says it to everyone within radio range.
+bool sharesLocation(uint8_t index);
+void setSharesLocation(uint8_t index, bool on);
 
 int channelCount();                                  // how many slots are in use
 bool channelAt(int index, ChannelInfo& out);         // by SLOT, not by position

@@ -540,6 +540,54 @@ static void testPosition() {
           "unread fields with multi-byte tags are skipped correctly");
 }
 
+// Our own Position going out, decoded back. The coordinates must be sfixed32 and
+// a west longitude must survive as negative — the same trap as on the way in.
+static void testPositionEncode() {
+    mesh::Position p;
+    p.latitude = 37.7764;
+    p.longitude = -122.4346;
+    p.altitudeM = 52;
+    p.utc = 1786557176;
+    p.satsInView = 9;
+
+    uint8_t buf[64];
+    const size_t n = mesh::encodePosition(p, buf, sizeof(buf));
+    check(n > 0, "Position encodes");
+    check(buf[0] == ((1 << 3) | 5), "latitude is field 1, wire type 5 (sfixed32)");
+
+    mesh::Position back;
+    check(mesh::decodePosition(buf, n, back), "our own Position decodes");
+    check(back.valid, "our own Position is valid");
+    check(std::fabs(back.latitude - 37.7764) < 1e-6, "latitude survives");
+    check(std::fabs(back.longitude - (-122.4346)) < 1e-6,
+          "a west longitude survives as negative");
+    check(back.altitudeM == 52, "altitude survives");
+    check(back.utc == 1786557176, "time survives");
+    check(back.satsInView == 9, "satellite count survives");
+
+    // Below sea level: int32 is not zigzagged, so this is the case a naive varint
+    // would mangle.
+    mesh::Position low;
+    low.latitude = 36.5;
+    low.longitude = -116.9;
+    low.altitudeM = -85;                      // Badwater Basin
+    const size_t ln = mesh::encodePosition(low, buf, sizeof(buf));
+    mesh::Position lowBack;
+    check(mesh::decodePosition(buf, ln, lowBack) && lowBack.altitudeM == -85,
+          "a negative altitude survives");
+
+    // No clock and no satellite count: those fields must be absent, not zero.
+    mesh::Position bare;
+    bare.latitude = 1.0;
+    bare.longitude = 2.0;
+    const size_t bn = mesh::encodePosition(bare, buf, sizeof(buf));
+    mesh::Position bareBack;
+    check(mesh::decodePosition(buf, bn, bareBack) && bareBack.utc == 0 &&
+              bareBack.satsInView == 0,
+          "an unknown time and satellite count are simply absent");
+    check(bn < n, "omitting unknown fields makes a shorter packet");
+}
+
 // The full send path, decoded back the way a peer would: header in the clear,
 // payload decrypted with the channel key, Data parsed out of it.
 static void testEndToEnd() {
@@ -613,6 +661,7 @@ int main() {
     testDataProto();
     testUserProto();
     testPosition();
+    testPositionEncode();
     testEndToEnd();
     printf("\n%s (%d failure%s)\n", failures ? "FAILED" : "all passed",
            failures, failures == 1 ? "" : "s");

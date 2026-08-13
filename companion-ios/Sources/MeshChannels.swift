@@ -24,6 +24,9 @@ struct MeshChannel: Identifiable, Equatable {
     /// The key as it is SHARED: empty = unencrypted, 1 byte = one of Meshtastic's
     /// well-known keys, 16 or 32 bytes = a real key.
     let psk: Data
+    /// Whether the device broadcasts our position on this channel. Off by default
+    /// and per channel, so it can be on with a ride group and off in public.
+    let sharesLocation: Bool
 
     var id: UInt8 { index }
     var isPrimary: Bool { index == 0 }

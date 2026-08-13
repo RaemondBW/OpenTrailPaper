@@ -59,6 +59,8 @@ struct MeshChannelsSheet: View {
                             Text("How this works").trackedLabel()
                             Text("Every channel shares one radio setting, so a private channel costs no range and no battery. What separates them is the key.")
                                 .font(BarlowFont.text(14)).foregroundStyle(Palette.muted)
+                            Text("Location sharing sends your position about every 10 minutes while you are moving, and only when the device has a GPS fix. It is deliberately not continuous: a position broadcast is spent on everyone's airtime, since it goes out on the shared frequency and other nodes relay it.")
+                                .font(BarlowFont.text(14)).foregroundStyle(Palette.muted)
                             Text("Both people must also be on the same public channel — that is what sets the frequency you are both listening on. If a code does not work, check you are both on \(ble.meshState.channel).")
                                 .font(BarlowFont.text(14)).foregroundStyle(Palette.muted)
                         }
@@ -130,6 +132,21 @@ struct MeshChannelsSheet: View {
                      ? "Sets the frequency for every channel · \(c.keyDescription)"
                      : "\(c.keyDescription) · channel byte 0x\(String(format: "%02x", c.hash))")
                     .font(BarlowFont.text(14)).foregroundStyle(Palette.muted)
+                Toggle(isOn: Binding(
+                    get: { c.sharesLocation },
+                    set: { ble.setMeshShareLocation(index: c.index, on: $0) })) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Share my location here")
+                            .font(BarlowFont.text(15)).foregroundStyle(Palette.ink)
+                        Text(c.isPrimary
+                             ? "This channel is public — everyone in radio range could read it"
+                             : "Only people holding this channel's key can read it")
+                            .font(BarlowFont.text(12))
+                            .foregroundStyle(c.isPrimary ? Palette.accent : Palette.muted)
+                    }
+                }
+                .tint(Palette.accent)
+
                 HStack(spacing: 18) {
                     Button("Read this one") { selected = c.index; dismiss() }
                     if c.isPrivate { Button("Share") { sharing = c } }

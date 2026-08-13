@@ -106,6 +106,11 @@ struct Position {
 
 bool decodePosition(const uint8_t* in, size_t len, Position& p);
 
+// Encodes our own Position for a POSITION_APP broadcast. `utc` and `satsInView`
+// are omitted when 0, the way proto3 omits any default — a device with no clock
+// or no satellite count says nothing rather than claiming zero.
+size_t encodePosition(const Position& p, uint8_t* out, size_t cap);
+
 // meshtastic.Routing, error_reason field only — which is all an ack is.
 // NONE (0) is an ACK; anything else is a NAK carrying the reason.
 size_t encodeRouting(uint32_t errorReason, uint8_t* out, size_t cap);

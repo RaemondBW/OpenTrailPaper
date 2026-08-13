@@ -33,6 +33,9 @@ uint8_t meshKey = 1;
 // Modem preset index into mesh::kPresets. Unlike the channel name this IS stored
 // as a plain value: it is a user choice with no compile-time twin to follow.
 uint8_t meshPresetIdx = MESH_PRESET_DEFAULT;
+// Bitmask of channels we share our position on. 0 = none, which is the default:
+// telling a public mesh where you are should be a decision, not an accident.
+uint8_t meshPosMask = 0;
 char meshLong[40] = "";
 char meshShort[8] = "";
 const char* KEYS[3] = {"sens_hr", "sens_pwr", "sens_cad"};
@@ -66,6 +69,7 @@ void begin() {
     prefs.getString("meshchan", meshChan, sizeof(meshChan));   // "" = use the preset
     meshKey = (uint8_t)constrain(prefs.getUChar("meshkey", 1), 1, 10);
     meshPresetIdx = prefs.getUChar("meshpreset", MESH_PRESET_DEFAULT);
+    meshPosMask = prefs.getUChar("meshposch", 0);
     // A preset written by a newer firmware that knew more of them must not leave
     // this build driving the radio with garbage.
     if (meshPresetIdx >= mesh::PRESET_COUNT) meshPresetIdx = MESH_PRESET_DEFAULT;
@@ -197,6 +201,13 @@ void setMeshPrivateChannels(const uint8_t* data, size_t len) {
     // with no private channels reads back cleanly.
     if (!data || len == 0) prefs.remove("meshchans");
     else prefs.putBytes("meshchans", data, len);
+}
+
+uint8_t meshPositionChannels() { return meshPosMask; }
+void setMeshPositionChannels(uint8_t mask) {
+    if (meshPosMask == mask) return;
+    meshPosMask = mask;
+    prefs.putUChar("meshposch", mask);
 }
 
 uint8_t meshPreset() { return meshPresetIdx; }

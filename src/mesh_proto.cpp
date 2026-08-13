@@ -392,6 +392,37 @@ bool decodePosition(const uint8_t* in, size_t len, Position& p) {
     return true;
 }
 
+size_t encodePosition(const Position& p, uint8_t* out, size_t cap) {
+    Writer w{out, cap};
+    // Coordinates are sfixed32 (wire type 5), not varints — the one place this
+    // codec writes a fixed-width field.
+    const int32_t latE7 = (int32_t)(p.latitude * 1e7);
+    const int32_t lonE7 = (int32_t)(p.longitude * 1e7);
+    w.tag(1, 5);
+    w.raw((uint8_t)latE7); w.raw((uint8_t)(latE7 >> 8));
+    w.raw((uint8_t)(latE7 >> 16)); w.raw((uint8_t)(latE7 >> 24));
+    w.tag(2, 5);
+    w.raw((uint8_t)lonE7); w.raw((uint8_t)(lonE7 >> 8));
+    w.raw((uint8_t)(lonE7 >> 16)); w.raw((uint8_t)(lonE7 >> 24));
+    if (p.altitudeM) {
+        w.tag(3, 0);
+        // int32 on the wire is a plain two's-complement varint, so a negative
+        // altitude (below sea level, and Death Valley is a real place) sign-extends
+        // to ten bytes rather than being zigzagged.
+        w.varint((uint64_t)(int64_t)p.altitudeM);
+    }
+    if (p.utc) {
+        w.tag(4, 5);
+        w.raw((uint8_t)p.utc); w.raw((uint8_t)(p.utc >> 8));
+        w.raw((uint8_t)(p.utc >> 16)); w.raw((uint8_t)(p.utc >> 24));
+    }
+    // location_source = 1 (LOC_INTERNAL): this came from our own receiver rather
+    // than being typed in or inherited from a phone.
+    w.u32(5, 1);
+    w.u32(19, p.satsInView);
+    return w.overflow ? 0 : w.len;
+}
+
 size_t encodeRouting(uint32_t errorReason, uint8_t* out, size_t cap) {
     // Routing is a oneof; error_reason is field 3. NONE (0) is the ACK, and
     // proto3 would normally omit a zero — but the field IS the message here, so

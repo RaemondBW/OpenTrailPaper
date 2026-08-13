@@ -943,6 +943,7 @@ class AgnssCb : public NimBLECharacteristicCallbacks {
 //     [0x0c]                                   send me the channel list
 //     [0x0d][u8 idx][u8 nameLen][name][psk]    add / replace a private channel
 //     [0x0e][u8 idx]                           forget a private channel
+//     [0x0f][u8 idx][u8 on]                    share our position on a channel
 //
 //   Device -> phone (notify):
 //     [0x90] state    flags, node number, frequency, channel, our names
@@ -1132,6 +1133,7 @@ void sendMeshChannels() {
         // link is the one the rider already trusts with everything else here.
         pkt[p++] = ci.pskLen;
         memcpy(pkt + p, ci.psk, ci.pskLen); p += ci.pskLen;
+        pkt[p++] = ci.sharesLocation ? 1 : 0;
         sendChunk(meshChr, pkt, p);
     }
     uint8_t end = 0x9c;
@@ -1198,6 +1200,12 @@ class MeshCb : public NimBLECharacteristicCallbacks {
             meshChanIdxPending = (int8_t)idx;
             break;
         }
+        case 0x0f:                                     // position sharing
+            if (n >= 3) {
+                mesh_service::setSharesLocation(p[1], p[2] != 0);
+                meshReq |= MREQ_CHANNELS;
+            }
+            break;
         case 0x0e:                                     // forget a channel
             if (n >= 2) {
                 meshChanPskLenPending = 0xFF;          // delete marker

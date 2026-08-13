@@ -34,9 +34,9 @@ implementation follows the real wire format rather than inventing a private one.
   router. Adding flood routing would put every packet it hears back on the air —
   a real cost in battery and airtime on something whose day job is a bike
   computer.
-- **Send position or telemetry.** The device knows exactly where you are; it does
-  not tell the mesh. The asymmetry is deliberate — it reads other nodes' positions
-  and broadcasts none of its own.
+- **Send telemetry.** Battery, temperature and the rest stay on the device.
+  Position is the exception and is opt-in per channel — see
+  [Sharing your location](#sharing-your-location).
 - **PKI-encrypted direct messages** (Meshtastic 2.5+). The device publishes no
   public key, which is what makes peers fall back to the shared channel key when
   they message it — so direct messages still work, they are just channel-
@@ -209,6 +209,31 @@ This is **not** end-to-end encryption per person. Meshtastic 2.5 has that
 (X25519 per node), and this firmware does not implement it; see the "does not" list
 above. A shared key is exactly as private as the group holding it.
 
+## Sharing your location
+
+Off by default and enabled **per channel**, from the same sheet as the channels
+themselves. The point of the per-channel switch is that "share where I am" is a
+reasonable thing to want with a ride group and an unreasonable thing to do on a
+public mesh, and those are two different channels on the same radio.
+
+When it is on, the device broadcasts a `POSITION_APP` packet on that channel:
+
+- only with a real GPS fix — no fix, no claim, since a stale position is worse
+  than none for people using it to find each other;
+- when you have moved at least **100 m** and at least **10 minutes** have passed;
+- or once an hour when parked, so somebody who just joined can see you.
+
+Those thresholds follow BayMesh's smart-position guidance, and they are
+deliberately conservative: a position broadcast goes out on the shared frequency
+and other nodes relay it whether or not they can decrypt it, so it is spent on
+everyone's airtime. At 20 km/h that is roughly 3 km between updates.
+
+The device still never shares position on a channel you have not switched on, and
+turning a private channel off — or forgetting it — clears its bit.
+
+Note the asymmetry this removes: the firmware always *read* other nodes'
+positions and never sent its own. Now it can, to exactly the people you chose.
+
 ## Wire format
 
 A packet is a 16-byte plaintext header followed by an AES-CTR encrypted payload:
@@ -290,6 +315,7 @@ Phone → device:
 | `0x0c` | — | send me the channel list |
 | `0x0d` | `u8 idx`, name, psk | add / replace a private channel |
 | `0x0e` | `u8 idx` | forget a private channel |
+| `0x0f` | `u8 idx`, `u8 on` | share our position on a channel |
 
 Device → phone (notify): `0x90` state, `0x91` one message, `0x92` end of
 history, `0x93` one node, `0x94` end of node list, `0x95` counters, `0x96`

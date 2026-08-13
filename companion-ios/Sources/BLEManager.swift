@@ -1103,6 +1103,13 @@ final class BLEManager: NSObject, ObservableObject {
         p.writeValue(cmd, for: c, type: .withResponse)
     }
 
+    /// Turns position sharing on or off for one channel. The device broadcasts on
+    /// a distance and interval trigger, not continuously — see docs/meshtastic.md.
+    func setMeshShareLocation(index: UInt8, on: Bool) {
+        guard let c = meshChar, let p = peripheral else { return }
+        p.writeValue(Data([0x0f, index, on ? 1 : 0]), for: c, type: .withResponse)
+    }
+
     func forgetMeshChannel(index: UInt8) {
         guard let c = meshChar, let p = peripheral, index != 0 else { return }
         p.writeValue(Data([0x0e, index]), for: c, type: .withResponse)
@@ -1240,9 +1247,11 @@ final class BLEManager: NSObject, ObservableObject {
         meshStats = MeshStats(rx: 214, rxDropped: 11, rxOtherChannel: 63,
                               rxDuplicate: 88, tx: 19, txFailed: 1, acksRx: 12)
         meshChannels = [
-            MeshChannel(index: 0, name: "MediumFast", hash: 0x1f, psk: Data([0x01])),
+            MeshChannel(index: 0, name: "MediumFast", hash: 0x1f, psk: Data([0x01]),
+                        sharesLocation: false),
             MeshChannel(index: 1, name: "Saturday Ride", hash: 0x8c,
-                        psk: Data((0..<32).map { UInt8($0 &* 7 &+ 3) })),
+                        psk: Data((0..<32).map { UInt8($0 &* 7 &+ 3) }),
+                        sharesLocation: true),
         ]
         meshPresets = [
             MeshPreset(index: 0, name: "LongFast", sf: 11, bandwidthKhz: 250, codingRate: 5),
@@ -1380,9 +1389,11 @@ final class BLEManager: NSObject, ObservableObject {
             guard i < d.count else { return }
             let pskLen = Int(d[i]); i += 1
             guard i + pskLen <= d.count else { return }
+            let shares = d.count > i + pskLen ? d[i + pskLen] != 0 : false
             meshChannelsBuilding.append(MeshChannel(
                 index: d[1], name: name, hash: d[2],
-                psk: d.subdata(in: i..<(i + pskLen))))
+                psk: d.subdata(in: i..<(i + pskLen)),
+                sharesLocation: shares))
 
         case 0x9c:  // end of the channel list
             meshChannels = meshChannelsBuilding.sorted { $0.index < $1.index }

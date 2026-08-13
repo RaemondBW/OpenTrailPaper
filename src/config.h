@@ -143,6 +143,20 @@
 // is the ceiling.
 //   https://bayme.sh/docs/getting-started/recommended-settings/
 #define MESH_HOP_LIMIT      6
+// Sharing our own position on a channel (off unless the rider turns it on, per
+// channel). The thresholds follow the Bay Area Mesh's smart-position guidance —
+// "minimum 10 minutes" with a "100 to 130" metre trigger — because a position
+// broadcast is spent on everyone else's airtime: it goes out on the shared
+// frequency and other nodes relay it, whether or not they can decrypt it.
+//   https://bayme.sh/docs/getting-started/recommended-settings/
+// A rider moving at 20 km/h covers ~3 km between updates, which is the price of
+// being a good neighbour on a mesh you share.
+#define MESH_POS_MIN_INTERVAL_MS (10UL * 60UL * 1000UL)
+#define MESH_POS_MIN_MOVE_M      100.0f
+// Re-send even when parked, so somebody who has just joined the channel can see
+// where you are without waiting for you to move.
+#define MESH_POS_HEARTBEAT_MS    (60UL * 60UL * 1000UL)
+
 // How many received/sent messages the device keeps for the phone to pull.
 #define MESH_MSG_HISTORY    48
 // How many mesh neighbours we remember names for.
