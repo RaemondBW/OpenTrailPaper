@@ -332,6 +332,15 @@ section .sub { color: var(--ink-soft); font-size: 1.06rem; margin: 0 0 40px; max
 }
 
 /* --- companion app gallery --- */
+/* The section's .sub already carries the 40px gap above the button, so the row
+   only owns the space down to the screenshots. */
+.app-cta { margin: 0 0 40px; }
+.app-cta-note { color: var(--ink-soft); font-size: 0.9rem; }
+/* Below 860px .cta-row stacks and centres its button, so the note follows it. */
+@media (max-width: 860px) {
+  .app-cta { margin-bottom: 24px; }
+  .app-cta-note { text-align: center; }
+}
 .app-gallery { display: grid; grid-template-columns: repeat(3, 1fr); gap: 40px; }
 @media (max-width: 720px) {
   .app-gallery {
