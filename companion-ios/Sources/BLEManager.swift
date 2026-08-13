@@ -130,6 +130,9 @@ struct MeshState: Equatable {
 
     var enabled = false
     var radioOk = false
+    /// No explicit channel name is set, so `channel` is the modem preset's name —
+    /// what a stock Meshtastic node does, and what keeps the two in step.
+    var channelFollowsPreset = true
     var nodeNum: UInt32 = 0
     var frequencyHz: UInt32 = 0
     var channel = ""
@@ -1135,12 +1138,13 @@ final class BLEManager: NSObject, ObservableObject {
     /// Moves the device to another channel. Note this retunes the radio — in
     /// Meshtastic the channel name decides the frequency slot as well as the key,
     /// so a device on "LongFast" and one on "MyTrail" cannot hear each other at all.
+    /// An EMPTY name means "follow the modem preset" — the interoperable default,
+    /// not a no-op: a stock node leaves its primary channel unnamed and derives the
+    /// frequency from the preset, so pinning a name is what breaks interop.
     func setMeshChannel(name: String, key: UInt8) {
         guard let c = meshChar, let p = peripheral else { return }
-        let n = Data(String(name.prefix(14)).utf8)
-        guard !n.isEmpty else { return }
         var cmd = Data([0x07, max(1, min(10, key))])
-        cmd.append(n)
+        cmd.append(Data(String(name.prefix(14)).utf8))
         p.writeValue(cmd, for: c, type: .withResponse)
     }
 
@@ -1158,7 +1162,8 @@ final class BLEManager: NSObject, ObservableObject {
         // (on a simulator, straight to poweredOff), which left the demo showing
         // the not-connected screen over perfectly good seeded data.
         demoMesh = true
-        meshState = MeshState(enabled: true, radioOk: true, nodeNum: 0xa4c1380c,
+        meshState = MeshState(enabled: true, radioOk: true,
+                              channelFollowsPreset: true, nodeNum: 0xa4c1380c,
                               frequencyHz: 906_875_000, channel: "LongFast",
                               channelKey: 1, longName: "OpenTrail 380c",
                               shortName: "380c", nodeCount: 3, unread: 0)
@@ -1230,6 +1235,7 @@ final class BLEManager: NSObject, ObservableObject {
             var s = MeshState()
             s.enabled = d[1] & 1 != 0
             s.radioOk = d[1] & 2 != 0
+            s.channelFollowsPreset = d[1] & 4 != 0
             s.nodeNum = d.le32(at: 2)
             s.frequencyHz = d.le32(at: 6)
             s.channelKey = d[10]

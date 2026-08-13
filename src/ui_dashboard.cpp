@@ -1376,9 +1376,10 @@ static void printMeshReport() {
     // matching only one of them is the classic way to end up completely deaf: the
     // channel name decides the frequency, the modem decides whether you can
     // demodulate what arrives there.
-    Serial.printf("[mesh] channel '%s' key %u -> %.4f MHz, hash 0x%02x\n",
-                  mesh_service::channelName(), mesh_service::channelPskIndex(),
-                  mesh_service::frequencyMHz(),
+    Serial.printf("[mesh] channel '%s'%s key %u -> %.4f MHz, hash 0x%02x\n",
+                  mesh_service::channelName(),
+                  mesh_service::channelFollowsPreset() ? " (from modem)" : " (custom)",
+                  mesh_service::channelPskIndex(), mesh_service::frequencyMHz(),
                   mesh::channelHash(mesh_service::channelName(), psk, sizeof(psk)));
     const mesh::ModemPreset& mp = mesh::preset(mesh_service::presetIndex());
     Serial.printf("[mesh] modem %s: SF%u BW%.0f CR4/%u\n", mp.name, mp.sf, mp.bwKhz,
@@ -1591,9 +1592,13 @@ static void runConsoleLine(char* line) {
         } else if (arg && !strcasecmp(arg, "channel")) {
             char* want = strtok(nullptr, " \t");
             if (!want) {
-                Serial.println("[cmd] mesh channel <name> [key 1-10]");
+                Serial.println("[cmd] mesh channel <name|default> [key 1-10]");
+                Serial.println("      'default' follows the modem preset, which is");
+                Serial.println("      what a stock Meshtastic node does.");
                 return;
             }
+            // "default" clears the explicit name so the preset supplies it again.
+            if (!strcasecmp(want, "default")) want = (char*)"";
             char* key = strtok(nullptr, " \t");
             mesh_service::setChannel(want, key ? (uint8_t)atoi(key)
                                               : mesh_service::channelPskIndex());

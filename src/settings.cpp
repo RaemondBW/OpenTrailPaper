@@ -27,10 +27,7 @@ bool rtcSynced = false;  // has GPS ever written UTC to the coin-cell RTC?
 // Mesh messaging. Default ON with the default channel, which is what makes a
 // device out of the box able to hear the public mesh around it.
 bool meshOn = true;
-// EMPTY means "follow MESH_CHANNEL_NAME", and that is deliberate: storing a copy
-// would pin a device to whatever channel it first booted with, so a firmware
-// rebuilt for a different channel would keep listening on the old frequency with
-// nothing in the log to say why. Only an explicit choice from the phone is written.
+// "" = no explicit channel; mesh_service derives the name from the modem preset.
 char meshChan[16] = "";
 uint8_t meshKey = 1;
 // Modem preset index into mesh::kPresets. Unlike the channel name this IS stored
@@ -170,10 +167,12 @@ void setMeshEnabled(bool on) {
     prefs.putBool("meshon", on);
 }
 
-const char* meshChannel() {
-    // No stored choice means follow the compiled channel — see the note above.
-    return meshChan[0] ? meshChan : MESH_CHANNEL_NAME;
-}
+// "" means the rider has chosen no channel name, and mesh_service then derives it
+// from the modem preset the way a stock Meshtastic node does. Deliberately NOT
+// defaulted to a fixed string here: pinning a name would keep a device on
+// LongFast's frequency slot after its preset moved to MediumFast, which no stock
+// node would be listening on.
+const char* meshChannel() { return meshChan; }
 uint8_t meshChannelKey() { return meshKey; }
 
 void setMeshChannel(const char* name, uint8_t keyIndex) {

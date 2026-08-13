@@ -166,6 +166,22 @@ static void testPresets() {
     check(strcmp(mesh::preset(-1).name, "LongFast") == 0,
           "a negative preset falls back to LongFast");
 
+    // The interop rule this table exists to serve: an unnamed primary channel takes
+    // the PRESET's name, so a node on MediumFast is on MediumFast's slot. Firmware
+    // that pinned the channel to "LongFast" and let the preset move independently
+    // would sit on 906.875 while a stock MediumFast node sat on 913.125.
+    for (int i = 0; i < mesh::PRESET_COUNT; ++i) {
+        const mesh::ModemPreset& p = mesh::kPresets[i];
+        const float f = mesh::channelFrequencyMHz(p.name, p.bwKhz, 902.0f, 928.0f,
+                                                  0.0f);
+        printf("      %-11s -> %.4f MHz\n", p.name, f);
+        check(f >= 902.0f && f <= 928.0f,
+              "every preset's own name lands inside the band");
+    }
+    check(std::fabs(mesh::channelFrequencyMHz("MediumFast", 250.0f, 902.0f, 928.0f,
+                                              0.0f) - 913.125f) < 0.0005f,
+          "an unnamed channel on MediumFast is on 913.125, not LongFast's slot");
+
     // Bandwidth is part of a preset, and slots are bandwidth-wide — so a preset
     // that changes the bandwidth moves the frequency even on the same channel.
     const float at250 = mesh::channelFrequencyMHz("LongFast", 250.0f, 902.0f,

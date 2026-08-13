@@ -113,10 +113,17 @@
 // two unconfigured devices able to find each other.
 //
 //   name          slot  frequency (US)   channel hash (default key)
-//   LongFast        19    906.875 MHz        0x08   <- default
+//   LongFast        19    906.875 MHz        0x08
 //   MediumFast      44    913.125 MHz        0x1f
-#define MESH_CHANNEL_NAME   "LongFast"
-// Index into mesh::kPresets (mesh_proto.cpp). 0 = LongFast, SF11 / 250 kHz.
+//
+// There is no default channel NAME: with none set, the name comes from the modem
+// preset below, which is what a stock Meshtastic node does (it leaves its primary
+// channel unnamed). That is what keeps preset and channel in step — a node on the
+// MediumFast preset is on MediumFast's slot, not LongFast's. A name is only stored
+// when the rider sets one, for a private channel.
+//
+// Index into mesh::kPresets (mesh_proto.cpp). 0 = LongFast, SF11 / 250 kHz —
+// Meshtastic's default, so an unconfigured device lands where stock nodes are.
 #define MESH_PRESET_DEFAULT 0
 // Fixed by the protocol, not tunable: every Meshtastic node uses this sync word
 // and preamble, so a mismatch here means silence in both directions.

@@ -1005,7 +1005,11 @@ void sendMeshState() {
     int p = 0;
     pkt[p++] = 0x90;
     pkt[p++] = (uint8_t)((mesh_service::enabled() ? 1 : 0) |
-                         (mesh_service::radioOk() ? 2 : 0));
+                         (mesh_service::radioOk() ? 2 : 0) |
+                         // bit 2: the channel name came from the modem preset
+                         // rather than being pinned, which is the interoperable
+                         // default and worth the app being able to say so.
+                         (mesh_service::channelFollowsPreset() ? 4 : 0));
     uint32_t num = mesh_service::nodeNum();
     memcpy(pkt + p, &num, 4); p += 4;
     // Hz rather than MHz so the app has no float to parse — 906875000 fits a u32.
@@ -1171,7 +1175,10 @@ class MeshCb : public NimBLECharacteristicCallbacks {
             if (n >= 2) meshEnablePending = p[1] ? 1 : 0;
             break;
         case 0x07: {                                   // switch channel
-            if (n < 3) return;
+            // [op][key] with an OPTIONAL name: zero-length means "follow the
+            // modem preset", which is the interoperable default rather than a
+            // malformed write.
+            if (n < 2) return;
             meshSetKey = p[1];
             size_t cn = n - 2;
             if (cn > sizeof(meshSetChan) - 1) cn = sizeof(meshSetChan) - 1;

@@ -111,8 +111,15 @@ void setNames(const char* longName, const char* shortName);
 // frequency slot, so this retunes the radio and clears the messages and
 // neighbours learned on the old one; pskIndex picks one of Meshtastic's ten
 // well-known keys (1 = the default channel's).
+// An EMPTY name means "follow the modem preset", which is the interoperable
+// default and what channelName() then reports: a stock Meshtastic node leaves its
+// primary channel unnamed and derives both hashes from the preset's name, so a node
+// on MediumFast is on MediumFast's frequency slot. Pass a name only for a private
+// channel, which then stays put across preset changes.
 void setChannel(const char* name, uint8_t pskIndex);
 uint8_t channelPskIndex();
+// True when no explicit name is set, so channelName() is the preset's name.
+bool channelFollowsPreset();
 
 // Modem preset: an index into mesh::kPresets, deciding how fast we talk rather
 // than where. Because bandwidth is part of a preset, changing it can move the

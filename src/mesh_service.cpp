@@ -50,7 +50,17 @@ char myShortName[8] = {};
 
 // Channel identity. The name feeds two different hashes: the frequency slot and
 // the byte that stamps each packet.
-char chanName[16] = MESH_CHANNEL_NAME;
+// The channel name the rider explicitly chose, or "" for "follow the modem".
+//
+// Empty is the normal state and is what makes this interoperate. On a stock
+// Meshtastic node the primary channel has NO name, and both the frequency slot and
+// the channel byte are derived from the modem preset's name instead
+// (Channels::getName()) — so changing preset there moves the channel too, and a
+// node on the MediumFast preset sits on MediumFast's slot, not LongFast's. Pinning
+// a name here would put us on a channel no stock node uses the moment the preset
+// changed. An explicit name overrides, which is the private-channel case, and then
+// the preset really is independent.
+char chanExplicit[16] = {};
 uint8_t chanPskIndex = 1;
 uint8_t chanPsk[16] = {};
 uint8_t chanHash = 0;
@@ -140,13 +150,18 @@ uint32_t deriveNodeNum() {
     return n;
 }
 
+// The name that actually goes into both hashes.
+const char* effectiveChan() {
+    return chanExplicit[0] ? chanExplicit : mesh::preset(presetIdx).name;
+}
+
 void applyChannel() {
     mesh::defaultPsk(chanPskIndex, chanPsk);
-    chanHash = mesh::channelHash(chanName, chanPsk, sizeof(chanPsk));
+    chanHash = mesh::channelHash(effectiveChan(), chanPsk, sizeof(chanPsk));
 }
 
 float channelFreq() {
-    return mesh::channelFrequencyMHz(chanName, mesh::preset(presetIdx).bwKhz,
+    return mesh::channelFrequencyMHz(effectiveChan(), mesh::preset(presetIdx).bwKhz,
                                      MESH_FREQ_START_MHZ, MESH_FREQ_END_MHZ,
                                      MESH_SPACING_MHZ);
 }
@@ -521,7 +536,7 @@ bool begin() {
     meshEnabled = settings::meshEnabled();
     chanPskIndex = settings::meshChannelKey();
     presetIdx = settings::meshPreset();
-    snprintf(chanName, sizeof(chanName), "%s", settings::meshChannel());
+    snprintf(chanExplicit, sizeof(chanExplicit), "%s", settings::meshChannel());
     snprintf(myLongName, sizeof(myLongName), "%s", settings::meshLongName());
     snprintf(myShortName, sizeof(myShortName), "%s", settings::meshShortName());
     if (!myLongName[0]) {
@@ -538,7 +553,7 @@ bool begin() {
     char id[16];
     mesh::nodeIdString(myNodeNum, id, sizeof(id));
     diag::log("mesh: node %s '%s' (%s) channel '%s' hash 0x%02x, modem %s "
-              "(SF%u BW%.0f)", id, myLongName, myShortName, chanName, chanHash,
+              "(SF%u BW%.0f)", id, myLongName, myShortName, effectiveChan(), chanHash,
               mesh::preset(presetIdx).name, mesh::preset(presetIdx).sf,
               mesh::preset(presetIdx).bwKhz);
 
@@ -644,7 +659,8 @@ void applyEnabled(bool on) {
 
 uint32_t nodeNum() { return myNodeNum; }
 float frequencyMHz() { return channelFreq(); }
-const char* channelName() { return chanName; }
+const char* channelName() { return effectiveChan(); }
+bool channelFollowsPreset() { return chanExplicit[0] == 0; }
 const char* longName() { return myLongName; }
 const char* shortName() { return myShortName; }
 uint8_t channelPskIndex() { return chanPskIndex; }
@@ -667,7 +683,11 @@ void setPreset(uint8_t index) {
 }
 
 void setChannel(const char* name, uint8_t pskIndex) {
-    if (!name || !name[0]) return;
+    // Only a null pointer is refused. An EMPTY name is the meaningful request to
+    // stop pinning a channel and follow the modem preset again — rejecting it here
+    // (while the applier accepted it) is why "mesh channel default" silently did
+    // nothing.
+    if (!name) return;
     take();
     snprintf(reqChanName, sizeof(reqChanName), "%s", name);
     reqChanKey = pskIndex;
@@ -680,19 +700,29 @@ const char* presetName() { return mesh::preset(presetIdx).name; }
 // Applies a staged preset change. Mesh task only.
 void applyPreset(uint8_t index) {
     if (index >= mesh::PRESET_COUNT || index == presetIdx) return;
+    // With no explicit channel name the preset IS the channel name, so switching
+    // preset moves the frequency slot and the channel byte as well as the speed —
+    // exactly as it does on a stock node. Remember whether that happened.
+    const bool wasFollowing = channelFollowsPreset();
     presetIdx = index;
     settings::setMeshPreset(index);
     const mesh::ModemPreset& p = mesh::preset(presetIdx);
-    // Neighbours and messages are not cleared the way a channel change clears
-    // them: this is the same conversation with the same people, just spoken at a
-    // different rate. But anything queued was encrypted for a frame we are about
-    // to stop sending, so the outbox goes.
+    applyChannel();          // re-derive the hash: the effective name may have moved
     take();
+    // Anything queued was encrypted for a frame we are about to stop sending.
     outboxCount = 0;
+    if (wasFollowing) {
+        // A different channel, not merely a different speed: the neighbours and
+        // messages belong to the one we just left.
+        msgCount = msgHead = unread = 0;
+        nodeUsed = 0;
+        memset(seen, 0, sizeof(seen));
+    }
     changed = true;
     give();
-    diag::log("mesh: modem %s (SF%u BW%.0f CR4/%u) -> %.4f MHz", p.name, p.sf,
-              p.bwKhz, p.cr, channelFreq());
+    diag::log("mesh: modem %s (SF%u BW%.0f CR4/%u) -> channel '%s' hash 0x%02x "
+              "%.4f MHz", p.name, p.sf, p.bwKhz, p.cr, effectiveChan(), chanHash,
+              channelFreq());
     if (meshEnabled) {
         // Restarted rather than tweaked: bandwidth is part of a preset, and a
         // bandwidth change moves the frequency slot as well as the modem.
@@ -718,15 +748,17 @@ void setNames(const char* longName, const char* shortName) {
 
 // Applies a staged channel change. Mesh task only.
 void applyChannelChange(const char* name, uint8_t pskIndex) {
-    if (!name || !name[0]) return;
+    if (!name) return;
     if (pskIndex < 1) pskIndex = 1;
     if (pskIndex > 10) pskIndex = 10;
-    if (strcmp(name, chanName) == 0 && pskIndex == chanPskIndex) return;
+    // An empty name means "follow the modem preset" — the interoperable default,
+    // not a rejected input.
+    if (strcmp(name, chanExplicit) == 0 && pskIndex == chanPskIndex) return;
 
-    snprintf(chanName, sizeof(chanName), "%s", name);
+    snprintf(chanExplicit, sizeof(chanExplicit), "%s", name);
     chanPskIndex = pskIndex;
     applyChannel();
-    settings::setMeshChannel(chanName, chanPskIndex);
+    settings::setMeshChannel(chanExplicit, chanPskIndex);
 
     // Messages and neighbours belong to the channel we just left — keeping them
     // would show the rider a conversation they are no longer part of.
@@ -738,7 +770,8 @@ void applyChannelChange(const char* name, uint8_t pskIndex) {
     changed = true;
     give();
 
-    diag::log("mesh: channel '%s' key %u -> %.4f MHz hash 0x%02x", chanName,
+    diag::log("mesh: channel '%s'%s key %u -> %.4f MHz hash 0x%02x",
+              effectiveChan(), channelFollowsPreset() ? " (follows modem)" : "",
               chanPskIndex, channelFreq(), chanHash);
     if (meshEnabled) {
         radioUp = startRadio();          // the name moves the frequency slot

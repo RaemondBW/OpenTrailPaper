@@ -633,6 +633,12 @@ private struct MeshSettingsSheet: View {
                                 .tint(Palette.accent)
                             row("Node", ble.meshState.nodeId)
                             row("Channel", "\(ble.meshState.channel) · key \(ble.meshState.channelKey)")
+                            if ble.meshState.channelFollowsPreset {
+                                Text("The channel name comes from the modem, the way an unconfigured Meshtastic node works — so changing the modem moves the channel and the frequency with it.")
+                                    .font(BarlowFont.text(13))
+                                    .foregroundStyle(Palette.muted)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
                             row("Modem", activePreset.map { "\($0.name) · SF\($0.sf)" }
                                          ?? "—")
                             row("Frequency",
@@ -700,17 +706,28 @@ private struct MeshSettingsSheet: View {
                     Card {
                         VStack(alignment: .leading, spacing: 10) {
                             Text("Channel · where").trackedLabel()
-                            TextField("Channel name", text: $channel)
+                            TextField(ble.meshState.channelFollowsPreset
+                                      ? "Same as the modem (\(ble.meshState.channel))"
+                                      : "Channel name",
+                                      text: $channel)
                                 .font(BarlowFont.text(16))
                                 .autocorrectionDisabled()
                             Stepper("Key \(channelKey)", value: $channelKey, in: 1...10)
                                 .font(BarlowFont.text(16))
-                            Text("Everyone you want to talk to must use the same name and key. The name is what sets the frequency, which is why changing it retunes the radio. \"LongFast\" with key 1 is Meshtastic's default channel and what a stock node listens on — note that a channel and a modem preset can share a name and still be separate settings.")
+                            Text("Everyone you want to talk to must use the same name and key. The name is what sets the frequency, which is why changing it retunes the radio. Leave it empty to follow the modem, which is what a stock Meshtastic node does and the setting most likely to reach other people.")
                                 .font(BarlowFont.text(13)).foregroundStyle(Palette.muted)
-                            Button("Switch channel") { confirmChannel = true }
-                                .font(BarlowFont.condensed(18, .semibold))
-                                .foregroundStyle(Palette.accent)
-                                .disabled(channel.isEmpty)
+                            HStack(spacing: 18) {
+                                Button("Switch channel") { confirmChannel = true }
+                                    .disabled(channel.isEmpty)
+                                if !ble.meshState.channelFollowsPreset {
+                                    Button("Follow the modem") {
+                                        channel = ""
+                                        confirmChannel = true
+                                    }
+                                }
+                            }
+                            .font(BarlowFont.condensed(18, .semibold))
+                            .foregroundStyle(Palette.accent)
                         }
                     }
 
@@ -742,7 +759,9 @@ private struct MeshSettingsSheet: View {
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("The device retunes its radio and clears the messages and neighbours it learned on the old channel.")
+                Text(channel.isEmpty
+                     ? "The channel name will follow the modem preset again. The device retunes its radio and clears the messages and neighbours it learned on the old channel."
+                     : "The device retunes its radio and clears the messages and neighbours it learned on the old channel.")
             }
             .alert("Switch modem?", isPresented: Binding(
                 get: { pendingPreset != nil },
@@ -760,7 +779,9 @@ private struct MeshSettingsSheet: View {
             .onAppear {
                 longName = ble.meshState.longName
                 shortName = ble.meshState.shortName
-                channel = ble.meshState.channel
+                // Left blank when the name is the modem's, so the field shows the
+                // state rather than looking like a pinned custom channel.
+                channel = ble.meshState.channelFollowsPreset ? "" : ble.meshState.channel
                 channelKey = ble.meshState.channelKey
                 ble.requestMeshStats()
             }
