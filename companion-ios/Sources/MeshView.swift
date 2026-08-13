@@ -146,6 +146,11 @@ struct MeshView: View {
         if !ble.meshState.enabled { return "radio off" }
         if recipientNum != nil { return "direct to \(recipientName)" }
         let f = ble.meshState.frequencyMHz
+        // Channel, modem, frequency: the three things that have to match another
+        // node, in one line.
+        if let p = ble.meshPresets.first(where: { $0.index == ble.meshState.presetIndex }) {
+            return String(format: "%@ · SF%d · %.3f MHz", ble.meshState.channel, p.sf, f)
+        }
         return String(format: "%@ · %.3f MHz", ble.meshState.channel, f)
     }
 
@@ -610,6 +615,10 @@ private struct MeshSettingsSheet: View {
     /// the frequency too — not something to do on a mis-tap.
     @State private var pendingPreset: MeshPreset? = nil
 
+    private var activePreset: MeshPreset? {
+        ble.meshPresets.first { $0.index == ble.meshState.presetIndex }
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -623,6 +632,9 @@ private struct MeshSettingsSheet: View {
                                 .font(BarlowFont.text(16))
                                 .tint(Palette.accent)
                             row("Node", ble.meshState.nodeId)
+                            row("Channel", "\(ble.meshState.channel) · key \(ble.meshState.channelKey)")
+                            row("Modem", activePreset.map { "\($0.name) · SF\($0.sf)" }
+                                         ?? "—")
                             row("Frequency",
                                 String(format: "%.3f MHz", ble.meshState.frequencyMHz))
                             row("Status", ble.meshState.radioOk ? "up" : "not found")
@@ -631,7 +643,7 @@ private struct MeshSettingsSheet: View {
 
                     Card {
                         VStack(alignment: .leading, spacing: 10) {
-                            Text("Modem").trackedLabel()
+                            Text("Modem · how fast").trackedLabel()
                             // Listed from the device, not from a table in the app:
                             // the firmware decides which modems exist.
                             if ble.meshPresets.isEmpty {
@@ -660,7 +672,7 @@ private struct MeshSettingsSheet: View {
                                 }
                                 .buttonStyle(.plain)
                             }
-                            Text("How fast the radio talks. Lower spreading factors are quicker and cheaper on battery but carry less far. Every node you want to reach must use the same modem — a mismatch is silent, not just slow.")
+                            Text("How fast the radio talks, not where. Lower spreading factors are quicker and cheaper on battery but carry less far. Every node you want to reach must use the same modem — a mismatch is silent, not just slow.")
                                 .font(BarlowFont.text(14)).foregroundStyle(Palette.muted)
                         }
                     }
@@ -687,13 +699,13 @@ private struct MeshSettingsSheet: View {
 
                     Card {
                         VStack(alignment: .leading, spacing: 10) {
-                            Text("Channel").trackedLabel()
+                            Text("Channel · where").trackedLabel()
                             TextField("Channel name", text: $channel)
                                 .font(BarlowFont.text(16))
                                 .autocorrectionDisabled()
                             Stepper("Key \(channelKey)", value: $channelKey, in: 1...10)
                                 .font(BarlowFont.text(16))
-                            Text("Everyone you want to talk to must use the same name and key. The name also sets the frequency — \"LongFast\" with key 1 is Meshtastic's default channel, which is what a stock node is listening on.")
+                            Text("Everyone you want to talk to must use the same name and key. The name is what sets the frequency, which is why changing it retunes the radio. \"LongFast\" with key 1 is Meshtastic's default channel and what a stock node listens on — note that a channel and a modem preset can share a name and still be separate settings.")
                                 .font(BarlowFont.text(13)).foregroundStyle(Palette.muted)
                             Button("Switch channel") { confirmChannel = true }
                                 .font(BarlowFont.condensed(18, .semibold))

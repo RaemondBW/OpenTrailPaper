@@ -497,8 +497,16 @@ void setup() {
     if (!mesh_service::enabled())
         ui_dashboard::bootDetailFor("Mesh", "off in settings");
     else if (mesh_service::radioOk())
-        ui_dashboard::bootDetailFor("Mesh", "%s %.3f MHz",
+        // Channel AND modem, because they are separate settings and either one
+        // being wrong sounds exactly the same on air — silence. The channel name
+        // and the modem name are often the same word, so the SF is what actually
+        // distinguishes them here: "MediumFast SF11" is a channel called
+        // MediumFast being spoken with the LongFast modem, which is a real
+        // configuration and used to be unreadable from this screen.
+        // Fits the 28-byte detail field at the 15-char channel name limit.
+        ui_dashboard::bootDetailFor("Mesh", "%s SF%u %.3f",
                                     mesh_service::channelName(),
+                                    mesh::preset(mesh_service::presetIndex()).sf,
                                     mesh_service::frequencyMHz());
     else
         ui_dashboard::bootDetailFor("Mesh", "no SX1262");

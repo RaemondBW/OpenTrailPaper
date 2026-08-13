@@ -90,6 +90,21 @@ uint32_t lastTxEndMs = 0;
 // rather than at the next tick.
 SemaphoreHandle_t wake = nullptr;
 
+// Config changes asked for by another task, applied by the mesh task.
+//
+// LOAD-BEARING. Every one of these restarts or re-tunes the radio, and
+// lora_radio has no internal locking — by its own contract one task owns it.
+// These setters are called from the BLE server task (the phone's Mesh screen)
+// and from the UI task (the `mesh` console command), so applying them inline
+// would have a second task calling begin() while this one is part-way through a
+// transmission, which spans startSend / irq / finishSend and cannot survive it.
+// So they are staged here and picked up at the top of the task loop.
+volatile int8_t reqPreset = -1;        // -1 = nothing, else a preset index
+volatile int8_t reqEnable = -1;        // -1 = nothing, 0 = off, 1 = on
+char reqChanName[16] = {};
+volatile uint8_t reqChanKey = 0;
+volatile bool reqChan = false;
+
 // Politeness gap between our own transmissions. The US band has no duty-cycle
 // ceiling, but a node that answers instantly and repeatedly is the one that
 // collides with everybody; Meshtastic spaces its own traffic for the same reason.
@@ -537,12 +552,43 @@ bool begin() {
     return true;
 }
 
+void applyEnabled(bool on);
+void applyPreset(uint8_t index);
+void applyChannelChange(const char* name, uint8_t pskIndex);
+
+// Anything another task asked for, applied here where the radio is owned. Runs
+// before the enabled/radioUp check below, so a "turn it on" request from a device
+// that booted with mesh off still gets serviced.
+void applyPendingConfig() {
+    if (reqEnable >= 0) {
+        const bool on = reqEnable != 0;
+        reqEnable = -1;
+        applyEnabled(on);
+    }
+    if (reqChan) {
+        char name[sizeof(reqChanName)];
+        take();
+        snprintf(name, sizeof(name), "%s", reqChanName);
+        const uint8_t key = reqChanKey;
+        reqChan = false;
+        give();
+        applyChannelChange(name, key);
+    }
+    if (reqPreset >= 0) {
+        const uint8_t idx = (uint8_t)reqPreset;
+        reqPreset = -1;
+        applyPreset(idx);
+    }
+}
+
 void task(void*) {
     uint8_t frame[mesh::MAX_RADIO_LEN];
     for (;;) {
         // Blocks until the radio interrupt (or a queued message) wakes us, with a
         // 250 ms backstop for the outbox's own timers. Nothing here spins.
         if (wake) xSemaphoreTake(wake, pdMS_TO_TICKS(250));
+
+        applyPendingConfig();
 
         if (!radioUp || !meshEnabled) {
             vTaskDelay(pdMS_TO_TICKS(500));
@@ -574,7 +620,8 @@ void task(void*) {
 bool radioOk() { return radioUp; }
 bool enabled() { return meshEnabled; }
 
-void setEnabled(bool on) {
+// Applies a staged enable/disable. Mesh task only.
+void applyEnabled(bool on) {
     if (on == meshEnabled) return;
     meshEnabled = on;
     settings::setMeshEnabled(on);
@@ -602,9 +649,36 @@ const char* longName() { return myLongName; }
 const char* shortName() { return myShortName; }
 uint8_t channelPskIndex() { return chanPskIndex; }
 uint8_t presetIndex() { return presetIdx; }
-const char* presetName() { return mesh::preset(presetIdx).name; }
+
+// The three setters below only STAGE the change; the mesh task applies it within
+// a tick. Callers are the BLE server task and the console, neither of which may
+// touch the radio — see the note on reqPreset above. The getters keep returning
+// the old value until it lands, which is why the phone is sent a fresh state
+// snapshot after the change rather than trusting its own optimism.
+void setEnabled(bool on) {
+    reqEnable = on ? 1 : 0;
+    if (wake) xSemaphoreGive(wake);
+}
 
 void setPreset(uint8_t index) {
+    if (index >= mesh::PRESET_COUNT) return;
+    reqPreset = (int8_t)index;
+    if (wake) xSemaphoreGive(wake);
+}
+
+void setChannel(const char* name, uint8_t pskIndex) {
+    if (!name || !name[0]) return;
+    take();
+    snprintf(reqChanName, sizeof(reqChanName), "%s", name);
+    reqChanKey = pskIndex;
+    reqChan = true;
+    give();
+    if (wake) xSemaphoreGive(wake);
+}
+const char* presetName() { return mesh::preset(presetIdx).name; }
+
+// Applies a staged preset change. Mesh task only.
+void applyPreset(uint8_t index) {
     if (index >= mesh::PRESET_COUNT || index == presetIdx) return;
     presetIdx = index;
     settings::setMeshPreset(index);
@@ -642,7 +716,8 @@ void setNames(const char* longName, const char* shortName) {
     }
 }
 
-void setChannel(const char* name, uint8_t pskIndex) {
+// Applies a staged channel change. Mesh task only.
+void applyChannelChange(const char* name, uint8_t pskIndex) {
     if (!name || !name[0]) return;
     if (pskIndex < 1) pskIndex = 1;
     if (pskIndex > 10) pskIndex = 10;

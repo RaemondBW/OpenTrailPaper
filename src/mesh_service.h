@@ -100,15 +100,23 @@ const char* shortName();
 // Renames this node and re-announces it to the mesh. Persisted.
 void setNames(const char* longName, const char* shortName);
 
+// setEnabled / setChannel / setPreset below only REQUEST the change: each one
+// restarts or retunes the radio, and lora_radio has no locking — one task owns
+// it, and a transmission spans several calls. Callers are the BLE server task and
+// the serial console, so the work is staged and applied by the mesh task within a
+// tick (~250 ms). The getters keep reporting the old value until then, which is
+// why the phone is sent a fresh state snapshot afterwards rather than assuming.
+
 // Moves to another channel. The name feeds both the channel hash AND the
-// frequency slot, so this retunes the radio; pskIndex picks one of Meshtastic's
-// ten well-known keys (1 = the default channel's).
+// frequency slot, so this retunes the radio and clears the messages and
+// neighbours learned on the old one; pskIndex picks one of Meshtastic's ten
+// well-known keys (1 = the default channel's).
 void setChannel(const char* name, uint8_t pskIndex);
 uint8_t channelPskIndex();
 
 // Modem preset: an index into mesh::kPresets, deciding how fast we talk rather
-// than where. Changing it restarts the radio, and because bandwidth is part of a
-// preset it can move the frequency too. Persisted.
+// than where. Because bandwidth is part of a preset, changing it can move the
+// frequency as well as the speed. Persisted.
 uint8_t presetIndex();
 const char* presetName();
 void setPreset(uint8_t index);
