@@ -62,6 +62,12 @@
 // Full (ghost-clearing) refresh every N fast refreshes.
 #define FULL_REFRESH_EVERY  60
 
+// Matched to the current release tag on purpose, even though this branch is NOT
+// that release. The phone's updater compares this string to the latest GitHub
+// release and offers an update on any difference, so a dev build reporting an
+// older version invites a tap that silently replaces it with mainline firmware —
+// which is exactly what happened once. Keep this in step with main's version
+// while the branch is unmerged; on merge it goes back to being the real version.
 #define FIRMWARE_VERSION    "v1.13"
 
 // Rider settings
