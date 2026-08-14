@@ -73,7 +73,8 @@ uint32_t navPromptShownAt = 0;
 // Turn-by-turn banner rect (top of map/dashboard); tapping it ends nav.
 const EpdRect kNavBanner = {0, ui::STATUS_H, 540, 138};
 void drawNavBanner(uint8_t* fb);
-void buildMapScreenData(const RideState& s, MapScreenData& map);
+void buildMapScreenData(const RideState& s, MapScreenData& map,
+                        bool finalFrame = false);
 
 // Which screen the Sensors page was opened from, so back returns there.
 Screen sensorsFrom = SCREEN_MENU;
@@ -175,7 +176,7 @@ void shutdownDevice(uint8_t* fb, const char* reason) {
         // GPS warm-start seed is as fresh as possible.
         if (s.everHadFix) settings::setLastPosition(s.latitude, s.longitude);
         MapScreenData map = {};
-        buildMapScreenData(s, map);
+        buildMapScreenData(s, map, /*finalFrame=*/true);
         ui_render_map_features(map, s, fb);
     }
     ui_render_shutdown_screen(fb);
@@ -682,7 +683,8 @@ void handlePowerTap(int x, int y) {
     }
 }
 
-void buildMapScreenData(const RideState& s, MapScreenData& map) {
+void buildMapScreenData(const RideState& s, MapScreenData& map,
+                        bool finalFrame) {
     map.riderX = 270;
     map.riderY = 430;
     // Track-up: the world rotates so travel direction is up; the rider
@@ -722,14 +724,28 @@ void buildMapScreenData(const RideState& s, MapScreenData& map) {
     } else {
         settings::lastPosition(lat, lon);
     }
-    // Abandon the frame the moment a finger lands. The touch ISR only sets a
-    // flag and wakes this task — the reading and dispatch happen in this same
-    // loop — so a frame that runs to completion regardless is a frame the
-    // screen ignores you for. Tiles come nearest-first, so what gets dropped is
-    // the far edge, and `partial` brings us straight back for the rest.
+    // The farewell frame is the one frame with no "next one".
+    //
+    // Every rule below exists because another frame is coming: draw only what
+    // is already in RAM, and bail the instant a finger lands, because `partial`
+    // brings us straight back. Nothing brings the shutdown screen back — it is
+    // painted, the rails come down, and it sits on the glass for days. Run it
+    // cached-only and it draws whatever the cache happened to hold, which after
+    // riding at a close zoom is the tile under the rider and little else; abort
+    // it on touch and it stops after one tile, since power-off is REACHED by
+    // touching (the dialog) or holding BOOT. That is the whole bug: the farewell
+    // asked for the widest zoom and then refused to read the card for it.
+    //
+    // So: read the card, ignore the finger, and bound it by the clock instead —
+    // a power-off must not hang, and tiles come nearest-first, so a deadline
+    // costs the far edge rather than the middle.
+    static uint32_t frameDeadline;
+    frameDeadline = millis() + 4000;
     map_store::renderInto(lat, lon, mapMpp, map.riderX, map.riderY, rot, map,
-                          []() -> bool { return !touchIrq && !touchWasDown; },
-                          /*cachedOnly=*/!mapFullPass);
+                          finalFrame
+                              ? []() -> bool { return millis() < frameDeadline; }
+                              : []() -> bool { return !touchIrq && !touchWasDown; },
+                          /*cachedOnly=*/finalFrame ? false : !mapFullPass);
     map.hasMap = map_store::coversPosition(lat, lon);
 
     if (routes::active() && routeScreenPts) {
