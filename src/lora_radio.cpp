@@ -95,6 +95,11 @@ void listen() {
     dio1 = false;
     txInFlight = false;
     sdLock();
+    // standby() FIRST, so this works from any state including sleep. sleep() is
+    // what the mesh radio's off switch calls, and startReceive() on a sleeping
+    // SX1262 does not reliably wake it — which left the chip in a state where the
+    // next transmit failed outright.
+    radio.standby();
     lastErr = radio.startReceive();
     sdUnlock();
 }

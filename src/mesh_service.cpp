@@ -832,8 +832,12 @@ void applyEnabled(bool on) {
     meshEnabled = on;
     settings::setMeshEnabled(on);
     if (on) {
-        if (!radioUp) radioUp = startRadio();
-        else lora_radio::listen();
+        // Always a full bring-up, never just listen(): turning the radio off puts
+        // the module to sleep, and re-running begin() is the one path known to
+        // leave every register the way the rest of this file assumes. The toggle
+        // is a front-page control now, so it has to survive being flipped
+        // repeatedly rather than mostly working.
+        radioUp = startRadio();
         // Re-announce shortly after coming back, so neighbours re-learn us.
         nextNodeInfoMs = millis() + 5000;
     } else {
@@ -841,6 +845,8 @@ void applyEnabled(bool on) {
         // expecting to pay. The module keeps its config, so coming back is a
         // startReceive() rather than a full re-init.
         lora_radio::sleep();
+        // radioOk() now reports what is true: the module is asleep, not listening.
+        radioUp = false;
         take();
         outboxCount = 0;      // nothing queued is going anywhere now
         give();
