@@ -216,6 +216,66 @@ int main(int argc, char** argv) {
         {"northup", 0.0f}, {"trackup", -37.0f},
     };
 
+    // --sweep: how close does a frame ever get to the scratch budgets? Walks a
+    // grid of positions over the whole tile set at every zoom and heading and
+    // reports the worst case, which is the only honest way to size MAX_POINTS /
+    // MAX_POLYS / the fill budgets in map_tiles.cpp.
+    if (getenv("TILESCENE_SWEEP")) {
+        double s = 90, w = 180, n = -90, e = -180;
+        for (auto& t : g_tiles) {
+            s = t.s < s ? t.s : s; n = t.n > n ? t.n : n;
+            w = t.w < w ? t.w : w; e = t.e > e ? t.e : e;
+        }
+        struct { int pts, polys, wpts, wpolys, ppts, ppolys, frames; } peak = {};
+        const float rots[] = {0.0f, -20.0f, -45.0f, -70.0f, -90.0f};
+        for (int gy = 0; gy <= 12; ++gy) {
+            for (int gx = 0; gx <= 12; ++gx) {
+                double la = s + (n - s) * gy / 12.0;
+                double lo = w + (e - w) * gx / 12.0;
+                for (float mpp : zooms) {
+                    for (float rot : rots) {
+                        int sel[MAP_TILE_BUDGET];
+                        int want = 0;
+                        int used = mapSelectTiles(
+                            (int)g_tiles.size(),
+                            [](int i) { return MapTileBox{g_tiles[i].s, g_tiles[i].w,
+                                                          g_tiles[i].n, g_tiles[i].e}; },
+                            la, lo, mpp, rot, MAP_TILE_BUDGET, sel, &want);
+                        MapScreenData m = {};
+                        map_tiles::beginProject(m);
+                        for (int i = 0; i < used; ++i) {
+                            const Tile& t = g_tiles[sel[i]];
+                            map_tiles::projectBlobInto(t.bytes.data(), t.bytes.size(),
+                                                       la, lo, mpp, 270, 430, rot);
+                        }
+                        map_tiles::endProject(m);
+                        map_tiles::MapProjectStats st = map_tiles::projectStats();
+                        peak.frames++;
+                        if (st.usedPoints > peak.pts) peak.pts = st.usedPoints;
+                        if (m.featureCount > peak.polys) peak.polys = m.featureCount;
+                        if (st.usedWaterPoints > peak.wpts) peak.wpts = st.usedWaterPoints;
+                        if (m.waterCount > peak.wpolys) peak.wpolys = m.waterCount;
+                        if (st.usedParkPoints > peak.ppts) peak.ppts = st.usedParkPoints;
+                        if (m.parkCount > peak.ppolys) peak.ppolys = m.parkCount;
+                    }
+                }
+            }
+        }
+        map_tiles::MapProjectStats cap = map_tiles::projectStats();
+        printf("sweep: %d frames over the tile set\n", peak.frames);
+        auto row = [](const char* what, int p, int c) {
+            printf("  %-13s peak %6d of %6d  (%.0f%% used, %.1fx headroom)\n",
+                   what, p, c, 100.0 * p / c, p ? (double)c / p : 0.0);
+        };
+        row("road points", peak.pts, cap.capPoints);
+        row("road polys", peak.polys, cap.capPolys);
+        row("water points", peak.wpts, cap.capWaterPoints);
+        row("water polys", peak.wpolys, cap.capWaterPolys);
+        row("park points", peak.ppts, cap.capParkPoints);
+        row("park polys", peak.ppolys, cap.capParkPolys);
+        return 0;
+    }
+
     printf("%-9s %-4s %5s %5s  %6s %6s  %5s %5s  %s\n",
            "view", "mpp", "want", "used", "polys", "pts", "wpoly", "wpts", "dropped");
     for (auto& v : views) {

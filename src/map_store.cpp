@@ -178,8 +178,16 @@ int g_tileCount = 0;
 // selected, it just re-reads some of them next time. Correctness never depends
 // on the cache, only speed: renderInto finishes with one tile's bytes before it
 // asks for the next.
+// One megabyte holds the working set of every zoom the rider actually spends
+// time at — 2 to 16 m/px needs 2 to 15 tiles, 100 to 750 KB — and lets the
+// widest track-up view (38 tiles, ~1.9 MB) stream the outer half from the card
+// instead of reserving PSRAM all day for a view that is glanced at.
+//
+// It is reserved against OTA: staging a firmware image wants ~1.9 MB of
+// CONTIGUOUS PSRAM in one allocation, and a full tile cache is exactly the kind
+// of long-lived block that fragments that away. releaseCache() exists for it.
 constexpr int CACHE_N = MAP_TILE_BUDGET;
-constexpr size_t CACHE_BYTES = 2 * 1024 * 1024;
+constexpr size_t CACHE_BYTES = 1024 * 1024;
 struct CachedTile { int idx; uint8_t* buf; size_t len; uint32_t stamp; };
 CachedTile g_cache[CACHE_N] = {};
 size_t g_cacheBytes = 0;
@@ -562,6 +570,19 @@ void begin(double lat, double lon) {
     scanTiles();
     scanMaps();
     if (!loadCovering(lat, lon)) clearPrimary();   // no fallback map
+}
+
+// Hand the tile cache's PSRAM back. Costs the next few frames an SD re-read;
+// buys a large contiguous allocation elsewhere a chance of succeeding.
+void releaseCache() {
+    MapGuard g;
+    for (int i = 0; i < CACHE_N; ++i) {
+        if (!g_cache[i].buf) continue;
+        heap_caps_free(g_cache[i].buf);
+        g_cache[i] = {};
+        g_cache[i].idx = -1;
+    }
+    g_cacheBytes = 0;
 }
 
 void rescanCard() {

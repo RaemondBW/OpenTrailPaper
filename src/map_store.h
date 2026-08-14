@@ -27,6 +27,11 @@ void begin(double lat, double lon);
 // at all — it runs every second, on the bus the recorder writes the FIT to.
 void ensureForPosition(double lat, double lon);
 
+// Free every cached tile blob (PSRAM). The map redraws exactly the same, just
+// re-reading from the card; call it before staging something large in PSRAM,
+// such as an OTA image, which needs its ~2 MB in one contiguous piece.
+void releaseCache();
+
 // Re-read the tile and whole-map indexes from the card. Call after something
 // other than saveTile/saveAndActivate could have changed /maps — i.e. when a
 // host computer releases the SD after mounting it over USB.

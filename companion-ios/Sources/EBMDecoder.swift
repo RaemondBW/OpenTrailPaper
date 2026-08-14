@@ -34,19 +34,30 @@ enum EBM {
     /// old 24-tile drawing cap, and with it the ragged edge between inked and
     /// merely outlined areas. `.overview` decodes what a wide view actually
     /// draws, so a whole region's worth of areas fits and all of it can be ink.
-    enum Detail: Hashable {
+    enum Detail: Hashable, CaseIterable {
         case full        // everything, at the 3 m detail the tile stores
         case overview    // what the device still draws at >= 32 m/px
+        case coarse      // the shape of the ground: fills + motorways only
 
         /// Classes worth building paths for. Mirrors EInkRenderer.width(), which
         /// is itself map_view.cpp styleFor + map_tiles.cpp shedding.
         var classes: Set<FeatureClass> {
-            self == .full ? Set(FeatureClass.allCases) : [.arterial, .primary]
+            switch self {
+            case .full:     return Set(FeatureClass.allCases)
+            case .overview: return [.arterial, .primary]
+            case .coarse:   return [.arterial]
+            }
         }
 
         /// Drop a point within this many metres of the last one kept. The device
         /// does the same in screen space (~2 px), which at 32 m/px is ~64 m.
-        var simplifyM: Double { self == .full ? 0 : 60 }
+        var simplifyM: Double {
+            switch self {
+            case .full:     return 0
+            case .overview: return 60
+            case .coarse:   return 400
+            }
+        }
     }
 
     /// One decoded tile, already projected into map points — the space the

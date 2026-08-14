@@ -51,6 +51,11 @@ struct MapProjectStats {
     int blobsTruncated;     // blobs abandoned mid-parse because scratch filled
     int roadsOffscreen;     // rejected: no kept vertex inside the viewport
     int waterOffscreen, parksOffscreen;
+    // The scratch capacities these are measured against, so a tool reporting
+    // headroom reads the real numbers instead of a copy that goes stale.
+    int capPoints, capPolys;
+    int capWaterPoints, capWaterPolys;
+    int capParkPoints, capParkPolys;
 };
 MapProjectStats projectStats();
 

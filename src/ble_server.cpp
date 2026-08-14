@@ -720,6 +720,10 @@ class OtaCb : public NimBLECharacteristicCallbacks {
             uint32_t expected = (uint32_t)p[1] | ((uint32_t)p[2] << 8) |
                                 ((uint32_t)p[3] << 16) | ((uint32_t)p[4] << 24);
             otaFreeBuf();
+            // A firmware image wants ~2 MB of PSRAM in ONE piece, and the tile
+            // cache is exactly the long-lived block that fragments that away.
+            // The map just re-reads from the card afterwards.
+            map_store::releaseCache();
             otaBuf = (uint8_t*)heap_caps_malloc(expected, MALLOC_CAP_SPIRAM);
             if (!otaBuf) {
                 uint8_t e[2] = {0xAF, 0xF0};   // out of memory

@@ -118,7 +118,8 @@ final class EInkTileStore: ObservableObject {
         let w = region.center.longitude - padLon, e = region.center.longitude + padLon
 
         let mpp = metersPerPoint(region, widthPoints)
-        let detail: EBM.Detail = mpp >= Self.overviewFrom ? .overview : .full
+        let detail: EBM.Detail = mpp >= Self.coarseFrom ? .coarse
+                               : mpp >= Self.overviewFrom ? .overview : .full
 
         var near: [(tile: MapTile, distance: Double)] = []
         for id in all {
@@ -139,13 +140,13 @@ final class EInkTileStore: ObservableObject {
         var areas: [EInkArea] = []
         var outlines: [OutlineHex] = []
         // Whichever level of detail we already hold, preferring the right one.
-        // Zooming across the threshold otherwise dropped every area to an
-        // outline until its re-decode landed — a full-screen flash of the map
+        // Zooming across a threshold otherwise dropped every area to an outline
+        // until its re-decode landed — a full-screen flash of the map
         // disappearing and coming back, every time.
-        let fallback: EBM.Detail = detail == .full ? .overview : .full
+        let fallbacks = EBM.Detail.allCases.filter { $0 != detail }
         for t in drawable {
             if let geo = loaded[Key(id: t.id, detail: detail)]
-                      ?? loaded[Key(id: t.id, detail: fallback)] {
+                      ?? fallbacks.lazy.compactMap({ self.loaded[Key(id: t.id, detail: $0)] }).first {
                 areas.append(EInkArea(id: t.id, hexagon: t.hexagon, center: t.center,
                                       synced: synced.contains(t.id), tile: geo))
             } else {
@@ -171,6 +172,18 @@ final class EInkTileStore: ObservableObject {
     /// Past this, the device itself is drawing arterials and primaries only, so
     /// decoding the rest is memory spent on geometry no pixel shows.
     private static let overviewFrom: Double = 32
+
+    /// And past THIS a res-6 hexagon is ~40 pt across, so the street network
+    /// inside it is finer than a pixel: only the motorway skeleton and the
+    /// screentoned water and parkland — the shape of the ground — survive.
+    ///
+    /// Geometry is the app's real memory cost, and it is not cheap: a point in
+    /// a CGPath measures at ~25 bytes, six times the four bytes it occupies in
+    /// the .ebm it came from. Measured over 728 areas (~28,000 km2 of
+    /// coverage): 312 MB at full street detail, 23 MB at overview, 12 MB here.
+    /// Which is why the level of detail, not a cap on how many areas may be
+    /// drawn, is what bounds this screen.
+    private static let coarseFrom: Double = 5_600 / 40
 
     /// A backstop, not a design limit — every downloaded area in view is drawn
     /// in the device's ink at EVERY zoom.
@@ -206,8 +219,8 @@ final class EInkTileStore: ObservableObject {
         // Both levels: the one being decoded, and the one standing in for it
         // meanwhile (see the fallback in visibleContent). Evicting the stand-in
         // is what the flash looked like.
-        pinned = Set(wanted.flatMap {
-            [Key(id: $0, detail: .full), Key(id: $0, detail: .overview)]
+        pinned = Set(wanted.flatMap { id in
+            EBM.Detail.allCases.map { Key(id: id, detail: $0) }
         })
         for id in wanted {
             let key = Key(id: id, detail: detail)

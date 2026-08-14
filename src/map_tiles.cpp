@@ -10,13 +10,32 @@
 
 namespace {
 
-// Scratch capacity: worst case is the whole city visible at max zoom-out.
-// If these overflow the projector stops mid-iteration, dropping whatever comes
-// last (the north), so keep generous headroom.
-constexpr int MAX_POINTS = 160000;
-constexpr int MAX_POLYS = 20000;
-// Water (WTR2) and park (PRK2) polygons get their own smaller scratch.
-constexpr int MAX_WATER_POINTS = 24000;
+// Scratch capacity. Sized against MEASURED peaks, not guesses: 5,070 frames
+// over a real res-6 tile set, at every zoom on the ladder and five headings
+// (tools/map_test/run_tilescene.sh with TILESCENE_SWEEP=1) reported
+//
+//   road points  40,398     water points  2,101
+//   road polys   18,216     water polys       91
+//
+// Two things that reads off, both of which set the sizes below.
+//
+// POINTS were 4x oversized. After the ~2 px screen-space decimation the kept
+// points are bounded by the SCREEN, not by how many tiles are in view — a wider
+// view pulls more tiles but each contributes proportionally fewer points — so
+// this does not grow with coverage and 2x the measured peak is real headroom.
+//
+// POLYS are the binding budget — 91% full at the old 20,000, so they go UP
+// rather than down. The scratch is dominated by POLYLINE RECORDS, not by
+// geometry: 18,216 records of 12 bytes hold 40,398 points of 4, because a road
+// split at sub-tile boundaries and then decimated averages 2.2 points. Overflow
+// abandons the rest of a tile, and since tiles are projected nearest-first that
+// shows up as the far edges of the map thinning out.
+constexpr int MAX_POINTS = 80000;
+constexpr int MAX_POLYS = 24000;
+// Water (WTR2) and park (PRK2) polygons get their own smaller scratch. Water is
+// trimmed to 12x its measured peak; parks keep the old size because the tile set
+// measured predates the parks layer and has none to measure.
+constexpr int MAX_WATER_POINTS = 12000;
 constexpr int MAX_WATER_POLYS = 512;
 constexpr int MAX_PARK_POINTS = 24000;
 constexpr int MAX_PARK_POLYS = 512;
@@ -121,6 +140,12 @@ MapProjectStats projectStats() {
     s.usedPolys = g_usedPolys;
     s.usedWaterPoints = g_usedWaterPts;
     s.usedParkPoints = g_usedParkPts;
+    s.capPoints = MAX_POINTS;
+    s.capPolys = MAX_POLYS;
+    s.capWaterPoints = MAX_WATER_POINTS;
+    s.capWaterPolys = MAX_WATER_POLYS;
+    s.capParkPoints = MAX_PARK_POINTS;
+    s.capParkPolys = MAX_PARK_POLYS;
     return s;
 }
 
