@@ -16,19 +16,14 @@ struct RouteView: View {
     var body: some View {
         NavigationStack {
             ZStack(alignment: .bottom) {
-                // Same map as the Maps screen: the areas already downloaded are
-                // drawn as the head unit will draw them, so you can see at a
-                // glance whether a route you're planning is inside the coverage
-                // the device actually carries.
+                // Same map component as the Maps screen, but showing only the
+                // gaps: this page is for finding a destination and building a
+                // route, and plain Apple Maps reads better for that.
                 EInkMapView(
-                    // NO e-ink areas here: this page is for finding a
-                    // destination and building a route, and plain Apple Maps
-                    // reads better for that than the device's 1-bit rendering.
-                    // It also stops the page decoding tile geometry it never
-                    // shows, which is what made it stutter while panning.
-                    // The gap hexes stay — they answer a question the rider is
-                    // actually asking here ("will I ride off my maps?").
-                    areas: [],
+                    // Only the GAP hexes here — the ground a planned route
+                    // crosses that nothing covers. That is the question this
+                    // page is for ("will I ride off my maps?"); ordinary
+                    // coverage would just be noise over the route.
                     outlines: gapHexes,
                     route: model.route?.polyline,
                     destination: model.destination.map {
@@ -36,9 +31,9 @@ struct RouteView: View {
                     },
                     camera: model.camera,
                     showsUserLocation: ble.locationPermission.isGranted,
-                    onRegionChange: { r, _ in
+                    onRegionChange: { r in
                         visibleRegion = r
-                        refreshEInk()
+                        refreshCoverage()
                     })
                 .ignoresSafeArea(edges: .top)
 
@@ -97,8 +92,8 @@ struct RouteView: View {
             .onChange(of: model.destinationName) {
                 ble.routeSent = false; ble.routeReceived = false
             }
-            .onChange(of: store.version) { refreshEInk(); recomputeCoverage() }
-            .onChange(of: ble.deviceTileIds) { refreshEInk(); recomputeCoverage() }
+            .onChange(of: store.version) { refreshCoverage(); recomputeCoverage() }
+            .onChange(of: ble.deviceTileIds) { refreshCoverage(); recomputeCoverage() }
             // The route itself is the trigger that matters: a new route can walk
             // straight off the downloaded area, and clearing one must take the
             // hexagons away again.
@@ -106,17 +101,11 @@ struct RouteView: View {
         }
     }
 
-    /// Ask the store what to draw for the region now on screen.
-    ///
-    /// Areas only. This screen deliberately drops the store's outline hexes: a
-    /// downloaded area already announces itself by being painted in the device's
-    /// ink, and outlining the ones that happen not to be drawable yet just put a
-    /// hex grid over ground that is fine. Hexagons here mean one thing —
-    /// coverage you do NOT have (`recomputeCoverage`).
-    private func refreshEInk() {
-        // Nothing to refresh: the route map draws plain Apple Maps. Kept as a
-        // no-op so the region-change plumbing stays in one shape with MapsView.
-    }
+    /// Nothing to refresh here: this screen draws plain Apple Maps plus the
+    /// coverage GAPS, and those come from the route rather than the viewport
+    /// (`recomputeCoverage`). Kept as a no-op so the region-change plumbing
+    /// stays in one shape with MapsView.
+    private func refreshCoverage() {}
 
     /// The hexes the route crosses that neither the phone nor the device holds.
     ///

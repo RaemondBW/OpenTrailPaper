@@ -27,10 +27,6 @@ struct MapsView: View {
     @StateObject private var projection = MapProjection()
     @ObservedObject private var store = EInkTileStore.shared
     @State private var visibleRegion: MKCoordinateRegion?
-    /// Width of the map view in points — how much ground a hexagon covers ON
-    /// SCREEN is what decides whether it is drawn as ink or outlined.
-    @State private var mapWidth: CGFloat = 0
-    @State private var einkAreas: [EInkArea] = []
     @State private var outlineHexes: [OutlineHex] = []
     /// The locator's fallback shot has been taken.
     @State private var didLocate = false
@@ -60,8 +56,8 @@ struct MapsView: View {
 
     // Hexes in the drawn box that aren't on the device yet, in whichever state
     // the download has reached. Areas already downloaded are NOT in here — they
-    // draw as e-ink underneath, which says "you have this" far better than a
-    // selection tint would.
+    // already show as coverage hexagons, which says "you have this" better than
+    // a selection tint would.
     private var selectionHexes: [SelectionHex] {
         tiles.filter { !ble.deviceTileIds.contains($0.id) }.map { t in
             SelectionHex(id: t.id, hexagon: t.hexagon,
@@ -89,7 +85,6 @@ struct MapsView: View {
         NavigationStack {
             ZStack(alignment: .top) {
                 EInkMapView(
-                    areas: einkAreas,
                     outlines: outlineHexes,
                     selection: selectionHexes,
                     camera: camera,
@@ -109,10 +104,9 @@ struct MapsView: View {
                         inspected = (id, ble.deviceTileIds.contains(id))
                         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                     },
-                    onRegionChange: { r, width in
+                    onRegionChange: { r in
                         visibleRegion = r
-                        mapWidth = width
-                        refreshEInk()
+                        refreshCoverage()
                     })
                 .ignoresSafeArea(edges: .top)
 
@@ -170,7 +164,7 @@ struct MapsView: View {
             // Redraw when a tile finishes decoding, or when the device's own
             // tile list arrives and flips areas to "synced". Both are also the
             // moment the coverage we want to frame becomes known.
-            .onChange(of: store.version) { refreshEInk(); fitDownloadedHexes() }
+            .onChange(of: store.version) { refreshCoverage(); fitDownloadedHexes() }
             // The device's tile list also arrives tile-by-tile during an upload,
             // and each change re-derives selectionHexes and rebuilds every
             // overlay. Coalesced for the same reason the store's version is.
@@ -205,18 +199,15 @@ struct MapsView: View {
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 250_000_000)
             refreshPending = false
-            refreshEInk()
+            refreshCoverage()
             fitDownloadedHexes()
         }
     }
 
-    /// Ask the store what to draw for the region now on screen.
-    private func refreshEInk() {
-        guard let r = visibleRegion, mapWidth > 1 else { return }
-        let content = store.visibleContent(in: r, widthPoints: mapWidth,
-                                           synced: ble.deviceTileIds)
-        einkAreas = content.areas
-        outlineHexes = content.outlines
+    /// Ask the store which coverage hexagons the region now on screen needs.
+    private func refreshCoverage() {
+        guard let r = visibleRegion else { return }
+        outlineHexes = store.visibleContent(in: r, synced: ble.deviceTileIds)
     }
 
     /// Frame ALL the coverage — everything the phone holds plus everything the
@@ -355,7 +346,7 @@ struct MapsView: View {
         card {
             VStack(alignment: .leading, spacing: 3) {
                 Text(drawMode ? "Drag a box across the area you want."
-                              : "Tap “Select area”, then drag a box. Areas drawn like the device’s screen are downloaded; a green check means the device has them too.")
+                              : "Tap “Select area”, then drag a box. Shaded hexagons are downloaded; a green check means the device has them too.")
                     .font(BarlowFont.text(14)).foregroundStyle(drawMode ? Palette.accent : Palette.muted)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 if !ble.deviceTileIds.isEmpty {
