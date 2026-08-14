@@ -1200,7 +1200,10 @@ final class BLEManager: NSObject, ObservableObject {
         // (on a simulator, straight to poweredOff), which left the demo showing
         // the not-connected screen over perfectly good seeded data.
         demoMesh = true
-        meshState = MeshState(enabled: true, radioOk: true,
+        // -demo-mesh-off shows the state a device comes up in now that the radio
+        // defaults to off, which is the first thing a new rider sees.
+        let off = ProcessInfo.processInfo.arguments.contains("-demo-mesh-off")
+        meshState = MeshState(enabled: !off, radioOk: true,
                               channelFollowsPreset: true, nodeNum: 0xa4c1380c,
                               frequencyHz: 913_125_000, channel: "MediumFast",
                               channelKey: 1, longName: "OpenTrail 380c",

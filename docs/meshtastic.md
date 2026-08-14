@@ -47,6 +47,16 @@ implementation follows the real wire format rather than inventing a private one.
   that. Privacy here is a shared channel key — see [Private channels](#private-channels)
   — which is exactly as private as the group holding it.
 
+## Turning it on
+
+The radio is **off by default**, and the switch is at the top of the app's Mesh
+tab. Joining a mesh means announcing yourself on it and spending battery listening
+continuously, and neither should happen because a firmware update landed — so the
+device waits to be asked.
+
+Everything else survives being switched off: channels, keys, names and the modem
+choice are all persisted, so turning it back on resumes where you were.
+
 ## Region
 
 `MESH_REGION_NAME` and the frequency bounds in `src/config.h` are **compile-time

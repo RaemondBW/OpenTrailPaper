@@ -125,7 +125,9 @@ struct MeshView: View {
     // MARK: - Chrome
 
     private var header: some View {
-        HStack(alignment: .firstTextBaseline) {
+        // Centre-aligned rather than on the text baseline: a Toggle has no
+        // baseline to align to, so it hung below the icons beside it.
+        HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Mesh").font(TypeScale.screenTitle).foregroundStyle(Palette.ink)
                 Text(subtitle)
@@ -135,6 +137,15 @@ struct MeshView: View {
                     .foregroundStyle(Palette.muted)
             }
             Spacer()
+            if attached {
+                Toggle("Mesh radio", isOn: Binding(
+                    get: { ble.meshState.enabled },
+                    set: { ble.setMeshEnabled($0) }))
+                    .labelsHidden()
+                    .tint(Palette.accent)
+                    .padding(.trailing, 12)
+                    .accessibilityLabel("Mesh radio")
+            }
             Button { showNodes = true } label: {
                 Image(systemName: "person.2")
                     .font(.system(size: 17, weight: .semibold))
@@ -151,6 +162,8 @@ struct MeshView: View {
                     }
             }
             .padding(.trailing, 14)
+            .opacity(ble.meshState.enabled ? 1 : 0.35)
+            .disabled(!ble.meshState.enabled)
             Button { showSettings = true } label: {
                 Image(systemName: "antenna.radiowaves.left.and.right")
                     .font(.system(size: 17, weight: .semibold))
@@ -245,9 +258,10 @@ struct MeshView: View {
         VStack(spacing: 16) {
             emptyState(icon: "power",
                        title: "Mesh radio is off",
-                       body: "Turn the LoRa radio on to join the mesh. It draws a little power even when idle.")
+                       body: "Turn it on with the switch above to join the mesh and send messages. The radio listens continuously, so it draws a little power even when nothing is being said.")
             PrimaryButton(title: "Turn on the radio") { ble.setMeshEnabled(true) }
                 .padding(.horizontal, 32)
+                .padding(.bottom, 28)     // clear of the tab bar
         }
         .frame(maxHeight: .infinity)
     }

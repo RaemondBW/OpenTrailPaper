@@ -24,9 +24,11 @@ char addrs[3][18] = {"", "", ""};
 char names[3][32] = {"", "", ""};   // remembered vendor/model per paired kind
 double lastLat = 0, lastLon = 0;
 bool rtcSynced = false;  // has GPS ever written UTC to the coin-cell RTC?
-// Mesh messaging. Default ON with the default channel, which is what makes a
-// device out of the box able to hear the public mesh around it.
-bool meshOn = true;
+// Mesh messaging, OFF until the rider turns it on. Joining a public mesh means
+// announcing yourself on it and spending battery listening, and neither should
+// happen because a firmware update landed — it is a choice, so the device waits to
+// be asked. The Mesh tab has the switch.
+bool meshOn = false;
 // "" = no explicit channel; mesh_service derives the name from the modem preset.
 char meshChan[16] = "";
 uint8_t meshKey = 1;
@@ -65,7 +67,7 @@ void begin() {
     lastLat = prefs.getDouble("lastlat", 0);
     lastLon = prefs.getDouble("lastlon", 0);
     rtcSynced = prefs.getBool("rtcok", false);
-    meshOn = prefs.getBool("meshon", true);
+    meshOn = prefs.getBool("meshon", false);
     prefs.getString("meshchan", meshChan, sizeof(meshChan));   // "" = use the preset
     meshKey = (uint8_t)constrain(prefs.getUChar("meshkey", 1), 1, 10);
     meshPresetIdx = prefs.getUChar("meshpreset", MESH_PRESET_DEFAULT);
