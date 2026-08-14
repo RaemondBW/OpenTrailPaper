@@ -50,6 +50,7 @@ companion-ios/build-sim/
 tools/route_test/route_test
 tools/map_test/roundtrip
 tools/map_test/tilescene
+tools/map_test/h3lookup
 tools/fit_test/fit_test
 tools/fit_test/ascent_test
 tools/preview/preview

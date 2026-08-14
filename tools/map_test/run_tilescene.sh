@@ -18,16 +18,22 @@ shift 2 2>/dev/null || shift $#
 
 ROOT=../..
 EPDIY=$ROOT/vendor/T5S3-4.7-e-paper-PRO/lib/epdiy/src
-CXXFLAGS="-std=c++17 -O2 -I ../preview/shim -I $EPDIY -I $ROOT/src"
+H3=$ROOT/companion-ios/Sources/H3
+CXXFLAGS="-std=c++17 -O2 -I ../preview/shim -I $EPDIY -I $ROOT/src -I $H3 -I $H3/include"
 
 for f in tilescene.cpp "$ROOT/src/epd_compat.cpp" "$ROOT/src/ui_render.cpp" \
          "$ROOT/src/map_view.cpp" "$ROOT/src/map_tiles.cpp" \
          "$ROOT/src/dash_layout.cpp"; do
     clang++ $CXXFLAGS -c "$f" -o "/tmp/$(basename "$f" .cpp)_tile.o"
 done
+# H3 is C — the tile lookup is computed from cell ids, same as the firmware.
+for f in "$H3"/h3shim.c "$H3"/lib/*.c; do
+    clang -std=c11 -O2 -I "$H3" -I "$H3/include" -c "$f" \
+        -o "/tmp/$(basename "$f" .c)_h3.o"
+done
 clang++ /tmp/tilescene_tile.o /tmp/epd_compat_tile.o /tmp/ui_render_tile.o \
     /tmp/map_view_tile.o /tmp/map_tiles_tile.o /tmp/dash_layout_tile.o \
-    -lz -o tilescene
+    /tmp/*_h3.o -lz -o tilescene
 
 mkdir -p "$OUT"
 ./tilescene "$TILES" "$OUT" "$@"

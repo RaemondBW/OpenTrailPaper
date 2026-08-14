@@ -17,9 +17,15 @@
 
 namespace map_store {
 
+// Called every so often while the card is being indexed, with the running tile
+// count. Indexing is by far the longest thing in boot and it happens with the
+// panel showing a static frame — see epdc_set_idle_timeout() for why a long gap
+// between paints is not merely a cosmetic problem.
+using ScanProgress = void (*)(int tilesSoFar);
+
 // Load tiles index + the best whole map for a starting position (or the
 // embedded default). Call after the SD card is mounted.
-void begin(double lat, double lon);
+void begin(double lat, double lon, ScanProgress onProgress = nullptr);
 
 // If the currently loaded whole map doesn't cover (lat, lon), load the
 // downloaded one that does. Answered from the in-RAM bounds index, so outside

@@ -48,10 +48,19 @@ constexpr int W = 540, H = 960;
 
 struct Tile {
     std::string id;
+    uint64_t cell = 0;
     std::vector<uint8_t> bytes;
     double s, w, n, e;
 };
 std::vector<Tile> g_tiles;
+
+// The harness resolves a cell the way the device does — by id, not by scanning
+// a list — so it exercises the same lookup rather than a stand-in for it.
+const Tile* tileForCell(uint64_t cell) {
+    for (const Tile& t : g_tiles)
+        if (t.cell == cell) return &t;
+    return nullptr;                       // nothing downloaded for that cell
+}
 
 template <typename T>
 T rd(const uint8_t* p) { T v; memcpy(&v, p, sizeof(T)); return v; }
@@ -77,6 +86,7 @@ void loadTile(const std::string& path, const std::string& id) {
     if (fread(t.bytes.data(), 1, sz, f) != (size_t)sz || sz < 36) { fclose(f); return; }
     fclose(f);
     if (!headerBounds(t.bytes.data(), t.s, t.w, t.n, t.e)) return;
+    t.cell = h3_from_id(t.id.c_str());
     g_tiles.push_back(std::move(t));
 }
 
@@ -166,7 +176,9 @@ std::string dropSummary(const map_tiles::MapProjectStats& st, int want, int used
         if (!s.empty()) s += " ";
         s += b;
     };
-    add("tiles:%d", want - used);
+    // NOT a budget drop: with cell-id lookup, "wanted" counts every cell the
+    // viewport covers and most of them are simply ground nobody downloaded.
+    add("notile:%d", want - used);
     add("roads:%d", st.roadsDropped);
     add("water:%d", st.waterDropped);
     add("parks:%d", st.parksDropped);
@@ -234,18 +246,16 @@ int main(int argc, char** argv) {
                 double lo = w + (e - w) * gx / 12.0;
                 for (float mpp : zooms) {
                     for (float rot : rots) {
-                        int sel[MAP_TILE_BUDGET];
+                        uint64_t sel[MAP_TILE_BUDGET];
                         int want = 0;
-                        int used = mapSelectTiles(
-                            (int)g_tiles.size(),
-                            [](int i) { return MapTileBox{g_tiles[i].s, g_tiles[i].w,
-                                                          g_tiles[i].n, g_tiles[i].e}; },
-                            la, lo, mpp, rot, MAP_TILE_BUDGET, sel, &want);
+                        int used = mapSelectCells(la, lo, mpp, rot,
+                                                  MAP_TILE_BUDGET, sel, &want);
                         MapScreenData m = {};
                         map_tiles::beginProject(m);
                         for (int i = 0; i < used; ++i) {
-                            const Tile& t = g_tiles[sel[i]];
-                            map_tiles::projectBlobInto(t.bytes.data(), t.bytes.size(),
+                            const Tile* t = tileForCell(sel[i]);
+                            if (!t) continue;
+                            map_tiles::projectBlobInto(t->bytes.data(), t->bytes.size(),
                                                        la, lo, mpp, 270, 430, rot);
                         }
                         map_tiles::endProject(m);
@@ -277,16 +287,13 @@ int main(int argc, char** argv) {
     }
 
     printf("%-9s %-4s %5s %5s  %6s %6s  %5s %5s  %s\n",
-           "view", "mpp", "want", "used", "polys", "pts", "wpoly", "wpts", "dropped");
+           "view", "mpp", "cells", "drawn", "polys", "pts", "wpoly", "wpts", "dropped");
     for (auto& v : views) {
         for (float mpp : zooms) {
-            int sel[MAP_TILE_BUDGET];
+            uint64_t sel[MAP_TILE_BUDGET];
             int want = 0;
-            int used = mapSelectTiles(
-                (int)g_tiles.size(),
-                [](int i) { return MapTileBox{g_tiles[i].s, g_tiles[i].w,
-                                              g_tiles[i].n, g_tiles[i].e}; },
-                lat, lon, mpp, v.rot, MAP_TILE_BUDGET, sel, &want);
+            int used = mapSelectCells(lat, lon, mpp, v.rot, MAP_TILE_BUDGET,
+                                      sel, &want);
 
             MapScreenData map = {};
             map.riderX = 270;
@@ -298,11 +305,15 @@ int main(int argc, char** argv) {
             map.hasMap = true;
 
             map_tiles::beginProject(map);
+            int drawn = 0;
             for (int i = 0; i < used; ++i) {
-                const Tile& t = g_tiles[sel[i]];
-                map_tiles::projectBlobInto(t.bytes.data(), t.bytes.size(), lat, lon,
+                const Tile* t = tileForCell(sel[i]);
+                if (!t) continue;
+                drawn++;
+                map_tiles::projectBlobInto(t->bytes.data(), t->bytes.size(), lat, lon,
                                            mpp, map.riderX, map.riderY, v.rot);
             }
+            used = drawn;
             map_tiles::endProject(map);
 
             map_tiles::MapProjectStats st = map_tiles::projectStats();

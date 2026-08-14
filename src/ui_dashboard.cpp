@@ -963,6 +963,12 @@ void renderListScreen(uint8_t* fb) {
 #define EPDC_STEP(msg) ((void)0)
 #endif
 
+// The driver's own default, restored after boot.
+constexpr int kPanelIdleTimeoutS = 5;
+// Held during boot. Longer than any boot, and comfortably inside the driver's
+// uint8_t countdown.
+constexpr int kPanelBootIdleS = 200;
+
 namespace ui_dashboard {
 
 // Boot progress state. Kept tiny and static — this runs before any allocation
@@ -1057,9 +1063,12 @@ void bootRepaint() {
     if (!bootScreenLive) return;
     uint8_t* fb = epdc_framebuffer();
     if (!fb) return;
+    EPDC_STEP("bootRepaint: render");
     ui_render_boot_screen(FIRMWARE_VERSION, bootLines, bootState, bootDetail,
                           bootMs, bootCount, fb);
+    EPDC_STEP("bootRepaint: paint");
     epdc_paint();
+    EPDC_STEP("bootRepaint: wait");
     // WAIT for the rows to finish clocking out. epdc_paint() is asynchronous on
     // the EPD_Painter backend — it hands the frame to the driver's paint task
     // and returns mid-drive — so leaving one in flight means the NEXT paint is
@@ -1079,7 +1088,9 @@ void bootRepaint() {
     // else drives the panel. Bounded at 6 s inside epdc_paint_wait(), so this
     // cannot turn a slow panel into a hung boot.
     epdc_paint_wait();
+    EPDC_STEP("bootRepaint: painted");
     if (shadowFb) memcpy(shadowFb, fb, fbSize);   // keep the delta engine honest
+    EPDC_STEP("bootRepaint: done");
 }
 
 // Index of `step` in the table, or -1. Compared by pointer first since every
@@ -1123,6 +1134,19 @@ void bootStatus(const char* step, bool ok) {
     snprintf(bootDetail[i], sizeof(bootDetail[i]), "%s", bootPending);
     bootPending[0] = 0;
     bootRepaint();
+    // Put the boot log on the CARD, step by step, as soon as there is a card to
+    // put it on.
+    //
+    // Until this existed, a boot that died never left a trace anywhere. The
+    // reset reason and the core-dump summary are logged in the first
+    // milliseconds of setup(), but: the USB CDC does not exist yet (TinyUSB
+    // starts from the UI task, after the SD mount), a CDC with no host attached
+    // silently discards writes anyway, and the only caller of flushToSD() was
+    // the BLE server task — which is created AFTER this function runs. So the
+    // one failure mode you most need a log for was the one that produced none,
+    // and diagnosing a boot loop meant guessing. No-ops before the card mounts
+    // and while a ride is recording.
+    diag::flushToSD();
 }
 
 // Attach detail to a step already announced ("30436 MB free", "CASIC"), so the
@@ -1150,16 +1174,45 @@ bool begin() {
     // the panel never flashes the default and then rearrange itself.
     dash_config::begin();
 
+    // The tile scan below is seconds long with no paint, and the driver powers
+    // the panel down after five unpainted seconds — see epdc_set_idle_timeout().
+    // Hold the rails up until the UI task takes over.
+    //
+    // A LONG timeout, NOT 0. Zero looks like "disabled" and is the opposite of
+    // it: PanelPowerGuard does `if (state == 0) powerOn(); state =
+    // _idle_timeout_s;`, so a zero timeout leaves the counter at zero after
+    // every paint and the NEXT paint calls powerOn() inline — which is the very
+    // path that wedges. Measured: with 0 the boot loop went from intermittent
+    // (1 boot in 8 survived) to every single time.
+    epdc_set_idle_timeout(kPanelBootIdleS);
+
     bootStep("Maps");
     double mlat = DEFAULT_MAP_LAT, mlon = DEFAULT_MAP_LON;
     settings::lastPosition(mlat, mlon);
-    map_store::begin(mlat, mlon);
+    // Repaint while the card is indexed, so the glass shows the count climbing
+    // instead of a frozen list — and, less obviously, so the panel is never left
+    // unpainted long enough for the driver's idle timer to drop its rails
+    // mid-boot. Rate limited: a full boot repaint is ~450 ms, so a small card
+    // pays nothing and a large one pays a few frames it is glad to have.
+    map_store::begin(mlat, mlon, [](int tiles) {
+        static uint32_t lastPaint = 0;
+        if (millis() - lastPaint < 1500) return;
+        lastPaint = millis();
+        bootDetailFor("Maps", "%d tiles…", tiles);
+        bootRepaint();
+    });
+    EPDC_STEP("map_store::begin returned");
     bootDetailFor("Maps", "%d tiles · %s", map_store::tileCount(),
                   map_store::tileCount() ? "indexed" : "none on card");
+    EPDC_STEP("bootDetailFor done");
     bootStatus("Maps", true);
+    EPDC_STEP("bootStatus done");
     EPDC_STEP("map loaded — begin() done");
     // Hand the panel over to the dashboard: further bootStatus() calls no-op,
     // and the task's first refresh() paints the real UI over the boot screen.
+    // Hand the idle power-off back: from here the UI task paints on every
+    // change, and dropping the rails between frames is worth the battery.
+    epdc_set_idle_timeout(kPanelIdleTimeoutS);
     bootScreenLive = false;
     return true;
 }

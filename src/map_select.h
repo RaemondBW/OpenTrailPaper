@@ -6,12 +6,9 @@
 
 #include <cmath>
 
-// Hard cap on the tile index (map_store's g_tiles). The index lives in PSRAM
-// (60 bytes an entry), so this is not paid out of the 320 KB of internal RAM
-// that the display driver and BLE controller are already fighting over. It was
-// 512 and static, which is one metro area — a rider who downloads a region gets
-// tiles saved to the card that the map then never draws.
-constexpr int MAP_MAX_TILES = 4096;
+extern "C" {
+#include "h3shim.h"
+}
 
 // Tiles one frame may project, and the number of slots in map_store's LRU.
 //
@@ -19,15 +16,16 @@ constexpr int MAP_MAX_TILES = 4096;
 // having ground on it out at the edges. Measured against real H3 res-6 coverage
 // (~5.6 km across): 23 tiles at the widest north-up view, and 38 track-up,
 // whose selection square has to contain the rotated viewport at any heading.
-// The old budget was 32 — enough for north-up, six short of track-up, so the
-// corners of the max zoom-out went blank exactly when the rider wanted the
-// overview. 64 leaves headroom for a denser tiling without another rebuild.
+// 64 leaves headroom for a denser tiling without another rebuild.
 //
 // It is NOT a memory bound: the LRU is bounded by bytes as well as slots, and
 // nothing holds more than one tile's bytes at a time while projecting.
 constexpr int MAP_TILE_BUDGET = 64;
 
-struct MapTileBox { double s, w, n, e; };
+// Working room for the H3 disk before it is trimmed to the budget. A wide
+// track-up view covers ~38 cells; this leaves the arithmetic somewhere to put
+// the ones that turn out to be too far away.
+constexpr int MAP_CELL_SCRATCH = 256;
 
 // Screen half-extents (px) of the tile-selection rectangle. The map draws under
 // the status bar and footer, so those covered bands need no tiles; a ~410 px
@@ -39,47 +37,45 @@ inline void mapViewHalfExtentPx(float rotateDeg, float& hx, float& hy) {
     hy = 410.0f;
 }
 
-// Indices of the tiles overlapping the viewport around (lat, lon), NEAREST
-// FIRST, written to `out` (at most maxOut). Returns how many were written;
-// `*overlapping`, when given, receives how many overlapped in total — the two
-// differ exactly when the frame cannot draw everything it needs.
+// The H3 cells covering the viewport around (lat, lon), NEAREST FIRST, written
+// to `out` (at most maxOut). Returns how many were written; `*overlapping`, when
+// given, receives how many the viewport touched in total.
 //
-// `boxAt(i)` returns tile i's bbox, so the caller's own index is read in place
-// rather than copied into a second array (16 KB of internal RAM on the device).
+// COMPUTED, not looked up. A tile's filename is its H3 cell id, so the set of
+// tiles a frame needs falls out of the geometry — there is no index to build,
+// nothing to scan at boot, and no cap on how much of the world the card may
+// hold. Cells with no tile downloaded simply fail to open.
 //
-// Nearest-first is not cosmetic: when the budget does bite, what survives has
-// to be the ground the rider is on, and the hole has to be at the edges.
-template <typename BoxAt>
-int mapSelectTiles(int n, BoxAt boxAt, double lat, double lon,
-                   float metersPerPixel, float rotateDeg, int maxOut, int* out,
-                   int* overlapping = nullptr) {
+// Nearest-first is not cosmetic: when the budget bites, what survives has to be
+// the ground the rider is on, and the hole has to be at the edges.
+inline int mapSelectCells(double lat, double lon, float metersPerPixel,
+                          float rotateDeg, int maxOut, uint64_t* out,
+                          int* overlapping = nullptr) {
     const double kx = 111320.0 * cos(lat * M_PI / 180.0);
     const double ky = 110540.0;
     float hx, hy;
     mapViewHalfExtentPx(rotateDeg, hx, hy);
     const double dLat = (hy * metersPerPixel) / ky;
     const double dLon = (hx * metersPerPixel) / (kx > 1 ? kx : 1);
-    const double vs = lat - dLat, vn = lat + dLat;
-    const double vw = lon - dLon, ve = lon + dLon;
 
-    // Kept sorted by distance, capped at maxOut — so this needs room for the
-    // BUDGET, not for the whole index, and the far tiles fall off the end as
-    // nearer ones arrive.
+    static uint64_t cells[MAP_CELL_SCRATCH];
+    int nc = h3_covering_cells(lat - dLat, lon - dLon, lat + dLat, lon + dLon,
+                               cells, MAP_CELL_SCRATCH);
+    if (overlapping) *overlapping = nc;
+    if (maxOut > MAP_TILE_BUDGET) maxOut = MAP_TILE_BUDGET;
+
+    // Insertion sort into a fixed nearest-first list, so this needs room for the
+    // BUDGET rather than for every cell the disk produced.
     double best[MAP_TILE_BUDGET];
     int kept = 0;
-    if (maxOut > MAP_TILE_BUDGET) maxOut = MAP_TILE_BUDGET;
-    int nc = 0;
-
-    for (int i = 0; i < n; ++i) {
-        const MapTileBox t = boxAt(i);
-        if (t.e < vw || t.w > ve || t.n < vs || t.s > vn) continue;
-        nc++;
-        // Distance from the rider to the NEAREST POINT of the tile, not to its
-        // centre. Centre distance ranks the tile the rider is standing in below
-        // a smaller neighbour once the viewport is wide, which is how a budget
-        // cut used to drop ground from under the rider first.
-        const double cx = lon < t.w ? t.w : (lon > t.e ? t.e : lon);
-        const double cy = lat < t.s ? t.s : (lat > t.n ? t.n : lat);
+    for (int i = 0; i < nc; ++i) {
+        double s, w, n, e;
+        h3_cell_bbox(cells[i], &s, &w, &n, &e);
+        // Distance to the NEAREST POINT of the cell, not to its centre: centre
+        // distance ranks the cell the rider is standing in below a neighbour
+        // once the viewport is wide.
+        const double cx = lon < w ? w : (lon > e ? e : lon);
+        const double cy = lat < s ? s : (lat > n ? n : lat);
         const double dx = (cx - lon) * kx, dy = (cy - lat) * ky;
         const double d2 = dx * dx + dy * dy;
 
@@ -91,9 +87,8 @@ int mapSelectTiles(int n, BoxAt boxAt, double lat, double lon,
             --at;
         }
         best[at] = d2;
-        out[at] = i;
+        out[at] = cells[i];
         if (kept < maxOut) ++kept;
     }
-    if (overlapping) *overlapping = nc;
     return kept;
 }

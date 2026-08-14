@@ -961,7 +961,7 @@ void sendTileList() {
     // the internal RAM the display and BLE controller are short of, AND a silent
     // truncation: a rider past 512 tiles kept being offered tiles the device
     // already had, because the list the app dedups against stopped there.
-    constexpr int TILE_LIST_MAX = MAP_MAX_TILES;
+    constexpr int TILE_LIST_MAX = 4096;
     static char (*ids)[24] = nullptr;
     if (!ids) {
         ids = (char(*)[24])heap_caps_malloc((size_t)TILE_LIST_MAX * 24,
