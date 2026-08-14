@@ -32,7 +32,10 @@ struct MapsView: View {
     @State private var mapWidth: CGFloat = 0
     @State private var einkAreas: [EInkArea] = []
     @State private var outlineHexes: [OutlineHex] = []
-    @State private var didCenter = false
+    /// The locator's fallback shot has been taken.
+    @State private var didLocate = false
+    /// All the coverage has been framed — the opening shot this screen wants.
+    @State private var didFrameCoverage = false
     @State private var dragStart: CGPoint?
     @State private var dragEnd: CGPoint?
     @State private var box: (s: Double, w: Double, n: Double, e: Double)?
@@ -174,12 +177,18 @@ struct MapsView: View {
             .onChange(of: ble.deviceTileIds) { scheduleRefresh() }
             // Center on the user's first fix, once, at our fixed tile-friendly
             // span. Only before any interaction so it never yanks the map away
-            // from a box the user is drawing — and only as the FALLBACK for
-            // someone with no coverage yet, since `fitDownloadedHexes` claims
-            // `didCenter` the moment it has hexes to frame.
+            // from a box the user is drawing.
+            //
+            // This is the FALLBACK, and it no longer blocks the coverage shot.
+            // Both used to claim one `didCenter` and whichever fired first won —
+            // and the fix nearly always arrives before the tile scan does, so
+            // the opening view was a fixed 25 km box on the rider and a
+            // region-sized download was mostly off-screen with nothing to say it
+            // existed. fitDownloadedHexes now overrides this once.
             .onReceive(locator.$coordinate) { coord in
-                guard !didCenter, box == nil, !drawMode, let coord else { return }
-                didCenter = true
+                guard !didLocate, !didFrameCoverage, box == nil, !drawMode,
+                      let coord else { return }
+                didLocate = true
                 camera = MapCameraCommand(target: .region(MKCoordinateRegion(center: coord,
                     span: MKCoordinateSpan(latitudeDelta: 0.25, longitudeDelta: 0.25))))
             }
@@ -216,11 +225,12 @@ struct MapsView: View {
     /// Managing downloaded areas starts with seeing them, and the old opening
     /// shot (a fixed ~22 km box on the user) showed one screenful of a
     /// collection that can span a country: the rest was off-map with nothing to
-    /// say it existed. Runs once — `didCenter` is shared with the locate-the-
-    /// user fallback, so whichever gets there first wins and neither one ever
+    /// say it existed. Runs once, and takes precedence over the locate-the-user
+    /// fallback — the tile scan is asynchronous, so it reliably loses a race
+    /// against a location fix that is often already cached. Neither one ever
     /// moves the camera under a box being drawn.
     private func fitDownloadedHexes() {
-        guard !didCenter, box == nil, !drawMode else { return }
+        guard !didFrameCoverage, box == nil, !drawMode else { return }
         let ids = store.ids.union(ble.deviceTileIds)
         guard !ids.isEmpty else { return }
 
@@ -233,7 +243,7 @@ struct MapsView: View {
             }
         }
         guard !rect.isNull, rect.size.width > 0, rect.size.height > 0 else { return }
-        didCenter = true
+        didFrameCoverage = true
         // Less padding than a route gets: the hexes ARE the subject here, and
         // the bottom card already eats the lower edge of the map.
         camera = MapCameraCommand(target: .rect(rect.paddedForDisplay(fraction: 0.12)))

@@ -40,7 +40,7 @@ struct OutlineHex: Identifiable {
 
 /// A hex in the area the user is selecting for download.
 struct SelectionHex: Identifiable {
-    enum Kind { case pending, done, excluded }
+    enum Kind: Equatable { case pending, done, excluded }
     let id: String
     let hexagon: [CLLocationCoordinate2D]
     let kind: Kind
@@ -195,8 +195,19 @@ struct EInkMapView: UIViewRepresentable {
         // the expensive one to render, and adding it back would discard every
         // tile MapKit has already drawn — which, during a download that lands a
         // new area several times a second, is the whole visible map each time.
-        map.removeOverlays(map.overlays.filter { !($0 is EInkAreasOverlay) })
+        map.removeOverlays(map.overlays.filter {
+            !($0 is EInkAreasOverlay) && !($0 is HexLayerOverlay)
+        })
         map.removeAnnotations(map.annotations.compactMap { $0 as? SyncedCheckAnnotation })
+
+        // The green check is a per-area badge, and it only says anything while
+        // areas are big enough to hold one. Framing a region's worth of
+        // coverage puts hundreds of them on screen, overlapping into a solid
+        // mat of green — hundreds of annotations for MapKit to place, saying
+        // less than nothing. The hex edge already draws green when synced, so
+        // past this many the edge carries it alone.
+        let synced = areas.filter(\.synced).count + outlines.filter(\.synced).count
+        let showChecks = synced <= 120
 
         let eink = c.eink ?? {
             let o = EInkAreasOverlay()
@@ -208,35 +219,49 @@ struct EInkMapView: UIViewRepresentable {
             c.einkRenderer?.setNeedsDisplay(rect)
         }
 
-        // Selection sits UNDER the e-ink areas: a hex already downloaded should
-        // read as downloaded, not as a pending selection tint.
+        // Selection and outlines: also ONE overlay, inserted below the e-ink one
+        // so a hex already downloaded reads as downloaded rather than as a
+        // pending selection tint. (Overlays at one level draw in insertion
+        // order, and the e-ink layer is no longer re-added on every change, so
+        // "add it last" would no longer put it on top.)
         //
-        // Inserted BELOW the e-ink overlay rather than added after it. Overlays
-        // at one level draw in insertion order, and the e-ink layer is no longer
-        // re-added on every change — so "add it last" no longer puts it on top.
+        // These were an MKPolygon apiece, and with a region-sized download that
+        // is several hundred overlays torn down and rebuilt every time an area
+        // finishes decoding — four times a second through a download. The tiles
+        // filled in visibly slowly for that reason, not because decoding is slow
+        // (0.22 ms an area at overview detail, measured over 728 of them).
+        var flat: [HexLayerOverlay.Hex] = []
+        flat.reserveCapacity(selection.count + outlines.count)
         for hex in selection {
-            var pts = hex.hexagon
-            guard pts.count >= 3 else { continue }
-            let poly = StyledPolygon(coordinates: &pts, count: pts.count)
-            poly.style = .selection(hex.kind)
-            map.insertOverlay(poly, below: eink)
+            flat.append(.init(id: "s:" + hex.id, hexagon: hex.hexagon,
+                              style: .selection(hex.kind)))
         }
         for hex in outlines {
-            var pts = hex.hexagon
-            guard pts.count >= 3 else { continue }
-            let poly = StyledPolygon(coordinates: &pts, count: pts.count)
-            poly.style = hex.missing ? .missingCoverage
-                                     : .downloadedOutline(synced: hex.synced)
-            map.insertOverlay(poly, below: eink)
-            if hex.synced { map.addAnnotation(SyncedCheckAnnotation(coordinate: hex.center)) }
+            flat.append(.init(id: "o:" + hex.id, hexagon: hex.hexagon,
+                              style: hex.missing ? .missingCoverage
+                                                 : .downloadedOutline(synced: hex.synced)))
+            if hex.synced && showChecks {
+                map.addAnnotation(SyncedCheckAnnotation(coordinate: hex.center))
+            }
+        }
+        let hexLayer = c.hexes ?? {
+            let o = HexLayerOverlay()
+            c.hexes = o
+            map.insertOverlay(o, below: eink)
+            return o
+        }()
+        for rect in hexLayer.update(flat) {
+            c.hexRenderer?.setNeedsDisplay(rect)
         }
         // .aboveRoads, NOT .aboveLabels: the paper covers Apple's roads (we draw
         // our own) but its place and street names come back through on top of
         // the screentones. Painting over them left downloaded areas as anonymous
         // patches of ink — you could see the shape of the coverage but not read
         // where it was.
-        for area in areas where area.synced {
-            map.addAnnotation(SyncedCheckAnnotation(coordinate: area.center))
+        if showChecks {
+            for area in areas where area.synced {
+                map.addAnnotation(SyncedCheckAnnotation(coordinate: area.center))
+            }
         }
         // Last, so the route always sits on top of the paper.
         if let route { map.addOverlay(route, level: .aboveLabels) }
@@ -274,6 +299,8 @@ struct EInkMapView: UIViewRepresentable {
         /// renderer that holds its drawn tiles.
         fileprivate var eink: EInkAreasOverlay?
         fileprivate weak var einkRenderer: EInkRenderer?
+        fileprivate var hexes: HexLayerOverlay?
+        fileprivate weak var hexRenderer: HexLayerRenderer?
         var route: MKPolyline?
         var destination: MapDestination?
         var lastCamera: MapCameraCommand?
@@ -305,12 +332,9 @@ struct EInkMapView: UIViewRepresentable {
                 einkRenderer = r
                 return r
             }
-            if let poly = overlay as? StyledPolygon {
-                let r = MKPolygonRenderer(polygon: poly)
-                let (fill, stroke) = poly.style.colors
-                r.fillColor = fill
-                r.strokeColor = stroke
-                r.lineWidth = 1.5
+            if let hexes = overlay as? HexLayerOverlay {
+                let r = HexLayerRenderer(overlay: hexes)
+                hexRenderer = r
                 return r
             }
             if let line = overlay as? MKPolyline {
@@ -398,34 +422,121 @@ private final class DestinationAnnotation: NSObject, MKAnnotation {
 
 // MARK: - Flat hex overlays (selection + un-previewable device areas)
 
-private final class StyledPolygon: MKPolygon {
-    enum Style {
-        case selection(SelectionHex.Kind)
-        case downloadedOutline(synced: Bool)
-        case missingCoverage
+/// Every selection and outline hexagon, in ONE overlay — same reasoning as
+/// EInkAreasOverlay, and the same in-place update so only what changed repaints.
+private final class HexLayerOverlay: NSObject, MKOverlay {
+    struct Hex {
+        let id: String                 // namespaced: selection and outline can
+        let hexagon: [CLLocationCoordinate2D]   // both hold the same H3 id
+        let style: HexStyle
+    }
+    struct Piece {
+        let id: String
+        let style: HexStyle
+        let path: CGPath
+        let rect: MKMapRect
+    }
 
-        var colors: (fill: UIColor, stroke: UIColor) {
-            switch self {
-            case .downloadedOutline(let synced):
-                let c = UIColor(synced ? Palette.good : Palette.faint)
-                return (c.withAlphaComponent(0.14), c)
-            // A gap in the maps, so it has to read as "look here" — the accent,
-            // barely tinted: these sit under the route line, which must stay
-            // the most legible thing on the screen.
-            case .missingCoverage:
-                let c = UIColor(Palette.accent)
-                return (c.withAlphaComponent(0.10), c.withAlphaComponent(0.7))
-            case .selection(.done):
-                return (UIColor(Palette.good).withAlphaComponent(0.22), UIColor(Palette.good))
-            case .selection(.excluded):
-                return (UIColor(Palette.muted).withAlphaComponent(0.08),
-                        UIColor(Palette.muted).withAlphaComponent(0.55))
-            case .selection(.pending):
-                return (UIColor(Palette.accent).withAlphaComponent(0.16), UIColor(Palette.accent))
+    private var storage: [Piece] = []
+    private let lock = NSLock()
+    var pieces: [Piece] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
+
+    let boundingMapRect = MKMapRect.world
+    var coordinate: CLLocationCoordinate2D { CLLocationCoordinate2D(latitude: 0, longitude: 0) }
+
+    func update(_ hexes: [Hex]) -> [MKMapRect] {
+        var previous: [String: Piece] = [:]
+        let current = pieces
+        previous.reserveCapacity(current.count)
+        for p in current { previous[p.id] = p }
+
+        var next: [Piece] = []
+        var dirty: [MKMapRect] = []
+        var seen = Set<String>()
+        next.reserveCapacity(hexes.count)
+        for hex in hexes where hex.hexagon.count >= 3 {
+            seen.insert(hex.id)
+            if let old = previous[hex.id], old.style == hex.style {
+                next.append(old)
+                continue
             }
+            let path = CGMutablePath()
+            var rect = MKMapRect.null
+            for (i, c) in hex.hexagon.enumerated() {
+                let p = MKMapPoint(c)
+                let pt = CGPoint(x: p.x, y: p.y)
+                if i == 0 { path.move(to: pt) } else { path.addLine(to: pt) }
+                rect = rect.union(MKMapRect(origin: p, size: MKMapSize(width: 0, height: 0)))
+            }
+            path.closeSubpath()
+            next.append(Piece(id: hex.id, style: hex.style, path: path, rect: rect))
+            dirty.append(rect)
+        }
+        for (id, old) in previous where !seen.contains(id) { dirty.append(old.rect) }
+        lock.lock()
+        storage = next
+        lock.unlock()
+        return dirty
+    }
+}
+
+private final class HexLayerRenderer: MKOverlayRenderer {
+    private var pieces: [HexLayerOverlay.Piece] { (overlay as! HexLayerOverlay).pieces }
+
+    override func canDraw(_ mapRect: MKMapRect, zoomScale: MKZoomScale) -> Bool {
+        pieces.contains { $0.rect.intersects(mapRect) }
+    }
+
+    override func draw(_ mapRect: MKMapRect, zoomScale: MKZoomScale, in ctx: CGContext) {
+        let o = point(for: MKMapPoint(x: 0, y: 0))
+        let probe = point(for: MKMapPoint(x: 1024, y: 1024))
+        let scale = (probe.x - o.x) / 1024
+        guard scale > 0, zoomScale > 0 else { return }
+        var t = CGAffineTransform(translationX: o.x, y: o.y).scaledBy(x: scale, y: scale)
+        // Matches what MKPolygonRenderer drew before: 1.5 screen points.
+        ctx.setLineWidth(1.5 / Double(zoomScale))
+        for piece in pieces where piece.rect.intersects(mapRect) {
+            guard let path = piece.path.copy(using: &t) else { continue }
+            let (fill, stroke) = piece.style.colors
+            ctx.addPath(path)
+            ctx.setFillColor(fill.cgColor)
+            ctx.setStrokeColor(stroke.cgColor)
+            ctx.drawPath(using: .fillStroke)
         }
     }
-    var style: Style = .selection(.pending)
+}
+
+/// Fill and stroke for the flat hexagons. Was nested in the MKPolygon subclass
+/// that used to carry one hex each.
+enum HexStyle: Equatable {
+    case selection(SelectionHex.Kind)
+    case downloadedOutline(synced: Bool)
+    case missingCoverage
+
+    var colors: (fill: UIColor, stroke: UIColor) {
+        switch self {
+        case .downloadedOutline(let synced):
+            let c = UIColor(synced ? Palette.good : Palette.faint)
+            return (c.withAlphaComponent(0.14), c)
+        // A gap in the maps, so it has to read as "look here" — the accent,
+        // barely tinted: these sit under the route line, which must stay
+        // the most legible thing on the screen.
+        case .missingCoverage:
+            let c = UIColor(Palette.accent)
+            return (c.withAlphaComponent(0.10), c.withAlphaComponent(0.7))
+        case .selection(.done):
+            return (UIColor(Palette.good).withAlphaComponent(0.22), UIColor(Palette.good))
+        case .selection(.excluded):
+            return (UIColor(Palette.muted).withAlphaComponent(0.08),
+                    UIColor(Palette.muted).withAlphaComponent(0.55))
+        case .selection(.pending):
+            return (UIColor(Palette.accent).withAlphaComponent(0.16), UIColor(Palette.accent))
+        }
+    }
 }
 
 // MARK: - The e-ink overlay

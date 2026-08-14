@@ -55,7 +55,12 @@ final class EInkTileStore: ObservableObject {
 
     private var loaded: [Key: EBM.Tile] = [:]
     private var loading: Set<Key> = []
-    private var recency: [Key] = []             // LRU, most recent last
+    /// Key -> when it was last wanted. A tick counter rather than an ordered
+    /// array: every region change touches every visible area, and with a
+    /// region-sized download that was a linear scan of a thousand-entry array
+    /// per area, on the main actor.
+    private var lastWanted: [Key: UInt64] = [:]
+    private var clock: UInt64 = 0
     private var heldPoints = 0
 
     /// Roughly 20 MB of geometry (a point is two doubles in a CGPath, plus
@@ -114,7 +119,6 @@ final class EInkTileStore: ObservableObject {
 
         let mpp = metersPerPoint(region, widthPoints)
         let detail: EBM.Detail = mpp >= Self.overviewFrom ? .overview : .full
-        let inkable = mpp <= Self.inkAbove
 
         var near: [(tile: MapTile, distance: Double)] = []
         for id in all {
@@ -127,9 +131,8 @@ final class EInkTileStore: ObservableObject {
         // Nearest first, so if the safety cap ever bites it is the far edge of
         // the screen that loses its ink, not the middle.
         near.sort { $0.distance < $1.distance }
-        let drawable = inkable ? near.prefix(Self.hardLimit).map(\.tile) : []
-        let rest = inkable ? near.dropFirst(Self.hardLimit).map(\.tile)
-                           : near.map(\.tile)
+        let drawable = near.prefix(Self.hardLimit).map(\.tile)
+        let rest = near.dropFirst(Self.hardLimit).map(\.tile)
 
         ensureLoaded(drawable.filter { ids.contains($0.id) }.map(\.id), detail: detail)
 
@@ -169,15 +172,20 @@ final class EInkTileStore: ObservableObject {
     /// decoding the rest is memory spent on geometry no pixel shows.
     private static let overviewFrom: Double = 32
 
-    /// Ink while a res-6 hexagon (~5.6 km) is at least ~40 pt across. Beyond
-    /// that the roads inside it are thinner than the hairline outline and the
-    /// screentones alias into flat grey — an outline says "downloaded" better.
-    private static let inkAbove: Double = 5_600 / 40
-
-    /// A backstop, not a design limit. Reaching it means something is framing
-    /// more coverage than a phone screen can meaningfully show; the areas past
-    /// it still outline, so nothing silently disappears.
-    private static let hardLimit = 256
+    /// A backstop, not a design limit — every downloaded area in view is drawn
+    /// in the device's ink at EVERY zoom.
+    ///
+    /// There was briefly a zoom threshold here on the theory that hexes below
+    /// ~40 pt across are too small for the ink to read. That was wrong twice
+    /// over: the screentones are drawn at a constant SCREEN size, so the paper
+    /// and water hold their texture however far out you go, and a region-sized
+    /// download frames at ~340 m/px — so the one view that shows all your
+    /// coverage at once was the one view with no ink in it at all.
+    ///
+    /// The cost is bounded by the level of detail instead: a wide view decodes
+    /// at `.overview`, ~1000 points an area, so this many still fits inside
+    /// `pointBudget`. Areas past it outline, so nothing silently disappears.
+    private static let hardLimit = 1024
 
     /// H3 id -> hexagon, memoised. Every id is a fixed cell on the globe, so
     /// this never needs invalidating.
@@ -243,13 +251,13 @@ final class EInkTileStore: ObservableObject {
     }
 
     private func touch(_ key: Key) {
-        if let i = recency.firstIndex(of: key) { recency.remove(at: i) }
-        recency.append(key)
+        clock &+= 1
+        lastWanted[key] = clock
     }
 
     private func evict(_ key: Key) {
         if let t = loaded.removeValue(forKey: key) { heldPoints -= t.pointCount }
-        recency.removeAll { $0 == key }
+        lastWanted.removeValue(forKey: key)
     }
 
     /// What the map asked for last. Never evicted, however far over budget:
@@ -258,13 +266,16 @@ final class EInkTileStore: ObservableObject {
     /// with the areas flickering between ink and outline.
     private var pinned: Set<Key> = []
 
-    /// Drop least-recently-wanted geometry until back inside the budget.
+    /// Drop least-recently-wanted geometry until back inside the budget. Only
+    /// sorts when the budget is actually exceeded, so the common path is free.
     private func trim() {
-        var i = 0
-        while heldPoints > pointBudget, i < recency.count {
-            let victim = recency[i]
-            if !pinned.contains(victim), loaded[victim] != nil { evict(victim) }
-            else { i += 1 }
+        guard heldPoints > pointBudget else { return }
+        let victims = loaded.keys
+            .filter { !pinned.contains($0) }
+            .sorted { (lastWanted[$0] ?? 0) < (lastWanted[$1] ?? 0) }
+        for v in victims {
+            if heldPoints <= pointBudget { break }
+            evict(v)
         }
     }
 }

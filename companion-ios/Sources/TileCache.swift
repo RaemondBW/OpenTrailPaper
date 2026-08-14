@@ -49,7 +49,7 @@ actor TileCache {
         try? d.setResourceValues(res)
     }
 
-    private func url(_ id: String) -> URL {
+    nonisolated private func url(_ id: String) -> URL {
         // Ids are hex H3 strings, so they are already filename-safe; guard anyway
         // so a malformed id can never escape the directory.
         let safe = id.filter { $0.isHexDigit }
@@ -70,7 +70,14 @@ actor TileCache {
     /// Blob for `id` with no age check, for DRAWING the area on the map.
     /// `data(for:)` expires tiles so a rebuild picks up OSM edits; expiring what
     /// the map draws would instead make downloaded areas quietly disappear.
-    func displayData(for id: String) -> Data? {
+    ///
+    /// NONISOLATED, and that is the point. It reads a file under a `let`
+    /// directory and touches no actor state, but as an actor method every read
+    /// queued behind every other — so drawing a region's worth of downloaded
+    /// areas turned into hundreds of strictly sequential disk reads, and the map
+    /// filled in one hexagon at a time. Writes are atomic, so a read that races
+    /// one sees the old file or the new one, never a torn one.
+    nonisolated func displayData(for id: String) -> Data? {
         let d = try? Data(contentsOf: url(id))
         return (d?.isEmpty == false) ? d : nil
     }
