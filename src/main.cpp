@@ -351,16 +351,22 @@ void setup() {
     esp_reset_reason_t rr = esp_reset_reason();
     diag::log("boot firmware %s (reset: %s [%d])", FIRMWARE_VERSION,
               resetReasonStr(rr), (int)rr);
-    // Is the force-download-boot bit still set?
+    // Clear the force-download-boot bit if it survived into this boot.
     //
-    // The `bootloader` console command (usb_persist_restart) sets it and NOTHING
-    // in the Arduino core ever clears it — whether it survives depends on the
-    // ROM, which we can't read from the host. If this logs 1 on a normal app
-    // boot, the bit is sticky and the command strands the device in download
-    // mode until a real power cycle; if it logs 0, the command is safe to use
-    // for hands-free flashing and the physical BOOT/RST dance is unnecessary.
-    diag::log("force-download-boot bit: %d",
-              (int)((REG_READ(RTC_CNTL_OPTION1_REG) & RTC_CNTL_FORCE_DOWNLOAD_BOOT) != 0));
+    // The `bootloader` console command (usb_persist_restart) sets it and nothing
+    // in the Arduino core ever clears it. It lives in the RTC domain, which a
+    // soft reset does not touch, so a set bit means the *next* esp_restart() —
+    // an OTA reboot, a crash, a `restart` — would land in download mode instead
+    // of the app, with no obvious cause. Only a physical RESET clears the domain.
+    //
+    // The host-side flasher clears it too (tools/flash.py), which is what makes
+    // hands-free flashing work; this is the belt-and-braces for every other way
+    // the bit could still be set by the time we get here. Logged when found set,
+    // since on a healthy boot it should always read 0.
+    if (REG_READ(RTC_CNTL_OPTION1_REG) & RTC_CNTL_FORCE_DOWNLOAD_BOOT) {
+        REG_CLR_BIT(RTC_CNTL_OPTION1_REG, RTC_CNTL_FORCE_DOWNLOAD_BOOT);
+        diag::log("cleared a stale force-download-boot bit");
+    }
     if (rr == ESP_RST_DEEPSLEEP) {
         esp_sleep_wakeup_cause_t wc = esp_sleep_get_wakeup_cause();
         diag::log("woke by: %s [%d]", wakeCauseStr(wc), (int)wc);

@@ -18,6 +18,7 @@ compile_commands.json
 tools/maps/sf_overpass.json
 *_overpass.json
 tools/maps/__pycache__/
+tools/__pycache__/
 
 # Xcode user-specific state (the generated .xcodeproj itself is kept)
 **/xcuserdata/
