@@ -698,7 +698,15 @@ float elevationAt(double lat, double lon) {
 int listTileIds(char out[][24], int maxOut) {
     MapGuard g;
     int n = 0;
+    int seen = 0;
     sdLock();
+    // Yield every so often. This walk is the one card operation left on a
+    // request path, it runs on the BLE server task, and it grows with the card:
+    // opening the Maps screen asks for it (refreshDeviceTiles), so at 150+ tiles
+    // it was seconds of uninterrupted SD work and the task watchdog reset the
+    // device before the reply was ever sent — which is why the log shows tile
+    // list requests simply stopping rather than failing.
+    auto breathe = [&]() { if ((++seen & 0x1F) == 0) vTaskDelay(1); };
     auto take = [&](const char* prefix, const char* base) {
         if (n >= maxOut || !strstr(base, ".ebm")) return;
         snprintf(out[n], 24, "%s%s", prefix, base);
@@ -715,6 +723,7 @@ int listTileIds(char out[][24], int maxOut) {
                 take(prefix, base ? base + 1 : nm);
             }
             f.close();
+            breathe();
         }
         d.close();
     };
@@ -768,6 +777,7 @@ int listMaps(MapBounds* out, int maxOut) {
                 }
             }
             f.close();
+            if ((n & 0x0F) == 0) vTaskDelay(1);   // same courtesy as listTileIds
         }
         dir.close();
     }

@@ -954,8 +954,10 @@ void mapCommit() {
 }
 
 // Stream the H3 tile ids already on the SD to the phone, so it can skip
-// re-sending tiles it already delivered. Reads the (in-RAM) tile index; runs
-// in the server task to stay off the BLE host thread.
+// re-sending tiles it already delivered. Walks the card (the filename IS the
+// id, so there is no index to read) and runs in the server task to stay off
+// the BLE host thread. The phone asks on every Maps-screen open, so the timing
+// is logged: this is the request path most likely to grow past the watchdog.
 void sendTileList() {
     // PSRAM, and sized to the whole index. At 512 in .bss this was both 12 KB of
     // the internal RAM the display and BLE controller are short of, AND a silent
@@ -968,7 +970,9 @@ void sendTileList() {
                                             MALLOC_CAP_SPIRAM);
         if (!ids) { diag::log("tile list: no PSRAM for %d ids", TILE_LIST_MAX); return; }
     }
+    uint32_t t0 = millis();
     int n = map_store::listTileIds(ids, TILE_LIST_MAX);
+    uint32_t walkMs = millis() - t0;
 
     uint8_t begin = 0xD0;
     sendChunk(mapChr, &begin, 1);
@@ -996,7 +1000,7 @@ void sendTileList() {
 
     uint8_t end = 0xD2;
     sendChunk(mapChr, &end, 1);
-    diag::log("tile list: %d ids sent", n);
+    diag::log("tile list: %d ids sent (walk %ums, total %ums)", n, walkMs, millis() - t0);
 }
 
 // Write the PSRAM-staged firmware to the SD card as /firmware.bin, then reboot
