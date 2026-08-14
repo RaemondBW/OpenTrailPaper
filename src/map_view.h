@@ -78,6 +78,9 @@ struct MapScreenData {
     // the frame ran out of tile budget and the outer ones are simply absent.
     int projectedTiles = 0;
     int wantedTiles = 0;
+    // The frame was cut short (see map_store::KeepRendering) — it holds the
+    // tiles nearest the rider but not the outer ones.
+    bool partial = false;
     int tilePolys = 0;          // polys from tiles (before the base blob)
     int clsCount[7] = {0, 0, 0, 0, 0, 0, 0};  // kept polys per class
 };

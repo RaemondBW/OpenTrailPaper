@@ -54,6 +54,12 @@ Screen screen = SCREEN_DASH;
 RideSummary pendingSummary;
 
 float mapMpp = 2.0f;  // map zoom: 1/2/4/8/16/32 m per px (wide levels show tiles)
+// Whether the next map frame may read tiles off the card. See renderMapScreen:
+// the first pass after any change is drawn from RAM alone so it lands at once.
+bool mapFullPass = false;
+// Which zoom button is showing its pressed state (0 none, 1 in, 2 out). Held
+// from the tap until a COMPLETE map frame has been drawn.
+int zoomHeld = 0;
 bool mapTrackUp = false;
 
 // Serial test hooks: drive the UI over the CDC serial port to profile the map
@@ -438,6 +444,11 @@ void ackZoomTap(bool zoomIn) {
     uint8_t* fb = epdc_framebuffer();
     ui_map_draw_zoom_button(zoomIn, true, fb);
     refresh(false, true, false);
+    // Stay pressed until the map has actually caught up. A single flash before
+    // the redraw answers "did it hear me?" but not "is it still working?", and
+    // on a cold zoom the outer tiles can take a moment to arrive. Held down, the
+    // button is doing the job a spinner would.
+    zoomHeld = zoomIn ? 1 : 2;
 }
 
 void handleTap(int x, int y) {
@@ -711,7 +722,14 @@ void buildMapScreenData(const RideState& s, MapScreenData& map) {
     } else {
         settings::lastPosition(lat, lon);
     }
-    map_store::renderInto(lat, lon, mapMpp, map.riderX, map.riderY, rot, map);
+    // Abandon the frame the moment a finger lands. The touch ISR only sets a
+    // flag and wakes this task — the reading and dispatch happen in this same
+    // loop — so a frame that runs to completion regardless is a frame the
+    // screen ignores you for. Tiles come nearest-first, so what gets dropped is
+    // the far edge, and `partial` brings us straight back for the rest.
+    map_store::renderInto(lat, lon, mapMpp, map.riderX, map.riderY, rot, map,
+                          []() -> bool { return !touchIrq && !touchWasDown; },
+                          /*cachedOnly=*/!mapFullPass);
     map.hasMap = map_store::coversPosition(lat, lon);
 
     if (routes::active() && routeScreenPts) {
@@ -737,16 +755,56 @@ void renderMapScreen(const RideState& s, uint8_t* fb) {
     uint32_t m0 = millis();
     buildMapScreenData(s, map);
     uint32_t m1 = millis();
+
+    // A finger arrived while this frame was being built. Don't spend the panel
+    // on it — one paint is 130-400 ms, and that is 130-400 ms in which nothing
+    // acknowledges the touch. Put the LAST PAINTED frame back and return, so
+    // refresh() finds nothing changed, skips the panel, and the next thing to
+    // reach the glass is the pressed zoom button.
+    //
+    // Restoring from shadowFb rather than just returning is the whole point: the
+    // caller memsets the framebuffer to white before this runs, so returning
+    // early leaves a BLANK screen — status bar, data fields and all — with only
+    // the acknowledgement drawn on it. shadowFb is by definition what is
+    // currently on the glass, so this is a no-op repaint rather than a wipe.
+    if ((touchIrq || touchWasDown) && shadowFb) {
+        memcpy(fb, shadowFb, fbSize);
+        forceDraw = true;
+        mapFullPass = true;      // and let the retry read whatever it missed
+        if (dbgTiming) diag::log("map: frame dropped for a touch");
+        return;
+    }
     ui_render_map(map, s, fb);
+    // ui_render_map redraws the buttons unpressed, so re-assert the held one on
+    // top of it. Released only once the frame is complete — a partial frame
+    // means tiles are still coming.
+    if (zoomHeld) {
+        if (map.partial) ui_map_draw_zoom_button(zoomHeld == 1, true, fb);
+        else             zoomHeld = 0;
+    }
+    // Two-pass rendering, and the reason a zoom lands instantly.
+    //
+    // The FIRST pass after any change draws only tiles already in RAM. Zooming
+    // does not change which ground is under the rider — only its scale — so the
+    // middle of the map is always already resident and can be re-projected and
+    // painted in milliseconds. If that left anything out (the newly exposed
+    // outer ring, or a frame a finger interrupted), the frame comes back marked
+    // partial and the NEXT one is allowed to read the card.
+    //
+    // Steady state costs nothing: once everything on screen is cached, the
+    // cached-only pass IS the complete frame and there is no second one.
+    if (map.partial) { forceDraw = true; mapFullPass = true; }
+    else             { mapFullPass = false; }
     if (dbgTiming)
         diag::log("map: project=%lu draw=%lu polys=%d (tiles=%d base=%d) "
-                  "cls[maj=%d pri=%d sec=%d ter=%d min=%d path=%d] ntiles=%d/%d "
+                  "cls[maj=%d pri=%d sec=%d ter=%d min=%d path=%d] ntiles=%d/%d%s "
                   "mpp=%d",
                   (unsigned long)(m1 - m0), (unsigned long)(millis() - m1),
                   map.featureCount, map.tilePolys, map.featureCount - map.tilePolys,
                   map.clsCount[0], map.clsCount[1], map.clsCount[2], map.clsCount[3],
                   map.clsCount[4], map.clsCount[5],
-                  map.projectedTiles, map.wantedTiles, (int)mapMpp);
+                  map.projectedTiles, map.wantedTiles,
+                  map.partial ? " cut" : "", (int)mapMpp);
     drawNavBanner(fb);
 }
 

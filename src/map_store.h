@@ -43,12 +43,23 @@ void releaseCache();
 // host computer releases the SD after mounting it over USB.
 void rescanCard();
 
+// Called between tiles while a frame is being built. Return false to abandon
+// the rest of it — the frame draws the tiles it already has, which are the ones
+// nearest the rider, and the caller can get on with whatever was more urgent.
+using KeepRendering = bool (*)();
+
 // Render the map around (lat, lon) into `out`: projects every H3 tile that
 // overlaps the viewport (loading them from SD on demand), falling back to the
 // whole-map / embedded blob where no tiles cover. Replaces a direct
 // map_tiles::project() call.
+// `cachedOnly` draws ONLY tiles already resident, never touching the card, and
+// marks the frame partial if that left anything out. It is what makes a zoom
+// feel immediate: the ground around the rider is already in RAM at any zoom it
+// was just drawn at, so it can be re-projected and put on the glass in
+// milliseconds while the outer ring is still being read.
 void renderInto(double lat, double lon, float metersPerPixel, int centerX,
-                int centerY, float rotateDeg, MapScreenData& out);
+                int centerY, float rotateDeg, MapScreenData& out,
+                KeepRendering keepGoing = nullptr, bool cachedOnly = false);
 
 // Save a freshly received whole .ebm to /maps/<name>.ebm and make it active.
 // Returns false on SD/parse error.

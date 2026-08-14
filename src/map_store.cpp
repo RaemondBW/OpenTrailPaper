@@ -174,7 +174,35 @@ bool tileExists(uint64_t cell) {
 // CONTIGUOUS PSRAM in one allocation, and a full tile cache is exactly the kind
 // of long-lived block that fragments that away. releaseCache() exists for it.
 constexpr int CACHE_N = MAP_TILE_BUDGET;
-constexpr size_t CACHE_BYTES = 1024 * 1024;
+
+// How many bytes of tile blobs may stay resident.
+//
+// This has to hold the WHOLE working set of the widest view, and "it can just
+// stream the rest off the card" is not an option here — that was tried, and the
+// SD runs at 4 MHz, about 400 KB/s in practice. A 22-tile view is ~2.2 MB, so a
+// cache one megabyte short of it does not degrade gracefully: every tile is
+// evicted before the next frame wants it again, all 22 are re-read every frame,
+// and the projection goes from 129 ms to 5,650 ms. That is a frame the UI task
+// spends entirely inside SPI reads, which is why touch went unresponsive — the
+// same loop polls the touch controller — and it is uncomfortably close to the
+// 5 s task watchdog.
+//
+// Sized from what is actually free rather than a guess, and released wholesale
+// before an OTA (releaseCache), which is what keeps a large cache compatible
+// with staging a ~2 MB firmware image in one contiguous piece.
+size_t cacheBudget() {
+    static size_t budget = 0;
+    if (budget) return budget;
+    constexpr size_t kReserve = 2560u * 1024;   // OTA staging + headroom
+    constexpr size_t kCeiling = 4096u * 1024;
+    constexpr size_t kFloor   = 512u * 1024;
+    const size_t freeNow = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    budget = freeNow > kReserve + kFloor ? freeNow - kReserve : kFloor;
+    if (budget > kCeiling) budget = kCeiling;
+    diag::log("map: tile cache %u KB (psram free %u KB)",
+              (unsigned)(budget / 1024), (unsigned)(freeNow / 1024));
+    return budget;
+}
 struct CachedTile { uint64_t cell; uint8_t* buf; size_t len; uint32_t stamp; };
 CachedTile g_cache[CACHE_N] = {};
 size_t g_cacheBytes = 0;
@@ -295,7 +323,7 @@ void invalidateCached(uint64_t cell) {
 // The blob for one H3 cell, read from the card into the LRU cache on demand.
 // Null when no tile covers that cell, when the read fails, or when the USB host
 // owns the card and the tile is not already cached.
-const uint8_t* ensureTileLoaded(uint64_t cell, size_t& outLen) {
+const uint8_t* ensureTileLoaded(uint64_t cell, size_t& outLen, bool mayRead = true) {
     for (int i = 0; i < CACHE_N; ++i) {
         if (g_cache[i].buf && g_cache[i].cell == cell) {
             g_cache[i].stamp = ++g_clock;
@@ -303,6 +331,7 @@ const uint8_t* ensureTileLoaded(uint64_t cell, size_t& outLen) {
             return g_cache[i].buf;
         }
     }
+    if (!mayRead) { outLen = 0; return nullptr; }   // cached-only pass
     if (usb_storage::hostActive()) { outLen = 0; return nullptr; }
     if (!tileExists(cell)) { outLen = 0; return nullptr; }
 
@@ -338,7 +367,7 @@ const uint8_t* ensureTileLoaded(uint64_t cell, size_t& outLen) {
         *lru = {};
         return true;
     };
-    while ((!freeSlot() || g_cacheBytes + len > CACHE_BYTES) && evictLru()) {}
+    while ((!freeSlot() || g_cacheBytes + len > cacheBudget()) && evictLru()) {}
     CachedTile* victim = freeSlot();
 
     uint8_t* buf = (uint8_t*)heap_caps_malloc(len, MALLOC_CAP_SPIRAM);
@@ -453,7 +482,8 @@ void ensureForPosition(double lat, double lon) {
 }
 
 void renderInto(double lat, double lon, float metersPerPixel, int centerX,
-                int centerY, float rotateDeg, MapScreenData& out) {
+                int centerY, float rotateDeg, MapScreenData& out,
+                KeepRendering keepGoing, bool cachedOnly) {
     // Held for the whole frame: the projector reads straight out of the tile
     // cache, so nothing may rebuild the index or free a blob underneath it.
     MapGuard g;
@@ -470,14 +500,35 @@ void renderInto(double lat, double lon, float metersPerPixel, int centerX,
     int lim = mapSelectCells(lat, lon, metersPerPixel, rotateDeg,
                              MAP_TILE_BUDGET, sel, &wanted);
 
+    // ONE TILE AT A TIME, yielding between them, and stopping early if the
+    // caller says something more urgent has come up.
+    //
+    // A frame is not a small amount of work: a cold wide view reads a couple of
+    // megabytes off a 4 MHz card, and it used to do that as one uninterruptible
+    // run inside the UI task — the same task that polls the touch controller.
+    // The touch interrupt would fire, set its flag, and then wait out the whole
+    // frame, which is what made the screen feel dead rather than slow. Tiles are
+    // ordered nearest-first, so a frame cut short still draws the ground the
+    // rider is standing on and the next one fills in the rest.
     int drawn = 0;
     for (int a = 0; a < lim; ++a) {
+        if (a && keepGoing && !keepGoing()) { out.partial = true; break; }
         size_t len;
-        const uint8_t* b = ensureTileLoaded(sel[a], len);
-        if (!b) continue;              // nothing downloaded for that cell
+        const uint8_t* b = ensureTileLoaded(sel[a], len, !cachedOnly);
+        if (!b) {
+            // On a cached-only pass this means "not in RAM yet", not "no tile":
+            // the frame is incomplete and the caller owes us a full one.
+            if (cachedOnly && tileExists(sel[a])) out.partial = true;
+            continue;
+        }
         drawn++;
         map_tiles::projectBlobInto(b, len, lat, lon, metersPerPixel,
                                    centerX, centerY, rotateDeg);
+        // Let the rest of the system run. Costs a tick per tile against reads
+        // measured in tens of milliseconds, and it keeps a slow frame from
+        // starving the idle task into a watchdog reset. Nothing to yield for on
+        // a cached-only pass — it does no I/O at all.
+        if (!cachedOnly) vTaskDelay(1);
     }
 
     int tilePolys = map_tiles::projectedPolyCount();   // split for diagnostics
