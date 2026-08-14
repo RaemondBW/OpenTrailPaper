@@ -40,6 +40,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -50,7 +51,6 @@ import androidx.compose.ui.unit.sp
 import com.raemond.opentrailpaper.ble.BleManager
 import com.raemond.opentrailpaper.data.BoundingBox
 import com.raemond.opentrailpaper.data.LatLon
-import com.raemond.opentrailpaper.map.EInkArea
 import com.raemond.opentrailpaper.map.EInkTileStore
 import com.raemond.opentrailpaper.map.H3Tiles
 import com.raemond.opentrailpaper.map.MapBuilder
@@ -88,12 +88,20 @@ fun MapsSheet(ble: BleManager, onDismiss: () -> Unit) {
     val clipboard = LocalClipboardManager.current
 
     var region by remember { mutableStateOf<BoundingBox?>(null) }
-    var areas by remember { mutableStateOf<List<EInkArea>>(emptyList()) }
     var outlines by remember { mutableStateOf<List<OutlineHex>>(emptyList()) }
     var camera by remember {
         mutableStateOf(MapCamera.region(LatLon(37.7764, -122.4346), 0.25))
     }
-    var didCentre by remember { mutableStateOf(false) }
+    /** The locator's fallback shot has been taken. */
+    var didLocate by remember { mutableStateOf(false) }
+    /** All the coverage has been framed — the opening shot this screen wants. */
+    var didFrameCoverage by remember { mutableStateOf(false) }
+    /**
+     * Measured height of the floating card, so the map can frame around whatever
+     * the card currently is — the hint, a selection summary and a send-progress
+     * card are very different heights, and this screen swaps between them.
+     */
+    var cardHeightPx by remember { mutableStateOf(0) }
 
     var drawMode by remember { mutableStateOf(false) }
     var dragStart by remember { mutableStateOf<Offset?>(null) }
@@ -117,9 +125,9 @@ fun MapsSheet(ble: BleManager, onDismiss: () -> Unit) {
     }
 
     // Hexes in the drawn box that aren't on the device yet, in whichever state the
-    // download has reached. Areas already downloaded are NOT in here — they draw
-    // as e-ink underneath, which says "you have this" far better than a selection
-    // tint would.
+    // download has reached. Areas already downloaded are NOT in here — they
+    // already show as coverage hexagons, which says "you have this" better than a
+    // selection tint would.
     val selectionHexes = remember(tiles, ble.deviceTileIds, converted, excluded) {
         tiles.filter { it.id !in ble.deviceTileIds }.map { t ->
             SelectionHex(
@@ -148,23 +156,27 @@ fun MapsSheet(ble: BleManager, onDismiss: () -> Unit) {
     LaunchedEffect(region, EInkTileStore.version, ble.deviceTileIds) {
         delay(250)
         val r = region ?: return@LaunchedEffect
-        val content = EInkTileStore.visibleContent(r, ble.deviceTileIds)
-        areas = content.first
-        outlines = content.second
+        outlines = EInkTileStore.visibleContent(r, ble.deviceTileIds)
 
         // Frame ALL the coverage — everything the phone holds plus everything the
         // device holds — the first time this screen has something to frame.
         // Managing downloaded areas starts with seeing them, and a fixed ~22 km
         // box on the rider shows one screenful of a collection that can span a
         // country.
-        if (!didCentre && box == null && !drawMode) {
+        //
+        // Takes precedence over the locate-the-rider fallback below: the tile scan
+        // is asynchronous, so it reliably loses a race against a location fix that
+        // is often already cached. Neither one ever moves the camera under a box
+        // being drawn.
+        if (!didFrameCoverage && box == null && !drawMode) {
             val ids = EInkTileStore.ids + ble.deviceTileIds
             val corners = ids.mapNotNull { H3Tiles.tile(it) }.flatMap { it.hexagon }
             val bounds = BoundingBox.around(corners)
             if (bounds != null) {
-                didCentre = true
-                // Less padding than a route gets: the hexes ARE the subject here,
-                // and the bottom card already eats the lower edge of the map.
+                didFrameCoverage = true
+                // Less padding than a route gets: the hexes ARE the subject here.
+                // The card's own share of the map is handled by the map's bottom
+                // inset, so it must not be padded for a second time.
                 camera = MapCamera.box(bounds, paddingPx = 32)
             }
         }
@@ -175,8 +187,8 @@ fun MapsSheet(ble: BleManager, onDismiss: () -> Unit) {
     // is being drawn.
     LaunchedEffect(ble.lastLocation) {
         val loc = ble.lastLocation ?: return@LaunchedEffect
-        if (didCentre || box != null || drawMode) return@LaunchedEffect
-        didCentre = true
+        if (didLocate || didFrameCoverage || box != null || drawMode) return@LaunchedEffect
+        didLocate = true
         camera = MapCamera.region(LatLon(loc.latitude, loc.longitude), 0.25)
     }
 
@@ -239,11 +251,11 @@ fun MapsSheet(ble: BleManager, onDismiss: () -> Unit) {
         Box(Modifier.fillMaxSize()) {
             OsmMap(
                 modifier = Modifier.fillMaxSize(),
-                areas = areas,
                 outlines = outlines,
                 selection = selectionHexes,
                 camera = camera,
                 showUserLocation = ble.locationPermission.isGranted,
+                bottomInsetPx = cardHeightPx,
                 projector = projector,
                 // Tap a hex (once an area is drawn) to skip/keep it.
                 onTap = { c ->
@@ -350,9 +362,15 @@ fun MapsSheet(ble: BleManager, onDismiss: () -> Unit) {
 
             // A floating "modal" card at the bottom. Progress states show a
             // spinner + live hex counts; idle/selection states show the controls.
+            //
+            // Its height is MEASURED rather than assumed, and reported to the map
+            // as a bottom inset: the three states it swaps between are very
+            // different heights, and "fit all my coverage" must not fit half the
+            // hexes behind whichever one is showing.
             Box(
                 Modifier
                     .align(Alignment.BottomCenter)
+                    .onSizeChanged { cardHeightPx = it.height }
                     .padding(horizontal = 16.dp, vertical = 10.dp),
             ) {
                 when {
@@ -675,8 +693,8 @@ private fun HintCard(drawMode: Boolean, deviceHexes: Int) {
             if (drawMode) {
                 "Drag a box across the area you want."
             } else {
-                "Tap “Select area”, then drag a box. Areas drawn like the device's screen are " +
-                    "downloaded; a green check means the device has them too."
+                "Tap “Select area”, then drag a box. Shaded hexagons are downloaded; " +
+                    "a green check means the device has them too."
             },
             style = barlow(14.sp),
             color = if (drawMode) Palette.accent else Palette.muted,

@@ -23,11 +23,10 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.raemond.opentrailpaper.data.BoundingBox
 import com.raemond.opentrailpaper.data.LatLon
-import com.raemond.opentrailpaper.map.EInkArea
-import com.raemond.opentrailpaper.map.EInkOverlay
 import com.raemond.opentrailpaper.map.HexOverlay
 import com.raemond.opentrailpaper.map.MapMarkers
 import com.raemond.opentrailpaper.map.MapStyle
+import com.raemond.opentrailpaper.map.MercatorWorld
 import com.raemond.opentrailpaper.map.OutlineHex
 import com.raemond.opentrailpaper.map.SelectionHex
 import org.osmdroid.events.MapEventsReceiver
@@ -45,6 +44,7 @@ import org.osmdroid.views.overlay.Polyline
 import org.osmdroid.views.overlay.mylocation.GpsMyLocationProvider
 import org.osmdroid.views.overlay.mylocation.MyLocationNewOverlay
 import java.util.UUID
+import kotlin.math.pow
 
 /**
  * A one-shot camera move. Identity is the token, so re-issuing the same target
@@ -88,26 +88,36 @@ class MapProjector {
 data class MapDestination(val name: String, val coordinate: LatLon)
 
 /**
- * The map both the Route and Maps screens draw on: standard OSM everywhere,
- * except the areas this phone has downloaded — those are painted as the head unit
- * will render them (see [EInkOverlay]). Areas the device also has get a green
- * check.
+ * The map both the Route and Maps screens draw on: standard OSM, with the areas
+ * this phone or the device holds drawn over it as hexagons — green with a check
+ * where the DEVICE has them too, a quiet fill where they are only on the phone.
+ *
+ * It used to paint each downloaded area in the head unit's own 1-bit style. That
+ * is gone; see [com.raemond.opentrailpaper.map.EInkTileStore] for why. The
+ * question this map answers is which ground is covered and whether the device has
+ * it, and hexagons answer it without decoding a byte of map geometry.
  *
  * A real `MapView` behind `AndroidView`, for the same reason iOS wraps `MKMapView`
- * in a `UIViewRepresentable` rather than using SwiftUI's `Map`: the e-ink areas
- * have to be drawn inside the map's own draw pass to stay pinned to the ground
- * while panning.
+ * in a `UIViewRepresentable` rather than using SwiftUI's `Map`: overlays at this
+ * count have to be drawn inside the map's own draw pass to stay pinned to the
+ * ground while panning.
  */
 @Composable
 fun OsmMap(
     modifier: Modifier = Modifier,
-    areas: List<EInkArea> = emptyList(),
     outlines: List<OutlineHex> = emptyList(),
     selection: List<SelectionHex> = emptyList(),
     route: List<LatLon>? = null,
     destination: MapDestination? = null,
     camera: MapCamera? = null,
     showUserLocation: Boolean = false,
+    /**
+     * How much of the map's bottom edge is covered by floating UI. The map itself
+     * runs full-bleed under the card, so this is what keeps it from *framing*
+     * full height: a camera move fits its target into the band above the card
+     * instead of centring it behind one.
+     */
+    bottomInsetPx: Int = 0,
     projector: MapProjector? = null,
     onTap: ((LatLon) -> Unit)? = null,
     onLongPress: ((LatLon) -> Unit)? = null,
@@ -138,7 +148,7 @@ fun OsmMap(
     val state = remember { MapState() }
 
     // Place names, as their own transparent layer. See MapStyle: this is what
-    // lets a downloaded area stay readable once it is painted in the device's ink.
+    // keeps a covered area readable once a coverage hexagon is tinted over it.
     val labelsOverlay = remember {
         TilesOverlay(MapTileProviderBasic(context, MapStyle.labels), context).apply {
             loadingBackgroundColor = android.graphics.Color.TRANSPARENT
@@ -227,7 +237,7 @@ fun OsmMap(
             // Overlays are expensive to rebuild, and Compose calls this for any
             // state change on the host screen (a progress string, a text field).
             // Only touch the map when what's actually drawn has changed.
-            val signature = contentSignature(areas, outlines, selection, route, destination)
+            val signature = contentSignature(outlines, selection, route, destination)
             if (signature != state.contentKey) {
                 state.contentKey = signature
                 rebuildContent(
@@ -235,7 +245,6 @@ fun OsmMap(
                     state,
                     map.resources.displayMetrics.density,
                     labelsOverlay,
-                    areas,
                     outlines,
                     selection,
                     route,
@@ -245,7 +254,7 @@ fun OsmMap(
 
             if (camera != null && camera != state.lastCamera) {
                 state.lastCamera = camera
-                apply(map, state, camera)
+                apply(map, state, camera, bottomInsetPx)
             }
             map.invalidate()
         },
@@ -272,11 +281,9 @@ fun OsmMap(
 /**
  * Everything that changes what's drawn, and nothing that doesn't. The route is in
  * here because overlays draw in list order — it has to be re-added on top
- * whenever the areas underneath are rebuilt, or a downloaded area's paper simply
- * paints over it.
+ * whenever the hexes underneath are rebuilt, or a coverage fill paints over it.
  */
 private fun contentSignature(
-    areas: List<EInkArea>,
     outlines: List<OutlineHex>,
     selection: List<SelectionHex>,
     route: List<LatLon>?,
@@ -287,7 +294,6 @@ private fun contentSignature(
     // time was itself a measurable part of the Maps page's stutter during a
     // large download.
     var h = 17
-    for (a in areas) h = h * 31 + a.id.hashCode() + if (a.synced) 1 else 0
     for (o in outlines) {
         h = h * 31 + o.id.hashCode() + (if (o.synced) 2 else 0) + (if (o.missing) 4 else 0)
     }
@@ -304,7 +310,6 @@ private fun rebuildContent(
     state: MapState,
     density: Float,
     labelsOverlay: TilesOverlay,
-    areas: List<EInkArea>,
     outlines: List<OutlineHex>,
     selection: List<SelectionHex>,
     route: List<LatLon>?,
@@ -320,8 +325,14 @@ private fun rebuildContent(
         state.contentOverlays.add(overlay)
     }
 
-    // Selection sits UNDER the e-ink areas: a hex already downloaded should read
-    // as downloaded, not as a pending selection tint.
+    // The green check is a per-area badge and only says anything while the areas
+    // are big enough to hold one. Framing a region's worth of coverage puts
+    // hundreds on screen, overlapping into a solid mat of green. Past this many,
+    // the hexagon's own green edge carries it alone.
+    val showChecks = outlines.count { it.synced && !it.missing } <= MAX_CHECKS
+
+    // Selection sits UNDER the coverage hexes: ground already downloaded should
+    // read as downloaded, not as a pending selection tint.
     val flats = ArrayList<HexOverlay.Hex>(selection.size + outlines.size)
     for (hex in selection) {
         flats.add(
@@ -344,24 +355,17 @@ private fun rebuildContent(
                     hex.synced -> HexOverlay.Style.OUTLINE_SYNCED
                     else -> HexOverlay.Style.OUTLINE_PHONE
                 },
-                check = hex.synced && !hex.missing,
+                check = showChecks && hex.synced && !hex.missing,
             ),
         )
     }
     if (flats.isNotEmpty()) add(HexOverlay(flats, density))
 
-    for (area in areas) add(EInkOverlay(area, density))
-
     // Labels last of the ground layers, so street and place names read back
-    // through the screentones instead of being buried under them.
+    // through the coverage tint instead of being buried under it.
     add(labelsOverlay)
-    // The check marks for painted areas ride on their own flat overlay, so they
-    // land above every hexagon's ink rather than under the next one drawn.
-    val checks = areas.filter { it.synced }
-        .map { HexOverlay.Hex(it.hexagon, HexOverlay.Style.OUTLINE_SYNCED, check = true) }
-    if (checks.isNotEmpty()) add(HexOverlay(checks, density))
 
-    // Last, so the route always sits on top of the paper.
+    // Last, so the route always sits on top of the coverage.
     if (route != null && route.size > 1) {
         val line = Polyline(map)
         line.setPoints(route.map { GeoPoint(it.lat, it.lon) })
@@ -385,7 +389,7 @@ private fun rebuildContent(
     }
 }
 
-private fun apply(map: MapView, state: MapState, camera: MapCamera) {
+private fun apply(map: MapView, state: MapState, camera: MapCamera, bottomInsetPx: Int) {
     // Only break follow mode if it is actually engaged.
     fun stopFollowing() {
         state.locationOverlay?.disableFollowLocation()
@@ -393,21 +397,30 @@ private fun apply(map: MapView, state: MapState, camera: MapCamera) {
     when (val target = camera.target) {
         is MapCamera.Target.Region -> {
             stopFollowing()
-            map.controller.setCenter(GeoPoint(target.center.lat, target.center.lon))
             // osmdroid zooms by level, so a degree span becomes the level whose
             // world is that many degrees wide across the view.
             val zoom = zoomForSpan(target.spanDeg, map.width)
             map.controller.setZoom(zoom)
+            map.controller.setCenter(liftedCentre(target.center, zoom, bottomInsetPx))
         }
 
         is MapCamera.Target.Box -> {
             stopFollowing()
             val b = target.box
-            map.zoomToBoundingBox(
-                org.osmdroid.util.BoundingBox(b.north, b.east, b.south, b.west),
-                true,
-                target.paddingPx,
-            )
+            if (bottomInsetPx <= 0) {
+                map.zoomToBoundingBox(
+                    org.osmdroid.util.BoundingBox(b.north, b.east, b.south, b.west),
+                    true,
+                    target.paddingPx,
+                )
+            } else {
+                // zoomToBoundingBox only takes a uniform border, which would centre
+                // the box behind the floating card. Fit it into the band ABOVE the
+                // card instead: pick the zoom against the usable height, then lift
+                // the centre by half the inset. Animated, like the plain path.
+                val zoom = zoomToFit(b, map, target.paddingPx, bottomInsetPx)
+                map.controller.animateTo(liftedCentre(b.center, zoom, bottomInsetPx), zoom, null)
+            }
         }
 
         MapCamera.Target.FollowUser -> state.locationOverlay?.enableFollowLocation()
@@ -421,6 +434,40 @@ private fun zoomForSpan(spanDeg: Double, widthPx: Int): Double {
     val z = kotlin.math.ln(width * 360.0 / (tile * spanDeg)) / kotlin.math.ln(2.0)
     return z.coerceIn(2.0, 19.0)
 }
+
+/** The largest zoom at which [box] fits the view, less its border and the band
+ *  the floating card covers. */
+private fun zoomToFit(box: BoundingBox, map: MapView, borderPx: Int, bottomInsetPx: Int): Double {
+    val tile = MapStyle.TILE_SIZE.toDouble()
+    val w = ((if (map.width > 0) map.width else 1080) - 2 * borderPx).coerceAtLeast(1)
+    val h = ((if (map.height > 0) map.height else 1920) - 2 * borderPx - bottomInsetPx)
+        .coerceAtLeast(1)
+    // The box as a fraction of the whole world, so a zoom is a ratio away.
+    val fx = ((box.east - box.west) / 360.0).coerceAtLeast(1e-9)
+    val fy = ((MercatorWorld.y(box.south) - MercatorWorld.y(box.north)) / MercatorWorld.WORLD)
+        .coerceAtLeast(1e-9)
+    val ln2 = kotlin.math.ln(2.0)
+    val zx = kotlin.math.ln(w / (tile * fx)) / ln2
+    val zy = kotlin.math.ln(h / (tile * fy)) / ln2
+    return kotlin.math.min(zx, zy).coerceIn(2.0, 19.0)
+}
+
+/**
+ * Where the MAP must be centred for [centre] to land in the middle of the band
+ * above the floating card — half the inset south of it, so the content rides up.
+ */
+private fun liftedCentre(centre: LatLon, zoom: Double, bottomInsetPx: Int): GeoPoint {
+    if (bottomInsetPx <= 0) return GeoPoint(centre.lat, centre.lon)
+    val worldPx = MapStyle.TILE_SIZE * 2.0.pow(zoom)
+    val y = MercatorWorld.y(centre.lat) / MercatorWorld.WORLD * worldPx + bottomInsetPx / 2.0
+    return GeoPoint(MercatorWorld.latFromY(y / worldPx * MercatorWorld.WORLD), centre.lon)
+}
+
+/**
+ * Past this many synced areas on screen the checks overlap into a solid mat of
+ * green and say less than the hexagons' own edges do.
+ */
+private const val MAX_CHECKS = 120
 
 private class MapState {
     var wired = false

@@ -22,18 +22,13 @@ import java.io.File
  * and needs no invalidation beyond age.
  *
  * Lives in `filesDir`, NOT the cache directory. It started as a build cache on
- * the theory that it is reconstructible from the network — true, but it is no
- * longer only that: these blobs are what the map draws downloaded areas from
- * ([EInkTileStore]), so an eviction would silently blank out areas the user
- * downloaded, with an Overpass round-trip to get them back.
+ * the theory that it is reconstructible from the network — true, but an eviction
+ * would silently un-download areas the rider chose, with an Overpass round-trip
+ * to get them back.
  */
 object TileCache {
 
-    /**
-     * Tiles older than this are re-fetched, so OSM edits eventually land.
-     * Applies to REUSE only — [displayData] ignores it, since drawing a slightly
-     * stale area beats drawing nothing.
-     */
+    /** Tiles older than this are re-fetched, so OSM edits eventually land. */
     private const val MAX_AGE_MS = 90L * 24 * 60 * 60 * 1000   // 90 days
 
     /** Rough ceiling before the oldest entries are dropped. */
@@ -65,19 +60,8 @@ object TileCache {
         f.readBytes().takeIf { it.isNotEmpty() }
     }
 
-    /**
-     * Blob for [id] with no age check, for DRAWING the area on the map.
-     * [data] expires tiles so a rebuild picks up OSM edits; expiring what the map
-     * draws would instead make downloaded areas quietly disappear.
-     */
-    suspend fun displayData(id: String): ByteArray? = withContext(Dispatchers.IO) {
-        runCatching { fileFor(id).readBytes() }.getOrNull()?.takeIf { it.isNotEmpty() }
-    }
-
-    /**
-     * Every H3 id this phone holds tile data for — the set of areas the map can
-     * draw in the device's own style.
-     */
+    /** Every H3 id this phone holds tile data for — the areas the map shows as
+     *  downloaded. */
     suspend fun cachedIds(): Set<String> = withContext(Dispatchers.IO) {
         (dir.listFiles() ?: emptyArray())
             .filter { it.extension == "ebm" }

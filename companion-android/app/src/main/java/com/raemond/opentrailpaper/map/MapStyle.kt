@@ -9,9 +9,8 @@ import org.osmdroid.tileprovider.tilesource.XYTileSource
  * NOT the standard OpenStreetMap style. That style is a general-purpose map of
  * everything — motorway shields, ferry routes, county lines, administrative
  * boundaries, POI icons at every zoom — and this app needs the opposite: a quiet
- * ground for the head unit's own ink to sit on. A downloaded area is painted in
- * black-on-paper exactly as the device will draw it, and that only reads as
- * "this is your device's map" if the surrounding map is calm.
+ * ground for the coverage hexagons to sit on. Which ground you hold only reads at
+ * a glance if the map underneath is calm.
  *
  * CARTO's Voyager is the closest keyless OSM raster style to what Apple Maps
  * gives the iOS companion: soft land, white roads with light casing, muted green
@@ -20,11 +19,11 @@ import org.osmdroid.tileprovider.tilesource.XYTileSource
  * muddy.
  *
  * LABELS ARE A SEPARATE LAYER, and that is the point of splitting them. The iOS
- * overlay is deliberately drawn below the map's labels so place and street names
- * come back through on top of the screentones — without that, a downloaded area
- * is an anonymous patch of ink: you can see the shape of your coverage but not
- * read where it is. Raster tiles bake labels into the image, so the only way to
- * reproduce that is to draw the labels again above the ink.
+ * hexagons are deliberately drawn below the map's labels so place and street
+ * names come back through on top of the coverage tint — without that, a
+ * downloaded region is an anonymous patch of colour: you can see the shape of
+ * your coverage but not read where it is. Raster tiles bake labels into the
+ * image, so the only way to reproduce that is to draw the labels again on top.
  *
  * Attribution is required by both OpenStreetMap and CARTO and is drawn on every
  * map by [com.raemond.opentrailpaper.ui.OsmMap]. CARTO's basemaps are free to use
@@ -62,7 +61,7 @@ object MapStyle {
     )
 
     /** Text only, on transparent tiles, so it can be drawn back on top of the
-     *  device's ink. */
+     *  coverage hexagons. */
     val labels: OnlineTileSourceBase = XYTileSource(
         "CartoVoyagerLabels",
         MIN_ZOOM,
