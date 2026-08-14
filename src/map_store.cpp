@@ -580,6 +580,14 @@ bool saveAndActivate(const char* name, const uint8_t* data, size_t len) {
         size_t chunk = len - wrote < 4096 ? len - wrote : 4096;
         if (f.write(data + wrote, chunk) != chunk) ok = false;
         else wrote += chunk;
+        // Come up for air every 16 KB. This runs on the BLE server task, and a
+        // big tile is a lot of uninterrupted SD work: a 177 KB tile measured
+        // seconds of it, the idle task never ran, and the TASK WATCHDOG reset
+        // the device mid-transfer — inside spiTransferBytesNL, which busy-waits
+        // on the SPI peripheral and cannot be interrupted from our side. Worse,
+        // resetting mid-write is what leaves the card garbled for the next boot
+        // (see sdSpiForceIdle), so this failure fed itself.
+        if ((wrote & 0x3FFF) == 0) vTaskDelay(1);
     }
     if (f) f.close();
     if (!ok) SD.remove(path);
@@ -632,6 +640,14 @@ bool saveTile(const char* id, const uint8_t* data, size_t len) {
         size_t chunk = len - wrote < 4096 ? len - wrote : 4096;
         if (f.write(data + wrote, chunk) != chunk) ok = false;
         else wrote += chunk;
+        // Come up for air every 16 KB. This runs on the BLE server task, and a
+        // big tile is a lot of uninterrupted SD work: a 177 KB tile measured
+        // seconds of it, the idle task never ran, and the TASK WATCHDOG reset
+        // the device mid-transfer — inside spiTransferBytesNL, which busy-waits
+        // on the SPI peripheral and cannot be interrupted from our side. Worse,
+        // resetting mid-write is what leaves the card garbled for the next boot
+        // (see sdSpiForceIdle), so this failure fed itself.
+        if ((wrote & 0x3FFF) == 0) vTaskDelay(1);
     }
     if (f) f.close();
     if (!ok) SD.remove(path);

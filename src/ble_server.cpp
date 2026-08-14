@@ -1020,6 +1020,10 @@ void otaCommit() {
                 size_t w = f.write(otaBuf + wrote, chunk);
                 if (w != chunk) break;
                 wrote += w;
+                // Same reason as the tile writes in map_store: a firmware image
+                // is ~2 MB of uninterrupted SD work on this task, and the task
+                // watchdog does not care that it is making progress.
+                if ((wrote & 0x3FFF) == 0) vTaskDelay(1);
             }
             f.close();
             ok = (wrote == otaBufLen);
