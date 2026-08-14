@@ -1555,8 +1555,12 @@ void task(void*) {
         // A card that only mounted after boot had given up: setup() skipped the
         // routes, the map index and the USB drive, and nothing revisited them, so
         // the card stayed mounted-but-unused for the whole session. Run that
-        // bring-up now. It happens here, in the UI task, because the map cache is
-        // this task's alone — doing it from loop() would race the renderer.
+        // bring-up now. It happens here, in the UI task, next to the renderer
+        // that consumes it.
+        //
+        // It used to say the map cache was "this task's alone". It never was —
+        // the BLE server writes to it on every tile received — and acting on
+        // that belief is why nothing locked it. map_store owns the locking now.
         if (ride_recorder::consumeLateMount()) {
             diag::log("sd: late mount — loading routes/maps, exposing USB drive");
             ride_recorder::recoverRides();

@@ -21,6 +21,43 @@ namespace {
 constexpr char MAP_DIR[] = "/maps";
 constexpr char TILE_DIR[] = "/maps/tiles";
 
+// The tile index and the tile cache are shared by TWO tasks, and used to be
+// shared with no lock at all:
+//
+//   UI task     — renderInto / elevationAt / coversPosition / ensureForPosition
+//   BLE server  — saveTile / listTileIds / listMaps / saveAndActivate
+//
+// saveTile rebuilt the whole index, which starts by freeing every cached tile
+// blob. Do that while the UI task is holding a pointer into that cache — or,
+// worse, half way through its own eviction — and you get a use-after-free or a
+// double free in PSRAM, which lands as a panic and a reset some indeterminate
+// time later. It fires more often the more tiles are sent, because the rebuild
+// ran once PER TILE, so a large transfer was hundreds of chances to hit it.
+//
+// This guards the RAM structures (g_tiles, g_tileCount, g_cache, g_maps and the
+// active whole-map pointers). It is NOT the SD lock: it is always taken OUTSIDE
+// sdLock, never the other way round, so the two can never deadlock.
+// A function-local static, so the mutex exists before the first caller whoever
+// that is — begin() runs on the UI task and the BLE server is already up by
+// then, so there is no safe "create it in setup()" moment to rely on.
+SemaphoreHandle_t mapMutex() {
+    static SemaphoreHandle_t m = xSemaphoreCreateRecursiveMutex();
+    return m;
+}
+
+void mapLock() {
+    if (SemaphoreHandle_t m = mapMutex()) xSemaphoreTakeRecursive(m, portMAX_DELAY);
+}
+void mapUnlock() {
+    if (SemaphoreHandle_t m = mapMutex()) xSemaphoreGiveRecursive(m);
+}
+
+// Scope guard so an early return can't leak the lock.
+struct MapGuard {
+    MapGuard() { mapLock(); }
+    ~MapGuard() { mapUnlock(); }
+};
+
 uint8_t* activeBuf = nullptr;     // PSRAM copy of the active whole SD map (or null)
 size_t activeLen = 0;
 
@@ -111,7 +148,12 @@ void tileDirFor(const char* id, char* out, size_t len) {
 // TILE_PREFIX_LEN prefix the file drops that prefix, otherwise it is the full
 // id. Same 60 bytes as before — name shrank as dir was added.
 struct TileMeta { char name[20]; char dir[8]; double s, w, n, e; };
-TileMeta g_tiles[MAX_TILES];
+
+// PSRAM, not .bss: at MAX_TILES this is a quarter of a megabyte, and internal
+// RAM is the scarce one here (see epd_compat.cpp on the display/BLE squeeze).
+// Null until the first ensureIndex(); every reader checks g_tileCount, which
+// stays 0 while it is.
+TileMeta* g_tiles = nullptr;
 
 // On-disk path for an indexed tile. The filename drops the directory prefix
 // when the tile lives in a prefix directory (the current layout) and is the full
@@ -246,7 +288,21 @@ bool loadCovering(double lat, double lon) {
 
 // (Re)build the in-memory tile index from /maps/tiles headers. Invalidates
 // the LRU cache since index positions may shift.
+// The tile index buffer. Allocated once; a failure here leaves g_tileCount at 0
+// so every reader degrades to "no tiles on the card" rather than dereferencing
+// null.
+bool ensureIndex() {
+    if (g_tiles) return true;
+    g_tiles = (TileMeta*)heap_caps_malloc((size_t)MAX_TILES * sizeof(TileMeta),
+                                          MALLOC_CAP_SPIRAM);
+    if (!g_tiles)
+        diag::log("map: tile index alloc failed (%u bytes) — no tiles will draw",
+                  (unsigned)((size_t)MAX_TILES * sizeof(TileMeta)));
+    return g_tiles != nullptr;
+}
+
 void scanTiles() {
+    if (!ensureIndex()) return;
     for (int i = 0; i < CACHE_N; ++i) {
         if (g_cache[i].buf) heap_caps_free(g_cache[i].buf);
         g_cache[i] = {};
@@ -326,6 +382,64 @@ void scanTiles() {
     }
     sdUnlock();
     diag::log("map: %d tiles indexed", g_tileCount);
+}
+
+// Drop a cached blob for one tile index (its file on the card just changed).
+void invalidateCached(int idx) {
+    for (int i = 0; i < CACHE_N; ++i) {
+        if (g_cache[i].buf && g_cache[i].idx == idx) {
+            heap_caps_free(g_cache[i].buf);
+            g_cacheBytes -= g_cache[i].len;
+            g_cache[i] = {};
+            g_cache[i].idx = -1;
+        }
+    }
+}
+
+// Add (or refresh) ONE tile in the in-RAM index, from the bytes just written.
+//
+// saveTile used to call scanTiles() instead, re-reading the header of every
+// .ebm on the card to learn one new bbox. That is O(tiles) of SD directory work
+// and file opens PER TILE SAVED, so a transfer of M tiles into a card holding N
+// did O(N*M) — seconds of held SD lock per tile once N is in the hundreds, which
+// is what made a big download crawl and gave the index-rebuild race hundreds of
+// chances to fire. Appending is O(tiles) in RAM and touches the card not at all.
+//
+// Appending also keeps index positions STABLE, which is why this does not have
+// to throw the tile cache away the way a rescan does.
+void indexOneTile(const char* bareId, const uint8_t* data) {
+    if (!ensureIndex()) return;
+    double s, w, n, e;
+    if (!headerBounds(data, s, w, n, e)) return;
+
+    char name[20];
+    snprintf(name, sizeof(name), "%.15s.ebm", bareId);
+    char dir[80];
+    tileDirFor(bareId, dir, sizeof(dir));
+
+    for (int i = 0; i < g_tileCount; ++i) {
+        if (strcmp(g_tiles[i].name, name) != 0) continue;
+        g_tiles[i].s = s; g_tiles[i].w = w; g_tiles[i].n = n; g_tiles[i].e = e;
+        invalidateCached(i);           // the file under it just changed
+        return;
+    }
+    if (g_tileCount >= MAX_TILES) {
+        static bool warned = false;
+        if (!warned) {
+            warned = true;
+            diag::log("map: WARNING tile index full at %d — tiles arriving now "
+                      "are saved but will not render", MAX_TILES);
+        }
+        return;
+    }
+    TileMeta& t = g_tiles[g_tileCount++];
+    snprintf(t.name, sizeof(t.name), "%s", name);
+    // Same rule scanTiles uses: the directory is the id prefix, or "" flat.
+    if (strlen(dir) > strlen(TILE_DIR))
+        snprintf(t.dir, sizeof(t.dir), "%.*s", TILE_PREFIX_LEN, bareId);
+    else
+        t.dir[0] = 0;
+    t.s = s; t.w = w; t.n = n; t.e = e;
 }
 
 // Return the tile blob for index `idx`, loading it from SD into the LRU cache
@@ -441,6 +555,7 @@ float elevFromBlob(const uint8_t* b, size_t len, double lat, double lon) {
 namespace map_store {
 
 void begin(double lat, double lon) {
+    MapGuard g;
     sdLock();
     if (!SD.exists(MAP_DIR)) SD.mkdir(MAP_DIR);
     sdUnlock();
@@ -450,6 +565,7 @@ void begin(double lat, double lon) {
 }
 
 void rescanCard() {
+    MapGuard g;
     scanTiles();
     scanMaps();
 }
@@ -460,6 +576,7 @@ void rescanCard() {
 // bus under the same mutex once a second, and a ride must never be held up by
 // map bookkeeping. Hence the RAM-resident bounds index.
 void ensureForPosition(double lat, double lon) {
+    MapGuard g;
     if (boundsCover(lat, lon)) return;      // current whole map already covers us
     if (loadCovering(lat, lon)) return;     // switched to a better downloaded map
     clearPrimary();                         // nothing whole-map covers us now
@@ -467,6 +584,9 @@ void ensureForPosition(double lat, double lon) {
 
 void renderInto(double lat, double lon, float metersPerPixel, int centerX,
                 int centerY, float rotateDeg, MapScreenData& out) {
+    // Held for the whole frame: the projector reads straight out of the tile
+    // cache, so nothing may rebuild the index or free a blob underneath it.
+    MapGuard g;
     map_tiles::beginProject(out);
 
     // Which tiles does this frame need? A fast RAM pass over the bbox index —
@@ -520,6 +640,7 @@ void renderInto(double lat, double lon, float metersPerPixel, int centerX,
 }
 
 bool saveAndActivate(const char* name, const uint8_t* data, size_t len) {
+    MapGuard g;
     if (len < 36 || memcmp(data, "EBM2", 4) != 0) {
         diag::log("map save rejected: not EBM2 (%u bytes)", (unsigned)len);
         return false;
@@ -549,6 +670,7 @@ bool saveAndActivate(const char* name, const uint8_t* data, size_t len) {
 }
 
 bool saveTile(const char* id, const uint8_t* data, size_t len) {
+    MapGuard g;
     if (len < 36 || memcmp(data, "EBM2", 4) != 0) {
         diag::log("tile save rejected: not EBM2 (%u bytes)", (unsigned)len);
         return false;
@@ -595,11 +717,12 @@ bool saveTile(const char* id, const uint8_t* data, size_t len) {
     sdUnlock();
     if (!ok) { diag::log("tile save: write failed %s", path); return false; }
     diag::log("tile saved: %s (%u KB)", path, (unsigned)(len / 1024));
-    scanTiles();   // refresh index so the new tile renders immediately
+    indexOneTile(bare, data);   // renders immediately; no re-read of the card
     return true;
 }
 
 bool hasTile(const char* id) {
+    MapGuard g;
     for (int i = 0; i < g_tileCount; ++i) {
         // g_tiles[i].name is "<id>.ebm"; match the id prefix.
         if (strncmp(g_tiles[i].name, id, strlen(id)) == 0 &&
@@ -608,9 +731,10 @@ bool hasTile(const char* id) {
     return false;
 }
 
-int tileCount() { return g_tileCount; }
+int tileCount() { MapGuard g; return g_tileCount; }
 
 bool coversPosition(double lat, double lon) {
+    MapGuard g;
     for (int i = 0; i < g_tileCount; ++i) {
         const TileMeta& t = g_tiles[i];
         if (lat >= t.s && lat <= t.n && lon >= t.w && lon <= t.e) return true;
@@ -620,6 +744,7 @@ bool coversPosition(double lat, double lon) {
 }
 
 float elevationAt(double lat, double lon) {
+    MapGuard g;                 // shares the tile cache with renderInto
     for (int i = 0; i < g_tileCount; ++i) {
         const TileMeta& t = g_tiles[i];
         if (lat < t.s || lat > t.n || lon < t.w || lon > t.e) continue;
@@ -633,6 +758,7 @@ float elevationAt(double lat, double lon) {
 }
 
 int listTileIds(char out[][24], int maxOut) {
+    MapGuard g;
     int n = 0;
     for (int i = 0; i < g_tileCount && n < maxOut; ++i) {
         strncpy(out[n], g_tiles[i].name, 23);
@@ -652,6 +778,7 @@ uint32_t sdFreeKB() {
 }
 
 int listMaps(MapBounds* out, int maxOut) {
+    MapGuard g;
     int n = 0;
     sdLock();
     File dir = SD.open(MAP_DIR);

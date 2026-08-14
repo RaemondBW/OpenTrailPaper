@@ -6,8 +6,12 @@
 
 #include <cmath>
 
-// Hard cap on the tile index (map_store's g_tiles).
-constexpr int MAP_MAX_TILES = 512;
+// Hard cap on the tile index (map_store's g_tiles). The index lives in PSRAM
+// (60 bytes an entry), so this is not paid out of the 320 KB of internal RAM
+// that the display driver and BLE controller are already fighting over. It was
+// 512 and static, which is one metro area — a rider who downloads a region gets
+// tiles saved to the card that the map then never draws.
+constexpr int MAP_MAX_TILES = 4096;
 
 // Tiles one frame may project, and the number of slots in map_store's LRU.
 //

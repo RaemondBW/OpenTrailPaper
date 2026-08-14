@@ -14,6 +14,7 @@
 #include "routes.h"
 #include "gps_service.h"
 #include "ble_sensors.h"
+#include "map_select.h"
 #include "map_store.h"
 #include "sd_bus.h"
 #include "usb_storage.h"
@@ -952,8 +953,17 @@ void mapCommit() {
 // re-sending tiles it already delivered. Reads the (in-RAM) tile index; runs
 // in the server task to stay off the BLE host thread.
 void sendTileList() {
-    constexpr int TILE_LIST_MAX = 512;
-    static char ids[TILE_LIST_MAX][24];
+    // PSRAM, and sized to the whole index. At 512 in .bss this was both 12 KB of
+    // the internal RAM the display and BLE controller are short of, AND a silent
+    // truncation: a rider past 512 tiles kept being offered tiles the device
+    // already had, because the list the app dedups against stopped there.
+    constexpr int TILE_LIST_MAX = MAP_MAX_TILES;
+    static char (*ids)[24] = nullptr;
+    if (!ids) {
+        ids = (char(*)[24])heap_caps_malloc((size_t)TILE_LIST_MAX * 24,
+                                            MALLOC_CAP_SPIRAM);
+        if (!ids) { diag::log("tile list: no PSRAM for %d ids", TILE_LIST_MAX); return; }
+    }
     int n = map_store::listTileIds(ids, TILE_LIST_MAX);
 
     uint8_t begin = 0xD0;
