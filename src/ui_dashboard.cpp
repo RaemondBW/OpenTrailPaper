@@ -419,6 +419,27 @@ void cycleBacklight() {
     applyBacklight(next);
 }
 
+// Answer a zoom tap NOW, before the map is re-projected.
+//
+// Re-projecting pulls tiles off the SD card and takes the best part of a
+// second, and until this existed nothing on the panel moved in that time — so a
+// tap that had registered looked exactly like one that had missed, and the
+// natural response was to tap again (zooming twice). Painting the button in its
+// pressed state is a ~76 px change the driver's delta engine drives almost
+// immediately; the full redraw that follows puts it back.
+//
+// Through refresh() rather than epdc_paint() directly, so the shadow buffer
+// tracks what is actually on the glass. Otherwise a tap at either end of the
+// zoom range — where mapMpp is clamped and the rest of the frame is unchanged —
+// would leave the button stuck black: the next frame would compare equal to the
+// shadow and never repaint.
+void ackZoomTap(bool zoomIn) {
+    if (screen != SCREEN_MAP) return;
+    uint8_t* fb = epdc_framebuffer();
+    ui_map_draw_zoom_button(zoomIn, true, fb);
+    refresh(false, true, false);
+}
+
 void handleTap(int x, int y) {
     // The "Start navigation?" prompt owns every tap while it is up. START
     // begins navigation; any other tap dismisses it, so it can never trap
@@ -472,10 +493,12 @@ void handleTap(int x, int y) {
                 x < kMapZoom.zoomX + kMapZoom.size) {
                 if (y >= kMapZoom.zoomInY && y < kMapZoom.zoomInY + kMapZoom.size) {
                     if (mapMpp > 1.0f) mapMpp /= 2.0f;
+                    ackZoomTap(true);
                     break;
                 }
                 if (y >= kMapZoom.zoomOutY && y < kMapZoom.zoomOutY + kMapZoom.size) {
                     if (mapMpp < 32.0f) mapMpp *= 2.0f;
+                    ackZoomTap(false);
                     break;
                 }
             }
@@ -717,12 +740,13 @@ void renderMapScreen(const RideState& s, uint8_t* fb) {
     ui_render_map(map, s, fb);
     if (dbgTiming)
         diag::log("map: project=%lu draw=%lu polys=%d (tiles=%d base=%d) "
-                  "cls[maj=%d pri=%d sec=%d ter=%d min=%d path=%d] ntiles=%d mpp=%d",
+                  "cls[maj=%d pri=%d sec=%d ter=%d min=%d path=%d] ntiles=%d/%d "
+                  "mpp=%d",
                   (unsigned long)(m1 - m0), (unsigned long)(millis() - m1),
                   map.featureCount, map.tilePolys, map.featureCount - map.tilePolys,
                   map.clsCount[0], map.clsCount[1], map.clsCount[2], map.clsCount[3],
                   map.clsCount[4], map.clsCount[5],
-                  map.projectedTiles, (int)mapMpp);
+                  map.projectedTiles, map.wantedTiles, (int)mapMpp);
     drawNavBanner(fb);
 }
 

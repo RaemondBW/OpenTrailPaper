@@ -8,7 +8,10 @@ struct SettingsView: View {
     @AppStorage(UnitPref.key) private var useMiles = false
     @State private var confirmUpdate = false
     @State private var showSensors = false
-    @State private var showMaps = false
+    /// `-demo-maps` opens the Maps sheet at launch. The Maps screen is only
+    /// reachable by tapping through Settings, so without this it could not be
+    /// captured for the site, or driven from a simulator at all.
+    @State private var showMaps = ProcessInfo.processInfo.arguments.contains("-demo-maps")
 
     var body: some View {
         NavigationStack {

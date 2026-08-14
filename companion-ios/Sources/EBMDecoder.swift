@@ -26,6 +26,29 @@ enum EBM {
         case arterial = 0, primary = 1, secondary = 2, tertiary = 3, minor = 4, path = 5
     }
 
+    /// How much of a tile to build paths for.
+    ///
+    /// Zoomed out, a preview holding every residential street is geometry no
+    /// pixel can show: the device has already shed those classes by then, and
+    /// the phone was decoding them anyway — which is the memory that forced the
+    /// old 24-tile drawing cap, and with it the ragged edge between inked and
+    /// merely outlined areas. `.overview` decodes what a wide view actually
+    /// draws, so a whole region's worth of areas fits and all of it can be ink.
+    enum Detail: Hashable {
+        case full        // everything, at the 3 m detail the tile stores
+        case overview    // what the device still draws at >= 32 m/px
+
+        /// Classes worth building paths for. Mirrors EInkRenderer.width(), which
+        /// is itself map_view.cpp styleFor + map_tiles.cpp shedding.
+        var classes: Set<FeatureClass> {
+            self == .full ? Set(FeatureClass.allCases) : [.arterial, .primary]
+        }
+
+        /// Drop a point within this many metres of the last one kept. The device
+        /// does the same in screen space (~2 px), which at 32 m/px is ~64 m.
+        var simplifyM: Double { self == .full ? 0 : 60 }
+    }
+
     /// One decoded tile, already projected into map points — the space the
     /// overlay renderer draws in, so nothing has to be re-projected per frame.
     struct Tile {
@@ -38,7 +61,7 @@ enum EBM {
     }
 
     /// Decodes a blob, or nil if it isn't a well-formed EBM2.
-    static func decode(_ data: Data) -> Tile? {
+    static func decode(_ data: Data, detail: Detail = .full) -> Tile? {
         var r = Reader(data)
         guard r.magic("EBM2"),
               let lat0 = r.f64(at: 4), let lon0 = r.f64(at: 12),
@@ -66,6 +89,8 @@ enum EBM {
 
         var roadPaths: [FeatureClass: CGMutablePath] = [:]
         var points = 0
+        let wanted = detail.classes
+        let eps2 = detail.simplifyM * detail.simplifyM
 
         // --- roads, per sub-tile
         let indexBase = 36
@@ -89,15 +114,26 @@ enum EBM {
                     let n = Int(n16)
                     guard p + n * 4 <= off + len else { break }
                     defer { p += n * 4 }
-                    guard let fc = FeatureClass(rawValue: cls), n >= 2 else { continue }
+                    guard let fc = FeatureClass(rawValue: cls), n >= 2,
+                          wanted.contains(fc) else { continue }
                     let path = roadPaths[fc] ?? { let m = CGMutablePath(); roadPaths[fc] = m; return m }()
+                    var kept = 0
+                    var lx = 0.0, ly = 0.0
                     for j in 0..<n {
                         guard let mx = r.i16(at: p + j * 4),
                               let my = r.i16(at: p + j * 4 + 2) else { break }
-                        let pt = project(ox + Double(mx), oy + Double(my))
-                        if j == 0 { path.move(to: pt) } else { path.addLine(to: pt) }
+                        let x = Double(mx), y = Double(my)
+                        // Always keep the ends, so simplified roads still join.
+                        if kept > 0, j < n - 1, eps2 > 0 {
+                            let dx = x - lx, dy = y - ly
+                            if dx * dx + dy * dy < eps2 { continue }
+                        }
+                        let pt = project(ox + x, oy + y)
+                        if kept == 0 { path.move(to: pt) } else { path.addLine(to: pt) }
+                        lx = x; ly = y
+                        kept += 1
                     }
-                    points += n
+                    points += kept
                 }
             }
         }
@@ -110,10 +146,12 @@ enum EBM {
             q += 44 + Int(gw) * Int(gh) * 2
         }
         var water: CGPath? = nil, parks: CGPath? = nil
-        if let (path, next, n) = readFills(&r, at: q, magic: "WTR2", project: project) {
+        if let (path, next, n) = readFills(&r, at: q, magic: "WTR2", eps2: eps2,
+                                           project: project) {
             water = path; q = next; points += n
         }
-        if let (path, _, n) = readFills(&r, at: q, magic: "PRK2", project: project) {
+        if let (path, _, n) = readFills(&r, at: q, magic: "PRK2", eps2: eps2,
+                                        project: project) {
             parks = path; points += n
         }
 
@@ -125,9 +163,19 @@ enum EBM {
     /// `<magic><u16 count>`, then each polygon as `<u16 pointCount><i16 x,y …>`
     /// in metres E/N of the grid origin. Returns the combined path (rings are
     /// closed, as the device closes them), where the section ends, and its size.
+    ///
+    /// The path is NIL when the section holds no rings, and that is not a
+    /// tidiness point. A present-but-empty section is normal — an inland area
+    /// has a WTR2 with no water in it, an area with no parkland a PRK2 with
+    /// nothing in it — and CGContext.clip() with an empty path does not clip to
+    /// nothing, it leaves the clip alone. An empty path therefore used to tile
+    /// its screentone across the WHOLE hexagon: every inland area came out under
+    /// a park hatch, every parkless one under a water dot screen. That is what
+    /// made downloaded areas look like solid blocks of texture instead of maps.
     private static func readFills(_ r: inout Reader, at start: Int, magic: String,
+                                  eps2: Double,
                                   project: (Double, Double) -> CGPoint)
-        -> (CGPath, Int, Int)? {
+        -> (CGPath?, Int, Int)? {
         guard start >= 0, start + 6 <= r.count, r.magic(magic, at: start),
               let count = r.u16(at: start + 4) else { return nil }
         var q = start + 6
@@ -140,16 +188,30 @@ enum EBM {
             guard q + n * 4 <= r.count else { break }
             defer { q += n * 4 }
             guard n >= 3 else { continue }
+            var ring: [CGPoint] = []
+            ring.reserveCapacity(n)
+            var lx = 0.0, ly = 0.0
             for j in 0..<n {
                 guard let mx = r.i16(at: q + j * 4),
                       let my = r.i16(at: q + j * 4 + 2) else { break }
-                let pt = project(Double(mx), Double(my))
-                if j == 0 { path.move(to: pt) } else { path.addLine(to: pt) }
+                let x = Double(mx), y = Double(my)
+                if !ring.isEmpty, eps2 > 0 {
+                    let dx = x - lx, dy = y - ly
+                    if dx * dx + dy * dy < eps2 { continue }
+                }
+                ring.append(project(x, y))
+                lx = x; ly = y
             }
+            // A ring simplified below a triangle has no area left to fill —
+            // a pond smaller than the simplification, which is exactly what
+            // should disappear at this zoom.
+            guard ring.count >= 3 else { continue }
+            path.move(to: ring[0])
+            for pt in ring.dropFirst() { path.addLine(to: pt) }
             path.closeSubpath()
-            total += n
+            total += ring.count
         }
-        return (path, q, total)
+        return (path.isEmpty ? nil : path, q, total)
     }
 
     /// Bounds-checked little-endian reads. Every accessor returns nil rather

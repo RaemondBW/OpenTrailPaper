@@ -1,8 +1,10 @@
 # PlatformIO build output
 .pio/
 
-# Vendored LilyGO board support (re-clone into vendor/ — see project notes)
-vendor/
+# Vendored LilyGO board support (re-clone into vendor/ — see project notes).
+# No trailing slash: a git worktree has no vendor/ of its own and the usual fix
+# is to symlink the main checkout's, which "vendor/" would not match.
+vendor
 
 # Editor / tooling
 .vscode/
@@ -47,9 +49,15 @@ companion-ios/build-sim/
 # Host test binaries (built by the run_*.sh scripts)
 tools/route_test/route_test
 tools/map_test/roundtrip
+tools/map_test/tilescene
 tools/fit_test/fit_test
 tools/fit_test/ascent_test
 tools/preview/preview
+
+# Frames from tools/map_test/run_tilescene.sh. Unlike tools/preview/out these
+# are not site images — they are a scratch pad for looking at one position, and
+# the tiles that produced them are not in the repo either.
+tools/map_test/out*/
 
 # ESP-IDF build output and fetched components. Regenerable, ~750 MB, and not
 # used by the PlatformIO build that actually ships — leftovers from the parked

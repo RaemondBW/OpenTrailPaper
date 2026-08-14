@@ -100,7 +100,7 @@ struct RootView: View {
         let a = ProcessInfo.processInfo.arguments
         if a.contains("-tab-route") { return 1 }
         if a.contains("-tab-rides") { return 2 }
-        if a.contains("-tab-settings") { return 3 }
+        if a.contains("-tab-settings") || a.contains("-demo-maps") { return 3 }
         return 0
     }
 
@@ -111,7 +111,8 @@ struct RootView: View {
         let a = ProcessInfo.processInfo.arguments
         if a.contains(where: { $0.hasPrefix("-onboarding") }) { return true }
         let demoFlags = ["-tab-route", "-tab-rides", "-tab-settings",
-                         "-demo-route", "-demo-rides", "-demo-update", "-demo-dash"]
+                         "-demo-route", "-demo-rides", "-demo-update", "-demo-dash",
+                         "-demo-maps"]
         if demoFlags.contains(where: a.contains) { return false }
         return !UserDefaults.standard.bool(forKey: BLEManager.onboardedKey)
     }

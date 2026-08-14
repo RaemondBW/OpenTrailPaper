@@ -37,6 +37,23 @@ void endProject(MapScreenData& out);
 int projectedPolyCount();
 void projectedClassCounts(int out[7]);
 
+// What this frame had to throw away. A frame that silently drops half its
+// geometry looks exactly like a frame with nothing to draw, which is what made
+// the partly-drawn map hard to read as a bug; these counters name the limit
+// that bit. Reset by beginProject().
+struct MapProjectStats {
+    int usedPoints;         // road/path scratch points in use
+    int usedPolys;
+    int usedWaterPoints, usedParkPoints;
+    int roadsDropped;       // hit MAX_POLYS / MAX_POINTS — geometry lost
+    int waterDropped;       // hit MAX_WATER_POLYS / MAX_WATER_POINTS
+    int parksDropped;       // hit MAX_PARK_POLYS / MAX_PARK_POINTS
+    int blobsTruncated;     // blobs abandoned mid-parse because scratch filled
+    int roadsOffscreen;     // rejected: no kept vertex inside the viewport
+    int waterOffscreen, parksOffscreen;
+};
+MapProjectStats projectStats();
+
 // Standalone geo -> screen projection around a center point (works
 // without a loaded map; used for the route overlay).
 void geoToScreen(double lat, double lon, double centerLat, double centerLon,

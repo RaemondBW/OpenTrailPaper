@@ -38,6 +38,21 @@ int g_usedPts = 0, g_usedPolys = 0;
 int g_clsKept[7] = {0, 0, 0, 0, 0, 0, 0};   // diag: polys kept per class this frame
 int g_usedWaterPts = 0, g_usedWaterPolys = 0;
 int g_usedParkPts = 0, g_usedParkPolys = 0;
+map_tiles::MapProjectStats g_stats = {};
+
+// The screen rectangle a projected feature has to reach to be worth keeping,
+// with a margin so a thick stroke centred just off-panel still shows its edge.
+constexpr int VP_X0 = -50, VP_X1 = 590, VP_Y0 = -50, VP_Y1 = 1010;
+
+// Could the segment a->b put ink on the panel? A bounding-box test: exact for
+// axis-aligned work, and for a diagonal that misses it only costs one clipped
+// draw. What matters is that it never says no to a segment that crosses.
+inline bool segmentOnScreen(int ax, int ay, int bx, int by) {
+    int lo = ax < bx ? ax : bx, hi = ax < bx ? bx : ax;
+    if (hi <= VP_X0 || lo >= VP_X1) return false;
+    lo = ay < by ? ay : by; hi = ay < by ? by : ay;
+    return hi > VP_Y0 && lo < VP_Y1;
+}
 
 void* bigAlloc(size_t n) {
 #ifdef ARDUINO
@@ -93,11 +108,21 @@ void beginProject(MapScreenData& out) {
     g_usedWaterPolys = 0;
     g_usedParkPts = 0;
     g_usedParkPolys = 0;
+    g_stats = {};
     for (int i = 0; i < 7; ++i) g_clsKept[i] = 0;
 }
 
 int projectedPolyCount() { return g_usedPolys; }
 void projectedClassCounts(int out[7]) { for (int i = 0; i < 7; ++i) out[i] = g_clsKept[i]; }
+
+MapProjectStats projectStats() {
+    MapProjectStats s = g_stats;
+    s.usedPoints = g_usedPts;
+    s.usedPolys = g_usedPolys;
+    s.usedWaterPoints = g_usedWaterPts;
+    s.usedParkPoints = g_usedParkPts;
+    return s;
+}
 
 void endProject(MapScreenData& out) {
     out.featureCount = g_usedPolys;
@@ -191,7 +216,14 @@ void projectBlobInto(const uint8_t* b, size_t bLen, double lat, double lon,
                     continue;
                 }
 
-                if (usedPolys >= MAX_POLYS || usedPts + n > MAX_POINTS) goto done;
+                if (usedPolys >= MAX_POLYS || usedPts + n > MAX_POINTS) {
+                    // The scratch is full, so the rest of this sub-tile — and
+                    // every sub-tile after it — is lost. Which geometry that is
+                    // depends on iteration order, not on what matters.
+                    g_stats.roadsDropped += count - i;
+                    g_stats.blobsTruncated++;
+                    goto done;
+                }
 
                 // Project + viewport reject + screen-space decimation in one
                 // pass. The tile keeps 3 m detail; zoomed out that is far below a
@@ -203,7 +235,7 @@ void projectBlobInto(const uint8_t* b, size_t bLen, double lat, double lon,
                 int16_t* dst = pts + usedPts * 2;
                 int kept = 0;
                 int lastKx = -30000, lastKy = -30000;
-                bool anyVisible = false;
+                bool touchesViewport = false;
                 for (uint16_t j = 0; j < n; ++j) {
                     int16_t mx = rd<int16_t>(p + j * 4);
                     int16_t my = rd<int16_t>(p + j * 4 + 2);
@@ -225,9 +257,15 @@ void projectBlobInto(const uint8_t* b, size_t bLen, double lat, double lon,
                         int adx = ix - lastKx, ady = iy - lastKy;
                         if (adx * adx + ady * ady < 4) continue;   // within ~2 px
                     }
-                    if (ix > -50 && ix < 590 && iy > -50 && iy < 1010) {
-                        anyVisible = true;
-                    }
+                    // Keep the feature if any SEGMENT of it reaches the screen,
+                    // not if any VERTEX lands on it. A vertex test throws away
+                    // every line that crosses the viewport between two distant
+                    // points — at 2 m/px one stored tile is 2800 px wide, so a
+                    // road (or a tile-sized water ring) routinely spans the whole
+                    // screen with both ends off it. That is what left hard
+                    // straight edges where a bay simply stopped being drawn.
+                    if (kept > 0 && segmentOnScreen(lastKx, lastKy, ix, iy))
+                        touchesViewport = true;
                     dst[kept * 2] = (int16_t)ix;
                     dst[kept * 2 + 1] = (int16_t)iy;
                     lastKx = ix; lastKy = iy;
@@ -235,7 +273,8 @@ void projectBlobInto(const uint8_t* b, size_t bLen, double lat, double lon,
                 }
                 p += n * 4;
 
-                if (kept < 2 || !anyVisible) continue;
+                if (kept >= 2 && !touchesViewport) g_stats.roadsOffscreen++;
+                if (kept < 2 || !touchesViewport) continue;
                 polys[usedPolys].cls = (MapFeatureClass)cls;
                 polys[usedPolys].pts = dst;
                 polys[usedPolys].pointCount = kept;
@@ -275,7 +314,7 @@ done:
     // Assumes the magic at q was already matched by the caller.
     auto parseFill = [&](int16_t* dstPts, MapPolyline* dstPolys,
                          int& usedPts, int& usedPolys, int maxPts, int maxPolys,
-                         MapFeatureClass cls) {
+                         MapFeatureClass cls, int& dropped, int& offscreen) {
         uint16_t polyCount = rd<uint16_t>(q + 4);
         q += 6;
         for (int pi = 0; pi < polyCount && q + 2 <= wend; ++pi) {
@@ -284,10 +323,18 @@ done:
             if (q + (size_t)wn * 4 > wend) break;
             const uint8_t* poly = q;
             q += (size_t)wn * 4;                 // always advance to next poly
-            if (usedPolys >= maxPolys || usedPts + wn > maxPts) continue;
+            // Room is checked against what the ring COSTS AFTER decimation, not
+            // against its stored point count. A coastline stores thousands of
+            // 3 m points and keeps a few dozen of them at a wide zoom; reserving
+            // the stored count filled the budget with rings that were never
+            // going to use it, and the water past that point simply vanished.
+            const int room = maxPts - usedPts;
+            if (usedPolys >= maxPolys || room < 3) { dropped++; continue; }
             int16_t* dst = dstPts + usedPts * 2;
             int kept = 0;
-            bool vis = false;
+            bool overflow = false;
+            int lastKx = -30000, lastKy = -30000;
+            int minX = 30000, maxX = -30000, minY = 30000, maxY = -30000;
             for (uint16_t j = 0; j < wn; ++j) {
                 float sx = centerX + ((float)rd<int16_t>(poly + j * 4) - (float)px) * invMpp;
                 float sy = centerY - ((float)rd<int16_t>(poly + j * 4 + 2) - (float)py) * invMpp;
@@ -300,12 +347,39 @@ done:
                 if (sx > 20000) sx = 20000;
                 if (sy < -20000) sy = -20000;
                 if (sy > 20000) sy = 20000;
-                if (sx > -50 && sx < 590 && sy > -50 && sy < 1010) vis = true;
-                dst[kept * 2] = (int16_t)lroundf(sx);
-                dst[kept * 2 + 1] = (int16_t)lroundf(sy);
+                int ix = (int)lroundf(sx), iy = (int)lroundf(sy);
+                // Same ~2 px screen-space decimation the roads get. A ring is
+                // stored at 3 m detail; at 32 m/px a whole coastline collapses
+                // to a few dozen points, which is what makes it affordable to
+                // keep every tile's water at the widest zoom.
+                if (kept > 0) {
+                    int adx = ix - lastKx, ady = iy - lastKy;
+                    if (adx * adx + ady * ady < 4) continue;
+                }
+                if (kept == room) { overflow = true; break; }   // won't fit whole
+                if (ix < minX) minX = ix;
+                if (ix > maxX) maxX = ix;
+                if (iy < minY) minY = iy;
+                if (iy > maxY) maxY = iy;
+                dst[kept * 2] = (int16_t)ix;
+                dst[kept * 2 + 1] = (int16_t)iy;
+                lastKx = ix; lastKy = iy;
                 kept++;
             }
-            if (kept >= 3 && vis) {
+            // A ring drawn half-finished is a shape that was never there, so a
+            // ring that does not fit is dropped whole.
+            if (overflow) { dropped++; continue; }
+            // A FILL is kept when its bounding box overlaps the panel, not when
+            // one of its vertices lands on it. The rings here are region-scale —
+            // a bay clipped to its tile — so zoomed in, the ring that should
+            // flood the whole screen has every vertex kilometres off it. The
+            // vertex test dropped exactly those, which is why the water ended in
+            // hard straight lines at tile edges and vanished entirely once the
+            // rider was inside a big one.
+            const bool overlaps = maxX > VP_X0 && minX < VP_X1 &&
+                                  maxY > VP_Y0 && minY < VP_Y1;
+            if (kept >= 3 && !overlaps) offscreen++;
+            if (kept >= 3 && overlaps) {
                 dstPolys[usedPolys].cls = cls;
                 dstPolys[usedPolys].pts = dst;
                 dstPolys[usedPolys].pointCount = kept;
@@ -316,12 +390,14 @@ done:
     };
 
     parseFill(waterPts, waterPolys, g_usedWaterPts, g_usedWaterPolys,
-              MAX_WATER_POINTS, MAX_WATER_POLYS, MAP_WATER);
+              MAX_WATER_POINTS, MAX_WATER_POLYS, MAP_WATER,
+              g_stats.waterDropped, g_stats.waterOffscreen);
 
     // Parks (PRK2) follow the water section. Older tiles omit it — skip cleanly.
     if (q + 6 <= wend && memcmp(q, "PRK2", 4) == 0) {
         parseFill(parkPts, parkPolys, g_usedParkPts, g_usedParkPolys,
-                  MAX_PARK_POINTS, MAX_PARK_POLYS, MAP_PARK);
+                  MAX_PARK_POINTS, MAX_PARK_POLYS, MAP_PARK,
+                  g_stats.parksDropped, g_stats.parksOffscreen);
     }
 }
 

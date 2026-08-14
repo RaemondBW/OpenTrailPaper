@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstring>
 
+#include "map_select.h"
 #include "map_tiles.h"
 #include "sd_bus.h"
 #include "usb_storage.h"
@@ -47,7 +48,7 @@ int g_mapCount = 0;
 // its H3 id. We keep a lightweight in-memory index of (name, bbox) and load
 // the actual tile bytes on demand into a small PSRAM LRU cache. This caps
 // resident map memory regardless of how much of the world is on the card.
-constexpr int MAX_TILES = 512;
+constexpr int MAX_TILES = MAP_MAX_TILES;
 
 // Tiles are grouped by the first TILE_PREFIX_LEN characters of their H3 id:
 //   /maps/tiles/8628/862830827ffffff.ebm
@@ -124,15 +125,22 @@ void tilePathOf(const TileMeta& t, char* out, size_t len) {
 
 int g_tileCount = 0;
 
-// renderInto projects every tile overlapping the viewable rectangle. The cache
-// must hold that whole set, or a render evicts a tile it still needs and every
-// zoom-out (and every 1 Hz redraw at that zoom) re-reads the tiles from the SD
-// card — seconds of lag. A wide north-up view is ~a dozen-plus H3 tiles; 32
-// leaves margin so repeated zoom in/out stays all cache hits, and only a
-// pathologically dense overlap culls to the nearest 32 (see renderInto).
-constexpr int CACHE_N = 32;
+// The tile LRU. One slot per tile the widest frame can ask for (MAP_TILE_BUDGET
+// — see map_select.h), so a working set that fits in the byte budget stays
+// entirely cached and repeated zoom in/out costs no SD reads at all.
+//
+// Bounded by BYTES as well as slots, because a slot is not a fixed cost: a
+// res-6 tile is ~50 KB of quiet suburb but over 200 KB of dense city, and 64
+// dense slots would be more PSRAM than this device has spare. Past the byte
+// budget the far tiles simply stream — the frame still draws every tile it
+// selected, it just re-reads some of them next time. Correctness never depends
+// on the cache, only speed: renderInto finishes with one tile's bytes before it
+// asks for the next.
+constexpr int CACHE_N = MAP_TILE_BUDGET;
+constexpr size_t CACHE_BYTES = 2 * 1024 * 1024;
 struct CachedTile { int idx; uint8_t* buf; size_t len; uint32_t stamp; };
 CachedTile g_cache[CACHE_N] = {};
+size_t g_cacheBytes = 0;
 uint32_t g_clock = 0;
 
 template <typename T>
@@ -244,6 +252,7 @@ void scanTiles() {
         g_cache[i] = {};
         g_cache[i].idx = -1;
     }
+    g_cacheBytes = 0;
     g_tileCount = 0;
     sdLock();
     if (!SD.exists(MAP_DIR)) SD.mkdir(MAP_DIR);
@@ -337,24 +346,55 @@ const uint8_t* ensureTileLoaded(int idx, size_t& outLen) {
     sdLock();
     File f = SD.open(path, FILE_READ);
     size_t len = f ? f.size() : 0;
-    uint8_t* buf = nullptr;
-    if (f && len >= 36) {
-        buf = (uint8_t*)heap_caps_malloc(len, MALLOC_CAP_SPIRAM);
-        if (buf && f.read(buf, len) != len) { heap_caps_free(buf); buf = nullptr; }
+    if (!f || len < 36) {
+        if (f) f.close();
+        sdUnlock();
+        diag::log("map: tile %s unreadable", path);
+        outLen = 0;
+        return nullptr;
     }
-    if (f) f.close();
-    sdUnlock();
-    if (!buf) { outLen = 0; return nullptr; }
 
-    // Evict the least-recently-used (or a free) slot.
-    CachedTile* victim = &g_cache[0];
-    for (int i = 0; i < CACHE_N; ++i) {
-        if (!g_cache[i].buf) { victim = &g_cache[i]; break; }
-        if (g_cache[i].stamp < victim->stamp) victim = &g_cache[i];
+    // Make room BEFORE allocating, so the peak is the budget rather than the
+    // budget plus the tile being read. A tile bigger than the whole budget
+    // empties the cache and lives there alone rather than failing to load.
+    auto freeSlot = [&]() -> CachedTile* {
+        for (int i = 0; i < CACHE_N; ++i)
+            if (!g_cache[i].buf) return &g_cache[i];
+        return nullptr;
+    };
+    auto evictLru = [&]() -> bool {
+        CachedTile* lru = nullptr;
+        for (int i = 0; i < CACHE_N; ++i)
+            if (g_cache[i].buf && (!lru || g_cache[i].stamp < lru->stamp))
+                lru = &g_cache[i];
+        if (!lru) return false;
+        heap_caps_free(lru->buf);
+        g_cacheBytes -= lru->len;
+        *lru = {};
+        lru->idx = -1;
+        return true;
+    };
+    while ((!freeSlot() || g_cacheBytes + len > CACHE_BYTES) && evictLru()) {}
+    CachedTile* victim = freeSlot();
+
+    uint8_t* buf = (uint8_t*)heap_caps_malloc(len, MALLOC_CAP_SPIRAM);
+    if (buf && f.read(buf, len) != len) { heap_caps_free(buf); buf = nullptr; }
+    f.close();
+    sdUnlock();
+    if (!buf) {
+        // Used to return null in silence, so an out-of-PSRAM tile was
+        // indistinguishable from ground with no map on it.
+        diag::log("map: tile %s (%u KB) would not fit in PSRAM (%u free)", path,
+                  (unsigned)(len / 1024),
+                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+        outLen = 0;
+        return nullptr;
     }
-    if (victim->buf) heap_caps_free(victim->buf);
+    // Never null: the loop above stops only once a slot is free, or once the
+    // cache is empty — and an empty cache is CACHE_N free slots.
     victim->buf = buf; victim->len = len; victim->idx = idx;
     victim->stamp = ++g_clock;
+    g_cacheBytes += len;
     outLen = len;
     return buf;
 }
@@ -429,48 +469,22 @@ void renderInto(double lat, double lon, float metersPerPixel, int centerX,
                 int centerY, float rotateDeg, MapScreenData& out) {
     map_tiles::beginProject(out);
 
-    // Tile-selection rectangle = the VISIBLE map band around the rider. The map
-    // draws under the status bar and footer, so those covered bands (~150 px top
-    // + bottom) don't need tiles — a ~410 px half-height covers what's actually
-    // shown, vs the old 520 that pulled a third more tiles off-screen. North-up
-    // uses this tight extent; track-up expands to the rotated diagonal so a
-    // rotated corner still pulls its tile.
-    double kx = 111320.0 * cos(lat * M_PI / 180.0);
-    double ky = 110540.0;
-    float hx = 290.0f, hy = 410.0f;                        // px half-extents
-    if (rotateDeg != 0.0f) { hx = 480.0f; hy = 480.0f; }   // cover the diagonal
-    double dLat = (hy * metersPerPixel) / ky;
-    double dLon = (hx * metersPerPixel) / (kx > 1 ? kx : 1);
-    double vs = lat - dLat, vn = lat + dLat, vw = lon - dLon, ve = lon + dLon;
+    // Which tiles does this frame need? A fast RAM pass over the bbox index —
+    // every tile the viewport touches, nearest first, no SD access (see
+    // map_select.h, which tools/map_test drives directly).
+    // Static, not stack: the UI task has 8 KB and this runs under the whole
+    // renderer. renderInto is UI-task-only, like elevationAt.
+    static int sel[MAP_TILE_BUDGET];
+    int wanted = 0;
+    int lim = mapSelectTiles(
+        g_tileCount,
+        [](int i) { return MapTileBox{g_tiles[i].s, g_tiles[i].w,
+                                      g_tiles[i].n, g_tiles[i].e}; },
+        lat, lon, metersPerPixel, rotateDeg, MAP_TILE_BUDGET, sel, &wanted);
 
-    // Which tiles are required? A fast RAM pass over the tile-bounds index: EVERY
-    // tile whose bbox overlaps the viewable rectangle — that set (not "the
-    // nearest N": a portrait view's corner tiles are visible but far) is what we
-    // draw. The rectangle bounds the count. Only if it would overflow the cache
-    // (pathologically dense coverage) do we fall back to the nearest CACHE_N so
-    // the LRU can't thrash. No SD access here, just bbox tests.
-    static struct Cand { int idx; double d2; } cand[MAX_TILES];
-    int nc = 0;
-    for (int i = 0; i < g_tileCount; ++i) {
-        const TileMeta& t = g_tiles[i];
-        if (t.e < vw || t.w > ve || t.n < vs || t.s > vn) continue;  // no overlap
-        double dx = ((t.w + t.e) * 0.5 - lon) * kx;
-        double dy = ((t.s + t.n) * 0.5 - lat) * ky;
-        cand[nc].idx = i;
-        cand[nc].d2 = dx * dx + dy * dy;
-        nc++;
-    }
-    bool cull = nc > CACHE_N;                 // only when it would overflow the cache
-    int lim = cull ? CACHE_N : nc;
     for (int a = 0; a < lim; ++a) {
-        if (cull) {                           // keep the nearest CACHE_N (rare)
-            int best = a;
-            for (int j = a + 1; j < nc; ++j)
-                if (cand[j].d2 < cand[best].d2) best = j;
-            Cand tmp = cand[a]; cand[a] = cand[best]; cand[best] = tmp;
-        }
         size_t len;
-        const uint8_t* b = ensureTileLoaded(cand[a].idx, len);
+        const uint8_t* b = ensureTileLoaded(sel[a], len);
         if (b) map_tiles::projectBlobInto(b, len, lat, lon, metersPerPixel,
                                           centerX, centerY, rotateDeg);
     }
@@ -490,8 +504,19 @@ void renderInto(double lat, double lon, float metersPerPixel, int centerX,
     }
     map_tiles::endProject(out);
     out.projectedTiles = lim;
+    out.wantedTiles = wanted;
     out.tilePolys = tilePolys;
     map_tiles::projectedClassCounts(out.clsCount);
+    if (wanted > lim) {
+        // Say so rather than just drawing less: a frame missing its outer tiles
+        // looks like ground nobody downloaded.
+        static uint32_t lastWarn = 0;
+        if (millis() - lastWarn > 10000) {
+            lastWarn = millis();
+            diag::log("map: viewport needs %d tiles, budget is %d — outer %d "
+                      "not drawn", wanted, MAP_TILE_BUDGET, wanted - lim);
+        }
+    }
 }
 
 bool saveAndActivate(const char* name, const uint8_t* data, size_t len) {

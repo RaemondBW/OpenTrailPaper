@@ -73,8 +73,11 @@ struct MapScreenData {
     // shows a "no map here — download it in the app" prompt.
     bool hasMap = true;
 
-    // How many SD tiles were projected this frame (diagnostics/timing).
+    // How many SD tiles were projected this frame (diagnostics/timing), and how
+    // many the viewport actually overlapped. wantedTiles > projectedTiles means
+    // the frame ran out of tile budget and the outer ones are simply absent.
     int projectedTiles = 0;
+    int wantedTiles = 0;
     int tilePolys = 0;          // polys from tiles (before the base blob)
     int clsCount[7] = {0, 0, 0, 0, 0, 0, 0};  // kept polys per class
 };
@@ -96,6 +99,14 @@ struct MapTouchZones {
     int zoomX, zoomInY, zoomOutY, size;
 };
 extern const MapTouchZones kMapZoom;
+
+// One zoom button, on its own. Re-projecting the map after a zoom tap takes the
+// best part of a second (tiles come off the SD card), and until this existed
+// nothing on the panel moved in that time — so a tap that HAD registered was
+// indistinguishable from one that had missed, and riders tapped again. Drawing
+// the pressed state and painting just this rectangle answers the touch straight
+// away; the full redraw then restores it.
+void ui_map_draw_zoom_button(bool zoomIn, bool pressed, uint8_t* fb);
 
 // Native-fb-aligned mask (1 byte/fb-byte, 1 = covered) of the current map frame's
 // water/park dithered fills — the dense-dark regions where DU ghosting settles.

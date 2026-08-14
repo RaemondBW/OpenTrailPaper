@@ -36,7 +36,7 @@ struct RouteView: View {
                     },
                     camera: model.camera,
                     showsUserLocation: ble.locationPermission.isGranted,
-                    onRegionChange: { r in
+                    onRegionChange: { r, _ in
                         visibleRegion = r
                         refreshEInk()
                     })

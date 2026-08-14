@@ -27,6 +27,9 @@ struct MapsView: View {
     @StateObject private var projection = MapProjection()
     @ObservedObject private var store = EInkTileStore.shared
     @State private var visibleRegion: MKCoordinateRegion?
+    /// Width of the map view in points — how much ground a hexagon covers ON
+    /// SCREEN is what decides whether it is drawn as ink or outlined.
+    @State private var mapWidth: CGFloat = 0
     @State private var einkAreas: [EInkArea] = []
     @State private var outlineHexes: [OutlineHex] = []
     @State private var didCenter = false
@@ -103,8 +106,9 @@ struct MapsView: View {
                         inspected = (id, ble.deviceTileIds.contains(id))
                         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                     },
-                    onRegionChange: { r in
+                    onRegionChange: { r, width in
                         visibleRegion = r
+                        mapWidth = width
                         refreshEInk()
                     })
                 .ignoresSafeArea(edges: .top)
@@ -199,8 +203,9 @@ struct MapsView: View {
 
     /// Ask the store what to draw for the region now on screen.
     private func refreshEInk() {
-        guard let r = visibleRegion else { return }
-        let content = store.visibleContent(in: r, synced: ble.deviceTileIds)
+        guard let r = visibleRegion, mapWidth > 1 else { return }
+        let content = store.visibleContent(in: r, widthPoints: mapWidth,
+                                           synced: ble.deviceTileIds)
         einkAreas = content.areas
         outlineHexes = content.outlines
     }

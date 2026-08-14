@@ -100,8 +100,10 @@ struct EInkMapView: UIViewRepresentable {
     var onTap: ((CLLocationCoordinate2D) -> Void)? = nil
     var onLongPress: ((CLLocationCoordinate2D) -> Void)? = nil
     /// Fires as the user pans/zooms, so the screen can ask the store for the
-    /// areas that just came into view.
-    var onRegionChange: ((MKCoordinateRegion) -> Void)? = nil
+    /// areas that just came into view. The map's own width in points comes with
+    /// it: what the store has to decide is how big an area lands ON SCREEN, and
+    /// a region alone cannot say that.
+    var onRegionChange: ((MKCoordinateRegion, CGFloat) -> Void)? = nil
 
     func makeUIView(context: Context) -> MKMapView {
         let map = MKMapView()
@@ -189,17 +191,35 @@ struct EInkMapView: UIViewRepresentable {
     }
 
     private func rebuildContent(_ map: MKMapView, coordinator c: Coordinator) {
-        map.removeOverlays(map.overlays)
+        // The e-ink layer is updated IN PLACE and survives this teardown. It is
+        // the expensive one to render, and adding it back would discard every
+        // tile MapKit has already drawn — which, during a download that lands a
+        // new area several times a second, is the whole visible map each time.
+        map.removeOverlays(map.overlays.filter { !($0 is EInkAreasOverlay) })
         map.removeAnnotations(map.annotations.compactMap { $0 as? SyncedCheckAnnotation })
+
+        let eink = c.eink ?? {
+            let o = EInkAreasOverlay()
+            c.eink = o
+            map.addOverlay(o, level: .aboveRoads)
+            return o
+        }()
+        for rect in eink.update(areas) {
+            c.einkRenderer?.setNeedsDisplay(rect)
+        }
 
         // Selection sits UNDER the e-ink areas: a hex already downloaded should
         // read as downloaded, not as a pending selection tint.
+        //
+        // Inserted BELOW the e-ink overlay rather than added after it. Overlays
+        // at one level draw in insertion order, and the e-ink layer is no longer
+        // re-added on every change — so "add it last" no longer puts it on top.
         for hex in selection {
             var pts = hex.hexagon
             guard pts.count >= 3 else { continue }
             let poly = StyledPolygon(coordinates: &pts, count: pts.count)
             poly.style = .selection(hex.kind)
-            map.addOverlay(poly, level: .aboveRoads)
+            map.insertOverlay(poly, below: eink)
         }
         for hex in outlines {
             var pts = hex.hexagon
@@ -207,7 +227,7 @@ struct EInkMapView: UIViewRepresentable {
             let poly = StyledPolygon(coordinates: &pts, count: pts.count)
             poly.style = hex.missing ? .missingCoverage
                                      : .downloadedOutline(synced: hex.synced)
-            map.addOverlay(poly, level: .aboveRoads)
+            map.insertOverlay(poly, below: eink)
             if hex.synced { map.addAnnotation(SyncedCheckAnnotation(coordinate: hex.center)) }
         }
         // .aboveRoads, NOT .aboveLabels: the paper covers Apple's roads (we draw
@@ -215,10 +235,8 @@ struct EInkMapView: UIViewRepresentable {
         // the screentones. Painting over them left downloaded areas as anonymous
         // patches of ink — you could see the shape of the coverage but not read
         // where it was.
-        for area in areas {
-            guard let overlay = EInkOverlay(area: area) else { continue }
-            map.addOverlay(overlay, level: .aboveRoads)
-            if area.synced { map.addAnnotation(SyncedCheckAnnotation(coordinate: area.center)) }
+        for area in areas where area.synced {
+            map.addAnnotation(SyncedCheckAnnotation(coordinate: area.center))
         }
         // Last, so the route always sits on top of the paper.
         if let route { map.addOverlay(route, level: .aboveLabels) }
@@ -250,8 +268,12 @@ struct EInkMapView: UIViewRepresentable {
     final class Coordinator: NSObject, MKMapViewDelegate, UIGestureRecognizerDelegate {
         var onTap: ((CLLocationCoordinate2D) -> Void)?
         var onLongPress: ((CLLocationCoordinate2D) -> Void)?
-        var onRegionChange: ((MKCoordinateRegion) -> Void)?
+        var onRegionChange: ((MKCoordinateRegion, CGFloat) -> Void)?
         var contentKey = 0                // 0 is never a real signature here
+        /// The one e-ink overlay, kept across content changes along with the
+        /// renderer that holds its drawn tiles.
+        fileprivate var eink: EInkAreasOverlay?
+        fileprivate weak var einkRenderer: EInkRenderer?
         var route: MKPolyline?
         var destination: MapDestination?
         var lastCamera: MapCameraCommand?
@@ -274,11 +296,15 @@ struct EInkMapView: UIViewRepresentable {
         }
 
         func mapView(_ map: MKMapView, regionDidChangeAnimated animated: Bool) {
-            onRegionChange?(map.region)
+            onRegionChange?(map.region, map.bounds.width)
         }
 
         func mapView(_ map: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
-            if let eink = overlay as? EInkOverlay { return EInkRenderer(overlay: eink) }
+            if let eink = overlay as? EInkAreasOverlay {
+                let r = EInkRenderer(overlay: eink)
+                einkRenderer = r
+                return r
+            }
             if let poly = overlay as? StyledPolygon {
                 let r = MKPolygonRenderer(polygon: poly)
                 let (fill, stroke) = poly.style.colors
@@ -404,40 +430,102 @@ private final class StyledPolygon: MKPolygon {
 
 // MARK: - The e-ink overlay
 
-private final class EInkOverlay: NSObject, MKOverlay {
-    let area: EInkArea
-    let boundingMapRect: MKMapRect
-    /// The hexagon in map-point space — the clip that makes a downloaded area
-    /// stop exactly at its edge, and lets neighbouring hexes meet seamlessly.
-    let hexPath: CGPath
-    var coordinate: CLLocationCoordinate2D { area.center }
+/// EVERY downloaded area, in ONE overlay.
+///
+/// It used to be one MKOverlay (and one MKOverlayRenderer) per hexagon, and
+/// MapKit's per-overlay compositing is what made a screenful expensive — so the
+/// store capped drawing at the nearest 24 hexes and outlined the rest, which is
+/// why a wide view of a large download was mostly empty outlines with a ragged
+/// edge through it. One overlay costs one renderer no matter how much coverage
+/// is on screen; the per-frame work is bounded by the rect MapKit asks for, not
+/// by how many areas exist.
+private final class EInkAreasOverlay: NSObject, MKOverlay {
+    struct Piece {
+        let area: EInkArea
+        /// The hexagon in map-point space — the clip that makes an area stop
+        /// exactly at its edge, and lets neighbours meet seamlessly.
+        let hexPath: CGPath
+        let rect: MKMapRect
+    }
+    /// Read on MapKit's rendering threads, written on the main actor when the
+    /// drawable set changes — so it goes through a lock. The array is copy-on-
+    /// write, so a reader takes a cheap snapshot and is unaffected by a swap
+    /// half way through its frame.
+    private var storage: [Piece] = []
+    private let lock = NSLock()
+    var pieces: [Piece] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
 
-    init?(area: EInkArea) {
-        guard area.hexagon.count >= 3 else { return nil }
-        self.area = area
-        let path = CGMutablePath()
-        var rect = MKMapRect.null
-        for (i, c) in area.hexagon.enumerated() {
-            let p = MKMapPoint(c)
-            let pt = CGPoint(x: p.x, y: p.y)
-            if i == 0 { path.move(to: pt) } else { path.addLine(to: pt) }
-            rect = rect.union(MKMapRect(origin: p, size: MKMapSize(width: 0, height: 0)))
+    /// Fixed, and deliberately the whole world. MapKit indexes an overlay by
+    /// this rect when it is added, so it cannot be allowed to change as areas
+    /// come and go — and the alternative, re-adding the overlay whenever the
+    /// set changes, throws away every rendered tile. `canDraw` does the culling
+    /// instead, which is cheap and needs no fixed extent.
+    let boundingMapRect = MKMapRect.world
+    var coordinate: CLLocationCoordinate2D { CLLocationCoordinate2D(latitude: 0, longitude: 0) }
+
+    /// Swap in a new set of areas and report which rects actually changed, so
+    /// only those repaint. During a bulk download areas land continuously; with
+    /// a blanket invalidation each one would repaint the entire visible map.
+    func update(_ areas: [EInkArea]) -> [MKMapRect] {
+        let current = pieces
+        var previous: [String: Piece] = [:]
+        previous.reserveCapacity(current.count)
+        for p in current { previous[p.area.id] = p }
+
+        var next: [Piece] = []
+        var dirty: [MKMapRect] = []
+        var seen = Set<String>()
+        next.reserveCapacity(areas.count)
+        for area in areas where area.hexagon.count >= 3 {
+            seen.insert(area.id)
+            if let old = previous[area.id], Self.same(old.area, area) {
+                next.append(old)
+                continue
+            }
+            let path = CGMutablePath()
+            var rect = MKMapRect.null
+            for (i, c) in area.hexagon.enumerated() {
+                let p = MKMapPoint(c)
+                let pt = CGPoint(x: p.x, y: p.y)
+                if i == 0 { path.move(to: pt) } else { path.addLine(to: pt) }
+                rect = rect.union(MKMapRect(origin: p, size: MKMapSize(width: 0, height: 0)))
+            }
+            path.closeSubpath()
+            next.append(Piece(area: area, hexPath: path, rect: rect))
+            dirty.append(rect)
         }
-        path.closeSubpath()
-        hexPath = path
-        boundingMapRect = rect
-        super.init()
+        for (id, old) in previous where !seen.contains(id) { dirty.append(old.rect) }
+        lock.lock()
+        storage = next
+        lock.unlock()
+        return dirty
+    }
+
+    /// Same area, same ink. `pointCount` stands in for the geometry itself:
+    /// re-decoding the same blob at the same level of detail gives the same
+    /// count, and every reason the geometry actually changes — a rebuilt
+    /// download, a switch to overview detail — changes it.
+    private static func same(_ a: EInkArea, _ b: EInkArea) -> Bool {
+        a.synced == b.synced && a.tile.pointCount == b.tile.pointCount
     }
 }
 
 private final class EInkRenderer: MKOverlayRenderer {
-    private let area: EInkArea
-    private let hexPath: CGPath
+    private var areas: EInkAreasOverlay { overlay as! EInkAreasOverlay }
+    private var pieces: [EInkAreasOverlay.Piece] { areas.pieces }
 
-    init(overlay: EInkOverlay) {
-        area = overlay.area
-        hexPath = overlay.hexPath
+    init(overlay: EInkAreasOverlay) {
         super.init(overlay: overlay)
+    }
+
+    // The overlay spans the world, so without this MapKit would ask for tiles
+    // everywhere. Nothing is drawn where no area lands.
+    override func canDraw(_ mapRect: MKMapRect, zoomScale: MKZoomScale) -> Bool {
+        pieces.contains { $0.rect.intersects(mapRect) }
     }
 
     // Device ink: pure black, because the panel's fast refresh is 1-bit and
@@ -459,14 +547,29 @@ private final class EInkRenderer: MKOverlayRenderer {
         let scale = (probe.x - o.x) / 1024
         guard scale > 0, zoomScale > 0 else { return }
         var t = CGAffineTransform(translationX: o.x, y: o.y).scaledBy(x: scale, y: scale)
-        guard let hex = hexPath.copy(using: &t) else { return }
+
+        // Only the areas MapKit is actually asking about. This is what lets the
+        // overlay hold a whole region's coverage without the per-frame cost
+        // growing with it. One snapshot for the whole frame, so the set cannot
+        // change under the loop.
+        for piece in pieces where piece.rect.intersects(mapRect) {
+            draw(piece, transform: &t, in: ctx, zoomScale: zoomScale,
+                 mapRect: mapRect, scale: scale)
+        }
+    }
+
+    private func draw(_ piece: EInkAreasOverlay.Piece,
+                      transform t: inout CGAffineTransform, in ctx: CGContext,
+                      zoomScale: MKZoomScale, mapRect: MKMapRect, scale: Double) {
+        guard let hex = piece.hexPath.copy(using: &t) else { return }
+        let area = piece.area
 
         ctx.saveGState()
         ctx.addPath(hex)
         ctx.clip()
 
         ctx.setFillColor(Self.paper)
-        ctx.fill(rect(for: overlay.boundingMapRect))
+        ctx.fill(rect(for: piece.rect))
 
         // The device sheds detail by metres-per-pixel; mirroring that keeps the
         // preview honest AND bounds the work when zoomed out.
@@ -533,7 +636,10 @@ private final class EInkRenderer: MKOverlayRenderer {
     private func screentone(_ path: CGPath, image: CGImage?, cellPoints: Double,
                             in ctx: CGContext, zoomScale: MKZoomScale,
                             mapRect: MKMapRect, scale: Double) {
-        guard let image else { return }
+        // isEmpty as well as the image: clip() with an empty path is a no-op,
+        // not an empty clip, so tiling through one covers everything already
+        // clipped in — the whole hexagon. See EBM.readFills.
+        guard let image, !path.isEmpty else { return }
         let cellMapRaw = cellPoints / Double(zoomScale)
         guard cellMapRaw > 0, cellMapRaw.isFinite else { return }
         let cellMap = pow(2, log2(cellMapRaw).rounded())
