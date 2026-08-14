@@ -568,6 +568,7 @@ private struct MeshNodesSheet: View {
             }
             .background(Palette.paper.ignoresSafeArea())
             .navigationTitle("Nodes")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }
@@ -843,6 +844,7 @@ private struct MeshSettingsSheet: View {
             }
             .background(Palette.paper.ignoresSafeArea())
             .navigationTitle("Mesh")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }
