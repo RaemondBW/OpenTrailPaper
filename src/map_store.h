@@ -43,9 +43,6 @@ void releaseCache();
 // host computer releases the SD after mounting it over USB.
 void rescanCard();
 
-// Number of H3 tiles currently indexed (shown on the boot log).
-int tileCount();
-
 // Render the map around (lat, lon) into `out`: projects every H3 tile that
 // overlaps the viewport (loading them from SD on demand), falling back to the
 // whole-map / embedded blob where no tiles cover. Replaces a direct
@@ -64,7 +61,9 @@ bool saveTile(const char* id, const uint8_t* data, size_t len);
 // Whether tile <id> (H3 id without extension) is already on the card.
 bool hasTile(const char* id);
 
-// Number of H3 tiles currently indexed.
+// How many tiles are on the card. WALKS THE CARD — there is no index to count,
+// so this opens every tile directory. Diagnostics only: never call it on the
+// boot path or anywhere a frame is waiting.
 int tileCount();
 
 // Whether any map (a downloaded tile, a whole map, or the embedded default)

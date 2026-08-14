@@ -1202,8 +1202,12 @@ bool begin() {
         bootRepaint();
     });
     EPDC_STEP("map_store::begin returned");
-    bootDetailFor("Maps", "%d tiles · %s", map_store::tileCount(),
-                  map_store::tileCount() ? "indexed" : "none on card");
+    // NO tile count here. Counting means walking every tile directory on the
+    // card, and this is the boot path — the exact place map_store::tileCount()
+    // documents itself as never belonging. Having it here (twice, once per
+    // argument) put a full card walk back into boot immediately after the scan
+    // it was meant to have removed, which is what kept the boot loop alive.
+    bootDetailFor("Maps", "ready");
     EPDC_STEP("bootDetailFor done");
     bootStatus("Maps", true);
     EPDC_STEP("bootStatus done");
