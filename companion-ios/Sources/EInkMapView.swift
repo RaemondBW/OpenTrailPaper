@@ -1,32 +1,23 @@
 import SwiftUI
 import MapKit
 
-// The map both the Route and Maps screens draw on: standard Apple Maps
-// everywhere, except the areas this phone has downloaded — those are painted as
-// the head unit will render them. Black ink on paper, roads by class, water as
-// a 75% dot screen, parks as a diagonal hatch, exactly the screentones in
-// src/map_view.cpp. Areas the device also has get a green check.
+// The map both the Route and Maps screens draw on: standard Apple Maps, with
+// the areas this phone or the device holds drawn over it as hexagons — green
+// with a check where the DEVICE has them too, a quiet hairline where they are
+// only on the phone.
 //
-// UIKit rather than SwiftUI's Map: only MKOverlayRenderer can draw a patterned
-// fill locked to the map, and only MapKit's own overlay compositing keeps it
-// pinned frame-for-frame while panning. A SwiftUI Canvas layered over a Map
-// redraws a frame late and visibly swims.
+// It used to paint each downloaded area in the head unit's own 1-bit style.
+// That is gone; see EInkTileStore for why. The question this screen answers is
+// which ground is covered and whether the device has it, and hexagons answer it
+// without decoding a byte of map geometry.
+//
+// UIKit rather than SwiftUI's Map: overlays at this count need MapKit's own
+// compositing to stay pinned frame-for-frame while panning. A SwiftUI Canvas
+// layered over a Map redraws a frame late and visibly swims.
 
 // MARK: - What the map draws
 
-/// A downloaded area with geometry ready to draw.
-struct EInkArea: Identifiable {
-    let id: String                     // H3 cell id
-    let hexagon: [CLLocationCoordinate2D]
-    let center: CLLocationCoordinate2D
-    let synced: Bool                   // the device has it too -> green check
-    let tile: EBM.Tile
-}
-
-/// A downloaded area we can't paint right now — its geometry is still decoding,
-/// it's one of many at a far-out zoom, or the phone no longer holds its tile
-/// data (cache cleared, or another phone sent it). Outlined rather than
-/// dropped, so coverage the user knows about never just vanishes.
+/// One area of coverage: this phone holds it, the device holds it, or both.
 struct OutlineHex: Identifiable {
     let id: String
     let hexagon: [CLLocationCoordinate2D]
@@ -40,7 +31,7 @@ struct OutlineHex: Identifiable {
 
 /// A hex in the area the user is selecting for download.
 struct SelectionHex: Identifiable {
-    enum Kind { case pending, done, excluded }
+    enum Kind: Equatable { case pending, done, excluded }
     let id: String
     let hexagon: [CLLocationCoordinate2D]
     let kind: Kind
@@ -83,7 +74,6 @@ final class MapProjection: ObservableObject {
 // MARK: - The view
 
 struct EInkMapView: UIViewRepresentable {
-    var areas: [EInkArea] = []
     var outlines: [OutlineHex] = []
     var selection: [SelectionHex] = []
     var route: MKPolyline? = nil
@@ -96,6 +86,12 @@ struct EInkMapView: UIViewRepresentable {
     /// with an explanation.
     var showsUserLocation = false
     var showsTrackingButton = false
+    /// How much of the map's bottom edge is covered by floating UI. The map
+    /// itself runs full-bleed under the card — stopping it above one leaves a
+    /// dead band of page background — so this is what keeps the map from
+    /// *acting* full height: framing insets by it, and MapKit's own legal link
+    /// and tracking button move up out from under the card.
+    var bottomInset: CGFloat = 0
     var projection: MapProjection? = nil
     var onTap: ((CLLocationCoordinate2D) -> Void)? = nil
     var onLongPress: ((CLLocationCoordinate2D) -> Void)? = nil
@@ -149,6 +145,10 @@ struct EInkMapView: UIViewRepresentable {
         if map.showsUserLocation != showsUserLocation {
             map.showsUserLocation = showsUserLocation
         }
+        if map.layoutMargins.bottom != bottomInset {
+            map.preservesSuperviewLayoutMargins = false
+            map.layoutMargins.bottom = bottomInset
+        }
 
         // Overlays are expensive to rebuild, and SwiftUI calls this for any
         // state change on the host view (a progress string, a text field). Only
@@ -181,7 +181,6 @@ struct EInkMapView: UIViewRepresentable {
         // hex ids each time was itself a measurable part of the Maps page's
         // stutter during a large download.
         var h = Hasher()
-        for a in areas { h.combine(a.id); h.combine(a.synced) }
         for o in outlines { h.combine(o.id); h.combine(o.synced); h.combine(o.missing) }
         for s in selection { h.combine(s.id); h.combine(String(describing: s.kind)) }
         if let r = route { h.combine(ObjectIdentifier(r)) }
@@ -189,38 +188,46 @@ struct EInkMapView: UIViewRepresentable {
     }
 
     private func rebuildContent(_ map: MKMapView, coordinator c: Coordinator) {
-        map.removeOverlays(map.overlays)
+        // The hex layer is updated IN PLACE and survives this teardown, so only
+        // the rects that actually changed repaint. During a download areas land
+        // several times a second and re-adding the overlay would discard every
+        // tile MapKit has already drawn.
+        map.removeOverlays(map.overlays.filter { !($0 is HexLayerOverlay) })
         map.removeAnnotations(map.annotations.compactMap { $0 as? SyncedCheckAnnotation })
 
-        // Selection sits UNDER the e-ink areas: a hex already downloaded should
-        // read as downloaded, not as a pending selection tint.
+        // The green check is a per-area badge and only says anything while the
+        // areas are big enough to hold one. Framing a region's worth of coverage
+        // puts hundreds on screen, overlapping into a solid mat of green. Past
+        // this many, the hexagon's own green edge carries it alone.
+        let syncedCount = outlines.filter(\.synced).count
+        let showChecks = syncedCount <= 120
+
+        var flat: [HexLayerOverlay.Hex] = []
+        flat.reserveCapacity(selection.count + outlines.count)
+        // Selection sits UNDER the coverage hexes: ground already downloaded
+        // should read as downloaded, not as a pending selection tint.
         for hex in selection {
-            var pts = hex.hexagon
-            guard pts.count >= 3 else { continue }
-            let poly = StyledPolygon(coordinates: &pts, count: pts.count)
-            poly.style = .selection(hex.kind)
-            map.addOverlay(poly, level: .aboveRoads)
+            flat.append(.init(id: "s:" + hex.id, hexagon: hex.hexagon,
+                              style: .selection(hex.kind)))
         }
         for hex in outlines {
-            var pts = hex.hexagon
-            guard pts.count >= 3 else { continue }
-            let poly = StyledPolygon(coordinates: &pts, count: pts.count)
-            poly.style = hex.missing ? .missingCoverage
-                                     : .downloadedOutline(synced: hex.synced)
-            map.addOverlay(poly, level: .aboveRoads)
-            if hex.synced { map.addAnnotation(SyncedCheckAnnotation(coordinate: hex.center)) }
+            flat.append(.init(id: "o:" + hex.id, hexagon: hex.hexagon,
+                              style: hex.missing ? .missingCoverage
+                                                 : .downloadedOutline(synced: hex.synced)))
+            if hex.synced && showChecks {
+                map.addAnnotation(SyncedCheckAnnotation(coordinate: hex.center))
+            }
         }
-        // .aboveRoads, NOT .aboveLabels: the paper covers Apple's roads (we draw
-        // our own) but its place and street names come back through on top of
-        // the screentones. Painting over them left downloaded areas as anonymous
-        // patches of ink — you could see the shape of the coverage but not read
-        // where it was.
-        for area in areas {
-            guard let overlay = EInkOverlay(area: area) else { continue }
-            map.addOverlay(overlay, level: .aboveRoads)
-            if area.synced { map.addAnnotation(SyncedCheckAnnotation(coordinate: area.center)) }
+        let hexLayer = c.hexes ?? {
+            let o = HexLayerOverlay()
+            c.hexes = o
+            map.addOverlay(o, level: .aboveRoads)
+            return o
+        }()
+        for rect in hexLayer.update(flat) {
+            c.hexRenderer?.setNeedsDisplay(rect)
         }
-        // Last, so the route always sits on top of the paper.
+        // Last, so the route always sits on top of the coverage.
         if let route { map.addOverlay(route, level: .aboveLabels) }
         c.route = route
     }
@@ -233,16 +240,36 @@ struct EInkMapView: UIViewRepresentable {
         func stopFollowing() {
             if map.userTrackingMode != .none { map.setUserTrackingMode(.none, animated: false) }
         }
+        // Frame into the part of the map that isn't under the floating card, so
+        // "fit all my coverage" doesn't fit half of it behind the controls.
+        let pad = UIEdgeInsets(top: 0, left: 0, bottom: bottomInset, right: 0)
         switch command.target {
         case .region(let r):
             stopFollowing()
-            map.setRegion(r, animated: true)
+            // setRegion has no edgePadding, so go through the rect form once
+            // there is something to inset for.
+            if bottomInset > 0 {
+                map.setVisibleMapRect(Self.mapRect(r), edgePadding: pad, animated: true)
+            } else {
+                map.setRegion(r, animated: true)
+            }
         case .rect(let rect):
             stopFollowing()
-            map.setVisibleMapRect(rect, animated: true)
+            map.setVisibleMapRect(rect, edgePadding: pad, animated: true)
         case .followUser:
             map.setUserTrackingMode(.follow, animated: true)
         }
+    }
+
+    private static func mapRect(_ r: MKCoordinateRegion) -> MKMapRect {
+        let a = MKMapPoint(CLLocationCoordinate2D(
+            latitude: r.center.latitude + r.span.latitudeDelta / 2,
+            longitude: r.center.longitude - r.span.longitudeDelta / 2))
+        let b = MKMapPoint(CLLocationCoordinate2D(
+            latitude: r.center.latitude - r.span.latitudeDelta / 2,
+            longitude: r.center.longitude + r.span.longitudeDelta / 2))
+        return MKMapRect(x: min(a.x, b.x), y: min(a.y, b.y),
+                         width: abs(a.x - b.x), height: abs(a.y - b.y))
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -252,6 +279,8 @@ struct EInkMapView: UIViewRepresentable {
         var onLongPress: ((CLLocationCoordinate2D) -> Void)?
         var onRegionChange: ((MKCoordinateRegion) -> Void)?
         var contentKey = 0                // 0 is never a real signature here
+        fileprivate var hexes: HexLayerOverlay?
+        fileprivate weak var hexRenderer: HexLayerRenderer?
         var route: MKPolyline?
         var destination: MapDestination?
         var lastCamera: MapCameraCommand?
@@ -278,13 +307,9 @@ struct EInkMapView: UIViewRepresentable {
         }
 
         func mapView(_ map: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
-            if let eink = overlay as? EInkOverlay { return EInkRenderer(overlay: eink) }
-            if let poly = overlay as? StyledPolygon {
-                let r = MKPolygonRenderer(polygon: poly)
-                let (fill, stroke) = poly.style.colors
-                r.fillColor = fill
-                r.strokeColor = stroke
-                r.lineWidth = 1.5
+            if let hexes = overlay as? HexLayerOverlay {
+                let r = HexLayerRenderer(overlay: hexes)
+                hexRenderer = r
                 return r
             }
             if let line = overlay as? MKPolyline {
@@ -370,212 +395,125 @@ private final class DestinationAnnotation: NSObject, MKAnnotation {
     }
 }
 
-// MARK: - Flat hex overlays (selection + un-previewable device areas)
+// MARK: - The hex layer
 
-private final class StyledPolygon: MKPolygon {
-    enum Style {
-        case selection(SelectionHex.Kind)
-        case downloadedOutline(synced: Bool)
-        case missingCoverage
+/// Every selection and outline hexagon, in ONE overlay — same reasoning as
+/// EInkAreasOverlay, and the same in-place update so only what changed repaints.
+private final class HexLayerOverlay: NSObject, MKOverlay {
+    struct Hex {
+        let id: String                 // namespaced: selection and outline can
+        let hexagon: [CLLocationCoordinate2D]   // both hold the same H3 id
+        let style: HexStyle
+    }
+    struct Piece {
+        let id: String
+        let style: HexStyle
+        let path: CGPath
+        let rect: MKMapRect
+    }
 
-        var colors: (fill: UIColor, stroke: UIColor) {
-            switch self {
-            case .downloadedOutline(let synced):
-                let c = UIColor(synced ? Palette.good : Palette.faint)
-                return (c.withAlphaComponent(0.14), c)
-            // A gap in the maps, so it has to read as "look here" — the accent,
-            // barely tinted: these sit under the route line, which must stay
-            // the most legible thing on the screen.
-            case .missingCoverage:
-                let c = UIColor(Palette.accent)
-                return (c.withAlphaComponent(0.10), c.withAlphaComponent(0.7))
-            case .selection(.done):
-                return (UIColor(Palette.good).withAlphaComponent(0.22), UIColor(Palette.good))
-            case .selection(.excluded):
-                return (UIColor(Palette.muted).withAlphaComponent(0.08),
-                        UIColor(Palette.muted).withAlphaComponent(0.55))
-            case .selection(.pending):
-                return (UIColor(Palette.accent).withAlphaComponent(0.16), UIColor(Palette.accent))
+    private var storage: [Piece] = []
+    private let lock = NSLock()
+    var pieces: [Piece] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
+
+    let boundingMapRect = MKMapRect.world
+    var coordinate: CLLocationCoordinate2D { CLLocationCoordinate2D(latitude: 0, longitude: 0) }
+
+    func update(_ hexes: [Hex]) -> [MKMapRect] {
+        var previous: [String: Piece] = [:]
+        let current = pieces
+        previous.reserveCapacity(current.count)
+        for p in current { previous[p.id] = p }
+
+        var next: [Piece] = []
+        var dirty: [MKMapRect] = []
+        var seen = Set<String>()
+        next.reserveCapacity(hexes.count)
+        for hex in hexes where hex.hexagon.count >= 3 {
+            seen.insert(hex.id)
+            if let old = previous[hex.id], old.style == hex.style {
+                next.append(old)
+                continue
             }
+            let path = CGMutablePath()
+            var rect = MKMapRect.null
+            for (i, c) in hex.hexagon.enumerated() {
+                let p = MKMapPoint(c)
+                let pt = CGPoint(x: p.x, y: p.y)
+                if i == 0 { path.move(to: pt) } else { path.addLine(to: pt) }
+                rect = rect.union(MKMapRect(origin: p, size: MKMapSize(width: 0, height: 0)))
+            }
+            path.closeSubpath()
+            next.append(Piece(id: hex.id, style: hex.style, path: path, rect: rect))
+            dirty.append(rect)
         }
-    }
-    var style: Style = .selection(.pending)
-}
-
-// MARK: - The e-ink overlay
-
-private final class EInkOverlay: NSObject, MKOverlay {
-    let area: EInkArea
-    let boundingMapRect: MKMapRect
-    /// The hexagon in map-point space — the clip that makes a downloaded area
-    /// stop exactly at its edge, and lets neighbouring hexes meet seamlessly.
-    let hexPath: CGPath
-    var coordinate: CLLocationCoordinate2D { area.center }
-
-    init?(area: EInkArea) {
-        guard area.hexagon.count >= 3 else { return nil }
-        self.area = area
-        let path = CGMutablePath()
-        var rect = MKMapRect.null
-        for (i, c) in area.hexagon.enumerated() {
-            let p = MKMapPoint(c)
-            let pt = CGPoint(x: p.x, y: p.y)
-            if i == 0 { path.move(to: pt) } else { path.addLine(to: pt) }
-            rect = rect.union(MKMapRect(origin: p, size: MKMapSize(width: 0, height: 0)))
-        }
-        path.closeSubpath()
-        hexPath = path
-        boundingMapRect = rect
-        super.init()
+        for (id, old) in previous where !seen.contains(id) { dirty.append(old.rect) }
+        lock.lock()
+        storage = next
+        lock.unlock()
+        return dirty
     }
 }
 
-private final class EInkRenderer: MKOverlayRenderer {
-    private let area: EInkArea
-    private let hexPath: CGPath
+private final class HexLayerRenderer: MKOverlayRenderer {
+    private var pieces: [HexLayerOverlay.Piece] { (overlay as! HexLayerOverlay).pieces }
 
-    init(overlay: EInkOverlay) {
-        area = overlay.area
-        hexPath = overlay.hexPath
-        super.init(overlay: overlay)
+    override func canDraw(_ mapRect: MKMapRect, zoomScale: MKZoomScale) -> Bool {
+        pieces.contains { $0.rect.intersects(mapRect) }
     }
-
-    // Device ink: pure black, because the panel's fast refresh is 1-bit and
-    // cannot show a grey. Paper matches the app's warm off-white.
-    private static let ink = UIColor.black.cgColor
-    private static let paper = UIColor(Palette.paper).cgColor
-
-    /// Thin classes first so a motorway crosses on top of a footpath, as on the
-    /// device (it draws in the same order).
-    private static let drawOrder: [EBM.FeatureClass] =
-        [.path, .minor, .tertiary, .secondary, .primary, .arterial]
 
     override func draw(_ mapRect: MKMapRect, zoomScale: MKZoomScale, in ctx: CGContext) {
-        // Map points -> this renderer's drawing space. Linear and rotation-free,
-        // so two probes describe it completely, and a prebuilt path (in map
-        // points) can be transformed instead of re-projected point by point.
         let o = point(for: MKMapPoint(x: 0, y: 0))
         let probe = point(for: MKMapPoint(x: 1024, y: 1024))
         let scale = (probe.x - o.x) / 1024
         guard scale > 0, zoomScale > 0 else { return }
         var t = CGAffineTransform(translationX: o.x, y: o.y).scaledBy(x: scale, y: scale)
-        guard let hex = hexPath.copy(using: &t) else { return }
-
-        ctx.saveGState()
-        ctx.addPath(hex)
-        ctx.clip()
-
-        ctx.setFillColor(Self.paper)
-        ctx.fill(rect(for: overlay.boundingMapRect))
-
-        // The device sheds detail by metres-per-pixel; mirroring that keeps the
-        // preview honest AND bounds the work when zoomed out.
-        let metersPerPoint = MKMetersPerMapPointAtLatitude(area.center.latitude) / Double(zoomScale)
-
-        // Parks under water: a lake inside a park is water, not parkland.
-        if let parks = area.tile.parks, let p = parks.copy(using: &t) {
-            screentone(p, image: Self.hatchTone, cellPoints: 6,
-                       in: ctx, zoomScale: zoomScale, mapRect: mapRect, scale: scale)
-        }
-        if let water = area.tile.water, let p = water.copy(using: &t) {
-            screentone(p, image: Self.dotTone, cellPoints: 3,
-                       in: ctx, zoomScale: zoomScale, mapRect: mapRect, scale: scale)
-        }
-
-        ctx.setStrokeColor(Self.ink)
-        ctx.setLineCap(.round)
-        ctx.setLineJoin(.round)
-        for cls in Self.drawOrder {
-            guard let width = Self.width(cls, metersPerPoint: metersPerPoint),
-                  let path = area.tile.roads[cls], let p = path.copy(using: &t) else { continue }
-            ctx.saveGState()
-            // A path/trail is a dithered grey line on the panel; a fine dash is
-            // the closest thing that still reads as 1-bit here.
-            if cls == .path {
-                let d = 1.5 / Double(zoomScale)
-                ctx.setLineDash(phase: 0, lengths: [d, d])
-            }
-            ctx.setLineWidth(width / Double(zoomScale))
-            ctx.addPath(p)
-            ctx.strokePath()
-            ctx.restoreGState()
-        }
-        ctx.restoreGState()
-
-        // Edge last and unclipped, so the full stroke shows: green where the
-        // device has this area too, quiet hairline where it's only on the phone.
-        ctx.addPath(hex)
-        ctx.setStrokeColor(UIColor(area.synced ? Palette.good : Palette.faint).cgColor)
-        ctx.setLineWidth((area.synced ? 2.0 : 1.0) / Double(zoomScale))
-        ctx.strokePath()
-    }
-
-    /// Stroke width in screen points, or nil when the device would shed this
-    /// class at this zoom (map_view.cpp styleFor + map_tiles.cpp shedding).
-    private static func width(_ cls: EBM.FeatureClass, metersPerPoint mpp: Double) -> Double? {
-        switch cls {
-        case .path:      return mpp >= 4 ? nil : 1
-        case .minor:     return mpp >= 16 ? nil : 2
-        case .secondary: return mpp >= 32 ? nil : 3
-        case .tertiary:  return mpp >= 32 ? nil : 2
-        case .primary:   return mpp >= 16 ? 2 : 4
-        case .arterial:  return mpp >= 16 ? 2 : 5
+        ctx.setLineWidth(2.0 / Double(zoomScale))
+        for piece in pieces where piece.rect.intersects(mapRect) {
+            guard let path = piece.path.copy(using: &t) else { continue }
+            let (fill, stroke) = piece.style.colors
+            ctx.addPath(path)
+            ctx.setFillColor(fill.cgColor)
+            ctx.setStrokeColor(stroke.cgColor)
+            ctx.drawPath(using: .fillStroke)
         }
     }
+}
 
-    /// Fills `path` with a 1-bit tone, drawn at a constant size on screen.
-    ///
-    /// The tile origin is snapped to a global grid in MAP-POINT space, with the
-    /// cell quantised to a power of two. Both matter: MapKit hands this renderer
-    /// one sub-rect at a time and each downloaded hex is a separate overlay, so
-    /// anchoring the pattern to anything local would print a visible seam at
-    /// every tile and hex boundary.
-    private func screentone(_ path: CGPath, image: CGImage?, cellPoints: Double,
-                            in ctx: CGContext, zoomScale: MKZoomScale,
-                            mapRect: MKMapRect, scale: Double) {
-        guard let image else { return }
-        let cellMapRaw = cellPoints / Double(zoomScale)
-        guard cellMapRaw > 0, cellMapRaw.isFinite else { return }
-        let cellMap = pow(2, log2(cellMapRaw).rounded())
-        let anchorX = (mapRect.minX / cellMap).rounded(.down) * cellMap
-        let anchorY = (mapRect.minY / cellMap).rounded(.down) * cellMap
-        let origin = point(for: MKMapPoint(x: anchorX, y: anchorY))
-        let cell = cellMap * scale
-        guard cell > 0.01 else { return }
+/// Fill and stroke for the flat hexagons. Was nested in the MKPolygon subclass
+/// that used to carry one hex each.
+enum HexStyle: Equatable {
+    case selection(SelectionHex.Kind)
+    case downloadedOutline(synced: Bool)
+    case missingCoverage
 
-        ctx.saveGState()
-        ctx.addPath(path)
-        ctx.clip()
-        ctx.interpolationQuality = .none    // keep the tone hard-edged, not blurred
-        ctx.draw(image, in: CGRect(x: origin.x, y: origin.y, width: cell, height: cell),
-                 byTiling: true)
-        ctx.restoreGState()
-    }
-
-    // The device's tones are dots for water and diagonal stripes for parks, and
-    // that CHARACTER is what has to survive here — it's how the two read apart
-    // at a glance. Their exact ink coverage cannot: on a 235 ppi panel the
-    // water's 75% dots integrate into a dark grey, but a phone screentone big
-    // enough to still look dotted is coarse enough that 75% is simply black, and
-    // the bay swallows the map. So the patterns are kept and the coverage is
-    // lightened, preserving the device's ordering — water darker than parkland.
-    private static let dotTone = makeTone(2) { x, y in (x & 1) == (y & 1) }        // 50% dots
-    private static let hatchTone = makeTone(4) { x, y in ((x - y) & 3) < 1 }       // 25% stripes
-
-    /// A tiny opaque-black-on-clear bitmap, tiled by `screentone`.
-    private static func makeTone(_ size: Int, _ on: (Int, Int) -> Bool) -> CGImage? {
-        var px = [UInt8](repeating: 0, count: size * size * 4)   // RGBA, premultiplied
-        for y in 0..<size {
-            for x in 0..<size where on(x, y) {
-                let i = (y * size + x) * 4
-                px[i] = 0; px[i + 1] = 0; px[i + 2] = 0; px[i + 3] = 255
-            }
+    var colors: (fill: UIColor, stroke: UIColor) {
+        switch self {
+        // These now CARRY the coverage message rather than sitting under an
+        // opaque e-ink area, so they are drawn to be seen. At 0.14 over
+        // Palette.faint they were tuned to whisper beneath the paper fill, and
+        // with that gone they vanished into Apple's green terrain — visible
+        // only where they happened to cross water.
+        case .downloadedOutline(let synced):
+            let c = UIColor(synced ? Palette.good : Palette.muted)
+            return (c.withAlphaComponent(synced ? 0.30 : 0.22), c)
+        // A gap in the maps, so it has to read as "look here" — the accent,
+        // barely tinted: these sit under the route line, which must stay
+        // the most legible thing on the screen.
+        case .missingCoverage:
+            let c = UIColor(Palette.accent)
+            return (c.withAlphaComponent(0.10), c.withAlphaComponent(0.7))
+        case .selection(.done):
+            return (UIColor(Palette.good).withAlphaComponent(0.22), UIColor(Palette.good))
+        case .selection(.excluded):
+            return (UIColor(Palette.muted).withAlphaComponent(0.08),
+                    UIColor(Palette.muted).withAlphaComponent(0.55))
+        case .selection(.pending):
+            return (UIColor(Palette.accent).withAlphaComponent(0.16), UIColor(Palette.accent))
         }
-        guard let provider = CGDataProvider(data: Data(px) as CFData) else { return nil }
-        return CGImage(width: size, height: size, bitsPerComponent: 8, bitsPerPixel: 32,
-                       bytesPerRow: size * 4, space: CGColorSpaceCreateDeviceRGB(),
-                       bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
-                       provider: provider, decode: nil, shouldInterpolate: false,
-                       intent: .defaultIntent)
     }
 }

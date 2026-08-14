@@ -2,8 +2,7 @@ import Foundation
 import Combine
 import MapKit
 
-/// Holds decoded map geometry for the areas this phone has downloaded, so the
-/// map can draw them in the device's own e-ink style.
+/// Which areas this phone has downloaded, so the map can show coverage.
 ///
 /// Two separate facts, deliberately kept apart:
 ///   * `ids` — every area we hold tile DATA for. This is what "downloaded"
@@ -12,24 +11,29 @@ import MapKit
 ///   * `BLEManager.deviceTileIds` — what the DEVICE has. The intersection is
 ///     what earns a green check.
 ///
-/// Decoding happens off the main actor; the renderer is never allowed to touch
-/// the disk, so only tiles already decoded get an overlay. A tile appears the
-/// moment its decode lands.
+/// This used to decode each area's `.ebm` and paint it in the head unit's own
+/// 1-bit style — paper, screentoned water and parkland, roads by class. That is
+/// gone. It was expensive in a way that could not be designed away: geometry in
+/// a CGPath measures ~25 bytes a point, six times what the same point occupies
+/// in the tile it came from, so a region-sized download ran to 312 MB at full
+/// street detail and still needed three levels of detail, an LRU, a decode
+/// queue and a bespoke overlay renderer to stay inside a budget. What the map
+/// is actually asked is "which ground do I have, and does the device have it
+/// too" — and a hexagon with a check answers that completely.
 @MainActor
 final class EInkTileStore: ObservableObject {
     static let shared = EInkTileStore()
 
     /// Bumps whenever the drawable set changes, so views re-diff their overlays.
     ///
-    /// COALESCED — see bump(). A downloading run finishes tiles continuously and
+    /// COALESCED — see bump(). A downloading run finishes areas continuously and
     /// each one used to publish immediately, so the map rebuilt every overlay it
-    /// had, several times a second. With a few hundred hexes on screen that is
-    /// O(n) MapKit teardown per tile and the page visibly stutters.
+    /// had, several times a second.
     @Published private(set) var version = 0
 
     private var bumpPending = false
 
-    /// Publish at most ~4x/sec. Tiles land far faster than that and no rider can
+    /// Publish at most ~4x/sec. Areas land far faster than that and no rider can
     /// see the difference, but MapKit certainly can.
     private func bump() {
         guard !bumpPending else { return }
@@ -44,43 +48,26 @@ final class EInkTileStore: ObservableObject {
     /// Areas we hold data for on disk.
     private(set) var ids: Set<String> = []
 
-    private var loaded: [String: EBM.Tile] = [:]
-    private var loading: Set<String> = []
-    private var recency: [String] = []          // LRU, most recent last
-    private var heldPoints = 0
-
-    /// Roughly 20 MB of geometry (a point is two doubles in a CGPath, plus
-    /// overhead). Well past a screenful of res-6 hexes; the LRU only bites when
-    /// panning across a large downloaded region.
-    private let pointBudget = 1_200_000
-
     /// Re-read which areas exist on disk. Cheap (one directory listing).
     func refresh() {
         Task {
             let disk = await TileCache.shared.cachedIds()
             guard disk != ids else { return }
             ids = disk
-            // Drop geometry for areas that vanished (cache cleared).
-            for gone in loaded.keys where !disk.contains(gone) { evict(gone) }
             bump()
         }
     }
 
-    /// Decoded geometry, or nil if it hasn't been decoded yet.
-    func tile(for id: String) -> EBM.Tile? { loaded[id] }
-
-    /// What the map should draw for `region`, split into areas we can render in
-    /// the device's style and ones we can only outline.
+    /// The hexagons to draw for `region`: everything this phone or the device
+    /// holds that the viewport touches, each carrying whether the DEVICE has it.
     ///
-    /// `synced` is the device's own tile list, so the two states the user asked
-    /// about — downloaded, and downloaded *and* on the device — are decided in
-    /// one place. Anything the device has but this phone has no data for still
-    /// gets an outline: coverage the user knows about must not vanish just
-    /// because the preview can't be drawn.
+    /// Anything the device has but this phone has no data for is included too —
+    /// coverage the rider knows about must not vanish because the blob lives
+    /// somewhere else.
     func visibleContent(in region: MKCoordinateRegion, synced: Set<String>)
-        -> (areas: [EInkArea], outlines: [OutlineHex]) {
+        -> [OutlineHex] {
         let all = ids.union(synced)
-        guard !all.isEmpty, region.span.latitudeDelta > 0 else { return ([], []) }
+        guard !all.isEmpty, region.span.latitudeDelta > 0 else { return [] }
 
         // Pad by a hex so an area half off-screen still draws to the edge.
         let padLat = region.span.latitudeDelta / 2 + 0.06
@@ -88,47 +75,23 @@ final class EInkTileStore: ObservableObject {
         let s = region.center.latitude - padLat, n = region.center.latitude + padLat
         let w = region.center.longitude - padLon, e = region.center.longitude + padLon
 
-        var near: [(tile: MapTile, distance: Double)] = []
+        var out: [OutlineHex] = []
+        out.reserveCapacity(all.count)
         for id in all {
             guard let t = geometry(id) else { continue }
             guard t.north >= s, t.south <= n, t.east >= w, t.west <= e else { continue }
-            let dLat = t.center.latitude - region.center.latitude
-            let dLon = t.center.longitude - region.center.longitude
-            near.append((t, dLat * dLat + dLon * dLon))
+            out.append(OutlineHex(id: t.id, hexagon: t.hexagon, center: t.center,
+                                  synced: synced.contains(t.id)))
         }
-        // Zoomed out far enough to see hundreds of areas, the ink is sub-pixel
-        // anyway. Draw the nearest in full and outline the rest rather than
-        // silently dropping them.
-        near.sort { $0.distance < $1.distance }
-        let drawable = near.prefix(previewLimit).map(\.tile)
-        let rest = near.dropFirst(previewLimit).map(\.tile)
-
-        ensureLoaded(drawable.filter { ids.contains($0.id) }.map(\.id))
-
-        var areas: [EInkArea] = []
-        var outlines: [OutlineHex] = []
-        for t in drawable {
-            if let geo = loaded[t.id] {
-                areas.append(EInkArea(id: t.id, hexagon: t.hexagon, center: t.center,
-                                      synced: synced.contains(t.id), tile: geo))
-            } else {
-                outlines.append(OutlineHex(id: t.id, hexagon: t.hexagon, center: t.center,
-                                           synced: synced.contains(t.id)))
-            }
-        }
-        for t in rest {
-            outlines.append(OutlineHex(id: t.id, hexagon: t.hexagon, center: t.center,
-                                       synced: synced.contains(t.id)))
-        }
-        return (areas, outlines)
+        return out
     }
 
-    // Fewer tiles drawn in full at once. Each one decodes off-main and then
-    // publishes, and at 80 a large download kept a continuous stream of decodes
-    // and overlay rebuilds running — which is what the Maps page stutter was.
-    // Beyond ~24 hexes on screen the ink is too small to read anyway; the rest
-    // outline, which costs nothing to draw.
-    private let previewLimit = 24
+    /// Called after a download so freshly built areas appear without a restart.
+    func noteDownloaded(_ newIds: [String]) {
+        guard !newIds.isEmpty else { return }
+        ids.formUnion(newIds)
+        bump()
+    }
 
     /// H3 id -> hexagon, memoised. Every id is a fixed cell on the globe, so
     /// this never needs invalidating.
@@ -140,66 +103,5 @@ final class EInkTileStore: ObservableObject {
         let t = H3Tiles.tile(from: cell)
         geometryCache[id] = t
         return t
-    }
-
-    /// Ask for these areas to be available to draw. Already-loaded ids are just
-    /// marked recently used; the rest are decoded in the background.
-    func ensureLoaded(_ wanted: [String]) {
-        for id in wanted {
-            touch(id)
-            guard loaded[id] == nil, !loading.contains(id), ids.contains(id) else { continue }
-            loading.insert(id)
-            Task.detached(priority: .utility) {
-                let blob = await TileCache.shared.displayData(for: id)
-                let tile = blob.flatMap { EBM.decode($0) }
-                await MainActor.run { self.finishLoad(id, tile) }
-            }
-        }
-    }
-
-    /// Called after a download so freshly built areas draw without a restart.
-    func noteDownloaded(_ newIds: [String]) {
-        guard !newIds.isEmpty else { return }
-        ids.formUnion(newIds)
-        // Re-decode rather than trusting a stale in-memory copy: a rebuilt area
-        // can legitimately differ from the one we already drew.
-        for id in newIds { evict(id) }
-        bump()
-    }
-
-    private func finishLoad(_ id: String, _ tile: EBM.Tile?) {
-        loading.remove(id)
-        guard let tile else {
-            // Undecodable (truncated write, format drift): forget it so we
-            // don't retry every pan, and so it draws as plain Apple Maps.
-            ids.remove(id)
-            bump()
-            return
-        }
-        loaded[id] = tile
-        heldPoints += tile.pointCount
-        touch(id)
-        trim()
-        bump()
-    }
-
-    private func touch(_ id: String) {
-        if let i = recency.firstIndex(of: id) { recency.remove(at: i) }
-        recency.append(id)
-    }
-
-    private func evict(_ id: String) {
-        if let t = loaded.removeValue(forKey: id) { heldPoints -= t.pointCount }
-        recency.removeAll { $0 == id }
-    }
-
-    /// Drop least-recently-wanted geometry until back inside the budget. Never
-    /// drops the most recent entries, which are what's on screen right now.
-    private func trim() {
-        var i = 0
-        while heldPoints > pointBudget, i < recency.count, recency.count > 4 {
-            let victim = recency[i]
-            if loaded[victim] != nil { evict(victim) } else { i += 1 }
-        }
     }
 }

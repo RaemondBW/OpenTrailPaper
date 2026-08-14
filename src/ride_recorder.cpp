@@ -281,6 +281,44 @@ namespace {
 //
 // `logFailures` is off for the background retry, which would otherwise write
 // three lines every 30 s for as long as a card is simply absent.
+// Shove the card back to a known state before asking the library to mount it.
+//
+// WHY. This device cannot power-cycle its SD card — there is no gate on that
+// rail (the XL9555 gates GPS/LoRa only). So when the firmware resets in the
+// MIDDLE of an SD transaction, which is exactly what a watchdog reset during
+// spiTransferBytesNL() does, the card keeps the state it was left in: mid
+// command, and with CRC checking still enabled from the previous session. The
+// SD spec only allows CRC on for CMD0 and CMD8, so the mount sequence's first
+// command comes back a CRC error and the whole mount aborts — on a card that is
+// perfectly healthy and mounts fine in a reader. That is espressif/esp-idf
+// #14000; the tolerant behaviour landed in IDF 5.x and this build is on 4.4.
+//
+// The sequence is the one the SD physical-layer spec prescribes for entering
+// SPI mode, and it is what a power cycle would otherwise have done for us:
+//   * >= 74 clocks with CS and MOSI HIGH, to let the card's internal state
+//     machine finish whatever it was doing (80 here, ten 0xFF bytes);
+//   * then CMD0 GO_IDLE_STATE, which carries a FIXED, always-valid CRC (0x95)
+//     and so is the one command a card still in CRC mode will accept.
+//
+// Cheap (a few hundred microseconds at 400 kHz) and harmless on a card that is
+// already idle, so it runs before every attempt rather than only after a crash.
+void sdSpiForceIdle() {
+    SPI.beginTransaction(SPISettings(400000, MSBFIRST, SPI_MODE0));
+    digitalWrite(BOARD_SD_CS, HIGH);
+    for (int i = 0; i < 10; ++i) SPI.transfer(0xFF);   // >= 74 clocks, CS high
+
+    digitalWrite(BOARD_SD_CS, LOW);
+    SPI.transfer(0xFF);
+    static const uint8_t kCmd0[] = {0x40, 0x00, 0x00, 0x00, 0x00, 0x95};
+    for (uint8_t b : kCmd0) SPI.transfer(b);
+    for (int i = 0; i < 10; ++i) {                     // R1, bit7 clear
+        if ((SPI.transfer(0xFF) & 0x80) == 0) break;
+    }
+    digitalWrite(BOARD_SD_CS, HIGH);
+    SPI.transfer(0xFF);                                // release the bus
+    SPI.endTransaction();
+}
+
 bool mountLocked(bool logFailures) {
     // settleMs is waited BEFORE the attempt. The old schedule (three tries, 50 ms
     // apart) gave the card ~100 ms to come up and then declared it absent, which
@@ -305,6 +343,7 @@ bool mountLocked(bool logFailures) {
     for (auto& a : kAttempts) {
         uint32_t f = a.freq;
         if (a.settleMs) delay(a.settleMs);   // let the card/bus settle first
+        sdSpiForceIdle();                    // clear a garbled prior transaction
         // max_files: the library default is 5 open files for the WHOLE firmware,
         // and a ride holds one of them open from start to finish. Ten leaves room
         // for a map tile, a route, a diag flush and a BLE download at the same

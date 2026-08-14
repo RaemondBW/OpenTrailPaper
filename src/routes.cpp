@@ -399,7 +399,17 @@ bool loadFromMemory(const char* name, const char* gpx, size_t len) {
         snprintf(path, sizeof(path), ROUTE_DIR "/%s", name);
         File f = SD.open(path, FILE_WRITE);
         if (f) {
-            f.write((const uint8_t*)gpx, len);
+            // Chunked with a yield rather than one call: a GPX can be 256 KB,
+            // and a single write of that is seconds of SD work with nothing
+            // else getting a look in — which the task watchdog reads as a hung
+            // task and resets. Same rule as the tile and firmware writes.
+            size_t wrote = 0;
+            while (wrote < len) {
+                size_t chunk = len - wrote < 4096 ? len - wrote : 4096;
+                if (f.write((const uint8_t*)gpx + wrote, chunk) != chunk) break;
+                wrote += chunk;
+                if ((wrote & 0x3FFF) == 0) vTaskDelay(1);
+            }
             f.close();
         }
     }

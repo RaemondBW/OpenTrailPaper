@@ -3,6 +3,14 @@ import MapKit
 import CoreLocation
 import Combine
 
+/// Height of the floating bottom card, reported up so the map can inset for it.
+private struct CardHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
 // Draw a box on the map; the app covers it with H3 hexagon tiles (~5.6 km
 // across), skips the ones already on the device, fetches OSM for the rest, and
 // streams each new tile to the device one at a time. The device stores every
@@ -27,9 +35,11 @@ struct MapsView: View {
     @StateObject private var projection = MapProjection()
     @ObservedObject private var store = EInkTileStore.shared
     @State private var visibleRegion: MKCoordinateRegion?
-    @State private var einkAreas: [EInkArea] = []
     @State private var outlineHexes: [OutlineHex] = []
-    @State private var didCenter = false
+    /// The locator's fallback shot has been taken.
+    @State private var didLocate = false
+    /// All the coverage has been framed — the opening shot this screen wants.
+    @State private var didFrameCoverage = false
     @State private var dragStart: CGPoint?
     @State private var dragEnd: CGPoint?
     @State private var box: (s: Double, w: Double, n: Double, e: Double)?
@@ -51,11 +61,25 @@ struct MapsView: View {
     @State private var failedHexes: Set<String> = []
     @State private var downloadTotal = 0            // hexes targeted this run
     @State private var downloadTask: Task<Void, Never>?
+    /// Measured height of the floating card, so the map can inset for whatever
+    /// the card currently is — the hint, a selection summary and a send progress
+    /// card are very different heights, and this screen swaps between them.
+    @State private var cardHeight: CGFloat = 0
+
+    /// The band along the bottom of the map the card covers: the card and its
+    /// padding, plus the home-indicator strip the full-bleed map runs under.
+    private var cardInset: CGFloat { cardHeight + MapsView.homeIndicatorInset }
+
+    private static var homeIndicatorInset: CGFloat {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }.first?
+            .windows.first(where: \.isKeyWindow)?.safeAreaInsets.bottom ?? 0
+    }
 
     // Hexes in the drawn box that aren't on the device yet, in whichever state
     // the download has reached. Areas already downloaded are NOT in here — they
-    // draw as e-ink underneath, which says "you have this" far better than a
-    // selection tint would.
+    // already show as coverage hexagons, which says "you have this" better than
+    // a selection tint would.
     private var selectionHexes: [SelectionHex] {
         tiles.filter { !ble.deviceTileIds.contains($0.id) }.map { t in
             SelectionHex(id: t.id, hexagon: t.hexagon,
@@ -83,12 +107,12 @@ struct MapsView: View {
         NavigationStack {
             ZStack(alignment: .top) {
                 EInkMapView(
-                    areas: einkAreas,
                     outlines: outlineHexes,
                     selection: selectionHexes,
                     camera: camera,
                     showsUserLocation: ble.locationPermission.isGranted,
                     showsTrackingButton: true,
+                    bottomInset: cardInset,
                     projection: projection,
                     // Tap a hex (once an area is drawn) to skip/keep it.
                     onTap: { c in
@@ -105,9 +129,9 @@ struct MapsView: View {
                     },
                     onRegionChange: { r in
                         visibleRegion = r
-                        refreshEInk()
+                        refreshCoverage()
                     })
-                .ignoresSafeArea(edges: .top)
+                .ignoresSafeArea(edges: [.top, .bottom])
 
                 // In draw mode a transparent layer captures the drag so the
                 // map doesn't pan while you draw a box.
@@ -134,7 +158,7 @@ struct MapsView: View {
                                 dragStart = nil; dragEnd = nil
                                 drawMode = false
                             })
-                        .ignoresSafeArea(edges: .top)
+                        .ignoresSafeArea(edges: [.top, .bottom])
                 }
 
                 if let a = dragStart, let b = dragEnd {
@@ -154,7 +178,7 @@ struct MapsView: View {
             )) { info in
                 TileInspectorSheet(info: info)
             }
-            .safeAreaInset(edge: .bottom) { bottomBar }
+            .overlay(alignment: .bottom) { bottomBar }
             .onAppear {
                 ble.refreshDeviceMaps(); ble.refreshDeviceTiles(); locator.start()
                 store.refresh()
@@ -163,19 +187,25 @@ struct MapsView: View {
             // Redraw when a tile finishes decoding, or when the device's own
             // tile list arrives and flips areas to "synced". Both are also the
             // moment the coverage we want to frame becomes known.
-            .onChange(of: store.version) { refreshEInk(); fitDownloadedHexes() }
+            .onChange(of: store.version) { refreshCoverage(); fitDownloadedHexes() }
             // The device's tile list also arrives tile-by-tile during an upload,
             // and each change re-derives selectionHexes and rebuilds every
             // overlay. Coalesced for the same reason the store's version is.
             .onChange(of: ble.deviceTileIds) { scheduleRefresh() }
             // Center on the user's first fix, once, at our fixed tile-friendly
             // span. Only before any interaction so it never yanks the map away
-            // from a box the user is drawing — and only as the FALLBACK for
-            // someone with no coverage yet, since `fitDownloadedHexes` claims
-            // `didCenter` the moment it has hexes to frame.
+            // from a box the user is drawing.
+            //
+            // This is the FALLBACK, and it no longer blocks the coverage shot.
+            // Both used to claim one `didCenter` and whichever fired first won —
+            // and the fix nearly always arrives before the tile scan does, so
+            // the opening view was a fixed 25 km box on the rider and a
+            // region-sized download was mostly off-screen with nothing to say it
+            // existed. fitDownloadedHexes now overrides this once.
             .onReceive(locator.$coordinate) { coord in
-                guard !didCenter, box == nil, !drawMode, let coord else { return }
-                didCenter = true
+                guard !didLocate, !didFrameCoverage, box == nil, !drawMode,
+                      let coord else { return }
+                didLocate = true
                 camera = MapCameraCommand(target: .region(MKCoordinateRegion(center: coord,
                     span: MKCoordinateSpan(latitudeDelta: 0.25, longitudeDelta: 0.25))))
             }
@@ -192,17 +222,15 @@ struct MapsView: View {
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 250_000_000)
             refreshPending = false
-            refreshEInk()
+            refreshCoverage()
             fitDownloadedHexes()
         }
     }
 
-    /// Ask the store what to draw for the region now on screen.
-    private func refreshEInk() {
+    /// Ask the store which coverage hexagons the region now on screen needs.
+    private func refreshCoverage() {
         guard let r = visibleRegion else { return }
-        let content = store.visibleContent(in: r, synced: ble.deviceTileIds)
-        einkAreas = content.areas
-        outlineHexes = content.outlines
+        outlineHexes = store.visibleContent(in: r, synced: ble.deviceTileIds)
     }
 
     /// Frame ALL the coverage — everything the phone holds plus everything the
@@ -211,11 +239,12 @@ struct MapsView: View {
     /// Managing downloaded areas starts with seeing them, and the old opening
     /// shot (a fixed ~22 km box on the user) showed one screenful of a
     /// collection that can span a country: the rest was off-map with nothing to
-    /// say it existed. Runs once — `didCenter` is shared with the locate-the-
-    /// user fallback, so whichever gets there first wins and neither one ever
+    /// say it existed. Runs once, and takes precedence over the locate-the-user
+    /// fallback — the tile scan is asynchronous, so it reliably loses a race
+    /// against a location fix that is often already cached. Neither one ever
     /// moves the camera under a box being drawn.
     private func fitDownloadedHexes() {
-        guard !didCenter, box == nil, !drawMode else { return }
+        guard !didFrameCoverage, box == nil, !drawMode else { return }
         let ids = store.ids.union(ble.deviceTileIds)
         guard !ids.isEmpty else { return }
 
@@ -228,9 +257,10 @@ struct MapsView: View {
             }
         }
         guard !rect.isNull, rect.size.width > 0, rect.size.height > 0 else { return }
-        didCenter = true
-        // Less padding than a route gets: the hexes ARE the subject here, and
-        // the bottom card already eats the lower edge of the map.
+        didFrameCoverage = true
+        // Less padding than a route gets: the hexes ARE the subject here. The
+        // card's own share of the map is handled by the map's bottomInset, so
+        // it must not be padded for a second time.
         camera = MapCameraCommand(target: .rect(rect.paddedForDisplay(fraction: 0.12)))
     }
 
@@ -274,6 +304,10 @@ struct MapsView: View {
         }
         .padding(.horizontal, 16)
         .padding(.bottom, 6)
+        .background(GeometryReader { g in
+            Color.clear.preference(key: CardHeightKey.self, value: g.size.height)
+        })
+        .onPreferenceChange(CardHeightKey.self) { cardHeight = $0 }
     }
 
     // Download + vectorize + send all run in parallel, so one card shows the
@@ -340,7 +374,7 @@ struct MapsView: View {
         card {
             VStack(alignment: .leading, spacing: 3) {
                 Text(drawMode ? "Drag a box across the area you want."
-                              : "Tap “Select area”, then drag a box. Areas drawn like the device’s screen are downloaded; a green check means the device has them too.")
+                              : "Tap “Select area”, then drag a box. Shaded hexagons are downloaded; a green check means the device has them too.")
                     .font(BarlowFont.text(14)).foregroundStyle(drawMode ? Palette.accent : Palette.muted)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 if !ble.deviceTileIds.isEmpty {

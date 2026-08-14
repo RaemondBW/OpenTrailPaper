@@ -27,20 +27,32 @@ void begin(double lat, double lon);
 // at all — it runs every second, on the bus the recorder writes the FIT to.
 void ensureForPosition(double lat, double lon);
 
+// Free every cached tile blob (PSRAM). The map redraws exactly the same, just
+// re-reading from the card; call it before staging something large in PSRAM,
+// such as an OTA image, which needs its ~2 MB in one contiguous piece.
+void releaseCache();
+
 // Re-read the tile and whole-map indexes from the card. Call after something
 // other than saveTile/saveAndActivate could have changed /maps — i.e. when a
 // host computer releases the SD after mounting it over USB.
 void rescanCard();
 
-// Number of H3 tiles currently indexed (shown on the boot log).
-int tileCount();
-
+// Called between tiles while a frame is being built. Return false to abandon
+// the rest of it — the frame draws the tiles it already has, which are the ones
+// nearest the rider, and the caller can get on with whatever was more urgent.
+using KeepRendering = bool (*)();
 // Render the map around (lat, lon) into `out`: projects every H3 tile that
 // overlaps the viewport (loading them from SD on demand), falling back to the
 // whole-map / embedded blob where no tiles cover. Replaces a direct
 // map_tiles::project() call.
+// `cachedOnly` draws ONLY tiles already resident, never touching the card, and
+// marks the frame partial if that left anything out. It is what makes a zoom
+// feel immediate: the ground around the rider is already in RAM at any zoom it
+// was just drawn at, so it can be re-projected and put on the glass in
+// milliseconds while the outer ring is still being read.
 void renderInto(double lat, double lon, float metersPerPixel, int centerX,
-                int centerY, float rotateDeg, MapScreenData& out);
+                int centerY, float rotateDeg, MapScreenData& out,
+                KeepRendering keepGoing = nullptr, bool cachedOnly = false);
 
 // Save a freshly received whole .ebm to /maps/<name>.ebm and make it active.
 // Returns false on SD/parse error.
@@ -52,9 +64,6 @@ bool saveTile(const char* id, const uint8_t* data, size_t len);
 
 // Whether tile <id> (H3 id without extension) is already on the card.
 bool hasTile(const char* id);
-
-// Number of H3 tiles currently indexed.
-int tileCount();
 
 // Whether any map (a downloaded tile, a whole map, or the embedded default)
 // actually covers (lat, lon). False => the map screen has nothing to draw here

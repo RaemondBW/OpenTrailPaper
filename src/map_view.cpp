@@ -311,6 +311,19 @@ int mapCompassCy(bool navBannerVisible) {
                             : kMapCompass.cy;
 }
 
+void ui_map_draw_zoom_button(bool zoomIn, bool pressed, uint8_t* fb) {
+    EpdRect r = {kMapZoom.zoomX, zoomIn ? kMapZoom.zoomInY : kMapZoom.zoomOutY,
+                 kMapZoom.size, kMapZoom.size};
+    const uint8_t face = pressed ? 0x00 : 0xFF;   // pressed = filled ink
+    const uint8_t mark = pressed ? 0xFF : 0x00;
+    epd_fill_rect(r, face, fb);
+    epd_draw_rect(r, 0x00, fb);
+    epd_draw_rect({r.x + 1, r.y + 1, r.width - 2, r.height - 2}, 0x00, fb);
+    int cx = r.x + r.width / 2, cy = r.y + r.height / 2;
+    epd_fill_rect({cx - 14, cy - 2, 28, 5}, mark, fb);
+    if (zoomIn) epd_fill_rect({cx - 2, cy - 14, 5, 28}, mark, fb);
+}
+
 // Native-fb-aligned mask of the current frame's water/park fills (1 = covered).
 // Null until the first map render. Used by the ghost settle-clean.
 const uint8_t* ui_map_dither_mask() { return s_ditherMask; }
@@ -394,17 +407,8 @@ void ui_render_map(const MapScreenData& map, const RideState& s, uint8_t* fb) {
     }
 
     // Zoom buttons (design 1f, right edge)
-    for (int i = 0; i < 2; ++i) {
-        int by = i == 0 ? kMapZoom.zoomInY : kMapZoom.zoomOutY;
-        EpdRect r = {kMapZoom.zoomX, by, kMapZoom.size, kMapZoom.size};
-        epd_fill_rect(r, 0xFF, fb);
-        epd_draw_rect(r, 0x00, fb);
-        EpdRect r2 = {r.x + 1, r.y + 1, r.width - 2, r.height - 2};
-        epd_draw_rect(r2, 0x00, fb);
-        int cx = r.x + r.width / 2, cy = r.y + r.height / 2;
-        epd_fill_rect({cx - 14, cy - 2, 28, 5}, 0x00, fb);
-        if (i == 0) epd_fill_rect({cx - 2, cy - 14, 5, 28}, 0x00, fb);
-    }
+    ui_map_draw_zoom_button(true, false, fb);
+    ui_map_draw_zoom_button(false, false, fb);
 
     // Status bar drawn after the map (epdiy has no clipping)
     epd_fill_rect({0, 0, W, ui::STATUS_H - 3}, 0xFF, fb);

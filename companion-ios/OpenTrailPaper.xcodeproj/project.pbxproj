@@ -14,7 +14,6 @@
 		206AAAF21E4BC20EAB8D7C79 /* vertex.c in Sources */ = {isa = PBXBuildFile; fileRef = 861D40F3D0D6EE123389E135 /* vertex.c */; };
 		2593A42A317117DDFBAF716E /* EInkMapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 062C37A066E27E1DEC3AF253 /* EInkMapView.swift */; };
 		27D3072E86C963D6934C56BA /* RideSim.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B38F0A13FA33BFE4E04416 /* RideSim.swift */; };
-		2896F748FD963A319E478447 /* EBMDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18E924B930AF50BBF8472A7F /* EBMDecoder.swift */; };
 		292571D164EEF9C5316E8BAB /* linkedGeo.c in Sources */ = {isa = PBXBuildFile; fileRef = 878E3C8F7719672814B9A1C2 /* linkedGeo.c */; };
 		2A3194F4903302F4B2C27D19 /* polygon.c in Sources */ = {isa = PBXBuildFile; fileRef = 0CBC93C157DBF69D2E2C1823 /* polygon.c */; };
 		2D50FCD8D5DDF2010C20E161 /* RideView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4E83FB3A70437DD5D0F8629 /* RideView.swift */; };
@@ -72,7 +71,6 @@
 		119DE3CCD0BED37A2EED959F /* polygonAlgos.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = polygonAlgos.h; sourceTree = "<group>"; };
 		158AB26E91BB4024B25490AD /* h3shim.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = h3shim.c; sourceTree = "<group>"; };
 		1727B3F48F1EFA384DE4B5C8 /* h3api.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = h3api.h; sourceTree = "<group>"; };
-		18E924B930AF50BBF8472A7F /* EBMDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EBMDecoder.swift; sourceTree = "<group>"; };
 		21F000263728C013838D0605 /* faceijk.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = faceijk.c; sourceTree = "<group>"; };
 		22AE81B336FF77D1655400EA /* constants.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = constants.h; sourceTree = "<group>"; };
 		27A939183F2903B61CA144FB /* bbox.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = bbox.h; sourceTree = "<group>"; };
@@ -199,7 +197,6 @@
 				D66117B8CB78BBC0949D8DF3 /* demo.fit */,
 				E467F3BA417A6A968F920F77 /* DeviceMock.swift */,
 				336612AF0918144CAB1C1FCD /* DiagnosticsView.swift */,
-				18E924B930AF50BBF8472A7F /* EBMDecoder.swift */,
 				062C37A066E27E1DEC3AF253 /* EInkMapView.swift */,
 				CDD609424C1648F1D8704550 /* EInkTileStore.swift */,
 				BFEB166F13A60DC2EDA5E981 /* FirmwareRelease.swift */,
@@ -365,7 +362,6 @@
 				8885B18C0FC6E6E98283CD24 /* DashboardEditorView.swift in Sources */,
 				0F07C59EAB533AC46B37D7ED /* DeviceMock.swift in Sources */,
 				F71D1CFFCC25AD4A7A19D698 /* DiagnosticsView.swift in Sources */,
-				2896F748FD963A319E478447 /* EBMDecoder.swift in Sources */,
 				2593A42A317117DDFBAF716E /* EInkMapView.swift in Sources */,
 				D51119ACFAB6419E07143355 /* EInkTileStore.swift in Sources */,
 				A44F34DFEC944328672D82B2 /* FITDecoder.swift in Sources */,

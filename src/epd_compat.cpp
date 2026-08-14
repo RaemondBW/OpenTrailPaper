@@ -670,10 +670,25 @@ static void expandLevels() {
     }
 }
 
+// -DEPDC_PAINT_TRACE splits epdc_paint() into its two halves on the console.
+// The boot loop under investigation resets INSIDE this function, and the two
+// halves fail in completely different places: expandLevels() is our own PSRAM
+// loop, paint() is the driver clocking the panel. Without this the trace can
+// only say "somewhere in epdc_paint".
+#ifdef EPDC_PAINT_TRACE
+#define PAINT_TRACE(msg) Serial.printf("[epdc] %lu ms: %s\n", \
+                                       (unsigned long)millis(), msg)
+#else
+#define PAINT_TRACE(msg) ((void)0)
+#endif
+
 void epdc_paint() {
     if (!g_painter) return;
+    PAINT_TRACE("expand enter");
     expandLevels();
+    PAINT_TRACE("expand done, paint enter");
     g_painter->paint(g_levels);
+    PAINT_TRACE("paint returned");
 }
 
 void epdc_clear_dirty(int tolerance) {

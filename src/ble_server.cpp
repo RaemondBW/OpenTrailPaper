@@ -14,6 +14,7 @@
 #include "routes.h"
 #include "gps_service.h"
 #include "ble_sensors.h"
+#include "map_select.h"
 #include "map_store.h"
 #include "sd_bus.h"
 #include "usb_storage.h"
@@ -719,6 +720,10 @@ class OtaCb : public NimBLECharacteristicCallbacks {
             uint32_t expected = (uint32_t)p[1] | ((uint32_t)p[2] << 8) |
                                 ((uint32_t)p[3] << 16) | ((uint32_t)p[4] << 24);
             otaFreeBuf();
+            // A firmware image wants ~2 MB of PSRAM in ONE piece, and the tile
+            // cache is exactly the long-lived block that fragments that away.
+            // The map just re-reads from the card afterwards.
+            map_store::releaseCache();
             otaBuf = (uint8_t*)heap_caps_malloc(expected, MALLOC_CAP_SPIRAM);
             if (!otaBuf) {
                 uint8_t e[2] = {0xAF, 0xF0};   // out of memory
@@ -949,12 +954,25 @@ void mapCommit() {
 }
 
 // Stream the H3 tile ids already on the SD to the phone, so it can skip
-// re-sending tiles it already delivered. Reads the (in-RAM) tile index; runs
-// in the server task to stay off the BLE host thread.
+// re-sending tiles it already delivered. Walks the card (the filename IS the
+// id, so there is no index to read) and runs in the server task to stay off
+// the BLE host thread. The phone asks on every Maps-screen open, so the timing
+// is logged: this is the request path most likely to grow past the watchdog.
 void sendTileList() {
-    constexpr int TILE_LIST_MAX = 512;
-    static char ids[TILE_LIST_MAX][24];
+    // PSRAM, and sized to the whole index. At 512 in .bss this was both 12 KB of
+    // the internal RAM the display and BLE controller are short of, AND a silent
+    // truncation: a rider past 512 tiles kept being offered tiles the device
+    // already had, because the list the app dedups against stopped there.
+    constexpr int TILE_LIST_MAX = 4096;
+    static char (*ids)[24] = nullptr;
+    if (!ids) {
+        ids = (char(*)[24])heap_caps_malloc((size_t)TILE_LIST_MAX * 24,
+                                            MALLOC_CAP_SPIRAM);
+        if (!ids) { diag::log("tile list: no PSRAM for %d ids", TILE_LIST_MAX); return; }
+    }
+    uint32_t t0 = millis();
     int n = map_store::listTileIds(ids, TILE_LIST_MAX);
+    uint32_t walkMs = millis() - t0;
 
     uint8_t begin = 0xD0;
     sendChunk(mapChr, &begin, 1);
@@ -982,7 +1000,7 @@ void sendTileList() {
 
     uint8_t end = 0xD2;
     sendChunk(mapChr, &end, 1);
-    diag::log("tile list: %d ids sent", n);
+    diag::log("tile list: %d ids sent (walk %ums, total %ums)", n, walkMs, millis() - t0);
 }
 
 // Write the PSRAM-staged firmware to the SD card as /firmware.bin, then reboot
@@ -1006,6 +1024,10 @@ void otaCommit() {
                 size_t w = f.write(otaBuf + wrote, chunk);
                 if (w != chunk) break;
                 wrote += w;
+                // Same reason as the tile writes in map_store: a firmware image
+                // is ~2 MB of uninterrupted SD work on this task, and the task
+                // watchdog does not care that it is making progress.
+                if ((wrote & 0x3FFF) == 0) vTaskDelay(1);
             }
             f.close();
             ok = (wrote == otaBufLen);

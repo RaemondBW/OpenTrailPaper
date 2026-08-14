@@ -54,6 +54,12 @@ Screen screen = SCREEN_DASH;
 RideSummary pendingSummary;
 
 float mapMpp = 2.0f;  // map zoom: 1/2/4/8/16/32 m per px (wide levels show tiles)
+// Whether the next map frame may read tiles off the card. See renderMapScreen:
+// the first pass after any change is drawn from RAM alone so it lands at once.
+bool mapFullPass = false;
+// Which zoom button is showing its pressed state (0 none, 1 in, 2 out). Held
+// from the tap until a COMPLETE map frame has been drawn.
+int zoomHeld = 0;
 bool mapTrackUp = false;
 
 // Serial test hooks: drive the UI over the CDC serial port to profile the map
@@ -67,7 +73,8 @@ uint32_t navPromptShownAt = 0;
 // Turn-by-turn banner rect (top of map/dashboard); tapping it ends nav.
 const EpdRect kNavBanner = {0, ui::STATUS_H, 540, 138};
 void drawNavBanner(uint8_t* fb);
-void buildMapScreenData(const RideState& s, MapScreenData& map);
+void buildMapScreenData(const RideState& s, MapScreenData& map,
+                        bool finalFrame = false);
 
 // Which screen the Sensors page was opened from, so back returns there.
 Screen sensorsFrom = SCREEN_MENU;
@@ -169,7 +176,7 @@ void shutdownDevice(uint8_t* fb, const char* reason) {
         // GPS warm-start seed is as fresh as possible.
         if (s.everHadFix) settings::setLastPosition(s.latitude, s.longitude);
         MapScreenData map = {};
-        buildMapScreenData(s, map);
+        buildMapScreenData(s, map, /*finalFrame=*/true);
         ui_render_map_features(map, s, fb);
     }
     ui_render_shutdown_screen(fb);
@@ -419,6 +426,32 @@ void cycleBacklight() {
     applyBacklight(next);
 }
 
+// Answer a zoom tap NOW, before the map is re-projected.
+//
+// Re-projecting pulls tiles off the SD card and takes the best part of a
+// second, and until this existed nothing on the panel moved in that time — so a
+// tap that had registered looked exactly like one that had missed, and the
+// natural response was to tap again (zooming twice). Painting the button in its
+// pressed state is a ~76 px change the driver's delta engine drives almost
+// immediately; the full redraw that follows puts it back.
+//
+// Through refresh() rather than epdc_paint() directly, so the shadow buffer
+// tracks what is actually on the glass. Otherwise a tap at either end of the
+// zoom range — where mapMpp is clamped and the rest of the frame is unchanged —
+// would leave the button stuck black: the next frame would compare equal to the
+// shadow and never repaint.
+void ackZoomTap(bool zoomIn) {
+    if (screen != SCREEN_MAP) return;
+    uint8_t* fb = epdc_framebuffer();
+    ui_map_draw_zoom_button(zoomIn, true, fb);
+    refresh(false, true, false);
+    // Stay pressed until the map has actually caught up. A single flash before
+    // the redraw answers "did it hear me?" but not "is it still working?", and
+    // on a cold zoom the outer tiles can take a moment to arrive. Held down, the
+    // button is doing the job a spinner would.
+    zoomHeld = zoomIn ? 1 : 2;
+}
+
 void handleTap(int x, int y) {
     // The "Start navigation?" prompt owns every tap while it is up. START
     // begins navigation; any other tap dismisses it, so it can never trap
@@ -472,10 +505,12 @@ void handleTap(int x, int y) {
                 x < kMapZoom.zoomX + kMapZoom.size) {
                 if (y >= kMapZoom.zoomInY && y < kMapZoom.zoomInY + kMapZoom.size) {
                     if (mapMpp > 1.0f) mapMpp /= 2.0f;
+                    ackZoomTap(true);
                     break;
                 }
                 if (y >= kMapZoom.zoomOutY && y < kMapZoom.zoomOutY + kMapZoom.size) {
                     if (mapMpp < 32.0f) mapMpp *= 2.0f;
+                    ackZoomTap(false);
                     break;
                 }
             }
@@ -648,7 +683,8 @@ void handlePowerTap(int x, int y) {
     }
 }
 
-void buildMapScreenData(const RideState& s, MapScreenData& map) {
+void buildMapScreenData(const RideState& s, MapScreenData& map,
+                        bool finalFrame) {
     map.riderX = 270;
     map.riderY = 430;
     // Track-up: the world rotates so travel direction is up; the rider
@@ -688,7 +724,28 @@ void buildMapScreenData(const RideState& s, MapScreenData& map) {
     } else {
         settings::lastPosition(lat, lon);
     }
-    map_store::renderInto(lat, lon, mapMpp, map.riderX, map.riderY, rot, map);
+    // The farewell frame is the one frame with no "next one".
+    //
+    // Every rule below exists because another frame is coming: draw only what
+    // is already in RAM, and bail the instant a finger lands, because `partial`
+    // brings us straight back. Nothing brings the shutdown screen back — it is
+    // painted, the rails come down, and it sits on the glass for days. Run it
+    // cached-only and it draws whatever the cache happened to hold, which after
+    // riding at a close zoom is the tile under the rider and little else; abort
+    // it on touch and it stops after one tile, since power-off is REACHED by
+    // touching (the dialog) or holding BOOT. That is the whole bug: the farewell
+    // asked for the widest zoom and then refused to read the card for it.
+    //
+    // So: read the card, ignore the finger, and bound it by the clock instead —
+    // a power-off must not hang, and tiles come nearest-first, so a deadline
+    // costs the far edge rather than the middle.
+    static uint32_t frameDeadline;
+    frameDeadline = millis() + 4000;
+    map_store::renderInto(lat, lon, mapMpp, map.riderX, map.riderY, rot, map,
+                          finalFrame
+                              ? []() -> bool { return millis() < frameDeadline; }
+                              : []() -> bool { return !touchIrq && !touchWasDown; },
+                          /*cachedOnly=*/finalFrame ? false : !mapFullPass);
     map.hasMap = map_store::coversPosition(lat, lon);
 
     if (routes::active() && routeScreenPts) {
@@ -714,15 +771,56 @@ void renderMapScreen(const RideState& s, uint8_t* fb) {
     uint32_t m0 = millis();
     buildMapScreenData(s, map);
     uint32_t m1 = millis();
+
+    // A finger arrived while this frame was being built. Don't spend the panel
+    // on it — one paint is 130-400 ms, and that is 130-400 ms in which nothing
+    // acknowledges the touch. Put the LAST PAINTED frame back and return, so
+    // refresh() finds nothing changed, skips the panel, and the next thing to
+    // reach the glass is the pressed zoom button.
+    //
+    // Restoring from shadowFb rather than just returning is the whole point: the
+    // caller memsets the framebuffer to white before this runs, so returning
+    // early leaves a BLANK screen — status bar, data fields and all — with only
+    // the acknowledgement drawn on it. shadowFb is by definition what is
+    // currently on the glass, so this is a no-op repaint rather than a wipe.
+    if ((touchIrq || touchWasDown) && shadowFb) {
+        memcpy(fb, shadowFb, fbSize);
+        forceDraw = true;
+        mapFullPass = true;      // and let the retry read whatever it missed
+        if (dbgTiming) diag::log("map: frame dropped for a touch");
+        return;
+    }
     ui_render_map(map, s, fb);
+    // ui_render_map redraws the buttons unpressed, so re-assert the held one on
+    // top of it. Released only once the frame is complete — a partial frame
+    // means tiles are still coming.
+    if (zoomHeld) {
+        if (map.partial) ui_map_draw_zoom_button(zoomHeld == 1, true, fb);
+        else             zoomHeld = 0;
+    }
+    // Two-pass rendering, and the reason a zoom lands instantly.
+    //
+    // The FIRST pass after any change draws only tiles already in RAM. Zooming
+    // does not change which ground is under the rider — only its scale — so the
+    // middle of the map is always already resident and can be re-projected and
+    // painted in milliseconds. If that left anything out (the newly exposed
+    // outer ring, or a frame a finger interrupted), the frame comes back marked
+    // partial and the NEXT one is allowed to read the card.
+    //
+    // Steady state costs nothing: once everything on screen is cached, the
+    // cached-only pass IS the complete frame and there is no second one.
+    if (map.partial) { forceDraw = true; mapFullPass = true; }
+    else             { mapFullPass = false; }
     if (dbgTiming)
         diag::log("map: project=%lu draw=%lu polys=%d (tiles=%d base=%d) "
-                  "cls[maj=%d pri=%d sec=%d ter=%d min=%d path=%d] ntiles=%d mpp=%d",
+                  "cls[maj=%d pri=%d sec=%d ter=%d min=%d path=%d] ntiles=%d/%d%s "
+                  "mpp=%d",
                   (unsigned long)(m1 - m0), (unsigned long)(millis() - m1),
                   map.featureCount, map.tilePolys, map.featureCount - map.tilePolys,
                   map.clsCount[0], map.clsCount[1], map.clsCount[2], map.clsCount[3],
                   map.clsCount[4], map.clsCount[5],
-                  map.projectedTiles, (int)mapMpp);
+                  map.projectedTiles, map.wantedTiles,
+                  map.partial ? " cut" : "", (int)mapMpp);
     drawNavBanner(fb);
 }
 
@@ -939,6 +1037,7 @@ void renderListScreen(uint8_t* fb) {
 #define EPDC_STEP(msg) ((void)0)
 #endif
 
+
 namespace ui_dashboard {
 
 // Boot progress state. Kept tiny and static — this runs before any allocation
@@ -1033,9 +1132,12 @@ void bootRepaint() {
     if (!bootScreenLive) return;
     uint8_t* fb = epdc_framebuffer();
     if (!fb) return;
+    EPDC_STEP("bootRepaint: render");
     ui_render_boot_screen(FIRMWARE_VERSION, bootLines, bootState, bootDetail,
                           bootMs, bootCount, fb);
+    EPDC_STEP("bootRepaint: paint");
     epdc_paint();
+    EPDC_STEP("bootRepaint: wait");
     // WAIT for the rows to finish clocking out. epdc_paint() is asynchronous on
     // the EPD_Painter backend — it hands the frame to the driver's paint task
     // and returns mid-drive — so leaving one in flight means the NEXT paint is
@@ -1055,7 +1157,9 @@ void bootRepaint() {
     // else drives the panel. Bounded at 6 s inside epdc_paint_wait(), so this
     // cannot turn a slow panel into a hung boot.
     epdc_paint_wait();
+    EPDC_STEP("bootRepaint: painted");
     if (shadowFb) memcpy(shadowFb, fb, fbSize);   // keep the delta engine honest
+    EPDC_STEP("bootRepaint: done");
 }
 
 // Index of `step` in the table, or -1. Compared by pointer first since every
@@ -1099,6 +1203,19 @@ void bootStatus(const char* step, bool ok) {
     snprintf(bootDetail[i], sizeof(bootDetail[i]), "%s", bootPending);
     bootPending[0] = 0;
     bootRepaint();
+    // Put the boot log on the CARD, step by step, as soon as there is a card to
+    // put it on.
+    //
+    // Until this existed, a boot that died never left a trace anywhere. The
+    // reset reason and the core-dump summary are logged in the first
+    // milliseconds of setup(), but: the USB CDC does not exist yet (TinyUSB
+    // starts from the UI task, after the SD mount), a CDC with no host attached
+    // silently discards writes anyway, and the only caller of flushToSD() was
+    // the BLE server task — which is created AFTER this function runs. So the
+    // one failure mode you most need a log for was the one that produced none,
+    // and diagnosing a boot loop meant guessing. No-ops before the card mounts
+    // and while a ride is recording.
+    diag::flushToSD();
 }
 
 // Attach detail to a step already announced ("30436 MB free", "CASIC"), so the
@@ -1130,9 +1247,16 @@ bool begin() {
     double mlat = DEFAULT_MAP_LAT, mlon = DEFAULT_MAP_LON;
     settings::lastPosition(mlat, mlon);
     map_store::begin(mlat, mlon);
-    bootDetailFor("Maps", "%d tiles · %s", map_store::tileCount(),
-                  map_store::tileCount() ? "indexed" : "none on card");
+    EPDC_STEP("map_store::begin returned");
+    // NO tile count here. Counting means walking every tile directory on the
+    // card, and this is the boot path — the exact place map_store::tileCount()
+    // documents itself as never belonging. Having it here (twice, once per
+    // argument) put a full card walk back into boot immediately after the scan
+    // it was meant to have removed, which is what kept the boot loop alive.
+    bootDetailFor("Maps", "ready");
+    EPDC_STEP("bootDetailFor done");
     bootStatus("Maps", true);
+    EPDC_STEP("bootStatus done");
     EPDC_STEP("map loaded — begin() done");
     // Hand the panel over to the dashboard: further bootStatus() calls no-op,
     // and the task's first refresh() paints the real UI over the boot screen.
@@ -1531,8 +1655,12 @@ void task(void*) {
         // A card that only mounted after boot had given up: setup() skipped the
         // routes, the map index and the USB drive, and nothing revisited them, so
         // the card stayed mounted-but-unused for the whole session. Run that
-        // bring-up now. It happens here, in the UI task, because the map cache is
-        // this task's alone — doing it from loop() would race the renderer.
+        // bring-up now. It happens here, in the UI task, next to the renderer
+        // that consumes it.
+        //
+        // It used to say the map cache was "this task's alone". It never was —
+        // the BLE server writes to it on every tile received — and acting on
+        // that belief is why nothing locked it. map_store owns the locking now.
         if (ride_recorder::consumeLateMount()) {
             diag::log("sd: late mount — loading routes/maps, exposing USB drive");
             ride_recorder::recoverRides();
