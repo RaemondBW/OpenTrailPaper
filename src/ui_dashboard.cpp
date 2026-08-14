@@ -1322,11 +1322,15 @@ void applySdUpdate() {
 }
 
 // Reboot into the ROM serial bootloader (download mode) for hands-free
-// reflashing. usb_persist_restart keeps the USB-CDC enumerated across the reset
-// (same port, no re-enumeration) — unlike a raw FORCE_DOWNLOAD_BOOT + restart,
-// which tears the USB down and leaves no port for the host to connect to.
+// reflashing. On the S3, usb_persist_restart(RESTART_BOOTLOADER) calls
+// usb_switch_to_cdc_jtag() before restarting, so the board comes back on the
+// USB-Serial-JTAG peripheral rather than TinyUSB: a *different* USB device on a
+// different port (…usbmodem2101, product "USB JTAG/serial debug unit"). That is
+// the point — unlike our OTG port, that bridge has DTR/RTS wired to GPIO0/EN,
+// so the host can reset us back into the app afterwards with no button press.
+// tools/flash.py drives both halves; `pio run -t upload` goes through it.
 static void rebootToBootloader() {
-    Serial.println("[cmd] entering download mode (USB persists) — flash now");
+    Serial.println("[cmd] entering download mode — flash now");
     Serial.flush();
     delay(100);
     usb_persist_restart(RESTART_BOOTLOADER);
