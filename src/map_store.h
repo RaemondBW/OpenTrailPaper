@@ -17,15 +17,9 @@
 
 namespace map_store {
 
-// Called every so often while the card is being indexed, with the running tile
-// count. Indexing is by far the longest thing in boot and it happens with the
-// panel showing a static frame — see epdc_set_idle_timeout() for why a long gap
-// between paints is not merely a cosmetic problem.
-using ScanProgress = void (*)(int tilesSoFar);
-
 // Load tiles index + the best whole map for a starting position (or the
 // embedded default). Call after the SD card is mounted.
-void begin(double lat, double lon, ScanProgress onProgress = nullptr);
+void begin(double lat, double lon);
 
 // If the currently loaded whole map doesn't cover (lat, lon), load the
 // downloaded one that does. Answered from the in-RAM bounds index, so outside
@@ -47,7 +41,6 @@ void rescanCard();
 // the rest of it — the frame draws the tiles it already has, which are the ones
 // nearest the rider, and the caller can get on with whatever was more urgent.
 using KeepRendering = bool (*)();
-
 // Render the map around (lat, lon) into `out`: projects every H3 tile that
 // overlaps the viewport (loading them from SD on demand), falling back to the
 // whole-map / embedded blob where no tiles cover. Replaces a direct
@@ -71,11 +64,6 @@ bool saveTile(const char* id, const uint8_t* data, size_t len);
 
 // Whether tile <id> (H3 id without extension) is already on the card.
 bool hasTile(const char* id);
-
-// How many tiles are on the card. WALKS THE CARD — there is no index to count,
-// so this opens every tile directory. Diagnostics only: never call it on the
-// boot path or anywhere a frame is waiting.
-int tileCount();
 
 // Whether any map (a downloaded tile, a whole map, or the embedded default)
 // actually covers (lat, lon). False => the map screen has nothing to draw here

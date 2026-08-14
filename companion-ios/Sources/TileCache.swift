@@ -14,17 +14,14 @@ import Foundation
 /// is safe and needs no invalidation beyond age.
 ///
 /// Lives in Application Support, NOT Caches. It started in Caches on the theory
-/// that it is reconstructible from the network — true, but it is no longer only
-/// a build cache: these blobs are what the map draws downloaded areas from
-/// (`EInkTileStore`), so an eviction would silently blank out areas the user
-/// downloaded, with an Overpass round-trip to get them back. Excluded from
-/// backup, so it still doesn't ride along in iCloud.
+/// that it is reconstructible from the network — true, but an eviction would
+/// silently un-download areas the rider chose, with an Overpass round-trip to
+/// get them back. Excluded from backup, so it still doesn't ride along in
+/// iCloud.
 actor TileCache {
     static let shared = TileCache()
 
     /// Tiles older than this are re-fetched, so OSM edits eventually land.
-    /// Applies to REUSE only — `displayData` ignores it, since drawing a
-    /// slightly stale area beats drawing nothing.
     private let maxAge: TimeInterval = 60 * 60 * 24 * 90   // 90 days
     /// Rough ceiling before the oldest entries are dropped.
     private let maxBytes: Int = 256 * 1024 * 1024
@@ -49,7 +46,7 @@ actor TileCache {
         try? d.setResourceValues(res)
     }
 
-    nonisolated private func url(_ id: String) -> URL {
+    private func url(_ id: String) -> URL {
         // Ids are hex H3 strings, so they are already filename-safe; guard anyway
         // so a malformed id can never escape the directory.
         let safe = id.filter { $0.isHexDigit }
@@ -65,21 +62,6 @@ actor TileCache {
               let d = try? Data(contentsOf: u), !d.isEmpty
         else { return nil }
         return d
-    }
-
-    /// Blob for `id` with no age check, for DRAWING the area on the map.
-    /// `data(for:)` expires tiles so a rebuild picks up OSM edits; expiring what
-    /// the map draws would instead make downloaded areas quietly disappear.
-    ///
-    /// NONISOLATED, and that is the point. It reads a file under a `let`
-    /// directory and touches no actor state, but as an actor method every read
-    /// queued behind every other — so drawing a region's worth of downloaded
-    /// areas turned into hundreds of strictly sequential disk reads, and the map
-    /// filled in one hexagon at a time. Writes are atomic, so a read that races
-    /// one sees the old file or the new one, never a torn one.
-    nonisolated func displayData(for id: String) -> Data? {
-        let d = try? Data(contentsOf: url(id))
-        return (d?.isEmpty == false) ? d : nil
     }
 
     /// Every H3 id this phone holds tile data for — the set of areas the map can

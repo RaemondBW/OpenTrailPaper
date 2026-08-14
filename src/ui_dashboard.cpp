@@ -1021,11 +1021,6 @@ void renderListScreen(uint8_t* fb) {
 #define EPDC_STEP(msg) ((void)0)
 #endif
 
-// The driver's own default, restored after boot.
-constexpr int kPanelIdleTimeoutS = 5;
-// Held during boot. Longer than any boot, and comfortably inside the driver's
-// uint8_t countdown.
-constexpr int kPanelBootIdleS = 200;
 
 namespace ui_dashboard {
 
@@ -1232,33 +1227,10 @@ bool begin() {
     // the panel never flashes the default and then rearrange itself.
     dash_config::begin();
 
-    // The tile scan below is seconds long with no paint, and the driver powers
-    // the panel down after five unpainted seconds — see epdc_set_idle_timeout().
-    // Hold the rails up until the UI task takes over.
-    //
-    // A LONG timeout, NOT 0. Zero looks like "disabled" and is the opposite of
-    // it: PanelPowerGuard does `if (state == 0) powerOn(); state =
-    // _idle_timeout_s;`, so a zero timeout leaves the counter at zero after
-    // every paint and the NEXT paint calls powerOn() inline — which is the very
-    // path that wedges. Measured: with 0 the boot loop went from intermittent
-    // (1 boot in 8 survived) to every single time.
-    epdc_set_idle_timeout(kPanelBootIdleS);
-
     bootStep("Maps");
     double mlat = DEFAULT_MAP_LAT, mlon = DEFAULT_MAP_LON;
     settings::lastPosition(mlat, mlon);
-    // Repaint while the card is indexed, so the glass shows the count climbing
-    // instead of a frozen list — and, less obviously, so the panel is never left
-    // unpainted long enough for the driver's idle timer to drop its rails
-    // mid-boot. Rate limited: a full boot repaint is ~450 ms, so a small card
-    // pays nothing and a large one pays a few frames it is glad to have.
-    map_store::begin(mlat, mlon, [](int tiles) {
-        static uint32_t lastPaint = 0;
-        if (millis() - lastPaint < 1500) return;
-        lastPaint = millis();
-        bootDetailFor("Maps", "%d tiles…", tiles);
-        bootRepaint();
-    });
+    map_store::begin(mlat, mlon);
     EPDC_STEP("map_store::begin returned");
     // NO tile count here. Counting means walking every tile directory on the
     // card, and this is the boot path — the exact place map_store::tileCount()
@@ -1272,9 +1244,6 @@ bool begin() {
     EPDC_STEP("map loaded — begin() done");
     // Hand the panel over to the dashboard: further bootStatus() calls no-op,
     // and the task's first refresh() paints the real UI over the boot screen.
-    // Hand the idle power-off back: from here the UI task paints on every
-    // change, and dropping the rails between frames is worth the battery.
-    epdc_set_idle_timeout(kPanelIdleTimeoutS);
     bootScreenLive = false;
     return true;
 }

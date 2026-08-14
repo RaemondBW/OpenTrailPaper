@@ -40,7 +40,7 @@ const char* activeName() { return "mission_dolores.gpx"; }
 // route-preview road-context render to map_tiles' single loaded blob.
 namespace map_store {
 void renderInto(double lat, double lon, float mpp, int cx, int cy, float rot,
-                MapScreenData& out) {
+                MapScreenData& out, bool (*)(), bool) {
     map_tiles::project(lat, lon, mpp, cx, cy, rot, out);
 }
 }

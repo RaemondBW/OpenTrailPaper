@@ -431,9 +431,8 @@ float elevFromBlob(const uint8_t* b, size_t len, double lat, double lon) {
 
 namespace map_store {
 
-void begin(double lat, double lon, ScanProgress onProgress) {
+void begin(double lat, double lon) {
     MapGuard g;
-    (void)onProgress;    // nothing long enough left to report progress on
     sdLock();
     if (!SD.exists(MAP_DIR)) SD.mkdir(MAP_DIR);
     sdUnlock();
@@ -717,42 +716,6 @@ int listTileIds(char out[][24], int maxOut) {
                 walk(full, strlen(sub) == TILE_PREFIX_LEN ? sub : "");
                 continue;
             }
-            e.close();
-        }
-        d.close();
-    }
-    sdUnlock();
-    return n;
-}
-
-int tileCount() {
-    static char ids[1][24];
-    (void)ids;
-    // Counting means walking the card, so this is for diagnostics only — never
-    // call it anywhere a boot is waiting.
-    MapGuard g;
-    int n = 0;
-    sdLock();
-    File d = SD.open(TILE_DIR);
-    if (d) {
-        for (File e = d.openNextFile(); e; e = d.openNextFile()) {
-            if (e.isDirectory()) {
-                const char* nm = e.name();
-                const char* base = strrchr(nm, '/');
-                char full[96];
-                snprintf(full, sizeof(full), "%s/%s", TILE_DIR, base ? base + 1 : nm);
-                e.close();
-                File s2 = SD.open(full);
-                if (s2) {
-                    for (File f = s2.openNextFile(); f; f = s2.openNextFile()) {
-                        if (!f.isDirectory() && strstr(f.name(), ".ebm")) n++;
-                        f.close();
-                    }
-                    s2.close();
-                }
-                continue;
-            }
-            if (strstr(e.name(), ".ebm")) n++;
             e.close();
         }
         d.close();

@@ -38,7 +38,8 @@ void point(int, double& lat, double& lon) { lat = lon = 0; }
 const char* activeName() { return ""; }
 }
 namespace map_store {
-void renderInto(double, double, float, int, int, float, MapScreenData&) {}
+void renderInto(double, double, float, int, int, float, MapScreenData&,
+                bool (*)(), bool) {}
 }
 
 namespace {

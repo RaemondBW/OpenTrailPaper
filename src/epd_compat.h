@@ -86,26 +86,6 @@ void epdc_paint_wait();
 void epdc_power_off_soon();
 void epdc_power_off_wait();
 
-// How long the panel may sit unpainted before the driver drops its rails, in
-// seconds.
-//
-// Do NOT pass 0 meaning "never": the driver re-arms its countdown to this
-// value on every paint and powers ON whenever it finds the countdown at zero,
-// so 0 makes every paint take the power-up path rather than none of them.
-// Pass a value longer than the gap you need to cover.
-//
-// This exists because of what the driver does at the far end of that timer.
-// PanelPowerGuard re-arms a counter to `_idle_timeout_s` on every paint, a 1 Hz
-// task decrements it, and at zero it powers the panel OFF; the next paint then
-// has to bring the rails back up inline. Boot has one long gap with no paint —
-// the SD tile scan, ~5 s and growing with the card — so whether the power-off
-// lands inside that gap is decided by where a free-running 1 Hz tick happens to
-// fall. When it did, the paint that followed wedged with interrupts disabled
-// and the interrupt watchdog reset the device: a boot loop that appeared once
-// the tile count grew, was intermittent (seven resets, then a clean boot), and
-// looked for all the world like a fault in the map code it happened to follow.
-void epdc_set_idle_timeout(int seconds);
-
 // Drive the whole panel to white. `passes` > 1 repeats it: e-paper keeps its
 // image through power-off, so the first boot after a different firmware needs
 // several passes to shift what is physically on the glass (one was not enough,
