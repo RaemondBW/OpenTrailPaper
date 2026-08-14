@@ -22,10 +22,9 @@ settings, push routes and build offline maps. Feature-for-feature with
 - **Maps** — drag a box; the app covers it with H3 res-6 hexagons (~5.6 km
   across), skips the ones already on the device, fetches OpenStreetMap for the
   rest, bakes roads/water/coastline/parks/elevation into `.ebm` tiles and streams
-  each new one to the SD card. Areas you've downloaded are drawn the way the head
-  unit will draw them: black ink on paper, roads by class, water as a dot screen
-  and parks as a diagonal hatch (the screentones in `src/map_view.cpp`). Areas the
-  device also has get a green check.
+  each new one to the SD card. Areas you've downloaded are shaded as hexagons —
+  green with a check where the device has them too — so the screen answers which
+  ground you hold and whether it is on the head unit.
 - **Settings** — units, clock format, USB-drive mode, FTP, timezone, backlight;
   sensor pairing; device diagnostics logs with a battery-drain chart; and
   over-the-air firmware updates straight from GitHub Releases.

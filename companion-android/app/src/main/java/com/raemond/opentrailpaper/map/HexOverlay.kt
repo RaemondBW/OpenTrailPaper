@@ -13,8 +13,12 @@ import org.osmdroid.views.Projection
 import org.osmdroid.views.overlay.Overlay
 
 /**
- * Flat hexagons: the area being selected for download, and coverage we know
- * about but can't paint in the device's ink right now.
+ * Flat hexagons: the ground this phone or the device holds, and the area being
+ * selected for download.
+ *
+ * These used to sit under an opaque e-ink painting of each area (see
+ * [EInkTileStore] for why that is gone), so they only had to hint at an edge.
+ * Now they ARE the coverage, and are drawn to be seen.
  *
  * Drawn as one overlay rather than an osmdroid Polygon per hex. A large
  * selection is several hundred cells, and several hundred overlays means several
@@ -40,7 +44,7 @@ class HexOverlay(
         /** Tapped out of the selection. */
         SELECTION_EXCLUDED,
 
-        /** Downloaded, but its geometry isn't drawable right now. */
+        /** Downloaded on this phone. */
         OUTLINE_PHONE,
 
         /** As above, and the device has it too. */
@@ -59,8 +63,12 @@ class HexOverlay(
                 SELECTION_PENDING -> Palette.accent.toArgb().withAlpha(0.16f)
                 SELECTION_DONE -> Palette.good.toArgb().withAlpha(0.22f)
                 SELECTION_EXCLUDED -> Palette.muted.toArgb().withAlpha(0.08f)
-                OUTLINE_PHONE -> Palette.faint.toArgb().withAlpha(0.14f)
-                OUTLINE_SYNCED -> Palette.good.toArgb().withAlpha(0.14f)
+                // At 0.14 over Palette.faint these were tuned to whisper beneath
+                // the paper fill of a painted area, and with that gone they
+                // vanished into the base map's green terrain — visible only where
+                // a hexagon happened to cross water.
+                OUTLINE_PHONE -> Palette.muted.toArgb().withAlpha(0.22f)
+                OUTLINE_SYNCED -> Palette.good.toArgb().withAlpha(0.30f)
                 MISSING -> Palette.accent.toArgb().withAlpha(0.10f)
             }
 
@@ -69,7 +77,7 @@ class HexOverlay(
                 SELECTION_PENDING -> Palette.accent.toArgb()
                 SELECTION_DONE -> Palette.good.toArgb()
                 SELECTION_EXCLUDED -> Palette.muted.toArgb().withAlpha(0.55f)
-                OUTLINE_PHONE -> Palette.faint.toArgb()
+                OUTLINE_PHONE -> Palette.muted.toArgb()
                 OUTLINE_SYNCED -> Palette.good.toArgb()
                 MISSING -> Palette.accent.toArgb().withAlpha(0.7f)
             }
@@ -78,7 +86,7 @@ class HexOverlay(
     private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
     private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        strokeWidth = 1.5f * density
+        strokeWidth = 2f * density
     }
     private val path = Path()
     private val point = Point()
@@ -112,10 +120,10 @@ class HexOverlay(
  * The badge that says "the device has this one too".
  *
  * Drawn rather than tinted from a vector asset: the mark has to hold its colour
- * over both paper and a dark water screentone, and the white ring is what keeps
- * it legible on the dark half. 14 dp across — it is a status badge on a ~5.6 km
- * hexagon, not a pin: any larger and neighbouring checks nearly touch when
- * zoomed out.
+ * over whatever ground the base map puts under it, and the white ring is what
+ * keeps it legible on the dark parts. 14 dp across — it is a status badge on a
+ * ~5.6 km hexagon, not a pin: any larger and neighbouring checks nearly touch
+ * when zoomed out.
  */
 object SyncedCheck {
     /** 14 dp across. */

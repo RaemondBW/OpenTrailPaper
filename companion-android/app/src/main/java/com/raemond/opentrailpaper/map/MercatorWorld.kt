@@ -8,18 +8,12 @@ import kotlin.math.sin
 
 /**
  * A fixed, zoom-independent Web Mercator space — the Android stand-in for
- * `MKMapPoint`, which the iOS decoder projects into once so nothing has to be
- * re-projected per frame.
+ * `MKMapPoint`.
  *
- * Having a fixed space matters twice over. Decoded geometry survives pans and
- * zooms untouched, and the screentones can be anchored to a GLOBAL grid rather
- * than to each tile — the thing that stops a visible seam appearing at every
- * hexagon boundary.
- *
- * Coordinates are stored in [android.graphics.Path], whose vertices are floats,
- * so geometry is kept RELATIVE to its own tile's origin. Absolute world values
- * run to 2^28 where a float's step is several metres; a few kilometres from the
- * tile origin the step is under a centimetre.
+ * Being zoom-independent is the point: a position converts once and then any
+ * zoom is a single multiply away, which is what lets [MapSnapshotter] lay a ride
+ * over stitched raster tiles and [com.raemond.opentrailpaper.ui.OsmMap] work out
+ * the zoom and centre that frame a bounding box above a floating card.
  */
 object MercatorWorld {
     /** World size in units. A power of two, so tone-cell quantisation is exact. */

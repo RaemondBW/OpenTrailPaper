@@ -125,12 +125,10 @@ fun RouteScreen(ble: BleManager) {
     LaunchedEffect(route, EInkTileStore.version, ble.deviceTileIds) { recomputeCoverage() }
 
     Box(Modifier.fillMaxSize().background(Palette.paper)) {
-        // NO e-ink areas here: this page is for finding a destination and
-        // building a route, and the plain map reads better for that than the
-        // device's 1-bit rendering. It also stops the page decoding tile geometry
-        // it never shows, which is what made it stutter while panning. The gap
-        // hexes stay — they answer a question the rider is actually asking here
-        // ("will I ride off my maps?").
+        // Same map component as the Maps screen, but showing only the GAP hexes —
+        // the ground a planned route crosses that nothing covers. That is the
+        // question this page is for ("will I ride off my maps?"); ordinary
+        // coverage would just be noise over the route.
         OsmMap(
             modifier = Modifier.fillMaxSize(),
             outlines = gapHexes,
