@@ -86,6 +86,12 @@ struct EInkMapView: UIViewRepresentable {
     /// with an explanation.
     var showsUserLocation = false
     var showsTrackingButton = false
+    /// How much of the map's bottom edge is covered by floating UI. The map
+    /// itself runs full-bleed under the card — stopping it above one leaves a
+    /// dead band of page background — so this is what keeps the map from
+    /// *acting* full height: framing insets by it, and MapKit's own legal link
+    /// and tracking button move up out from under the card.
+    var bottomInset: CGFloat = 0
     var projection: MapProjection? = nil
     var onTap: ((CLLocationCoordinate2D) -> Void)? = nil
     var onLongPress: ((CLLocationCoordinate2D) -> Void)? = nil
@@ -138,6 +144,10 @@ struct EInkMapView: UIViewRepresentable {
         projection?.map = map
         if map.showsUserLocation != showsUserLocation {
             map.showsUserLocation = showsUserLocation
+        }
+        if map.layoutMargins.bottom != bottomInset {
+            map.preservesSuperviewLayoutMargins = false
+            map.layoutMargins.bottom = bottomInset
         }
 
         // Overlays are expensive to rebuild, and SwiftUI calls this for any
@@ -230,16 +240,36 @@ struct EInkMapView: UIViewRepresentable {
         func stopFollowing() {
             if map.userTrackingMode != .none { map.setUserTrackingMode(.none, animated: false) }
         }
+        // Frame into the part of the map that isn't under the floating card, so
+        // "fit all my coverage" doesn't fit half of it behind the controls.
+        let pad = UIEdgeInsets(top: 0, left: 0, bottom: bottomInset, right: 0)
         switch command.target {
         case .region(let r):
             stopFollowing()
-            map.setRegion(r, animated: true)
+            // setRegion has no edgePadding, so go through the rect form once
+            // there is something to inset for.
+            if bottomInset > 0 {
+                map.setVisibleMapRect(Self.mapRect(r), edgePadding: pad, animated: true)
+            } else {
+                map.setRegion(r, animated: true)
+            }
         case .rect(let rect):
             stopFollowing()
-            map.setVisibleMapRect(rect, animated: true)
+            map.setVisibleMapRect(rect, edgePadding: pad, animated: true)
         case .followUser:
             map.setUserTrackingMode(.follow, animated: true)
         }
+    }
+
+    private static func mapRect(_ r: MKCoordinateRegion) -> MKMapRect {
+        let a = MKMapPoint(CLLocationCoordinate2D(
+            latitude: r.center.latitude + r.span.latitudeDelta / 2,
+            longitude: r.center.longitude - r.span.longitudeDelta / 2))
+        let b = MKMapPoint(CLLocationCoordinate2D(
+            latitude: r.center.latitude - r.span.latitudeDelta / 2,
+            longitude: r.center.longitude + r.span.longitudeDelta / 2))
+        return MKMapRect(x: min(a.x, b.x), y: min(a.y, b.y),
+                         width: abs(a.x - b.x), height: abs(a.y - b.y))
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }

@@ -3,6 +3,14 @@ import MapKit
 import CoreLocation
 import Combine
 
+/// Height of the floating bottom card, reported up so the map can inset for it.
+private struct CardHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
 // Draw a box on the map; the app covers it with H3 hexagon tiles (~5.6 km
 // across), skips the ones already on the device, fetches OSM for the rest, and
 // streams each new tile to the device one at a time. The device stores every
@@ -53,6 +61,20 @@ struct MapsView: View {
     @State private var failedHexes: Set<String> = []
     @State private var downloadTotal = 0            // hexes targeted this run
     @State private var downloadTask: Task<Void, Never>?
+    /// Measured height of the floating card, so the map can inset for whatever
+    /// the card currently is — the hint, a selection summary and a send progress
+    /// card are very different heights, and this screen swaps between them.
+    @State private var cardHeight: CGFloat = 0
+
+    /// The band along the bottom of the map the card covers: the card and its
+    /// padding, plus the home-indicator strip the full-bleed map runs under.
+    private var cardInset: CGFloat { cardHeight + MapsView.homeIndicatorInset }
+
+    private static var homeIndicatorInset: CGFloat {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }.first?
+            .windows.first(where: \.isKeyWindow)?.safeAreaInsets.bottom ?? 0
+    }
 
     // Hexes in the drawn box that aren't on the device yet, in whichever state
     // the download has reached. Areas already downloaded are NOT in here — they
@@ -90,6 +112,7 @@ struct MapsView: View {
                     camera: camera,
                     showsUserLocation: ble.locationPermission.isGranted,
                     showsTrackingButton: true,
+                    bottomInset: cardInset,
                     projection: projection,
                     // Tap a hex (once an area is drawn) to skip/keep it.
                     onTap: { c in
@@ -108,7 +131,7 @@ struct MapsView: View {
                         visibleRegion = r
                         refreshCoverage()
                     })
-                .ignoresSafeArea(edges: .top)
+                .ignoresSafeArea(edges: [.top, .bottom])
 
                 // In draw mode a transparent layer captures the drag so the
                 // map doesn't pan while you draw a box.
@@ -135,7 +158,7 @@ struct MapsView: View {
                                 dragStart = nil; dragEnd = nil
                                 drawMode = false
                             })
-                        .ignoresSafeArea(edges: .top)
+                        .ignoresSafeArea(edges: [.top, .bottom])
                 }
 
                 if let a = dragStart, let b = dragEnd {
@@ -155,7 +178,7 @@ struct MapsView: View {
             )) { info in
                 TileInspectorSheet(info: info)
             }
-            .safeAreaInset(edge: .bottom) { bottomBar }
+            .overlay(alignment: .bottom) { bottomBar }
             .onAppear {
                 ble.refreshDeviceMaps(); ble.refreshDeviceTiles(); locator.start()
                 store.refresh()
@@ -235,8 +258,9 @@ struct MapsView: View {
         }
         guard !rect.isNull, rect.size.width > 0, rect.size.height > 0 else { return }
         didFrameCoverage = true
-        // Less padding than a route gets: the hexes ARE the subject here, and
-        // the bottom card already eats the lower edge of the map.
+        // Less padding than a route gets: the hexes ARE the subject here. The
+        // card's own share of the map is handled by the map's bottomInset, so
+        // it must not be padded for a second time.
         camera = MapCameraCommand(target: .rect(rect.paddedForDisplay(fraction: 0.12)))
     }
 
@@ -280,6 +304,10 @@ struct MapsView: View {
         }
         .padding(.horizontal, 16)
         .padding(.bottom, 6)
+        .background(GeometryReader { g in
+            Color.clear.preference(key: CardHeightKey.self, value: g.size.height)
+        })
+        .onPreferenceChange(CardHeightKey.self) { cardHeight = $0 }
     }
 
     // Download + vectorize + send all run in parallel, so one card shows the
