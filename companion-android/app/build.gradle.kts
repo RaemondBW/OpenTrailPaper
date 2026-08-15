@@ -1,8 +1,33 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
 }
+
+// Release signing, kept OUT of the repository.
+//
+// keystore.properties (gitignored) holds four values; CI can supply the same
+// four as environment variables instead. When neither is present the release
+// build still runs and simply comes out unsigned — so a clone with no key can
+// verify that a minified build compiles, which is most of what the release
+// config is for day to day.
+//
+//   storeFile=/absolute/path/to/upload-keystore.jks
+//   storePassword=…
+//   keyAlias=upload
+//   keyPassword=…
+val keystoreProperties = Properties().apply {
+    val f = rootProject.file("keystore.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}
+
+fun signingValue(key: String, env: String): String? =
+    keystoreProperties.getProperty(key) ?: System.getenv(env)
+
+val releaseStoreFile = signingValue("storeFile", "OTP_KEYSTORE_FILE")
+val hasReleaseKey = releaseStoreFile != null && file(releaseStoreFile).exists()
 
 android {
     namespace = "com.raemond.opentrailpaper"
@@ -27,6 +52,17 @@ android {
         }
     }
 
+    signingConfigs {
+        if (hasReleaseKey) {
+            create("release") {
+                storeFile = file(releaseStoreFile!!)
+                storePassword = signingValue("storePassword", "OTP_KEYSTORE_PASSWORD")
+                keyAlias = signingValue("keyAlias", "OTP_KEY_ALIAS")
+                keyPassword = signingValue("keyPassword", "OTP_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
@@ -34,6 +70,10 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
+            // Absent on a clone with no key: the bundle builds unsigned rather
+            // than the build failing, and Play rejects it at upload — which is a
+            // far better place to find out than a tester's phone.
+            if (hasReleaseKey) signingConfig = signingConfigs.getByName("release")
         }
     }
 
