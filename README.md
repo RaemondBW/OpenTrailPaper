@@ -356,25 +356,68 @@ pio run -t upload                       # flash over USB
 pio device monitor -b 115200            # serial log
 ```
 
-The board runs in USB-OTG mode, so esptool's auto-reset can't enter the
-bootloader. Three ways in:
+`pio run -t upload` needs no button presses: `tools/pio_upload.py` reboots the
+running firmware into download mode first and resets it back into the app
+afterwards. Close any serial monitor before uploading — the hook needs the
+console port to send the `bootloader` command.
 
-- **From the running firmware** (easiest): send `bootloader` on the serial
-  console. It calls `usb_persist_restart(RESTART_BOOTLOADER)`, so the port
-  reappears as `…usbmodem2101` with no button press. Flash with
-  `--after no_reset`, then tap **RESET** to run — esptool's own reset drives
-  GPIO0 low on that bridge and would land straight back in download mode.
-- **By hand**, when the firmware isn't running: hold **BOOT**, tap **RESET**,
-  release **BOOT**, upload, tap **RESET**.
+The same logic is available standalone, for flashing a prebuilt image without a
+PlatformIO build:
+
+```sh
+tools/flash.py --firmware firmware.bin  # enter download mode, write, reset
+tools/flash.py enter                    # only reboot into download mode
+tools/flash.py finish                   # only reset a board that's stuck in it
+```
+
+<details>
+<summary>Why this needs its own tooling</summary>
+
+The board runs its USB in OTG mode, so while the app is running there is no
+bridge whose DTR/RTS reach GPIO0/EN — esptool's auto-reset can't get *in*.
+`usb_persist_restart(RESTART_BOOTLOADER)`, behind the firmware's `bootloader`
+console command, solves that half: on the S3 it calls `usb_switch_to_cdc_jtag()`,
+so the board reappears as the USB-Serial-JTAG device (`…usbmodem2101`, product
+`USB JTAG/serial debug unit`) — a different port from the app's, and one whose
+DTR/RTS *are* wired to GPIO0/EN.
+
+Getting back *out* used to need the RESET button, for two separate reasons:
+
+- `usb_persist_restart()` sets `RTC_CNTL_FORCE_DOWNLOAD_BOOT`, and nothing in the
+  Arduino core clears it. It sits in the RTC domain, which a soft reset doesn't
+  touch, so the ROM diverts to the loader again on every subsequent reset. Only
+  pulling CHIP_EN low — the physical button — resets that domain.
+- esptool's `--after hard_reset` pulses RTS but leaves DTR asserted (its
+  `_setRTS()` re-asserts DTR as a Windows workaround, and `--before no_reset`
+  never clears it). With DTR driving GPIO0, its reset releases EN with GPIO0
+  still low: download mode, again.
+
+`tools/flash.py` clears the bit over the download-mode connection and then drives
+the reset itself with DTR deasserted. `src/main.cpp` also clears a stale bit at
+boot, so a set bit can't quietly send some later OTA reboot into download mode.
+</details>
+
+Two fallbacks remain:
+
+- **By hand**, if the firmware is too broken to accept the `bootloader` command:
+  hold **BOOT**, tap **RESET**, release **BOOT**, then `tools/flash.py` (it
+  detects the board is already in download mode and skips straight to flashing).
 - **No USB at all**: copy `firmware.bin` to the SD card root and reboot, or push
   OTA from the app.
 
-Note that the app's OTG console port only re-enumerates on a *physical* reset,
-so after any software restart the port stays away until you tap **RESET**.
+Note that the app's OTG console port only re-enumerates on a *physical* reset, so
+after a plain software restart (`reboot`, an OTA, a crash) the port stays away
+until you tap **RESET**. This is not fixable from the firmware: the Arduino core
+compiles its USB-persist support out (`usb_persist_enabled` is hard-coded false in
+`esp32-hal-tinyusb.c`), so `RESTART_PERSIST` is a no-op. Going out through
+download mode, as the flasher does, is the way to get a software-triggered reset
+that brings the port back.
 
 No toolchain? Flash a prebuilt `firmware.bin` (from CI artifacts or a release)
 straight from the [project site](https://raemondbw.github.io/OpenTrailPaper/#flash)
-over Web Serial in Chrome/Edge — same manual download-mode step as above.
+over Web Serial in Chrome/Edge. You still need to enter download mode by hand
+there (BOOT + RESET, or send `bootloader` from a serial console first), but it
+resets into the new firmware on its own when the flash finishes.
 
 ### iOS companion
 

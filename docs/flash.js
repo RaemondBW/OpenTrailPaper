@@ -135,6 +135,41 @@ async function cleanup() {
   if (statusEl.className.indexOf("err") === -1) setStatus("Not connected.");
 }
 
+// --- leaving download mode ---------------------------------------------------
+// soc/rtc_cntl_reg.h: DR_REG_RTCCNTL_BASE (0x60008000) + 0x12C, bit 0.
+const RTC_CNTL_OPTION1_REG = 0x6000812c;
+const RTC_CNTL_FORCE_DOWNLOAD_BOOT = 0x1;
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Reset the board so it runs the app instead of returning to download mode.
+// Two things stand in the way, and both are handled here:
+//
+//  1. Whatever put the board into download mode set FORCE_DOWNLOAD_BOOT. That
+//     bit lives in the RTC domain, which a reset does not clear, so the ROM
+//     would divert to the loader again. We clear it over the connection that
+//     just did the flashing, while the loader is still listening.
+//
+//  2. On the USB-Serial-JTAG bridge, DTR drives GPIO0 and RTS drives EN — and
+//     Transport.setRTS() re-asserts the last DTR state on every call (a
+//     Windows driver workaround). Deassert DTR *first*, or every RTS pulse
+//     also pulls GPIO0 low and boots the loader.
+async function bootIntoApp() {
+  await esploader.writeReg(
+    RTC_CNTL_OPTION1_REG,
+    0x0,
+    RTC_CNTL_FORCE_DOWNLOAD_BOOT, // mask: leave the rest of the register alone
+  );
+  log("Cleared the force-download-boot bit.");
+
+  await transport.setDTR(false); // GPIO0 high — boot from flash
+  await transport.setRTS(false); // idle
+  await sleep(100);
+  await transport.setRTS(true); // EN low: chip in reset
+  await sleep(100);
+  await transport.setRTS(false); // EN high: boots, sampling GPIO0 high
+}
+
 // --- flash ------------------------------------------------------------------
 flashBtn.addEventListener("click", async () => {
   if (!esploader) return;
@@ -191,15 +226,40 @@ flashBtn.addEventListener("click", async () => {
     });
 
     bar.style.width = "100%";
-    setStatus("Done! Tap RESET on the board to run the new firmware.", "ok");
-    log("\n✔ Flash complete. Tap RESET to boot.");
-    try { await esploader.after(); } catch (_) { /* OTG can't auto-reset; that's fine */ }
+    log("\n✔ Flash complete.");
+
+    // Boot the new firmware without a RESET tap. esptool's own after() can't:
+    // it pulses RTS while leaving DTR asserted, and on this board's
+    // USB-Serial-JTAG bridge DTR drives GPIO0 — so its reset lands right back
+    // in download mode. See bootIntoApp() for the sequence that works.
+    let resetErr = null;
+    try {
+      await bootIntoApp();
+      log("Reset sent — the board should be running the new firmware now.");
+    } catch (e) {
+      console.error(e);
+      resetErr = e;
+      log("Couldn't reset automatically (" + (e?.message || e) + "). Tap RESET to boot.");
+    }
+
+    // The board re-enumerates as a different USB device on the way out of
+    // download mode, so this port is dead either way — drop it and reset the UI
+    // rather than leaving a Disconnect button pointing at nothing.
+    await cleanup();
+    setStatus(
+      resetErr
+        ? "Flashed OK, but the reset failed — tap RESET on the board."
+        : "Done! The board is booting the new firmware.",
+      "ok",
+    );
   } catch (err) {
     console.error(err);
     log("Error: " + (err?.message || err));
     setStatus("Flash failed — see the log above.", "err");
   } finally {
-    flashBtn.disabled = false;
+    // Only offer Flash again if we still hold a connection: on the success path
+    // cleanup() has already dropped it, and the board is off running the app.
+    flashBtn.disabled = esploader === null;
     connectBtn.disabled = false;
   }
 });
