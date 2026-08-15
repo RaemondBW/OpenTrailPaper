@@ -1155,7 +1155,8 @@ void ui_render_menu(const MenuInfo& m, uint8_t* fb) {
     char sub[64];
 
     // Header: MENU left (inset to match the rows), battery percent right
-    epd_fill_rect({0, kMenuRowTop - ui::RULE_HEAVY, W, ui::RULE_HEAVY}, ui::INK, fb);
+    // No rule here: kMenuRowTop sits on the status band, whose own 3 px rule
+    // is already the separator. Drawing one too made two lines with a gap.
 
     struct Row {
         const char* title;
@@ -1273,7 +1274,8 @@ void ui_render_list(const char* title, const ListRow* rows, int count,
     // LIST template: title in the status band, rows on the 24 px margin, one
     // 96 px BACK strip as the single exit. Rows are 148 px with a 2 px rule
     // below — the rule is chrome and is drawn once, never inside a fast region.
-    epd_fill_rect({0, kMenuRowTop - ui::RULE_HEAVY, W, ui::RULE_HEAVY}, ui::INK, fb);
+    // No rule here: kMenuRowTop sits on the status band, whose own 3 px rule
+    // is already the separator. Drawing one too made two lines with a gap.
 
     const int textW = ui::CONTENT_W - 2 * ui::CELL_PAD - (turnArrows ? 64 : 36);
     for (int i = 0; i < count && i < kMenuRowCount; ++i) {
@@ -1344,14 +1346,15 @@ static void settingsToggle(int x, int y, int w, int h, bool on, uint8_t* fb,
 void ui_render_settings(const SettingsInfo& si, uint8_t* fb) {
     const int W = epd_rotated_display_width();
 
-    epd_fill_rect({0, kMenuRowTop - ui::RULE_HEAVY, W, ui::RULE_HEAVY}, ui::INK, fb);
+    // No rule here: kMenuRowTop sits on the status band, whose own 3 px rule
+    // is already the separator. Drawing one too made two lines with a gap.
 
     struct Row {
         const char* label;
         char value[16];
         bool toggle;   // switch instead of a +/- stepper
         bool on;
-    } rows[6];
+    } rows[kSettingsRowCount];
     snprintf(rows[0].value, sizeof(rows[0].value), "%d", si.ftpW);
     rows[0].label = "FTP";
     rows[0].toggle = false;
@@ -1378,8 +1381,15 @@ void ui_render_settings(const SettingsInfo& si, uint8_t* fb) {
     rows[5].label = "SHOW OFFLINE";
     rows[5].toggle = true;
     rows[5].on = si.showOffline;
+    // The same switch the phone's Mesh tab drives, surfaced here so the radio can
+    // be shut off without a phone — it is the one setting on this page that costs
+    // battery continuously while it is on.
+    snprintf(rows[6].value, sizeof(rows[6].value), "%s", si.meshOn ? "On" : "Off");
+    rows[6].label = "MESH RADIO";
+    rows[6].toggle = true;
+    rows[6].on = si.meshOn;
 
-    for (int i = 0; i < 6; ++i) {
+    for (int i = 0; i < kSettingsRowCount; ++i) {
         const int y = kMenuRowTop + i * kSettingsRowH;
         const int midY = y + kSettingsRowH / 2;
 
@@ -1387,7 +1397,7 @@ void ui_render_settings(const SettingsInfo& si, uint8_t* fb) {
         // column. label() centres, so anchor it at its own half width.
         // Specimen: the row label is arialbold_20 sentence-weight, left-aligned
         // on the 16 px padding — not a tracked 14 pt label.
-        const int labelRoom = (rows[i].toggle ? kSettingsToggleX : kSettingsMinusX)
+        const int labelRoom = (rows[i].toggle ? settingsToggleX(i) : kSettingsMinusX)
                               - (ui::CONTENT_X + ui::CELL_PAD) - ui::HALF_STEP;
         char lab[24];
         fitText(&Arial_B, rows[i].label, labelRoom, lab, sizeof(lab));
@@ -1402,8 +1412,8 @@ void ui_render_settings(const SettingsInfo& si, uint8_t* fb) {
             // A switch reading ON/OFF beside "UNITS" says nothing — on what?
             // The two positions ARE the choice, so they carry the unit names.
             const bool isUnits = (i == kSettingsUnitsRow);
-            settingsToggle(kSettingsToggleX, midY - kSettingsToggleH / 2,
-                           kSettingsToggleW, kSettingsToggleH, rows[i].on, fb,
+            settingsToggle(settingsToggleX(i), midY - kSettingsToggleH / 2,
+                           settingsToggleW(i), kSettingsToggleH, rows[i].on, fb,
                            isUnits ? "MILES" : "ON", isUnits ? "KM" : "OFF");
         } else {
             // STEPPER: 88 x 88 targets, value centred in the 88 px between them.
@@ -1439,7 +1449,7 @@ void ui_render_settings(const SettingsInfo& si, uint8_t* fb) {
     // stretching the row to fill it made a single tappable line as tall as two
     // settings rows, with its text stranded at the top. The page just ends
     // instead; rows are a fixed height in this system.
-    const int ny = kMenuRowTop + 6 * kSettingsRowH;
+    const int ny = kMenuRowTop + kSettingsGpsRow * kSettingsRowH;
     ui::text(&Impact_T, ui::CONTENT_X + ui::CELL_PAD, ny + 40, "GPS DEBUG", fb);
     ui::text(&Arial_B, ui::CONTENT_X + ui::CELL_PAD, ny + 72,
              "Receiver diagnostics", fb, EPD_DRAW_ALIGN_LEFT, ui::INK);
@@ -1449,7 +1459,8 @@ void ui_render_settings(const SettingsInfo& si, uint8_t* fb) {
 void ui_render_gps_debug(const GpsDebugView& g, uint8_t* fb) {
     const int W = epd_rotated_display_width();
 
-    epd_fill_rect({0, kMenuRowTop - ui::RULE_HEAVY, W, ui::RULE_HEAVY}, ui::INK, fb);
+    // No rule here: kMenuRowTop sits on the status band, whose own 3 px rule
+    // is already the separator. Drawing one too made two lines with a gap.
 
     struct Line {
         const char* label;

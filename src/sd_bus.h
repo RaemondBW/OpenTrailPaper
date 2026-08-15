@@ -11,6 +11,11 @@
 // sdLock()/sdUnlock(). Created in setup() before any task starts; the guards
 // no-op until then. Recursive so a locked helper can call another safely.
 
+// NOT only the SD card: the SX1262 LoRa module hangs off the same MISO/MOSI/SCK
+// with its own chip select, so lora_radio.cpp takes this lock for every radio
+// transfer too. That is also why it never holds it across a transmission — a
+// LongFast packet is seconds of air time, and the recorder needs the bus at 1 Hz.
+
 // These also hold light sleep off for the duration. The SD path runs through
 // Arduino's SPIClass, which — unlike ESP-IDF's spi_master — takes no PM lock, so
 // a light sleep landing mid-command gates the SPI clock and wedges the card

@@ -17,6 +17,7 @@ enum BikeUUID {
     static let map      = CBUUID(string: "B1C50007-9E0F-4B7A-9C6D-1F2E3A4B5C6D")
     static let agnss    = CBUUID(string: "B1C50008-9E0F-4B7A-9C6D-1F2E3A4B5C6D")
     static let dash     = CBUUID(string: "B1C50009-9E0F-4B7A-9C6D-1F2E3A4B5C6D")
+    static let mesh     = CBUUID(string: "B1C5000A-9E0F-4B7A-9C6D-1F2E3A4B5C6D")
 }
 
 // A cycling sensor known to the head unit (HR / power / cadence).
@@ -74,6 +75,134 @@ struct DeviceStatus {
     var power: Int? = nil
     var speedKmh = 0.0
     var remainingKm = 0.0
+}
+
+// MARK: - Meshtastic mesh
+
+/// One message in the mesh conversation, sent or received.
+///
+/// `id` is the Meshtastic packet id, which is what makes this identifiable at
+/// all: the device streams its whole history whenever something changes, so the
+/// list is rebuilt from scratch each time and rows have to survive that.
+struct MeshMessage: Identifiable, Equatable {
+    enum Status: UInt8 { case pending = 0, sent = 1, acked = 2, failed = 3 }
+
+    let id: UInt32
+    let from: UInt32
+    let to: UInt32
+    let outgoing: Bool
+    /// Which channel it belongs to. 0 is the primary (public) channel; anything
+    /// else is a private one, and this is what keeps those threads apart.
+    let channel: UInt8
+    let status: Status
+    let text: String
+    /// When it happened, worked out from the age the device reported. The device
+    /// often has no wall clock (no GPS fix yet, no RTC set), so the phone's own
+    /// clock minus that age is the only date either end can agree on.
+    let date: Date
+    let rssi: Int
+    let snr: Int
+    let hops: Int
+
+    var isBroadcast: Bool { to == MeshState.broadcastAddr }
+}
+
+/// A neighbour the device has heard on the mesh.
+struct MeshNode: Identifiable, Equatable {
+    let num: UInt32
+    let shortName: String
+    let longName: String
+    let lastHeard: Date
+    let rssi: Int
+    let snr: Int
+    let hops: Int
+    /// Where it last said it was. nil is the common case and means "has not sent a
+    /// position", which is different from being at 0,0 — nodes broadcast position
+    /// on their own schedule, and many never do.
+    let position: MeshNodePosition?
+
+    var id: UInt32 { num }
+    /// "!a4c1380c" — how Meshtastic writes a node number everywhere.
+    var nodeId: String { "!" + String(format: "%08x", num) }
+    var displayName: String { longName.isEmpty ? nodeId : longName }
+}
+
+/// The device's mesh configuration, as it reports it.
+struct MeshState: Equatable {
+    static let broadcastAddr: UInt32 = 0xFFFF_FFFF
+
+    var enabled = false
+    var radioOk = false
+    /// No explicit channel name is set, so `channel` is the modem preset's name —
+    /// what a stock Meshtastic node does, and what keeps the two in step.
+    var channelFollowsPreset = true
+    var nodeNum: UInt32 = 0
+    var frequencyHz: UInt32 = 0
+    var channel = ""
+    var channelKey: UInt8 = 1
+    var longName = ""
+    var shortName = ""
+    var nodeCount = 0
+    var unread = 0
+    /// Index into `BLEManager.meshPresets`.
+    var presetIndex: UInt8 = 0
+
+    var nodeId: String { "!" + String(format: "%08x", nodeNum) }
+    var frequencyMHz: Double { Double(frequencyHz) / 1_000_000 }
+    /// Nothing has been heard from the device yet.
+    var isUnknown: Bool { nodeNum == 0 }
+}
+
+/// A position a node broadcast over the mesh.
+struct MeshNodePosition: Equatable {
+    let latitude: Double
+    let longitude: Double
+    let altitudeM: Int
+    let satsInView: Int
+    /// How much of the coordinate the sender chose to publish; 32 is full
+    /// precision. Meshtastic lets a node blur its position on purpose, so a
+    /// coarse fix must not be drawn as though it were exact.
+    let precisionBits: Int
+    let received: Date
+
+    var coordinate: CLLocationCoordinate2D {
+        CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+    }
+    var isImprecise: Bool { precisionBits < 32 }
+    /// Rough radius the sender's blurring leaves, for describing the uncertainty.
+    /// Each bit dropped from a coordinate doubles the box it could be in.
+    var uncertaintyM: Double? {
+        guard isImprecise else { return nil }
+        // 2^(32 - bits) steps of ~360/2^32 degrees, taken at the equator.
+        let steps = pow(2.0, Double(32 - precisionBits))
+        return steps * (40_075_000 / pow(2.0, 32))
+    }
+    var shortText: String {
+        String(format: "%.5f, %.5f", latitude, longitude)
+    }
+}
+
+/// A modem preset the device supports: how fast it talks, as opposed to the
+/// channel, which is where. Streamed from the device rather than hard-coded here,
+/// because the firmware owns which modems exist (`mesh::kPresets`) and a copy of
+/// that table on the phone is a copy that drifts.
+struct MeshPreset: Identifiable, Equatable {
+    let index: UInt8
+    let name: String
+    let sf: Int
+    let bandwidthKhz: Double
+    let codingRate: Int
+
+    var id: UInt8 { index }
+    var detail: String {
+        String(format: "SF%d · %.0f kHz", sf, bandwidthKhz)
+    }
+}
+
+/// Packet counters, for the diagnostics view.
+struct MeshStats: Equatable {
+    var rx = 0, rxDropped = 0, rxOtherChannel = 0, rxDuplicate = 0
+    var tx = 0, txFailed = 0, acksRx = 0
 }
 
 /// How a system permission stands right now.
@@ -193,6 +322,27 @@ final class BLEManager: NSObject, ObservableObject {
     private var routeChar: CBCharacteristic?
     private var ridesChar: CBCharacteristic?
     private var otaChar: CBCharacteristic?
+
+    // MARK: Meshtastic
+    private var meshChar: CBCharacteristic?
+    /// Rebuilt from the device's stream, then published in one go at the end
+    /// marker — publishing per message would redraw the chat mid-list.
+    private var meshBuilding: [MeshMessage] = []
+    private var meshNodesBuilding: [MeshNode] = []
+    @Published var meshState = MeshState()
+    @Published var meshMessages: [MeshMessage] = []
+    @Published var meshNodes: [MeshNode] = []
+    @Published var meshStats = MeshStats()
+    @Published var meshPresets: [MeshPreset] = []
+    private var meshPresetsBuilding: [MeshPreset] = []
+    @Published var meshChannels: [MeshChannel] = []
+    private var meshChannelsBuilding: [MeshChannel] = []
+    /// Set when the device refuses a message (radio off, or its outbox is full),
+    /// so the compose field can say so instead of silently losing the text.
+    @Published var meshSendRejected = false
+    /// Screenshot / design-review mode: the mesh screens are showing seeded data
+    /// and should behave as if a device were attached. Set only by `-demo-mesh`.
+    @Published var demoMesh = false
 
     // One-shot location handed to the device on connect so its GPS warm-starts
     // near the phone instead of cold-searching the whole sky.
@@ -922,6 +1072,349 @@ final class BLEManager: NSObject, ObservableObject {
         }
     }
 
+    // MARK: - Meshtastic mesh
+    //
+    // The device is the node; this is its keyboard and screen. Protocol (both
+    // directions) is documented in src/ble_server.cpp next to the opcodes.
+
+    /// Ask for everything the Messages screen shows. Called when it appears and
+    /// whenever the device says something changed.
+    func refreshMesh() {
+        guard let c = meshChar, let p = peripheral else { return }
+        p.writeValue(Data([0x01]), for: c, type: .withResponse)   // state
+        p.writeValue(Data([0x03]), for: c, type: .withResponse)   // history
+        p.writeValue(Data([0x04]), for: c, type: .withResponse)   // nodes
+        p.writeValue(Data([0x0c]), for: c, type: .withResponse)   // channels
+        if meshPresets.isEmpty {
+            // Fixed for the life of the firmware, so once is enough.
+            p.writeValue(Data([0x0a]), for: c, type: .withResponse)
+        }
+    }
+
+    /// Adds or replaces a private channel on the device. Slot 0 is the primary and
+    /// is refused by the firmware — it decides the frequency.
+    func setMeshPrivateChannel(index: UInt8, name: String, psk: Data) {
+        guard let c = meshChar, let p = peripheral else { return }
+        let n = Data(String(name.prefix(15)).utf8)
+        var cmd = Data([0x0d, index, UInt8(n.count)])
+        cmd.append(n)
+        cmd.append(UInt8(psk.count))
+        cmd.append(psk)
+        p.writeValue(cmd, for: c, type: .withResponse)
+    }
+
+    /// Turns position sharing on or off for one channel. The device broadcasts on
+    /// a distance and interval trigger, not continuously — see docs/meshtastic.md.
+    func setMeshShareLocation(index: UInt8, on: Bool) {
+        guard let c = meshChar, let p = peripheral else { return }
+        p.writeValue(Data([0x0f, index, on ? 1 : 0]), for: c, type: .withResponse)
+    }
+
+    func forgetMeshChannel(index: UInt8) {
+        guard let c = meshChar, let p = peripheral, index != 0 else { return }
+        p.writeValue(Data([0x0e, index]), for: c, type: .withResponse)
+    }
+
+    /// The lowest free private slot, or nil when the device is full.
+    var firstFreeMeshChannel: UInt8? {
+        let used = Set(meshChannels.map(\.index))
+        for i in UInt8(1)..<UInt8(8) where !used.contains(i) { return i }
+        return nil
+    }
+
+    /// Switches the modem. Note this can move the frequency as well as the speed:
+    /// bandwidth is part of a preset, and the channel's frequency slot is
+    /// bandwidth-wide.
+    func setMeshPreset(_ index: UInt8) {
+        guard let c = meshChar, let p = peripheral else { return }
+        p.writeValue(Data([0x0b, index]), for: c, type: .withResponse)
+    }
+
+    func requestMeshStats() {
+        guard let c = meshChar, let p = peripheral else { return }
+        p.writeValue(Data([0x09]), for: c, type: .withResponse)
+    }
+
+    /// Sends a message to one node, or to the whole channel when `to` is nil.
+    func sendMeshText(_ text: String, to: UInt32? = nil, channel: UInt8 = 0) {
+        guard let c = meshChar, let p = peripheral else { return }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        // 200 bytes is the device's own cap. Truncated on a character boundary so
+        // a multi-byte glyph is never cut in half into invalid UTF-8.
+        var body = Data(trimmed.utf8)
+        if body.count > 200 {
+            var cut = trimmed
+            while Data(cut.utf8).count > 200 { cut.removeLast() }
+            body = Data(cut.utf8)
+        }
+        meshSendRejected = false
+        var cmd = Data([0x02])
+        cmd.appendLE(to ?? MeshState.broadcastAddr)
+        cmd.append(channel)
+        cmd.append(body)
+        p.writeValue(cmd, for: c, type: .withResponse)
+    }
+
+    func setMeshEnabled(_ on: Bool) {
+        guard let c = meshChar, let p = peripheral else { return }
+        p.writeValue(Data([0x06, on ? 1 : 0]), for: c, type: .withResponse)
+    }
+
+    /// Renames this node on the mesh. `short` is what other apps show on a map
+    /// pin, so it is kept to four characters as Meshtastic does.
+    func setMeshNames(long: String, short: String) {
+        guard let c = meshChar, let p = peripheral else { return }
+        let l = Data(String(long.prefix(38)).utf8)
+        let s = Data(String(short.prefix(4)).utf8)
+        var cmd = Data([0x05, UInt8(l.count)])
+        cmd.append(l)
+        cmd.append(s)
+        p.writeValue(cmd, for: c, type: .withResponse)
+    }
+
+    /// Moves the device to another channel. Note this retunes the radio — in
+    /// Meshtastic the channel name decides the frequency slot as well as the key,
+    /// so a device on "LongFast" and one on "MyTrail" cannot hear each other at all.
+    /// An EMPTY name means "follow the modem preset" — the interoperable default,
+    /// not a no-op: a stock node leaves its primary channel unnamed and derives the
+    /// frequency from the preset, so pinning a name is what breaks interop.
+    func setMeshChannel(name: String, key: UInt8) {
+        guard let c = meshChar, let p = peripheral else { return }
+        var cmd = Data([0x07, max(1, min(10, key))])
+        cmd.append(Data(String(name.prefix(14)).utf8))
+        p.writeValue(cmd, for: c, type: .withResponse)
+    }
+
+    func markMeshRead() {
+        guard let c = meshChar, let p = peripheral else { return }
+        p.writeValue(Data([0x08]), for: c, type: .withResponse)
+    }
+
+    /// Fills the mesh screens with a plausible conversation so the layout can be
+    /// reviewed and screenshotted without a device and a second radio. Reached
+    /// only via the `-demo-mesh` launch argument, like the other `-demo-*` flags.
+    func seedDemoMesh() {
+        // A flag of its own rather than forcing `state = .connected`: the central
+        // manager's own callbacks own that field and overwrite it moments later
+        // (on a simulator, straight to poweredOff), which left the demo showing
+        // the not-connected screen over perfectly good seeded data.
+        demoMesh = true
+        // -demo-mesh-off shows the state a device comes up in now that the radio
+        // defaults to off, which is the first thing a new rider sees.
+        let off = ProcessInfo.processInfo.arguments.contains("-demo-mesh-off")
+        meshState = MeshState(enabled: !off, radioOk: true,
+                              channelFollowsPreset: true, nodeNum: 0xa4c1380c,
+                              frequencyHz: 913_125_000, channel: "MediumFast",
+                              channelKey: 1, longName: "OpenTrail 380c",
+                              shortName: "380c", nodeCount: 3, unread: 0,
+                              presetIndex: 2)
+        let now = Date()
+        meshNodes = [
+            MeshNode(num: 0x7b2e91aa, shortName: "ALEX", longName: "Alex",
+                     lastHeard: now.addingTimeInterval(-90), rssi: -84, snr: 6, hops: 0,
+                     position: MeshNodePosition(latitude: 37.7955, longitude: -122.4380,
+                                                altitudeM: 112, satsInView: 9,
+                                                precisionBits: 32,
+                                                received: now.addingTimeInterval(-120))),
+            MeshNode(num: 0x3fd10c55, shortName: "SAM", longName: "Sam's T-Beam",
+                     lastHeard: now.addingTimeInterval(-600), rssi: -108, snr: -4, hops: 2,
+                     position: MeshNodePosition(latitude: 37.7699, longitude: -122.4103,
+                                                altitudeM: 34, satsInView: 7,
+                                                precisionBits: 13,
+                                                received: now.addingTimeInterval(-900))),
+            // No position: the common case, and the one the list has to say
+            // something honest about.
+            MeshNode(num: 0x11aa4402, shortName: "GATE", longName: "Trailhead Gate",
+                     lastHeard: now.addingTimeInterval(-2400), rssi: -97, snr: 1, hops: 1,
+                     position: nil),
+        ]
+        let bc = MeshState.broadcastAddr
+        meshMessages = [
+            MeshMessage(id: 1, from: 0x7b2e91aa, to: bc, outgoing: false, channel: 0,
+                        status: .sent, text: "Heading up the fire road now, should be at the saddle in 40.",
+                        date: now.addingTimeInterval(-2100), rssi: -84, snr: 6, hops: 0),
+            MeshMessage(id: 2, from: 0xa4c1380c, to: bc, outgoing: true, channel: 0,
+                        status: .sent, text: "Copy. I'm still at the creek crossing, water is high.",
+                        date: now.addingTimeInterval(-1800), rssi: 0, snr: 0, hops: 0),
+            MeshMessage(id: 3, from: 0x3fd10c55, to: bc, outgoing: false, channel: 1,
+                        status: .sent, text: "Same, went around on the north side. Bridge is out.",
+                        date: now.addingTimeInterval(-1500), rssi: -108, snr: -4, hops: 2),
+            MeshMessage(id: 4, from: 0xa4c1380c, to: 0x7b2e91aa, outgoing: true, channel: 1,
+                        status: .acked, text: "Taking the north detour, add 20 min.",
+                        date: now.addingTimeInterval(-900), rssi: 0, snr: 0, hops: 0),
+            MeshMessage(id: 5, from: 0x7b2e91aa, to: bc, outgoing: false, channel: 0,
+                        status: .sent, text: "Got it. Waiting at the saddle, no rush.",
+                        date: now.addingTimeInterval(-120), rssi: -84, snr: 6, hops: 0),
+        ]
+        meshStats = MeshStats(rx: 214, rxDropped: 11, rxOtherChannel: 63,
+                              rxDuplicate: 88, tx: 19, txFailed: 1, acksRx: 12)
+        meshChannels = [
+            MeshChannel(index: 0, name: "MediumFast", hash: 0x1f, psk: Data([0x01]),
+                        sharesLocation: false),
+            MeshChannel(index: 1, name: "Saturday Ride", hash: 0x8c,
+                        psk: Data((0..<32).map { UInt8($0 &* 7 &+ 3) }),
+                        sharesLocation: true),
+        ]
+        meshPresets = [
+            MeshPreset(index: 0, name: "LongFast", sf: 11, bandwidthKhz: 250, codingRate: 5),
+            MeshPreset(index: 1, name: "MediumSlow", sf: 10, bandwidthKhz: 250, codingRate: 5),
+            MeshPreset(index: 2, name: "MediumFast", sf: 9, bandwidthKhz: 250, codingRate: 5),
+            MeshPreset(index: 3, name: "ShortSlow", sf: 8, bandwidthKhz: 250, codingRate: 5),
+            MeshPreset(index: 4, name: "ShortFast", sf: 7, bandwidthKhz: 250, codingRate: 5),
+            MeshPreset(index: 5, name: "ShortTurbo", sf: 7, bandwidthKhz: 500, codingRate: 5),
+        ]
+    }
+
+    /// Straight-line distance from the phone to a coordinate, or nil when we have
+    /// no location to measure from. Reads CoreLocation's cached fix rather than
+    /// starting a stream: the mesh screens are not worth turning the GPS on for,
+    /// and the device's own position is in the same pocket anyway.
+    func distanceMeters(to coord: CLLocationCoordinate2D) -> Double? {
+        guard locationAuthorized, let here = locationManager.location else { return nil }
+        let there = CLLocation(latitude: coord.latitude, longitude: coord.longitude)
+        return here.distance(from: there)
+    }
+
+    private func handleMeshNotify(_ d: Data) {
+        guard let op = d.first else { return }
+        switch op {
+        case 0x90:  // state
+            guard d.count >= 13 else { return }
+            var s = MeshState()
+            s.enabled = d[1] & 1 != 0
+            s.radioOk = d[1] & 2 != 0
+            s.channelFollowsPreset = d[1] & 4 != 0
+            s.nodeNum = d.le32(at: 2)
+            s.frequencyHz = d.le32(at: 6)
+            s.channelKey = d[10]
+            s.nodeCount = Int(d[11])
+            s.unread = Int(d[12])
+            var i = 13
+            s.channel = d.lenString(at: &i)
+            s.shortName = d.lenString(at: &i)
+            s.longName = d.lenString(at: &i)
+            if i < d.count { s.presetIndex = d[i] }
+            meshState = s
+
+        case 0x91:  // one message
+            guard d.count >= 26 else { return }
+            let textLen = Int(d[25])
+            guard d.count >= 26 + textLen else { return }
+            let flags = d[24]
+            // The channel byte is appended after the text.
+            let channel = d.count > 26 + textLen ? d[26 + textLen] : 0
+            // The device sends both a UTC stamp and an age. Prefer the stamp —
+            // it came from GPS and is exact — but it is 0 until the device has a
+            // fix, and then the phone's clock minus the age is all there is.
+            let utc = d.le32(at: 13)
+            let age = TimeInterval(d.le32(at: 17)) / 1000
+            let when = utc > 0 ? Date(timeIntervalSince1970: TimeInterval(utc))
+                               : Date().addingTimeInterval(-age)
+            meshBuilding.append(MeshMessage(
+                id: d.le32(at: 1),
+                from: d.le32(at: 5),
+                to: d.le32(at: 9),
+                outgoing: flags & 1 != 0,
+                channel: channel,
+                status: MeshMessage.Status(rawValue: flags >> 4) ?? .pending,
+                text: String(data: d.subdata(in: 26..<(26 + textLen)),
+                             encoding: .utf8) ?? "",
+                date: when,
+                rssi: Int(Int8(bitPattern: d[21])),
+                snr: Int(Int8(bitPattern: d[22])),
+                hops: Int(d[23])))
+
+        case 0x92:  // end of history
+            meshMessages = meshBuilding
+            meshBuilding = []
+
+        case 0x93:  // one node
+            guard d.count >= 12 else { return }
+            var i = 12
+            let short = d.lenString(at: &i)
+            let long = d.lenString(at: &i)
+            let age = TimeInterval(d.le32(at: 5)) / 1000
+            // Position is appended and optional: one flag byte, then the fields
+            // only if the node has actually broadcast one.
+            var pos: MeshNodePosition? = nil
+            if i < d.count, d[i] != 0, d.count >= i + 1 + 16 {
+                let base = i + 1
+                let posAge = TimeInterval(d.le32(at: base + 12)) / 1000
+                pos = MeshNodePosition(
+                    latitude: Double(Int32(bitPattern: d.le32(at: base))) / 1e7,
+                    longitude: Double(Int32(bitPattern: d.le32(at: base + 4))) / 1e7,
+                    altitudeM: Int(Int16(bitPattern: UInt16(d[base + 8]) |
+                                         (UInt16(d[base + 9]) << 8))),
+                    satsInView: Int(d[base + 10]),
+                    precisionBits: Int(d[base + 11]),
+                    received: Date().addingTimeInterval(-posAge))
+            }
+            meshNodesBuilding.append(MeshNode(
+                num: d.le32(at: 1),
+                shortName: short,
+                longName: long,
+                lastHeard: Date().addingTimeInterval(-age),
+                rssi: Int(Int8(bitPattern: d[10])),
+                snr: Int(Int8(bitPattern: d[9])),
+                hops: Int(d[11]),
+                position: pos))
+
+        case 0x94:  // end of node list — most recently heard first
+            meshNodes = meshNodesBuilding.sorted { $0.lastHeard > $1.lastHeard }
+            meshNodesBuilding = []
+
+        case 0x95:  // packet counters
+            guard d.count >= 29 else { return }
+            meshStats = MeshStats(
+                rx: Int(d.le32(at: 1)), rxDropped: Int(d.le32(at: 5)),
+                rxOtherChannel: Int(d.le32(at: 9)), rxDuplicate: Int(d.le32(at: 13)),
+                tx: Int(d.le32(at: 17)), txFailed: Int(d.le32(at: 21)),
+                acksRx: Int(d.le32(at: 25)))
+
+        case 0x99:  // one modem preset
+            guard d.count >= 6 else { return }
+            var i = 6
+            let name = d.lenString(at: &i)
+            let bw10 = Int(d[3]) | (Int(d[4]) << 8)
+            meshPresetsBuilding.append(MeshPreset(
+                index: d[1], name: name, sf: Int(d[2]),
+                bandwidthKhz: Double(bw10) / 10, codingRate: Int(d[5])))
+
+        case 0x9a:  // end of the preset list
+            meshPresets = meshPresetsBuilding
+            meshPresetsBuilding = []
+
+        case 0x9b:  // one channel, with its key
+            guard d.count >= 3 else { return }
+            var i = 3
+            let name = d.lenString(at: &i)
+            guard i < d.count else { return }
+            let pskLen = Int(d[i]); i += 1
+            guard i + pskLen <= d.count else { return }
+            let shares = d.count > i + pskLen ? d[i + pskLen] != 0 : false
+            meshChannelsBuilding.append(MeshChannel(
+                index: d[1], name: name, hash: d[2],
+                psk: d.subdata(in: i..<(i + pskLen)),
+                sharesLocation: shares))
+
+        case 0x9c:  // end of the channel list
+            meshChannels = meshChannelsBuilding.sorted { $0.index < $1.index }
+            meshChannelsBuilding = []
+
+        case 0x96:  // something changed — pull it
+            refreshMesh()
+
+        case 0x97:  // queued; the id its acks will quote
+            meshSendRejected = false
+
+        case 0x98:  // refused
+            meshSendRejected = true
+
+        default: break
+        }
+    }
+
     func downloadRide(_ name: String) {
         guard ridesChar != nil, peripheral != nil else { return }
         enqueueTransfer(.ride(name))
@@ -1278,7 +1771,10 @@ extension BLEManager: CBCentralManagerDelegate {
                                     error: Error?) {
         MainActor.assumeIsolated {
             settingsChar = nil; statusChar = nil; routeChar = nil; ridesChar = nil
-            sensorsChar = nil; mapChar = nil; otaChar = nil
+            sensorsChar = nil; mapChar = nil; otaChar = nil; meshChar = nil
+            // A half-received mesh stream must not be published on reconnect.
+            meshBuilding = []; meshNodesBuilding = []; meshPresetsBuilding = []
+            meshChannelsBuilding = []
             stopLocationStream()   // no device to send the phone's position to
             // If we disconnect mid-update: after the data is sent + commit
             // requested, a disconnect is EXPECTED (the device reboots into the
@@ -1374,6 +1870,8 @@ extension BLEManager: CBPeripheralDelegate {
                     sensorsChar = ch; p.setNotifyValue(true, for: ch)
                 case BikeUUID.map:
                     mapChar = ch; p.setNotifyValue(true, for: ch)
+                case BikeUUID.mesh:
+                    meshChar = ch; p.setNotifyValue(true, for: ch)
                 default: break
                 }
             }
@@ -1392,6 +1890,10 @@ extension BLEManager: CBPeripheralDelegate {
             if ch.uuid == BikeUUID.sensors, let p = peripheral {
                 p.writeValue(Data([0x05]), for: ch, type: .withResponse)   // one snapshot
             }
+            // Same reason as the OTA version query: the device answers by
+            // notification, so asking before notifications are on throws the
+            // reply away and the Messages tab sits empty until it is opened.
+            if ch.uuid == BikeUUID.mesh { refreshMesh() }
         }
     }
 
@@ -1417,6 +1919,7 @@ extension BLEManager: CBPeripheralDelegate {
             case BikeUUID.sensors: handleSensorsNotify(data)
             case BikeUUID.map: handleMapNotify(data)
             case BikeUUID.dash: parseDashLayout(data)
+            case BikeUUID.mesh: handleMeshNotify(data)
             default: break
             }
         }
@@ -1540,5 +2043,28 @@ private extension Data {
     mutating func appendLE(_ v: Int32) {
         let u = UInt32(bitPattern: v)
         for s in stride(from: 0, to: 32, by: 8) { append(UInt8((u >> s) & 0xFF)) }
+    }
+    mutating func appendLE(_ v: UInt32) {
+        for s in stride(from: 0, to: 32, by: 8) { append(UInt8((v >> s) & 0xFF)) }
+    }
+
+    /// Little-endian u32 at a byte offset. Returns 0 rather than trapping if the
+    /// packet is short — a malformed notification must not crash the app.
+    func le32(at i: Int) -> UInt32 {
+        guard i + 4 <= count else { return 0 }
+        return UInt32(self[i]) | (UInt32(self[i + 1]) << 8) |
+               (UInt32(self[i + 2]) << 16) | (UInt32(self[i + 3]) << 24)
+    }
+
+    /// A length-prefixed UTF-8 string, advancing `i` past it. The mesh protocol
+    /// prefixes every name this way so several can share one packet.
+    func lenString(at i: inout Int) -> String {
+        guard i < count else { return "" }
+        let n = Int(self[i])
+        i += 1
+        guard n > 0, i + n <= count else { return "" }
+        let s = String(data: subdata(in: i..<(i + n)), encoding: .utf8) ?? ""
+        i += n
+        return s
     }
 }

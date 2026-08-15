@@ -26,6 +26,10 @@
 #include "i2c_bus.h"
 #include "usb_storage.h"
 #include "ble_sensors.h"
+#include <esp_random.h>
+
+#include "lora_radio.h"
+#include "mesh_service.h"
 #include "ble_server.h"
 #include "routes.h"
 #include "settings.h"
@@ -595,7 +599,7 @@ void handleTap(int x, int y) {
             break;
         case SCREEN_SETTINGS: {
             int row = (y - kMenuRowTop) / kSettingsRowH;
-            bool inRows = y >= kMenuRowTop && row >= 0 && row < 6;
+            bool inRows = y >= kMenuRowTop && row >= 0 && row < kSettingsRowCount;
             // BACKLIGHT is NOT a toggle row: ui_render_settings draws it with the
             // -/+ stepper (four levels don't fit a switch), so it must be hit-
             // tested like one. It used to be listed here, which meant only the
@@ -603,11 +607,15 @@ void handleTap(int x, int y) {
             // through to the "tap anywhere else" branch and bounced the rider
             // out to the menu instead of dimming the light.
             bool toggleRow = row == kSettingsUnitsRow || row == kSettingsUsbRow ||
-                             row == kSettingsOfflineRow;
+                             row == kSettingsOfflineRow || row == kSettingsMeshRow;
             bool minus = x >= kSettingsMinusX && x < kSettingsMinusX + kSettingsBtn;
             bool plus = x >= kSettingsPlusX && x < kSettingsPlusX + kSettingsBtn;
-            bool toggleHit = x >= kSettingsToggleX &&
-                             x < kSettingsToggleX + kSettingsToggleW;
+            // Per-row, because UNITS draws a wider switch: a fixed rect would
+            // leave its left third dead, and a stray tap there falls through to
+            // the do-nothing branch with no feedback.
+            const int togX = inRows ? settingsToggleX(row) : kSettingsToggleX;
+            const int togW = inRows ? settingsToggleW(row) : kSettingsToggleW;
+            bool toggleHit = x >= togX && x < togX + togW;
             bool edited = false;
             if (inRows && !toggleRow && (minus || plus)) {
                 int dir = plus ? 1 : -1;
@@ -631,6 +639,14 @@ void handleTap(int x, int y) {
                     bool on = !settings::usbDrive();
                     settings::setUsbDrive(on);
                     usb_storage::setDriveEnabled(on);
+                } else if (row == kSettingsMeshRow) {
+                    // REQUEST, not apply: setEnabled() stages the change for the
+                    // mesh task, which owns the radio. Doing the bring-up from
+                    // the touch handler would drive SPI from a second task and
+                    // is exactly what sd_bus.h warns about. Persisting is the
+                    // task's job too (applyEnabled -> settings::setMeshEnabled),
+                    // so nothing is written here.
+                    mesh_service::setEnabled(!mesh_service::enabled());
                 } else {   // show offline sensor fields
                     settings::setShowOffline(!settings::showOffline());
                 }
@@ -1357,6 +1373,91 @@ static int sensorKindArg(const char* a) {
 // name (upgraded to the DIS "Manufacturer Model" on first connect and kept in
 // NVS), so two identical straps are indistinguishable there: this is the only
 // place you can check that the thing feeding the dashboard is actually yours.
+// Everything the mesh node knows about itself, its neighbours and its traffic.
+//
+// Exists because the failure modes here are all silent: a node on the wrong
+// frequency slot, the wrong channel key or a dead SX1262 all present the same
+// way — nothing arrives — and the counters are the only thing that tells those
+// apart. rxOther climbing with rx flat means the band is busy but nothing is on
+// OUR channel (wrong name or key). Everything flat means the radio is not
+// hearing at all.
+static void printMeshReport() {
+    Serial.printf("[mesh] radio %s, messaging %s\n",
+                  mesh_service::radioOk() ? "UP" : "DOWN",
+                  mesh_service::enabled() ? "on" : "OFF");
+    char id[16];
+    mesh::nodeIdString(mesh_service::nodeNum(), id, sizeof(id));
+    Serial.printf("[mesh] node %s '%s' (%s)\n", id, mesh_service::longName(),
+                  mesh_service::shortName());
+    uint8_t psk[16];
+    mesh::defaultPsk(mesh_service::channelPskIndex(), psk);
+    // Channel and modem on separate lines because they are separate settings, and
+    // matching only one of them is the classic way to end up completely deaf: the
+    // channel name decides the frequency, the modem decides whether you can
+    // demodulate what arrives there.
+    Serial.printf("[mesh] channel '%s'%s key %u -> %.4f MHz, hash 0x%02x\n",
+                  mesh_service::channelName(),
+                  mesh_service::channelFollowsPreset() ? " (from modem)" : " (custom)",
+                  mesh_service::channelPskIndex(), mesh_service::frequencyMHz(),
+                  mesh::channelHash(mesh_service::channelName(), psk, sizeof(psk)));
+    const mesh::ModemPreset& mp = mesh::preset(mesh_service::presetIndex());
+    Serial.printf("[mesh] modem %s: SF%u BW%.0f CR4/%u\n", mp.name, mp.sf, mp.bwKhz,
+                  mp.cr);
+
+    // Every channel we can decrypt. All share the frequency above — only the
+    // primary's name decides that; the rest are told apart by their hash.
+    for (int i = 0; i < mesh::MAX_CHANNELS; ++i) {
+        mesh_service::ChannelInfo ci;
+        if (!mesh_service::channelAt(i, ci)) continue;
+        char keydesc[24];
+        if (ci.pskLen == 0)      snprintf(keydesc, sizeof(keydesc), "unencrypted");
+        else if (ci.pskLen == 1) snprintf(keydesc, sizeof(keydesc), "well-known #%u",
+                                          ci.psk[0]);
+        else                     snprintf(keydesc, sizeof(keydesc), "%u-byte key",
+                                          (unsigned)ci.pskLen);
+        Serial.printf("[mesh] ch%d %-14s hash 0x%02x  %s%s\n", i,
+                      ci.name[0] ? ci.name : "(unnamed)", ci.hash, keydesc,
+                      i == 0 ? "  <- primary, sets the frequency" : "");
+    }
+
+    mesh_service::Stats s = mesh_service::stats();
+    Serial.printf("[mesh] rx=%u dropped=%u rxOther=%u dup=%u | tx=%u txFail=%u acks=%u\n",
+                  (unsigned)s.rx, (unsigned)s.rxDropped,
+                  (unsigned)s.rxOtherChannel, (unsigned)s.rxDuplicate,
+                  (unsigned)s.tx, (unsigned)s.txFailed, (unsigned)s.acksRx);
+
+    const int nn = mesh_service::nodeCount();
+    Serial.printf("[mesh] %d neighbour%s:\n", nn, nn == 1 ? "" : "s");
+    for (int i = 0; i < nn; ++i) {
+        mesh_service::Node n;
+        if (!mesh_service::nodeAt(i, n)) continue;
+        mesh::nodeIdString(n.num, id, sizeof(id));
+        Serial.printf("  %s %-20s %-5s %4d dBm snr %3d %d hop%s, %lus ago\n", id,
+                      n.longName[0] ? n.longName : "(no NodeInfo yet)",
+                      n.shortName, n.rssi, n.snr, n.hops, n.hops == 1 ? "" : "s",
+                      (unsigned long)((millis() - n.lastHeardMs) / 1000));
+        if (n.hasPosition) {
+            Serial.printf("             %.5f,%.5f  %dm  %u sats%s  (%lus ago)\n",
+                          n.latitude, n.longitude, (int)n.altitudeM, n.satsInView,
+                          n.precisionBits < 32 ? "  IMPRECISE" : "",
+                          (unsigned long)((millis() - n.positionMs) / 1000));
+        }
+    }
+
+    const int mc = mesh_service::messageCount();
+    Serial.printf("[mesh] %d message%s (%d unread):\n", mc, mc == 1 ? "" : "s",
+                  mesh_service::unreadCount());
+    static const char* kTx[] = {"queued", "sent", "ACKED", "FAILED"};
+    for (int i = 0; i < mc; ++i) {
+        mesh_service::Message m;
+        if (!mesh_service::messageAt(i, m)) continue;
+        mesh::nodeIdString(m.outgoing ? m.to : m.from, id, sizeof(id));
+        Serial.printf("  %s %s %-9s %lus ago: %s\n", m.outgoing ? "->" : "<-", id,
+                      m.outgoing ? kTx[m.status & 3] : "",
+                      (unsigned long)((millis() - m.ms) / 1000), m.text);
+    }
+}
+
 static void printSensorReport() {
     ble_sensors::Link ls[ble_sensors::KIND_COUNT];
     ble_sensors::links(ls);
@@ -1426,6 +1527,14 @@ static void printConsoleHelp() {
     Serial.println("  power                battery voltage + draw (mA) + full fuel-gauge state");
     Serial.println("  aux                  optional Qwiic sensors: baro / accel / compass");
     Serial.println("  sensors              paired/connected MACs + everything seen this session");
+    Serial.println("  mesh                 node state, neighbours, messages, counters");
+    Serial.println("  mesh send <text>     broadcast a message to the channel");
+    Serial.println("  mesh preset [name]   list / set the modem preset (how fast)");
+    Serial.println("  mesh rssi            sample the noise floor (is RX alive?)");
+    Serial.println("  mesh private <name>  new private channel, random 256-bit key");
+    Serial.println("  mesh forget <slot>   delete a private channel");
+    Serial.println("  mesh channel <name> [key]   set the channel (where — retunes)");
+    Serial.println("  mesh <on|off>        power the LoRa radio");
     Serial.println("  disconnect <kind>    drop the link (hr|power|cadence|all); stays paired");
     Serial.println("  forget <kind|mac>    unpair and drop (hr|power|cadence|all|aa:bb:..)");
     Serial.println("  bootloader           reboot into download mode for flashing");
@@ -1489,6 +1598,112 @@ static void runConsoleLine(char* line) {
         char line[160];
         aux_sensors::report(line, sizeof(line));
         Serial.printf("[cmd] %s\n", line);
+    } else if (!strcasecmp(cmd, "mesh")) {
+        if (arg && !strcasecmp(arg, "send")) {
+            // The rest of the LINE, not the next token — a test message has
+            // spaces in it. strtok with an empty delimiter set returns the
+            // remainder, which is exactly what is wanted here.
+            char* text = strtok(nullptr, "");
+            while (text && *text == ' ') ++text;
+            if (!text || !*text) {
+                Serial.println("[cmd] mesh send <text>   (broadcasts to the channel)");
+                return;
+            }
+            const uint32_t id = mesh_service::queueText(mesh::BROADCAST_ADDR, text);
+            if (id) Serial.printf("[cmd] queued packet 0x%08x: %s\n", (unsigned)id, text);
+            else    Serial.println("[cmd] NOT queued (radio off, or outbox full)");
+        } else if (arg && !strcasecmp(arg, "private")) {
+            // Create a private channel with a random 256-bit key. The same thing
+            // the app's QR flow does, reachable without a phone.
+            char* want = strtok(nullptr, " \t");
+            if (!want) {
+                Serial.println("[cmd] mesh private <name>   (new random 256-bit key)");
+                Serial.println("      mesh forget <slot>    (delete one)");
+                return;
+            }
+            const int slot = mesh_service::firstFreeChannel();
+            if (slot < 0) { Serial.println("[cmd] no free channel slots"); return; }
+            uint8_t key[32];
+            for (int i = 0; i < 32; i += 4) {
+                const uint32_t r = esp_random();
+                memcpy(key + i, &r, 4);
+            }
+            if (!mesh_service::setPrivateChannel((uint8_t)slot, want, key, sizeof(key))) {
+                Serial.println("[cmd] could not create the channel");
+                return;
+            }
+            Serial.printf("[cmd] creating '%s' in slot %d with a random 256-bit key\n",
+                          want, slot);
+            Serial.println("      share it from the app to let someone join");
+        } else if (arg && !strcasecmp(arg, "forget")) {
+            char* want = strtok(nullptr, " \t");
+            if (!want) { Serial.println("[cmd] mesh forget <slot>"); return; }
+            const int slot = atoi(want);
+            if (!mesh_service::deletePrivateChannel((uint8_t)slot))
+                Serial.println("[cmd] slot 0 is the primary and cannot be forgotten");
+            else
+                Serial.printf("[cmd] forgetting channel %d and its messages\n", slot);
+        } else if (arg && !strcasecmp(arg, "rssi")) {
+            // Is the receiver actually running? Counters cannot tell a quiet band
+            // from a dead receive chain — both are silence. A live SX1262 in RX
+            // reads a noise floor around -95..-125 dBm and moves a few dB between
+            // samples; a stuck or absurd value says the radio is not listening.
+            if (!mesh_service::radioOk()) {
+                Serial.println("[cmd] radio is not up");
+                return;
+            }
+            Serial.printf("[cmd] sampling the noise floor on %.4f MHz...\n",
+                          mesh_service::frequencyMHz());
+            float lo = 999, hi = -999, sum = 0;
+            constexpr int N = 20;
+            for (int i = 0; i < N; ++i) {
+                const float v = lora_radio::instantRssi();
+                if (v < lo) lo = v;
+                if (v > hi) hi = v;
+                sum += v;
+                Serial.printf("  %6.1f dBm\n", v);
+                delay(100);
+            }
+            Serial.printf("[cmd] min %.1f  max %.1f  mean %.1f dBm (spread %.1f)\n",
+                          lo, hi, sum / N, hi - lo);
+            Serial.println("      a plausible floor that MOVES = receiver listening, "
+                           "band simply quiet");
+            Serial.println("      stuck or absurd = the receive chain is not running");
+        } else if (arg && !strcasecmp(arg, "preset")) {
+            char* want = strtok(nullptr, " \t");
+            if (!want) {
+                Serial.println("[cmd] mesh preset <name>. Available:");
+                for (int i = 0; i < mesh::PRESET_COUNT; ++i) {
+                    const mesh::ModemPreset& p = mesh::kPresets[i];
+                    Serial.printf("  %-11s SF%-2u %3.0f kHz%s\n", p.name, p.sf,
+                                  p.bwKhz,
+                                  i == mesh_service::presetIndex() ? "  <- current" : "");
+                }
+                return;
+            }
+            const int idx = mesh::presetIndexByName(want);
+            if (idx < 0) { Serial.printf("[cmd] unknown preset '%s'\n", want); return; }
+            mesh_service::setPreset((uint8_t)idx);
+        } else if (arg && !strcasecmp(arg, "channel")) {
+            char* want = strtok(nullptr, " \t");
+            if (!want) {
+                Serial.println("[cmd] mesh channel <name|default> [key 1-10]");
+                Serial.println("      'default' follows the modem preset, which is");
+                Serial.println("      what a stock Meshtastic node does.");
+                return;
+            }
+            // "default" clears the explicit name so the preset supplies it again.
+            if (!strcasecmp(want, "default")) want = (char*)"";
+            char* key = strtok(nullptr, " \t");
+            mesh_service::setChannel(want, key ? (uint8_t)atoi(key)
+                                              : mesh_service::channelPskIndex());
+        } else if (arg && !strcasecmp(arg, "on")) {
+            mesh_service::setEnabled(true);
+        } else if (arg && !strcasecmp(arg, "off")) {
+            mesh_service::setEnabled(false);
+        } else {
+            printMeshReport();
+        }
     } else if (!strcasecmp(cmd, "sensors")) {
         printSensorReport();
     } else if (!strcasecmp(cmd, "disconnect")) {
@@ -2013,10 +2228,18 @@ void task(void*) {
                                                               : "DIRECTIONS");
                     break;
                 case SCREEN_SETTINGS: {
+                    // Mesh state comes from the SERVICE, not settings: the tap
+                    // only stages a request, and the stored flag is not written
+                    // until the mesh task has actually brought the radio up or
+                    // put it to sleep. The task is woken immediately and a panel
+                    // repaint is far slower, so this still reads as instant —
+                    // and if the radio ever fails to start, the row shows what
+                    // is true rather than what was asked for.
                     SettingsInfo si{settings::showOffline(),
                                     settings::ftpWatts(), settings::tzMinutes(),
                                     settings::backlight(), settings::useMiles(),
-                                    settings::usbDrive()};
+                                    settings::usbDrive(),
+                                    mesh_service::enabled()};
                     ui_render_settings(si, fb);
                     ui::statusBar(s, fb, "SETTINGS");
                     break;

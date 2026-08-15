@@ -3,6 +3,9 @@
 // NVS-backed persistent settings: rider config + paired sensor addresses.
 // config.h values are the first-boot defaults.
 
+#include <cstddef>
+#include <cstdint>
+
 namespace settings {
 
 void begin();
@@ -49,6 +52,43 @@ void setLastPosition(double lat, double lon);
 // NOT seed GPS time-aiding from it — a grossly wrong time slows acquisition.
 bool rtcTrusted();
 void setRtcTrusted(bool ok);
+
+// --- Meshtastic mesh messaging (see mesh_service.h) ------------------------
+// The region is NOT here: it is a compile-time constant in config.h, because
+// which band the radio may use is a legal question, not a preference.
+
+bool meshEnabled();               // false = the LoRa radio is never powered up
+void setMeshEnabled(bool on);
+
+// Channel name. Feeds both the channel hash and — via a second hash — the
+// frequency slot, so two devices must agree on it exactly to hear each other.
+const char* meshChannel();
+// Which of Meshtastic's ten well-known channel keys, 1-10. 1 is the default
+// channel's ("AQ==").
+uint8_t meshChannelKey();
+void setMeshChannel(const char* name, uint8_t keyIndex);
+
+// The private channels, as meshtastic.ChannelSet bytes — the same encoding a
+// share QR carries, so a channel has one representation rather than two.
+// Returns the length written, 0 if none stored.
+size_t meshPrivateChannels(uint8_t* out, size_t cap);
+void setMeshPrivateChannels(const uint8_t* data, size_t len);
+
+// Which channels we broadcast our own position on, as a bitmask over channel
+// slots. 0 (the default) means we tell the mesh nothing about where we are.
+uint8_t meshPositionChannels();
+void setMeshPositionChannels(uint8_t mask);
+
+// Modem preset: an index into mesh::kPresets, deciding how fast the radio talks.
+// Separate from the channel, which decides where. MESH_PRESET_DEFAULT until set.
+uint8_t meshPreset();
+void setMeshPreset(uint8_t index);
+
+// How this node introduces itself on the mesh. Empty until first set, at which
+// point mesh_service derives a default from the node number.
+const char* meshLongName();
+const char* meshShortName();      // up to 4 glyphs, as Meshtastic apps show it
+void setMeshNames(const char* longName, const char* shortName);
 
 // Compass mounting yaw, in degrees, learned from GPS course while riding (see
 // aux_math::HeadingOffset). Persisted because the board does not move between

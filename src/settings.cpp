@@ -5,6 +5,7 @@
 #include <cmath>
 
 #include "config.h"
+#include "mesh_proto.h"
 
 namespace {
 
@@ -23,6 +24,22 @@ char addrs[3][18] = {"", "", ""};
 char names[3][32] = {"", "", ""};   // remembered vendor/model per paired kind
 double lastLat = 0, lastLon = 0;
 bool rtcSynced = false;  // has GPS ever written UTC to the coin-cell RTC?
+// Mesh messaging, OFF until the rider turns it on. Joining a public mesh means
+// announcing yourself on it and spending battery listening, and neither should
+// happen because a firmware update landed — it is a choice, so the device waits to
+// be asked. The Mesh tab has the switch.
+bool meshOn = false;
+// "" = no explicit channel; mesh_service derives the name from the modem preset.
+char meshChan[16] = "";
+uint8_t meshKey = 1;
+// Modem preset index into mesh::kPresets. Unlike the channel name this IS stored
+// as a plain value: it is a user choice with no compile-time twin to follow.
+uint8_t meshPresetIdx = MESH_PRESET_DEFAULT;
+// Bitmask of channels we share our position on. 0 = none, which is the default:
+// telling a public mesh where you are should be a decision, not an accident.
+uint8_t meshPosMask = 0;
+char meshLong[40] = "";
+char meshShort[8] = "";
 const char* KEYS[3] = {"sens_hr", "sens_pwr", "sens_cad"};
 const char* NAME_KEYS[3] = {"snm_hr", "snm_pwr", "snm_cad"};
 
@@ -50,6 +67,16 @@ void begin() {
     lastLat = prefs.getDouble("lastlat", 0);
     lastLon = prefs.getDouble("lastlon", 0);
     rtcSynced = prefs.getBool("rtcok", false);
+    meshOn = prefs.getBool("meshon", false);
+    prefs.getString("meshchan", meshChan, sizeof(meshChan));   // "" = use the preset
+    meshKey = (uint8_t)constrain(prefs.getUChar("meshkey", 1), 1, 10);
+    meshPresetIdx = prefs.getUChar("meshpreset", MESH_PRESET_DEFAULT);
+    meshPosMask = prefs.getUChar("meshposch", 0);
+    // A preset written by a newer firmware that knew more of them must not leave
+    // this build driving the radio with garbage.
+    if (meshPresetIdx >= mesh::PRESET_COUNT) meshPresetIdx = MESH_PRESET_DEFAULT;
+    prefs.getString("meshlong", meshLong, sizeof(meshLong));
+    prefs.getString("meshshort", meshShort, sizeof(meshShort));
     Serial.printf("[cfg] ftp=%dW tz=%dmin sensors=[%s|%s|%s]\n", ftp, tz,
                   addrs[0], addrs[1], addrs[2]);
 }
@@ -137,6 +164,73 @@ void setCompassOffsetDeg(float deg) {
     // when the learned offset has actually drifted a few degrees.
     compassOff = deg;
     prefs.putFloat("cmpoff", deg);
+}
+
+bool meshEnabled() { return meshOn; }
+void setMeshEnabled(bool on) {
+    if (meshOn == on) return;
+    meshOn = on;
+    prefs.putBool("meshon", on);
+}
+
+// "" means the rider has chosen no channel name, and mesh_service then derives it
+// from the modem preset the way a stock Meshtastic node does. Deliberately NOT
+// defaulted to a fixed string here: pinning a name would keep a device on
+// LongFast's frequency slot after its preset moved to MediumFast, which no stock
+// node would be listening on.
+const char* meshChannel() { return meshChan; }
+uint8_t meshChannelKey() { return meshKey; }
+
+void setMeshChannel(const char* name, uint8_t keyIndex) {
+    // An EMPTY name is a real value here — it means "no pinned channel, follow the
+    // modem preset" — so it must be STORED, not rejected. This guard existed in
+    // three layers (here, mesh_service::setChannel and applyChannelChange) and
+    // this was the last one: clearing the channel worked in RAM and silently came
+    // back on the next boot, because the empty string never reached NVS.
+    if (!name) return;
+    snprintf(meshChan, sizeof(meshChan), "%s", name);
+    meshKey = (uint8_t)constrain((int)keyIndex, 1, 10);
+    prefs.putString("meshchan", meshChan);
+    prefs.putUChar("meshkey", meshKey);
+}
+
+size_t meshPrivateChannels(uint8_t* out, size_t cap) {
+    return prefs.getBytes("meshchans", out, cap);
+}
+
+void setMeshPrivateChannels(const uint8_t* data, size_t len) {
+    // An empty set removes the key rather than storing zero bytes, so a device
+    // with no private channels reads back cleanly.
+    if (!data || len == 0) prefs.remove("meshchans");
+    else prefs.putBytes("meshchans", data, len);
+}
+
+uint8_t meshPositionChannels() { return meshPosMask; }
+void setMeshPositionChannels(uint8_t mask) {
+    if (meshPosMask == mask) return;
+    meshPosMask = mask;
+    prefs.putUChar("meshposch", mask);
+}
+
+uint8_t meshPreset() { return meshPresetIdx; }
+void setMeshPreset(uint8_t index) {
+    if (index >= mesh::PRESET_COUNT) return;
+    meshPresetIdx = index;
+    prefs.putUChar("meshpreset", index);
+}
+
+const char* meshLongName() { return meshLong; }
+const char* meshShortName() { return meshShort; }
+
+void setMeshNames(const char* longName, const char* shortName) {
+    if (longName && longName[0]) {
+        snprintf(meshLong, sizeof(meshLong), "%s", longName);
+        prefs.putString("meshlong", meshLong);
+    }
+    if (shortName && shortName[0]) {
+        snprintf(meshShort, sizeof(meshShort), "%s", shortName);
+        prefs.putString("meshshort", meshShort);
+    }
 }
 
 bool rtcTrusted() { return rtcSynced; }

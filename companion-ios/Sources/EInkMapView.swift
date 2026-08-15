@@ -47,6 +47,25 @@ struct MapDestination: Equatable {
     }
 }
 
+/// A mesh node to drop on the map. Kept as a flat value rather than passing
+/// MeshNode in, so the map layer stays ignorant of what a mesh is.
+struct MeshNodePin: Identifiable, Equatable {
+    let id: UInt32
+    let label: String          // shown on the callout
+    let detail: String         // second callout line: signal, age, precision
+    let coordinate: CLLocationCoordinate2D
+    /// The sender deliberately blurred this position. Drawn hollow, because a
+    /// solid pin on a coordinate the sender rounded off would be a lie.
+    let imprecise: Bool
+
+    static func == (a: Self, b: Self) -> Bool {
+        a.id == b.id && a.label == b.label && a.detail == b.detail &&
+        a.imprecise == b.imprecise &&
+        a.coordinate.latitude == b.coordinate.latitude &&
+        a.coordinate.longitude == b.coordinate.longitude
+    }
+}
+
 /// A one-shot camera move. Identity is the token, so re-issuing the same target
 /// (tapping "recenter" twice) still moves the map.
 struct MapCameraCommand: Equatable {
@@ -78,6 +97,7 @@ struct EInkMapView: UIViewRepresentable {
     var selection: [SelectionHex] = []
     var route: MKPolyline? = nil
     var destination: MapDestination? = nil
+    var meshNodes: [MeshNodePin] = []
     var camera: MapCameraCommand? = nil
     /// Only turned on once location has actually been granted. MapKit asks for
     /// location the moment it's told to show the blue dot, which would make
@@ -164,6 +184,11 @@ struct EInkMapView: UIViewRepresentable {
             if let d = destination {
                 map.addAnnotation(DestinationAnnotation(name: d.name, coordinate: d.coordinate))
             }
+        }
+        if c.meshNodes != meshNodes {
+            c.meshNodes = meshNodes
+            map.annotations.compactMap { $0 as? MeshNodeAnnotation }.forEach(map.removeAnnotation)
+            for n in meshNodes { map.addAnnotation(MeshNodeAnnotation(pin: n)) }
         }
         if let camera, camera != c.lastCamera {
             c.lastCamera = camera
@@ -283,6 +308,7 @@ struct EInkMapView: UIViewRepresentable {
         fileprivate weak var hexRenderer: HexLayerRenderer?
         var route: MKPolyline?
         var destination: MapDestination?
+        var meshNodes: [MeshNodePin] = []
         var lastCamera: MapCameraCommand?
 
         @objc func handleTap(_ g: UITapGestureRecognizer) {
@@ -336,6 +362,25 @@ struct EInkMapView: UIViewRepresentable {
                 v.isUserInteractionEnabled = false
                 return v
             }
+            if let node = annotation as? MeshNodeAnnotation {
+                let id = "meshnode"
+                let v = (map.dequeueReusableAnnotationView(withIdentifier: id) as? MKMarkerAnnotationView)
+                    ?? MKMarkerAnnotationView(annotation: node, reuseIdentifier: id)
+                v.annotation = node
+                v.canShowCallout = true
+                v.glyphImage = UIImage(systemName: "dot.radiowaves.left.and.right")
+                // A blurred position is drawn as an outline, not a solid pin: the
+                // sender rounded the coordinate off on purpose and the map should
+                // not claim more than they gave.
+                if node.pin.imprecise {
+                    v.markerTintColor = UIColor(Palette.faint)
+                    v.glyphTintColor = UIColor(Palette.ink)
+                } else {
+                    v.markerTintColor = UIColor(Palette.good)
+                    v.glyphTintColor = .white
+                }
+                return v
+            }
             if let dest = annotation as? DestinationAnnotation {
                 let id = "destination"
                 let v = (map.dequeueReusableAnnotationView(withIdentifier: id) as? MKMarkerAnnotationView)
@@ -384,6 +429,18 @@ private final class SyncedCheckAnnotation: NSObject, MKAnnotation {
             check.stroke()
         }
     }()
+}
+
+private final class MeshNodeAnnotation: NSObject, MKAnnotation {
+    let pin: MeshNodePin
+    let title: String?
+    let subtitle: String?
+    var coordinate: CLLocationCoordinate2D { pin.coordinate }
+    init(pin: MeshNodePin) {
+        self.pin = pin
+        title = pin.label
+        subtitle = pin.detail
+    }
 }
 
 private final class DestinationAnnotation: NSObject, MKAnnotation {

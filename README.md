@@ -150,7 +150,7 @@ on the phone and is pushed over BLE.
 
 | | Device (ESP32-S3 firmware, `src/`) | iOS app (`companion-ios/`) |
 |---|---|---|
-| **Owns** | GPS, sensors, ride recording, rendering, navigation | Map tile authoring, route planning, ride history, settings UI, OTA |
+| **Owns** | GPS, sensors, ride recording, rendering, navigation, the LoRa mesh radio | Map tile authoring, route planning, ride history, settings UI, OTA, the mesh chat UI |
 | **Storage** | SD card (`/rides`, `/routes`, `/maps`, `/logs`) | transient — everything is streamed to/from the device |
 | **Maps** | renders H3 tiles from the SD card | fetches OSM + elevation, builds tiles, streams them (Settings → Maps) |
 | **Routes** | rides a `/routes/*.gpx`, draws it on the map | Apple Maps search → GPX → BLE |
@@ -161,7 +161,8 @@ Everything the two sides exchange goes through the GATT server in
 `src/ble_server.cpp` (mirrored by `companion-ios/Sources/BLEManager.swift`):
 a **settings** characteristic (read/write, byte-for-byte mirrored),
 a **status** notify stream (speed / battery / HR / power / sats / route
-remaining), and framed **route**, **map-tile**, **log** and **OTA** transfers.
+remaining), framed **route**, **map-tile**, **log** and **OTA** transfers, and a
+**mesh** characteristic carrying Meshtastic messages both ways.
 
 ## Features
 
@@ -185,6 +186,12 @@ remaining), and framed **route**, **map-tile**, **log** and **OTA** transfers.
 - **On-device settings** — units (mi/km), 12/24 h clock, FTP (power zone bar),
   timezone, backlight level, USB drive on/off — persisted in NVS, mirrored to
   the app.
+- **Mesh messaging** — the PRO board's SX1262 makes the head unit a real
+  [Meshtastic](https://meshtastic.org) node: send and receive text messages over
+  LoRa with no phone signal anywhere, from the app's Mesh tab. Broadcasts to the
+  channel or direct messages, with acknowledgements and neighbour names. It is a
+  leaf, not a router — it does not rebroadcast other people's traffic or report
+  its position. See [docs/meshtastic.md](docs/meshtastic.md).
 - **Updates** — drop `firmware.bin` on the SD card, or push it over BLE from the
   app (A/B OTA partitions protect the running image either way).
 
@@ -338,8 +345,22 @@ ride cut short by a reset, to cover the boot-time recovery path. With
 (`pip install fitdecode`) it parses each file with CRC checking, which catches
 encoder bugs an upload would otherwise reject.
 
-Both host harnesses plus a full firmware + iOS build run in CI
-(`.github/workflows/build.yml`).
+## Meshtastic wire-format tests
+
+`tools/mesh_test/run_mesh_test.sh` compiles the real `src/mesh_proto.cpp` on the
+host and checks it against known-good values: the AES keystream (against
+OpenSSL), the default channel PSK, the channel hash, the frequency slot the
+`LongFast` channel lands on, the byte layout of the radio header, and protobuf
+round-trips including truncated and unknown-field input.
+
+These are interop tests rather than unit tests. Every value they cover fails
+*silently* on real hardware — a wrongly tuned or wrongly keyed node just sits
+there hearing nothing and heard by nobody, which is indistinguishable from being
+out of range. Run them after any edit to `mesh_proto.cpp`. See
+[docs/meshtastic.md](docs/meshtastic.md).
+
+The firmware build, the iOS app build and these wire-format tests run in CI
+(`.github/workflows/build.yml`); the FIT and preview harnesses are run locally.
 
 ## Building
 
@@ -456,7 +477,10 @@ src/
   ride_state.h       mutex-guarded shared state (GPS/BLE/battery → UI/recorder)
   gps_service.*      L76K/CASIC + M10Q autodetect, aiding, TinyGPSPlus → state
   ble_sensors.*      NimBLE central: HR / power / CSC parsing
-  ble_server.*       NimBLE GATT server: settings, status, route/tile/log/OTA
+  ble_server.*       NimBLE GATT server: settings, status, route/tile/log/OTA, mesh
+  mesh_proto.*       Meshtastic wire format: header, protobufs, AES-CTR, hashes
+  lora_radio.*       SX1262 over RadioLib, non-blocking, SPI shared with the SD
+  mesh_service.*     mesh node: identity, dedup, message ring, outbox, NodeDB
   fit_writer.*       minimal FIT activity encoder + interrupted-ride repair
   ride_recorder.*    ride lifecycle, distance, SD writes, boot recovery
   map_store.*        SD tile index, LRU cache, elevation lookup, save/rescan
@@ -472,11 +496,12 @@ src/
   settings.*         NVS-backed settings
   diag.*             per-day SD logging + crash backtraces
 companion-ios/
-  Sources/           SwiftUI app: Ride / Route / Settings, BLE, map authoring
+  Sources/           SwiftUI app: Ride / Route / Rides / Mesh / Settings, BLE, maps
   Sources/H3/        Uber H3 v4.1.0 (vendored) + thin C shim
 tools/
   preview/           host renderer for the device screens (→ out/*.png)
   fit_test/          host FIT encoder + CRC validation
+  mesh_test/         host Meshtastic wire-format / crypto / channel-hash tests
   maps/              OSM → EBM2 region map builder
 vendor/              LilyGO board support (cloned, not committed)
 ```

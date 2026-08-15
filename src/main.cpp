@@ -27,6 +27,7 @@
 #include "usb_storage.h"
 #include "power_mgmt.h"
 #include "aux_sensors.h"
+#include "mesh_service.h"
 #include "diag.h"
 #include <esp_sleep.h>
 #include <soc/rtc_cntl_reg.h>
@@ -494,6 +495,31 @@ void setup() {
     ui_dashboard::bootStatus("GPS", gpsOk);
     diag::log("gps module: %s", gps_service::moduleName());
 
+    // Mesh messaging. Sits here because the SX1262 needs two things that are now
+    // true and were not earlier: the shared 3V3 rail (raised with the GPS above)
+    // and the SPI bus (opened by ride_recorder::begin()).
+    ui_dashboard::bootStep("Mesh");
+    const bool meshOk = mesh_service::begin();
+    if (!mesh_service::enabled())
+        ui_dashboard::bootDetailFor("Mesh", "off in settings");
+    else if (mesh_service::radioOk())
+        // Channel AND modem, because they are separate settings and either one
+        // being wrong sounds exactly the same on air — silence. The channel name
+        // and the modem name are often the same word, so the SF is what actually
+        // distinguishes them here: "MediumFast SF11" is a channel called
+        // MediumFast being spoken with the LongFast modem, which is a real
+        // configuration and used to be unreadable from this screen.
+        // Fits the 28-byte detail field at the 15-char channel name limit.
+        ui_dashboard::bootDetailFor("Mesh", "%s SF%u %.3f",
+                                    mesh_service::channelName(),
+                                    mesh::preset(mesh_service::presetIndex()).sf,
+                                    mesh_service::frequencyMHz());
+    else
+        ui_dashboard::bootDetailFor("Mesh", "no SX1262");
+    // Switched off is not a failure, so that case still gets a tick.
+    ui_dashboard::bootStatus("Mesh",
+                             mesh_service::radioOk() || !mesh_service::enabled());
+
     // Optional Qwiic sensors, probed HERE — inside the window where the boot
     // screen is live.
     //
@@ -622,6 +648,13 @@ void setup() {
     // device exactly one bus probe at boot.
     if (auxOk)
         xTaskCreatePinnedToCore(aux_sensors::task, "aux", 3072, nullptr, 1, nullptr, 1);
+    // Created even when the radio is off or absent — the phone can switch mesh
+    // messaging on at runtime, and there has to be a task ready to service it.
+    // (meshOk is false only when there was no PSRAM for the message ring, which
+    // means the feature cannot work at all.)
+    if (meshOk)
+        xTaskCreatePinnedToCore(mesh_service::task, "mesh", 4096, nullptr, 2,
+                                nullptr, 0);
     xTaskCreatePinnedToCore(ui_dashboard::task, "ui", 8192, nullptr, 2, nullptr, 1);
 
     Serial.println("[main] all tasks started");

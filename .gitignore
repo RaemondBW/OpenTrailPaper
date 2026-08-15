@@ -2,8 +2,9 @@
 .pio/
 
 # Vendored LilyGO board support (re-clone into vendor/ — see project notes).
-# No trailing slash: a git worktree has no vendor/ of its own and the usual fix
-# is to symlink the main checkout's, which "vendor/" would not match.
+# No trailing slash: with one, this matches only a directory, and a `vendor`
+# SYMLINK into a shared clone — which is how a git worktree avoids re-cloning
+# several hundred MB of board support — slips past it and gets committed.
 vendor
 
 # Editor / tooling

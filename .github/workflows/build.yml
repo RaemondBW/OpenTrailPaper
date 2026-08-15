@@ -80,6 +80,18 @@ jobs:
           files: .pio/build/t5s3-painter/firmware.bin
           fail_on_unmatched_files: true
 
+  # The Meshtastic codec is the one part of the firmware whose bugs are invisible
+  # on hardware — a wrongly tuned or wrongly keyed node just hears nothing — so
+  # its host tests gate every push. No toolchain needed: mesh_proto.cpp is plain
+  # C++ with no Arduino dependency, which is why it was written that way.
+  mesh-tests:
+    name: Meshtastic wire format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run host tests
+        run: sh tools/mesh_test/run_mesh_test.sh
+
   ios:
     name: Companion app (iOS)
     # RouteView uses MKDirectionsTransportType.cycling, which Apple only
