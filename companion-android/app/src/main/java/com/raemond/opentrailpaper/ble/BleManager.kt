@@ -286,6 +286,38 @@ class BleManager(private val app: Application) {
         }
     }
 
+    /**
+     * MUST be declared above `init`, and that is not a style preference.
+     *
+     * Property initialisers run in declaration order, and init reaches
+     * refreshPermissions() -> startCentral() -> startScan(). On the one path
+     * where the permissions are ALREADY granted and the radio is already on —
+     * every cold start for a returning user — this used to be read before its
+     * initialiser had run, and BluetoothLeScanner rejects a null callback with
+     * IllegalArgumentException, taking the process down before the first frame.
+     *
+     * `by lazy` does NOT fix this: the Lazy delegate is itself a field
+     * initialised in declaration order, so it is null at exactly the same point.
+     * Position is the fix.
+     */
+    private val scanCallback = object : ScanCallback() {
+        override fun onScanResult(callbackType: Int, result: ScanResult) {
+            main.post {
+                if (gatt == null) {
+                    stopScan()
+                    connect(result.device)
+                }
+            }
+        }
+
+        override fun onScanFailed(errorCode: Int) {
+            main.post {
+                scanning = false
+                state = ConnState.IDLE
+            }
+        }
+    }
+
     init {
         useMiles = Prefs.useMiles
         // Show last-known on-device tiles immediately; a refresh confirms them.
@@ -368,24 +400,6 @@ class BleManager(private val app: Application) {
     }
 
     // MARK: scanning + connection
-
-    private val scanCallback = object : ScanCallback() {
-        override fun onScanResult(callbackType: Int, result: ScanResult) {
-            main.post {
-                if (gatt == null) {
-                    stopScan()
-                    connect(result.device)
-                }
-            }
-        }
-
-        override fun onScanFailed(errorCode: Int) {
-            main.post {
-                scanning = false
-                state = ConnState.IDLE
-            }
-        }
-    }
 
     fun startScan() {
         val scanner = adapter?.bluetoothLeScanner ?: return
