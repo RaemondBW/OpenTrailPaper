@@ -88,6 +88,22 @@ class MapProjector {
 data class MapDestination(val name: String, val coordinate: LatLon)
 
 /**
+ * A mesh node to drop on the map. Kept as a flat value rather than passing a
+ * MeshNode in, so the map layer stays ignorant of what a mesh is.
+ */
+data class MeshNodePin(
+    val id: Int,
+    val label: String,          // shown on the callout
+    val detail: String,         // second callout line: signal, age, precision
+    val coordinate: LatLon,
+    /**
+     * The sender deliberately blurred this position. Drawn hollow, because a
+     * solid pin on a coordinate the sender rounded off would be a lie.
+     */
+    val imprecise: Boolean,
+)
+
+/**
  * The map both the Route and Maps screens draw on: standard OSM, with the areas
  * this phone or the device holds drawn over it as hexagons — green with a check
  * where the DEVICE has them too, a quiet fill where they are only on the phone.
@@ -109,6 +125,7 @@ fun OsmMap(
     selection: List<SelectionHex> = emptyList(),
     route: List<LatLon>? = null,
     destination: MapDestination? = null,
+    meshNodes: List<MeshNodePin> = emptyList(),
     camera: MapCamera? = null,
     showUserLocation: Boolean = false,
     /**
@@ -237,7 +254,8 @@ fun OsmMap(
             // Overlays are expensive to rebuild, and Compose calls this for any
             // state change on the host screen (a progress string, a text field).
             // Only touch the map when what's actually drawn has changed.
-            val signature = contentSignature(outlines, selection, route, destination)
+            val signature =
+                contentSignature(outlines, selection, route, destination, meshNodes)
             if (signature != state.contentKey) {
                 state.contentKey = signature
                 rebuildContent(
@@ -249,6 +267,7 @@ fun OsmMap(
                     selection,
                     route,
                     destination,
+                    meshNodes,
                 )
             }
 
@@ -288,6 +307,7 @@ private fun contentSignature(
     selection: List<SelectionHex>,
     route: List<LatLon>?,
     destination: MapDestination?,
+    meshNodes: List<MeshNodePin>,
 ): Int {
     // A hash, not a joined string. This runs on every Compose update of the host
     // screen, and building a comma-joined list of several hundred hex ids each
@@ -302,6 +322,7 @@ private fun contentSignature(
     route?.firstOrNull()?.let { h = h * 31 + it.hashCode() }
     route?.lastOrNull()?.let { h = h * 31 + it.hashCode() }
     h = h * 31 + (destination?.hashCode() ?: 0)
+    for (n in meshNodes) h = h * 31 + n.hashCode()
     return h
 }
 
@@ -314,6 +335,7 @@ private fun rebuildContent(
     selection: List<SelectionHex>,
     route: List<LatLon>?,
     destination: MapDestination?,
+    meshNodes: List<MeshNodePin>,
 ) {
     state.contentOverlays.forEach { map.overlays.remove(it) }
     state.contentOverlays.clear()
@@ -374,6 +396,19 @@ private fun rebuildContent(
         line.outlinePaint.strokeCap = android.graphics.Paint.Cap.ROUND
         line.outlinePaint.strokeJoin = android.graphics.Paint.Join.ROUND
         add(line)
+    }
+
+    for (n in meshNodes) {
+        val marker = Marker(map)
+        marker.position = GeoPoint(n.coordinate.lat, n.coordinate.lon)
+        marker.title = n.label
+        marker.snippet = n.detail
+        marker.icon = android.graphics.drawable.BitmapDrawable(
+            map.resources,
+            MapMarkers.meshNodePin(density, n.imprecise),
+        )
+        marker.setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
+        add(marker)
     }
 
     if (destination != null) {

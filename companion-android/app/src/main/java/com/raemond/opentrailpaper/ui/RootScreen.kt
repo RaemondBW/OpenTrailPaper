@@ -9,7 +9,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.WifiTethering
 import androidx.compose.material.icons.automirrored.filled.ViewList
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
@@ -39,11 +42,12 @@ private val TABS = listOf(
     Tab("Ride", Icons.Filled.Speed),
     Tab("Route", Icons.Filled.Map),
     Tab("Rides", Icons.AutoMirrored.Filled.ViewList),
+    Tab("Mesh", Icons.Filled.WifiTethering),
     Tab("Settings", Icons.Filled.Tune),
 )
 
 /**
- * The four tabs, and the full-screen tutorial that covers them on first run.
+ * The five tabs, and the full-screen tutorial that covers them on first run.
  *
  * The tutorial is a cover rather than a destination so that both first launch and
  * the Settings "Show tutorial" button drive exactly the same thing — the state
@@ -77,7 +81,23 @@ fun RootScreen(
                             NavigationBarItem(
                                 selected = tab == index,
                                 onClick = { tab = index },
-                                icon = { Icon(item.icon, contentDescription = item.label) },
+                                icon = {
+                                    // Unread mesh messages arrive while another
+                                    // tab is up, so the count has to be visible
+                                    // from anywhere in the app.
+                                    val unread =
+                                        if (item.label == "Mesh") ble.meshState.unread else 0
+                                    BadgedBox(badge = {
+                                        if (unread > 0) {
+                                            Badge(
+                                                containerColor = Palette.accent,
+                                                contentColor = Palette.accentInk,
+                                            ) { Text("$unread") }
+                                        }
+                                    }) {
+                                        Icon(item.icon, contentDescription = item.label)
+                                    }
+                                },
                                 label = {
                                     Text(item.label, style = condensed(11.sp, FontWeight.SemiBold))
                                 },
@@ -99,6 +119,7 @@ fun RootScreen(
                     0 -> RideScreen(ble)
                     1 -> RouteScreen(ble)
                     2 -> RidesScreen(ble)
+                    3 -> MeshScreen(ble)
                     else -> SettingsScreen(ble, host) { showTutorial = true }
                 }
             }

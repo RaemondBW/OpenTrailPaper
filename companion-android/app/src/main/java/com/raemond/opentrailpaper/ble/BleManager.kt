@@ -148,6 +148,28 @@ class BleManager(private val app: Application) {
      */
     var dashLayout by mutableStateOf<DashLayout?>(null); private set
 
+    // MARK: Meshtastic
+    //
+    // The device is the node; this app is its keyboard and screen. Everything
+    // here was streamed off the device, so a phone that has been away still sees
+    // what arrived while it was gone.
+
+    var meshState by mutableStateOf(MeshState()); private set
+    var meshMessages by mutableStateOf<List<MeshMessage>>(emptyList()); private set
+    var meshNodes by mutableStateOf<List<MeshNode>>(emptyList()); private set
+    var meshChannels by mutableStateOf<List<MeshChannel>>(emptyList()); private set
+    var meshPresets by mutableStateOf<List<MeshPreset>>(emptyList()); private set
+    var meshStats by mutableStateOf(MeshStats()); private set
+
+    /** The device refused the last send — radio off, or its outbox is full. */
+    var meshSendRejected by mutableStateOf(false); private set
+
+    /** Whether this firmware has the mesh characteristic at all. */
+    val meshSupported: Boolean get() = meshChar != null
+
+    /** Whether Mesh has something to talk to. */
+    val meshAttached: Boolean get() = state == ConnState.CONNECTED && meshSupported
+
     /** Whether a transfer wants the screen kept awake; MainActivity applies it. */
     var keepScreenOn by mutableStateOf(false); private set
 
@@ -174,6 +196,14 @@ class BleManager(private val app: Application) {
     private var sensorsChar: BluetoothGattCharacteristic? = null
     private var mapChar: BluetoothGattCharacteristic? = null
     private var dashChar: BluetoothGattCharacteristic? = null
+    private var meshChar: BluetoothGattCharacteristic? = null
+
+    // Streamed lists arrive one item per notification and are published only on
+    // the end marker, so the UI never sees a half-built list.
+    private val meshMessagesBuilding = ArrayList<MeshMessage>()
+    private val meshNodesBuilding = ArrayList<MeshNode>()
+    private val meshChannelsBuilding = ArrayList<MeshChannel>()
+    private val meshPresetsBuilding = ArrayList<MeshPreset>()
 
     /** Negotiated ATT payload; one byte of every packet is the opcode. */
     private var mtu = 23
@@ -492,12 +522,15 @@ class BleManager(private val app: Application) {
         sensorsChar = service.getCharacteristic(BikeUuid.sensors)
         mapChar = service.getCharacteristic(BikeUuid.map)
         dashChar = service.getCharacteristic(BikeUuid.dash)
+        // Absent on firmware built before the mesh landed, so every mesh call
+        // below no-ops rather than crashing on an older device.
+        meshChar = service.getCharacteristic(BikeUuid.mesh)
 
         // Subscribe to everything that notifies, then read the two the device
         // holds authoritative copies of.
         listOfNotNull(
             settingsChar, statusChar, routeChar, ridesChar,
-            otaChar, sensorsChar, mapChar, dashChar,
+            otaChar, sensorsChar, mapChar, dashChar, meshChar,
         ).forEach { queue.enqueue(GattQueue.Op.Notify(it, true)) }
 
         settingsChar?.let { queue.enqueue(GattQueue.Op.Read(it)) }
@@ -517,6 +550,10 @@ class BleManager(private val app: Application) {
         when (uuid) {
             BikeUuid.ota -> queryDeviceFirmware()
             BikeUuid.sensors -> refreshSensors()   // one snapshot
+            // Same ordering constraint: every mesh reply is a notification, so
+            // asking before the CCCD write lands throws the answer away. The tab
+            // badge needs the state whether or not the Mesh screen is on top.
+            BikeUuid.mesh -> refreshMesh()
         }
     }
 
@@ -530,12 +567,14 @@ class BleManager(private val app: Application) {
             BikeUuid.sensors -> handleSensorsNotify(data)
             BikeUuid.map -> handleMapNotify(data)
             BikeUuid.dash -> dashLayout = DashLayout.parse(String(data, Charsets.UTF_8))
+            BikeUuid.mesh -> handleMeshNotify(data)
         }
     }
 
     private fun handleDisconnect() {
         settingsChar = null; statusChar = null; routeChar = null; ridesChar = null
         sensorsChar = null; mapChar = null; otaChar = null; dashChar = null
+        meshChar = null
         stopLocationStream()   // no device to send the phone's position to
 
         // If we drop mid-update: after the data is sent + commit requested, a
@@ -1269,6 +1308,292 @@ class BleManager(private val app: Application) {
     fun connectedSensor(bit: Int): BikeSensor? =
         sensors.firstOrNull { it.connected && it.kindsMask and bit != 0 }
 
+    // ---------------------------------------------------------------------
+    // MARK: - Meshtastic mesh
+    //
+    // Protocol, both directions, is documented in src/ble_server.cpp next to the
+    // opcodes; companion-ios/Sources/BLEManager.swift is the other half of this.
+    // ---------------------------------------------------------------------
+
+    /**
+     * Ask for everything the Mesh screen shows. Called when the characteristic
+     * comes up and whenever the device says something changed.
+     */
+    fun refreshMesh() {
+        if (meshChar == null) return
+        writeChar(meshChar, byteArrayOf(0x01))     // state
+        writeChar(meshChar, byteArrayOf(0x03))     // history
+        writeChar(meshChar, byteArrayOf(0x04))     // nodes
+        writeChar(meshChar, byteArrayOf(0x0c))     // channels
+        // Fixed for the life of the firmware, so once is enough.
+        if (meshPresets.isEmpty()) writeChar(meshChar, byteArrayOf(0x0a))
+    }
+
+    /** Sends to one node, or to the whole channel when [to] is null. */
+    fun sendMeshText(text: String, to: Int? = null, channel: Int = 0) {
+        if (meshChar == null) return
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return
+        // 200 bytes is the device's own cap. Cut on a character boundary so a
+        // multi-byte glyph is never halved into invalid UTF-8.
+        var body = trimmed.toByteArray(Charsets.UTF_8)
+        if (body.size > MESH_MAX_TEXT) {
+            var cut = trimmed
+            while (cut.toByteArray(Charsets.UTF_8).size > MESH_MAX_TEXT) {
+                cut = cut.substring(0, cut.offsetByCodePoints(cut.length, -1))
+            }
+            body = cut.toByteArray(Charsets.UTF_8)
+        }
+        meshSendRejected = false
+        val cmd = Packet(body.size + 6)
+        cmd.u8(0x02)
+        cmd.u32(to ?: MeshState.BROADCAST_ADDR)
+        cmd.u8(channel)
+        cmd.raw(body)
+        writeChar(meshChar, cmd.bytes())
+    }
+
+    fun setMeshEnabled(on: Boolean) =
+        writeChar(meshChar, byteArrayOf(0x06, if (on) 1 else 0))
+
+    /**
+     * Renames this node on the mesh. [short] is what other apps show on a map pin,
+     * so it is kept to four characters as Meshtastic does.
+     */
+    fun setMeshNames(long: String, short: String) {
+        if (meshChar == null) return
+        val l = long.take(38).toByteArray(Charsets.UTF_8)
+        val s = short.take(4).toByteArray(Charsets.UTF_8)
+        val cmd = Packet(l.size + s.size + 2)
+        cmd.u8(0x05)
+        cmd.u8(l.size)
+        cmd.raw(l)
+        cmd.raw(s)
+        writeChar(meshChar, cmd.bytes())
+    }
+
+    /**
+     * Moves the device to another channel. Note this retunes the radio — in
+     * Meshtastic the channel name decides the frequency slot as well as the key,
+     * so a device on "LongFast" and one on "MyTrail" cannot hear each other at
+     * all. An EMPTY name means "follow the modem preset" — the interoperable
+     * default, not a no-op: a stock node leaves its primary channel unnamed and
+     * derives the frequency from the preset, so pinning a name is what breaks
+     * interop.
+     */
+    fun setMeshChannel(name: String, key: Int) {
+        if (meshChar == null) return
+        val cmd = Packet(20)
+        cmd.u8(0x07)
+        cmd.u8(key.coerceIn(1, 10))
+        cmd.raw(name.take(14).toByteArray(Charsets.UTF_8))
+        writeChar(meshChar, cmd.bytes())
+    }
+
+    fun markMeshRead() = writeChar(meshChar, byteArrayOf(0x08))
+
+    fun requestMeshStats() = writeChar(meshChar, byteArrayOf(0x09))
+
+    /**
+     * Switches the modem. Note this can move the frequency as well as the speed:
+     * bandwidth is part of a preset, and the channel's frequency slot is
+     * bandwidth-wide.
+     */
+    fun setMeshPreset(index: Int) = writeChar(meshChar, byteArrayOf(0x0b, index.toByte()))
+
+    /**
+     * Adds or replaces a private channel. Slot 0 is the primary and is refused by
+     * the firmware — it decides the frequency.
+     */
+    fun setMeshPrivateChannel(index: Int, name: String, psk: ByteArray) {
+        if (meshChar == null) return
+        val n = name.take(15).toByteArray(Charsets.UTF_8)
+        val cmd = Packet(n.size + psk.size + 4)
+        cmd.u8(0x0d)
+        cmd.u8(index)
+        cmd.u8(n.size)
+        cmd.raw(n)
+        cmd.u8(psk.size)
+        cmd.raw(psk)
+        writeChar(meshChar, cmd.bytes())
+    }
+
+    fun forgetMeshChannel(index: Int) {
+        if (index == 0) return              // the primary cannot be forgotten
+        writeChar(meshChar, byteArrayOf(0x0e, index.toByte()))
+    }
+
+    /**
+     * Turns position sharing on or off for one channel. The device broadcasts on a
+     * distance and interval trigger, not continuously — see docs/meshtastic.md.
+     */
+    fun setMeshShareLocation(index: Int, on: Boolean) =
+        writeChar(meshChar, byteArrayOf(0x0f, index.toByte(), if (on) 1 else 0))
+
+    /** The lowest free private slot, or null when the device is full. */
+    val firstFreeMeshChannel: Int?
+        get() {
+            val used = meshChannels.map { it.index }.toSet()
+            return (1 until MESH_MAX_CHANNELS).firstOrNull { it !in used }
+        }
+
+    private fun handleMeshNotify(d: ByteArray) {
+        when (d.firstOrNull()?.toInt()?.and(0xFF) ?: return) {
+            0x90 -> {                                             // state
+                if (d.size < 13) return
+                val flags = d[1].toInt() and 0xFF
+                val (channel, i1) = lenStringAt(d, 13)
+                val (short, i2) = lenStringAt(d, i1)
+                val (long, i) = lenStringAt(d, i2)
+                meshState = MeshState(
+                    enabled = flags and 1 != 0,
+                    radioOk = flags and 2 != 0,
+                    channelFollowsPreset = flags and 4 != 0,
+                    nodeNum = le32(d, 2),
+                    // u32 Hz widened, so 906.875 MHz does not come back negative.
+                    frequencyHz = le32(d, 6).toLong() and 0xFFFF_FFFFL,
+                    channelKey = d[10].toInt() and 0xFF,
+                    nodeCount = d[11].toInt() and 0xFF,
+                    unread = d[12].toInt() and 0xFF,
+                    channel = channel,
+                    shortName = short,
+                    longName = long,
+                    presetIndex = if (i < d.size) d[i].toInt() and 0xFF else 0,
+                )
+            }
+
+            0x91 -> {                                             // one message
+                if (d.size < 26) return
+                val textLen = d[25].toInt() and 0xFF
+                if (d.size < 26 + textLen) return
+                val flags = d[24].toInt() and 0xFF
+                // The channel byte is appended AFTER the text.
+                val channel = if (d.size > 26 + textLen) d[26 + textLen].toInt() and 0xFF else 0
+                // The device sends both a UTC stamp and an age. Prefer the stamp —
+                // it came from GPS and is exact — but it is 0 until the device has
+                // a fix, and then the phone's clock minus the age is all there is.
+                val utc = le32(d, 13).toLong() and 0xFFFF_FFFFL
+                val age = le32(d, 17).toLong() and 0xFFFF_FFFFL
+                val whenMs =
+                    if (utc > 0) utc * 1000 else System.currentTimeMillis() - age
+                meshMessagesBuilding.add(
+                    MeshMessage(
+                        id = le32(d, 1),
+                        from = le32(d, 5),
+                        to = le32(d, 9),
+                        outgoing = flags and 1 != 0,
+                        channel = channel,
+                        status = MeshMessage.Status.from(flags shr 4),
+                        text = String(d, 26, textLen, Charsets.UTF_8),
+                        timeMs = whenMs,
+                        rssi = d[21].toInt(),                     // already signed
+                        snr = d[22].toInt(),
+                        hops = d[23].toInt() and 0xFF,
+                    ),
+                )
+            }
+
+            0x92 -> {                                             // end of history
+                meshMessages = meshMessagesBuilding.toList()
+                meshMessagesBuilding.clear()
+            }
+
+            0x93 -> {                                             // one node
+                if (d.size < 12) return
+                val (short, ni) = lenStringAt(d, 12)
+                val (long, i) = lenStringAt(d, ni)
+                val age = le32(d, 5).toLong() and 0xFFFF_FFFFL
+                // Position is appended and optional: one flag byte, then the
+                // fields only if the node has actually broadcast one.
+                var pos: MeshNodePosition? = null
+                if (i < d.size && d[i].toInt() != 0 && d.size >= i + 1 + 16) {
+                    val b = i + 1
+                    val posAge = le32(d, b + 12).toLong() and 0xFFFF_FFFFL
+                    pos = MeshNodePosition(
+                        latitude = le32(d, b) / 1e7,
+                        longitude = le32(d, b + 4) / 1e7,
+                        altitudeM = le16(d, b + 8).toShort().toInt(),
+                        satsInView = d[b + 10].toInt() and 0xFF,
+                        precisionBits = d[b + 11].toInt() and 0xFF,
+                        receivedMs = System.currentTimeMillis() - posAge,
+                    )
+                }
+                meshNodesBuilding.add(
+                    MeshNode(
+                        num = le32(d, 1),
+                        shortName = short,
+                        longName = long,
+                        lastHeardMs = System.currentTimeMillis() - age,
+                        rssi = d[10].toInt(),
+                        snr = d[9].toInt(),
+                        hops = d[11].toInt() and 0xFF,
+                        position = pos,
+                    ),
+                )
+            }
+
+            0x94 -> {                                             // end of nodes
+                meshNodes = meshNodesBuilding.sortedByDescending { it.lastHeardMs }
+                meshNodesBuilding.clear()
+            }
+
+            0x95 -> {                                             // packet counters
+                if (d.size < 29) return
+                meshStats = MeshStats(
+                    rx = le32(d, 1), rxDropped = le32(d, 5),
+                    rxOtherChannel = le32(d, 9), rxDuplicate = le32(d, 13),
+                    tx = le32(d, 17), txFailed = le32(d, 21), acksRx = le32(d, 25),
+                )
+            }
+
+            0x96 -> refreshMesh()                                 // something changed
+
+            0x97 -> meshSendRejected = false                      // queued
+            0x98 -> meshSendRejected = true                       // refused
+
+            0x99 -> {                                             // one modem preset
+                if (d.size < 6) return
+                meshPresetsBuilding.add(
+                    MeshPreset(
+                        index = d[1].toInt() and 0xFF,
+                        name = lenStringAt(d, 6).first,
+                        sf = d[2].toInt() and 0xFF,
+                        bandwidthKhz = le16(d, 3) / 10.0,
+                        codingRate = d[5].toInt() and 0xFF,
+                    ),
+                )
+            }
+
+            0x9a -> {                                             // end of presets
+                meshPresets = meshPresetsBuilding.toList()
+                meshPresetsBuilding.clear()
+            }
+
+            0x9b -> {                                             // one channel, with its key
+                if (d.size < 3) return
+                val (name, after) = lenStringAt(d, 3)
+                if (after >= d.size) return
+                val pskLen = d[after].toInt() and 0xFF
+                val i = after + 1
+                if (i + pskLen > d.size) return
+                meshChannelsBuilding.add(
+                    MeshChannel(
+                        index = d[1].toInt() and 0xFF,
+                        name = name,
+                        hash = d[2].toInt() and 0xFF,
+                        psk = d.copyOfRange(i, i + pskLen),
+                        sharesLocation = d.size > i + pskLen && d[i + pskLen].toInt() != 0,
+                    ),
+                )
+            }
+
+            0x9c -> {                                             // end of channels
+                meshChannels = meshChannelsBuilding.sortedBy { it.index }
+                meshChannelsBuilding.clear()
+            }
+        }
+    }
+
     private fun handleSensorsNotify(d: ByteArray) {
         when (d.firstOrNull()?.toInt()?.and(0xFF) ?: return) {
             0x10 -> sensorsBuilding = mutableListOf()             // list begin
@@ -1655,6 +1980,33 @@ class BleManager(private val app: Application) {
         private fun le32(d: ByteArray, i: Int): Int =
             (d[i].toInt() and 0xFF) or ((d[i + 1].toInt() and 0xFF) shl 8) or
                 ((d[i + 2].toInt() and 0xFF) shl 16) or ((d[i + 3].toInt() and 0xFF) shl 24)
+
+        /** The device's own cap on one mesh message, in UTF-8 bytes. */
+        private const val MESH_MAX_TEXT = 200
+
+        /** `mesh::MAX_CHANNELS` — slot 0 is the primary, 1..7 are private. */
+        private const val MESH_MAX_CHANNELS = 8
+
+        /**
+         * A length-prefixed UTF-8 string, the shape every name in the mesh
+         * protocol uses so the app never has to guess where a field ends.
+         *
+         * Returns the text AND the index just past it. Advancing by the DECODED
+         * string's byte length instead would desync the rest of the packet the
+         * moment a name is not valid UTF-8 — decoding substitutes U+FFFD, whose
+         * own encoding is three bytes, so a single stray byte in a node name
+         * would shift every field after it. Node names arrive over the air from
+         * other people's radios, so that is reachable, not theoretical.
+         *
+         * Out-of-range or truncated reads give "" rather than throwing: this runs
+         * on notifications from a device that may be older than this build.
+         */
+        private fun lenStringAt(d: ByteArray, at: Int): Pair<String, Int> {
+            if (at < 0 || at >= d.size) return "" to d.size
+            val n = d[at].toInt() and 0xFF
+            if (at + 1 + n > d.size) return "" to d.size
+            return String(d, at + 1, n, Charsets.UTF_8) to (at + 1 + n)
+        }
     }
 }
 

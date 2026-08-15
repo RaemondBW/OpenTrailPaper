@@ -83,6 +83,14 @@ dependencies {
     // one piece where a mistake produces a silently wrong map tile) out of
     // reach of unit tests.
     implementation(libs.gson)
+    // Mesh channel invites. ZXing's core is pure Java — it both draws the QR and
+    // reads one out of a camera frame, so joining a channel needs no Play
+    // Services and no key, the same reason the map is osmdroid and not Google's.
+    implementation(libs.zxing.core)
+    implementation(libs.androidx.camera.core)
+    implementation(libs.androidx.camera.camera2)
+    implementation(libs.androidx.camera.lifecycle)
+    implementation(libs.androidx.camera.view)
     debugImplementation(libs.androidx.ui.tooling)
     // The byte formats shared with the firmware are pure Kotlin, so they are
     // testable on the JVM with no device and no network.

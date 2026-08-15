@@ -25,6 +25,12 @@ settings, push routes and build offline maps. Feature-for-feature with
   each new one to the SD card. Areas you've downloaded are shaded as hexagons —
   green with a check where the device has them too — so the screen answers which
   ground you hold and whether it is on the head unit.
+- **Mesh** — text messaging over the head unit's LoRa radio, which makes it a
+  real [Meshtastic](https://meshtastic.org) node. Broadcast to the channel or
+  message one neighbour, with delivery marks and the nodes that have reported a
+  position plotted on a map. Private channels carry a random 256-bit key and are
+  shared by QR code in Meshtastic's own `meshtastic.org/e/#` format, so the
+  official app can join one and this app can join theirs.
 - **Settings** — units, clock format, USB-drive mode, FTP, timezone, backlight;
   sensor pairing; device diagnostics logs with a battery-drain chart; and
   over-the-air firmware updates straight from GitHub Releases.
@@ -50,7 +56,7 @@ auto-scans for the device by its GATT service UUID once Bluetooth is allowed.
 
 ## How it differs from the iOS app
 
-Both companions do the same jobs; three implementation choices differ because the
+Both companions do the same jobs; four implementation choices differ because the
 platforms do.
 
 - **Maps, search and routing.** iOS uses MapKit throughout. Android has no
@@ -72,6 +78,13 @@ platforms do.
   ride records. Android needs a location-typed foreground service for the same
   thing, so `ble/RideLocationService.kt` runs — and only runs — while the device
   reports that it is recording.
+- **Mesh channel QR codes.** iOS draws them with CoreImage and reads them with
+  AVFoundation, both in the OS. Android's equivalents are in Play Services (ML
+  Kit), which this app does not depend on for the same reason it does not use
+  Google Maps — so the QR is drawn and decoded by **ZXing**'s pure-Java core, with
+  **CameraX** supplying the frames. The camera is bound to the scanner's own
+  lifecycle, so it runs only while that sheet is open, and the permission is
+  optional: the invite link can be pasted instead.
 
 ## BLE protocol (matches `src/ble_server.cpp`)
 
@@ -87,6 +100,7 @@ Service `B1C50000-9E0F-4B7A-9C6D-1F2E3A4B5C6D`:
 | Sensors  | `…0006` | write/notify | scan / stop / pair / forget / snapshot |
 | Map      | `…0007` | write/notify | whole-map and per-tile uploads, plus the on-device tile list |
 | Dash     | `…0009` | read/write/notify | the text of `/config/dashboard.cfg` |
+| Mesh     | `…000a` | write/notify | Meshtastic state, messages, nodes, channels and modem presets, both ways |
 
 ## Notes / limitations
 
