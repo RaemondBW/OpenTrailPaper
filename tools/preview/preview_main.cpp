@@ -495,7 +495,10 @@ int main(int argc, char** argv) {
     emit("routes.png");
 
     // Settings
-    SettingsInfo si{true, 250, -420, 2, false, true};
+    // useMiles ON deliberately: "MILES" is the longest word either switch has to
+    // carry and the reason the UNITS control is wider than the rest, so the
+    // preview has to render that position rather than the short "KM" one.
+    SettingsInfo si{true, 250, -420, 2, true, true, true};
     clearWhite(fb.data());
     ui_render_settings(si, fb.data());
     ui::statusBar(s, fb.data(), "SETTINGS");

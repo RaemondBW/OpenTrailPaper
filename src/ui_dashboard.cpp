@@ -599,7 +599,7 @@ void handleTap(int x, int y) {
             break;
         case SCREEN_SETTINGS: {
             int row = (y - kMenuRowTop) / kSettingsRowH;
-            bool inRows = y >= kMenuRowTop && row >= 0 && row < 6;
+            bool inRows = y >= kMenuRowTop && row >= 0 && row < kSettingsRowCount;
             // BACKLIGHT is NOT a toggle row: ui_render_settings draws it with the
             // -/+ stepper (four levels don't fit a switch), so it must be hit-
             // tested like one. It used to be listed here, which meant only the
@@ -607,11 +607,15 @@ void handleTap(int x, int y) {
             // through to the "tap anywhere else" branch and bounced the rider
             // out to the menu instead of dimming the light.
             bool toggleRow = row == kSettingsUnitsRow || row == kSettingsUsbRow ||
-                             row == kSettingsOfflineRow;
+                             row == kSettingsOfflineRow || row == kSettingsMeshRow;
             bool minus = x >= kSettingsMinusX && x < kSettingsMinusX + kSettingsBtn;
             bool plus = x >= kSettingsPlusX && x < kSettingsPlusX + kSettingsBtn;
-            bool toggleHit = x >= kSettingsToggleX &&
-                             x < kSettingsToggleX + kSettingsToggleW;
+            // Per-row, because UNITS draws a wider switch: a fixed rect would
+            // leave its left third dead, and a stray tap there falls through to
+            // the do-nothing branch with no feedback.
+            const int togX = inRows ? settingsToggleX(row) : kSettingsToggleX;
+            const int togW = inRows ? settingsToggleW(row) : kSettingsToggleW;
+            bool toggleHit = x >= togX && x < togX + togW;
             bool edited = false;
             if (inRows && !toggleRow && (minus || plus)) {
                 int dir = plus ? 1 : -1;
@@ -635,6 +639,14 @@ void handleTap(int x, int y) {
                     bool on = !settings::usbDrive();
                     settings::setUsbDrive(on);
                     usb_storage::setDriveEnabled(on);
+                } else if (row == kSettingsMeshRow) {
+                    // REQUEST, not apply: setEnabled() stages the change for the
+                    // mesh task, which owns the radio. Doing the bring-up from
+                    // the touch handler would drive SPI from a second task and
+                    // is exactly what sd_bus.h warns about. Persisting is the
+                    // task's job too (applyEnabled -> settings::setMeshEnabled),
+                    // so nothing is written here.
+                    mesh_service::setEnabled(!mesh_service::enabled());
                 } else {   // show offline sensor fields
                     settings::setShowOffline(!settings::showOffline());
                 }
@@ -2216,10 +2228,18 @@ void task(void*) {
                                                               : "DIRECTIONS");
                     break;
                 case SCREEN_SETTINGS: {
+                    // Mesh state comes from the SERVICE, not settings: the tap
+                    // only stages a request, and the stored flag is not written
+                    // until the mesh task has actually brought the radio up or
+                    // put it to sleep. The task is woken immediately and a panel
+                    // repaint is far slower, so this still reads as instant —
+                    // and if the radio ever fails to start, the row shows what
+                    // is true rather than what was asked for.
                     SettingsInfo si{settings::showOffline(),
                                     settings::ftpWatts(), settings::tzMinutes(),
                                     settings::backlight(), settings::useMiles(),
-                                    settings::usbDrive()};
+                                    settings::usbDrive(),
+                                    mesh_service::enabled()};
                     ui_render_settings(si, fb);
                     ui::statusBar(s, fb, "SETTINGS");
                     break;

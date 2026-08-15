@@ -41,7 +41,13 @@ constexpr int BODY_TOP = STATUS_H;
 constexpr int BODY_BOTTOM = MAP_STRIP_TOP;
 
 constexpr int ROW_H = 148;       // list row
-constexpr int DENSE_ROW_H = 111; // settings row
+// Settings row. Sized by what the page has to hold rather than picked: seven
+// setting rows plus the GPS DEBUG nav row have to land above kContentBottom
+// (936), and 64 + 8 * 108 = 928 clears it. Was 111 when the page carried six
+// settings rows and started 32 px lower. The floor is TOUCH_MIN (88) plus
+// enough air that the stepper does not crowd the row rule — 108 leaves 10 px
+// above and below an 88 px target, against 11 px before.
+constexpr int DENSE_ROW_H = 108; // settings row
 constexpr int TOUCH_MIN = 88;    // minimum hit rect, one gloved thumb
 
 // Ink. Four levels exist, but only INK and PAPER survive a fast DU pass — mid
@@ -145,7 +151,13 @@ void ui_render_summary(const RideSummary& r, uint8_t* fb);
 // Menu (design 1h). Rows are kMenuRowH tall starting at kMenuRowTop;
 // row 0 (Start/Stop Ride) is the only action today, the rest show live
 // status. Tapping outside the rows returns to the ride screen.
-constexpr int kMenuRowTop = 96;
+//
+// Rows butt straight onto the status band. This was 96, which left a 32 px
+// band of nothing under a status bar that already ends in its own 3 px rule
+// (see statusBar) — and every page then drew a SECOND heavy rule at the top of
+// its rows, so the gap read as an empty stripe between two lines rather than as
+// deliberate space. One separator is enough, and the status bar owns it.
+constexpr int kMenuRowTop = ui::STATUS_H;
 constexpr int kMenuRowH = ui::ROW_H;
 constexpr int kMenuRowCount = 5;
 
@@ -195,6 +207,21 @@ constexpr int kSettingsToggleW = 120;
 constexpr int kSettingsToggleH = 52;
 constexpr int kSettingsToggleX =
     ui::CONTENT_X + ui::CONTENT_W - ui::CELL_PAD - kSettingsToggleW;
+// UNITS is wider than the ON/OFF switches because its two positions carry WORDS
+// — "MILES" in a 60 px half was set solid against both edges. Only the width
+// changes: the right edge stays on the same column as every other switch, so
+// the control column still reads as one line down the page.
+constexpr int kSettingsUnitsToggleW = 168;
+constexpr int kSettingsUnitsToggleX =
+    ui::CONTENT_X + ui::CONTENT_W - ui::CELL_PAD - kSettingsUnitsToggleW;
+// Per-row switch geometry, so the hit test and the drawing cannot disagree.
+constexpr int kSettingsUnitsRowIdx = 3;
+constexpr int settingsToggleW(int row) {
+    return row == kSettingsUnitsRowIdx ? kSettingsUnitsToggleW : kSettingsToggleW;
+}
+constexpr int settingsToggleX(int row) {
+    return row == kSettingsUnitsRowIdx ? kSettingsUnitsToggleX : kSettingsToggleX;
+}
 constexpr int kSettingsRowH = ui::DENSE_ROW_H;
 struct SettingsInfo {
     bool showOffline;
@@ -203,6 +230,7 @@ struct SettingsInfo {
     int backlight;   // 0 off .. 3 bright
     bool useMiles;   // false = km, true = miles
     bool usbDrive;   // expose the SD to a host as a USB drive
+    bool meshOn;     // LoRa mesh radio powered up and listening
 };
 void ui_render_settings(const SettingsInfo& si, uint8_t* fb);
 
@@ -212,14 +240,17 @@ void ui_render_settings(const SettingsInfo& si, uint8_t* fb);
 // duplicate a key the rider's thumb is already on.
 constexpr int kContentBottom = 960 - ui::MARGIN;
 
-// Settings sub-page row hit-testing. Rows 0-1 are +/- adjusters (FTP,
-// timezone); rows 2-4 are toggle switches (backlight, units, USB drive);
-// row 5 is navigation. Sensors lives on the main menu, not here.
+// Settings sub-page row hit-testing. Rows 0-2 are +/- steppers (FTP, timezone,
+// backlight — four backlight levels do not fit a switch); rows 3-6 are toggle
+// switches (units, USB drive, show offline, mesh); row 7 is navigation.
+// Sensors lives on the main menu, not here.
 constexpr int kSettingsBacklightRow = 2;
-constexpr int kSettingsUnitsRow = 3;
+constexpr int kSettingsUnitsRow = kSettingsUnitsRowIdx;
 constexpr int kSettingsUsbRow = 4;
 constexpr int kSettingsOfflineRow = 5;
-constexpr int kSettingsGpsRow = 6;
+constexpr int kSettingsMeshRow = 6;
+constexpr int kSettingsRowCount = 7;   // stepper + switch rows, excluding nav
+constexpr int kSettingsGpsRow = kSettingsRowCount;
 
 // GPS diagnostics page (reached from Settings). Mirrors GpsDebug from
 // gps_service.h but stays host-safe for the preview harness.
