@@ -484,6 +484,11 @@ section.dark .progress { background: #1e1e1e; border-color: #3a3a3a; }
 section.dark select {
   background: #1e1e1e; border: 1px solid #3a3a3a; color: #fff;
 }
+/* hw-list was styled for the light hardware cards on the home page; on a dark
+   section its --ink text disappears. Product names are links, so let the
+   strong inherit the link colour rather than fighting it. */
+section.dark .hw-list li { color: #b5b2a8; }
+section.dark .hw-list a strong { color: inherit; }
 
 /* --- mapgen --- */
 .pickmap {
