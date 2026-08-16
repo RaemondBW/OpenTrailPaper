@@ -68,7 +68,7 @@
 // older version invites a tap that silently replaces it with mainline firmware —
 // which is exactly what happened once. Keep this in step with main's version
 // while the branch is unmerged; on merge it goes back to being the real version.
-#define FIRMWARE_VERSION    "v1.13"
+#define FIRMWARE_VERSION    "v1.14"
 
 // Rider settings
 #define FTP_WATTS           250     // for the power zone bar (Coggan zones)
