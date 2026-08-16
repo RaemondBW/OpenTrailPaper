@@ -9,6 +9,7 @@
 #include "settings.h"
 #include "diag.h"
 #include "ride_recorder.h"
+#include "sd_bus.h"
 
 namespace {
 
@@ -44,14 +45,22 @@ inline void noteHostTraffic() {
 
 // Read/write whole 512-byte sectors straight off the SD card. TinyUSB passes
 // sector-aligned requests (offset 0, bufsize a multiple of 512).
+//
+// Under sdLock even though hostActive() keeps the firmware's FILESYSTEM off the
+// card: the SX1262 shares MISO/MOSI/SCK, and lora_radio's transfers run under
+// this lock at all times — including while a host owns the drive. A raw sector
+// command interleaved with a radio transfer is two chip selects low on one bus,
+// which garbles both and leaves the card wedged mid-command.
 int32_t onRead(uint32_t lba, uint32_t offset, void* buffer, uint32_t bufsize) {
     (void)offset;
     noteHostTraffic();
     uint8_t* buf = (uint8_t*)buffer;
     uint32_t count = bufsize / 512;
+    sdLock();
     for (uint32_t i = 0; i < count; ++i) {
-        if (!SD.readRAW(buf + i * 512, lba + i)) return -1;
+        if (!SD.readRAW(buf + i * 512, lba + i)) { sdUnlock(); return -1; }
     }
+    sdUnlock();
     return count * 512;
 }
 
@@ -59,9 +68,11 @@ int32_t onWrite(uint32_t lba, uint32_t offset, uint8_t* buffer, uint32_t bufsize
     (void)offset;
     noteHostTraffic();
     uint32_t count = bufsize / 512;
+    sdLock();
     for (uint32_t i = 0; i < count; ++i) {
-        if (!SD.writeRAW(buffer + i * 512, lba + i)) return -1;
+        if (!SD.writeRAW(buffer + i * 512, lba + i)) { sdUnlock(); return -1; }
     }
+    sdUnlock();
     return count * 512;
 }
 
@@ -96,7 +107,12 @@ namespace usb_storage {
 
 void begin() {
     if (g_ready) return;        // late-mount path can call this a second time
+    // Locked like every other card access: this runs on the UI task while the
+    // mesh task is already making radio transfers on the same bus, and it was
+    // one of the last unlocked SD calls left. See sd_bus.h.
+    sdLock();
     uint32_t sectors = SD.numSectors();
+    sdUnlock();
     if (sectors == 0) return;   // no card — nothing to expose yet
     USB.onEvent(usbEvent);
     msc.vendorID("BikeGPS");

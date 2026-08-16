@@ -1285,15 +1285,24 @@ bool begin() {
 // OTA partitions still protect the running image if the flash fails. To update:
 // copy the new firmware.bin to the SD card root and power the device on.
 void applySdUpdate() {
-    if (!ride_recorder::sdMounted() || !SD.exists("/firmware.bin")) return;
+    if (!ride_recorder::sdMounted()) return;
+
+    // Locked for the whole check-rename-read sequence. This runs on the UI task
+    // with the mesh task already live on the shared SPI bus; the previous
+    // unlocked SD.exists() here could interleave with a LoRa transfer and wedge
+    // the card mid-command — the silent boot freeze right after "Maps ready".
+    // Holding the lock across the flash also keeps every other card user off
+    // the bus while the firmware is being read, which is what you want anyway.
+    sdLock();
+    if (!SD.exists("/firmware.bin")) { sdUnlock(); return; }
 
     // Rename first so a bad/interrupted flash can never boot-loop re-trying it.
     SD.remove("/firmware.applied");
     SD.rename("/firmware.bin", "/firmware.applied");
     File f = SD.open("/firmware.applied", FILE_READ);
-    if (!f) return;
+    if (!f) { sdUnlock(); return; }
     size_t size = f.size();
-    if (size < 4096) { f.close(); return; }
+    if (size < 4096) { f.close(); sdUnlock(); return; }
 
     auto drawProgress = [&](int pct, bool first) {
         uint8_t* fb = epdc_framebuffer();
@@ -1323,7 +1332,7 @@ void applySdUpdate() {
     if (ok) {
         SD.remove("/firmware.applied");   // done — don't keep it around
         diag::log("sd update OK — rebooting into new firmware");
-        diag::flushToSD();
+        diag::flushToSD();   // takes sdLock recursively — same task, fine
         drawProgress(100, false);
         epdc_paint_wait();   // same async-paint hazard as shutdownDevice(): the
                              // delay below is a guess, not a completion signal
@@ -1335,6 +1344,7 @@ void applySdUpdate() {
         diag::log("sd update FAILED (err %d) — keeping current firmware",
                   Update.getError());
     }
+    sdUnlock();
 }
 
 // Reboot into the ROM serial bootloader (download mode) for hands-free

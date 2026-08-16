@@ -80,9 +80,15 @@ void log(const char* fmt, ...) {
 void flushToSD() {
     if (!buf || !mtx) return;
     if (!ride_recorder::sdMounted() || ride_recorder::isRecording()) return;
-    xSemaphoreTake(mtx, portMAX_DELAY);
-    if (len == 0) { xSemaphoreGive(mtx); return; }
+    // sdLock BEFORE the diag mutex — the same order as every task that calls
+    // diag::log() while holding the SD lock (recovery, map/tile saves, ...).
+    // The old order here (mtx first, then sdLock) deadlocked against exactly
+    // those callers: this task held the log mutex waiting for the card while
+    // they held the card waiting for the log mutex. Card-present boots only,
+    // since without a mount this function returns before locking anything.
     sdLock();
+    xSemaphoreTake(mtx, portMAX_DELAY);
+    if (len == 0) { xSemaphoreGive(mtx); sdUnlock(); return; }
     if (!SD.exists(LOG_DIR)) SD.mkdir(LOG_DIR);
     computeLogPath(activePath, sizeof(activePath));   // today's file (UTC)
     File f = SD.open(activePath, FILE_APPEND);
@@ -91,8 +97,8 @@ void flushToSD() {
         f.close();
         len = 0;
     }
-    sdUnlock();
     xSemaphoreGive(mtx);
+    sdUnlock();
 }
 
 const char* logPath() {
