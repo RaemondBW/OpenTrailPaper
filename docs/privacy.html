@@ -36,8 +36,8 @@
   <div class="wrap">
     <p class="kicker">Legal</p>
     <h1>Privacy Policy</h1>
-    <p class="lede">This policy covers the OpenTrailPaper iPhone app, the OpenTrailPaper firmware that runs on the head unit, and this website. In short: there are no accounts, no tracking, and no cloud. Your rides, routes and location stay on your phone and your device.</p>
-    <p class="policy-date">Last updated: July 22, 2026</p>
+    <p class="lede">This policy covers the OpenTrailPaper apps for iPhone and Android, the OpenTrailPaper firmware that runs on the head unit, and this website. In short: there are no accounts, no tracking, and no cloud. Your rides, routes and location stay on your phone and your device.</p>
+    <p class="policy-date">Last updated: August 16, 2026</p>
   </div>
 </section>
 
@@ -51,16 +51,20 @@
     </div>
 
     <h2>1. Information the app collects and how it is used</h2>
-    <p>The OpenTrailPaper app asks for two system permissions. Both are used only to make the app and head unit work, and
-      you can change or revoke either at any time in the iOS Settings app.</p>
+    <p>The OpenTrailPaper app asks for a small number of system permissions. Each is used only to make the app and head
+      unit work, and you can change or revoke any of them at any time in your phone's system settings.</p>
 
     <h3>Location</h3>
-    <p>With your permission, the app uses your location <strong>only while you are using the app</strong>. It is used to:</p>
+    <p>With your permission, the app uses your location while you are using it. It is used to:</p>
     <ul>
       <li>show your position on the map while you plan a route or pick a map area;</li>
       <li>send a rough starting position to the head unit so its GPS locks on faster;</li>
       <li>act as a backup position for the device when it cannot see the sky.</li>
     </ul>
+    <p>On Android, if you leave the app while your head unit is recording a ride, the app keeps sending your position to
+      the device over Bluetooth through a service that shows a visible, persistent notification; it stops when the ride
+      stops or you dismiss it. On Android versions before 12, the system also requires the location permission to scan
+      for Bluetooth devices — it is not used to determine your location there.</p>
     <p>Your location is processed on your phone and sent over Bluetooth to your own head unit. It is not sent to us, and
       we have no servers that could receive it.</p>
 
@@ -69,6 +73,11 @@
       (heart rate, power, cadence). Everything between the phone and the device travels over this direct Bluetooth link:
       routes, offline map tiles, settings, firmware updates and recorded rides. Bluetooth is not used to identify you, to
       track your location in the background, or for advertising.</p>
+
+    <h3>Camera (Android)</h3>
+    <p>The Android app asks for the camera only when you choose to scan a QR code that invites you to a mesh radio
+      channel, and only while that screen is open. Frames are processed on your phone to read the code and are never
+      stored or uploaded. The permission is optional — an invite link can be pasted instead.</p>
 
     <h3>Rides, routes and maps</h3>
     <p>Rides recorded by the head unit are written to its SD card as standard <code>.fit</code> files. When you pull a
@@ -80,16 +89,30 @@
     <p>Some features do need to reach the internet, and those requests go directly from your phone to the third party
       concerned. We do not receive a copy. Specifically:</p>
     <ul>
-      <li><strong>Apple Maps (MapKit).</strong> The map you see while planning, the destination search, and turn-by-turn
-        route calculation are provided by Apple. Apple receives the search terms and the coordinates involved, handled
-        under <a href="https://www.apple.com/legal/privacy/">Apple's privacy policy</a>.</li>
+      <li><strong>Apple Maps (MapKit) — iPhone app.</strong> The map you see while planning, the destination search, and
+        turn-by-turn route calculation are provided by Apple. Apple receives the search terms and the coordinates
+        involved, handled under <a href="https://www.apple.com/legal/privacy/">Apple's privacy policy</a>.</li>
+      <li><strong>CARTO basemap tiles — Android app.</strong> The map you see while planning is drawn from CARTO's
+        OpenStreetMap tile service, which receives the coordinates of the map areas you look at.</li>
+      <li><strong>Nominatim (OpenStreetMap) — Android app.</strong> Destination search sends your typed query, along with
+        your current position so nearby results rank first, to the public Nominatim geocoding service.</li>
+      <li><strong>OSRM — Android app.</strong> Turn-by-turn route calculation sends the start and destination coordinates
+        to the public OSRM routing service.</li>
       <li><strong>OpenStreetMap / Overpass API.</strong> When you build an offline map, the app downloads map data for the
         area you selected from a public Overpass API server. That server receives the geographic bounds you chose.</li>
-      <li><strong>Open-Meteo elevation API.</strong> When a route needs an elevation profile or a climb total, the app
-        requests elevations for the coordinates along that route from Open-Meteo.</li>
+      <li><strong>Open-Meteo elevation API.</strong> When a route or offline map needs elevations, the app requests them
+        for the coordinates involved from Open-Meteo.</li>
+      <li><strong>GitHub Releases.</strong> Checking for firmware updates fetches the project's public release list from
+        GitHub. The request carries nothing about you beyond what any web request does (your IP address), under
+        <a href="https://docs.github.com/en/site-policy/privacy-policies/github-privacy-statement">GitHub's privacy
+        statement</a>.</li>
     </ul>
     <p>These services see only what is needed to answer the request. They do not receive an account, a name, or a device
       identifier from us, because the app does not have any.</p>
+    <p><strong>Mesh radio.</strong> If you choose to join a mesh channel, your head unit broadcasts your position and
+      messages over its LoRa radio to the other members of that channel, encrypted with the channel's shared key. This
+      is radio-to-radio between the channel's own devices, not a service of ours — leave the channel and the
+      broadcasting stops.</p>
 
     <h2>3. Analytics, tracking and advertising</h2>
     <p>There are none. The app contains no analytics SDK, no crash-reporting service, no advertising identifiers and no
@@ -114,7 +137,7 @@
     <h2>8. Data protection</h2>
     <p>Our main protection is not collecting things in the first place. Data stays on hardware you own, and the phone-to-device
       link is a direct Bluetooth connection rather than a trip through the internet. Data stored on your phone is protected
-      by iOS and your device passcode. No method of storage or transmission is perfectly secure, but there is no central
+      by your phone's operating system and passcode. No method of storage or transmission is perfectly secure, but there is no central
       store of user data to breach.</p>
 
     <h2>9. This website</h2>
@@ -132,9 +155,10 @@
     </ul>
 
     <h2>10. Your choices</h2>
-    <p>You can revoke the location or Bluetooth permission at any time in <strong>Settings → OpenTrailPaper</strong> on
-      your iPhone; the related features simply stop working. You can delete recorded rides and routes from within the app,
-      and you can delete the app to remove its local data entirely.</p>
+    <p>You can revoke the location, Bluetooth or camera permission at any time in your phone's settings
+      (<strong>Settings → OpenTrailPaper</strong> on iPhone, <strong>Settings → Apps → OpenTrailPaper → Permissions</strong>
+      on Android); the related features simply stop working. You can delete recorded rides and routes from within the
+      app, and you can delete the app to remove its local data entirely.</p>
 
     <h2>11. Open source</h2>
     <p>OpenTrailPaper is open source. If you would rather verify these claims than take our word for them, the complete

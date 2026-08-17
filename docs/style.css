@@ -336,6 +336,8 @@ section .sub { color: var(--ink-soft); font-size: 1.06rem; margin: 0 0 40px; max
    only owns the space down to the screenshots. */
 .app-cta { margin: 0 0 40px; }
 .app-cta-note { color: var(--ink-soft); font-size: 0.9rem; }
+/* Full flex row so the Android line breaks below the App Store button + note. */
+.app-cta-note.android-note { flex-basis: 100%; }
 /* Below 860px .cta-row stacks and centres its button, so the note follows it. */
 @media (max-width: 860px) {
   .app-cta { margin-bottom: 24px; }
