@@ -47,8 +47,35 @@ jobs:
             https://github.com/Xinyuan-LilyGO/T5S3-4.7-e-paper-PRO \
             vendor/T5S3-4.7-e-paper-PRO
 
+      # The stock framework's esp_pm_configure() is a precompiled stub that
+      # returns ESP_ERR_NOT_SUPPORTED, so firmware built on it logs
+      # "pm: light sleep UNAVAILABLE" and never sleeps. Overlay the PM-enabled
+      # libs (built once by build-pm-libs.yml, pinned as the pm-libs-1
+      # prerelease asset) before building. Idempotent, so a cache hit that
+      # restored an already-overlaid ~/.platformio is fine.
+      - name: Install framework and apply PM overlay
+        run: |
+          pio pkg install -e t5s3-painter
+          tools/apply-pm-framework.sh
+
       - name: Build
         run: pio run
+
+      # Prove the binary that ships actually contains power management — the
+      # overlay silently not taking (wrong cache, changed package layout) would
+      # otherwise reproduce the exact bug this guards against: a release that
+      # logs "pm: light sleep UNAVAILABLE" on every device.
+      - name: Verify firmware links real PM
+        run: |
+          nm=$(ls ~/.platformio/packages/toolchain-xtensa-esp32s3*/bin/xtensa-esp32s3-elf-nm | head -1)
+          hex=$("$nm" --print-size --defined-only .pio/build/t5s3-painter/firmware.elf \
+                | awk '$4 == "esp_pm_configure" { print $2 }')
+          size=$(( 16#${hex:-0} ))
+          echo "esp_pm_configure size: $size"
+          if [ "$size" -le 100 ]; then
+            echo "::error::firmware.elf has a stub esp_pm_configure — PM overlay did not take"
+            exit 1
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
