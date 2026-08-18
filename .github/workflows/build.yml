@@ -39,6 +39,14 @@ jobs:
       - name: Install PlatformIO
         run: pip install --upgrade platformio
 
+      # Board definition + display/touch/battery drivers live here, and
+      # platformio.ini points boards_dir/lib_extra_dirs at it.
+      - name: Clone LilyGO board support
+        run: |
+          git clone --depth 1 \
+            https://github.com/Xinyuan-LilyGO/T5S3-4.7-e-paper-PRO \
+            vendor/T5S3-4.7-e-paper-PRO
+
       # The stock framework's esp_pm_configure() is a precompiled stub that
       # returns ESP_ERR_NOT_SUPPORTED, so firmware built on it logs
       # "pm: light sleep UNAVAILABLE" and never sleeps. Overlay the PM-enabled
@@ -49,14 +57,6 @@ jobs:
         run: |
           pio pkg install -e t5s3-painter
           tools/apply-pm-framework.sh
-
-      # Board definition + display/touch/battery drivers live here, and
-      # platformio.ini points boards_dir/lib_extra_dirs at it.
-      - name: Clone LilyGO board support
-        run: |
-          git clone --depth 1 \
-            https://github.com/Xinyuan-LilyGO/T5S3-4.7-e-paper-PRO \
-            vendor/T5S3-4.7-e-paper-PRO
 
       - name: Build
         run: pio run
