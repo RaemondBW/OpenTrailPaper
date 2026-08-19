@@ -23,6 +23,7 @@
 #include "map_view.h"
 #include "map_tiles.h"
 #include "map_store.h"
+#include "media.h"
 #include "i2c_bus.h"
 #include "usb_storage.h"
 #include "ble_sensors.h"
@@ -55,6 +56,10 @@ enum Screen { SCREEN_DASH, SCREEN_MAP, SCREEN_SUMMARY, SCREEN_MENU,
               SCREEN_SENSORS, SCREEN_ROUTES, SCREEN_HISTORY,
               SCREEN_SETTINGS, SCREEN_GPSDEBUG, SCREEN_DIRECTIONS };
 Screen screen = SCREEN_DASH;
+// Which dashboard page SCREEN_DASH shows. Deliberately NOT reset by
+// navigation: leaving for the menu or settings and coming back lands on the
+// page the rider was on — the page is a place, not a mode.
+int dashPage = 0;
 RideSummary pendingSummary;
 
 float mapMpp = 2.0f;  // map zoom: 1/2/4/8/16/32 m per px (wide levels show tiles)
@@ -498,6 +503,26 @@ void handleTap(int x, int y) {
     switch (screen) {
         case SCREEN_DASH:
         case SCREEN_MAP:
+            // Transport controls on the MUSIC page. Handled before the shared
+            // dash/map targets so the buttons win over the "strip" fallthrough;
+            // the status bar above them still opens the menu as everywhere.
+            if (screen == SCREEN_DASH &&
+                dash_config::page(dashPage).kind == DP_MUSIC &&
+                y >= ui::STATUS_H) {
+                uint8_t cmd = 0;
+                if (inRect(kMediaPrev, x, y)) cmd = MC_PREV;
+                else if (inRect(kMediaPlay, x, y)) cmd = MC_TOGGLE;
+                else if (inRect(kMediaNext, x, y)) cmd = MC_NEXT;
+                if (cmd) {
+                    ble_server::mediaCommand(cmd);
+                    // Answer play/pause on the glass now: flip the local flag
+                    // and repaint rather than waiting the round trip to the
+                    // phone — its state report will correct us if it disagrees.
+                    if (cmd == MC_TOGGLE) media::toggleLocal();
+                    forceDraw = true;
+                }
+                break;
+            }
             if (screen == SCREEN_MAP) {
                 int dx = x - kMapCompass.cx,
                     dy = y - mapCompassCy(routes::navActive());
@@ -2129,9 +2154,18 @@ void task(void*) {
             if (millis() - lastHome > 400) {
                 lastHome = millis();
                 noteActivity();
-                if (screen == SCREEN_DASH)      screen = SCREEN_MAP;
-                else if (screen == SCREEN_MAP)  screen = SCREEN_DASH;
-                else                            goBack();
+                // The carousel: dash pages in configured order, then the
+                // map, then back to page one. With a single-page config this
+                // is exactly the old dash <-> map swap.
+                if (screen == SCREEN_DASH) {
+                    if (dashPage + 1 < dash_config::pageCount()) dashPage++;
+                    else screen = SCREEN_MAP;
+                } else if (screen == SCREEN_MAP) {
+                    screen = SCREEN_DASH;
+                    dashPage = 0;
+                } else {
+                    goBack();
+                }
             }
         }
 
@@ -2139,12 +2173,32 @@ void task(void*) {
 
         // A layout the rider just changed in the app should land on the panel
         // now, not up to a second later — they are looking at both screens.
-        if (ble_server::takeDashChanged()) forceDraw = true;
+        if (ble_server::takeDashChanged()) {
+            // The config may have fewer pages now — never point past the end.
+            if (dashPage >= dash_config::pageCount()) dashPage = 0;
+            forceDraw = true;
+        }
+        // New metadata or album art landed: repaint the music page now, not at
+        // the next 1 Hz tick — the rider just pressed a button somewhere.
+        {
+            static uint32_t lastMediaVersion = 0;
+            uint32_t mv = media::version();
+            if (mv != lastMediaVersion) {
+                lastMediaVersion = mv;
+                if (screen == SCREEN_DASH &&
+                    dash_config::page(dashPage).kind == DP_MUSIC)
+                    forceDraw = true;
+            }
+        }
 
         bool navPrompt = routes::navPending();
         if (navPrompt && !lastNavPrompt) navPromptShownAt = millis();
+        static int lastDashPage = 0;
+        // A page flip is a screen change in every way that matters to the
+        // refresh path: full-frame content swap, wants the quality pass.
         bool screenChanged = screen != lastScreen || powerOverlay != lastOverlay
-                             || navPrompt != lastNavPrompt;
+                             || navPrompt != lastNavPrompt
+                             || (screen == SCREEN_DASH && dashPage != lastDashPage);
         // Was: a deferred GL16 clean scheduled after an interactive DU burst
         // settled. The driver DC-balances its own output, so there is nothing
         // left to clean up after — and the ~950 ms hitch that clean cost is gone
@@ -2177,6 +2231,7 @@ void task(void*) {
             Screen prevScreen = lastScreen;
             const bool prevOverlay = lastOverlay, prevNav = lastNavPrompt;
             lastScreen = screen;
+            lastDashPage = dashPage;
             lastOverlay = powerOverlay;
             lastNavPrompt = navPrompt;
             RideState s = g_state.snapshot();
@@ -2223,14 +2278,31 @@ void task(void*) {
                                    routes::maneuverCount(), fb);
             } else {
             switch (screen) {
-                case SCREEN_DASH:
-                    // Compact hero whenever a banner (turn OR pause) owns the
-                    // band, so no field hides underneath it.
-                    ui_render_dashboard(s, routes::navActive() || s.ridePaused,
-                                        dash_config::current(), fb);
+                case SCREEN_DASH: {
+                    const DashPage& pg = dash_config::page(dashPage);
+                    if (pg.kind == DP_MUSIC) {
+                        // Advance the position locally while playing — the
+                        // phone only reports on state changes, and a frozen
+                        // bar under a playing track reads as a hang.
+                        MediaState m = media::get();
+                        if (m.present && m.playing && m.durSec > 0) {
+                            uint32_t adv = (millis() - m.posAtMs) / 1000;
+                            m.posSec = (m.posSec + adv > m.durSec)
+                                           ? m.durSec
+                                           : (uint16_t)(m.posSec + adv);
+                        }
+                        ui_render_media(s, m, fb);
+                    } else {
+                        // Compact hero whenever a banner (turn OR pause) owns
+                        // the band, so no field hides underneath it.
+                        ui_render_dashboard(s,
+                                            routes::navActive() || s.ridePaused,
+                                            pg.layout, fb);
+                    }
                     drawNavBanner(fb);  // turn cue on the data page too
                     drawPauseBanner(s, fb);
                     break;
+                }
                 case SCREEN_MAP: renderMapScreen(s, fb); break;
                 case SCREEN_SUMMARY:
                     // Modal: the ride screen stays behind the sheet, scrimmed.

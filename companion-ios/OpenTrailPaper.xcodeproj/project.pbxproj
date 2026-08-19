@@ -35,6 +35,7 @@
 		5D1E2FE5B8652DC846C39AF7 /* SensorsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D0FC030F1FACFFD44C96837 /* SensorsView.swift */; };
 		5D72742ADF79FE45ED70CBEA /* MapBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = B784675A7E0FFAA781206855 /* MapBuilder.swift */; };
 		600D81E288833B6FE703B454 /* MeshChannels.swift in Sources */ = {isa = PBXBuildFile; fileRef = C74406B4D6CC045B23CAA7BA /* MeshChannels.swift */; };
+		67DE4D1D0B201C9090D5F366 /* MediaRemote.swift in Sources */ = {isa = PBXBuildFile; fileRef = 348AD6E718C562CDFACF9818 /* MediaRemote.swift */; };
 		72A4059778F0676C0911C393 /* RideDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1B62C507D47EAD0BDDDD24F /* RideDetailView.swift */; };
 		79F918433F0C02EF0915A0EE /* RouteView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A26EB50B7E6CF1B4A63235CA /* RouteView.swift */; };
 		8885B18C0FC6E6E98283CD24 /* DashboardEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F99E928FB741D98CDD96ABA0 /* DashboardEditorView.swift */; };
@@ -83,6 +84,7 @@
 		2ACAD995F312514690C2FF16 /* MeshScanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshScanner.swift; sourceTree = "<group>"; };
 		2E449077B1E39DF8A349A23D /* bbox.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = bbox.c; sourceTree = "<group>"; };
 		336612AF0918144CAB1C1FCD /* DiagnosticsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsView.swift; sourceTree = "<group>"; };
+		348AD6E718C562CDFACF9818 /* MediaRemote.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaRemote.swift; sourceTree = "<group>"; };
 		36C9973B7C9E0A6EF2F31B32 /* MeshChannelsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshChannelsSheet.swift; sourceTree = "<group>"; };
 		37C3CA9775B956BC238BAA42 /* BikeGPSCompanionApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BikeGPSCompanionApp.swift; sourceTree = "<group>"; };
 		403E838590B5304D34C70F23 /* mathExtensions.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = mathExtensions.h; sourceTree = "<group>"; };
@@ -214,6 +216,7 @@
 				2A59688151174F730E1FDAD4 /* Info.plist */,
 				B784675A7E0FFAA781206855 /* MapBuilder.swift */,
 				A7C77C595BBAE5BCBD82A004 /* MapsView.swift */,
+				348AD6E718C562CDFACF9818 /* MediaRemote.swift */,
 				C74406B4D6CC045B23CAA7BA /* MeshChannels.swift */,
 				36C9973B7C9E0A6EF2F31B32 /* MeshChannelsSheet.swift */,
 				2ACAD995F312514690C2FF16 /* MeshScanner.swift */,
@@ -382,6 +385,7 @@
 				431EACF518E6E7F25D9682EC /* H3Tiles.swift in Sources */,
 				5D72742ADF79FE45ED70CBEA /* MapBuilder.swift in Sources */,
 				C462314C3BD9E277B9F451A9 /* MapsView.swift in Sources */,
+				67DE4D1D0B201C9090D5F366 /* MediaRemote.swift in Sources */,
 				600D81E288833B6FE703B454 /* MeshChannels.swift in Sources */,
 				220B52732EE34DEE8CBA4238 /* MeshChannelsSheet.swift in Sources */,
 				578D5A6227F3573A17A1CE9B /* MeshScanner.swift in Sources */,

@@ -133,6 +133,14 @@ void valueWithUnit(const EpdFont* valueFont, int x0, int x1, int baselineY,
 void ui_render_dashboard(const RideState& s, bool navActive,
                          const DashLayout& layout, uint8_t* fb);
 
+// The MUSIC page: phone media controls + album art (media_state.h). Touch
+// targets exported for the dashboard's hit-testing, same as the sheets'.
+struct MediaState;
+void ui_render_media(const RideState& s, const MediaState& m, uint8_t* fb);
+extern const EpdRect kMediaPrev;
+extern const EpdRect kMediaPlay;
+extern const EpdRect kMediaNext;
+
 // Did the last ui_render_dashboard() grey out any cell?
 //
 // The caller needs this to know whether the panel wants a scrub. The greyed-out

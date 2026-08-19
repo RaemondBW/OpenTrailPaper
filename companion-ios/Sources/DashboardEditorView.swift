@@ -15,14 +15,28 @@ struct DashboardEditorView: View {
     @EnvironmentObject var ble: BLEManager
     @Environment(\.dismiss) private var dismiss
 
-    @State private var layout = DashLayout(items: [])
+    @State private var config = DashConfig(pages: [])
+    @State private var pageIx = 0
     @State private var showAdd = false
     @State private var dirty = false
+
+    /// The page under edit. The field controls below all operate through this,
+    /// so they read exactly as they did when there was only one layout.
+    private var layout: DashLayout {
+        config.pages.indices.contains(pageIx) ? config.pages[pageIx].layout
+                                              : DashLayout(items: [])
+    }
+    private func mutate(_ f: (inout DashLayout) -> Void) {
+        guard config.pages.indices.contains(pageIx),
+              !config.pages[pageIx].isMusic else { return }
+        f(&config.pages[pageIx].layout)
+        dirty = true
+    }
 
     var body: some View {
         NavigationStack {
             Group {
-                if ble.dashLayout == nil {
+                if ble.dashConfig == nil {
                     ContentUnavailableView(
                         "Connect to edit",
                         systemImage: "rectangle.3.group",
@@ -39,7 +53,7 @@ struct DashboardEditorView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Send") {
-                        ble.sendDashLayout(layout)
+                        ble.sendDashConfig(config)
                         dirty = false
                     }
                     // Enabled whenever this layout is not what the device is
@@ -53,21 +67,23 @@ struct DashboardEditorView: View {
                     // until the device reports the layout back, and it goes
                     // quiet by itself once it matches — including when the
                     // rider edits their way back to what is already on there.
-                    .disabled(layout.items.isEmpty || layout == ble.dashLayout)
+                    .disabled(config.pages.isEmpty || config == ble.dashConfig)
                 }
             }
-            .onAppear { if let l = ble.dashLayout { layout = l } }
+            .onAppear { if let c = ble.dashConfig { config = c; pageIx = 0 } }
             // The device is the source of truth: if it corrects or rejects what
             // we sent, adopt what it actually holds rather than keeping a local
             // fiction on screen. Skipped while the rider has unsent edits, so a
             // stray notify can't wipe work in progress.
-            .onChange(of: ble.dashLayout) {
-                if !dirty, let l = ble.dashLayout { layout = l }
+            .onChange(of: ble.dashConfig) {
+                if !dirty, let c = ble.dashConfig {
+                    config = c
+                    if pageIx >= config.pages.count { pageIx = 0 }
+                }
             }
             .sheet(isPresented: $showAdd) {
                 FieldPicker { id in
-                    layout.items.append(DashItem(field: id, size: .medium, half: true))
-                    dirty = true
+                    mutate { $0.items.append(DashItem(field: id, size: .medium, half: true)) }
                 }
             }
         }
@@ -75,6 +91,64 @@ struct DashboardEditorView: View {
 
     private var editor: some View {
         List {
+            Section {
+                Picker("Page", selection: $pageIx) {
+                    ForEach(config.pages.indices, id: \.self) { i in
+                        if config.pages[i].isMusic {
+                            Image(systemName: "music.note").tag(i)
+                        } else {
+                            Text("\(i + 1)").tag(i)
+                        }
+                    }
+                }
+                .pickerStyle(.segmented)
+                HStack {
+                    if config.pages.count < DashConfig.maxPages {
+                        Menu {
+                            Button("Data page") {
+                                config.pages.insert(.fields, at: pageIx + 1)
+                                pageIx += 1
+                                dirty = true
+                            }
+                            if !config.hasMusicPage {
+                                Button("Music controls page") {
+                                    config.pages.insert(.music, at: pageIx + 1)
+                                    pageIx += 1
+                                    dirty = true
+                                }
+                            }
+                        } label: {
+                            Label("Add a page", systemImage: "plus.circle.fill")
+                        }
+                    }
+                    Spacer()
+                    if config.pages.count > 1 {
+                        Button(role: .destructive) {
+                            config.pages.remove(at: pageIx)
+                            if pageIx >= config.pages.count { pageIx = config.pages.count - 1 }
+                            dirty = true
+                        } label: {
+                            Label("Remove page", systemImage: "minus.circle")
+                        }
+                    }
+                }
+                .buttonStyle(.borderless)
+            } header: {
+                Text("Pages")
+            } footer: {
+                Text("The device's Home key steps through the pages, then the map.")
+            }
+
+            if config.pages.indices.contains(pageIx), config.pages[pageIx].isMusic {
+                Section {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label("Music controls", systemImage: "music.note")
+                        Text("This page shows what's playing on the phone — title, album art, and play/skip buttons. It follows the Apple Music app; other players don't let apps see their playback on iOS.")
+                            .font(TypeScale.body).foregroundStyle(Palette.muted)
+                    }
+                    .padding(.vertical, 4)
+                }
+            } else {
             Section {
                 DashPreview(layout: layout)
                     .frame(height: 320)
@@ -86,16 +160,14 @@ struct DashboardEditorView: View {
             }
 
             Section {
-                ForEach($layout.items) { $item in
-                    DashItemRow(item: $item) { dirty = true }
+                ForEach(layout.items) { item in
+                    DashItemRow(item: bindingFor(item)) { dirty = true }
                 }
                 .onMove { from, to in
-                    layout.items.move(fromOffsets: from, toOffset: to)
-                    dirty = true
+                    mutate { $0.items.move(fromOffsets: from, toOffset: to) }
                 }
                 .onDelete { idx in
-                    layout.items.remove(atOffsets: idx)
-                    dirty = true
+                    mutate { $0.items.remove(atOffsets: idx) }
                 }
                 if layout.items.count < DashLayout.maxItems {
                     Button {
@@ -115,12 +187,32 @@ struct DashboardEditorView: View {
 
             Section {
                 Button("Reset to the default layout") {
-                    layout = .deviceDefault
+                    config = .deviceDefault
+                    pageIx = 0
                     dirty = true
                 }
             }
+            }   // page-kind branch
         }
         .environment(\.editMode, .constant(.active))
+    }
+
+    /// A binding into the CURRENT page's item — ForEach($layout.items) can't
+    /// exist now that `layout` is computed through the page index.
+    private func bindingFor(_ item: DashItem) -> Binding<DashItem> {
+        Binding(
+            get: {
+                config.pages.indices.contains(pageIx)
+                    ? config.pages[pageIx].layout.items.first(where: { $0.id == item.id }) ?? item
+                    : item
+            },
+            set: { new in
+                mutate { l in
+                    if let ix = l.items.firstIndex(where: { $0.id == item.id }) {
+                        l.items[ix] = new
+                    }
+                }
+            })
     }
 }
 

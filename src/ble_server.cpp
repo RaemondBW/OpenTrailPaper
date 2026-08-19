@@ -16,6 +16,7 @@
 #include "ble_sensors.h"
 #include "map_select.h"
 #include "map_store.h"
+#include "media.h"
 #include "sd_bus.h"
 #include "usb_storage.h"
 #include "dash_config.h"
@@ -36,6 +37,7 @@ const char* CHR_MAP       = "b1c50007-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
 const char* CHR_AGNSS     = "b1c50008-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
 const char* CHR_DASH      = "b1c50009-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
 const char* CHR_MESH      = "b1c5000a-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
+const char* CHR_MEDIA     = "b1c5000b-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
 
 NimBLECharacteristic* statusChr = nullptr;
 NimBLECharacteristic* sensorsChr = nullptr;
@@ -150,7 +152,7 @@ NimBLECharacteristic* dashChr = nullptr;
 //
 // So: copy the bytes, set a flag, get out. Static rather than stack because
 // this is a BLE callback, and sized for DASH_MAX_ITEMS worth of text.
-constexpr size_t DASH_TEXT_MAX = 640;
+constexpr size_t DASH_TEXT_MAX = 2048;   // sized with dash_config's TEXT_MAX
 char dashPendingText[DASH_TEXT_MAX];
 volatile bool dashApplyPending = false;
 
@@ -172,6 +174,67 @@ class DashCb : public NimBLECharacteristicCallbacks {
         memcpy(dashPendingText, v.data(), v.size());
         dashPendingText[v.size()] = 0;
         dashApplyPending = true;
+    }
+};
+
+// --- Phone media (MUSIC page) -----------------------------------------------
+// Phone -> device, one packet per write:
+//   [0x01] meta : [u8 flags: bit0 playing][u16 posSec][u16 durSec]
+//                 [title\0artist\0album\0]   (UTF-8, device truncates)
+//   [0x10] art begin : [u16 w][u16 h] — 8-bit grayscale, w*h bytes follow
+//   [0x11] art data  : raw bytes, appended in order
+//   [0x12] art end   : device dithers + repaints (deferred to the server task)
+//   [0x02] clear     : no player / playback ended
+// Device -> phone (notify): [0xA0][MediaCmd] — play/pause, next, prev.
+NimBLECharacteristic* mediaChr = nullptr;
+volatile uint8_t mediaCmdPending = 0;    // MediaCmd queued by the UI task
+volatile bool mediaArtPending = false;   // art fully received -> dither in task
+
+class MediaCb : public NimBLECharacteristicCallbacks {
+    void onWrite(NimBLECharacteristic* c, NimBLEConnInfo&) override {
+        std::string v = c->getValue();
+        if (v.empty()) return;
+        const uint8_t* p = (const uint8_t*)v.data();
+        size_t n = v.size();
+        switch (p[0]) {
+        case 0x01: {
+            if (n < 6) return;
+            bool playing = p[1] & 1;
+            uint16_t pos = (uint16_t)p[2] | ((uint16_t)p[3] << 8);
+            uint16_t dur = (uint16_t)p[4] | ((uint16_t)p[5] << 8);
+            // Three NUL-terminated strings; missing ones read as empty. Copied
+            // into a bounded scratch with a forced terminator, so a packet
+            // without NULs cannot run off the end.
+            char text[200];
+            size_t tl = n - 6 < sizeof(text) - 1 ? n - 6 : sizeof(text) - 1;
+            memcpy(text, p + 6, tl);
+            text[tl] = 0;
+            const char* f[3] = {"", "", ""};
+            size_t off = 0;
+            for (int i = 0; i < 3 && off <= tl; ++i) {
+                f[i] = text + off;
+                off += strlen(text + off) + 1;
+            }
+            media::setMeta(playing, pos, dur, f[0], f[1], f[2]);
+            break;
+        }
+        case 0x10:
+            if (n >= 5)
+                media::beginArt((int)(p[1] | (p[2] << 8)),
+                                (int)(p[3] | (p[4] << 8)));
+            break;
+        case 0x11:
+            media::artData(p + 1, n - 1);
+            break;
+        case 0x12:
+            // Dithering ~100 KB is server-task work, not callback work — the
+            // same deferral otaCommit and mapCommit already use.
+            mediaArtPending = true;
+            break;
+        case 0x02:
+            media::clear();
+            break;
+        }
     }
 };
 
@@ -697,6 +760,8 @@ class ServerCb : public NimBLEServerCallbacks {
         // doesn't stay frozen on the update popup / refuse the next attempt.
         otaAbortIfDownloading();
         mapAbortReceive();
+        // The music page must not show a player nobody can reach.
+        media::clear();
         if (sensorsStreaming) {   // app's sensor screen can't still be open
             sensorsStreaming = false;
             ble_sensors::setScanAlways(false);
@@ -1574,6 +1639,11 @@ void begin() {
         NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::NOTIFY);
     meshChr->setCallbacks(new MeshCb());
 
+    mediaChr = svc->createCharacteristic(
+        CHR_MEDIA,
+        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::NOTIFY);
+    mediaChr->setCallbacks(new MediaCb());
+
     svc->start();
 
     NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
@@ -1595,6 +1665,8 @@ void setRelaxedSleepExperiment(bool on) {
     relaxedSleepOk = on;
     diag::log("ble: light-sleep-with-phone experiment %s", on ? "ARMED" : "off");
 }
+
+void mediaCommand(unsigned char cmd) { mediaCmdPending = cmd; }
 
 bool takeDashChanged() {
     if (!dashDirty) return false;
@@ -1623,6 +1695,18 @@ void task(void*) {
         if (otaCommitPending && sdFree) {
             otaCommitPending = false;    // write staged firmware to SD (off BLE
             otaCommit();                 // host, and not while the recorder owns SD)
+        }
+        if (mediaArtPending) {
+            mediaArtPending = false;
+            media::commitArt();
+        }
+        if (uint8_t mc = mediaCmdPending) {
+            mediaCmdPending = 0;
+            if (mediaChr && phoneConnected) {
+                uint8_t pkt[2] = {0xA0, mc};
+                mediaChr->setValue(pkt, 2);
+                mediaChr->notify();
+            }
         }
         if (dashApplyPending && sdFree) {
             dashApplyPending = false;

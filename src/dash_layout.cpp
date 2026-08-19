@@ -75,6 +75,17 @@ uint8_t dashSizeFromId(const char* id, size_t len) {
     return DZ_COUNT;
 }
 
+const DashPages& dashDefaultPages() {
+    static DashPages d = [] {
+        DashPages p;
+        p.pages[0].kind = DP_FIELDS;
+        p.pages[0].layout = dashDefaultLayout();
+        p.count = 1;
+        return p;
+    }();
+    return d;
+}
+
 bool dashParse(const char* text, DashLayout& out) {
     out.count = 0;
     if (!text) return false;
@@ -132,23 +143,123 @@ bool dashParse(const char* text, DashLayout& out) {
     return out.count > 0;
 }
 
+namespace {
+
+// Append one layout's item lines; returns false on truncation.
+bool serializeItems(const DashLayout& layout, char* out, size_t cap, size_t& n) {
+    for (int i = 0; i < layout.count; ++i) {
+        const DashItem& it = layout.items[i];
+        if (it.field >= DF_COUNT || it.size >= DZ_COUNT) continue;
+        int w = snprintf(out + n, cap - n, "%-10s %-6s%s\n", dashFieldId(it.field),
+                         dashSizeId(it.size), it.half ? " half" : "");
+        if (w < 0 || (size_t)w >= cap - n) return false;
+        n += (size_t)w;
+    }
+    return true;
+}
+
+const char kHeader[] =
+    "# OpenTrailPaper dashboard layout\n"
+    "# <field> <small|medium|large|hero> [half]\n"
+    "# 'half' shares the row with the next 'half' field.\n"
+    "# 'page' on its own line starts a new page (Home key steps through\n"
+    "# them); 'page music' adds the phone media-controls page.\n";
+
+}  // namespace
+
 size_t dashSerialize(const DashLayout& layout, char* out, size_t cap) {
     if (!out || cap == 0) return 0;
-    static const char kHeader[] =
-        "# OpenTrailPaper dashboard layout\n"
-        "# <field> <small|medium|large|hero> [half]\n"
-        "# 'half' shares the row with the next 'half' field.\n";
     size_t n = 0;
     int w = snprintf(out, cap, "%s", kHeader);
     if (w < 0 || (size_t)w >= cap) return 0;
     n = (size_t)w;
-    for (int i = 0; i < layout.count; ++i) {
-        const DashItem& it = layout.items[i];
-        if (it.field >= DF_COUNT || it.size >= DZ_COUNT) continue;
-        w = snprintf(out + n, cap - n, "%-10s %-6s%s\n", dashFieldId(it.field),
-                     dashSizeId(it.size), it.half ? " half" : "");
-        if (w < 0 || (size_t)w >= cap - n) return 0;   // truncated: report failure
-        n += (size_t)w;
+    if (!serializeItems(layout, out, cap, n)) return 0;
+    return n;
+}
+
+bool dashParsePages(const char* text, DashPages& out) {
+    out.count = 0;
+    if (!text) return false;
+
+    // Parse into a scratch page; commit it whenever a `page` line (or the end
+    // of the text) closes it. A field page that collected nothing is dropped —
+    // a config of nothing but `page` lines must not become blank panels.
+    DashPage cur;
+    auto commit = [&] {
+        if (out.count >= DASH_MAX_PAGES) return;
+        if (cur.kind == DP_MUSIC || cur.layout.count > 0)
+            out.pages[out.count++] = cur;
+        cur = DashPage{};
+    };
+
+    const char* p = text;
+    for (;;) {
+        const char* lineEnd = p;
+        while (*lineEnd && *lineEnd != '\n') ++lineEnd;
+        const char* cut = p;
+        while (cut < lineEnd && *cut != '#') ++cut;
+
+        const char* tok[3] = {nullptr, nullptr, nullptr};
+        size_t tokLen[3] = {0, 0, 0};
+        int ntok = 0;
+        const char* q = p;
+        while (q < cut && ntok < 3) {
+            while (q < cut && (*q == ' ' || *q == '\t' || *q == '\r')) ++q;
+            if (q >= cut) break;
+            const char* start = q;
+            while (q < cut && *q != ' ' && *q != '\t' && *q != '\r') ++q;
+            tok[ntok] = start;
+            tokLen[ntok] = (size_t)(q - start);
+            ++ntok;
+        }
+
+        if (ntok >= 1 && tokenEq(tok[0], tokLen[0], "page")) {
+            commit();
+            if (ntok >= 2 && tokenEq(tok[1], tokLen[1], "music"))
+                cur.kind = DP_MUSIC;
+        } else if (ntok >= 1 && cur.kind == DP_FIELDS &&
+                   cur.layout.count < DASH_MAX_ITEMS) {
+            uint8_t f = dashFieldFromId(tok[0], tokLen[0]);
+            if (f < DF_COUNT) {
+                DashItem it;
+                it.field = f;
+                it.size = DZ_MEDIUM;
+                it.half = false;
+                if (ntok >= 2) {
+                    uint8_t z = dashSizeFromId(tok[1], tokLen[1]);
+                    if (z < DZ_COUNT) it.size = z;
+                }
+                for (int i = 1; i < ntok; ++i)
+                    if (tokenEq(tok[i], tokLen[i], "half")) it.half = true;
+                cur.layout.items[cur.layout.count++] = it;
+            }
+        }
+
+        if (!*lineEnd) break;
+        p = lineEnd + 1;
+    }
+    commit();
+    return out.count > 0;
+}
+
+size_t dashSerializePages(const DashPages& pages, char* out, size_t cap) {
+    if (!out || cap == 0) return 0;
+    size_t n = 0;
+    int w = snprintf(out, cap, "%s", kHeader);
+    if (w < 0 || (size_t)w >= cap) return 0;
+    n = (size_t)w;
+    for (int i = 0; i < pages.count; ++i) {
+        const DashPage& pg = pages.pages[i];
+        if (i > 0 || pg.kind == DP_MUSIC) {
+            // The first field page needs no `page` line — that is exactly what
+            // keeps a one-page config byte-compatible with the old format.
+            w = snprintf(out + n, cap - n, "%s",
+                         pg.kind == DP_MUSIC ? "page music\n" : "page\n");
+            if (w < 0 || (size_t)w >= cap - n) return 0;
+            n += (size_t)w;
+        }
+        if (pg.kind == DP_FIELDS && !serializeItems(pg.layout, out, cap, n))
+            return 0;
     }
     return n;
 }

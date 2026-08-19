@@ -43,6 +43,10 @@ void setRelaxedSleepExperiment(bool on);
 // the UI task can repaint immediately instead of waiting for the next 1 Hz tick.
 bool takeDashChanged();
 
+// Queue a media transport command (media_state.h MediaCmd) for the phone.
+// Called from the UI task; the server task sends the notify.
+void mediaCommand(unsigned char cmd);
+
 // Firmware-update status, for the on-device "Updating firmware" popup.
 bool updateInProgress();      // true while receiving or flashing an OTA image
 int  updatePercent();         // 0..100

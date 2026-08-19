@@ -21,7 +21,14 @@ namespace dash_config {
 // the default). Call again after a rescan.
 void begin();
 
-// The layout the renderer should use. Never empty.
+// The pages the carousel shows. Never empty — at minimum one default page.
+const DashPages& pages();
+int pageCount();
+const DashPage& page(int idx);
+
+// Page 0's field layout (or the default when page 0 is the music page) — for
+// callers that need "a dashboard" with no page context, like the ride-summary
+// backdrop.
 const DashLayout& current();
 
 // Replace the layout, persist it to the card, and take effect on the next frame.

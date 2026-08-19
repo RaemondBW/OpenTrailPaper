@@ -160,3 +160,99 @@ struct DashLayout: Equatable {
         return out
     }
 }
+
+// MARK: - Pages
+
+/// The whole config: an ordered carousel of pages the device's Home key steps
+/// through. A page is either a field layout or the MUSIC page (phone media
+/// controls — its content comes over BLE, so it carries no items). Mirrors
+/// DashPages in src/dash_layout.h; the `page` / `page music` separator lines
+/// are the wire format, and text with no separators is exactly the old
+/// one-page config.
+struct DashConfig: Equatable {
+    struct Page {
+        var isMusic: Bool
+        var layout: DashLayout
+        static var music: Page { Page(isMusic: true, layout: DashLayout(items: [])) }
+        static var fields: Page { Page(isMusic: false, layout: DashLayout(items: [])) }
+    }
+
+    var pages: [Page]
+
+    /// DASH_MAX_PAGES on the device — the parser drops anything past it.
+    static let maxPages = 4
+
+    static func == (a: DashConfig, b: DashConfig) -> Bool {
+        a.configText == b.configText
+    }
+
+    init(pages: [Page]) { self.pages = pages }
+
+    /// Parse the device's text: split into per-page chunks on `page` lines,
+    /// reusing DashLayout's forgiving field parsing for each chunk.
+    init(text: String) {
+        var out: [Page] = []
+        var chunk = ""
+        var music = false
+        func commit() {
+            let layout = DashLayout(text: chunk)
+            if music || !layout.items.isEmpty {
+                out.append(Page(isMusic: music, layout: music ? DashLayout(items: []) : layout))
+            }
+            chunk = ""
+            music = false
+        }
+        for rawLine in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = rawLine.split(separator: "#", maxSplits: 1,
+                                     omittingEmptySubsequences: false)[0]
+            let tok = line.split(whereSeparator: { $0 == " " || $0 == "\t" || $0 == "\r" })
+            if tok.first == "page" {
+                commit()
+                music = tok.count > 1 && tok[1] == "music"
+            } else {
+                chunk += rawLine + "\n"
+            }
+        }
+        commit()
+        pages = Array(out.prefix(DashConfig.maxPages))
+    }
+
+    /// Serialize, byte-compatible with dashSerializePages(): the first field
+    /// page carries no `page` line, so a one-page config round-trips to the
+    /// pre-pages format.
+    var configText: String {
+        var s = "# OpenTrailPaper dashboard layout\n"
+        s += "# <field> <small|medium|large|hero> [half]\n"
+        s += "# 'half' shares the row with the next 'half' field.\n"
+        s += "# 'page' on its own line starts a new page (Home key steps through\n"
+        s += "# them); 'page music' adds the phone media-controls page.\n"
+        for (i, page) in pages.enumerated() {
+            if page.isMusic {
+                s += "page music\n"
+            } else if i > 0 {
+                s += "page\n"
+            }
+            if !page.isMusic {
+                for it in page.layout.items {
+                    let field = it.field.padding(toLength: max(10, it.field.count),
+                                                 withPad: " ", startingAt: 0)
+                    let size = it.size.rawValue.padding(toLength: max(6, it.size.rawValue.count),
+                                                        withPad: " ", startingAt: 0)
+                    s += "\(field) \(size)\(it.half ? " half" : "")\n"
+                }
+            }
+        }
+        return s
+    }
+
+    /// The first data page — what thumbnails show.
+    var firstFields: DashLayout? {
+        pages.first(where: { !$0.isMusic })?.layout
+    }
+
+    var hasMusicPage: Bool { pages.contains { $0.isMusic } }
+
+    static var deviceDefault: DashConfig {
+        DashConfig(pages: [Page(isMusic: false, layout: .deviceDefault)])
+    }
+}

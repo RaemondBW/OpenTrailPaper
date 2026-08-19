@@ -17,6 +17,7 @@
 #include "epd_compat.h"
 #include "ride_state.h"
 #include "ui_render.h"
+#include "media_state.h"
 #include "map_view.h"
 #include "map_tiles.h"
 
@@ -616,6 +617,55 @@ int main(int argc, char** argv) {
             ui_render_dashboard(st, false, custom, fb.data());
             emit("dashboard_custom.png");
         }
+    }
+
+    // MUSIC page — playing, with synthetic album art (radial gradient + rings,
+    // dithered here exactly as media.cpp would have) and a title long enough
+    // to exercise the truncation.
+    {
+        const int AW = 300, AH = 300;
+        static uint8_t art[AW * AH];
+        for (int y = 0; y < AH; ++y)
+            for (int x = 0; x < AW; ++x) {
+                double dx = x - AW / 2, dy = y - AH / 2;
+                double d = std::sqrt(dx * dx + dy * dy);
+                int v = (int)(255 - d * 1.4) + ((((int)d / 24) & 1) ? 40 : 0);
+                if (v < 0) v = 0;
+                if (v > 255) v = 255;
+                // Same palette the device dithers to; ordered threshold is
+                // close enough for a preview.
+                static const uint8_t tone[5] = {0x00, 0x11, 0x22, 0x33, 0xFF};
+                art[y * AW + x] = tone[v / 52 > 4 ? 4 : v / 52];
+            }
+        MediaState m;
+        m.present = true;
+        m.playing = true;
+        m.posSec = 154;
+        m.durSec = 331;
+        snprintf(m.title, sizeof(m.title),
+                 "Turn Your Lights Down Low (Extended Remaster)");
+        snprintf(m.artist, sizeof(m.artist), "Bob Marley & The Wailers");
+        snprintf(m.album, sizeof(m.album), "Exodus");
+        m.art = art;
+        m.artW = AW;
+        m.artH = AH;
+        clearWhite(fb.data());
+        ui_render_media(s, m, fb.data());
+        emit("music_playing.png");
+
+        // Paused, no art yet — the vinyl placeholder.
+        m.art = nullptr;
+        m.artW = m.artH = 0;
+        m.playing = false;
+        clearWhite(fb.data());
+        ui_render_media(s, m, fb.data());
+        emit("music_no_art.png");
+
+        // Nothing playing at all.
+        MediaState none;
+        clearWhite(fb.data());
+        ui_render_media(s, none, fb.data());
+        emit("music_idle.png");
     }
 
     // Nav prompt over the map

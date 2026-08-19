@@ -18,6 +18,7 @@ enum BikeUUID {
     static let agnss    = CBUUID(string: "B1C50008-9E0F-4B7A-9C6D-1F2E3A4B5C6D")
     static let dash     = CBUUID(string: "B1C50009-9E0F-4B7A-9C6D-1F2E3A4B5C6D")
     static let mesh     = CBUUID(string: "B1C5000A-9E0F-4B7A-9C6D-1F2E3A4B5C6D")
+    static let media    = CBUUID(string: "B1C5000B-9E0F-4B7A-9C6D-1F2E3A4B5C6D")
 }
 
 // A cycling sensor known to the head unit (HR / power / cadence).
@@ -314,7 +315,9 @@ final class BLEManager: NSObject, ObservableObject {
     /// nil until the device has been read, which is how the editor knows to
     /// show "connect to edit" rather than an invented default that would
     /// overwrite the rider's real one the moment they touched a control.
-    @Published var dashLayout: DashLayout?
+    @Published var dashConfig: DashConfig?
+    /// First data page, for thumbnails (RideView's dashboard card).
+    var dashLayout: DashLayout? { dashConfig?.firstFields }
     /// Version we are flashing, so the success check compares against what
     /// was actually sent rather than a compile-time constant.
     private var otaTargetVersion = ""
@@ -325,6 +328,8 @@ final class BLEManager: NSObject, ObservableObject {
 
     // MARK: Meshtastic
     private var meshChar: CBCharacteristic?
+    private var mediaChar: CBCharacteristic?
+    private lazy var mediaRemote = MediaRemote(ble: self)
     /// Rebuilt from the device's stream, then published in one go at the end
     /// marker — publishing per message would redraw the chat mid-list.
     private var meshBuilding: [MeshMessage] = []
@@ -409,7 +414,7 @@ final class BLEManager: NSObject, ObservableObject {
     override init() {
         super.init()
         if isDemoUpdate { state = .connected; deviceFirmware = "v0.83" }
-        if isDemoDash { state = .connected; dashLayout = .deviceDefault }
+        if isDemoDash { state = .connected; dashConfig = .deviceDefault }
         locationManager.delegate = self
         locationManager.desiredAccuracy = kCLLocationAccuracyHundredMeters
         let a = locationManager.authorizationStatus
@@ -1772,6 +1777,7 @@ extension BLEManager: CBCentralManagerDelegate {
         MainActor.assumeIsolated {
             settingsChar = nil; statusChar = nil; routeChar = nil; ridesChar = nil
             sensorsChar = nil; mapChar = nil; otaChar = nil; meshChar = nil
+            mediaChar = nil; mediaRemote.stop()
             // A half-received mesh stream must not be published on reconnect.
             meshBuilding = []; meshNodesBuilding = []; meshPresetsBuilding = []
             meshChannelsBuilding = []
@@ -1872,6 +1878,9 @@ extension BLEManager: CBPeripheralDelegate {
                     mapChar = ch; p.setNotifyValue(true, for: ch)
                 case BikeUUID.mesh:
                     meshChar = ch; p.setNotifyValue(true, for: ch)
+                case BikeUUID.media:
+                    mediaChar = ch; p.setNotifyValue(true, for: ch)
+                    updateMediaRemote()
                 default: break
                 }
             }
@@ -1920,6 +1929,7 @@ extension BLEManager: CBPeripheralDelegate {
             case BikeUUID.map: handleMapNotify(data)
             case BikeUUID.dash: parseDashLayout(data)
             case BikeUUID.mesh: handleMeshNotify(data)
+            case BikeUUID.media: handleMediaNotify(data)
             default: break
             }
         }
@@ -1929,16 +1939,72 @@ extension BLEManager: CBPeripheralDelegate {
 
     private func parseDashLayout(_ d: Data) {
         guard let text = String(data: d, encoding: .utf8) else { return }
-        dashLayout = DashLayout(text: text)
+        dashConfig = DashConfig(text: text)
+        updateMediaRemote()
     }
 
     /// Push a layout to the device. It writes the file, applies it to the panel,
     /// and notifies back what it actually stored — so a rejected layout corrects
     /// the editor instead of leaving it out of step.
-    func sendDashLayout(_ layout: DashLayout) {
+    func sendDashConfig(_ config: DashConfig) {
         guard let ch = dashChar, let p = peripheral else { return }
-        guard let data = layout.configText.data(using: .utf8) else { return }
+        guard let data = config.configText.data(using: .utf8) else { return }
         p.writeValue(data, for: ch, type: .withResponse)
+    }
+
+    // MARK: - Phone media (the device's MUSIC page)
+
+    /// The remote runs only while the device is connected AND its config has a
+    /// music page — no page, no Media Library prompt and no observers.
+    private func updateMediaRemote() {
+        if mediaChar != nil, dashConfig?.hasMusicPage == true {
+            mediaRemote.start()
+        } else {
+            mediaRemote.stop()
+        }
+    }
+
+    private func handleMediaNotify(_ d: Data) {
+        guard d.count >= 2, d[0] == 0xA0 else { return }
+        mediaRemote.handleCommand(d[1])
+    }
+
+    func sendMediaMeta(playing: Bool, posSec: UInt16, durSec: UInt16,
+                       title: String, artist: String, album: String) {
+        guard let c = mediaChar, let p = peripheral else { return }
+        var pkt = Data([0x01, playing ? 1 : 0,
+                        UInt8(posSec & 0xFF), UInt8(posSec >> 8),
+                        UInt8(durSec & 0xFF), UInt8(durSec >> 8)])
+        // Three NUL-terminated UTF-8 strings; the device truncates to its own
+        // caps, so only the packet has to stay comfortably under one write.
+        for s in [title, artist, album] {
+            pkt.append(contentsOf: Array(s.utf8.prefix(60)))
+            pkt.append(0)
+        }
+        p.writeValue(pkt, for: c, type: .withResponse)
+    }
+
+    func sendMediaArt(_ gray: Data, width: Int, height: Int) {
+        guard let c = mediaChar, let p = peripheral else { return }
+        var begin = Data([0x10])
+        begin.append(contentsOf: [UInt8(width & 0xFF), UInt8(width >> 8),
+                                  UInt8(height & 0xFF), UInt8(height >> 8)])
+        p.writeValue(begin, for: c, type: .withResponse)
+        let chunk = max(20, p.maximumWriteValueLength(for: .withoutResponse)) - 1
+        var off = 0
+        while off < gray.count {
+            let n = min(chunk, gray.count - off)
+            var pkt = Data([0x11])
+            pkt.append(gray.subdata(in: off..<off + n))
+            p.writeValue(pkt, for: c, type: .withoutResponse)
+            off += n
+        }
+        p.writeValue(Data([0x12]), for: c, type: .withResponse)
+    }
+
+    func sendMediaClear() {
+        guard let c = mediaChar, let p = peripheral else { return }
+        p.writeValue(Data([0x02]), for: c, type: .withResponse)
     }
 
     private func parseStatus(_ d: Data) {
