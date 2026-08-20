@@ -78,60 +78,47 @@ struct DashboardEditorView: View {
     }
 
     private var editor: some View {
-        VStack(spacing: 0) {
-            pageHeader
-            TabView(selection: $pageIx) {
-                ForEach(config.pages.indices, id: \.self) { i in
-                    pageList(i).tag(i)
-                }
-                if config.pages.count < DashConfig.maxPages {
-                    addPagePane.tag(config.pages.count)
-                }
+        TabView(selection: $pageIx) {
+            ForEach(config.pages.indices, id: \.self) { i in
+                pageList(i).tag(i)
             }
-            .tabViewStyle(.page(indexDisplayMode: .always))
-            .indexViewStyle(.page(backgroundDisplayMode: .always))
+            if config.pages.count < DashConfig.maxPages {
+                addPagePane.tag(config.pages.count)
+            }
         }
+        .tabViewStyle(.page(indexDisplayMode: .always))
+        .indexViewStyle(.page(backgroundDisplayMode: .always))
         .sheet(isPresented: $showReorder) { reorderSheet }
     }
 
-    // The strip above the pager: which page you are on, remove in the top
-    // corner, and press-and-hold anywhere on it to reorder the pages.
-    private var pageHeader: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(headerTitle).font(TypeScale.bodyStrong).foregroundStyle(Palette.ink)
-                if config.pages.count > 1 {
-                    Text("Swipe for other pages · hold to reorder")
-                        .font(.system(size: 12)).foregroundStyle(Palette.faint)
-                }
-            }
-            Spacer()
-            if config.pages.indices.contains(pageIx), config.pages.count > 1 {
-                Button(role: .destructive) {
-                    config.pages.remove(at: pageIx)
+    // The preview IS the page's identity: panel thumbnail, remove on its
+    // corner, hold to reorder. Shared by data and music pages.
+    private func previewCard<P: View>(_ i: Int, @ViewBuilder preview: () -> P)
+        -> some View {
+        ZStack(alignment: .topTrailing) {
+            preview()
+                .frame(height: 300)
+            if config.pages.count > 1 {
+                Button {
+                    config.pages.remove(at: i)
                     if pageIx >= config.pages.count { pageIx = config.pages.count - 1 }
                     dirty = true
                 } label: {
                     Image(systemName: "minus.circle.fill")
-                        .font(.system(size: 22))
-                        .foregroundStyle(.red)
+                        .font(.system(size: 24))
+                        .symbolRenderingMode(.palette)
+                        .foregroundStyle(.white, .red)
+                        .background(Circle().fill(.white).padding(3))
                 }
+                .buttonStyle(.plain)
+                .offset(x: 12, y: -10)
                 .accessibilityLabel("Remove this page")
             }
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 10)
-        .contentShape(Rectangle())
         .onLongPressGesture {
             if config.pages.count > 1 { showReorder = true }
         }
-    }
-
-    private var headerTitle: String {
-        guard config.pages.indices.contains(pageIx) else { return "Add a page" }
-        let page = config.pages[pageIx]
-        let name = page.isMusic ? "Music" : "Data"
-        return "Page \(pageIx + 1) of \(config.pages.count) · \(name)"
+        .frame(maxWidth: .infinity)
     }
 
     // One swipeable page of the editor.
@@ -140,9 +127,18 @@ struct DashboardEditorView: View {
         if config.pages.indices.contains(i), config.pages[i].isMusic {
             List {
                 Section {
+                    previewCard(i) { MusicPreview() }
+                        .listRowInsets(EdgeInsets(top: 12, leading: 0, bottom: 12, trailing: 0))
+                        .listRowBackground(Color.clear)
+                } footer: {
+                    if config.pages.count > 1 {
+                        Text("Swipe for other pages · hold the preview to reorder")
+                    }
+                }
+                Section {
                     VStack(alignment: .leading, spacing: 8) {
                         Label("Music controls", systemImage: "music.note")
-                        Text("This page shows what's playing on the phone — title, album art, play/skip and volume. Track info follows the Apple Music app; other players don't let apps see their playback on iOS. Volume works with everything.")
+                        Text("Shows what's playing on the phone — any app — with play/skip and volume, via the phone's own media service (pair when asked). Album art appears for Apple Music.")
                             .font(TypeScale.body).foregroundStyle(Palette.muted)
                     }
                     .padding(.vertical, 4)
@@ -151,13 +147,13 @@ struct DashboardEditorView: View {
         } else if config.pages.indices.contains(i) {
             List {
                 Section {
-                    DashPreview(layout: config.pages[i].layout)
-                        .frame(height: 320)
-                        .frame(maxWidth: .infinity)
+                    previewCard(i) { DashPreview(layout: config.pages[i].layout) }
                         .listRowInsets(EdgeInsets(top: 12, leading: 0, bottom: 12, trailing: 0))
                         .listRowBackground(Color.clear)
-                } header: {
-                    Text("How the panel will look")
+                } footer: {
+                    if config.pages.count > 1 {
+                        Text("Swipe for other pages · hold the preview to reorder")
+                    }
                 }
 
                 Section {
@@ -673,5 +669,65 @@ struct DashPreview: View {
         case "routeleft": return "12.4"
         default: return "--"
         }
+    }
+}
+
+
+// Thumbnail of the device's MUSIC page, same idiom as DashPreview: device
+// geometry scaled by width, stylized shapes rather than live content.
+struct MusicPreview: View {
+    var body: some View {
+        GeometryReader { geo in
+            let k = geo.size.width / 540
+            ZStack(alignment: .topLeading) {
+                // Status band rule
+                Rectangle().fill(.black)
+                    .frame(width: 540 * k, height: 3 * k)
+                    .offset(y: 61 * k)
+                // Album art frame + vinyl
+                Rectangle().stroke(.black, lineWidth: max(1, 2 * k))
+                    .frame(width: 324 * k, height: 324 * k)
+                    .offset(x: 108 * k, y: 96 * k)
+                Circle().stroke(.black, lineWidth: max(1, 2 * k))
+                    .frame(width: 208 * k, height: 208 * k)
+                    .offset(x: (270 - 104) * k, y: (258 - 104) * k)
+                Circle().fill(.black)
+                    .frame(width: 68 * k, height: 68 * k)
+                    .offset(x: (270 - 34) * k, y: (258 - 34) * k)
+                // Volume stepper, right edge
+                ForEach(0..<2, id: \.self) { v in
+                    Rectangle().stroke(.black, lineWidth: max(1, 2 * k))
+                        .frame(width: 76 * k, height: 76 * k)
+                        .offset(x: 462 * k, y: (140 + CGFloat(v) * 92) * k)
+                }
+                // Title / artist bars
+                Capsule().fill(.black)
+                    .frame(width: 320 * k, height: 26 * k)
+                    .offset(x: 110 * k, y: 478 * k)
+                Capsule().fill(.black.opacity(0.55))
+                    .frame(width: 200 * k, height: 16 * k)
+                    .offset(x: 170 * k, y: 534 * k)
+                // Progress bar
+                Rectangle().stroke(.black, lineWidth: max(1, 2 * k))
+                    .frame(width: 492 * k, height: 14 * k)
+                    .offset(x: 24 * k, y: 640 * k)
+                Rectangle().fill(.black)
+                    .frame(width: 220 * k, height: 10 * k)
+                    .offset(x: 26 * k, y: 642 * k)
+                // Transport row
+                ForEach(0..<3, id: \.self) { b in
+                    Rectangle().stroke(.black, lineWidth: max(1, 2 * k))
+                        .frame(width: [140.0, 188.0, 140.0][b] * k, height: 120 * k)
+                        .offset(x: [24.0, 176.0, 376.0][b] * k, y: 780 * k)
+                }
+                Image(systemName: "playpause.fill")
+                    .font(.system(size: 34 * k))
+                    .offset(x: 252 * k, y: 822 * k)
+            }
+            .frame(width: geo.size.width, height: 960 * k, alignment: .topLeading)
+        }
+        .aspectRatio(540 / 960, contentMode: .fit)
+        .background(Color(hex: 0xF7F5EF))
+        .foregroundStyle(.black)
     }
 }
