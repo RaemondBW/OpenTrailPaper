@@ -19,6 +19,7 @@ struct DashboardEditorView: View {
     @State private var pageIx = 0
     @State private var showAdd = false
     @State private var showReorder = false
+    @State private var scrolled: Int?
     @State private var dirty = false
 
     var body: some View {
@@ -66,7 +67,7 @@ struct DashboardEditorView: View {
             .onChange(of: ble.dashConfig) {
                 if !dirty, let c = ble.dashConfig {
                     config = c
-                    if pageIx >= config.pages.count { pageIx = 0 }
+                    if pageIx >= config.pages.count { pageIx = 0; scrolled = 0 }
                 }
             }
             .sheet(isPresented: $showAdd) {
@@ -78,63 +79,20 @@ struct DashboardEditorView: View {
     }
 
     private var editor: some View {
-        TabView(selection: $pageIx) {
-            ForEach(config.pages.indices, id: \.self) { i in
-                pageList(i).tag(i)
-            }
-            if config.pages.count < DashConfig.maxPages {
-                addPagePane.tag(config.pages.count)
-            }
-        }
-        .tabViewStyle(.page(indexDisplayMode: .always))
-        .indexViewStyle(.page(backgroundDisplayMode: .always))
-        .sheet(isPresented: $showReorder) { reorderSheet }
-    }
-
-    // The preview IS the page's identity: panel thumbnail, remove on its
-    // corner, hold to reorder. Shared by data and music pages.
-    private func previewCard<P: View>(_ i: Int, @ViewBuilder preview: () -> P)
-        -> some View {
-        ZStack(alignment: .topTrailing) {
-            preview()
-                .frame(height: 300)
-            if config.pages.count > 1 {
-                Button {
-                    config.pages.remove(at: i)
-                    if pageIx >= config.pages.count { pageIx = config.pages.count - 1 }
-                    dirty = true
-                } label: {
-                    Image(systemName: "minus.circle.fill")
-                        .font(.system(size: 24))
-                        .symbolRenderingMode(.palette)
-                        .foregroundStyle(.white, .red)
-                        .background(Circle().fill(.white).padding(3))
+        List {
+            // The carousel: every page as a peeking preview card, the add card
+            // at the far end. The selected card's editor follows below.
+            Section {
+                carousel
+                    .listRowInsets(EdgeInsets())
+                    .listRowBackground(Color.clear)
+            } footer: {
+                if config.pages.count > 1 {
+                    Text("Swipe the carousel · hold a page to reorder")
                 }
-                .buttonStyle(.plain)
-                .offset(x: 12, y: -10)
-                .accessibilityLabel("Remove this page")
             }
-        }
-        .onLongPressGesture {
-            if config.pages.count > 1 { showReorder = true }
-        }
-        .frame(maxWidth: .infinity)
-    }
 
-    // One swipeable page of the editor.
-    @ViewBuilder
-    private func pageList(_ i: Int) -> some View {
-        if config.pages.indices.contains(i), config.pages[i].isMusic {
-            List {
-                Section {
-                    previewCard(i) { MusicPreview() }
-                        .listRowInsets(EdgeInsets(top: 12, leading: 0, bottom: 12, trailing: 0))
-                        .listRowBackground(Color.clear)
-                } footer: {
-                    if config.pages.count > 1 {
-                        Text("Swipe for other pages · hold the preview to reorder")
-                    }
-                }
+            if config.pages.indices.contains(pageIx), config.pages[pageIx].isMusic {
                 Section {
                     VStack(alignment: .leading, spacing: 8) {
                         Label("Music controls", systemImage: "music.note")
@@ -143,30 +101,18 @@ struct DashboardEditorView: View {
                     }
                     .padding(.vertical, 4)
                 }
-            }
-        } else if config.pages.indices.contains(i) {
-            List {
+            } else if config.pages.indices.contains(pageIx) {
                 Section {
-                    previewCard(i) { DashPreview(layout: config.pages[i].layout) }
-                        .listRowInsets(EdgeInsets(top: 12, leading: 0, bottom: 12, trailing: 0))
-                        .listRowBackground(Color.clear)
-                } footer: {
-                    if config.pages.count > 1 {
-                        Text("Swipe for other pages · hold the preview to reorder")
-                    }
-                }
-
-                Section {
-                    ForEach(config.pages[i].layout.items) { item in
-                        DashItemRow(item: bindingFor(item, in: i)) { dirty = true }
+                    ForEach(config.pages[pageIx].layout.items) { item in
+                        DashItemRow(item: bindingFor(item, in: pageIx)) { dirty = true }
                     }
                     .onMove { from, to in
-                        mutateAt(i) { $0.items.move(fromOffsets: from, toOffset: to) }
+                        mutateAt(pageIx) { $0.items.move(fromOffsets: from, toOffset: to) }
                     }
                     .onDelete { idx in
-                        mutateAt(i) { $0.items.remove(atOffsets: idx) }
+                        mutateAt(pageIx) { $0.items.remove(atOffsets: idx) }
                     }
-                    if config.pages[i].layout.items.count < DashLayout.maxItems {
+                    if config.pages[pageIx].layout.items.count < DashLayout.maxItems {
                         Button {
                             showAdd = true
                         } label: {
@@ -186,48 +132,125 @@ struct DashboardEditorView: View {
                     Button("Reset to the default layout") {
                         config = .deviceDefault
                         pageIx = 0
+                        scrolled = 0
                         dirty = true
                     }
                 }
             }
-            .environment(\.editMode, .constant(.active))
+        }
+        .environment(\.editMode, .constant(.active))
+        .sheet(isPresented: $showReorder) { reorderSheet }
+    }
+
+    private var carousel: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            LazyHStack(spacing: 16) {
+                ForEach(config.pages.indices, id: \.self) { i in
+                    carouselCard(i).id(i)
+                }
+                if config.pages.count < DashConfig.maxPages {
+                    addCard.id(config.pages.count)
+                }
+            }
+            .scrollTargetLayout()
+            .padding(.vertical, 14)
+        }
+        .contentMargins(.horizontal, 56, for: .scrollContent)
+        .scrollTargetBehavior(.viewAligned)
+        .scrollPosition(id: $scrolled)
+        .frame(height: 250)
+        .onAppear { scrolled = pageIx }
+        // The centred card IS the selection (clamped off the add card, which
+        // is browsable but has nothing to edit below).
+        .onChange(of: scrolled) {
+            if let i = scrolled, i < config.pages.count { pageIx = i }
         }
     }
 
-    // The pane past the last page: swipe to it to add another.
-    private var addPagePane: some View {
-        VStack(spacing: 18) {
-            Image(systemName: "plus.circle")
-                .font(.system(size: 44, weight: .light))
-                .foregroundStyle(Palette.faint)
-            Text("Add a page").font(TypeScale.title).foregroundStyle(Palette.ink)
+    private func carouselCard(_ i: Int) -> some View {
+        ZStack(alignment: .topTrailing) {
+            Group {
+                if config.pages[i].isMusic {
+                    MusicPreview()
+                } else {
+                    DashPreview(layout: config.pages[i].layout)
+                }
+            }
+            .frame(width: 124, height: 206)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(pageIx == i ? Color.accentColor : Palette.hairline,
+                            lineWidth: pageIx == i ? 2.5 : 1))
+            if config.pages.count > 1 {
+                Button {
+                    withAnimation {
+                        config.pages.remove(at: i)
+                        if pageIx >= config.pages.count { pageIx = config.pages.count - 1 }
+                        scrolled = pageIx
+                    }
+                    dirty = true
+                } label: {
+                    Image(systemName: "minus.circle.fill")
+                        .font(.system(size: 22))
+                        .symbolRenderingMode(.palette)
+                        .foregroundStyle(.white, .red)
+                        .background(Circle().fill(.white).padding(2))
+                }
+                .buttonStyle(.plain)
+                .offset(x: 9, y: -9)
+                .accessibilityLabel("Remove this page")
+            }
+        }
+        .onTapGesture {
+            pageIx = i
+            withAnimation { scrolled = i }
+        }
+        .onLongPressGesture {
+            if config.pages.count > 1 { showReorder = true }
+        }
+    }
+
+    // The far-right card: a new page, data or music.
+    private var addCard: some View {
+        Menu {
             Button {
-                config.pages.append(.fields)
+                withAnimation {
+                    config.pages.append(.fields)
+                    pageIx = config.pages.count - 1
+                    scrolled = pageIx
+                }
                 dirty = true
             } label: {
                 Label("Data page", systemImage: "rectangle.3.group")
-                    .frame(maxWidth: 220)
             }
-            .buttonStyle(.borderedProminent)
             if !config.hasMusicPage {
                 Button {
-                    config.pages.append(.music)
+                    withAnimation {
+                        config.pages.append(.music)
+                        pageIx = config.pages.count - 1
+                        scrolled = pageIx
+                    }
                     dirty = true
                 } label: {
                     Label("Music controls", systemImage: "music.note")
-                        .frame(maxWidth: 220)
                 }
-                .buttonStyle(.bordered)
             }
-            Text("The device's Home key steps through the pages, then the map.")
-                .font(.system(size: 13)).foregroundStyle(Palette.faint)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 40)
+        } label: {
+            VStack(spacing: 10) {
+                Image(systemName: "plus.circle")
+                    .font(.system(size: 30, weight: .light))
+                Text("Add a page").font(.system(size: 13))
+            }
+            .foregroundStyle(Palette.muted)
+            .frame(width: 124, height: 206)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(Palette.hairline,
+                                  style: StrokeStyle(lineWidth: 1.5, dash: [6, 5])))
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    // Long-press target: drag the pages into the order Home steps through.
     private var reorderSheet: some View {
         NavigationStack {
             List {
