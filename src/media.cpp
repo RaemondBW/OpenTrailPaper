@@ -10,6 +10,12 @@ namespace {
 
 MediaState g_state;
 volatile uint32_t g_version = 0;
+// millis() of the last AMS attribute update; 0 = never. Gates the app's
+// metadata feed (Apple Music only) so it can't fight AMS over the same page.
+uint32_t g_amsMs = 0;
+constexpr uint32_t AMS_LIVE_MS = 20000;
+
+void bump() { g_version = g_version + 1; }
 
 // Incoming art staging (8-bit grayscale from the phone).
 uint8_t* g_rx = nullptr;
@@ -39,16 +45,25 @@ namespace media {
 const MediaState& get() { return g_state; }
 uint32_t version() { return g_version; }
 
+void dropArt() {
+    if (g_art) { heap_caps_free(g_art); g_art = nullptr; }
+    g_state.art = nullptr;
+    g_state.artW = g_state.artH = 0;
+}
+
+bool amsLive() { return g_amsMs && millis() - g_amsMs < AMS_LIVE_MS; }
+
 void setMeta(bool playing, uint16_t posSec, uint16_t durSec,
              const char* title, const char* artist, const char* album) {
+    // AMS is authoritative while it flows: it sees every player, the app path
+    // sees only Apple Music, and two writers disagreeing about "the" track
+    // makes the page flicker between them.
+    if (amsLive()) return;
     // A track change with the art from the last track under it is a lie worth
     // preventing: the phone always follows metadata with new art (or none),
     // so stale art is dropped the moment the title stops matching.
-    if (strncmp(g_state.title, title ? title : "", sizeof(g_state.title)) != 0) {
-        if (g_art) { heap_caps_free(g_art); g_art = nullptr; }
-        g_state.art = nullptr;
-        g_state.artW = g_state.artH = 0;
-    }
+    if (strncmp(g_state.title, title ? title : "", sizeof(g_state.title)) != 0)
+        dropArt();
     g_state.present = true;
     g_state.playing = playing;
     g_state.posSec = posSec;
@@ -57,7 +72,7 @@ void setMeta(bool playing, uint16_t posSec, uint16_t durSec,
     copyStr(g_state.title, sizeof(g_state.title), title);
     copyStr(g_state.artist, sizeof(g_state.artist), artist);
     copyStr(g_state.album, sizeof(g_state.album), album);
-    g_version = g_version + 1;
+    bump();
 }
 
 bool beginArt(int w, int h) {
@@ -129,7 +144,58 @@ void commitArt() {
     g_state.artH = H;
     diag::log("media: art %dx%d dithered", W, H);
     freeRx();
-    g_version = g_version + 1;
+    bump();
+}
+
+void amsTitle(const char* title) {
+    g_amsMs = millis();
+    if (strncmp(g_state.title, title ? title : "",
+                sizeof(g_state.title)) != 0) {
+        dropArt();
+        snprintf(g_state.title, sizeof(g_state.title), "%s",
+                 title ? title : "");
+        // A fresh track: elapsed restarts unless AMS says otherwise in the
+        // PlaybackInfo that follows a track change.
+        g_state.posSec = 0;
+        g_state.posAtMs = millis();
+    }
+    g_state.present = true;
+    bump();
+}
+
+void amsArtist(const char* artist) {
+    g_amsMs = millis();
+    snprintf(g_state.artist, sizeof(g_state.artist), "%s",
+             artist ? artist : "");
+    g_state.present = true;
+    bump();
+}
+
+void amsAlbum(const char* album) {
+    g_amsMs = millis();
+    snprintf(g_state.album, sizeof(g_state.album), "%s", album ? album : "");
+    g_state.present = true;
+    bump();
+}
+
+void amsPlayback(bool playing, uint16_t posSec) {
+    g_amsMs = millis();
+    g_state.present = true;
+    g_state.playing = playing;
+    g_state.posSec = posSec;
+    g_state.posAtMs = millis();
+    bump();
+}
+
+void amsDuration(uint16_t durSec) {
+    g_amsMs = millis();
+    g_state.durSec = durSec;
+    bump();
+}
+
+void clearFromApp() {
+    if (amsLive()) return;   // the app can't blank a track AMS still reports
+    clear();
 }
 
 void toggleLocal() {
@@ -144,7 +210,7 @@ void toggleLocal() {
     }
     g_state.posAtMs = now;
     g_state.playing = !g_state.playing;
-    g_version = g_version + 1;
+    bump();
 }
 
 void clear() {
@@ -152,7 +218,7 @@ void clear() {
     if (g_art) { heap_caps_free(g_art); g_art = nullptr; }
     bool was = g_state.present;
     g_state = MediaState{};
-    if (was) g_version = g_version + 1;
+    if (was) bump();
 }
 
 }  // namespace media

@@ -17,6 +17,7 @@
 #include "map_select.h"
 #include "map_store.h"
 #include "media.h"
+#include "ams_client.h"
 #include "sd_bus.h"
 #include "usb_storage.h"
 #include "dash_config.h"
@@ -232,7 +233,7 @@ class MediaCb : public NimBLECharacteristicCallbacks {
             mediaArtPending = true;
             break;
         case 0x02:
-            media::clear();
+            media::clearFromApp();
             break;
         }
     }
@@ -736,12 +737,21 @@ class ServerCb : public NimBLEServerCallbacks {
         // opening sync runs at full speed.
         lastBulkMs = millis();
         srv->updateConnParams(info.getConnHandle(), 12, 24, 0, 400);
+        // Start the AMS handshake (encrypt -> discover the phone's own media
+        // service). Runs in the server task, not here.
+        ams::onConnect(info.getConnHandle());
+    }
+    void onAuthenticationComplete(NimBLEConnInfo& info) override {
+        diag::log("ble: link %s (bonded=%d)",
+                  info.isEncrypted() ? "encrypted" : "NOT encrypted",
+                  info.isBonded());
+        ams::onSecured(info.getConnHandle(), info.isEncrypted());
     }
     void onMTUChange(uint16_t mtu, NimBLEConnInfo&) override {
         diag::log("MTU negotiated: %u", mtu);
         negotiatedMTU = mtu;
     }
-    void onDisconnect(NimBLEServer*, NimBLEConnInfo&, int reason) override {
+    void onDisconnect(NimBLEServer*, NimBLEConnInfo& info, int reason) override {
         diag::log("phone disconnected (reason %d)", reason);
         // A supervision timeout (520) while the CPU was allowed to sleep on the
         // relaxed link is the experiment's failure signature — count it, and
@@ -756,12 +766,11 @@ class ServerCb : public NimBLEServerCallbacks {
         }
         linkIntervalLong = false;
         phoneConnected = false;
+        ams::onDisconnect(info.getConnHandle());
         // Recover from a transfer interrupted by the disconnect, so the device
         // doesn't stay frozen on the update popup / refuse the next attempt.
         otaAbortIfDownloading();
         mapAbortReceive();
-        // The music page must not show a player nobody can reach.
-        media::clear();
         if (sensorsStreaming) {   // app's sensor screen can't still be open
             sensorsStreaming = false;
             ble_sensors::setScanAlways(false);
@@ -1700,9 +1709,12 @@ void task(void*) {
             mediaArtPending = false;
             media::commitArt();
         }
+        ams::tick();
         if (uint8_t mc = mediaCmdPending) {
             mediaCmdPending = 0;
-            if (mediaChr && phoneConnected) {
+            // AMS reaches every player and works with the app killed; the
+            // app-notify path is the fallback when pairing was declined.
+            if (!ams::sendCommand(mc) && mediaChr && phoneConnected) {
                 uint8_t pkt[2] = {0xA0, mc};
                 mediaChr->setValue(pkt, 2);
                 mediaChr->notify();
