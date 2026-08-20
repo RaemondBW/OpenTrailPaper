@@ -18,20 +18,8 @@ struct DashboardEditorView: View {
     @State private var config = DashConfig(pages: [])
     @State private var pageIx = 0
     @State private var showAdd = false
+    @State private var showReorder = false
     @State private var dirty = false
-
-    /// The page under edit. The field controls below all operate through this,
-    /// so they read exactly as they did when there was only one layout.
-    private var layout: DashLayout {
-        config.pages.indices.contains(pageIx) ? config.pages[pageIx].layout
-                                              : DashLayout(items: [])
-    }
-    private func mutate(_ f: (inout DashLayout) -> Void) {
-        guard config.pages.indices.contains(pageIx),
-              !config.pages[pageIx].isMusic else { return }
-        f(&config.pages[pageIx].layout)
-        dirty = true
-    }
 
     var body: some View {
         NavigationStack {
@@ -83,131 +71,212 @@ struct DashboardEditorView: View {
             }
             .sheet(isPresented: $showAdd) {
                 FieldPicker { id in
-                    mutate { $0.items.append(DashItem(field: id, size: .medium, half: true)) }
+                    mutateAt(pageIx) { $0.items.append(DashItem(field: id, size: .medium, half: true)) }
                 }
             }
         }
     }
 
     private var editor: some View {
-        List {
-            Section {
-                Picker("Page", selection: $pageIx) {
-                    ForEach(config.pages.indices, id: \.self) { i in
-                        if config.pages[i].isMusic {
-                            Image(systemName: "music.note").tag(i)
-                        } else {
-                            Text("\(i + 1)").tag(i)
-                        }
-                    }
+        VStack(spacing: 0) {
+            pageHeader
+            TabView(selection: $pageIx) {
+                ForEach(config.pages.indices, id: \.self) { i in
+                    pageList(i).tag(i)
                 }
-                .pickerStyle(.segmented)
-                HStack {
-                    if config.pages.count < DashConfig.maxPages {
-                        Menu {
-                            Button("Data page") {
-                                config.pages.insert(.fields, at: pageIx + 1)
-                                pageIx += 1
-                                dirty = true
-                            }
-                            if !config.hasMusicPage {
-                                Button("Music controls page") {
-                                    config.pages.insert(.music, at: pageIx + 1)
-                                    pageIx += 1
-                                    dirty = true
-                                }
-                            }
-                        } label: {
-                            Label("Add a page", systemImage: "plus.circle.fill")
-                        }
-                    }
-                    Spacer()
-                    if config.pages.count > 1 {
-                        Button(role: .destructive) {
-                            config.pages.remove(at: pageIx)
-                            if pageIx >= config.pages.count { pageIx = config.pages.count - 1 }
-                            dirty = true
-                        } label: {
-                            Label("Remove page", systemImage: "minus.circle")
-                        }
-                    }
+                if config.pages.count < DashConfig.maxPages {
+                    addPagePane.tag(config.pages.count)
                 }
-                .buttonStyle(.borderless)
-            } header: {
-                Text("Pages")
-            } footer: {
-                Text("The device's Home key steps through the pages, then the map.")
             }
+            .tabViewStyle(.page(indexDisplayMode: .always))
+            .indexViewStyle(.page(backgroundDisplayMode: .always))
+        }
+        .sheet(isPresented: $showReorder) { reorderSheet }
+    }
 
-            if config.pages.indices.contains(pageIx), config.pages[pageIx].isMusic {
+    // The strip above the pager: which page you are on, remove in the top
+    // corner, and press-and-hold anywhere on it to reorder the pages.
+    private var pageHeader: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(headerTitle).font(TypeScale.bodyStrong).foregroundStyle(Palette.ink)
+                if config.pages.count > 1 {
+                    Text("Swipe for other pages · hold to reorder")
+                        .font(.system(size: 12)).foregroundStyle(Palette.faint)
+                }
+            }
+            Spacer()
+            if config.pages.indices.contains(pageIx), config.pages.count > 1 {
+                Button(role: .destructive) {
+                    config.pages.remove(at: pageIx)
+                    if pageIx >= config.pages.count { pageIx = config.pages.count - 1 }
+                    dirty = true
+                } label: {
+                    Image(systemName: "minus.circle.fill")
+                        .font(.system(size: 22))
+                        .foregroundStyle(.red)
+                }
+                .accessibilityLabel("Remove this page")
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 10)
+        .contentShape(Rectangle())
+        .onLongPressGesture {
+            if config.pages.count > 1 { showReorder = true }
+        }
+    }
+
+    private var headerTitle: String {
+        guard config.pages.indices.contains(pageIx) else { return "Add a page" }
+        let page = config.pages[pageIx]
+        let name = page.isMusic ? "Music" : "Data"
+        return "Page \(pageIx + 1) of \(config.pages.count) · \(name)"
+    }
+
+    // One swipeable page of the editor.
+    @ViewBuilder
+    private func pageList(_ i: Int) -> some View {
+        if config.pages.indices.contains(i), config.pages[i].isMusic {
+            List {
                 Section {
                     VStack(alignment: .leading, spacing: 8) {
                         Label("Music controls", systemImage: "music.note")
-                        Text("This page shows what's playing on the phone — title, album art, and play/skip buttons. It follows the Apple Music app; other players don't let apps see their playback on iOS.")
+                        Text("This page shows what's playing on the phone — title, album art, play/skip and volume. Track info follows the Apple Music app; other players don't let apps see their playback on iOS. Volume works with everything.")
                             .font(TypeScale.body).foregroundStyle(Palette.muted)
                     }
                     .padding(.vertical, 4)
                 }
-            } else {
-            Section {
-                DashPreview(layout: layout)
-                    .frame(height: 320)
-                    .frame(maxWidth: .infinity)
-                    .listRowInsets(EdgeInsets(top: 12, leading: 0, bottom: 12, trailing: 0))
-                    .listRowBackground(Color.clear)
-            } header: {
-                Text("How the panel will look")
             }
+        } else if config.pages.indices.contains(i) {
+            List {
+                Section {
+                    DashPreview(layout: config.pages[i].layout)
+                        .frame(height: 320)
+                        .frame(maxWidth: .infinity)
+                        .listRowInsets(EdgeInsets(top: 12, leading: 0, bottom: 12, trailing: 0))
+                        .listRowBackground(Color.clear)
+                } header: {
+                    Text("How the panel will look")
+                }
 
-            Section {
-                ForEach(layout.items) { item in
-                    DashItemRow(item: bindingFor(item)) { dirty = true }
-                }
-                .onMove { from, to in
-                    mutate { $0.items.move(fromOffsets: from, toOffset: to) }
-                }
-                .onDelete { idx in
-                    mutate { $0.items.remove(atOffsets: idx) }
-                }
-                if layout.items.count < DashLayout.maxItems {
-                    Button {
-                        showAdd = true
-                    } label: {
-                        Label("Add a field", systemImage: "plus.circle.fill")
+                Section {
+                    ForEach(config.pages[i].layout.items) { item in
+                        DashItemRow(item: bindingFor(item, in: i)) { dirty = true }
+                    }
+                    .onMove { from, to in
+                        mutateAt(i) { $0.items.move(fromOffsets: from, toOffset: to) }
+                    }
+                    .onDelete { idx in
+                        mutateAt(i) { $0.items.remove(atOffsets: idx) }
+                    }
+                    if config.pages[i].layout.items.count < DashLayout.maxItems {
+                        Button {
+                            showAdd = true
+                        } label: {
+                            Label("Add a field", systemImage: "plus.circle.fill")
+                        }
+                    }
+                } header: {
+                    Text("Fields")
+                } footer: {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Drag to reorder, swipe to remove. “Half width” pairs a field with the next half-width field; on its own it spans the row.")
+                        Text("Fields that need a sensor — power, heart rate, cadence — are hidden on the device until it connects, and the rest expand to fill the space. Route left hides when no route is loaded.")
                     }
                 }
-            } header: {
-                Text("Fields")
-            } footer: {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Drag to reorder, swipe to remove. “Half width” pairs a field with the next half-width field; on its own it spans the row.")
-                    Text("Fields that need a sensor — power, heart rate, cadence — are hidden on the device until it connects, and the rest expand to fill the space. Route left hides when no route is loaded.")
+
+                Section {
+                    Button("Reset to the default layout") {
+                        config = .deviceDefault
+                        pageIx = 0
+                        dirty = true
+                    }
                 }
             }
+            .environment(\.editMode, .constant(.active))
+        }
+    }
 
-            Section {
-                Button("Reset to the default layout") {
-                    config = .deviceDefault
-                    pageIx = 0
+    // The pane past the last page: swipe to it to add another.
+    private var addPagePane: some View {
+        VStack(spacing: 18) {
+            Image(systemName: "plus.circle")
+                .font(.system(size: 44, weight: .light))
+                .foregroundStyle(Palette.faint)
+            Text("Add a page").font(TypeScale.title).foregroundStyle(Palette.ink)
+            Button {
+                config.pages.append(.fields)
+                dirty = true
+            } label: {
+                Label("Data page", systemImage: "rectangle.3.group")
+                    .frame(maxWidth: 220)
+            }
+            .buttonStyle(.borderedProminent)
+            if !config.hasMusicPage {
+                Button {
+                    config.pages.append(.music)
+                    dirty = true
+                } label: {
+                    Label("Music controls", systemImage: "music.note")
+                        .frame(maxWidth: 220)
+                }
+                .buttonStyle(.bordered)
+            }
+            Text("The device's Home key steps through the pages, then the map.")
+                .font(.system(size: 13)).foregroundStyle(Palette.faint)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 40)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    // Long-press target: drag the pages into the order Home steps through.
+    private var reorderSheet: some View {
+        NavigationStack {
+            List {
+                ForEach(config.pages.indices, id: \.self) { i in
+                    if config.pages[i].isMusic {
+                        Label("Music controls", systemImage: "music.note")
+                    } else {
+                        Label("Data · \(config.pages[i].layout.items.count) fields",
+                              systemImage: "rectangle.3.group")
+                    }
+                }
+                .onMove { from, to in
+                    config.pages.move(fromOffsets: from, toOffset: to)
                     dirty = true
                 }
             }
-            }   // page-kind branch
+            .environment(\.editMode, .constant(.active))
+            .navigationTitle("Page order")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { showReorder = false }
+                }
+            }
         }
-        .environment(\.editMode, .constant(.active))
+        .presentationDetents([.medium])
     }
 
-    /// A binding into the CURRENT page's item — ForEach($layout.items) can't
-    /// exist now that `layout` is computed through the page index.
-    private func bindingFor(_ item: DashItem) -> Binding<DashItem> {
+    private func mutateAt(_ i: Int, _ f: (inout DashLayout) -> Void) {
+        guard config.pages.indices.contains(i), !config.pages[i].isMusic else { return }
+        f(&config.pages[i].layout)
+        dirty = true
+    }
+
+    /// A binding into page `i`'s copy of `item` — ForEach($...) can't reach
+    /// through the pages array.
+    private func bindingFor(_ item: DashItem, in i: Int) -> Binding<DashItem> {
         Binding(
             get: {
-                config.pages.indices.contains(pageIx)
-                    ? config.pages[pageIx].layout.items.first(where: { $0.id == item.id }) ?? item
+                config.pages.indices.contains(i)
+                    ? config.pages[i].layout.items.first(where: { $0.id == item.id }) ?? item
                     : item
             },
             set: { new in
-                mutate { l in
+                mutateAt(i) { l in
                     if let ix = l.items.firstIndex(where: { $0.id == item.id }) {
                         l.items[ix] = new
                     }

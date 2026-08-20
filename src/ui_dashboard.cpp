@@ -513,6 +513,8 @@ void handleTap(int x, int y) {
                 if (inRect(kMediaPrev, x, y)) cmd = MC_PREV;
                 else if (inRect(kMediaPlay, x, y)) cmd = MC_TOGGLE;
                 else if (inRect(kMediaNext, x, y)) cmd = MC_NEXT;
+                else if (inRect(kMediaVolDown, x, y)) cmd = MC_VOL_DOWN;
+                else if (inRect(kMediaVolUp, x, y)) cmd = MC_VOL_UP;
                 if (cmd) {
                     ble_server::mediaCommand(cmd);
                     // Answer play/pause on the glass now: flip the local flag

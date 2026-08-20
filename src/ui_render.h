@@ -137,9 +137,11 @@ void ui_render_dashboard(const RideState& s, bool navActive,
 // targets exported for the dashboard's hit-testing, same as the sheets'.
 struct MediaState;
 void ui_render_media(const RideState& s, const MediaState& m, uint8_t* fb);
+extern const EpdRect kMediaVolDown;
 extern const EpdRect kMediaPrev;
 extern const EpdRect kMediaPlay;
 extern const EpdRect kMediaNext;
+extern const EpdRect kMediaVolUp;
 
 // Did the last ui_render_dashboard() grey out any cell?
 //

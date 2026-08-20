@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import MediaPlayer
 import UIKit
@@ -66,11 +67,46 @@ final class MediaRemote {
         case 1: player.playbackState == .playing ? player.pause() : player.play()
         case 2: player.skipToNextItem()
         case 3: player.skipToPreviousItem()
+        case 4: nudgeVolume(+0.0625)
+        case 5: nudgeVolume(-0.0625)
         default: break
         }
         // A state notification follows, but not always promptly — reflect the
         // new state now so the panel settles instead of flip-flopping.
         Task { @MainActor in self.pushNow() }
+    }
+
+    // MARK: - System volume
+
+    // The one App-Store-legal way to SET output volume: an MPVolumeView's
+    // slider, parked offscreen in the key window. This moves SYSTEM volume, so
+    // it works whatever app is playing — including the players iOS won't let
+    // us see the metadata of. Known limit: it is UI plumbing, so it may not
+    // take while the app is deep in the background; worth knowing on the bike.
+    private let volumeView = MPVolumeView(frame: CGRect(x: -2000, y: -2000,
+                                                        width: 1, height: 1))
+
+    private func nudgeVolume(_ delta: Float) {
+        if volumeView.superview == nil {
+            let scene = UIApplication.shared.connectedScenes
+                .compactMap { $0 as? UIWindowScene }
+                .first { $0.activationState == .foregroundActive || $0.activationState == .foregroundInactive }
+            guard let window = scene?.windows.first else { return }
+            volumeView.clipsToBounds = true
+            window.addSubview(volumeView)
+        }
+        guard let slider = volumeView.subviews.compactMap({ $0 as? UISlider }).first
+        else { return }
+        // The slider mirrors the live system volume once it's in a window;
+        // AVAudioSession is the fallback the first time, before it syncs.
+        let base = slider.value > 0 ? slider.value
+                                    : AVAudioSession.sharedInstance().outputVolume
+        let v = max(0, min(1, base + delta))
+        // A beat later: the slider ignores writes made in the same runloop
+        // turn it was attached in.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            slider.value = v
+        }
     }
 
     private func pushNow() {

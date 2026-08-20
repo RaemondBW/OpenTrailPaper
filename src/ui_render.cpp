@@ -1000,6 +1000,13 @@ bool ui_render_dashboard_toned() { return g_dashToned; }
 const EpdRect kMediaPrev = {24, 780, 140, 120};
 const EpdRect kMediaPlay = {176, 780, 188, 120};
 const EpdRect kMediaNext = {376, 780, 140, 120};
+// Volume: a vertical stepper on the right edge beside the art, drawn in the
+// map's zoom-button style (same x, same 76 px double-bordered square) so it
+// reads as the same control the thumb already knows. It moves the PHONE's
+// system volume, so it works whatever app is playing — including the players
+// iOS won't let us see the metadata of.
+const EpdRect kMediaVolUp = {540 - 78, 140, 76, 76};
+const EpdRect kMediaVolDown = {540 - 78, 232, 76, 76};
 
 namespace {
 
@@ -1047,6 +1054,15 @@ void mediaGlyph(const EpdRect& r, char kind, uint8_t* fb) {
                               cx - s + 12, cy, 0x00, fb);
             break;
     }
+}
+
+// Zoom-button twin (ui_map_draw_zoom_button): double border, heavy +/- mark.
+void volButton(const EpdRect& r, bool up, uint8_t* fb) {
+    epd_draw_rect(r, 0x00, fb);
+    epd_draw_rect({r.x + 1, r.y + 1, r.width - 2, r.height - 2}, 0x00, fb);
+    int cx = r.x + r.width / 2, cy = r.y + r.height / 2;
+    epd_fill_rect({cx - 14, cy - 2, 28, 5}, 0x00, fb);
+    if (up) epd_fill_rect({cx - 2, cy - 14, 5, 28}, 0x00, fb);
 }
 
 void fmtClockSec(char* out, size_t cap, int sec) {
@@ -1140,6 +1156,12 @@ void ui_render_media(const RideState& s, const MediaState& m, uint8_t* fb) {
     mediaGlyph(kMediaPrev, '<', fb);
     mediaGlyph(kMediaPlay, m.playing ? 'u' : 'p', fb);
     mediaGlyph(kMediaNext, '>', fb);
+
+    // --- Volume, zoom-style on the right edge ----------------------------
+    ui::label(kMediaVolUp.x + kMediaVolUp.width / 2, kMediaVolUp.y - 12, "VOL",
+              fb);
+    volButton(kMediaVolUp, true, fb);
+    volButton(kMediaVolDown, false, fb);
 }
 
 // Defined below with the list helpers; declared here so the sheet can clamp

@@ -28,4 +28,6 @@ enum MediaCmd : uint8_t {
     MC_TOGGLE = 1,   // play/pause
     MC_NEXT = 2,
     MC_PREV = 3,
+    MC_VOL_UP = 4,   // system volume — works whatever app is playing
+    MC_VOL_DOWN = 5,
 };
