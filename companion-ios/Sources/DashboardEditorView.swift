@@ -85,19 +85,27 @@ struct DashboardEditorView: View {
     }
 
     private var editor: some View {
-        List {
-            // The carousel: every page as a peeking preview card, the add card
-            // at the far end. The selected card's editor follows below.
-            Section {
-                carousel
-                    .listRowInsets(EdgeInsets())
-                    .listRowBackground(Color.clear)
-            } footer: {
-                if config.pages.count > 1 {
-                    Text("Tap a page to edit it · hold one, then drag it into place")
-                }
+        // The carousel sits ABOVE the List, not inside it. As a List row, the
+        // LIST hosted every drag interaction: long-pressing a card lifted the
+        // entire row — the whole strip as one screenshot — and the card-level
+        // drop delegates never saw the session. Out here the cards own their
+        // own drags.
+        VStack(spacing: 0) {
+            carousel
+            if config.pages.count > 1 {
+                Text("Tap a page to edit it · hold one, then drag it into place")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 8)
             }
+            pageSections
+        }
+        .background(Color(uiColor: .systemGroupedBackground))
+    }
 
+    private var pageSections: some View {
+        List {
             if config.pages.indices.contains(pageIx), config.pages[pageIx].isMap {
                 Section {
                     ForEach(0..<3, id: \.self) { slot in
