@@ -13,6 +13,7 @@
 #include "ble_sensors.h"
 #include "ble_server.h"
 #include "diag.h"
+#include "ride_recorder.h"
 
 namespace power_mgmt {
 
@@ -195,7 +196,15 @@ void tick() {
     // So the CPU only sleeps when the BLE radio is COMPLETELY quiet: no phone,
     // no sensor links, no hunt. Parked/idle — the state that actually drains
     // the battery for hours — has none of those, and keeps the full win.
-    bool sensors = ble_sensors::anyConnected();
+    //
+    // Exception, by design: a ride parked in a LONG auto-pause (2 min — see
+    // ride_recorder::longAutoPaused) releases the sensor hold. The meter is
+    // sleeping itself at a stop like that and the links are going away either
+    // way; what matters is that the hold and the hunt come back the moment
+    // the ride resumes, which they do — this flag flips false on the resume
+    // tick, before the sensors have woken enough to reconnect.
+    bool sensors = ble_sensors::anyConnected() &&
+                   !ride_recorder::longAutoPaused();
     bool grace = millis() < USB_GRACE_MS;
     bool serial = (bool)Serial;
     bool usb = grace || serial || phone || hunting || sensors;

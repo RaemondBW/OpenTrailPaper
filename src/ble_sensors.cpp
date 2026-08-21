@@ -486,8 +486,17 @@ void task(void*) {
         // sensor contact does not want a scan; a rider whose strap dropped out
         // at the coffee stop does, and still gets one.
         const bool sensorsRecent = everLinked && millis() - lastLinkMs < 15 * 60 * 1000;
+        // A ride parked in a long auto-pause does NOT hunt: the sensors are
+        // asleep or heading there (an Assioma naps within minutes of the
+        // cranks stopping), and a hunt would hold the CPU awake for a stop
+        // that could last an hour. The moment the ride resumes, this term
+        // flips back and the hunt restarts with its full first-minute
+        // continuous look — reconnection happens as the rider pulls away,
+        // at full radio quality.
+        const bool ridingNow = ride_recorder::isRecording() &&
+                               !ride_recorder::longAutoPaused();
         bool wantScan = !allConnected &&
-                        (scanAlways || ride_recorder::isRecording() ||
+                        (scanAlways || ridingNow ||
                          routes::navActive() || millis() < 90000 ||
                          (millis() - lastActivityMs < 30000 && sensorsRecent));
 

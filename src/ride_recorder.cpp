@@ -561,6 +561,13 @@ void stopRide(bool save) {
 
 bool isRecording() { return rideActive; }
 
+bool longAutoPaused() {
+    // Cross-task reads of the recorder's own counters; a tick of staleness is
+    // fine for a power-policy answer. 2 min: longer than any stoplight, short
+    // enough that a real stop starts saving within a coffee's first sips.
+    return rideActive && autoPaused && (pausedS - pauseEntryS) > 120;
+}
+
 const char* currentRideFile() {
     if (!fit.isOpen()) return "";
     const char* base = strrchr(ridePath, '/');
