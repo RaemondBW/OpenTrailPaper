@@ -235,12 +235,14 @@ struct DashboardEditorView: View {
             }
         }
         .onTapGesture { pageIx = i }
+        // Rounds the SYSTEM drag snapshot. Deliberately not onDrag(_:preview:):
+        // the custom-preview variant runs a different internal interaction
+        // that broke the drop delegates — the card lifted beautifully and
+        // could no longer be dropped anywhere.
         .contentShape(.dragPreview, RoundedRectangle(cornerRadius: 8))
         .onDrag {
             draggedPage = config.pages[i].id
             return NSItemProvider(object: config.pages[i].id.uuidString as NSString)
-        } preview: {
-            cardFace(i)
         }
         .onDrop(of: [UTType.text],
                 delegate: PageDropDelegate(item: config.pages[i],
