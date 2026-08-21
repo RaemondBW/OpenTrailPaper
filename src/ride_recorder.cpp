@@ -86,7 +86,13 @@ double haversineM(double lat1, double lon1, double lat2, double lon2) {
 
 void makeRidePath(char* out, size_t len, time_t utc) {
     struct tm tmv;
-    gmtime_r(&utc, &tmv);
+    // Named for the rider's wall clock, not UTC — an evening ride used to get
+    // tomorrow's date in its name (UTC rolls over at 4-5 pm Pacific). Same
+    // shifted-epoch trick as the diag log (diag.cpp localNow()): only the NAME
+    // is local; the timestamps inside the FIT stay true UTC, which is what
+    // every FIT consumer expects.
+    time_t local = utc + (time_t)settings::tzMinutes() * 60;
+    gmtime_r(&local, &tmv);
     snprintf(out, len, RIDE_DIR "/%04d%02d%02d-%02d%02d%02d.fit",
              tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday,
              tmv.tm_hour, tmv.tm_min, tmv.tm_sec);
