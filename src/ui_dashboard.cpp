@@ -813,6 +813,7 @@ void buildMapScreenData(const RideState& s, MapScreenData& map,
 
 void renderMapScreen(const RideState& s, uint8_t* fb) {
     MapScreenData map = {};
+    for (int i = 0; i < 3; ++i) map.stripFields[i] = dash_config::mapField(i);
     uint32_t m0 = millis();
     buildMapScreenData(s, map);
     uint32_t m1 = millis();

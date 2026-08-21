@@ -424,18 +424,28 @@ void ui_render_map(const MapScreenData& map, const RideState& s, uint8_t* fb) {
     const int fh = H - fy;
     const int colW = W / 3;
 
-    char v0[24], v1[24], v2[24];
-    snprintf(v0, sizeof(v0), "%.1f", units::speed(s.speedKmh, s.useMiles));
-    snprintf(v1, sizeof(v1), "%.1f", units::distM(s.distanceM, s.useMiles));
-    const char* l2 = map.showRemaining ? "LEFT" : "TIME";
-    if (map.showRemaining)
-        snprintf(v2, sizeof(v2), "%.1f", units::dist(map.remainingKm, s.useMiles));
-    else
-        snprintf(v2, sizeof(v2), "%lu:%02lu", (unsigned long)(s.elapsedS / 3600),
-                 (unsigned long)((s.elapsedS / 60) % 60));
+    // Fields come from the rider's config (`map` line in dashboard.cfg).
+    // One override stays: while navigating, if no cell already shows ROUTE
+    // LEFT, it replaces the third — the strip's oldest behaviour, and the one
+    // number a rider on a route actually wants.
+    uint8_t f3[3] = {map.stripFields[0], map.stripFields[1], map.stripFields[2]};
+    if (map.showRemaining) {
+        bool has = f3[0] == DF_ROUTE_LEFT || f3[1] == DF_ROUTE_LEFT ||
+                   f3[2] == DF_ROUTE_LEFT;
+        if (!has) f3[2] = DF_ROUTE_LEFT;
+    }
+
+    char vals[3][24];
+    const char* units3[3];
+    const char* labels[3];
+    for (int c = 0; c < 3; ++c) {
+        if (f3[c] >= DF_COUNT) f3[c] = DF_SPEED;
+        units3[c] = "";
+        dashFieldValue(f3[c], s, vals[c], sizeof(vals[c]), &units3[c]);
+        labels[c] = dashFieldLabel(f3[c]);
+    }
 
     // One caption size across the strip, as on the data page.
-    const char* labels[3] = {"SPEED", "DIST", l2};
     const EpdFont* lf = ui::kLabelLadder[ui::LABEL_LADDER_N - 1];
     for (int k = 0; k < ui::LABEL_LADDER_N; ++k) {
         bool fits = true;
@@ -445,10 +455,6 @@ void ui_render_map(const MapScreenData& map, const RideState& s, uint8_t* fb) {
         if (fits) { lf = ui::kLabelLadder[k]; break; }
     }
 
-    const char* vals[3] = {v0, v1, v2};
-    const char* units3[3] = {units::speedLabel(s.useMiles),
-                             units::distLabel(s.useMiles),
-                             map.showRemaining ? units::distLabel(s.useMiles) : ""};
     // Common value face across the three, so the strip reads as one row.
     int vi = 0;
     for (int c = 0; c < 3; ++c) {
@@ -460,7 +466,10 @@ void ui_render_map(const MapScreenData& map, const RideState& s, uint8_t* fb) {
     }
     for (int c = 0; c < 3; ++c) {
         EpdRect r = {c * colW, fy, colW, fh};
-        ui::cell(r, labels[c], vals[c], units3[c], fb, false,
+        // Greyed like a dash cell when the source is gone — a strip cell must
+        // never show a live-looking number from a dead sensor either.
+        bool stale = !dashFieldAvailable(f3[c], s) && !s.showOffline;
+        ui::cell(r, labels[c], vals[c], units3[c], fb, stale,
                  ui::kValueLadder[vi], lf);
     }
 }

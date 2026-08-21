@@ -178,6 +178,8 @@ struct DashConfig: Equatable {
     }
 
     var pages: [Page]
+    /// The map screen's 3-cell data strip (`map <f> <f> <f>` in the config).
+    var mapFields: [String] = ["speed", "distance", "ridetime"]
 
     /// DASH_MAX_PAGES on the device — the parser drops anything past it.
     static let maxPages = 4
@@ -202,6 +204,7 @@ struct DashConfig: Equatable {
             chunk = ""
             music = false
         }
+        var strip = ["speed", "distance", "ridetime"]
         for rawLine in text.split(separator: "\n", omittingEmptySubsequences: false) {
             let line = rawLine.split(separator: "#", maxSplits: 1,
                                      omittingEmptySubsequences: false)[0]
@@ -209,12 +212,19 @@ struct DashConfig: Equatable {
             if tok.first == "page" {
                 commit()
                 music = tok.count > 1 && tok[1] == "music"
+            } else if tok.first == "map" {
+                for i in 0..<3 where tok.count > i + 1 {
+                    if DashField.named(String(tok[i + 1])) != nil {
+                        strip[i] = String(tok[i + 1])
+                    }
+                }
             } else {
                 chunk += rawLine + "\n"
             }
         }
         commit()
         pages = Array(out.prefix(DashConfig.maxPages))
+        mapFields = strip
     }
 
     /// Serialize, byte-compatible with dashSerializePages(): the first field
@@ -225,6 +235,7 @@ struct DashConfig: Equatable {
         // app's config and the device's echo is a string comparison.
         var s = "# OpenTrailPaper dashboard layout\n"
         s += "# <field> <small|medium|large|hero> [half]; 'page' or 'page music' starts a new page\n"
+        s += "map \(mapFields[0]) \(mapFields[1]) \(mapFields[2])\n"
         for (i, page) in pages.enumerated() {
             if page.isMusic {
                 s += "page music\n"

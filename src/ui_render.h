@@ -143,6 +143,12 @@ extern const EpdRect kMediaPlay;
 extern const EpdRect kMediaNext;
 extern const EpdRect kMediaVolUp;
 
+// Field machinery shared with the map's data strip (map_view.cpp): value +
+// unit for a DashField, and whether its source is currently present.
+void dashFieldValue(uint8_t field, const RideState& s, char* val, size_t valCap,
+                    const char** unit);
+bool dashFieldAvailable(uint8_t field, const RideState& s);
+
 // Did the last ui_render_dashboard() grey out any cell?
 //
 // The caller needs this to know whether the panel wants a scrub. The greyed-out

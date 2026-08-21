@@ -91,6 +91,10 @@ struct DashPage {
 struct DashPages {
     DashPage pages[DASH_MAX_PAGES];
     int count = 0;
+    // The map screen's 3-cell data strip, configured by a `map <f> <f> <f>`
+    // line in the same file. Not a page — the map is always in the carousel —
+    // but its fields ride along in the one config.
+    uint8_t mapFields[3] = {DF_SPEED, DF_DISTANCE, DF_RIDE_TIME};
 };
 
 // The built-in layout: today's dashboard, field for field, so a device with no

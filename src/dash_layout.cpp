@@ -177,7 +177,9 @@ size_t dashSerialize(const DashLayout& layout, char* out, size_t cap) {
 }
 
 bool dashParsePages(const char* text, DashPages& out) {
-    out.count = 0;
+    // Full reset, not just the count: a reused struct must not inherit the
+    // previous parse's map-strip fields when the new text omits the `map` line.
+    out = DashPages{};
     if (!text) return false;
 
     // Parse into a scratch page; commit it whenever a `page` line (or the end
@@ -198,11 +200,12 @@ bool dashParsePages(const char* text, DashPages& out) {
         const char* cut = p;
         while (cut < lineEnd && *cut != '#') ++cut;
 
-        const char* tok[3] = {nullptr, nullptr, nullptr};
-        size_t tokLen[3] = {0, 0, 0};
+        // 4 tokens: `map` carries three field ids after its keyword.
+        const char* tok[4] = {nullptr, nullptr, nullptr, nullptr};
+        size_t tokLen[4] = {0, 0, 0, 0};
         int ntok = 0;
         const char* q = p;
-        while (q < cut && ntok < 3) {
+        while (q < cut && ntok < 4) {
             while (q < cut && (*q == ' ' || *q == '\t' || *q == '\r')) ++q;
             if (q >= cut) break;
             const char* start = q;
@@ -216,6 +219,14 @@ bool dashParsePages(const char* text, DashPages& out) {
             commit();
             if (ntok >= 2 && tokenEq(tok[1], tokLen[1], "music"))
                 cur.kind = DP_MUSIC;
+        } else if (ntok >= 1 && tokenEq(tok[0], tokLen[0], "map")) {
+            // `map <field> <field> <field>` — the map screen's data strip.
+            // Position-independent; a missing/typo'd token keeps that slot's
+            // default rather than dropping the line.
+            for (int i = 0; i < 3 && i + 1 < ntok; ++i) {
+                uint8_t f = dashFieldFromId(tok[i + 1], tokLen[i + 1]);
+                if (f < DF_COUNT) out.mapFields[i] = f;
+            }
         } else if (ntok >= 1 && cur.kind == DP_FIELDS &&
                    cur.layout.count < DASH_MAX_ITEMS) {
             uint8_t f = dashFieldFromId(tok[0], tokLen[0]);
@@ -247,6 +258,11 @@ size_t dashSerializePages(const DashPages& pages, char* out, size_t cap) {
     int w = snprintf(out, cap, "%s", kHeader);
     if (w < 0 || (size_t)w >= cap) return 0;
     n = (size_t)w;
+    w = snprintf(out + n, cap - n, "map %s %s %s\n",
+                 dashFieldId(pages.mapFields[0]), dashFieldId(pages.mapFields[1]),
+                 dashFieldId(pages.mapFields[2]));
+    if (w < 0 || (size_t)w >= cap - n) return 0;
+    n += (size_t)w;
     for (int i = 0; i < pages.count; ++i) {
         const DashPage& pg = pages.pages[i];
         if (i > 0 || pg.kind == DP_MUSIC) {

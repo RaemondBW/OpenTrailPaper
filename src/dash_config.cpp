@@ -81,6 +81,12 @@ void begin() {
 }
 
 const DashPages& pages() { return g_pages; }
+
+uint8_t mapField(int slot) {
+    if (slot < 0 || slot > 2) slot = 0;
+    uint8_t f = g_pages.mapFields[slot];
+    return f < DF_COUNT ? f : DF_SPEED;
+}
 int pageCount() { return g_pages.count; }
 const DashPage& page(int idx) {
     if (idx < 0 || idx >= g_pages.count) idx = 0;

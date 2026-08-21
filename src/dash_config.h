@@ -26,6 +26,9 @@ const DashPages& pages();
 int pageCount();
 const DashPage& page(int idx);
 
+// The map data strip's three fields (DashField), from the `map` config line.
+uint8_t mapField(int slot);
+
 // Page 0's field layout (or the default when page 0 is the music page) — for
 // callers that need "a dashboard" with no page context, like the ride-summary
 // backdrop.

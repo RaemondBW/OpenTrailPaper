@@ -94,12 +94,20 @@ struct DashboardEditorView: View {
 
             if pageIx == config.pages.count {
                 Section {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Label("Map", systemImage: "map")
-                        Text("The map is always the last stop in the Home-key cycle — after the pages here, before wrapping back to page one. It isn't editable and can't be removed.")
-                            .font(TypeScale.body).foregroundStyle(Palette.muted)
+                    ForEach(0..<3, id: \.self) { slot in
+                        Picker(["Left cell", "Middle cell", "Right cell"][slot],
+                               selection: Binding(
+                                   get: { config.mapFields[slot] },
+                                   set: { config.mapFields[slot] = $0; dirty = true })) {
+                            ForEach(DashField.all) { f in
+                                Text(f.label).tag(f.id)
+                            }
+                        }
                     }
-                    .padding(.vertical, 4)
+                } header: {
+                    Text("Map data strip")
+                } footer: {
+                    Text("The three cells under the map. While navigating, Route left takes the right cell unless one of them already shows it. The map itself is always the last stop in the Home-key cycle and can't be removed.")
                 }
             } else if config.pages.indices.contains(pageIx), config.pages[pageIx].isMusic {
                 Section {
