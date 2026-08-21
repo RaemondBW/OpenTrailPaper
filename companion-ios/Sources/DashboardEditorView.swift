@@ -190,6 +190,9 @@ struct DashboardEditorView: View {
         .contentMargins(.horizontal, 56, for: .scrollContent)
         .scrollTargetBehavior(.viewAligned)
         .scrollPosition(id: $scrolled)
+        // Reordering owns the finger once a card is lifted; letting the strip
+        // pan underneath would scroll AND move the card at once.
+        .scrollDisabled(dragIx != nil)
         .frame(height: 250)
         .onAppear { scrolled = pageIx }
         // The centred card IS the selection (clamped off the add card, which
@@ -246,7 +249,7 @@ struct DashboardEditorView: View {
             pageIx = i
             withAnimation { scrolled = i }
         }
-        .gesture(reorderGesture(i), isEnabled: config.pages.count > 1)
+        .simultaneousGesture(reorderGesture(i), isEnabled: config.pages.count > 1)
     }
 
     /// Presentation offset while a drag is live: the held card tracks the
