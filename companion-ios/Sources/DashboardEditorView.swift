@@ -94,7 +94,7 @@ struct DashboardEditorView: View {
                     .listRowBackground(Color.clear)
             } footer: {
                 if config.pages.count > 1 {
-                    Text("Swipe the carousel · hold a page, then drag to reorder")
+                    Text("Tap a page to edit it · hold and drag to reorder")
                 }
             }
 
@@ -191,22 +191,18 @@ struct DashboardEditorView: View {
             .scrollTargetLayout()
             .padding(.vertical, 14)
         }
-        .contentMargins(.horizontal, 56, for: .scrollContent)
-        .scrollTargetBehavior(.viewAligned)
-        .scrollPosition(id: $scrolled)
+        .contentMargins(.horizontal, 20, for: .scrollContent)
+        // FREE scrolling, no snap: the strip browses with plain momentum and
+        // selection is a TAP, not whichever card the deceleration parked in
+        // the middle. The snap behaviour made every swipe a negotiation — a
+        // small flick snapped back to the current card, and the centred-card-
+        // is-selected sync re-rendered the whole editor below mid-scroll.
+        .scrollPosition(id: $scrolled, anchor: .center)
         // Reordering owns the finger once a card is lifted; letting the strip
         // pan underneath would scroll AND move the card at once.
         .scrollDisabled(dragIx != nil)
         .frame(height: 250)
         .onAppear { scrolled = scrollID(pageIx) }
-        // The centred card IS the selection (clamped off the add card, which
-        // is browsable but has nothing to edit below).
-        .onChange(of: scrolled) {
-            if let sid = scrolled,
-               let i = config.pages.firstIndex(where: { $0.id.uuidString == sid }) {
-                pageIx = i
-            }
-        }
     }
 
     private func carouselCard(_ i: Int) -> some View {
