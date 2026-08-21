@@ -7,6 +7,7 @@
 
 #include "ride_recorder.h"
 #include "sd_bus.h"
+#include "settings.h"
 
 namespace {
 
@@ -17,10 +18,22 @@ SemaphoreHandle_t mtx = nullptr;
 constexpr char LOG_DIR[] = "/logs";
 char activePath[48] = "/logs/pending.log";
 
-// One log file per day (UTC): /logs/YYYYMMDD.log — small and easy to grab.
+// The rider's wall clock, as a shifted epoch fed to gmtime_r. The system clock
+// stays UTC (GPS writes it, the FIT file and the RTC depend on that); only the
+// log's presentation is local. settings::tzMinutes() is a plain static with a
+// sane default, so this is safe even for lines logged before settings::begin().
+time_t localNow() {
+    return time(nullptr) + (time_t)settings::tzMinutes() * 60;
+}
+
+// One log file per LOCAL day: /logs/YYYYMMDD.log — small and easy to grab.
+// Local, not UTC: an evening ride in California used to land in tomorrow's
+// file (UTC rolls over at 4-5 pm Pacific), so "yesterday's ride" meant knowing
+// which side of the boundary you rode on. The line timestamps below use the
+// same clock, so the file named for a day contains times from that day.
 // Before the clock is set (no GPS fix yet) lines go to /logs/pending.log.
 void computeLogPath(char* out, size_t n) {
-    time_t now = time(nullptr);
+    time_t now = localNow();
     if (now > 1735689600) {
         struct tm t;
         gmtime_r(&now, &t);
@@ -32,7 +45,7 @@ void computeLogPath(char* out, size_t n) {
 }
 
 void timestamp(char* out, size_t n) {
-    time_t now = time(nullptr);
+    time_t now = localNow();
     if (now > 1735689600) {               // system clock is set (GPS synced)
         struct tm t;
         gmtime_r(&now, &t);
