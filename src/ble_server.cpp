@@ -751,7 +751,21 @@ uint32_t connAtMs = 0;
 bool connEncrypted = false;
 uint8_t quickUnencDrops = 0;
 
+// The pairing code being shown on the panel (0 = none). Set by
+// onPassKeyDisplay, cleared when authentication finishes either way; the
+// timestamp bounds it so an abandoned dialog can't pin the sheet forever.
+volatile uint32_t pairCode = 0;
+volatile uint32_t pairCodeAtMs = 0;
+
 class ServerCb : public NimBLEServerCallbacks {
+    uint32_t onPassKeyDisplay() override {
+        // Fresh code per pairing; the panel shows it, the phone asks for it.
+        uint32_t code = esp_random() % 1000000;
+        pairCode = code;
+        pairCodeAtMs = millis();
+        diag::log("ble: pairing code %06lu shown", (unsigned long)code);
+        return code;
+    }
     void onConnect(NimBLEServer* srv, NimBLEConnInfo& info) override {
         negotiatedMTU = info.getMTU();
         phoneConnected = true;
@@ -788,6 +802,7 @@ class ServerCb : public NimBLEServerCallbacks {
             connEncrypted = true;
             quickUnencDrops = 0;   // a healthy pairing ends the streak
         }
+        pairCode = 0;   // done either way — drop the code sheet
         ams::onSecured(info.getConnHandle(), info.isEncrypted());
     }
     void onMTUChange(uint16_t mtu, NimBLEConnInfo&) override {
@@ -813,7 +828,7 @@ class ServerCb : public NimBLEServerCallbacks {
             if (++quickUnencDrops == 3)
                 diag::log("ble: 3 quick unencrypted drops — the phone likely "
                           "holds stale pairing keys. Fix: iPhone Settings > "
-                          "Bluetooth > BikeGPS > Forget This Device, then "
+                          "Bluetooth > OpenTrailPaper > Forget This Device, then "
                           "reconnect and pair fresh.");
         } else if (connEncrypted) {
             quickUnencDrops = 0;
@@ -1710,11 +1725,11 @@ void begin() {
 
     NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
     adv->addServiceUUID(SVC_UUID);
-    adv->setName("BikeGPS");
+    adv->setName("OpenTrailPaper");
     adv->enableScanResponse(true);
     NimBLEDevice::startAdvertising();
 
-    Serial.println("[srv] GATT server advertising as BikeGPS");
+    Serial.println("[srv] GATT server advertising as OpenTrailPaper");
 }
 
 void pushSettingsToPhone() { settingsDirty = true; }
@@ -1729,6 +1744,13 @@ void setRelaxedSleepExperiment(bool on) {
 }
 
 void mediaCommand(unsigned char cmd) { mediaCmdPending = cmd; }
+
+unsigned int pairingCode() {
+    // Self-expires: an abandoned iOS dialog never completes authentication,
+    // and the panel must not wear a dead code into the ride.
+    if (pairCode && millis() - pairCodeAtMs > 60000) pairCode = 0;
+    return pairCode;
+}
 
 bool takeDashChanged() {
     if (!dashDirty) return false;

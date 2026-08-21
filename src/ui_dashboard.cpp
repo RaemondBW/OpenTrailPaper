@@ -2195,6 +2195,13 @@ void task(void*) {
             if (dashPage >= dash_config::pageCount()) dashPage = 0;
             forceDraw = true;
         }
+        // A pairing code appearing (or clearing) must repaint NOW — the rider
+        // is standing there with the phone's dialog open.
+        {
+            static uint32_t lastPairCode = 0;
+            uint32_t pc = ble_server::pairingCode();
+            if (pc != lastPairCode) { lastPairCode = pc; forceDraw = true; }
+        }
         // New metadata or album art landed: repaint the music page now, not at
         // the next 1 Hz tick — the rider just pressed a button somewhere.
         {
@@ -2411,6 +2418,10 @@ void task(void*) {
                 }
             }
             if (powerOverlay) ui_render_power_sheet(s.recording, fb);
+            // Pairing code sheet sits over everything — the phone's dialog is
+            // modal on its side too.
+            if (unsigned int pc = ble_server::pairingCode())
+                ui_render_pairing(pc, fb);
             }  // end else (normal screens)
             // These three classified the frame so refresh() could pick a waveform.
             // The driver picks its own now (see refresh()), so they are inert — kept

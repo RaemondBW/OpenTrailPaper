@@ -668,6 +668,12 @@ int main(int argc, char** argv) {
         emit("music_idle.png");
     }
 
+    // BLE pairing sheet over the dashboard
+    clearWhite(fb.data());
+    ui_render_dashboard(s, false, dashDefaultLayout(), fb.data());
+    ui_render_pairing(831427, fb.data());
+    emit("pairing.png");
+
     // Nav prompt over the map
 
     // Turn-by-turn banner over the map. navBannerVisible must move the compass

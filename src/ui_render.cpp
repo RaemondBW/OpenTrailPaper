@@ -988,6 +988,25 @@ void ui_render_dashboard(const RideState& s, bool navActive,
 
 bool ui_render_dashboard_toned() { return g_dashToned; }
 
+void ui_render_pairing(uint32_t code, uint8_t* fb) {
+    const int W = epd_rotated_display_width();
+    // A centred card over the live screen — same double-border language as the
+    // zoom/volume buttons, sized so the code is readable from the cockpit.
+    const EpdRect card = {24, 300, W - 48, 372};
+    epd_fill_rect(card, 0xFF, fb);
+    epd_draw_rect(card, 0x00, fb);
+    epd_draw_rect({card.x + 2, card.y + 2, card.width - 4, card.height - 4},
+                  0x00, fb);
+    ui::label(W / 2, card.y + 64, "PAIR WITH PHONE", fb);
+    char grouped[16];
+    snprintf(grouped, sizeof(grouped), "%03lu %03lu",
+             (unsigned long)(code / 1000), (unsigned long)(code % 1000));
+    ui::text(&Impact_B, W / 2, card.y + 230, grouped, fb,
+             EPD_DRAW_ALIGN_CENTER);
+    ui::text(&Arial_B, W / 2, card.y + 316, "Enter this code on your iPhone",
+             fb, EPD_DRAW_ALIGN_CENTER, ui::DARK);
+}
+
 // ---------------------------------------------------------------------------
 // MUSIC page — phone media controls + album art.
 // ---------------------------------------------------------------------------

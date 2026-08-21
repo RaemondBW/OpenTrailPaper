@@ -143,6 +143,10 @@ extern const EpdRect kMediaPlay;
 extern const EpdRect kMediaNext;
 extern const EpdRect kMediaVolUp;
 
+// BLE pairing sheet: the 6-digit code the phone asks the rider to type,
+// drawn over whatever screen is up while the pairing dialog is live.
+void ui_render_pairing(uint32_t code, uint8_t* fb);
+
 // Field machinery shared with the map's data strip (map_view.cpp): value +
 // unit for a DashField, and whether its source is currently present.
 void dashFieldValue(uint8_t field, const RideState& s, char* val, size_t valCap,
