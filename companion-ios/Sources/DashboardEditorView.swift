@@ -92,7 +92,16 @@ struct DashboardEditorView: View {
                 }
             }
 
-            if config.pages.indices.contains(pageIx), config.pages[pageIx].isMusic {
+            if pageIx == config.pages.count {
+                Section {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label("Map", systemImage: "map")
+                        Text("The map is always the last stop in the Home-key cycle — after the pages here, before wrapping back to page one. It isn't editable and can't be removed.")
+                            .font(TypeScale.body).foregroundStyle(Palette.muted)
+                    }
+                    .padding(.vertical, 4)
+                }
+            } else if config.pages.indices.contains(pageIx), config.pages[pageIx].isMusic {
                 Section {
                     VStack(alignment: .leading, spacing: 8) {
                         Label("Music controls", systemImage: "music.note")
@@ -148,8 +157,9 @@ struct DashboardEditorView: View {
                 ForEach(config.pages.indices, id: \.self) { i in
                     carouselCard(i).id(i)
                 }
+                mapCard.id(config.pages.count)
                 if config.pages.count < DashConfig.maxPages {
-                    addCard.id(config.pages.count)
+                    addCard.id(config.pages.count + 1)
                 }
             }
             .scrollTargetLayout()
@@ -163,7 +173,7 @@ struct DashboardEditorView: View {
         // The centred card IS the selection (clamped off the add card, which
         // is browsable but has nothing to edit below).
         .onChange(of: scrolled) {
-            if let i = scrolled, i < config.pages.count { pageIx = i }
+            if let i = scrolled, i <= config.pages.count { pageIx = i }
         }
     }
 
@@ -209,6 +219,24 @@ struct DashboardEditorView: View {
         .onLongPressGesture {
             if config.pages.count > 1 { showReorder = true }
         }
+    }
+
+    // The map, shown where it actually sits in the Home cycle: after every
+    // page. Not removable, not editable — but visible, so the carousel is the
+    // whole loop the Home key walks.
+    private var mapCard: some View {
+        MapPagePreview()
+            .frame(width: 124, height: 206)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(pageIx == config.pages.count ? Color.accentColor
+                                                         : Palette.hairline,
+                            lineWidth: pageIx == config.pages.count ? 2.5 : 1))
+            .onTapGesture {
+                pageIx = config.pages.count
+                withAnimation { scrolled = pageIx }
+            }
     }
 
     // The far-right card: a new page, data or music.
@@ -752,5 +780,61 @@ struct MusicPreview: View {
         .aspectRatio(540 / 960, contentMode: .fit)
         .background(Color(hex: 0xF7F5EF))
         .foregroundStyle(.black)
+    }
+}
+
+
+// Thumbnail of the device's map screen: status rule, a few streets, the route,
+// the zoom stack and the data strip — enough to say "the map" at a glance.
+struct MapPagePreview: View {
+    var body: some View {
+        GeometryReader { geo in
+            let k = geo.size.width / 540
+            ZStack(alignment: .topLeading) {
+                Rectangle().fill(.black)
+                    .frame(width: 540 * k, height: 3 * k)
+                    .offset(y: 61 * k)
+                // Street grid, slightly rotated
+                ForEach(0..<4, id: \.self) { i in
+                    Rectangle().fill(.black.opacity(i == 1 ? 0.9 : 0.35))
+                        .frame(width: 700 * k, height: (i == 1 ? 7 : 3) * k)
+                        .rotationEffect(.degrees(18))
+                        .offset(x: -80 * k, y: (170 + CGFloat(i) * 150) * k)
+                }
+                ForEach(0..<3, id: \.self) { i in
+                    Rectangle().fill(.black.opacity(0.35))
+                        .frame(width: 3 * k, height: 700 * k)
+                        .rotationEffect(.degrees(18))
+                        .offset(x: (120 + CGFloat(i) * 160) * k, y: 90 * k)
+                }
+                // Position dot
+                Circle().fill(.black)
+                    .frame(width: 26 * k, height: 26 * k)
+                    .offset(x: 257 * k, y: 420 * k)
+                Circle().stroke(.black, lineWidth: max(1, 2 * k))
+                    .frame(width: 44 * k, height: 44 * k)
+                    .offset(x: 248 * k, y: 411 * k)
+                // Zoom stack, right edge
+                ForEach(0..<2, id: \.self) { v in
+                    Rectangle().fill(Color(hex: 0xF7F5EF))
+                        .overlay(Rectangle().stroke(.black, lineWidth: max(1, 2 * k)))
+                        .frame(width: 76 * k, height: 76 * k)
+                        .offset(x: 462 * k, y: (560 + CGFloat(v) * 80) * k)
+                }
+                // Data strip
+                Rectangle().fill(.black)
+                    .frame(width: 540 * k, height: 3 * k)
+                    .offset(y: 810 * k)
+                ForEach(0..<3, id: \.self) { c in
+                    Capsule().fill(.black)
+                        .frame(width: 90 * k, height: 30 * k)
+                        .offset(x: (40 + CGFloat(c) * 170) * k, y: 860 * k)
+                }
+            }
+            .frame(width: geo.size.width, height: 960 * k, alignment: .topLeading)
+            .clipped()
+        }
+        .aspectRatio(540 / 960, contentMode: .fit)
+        .background(Color(hex: 0xF7F5EF))
     }
 }

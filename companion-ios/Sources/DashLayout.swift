@@ -221,11 +221,10 @@ struct DashConfig: Equatable {
     /// page carries no `page` line, so a one-page config round-trips to the
     /// pre-pages format.
     var configText: String {
+        // Byte-identical with dash_layout.cpp's kHeader — `==` between the
+        // app's config and the device's echo is a string comparison.
         var s = "# OpenTrailPaper dashboard layout\n"
-        s += "# <field> <small|medium|large|hero> [half]\n"
-        s += "# 'half' shares the row with the next 'half' field.\n"
-        s += "# 'page' on its own line starts a new page (Home key steps through\n"
-        s += "# them); 'page music' adds the phone media-controls page.\n"
+        s += "# <field> <small|medium|large|hero> [half]; 'page' or 'page music' starts a new page\n"
         for (i, page) in pages.enumerated() {
             if page.isMusic {
                 s += "page music\n"

@@ -1953,6 +1953,13 @@ extension BLEManager: CBPeripheralDelegate {
     // MARK: - Dashboard layout
 
     private func parseDashLayout(_ d: Data) {
+        // A 1-byte 0x01 is the device saying "changed, too big for a notify —
+        // read me": a notification truncates at MTU-3 bytes, and adopting a
+        // truncated multi-page config is how the editor once wiped itself.
+        if d.count == 1, d[0] == 0x01 {
+            if let ch = dashChar { peripheral?.readValue(for: ch) }
+            return
+        }
         guard let text = String(data: d, encoding: .utf8) else { return }
         dashConfig = DashConfig(text: text)
         updateMediaRemote()
@@ -1964,7 +1971,19 @@ extension BLEManager: CBPeripheralDelegate {
     func sendDashConfig(_ config: DashConfig) {
         guard let ch = dashChar, let p = peripheral else { return }
         guard let data = config.configText.data(using: .utf8) else { return }
-        p.writeValue(data, for: ch, type: .withResponse)
+        // Streamed ([0x01] begin, [0x02]+bytes, [0x03] commit): a multi-page
+        // config outgrows the 512-byte ceiling iOS puts on a single write.
+        let chunk = max(20, p.maximumWriteValueLength(for: .withResponse)) - 1
+        p.writeValue(Data([0x01]), for: ch, type: .withResponse)
+        var off = 0
+        while off < data.count {
+            let n = min(chunk, data.count - off)
+            var pkt = Data([0x02])
+            pkt.append(data.subdata(in: off..<off + n))
+            p.writeValue(pkt, for: ch, type: .withResponse)
+            off += n
+        }
+        p.writeValue(Data([0x03]), for: ch, type: .withResponse)
     }
 
     // MARK: - Phone media (the device's MUSIC page)

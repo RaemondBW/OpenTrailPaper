@@ -165,16 +165,36 @@ void writeDashValue(NimBLECharacteristic* c) {
     c->setValue((const uint8_t*)text, n);
 }
 
+// A multi-page config outgrew single BLE writes (iOS caps one write at 512
+// bytes), so the app streams it: [0x01] begin, [0x02 bytes...] chunks,
+// [0x03] commit. A write starting with a printable byte is the legacy
+// whole-text path, kept so an older app's one-page config still lands.
+size_t dashRxLen = 0;
+
 class DashCb : public NimBLECharacteristicCallbacks {
     void onRead(NimBLECharacteristic* c, NimBLEConnInfo&) override {
         writeDashValue(c);
     }
     void onWrite(NimBLECharacteristic* c, NimBLEConnInfo&) override {
         std::string v = c->getValue();
-        if (v.empty() || v.size() >= DASH_TEXT_MAX) return;
-        memcpy(dashPendingText, v.data(), v.size());
-        dashPendingText[v.size()] = 0;
-        dashApplyPending = true;
+        if (v.empty()) return;
+        const uint8_t op = (uint8_t)v[0];
+        if (op == 0x01) {
+            dashRxLen = 0;
+        } else if (op == 0x02) {
+            size_t n = v.size() - 1;
+            if (dashRxLen + n >= DASH_TEXT_MAX) n = DASH_TEXT_MAX - 1 - dashRxLen;
+            memcpy(dashPendingText + dashRxLen, v.data() + 1, n);
+            dashRxLen += n;
+        } else if (op == 0x03) {
+            dashPendingText[dashRxLen] = 0;
+            dashRxLen = 0;
+            dashApplyPending = true;
+        } else if (op >= 0x20 && v.size() < DASH_TEXT_MAX) {   // legacy text
+            memcpy(dashPendingText, v.data(), v.size());
+            dashPendingText[v.size()] = 0;
+            dashApplyPending = true;
+        }
     }
 };
 
@@ -1639,7 +1659,8 @@ void begin() {
 
     dashChr = svc->createCharacteristic(
         CHR_DASH,
-        NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::NOTIFY);
+        NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::NOTIFY,
+        DASH_TEXT_MAX);   // a 4-page config outgrows the 512 B default
     dashChr->setCallbacks(new DashCb());
     writeDashValue(dashChr);
 
@@ -1733,7 +1754,21 @@ void task(void*) {
             // rejected — and so a send that silently failed is visible.
             if (dashChr) {
                 writeDashValue(dashChr);
-                dashChr->notify();
+                // A notification carries at most MTU-3 bytes, and a multi-page
+                // config no longer fits — the app was receiving the first 244
+                // bytes, reparsing them as a smaller config, and wiping its
+                // own editor. Short configs still go inline (an older app
+                // understands nothing else); anything bigger sends a 1-byte
+                // ping and the app reads the characteristic, which
+                // reassembles long values properly.
+                static char text[DASH_TEXT_MAX];
+                size_t n = dash_config::currentText(text, sizeof(text));
+                if (n <= 180) {
+                    dashChr->notify();
+                } else {
+                    const uint8_t ping = 0x01;
+                    dashChr->notify(&ping, 1);
+                }
             }
         }
         if (mapCommitPending && sdFree) {

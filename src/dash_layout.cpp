@@ -158,12 +158,11 @@ bool serializeItems(const DashLayout& layout, char* out, size_t cap, size_t& n) 
     return true;
 }
 
+// Two lines, not five: this text crosses BLE on every sync, and the wire
+// budget matters more than prose — the format is documented in dash_layout.h.
 const char kHeader[] =
     "# OpenTrailPaper dashboard layout\n"
-    "# <field> <small|medium|large|hero> [half]\n"
-    "# 'half' shares the row with the next 'half' field.\n"
-    "# 'page' on its own line starts a new page (Home key steps through\n"
-    "# them); 'page music' adds the phone media-controls page.\n";
+    "# <field> <small|medium|large|hero> [half]; 'page' or 'page music' starts a new page\n";
 
 }  // namespace
 
