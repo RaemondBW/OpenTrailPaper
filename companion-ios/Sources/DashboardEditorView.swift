@@ -18,7 +18,12 @@ struct DashboardEditorView: View {
     @State private var config = DashConfig(pages: [])
     @State private var pageIx = 0
     @State private var showAdd = false
-    @State private var showReorder = false
+    // In-carousel drag reorder: the card being held, and how far the finger
+    // has moved. The array is only reordered on RELEASE — mutating mid-drag
+    // changes the ForEach identity under the live gesture and SwiftUI cancels
+    // it; the in-flight motion is pure presentation (offsets on neighbours).
+    @State private var dragIx: Int?
+    @State private var dragW: CGFloat = 0
     @State private var scrolled: Int?
     @State private var dirty = false
 
@@ -88,7 +93,7 @@ struct DashboardEditorView: View {
                     .listRowBackground(Color.clear)
             } footer: {
                 if config.pages.count > 1 {
-                    Text("Swipe the carousel · hold a page to reorder")
+                    Text("Swipe the carousel · hold a page, then drag to reorder")
                 }
             }
 
@@ -156,7 +161,16 @@ struct DashboardEditorView: View {
             }
         }
         .environment(\.editMode, .constant(.active))
-        .sheet(isPresented: $showReorder) { reorderSheet }
+    }
+
+    /// One card slot: width + LazyHStack spacing.
+    private let cardPitch: CGFloat = 140
+
+    /// Where the held card would land if released now.
+    private var dragTarget: Int {
+        guard let d = dragIx else { return 0 }
+        let t = d + Int((dragW / cardPitch).rounded())
+        return min(max(t, 0), config.pages.count - 1)
     }
 
     private var carousel: some View {
@@ -200,7 +214,7 @@ struct DashboardEditorView: View {
                 RoundedRectangle(cornerRadius: 8)
                     .stroke(pageIx == i ? Color.accentColor : Palette.hairline,
                             lineWidth: pageIx == i ? 2.5 : 1))
-            if config.pages.count > 1 {
+            if config.pages.count > 1, dragIx == nil {
                 Button {
                     withAnimation {
                         config.pages.remove(at: i)
@@ -220,13 +234,63 @@ struct DashboardEditorView: View {
                 .accessibilityLabel("Remove this page")
             }
         }
+        // Held card lifts and follows the finger; the others slide aside to
+        // show where it will land.
+        .scaleEffect(dragIx == i ? 1.08 : 1)
+        .offset(x: cardShift(i))
+        .zIndex(dragIx == i ? 1 : 0)
+        .shadow(color: .black.opacity(dragIx == i ? 0.25 : 0), radius: 8, y: 4)
+        .animation(.spring(duration: 0.25), value: dragIx)
+        .animation(.spring(duration: 0.2), value: dragIx != nil ? dragTarget : 0)
         .onTapGesture {
             pageIx = i
             withAnimation { scrolled = i }
         }
-        .onLongPressGesture {
-            if config.pages.count > 1 { showReorder = true }
-        }
+        .gesture(reorderGesture(i), isEnabled: config.pages.count > 1)
+    }
+
+    /// Presentation offset while a drag is live: the held card tracks the
+    /// finger; cards between it and its landing slot step one pitch aside.
+    private func cardShift(_ i: Int) -> CGFloat {
+        guard let d = dragIx else { return 0 }
+        if i == d { return dragW }
+        let t = dragTarget
+        if d < i, i <= t { return -cardPitch }
+        if t <= i, i < d { return cardPitch }
+        return 0
+    }
+
+    private func reorderGesture(_ i: Int) -> some Gesture {
+        LongPressGesture(minimumDuration: 0.35)
+            .sequenced(before: DragGesture())
+            .onChanged { value in
+                switch value {
+                case .second(true, let drag):
+                    if dragIx == nil {
+                        dragIx = i
+                        dragW = 0
+                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    }
+                    if let drag { dragW = drag.translation.width }
+                default:
+                    break
+                }
+            }
+            .onEnded { _ in
+                guard let d = dragIx else { return }
+                let t = dragTarget
+                withAnimation(.spring(duration: 0.3)) {
+                    if t != d {
+                        config.pages.move(fromOffsets: IndexSet(integer: d),
+                                          toOffset: t > d ? t + 1 : t)
+                        dirty = true
+                    }
+                    pageIx = t
+                    scrolled = t
+                    dragIx = nil
+                    dragW = 0
+                }
+            }
     }
 
     // The map, shown where it actually sits in the Home cycle: after every
@@ -285,34 +349,6 @@ struct DashboardEditorView: View {
                     .strokeBorder(Palette.hairline,
                                   style: StrokeStyle(lineWidth: 1.5, dash: [6, 5])))
         }
-    }
-
-    private var reorderSheet: some View {
-        NavigationStack {
-            List {
-                ForEach(config.pages.indices, id: \.self) { i in
-                    if config.pages[i].isMusic {
-                        Label("Music controls", systemImage: "music.note")
-                    } else {
-                        Label("Data · \(config.pages[i].layout.items.count) fields",
-                              systemImage: "rectangle.3.group")
-                    }
-                }
-                .onMove { from, to in
-                    config.pages.move(fromOffsets: from, toOffset: to)
-                    dirty = true
-                }
-            }
-            .environment(\.editMode, .constant(.active))
-            .navigationTitle("Page order")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { showReorder = false }
-                }
-            }
-        }
-        .presentationDetents([.medium])
     }
 
     private func mutateAt(_ i: Int, _ f: (inout DashLayout) -> Void) {
