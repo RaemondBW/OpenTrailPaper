@@ -910,22 +910,22 @@ struct MapPagePreview: View {
                 ForEach(0..<3, id: \.self) { c in
                     let id = c < fields.count ? fields[c] : "speed"
                     ZStack(alignment: .topLeading) {
-                        // Boxed like the data pages' cells — same primitive on
-                        // the device (ui::cell), same look here.
+                        // Boxed like the data pages' cells — same primitive,
+                        // same margins and gutters as the device draws.
                         Rectangle().stroke(.black, lineWidth: max(1, 2 * k))
                         Text(previewPanelLabel(id))
                             .font(.system(size: 15 * k, weight: .bold))
                             .kerning(2 * k)
                             .lineLimit(1).minimumScaleFactor(0.5)
-                            .frame(width: 150 * k, alignment: .leading)
+                            .frame(width: 130 * k, alignment: .leading)
                             .offset(x: 14 * k, y: 12 * k)
                         Text(previewSample(id))
-                            .font(.system(size: 52 * k, weight: .heavy))
+                            .font(.system(size: 48 * k, weight: .heavy))
                             .lineLimit(1).minimumScaleFactor(0.5)
-                            .frame(width: 180 * k, height: 147 * k)
+                            .frame(width: 156 * k, height: 123 * k)
                     }
-                    .frame(width: 180 * k, height: 147 * k, alignment: .topLeading)
-                    .offset(x: CGFloat(c) * 180 * k, y: 813 * k)
+                    .frame(width: 156 * k, height: 123 * k, alignment: .topLeading)
+                    .offset(x: (24 + CGFloat(c) * 168) * k, y: 825 * k)
                 }
             }
             .frame(width: geo.size.width, height: 960 * k, alignment: .topLeading)

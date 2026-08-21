@@ -420,9 +420,12 @@ void ui_render_map(const MapScreenData& map, const RideState& s, uint8_t* fb) {
     epd_fill_rect({0, STRIP_TOP, W, H - STRIP_TOP}, ui::PAPER, fb);
     epd_fill_rect({0, STRIP_TOP, W, ui::RULE_HEAVY}, ui::INK, fb);
 
-    const int fy = STRIP_TOP + ui::RULE_HEAVY;
-    const int fh = H - fy;
-    const int colW = W / 3;
+    // Dash-page spacing, not flush thirds: the same 24 px screen margin and
+    // 12 px gutters the data pages use, so the strip reads as three cells with
+    // air rather than one wall-to-wall box.
+    const int fy = STRIP_TOP + ui::RULE_HEAVY + ui::GUTTER;
+    const int fh = H - fy - ui::GUTTER;
+    const int colW = (ui::CONTENT_W - 2 * ui::GUTTER) / 3;
 
     // Fields come from the rider's config (`map` line in dashboard.cfg).
     // One override stays: while navigating, if no cell already shows ROUTE
@@ -465,7 +468,7 @@ void ui_render_map(const MapScreenData& map, const RideState& s, uint8_t* fb) {
         if (idx > vi) vi = idx;
     }
     for (int c = 0; c < 3; ++c) {
-        EpdRect r = {c * colW, fy, colW, fh};
+        EpdRect r = {ui::CONTENT_X + c * (colW + ui::GUTTER), fy, colW, fh};
         // Greyed like a dash cell when the source is gone — a strip cell must
         // never show a live-looking number from a dead sensor either.
         bool stale = !dashFieldAvailable(f3[c], s) && !s.showOffline;
