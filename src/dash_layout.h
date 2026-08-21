@@ -73,14 +73,15 @@ struct DashLayout {
 // page is either a field layout or the MUSIC page (phone media controls +
 // album art), which carries no items — its content comes over BLE.
 //
-// 4 pages is a deliberate ceiling: the Home key is the only way around the
-// carousel, so every extra page is another press between the rider and the
-// map. It also keeps the whole config a fixed-size POD (~4x the old one).
-constexpr int DASH_MAX_PAGES = 4;
+// The MAP is itself a page in the cycle (`page map`), movable like the rest —
+// there is always exactly one, the parser appends it when a config predates
+// its existence, and it can't be removed. 5 = 4 configurable pages + the map.
+constexpr int DASH_MAX_PAGES = 5;
 
 enum DashPageKind : uint8_t {
     DP_FIELDS = 0,
     DP_MUSIC,
+    DP_MAP,
 };
 
 struct DashPage {

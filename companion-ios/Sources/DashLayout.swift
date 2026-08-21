@@ -170,19 +170,30 @@ struct DashLayout: Equatable {
 /// are the wire format, and text with no separators is exactly the old
 /// one-page config.
 struct DashConfig: Equatable {
-    struct Page {
-        var isMusic: Bool
+    struct Page: Identifiable {
+        // Stable identity for SwiftUI. Index-keyed cards made a deletion reuse
+        // the wrong views — the neighbour appeared duplicated and the map card
+        // vanished until the next full re-render.
+        let id = UUID()
+        var kind: Kind
         var layout: DashLayout
-        static var music: Page { Page(isMusic: true, layout: DashLayout(items: [])) }
-        static var fields: Page { Page(isMusic: false, layout: DashLayout(items: [])) }
+        enum Kind { case fields, music, map }
+        var isMusic: Bool { kind == .music }
+        var isMap: Bool { kind == .map }
+        static var music: Page { Page(kind: .music, layout: DashLayout(items: [])) }
+        static var fields: Page { Page(kind: .fields, layout: DashLayout(items: [])) }
+        static var map: Page { Page(kind: .map, layout: DashLayout(items: [])) }
     }
 
     var pages: [Page]
     /// The map screen's 3-cell data strip (`map <f> <f> <f>` in the config).
     var mapFields: [String] = ["speed", "distance", "ridetime"]
 
-    /// DASH_MAX_PAGES on the device — the parser drops anything past it.
+    /// Configurable (non-map) pages the device accepts; the map page rides
+    /// along on top of these (DASH_MAX_PAGES = 5 on the device).
     static let maxPages = 4
+
+    var contentPages: Int { pages.filter { !$0.isMap }.count }
 
     static func == (a: DashConfig, b: DashConfig) -> Bool {
         a.configText == b.configText
@@ -195,14 +206,17 @@ struct DashConfig: Equatable {
     init(text: String) {
         var out: [Page] = []
         var chunk = ""
-        var music = false
+        var kind = Page.Kind.fields
+        var sawMap = false
         func commit() {
-            let layout = DashLayout(text: chunk)
-            if music || !layout.items.isEmpty {
-                out.append(Page(isMusic: music, layout: music ? DashLayout(items: []) : layout))
+            let layout = kind == .fields ? DashLayout(text: chunk) : DashLayout(items: [])
+            var keep = kind != .fields || !layout.items.isEmpty
+            if kind == .map {
+                if sawMap { keep = false } else { sawMap = true }
             }
+            if keep { out.append(Page(kind: kind, layout: layout)) }
             chunk = ""
-            music = false
+            kind = .fields
         }
         var strip = ["speed", "distance", "ridetime"]
         for rawLine in text.split(separator: "\n", omittingEmptySubsequences: false) {
@@ -211,7 +225,8 @@ struct DashConfig: Equatable {
             let tok = line.split(whereSeparator: { $0 == " " || $0 == "\t" || $0 == "\r" })
             if tok.first == "page" {
                 commit()
-                music = tok.count > 1 && tok[1] == "music"
+                if tok.count > 1, tok[1] == "music" { kind = .music }
+                else if tok.count > 1, tok[1] == "map" { kind = .map }
             } else if tok.first == "map" {
                 for i in 0..<3 where tok.count > i + 1 {
                     if DashField.named(String(tok[i + 1])) != nil {
@@ -223,7 +238,11 @@ struct DashConfig: Equatable {
             }
         }
         commit()
-        pages = Array(out.prefix(DashConfig.maxPages))
+        // A pre-map-page config: the map belongs at the end, where the old
+        // fixed cycle put it.
+        if !sawMap { out.append(.map) }
+        pages = Array(out.prefix(DashConfig.maxPages + 1))
+        if !pages.contains(where: { $0.isMap }) { pages.append(.map) }
         mapFields = strip
     }
 
@@ -239,10 +258,12 @@ struct DashConfig: Equatable {
         for (i, page) in pages.enumerated() {
             if page.isMusic {
                 s += "page music\n"
+            } else if page.isMap {
+                s += "page map\n"
             } else if i > 0 {
                 s += "page\n"
             }
-            if !page.isMusic {
+            if page.kind == .fields {
                 for it in page.layout.items {
                     let field = it.field.padding(toLength: max(10, it.field.count),
                                                  withPad: " ", startingAt: 0)
@@ -257,12 +278,12 @@ struct DashConfig: Equatable {
 
     /// The first data page — what thumbnails show.
     var firstFields: DashLayout? {
-        pages.first(where: { !$0.isMusic })?.layout
+        pages.first(where: { $0.kind == .fields })?.layout
     }
 
     var hasMusicPage: Bool { pages.contains { $0.isMusic } }
 
     static var deviceDefault: DashConfig {
-        DashConfig(pages: [Page(isMusic: false, layout: .deviceDefault)])
+        DashConfig(pages: [Page(kind: .fields, layout: .deviceDefault), .map])
     }
 }

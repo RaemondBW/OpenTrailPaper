@@ -80,7 +80,8 @@ const DashPages& dashDefaultPages() {
         DashPages p;
         p.pages[0].kind = DP_FIELDS;
         p.pages[0].layout = dashDefaultLayout();
-        p.count = 1;
+        p.pages[1].kind = DP_MAP;
+        p.count = 2;
         return p;
     }();
     return d;
@@ -186,10 +187,14 @@ bool dashParsePages(const char* text, DashPages& out) {
     // of the text) closes it. A field page that collected nothing is dropped —
     // a config of nothing but `page` lines must not become blank panels.
     DashPage cur;
+    bool sawMap = false;
     auto commit = [&] {
-        if (out.count >= DASH_MAX_PAGES) return;
-        if (cur.kind == DP_MUSIC || cur.layout.count > 0)
-            out.pages[out.count++] = cur;
+        bool keep = cur.kind != DP_FIELDS || cur.layout.count > 0;
+        if (cur.kind == DP_MAP) {
+            if (sawMap) keep = false;   // exactly one map, first wins
+            else sawMap = true;
+        }
+        if (keep && out.count < DASH_MAX_PAGES) out.pages[out.count++] = cur;
         cur = DashPage{};
     };
 
@@ -219,6 +224,8 @@ bool dashParsePages(const char* text, DashPages& out) {
             commit();
             if (ntok >= 2 && tokenEq(tok[1], tokLen[1], "music"))
                 cur.kind = DP_MUSIC;
+            else if (ntok >= 2 && tokenEq(tok[1], tokLen[1], "map"))
+                cur.kind = DP_MAP;
         } else if (ntok >= 1 && tokenEq(tok[0], tokLen[0], "map")) {
             // `map <field> <field> <field>` — the map screen's data strip.
             // Position-independent; a missing/typo'd token keeps that slot's
@@ -249,7 +256,19 @@ bool dashParsePages(const char* text, DashPages& out) {
         p = lineEnd + 1;
     }
     commit();
-    return out.count > 0;
+    // A config from before the map was a page: it belongs at the end, exactly
+    // where the old fixed cycle put it.
+    if (!sawMap && out.count < DASH_MAX_PAGES) {
+        out.pages[out.count].kind = DP_MAP;
+        out.pages[out.count].layout = DashLayout{};
+        out.count++;
+    }
+    // A config that is ONLY the map has nothing to ride with — callers fall
+    // back to the default, same as an empty file.
+    bool content = false;
+    for (int i = 0; i < out.count; ++i)
+        if (out.pages[i].kind != DP_MAP) content = true;
+    return content;
 }
 
 size_t dashSerializePages(const DashPages& pages, char* out, size_t cap) {
@@ -265,11 +284,13 @@ size_t dashSerializePages(const DashPages& pages, char* out, size_t cap) {
     n += (size_t)w;
     for (int i = 0; i < pages.count; ++i) {
         const DashPage& pg = pages.pages[i];
-        if (i > 0 || pg.kind == DP_MUSIC) {
+        if (i > 0 || pg.kind != DP_FIELDS) {
             // The first field page needs no `page` line — that is exactly what
             // keeps a one-page config byte-compatible with the old format.
             w = snprintf(out + n, cap - n, "%s",
-                         pg.kind == DP_MUSIC ? "page music\n" : "page\n");
+                         pg.kind == DP_MUSIC  ? "page music\n"
+                         : pg.kind == DP_MAP ? "page map\n"
+                                             : "page\n");
             if (w < 0 || (size_t)w >= cap - n) return 0;
             n += (size_t)w;
         }

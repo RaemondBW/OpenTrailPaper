@@ -57,10 +57,25 @@ enum Screen { SCREEN_DASH, SCREEN_MAP, SCREEN_SUMMARY, SCREEN_MENU,
               SCREEN_SENSORS, SCREEN_ROUTES, SCREEN_HISTORY,
               SCREEN_SETTINGS, SCREEN_GPSDEBUG, SCREEN_DIRECTIONS };
 Screen screen = SCREEN_DASH;
-// Which dashboard page SCREEN_DASH shows. Deliberately NOT reset by
-// navigation: leaving for the menu or settings and coming back lands on the
-// page the rider was on — the page is a place, not a mode.
+// Which cycle slot the rider is on (indexes dash_config::pages, which now
+// includes the MAP as a movable page). Deliberately NOT reset by navigation:
+// leaving for the menu or settings and coming back lands on the page the
+// rider was on — the page is a place, not a mode.
 int dashPage = 0;
+
+// First slot that is an actual dashboard (not the map) — where "back to the
+// data page" lands when the current slot is the map.
+int firstContentPage() {
+    for (int i = 0; i < dash_config::pageCount(); ++i)
+        if (dash_config::page(i).kind != DP_MAP) return i;
+    return 0;
+}
+
+int mapSlot() {
+    for (int i = 0; i < dash_config::pageCount(); ++i)
+        if (dash_config::page(i).kind == DP_MAP) return i;
+    return dash_config::pageCount() - 1;
+}
 RideSummary pendingSummary;
 
 float mapMpp = 2.0f;  // map zoom: 1/2/4/8/16/32 m per px (wide levels show tiles)
@@ -411,7 +426,10 @@ void goBack() {
         case SCREEN_HISTORY:  screen = SCREEN_MENU; break;
         case SCREEN_SENSORS:  leaveList(); break;  // also stops the BLE scan
         case SCREEN_MENU:     screen = SCREEN_DASH; break;
-        case SCREEN_MAP:      screen = SCREEN_DASH; break;
+        case SCREEN_MAP:
+            dashPage = firstContentPage();
+            screen = SCREEN_DASH;
+            break;
         // Back on the summary resumes the ride (non-destructive); SAVE / DISCARD
         // must be tapped explicitly.
         case SCREEN_SUMMARY:  screen = SCREEN_DASH; break;
@@ -558,8 +576,10 @@ void handleTap(int x, int y) {
             // flip now has deliberate targets — that strip, and the Home key,
             // which is the only way back to the map.
             if (y < ui::STATUS_H) screen = SCREEN_MENU;
-            else if (screen == SCREEN_MAP && y >= ui::MAP_STRIP_TOP)
+            else if (screen == SCREEN_MAP && y >= ui::MAP_STRIP_TOP) {
+                dashPage = firstContentPage();
                 screen = SCREEN_DASH;
+            }
             break;
         case SCREEN_SUMMARY:
             if (inRect(kResumeButton, x, y)) {
@@ -2171,15 +2191,17 @@ void task(void*) {
             if (millis() - lastHome > 400) {
                 lastHome = millis();
                 noteActivity();
-                // The carousel: dash pages in configured order, then the
-                // map, then back to page one. With a single-page config this
-                // is exactly the old dash <-> map swap.
-                if (screen == SCREEN_DASH) {
-                    if (dashPage + 1 < dash_config::pageCount()) dashPage++;
-                    else screen = SCREEN_MAP;
-                } else if (screen == SCREEN_MAP) {
-                    screen = SCREEN_DASH;
-                    dashPage = 0;
+                // The carousel: every page in configured order, the map
+                // among them wherever the rider put it. With the default
+                // config this is exactly the old dash <-> map swap.
+                if (screen == SCREEN_DASH || screen == SCREEN_MAP) {
+                    // Entered the map some other way (routes, strip tap)?
+                    // Continue the cycle from the map's slot.
+                    if (screen == SCREEN_MAP) dashPage = mapSlot();
+                    dashPage = (dashPage + 1) % dash_config::pageCount();
+                    screen = dash_config::page(dashPage).kind == DP_MAP
+                                 ? SCREEN_MAP
+                                 : SCREEN_DASH;
                 } else {
                     goBack();
                 }
@@ -2191,8 +2213,12 @@ void task(void*) {
         // A layout the rider just changed in the app should land on the panel
         // now, not up to a second later — they are looking at both screens.
         if (ble_server::takeDashChanged()) {
-            // The config may have fewer pages now — never point past the end.
+            // The config may have fewer pages now — never point past the end,
+            // and a data screen must never wear the map's slot.
             if (dashPage >= dash_config::pageCount()) dashPage = 0;
+            if (screen == SCREEN_DASH &&
+                dash_config::page(dashPage).kind == DP_MAP)
+                dashPage = firstContentPage();
             forceDraw = true;
         }
         // A pairing code appearing (or clearing) must repaint NOW — the rider
@@ -2303,6 +2329,8 @@ void task(void*) {
             } else {
             switch (screen) {
                 case SCREEN_DASH: {
+                    if (dash_config::page(dashPage).kind == DP_MAP)
+                        dashPage = firstContentPage();
                     const DashPage& pg = dash_config::page(dashPage);
                     if (pg.kind == DP_MUSIC) {
                         // Advance the position locally while playing — the

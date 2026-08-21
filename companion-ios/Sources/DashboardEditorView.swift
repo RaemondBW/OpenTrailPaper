@@ -24,7 +24,7 @@ struct DashboardEditorView: View {
     // it; the in-flight motion is pure presentation (offsets on neighbours).
     @State private var dragIx: Int?
     @State private var dragW: CGFloat = 0
-    @State private var scrolled: Int?
+    @State private var scrolled: String?
     @State private var dirty = false
 
     var body: some View {
@@ -72,7 +72,8 @@ struct DashboardEditorView: View {
             .onChange(of: ble.dashConfig) {
                 if !dirty, let c = ble.dashConfig {
                     config = c
-                    if pageIx >= config.pages.count { pageIx = 0; scrolled = 0 }
+                    if pageIx >= config.pages.count { pageIx = 0 }
+                    scrolled = scrollID(pageIx)
                 }
             }
             .sheet(isPresented: $showAdd) {
@@ -97,7 +98,7 @@ struct DashboardEditorView: View {
                 }
             }
 
-            if pageIx == config.pages.count {
+            if config.pages.indices.contains(pageIx), config.pages[pageIx].isMap {
                 Section {
                     ForEach(0..<3, id: \.self) { slot in
                         Picker(["Left cell", "Middle cell", "Right cell"][slot],
@@ -112,7 +113,7 @@ struct DashboardEditorView: View {
                 } header: {
                     Text("Map data strip")
                 } footer: {
-                    Text("The three cells under the map. While navigating, Route left takes the right cell unless one of them already shows it. The map itself is always the last stop in the Home-key cycle and can't be removed.")
+                    Text("The three cells under the map. While navigating, Route left takes the right cell unless one of them already shows it. Drag the map card to choose where it sits in the Home-key cycle; it can't be removed.")
                 }
             } else if config.pages.indices.contains(pageIx), config.pages[pageIx].isMusic {
                 Section {
@@ -154,7 +155,7 @@ struct DashboardEditorView: View {
                     Button("Reset to the default layout") {
                         config = .deviceDefault
                         pageIx = 0
-                        scrolled = 0
+                        scrolled = scrollID(0)
                         dirty = true
                     }
                 }
@@ -173,15 +174,18 @@ struct DashboardEditorView: View {
         return min(max(t, 0), config.pages.count - 1)
     }
 
+    private func scrollID(_ i: Int) -> String? {
+        config.pages.indices.contains(i) ? config.pages[i].id.uuidString : nil
+    }
+
     private var carousel: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             LazyHStack(spacing: 16) {
-                ForEach(config.pages.indices, id: \.self) { i in
-                    carouselCard(i).id(i)
+                ForEach(Array(config.pages.enumerated()), id: \.element.id) { i, page in
+                    carouselCard(i).id(page.id.uuidString)
                 }
-                mapCard.id(config.pages.count)
-                if config.pages.count < DashConfig.maxPages {
-                    addCard.id(config.pages.count + 1)
+                if config.contentPages < DashConfig.maxPages {
+                    addCard.id("add")
                 }
             }
             .scrollTargetLayout()
@@ -194,21 +198,24 @@ struct DashboardEditorView: View {
         // pan underneath would scroll AND move the card at once.
         .scrollDisabled(dragIx != nil)
         .frame(height: 250)
-        .onAppear { scrolled = pageIx }
+        .onAppear { scrolled = scrollID(pageIx) }
         // The centred card IS the selection (clamped off the add card, which
         // is browsable but has nothing to edit below).
         .onChange(of: scrolled) {
-            if let i = scrolled, i <= config.pages.count { pageIx = i }
+            if let sid = scrolled,
+               let i = config.pages.firstIndex(where: { $0.id.uuidString == sid }) {
+                pageIx = i
+            }
         }
     }
 
     private func carouselCard(_ i: Int) -> some View {
         ZStack(alignment: .topTrailing) {
             Group {
-                if config.pages[i].isMusic {
-                    MusicPreview()
-                } else {
-                    DashPreview(layout: config.pages[i].layout)
+                switch config.pages[i].kind {
+                case .music: MusicPreview()
+                case .map: MapPagePreview(fields: config.mapFields)
+                case .fields: DashPreview(layout: config.pages[i].layout)
                 }
             }
             .frame(width: 124, height: 206)
@@ -217,12 +224,14 @@ struct DashboardEditorView: View {
                 RoundedRectangle(cornerRadius: 8)
                     .stroke(pageIx == i ? Color.accentColor : Palette.hairline,
                             lineWidth: pageIx == i ? 2.5 : 1))
-            if config.pages.count > 1, dragIx == nil {
+            // The map can't be removed; the last remaining data/music page
+            // can't either.
+            if !config.pages[i].isMap, config.contentPages > 1, dragIx == nil {
                 Button {
                     withAnimation {
                         config.pages.remove(at: i)
                         if pageIx >= config.pages.count { pageIx = config.pages.count - 1 }
-                        scrolled = pageIx
+                        scrolled = scrollID(pageIx)
                     }
                     dirty = true
                 } label: {
@@ -247,7 +256,7 @@ struct DashboardEditorView: View {
         .animation(.spring(duration: 0.2), value: dragIx != nil ? dragTarget : 0)
         .onTapGesture {
             pageIx = i
-            withAnimation { scrolled = i }
+            withAnimation { scrolled = scrollID(i) }
         }
         .simultaneousGesture(reorderGesture(i), isEnabled: config.pages.count > 1)
     }
@@ -289,28 +298,10 @@ struct DashboardEditorView: View {
                         dirty = true
                     }
                     pageIx = t
-                    scrolled = t
+                    scrolled = scrollID(t)
                     dragIx = nil
                     dragW = 0
                 }
-            }
-    }
-
-    // The map, shown where it actually sits in the Home cycle: after every
-    // page. Not removable, not editable — but visible, so the carousel is the
-    // whole loop the Home key walks.
-    private var mapCard: some View {
-        MapPagePreview(fields: config.mapFields)
-            .frame(width: 124, height: 206)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(pageIx == config.pages.count ? Color.accentColor
-                                                         : Palette.hairline,
-                            lineWidth: pageIx == config.pages.count ? 2.5 : 1))
-            .onTapGesture {
-                pageIx = config.pages.count
-                withAnimation { scrolled = pageIx }
             }
     }
 
@@ -318,23 +309,13 @@ struct DashboardEditorView: View {
     private var addCard: some View {
         Menu {
             Button {
-                withAnimation {
-                    config.pages.append(.fields)
-                    pageIx = config.pages.count - 1
-                    scrolled = pageIx
-                }
-                dirty = true
+                addPage(.fields)
             } label: {
                 Label("Data page", systemImage: "rectangle.3.group")
             }
             if !config.hasMusicPage {
                 Button {
-                    withAnimation {
-                        config.pages.append(.music)
-                        pageIx = config.pages.count - 1
-                        scrolled = pageIx
-                    }
-                    dirty = true
+                    addPage(.music)
                 } label: {
                     Label("Music controls", systemImage: "music.note")
                 }
@@ -354,8 +335,18 @@ struct DashboardEditorView: View {
         }
     }
 
+    private func addPage(_ page: DashConfig.Page) {
+        withAnimation {
+            config.pages.append(page)
+            pageIx = config.pages.count - 1
+            scrolled = scrollID(pageIx)
+        }
+        dirty = true
+    }
+
     private func mutateAt(_ i: Int, _ f: (inout DashLayout) -> Void) {
-        guard config.pages.indices.contains(i), !config.pages[i].isMusic else { return }
+        guard config.pages.indices.contains(i),
+              config.pages[i].kind == .fields else { return }
         f(&config.pages[i].layout)
         dirty = true
     }
