@@ -373,7 +373,11 @@ struct SettingsView: View {
         let base = name.replacingOccurrences(of: ".log", with: "")
         if base == "pending" || base == "diag" { return base == "diag" ? "Today" : "Before first GPS fix" }
         guard base.count == 8, let _ = Int(base) else { return name }
-        let f = DateFormatter(); f.dateFormat = "yyyyMMdd"; f.timeZone = TimeZone(secondsFromGMT: 0)
+        // The device names log files by the rider's LOCAL day now, so parse and
+        // format in one zone (the phone's) — the label must repeat the name's
+        // digits, not shift them. The old UTC parse re-interpreted the day and
+        // could label 20260819.log as "Aug 18".
+        let f = DateFormatter(); f.dateFormat = "yyyyMMdd"
         guard let d = f.date(from: base) else { return name }
         let out = DateFormatter(); out.dateFormat = "MMM d, yyyy"
         return out.string(from: d)
