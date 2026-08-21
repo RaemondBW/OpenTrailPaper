@@ -575,6 +575,21 @@ final class BLEManager: NSObject, ObservableObject {
 
     func startScan() {
         guard let central, central.state == .poweredOn else { return }
+        // Since the device bonds (for AMS), iOS holds its BLE link open at the
+        // SYSTEM level even when this app has no session — so the device is
+        // connected, not advertising, and a scan will sit there forever while
+        // music info visibly syncs. Adopt the system's connection instead:
+        // connect() on an already-connected peripheral completes immediately
+        // and hands this app its own session over the same link.
+        if peripheral == nil,
+           let p = central.retrieveConnectedPeripherals(
+               withServices: [BikeUUID.service]).first {
+            peripheral = p
+            p.delegate = self
+            state = .connecting
+            central.connect(p)
+            return
+        }
         state = .scanning
         central.scanForPeripherals(withServices: [BikeUUID.service])
     }
