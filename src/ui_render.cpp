@@ -221,6 +221,12 @@ void statusBar(const RideState& s, uint8_t* fb, const char* title) {
         if (!title) text(&Arial_L, x, 40, " · PWR", fb);
         x += textWidth(&Arial_L, " · PWR");
     }
+    // Auto-pause: the frozen ride timer is the real signal, but a frozen number
+    // needs a caption or it reads as a hang. Same label cluster as HR/PWR.
+    if (s.ridePaused) {
+        if (!title) text(&Arial_L, x, 40, " · PAUSED", fb);
+        x += textWidth(&Arial_L, " · PAUSED");
+    }
 
     batteryIcon(W - 12, 30, s.batteryPercent, s.charging, fb);
 
@@ -1889,4 +1895,39 @@ void ui_render_nav_banner(const char* instruction, float distanceM,
     } else {
         ui::text(f, textX, top + 82, l1, fb, EPD_DRAW_ALIGN_LEFT, 0xFF);
     }
+}
+
+void ui_render_pause_banner(uint32_t pausedForS, uint8_t* fb) {
+    // Same inverted band, in the same place, as the turn banner — the rider
+    // already knows that band means "the device is telling you something".
+    // Left cluster is a pause glyph where the arrow would be, then how long
+    // the ride has been paused where the turn distance would be; the counter
+    // ticking up each second is what says "paused and watching", not hung.
+    const int W = epd_rotated_display_width();
+    const int top = ui::STATUS_H;
+    epd_fill_rect({0, top, W, 138}, 0x00, fb);
+
+    // Pause glyph: two bars, sized to read at a glance from the saddle.
+    const int ax = 60, ay = top + 66;
+    epd_fill_rect({ax - 19, ay - 24, 14, 48}, 0xFF, fb);
+    epd_fill_rect({ax + 5, ay - 24, 14, 48}, 0xFF, fb);
+
+    char d[16];
+    if (pausedForS >= 3600) {
+        snprintf(d, sizeof(d), "%lu:%02lu:%02lu", (unsigned long)(pausedForS / 3600),
+                 (unsigned long)((pausedForS / 60) % 60),
+                 (unsigned long)(pausedForS % 60));
+    } else {
+        snprintf(d, sizeof(d), "%lu:%02lu", (unsigned long)(pausedForS / 60),
+                 (unsigned long)(pausedForS % 60));
+    }
+    const int distX = 104;
+    ui::text(&Impact_T, distX, top + 78, d, fb, EPD_DRAW_ALIGN_LEFT, 0xFF);
+
+    const int textX = distX + ui::textWidth(&Impact_T, d) + 28;
+    const int textW = W - textX - ui::MARGIN;
+    const char* label = "AUTO-PAUSED";
+    const EpdFont* f = ui::textWidth(&Impact_T, label) <= textW ? &Impact_T
+                                                                : &Arial_B;
+    ui::text(f, textX, top + 78, label, fb, EPD_DRAW_ALIGN_LEFT, 0xFF);
 }

@@ -27,11 +27,16 @@
 
 extern SemaphoreHandle_t g_sdMutex;
 
+// Mutex FIRST, then the PM lock. The other order held light sleep off for the
+// whole time a task merely WAITED for the bus — during a 2 MB OTA write or a
+// map save, every queued SD user was pinning the CPU awake before doing any
+// work. The PM lock only needs to cover actual bus transactions, and those
+// only happen while the mutex is held.
 inline void sdLock()   {
-    power_mgmt::busyAcquire();
     if (g_sdMutex) xSemaphoreTakeRecursive(g_sdMutex, portMAX_DELAY);
+    power_mgmt::busyAcquire();
 }
 inline void sdUnlock() {
-    if (g_sdMutex) xSemaphoreGiveRecursive(g_sdMutex);
     power_mgmt::busyRelease();
+    if (g_sdMutex) xSemaphoreGiveRecursive(g_sdMutex);
 }

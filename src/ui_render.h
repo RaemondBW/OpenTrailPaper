@@ -306,3 +306,7 @@ void ui_render_update_overlay(const char* phase, int pct, uint8_t* fb);
 // distance to the next turn + the instruction, with a direction arrow.
 void ui_render_nav_banner(const char* instruction, float distanceM,
                           bool useMiles, uint8_t* fb);
+
+// Auto-pause banner, same band as the turn banner (the turn banner wins when
+// both apply): pause glyph, how long the ride has been paused, "AUTO-PAUSED".
+void ui_render_pause_banner(uint32_t pausedForS, uint8_t* fb);

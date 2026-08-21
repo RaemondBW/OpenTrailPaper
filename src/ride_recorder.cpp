@@ -7,6 +7,7 @@
 #include "config.h"
 #include "fit_writer.h"
 #include "sd_bus.h"
+#include "settings.h"
 #include "usb_storage.h"
 #include "diag.h"
 
@@ -39,6 +40,17 @@ bool phoneSourceLogged = false;
 double distanceM = 0;
 uint32_t timerS = 0;
 uint32_t lastFlushS = 0;
+
+// Auto-pause. timerS only counts while the bike is (apparently) moving;
+// pausedS collects the rest, so wall-clock elapsed is always timerS + pausedS
+// — that sum is what endUtc fallbacks and the FIT session's elapsed/timer
+// split rely on. stoppedS is the run of consecutive stopped ticks that has to
+// reach settings::autoPauseSec() before the timer actually freezes.
+bool autoPaused = false;
+uint32_t stoppedS = 0;
+uint32_t pausedS = 0;
+uint32_t pauseEntryS = 0;   // pausedS when this pause began, for the resume log
+uint32_t lastMoveMs = 0;    // last tick with POSITIVE movement evidence
 
 // Stats for the summary screen
 uint32_t movingS = 0;
@@ -167,6 +179,11 @@ void resetStats() {
     timerS = 0;
     movingS = 0;
     lastFlushS = 0;
+    autoPaused = false;
+    stoppedS = 0;
+    pausedS = 0;
+    pauseEntryS = 0;
+    lastMoveMs = 0;
     havePrevFix = false;
     lastFixMs = 0;
     lastPhoneFixMs = 0;
@@ -223,6 +240,60 @@ void accumulateStats(const RideState& s) {
         }
     }
 }
+
+// Is the bike moving? Judged from the most direct evidence available, sensors
+// before GPS: turning pedals (power or cadence non-zero) or a turning wheel is
+// movement no matter what the position fix thinks — a trainer ride must never
+// pause — while GPS speed is the witness of last resort, catching the coasting
+// descent where pedals and cranks are all still.
+//
+// Three answers, not two. MOVING and STOPPED are positive testimony: a sensor
+// only votes while its data is fresh (a sleeping power meter abstains rather
+// than testifying "0 W"), and the wheel counter can only ever vote "moving" (a
+// silent one is indistinguishable from an absent one). BLIND is no witnesses
+// at all — no fix, every sensor asleep — and the CALLER decides what that
+// means, because it depends on history this function doesn't have: blind
+// moments after real movement is a tunnel and the timer should run; blind
+// with no movement in living memory is a desk, a trainer-less garage, or a
+// bike carried into a cafe, and "no evidence of moving" should not keep the
+// timer counting forever. (The first version returned moving-when-blind
+// unconditionally, and a ride recorded indoors with no fix never paused at
+// all — and a fix LOST while paused would have resumed the timer.)
+//
+// `resuming` raises the GPS bar from rolling speed to distinctly-riding speed:
+// a stationary fix wobbles, and a wobble that un-pauses the ride would need
+// another full stopped streak to re-pause it.
+enum class Motion { MOVING, STOPPED, BLIND };
+
+Motion motionEvidence(const RideState& s, bool resuming) {
+    const uint32_t now = millis();
+    auto fresh = [&](uint32_t ms) { return ms != 0 && now - ms < 5000; };
+    int witnesses = 0;
+    bool moving = false;
+    if (fresh(s.powerMs) && s.powerW != 0xFFFF) {
+        witnesses++;
+        if (s.powerW > 0) moving = true;
+    }
+    if (fresh(s.cadenceMs) && s.cadenceRpm != 0xFF) {
+        witnesses++;
+        if (s.cadenceRpm > 0) moving = true;
+    }
+    if (fresh(s.wheelMoveMs)) moving = true;   // rev counter advanced recently
+    if (s.gpsFix) {
+        witnesses++;
+        if (s.speedKmh > (resuming ? 5.0f : 3.0f)) moving = true;
+    }
+    if (moving) return Motion::MOVING;
+    return witnesses ? Motion::STOPPED : Motion::BLIND;
+}
+
+// How long a blind spell keeps the benefit of the doubt after the last
+// positive movement. Long enough to coast through any ordinary tunnel or a
+// minute of dense tree cover without the timer flinching; short enough that a
+// bike carried indoors stops accruing ride time within a couple of minutes.
+// Riders with a power meter, cadence or wheel sensor are barely affected —
+// their sensors keep testifying where GPS goes deaf.
+constexpr uint32_t BLIND_GRACE_MS = 120 * 1000;
 
 // GPS altitude is very noisy (±10-30 m with no barometer), so a short
 // baseline makes grade jump around randomly. We heavily smooth the
@@ -433,6 +504,8 @@ void startRide() {
     loggedFileLost = false;
     g_state.with([](RideState& st) {
         st.recording = true;
+        st.ridePaused = false;
+        st.pausedForS = 0;
         st.distanceM = 0;
         st.elapsedS = 0;
         st.movingS = 0;
@@ -446,7 +519,9 @@ void stopRide(bool save) {
     if (!rideActive) return;
     rideActive = false;
     RideState s = g_state.snapshot();
-    endUtc = s.timeValid ? s.utc : startUtc + timerS;
+    // Wall-clock fallback is timer PLUS paused time — the timer alone stopped
+    // tracking the clock the first time the ride auto-paused.
+    endUtc = s.timeValid ? s.utc : startUtc + timerS + pausedS;
     RideSummary sm = summary();   // fold the roll-up into the FIT session message
     sdLock();
     fit.finish(endUtc, distanceM, timerS,
@@ -457,16 +532,19 @@ void stopRide(bool save) {
     if (!save) {
         diag::log("ride discarded");
     } else {
-        diag::log("ride saved: %.2f km, %lu s", distanceM / 1000.0,
-                  (unsigned long)timerS);
-        Serial.printf("[rec] ride saved: %.1f km, %lu s\n", distanceM / 1000.0,
-                      (unsigned long)timerS);
+        diag::log("ride saved: %.2f km, %lu s (+%lu s paused)", distanceM / 1000.0,
+                  (unsigned long)timerS, (unsigned long)pausedS);
+        Serial.printf("[rec] ride saved: %.1f km, %lu s (+%lu s paused)\n",
+                      distanceM / 1000.0, (unsigned long)timerS,
+                      (unsigned long)pausedS);
     }
     // Ride is over — clear the trip so the dashboard reads zero, ready for the
     // next ride (the summary was already captured before stopping).
     resetStats();
     g_state.with([](RideState& st) {
         st.recording = false;
+        st.ridePaused = false;
+        st.pausedForS = 0;
         st.distanceM = 0;
         st.elapsedS = 0;
         st.movingS = 0;
@@ -495,7 +573,7 @@ RideSummary summary() {
     r.avgHrBpm = hrCount ? (uint8_t)(hrSum / hrCount) : 0;
     r.climbedM = (float)climbedM;
     r.startUtc = startUtc;
-    r.endUtc = endUtc ? endUtc : startUtc + timerS;
+    r.endUtc = endUtc ? endUtc : startUtc + timerS + pausedS;
     r.tzMin = g_state.snapshot().tzMin;
     r.useMiles = g_state.snapshot().useMiles;
     return r;
@@ -605,6 +683,65 @@ void task(void*) {
         }
 
         RideState s = g_state.snapshot();
+
+        // Auto-pause: freeze the timer once the bike has been demonstrably
+        // stopped for the configured run of seconds; resume the moment anything
+        // says it is moving again. Paused ticks write no records — the
+        // timestamp gap in the record stream is how a FIT reader sees the stop.
+        // Deliberately NOT a mid-file timer-stop/start event pair, which is
+        // what the FIT spec would prefer: repair() walks the record stream at a
+        // fixed byte stride and treats the first non-record byte as the torn
+        // end of the file, so an event written after a crash-recovered pause
+        // would silently amputate the rest of the ride.
+        const int pauseAfterS = settings::autoPauseSec();
+        if (pauseAfterS > 0) {
+            const Motion m = motionEvidence(s, /*resuming=*/autoPaused);
+            if (m == Motion::MOVING) lastMoveMs = millis() | 1;
+            // BLIND inherits the last positive answer for a grace window — a
+            // tunnel keeps its timer — but only while RUNNING. A paused ride
+            // needs positive movement to resume: losing the fix while parked
+            // at a cafe is not evidence of riding. Blind with no movement on
+            // record (a ride started indoors, before first fix) counts as
+            // stopped from the first tick.
+            const bool moving =
+                m == Motion::MOVING ||
+                (m == Motion::BLIND && !autoPaused && lastMoveMs &&
+                 millis() - lastMoveMs < BLIND_GRACE_MS);
+            if (autoPaused) {
+                if (moving) {
+                    autoPaused = false;
+                    stoppedS = 0;
+                    diag::log("rec: auto-resume (paused %lus)",
+                              (unsigned long)(pausedS - pauseEntryS));
+                }
+            } else if (!moving) {
+                if ((int)++stoppedS >= pauseAfterS) {
+                    autoPaused = true;
+                    pauseEntryS = pausedS;
+                    diag::log("rec: auto-pause (%d s stopped) at %.2f km",
+                              pauseAfterS, distanceM / 1000.0);
+                    // A stop is a natural safe point — persist what we have, so
+                    // a mid-stop power loss costs nothing.
+                    sdLock();
+                    fit.checkpoint();
+                    sdUnlock();
+                }
+            } else {
+                stoppedS = 0;
+            }
+        } else if (autoPaused) {
+            autoPaused = false;   // setting switched off mid-pause
+        }
+
+        if (autoPaused) {
+            pausedS++;
+            g_state.with([&](RideState& st) {
+                st.ridePaused = true;
+                st.pausedForS = pausedS - pauseEntryS;   // drives the banner's counter
+            });
+            continue;
+        }
+
         timerS++;
         accumulateStats(s);
 
@@ -715,6 +852,8 @@ void task(void*) {
         }
 
         g_state.with([&](RideState& st) {
+            st.ridePaused = false;
+            st.pausedForS = 0;
             st.distanceM = distanceM;
             st.elapsedS = timerS;
             st.movingS = movingS;

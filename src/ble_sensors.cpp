@@ -6,6 +6,7 @@
 #include "ride_state.h"
 #include "settings.h"
 #include "ride_recorder.h"
+#include "routes.h"
 #include "diag.h"
 
 namespace {
@@ -94,8 +95,14 @@ void onHrNotify(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool) {
     // (observed: a strap on the bench sliding 165 -> 125 bpm over six minutes).
     // The RR intervals do not corroborate it either — the strap derives the BPM
     // from them, so phantom beats give a perfectly self-consistent pair.
+    //
+    // Once a minute, not every couple of seconds: at 2 s this line plus its pwr
+    // twin overflowed the 48 KB diag ring roughly every eight minutes of a ride
+    // and evicted everything else — the 2026-08-16 ride kept its hr/pwr spam
+    // and lost every battery sample. One line a minute still settles the
+    // phantom-heart-rate question.
     static uint32_t lastLog = 0;
-    if (millis() - lastLog > 2000) {
+    if (millis() - lastLog > 60000) {
         lastLog = millis();
         char hex[40];
         int p = 0;
@@ -146,9 +153,10 @@ void onPowerNotify(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool)
     int16_t watts = (int16_t)(data[2] | (data[3] << 8));
 
     // Diagnostic: log the raw payload periodically so a power-reads-0 issue can
-    // be inspected from the log (pedal, then download it).
+    // be inspected from the log (pedal, then download it). Once a minute — see
+    // the matching throttle in onHrNotify for why not more often.
     static uint32_t lastLog = 0;
-    if (millis() - lastLog > 2000) {
+    if (millis() - lastLog > 60000) {
         lastLog = millis();
         char hex[40];
         int p = 0;
@@ -208,7 +216,24 @@ void onCscNotify(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool) {
     if (len < 1) return;
     uint8_t flags = data[0];
     size_t off = 1;
-    if (flags & 0x01) off += 6;  // wheel revolution data
+    if ((flags & 0x01) && len >= off + 6) {
+        // Wheel revolution data: cumulative revs (u32) + last event time. Only
+        // the "did the counter advance" bit is consumed — that is movement
+        // evidence for auto-pause, and unlike a speed it needs no wheel
+        // circumference configured. First notify after (re)connect only seeds
+        // the counter: a cumulative value looks like a huge advance otherwise.
+        uint32_t revs = data[off] | (data[off + 1] << 8) |
+                        ((uint32_t)data[off + 2] << 16) |
+                        ((uint32_t)data[off + 3] << 24);
+        static uint32_t lastWheelRevs = 0;
+        static bool haveWheelRevs = false;
+        if (haveWheelRevs && revs != lastWheelRevs) {
+            g_state.with([&](RideState& s) { s.wheelMoveMs = millis(); });
+        }
+        lastWheelRevs = revs;
+        haveWheelRevs = true;
+    }
+    if (flags & 0x01) off += 6;  // past the wheel revolution data
     if ((flags & 0x02) && len >= off + 4) {
         uint16_t revs = data[off] | (data[off + 1] << 8);
         uint16_t t = data[off + 2] | (data[off + 3] << 8);
@@ -230,6 +255,10 @@ int candidateCount = 0;
 SemaphoreHandle_t candMutex = nullptr;
 bool scanAlways = false;
 uint32_t lastActivityMs = 0;
+// When any paired sensor was last actually connected, and whether one ever has
+// been this boot. Gates the interaction-triggered hunt: see the task loop.
+uint32_t lastLinkMs = 0;
+bool everLinked = false;
 // Set by the task whenever it is hunting for a paired sensor that isn't
 // connected. Read by power_mgmt at 1 Hz — see radioBusy() in the header.
 volatile bool huntingRadio = false;
@@ -435,22 +464,41 @@ void task(void*) {
             if (paired && !sensors[k].connected) allConnected = false;
         }
 
-        // Only scan when it's actually useful: while recording, while the
-        // Sensors screen is open, or for a short window after the user
-        // interacts. Otherwise a paired-but-absent sensor (e.g. an HR strap
-        // you're not wearing) would keep the radio scanning forever and drain
-        // the battery while the device just sits idle.
+        // A link event — any paired sensor currently up — marks "sensors are in
+        // play today". Refreshed while connected (not just on the connect), so
+        // an HR strap that drops NEAR the end of a long ride still counts as
+        // recent afterwards.
+        for (int k = 0; k < KIND_COUNT; ++k) {
+            if (sensors[k].connected) { lastLinkMs = millis(); everLinked = true; }
+        }
+
+        // Only scan when it's actually useful: while recording or navigating,
+        // while the Sensors screen is open, in the first moments after power-on
+        // (the trailhead flow: switch on wearing the strap, sensors appear
+        // before the ride starts), or shortly after the user interacts WHILE
+        // sensors have been seen recently. That last condition is load-bearing:
+        // a bare touch used to arm a 30 s hunt, so anything that kept touching
+        // the glass — a jacket in a bag, a cable resting on the screen — held
+        // the radio (and through power_mgmt the whole SoC) out of sleep for
+        // hours at ~175 mA. Aug 15-16 logs: two full days with zero light-sleep
+        // samples, every one of them 'sensor hunt ON' with no rider anywhere
+        // near the bike. A midnight menu-poker who is hours from their last
+        // sensor contact does not want a scan; a rider whose strap dropped out
+        // at the coffee stop does, and still gets one.
+        const bool sensorsRecent = everLinked && millis() - lastLinkMs < 15 * 60 * 1000;
         bool wantScan = !allConnected &&
                         (scanAlways || ride_recorder::isRecording() ||
-                         millis() - lastActivityMs < 30000);
+                         routes::navActive() || millis() < 90000 ||
+                         (millis() - lastActivityMs < 30000 && sensorsRecent));
 
         // A sensor that is actually coming back — the meter waking on the first
         // pedal stroke, a strap re-wetting — starts advertising within seconds,
         // so the first minute of a hunt looks continuously. After that the
         // missing sensor probably isn't coming back this ride (left at home,
-        // flat cell) and holding the radio awake for hours would cost the ~25%
-        // that light sleep saves, so drop to a 5 s look every 10 s: still
-        // reconnects within about ten seconds of the sensor reappearing.
+        // flat cell) and every scan second costs light sleep (power_mgmt holds
+        // the SoC awake for the hunt), so drop to a 5 s look every 30 s: a
+        // reappearing sensor is picked up within half a minute, and the radio
+        // — and CPU — sleep through the other five-sixths of a long hunt.
         static uint32_t huntStartMs = 0;
         if (!wantScan) huntStartMs = 0;
         else if (!huntStartMs) huntStartMs = millis();
@@ -458,7 +506,7 @@ void task(void*) {
         // scanAlways means the user is sitting on a Sensors screen watching the
         // list fill in — never duty-cycle that.
         bool lookNow = wantScan &&
-                       (scanAlways || hunted < 60000 || (hunted / 5000) % 2 == 0);
+                       (scanAlways || hunted < 60000 || (hunted / 5000) % 6 == 0);
 
         bool pendingConnect = false;
         for (int k = 0; k < KIND_COUNT; ++k)

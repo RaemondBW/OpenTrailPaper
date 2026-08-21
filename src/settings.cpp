@@ -20,6 +20,9 @@ bool usbDrv = true;  // true = expose SD as USB drive when plugged into a host
 // false = a field whose sensor is unpaired is dropped from the dashboard and
 // the rest re-pack; true = it stays, showing no data.
 bool showOff = false;
+// Seconds of no movement (power, cadence, wheel and GPS all quiet) before the
+// ride timer auto-pauses. 0 disables auto-pause entirely.
+int autoPause = 10;
 char addrs[3][18] = {"", "", ""};
 char names[3][32] = {"", "", ""};   // remembered vendor/model per paired kind
 double lastLat = 0, lastLon = 0;
@@ -60,6 +63,7 @@ void begin() {
     // keeps the SD (logs/recording) when plugged in.
     usbDrv = prefs.getBool("usbdrv2", false);
     showOff = prefs.getBool("showoff", false);
+    autoPause = prefs.getInt("apause", 10);
     for (int k = 0; k < 3; ++k) {
         prefs.getString(KEYS[k], addrs[k], sizeof(addrs[k]));
         prefs.getString(NAME_KEYS[k], names[k], sizeof(names[k]));
@@ -85,6 +89,12 @@ int ftpWatts() { return ftp; }
 void setFtpWatts(int w) {
     ftp = constrain(w, 50, 500);
     prefs.putInt("ftp", ftp);
+}
+
+int autoPauseSec() { return autoPause; }
+void setAutoPauseSec(int s) {
+    autoPause = constrain(s, 0, 120);
+    prefs.putInt("apause", autoPause);
 }
 
 int tzMinutes() { return tz; }

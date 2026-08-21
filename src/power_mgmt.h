@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stddef.h>
+
 // Automatic light-sleep power management for the ESP32-S3.
 //
 // IMPORTANT: this only DOES anything on a framework built with CONFIG_PM_ENABLE
@@ -37,5 +39,14 @@ void tick();
 // balance. Both are no-ops when PM is unavailable (stock framework).
 void busyAcquire();
 void busyRelease();
+
+// One-line summary of everything currently holding light sleep off — "grace",
+// "serial", "phone", "hunt", "busy=N" — or "clear" when the CPU is free to
+// sleep. Written onto every battery log line so a drain regression names its
+// suspect in the same sample that shows the current, instead of needing a
+// day of log correlation to find (which is how the sensor-hunt regression
+// hid for a week). Never contains '%' — the phone's battery-line parser
+// keys on that character.
+void stateStr(char* out, size_t n);
 
 }  // namespace power_mgmt

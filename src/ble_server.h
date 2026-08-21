@@ -23,6 +23,22 @@ void pushSettingsToPhone();
 // auto-sleep during transfers.
 bool isPhoneConnected();
 
+// True while the connection is MEASURED to be running at a long interval
+// (>= 100 ms — the relaxed state the conn-param governor asks for while
+// riding). power_mgmt uses this to allow CPU light sleep with the phone
+// attached: the supervision-timeout failures that forced the always-hold
+// happened at a 30 ms interval, where the sleep clock's drift budget is 10x
+// tighter.
+bool linkRelaxed();
+
+// The light-sleep-with-phone experiment gate. DEFAULT OFF since 2026-08-19:
+// the relaxed interval did not save the link (3 supervision timeouts in 41 s),
+// so power_mgmt holds sleep off whenever the phone is connected. Re-armable
+// from the console (`sleepexp on`) for a future run after a controller-clock
+// fix; three timeouts while armed turn it back off for the boot.
+bool relaxedSleepAllowed();
+void setRelaxedSleepExperiment(bool on);
+
 // True once (and cleared) when the phone has written a new dashboard layout, so
 // the UI task can repaint immediately instead of waiting for the next 1 Hz tick.
 bool takeDashChanged();

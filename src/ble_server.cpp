@@ -41,6 +41,37 @@ NimBLECharacteristic* statusChr = nullptr;
 NimBLECharacteristic* sensorsChr = nullptr;
 NimBLECharacteristic* ridesChr = nullptr;
 NimBLECharacteristic* otaChr = nullptr;
+
+// millis() of the last BULK traffic on the link — file streaming, list sends,
+// OTA / map / route uploads. The connection-interval governor in task() holds
+// the fast interval while this is recent and relaxes it once the link goes
+// quiet. The phone's periodic location seeds and small command writes are
+// deliberately NOT counted: seeds flow for entire no-fix stretches (which
+// already force the fast interval), and counting every two-dozen-byte write
+// would pin the link fast forever.
+volatile uint32_t lastBulkMs = 0;
+inline void noteBulk() { lastBulkMs = millis(); }
+
+// MEASURED link state, for power_mgmt: true only while the phone is connected
+// at a genuinely long interval (>= 100 ms, read back from the link — not from
+// our own request, which iOS is free to reject). This is the gate that lets
+// the CPU light-sleep with the phone attached: at 30 ms the controller's
+// drifty RC sleep clock missed anchor points and killed the link by
+// supervision timeout (2026-08-02, 1231 drops); at 150-300 ms the drift
+// budget is 10x wider. Refreshed 1 Hz by the governor in task().
+volatile bool linkIntervalLong = false;
+
+// Light-sleep-while-connected experiment switch, DEFAULT OFF. Run 2026-08-19:
+// even at the relaxed 150-300 ms interval, the first sleep killed the link in
+// 4 s and the latch tripped after three supervision timeouts in 41 s — the
+// internal 150 kHz RC simply cannot wake the controller on target, at any
+// interval we can ask for. Left in place (console `sleepexp on`, not
+// persisted) so the experiment is one command to re-run after a controller
+// clock fix (external 32 kHz crystal — needs a lib-builder rebuild), instead
+// of an archaeology dig. The latch below still guards a re-armed run: three
+// reason-520 drops while sleeping-relaxed turn it back off for the boot.
+volatile int relaxedDropCount = 0;
+volatile bool relaxedSleepOk = false;
 volatile bool otaRebootPending = false;
 
 NimBLECharacteristic* settingsChr = nullptr;
@@ -171,6 +202,7 @@ volatile int  pendingRouteAck  = 0;       // 0 none, 1 received-ok, 2 parse-fail
 
 class RouteCb : public NimBLECharacteristicCallbacks {
     void onWrite(NimBLECharacteristic* c, NimBLEConnInfo&) override {
+        noteBulk();   // route upload chunks — keep the link fast while they flow
         std::string v = c->getValue();
         if (v.empty()) return;
         uint8_t op = v[0];
@@ -348,6 +380,7 @@ volatile uint16_t rideAckSeq = 0;
 
 class RidesCb : public NimBLECharacteristicCallbacks {
     void onWrite(NimBLECharacteristic* c, NimBLEConnInfo&) override {
+        noteBulk();   // download requests AND per-window acks land here
         std::string v = c->getValue();
         if (v.empty()) return;
         if (v[0] == 0x01) {
@@ -429,6 +462,7 @@ void sendRideList() {
 // Stream any SD file to the phone with the reliable windowed protocol (used
 // for both ride downloads and the diagnostics log).
 void streamFileWindowed(const char* path, const char* label) {
+    noteBulk();
     sdLock();
     File f = SD.open(path, FILE_READ);
     sdUnlock();
@@ -633,6 +667,11 @@ class ServerCb : public NimBLEServerCallbacks {
                   info.getConnInterval() * 1.25f);
         // Ask for a fast connection interval (15-30 ms) so large transfers
         // (ride download, OTA) aren't throttled to one packet per ~slow tick.
+        // The governor in task() relaxes this to 150-300 ms once the device is
+        // riding (GPS fix held) and the link has gone quiet, and snaps it back
+        // for transfers — treat the connect itself as activity so the app's
+        // opening sync runs at full speed.
+        lastBulkMs = millis();
         srv->updateConnParams(info.getConnHandle(), 12, 24, 0, 400);
     }
     void onMTUChange(uint16_t mtu, NimBLEConnInfo&) override {
@@ -641,6 +680,18 @@ class ServerCb : public NimBLEServerCallbacks {
     }
     void onDisconnect(NimBLEServer*, NimBLEConnInfo&, int reason) override {
         diag::log("phone disconnected (reason %d)", reason);
+        // A supervision timeout (520) while the CPU was allowed to sleep on the
+        // relaxed link is the experiment's failure signature — count it, and
+        // pull the plug after three. Other reasons (531 = the app closed the
+        // link on purpose) say nothing about sleep and don't count.
+        if (reason == 520 && linkIntervalLong && relaxedSleepOk) {
+            if (++relaxedDropCount >= 3) {
+                relaxedSleepOk = false;
+                diag::log("ble: light sleep with phone DISABLED "
+                          "(3 supervision timeouts on the relaxed link)");
+            }
+        }
+        linkIntervalLong = false;
         phoneConnected = false;
         // Recover from a transfer interrupted by the disconnect, so the device
         // doesn't stay frozen on the update popup / refuse the next attempt.
@@ -703,6 +754,7 @@ void otaAbortIfDownloading() {
 class OtaCb : public NimBLECharacteristicCallbacks {
     uint32_t lastProgress = 0;
     void onWrite(NimBLECharacteristic* c, NimBLEConnInfo&) override {
+        noteBulk();   // a 2 MB firmware push at 300 ms/packet would take hours
         std::string v = c->getValue();
         if (v.empty()) return;
         const uint8_t* p = (const uint8_t*)v.data();
@@ -816,6 +868,7 @@ void mapAbortReceive() {
 class MapCb : public NimBLECharacteristicCallbacks {
     bool receiving = false;
     void onWrite(NimBLECharacteristic* c, NimBLEConnInfo&) override {
+        noteBulk();   // map tile upload chunks
         std::string v = c->getValue();
         if (v.empty()) return;
         const uint8_t* p = (const uint8_t*)v.data();
@@ -1535,6 +1588,13 @@ void begin() {
 void pushSettingsToPhone() { settingsDirty = true; }
 
 bool isPhoneConnected() { return phoneConnected; }
+bool linkRelaxed() { return linkIntervalLong; }
+bool relaxedSleepAllowed() { return relaxedSleepOk; }
+void setRelaxedSleepExperiment(bool on) {
+    relaxedDropCount = 0;   // a re-armed run gets a fresh three strikes
+    relaxedSleepOk = on;
+    diag::log("ble: light-sleep-with-phone experiment %s", on ? "ARMED" : "off");
+}
 
 bool takeDashChanged() {
     if (!dashDirty) return false;
@@ -1668,7 +1728,8 @@ void task(void*) {
             sendSensorList();
         }
 
-        diag::flushToSD();   // persist buffered diagnostics (no-op while recording)
+        diag::flushToSD();   // persist buffered diagnostics (while recording,
+                             // only once the ring is half full — see diag.cpp)
 
         // Safety net: make sure we're discoverable whenever no phone is
         // connected, in case a disconnect ever slips past onDisconnect.
@@ -1696,6 +1757,58 @@ void task(void*) {
 
         statusChr->setValue(buf, sizeof(buf));
         statusChr->notify();
+
+        // Connection-interval governor. The 15-30 ms interval requested at
+        // connect exists for transfers; holding it through a whole ride wakes
+        // both radios ~33x a second to exchange nothing but the 1 Hz status
+        // notify. Once the device is riding (a fix held for 10 s — the same
+        // signal the rider asked for: "fix means I'm out riding, not syncing")
+        // and the link has been quiet for 8 s, ask for 150-300 ms. Snap back
+        // the moment a transfer starts or the fix drops (no fix = the phone's
+        // location seeds are the device's eyes — keep them prompt).
+        //
+        // iOS is the arbiter: a peripheral can only REQUEST parameters, so
+        // both requests stay inside Apple's accessory rules (interval ratio,
+        // timeout >= 3x interval) or they'd be rejected wholesale. Requests
+        // are rate-limited — iOS ignores a peripheral that nags.
+        {
+            static bool connSlow = false;
+            static uint32_t fixSinceMs = 0;
+            static uint32_t lastReqMs = 0;
+            if (!s.gpsFix) fixSinceMs = 0;
+            else if (!fixSinceMs) fixSinceMs = millis() | 1;
+            if (!phoneConnected) {
+                connSlow = false;   // next connect starts fast (onConnect asks)
+                linkIntervalLong = false;
+            } else {
+                const bool wantSlow = fixSinceMs &&
+                                      millis() - fixSinceMs > 10000 &&
+                                      millis() - lastBulkMs > 8000;
+                NimBLEServer* srv = NimBLEDevice::getServer();
+                if (srv && srv->getConnectedCount() > 0) {
+                    NimBLEConnInfo pi = srv->getPeerInfo(0);
+                    // What power_mgmt acts on is the MEASURED interval, not
+                    // our request — iOS may reject or renegotiate, and
+                    // sleeping against a real 30 ms link is exactly the
+                    // failure this experiment must not reproduce. 80 units
+                    // = 100 ms.
+                    linkIntervalLong = pi.getConnInterval() >= 80;
+                    if (wantSlow != connSlow &&
+                        millis() - lastReqMs > (wantSlow ? 15000 : 3000)) {
+                        connSlow = wantSlow;
+                        lastReqMs = millis();
+                        if (wantSlow) {
+                            srv->updateConnParams(pi.getConnHandle(), 120, 240, 0, 400);
+                            diag::log("ble: conn interval relaxed (riding, link idle)");
+                        } else {
+                            srv->updateConnParams(pi.getConnHandle(), 12, 24, 0, 400);
+                            diag::log("ble: conn interval fast (%s)",
+                                      s.gpsFix ? "transfer" : "no fix");
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
