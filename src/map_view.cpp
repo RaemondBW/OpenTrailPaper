@@ -458,11 +458,16 @@ void ui_render_map(const MapScreenData& map, const RideState& s, uint8_t* fb) {
         if (fits) { lf = ui::kLabelLadder[k]; break; }
     }
 
-    // Common value face across the three, so the strip reads as one row.
+    // Common value face across the three, so the strip reads as one row —
+    // sized against each field's WORST-CASE string (dashSizingHint), not the
+    // live value. Sizing from the live value made the face step down and back
+    // as numbers crossed digit boundaries at speed ("9.8" -> "10.2", distance
+    // rolling over), which read as the whole strip breathing mid-ride.
     int vi = 0;
     for (int c = 0; c < 3; ++c) {
         const int uw = units3[c][0] ? ui::textWidth(&Arial_B, units3[c]) + 4 : 0;
-        const int idx = ui::valueFontIndex(ui::kValueLadder, vals[c],
+        const int idx = ui::valueFontIndex(ui::kValueLadder,
+                                           dashSizingHint(f3[c]),
                                            colW - 2 * ui::CELL_PAD,
                                            fh - 2 * ui::CELL_PAD - 20, uw);
         if (idx > vi) vi = idx;

@@ -148,6 +148,9 @@ extern const EpdRect kMediaVolUp;
 void dashFieldValue(uint8_t field, const RideState& s, char* val, size_t valCap,
                     const char** unit);
 bool dashFieldAvailable(uint8_t field, const RideState& s);
+// The WIDEST string a field can produce — what type is sized against, so a
+// value crossing a digit boundary can never resize its cell mid-ride.
+const char* dashSizingHint(uint8_t field);
 
 // Did the last ui_render_dashboard() grey out any cell?
 //
