@@ -275,6 +275,21 @@ int main(int argc, char** argv) {
         emit("dashboard_mph.png");
     }
 
+    // Dashboard auto-paused at a stop: banner in the turn-banner band (compact
+    // hero, like navigating), frozen timer, and the status-bar PAUSED chip.
+    // HR/PWR connected is the crowded status-bar case — catches a chip
+    // collision with the battery block.
+    {
+        RideState sp = s;
+        sp.ridePaused = true;
+        sp.pausedForS = 154;
+        sp.speedKmh = 0.0f;
+        clearWhite(fb.data());
+        ui_render_dashboard(sp, true, dashDefaultLayout(), fb.data());
+        ui_render_pause_banner(sp.pausedForS, fb.data());
+        emit("dashboard_paused.png");
+    }
+
     // Dashboard while navigating: compact hero under the turn banner.
     clearWhite(fb.data());
     ui_render_dashboard(s, true, dashDefaultLayout(), fb.data());

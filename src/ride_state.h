@@ -61,9 +61,15 @@ struct RideState {
     // or one that has rolled out of range), so "connected" is judged by DATA
     // arriving, not by the stack's opinion of the link — see ui_dashboard.
     uint32_t hrMs = 0, powerMs = 0, cadenceMs = 0;
+    // millis() of the last observed WHEEL rotation (CSC wheel-rev counter
+    // advancing). Movement evidence for auto-pause — no wheel circumference
+    // needed, since "is it turning" is the only question asked of it.
+    uint32_t wheelMoveMs = 0;
 
     // Ride accumulation (owned by the recorder)
     bool     recording = false;
+    bool     ridePaused = false;   // auto-pause: timer frozen until movement
+    uint32_t pausedForS = 0;       // how long the CURRENT pause has lasted
     double   distanceM = 0.0;
     uint32_t elapsedS = 0;
     uint32_t movingS = 0;

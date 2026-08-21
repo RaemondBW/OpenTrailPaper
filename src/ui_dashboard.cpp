@@ -77,6 +77,7 @@ uint32_t navPromptShownAt = 0;
 // Turn-by-turn banner rect (top of map/dashboard); tapping it ends nav.
 const EpdRect kNavBanner = {0, ui::STATUS_H, 540, 138};
 void drawNavBanner(uint8_t* fb);
+void drawPauseBanner(const RideState& s, uint8_t* fb);
 void buildMapScreenData(const RideState& s, MapScreenData& map,
                         bool finalFrame = false);
 
@@ -717,8 +718,9 @@ void buildMapScreenData(const RideState& s, MapScreenData& map,
     map.northDeg = rot;
     map.trackUp = mapTrackUp;
     // Tell the map renderer to drop the compass below the turn banner when one
-    // is drawn over the top of the viewport.
-    map.navBannerVisible = routes::navActive();
+    // is drawn over the top of the viewport. The pause banner sits in the same
+    // band, so it displaces the compass the same way.
+    map.navBannerVisible = routes::navActive() || s.ridePaused;
     map.metersPerPixel = mapMpp;
 
     // Position priority: the device's own current GPS fix; else the connected
@@ -838,6 +840,7 @@ void renderMapScreen(const RideState& s, uint8_t* fb) {
                   map.projectedTiles, map.wantedTiles,
                   map.partial ? " cut" : "", (int)mapMpp);
     drawNavBanner(fb);
+    drawPauseBanner(s, fb);
 }
 
 // Turn-by-turn banner across the top, shown on the map AND the dashboard while
@@ -854,6 +857,14 @@ void drawNavBanner(uint8_t* fb) {
     if (routes::nextTurn(instr, sizeof(instr), dist)) {
         ui_render_nav_banner(instr, dist, g_state.snapshot().useMiles, fb);
     }
+}
+
+// Auto-pause banner in the same band, on the same two screens. The turn banner
+// wins when both apply — a rider stopped AT a turn needs the instruction, and
+// the status bar's PAUSED chip still covers the pause.
+void drawPauseBanner(const RideState& s, uint8_t* fb) {
+    if (routes::navActive() || !s.ridePaused) return;
+    ui_render_pause_banner(s.pausedForS, fb);
 }
 
 void enterSensors() {
@@ -1545,6 +1556,8 @@ static void printConsoleHelp() {
     Serial.println("  mesh forget <slot>   delete a private channel");
     Serial.println("  mesh channel <name> [key]   set the channel (where — retunes)");
     Serial.println("  mesh <on|off>        power the LoRa radio");
+    Serial.println("  autopause [sec|off]  ride timer pause after N s stopped (0/off disables)");
+    Serial.println("  sleepexp [on|off]    re-arm the light-sleep-with-phone experiment (this boot)");
     Serial.println("  disconnect <kind>    drop the link (hr|power|cadence|all); stays paired");
     Serial.println("  forget <kind|mac>    unpair and drop (hr|power|cadence|all|aa:bb:..)");
     Serial.println("  bootloader           reboot into download mode for flashing");
@@ -1760,12 +1773,18 @@ static void runConsoleLine(char* line) {
         // the console coming up. cardType is the useful bit: NONE means the card
         // is not answering at all (seating / wedged / dead), a real type with no
         // mount means the filesystem is the problem.
+        // Under sdLock like every other SD touch: the LoRa radio shares the SPI
+        // bus, and an unlocked cardType/cardSize interleaving with a radio
+        // transfer is the exact two-chip-selects-low wedge the boot-freeze fix
+        // hunted down everywhere else.
+        sdLock();
         uint8_t ct = SD.cardType();
+        uint64_t sizeMB = SD.cardSize() / (1024ULL * 1024ULL);
+        sdUnlock();
         const char* cn = ct == CARD_NONE ? "NONE" : ct == CARD_MMC ? "MMC"
                        : ct == CARD_SD ? "SD" : ct == CARD_SDHC ? "SDHC" : "UNKNOWN";
         Serial.printf("[sd] mounted=%s cardType=%s size=%lluMB\n",
-                      ride_recorder::sdMounted() ? "yes" : "NO", cn,
-                      SD.cardSize() / (1024ULL * 1024ULL));
+                      ride_recorder::sdMounted() ? "yes" : "NO", cn, sizeMB);
         // "Not mounted" has two causes that need opposite responses, and the
         // difference is invisible on the device's own screen. Say which it is.
         if (!ride_recorder::sdMounted()) {
@@ -1776,10 +1795,13 @@ static void runConsoleLine(char* line) {
                 Serial.println("[sd] not mounted by the firmware — cardType=NONE means "
                                "the card is not answering (seating / wedged / dead)");
         }
-        if (ride_recorder::sdMounted())
-            Serial.printf("[sd] %llu MB free, log=%s\n",
-                          (SD.totalBytes() - SD.usedBytes()) / (1024ULL * 1024ULL),
-                          diag::logPath());
+        if (ride_recorder::sdMounted()) {
+            sdLock();
+            uint64_t freeMB = (SD.totalBytes() - SD.usedBytes()) /
+                              (1024ULL * 1024ULL);
+            sdUnlock();
+            Serial.printf("[sd] %llu MB free, log=%s\n", freeMB, diag::logPath());
+        }
     } else if (!strcasecmp(cmd, "usbdrive")) {
         // The serial-side escape hatch for a stuck "a USB host owns the card":
         // turning the drive off hands the card straight back to the firmware.
@@ -1797,6 +1819,19 @@ static void runConsoleLine(char* line) {
         }
     } else if (!strcasecmp(cmd, "bootloader") || !strcasecmp(cmd, "boot")) {
         rebootToBootloader();
+    } else if (!strcasecmp(cmd, "sleepexp")) {
+        if (arg) ble_server::setRelaxedSleepExperiment(
+            !strcasecmp(arg, "on") || !strcasecmp(arg, "1"));
+        Serial.printf("[sleepexp] light sleep with phone: %s\n",
+                      ble_server::relaxedSleepAllowed() ? "ARMED" : "off");
+    } else if (!strcasecmp(cmd, "autopause")) {
+        if (arg) {
+            int sec = !strcasecmp(arg, "off") ? 0 : atoi(arg);
+            settings::setAutoPauseSec(sec);
+        }
+        int cur = settings::autoPauseSec();
+        if (cur) Serial.printf("[autopause] after %d s stopped\n", cur);
+        else     Serial.println("[autopause] off");
     } else if (!strcasecmp(cmd, "reboot")) {
         Serial.println("[cmd] rebooting");
         Serial.flush(); delay(80); esp_restart();
@@ -2189,9 +2224,12 @@ void task(void*) {
             } else {
             switch (screen) {
                 case SCREEN_DASH:
-                    ui_render_dashboard(s, routes::navActive(),
+                    // Compact hero whenever a banner (turn OR pause) owns the
+                    // band, so no field hides underneath it.
+                    ui_render_dashboard(s, routes::navActive() || s.ridePaused,
                                         dash_config::current(), fb);
                     drawNavBanner(fb);  // turn cue on the data page too
+                    drawPauseBanner(s, fb);
                     break;
                 case SCREEN_MAP: renderMapScreen(s, fb); break;
                 case SCREEN_SUMMARY:

@@ -13,6 +13,12 @@ void begin();
 int ftpWatts();
 void setFtpWatts(int w);
 
+// Auto-pause: seconds of no movement before the ride timer stops counting.
+// 0 = auto-pause off. Movement is judged by the recorder from power, cadence,
+// wheel rotation and GPS speed — see ride_recorder.cpp.
+int autoPauseSec();
+void setAutoPauseSec(int s);
+
 int tzMinutes();
 void setTzMinutes(int m);
 

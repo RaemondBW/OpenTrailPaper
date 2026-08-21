@@ -166,9 +166,16 @@ static void gaugeDetail(const GaugeSnapshot& g, char* out, size_t n) {
 static void gaugeLogLine(const GaugeSnapshot& g, bool socValid, int tries) {
     char detail[140];
     gaugeDetail(g, detail, sizeof(detail));
+    // What is holding light sleep off RIGHT NOW, sampled with the current it
+    // explains. "pm clear" at -170 mA means a lock leak or a framework problem;
+    // "pm hunt" at -170 mA means the sensor hunt (both have happened). No '%'
+    // in the token — same phone-parser constraint as gaugeDetail().
+    char pm[40];
+    power_mgmt::stateStr(pm, sizeof(pm));
     if (socValid) {
-        diag::log("battery: %u%% %umV %dmA %u/%umAh %s %s", g.soc, g.mv, g.ma,
-                  g.rc, g.fc, g.charging ? "charging" : "discharging", detail);
+        diag::log("battery: %u%% %umV %dmA %u/%umAh %s %s pm %s", g.soc, g.mv,
+                  g.ma, g.rc, g.fc, g.charging ? "charging" : "discharging",
+                  detail, pm);
     } else {
         // tries == 0 means the poll loop never ran (init() failed at boot), so
         // the raw SOC below came from this snapshot rather than a retry round.

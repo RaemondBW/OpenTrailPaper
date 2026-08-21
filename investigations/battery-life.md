@@ -283,6 +283,96 @@ always found it idle within 16 bytes).
   resumed in place). Run it on battery with nothing mounted. If the answer is
   ≥10 mA the rename is worth it; if it's 2 mA, close this out for good.
 
+### Found 2026-08-16 — the sensor hunt took the light-sleep win back
+
+Light sleep landed on 2026-08-02 at **-130 mA mean**. By 2026-08-15/16 the fleet
+was back at **-173/-177 mA** — and the tell is the daily *minimum* discharge
+sample from the card logs:
+
+| Day | mean | best sample | days' verdict |
+|---|---|---|---|
+| 08-02 (v0.86+PM) | -129 | -104 | sleeping |
+| 08-12 (v1.12) | -168 | -102 | sleeping sometimes |
+| 08-14 (v1.13) | -175 | -107 | sleeping rarely |
+| 08-15/16 (v1.13) | -173/-177 | **-164** | never slept once |
+
+Grouping every discharge sample of 08-12→08-16 by the pm state on the nearest
+`BT modem sleep` line settles it: **hunt ON → -173 to -193 mA; hunt off, no
+phone → -109 to -120 mA**. The regression is entirely
+`ble_sensors::radioBusy()` holding `power_mgmt`'s no-light-sleep lock, and on
+08-15/16 the hunt ran ALL DAY — e.g. 07:03 → 08:44 on 08-16, 101 minutes at
+-175 mA with nobody near the bike, ended only by the idle-timeout auto-sleep.
+
+Why it ran all day: `noteActivity()` — **any touch** — armed a 30 s hunt for
+the paired-but-absent HR strap and pedals, and something kept touching the
+glass (the auto-sleep firing exactly 10 min after the last refresh proves the
+activity signal, not a wedged flag — a lock-balance audit of every
+sdLock/busyAcquire path came back clean). A device jostled in a bag hunts,
+at full power, for as long as the jostling lasts.
+
+Fixed (this branch):
+
+- The interaction-triggered hunt now also requires a paired sensor to have
+  been CONNECTED within the last 15 minutes ("sensors are in play today").
+  Recording, navigation, the Sensors screen, and the first 90 s after boot
+  hunt as before — the midnight menu-poker and the jacket in the bag do not.
+- Long-hunt duty cycle 5 s on/5 s off → 5 s on/25 s off, so a ride recorded
+  with a sensor left at home suppresses sleep ~17% of the time, not half.
+- Every `battery:` line now ends with `pm <holders>` (`grace/serial/phone/
+  hunt/bN` or `clear`) — the suspect is named in the same sample as the
+  current, so this class of regression is one grep next time, not a week.
+- `power_mgmt::tick()` warns when the bus lock is held >30 s straight
+  (leak/MSC detector), and `sdLock()` now takes the mutex BEFORE the PM lock
+  so tasks queued for the bus no longer pin the CPU awake while waiting.
+- The hr/pwr raw-payload logs throttle 2 s → 60 s and diag flushes mid-ride
+  at half-ring high water: the 08-16 ride's spam had evicted ninety minutes
+  of battery telemetry, which is why the ride window has no samples.
+
+**Expected next ride:** parked-awake and idle drain back to ~-110 to -130 mA;
+ride drain unchanged or slightly better (the hunt no longer costs 50% during
+sensor-less rides); every battery line says what, if anything, held sleep off.
+
+**Measured 2026-08-17 (two car-drive logs):** idle `pm clear` = -110 mA — the
+hunt fix holds. But both drives sat at -185/-191 mA with `pm phone` on every
+sample: the companion app stays connected for whole rides, and the
+phone-connected hold (above) was now the dominant cost.
+
+### 2026-08-17 — conn-interval governor + sleep-while-relaxed experiment
+
+Two steps, shipped same day:
+
+1. **Connection-interval governor** (ble_server task): connect still requests
+   15-30 ms; once a GPS fix has been held 10 s and the link has had no bulk
+   traffic for 8 s, request 150-300 ms; snap back on transfers (a shared
+   `noteBulk()` stamp in the OTA/map/route/rides write handlers and the file
+   streamer) or on fix loss (phone seeds are the device's eyes with no fix).
+   Evening drive: relaxed at +49 s, one fast/relaxed round-trip for a
+   transfer, **zero drops in 44 min at the long interval**, ~3-5 mA saved —
+   the radio duty was never the real cost, but the stability was the gate for
+   step 2.
+2. **Light sleep with the phone attached, when — and only when — the MEASURED
+   interval is >= 100 ms** (`ble_server::linkRelaxed()`, read back from the
+   link each second; our request is not trusted, iOS can reject it).
+   Guard rails: a supervision timeout (reason 520) while sleeping-relaxed
+   counts against the experiment and three in one boot revert to the
+   always-hold (`relaxedSleepAllowed()`, logged); transfers/fix-loss snap the
+   interval fast, which re-arms the hold within a tick. Battery lines show
+   `prlx` (info, not a holder) while connected-and-sleeping.
+
+   **Verdict 2026-08-19 — FAILED, cleanly.** First relaxed sleep dropped the
+   link in 4 s; three supervision timeouts in 41 s tripped the latch
+   (`ble: light sleep with phone DISABLED`), then the rest of the ride was
+   stable at the old ~-190 mA. The RC sleep clock misses the controller's
+   anchor at ANY interval — 30 ms vs 300 ms was never the lever. The
+   experiment now defaults OFF (`sleepexp on` re-arms it for one boot), so a
+   connected ride costs zero reconnect churn. Phone-connected rides stay
+   ~-190 mA until the controller gets a real low-power clock: verify whether
+   the board wires a 32.768 kHz crystal to XTAL_32K, then rebuild the libs
+   with `CONFIG_RTC_CLK_SRC_EXT_CRYS` + `BT_CTRL_LPCLK_SEL_EXT_32K_XTAL` and
+   re-run `sleepexp on`. Until then: riding with the app closed is the ~60 mA
+   saving available today (auto-sleep of the link, from the app side, would
+   make that automatic).
+
 ## 3. CPU light sleep — the big lever, still unclaimed
 
 > **Before touching `CONFIG_PM_ENABLE`, read

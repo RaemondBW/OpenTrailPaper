@@ -79,7 +79,20 @@ void log(const char* fmt, ...) {
 
 void flushToSD() {
     if (!buf || !mtx) return;
-    if (!ride_recorder::sdMounted() || ride_recorder::isRecording()) return;
+    if (!ride_recorder::sdMounted()) return;
+    // Nothing to write, nothing to lock. The BLE task calls this at 1 Hz, and
+    // without the check every call was a pointless sdLock/sdUnlock round trip.
+    // (Unlocked read of `len`: a line landing right now waits for the next call.)
+    if (len == 0) return;
+    // Recording normally defers the flush so the log never contends with the
+    // 1 Hz FIT writes — but never at the price of the log itself. When the ring
+    // passes half full, flush anyway: unflushed lines are evicted oldest-half
+    // first, which on the 2026-08-16 ride deleted ninety minutes of battery
+    // telemetry. One append per several minutes under the same sdLock the
+    // recorder already takes is noise; it also means a mid-ride power loss
+    // keeps the log up to the last high-water flush instead of losing it all.
+    // (`len` is read unlocked: a stale read moves one flush by a line or two.)
+    if (ride_recorder::isRecording() && len < CAP / 2) return;
     // sdLock BEFORE the diag mutex — the same order as every task that calls
     // diag::log() while holding the SD lock (recovery, map/tile saves, ...).
     // The old order here (mtx first, then sdLock) deadlocked against exactly
