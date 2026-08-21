@@ -233,7 +233,7 @@ struct DashboardEditorView: View {
     // page. Not removable, not editable — but visible, so the carousel is the
     // whole loop the Home key walks.
     private var mapCard: some View {
-        MapPagePreview()
+        MapPagePreview(fields: config.mapFields)
             .frame(width: 124, height: 206)
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay(
@@ -732,18 +732,53 @@ struct DashPreview: View {
 }
 
 
-// Thumbnail of the device's MUSIC page, same idiom as DashPreview: device
-// geometry scaled by width, stylized shapes rather than live content.
+// Thumbnails of the device's MUSIC and MAP screens, same idiom as
+// DashPreview: device geometry (540x960) scaled by width, drawn with the same
+// content the panel shows so the carousel cards are honest previews.
+
+// Sample text shared by the two mock screens.
+private func previewPanelLabel(_ id: String) -> String {
+    id == "power3s" ? "POWER · 3S" : (DashField.named(id)?.label ?? id).uppercased()
+}
+
+private func previewSample(_ id: String) -> String {
+    switch id {
+    case "speed": return "32.4"
+    case "power3s", "power": return "247"
+    case "hr": return "156"
+    case "cadence": return "88"
+    case "distance": return "54.8"
+    case "ridetime", "movingtime": return "1:47"
+    case "climb": return "918"
+    case "grade": return "4.2"
+    case "altitude": return "112"
+    case "battery": return "76"
+    case "sats": return "11"
+    case "clock": return "14:25"
+    case "routeleft": return "12.4"
+    default: return "--"
+    }
+}
+
 struct MusicPreview: View {
     var body: some View {
         GeometryReader { geo in
             let k = geo.size.width / 540
             ZStack(alignment: .topLeading) {
-                // Status band rule
+                // Status band: clock, title, battery — as the device draws it.
+                Text("14:25").font(.system(size: 30 * k, weight: .bold))
+                    .offset(x: 14 * k, y: 14 * k)
+                Text("MUSIC").font(.system(size: 26 * k, weight: .heavy))
+                    .kerning(6 * k)
+                    .frame(width: 540 * k)
+                    .offset(y: 16 * k)
+                Text("76%").font(.system(size: 30 * k, weight: .bold))
+                    .offset(x: 440 * k, y: 14 * k)
                 Rectangle().fill(.black)
                     .frame(width: 540 * k, height: 3 * k)
                     .offset(y: 61 * k)
-                // Album art frame + vinyl
+
+                // Album art frame + vinyl placeholder
                 Rectangle().stroke(.black, lineWidth: max(1, 2 * k))
                     .frame(width: 324 * k, height: 324 * k)
                     .offset(x: 108 * k, y: 96 * k)
@@ -753,35 +788,65 @@ struct MusicPreview: View {
                 Circle().fill(.black)
                     .frame(width: 68 * k, height: 68 * k)
                     .offset(x: (270 - 34) * k, y: (258 - 34) * k)
-                // Volume stepper, right edge
+                Circle().fill(Color(hex: 0xF7F5EF))
+                    .frame(width: 24 * k, height: 24 * k)
+                    .offset(x: (270 - 12) * k, y: (258 - 12) * k)
+
+                // Volume stepper, zoom-button style
+                Text("VOL").font(.system(size: 20 * k, weight: .bold))
+                    .kerning(4 * k)
+                    .frame(width: 76 * k)
+                    .offset(x: 462 * k, y: 106 * k)
                 ForEach(0..<2, id: \.self) { v in
-                    Rectangle().stroke(.black, lineWidth: max(1, 2 * k))
-                        .frame(width: 76 * k, height: 76 * k)
-                        .offset(x: 462 * k, y: (140 + CGFloat(v) * 92) * k)
+                    ZStack {
+                        Rectangle().stroke(.black, lineWidth: max(1, 3 * k))
+                        Image(systemName: v == 0 ? "plus" : "minus")
+                            .font(.system(size: 34 * k, weight: .bold))
+                    }
+                    .frame(width: 76 * k, height: 76 * k)
+                    .offset(x: 462 * k, y: (140 + CGFloat(v) * 92) * k)
                 }
-                // Title / artist bars
-                Capsule().fill(.black)
-                    .frame(width: 320 * k, height: 26 * k)
-                    .offset(x: 110 * k, y: 478 * k)
-                Capsule().fill(.black.opacity(0.55))
-                    .frame(width: 200 * k, height: 16 * k)
-                    .offset(x: 170 * k, y: 534 * k)
-                // Progress bar
+
+                // Title / artist / album
+                Text("TURN YOUR LIGHTS DOWN LOW")
+                    .font(.system(size: 34 * k, weight: .heavy))
+                    .lineLimit(1).minimumScaleFactor(0.6)
+                    .frame(width: 492 * k)
+                    .offset(x: 24 * k, y: 470 * k)
+                Text("Bob Marley & The Wailers")
+                    .font(.system(size: 24 * k, weight: .semibold))
+                    .lineLimit(1)
+                    .frame(width: 492 * k)
+                    .offset(x: 24 * k, y: 530 * k)
+                Text("Exodus")
+                    .font(.system(size: 20 * k))
+                    .foregroundStyle(.black.opacity(0.6))
+                    .frame(width: 492 * k)
+                    .offset(x: 24 * k, y: 570 * k)
+
+                // Progress + times
                 Rectangle().stroke(.black, lineWidth: max(1, 2 * k))
                     .frame(width: 492 * k, height: 14 * k)
                     .offset(x: 24 * k, y: 640 * k)
                 Rectangle().fill(.black)
-                    .frame(width: 220 * k, height: 10 * k)
+                    .frame(width: 228 * k, height: 10 * k)
                     .offset(x: 26 * k, y: 642 * k)
-                // Transport row
+                Text("2:34").font(.system(size: 20 * k))
+                    .offset(x: 24 * k, y: 668 * k)
+                Text("5:31").font(.system(size: 20 * k))
+                    .offset(x: 470 * k, y: 668 * k)
+
+                // Transport
                 ForEach(0..<3, id: \.self) { b in
-                    Rectangle().stroke(.black, lineWidth: max(1, 2 * k))
-                        .frame(width: [140.0, 188.0, 140.0][b] * k, height: 120 * k)
-                        .offset(x: [24.0, 176.0, 376.0][b] * k, y: 780 * k)
+                    ZStack {
+                        Rectangle().stroke(.black, lineWidth: max(1, 2 * k))
+                        Image(systemName: ["backward.end.fill", "pause.fill",
+                                           "forward.end.fill"][b])
+                            .font(.system(size: 40 * k))
+                    }
+                    .frame(width: [140.0, 188.0, 140.0][b] * k, height: 120 * k)
+                    .offset(x: [24.0, 176.0, 376.0][b] * k, y: 780 * k)
                 }
-                Image(systemName: "playpause.fill")
-                    .font(.system(size: 34 * k))
-                    .offset(x: 252 * k, y: 822 * k)
             }
             .frame(width: geo.size.width, height: 960 * k, alignment: .topLeading)
         }
@@ -791,10 +856,9 @@ struct MusicPreview: View {
     }
 }
 
-
-// Thumbnail of the device's map screen: status rule, a few streets, the route,
-// the zoom stack and the data strip — enough to say "the map" at a glance.
 struct MapPagePreview: View {
+    var fields: [String] = ["speed", "distance", "ridetime"]
+
     var body: some View {
         GeometryReader { geo in
             let k = geo.size.width / 540
@@ -802,41 +866,66 @@ struct MapPagePreview: View {
                 Rectangle().fill(.black)
                     .frame(width: 540 * k, height: 3 * k)
                     .offset(y: 61 * k)
-                // Street grid, slightly rotated
-                ForEach(0..<4, id: \.self) { i in
-                    Rectangle().fill(.black.opacity(i == 1 ? 0.9 : 0.35))
-                        .frame(width: 700 * k, height: (i == 1 ? 7 : 3) * k)
-                        .rotationEffect(.degrees(18))
-                        .offset(x: -80 * k, y: (170 + CGFloat(i) * 150) * k)
-                }
-                ForEach(0..<3, id: \.self) { i in
-                    Rectangle().fill(.black.opacity(0.35))
-                        .frame(width: 3 * k, height: 700 * k)
-                        .rotationEffect(.degrees(18))
-                        .offset(x: (120 + CGFloat(i) * 160) * k, y: 90 * k)
-                }
-                // Position dot
-                Circle().fill(.black)
-                    .frame(width: 26 * k, height: 26 * k)
-                    .offset(x: 257 * k, y: 420 * k)
-                Circle().stroke(.black, lineWidth: max(1, 2 * k))
-                    .frame(width: 44 * k, height: 44 * k)
-                    .offset(x: 248 * k, y: 411 * k)
-                // Zoom stack, right edge
-                ForEach(0..<2, id: \.self) { v in
-                    Rectangle().fill(Color(hex: 0xF7F5EF))
-                        .overlay(Rectangle().stroke(.black, lineWidth: max(1, 2 * k)))
+                // Street grid, slightly rotated, clipped to the map band
+                Group {
+                    ForEach(0..<4, id: \.self) { i in
+                        Rectangle().fill(.black.opacity(i == 1 ? 0.9 : 0.35))
+                            .frame(width: 700 * k, height: (i == 1 ? 7 : 3) * k)
+                            .rotationEffect(.degrees(18))
+                            .offset(x: -80 * k, y: (150 + CGFloat(i) * 150) * k)
+                    }
+                    ForEach(0..<3, id: \.self) { i in
+                        Rectangle().fill(.black.opacity(0.35))
+                            .frame(width: 3 * k, height: 700 * k)
+                            .rotationEffect(.degrees(18))
+                            .offset(x: (120 + CGFloat(i) * 160) * k, y: 80 * k)
+                    }
+                    // Position dot
+                    Circle().fill(.black)
+                        .frame(width: 26 * k, height: 26 * k)
+                        .offset(x: 257 * k, y: 420 * k)
+                    Circle().stroke(.black, lineWidth: max(1, 2 * k))
+                        .frame(width: 44 * k, height: 44 * k)
+                        .offset(x: 248 * k, y: 411 * k)
+                    // Zoom stack
+                    ForEach(0..<2, id: \.self) { v in
+                        ZStack {
+                            Rectangle().fill(Color(hex: 0xF7F5EF))
+                            Rectangle().stroke(.black, lineWidth: max(1, 3 * k))
+                            Image(systemName: v == 0 ? "plus" : "minus")
+                                .font(.system(size: 34 * k, weight: .bold))
+                        }
                         .frame(width: 76 * k, height: 76 * k)
                         .offset(x: 462 * k, y: (560 + CGFloat(v) * 80) * k)
+                    }
                 }
-                // Data strip
+                .mask(Rectangle()
+                    .frame(width: 540 * k, height: (810 - 64) * k)
+                    .offset(y: 64 * k))
+
+                // Data strip: the CONFIGURED fields, drawn like dash cells.
                 Rectangle().fill(.black)
                     .frame(width: 540 * k, height: 3 * k)
                     .offset(y: 810 * k)
                 ForEach(0..<3, id: \.self) { c in
-                    Capsule().fill(.black)
-                        .frame(width: 90 * k, height: 30 * k)
-                        .offset(x: (40 + CGFloat(c) * 170) * k, y: 860 * k)
+                    let id = c < fields.count ? fields[c] : "speed"
+                    ZStack(alignment: .topLeading) {
+                        // Boxed like the data pages' cells — same primitive on
+                        // the device (ui::cell), same look here.
+                        Rectangle().stroke(.black, lineWidth: max(1, 2 * k))
+                        Text(previewPanelLabel(id))
+                            .font(.system(size: 15 * k, weight: .bold))
+                            .kerning(2 * k)
+                            .lineLimit(1).minimumScaleFactor(0.5)
+                            .frame(width: 150 * k, alignment: .leading)
+                            .offset(x: 14 * k, y: 12 * k)
+                        Text(previewSample(id))
+                            .font(.system(size: 52 * k, weight: .heavy))
+                            .lineLimit(1).minimumScaleFactor(0.5)
+                            .frame(width: 180 * k, height: 147 * k)
+                    }
+                    .frame(width: 180 * k, height: 147 * k, alignment: .topLeading)
+                    .offset(x: CGFloat(c) * 180 * k, y: 813 * k)
                 }
             }
             .frame(width: geo.size.width, height: 960 * k, alignment: .topLeading)
@@ -844,5 +933,6 @@ struct MapPagePreview: View {
         }
         .aspectRatio(540 / 960, contentMode: .fit)
         .background(Color(hex: 0xF7F5EF))
+        .foregroundStyle(.black)
     }
 }
