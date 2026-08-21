@@ -33,6 +33,8 @@ static volatile bool s_phone = false, s_hunt = false;
 // active). Not a holder — shown on the battery line as "prlx" so a sample
 // can't be misread as "app wasn't connected".
 static volatile bool s_phoneRelaxed = false;
+// Any BLE sensor link up (holds sleep off — see tick()).
+static volatile bool s_sens = false;
 
 bool begin() {
     // Light sleep ONLY — no dynamic frequency scaling. min == max == 240 MHz
@@ -184,10 +186,21 @@ void tick() {
     // sensor is missing and the device is actually looking for it. Once
     // everything is connected the hunt stops and the CPU sleeps again.
     bool hunting = ble_sensors::radioBusy();
+    // 2026-08-21, learned on the road: an ESTABLISHED sensor link dies under
+    // light sleep exactly like the phone's does. A ride ran 1h45m rock-solid
+    // while the connected phone held sleep off — then the phone left, sleep
+    // engaged, and the power meter dropped 40 s later, after which every
+    // reconnect lived only the few seconds the hunt's own hold bought it and
+    // died at supervision timeout, all the way home (connect/520 every ~30 s).
+    // So the CPU only sleeps when the BLE radio is COMPLETELY quiet: no phone,
+    // no sensor links, no hunt. Parked/idle — the state that actually drains
+    // the battery for hours — has none of those, and keeps the full win.
+    bool sensors = ble_sensors::anyConnected();
     bool grace = millis() < USB_GRACE_MS;
     bool serial = (bool)Serial;
-    bool usb = grace || serial || phone || hunting;
+    bool usb = grace || serial || phone || hunting || sensors;
     s_grace = grace; s_serial = serial; s_phone = phone; s_hunt = hunting;
+    s_sens = sensors;
 
     // A busy (bus) lock held for half a minute straight is not a transaction,
     // it is a leak — or a host copying files over MSC, which the log line lets
@@ -261,6 +274,7 @@ void stateStr(char* out, size_t n) {
     if (s_serial) add("serial");
     if (s_phone) add("phone");
     if (s_hunt) add("hunt");
+    if (s_sens) add("sens");
     // Info, not a holder: phone attached on the relaxed link, CPU sleeping.
     if (s_phoneRelaxed) add("prlx");
     const int busy = s_busyCount.load();

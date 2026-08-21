@@ -570,6 +570,12 @@ void setScanAlways(bool on) { scanAlways = on; }
 void noteActivity() { lastActivityMs = millis(); }
 bool radioBusy() { return huntingRadio; }
 
+bool anyConnected() {
+    for (int k = 0; k < KIND_COUNT; ++k)
+        if (sensors[k].connected) return true;
+    return false;
+}
+
 HrPacket lastHrPacket() { return lastHr; }
 
 void links(Link* out) {
