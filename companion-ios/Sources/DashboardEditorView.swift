@@ -19,11 +19,17 @@ struct DashboardEditorView: View {
     @State private var pageIx = 0
     @State private var showAdd = false
     // In-carousel drag reorder: the card being held, and how far the finger
-    // has moved. The array is only reordered on RELEASE — mutating mid-drag
-    // changes the ForEach identity under the live gesture and SwiftUI cancels
-    // it; the in-flight motion is pure presentation (offsets on neighbours).
-    @State private var dragIx: Int?
-    @State private var dragW: CGFloat = 0
+    // has moved. The array is only reordered on RELEASE — the in-flight motion
+    // is pure presentation (offsets on neighbours). @GestureState, NOT @State:
+    // a sequenced gesture that gets CANCELLED (finger drifts during the hold,
+    // an incoming call) never calls onEnded, and plain state stayed stuck —
+    // which left scrollDisabled latched and the strip dead until relaunch.
+    // GestureState is reset by the system on every end, cancellation included.
+    struct DragInfo: Equatable {
+        var ix: Int? = nil
+        var w: CGFloat = 0
+    }
+    @GestureState private var drag = DragInfo()
     @State private var scrolled: String?
     @State private var dirty = false
 
@@ -169,8 +175,8 @@ struct DashboardEditorView: View {
 
     /// Where the held card would land if released now.
     private var dragTarget: Int {
-        guard let d = dragIx else { return 0 }
-        let t = d + Int((dragW / cardPitch).rounded())
+        guard let d = drag.ix else { return 0 }
+        let t = d + Int((drag.w / cardPitch).rounded())
         return min(max(t, 0), config.pages.count - 1)
     }
 
@@ -200,7 +206,7 @@ struct DashboardEditorView: View {
         .scrollPosition(id: $scrolled, anchor: .center)
         // Reordering owns the finger once a card is lifted; letting the strip
         // pan underneath would scroll AND move the card at once.
-        .scrollDisabled(dragIx != nil)
+        .scrollDisabled(drag.ix != nil)
         .frame(height: 250)
         .onAppear { scrolled = scrollID(pageIx) }
     }
@@ -222,7 +228,7 @@ struct DashboardEditorView: View {
                             lineWidth: pageIx == i ? 2.5 : 1))
             // The map can't be removed; the last remaining data/music page
             // can't either.
-            if !config.pages[i].isMap, config.contentPages > 1, dragIx == nil {
+            if !config.pages[i].isMap, config.contentPages > 1, drag.ix == nil {
                 Button {
                     withAnimation {
                         config.pages.remove(at: i)
@@ -244,12 +250,12 @@ struct DashboardEditorView: View {
         }
         // Held card lifts and follows the finger; the others slide aside to
         // show where it will land.
-        .scaleEffect(dragIx == i ? 1.08 : 1)
+        .scaleEffect(drag.ix == i ? 1.08 : 1)
         .offset(x: cardShift(i))
-        .zIndex(dragIx == i ? 1 : 0)
-        .shadow(color: .black.opacity(dragIx == i ? 0.25 : 0), radius: 8, y: 4)
-        .animation(.spring(duration: 0.25), value: dragIx)
-        .animation(.spring(duration: 0.2), value: dragIx != nil ? dragTarget : 0)
+        .zIndex(drag.ix == i ? 1 : 0)
+        .shadow(color: .black.opacity(drag.ix == i ? 0.25 : 0), radius: 8, y: 4)
+        .animation(.spring(duration: 0.25), value: drag.ix)
+        .animation(.spring(duration: 0.2), value: drag.ix != nil ? dragTarget : 0)
         .onTapGesture {
             pageIx = i
             withAnimation { scrolled = scrollID(i) }
@@ -260,8 +266,8 @@ struct DashboardEditorView: View {
     /// Presentation offset while a drag is live: the held card tracks the
     /// finger; cards between it and its landing slot step one pitch aside.
     private func cardShift(_ i: Int) -> CGFloat {
-        guard let d = dragIx else { return 0 }
-        if i == d { return dragW }
+        guard let d = drag.ix else { return 0 }
+        if i == d { return drag.w }
         let t = dragTarget
         if d < i, i <= t { return -cardPitch }
         if t <= i, i < d { return cardPitch }
@@ -271,32 +277,30 @@ struct DashboardEditorView: View {
     private func reorderGesture(_ i: Int) -> some Gesture {
         LongPressGesture(minimumDuration: 0.35)
             .sequenced(before: DragGesture())
-            .onChanged { value in
-                switch value {
-                case .second(true, let drag):
-                    if dragIx == nil {
-                        dragIx = i
-                        dragW = 0
+            .updating($drag) { value, state, _ in
+                if case .second(true, let d) = value {
+                    if state.ix == nil {
+                        state.ix = i
                         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                     }
-                    if let drag { dragW = drag.translation.width }
-                default:
-                    break
+                    state.w = d?.translation.width ?? 0
                 }
             }
-            .onEnded { _ in
-                guard let d = dragIx else { return }
-                let t = dragTarget
+            .onEnded { value in
+                // @GestureState has already reset here; the landing slot comes
+                // from the gesture's final value.
+                guard case .second(true, let d) = value else { return }
+                let w = d?.translation.width ?? 0
+                let t = min(max(i + Int((w / cardPitch).rounded()), 0),
+                            config.pages.count - 1)
                 withAnimation(.spring(duration: 0.3)) {
-                    if t != d {
-                        config.pages.move(fromOffsets: IndexSet(integer: d),
-                                          toOffset: t > d ? t + 1 : t)
+                    if t != i {
+                        config.pages.move(fromOffsets: IndexSet(integer: i),
+                                          toOffset: t > i ? t + 1 : t)
                         dirty = true
                     }
                     pageIx = t
                     scrolled = scrollID(t)
-                    dragIx = nil
-                    dragW = 0
                 }
             }
     }
