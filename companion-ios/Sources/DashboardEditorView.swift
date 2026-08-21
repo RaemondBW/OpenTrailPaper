@@ -30,7 +30,6 @@ struct DashboardEditorView: View {
         var w: CGFloat = 0
     }
     @GestureState private var drag = DragInfo()
-    @State private var scrolled: String?
     @State private var dirty = false
 
     var body: some View {
@@ -79,7 +78,6 @@ struct DashboardEditorView: View {
                 if !dirty, let c = ble.dashConfig {
                     config = c
                     if pageIx >= config.pages.count { pageIx = 0 }
-                    scrolled = scrollID(pageIx)
                 }
             }
             .sheet(isPresented: $showAdd) {
@@ -161,7 +159,6 @@ struct DashboardEditorView: View {
                     Button("Reset to the default layout") {
                         config = .deviceDefault
                         pageIx = 0
-                        scrolled = scrollID(0)
                         dirty = true
                     }
                 }
@@ -180,35 +177,32 @@ struct DashboardEditorView: View {
         return min(max(t, 0), config.pages.count - 1)
     }
 
-    private func scrollID(_ i: Int) -> String? {
-        config.pages.indices.contains(i) ? config.pages[i].id.uuidString : nil
-    }
 
     private var carousel: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            LazyHStack(spacing: 16) {
-                ForEach(Array(config.pages.enumerated()), id: \.element.id) { i, page in
-                    carouselCard(i).id(page.id.uuidString)
+        // Deliberately JUST a horizontal scroll view. Every smarter version —
+        // viewAligned snapping, then a scrollPosition(id:) binding — ended up
+        // fighting the finger: the standing "keep this card here" instruction
+        // re-asserted itself on every re-render, so free swipes sprang back
+        // and read as dead. Selection is the tap; centring happens once, only
+        // when a new card appears.
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(spacing: 16) {
+                    ForEach(Array(config.pages.enumerated()), id: \.element.id) { i, page in
+                        carouselCard(i).id(page.id.uuidString)
+                    }
+                    if config.contentPages < DashConfig.maxPages {
+                        addCard(proxy).id("add")
+                    }
                 }
-                if config.contentPages < DashConfig.maxPages {
-                    addCard.id("add")
-                }
+                .padding(.vertical, 14)
+                .padding(.horizontal, 20)
             }
-            .scrollTargetLayout()
-            .padding(.vertical, 14)
+            // Reordering owns the finger once a card is lifted; letting the
+            // strip pan underneath would scroll AND move the card at once.
+            .scrollDisabled(drag.ix != nil)
+            .frame(height: 250)
         }
-        .contentMargins(.horizontal, 20, for: .scrollContent)
-        // FREE scrolling, no snap: the strip browses with plain momentum and
-        // selection is a TAP, not whichever card the deceleration parked in
-        // the middle. The snap behaviour made every swipe a negotiation — a
-        // small flick snapped back to the current card, and the centred-card-
-        // is-selected sync re-rendered the whole editor below mid-scroll.
-        .scrollPosition(id: $scrolled, anchor: .center)
-        // Reordering owns the finger once a card is lifted; letting the strip
-        // pan underneath would scroll AND move the card at once.
-        .scrollDisabled(drag.ix != nil)
-        .frame(height: 250)
-        .onAppear { scrolled = scrollID(pageIx) }
     }
 
     private func carouselCard(_ i: Int) -> some View {
@@ -233,7 +227,6 @@ struct DashboardEditorView: View {
                     withAnimation {
                         config.pages.remove(at: i)
                         if pageIx >= config.pages.count { pageIx = config.pages.count - 1 }
-                        scrolled = scrollID(pageIx)
                     }
                     dirty = true
                 } label: {
@@ -256,10 +249,7 @@ struct DashboardEditorView: View {
         .shadow(color: .black.opacity(drag.ix == i ? 0.25 : 0), radius: 8, y: 4)
         .animation(.spring(duration: 0.25), value: drag.ix)
         .animation(.spring(duration: 0.2), value: drag.ix != nil ? dragTarget : 0)
-        .onTapGesture {
-            pageIx = i
-            withAnimation { scrolled = scrollID(i) }
-        }
+        .onTapGesture { pageIx = i }
         .simultaneousGesture(reorderGesture(i), isEnabled: config.pages.count > 1)
     }
 
@@ -300,22 +290,21 @@ struct DashboardEditorView: View {
                         dirty = true
                     }
                     pageIx = t
-                    scrolled = scrollID(t)
                 }
             }
     }
 
     // The far-right card: a new page, data or music.
-    private var addCard: some View {
+    private func addCard(_ proxy: ScrollViewProxy) -> some View {
         Menu {
             Button {
-                addPage(.fields)
+                addPage(.fields, proxy)
             } label: {
                 Label("Data page", systemImage: "rectangle.3.group")
             }
             if !config.hasMusicPage {
                 Button {
-                    addPage(.music)
+                    addPage(.music, proxy)
                 } label: {
                     Label("Music controls", systemImage: "music.note")
                 }
@@ -335,11 +324,11 @@ struct DashboardEditorView: View {
         }
     }
 
-    private func addPage(_ page: DashConfig.Page) {
+    private func addPage(_ page: DashConfig.Page, _ proxy: ScrollViewProxy) {
         withAnimation {
             config.pages.append(page)
             pageIx = config.pages.count - 1
-            scrolled = scrollID(pageIx)
+            proxy.scrollTo(page.id.uuidString, anchor: .center)
         }
         dirty = true
     }
