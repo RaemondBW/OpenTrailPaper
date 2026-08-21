@@ -765,6 +765,15 @@ class ServerCb : public NimBLEServerCallbacks {
         diag::log("ble: link %s (bonded=%d)",
                   info.isEncrypted() ? "encrypted" : "NOT encrypted",
                   info.isBonded());
+        // A failed authentication against a peer we hold keys for means the
+        // bond is stale (the phone forgot us, or keys diverged). Keeping it
+        // guarantees every future connect fails the same way — iOS reconnects,
+        // encryption dies, iOS drops the link, forever. Drop our half so the
+        // next connect pairs fresh instead.
+        if (!info.isEncrypted() && NimBLEDevice::isBonded(info.getAddress())) {
+            NimBLEDevice::deleteBond(info.getAddress());
+            diag::log("ble: stale bond dropped — next connect re-pairs");
+        }
         ams::onSecured(info.getConnHandle(), info.isEncrypted());
     }
     void onMTUChange(uint16_t mtu, NimBLEConnInfo&) override {

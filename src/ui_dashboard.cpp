@@ -31,6 +31,7 @@
 
 #include "lora_radio.h"
 #include "mesh_service.h"
+#include <NimBLEDevice.h>
 #include "ble_server.h"
 #include "routes.h"
 #include "settings.h"
@@ -1776,9 +1777,22 @@ static void runConsoleLine(char* line) {
         else Serial.println("[sensors] still paired — it will reconnect within "
                             "seconds; use 'forget' to stop that");
     } else if (!strcasecmp(cmd, "forget")) {
+        // `forget phone`: drop every BLE bond (the phone pairing for AMS).
+        // The recovery for a stale-bond loop — iOS reconnecting with keys the
+        // device no longer matches and dropping the link before the app can
+        // get a session. Pair fresh on the next connect; the rider must also
+        // Forget the device in the iPhone's Bluetooth settings.
+        if (arg && !strcasecmp(arg, "phone")) {
+            int n = NimBLEDevice::getNumBonds();
+            NimBLEDevice::deleteAllBonds();
+            Serial.printf("[ble] %d bond%s cleared — also Forget the device on "
+                          "the iPhone (Settings > Bluetooth), then reconnect\n",
+                          n, n == 1 ? "" : "s");
+            return;
+        }
         int want = sensorKindArg(arg);
         if (!arg) {
-            Serial.println("[cmd] forget <hr|power|cadence|all|aa:bb:cc:dd:ee:ff>");
+            Serial.println("[cmd] forget <hr|power|cadence|all|phone|aa:bb:..>");
         } else if (want == KIND_ALL) {
             ble_sensors::forgetAll();
             Serial.println("[sensors] every pairing cleared");
