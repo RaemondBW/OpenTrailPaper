@@ -356,6 +356,12 @@ final class BLEManager: NSObject, ObservableObject {
     /// Whether the device has told us its state since this connection came up.
     /// The first status is special: see syncLocationStreamToDeviceFix().
     private var sawStatusSinceConnect = false
+    // Consecutive connections that died before ever delivering a status.
+    // Three in a row is the stale-pairing signature: iOS reconnects with keys
+    // the device no longer holds, encryption fails, iOS drops the link — and
+    // only the RIDER can fix it (Forget This Device), so at three we say so.
+    private var barrenConnects = 0
+    @Published var pairingLooksStale = false
     private var fixStableTask: Task<Void, Never>?   // debounce stopping the stream
     @Published var lastAidingSent: Date? = nil
 
@@ -1821,6 +1827,12 @@ extension BLEManager: CBCentralManagerDelegate {
                 finishTileJob(message: "Interrupted — reconnect to resume")
             }
             status = DeviceStatus()
+            if !sawStatusSinceConnect {
+                barrenConnects += 1
+                if barrenConnects == 3 { pairingLooksStale = true }
+            } else {
+                barrenConnects = 0
+            }
             sawStatusSinceConnect = false
             rides = []; loadingRides = false
             // Nothing queued can proceed without a link, and a half-received
@@ -2067,6 +2079,7 @@ extension BLEManager: CBPeripheralDelegate {
         guard state == .connected, routeChar != nil else { return }
         let firstStatus = !sawStatusSinceConnect
         sawStatusSinceConnect = true
+        barrenConnects = 0   // a working link ends the stale-pairing streak
         if status.gpsFix {
             // The device was ALREADY locked when we connected. We start the
             // stream the moment the route characteristic shows up, before the

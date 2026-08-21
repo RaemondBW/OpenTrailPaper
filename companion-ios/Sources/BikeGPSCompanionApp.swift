@@ -13,6 +13,16 @@ struct BikeGPSCompanionApp: App {
                 .environmentObject(ble)
                 .environmentObject(appState)
                 .tint(Palette.accent)
+                // The one Bluetooth failure the rider must fix by hand: iOS
+                // holding a pairing the head unit no longer matches. Nothing on
+                // either side can delete the phone's keys, so the only honest
+                // move is to say exactly what to tap.
+                .alert("Bluetooth pairing is stale",
+                       isPresented: $ble.pairingLooksStale) {
+                    Button("OK", role: .cancel) {}
+                } message: {
+                    Text("Your iPhone remembers an old pairing for the head unit, so connections keep failing.\n\nGo to Settings \u{2192} Bluetooth, tap \u{24D8} next to \u{201C}BikeGPS\u{201D}, choose Forget This Device — then come back and reconnect.")
+                }
         }
         // Coming back from the Settings app is the one way a permission changes
         // without either framework telling us, and it's exactly the path our own

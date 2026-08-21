@@ -743,10 +743,20 @@ namespace ble_server {
 void otaAbortIfDownloading();
 void mapAbortReceive();
 
+// Stale-bond loop detector. When the PHONE holds pairing keys we no longer
+// match, iOS auto-reconnects, fails encryption, and drops the link within
+// seconds — forever, and nothing device-side can delete the phone's keys.
+// What we CAN do is recognise the pattern and say the fix out loud.
+uint32_t connAtMs = 0;
+bool connEncrypted = false;
+uint8_t quickUnencDrops = 0;
+
 class ServerCb : public NimBLEServerCallbacks {
     void onConnect(NimBLEServer* srv, NimBLEConnInfo& info) override {
         negotiatedMTU = info.getMTU();
         phoneConnected = true;
+        connAtMs = millis();
+        connEncrypted = false;
         diag::log("phone connected: MTU=%u interval=%.1fms", info.getMTU(),
                   info.getConnInterval() * 1.25f);
         // Ask for a fast connection interval (15-30 ms) so large transfers
@@ -774,6 +784,10 @@ class ServerCb : public NimBLEServerCallbacks {
             NimBLEDevice::deleteBond(info.getAddress());
             diag::log("ble: stale bond dropped — next connect re-pairs");
         }
+        if (info.isEncrypted()) {
+            connEncrypted = true;
+            quickUnencDrops = 0;   // a healthy pairing ends the streak
+        }
         ams::onSecured(info.getConnHandle(), info.isEncrypted());
     }
     void onMTUChange(uint16_t mtu, NimBLEConnInfo&) override {
@@ -795,6 +809,15 @@ class ServerCb : public NimBLEServerCallbacks {
         }
         linkIntervalLong = false;
         phoneConnected = false;
+        if (!connEncrypted && millis() - connAtMs < 15000) {
+            if (++quickUnencDrops == 3)
+                diag::log("ble: 3 quick unencrypted drops — the phone likely "
+                          "holds stale pairing keys. Fix: iPhone Settings > "
+                          "Bluetooth > BikeGPS > Forget This Device, then "
+                          "reconnect and pair fresh.");
+        } else if (connEncrypted) {
+            quickUnencDrops = 0;
+        }
         ams::onDisconnect(info.getConnHandle());
         // Recover from a transfer interrupted by the disconnect, so the device
         // doesn't stay frozen on the update popup / refuse the next attempt.
