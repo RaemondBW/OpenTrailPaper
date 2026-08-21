@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 // Rearrange the head unit's dashboard from the phone.
 //
@@ -18,24 +19,13 @@ struct DashboardEditorView: View {
     @State private var config = DashConfig(pages: [])
     @State private var pageIx = 0
     @State private var showAdd = false
-    // In-carousel drag reorder: the card being held, and how far the finger
-    // has moved. The array is only reordered on RELEASE — the in-flight motion
-    // is pure presentation (offsets on neighbours). @GestureState, NOT @State:
-    // a sequenced gesture that gets CANCELLED (finger drifts during the hold,
-    // an incoming call) never calls onEnded, and plain state stayed stuck —
-    // which left scrollDisabled latched and the strip dead until relaunch.
-    // GestureState is reset by the system on every end, cancellation included.
-    struct DragInfo: Equatable {
-        var ix: Int? = nil
-        var w: CGFloat = 0
-    }
-    @GestureState private var drag = DragInfo()
-    // Home-screen-style reorder mode: entered from a card's context menu (a
-    // native long-press interaction, which — unlike every SwiftUI drag
-    // composition tried before it — never eats the scroll view's pan). The
-    // cards shrink until the whole cycle fits on screen at once, so dragging
-    // needs no scrolling at all.
-    @State private var reordering = false
+    // Reorder is the SYSTEM drag interaction (onDrag/onDrop): UIKit-backed
+    // like a context menu, so it cannot eat the scroll view's pan — pan first
+    // scrolls, hold first lifts — which every SwiftUI drag composition tried
+    // here DID (three rounds of dead swiping). The drop delegate reorders
+    // live as the lifted card crosses its neighbours; stable page UUIDs keep
+    // every view being itself through the moves.
+    @State private var draggedPage: UUID?
     @State private var dirty = false
 
     var body: some View {
@@ -104,7 +94,7 @@ struct DashboardEditorView: View {
                     .listRowBackground(Color.clear)
             } footer: {
                 if config.pages.count > 1 {
-                    Text("Tap a page to edit it · long-press for reorder and remove")
+                    Text("Tap a page to edit it · hold one, then drag it into place")
                 }
             }
 
@@ -173,18 +163,7 @@ struct DashboardEditorView: View {
         .environment(\.editMode, .constant(.active))
     }
 
-    /// One card slot: width + LazyHStack spacing (browse / reorder mode).
-    private var cardPitch: CGFloat { reordering ? 74 : 140 }
-    private var cardW: CGFloat { reordering ? 66 : 124 }
-    private var cardH: CGFloat { reordering ? 110 : 206 }
-    private var cardGap: CGFloat { reordering ? 8 : 16 }
 
-    /// Where the held card would land if released now.
-    private var dragTarget: Int {
-        guard let d = drag.ix else { return 0 }
-        let t = d + Int((drag.w / cardPitch).rounded())
-        return min(max(t, 0), config.pages.count - 1)
-    }
 
 
     private var carousel: some View {
@@ -196,31 +175,18 @@ struct DashboardEditorView: View {
         // when a new card appears.
         ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: cardGap) {
+                HStack(spacing: 16) {
                     ForEach(Array(config.pages.enumerated()), id: \.element.id) { i, page in
                         carouselCard(i).id(page.id.uuidString)
                     }
-                    if !reordering, config.contentPages < DashConfig.maxPages {
+                    if config.contentPages < DashConfig.maxPages {
                         addCard(proxy).id("add")
                     }
                 }
                 .padding(.vertical, 14)
                 .padding(.horizontal, 20)
-                .frame(maxWidth: .infinity)
             }
-            .scrollDisabled(reordering)
-            .frame(height: reordering ? 160 : 250)
-            .overlay(alignment: .topTrailing) {
-                if reordering {
-                    Button("Done") {
-                        withAnimation(.spring(duration: 0.3)) { reordering = false }
-                    }
-                    .font(.system(size: 15, weight: .semibold))
-                    .buttonStyle(.borderedProminent)
-                    .padding(.trailing, 12)
-                }
-            }
-            .animation(.spring(duration: 0.3), value: reordering)
+            .frame(height: 250)
         }
     }
 
@@ -233,17 +199,15 @@ struct DashboardEditorView: View {
                 case .fields: DashPreview(layout: config.pages[i].layout)
                 }
             }
-            .frame(width: cardW, height: cardH)
+            .frame(width: 124, height: 206)
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay(
                 RoundedRectangle(cornerRadius: 8)
                     .stroke(pageIx == i ? Color.accentColor : Palette.hairline,
                             lineWidth: pageIx == i ? 2.5 : 1))
             // The map can't be removed; the last remaining data/music page
-            // can't either. Removal lives in reorder mode (and the context
-            // menu), keeping browse-mode cards free of extra hit targets.
-            if reordering, !config.pages[i].isMap, config.contentPages > 1,
-               drag.ix == nil {
+            // can't either.
+            if !config.pages[i].isMap, config.contentPages > 1 {
                 Button {
                     withAnimation {
                         config.pages.remove(at: i)
@@ -262,75 +226,19 @@ struct DashboardEditorView: View {
                 .accessibilityLabel("Remove this page")
             }
         }
-        // Held card lifts and follows the finger; the others slide aside to
-        // show where it will land.
-        .scaleEffect(drag.ix == i ? 1.08 : 1)
-        .offset(x: cardShift(i))
-        .zIndex(drag.ix == i ? 1 : 0)
-        .shadow(color: .black.opacity(drag.ix == i ? 0.25 : 0), radius: 8, y: 4)
-        .animation(.spring(duration: 0.25), value: drag.ix)
-        .animation(.spring(duration: 0.2), value: drag.ix != nil ? dragTarget : 0)
-        .onTapGesture { if !reordering { pageIx = i } }
-        // Native context menu: long-press that provably coexists with the
-        // scroll view's pan, unlike every SwiftUI drag composition before it.
-        .contextMenu {
-            if !reordering, config.pages.count > 1 {
-                Button {
-                    pageIx = i
-                    withAnimation(.spring(duration: 0.3)) { reordering = true }
-                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                } label: {
-                    Label("Reorder pages", systemImage: "arrow.left.arrow.right")
-                }
-            }
-            if !config.pages[i].isMap, config.contentPages > 1 {
-                Button(role: .destructive) {
-                    withAnimation {
-                        config.pages.remove(at: i)
-                        if pageIx >= config.pages.count { pageIx = config.pages.count - 1 }
-                    }
-                    dirty = true
-                } label: {
-                    Label("Remove page", systemImage: "minus.circle")
-                }
-            }
+        .onTapGesture { pageIx = i }
+        .onDrag {
+            draggedPage = config.pages[i].id
+            return NSItemProvider(object: config.pages[i].id.uuidString as NSString)
         }
-        .gesture(reorderDrag(i), isEnabled: reordering)
+        .onDrop(of: [UTType.text],
+                delegate: PageDropDelegate(item: config.pages[i],
+                                           pages: $config.pages,
+                                           pageIx: $pageIx,
+                                           dragged: $draggedPage,
+                                           changed: { dirty = true }))
     }
 
-    /// Presentation offset while a drag is live: the held card tracks the
-    /// finger; cards between it and its landing slot step one pitch aside.
-    private func cardShift(_ i: Int) -> CGFloat {
-        guard let d = drag.ix else { return 0 }
-        if i == d { return drag.w }
-        let t = dragTarget
-        if d < i, i <= t { return -cardPitch }
-        if t <= i, i < d { return cardPitch }
-        return 0
-    }
-
-    private func reorderDrag(_ i: Int) -> some Gesture {
-        DragGesture()
-            .updating($drag) { value, state, _ in
-                if state.ix == nil { state.ix = i }
-                state.w = value.translation.width
-            }
-            .onEnded { value in
-                // @GestureState has already reset here; the landing slot comes
-                // from the gesture's final value.
-                let w = value.translation.width
-                let t = min(max(i + Int((w / cardPitch).rounded()), 0),
-                            config.pages.count - 1)
-                withAnimation(.spring(duration: 0.3)) {
-                    if t != i {
-                        config.pages.move(fromOffsets: IndexSet(integer: i),
-                                          toOffset: t > i ? t + 1 : t)
-                        dirty = true
-                    }
-                    pageIx = t
-                }
-            }
-    }
 
     // The far-right card: a new page, data or music.
     private func addCard(_ proxy: ScrollViewProxy) -> some View {
@@ -991,5 +899,41 @@ struct MapPagePreview: View {
         .aspectRatio(540 / 960, contentMode: .fit)
         .background(Color(hex: 0xF7F5EF))
         .foregroundStyle(.black)
+    }
+}
+
+
+// Live reorder for the page carousel: as the lifted card crosses a neighbour,
+// the array moves under it (stable UUIDs keep the views coherent), and the
+// selection follows the page it was on.
+private struct PageDropDelegate: DropDelegate {
+    let item: DashConfig.Page
+    @Binding var pages: [DashConfig.Page]
+    @Binding var pageIx: Int
+    @Binding var dragged: UUID?
+    let changed: () -> Void
+
+    func dropEntered(info: DropInfo) {
+        guard let d = dragged, d != item.id,
+              let from = pages.firstIndex(where: { $0.id == d }),
+              let to = pages.firstIndex(where: { $0.id == item.id }) else { return }
+        let selected = pages.indices.contains(pageIx) ? pages[pageIx].id : nil
+        withAnimation(.spring(duration: 0.25)) {
+            pages.move(fromOffsets: IndexSet(integer: from),
+                       toOffset: to > from ? to + 1 : to)
+        }
+        if let sel = selected, let ix = pages.firstIndex(where: { $0.id == sel }) {
+            pageIx = ix
+        }
+        changed()
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        dragged = nil
+        return true
     }
 }
