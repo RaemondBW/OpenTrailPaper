@@ -190,17 +190,25 @@ struct DashboardEditorView: View {
         }
     }
 
+    /// The card's visible face — shared by the card itself and its drag
+    /// preview, so lifting shows the same rounded card rather than the
+    /// system's rectangular snapshot (which reads like a screenshot: the
+    /// rounded corners sit on an opaque white plate).
+    private func cardFace(_ i: Int) -> some View {
+        Group {
+            switch config.pages[i].kind {
+            case .music: MusicPreview()
+            case .map: MapPagePreview(fields: config.mapFields)
+            case .fields: DashPreview(layout: config.pages[i].layout)
+            }
+        }
+        .frame(width: 124, height: 206)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
     private func carouselCard(_ i: Int) -> some View {
         ZStack(alignment: .topTrailing) {
-            Group {
-                switch config.pages[i].kind {
-                case .music: MusicPreview()
-                case .map: MapPagePreview(fields: config.mapFields)
-                case .fields: DashPreview(layout: config.pages[i].layout)
-                }
-            }
-            .frame(width: 124, height: 206)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+            cardFace(i)
             .overlay(
                 RoundedRectangle(cornerRadius: 8)
                     .stroke(pageIx == i ? Color.accentColor : Palette.hairline,
@@ -227,9 +235,12 @@ struct DashboardEditorView: View {
             }
         }
         .onTapGesture { pageIx = i }
+        .contentShape(.dragPreview, RoundedRectangle(cornerRadius: 8))
         .onDrag {
             draggedPage = config.pages[i].id
             return NSItemProvider(object: config.pages[i].id.uuidString as NSString)
+        } preview: {
+            cardFace(i)
         }
         .onDrop(of: [UTType.text],
                 delegate: PageDropDelegate(item: config.pages[i],
