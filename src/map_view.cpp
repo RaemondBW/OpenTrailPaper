@@ -445,8 +445,40 @@ void ui_render_map(const MapScreenData& map, const RideState& s, uint8_t* fb) {
         if (f3[c] >= DF_COUNT) f3[c] = DF_SPEED;
         units3[c] = "";
         dashFieldValue(f3[c], s, vals[c], sizeof(vals[c]), &units3[c]);
+        // Time fields render compact H:MM here, as the strip always did before
+        // it was configurable. The full H:MM:SS is a dash-cell luxury: in a
+        // 156 px strip cell its worst case ("88:88:88") drags the WHOLE row's
+        // shared face down to the smallest sizes — seconds nobody reads at a
+        // glance costing half the type size of all three cells.
+        if (f3[c] == DF_RIDE_TIME || f3[c] == DF_MOVING_TIME) {
+            uint32_t sec = f3[c] == DF_RIDE_TIME ? s.elapsedS : s.movingS;
+            snprintf(vals[c], sizeof(vals[c]), "%lu:%02lu",
+                     (unsigned long)(sec / 3600), (unsigned long)((sec / 60) % 60));
+        }
         labels[c] = dashFieldLabel(f3[c]);
     }
+
+    // Units move into the CAPTION ("SPEED · KM/H"), value cells hold bare
+    // numbers. In a 124 px inner cell the unit beside the value cost ~40 px —
+    // two full ladder steps of type size for three letters the caption can
+    // carry instead. The dash pages keep value-side units; their cells are
+    // wide enough that they cost nothing there.
+    char capBuf[3][40];
+    for (int c = 0; c < 3; ++c) {
+        if (units3[c][0]) {
+            snprintf(capBuf[c], sizeof(capBuf[c]), "%s \xc2\xb7 %s", labels[c],
+                     units3[c]);
+            labels[c] = capBuf[c];
+            units3[c] = "";
+        }
+    }
+
+    // The strip's own worst-case sizing strings: dashSizingHint's, except the
+    // compact time format above.
+    auto stripHint = [](uint8_t f) {
+        return (f == DF_RIDE_TIME || f == DF_MOVING_TIME) ? "88:88"
+                                                          : dashSizingHint(f);
+    };
 
     // One caption size across the strip, as on the data page.
     const EpdFont* lf = ui::kLabelLadder[ui::LABEL_LADDER_N - 1];
@@ -467,7 +499,7 @@ void ui_render_map(const MapScreenData& map, const RideState& s, uint8_t* fb) {
     for (int c = 0; c < 3; ++c) {
         const int uw = units3[c][0] ? ui::textWidth(&Arial_B, units3[c]) + 4 : 0;
         const int idx = ui::valueFontIndex(ui::kValueLadder,
-                                           dashSizingHint(f3[c]),
+                                           stripHint(f3[c]),
                                            colW - 2 * ui::CELL_PAD,
                                            fh - 2 * ui::CELL_PAD - 20, uw);
         if (idx > vi) vi = idx;
