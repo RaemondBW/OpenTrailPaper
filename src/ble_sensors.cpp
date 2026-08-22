@@ -439,7 +439,16 @@ namespace ble_sensors {
 
 void begin() {
     candMutex = xSemaphoreCreateMutex();
-    NimBLEDevice::init("BikeGPS");
+    NimBLEDevice::init("OpenTrailPaper");
+    // Bond with the phone (Secure Connections). The iPhone's own Apple Media
+    // Service only talks over an encrypted link, so the AMS client
+    // (ams_client.cpp) needs the pairing; bonds persist in NVS, so pairing
+    // happens once, not per ride. DISPLAY_ONLY + MITM: the panel shows a
+    // 6-digit code (ble_server's onPassKeyDisplay) and the phone asks the
+    // rider to type it — a pairing they can SEE is with their own device,
+    // not whichever head unit happens to be in radio range at the trailhead.
+    NimBLEDevice::setSecurityAuth(true, true, true);
+    NimBLEDevice::setSecurityIOCap(BLE_HS_IO_DISPLAY_ONLY);
     NimBLEScan* scan = NimBLEDevice::getScan();
     scan->setScanCallbacks(&scanCallbacks, false);
     scan->setActiveScan(true);

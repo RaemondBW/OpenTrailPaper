@@ -988,6 +988,201 @@ void ui_render_dashboard(const RideState& s, bool navActive,
 
 bool ui_render_dashboard_toned() { return g_dashToned; }
 
+void ui_render_pairing(uint32_t code, uint8_t* fb) {
+    const int W = epd_rotated_display_width();
+    // A centred card over the live screen — same double-border language as the
+    // zoom/volume buttons, sized so the code is readable from the cockpit.
+    const EpdRect card = {24, 300, W - 48, 372};
+    epd_fill_rect(card, 0xFF, fb);
+    epd_draw_rect(card, 0x00, fb);
+    epd_draw_rect({card.x + 2, card.y + 2, card.width - 4, card.height - 4},
+                  0x00, fb);
+    ui::label(W / 2, card.y + 64, "PAIR WITH PHONE", fb);
+    char grouped[16];
+    snprintf(grouped, sizeof(grouped), "%03lu %03lu",
+             (unsigned long)(code / 1000), (unsigned long)(code % 1000));
+    ui::text(&Impact_B, W / 2, card.y + 230, grouped, fb,
+             EPD_DRAW_ALIGN_CENTER);
+    ui::text(&Arial_B, W / 2, card.y + 316, "Enter this code on your iPhone",
+             fb, EPD_DRAW_ALIGN_CENTER, ui::DARK);
+}
+
+// ---------------------------------------------------------------------------
+// MUSIC page — phone media controls + album art.
+// ---------------------------------------------------------------------------
+
+#include "media_state.h"
+
+// Transport row: three targets filling the footer band, all comfortably past
+// TOUCH_MIN. Play/pause gets the middle and the extra width — it is the one a
+// rider actually hits mid-ride.
+const EpdRect kMediaPrev = {24, 780, 140, 120};
+const EpdRect kMediaPlay = {176, 780, 188, 120};
+const EpdRect kMediaNext = {376, 780, 140, 120};
+// Volume: a vertical stepper on the right edge beside the art, drawn in the
+// map's zoom-button style (same x, same 76 px double-bordered square) so it
+// reads as the same control the thumb already knows. It moves the PHONE's
+// system volume, so it works whatever app is playing — including the players
+// iOS won't let us see the metadata of.
+const EpdRect kMediaVolUp = {540 - 78, 140, 76, 76};
+const EpdRect kMediaVolDown = {540 - 78, 232, 76, 76};
+
+namespace {
+
+// Copy `src` into `dst`, dropping whole characters until it fits `availW` in
+// `font`, with an ellipsis when anything was cut. Multi-byte UTF-8 sequences
+// are dropped atomically so a truncated title can't end mid-character.
+void truncToWidth(const EpdFont* font, const char* src, int availW,
+                  char* dst, size_t cap) {
+    snprintf(dst, cap, "%s", src);
+    if (ui::textWidth(font, dst) <= availW) return;
+    size_t len = strlen(dst);
+    while (len > 0) {
+        do { --len; } while (len > 0 && (dst[len] & 0xC0) == 0x80);
+        dst[len] = 0;
+        if (len + 3 < cap) {
+            memcpy(dst + len, "...", 4);
+            if (ui::textWidth(font, dst) <= availW) return;
+            dst[len] = 0;
+        }
+    }
+}
+
+// Solid playback glyphs built from the fill primitives, centred in `r`.
+void mediaGlyph(const EpdRect& r, char kind, uint8_t* fb) {
+    const int cx = r.x + r.width / 2;
+    const int cy = r.y + r.height / 2;
+    const int s = 22;   // glyph half-height
+    switch (kind) {
+        case 'p':   // play: right-pointing triangle
+            epd_fill_triangle(cx - s + 4, cy - s, cx - s + 4, cy + s,
+                              cx + s, cy, 0x00, fb);
+            break;
+        case 'u':   // pause: two bars
+            epd_fill_rect({cx - s + 2, cy - s, 14, 2 * s}, 0x00, fb);
+            epd_fill_rect({cx + s - 16, cy - s, 14, 2 * s}, 0x00, fb);
+            break;
+        case '>':   // next: triangle + bar
+            epd_fill_triangle(cx - s - 2, cy - s + 6, cx - s - 2, cy + s - 6,
+                              cx + s - 12, cy, 0x00, fb);
+            epd_fill_rect({cx + s - 8, cy - s + 6, 10, 2 * s - 12}, 0x00, fb);
+            break;
+        case '<':   // prev: bar + triangle
+            epd_fill_rect({cx - s - 2, cy - s + 6, 10, 2 * s - 12}, 0x00, fb);
+            epd_fill_triangle(cx + s + 2, cy - s + 6, cx + s + 2, cy + s - 6,
+                              cx - s + 12, cy, 0x00, fb);
+            break;
+    }
+}
+
+// Zoom-button twin (ui_map_draw_zoom_button): double border, heavy +/- mark.
+void volButton(const EpdRect& r, bool up, uint8_t* fb) {
+    epd_draw_rect(r, 0x00, fb);
+    epd_draw_rect({r.x + 1, r.y + 1, r.width - 2, r.height - 2}, 0x00, fb);
+    int cx = r.x + r.width / 2, cy = r.y + r.height / 2;
+    epd_fill_rect({cx - 14, cy - 2, 28, 5}, 0x00, fb);
+    if (up) epd_fill_rect({cx - 2, cy - 14, 5, 28}, 0x00, fb);
+}
+
+void fmtClockSec(char* out, size_t cap, int sec) {
+    if (sec >= 3600) snprintf(out, cap, "%d:%02d:%02d", sec / 3600,
+                              (sec / 60) % 60, sec % 60);
+    else snprintf(out, cap, "%d:%02d", sec / 60, sec % 60);
+}
+
+}  // namespace
+
+void ui_render_media(const RideState& s, const MediaState& m, uint8_t* fb) {
+    g_dashToned = false;   // set below when grey art lands on the glass
+    ui::statusBar(s, fb, "MUSIC");
+
+    const int W = epd_rotated_display_width();
+
+    // --- Album art -----------------------------------------------------
+    // A fixed 324 px frame whatever arrives: the art centres inside it, so a
+    // phone that sends 200 px art doesn't reflow the text below.
+    const int frame = 324;
+    const EpdRect artBox = {(W - frame) / 2, 96, frame, frame};
+    epd_draw_rect(artBox, 0x00, fb);
+    if (m.art && m.artW > 0 && m.artW <= frame - 4 && m.artH <= frame - 4) {
+        g_dashToned = true;   // greys on the glass: entry needs the tone scrub
+        const int x0 = artBox.x + (frame - m.artW) / 2;
+        const int y0 = artBox.y + (frame - m.artH) / 2;
+        for (int y = 0; y < m.artH; ++y) {
+            const uint8_t* row = m.art + (size_t)y * m.artW;
+            for (int x = 0; x < m.artW; ++x)
+                if (row[x] != 0xFF)
+                    epd_draw_pixel(x0 + x, y0 + y, row[x], fb);
+        }
+    } else {
+        // No art: a record, not an empty box.
+        const int cx = artBox.x + frame / 2, cy = artBox.y + frame / 2;
+        epd_draw_circle(cx, cy, 104, 0x00, fb);
+        epd_draw_circle(cx, cy, 103, 0x00, fb);
+        epd_fill_circle(cx, cy, 34, 0x00, fb);
+        epd_fill_circle(cx, cy, 12, 0xFF, fb);
+    }
+
+    // --- Track / artist / album -----------------------------------------
+    char line[80];
+    const int availW = ui::CONTENT_W;
+    if (!m.present) {
+        ui::text(&Impact_T, W / 2, 508, "NOTHING PLAYING", fb,
+                 EPD_DRAW_ALIGN_CENTER);
+        ui::text(&Arial_B, W / 2, 556, "Start playback on your phone", fb,
+                 EPD_DRAW_ALIGN_CENTER, ui::DARK);
+    } else {
+        // Impact_T is subsetted to caps + digits (it exists for buttons and
+        // menu rows), so the title is uppercased — ASCII only, multi-byte
+        // sequences pass through untouched.
+        char title[sizeof(m.title)];
+        snprintf(title, sizeof(title), "%s", m.title[0] ? m.title : "UNTITLED");
+        for (char* c = title; *c; ++c)
+            if (*c >= 'a' && *c <= 'z') *c -= 32;
+        truncToWidth(&Impact_T, title, availW, line, sizeof(line));
+        ui::text(&Impact_T, W / 2, 508, line, fb, EPD_DRAW_ALIGN_CENTER);
+        truncToWidth(&Arial_B, m.artist, availW, line, sizeof(line));
+        ui::text(&Arial_B, W / 2, 556, line, fb, EPD_DRAW_ALIGN_CENTER);
+        truncToWidth(&Arial_L, m.album, availW, line, sizeof(line));
+        ui::text(&Arial_L, W / 2, 592, line, fb, EPD_DRAW_ALIGN_CENTER,
+                 ui::DARK);
+    }
+
+    // --- Progress --------------------------------------------------------
+    // Position advances locally between phone reports while playing, clamped
+    // to the track: the phone only speaks on state changes, and a frozen bar
+    // under a playing track reads as a hang.
+    const EpdRect bar = {ui::CONTENT_X, 640, ui::CONTENT_W, 14};
+    epd_draw_rect(bar, 0x00, fb);
+    if (m.present && m.durSec > 0) {
+        int pos = m.posSec;
+        if (pos > m.durSec) pos = m.durSec;
+        const int w = (int)((int64_t)(bar.width - 4) * pos / m.durSec);
+        if (w > 0) epd_fill_rect({bar.x + 2, bar.y + 2, w, bar.height - 4},
+                                 0x00, fb);
+        char t[16];
+        fmtClockSec(t, sizeof(t), pos);
+        ui::text(&Arial_L, bar.x, 690, t, fb, EPD_DRAW_ALIGN_LEFT, ui::DARK);
+        fmtClockSec(t, sizeof(t), m.durSec);
+        ui::text(&Arial_L, bar.x + bar.width, 690, t, fb,
+                 EPD_DRAW_ALIGN_RIGHT, ui::DARK);
+    }
+
+    // --- Transport -------------------------------------------------------
+    epd_draw_rect(kMediaPrev, 0x00, fb);
+    epd_draw_rect(kMediaPlay, 0x00, fb);
+    epd_draw_rect(kMediaNext, 0x00, fb);
+    mediaGlyph(kMediaPrev, '<', fb);
+    mediaGlyph(kMediaPlay, m.playing ? 'u' : 'p', fb);
+    mediaGlyph(kMediaNext, '>', fb);
+
+    // --- Volume, zoom-style on the right edge ----------------------------
+    ui::label(kMediaVolUp.x + kMediaVolUp.width / 2, kMediaVolUp.y - 12, "VOL",
+              fb);
+    volButton(kMediaVolUp, true, fb);
+    volButton(kMediaVolDown, false, fb);
+}
+
 // Defined below with the list helpers; declared here so the sheet can clamp
 // its body lines to the content column.
 static void fitText(const EpdFont* font, const char* str, int maxW,

@@ -133,6 +133,29 @@ void valueWithUnit(const EpdFont* valueFont, int x0, int x1, int baselineY,
 void ui_render_dashboard(const RideState& s, bool navActive,
                          const DashLayout& layout, uint8_t* fb);
 
+// The MUSIC page: phone media controls + album art (media_state.h). Touch
+// targets exported for the dashboard's hit-testing, same as the sheets'.
+struct MediaState;
+void ui_render_media(const RideState& s, const MediaState& m, uint8_t* fb);
+extern const EpdRect kMediaVolDown;
+extern const EpdRect kMediaPrev;
+extern const EpdRect kMediaPlay;
+extern const EpdRect kMediaNext;
+extern const EpdRect kMediaVolUp;
+
+// BLE pairing sheet: the 6-digit code the phone asks the rider to type,
+// drawn over whatever screen is up while the pairing dialog is live.
+void ui_render_pairing(uint32_t code, uint8_t* fb);
+
+// Field machinery shared with the map's data strip (map_view.cpp): value +
+// unit for a DashField, and whether its source is currently present.
+void dashFieldValue(uint8_t field, const RideState& s, char* val, size_t valCap,
+                    const char** unit);
+bool dashFieldAvailable(uint8_t field, const RideState& s);
+// The WIDEST string a field can produce — what type is sized against, so a
+// value crossing a digit boundary can never resize its cell mid-ride.
+const char* dashSizingHint(uint8_t field);
+
 // Did the last ui_render_dashboard() grey out any cell?
 //
 // The caller needs this to know whether the panel wants a scrub. The greyed-out

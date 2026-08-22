@@ -23,6 +23,7 @@
 #include "map_view.h"
 #include "map_tiles.h"
 #include "map_store.h"
+#include "media.h"
 #include "i2c_bus.h"
 #include "usb_storage.h"
 #include "ble_sensors.h"
@@ -30,6 +31,7 @@
 
 #include "lora_radio.h"
 #include "mesh_service.h"
+#include <NimBLEDevice.h>
 #include "ble_server.h"
 #include "routes.h"
 #include "settings.h"
@@ -55,6 +57,25 @@ enum Screen { SCREEN_DASH, SCREEN_MAP, SCREEN_SUMMARY, SCREEN_MENU,
               SCREEN_SENSORS, SCREEN_ROUTES, SCREEN_HISTORY,
               SCREEN_SETTINGS, SCREEN_GPSDEBUG, SCREEN_DIRECTIONS };
 Screen screen = SCREEN_DASH;
+// Which cycle slot the rider is on (indexes dash_config::pages, which now
+// includes the MAP as a movable page). Deliberately NOT reset by navigation:
+// leaving for the menu or settings and coming back lands on the page the
+// rider was on — the page is a place, not a mode.
+int dashPage = 0;
+
+// First slot that is an actual dashboard (not the map) — where "back to the
+// data page" lands when the current slot is the map.
+int firstContentPage() {
+    for (int i = 0; i < dash_config::pageCount(); ++i)
+        if (dash_config::page(i).kind != DP_MAP) return i;
+    return 0;
+}
+
+int mapSlot() {
+    for (int i = 0; i < dash_config::pageCount(); ++i)
+        if (dash_config::page(i).kind == DP_MAP) return i;
+    return dash_config::pageCount() - 1;
+}
 RideSummary pendingSummary;
 
 float mapMpp = 2.0f;  // map zoom: 1/2/4/8/16/32 m per px (wide levels show tiles)
@@ -405,7 +426,10 @@ void goBack() {
         case SCREEN_HISTORY:  screen = SCREEN_MENU; break;
         case SCREEN_SENSORS:  leaveList(); break;  // also stops the BLE scan
         case SCREEN_MENU:     screen = SCREEN_DASH; break;
-        case SCREEN_MAP:      screen = SCREEN_DASH; break;
+        case SCREEN_MAP:
+            dashPage = firstContentPage();
+            screen = SCREEN_DASH;
+            break;
         // Back on the summary resumes the ride (non-destructive); SAVE / DISCARD
         // must be tapped explicitly.
         case SCREEN_SUMMARY:  screen = SCREEN_DASH; break;
@@ -511,6 +535,28 @@ void handleTap(int x, int y) {
     switch (screen) {
         case SCREEN_DASH:
         case SCREEN_MAP:
+            // Transport controls on the MUSIC page. Handled before the shared
+            // dash/map targets so the buttons win over the "strip" fallthrough;
+            // the status bar above them still opens the menu as everywhere.
+            if (screen == SCREEN_DASH &&
+                dash_config::page(dashPage).kind == DP_MUSIC &&
+                y >= ui::STATUS_H) {
+                uint8_t cmd = 0;
+                if (inRect(kMediaPrev, x, y)) cmd = MC_PREV;
+                else if (inRect(kMediaPlay, x, y)) cmd = MC_TOGGLE;
+                else if (inRect(kMediaNext, x, y)) cmd = MC_NEXT;
+                else if (inRect(kMediaVolDown, x, y)) cmd = MC_VOL_DOWN;
+                else if (inRect(kMediaVolUp, x, y)) cmd = MC_VOL_UP;
+                if (cmd) {
+                    ble_server::mediaCommand(cmd);
+                    // Answer play/pause on the glass now: flip the local flag
+                    // and repaint rather than waiting the round trip to the
+                    // phone — its state report will correct us if it disagrees.
+                    if (cmd == MC_TOGGLE) media::toggleLocal();
+                    forceDraw = true;
+                }
+                break;
+            }
             if (screen == SCREEN_MAP) {
                 int dx = x - kMapCompass.cx,
                     dy = y - mapCompassCy(routes::navActive());
@@ -543,8 +589,10 @@ void handleTap(int x, int y) {
             // flip now has deliberate targets — that strip, and the Home key,
             // which is the only way back to the map.
             if (y < ui::STATUS_H) screen = SCREEN_MENU;
-            else if (screen == SCREEN_MAP && y >= ui::MAP_STRIP_TOP)
+            else if (screen == SCREEN_MAP && y >= ui::MAP_STRIP_TOP) {
+                dashPage = firstContentPage();
                 screen = SCREEN_DASH;
+            }
             break;
         case SCREEN_SUMMARY:
             if (inRect(kResumeButton, x, y)) {
@@ -799,6 +847,7 @@ void buildMapScreenData(const RideState& s, MapScreenData& map,
 
 void renderMapScreen(const RideState& s, uint8_t* fb) {
     MapScreenData map = {};
+    for (int i = 0; i < 3; ++i) map.stripFields[i] = dash_config::mapField(i);
     uint32_t m0 = millis();
     buildMapScreenData(s, map);
     uint32_t m1 = millis();
@@ -1761,9 +1810,22 @@ static void runConsoleLine(char* line) {
         else Serial.println("[sensors] still paired — it will reconnect within "
                             "seconds; use 'forget' to stop that");
     } else if (!strcasecmp(cmd, "forget")) {
+        // `forget phone`: drop every BLE bond (the phone pairing for AMS).
+        // The recovery for a stale-bond loop — iOS reconnecting with keys the
+        // device no longer matches and dropping the link before the app can
+        // get a session. Pair fresh on the next connect; the rider must also
+        // Forget the device in the iPhone's Bluetooth settings.
+        if (arg && !strcasecmp(arg, "phone")) {
+            int n = NimBLEDevice::getNumBonds();
+            NimBLEDevice::deleteAllBonds();
+            Serial.printf("[ble] %d bond%s cleared — also Forget the device on "
+                          "the iPhone (Settings > Bluetooth), then reconnect\n",
+                          n, n == 1 ? "" : "s");
+            return;
+        }
         int want = sensorKindArg(arg);
         if (!arg) {
-            Serial.println("[cmd] forget <hr|power|cadence|all|aa:bb:cc:dd:ee:ff>");
+            Serial.println("[cmd] forget <hr|power|cadence|all|phone|aa:bb:..>");
         } else if (want == KIND_ALL) {
             ble_sensors::forgetAll();
             Serial.println("[sensors] every pairing cleared");
@@ -2142,9 +2204,20 @@ void task(void*) {
             if (millis() - lastHome > 400) {
                 lastHome = millis();
                 noteActivity();
-                if (screen == SCREEN_DASH)      screen = SCREEN_MAP;
-                else if (screen == SCREEN_MAP)  screen = SCREEN_DASH;
-                else                            goBack();
+                // The carousel: every page in configured order, the map
+                // among them wherever the rider put it. With the default
+                // config this is exactly the old dash <-> map swap.
+                if (screen == SCREEN_DASH || screen == SCREEN_MAP) {
+                    // Entered the map some other way (routes, strip tap)?
+                    // Continue the cycle from the map's slot.
+                    if (screen == SCREEN_MAP) dashPage = mapSlot();
+                    dashPage = (dashPage + 1) % dash_config::pageCount();
+                    screen = dash_config::page(dashPage).kind == DP_MAP
+                                 ? SCREEN_MAP
+                                 : SCREEN_DASH;
+                } else {
+                    goBack();
+                }
             }
         }
 
@@ -2152,12 +2225,43 @@ void task(void*) {
 
         // A layout the rider just changed in the app should land on the panel
         // now, not up to a second later — they are looking at both screens.
-        if (ble_server::takeDashChanged()) forceDraw = true;
+        if (ble_server::takeDashChanged()) {
+            // The config may have fewer pages now — never point past the end,
+            // and a data screen must never wear the map's slot.
+            if (dashPage >= dash_config::pageCount()) dashPage = 0;
+            if (screen == SCREEN_DASH &&
+                dash_config::page(dashPage).kind == DP_MAP)
+                dashPage = firstContentPage();
+            forceDraw = true;
+        }
+        // A pairing code appearing (or clearing) must repaint NOW — the rider
+        // is standing there with the phone's dialog open.
+        {
+            static uint32_t lastPairCode = 0;
+            uint32_t pc = ble_server::pairingCode();
+            if (pc != lastPairCode) { lastPairCode = pc; forceDraw = true; }
+        }
+        // New metadata or album art landed: repaint the music page now, not at
+        // the next 1 Hz tick — the rider just pressed a button somewhere.
+        {
+            static uint32_t lastMediaVersion = 0;
+            uint32_t mv = media::version();
+            if (mv != lastMediaVersion) {
+                lastMediaVersion = mv;
+                if (screen == SCREEN_DASH &&
+                    dash_config::page(dashPage).kind == DP_MUSIC)
+                    forceDraw = true;
+            }
+        }
 
         bool navPrompt = routes::navPending();
         if (navPrompt && !lastNavPrompt) navPromptShownAt = millis();
+        static int lastDashPage = 0;
+        // A page flip is a screen change in every way that matters to the
+        // refresh path: full-frame content swap, wants the quality pass.
         bool screenChanged = screen != lastScreen || powerOverlay != lastOverlay
-                             || navPrompt != lastNavPrompt;
+                             || navPrompt != lastNavPrompt
+                             || (screen == SCREEN_DASH && dashPage != lastDashPage);
         // Was: a deferred GL16 clean scheduled after an interactive DU burst
         // settled. The driver DC-balances its own output, so there is nothing
         // left to clean up after — and the ~950 ms hitch that clean cost is gone
@@ -2190,6 +2294,7 @@ void task(void*) {
             Screen prevScreen = lastScreen;
             const bool prevOverlay = lastOverlay, prevNav = lastNavPrompt;
             lastScreen = screen;
+            lastDashPage = dashPage;
             lastOverlay = powerOverlay;
             lastNavPrompt = navPrompt;
             RideState s = g_state.snapshot();
@@ -2236,14 +2341,33 @@ void task(void*) {
                                    routes::maneuverCount(), fb);
             } else {
             switch (screen) {
-                case SCREEN_DASH:
-                    // Compact hero whenever a banner (turn OR pause) owns the
-                    // band, so no field hides underneath it.
-                    ui_render_dashboard(s, routes::navActive() || s.ridePaused,
-                                        dash_config::current(), fb);
+                case SCREEN_DASH: {
+                    if (dash_config::page(dashPage).kind == DP_MAP)
+                        dashPage = firstContentPage();
+                    const DashPage& pg = dash_config::page(dashPage);
+                    if (pg.kind == DP_MUSIC) {
+                        // Advance the position locally while playing — the
+                        // phone only reports on state changes, and a frozen
+                        // bar under a playing track reads as a hang.
+                        MediaState m = media::get();
+                        if (m.present && m.playing && m.durSec > 0) {
+                            uint32_t adv = (millis() - m.posAtMs) / 1000;
+                            m.posSec = (m.posSec + adv > m.durSec)
+                                           ? m.durSec
+                                           : (uint16_t)(m.posSec + adv);
+                        }
+                        ui_render_media(s, m, fb);
+                    } else {
+                        // Compact hero whenever a banner (turn OR pause) owns
+                        // the band, so no field hides underneath it.
+                        ui_render_dashboard(s,
+                                            routes::navActive() || s.ridePaused,
+                                            pg.layout, fb);
+                    }
                     drawNavBanner(fb);  // turn cue on the data page too
                     drawPauseBanner(s, fb);
                     break;
+                }
                 case SCREEN_MAP: renderMapScreen(s, fb); break;
                 case SCREEN_SUMMARY:
                     // Modal: the ride screen stays behind the sheet, scrimmed.
@@ -2335,6 +2459,10 @@ void task(void*) {
                 }
             }
             if (powerOverlay) ui_render_power_sheet(s.recording, fb);
+            // Pairing code sheet sits over everything — the phone's dialog is
+            // modal on its side too.
+            if (unsigned int pc = ble_server::pairingCode())
+                ui_render_pairing(pc, fb);
             }  // end else (normal screens)
             // These three classified the frame so refresh() could pick a waveform.
             // The driver picks its own now (see refresh()), so they are inert — kept

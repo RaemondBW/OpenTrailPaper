@@ -58,6 +58,12 @@ struct MapScreenData {
     bool showRemaining;
     float remainingKm;
 
+    // The 3-cell data strip's fields (DashField), from the rider's config
+    // (`map` line). Filled by ui_dashboard from dash_config; the preview tool
+    // sets its own. Defaults match the strip as it always was.
+    uint8_t stripFields[3] = {0 /*DF_SPEED*/, 5 /*DF_DISTANCE*/,
+                              6 /*DF_RIDE_TIME*/};
+
     // Screen direction of true north (0 = up; track-up sets -heading).
     float northDeg;
     bool trackUp;

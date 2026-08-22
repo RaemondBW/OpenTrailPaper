@@ -22,6 +22,8 @@
 	<false/>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSAppleMusicUsageDescription</key>
+	<string>Shows what&#8217;s playing (and its album art) on your head unit&#8217;s music page, and lets its buttons control playback.</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Connects to your OpenTrailPaper to sync routes and settings.</string>
 	<key>NSCameraUsageDescription</key>

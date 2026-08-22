@@ -16,6 +16,8 @@
 #include "ble_sensors.h"
 #include "map_select.h"
 #include "map_store.h"
+#include "media.h"
+#include "ams_client.h"
 #include "sd_bus.h"
 #include "usb_storage.h"
 #include "dash_config.h"
@@ -36,6 +38,7 @@ const char* CHR_MAP       = "b1c50007-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
 const char* CHR_AGNSS     = "b1c50008-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
 const char* CHR_DASH      = "b1c50009-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
 const char* CHR_MESH      = "b1c5000a-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
+const char* CHR_MEDIA     = "b1c5000b-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
 
 NimBLECharacteristic* statusChr = nullptr;
 NimBLECharacteristic* sensorsChr = nullptr;
@@ -150,7 +153,7 @@ NimBLECharacteristic* dashChr = nullptr;
 //
 // So: copy the bytes, set a flag, get out. Static rather than stack because
 // this is a BLE callback, and sized for DASH_MAX_ITEMS worth of text.
-constexpr size_t DASH_TEXT_MAX = 640;
+constexpr size_t DASH_TEXT_MAX = 2048;   // sized with dash_config's TEXT_MAX
 char dashPendingText[DASH_TEXT_MAX];
 volatile bool dashApplyPending = false;
 
@@ -162,16 +165,97 @@ void writeDashValue(NimBLECharacteristic* c) {
     c->setValue((const uint8_t*)text, n);
 }
 
+// A multi-page config outgrew single BLE writes (iOS caps one write at 512
+// bytes), so the app streams it: [0x01] begin, [0x02 bytes...] chunks,
+// [0x03] commit. A write starting with a printable byte is the legacy
+// whole-text path, kept so an older app's one-page config still lands.
+size_t dashRxLen = 0;
+
 class DashCb : public NimBLECharacteristicCallbacks {
     void onRead(NimBLECharacteristic* c, NimBLEConnInfo&) override {
         writeDashValue(c);
     }
     void onWrite(NimBLECharacteristic* c, NimBLEConnInfo&) override {
         std::string v = c->getValue();
-        if (v.empty() || v.size() >= DASH_TEXT_MAX) return;
-        memcpy(dashPendingText, v.data(), v.size());
-        dashPendingText[v.size()] = 0;
-        dashApplyPending = true;
+        if (v.empty()) return;
+        const uint8_t op = (uint8_t)v[0];
+        if (op == 0x01) {
+            dashRxLen = 0;
+        } else if (op == 0x02) {
+            size_t n = v.size() - 1;
+            if (dashRxLen + n >= DASH_TEXT_MAX) n = DASH_TEXT_MAX - 1 - dashRxLen;
+            memcpy(dashPendingText + dashRxLen, v.data() + 1, n);
+            dashRxLen += n;
+        } else if (op == 0x03) {
+            dashPendingText[dashRxLen] = 0;
+            dashRxLen = 0;
+            dashApplyPending = true;
+        } else if (op >= 0x20 && v.size() < DASH_TEXT_MAX) {   // legacy text
+            memcpy(dashPendingText, v.data(), v.size());
+            dashPendingText[v.size()] = 0;
+            dashApplyPending = true;
+        }
+    }
+};
+
+// --- Phone media (MUSIC page) -----------------------------------------------
+// Phone -> device, one packet per write:
+//   [0x01] meta : [u8 flags: bit0 playing][u16 posSec][u16 durSec]
+//                 [title\0artist\0album\0]   (UTF-8, device truncates)
+//   [0x10] art begin : [u16 w][u16 h] — 8-bit grayscale, w*h bytes follow
+//   [0x11] art data  : raw bytes, appended in order
+//   [0x12] art end   : device dithers + repaints (deferred to the server task)
+//   [0x02] clear     : no player / playback ended
+// Device -> phone (notify): [0xA0][MediaCmd] — play/pause, next, prev.
+NimBLECharacteristic* mediaChr = nullptr;
+volatile uint8_t mediaCmdPending = 0;    // MediaCmd queued by the UI task
+volatile bool mediaArtPending = false;   // art fully received -> dither in task
+
+class MediaCb : public NimBLECharacteristicCallbacks {
+    void onWrite(NimBLECharacteristic* c, NimBLEConnInfo&) override {
+        std::string v = c->getValue();
+        if (v.empty()) return;
+        const uint8_t* p = (const uint8_t*)v.data();
+        size_t n = v.size();
+        switch (p[0]) {
+        case 0x01: {
+            if (n < 6) return;
+            bool playing = p[1] & 1;
+            uint16_t pos = (uint16_t)p[2] | ((uint16_t)p[3] << 8);
+            uint16_t dur = (uint16_t)p[4] | ((uint16_t)p[5] << 8);
+            // Three NUL-terminated strings; missing ones read as empty. Copied
+            // into a bounded scratch with a forced terminator, so a packet
+            // without NULs cannot run off the end.
+            char text[200];
+            size_t tl = n - 6 < sizeof(text) - 1 ? n - 6 : sizeof(text) - 1;
+            memcpy(text, p + 6, tl);
+            text[tl] = 0;
+            const char* f[3] = {"", "", ""};
+            size_t off = 0;
+            for (int i = 0; i < 3 && off <= tl; ++i) {
+                f[i] = text + off;
+                off += strlen(text + off) + 1;
+            }
+            media::setMeta(playing, pos, dur, f[0], f[1], f[2]);
+            break;
+        }
+        case 0x10:
+            if (n >= 5)
+                media::beginArt((int)(p[1] | (p[2] << 8)),
+                                (int)(p[3] | (p[4] << 8)));
+            break;
+        case 0x11:
+            media::artData(p + 1, n - 1);
+            break;
+        case 0x12:
+            // Dithering ~100 KB is server-task work, not callback work — the
+            // same deferral otaCommit and mapCommit already use.
+            mediaArtPending = true;
+            break;
+        case 0x02:
+            media::clearFromApp();
+            break;
+        }
     }
 };
 
@@ -659,10 +743,34 @@ namespace ble_server {
 void otaAbortIfDownloading();
 void mapAbortReceive();
 
+// Stale-bond loop detector. When the PHONE holds pairing keys we no longer
+// match, iOS auto-reconnects, fails encryption, and drops the link within
+// seconds — forever, and nothing device-side can delete the phone's keys.
+// What we CAN do is recognise the pattern and say the fix out loud.
+uint32_t connAtMs = 0;
+bool connEncrypted = false;
+uint8_t quickUnencDrops = 0;
+
+// The pairing code being shown on the panel (0 = none). Set by
+// onPassKeyDisplay, cleared when authentication finishes either way; the
+// timestamp bounds it so an abandoned dialog can't pin the sheet forever.
+volatile uint32_t pairCode = 0;
+volatile uint32_t pairCodeAtMs = 0;
+
 class ServerCb : public NimBLEServerCallbacks {
+    uint32_t onPassKeyDisplay() override {
+        // Fresh code per pairing; the panel shows it, the phone asks for it.
+        uint32_t code = esp_random() % 1000000;
+        pairCode = code;
+        pairCodeAtMs = millis();
+        diag::log("ble: pairing code %06lu shown", (unsigned long)code);
+        return code;
+    }
     void onConnect(NimBLEServer* srv, NimBLEConnInfo& info) override {
         negotiatedMTU = info.getMTU();
         phoneConnected = true;
+        connAtMs = millis();
+        connEncrypted = false;
         diag::log("phone connected: MTU=%u interval=%.1fms", info.getMTU(),
                   info.getConnInterval() * 1.25f);
         // Ask for a fast connection interval (15-30 ms) so large transfers
@@ -673,12 +781,35 @@ class ServerCb : public NimBLEServerCallbacks {
         // opening sync runs at full speed.
         lastBulkMs = millis();
         srv->updateConnParams(info.getConnHandle(), 12, 24, 0, 400);
+        // Start the AMS handshake (encrypt -> discover the phone's own media
+        // service). Runs in the server task, not here.
+        ams::onConnect(info.getConnHandle());
+    }
+    void onAuthenticationComplete(NimBLEConnInfo& info) override {
+        diag::log("ble: link %s (bonded=%d)",
+                  info.isEncrypted() ? "encrypted" : "NOT encrypted",
+                  info.isBonded());
+        // A failed authentication against a peer we hold keys for means the
+        // bond is stale (the phone forgot us, or keys diverged). Keeping it
+        // guarantees every future connect fails the same way — iOS reconnects,
+        // encryption dies, iOS drops the link, forever. Drop our half so the
+        // next connect pairs fresh instead.
+        if (!info.isEncrypted() && NimBLEDevice::isBonded(info.getAddress())) {
+            NimBLEDevice::deleteBond(info.getAddress());
+            diag::log("ble: stale bond dropped — next connect re-pairs");
+        }
+        if (info.isEncrypted()) {
+            connEncrypted = true;
+            quickUnencDrops = 0;   // a healthy pairing ends the streak
+        }
+        pairCode = 0;   // done either way — drop the code sheet
+        ams::onSecured(info.getConnHandle(), info.isEncrypted());
     }
     void onMTUChange(uint16_t mtu, NimBLEConnInfo&) override {
         diag::log("MTU negotiated: %u", mtu);
         negotiatedMTU = mtu;
     }
-    void onDisconnect(NimBLEServer*, NimBLEConnInfo&, int reason) override {
+    void onDisconnect(NimBLEServer*, NimBLEConnInfo& info, int reason) override {
         diag::log("phone disconnected (reason %d)", reason);
         // A supervision timeout (520) while the CPU was allowed to sleep on the
         // relaxed link is the experiment's failure signature — count it, and
@@ -693,6 +824,16 @@ class ServerCb : public NimBLEServerCallbacks {
         }
         linkIntervalLong = false;
         phoneConnected = false;
+        if (!connEncrypted && millis() - connAtMs < 15000) {
+            if (++quickUnencDrops == 3)
+                diag::log("ble: 3 quick unencrypted drops — the phone likely "
+                          "holds stale pairing keys. Fix: iPhone Settings > "
+                          "Bluetooth > OpenTrailPaper > Forget This Device, then "
+                          "reconnect and pair fresh.");
+        } else if (connEncrypted) {
+            quickUnencDrops = 0;
+        }
+        ams::onDisconnect(info.getConnHandle());
         // Recover from a transfer interrupted by the disconnect, so the device
         // doesn't stay frozen on the update popup / refuse the next attempt.
         otaAbortIfDownloading();
@@ -1565,7 +1706,8 @@ void begin() {
 
     dashChr = svc->createCharacteristic(
         CHR_DASH,
-        NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::NOTIFY);
+        NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::NOTIFY,
+        DASH_TEXT_MAX);   // a 4-page config outgrows the 512 B default
     dashChr->setCallbacks(new DashCb());
     writeDashValue(dashChr);
 
@@ -1574,15 +1716,20 @@ void begin() {
         NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::NOTIFY);
     meshChr->setCallbacks(new MeshCb());
 
+    mediaChr = svc->createCharacteristic(
+        CHR_MEDIA,
+        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::NOTIFY);
+    mediaChr->setCallbacks(new MediaCb());
+
     svc->start();
 
     NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
     adv->addServiceUUID(SVC_UUID);
-    adv->setName("BikeGPS");
+    adv->setName("OpenTrailPaper");
     adv->enableScanResponse(true);
     NimBLEDevice::startAdvertising();
 
-    Serial.println("[srv] GATT server advertising as BikeGPS");
+    Serial.println("[srv] GATT server advertising as OpenTrailPaper");
 }
 
 void pushSettingsToPhone() { settingsDirty = true; }
@@ -1594,6 +1741,15 @@ void setRelaxedSleepExperiment(bool on) {
     relaxedDropCount = 0;   // a re-armed run gets a fresh three strikes
     relaxedSleepOk = on;
     diag::log("ble: light-sleep-with-phone experiment %s", on ? "ARMED" : "off");
+}
+
+void mediaCommand(unsigned char cmd) { mediaCmdPending = cmd; }
+
+unsigned int pairingCode() {
+    // Self-expires: an abandoned iOS dialog never completes authentication,
+    // and the panel must not wear a dead code into the ride.
+    if (pairCode && millis() - pairCodeAtMs > 60000) pairCode = 0;
+    return pairCode;
 }
 
 bool takeDashChanged() {
@@ -1624,6 +1780,21 @@ void task(void*) {
             otaCommitPending = false;    // write staged firmware to SD (off BLE
             otaCommit();                 // host, and not while the recorder owns SD)
         }
+        if (mediaArtPending) {
+            mediaArtPending = false;
+            media::commitArt();
+        }
+        ams::tick();
+        if (uint8_t mc = mediaCmdPending) {
+            mediaCmdPending = 0;
+            // AMS reaches every player and works with the app killed; the
+            // app-notify path is the fallback when pairing was declined.
+            if (!ams::sendCommand(mc) && mediaChr && phoneConnected) {
+                uint8_t pkt[2] = {0xA0, mc};
+                mediaChr->setValue(pkt, 2);
+                mediaChr->notify();
+            }
+        }
         if (dashApplyPending && sdFree) {
             dashApplyPending = false;
             const char* reason = nullptr;
@@ -1637,7 +1808,21 @@ void task(void*) {
             // rejected — and so a send that silently failed is visible.
             if (dashChr) {
                 writeDashValue(dashChr);
-                dashChr->notify();
+                // A notification carries at most MTU-3 bytes, and a multi-page
+                // config no longer fits — the app was receiving the first 244
+                // bytes, reparsing them as a smaller config, and wiping its
+                // own editor. Short configs still go inline (an older app
+                // understands nothing else); anything bigger sends a 1-byte
+                // ping and the app reads the characteristic, which
+                // reassembles long values properly.
+                static char text[DASH_TEXT_MAX];
+                size_t n = dash_config::currentText(text, sizeof(text));
+                if (n <= 180) {
+                    dashChr->notify();
+                } else {
+                    const uint8_t ping = 0x01;
+                    dashChr->notify(&ping, 1);
+                }
             }
         }
         if (mapCommitPending && sdFree) {

@@ -68,6 +68,36 @@ struct DashLayout {
     int count = 0;
 };
 
+// --- Multiple pages ---------------------------------------------------------
+// The dashboard is a short carousel of pages the Home key steps through. Each
+// page is either a field layout or the MUSIC page (phone media controls +
+// album art), which carries no items — its content comes over BLE.
+//
+// The MAP is itself a page in the cycle (`page map`), movable like the rest —
+// there is always exactly one, the parser appends it when a config predates
+// its existence, and it can't be removed. 5 = 4 configurable pages + the map.
+constexpr int DASH_MAX_PAGES = 5;
+
+enum DashPageKind : uint8_t {
+    DP_FIELDS = 0,
+    DP_MUSIC,
+    DP_MAP,
+};
+
+struct DashPage {
+    uint8_t kind = DP_FIELDS;   // DashPageKind
+    DashLayout layout;          // empty when kind == DP_MUSIC
+};
+
+struct DashPages {
+    DashPage pages[DASH_MAX_PAGES];
+    int count = 0;
+    // The map screen's 3-cell data strip, configured by a `map <f> <f> <f>`
+    // line in the same file. Not a page — the map is always in the carousel —
+    // but its fields ride along in the one config.
+    uint8_t mapFields[3] = {DF_SPEED, DF_DISTANCE, DF_RIDE_TIME};
+};
+
 // The built-in layout: today's dashboard, field for field, so a device with no
 // config file (or a corrupt one) looks exactly as it always has.
 const DashLayout& dashDefaultLayout();
@@ -80,15 +110,25 @@ const DashLayout& dashDefaultLayout();
 //     ridetime medium  half
 //     distance medium  half
 //
+// A line reading `page` starts a new page; `page music` adds the media-controls
+// page. Text with no `page` lines parses to exactly one page, so every config
+// written before pages existed still means what it meant.
+//
 // Deliberately forgiving — this is a file riders edit by hand on the SD card.
 // Unknown field names and sizes are SKIPPED rather than failing the whole file,
-// so one typo costs one row instead of the layout. Returns false only when the
-// result would be empty, which is the caller's cue to keep the default.
+// so one typo costs one row instead of the layout. Field pages that end up
+// empty are dropped. Returns false only when the result would be no pages,
+// which is the caller's cue to keep the default.
 bool dashParse(const char* text, DashLayout& out);
+bool dashParsePages(const char* text, DashPages& out);
 
 // Write the layout back as the same text, including the header comment. Returns
 // the number of bytes written (excluding the terminator), or 0 if it did not fit.
 size_t dashSerialize(const DashLayout& layout, char* out, size_t cap);
+size_t dashSerializePages(const DashPages& pages, char* out, size_t cap);
+
+// One page of dashDefaultLayout() — what a device with no config shows.
+const DashPages& dashDefaultPages();
 
 // Stable identifiers used in the config file and over BLE ("power3s").
 const char* dashFieldId(uint8_t field);

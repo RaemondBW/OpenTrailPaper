@@ -115,7 +115,7 @@ void begin() {
     sdUnlock();
     if (sectors == 0) return;   // no card — nothing to expose yet
     USB.onEvent(usbEvent);
-    msc.vendorID("BikeGPS");
+    msc.vendorID("OTPaper");
     msc.productID("SD Card");
     msc.productRevision("1.0");
     msc.onRead(onRead);

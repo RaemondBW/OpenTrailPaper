@@ -43,6 +43,14 @@ void setRelaxedSleepExperiment(bool on);
 // the UI task can repaint immediately instead of waiting for the next 1 Hz tick.
 bool takeDashChanged();
 
+// The 6-digit BLE pairing code to show on the panel; 0 when no pairing is in
+// progress. Set while the phone's pairing dialog is up, self-expiring.
+unsigned int pairingCode();
+
+// Queue a media transport command (media_state.h MediaCmd) for the phone.
+// Called from the UI task; the server task sends the notify.
+void mediaCommand(unsigned char cmd);
+
 // Firmware-update status, for the on-device "Updating firmware" popup.
 bool updateInProgress();      // true while receiving or flashing an OTA image
 int  updatePercent();         // 0..100
