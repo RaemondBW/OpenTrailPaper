@@ -806,6 +806,7 @@ class BleManager(private val app: Application) {
      * music page — no page, no notification-access prompt and no observers.
      */
     private fun updateMediaRemote() {
+        mediaAccessGranted = mediaRemote.accessGranted
         if (mediaChar != null && dashConfig?.hasMusicPage == true) {
             mediaRemote.start()
         } else {
@@ -820,9 +821,19 @@ class BleManager(private val app: Application) {
 
     // The editor's "grant media access" card: Android gates media sessions
     // behind notification access, and only the rider can flip that switch.
-    val mediaAccessGranted: Boolean get() = mediaRemote.accessGranted
+    // Compose state, not a plain getter — the card has to DISAPPEAR the moment
+    // the rider returns from the settings screen with the grant made, and a
+    // getter recomposes nothing.
+    var mediaAccessGranted by mutableStateOf(false); private set
+
     fun mediaAccessIntent() = mediaRemote.accessSettingsIntent()
-    fun refreshMediaAccess() = mediaRemote.refresh()
+
+    /** Called on every editor resume: adopt the current grant and (re)arm the
+     * observers, so granting takes effect the moment the rider comes back. */
+    fun refreshMediaAccess() {
+        mediaAccessGranted = mediaRemote.accessGranted
+        mediaRemote.refresh()
+    }
 
     fun sendMediaMeta(
         playing: Boolean,

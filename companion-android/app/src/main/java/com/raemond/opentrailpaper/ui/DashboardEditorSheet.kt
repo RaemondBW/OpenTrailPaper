@@ -533,6 +533,19 @@ private fun MapStripSection(config: DashConfig, onPick: (Int, String) -> Unit) {
 @Composable
 private fun MusicSection(ble: BleManager) {
     val context = LocalContext.current
+    // Re-check the grant every time this screen comes back to the foreground —
+    // the rider returns HERE from the notification-access switch, and the card
+    // below must vanish (and the observers arm) the moment they do.
+    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    androidx.compose.runtime.DisposableEffect(lifecycle) {
+        val obs = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                ble.refreshMediaAccess()
+            }
+        }
+        lifecycle.lifecycle.addObserver(obs)
+        onDispose { lifecycle.lifecycle.removeObserver(obs) }
+    }
     Card {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Filled.MusicNote, contentDescription = null, tint = Palette.ink)
@@ -563,9 +576,6 @@ private fun MusicSection(ble: BleManager) {
                 Text("Open settings", style = TypeScale.bodyStrong, color = Palette.accent)
             }
         }
-        // Re-arm the observers the moment the grant lands; harmless if the
-        // rider comes back without granting.
-        LaunchedEffect(Unit) { ble.refreshMediaAccess() }
     }
 }
 
