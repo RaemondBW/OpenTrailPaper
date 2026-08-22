@@ -56,7 +56,6 @@ import com.raemond.opentrailpaper.data.FirmwareRelease
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Locale
-import java.util.TimeZone
 
 /** Edit device settings and push them over BLE. */
 @Composable
@@ -548,10 +547,11 @@ private fun logDayLabel(name: String): String {
     if (base == "diag") return "Today"
     if (base == "pending") return "Before first GPS fix"
     if (base.length != 8 || base.toIntOrNull() == null) return name
+    // The device names log files by the rider's LOCAL day, so parse and format
+    // in one zone (the phone's) — the label must repeat the name's digits, not
+    // shift them. The old UTC parse could label 20260819.log as "Aug 18".
     val parsed = runCatching {
-        SimpleDateFormat("yyyyMMdd", Locale.US)
-            .apply { timeZone = TimeZone.getTimeZone("UTC") }
-            .parse(base)
+        SimpleDateFormat("yyyyMMdd", Locale.US).parse(base)
     }.getOrNull() ?: return name
     return SimpleDateFormat("MMM d, yyyy", Locale.getDefault()).format(parsed)
 }
