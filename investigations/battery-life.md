@@ -359,6 +359,19 @@ Two steps, shipped same day:
    interval fast, which re-arms the hold within a tick. Battery lines show
    `prlx` (info, not a holder) while connected-and-sleeping.
 
+   **Addendum 2026-08-21 — sensor links die under sleep too.** First real
+   bike ride with sensors after the hunt fix: 1h45m rock-solid while the
+   connected phone held sleep off, then the phone left at a stop, sleep
+   engaged, the Assioma dropped 40 s later, and every reconnect died at
+   supervision timeout ~4 s after the hunt's own hold released — a
+   connect/520 flap every ~30 s for the whole ride home. Fixed by holding
+   light sleep while ANY sensor link is up (`ble_sensors::anyConnected()`,
+   battery-line token `sens`): the CPU now sleeps only when the BLE radio is
+   completely quiet, which parked/idle — the state that drains for hours —
+   always is. Rides with sensors or phone run ~-180 mA until the controller
+   gets a real 32 kHz clock; that crystal rebuild is now THE remaining lever
+   for ride-time drain.
+
    **Verdict 2026-08-19 — FAILED, cleanly.** First relaxed sleep dropped the
    link in 4 s; three supervision timeouts in 41 s tripped the latch
    (`ble: light sleep with phone DISABLED`), then the rest of the ride was

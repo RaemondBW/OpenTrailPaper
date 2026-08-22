@@ -282,11 +282,10 @@ int main(int argc, char** argv) {
     {
         RideState sp = s;
         sp.ridePaused = true;
-        sp.pausedForS = 154;
         sp.speedKmh = 0.0f;
         clearWhite(fb.data());
         ui_render_dashboard(sp, true, dashDefaultLayout(), fb.data());
-        ui_render_pause_banner(sp.pausedForS, fb.data());
+        ui_render_pause_banner(fb.data());
         emit("dashboard_paused.png");
     }
 

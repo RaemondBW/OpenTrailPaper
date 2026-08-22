@@ -16,6 +16,20 @@ void startRide();
 void stopRide(bool save);
 bool isRecording();
 
+// True once an auto-pause has lasted long enough (2 min) that the rider is
+// clearly parked, not waiting out a light. Gates the power policy for the
+// stop: ble_sensors stops hunting and power_mgmt drops the sensor-link hold
+// so the CPU can sleep — the power meter sleeps itself at a coffee stop and
+// the links are going away regardless. The instant movement resumes the ride
+// unpauses, this goes false, and the hunt + no-sleep hold return in the same
+// tick, so reconnection runs at full radio quality.
+bool longAutoPaused();
+
+// Rider tapped the AUTO-PAUSED banner: resume the timer now. Movement gets a
+// 30 s head start before stillness counts toward re-pausing — the tap means
+// "I'm leaving", and clipping in takes a moment. No-op unless auto-paused.
+void manualResume();
+
 // Basename (no directory) of the FIT file currently being recorded, or ""
 // when idle. Lets the history screen skip the still-open, unfinalized file.
 const char* currentRideFile();
