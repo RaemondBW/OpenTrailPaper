@@ -515,7 +515,7 @@ void ui_render_map(const MapScreenData& map, const RideState& s, uint8_t* fb) {
         const int base = (bandTop + bandBot) / 2 + vf->ascender / 2;
         ui::text(vf, cx, base, vals[c], fb, EPD_DRAW_ALIGN_CENTER);
         if (units3[c][0])
-            ui::text(&Arial_B, cx, r.y + fh - 10, units3[c], fb,
+            ui::text(&Arial_L, cx, r.y + fh - 10, units3[c], fb,
                      EPD_DRAW_ALIGN_CENTER, ui::DARK);
         // Greyed like a dash cell when the source is gone — a strip cell must
         // never show a live-looking number from a dead sensor either.
