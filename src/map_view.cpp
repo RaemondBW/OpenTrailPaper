@@ -484,11 +484,14 @@ void ui_render_map(const MapScreenData& map, const RideState& s, uint8_t* fb) {
     // caption high, big bare number, small unit on the bottom edge.
     const int capBand = 34;    // caption band, from the cell top
     const int unitBand = 26;   // unit band, from the cell bottom
+    // The value's side padding is 6, not CELL_PAD's 16: nothing sits beside
+    // the number, and those 20 px are exactly one ladder step of type size.
+    const int valuePad = 6;
     int vi = 0;
     for (int c = 0; c < 3; ++c) {
         const int idx = ui::valueFontIndex(ui::kValueLadder,
                                            stripHint(f3[c]),
-                                           colW - 2 * ui::CELL_PAD,
+                                           colW - 2 * valuePad,
                                            fh - capBand - unitBand, 0);
         if (idx > vi) vi = idx;
     }
@@ -499,7 +502,11 @@ void ui_render_map(const MapScreenData& map, const RideState& s, uint8_t* fb) {
         epd_draw_rect({r.x + 1, r.y + 1, r.width - 2, r.height - 2}, ui::INK,
                       fb);
         const int cx = r.x + r.width / 2;
-        ui::label(cx, r.y + 24, labels[c], fb, ui::INK, lf);
+        // Left-aligned caption, the dash cells' own idiom: label() centres on
+        // a point, so hand it the tracked width's midpoint.
+        const int lw = ui::labelWidth(lf, labels[c]);
+        ui::label(r.x + ui::CELL_PAD + lw / 2, r.y + 24, labels[c], fb,
+                  ui::INK, lf);
         // Value centred in the band between caption and unit. Impact digit
         // faces carry cap height in ascender, so baseline = centre + asc/2
         // is optical centre.
