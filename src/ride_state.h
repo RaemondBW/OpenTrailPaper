@@ -69,7 +69,6 @@ struct RideState {
     // Ride accumulation (owned by the recorder)
     bool     recording = false;
     bool     ridePaused = false;   // auto-pause: timer frozen until movement
-    uint32_t pausedForS = 0;       // how long the CURRENT pause has lasted
     double   distanceM = 0.0;
     uint32_t elapsedS = 0;
     uint32_t movingS = 0;

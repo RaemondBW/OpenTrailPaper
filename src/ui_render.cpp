@@ -1897,12 +1897,14 @@ void ui_render_nav_banner(const char* instruction, float distanceM,
     }
 }
 
-void ui_render_pause_banner(uint32_t pausedForS, uint8_t* fb) {
+void ui_render_pause_banner(uint8_t* fb) {
     // Same inverted band, in the same place, as the turn banner — the rider
     // already knows that band means "the device is telling you something".
-    // Left cluster is a pause glyph where the arrow would be, then how long
-    // the ride has been paused where the turn distance would be; the counter
-    // ticking up each second is what says "paused and watching", not hung.
+    // Deliberately STATIC: an earlier version showed the paused duration
+    // counting up, which forced a panel refresh every second of a stop. The
+    // frame differ (shadowFb in ui_dashboard) drops identical frames, so a
+    // banner with nothing ticking lets a paused screen coast at ~one refresh
+    // a minute (the status-bar clock) instead of sixty.
     const int W = epd_rotated_display_width();
     const int top = ui::STATUS_H;
     epd_fill_rect({0, top, W, 138}, 0x00, fb);
@@ -1912,24 +1914,9 @@ void ui_render_pause_banner(uint32_t pausedForS, uint8_t* fb) {
     epd_fill_rect({ax - 19, ay - 24, 14, 48}, 0xFF, fb);
     epd_fill_rect({ax + 5, ay - 24, 14, 48}, 0xFF, fb);
 
-    char d[16];
-    if (pausedForS >= 3600) {
-        snprintf(d, sizeof(d), "%lu:%02lu:%02lu", (unsigned long)(pausedForS / 3600),
-                 (unsigned long)((pausedForS / 60) % 60),
-                 (unsigned long)(pausedForS % 60));
-    } else {
-        snprintf(d, sizeof(d), "%lu:%02lu", (unsigned long)(pausedForS / 60),
-                 (unsigned long)(pausedForS % 60));
-    }
-    const int distX = 104;
-    ui::text(&Impact_T, distX, top + 78, d, fb, EPD_DRAW_ALIGN_LEFT, 0xFF);
-
-    const int textX = distX + ui::textWidth(&Impact_T, d) + 28;
-    const int textW = W - textX - ui::MARGIN;
-    const char* label = "AUTO-PAUSED";
-    const EpdFont* f = ui::textWidth(&Impact_T, label) <= textW ? &Impact_T
-                                                                : &Arial_B;
-    ui::text(f, textX, top + 78, label, fb, EPD_DRAW_ALIGN_LEFT, 0xFF);
+    const int textX = 104;
+    ui::text(&Impact_T, textX, top + 78, "AUTO-PAUSED", fb,
+             EPD_DRAW_ALIGN_LEFT, 0xFF);
     // The band is tappable (resumes the ride and restarts the sensor hunt) —
     // say so, or the only rider who finds out is the one who taps by accident.
     ui::text(&Arial_L, textX, top + 116, "TAP TO RESUME", fb,

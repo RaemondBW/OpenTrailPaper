@@ -308,5 +308,6 @@ void ui_render_nav_banner(const char* instruction, float distanceM,
                           bool useMiles, uint8_t* fb);
 
 // Auto-pause banner, same band as the turn banner (the turn banner wins when
-// both apply): pause glyph, how long the ride has been paused, "AUTO-PAUSED".
-void ui_render_pause_banner(uint32_t pausedForS, uint8_t* fb);
+// both apply): pause glyph, "AUTO-PAUSED", tap-to-resume hint. Static by
+// design so a paused screen stops costing panel refreshes.
+void ui_render_pause_banner(uint8_t* fb);

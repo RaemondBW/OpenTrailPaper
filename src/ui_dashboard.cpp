@@ -877,7 +877,7 @@ void drawNavBanner(uint8_t* fb) {
 // the status bar's PAUSED chip still covers the pause.
 void drawPauseBanner(const RideState& s, uint8_t* fb) {
     if (routes::navActive() || !s.ridePaused) return;
-    ui_render_pause_banner(s.pausedForS, fb);
+    ui_render_pause_banner(fb);
 }
 
 void enterSensors() {

@@ -539,7 +539,6 @@ void startRide() {
     g_state.with([](RideState& st) {
         st.recording = true;
         st.ridePaused = false;
-        st.pausedForS = 0;
         st.distanceM = 0;
         st.elapsedS = 0;
         st.movingS = 0;
@@ -578,7 +577,6 @@ void stopRide(bool save) {
     g_state.with([](RideState& st) {
         st.recording = false;
         st.ridePaused = false;
-        st.pausedForS = 0;
         st.distanceM = 0;
         st.elapsedS = 0;
         st.movingS = 0;
@@ -608,10 +606,7 @@ void manualResume() {
     manualResumeMs = millis() | 1;
     diag::log("rec: manual resume (tap, paused %lus)",
               (unsigned long)(pausedS - pauseEntryS));
-    g_state.with([](RideState& st) {
-        st.ridePaused = false;
-        st.pausedForS = 0;
-    });
+    g_state.with([](RideState& st) { st.ridePaused = false; });
 }
 
 const char* currentRideFile() {
@@ -812,10 +807,7 @@ void task(void*) {
 
         if (autoPaused) {
             pausedS++;
-            g_state.with([&](RideState& st) {
-                st.ridePaused = true;
-                st.pausedForS = pausedS - pauseEntryS;   // drives the banner's counter
-            });
+            g_state.with([](RideState& st) { st.ridePaused = true; });
             continue;
         }
 
@@ -930,7 +922,6 @@ void task(void*) {
 
         g_state.with([&](RideState& st) {
             st.ridePaused = false;
-            st.pausedForS = 0;
             st.distanceM = distanceM;
             st.elapsedS = timerS;
             st.movingS = movingS;
