@@ -123,14 +123,16 @@ struct RidesView: View {
         return h > 0 ? "\(h)h \(m % 60)m" : "\(m)m"
     }
 
-    // Filenames look like 20260712-150300.fit — the device names them in UTC
-    // (gmtime), so parse as UTC to get the correct absolute instant. Display
-    // then uses the phone's local time zone (Calendar.current / .formatted).
+    // Filenames look like 20260712-150300.fit — the device names them in the
+    // RIDER'S wall-clock time (its timezone setting), so the name already says
+    // what a human wants to read. Parse and display in the phone's own zone so
+    // no conversion happens and the shown time equals the name, verbatim.
+    // (Rides recorded before the local-naming firmware carry UTC names and
+    // will display those UTC digits as-is — a one-time historical quirk.)
     static func rideDate(_ name: String) -> Date? {
         let base = name.replacingOccurrences(of: ".fit", with: "")
         let f = DateFormatter()
         f.dateFormat = "yyyyMMdd-HHmmss"
-        f.timeZone = TimeZone(secondsFromGMT: 0)
         return f.date(from: base)
     }
 
