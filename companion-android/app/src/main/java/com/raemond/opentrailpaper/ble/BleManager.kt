@@ -154,6 +154,14 @@ class BleManager(private val app: Application) {
     /** First data page, for thumbnails (RideScreen's dashboard card). */
     val dashLayout: DashLayout? get() = dashConfig?.firstFields
 
+    /**
+     * Screenshot/emulator demo (iOS: -demo-dash): hold the device's default
+     * config so the dashboard editor works with no head unit in range. Send
+     * still compares-and-enables, and the write lands nowhere — dashChar is
+     * null — which is exactly a demo's contract.
+     */
+    fun enableDashDemo() { dashConfig = DashConfig.deviceDefault }
+
     // MARK: Meshtastic
     //
     // The device is the node; this app is its keyboard and screen. Everything

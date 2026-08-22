@@ -43,6 +43,12 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         refreshPermissions()
 
+        // Emulator/screenshot demo — the Android twin of iOS's -demo-dash
+        // launch argument: seed the device's default dashboard config so the
+        // editor can be exercised with no head unit in range.
+        //   adb shell am start ... --ez demo-dash true
+        if (intent?.getBooleanExtra("demo-dash", false) == true) ble.enableDashDemo()
+
         setContent {
             OpenTrailPaperTheme {
                 RootScreen(
