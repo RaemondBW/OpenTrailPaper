@@ -195,6 +195,12 @@ struct DashboardEditorView: View {
                 .padding(.horizontal, 20)
             }
             .frame(height: 250)
+            // Catch-all: a drop released over a gap (or anywhere off a card)
+            // still ends the session cleanly, un-fading the source card.
+            .onDrop(of: [UTType.text], isTargeted: nil) { _ in
+                draggedPage = nil
+                return true
+            }
         }
     }
 
@@ -243,6 +249,12 @@ struct DashboardEditorView: View {
             }
         }
         .onTapGesture { pageIx = i }
+        // The card fades while its drag session is live, so the system's
+        // floating snapshot reads as THE card in motion rather than a copy
+        // hovering over an unmoved original. Not 0: if a cancelled session
+        // ever leaves the flag stale, a faint card beats a vanished one.
+        .opacity(draggedPage == config.pages[i].id ? 0.25 : 1)
+        .animation(.easeInOut(duration: 0.15), value: draggedPage)
         // Rounds the SYSTEM drag snapshot. Deliberately not onDrag(_:preview:):
         // the custom-preview variant runs a different internal interaction
         // that broke the drop delegates — the card lifted beautifully and
