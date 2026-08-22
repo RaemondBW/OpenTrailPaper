@@ -190,3 +190,149 @@ data class DashLayout(val items: List<DashItem>) {
             )
     }
 }
+
+// MARK: - Pages
+
+/**
+ * The whole config: an ordered carousel of pages the device's Home key steps
+ * through. A page is either a field layout, the MUSIC page (phone media
+ * controls — its content comes over BLE, so it carries no items), or the map.
+ * Mirrors DashPages in src/dash_layout.h and DashConfig in
+ * companion-ios/Sources/DashLayout.swift; the `page` / `page music` separator
+ * lines are the wire format, and text with no separators is exactly the old
+ * one-page config.
+ */
+data class DashConfig(
+    val pages: List<Page>,
+    /** The map screen's 3-cell data strip (`map <f> <f> <f>` in the config). */
+    val mapFields: List<String> = listOf("speed", "distance", "ridetime"),
+) {
+    enum class PageKind { FIELDS, MUSIC, MAP }
+
+    data class Page(
+        val kind: PageKind,
+        val layout: DashLayout,
+        /**
+         * Stable identity across edits, so a carousel reorder animates the
+         * SAME card rather than rebuilding neighbours — index-keyed cards made
+         * a deletion reuse the wrong views on iOS, and Compose keys have the
+         * identical failure mode.
+         */
+        val key: Long = nextKey++,
+    ) {
+        val isMusic: Boolean get() = kind == PageKind.MUSIC
+        val isMap: Boolean get() = kind == PageKind.MAP
+
+        companion object {
+            private var nextKey = 1L
+            fun fields(layout: DashLayout = DashLayout(emptyList())) =
+                Page(PageKind.FIELDS, layout)
+            fun music() = Page(PageKind.MUSIC, DashLayout(emptyList()))
+            fun map() = Page(PageKind.MAP, DashLayout(emptyList()))
+        }
+    }
+
+    /** Configurable (non-map) pages the device accepts; the map page rides
+     * along on top of these (DASH_MAX_PAGES = 5 on the device). */
+    val contentPages: Int get() = pages.count { !it.isMap }
+
+    /** The first data page — what thumbnails show. */
+    val firstFields: DashLayout? get() = pages.firstOrNull { it.kind == PageKind.FIELDS }?.layout
+
+    val hasMusicPage: Boolean get() = pages.any { it.isMusic }
+
+    /**
+     * Serialize, byte-compatible with dashSerializePages(): the first field
+     * page carries no `page` line, so a one-page config round-trips to the
+     * pre-pages format. The header lines are byte-identical with
+     * dash_layout.cpp's kHeader — `==` between the app's config and the
+     * device's echo is a string comparison.
+     */
+    val configText: String
+        get() = buildString {
+            append("# OpenTrailPaper dashboard layout\n")
+            append("# <field> <small|medium|large|hero> [half]; 'page' or 'page music' starts a new page\n")
+            append("map ${mapFields[0]} ${mapFields[1]} ${mapFields[2]}\n")
+            pages.forEachIndexed { i, page ->
+                when {
+                    page.isMusic -> append("page music\n")
+                    page.isMap -> append("page map\n")
+                    i > 0 -> append("page\n")
+                }
+                if (page.kind == PageKind.FIELDS) {
+                    for (it in page.layout.items) {
+                        append(it.field.padEnd(10))
+                        append(' ')
+                        append(it.size.token.padEnd(6))
+                        if (it.half) append(" half")
+                        append('\n')
+                    }
+                }
+            }
+        }
+
+    /** Two configs are the same when the bytes the device would store are. */
+    override fun equals(other: Any?): Boolean =
+        other is DashConfig && configText == other.configText
+
+    override fun hashCode(): Int = configText.hashCode()
+
+    companion object {
+        const val MAX_PAGES = 4
+
+        /**
+         * Parse the device's text: split into per-page chunks on `page` lines,
+         * reusing DashLayout's forgiving field parsing for each chunk.
+         */
+        fun parse(text: String): DashConfig {
+            val out = mutableListOf<Page>()
+            var chunk = StringBuilder()
+            var kind = PageKind.FIELDS
+            var sawMap = false
+            val strip = mutableListOf("speed", "distance", "ridetime")
+
+            fun commit() {
+                val layout = if (kind == PageKind.FIELDS) DashLayout.parse(chunk.toString())
+                             else DashLayout(emptyList())
+                var keep = kind != PageKind.FIELDS || layout.items.isNotEmpty()
+                if (kind == PageKind.MAP) {
+                    if (sawMap) keep = false else sawMap = true
+                }
+                if (keep) out.add(Page(kind, layout))
+                chunk = StringBuilder()
+                kind = PageKind.FIELDS
+            }
+
+            for (rawLine in text.split("\n")) {
+                val line = rawLine.substringBefore('#')
+                val tok = line.split(' ', '\t', '\r').filter { it.isNotEmpty() }
+                when {
+                    tok.firstOrNull() == "page" -> {
+                        commit()
+                        when (tok.getOrNull(1)) {
+                            "music" -> kind = PageKind.MUSIC
+                            "map" -> kind = PageKind.MAP
+                        }
+                    }
+                    tok.firstOrNull() == "map" -> {
+                        for (i in 0 until 3) {
+                            val f = tok.getOrNull(i + 1) ?: continue
+                            if (DashField.named(f) != null) strip[i] = f
+                        }
+                    }
+                    else -> chunk.append(rawLine).append('\n')
+                }
+            }
+            commit()
+            // A pre-map-page config: the map belongs at the end, where the old
+            // fixed cycle put it.
+            if (!sawMap) out.add(Page.map())
+            var pages = out.take(MAX_PAGES + 1)
+            if (pages.none { it.isMap }) pages = pages + Page.map()
+            return DashConfig(pages, strip)
+        }
+
+        val deviceDefault: DashConfig
+            get() = DashConfig(listOf(Page.fields(DashLayout.deviceDefault), Page.map()))
+    }
+}

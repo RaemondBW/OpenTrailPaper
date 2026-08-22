@@ -76,6 +76,20 @@
             android:exported="false"
             android:foregroundServiceType="location" />
 
+        <!-- Empty on purpose: it exists because getActiveSessions() — how the
+             device's MUSIC page learns what the phone is playing — is gated on
+             the rider granting notification access, and that grant is bound to
+             a NotificationListenerService. Nothing here reads notifications. -->
+        <service
+            android:name=".ble.MediaListener"
+            android:exported="true"
+            android:label="OpenTrailPaper media"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
         <!-- Shares downloaded .fit rides and device logs with other apps
              (Strava, Files, mail) the way iOS hands out a file URL. -->
         <provider

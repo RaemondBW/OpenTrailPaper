@@ -32,6 +32,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
+import com.raemond.opentrailpaper.data.DashConfig
 import com.raemond.opentrailpaper.data.DashLayout
 import com.raemond.opentrailpaper.data.FirmwareRelease
 import com.raemond.opentrailpaper.data.Prefs
@@ -42,6 +43,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.security.MessageDigest
 import kotlin.math.max
@@ -141,12 +143,16 @@ class BleManager(private val app: Application) {
     var deviceTileIds by mutableStateOf<Set<String>>(emptySet()); private set
 
     /**
-     * The device's dashboard layout, as the text of /config/dashboard.cfg.
-     * null until the device has been read, which is how the editor knows to show
-     * "connect to edit" rather than an invented default that would overwrite the
-     * rider's real one the moment they touched a control.
+     * The device's dashboard config — the page carousel — as the text of
+     * /config/dashboard.cfg. null until the device has been read, which is how
+     * the editor knows to show "connect to edit" rather than an invented
+     * default that would overwrite the rider's real one the moment they
+     * touched a control.
      */
-    var dashLayout by mutableStateOf<DashLayout?>(null); private set
+    var dashConfig by mutableStateOf<DashConfig?>(null); private set
+
+    /** First data page, for thumbnails (RideScreen's dashboard card). */
+    val dashLayout: DashLayout? get() = dashConfig?.firstFields
 
     // MARK: Meshtastic
     //
@@ -197,6 +203,10 @@ class BleManager(private val app: Application) {
     private var mapChar: BluetoothGattCharacteristic? = null
     private var dashChar: BluetoothGattCharacteristic? = null
     private var meshChar: BluetoothGattCharacteristic? = null
+    private var mediaChar: BluetoothGattCharacteristic? = null
+
+    /** Feeds the device's MUSIC page and answers its transport buttons. */
+    private val mediaRemote by lazy { MediaRemote(app, this) }
 
     // Streamed lists arrive one item per notification and are published only on
     // the end marker, so the UI never sees a half-built list.
@@ -537,14 +547,16 @@ class BleManager(private val app: Application) {
         mapChar = service.getCharacteristic(BikeUuid.map)
         dashChar = service.getCharacteristic(BikeUuid.dash)
         // Absent on firmware built before the mesh landed, so every mesh call
-        // below no-ops rather than crashing on an older device.
+        // below no-ops rather than crashing on an older device. Same for media
+        // (pre-pages firmware).
         meshChar = service.getCharacteristic(BikeUuid.mesh)
+        mediaChar = service.getCharacteristic(BikeUuid.media)
 
         // Subscribe to everything that notifies, then read the two the device
         // holds authoritative copies of.
         listOfNotNull(
             settingsChar, statusChar, routeChar, ridesChar,
-            otaChar, sensorsChar, mapChar, dashChar, meshChar,
+            otaChar, sensorsChar, mapChar, dashChar, meshChar, mediaChar,
         ).forEach { queue.enqueue(GattQueue.Op.Notify(it, true)) }
 
         settingsChar?.let { queue.enqueue(GattQueue.Op.Read(it)) }
@@ -580,15 +592,29 @@ class BleManager(private val app: Application) {
             BikeUuid.ota -> handleOtaNotify(data)
             BikeUuid.sensors -> handleSensorsNotify(data)
             BikeUuid.map -> handleMapNotify(data)
-            BikeUuid.dash -> dashLayout = DashLayout.parse(String(data, Charsets.UTF_8))
+            BikeUuid.dash -> handleDashNotify(data)
             BikeUuid.mesh -> handleMeshNotify(data)
+            BikeUuid.media -> handleMediaNotify(data)
         }
+    }
+
+    private fun handleDashNotify(data: ByteArray) {
+        // A 1-byte 0x01 is the device saying "changed, too big for a notify —
+        // read me": a notification truncates at MTU-3 bytes, and adopting a
+        // truncated multi-page config is how the editor once wiped itself.
+        if (data.size == 1 && data[0].toInt() == 0x01) {
+            dashChar?.let { queue.enqueue(GattQueue.Op.Read(it)) }
+            return
+        }
+        dashConfig = DashConfig.parse(String(data, Charsets.UTF_8))
+        updateMediaRemote()
     }
 
     private fun handleDisconnect() {
         settingsChar = null; statusChar = null; routeChar = null; ridesChar = null
         sensorsChar = null; mapChar = null; otaChar = null; dashChar = null
-        meshChar = null
+        meshChar = null; mediaChar = null
+        updateMediaRemote()    // no link, no media observers
         stopLocationStream()   // no device to send the phone's position to
 
         // If we drop mid-update: after the data is sent + commit requested, a
@@ -747,12 +773,100 @@ class BleManager(private val app: Application) {
     // MARK: dashboard layout
 
     /**
-     * Push a layout to the device. It writes the file, applies it to the panel,
-     * and notifies back what it actually stored — so a rejected layout corrects
-     * the editor instead of leaving it out of step.
+     * Push the page config to the device. It writes the file, applies it to
+     * the panel, and notifies back what it actually stored — so a rejected
+     * layout corrects the editor instead of leaving it out of step. Streamed
+     * ([0x01] begin, [0x02]+bytes, [0x03] commit): a multi-page config
+     * outgrows a single write, and the GattQueue drains the chunks in order.
      */
-    fun sendDashLayout(layout: DashLayout) {
-        writeChar(dashChar, layout.configText.toByteArray(Charsets.UTF_8))
+    fun sendDashConfig(config: DashConfig) {
+        val data = config.configText.toByteArray(Charsets.UTF_8)
+        writeChar(dashChar, byteArrayOf(0x01))
+        var off = 0
+        while (off < data.size) {
+            val n = minOf(chunkSize, data.size - off)
+            writeChar(dashChar, byteArrayOf(0x02) + data.copyOfRange(off, off + n))
+            off += n
+        }
+        writeChar(dashChar, byteArrayOf(0x03))
+    }
+
+    // MARK: phone media (the device's MUSIC page)
+
+    /**
+     * The remote runs only while the device is connected AND its config has a
+     * music page — no page, no notification-access prompt and no observers.
+     */
+    private fun updateMediaRemote() {
+        if (mediaChar != null && dashConfig?.hasMusicPage == true) {
+            mediaRemote.start()
+        } else {
+            mediaRemote.stop()
+        }
+    }
+
+    private fun handleMediaNotify(data: ByteArray) {
+        if (data.size < 2 || data[0] != 0xA0.toByte()) return
+        mediaRemote.handleCommand(data[1].toInt())
+    }
+
+    // The editor's "grant media access" card: Android gates media sessions
+    // behind notification access, and only the rider can flip that switch.
+    val mediaAccessGranted: Boolean get() = mediaRemote.accessGranted
+    fun mediaAccessIntent() = mediaRemote.accessSettingsIntent()
+    fun refreshMediaAccess() = mediaRemote.refresh()
+
+    fun sendMediaMeta(
+        playing: Boolean,
+        posSec: Int,
+        durSec: Int,
+        title: String,
+        artist: String,
+        album: String,
+    ) {
+        if (mediaChar == null) return
+        val out = ByteArrayOutputStream()
+        out.write(0x01)
+        out.write(if (playing) 1 else 0)
+        out.write(posSec and 0xFF); out.write((posSec shr 8) and 0xFF)
+        out.write(durSec and 0xFF); out.write((durSec shr 8) and 0xFF)
+        // Three NUL-terminated UTF-8 strings; the device truncates to its own
+        // caps, so only the packet has to stay comfortably under one write.
+        for (s in listOf(title, artist, album)) {
+            out.write(s.toByteArray(Charsets.UTF_8).let {
+                if (it.size > 60) it.copyOf(60) else it
+            })
+            out.write(0)
+        }
+        writeChar(mediaChar, out.toByteArray())
+    }
+
+    fun sendMediaClear() {
+        writeChar(mediaChar, byteArrayOf(0x02))
+    }
+
+    /** 8-bit grayscale, streamed: [0x10 w h] begin, [0x11]+bytes, [0x12] end. */
+    fun sendMediaArt(gray: ByteArray, width: Int, height: Int) {
+        if (mediaChar == null) return
+        writeChar(
+            mediaChar,
+            byteArrayOf(
+                0x10,
+                (width and 0xFF).toByte(), ((width shr 8) and 0xFF).toByte(),
+                (height and 0xFF).toByte(), ((height shr 8) and 0xFF).toByte(),
+            ),
+        )
+        var off = 0
+        while (off < gray.size) {
+            val n = minOf(chunkSize, gray.size - off)
+            writeChar(
+                mediaChar,
+                byteArrayOf(0x11) + gray.copyOfRange(off, off + n),
+                withResponse = false,
+            )
+            off += n
+        }
+        writeChar(mediaChar, byteArrayOf(0x12))
     }
 
     // MARK: rides (device -> phone)

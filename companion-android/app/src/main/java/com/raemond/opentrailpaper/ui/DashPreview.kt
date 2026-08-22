@@ -1,5 +1,6 @@
 package com.raemond.opentrailpaper.ui
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -22,13 +23,21 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.raemond.opentrailpaper.data.DashField
 import com.raemond.opentrailpaper.data.DashItem
 import com.raemond.opentrailpaper.data.DashLayout
 import com.raemond.opentrailpaper.data.DashSize
@@ -429,4 +438,232 @@ private fun zone(field: String, live: RideSim?): Int {
         pct < 150 -> 6
         else -> 7
     }
+}
+
+// MARK: - page thumbnails
+
+// Thumbnails of the device's MUSIC and MAP screens, same idiom as DashPreview:
+// device geometry (540x960) scaled by width, drawn with the same content the
+// panel shows so the carousel cards are honest previews. Ports of MusicPreview
+// and MapPagePreview in companion-ios/Sources/DashboardEditorView.swift.
+
+private fun previewPanelLabel(id: String): String =
+    if (id == "power3s") "POWER · 3S"
+    else (DashField.named(id)?.label ?: id).uppercase()
+
+private fun previewSample(id: String): String =
+    if (id == "ridetime" || id == "movingtime") "1:47" else sample(id)
+
+@Composable
+fun MusicPreview(modifier: Modifier = Modifier) {
+    PanelMock(modifier) { k ->
+        // Status band: clock, title, battery — as the device draws it.
+        PanelText("14:25", 30f * k, FontWeight.Bold, x = 14f * k, y = 14f * k)
+        PanelText(
+            "MUSIC", 26f * k, FontWeight.Black,
+            x = 0f, y = 16f * k, width = 540f * k, align = TextAlign.Center,
+            tracking = 6f * k,
+        )
+        PanelText("76%", 30f * k, FontWeight.Bold, x = 440f * k, y = 14f * k)
+
+        Canvas(Modifier.fillMaxSize()) {
+            val s = k * density
+            fun rect(x: Float, y: Float, w: Float, h: Float, fill: Boolean, stroke: Float = 2f) {
+                if (fill) {
+                    drawRect(Color.Black, Offset(x * s, y * s), Size(w * s, h * s))
+                } else {
+                    drawRect(
+                        Color.Black, Offset(x * s, y * s), Size(w * s, h * s),
+                        style = Stroke((stroke * s).coerceAtLeast(1f)),
+                    )
+                }
+            }
+            // Status rule
+            rect(0f, 61f, 540f, 3f, fill = true)
+            // Album art frame + vinyl placeholder
+            rect(108f, 96f, 324f, 324f, fill = false)
+            drawCircle(
+                Color.Black, 104f * s, Offset(270f * s, 258f * s),
+                style = Stroke((2f * s).coerceAtLeast(1f)),
+            )
+            drawCircle(Color.Black, 34f * s, Offset(270f * s, 258f * s))
+            drawCircle(PanelPaper, 12f * s, Offset(270f * s, 258f * s))
+            // Volume stepper boxes with their + / - glyphs
+            rect(462f, 140f, 76f, 76f, fill = false, stroke = 3f)
+            rect(462f, 232f, 76f, 76f, fill = false, stroke = 3f)
+            rect(486f, 175f, 28f, 6f, fill = true)
+            rect(497f, 164f, 6f, 28f, fill = true)
+            rect(486f, 267f, 28f, 6f, fill = true)
+            // Progress + fill
+            rect(24f, 640f, 492f, 14f, fill = false)
+            rect(26f, 642f, 228f, 10f, fill = true)
+            // Transport boxes
+            rect(24f, 780f, 140f, 120f, fill = false)
+            rect(176f, 780f, 188f, 120f, fill = false)
+            rect(376f, 780f, 140f, 120f, fill = false)
+            // prev: triangle to a bar; pause: two bars; next mirrored
+            fun tri(cx: Float, cy: Float, w: Float, h: Float, left: Boolean) {
+                val p = Path().apply {
+                    if (left) {
+                        moveTo((cx + w / 2) * s, (cy - h / 2) * s)
+                        lineTo((cx + w / 2) * s, (cy + h / 2) * s)
+                        lineTo((cx - w / 2) * s, cy * s)
+                    } else {
+                        moveTo((cx - w / 2) * s, (cy - h / 2) * s)
+                        lineTo((cx - w / 2) * s, (cy + h / 2) * s)
+                        lineTo((cx + w / 2) * s, cy * s)
+                    }
+                    close()
+                }
+                drawPath(p, Color.Black)
+            }
+            tri(88f, 840f, 26f, 32f, left = true)
+            rect(66f, 824f, 6f, 32f, fill = true)
+            rect(254f, 822f, 12f, 36f, fill = true)
+            rect(274f, 822f, 12f, 36f, fill = true)
+            tri(432f, 840f, 26f, 32f, left = false)
+            rect(448f, 824f, 6f, 32f, fill = true)
+        }
+
+        PanelText(
+            "VOL", 20f * k, FontWeight.Bold,
+            x = 462f * k, y = 106f * k, width = 76f * k, align = TextAlign.Center,
+            tracking = 4f * k,
+        )
+        PanelText(
+            "TURN YOUR LIGHTS DOWN LOW", 34f * k, FontWeight.Black,
+            x = 24f * k, y = 470f * k, width = 492f * k,
+        )
+        PanelText(
+            "Bob Marley & The Wailers", 24f * k, FontWeight.SemiBold,
+            x = 24f * k, y = 530f * k, width = 492f * k,
+        )
+        PanelText(
+            "Exodus", 20f * k, FontWeight.Normal,
+            x = 24f * k, y = 570f * k, width = 492f * k, faded = true,
+        )
+        PanelText("2:34", 20f * k, FontWeight.Normal, x = 24f * k, y = 668f * k)
+        PanelText("5:31", 20f * k, FontWeight.Normal, x = 470f * k, y = 668f * k)
+    }
+}
+
+@Composable
+fun MapPagePreview(fields: List<String>, modifier: Modifier = Modifier) {
+    PanelMock(modifier) { k ->
+        Canvas(Modifier.fillMaxSize()) {
+            val s = k * density
+            // Status rule, then the street grid clipped to the map band.
+            drawRect(Color.Black, Offset(0f, 61f * s), Size(540f * s, 3f * s))
+            clipRect(0f, 64f * s, 540f * s, 810f * s) {
+                rotate(18f, pivot = Offset(270f * s, 430f * s)) {
+                    for (i in 0 until 4) {
+                        drawRect(
+                            Color.Black.copy(alpha = if (i == 1) 0.9f else 0.35f),
+                            Offset(-80f * s, (150f + i * 150f) * s),
+                            Size(700f * s, (if (i == 1) 7f else 3f) * s),
+                        )
+                    }
+                    for (i in 0 until 3) {
+                        drawRect(
+                            Color.Black.copy(alpha = 0.35f),
+                            Offset((120f + i * 160f) * s, 80f * s),
+                            Size(3f * s, 700f * s),
+                        )
+                    }
+                }
+                // Position dot
+                drawCircle(Color.Black, 13f * s, Offset(270f * s, 433f * s))
+                drawCircle(
+                    Color.Black, 22f * s, Offset(270f * s, 433f * s),
+                    style = Stroke((2f * s).coerceAtLeast(1f)),
+                )
+                // Zoom stack
+                for (v in 0 until 2) {
+                    drawRect(
+                        PanelPaper, Offset(462f * s, (560f + v * 80f) * s),
+                        Size(76f * s, 76f * s),
+                    )
+                    drawRect(
+                        Color.Black, Offset(462f * s, (560f + v * 80f) * s),
+                        Size(76f * s, 76f * s), style = Stroke((3f * s).coerceAtLeast(1f)),
+                    )
+                    drawRect(
+                        Color.Black, Offset(486f * s, (595f + v * 80f) * s),
+                        Size(28f * s, 6f * s),
+                    )
+                    if (v == 0) {
+                        drawRect(Color.Black, Offset(497f * s, 584f * s), Size(6f * s, 28f * s))
+                    }
+                }
+            }
+            // Data strip rule + cell boxes, boxed like the data pages' cells.
+            drawRect(Color.Black, Offset(0f, 810f * s), Size(540f * s, 3f * s))
+            for (c in 0 until 3) {
+                drawRect(
+                    Color.Black, Offset((24f + c * 168f) * s, 825f * s),
+                    Size(156f * s, 123f * s), style = Stroke((2f * s).coerceAtLeast(1f)),
+                )
+            }
+        }
+        // The CONFIGURED fields, drawn like dash cells.
+        for (c in 0 until 3) {
+            val id = fields.getOrElse(c) { "speed" }
+            PanelText(
+                previewPanelLabel(id), 15f * k, FontWeight.Bold,
+                x = (38f + c * 168f) * k, y = 837f * k, width = 130f * k,
+                tracking = 2f * k,
+            )
+            PanelText(
+                previewSample(id), 48f * k, FontWeight.Black,
+                x = (24f + c * 168f) * k, y = 862f * k, width = 156f * k,
+                align = TextAlign.Center,
+            )
+        }
+    }
+}
+
+/** Shared scaffold: paper ground, 540x960 device space, font scale pinned. */
+@Composable
+private fun PanelMock(modifier: Modifier, content: @Composable (k: Float) -> Unit) {
+    BoxWithConstraints(
+        modifier
+            .background(PanelPaper)
+            .clipToBounds(),
+    ) {
+        val k = maxWidth.value / PANEL_W
+        val density = LocalDensity.current
+        CompositionLocalProvider(
+            LocalDensity provides Density(density.density, fontScale = 1f),
+            LocalTextStyle provides LocalTextStyle.current.copy(color = Color.Black),
+        ) {
+            content(k)
+        }
+    }
+}
+
+@Composable
+private fun PanelText(
+    text: String,
+    sizeDp: Float,
+    weight: FontWeight,
+    x: Float,
+    y: Float,
+    width: Float? = null,
+    align: TextAlign = TextAlign.Start,
+    tracking: Float = 0f,
+    faded: Boolean = false,
+) {
+    Text(
+        text,
+        fontSize = sizeDp.sp,
+        fontWeight = weight,
+        letterSpacing = tracking.sp,
+        textAlign = align,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        color = if (faded) Color.Black.copy(alpha = 0.6f) else Color.Black,
+        modifier = Modifier
+            .offset(x = x.dp, y = y.dp)
+            .then(if (width != null) Modifier.width(width.dp) else Modifier),
+    )
 }
