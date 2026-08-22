@@ -52,6 +52,14 @@ uint32_t pausedS = 0;
 uint32_t pauseEntryS = 0;   // pausedS when this pause began, for the resume log
 uint32_t lastMoveMs = 0;    // last tick with POSITIVE movement evidence
 
+// Where the phone last said we were when the bike stopped — the anchor for
+// motionEvidence's fallback witness. Seated by the pause state machine when
+// movement ends, dropped the moment anything says we're moving, so each stop
+// measures displacement from its own stopping point rather than a stale one.
+double phoneAnchorLat = 0, phoneAnchorLon = 0;
+float phoneAnchorAccM = 0;
+bool phoneAnchorValid = false;
+
 // Stats for the summary screen
 uint32_t movingS = 0;
 time_t startUtc = 0, endUtc = 0;
@@ -190,6 +198,7 @@ void resetStats() {
     pausedS = 0;
     pauseEntryS = 0;
     lastMoveMs = 0;
+    phoneAnchorValid = false;
     havePrevFix = false;
     lastFixMs = 0;
     lastPhoneFixMs = 0;
@@ -288,6 +297,23 @@ Motion motionEvidence(const RideState& s, bool resuming) {
     if (s.gpsFix) {
         witnesses++;
         if (s.speedKmh > (resuming ? 5.0f : 3.0f)) moving = true;
+    } else if (s.phoneFixValid && now - s.phoneFixMs < 10000 &&
+               s.phoneAccM > 0 && s.phoneAccM <= 50.0f) {
+        // No fix of our own: the PHONE's location is the witness of last
+        // resort — same accuracy gate as the record stream's fallback. It has
+        // no speed, so movement is displacement from the anchor seated where
+        // the bike stopped: farther than the combined accuracy circles (floor
+        // 30 m) is a rider leaving, not a fix wandering. This is what lets a
+        // ride parked INDOORS — device GPS dead, phone still located — resume
+        // as the rider pulls away instead of waiting out a fresh device fix.
+        witnesses++;
+        if (phoneAnchorValid) {
+            const float leash = fmaxf(30.0f, phoneAnchorAccM + s.phoneAccM);
+            if (haversineM(phoneAnchorLat, phoneAnchorLon,
+                           s.phoneLat, s.phoneLon) > leash) moving = true;
+        }
+        // Anchor not seated yet: this fix still counts as a witness (it can
+        // testify "stopped"), and the state machine seats the anchor from it.
     }
     if (moving) return Motion::MOVING;
     return witnesses ? Motion::STOPPED : Motion::BLIND;
@@ -720,6 +746,20 @@ void task(void*) {
                 m == Motion::MOVING ||
                 (m == Motion::BLIND && !autoPaused && lastMoveMs &&
                  millis() - lastMoveMs < BLIND_GRACE_MS);
+
+            // Phone-anchor upkeep for motionEvidence's fallback witness: while
+            // stopped, the anchor marks the stopping point; any movement drops
+            // it so the NEXT stop seats a fresh one where it actually happens.
+            if (moving) {
+                phoneAnchorValid = false;
+            } else if (!phoneAnchorValid && s.phoneFixValid &&
+                       millis() - s.phoneFixMs < 10000 &&
+                       s.phoneAccM > 0 && s.phoneAccM <= 50.0f) {
+                phoneAnchorLat = s.phoneLat;
+                phoneAnchorLon = s.phoneLon;
+                phoneAnchorAccM = s.phoneAccM;
+                phoneAnchorValid = true;
+            }
             if (autoPaused) {
                 if (moving) {
                     autoPaused = false;
