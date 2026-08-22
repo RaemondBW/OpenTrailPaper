@@ -1930,4 +1930,8 @@ void ui_render_pause_banner(uint32_t pausedForS, uint8_t* fb) {
     const EpdFont* f = ui::textWidth(&Impact_T, label) <= textW ? &Impact_T
                                                                 : &Arial_B;
     ui::text(f, textX, top + 78, label, fb, EPD_DRAW_ALIGN_LEFT, 0xFF);
+    // The band is tappable (resumes the ride and restarts the sensor hunt) —
+    // say so, or the only rider who finds out is the one who taps by accident.
+    ui::text(&Arial_L, textX, top + 116, "TAP TO RESUME", fb,
+             EPD_DRAW_ALIGN_LEFT, 0xFF);
 }

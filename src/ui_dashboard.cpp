@@ -495,6 +495,19 @@ void handleTap(int x, int y) {
         return;
     }
 
+    // Tapping the AUTO-PAUSED banner (same band, shown when nav isn't) resumes
+    // the ride by hand. Clearing the pause is also what restarts the sensor
+    // hunt — its gate is "recording and not parked" — so a rider tapping at
+    // the end of a coffee stop gets their meter and strap reconnecting while
+    // they clip in, instead of waiting for GPS to notice they're rolling.
+    if (!routes::navActive() && inRect(kNavBanner, x, y) &&
+        (screen == SCREEN_DASH || screen == SCREEN_MAP) &&
+        g_state.snapshot().ridePaused) {
+        ride_recorder::manualResume();
+        noteActivity();
+        return;
+    }
+
     switch (screen) {
         case SCREEN_DASH:
         case SCREEN_MAP:

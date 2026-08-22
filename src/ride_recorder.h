@@ -25,6 +25,11 @@ bool isRecording();
 // tick, so reconnection runs at full radio quality.
 bool longAutoPaused();
 
+// Rider tapped the AUTO-PAUSED banner: resume the timer now. Movement gets a
+// 30 s head start before stillness counts toward re-pausing — the tap means
+// "I'm leaving", and clipping in takes a moment. No-op unless auto-paused.
+void manualResume();
+
 // Basename (no directory) of the FIT file currently being recorded, or ""
 // when idle. Lets the history screen skip the still-open, unfinalized file.
 const char* currentRideFile();

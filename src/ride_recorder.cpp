@@ -51,6 +51,7 @@ uint32_t stoppedS = 0;
 uint32_t pausedS = 0;
 uint32_t pauseEntryS = 0;   // pausedS when this pause began, for the resume log
 uint32_t lastMoveMs = 0;    // last tick with POSITIVE movement evidence
+uint32_t manualResumeMs = 0;   // when the rider tapped resume; 0 = never
 
 // Where the phone last said we were when the bike stopped — the anchor for
 // motionEvidence's fallback witness. Seated by the pause state machine when
@@ -198,6 +199,7 @@ void resetStats() {
     pausedS = 0;
     pauseEntryS = 0;
     lastMoveMs = 0;
+    manualResumeMs = 0;
     phoneAnchorValid = false;
     havePrevFix = false;
     lastFixMs = 0;
@@ -594,6 +596,24 @@ bool longAutoPaused() {
     return rideActive && autoPaused && (pausedS - pauseEntryS) > 120;
 }
 
+void manualResume() {
+    // Called from the UI task (banner tap). The recorder task reads these
+    // flags at 1 Hz; plain aligned writes, same cross-task discipline as the
+    // rest of this file. The state update here (not deferred to the next
+    // recorder tick) is what makes the banner disappear on the tap's own
+    // repaint instead of up to a second later.
+    if (!rideActive || !autoPaused) return;
+    autoPaused = false;
+    stoppedS = 0;
+    manualResumeMs = millis() | 1;
+    diag::log("rec: manual resume (tap, paused %lus)",
+              (unsigned long)(pausedS - pauseEntryS));
+    g_state.with([](RideState& st) {
+        st.ridePaused = false;
+        st.pausedForS = 0;
+    });
+}
+
 const char* currentRideFile() {
     if (!fit.isOpen()) return "";
     const char* base = strrchr(ridePath, '/');
@@ -768,7 +788,11 @@ void task(void*) {
                               (unsigned long)(pausedS - pauseEntryS));
                 }
             } else if (!moving) {
-                if ((int)++stoppedS >= pauseAfterS) {
+                // A tapped resume gets 30 s before stillness counts again —
+                // the rider resumed to leave, and clipping in takes a moment.
+                if (manualResumeMs && millis() - manualResumeMs < 30000) {
+                    stoppedS = 0;
+                } else if ((int)++stoppedS >= pauseAfterS) {
                     autoPaused = true;
                     pauseEntryS = pausedS;
                     diag::log("rec: auto-pause (%d s stopped) at %.2f km",
