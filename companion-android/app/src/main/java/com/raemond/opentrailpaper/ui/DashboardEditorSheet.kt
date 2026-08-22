@@ -1,6 +1,11 @@
 package com.raemond.opentrailpaper.ui
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.AnimationVector2D
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.VectorConverter
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -47,20 +52,26 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.composed
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onPlaced
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.round
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
+import kotlinx.coroutines.launch
 import com.raemond.opentrailpaper.ble.BleManager
 import com.raemond.opentrailpaper.data.DashConfig
 import com.raemond.opentrailpaper.data.DashField
@@ -305,10 +316,19 @@ private fun PageCarousel(
     var dragKey by remember { mutableLongStateOf(-1L) }
     var dragOffset by remember { mutableFloatStateOf(0f) }
     var cardWidth by remember { mutableFloatStateOf(1f) }
+    val scroll = rememberScrollState()
+
+    // A just-added page scrolls into view (iOS: proxy.scrollTo on the new
+    // card). Growth only — a removal should not yank the strip anywhere.
+    var lastCount by remember { mutableIntStateOf(config.pages.size) }
+    LaunchedEffect(config.pages.size) {
+        if (config.pages.size > lastCount) scroll.animateScrollTo(scroll.maxValue)
+        lastCount = config.pages.size
+    }
 
     Row(
         Modifier
-            .horizontalScroll(rememberScrollState())
+            .horizontalScroll(scroll)
             .padding(horizontal = 20.dp, vertical = 14.dp),
         horizontalArrangement = Arrangement.spacedBy(16.dp),
     ) {
@@ -317,6 +337,11 @@ private fun PageCarousel(
             Box(
                 Modifier
                     .onSizeChanged { if (it.width > 0) cardWidth = it.width.toFloat() }
+                    // Neighbours spring to their new slots as the lifted card
+                    // crosses them (iOS: withAnimation(.spring) in the drop
+                    // delegate). The dragged card itself snaps — its position
+                    // is the finger's, and a spring would lag it.
+                    .animatePlacement(enabled = !dragging)
                     .offset { IntOffset(if (dragging) dragOffset.roundToInt() else 0, 0) }
                     .zIndex(if (dragging) 1f else 0f)
                     // The lifted card fades so the one in motion reads as THE
@@ -542,6 +567,30 @@ private fun MusicSection(ble: BleManager) {
         // rider comes back without granting.
         LaunchedEffect(Unit) { ble.refreshMediaAccess() }
     }
+}
+
+/**
+ * Springs a card to wherever the Row lays it out next — the Compose analogue
+ * of the iOS drop delegate's withAnimation(.spring) reorder. `enabled = false`
+ * snaps instead, for the card whose position IS the finger.
+ */
+private fun Modifier.animatePlacement(enabled: Boolean): Modifier = composed {
+    val scope = rememberCoroutineScope()
+    var target by remember { mutableStateOf<IntOffset?>(null) }
+    var anim by remember { mutableStateOf<Animatable<IntOffset, AnimationVector2D>?>(null) }
+    this
+        .onPlaced { target = it.positionInParent().round() }
+        .offset {
+            val t = target ?: return@offset IntOffset.Zero
+            val a = anim ?: Animatable(t, IntOffset.VectorConverter).also { anim = it }
+            if (a.targetValue != t) {
+                scope.launch {
+                    if (enabled) a.animateTo(t, spring(stiffness = Spring.StiffnessMediumLow))
+                    else a.snapTo(t)
+                }
+            }
+            a.value - t
+        }
 }
 
 /**
