@@ -177,12 +177,14 @@ struct DashConfig: Equatable {
         let id = UUID()
         var kind: Kind
         var layout: DashLayout
-        enum Kind { case fields, music, map }
+        enum Kind { case fields, music, map, workout }
         var isMusic: Bool { kind == .music }
         var isMap: Bool { kind == .map }
+        var isWorkout: Bool { kind == .workout }
         static var music: Page { Page(kind: .music, layout: DashLayout(items: [])) }
         static var fields: Page { Page(kind: .fields, layout: DashLayout(items: [])) }
         static var map: Page { Page(kind: .map, layout: DashLayout(items: [])) }
+        static var workout: Page { Page(kind: .workout, layout: DashLayout(items: [])) }
     }
 
     var pages: [Page]
@@ -227,6 +229,7 @@ struct DashConfig: Equatable {
                 commit()
                 if tok.count > 1, tok[1] == "music" { kind = .music }
                 else if tok.count > 1, tok[1] == "map" { kind = .map }
+                else if tok.count > 1, tok[1] == "workout" { kind = .workout }
             } else if tok.first == "map" {
                 for i in 0..<3 where tok.count > i + 1 {
                     if DashField.named(String(tok[i + 1])) != nil {
@@ -260,6 +263,8 @@ struct DashConfig: Equatable {
                 s += "page music\n"
             } else if page.isMap {
                 s += "page map\n"
+            } else if page.isWorkout {
+                s += "page workout\n"
             } else if i > 0 {
                 s += "page\n"
             }
@@ -282,6 +287,7 @@ struct DashConfig: Equatable {
     }
 
     var hasMusicPage: Bool { pages.contains { $0.isMusic } }
+    var hasWorkoutPage: Bool { pages.contains { $0.isWorkout } }
 
     static var deviceDefault: DashConfig {
         DashConfig(pages: [Page(kind: .fields, layout: .deviceDefault), .map])

@@ -6,6 +6,7 @@ struct RideView: View {
     @EnvironmentObject var ble: BLEManager
     @AppStorage(UnitPref.key) private var useMiles = false
     @State private var showDashEditor = false
+    @State private var showWorkouts = false
 
     var body: some View {
         NavigationStack {
@@ -23,6 +24,7 @@ struct RideView: View {
                     }
                     if s.hasRoute { routeCard(s) }
                     dashboardCard
+                    workoutCard
                     Spacer(minLength: 8)
                     if ble.state != .connected {
                         PrimaryButton(title: primaryTitle,
@@ -36,6 +38,7 @@ struct RideView: View {
             .background(Palette.paper.ignoresSafeArea())
             .navigationBarHidden(true)
             .sheet(isPresented: $showDashEditor) { DashboardEditorView() }
+            .sheet(isPresented: $showWorkouts) { WorkoutsView() }
             .onAppear {
                 ble.refreshSensors()
                 // Screenshot hook, alongside -tab-*/-demo-* in
@@ -85,6 +88,38 @@ struct RideView: View {
             }
         }
         .buttonStyle(.plain)
+    }
+
+    // Structured workouts: load/build one, and the live session at a glance.
+    private var workoutCard: some View {
+        Button { showWorkouts = true } label: {
+            Card {
+                HStack(spacing: 14) {
+                    Image(systemName: "figure.outdoor.cycle")
+                        .font(.system(size: 30))
+                        .foregroundStyle(Palette.muted)
+                        .frame(width: 62)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Workouts").font(TypeScale.title).foregroundStyle(Palette.ink)
+                        Text(workoutCardSubtitle)
+                            .font(TypeScale.body).foregroundStyle(Palette.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right").foregroundStyle(Palette.faint)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var workoutCardSubtitle: String {
+        let w = ble.workoutStatus
+        if w.loaded {
+            let state = w.running ? "running" : w.paused ? "paused" : w.done ? "done" : "ready"
+            return "\(w.name) — block \(w.blockIndex + 1)/\(w.blockCount), \(state)"
+        }
+        return "Send a structured workout to the device, or build one"
     }
 
     // "Ride" title + a compact device-status pill (green dot + name + battery).

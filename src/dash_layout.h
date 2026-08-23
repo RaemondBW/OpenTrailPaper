@@ -82,11 +82,13 @@ enum DashPageKind : uint8_t {
     DP_FIELDS = 0,
     DP_MUSIC,
     DP_MAP,
+    DP_WORKOUT,   // structured-workout page (`page workout`) — target power,
+                  // up/down guidance and the interval profile; workout.h
 };
 
 struct DashPage {
     uint8_t kind = DP_FIELDS;   // DashPageKind
-    DashLayout layout;          // empty when kind == DP_MUSIC
+    DashLayout layout;          // empty unless kind == DP_FIELDS
 };
 
 struct DashPages {

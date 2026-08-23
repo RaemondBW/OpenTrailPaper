@@ -23,6 +23,7 @@ bool showOff = false;
 // Seconds of no movement (power, cadence, wheel and GPS all quiet) before the
 // ride timer auto-pauses. 0 disables auto-pause entirely.
 int autoPause = 10;
+bool wkPauseStep = false;
 char addrs[3][18] = {"", "", ""};
 char names[3][32] = {"", "", ""};   // remembered vendor/model per paired kind
 double lastLat = 0, lastLon = 0;
@@ -64,6 +65,7 @@ void begin() {
     usbDrv = prefs.getBool("usbdrv2", false);
     showOff = prefs.getBool("showoff", false);
     autoPause = prefs.getInt("apause", 10);
+    wkPauseStep = prefs.getBool("wkpstep", false);
     for (int k = 0; k < 3; ++k) {
         prefs.getString(KEYS[k], addrs[k], sizeof(addrs[k]));
         prefs.getString(NAME_KEYS[k], names[k], sizeof(names[k]));
@@ -89,6 +91,12 @@ int ftpWatts() { return ftp; }
 void setFtpWatts(int w) {
     ftp = constrain(w, 50, 500);
     prefs.putInt("ftp", ftp);
+}
+
+bool workoutPauseEachBlock() { return wkPauseStep; }
+void setWorkoutPauseEachBlock(bool on) {
+    wkPauseStep = on;
+    prefs.putBool("wkpstep", on);
 }
 
 int autoPauseSec() { return autoPause; }
