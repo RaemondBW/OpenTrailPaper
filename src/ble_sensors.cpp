@@ -518,6 +518,15 @@ void task(void*) {
         // reappearing sensor is picked up within half a minute, and the radio
         // — and CPU — sleep through the other five-sixths of a long hunt.
         static uint32_t huntStartMs = 0;
+        // Resuming from an auto-pause restarts the continuous minute even if a
+        // hunt clock was already running: screen taps during a coffee stop can
+        // keep wantScan alive (activity term) long enough that the clock reads
+        // "old" by the time the rider pulls away, which would put the comeback
+        // — the moment the meter and strap are actually waking — on the lazy
+        // 5 s/30 s duty cycle instead of the full first-minute look.
+        static bool wasRiding = false;
+        if (ridingNow && !wasRiding) huntStartMs = 0;
+        wasRiding = ridingNow;
         if (!wantScan) huntStartMs = 0;
         else if (!huntStartMs) huntStartMs = millis();
         uint32_t hunted = huntStartMs ? millis() - huntStartMs : 0;
