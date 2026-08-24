@@ -2222,20 +2222,20 @@ void ui_render_workout(const RideState& s, const WorkoutView& v, uint8_t* fb) {
     // your power and the correction at full size, the target under them,
     // the block's countdown and progress smaller along the bottom. One
     // repaint region instead of three.
-    const EpdRect blk = {0, 156, 540, 368};
+    const EpdRect blk = {0, 143, 540, 381};
     epd_fill_rect(blk, ui::INK, fb);
     const bool havePower = s.power3sW != 0xFFFF && s.powerConnected;
     const int tol = 8;
     int diff = havePower ? (int)s.power3sW - (int)v.targetW : 0;
 
     // Caps row: what the numbers are, and which way to go.
-    ui::text(&Arial_L, 24, 198, "YOUR POWER · 3S", fb, EPD_DRAW_ALIGN_LEFT,
+    ui::text(&Arial_L, 24, 188, "YOUR POWER · 3S", fb, EPD_DRAW_ALIGN_LEFT,
              0xFF);
     const char* dir = !havePower    ? "NO POWER"
                       : diff < -tol ? "GO HARDER"
                       : diff > tol  ? "EASE OFF"
                                     : "IN RANGE";
-    ui::text(&Arial_L, 516, 198, dir, fb, EPD_DRAW_ALIGN_RIGHT, 0xFF);
+    ui::text(&Arial_L, 516, 188, dir, fb, EPD_DRAW_ALIGN_RIGHT, 0xFF);
 
     // The two hero numbers: current power left, the correction right.
     if (havePower) snprintf(buf, sizeof(buf), "%u", s.power3sW);
