@@ -250,8 +250,17 @@ void statusBar(const RideState& s, uint8_t* fb, const char* title) {
     epd_fill_rect({0, STATUS_H - 3, W, 3}, 0x00, fb);
     // Centred title, drawn last. The clusters are short (clock left, battery
     // right), so a page name fits between them.
-    if (title && title[0])
+    if (title && title[0]) {
+        // A titled bar suppresses the left cluster's chips, so the pause
+        // moves into the title itself — "MUSIC · PAUSED" — rather than
+        // silently vanishing on these pages.
+        char titled[32];
+        if (s.ridePaused) {
+            snprintf(titled, sizeof(titled), "%s · PAUSED", title);
+            title = titled;
+        }
         label(epd_rotated_display_width() / 2, 41, title, fb, INK, &Impact_S);
+    }
 }
 
 

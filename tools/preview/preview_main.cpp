@@ -297,6 +297,53 @@ int main(int argc, char** argv) {
     ui_render_nav_banner("Turn left onto Valencia St", 180, false, fb.data());
     emit("dashboard_nav.png");
 
+    // Navigating AND auto-paused: the turn banner wins the band, the pause
+    // lives in the status bar chip — a rider stopped AT a turn still sees
+    // the instruction.
+    {
+        RideState sp = s;
+        sp.ridePaused = true;
+        sp.speedKmh = 0.0f;
+        clearWhite(fb.data());
+        ui_render_dashboard(sp, true, dashDefaultLayout(), fb.data());
+        ui_render_nav_banner("Turn left onto Valencia St", 180, false, fb.data());
+        emit("dashboard_nav_paused.png");
+    }
+
+    // Auto-paused on the music and workout pages: no banner — the page keeps
+    // its content and the status bar carries the pause ("MUSIC · PAUSED").
+    {
+        RideState sp = s;
+        sp.ridePaused = true;
+        sp.speedKmh = 0.0f;
+        MediaState mp;
+        mp.present = true;
+        mp.playing = false;
+        mp.posSec = 154;
+        mp.durSec = 331;
+        snprintf(mp.title, sizeof(mp.title), "Turn Your Lights Down Low");
+        snprintf(mp.artist, sizeof(mp.artist), "Bob Marley & The Wailers");
+        snprintf(mp.album, sizeof(mp.album), "Exodus");
+        clearWhite(fb.data());
+        ui_render_media(sp, mp, fb.data());
+        emit("music_ride_paused.png");
+
+        static Workout pwk;
+        static const char* kPErg =
+            "[COURSE HEADER]\nMINUTES WATTS\n[END COURSE HEADER]\n"
+            "[COURSE DATA]\n0 120\n10 180\n10 260\n15 260\n15 140\n18 140\n"
+            "18 260\n23 260\n[END COURSE DATA]\n";
+        workoutParse(kPErg, 250, pwk);
+        snprintf(pwk.name, sizeof(pwk.name), "4X5 THRESHOLD");
+        WorkoutView pv;
+        sp.powerConnected = true;
+        sp.power3sW = 258;
+        workoutBuildView(pwk, 20 * 60, true, 250, pv);
+        clearWhite(fb.data());
+        ui_render_workout(sp, pv, fb.data());
+        emit("workout_ride_paused.png");
+    }
+
     // Map view (1f): real SF tiles if the .ebm exists, synthetic otherwise
     MapScreenData map = {};
     map.riderX = 270;

@@ -2509,7 +2509,10 @@ void task(void*) {
                                             pg.layout, fb);
                     }
                     drawNavBanner(fb);  // turn cue on the data page too
-                    drawPauseBanner(s, fb);
+                    // The big AUTO-PAUSED band only over field pages: music
+                    // and workout are dense layouts the band would bury, and
+                    // both already carry the pause in their status bar.
+                    if (pg.kind == DP_FIELDS) drawPauseBanner(s, fb);
                     break;
                 }
                 case SCREEN_MAP: renderMapScreen(s, fb); break;
@@ -2661,9 +2664,23 @@ void task(void*) {
                 (prevScreen != SCREEN_DASH || dashPage != prevDashPage);
             prevDashPage = screen == SCREEN_DASH ? dashPage : -1;
 
+            // The AUTO-PAUSED band leaving the glass earns a scrub too: it is
+            // a solid black block, and the content that replaces it half-
+            // erases under a DU drive — the band's ghost sat over the top of
+            // the page until something else forced a clear.
+            static bool prevPauseBanner = false;
+            const bool pauseBannerNow =
+                s.ridePaused && !routes::navActive() &&
+                (screen == SCREEN_MAP ||
+                 (screen == SCREEN_DASH &&
+                  dash_config::page(dashPage).kind == DP_FIELDS));
+            const bool pauseCleared = prevPauseBanner && !pauseBannerNow;
+            prevPauseBanner = pauseBannerNow;
+
             refresh(screenChanged, fastInPage, listFast, wantClean,
                     navPromptAppearing,
-                    mapTransition || tonedTransition || dashPageFlip);
+                    mapTransition || tonedTransition || dashPageFlip ||
+                        pauseCleared);
         }
 
         // The epdiy path managed panel rails by hand here — poweron before an
