@@ -207,7 +207,7 @@ data class DashConfig(
     /** The map screen's 3-cell data strip (`map <f> <f> <f>` in the config). */
     val mapFields: List<String> = listOf("speed", "distance", "ridetime"),
 ) {
-    enum class PageKind { FIELDS, MUSIC, MAP }
+    enum class PageKind { FIELDS, MUSIC, MAP, WORKOUT }
 
     data class Page(
         val kind: PageKind,
@@ -222,6 +222,7 @@ data class DashConfig(
     ) {
         val isMusic: Boolean get() = kind == PageKind.MUSIC
         val isMap: Boolean get() = kind == PageKind.MAP
+        val isWorkout: Boolean get() = kind == PageKind.WORKOUT
 
         companion object {
             private var nextKey = 1L
@@ -229,6 +230,7 @@ data class DashConfig(
                 Page(PageKind.FIELDS, layout)
             fun music() = Page(PageKind.MUSIC, DashLayout(emptyList()))
             fun map() = Page(PageKind.MAP, DashLayout(emptyList()))
+            fun workout() = Page(PageKind.WORKOUT, DashLayout(emptyList()))
         }
     }
 
@@ -240,6 +242,7 @@ data class DashConfig(
     val firstFields: DashLayout? get() = pages.firstOrNull { it.kind == PageKind.FIELDS }?.layout
 
     val hasMusicPage: Boolean get() = pages.any { it.isMusic }
+    val hasWorkoutPage: Boolean get() = pages.any { it.isWorkout }
 
     /**
      * Serialize, byte-compatible with dashSerializePages(): the first field
@@ -257,6 +260,7 @@ data class DashConfig(
                 when {
                     page.isMusic -> append("page music\n")
                     page.isMap -> append("page map\n")
+                    page.isWorkout -> append("page workout\n")
                     i > 0 -> append("page\n")
                 }
                 if (page.kind == PageKind.FIELDS) {
@@ -312,6 +316,7 @@ data class DashConfig(
                         when (tok.getOrNull(1)) {
                             "music" -> kind = PageKind.MUSIC
                             "map" -> kind = PageKind.MAP
+                            "workout" -> kind = PageKind.WORKOUT
                         }
                     }
                     tok.firstOrNull() == "map" -> {

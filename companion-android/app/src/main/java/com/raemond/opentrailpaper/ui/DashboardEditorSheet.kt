@@ -32,6 +32,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.DirectionsBike
 import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Remove
@@ -190,6 +191,7 @@ fun DashboardEditorSheet(ble: BleManager, onDismiss: () -> Unit) {
                     config = config.copy(
                         pages = config.pages + when (kind) {
                             DashConfig.PageKind.MUSIC -> DashConfig.Page.music()
+                            DashConfig.PageKind.WORKOUT -> DashConfig.Page.workout()
                             else -> DashConfig.Page.fields()
                         },
                     )
@@ -223,6 +225,26 @@ fun DashboardEditorSheet(ble: BleManager, onDismiss: () -> Unit) {
                     }
 
                     page.isMusic -> MusicSection(ble)
+
+                    page.isWorkout -> Card {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Filled.DirectionsBike,
+                                contentDescription = null,
+                                tint = Palette.ink,
+                            )
+                            Spacer(Modifier.size(8.dp))
+                            Text("Workout", style = TypeScale.bodyStrong, color = Palette.ink)
+                        }
+                        Text(
+                            "Runs a structured workout: block countdown, live power " +
+                                "against the target, and the whole session as a profile. " +
+                                "Load workouts from the Workouts screen or drop .erg/.mrc " +
+                                "files in /workouts on the SD card.",
+                            style = TypeScale.body,
+                            color = Palette.muted,
+                        )
+                    }
 
                     else -> {
                         TrackedLabel("Fields")
@@ -385,7 +407,11 @@ private fun PageCarousel(
         }
 
         if (config.contentPages < DashConfig.MAX_PAGES) {
-            AddPageCard(hasMusic = config.hasMusicPage, onAdd = onAdd)
+            AddPageCard(
+                hasMusic = config.hasMusicPage,
+                hasWorkout = config.hasWorkoutPage,
+                onAdd = onAdd,
+            )
         }
     }
 }
@@ -419,6 +445,9 @@ private fun PageCard(
                 )
                 DashConfig.PageKind.MAP -> MapPagePreview(
                     config.mapFields,
+                    Modifier.fillMaxWidth().aspectRatio(540f / 960f),
+                )
+                DashConfig.PageKind.WORKOUT -> WorkoutPagePreview(
                     Modifier.fillMaxWidth().aspectRatio(540f / 960f),
                 )
                 DashConfig.PageKind.FIELDS -> DashPreview(
@@ -457,7 +486,11 @@ private fun PageCard(
 
 /** The far-right card: a new page, data or music. */
 @Composable
-private fun AddPageCard(hasMusic: Boolean, onAdd: (DashConfig.PageKind) -> Unit) {
+private fun AddPageCard(
+    hasMusic: Boolean,
+    hasWorkout: Boolean,
+    onAdd: (DashConfig.PageKind) -> Unit,
+) {
     var menu by remember { mutableStateOf(false) }
     Box(Modifier.padding(top = 9.dp)) {
         Column(
@@ -488,6 +521,15 @@ private fun AddPageCard(hasMusic: Boolean, onAdd: (DashConfig.PageKind) -> Unit)
                     text = { Text("Music controls", style = TypeScale.body) },
                     leadingIcon = { Icon(Icons.Filled.MusicNote, contentDescription = null) },
                     onClick = { menu = false; onAdd(DashConfig.PageKind.MUSIC) },
+                )
+            }
+            if (!hasWorkout) {
+                DropdownMenuItem(
+                    text = { Text("Workout", style = TypeScale.body) },
+                    leadingIcon = {
+                        Icon(Icons.Filled.DirectionsBike, contentDescription = null)
+                    },
+                    onClick = { menu = false; onAdd(DashConfig.PageKind.WORKOUT) },
                 )
             }
         }

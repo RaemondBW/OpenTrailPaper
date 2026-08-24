@@ -212,6 +212,7 @@ class BleManager(private val app: Application) {
     private var dashChar: BluetoothGattCharacteristic? = null
     private var meshChar: BluetoothGattCharacteristic? = null
     private var mediaChar: BluetoothGattCharacteristic? = null
+    private var workoutChar: BluetoothGattCharacteristic? = null
 
     /** Feeds the device's MUSIC page and answers its transport buttons. */
     private val mediaRemote by lazy { MediaRemote(app, this) }
@@ -559,12 +560,14 @@ class BleManager(private val app: Application) {
         // (pre-pages firmware).
         meshChar = service.getCharacteristic(BikeUuid.mesh)
         mediaChar = service.getCharacteristic(BikeUuid.media)
+        workoutChar = service.getCharacteristic(BikeUuid.workout)
 
         // Subscribe to everything that notifies, then read the two the device
         // holds authoritative copies of.
         listOfNotNull(
             settingsChar, statusChar, routeChar, ridesChar,
             otaChar, sensorsChar, mapChar, dashChar, meshChar, mediaChar,
+            workoutChar,
         ).forEach { queue.enqueue(GattQueue.Op.Notify(it, true)) }
 
         settingsChar?.let { queue.enqueue(GattQueue.Op.Read(it)) }
@@ -588,6 +591,9 @@ class BleManager(private val app: Application) {
             // asking before the CCCD write lands throws the answer away. The tab
             // badge needs the state whether or not the Mesh screen is on top.
             BikeUuid.mesh -> refreshMesh()
+            // Every workout reply is a notification too: ask only once the
+            // CCCD write has landed, so the Workouts screen opens populated.
+            BikeUuid.workout -> refreshWorkouts()
         }
     }
 
@@ -603,6 +609,7 @@ class BleManager(private val app: Application) {
             BikeUuid.dash -> handleDashNotify(data)
             BikeUuid.mesh -> handleMeshNotify(data)
             BikeUuid.media -> handleMediaNotify(data)
+            BikeUuid.workout -> handleWorkoutNotify(data)
         }
     }
 
@@ -621,7 +628,7 @@ class BleManager(private val app: Application) {
     private fun handleDisconnect() {
         settingsChar = null; statusChar = null; routeChar = null; ridesChar = null
         sensorsChar = null; mapChar = null; otaChar = null; dashChar = null
-        meshChar = null; mediaChar = null
+        meshChar = null; mediaChar = null; workoutChar = null
         updateMediaRemote()    // no link, no media observers
         stopLocationStream()   // no device to send the phone's position to
 
@@ -886,6 +893,151 @@ class BleManager(private val app: Application) {
             off += n
         }
         writeChar(mediaChar, byteArrayOf(0x12))
+    }
+
+    // MARK: workouts (upload, control, live status — CHR_WORKOUT)
+
+    data class WorkoutStatus(
+        val loaded: Boolean = false,
+        val running: Boolean = false,
+        val paused: Boolean = false,
+        val done: Boolean = false,
+        val blockIndex: Int = 0,
+        val blockCount: Int = 0,
+        val elapsedSec: Long = 0,
+        val totalSec: Long = 0,
+        val targetW: Int = 0,
+        val ftpW: Int = 0,
+        val pauseEachBlock: Boolean = false,
+        val name: String = "",
+    )
+
+    var workoutStatus by mutableStateOf(WorkoutStatus()); private set
+    var deviceWorkouts by mutableStateOf<List<String>>(emptyList()); private set
+    var workoutMessage by mutableStateOf<String?>(null)
+    private val workoutListBuild = ArrayList<String>()
+
+    data class FetchedWorkout(val name: String, val text: String)
+    var fetchedWorkout by mutableStateOf<FetchedWorkout?>(null)
+    private var workoutFetchBuf = ByteArrayOutputStream()
+    private var workoutFetchName = ""
+
+    private fun workoutWrite(d: ByteArray) = writeChar(workoutChar, d)
+
+    /** One snapshot of files + session state; also runs when notifications
+     * first come up so the Workouts screen opens populated. */
+    fun refreshWorkouts() {
+        workoutWrite(byteArrayOf(0x06))
+        workoutWrite(byteArrayOf(0x30))
+    }
+
+    /**
+     * Send an .erg/.mrc to the device; it saves to /workouts and loads it. No
+     * inter-packet pacing needed here, unlike iOS: the GattQueue only issues
+     * the next write once the previous one's callback lands, which IS the flow
+     * control CoreBluetooth lacks.
+     */
+    fun uploadWorkout(name: String, text: String) {
+        if (workoutChar == null) { workoutMessage = "Not connected"; return }
+        val data = text.toByteArray(Charsets.UTF_8)
+        workoutWrite(byteArrayOf(0x01) + name.toByteArray(Charsets.UTF_8).let {
+            if (it.size > 40) it.copyOf(40) else it
+        })
+        var i = 0
+        while (i < data.size) {
+            val n = minOf(chunkSize, data.size - i)
+            workoutWrite(byteArrayOf(0x02) + data.copyOfRange(i, i + n))
+            i += n
+        }
+        workoutWrite(byteArrayOf(0x03))
+        // The list refresh rides on the device's save ack (0xA0), so the
+        // reply always includes the file this upload just created.
+    }
+
+    fun loadWorkout(name: String) = workoutWrite(byteArrayOf(0x11) + name.toByteArray())
+
+    /** Pull a workout file off the device so the builder can edit it. */
+    fun fetchWorkout(name: String) {
+        workoutFetchBuf = ByteArrayOutputStream()
+        workoutFetchName = name
+        fetchedWorkout = null
+        workoutWrite(byteArrayOf(0x12) + name.toByteArray())
+    }
+
+    fun deleteWorkout(name: String) {
+        workoutWrite(byteArrayOf(0x07) + name.toByteArray())
+        workoutWrite(byteArrayOf(0x06))
+    }
+
+    fun workoutStart() = workoutWrite(byteArrayOf(0x20))
+    fun workoutPause() = workoutWrite(byteArrayOf(0x21))
+    fun workoutResume() = workoutWrite(byteArrayOf(0x22))
+    fun workoutStop() = workoutWrite(byteArrayOf(0x23))
+
+    /** Stop AND unload — the device page returns to its no-workout state. */
+    fun workoutUnload() = workoutWrite(byteArrayOf(0x27))
+    fun workoutSkip() = workoutWrite(byteArrayOf(0x24))
+    fun workoutJump(block: Int) =
+        workoutWrite(byteArrayOf(0x25, block.coerceIn(0, 255).toByte()))
+
+    fun setWorkoutPauseEachBlock(on: Boolean) {
+        workoutStatus = workoutStatus.copy(pauseEachBlock = on) // local; status confirms
+        workoutWrite(byteArrayOf(0x26, if (on) 1 else 0))
+    }
+
+    private fun handleWorkoutNotify(d: ByteArray) {
+        if (d.isEmpty()) return
+        val body = d.copyOfRange(1, d.size)
+        fun u16(off: Int) = (body[off].toInt() and 0xFF) or
+            ((body[off + 1].toInt() and 0xFF) shl 8)
+        fun u32(off: Int) = (u16(off).toLong()) or ((u16(off + 2).toLong()) shl 16)
+        when (d[0].toInt() and 0xFF) {
+            0xA0 -> {   // ack: [ok/fail][msg]
+                val ok = body.firstOrNull()?.toInt() == 1
+                val msg = if (body.size > 1) {
+                    String(body, 1, body.size - 1, Charsets.UTF_8)
+                } else {
+                    ""
+                }
+                workoutMessage = if (ok) "Loaded $msg" else "Failed: $msg"
+                if (ok) workoutWrite(byteArrayOf(0x06))   // list now includes it
+            }
+            0xB0 -> workoutListBuild.clear()
+            0xB1 -> {
+                val name = String(body, Charsets.UTF_8)
+                if (name.isNotEmpty()) workoutListBuild.add(name)
+            }
+            0xB2 -> deviceWorkouts = workoutListBuild.sorted()
+            0xD1 -> workoutFetchBuf.write(body)
+            0xD2 -> {
+                fetchedWorkout = FetchedWorkout(
+                    workoutFetchName,
+                    workoutFetchBuf.toString("UTF-8"),
+                )
+                workoutFetchBuf = ByteArrayOutputStream()
+            }
+            0xC0 -> {
+                if (body.size < 18) return
+                workoutStatus = WorkoutStatus(
+                    loaded = body[0].toInt() != 0,
+                    running = body[1].toInt() != 0,
+                    paused = body[2].toInt() != 0,
+                    done = body[3].toInt() != 0,
+                    blockIndex = body[4].toInt() and 0xFF,
+                    blockCount = body[5].toInt() and 0xFF,
+                    elapsedSec = u32(6),
+                    totalSec = u32(10),
+                    targetW = u16(14),
+                    ftpW = u16(16),
+                    pauseEachBlock = body.size > 18 && body[18].toInt() != 0,
+                    name = if (body.size > 19) {
+                        String(body, 19, body.size - 19, Charsets.UTF_8)
+                    } else {
+                        ""
+                    },
+                )
+            }
+        }
     }
 
     // MARK: rides (device -> phone)

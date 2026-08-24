@@ -20,6 +20,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.DirectionsBike
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.StarBorder
@@ -52,6 +53,7 @@ import java.util.Locale
 @Composable
 fun RideScreen(ble: BleManager) {
     var showDashEditor by remember { mutableStateOf(false) }
+    var showWorkouts by remember { mutableStateOf(false) }
     val s = ble.status
     val useMiles = ble.useMiles
 
@@ -81,6 +83,7 @@ fun RideScreen(ble: BleManager) {
             )
         }
         if (s.hasRoute) RouteCard(s, useMiles)
+        WorkoutsCard(ble) { showWorkouts = true }
         DashboardCard(ble) { showDashEditor = true }
         Spacer(Modifier.height(8.dp))
         if (ble.state != BleManager.ConnState.CONNECTED) {
@@ -99,6 +102,47 @@ fun RideScreen(ble: BleManager) {
 
     if (showDashEditor) {
         DashboardEditorSheet(ble) { showDashEditor = false }
+    }
+    if (showWorkouts) {
+        WorkoutsSheet(ble) { showWorkouts = false }
+    }
+}
+
+/** Structured workouts: load/build one, and the live session at a glance. */
+@Composable
+private fun WorkoutsCard(ble: BleManager, onOpen: () -> Unit) {
+    Card(Modifier.clickable(onClick = onOpen)) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Icon(
+                Icons.Filled.DirectionsBike,
+                contentDescription = null,
+                tint = Palette.muted,
+                modifier = Modifier.width(62.dp),
+            )
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("Workouts", style = TypeScale.title, color = Palette.ink)
+                val w = ble.workoutStatus
+                Text(
+                    if (w.loaded) {
+                        val state = when {
+                            w.running -> "running"
+                            w.paused -> "paused"
+                            w.done -> "done"
+                            else -> "ready"
+                        }
+                        "${w.name} — block ${w.blockIndex + 1}/${w.blockCount}, $state"
+                    } else {
+                        "Send a structured workout to the device, or build one"
+                    },
+                    style = TypeScale.body,
+                    color = Palette.muted,
+                )
+            }
+            Icon(Icons.Filled.ChevronRight, contentDescription = null, tint = Palette.faint)
+        }
     }
 }
 

@@ -622,6 +622,73 @@ fun MapPagePreview(fields: List<String>, modifier: Modifier = Modifier) {
     }
 }
 
+/** Miniature of the device's workout page: countdown hero, reversed power
+ * band, session profile, block strips. Static — it's a card, not a sim.
+ * Port of WorkoutPagePreview in DashboardEditorView.swift. */
+@Composable
+fun WorkoutPagePreview(modifier: Modifier = Modifier) {
+    PanelMock(modifier) { k ->
+        PanelText("14:25", 30f * k, FontWeight.Bold, x = 14f * k, y = 14f * k)
+        PanelText("76%", 30f * k, FontWeight.Bold, x = 440f * k, y = 14f * k)
+        PanelText("BLOCK 3 OF 9", 24f * k, FontWeight.Bold, x = 24f * k, y = 90f * k)
+        PanelText("5:12", 150f * k, FontWeight.Black, x = 24f * k, y = 150f * k)
+        PanelText("LEFT", 24f * k, FontWeight.Bold, x = 440f * k, y = 290f * k)
+        Canvas(Modifier.fillMaxSize()) {
+            val s = k * density
+            drawRect(Color.Black, Offset(0f, 61f * s), Size(540f * s, 3f * s))
+            // Block progress: outline + fill
+            drawRect(
+                Color.Black, Offset(24f * s, 352f * s), Size(492f * s, 20f * s),
+                style = Stroke((2f * s).coerceAtLeast(1f)),
+            )
+            drawRect(Color.Black, Offset(24f * s, 352f * s), Size(190f * s, 20f * s))
+            // Reversed power band; its white texts compose after this canvas.
+            drawRect(Color.Black, Offset(0f, 392f * s), Size(540f * s, 132f * s))
+            // Session profile bars
+            val hts = listOf(50f, 70f, 110f, 40f, 110f, 40f, 124f, 40f, 34f)
+            val wds = listOf(80f, 40f, 64f, 24f, 64f, 24f, 33f, 24f, 48f)
+            val xs = listOf(24f, 106f, 148f, 214f, 240f, 306f, 332f, 367f, 393f)
+            for (i in 0 until 9) {
+                drawRect(
+                    if (i == 4) Color.Black
+                    else Color.Black.copy(alpha = if (i < 4) 0.45f else 0.18f),
+                    Offset(xs[i] * s, (706f - hts[i]) * s),
+                    Size(wds[i] * s, hts[i] * s),
+                )
+            }
+            drawRect(Color.Black, Offset(24f * s, 703f * s), Size(492f * s, 3f * s))
+            // Stat boxes + buttons
+            for (i in 0 until 2) {
+                drawRect(
+                    Color.Black, Offset((24f + i * 252f) * s, 754f * s),
+                    Size(240f * s, 104f * s), style = Stroke((2f * s).coerceAtLeast(1f)),
+                )
+                drawRect(
+                    Color.Black, Offset((24f + i * 252f) * s, 868f * s),
+                    Size(240f * s, 80f * s), style = Stroke((3f * s).coerceAtLeast(1f)),
+                )
+            }
+        }
+        // On top of the band the canvas painted.
+        PanelText(
+            "246", 66f * k, FontWeight.Black,
+            x = 24f * k, y = 412f * k, white = true,
+        )
+        PanelText(
+            "IN RANGE", 20f * k, FontWeight.Bold,
+            x = 380f * k, y = 400f * k, white = true,
+        )
+        PanelText(
+            "PAUSE", 20f * k, FontWeight.Bold,
+            x = 24f * k, y = 896f * k, width = 240f * k, align = TextAlign.Center,
+        )
+        PanelText(
+            "ALL BLOCKS", 20f * k, FontWeight.Bold,
+            x = 276f * k, y = 896f * k, width = 240f * k, align = TextAlign.Center,
+        )
+    }
+}
+
 /** Shared scaffold: paper ground, 540x960 device space, font scale pinned. */
 @Composable
 private fun PanelMock(modifier: Modifier, content: @Composable (k: Float) -> Unit) {
@@ -652,6 +719,7 @@ private fun PanelText(
     align: TextAlign = TextAlign.Start,
     tracking: Float = 0f,
     faded: Boolean = false,
+    white: Boolean = false,
 ) {
     Text(
         text,
@@ -661,7 +729,11 @@ private fun PanelText(
         textAlign = align,
         maxLines = 1,
         overflow = TextOverflow.Ellipsis,
-        color = if (faded) Color.Black.copy(alpha = 0.6f) else Color.Black,
+        color = when {
+            white -> Color.White
+            faded -> Color.Black.copy(alpha = 0.6f)
+            else -> Color.Black
+        },
         modifier = Modifier
             .offset(x = x.dp, y = y.dp)
             .then(if (width != null) Modifier.width(width.dp) else Modifier),

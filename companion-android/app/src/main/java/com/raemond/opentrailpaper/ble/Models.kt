@@ -18,6 +18,7 @@ object BikeUuid {
     val dash: UUID = UUID.fromString("B1C50009-9E0F-4B7A-9C6D-1F2E3A4B5C6D")
     val mesh: UUID = UUID.fromString("B1C5000A-9E0F-4B7A-9C6D-1F2E3A4B5C6D")
     val media: UUID = UUID.fromString("B1C5000B-9E0F-4B7A-9C6D-1F2E3A4B5C6D")
+    val workout: UUID = UUID.fromString("B1C5000C-9E0F-4B7A-9C6D-1F2E3A4B5C6D")
 
     /** The standard Client Characteristic Configuration descriptor. */
     val cccd: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
