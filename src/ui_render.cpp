@@ -1104,7 +1104,9 @@ void fmtClockSec(char* out, size_t cap, int sec) {
 
 void ui_render_media(const RideState& s, const MediaState& m, uint8_t* fb) {
     g_dashToned = false;   // set below when grey art lands on the glass
-    ui::statusBar(s, fb, "MUSIC");
+    // Untitled bar: the album art says "music" better than a label could,
+    // and the untitled bar keeps the HR/PWR/PAUSED chips.
+    ui::statusBar(s, fb);
 
     const int W = epd_rotated_display_width();
 

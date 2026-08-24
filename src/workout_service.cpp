@@ -6,6 +6,7 @@
 #include "diag.h"
 #include "sd_bus.h"
 #include "settings.h"
+#include "ride_state.h"
 
 namespace workout_service {
 namespace {
@@ -217,7 +218,10 @@ void jumpToSeg(int idx) {
 bool loaded() { return g_loaded; }
 bool running() { return g_running; }
 
+void motionTick();   // defined below; runs every tick regardless of settings
+
 void tick() {
+    motionTick();
     // "Pause after every block": catch the clock crossing a boundary and hold
     // it AT the boundary, so resume starts the next block from its first
     // second. Called at 1 Hz from loop(). The detector disarms whenever the
@@ -241,6 +245,38 @@ void tick() {
         g_boundaryArmed = false;
         diag::log("workout: holding at block %d/%d (pause-each-block)",
                   idx + 1, g_wk.count);
+    }
+}
+
+// Stillness auto-pause: a rider who stops without touching anything should
+// not watch their intervals march on. No power AND no movement for 5 s
+// pauses the clock; power or movement returning resumes it at once — the
+// ERG-trainer convention. Only pauses this code set are auto-resumed:
+// an explicit pause, and the pause-each-block boundary hold, stay held.
+void motionTick() {
+    static uint8_t stillSec = 0;
+    static bool autoPaused = false;
+    if (!g_started) { stillSec = 0; autoPaused = false; return; }
+
+    RideState st = g_state.snapshot();
+    const bool hasPower = st.power3sW != 0xFFFF && st.power3sW > 0;
+    const bool moving = (st.gpsFix && st.speedKmh > 1.0f) || st.deviceMoving;
+
+    if (g_running) {
+        if (!hasPower && !moving) {
+            if (++stillSec >= 5) {
+                stillSec = 0;
+                pause();
+                autoPaused = true;
+                diag::log("workout: auto-paused (no power, no movement)");
+            }
+        } else {
+            stillSec = 0;
+        }
+    } else if (autoPaused && (hasPower || moving)) {
+        autoPaused = false;
+        resume();
+        diag::log("workout: auto-resumed (%s)", hasPower ? "power" : "movement");
     }
 }
 
