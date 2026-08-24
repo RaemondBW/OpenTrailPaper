@@ -95,15 +95,28 @@ jobs:
           v=$(sed -n 's/.*FIRMWARE_VERSION[[:space:]]*"\([^"]*\)".*/\1/p' src/config.h)
           echo "version=$v" >> "$GITHUB_OUTPUT"
 
+      # The release body is this version's CHANGELOG.md section — the app shows
+      # it as "What's new" when offering the update, so the changelog IS the
+      # user-facing release notes. A missing section still publishes (with a
+      # placeholder) rather than blocking the release.
+      - name: Extract release notes
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          v="${{ steps.ver.outputs.version }}"
+          awk -v ver="## $v" '$0 == ver {on=1; next} on && /^## / {exit} on' \
+            CHANGELOG.md | sed -e '/./,$!d' > relnotes.md
+          if [ ! -s relnotes.md ]; then
+            echo "Firmware $v." > relnotes.md
+          fi
+          printf '\nBuilt from %s. Flash it from the app (Settings > Firmware), the project site, or drop firmware.bin on the SD card.\n' "$GITHUB_SHA" >> relnotes.md
+
       - name: Publish firmware release
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.ver.outputs.version }}
           name: Firmware ${{ steps.ver.outputs.version }}
-          body: |
-            Firmware ${{ steps.ver.outputs.version }} built from ${{ github.sha }}.
-            Flash it from the project site (Flash firmware) or drop firmware.bin on the SD card.
+          body_path: relnotes.md
           files: .pio/build/t5s3-painter/firmware.bin
           fail_on_unmatched_files: true
 

@@ -392,6 +392,25 @@ struct SettingsView: View {
                       : String(format: "%+d:%02d", h, m)
     }
 
+    /// Release-body markdown -> compact plain text: drop the trailing
+    /// "Built from <sha>..." line CI appends, bullet the list items, unwrap
+    /// the hard line breaks inside each item.
+    static func whatsNew(_ body: String) -> String {
+        var items: [String] = []
+        for rawLine in body.split(separator: "\n", omittingEmptySubsequences: true) {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("Built from ") || line.isEmpty { continue }
+            if line.hasPrefix("- ") {
+                items.append("• " + line.dropFirst(2))
+            } else if !items.isEmpty {
+                items[items.count - 1] += " " + line   // wrapped continuation
+            } else {
+                items.append(line)
+            }
+        }
+        return items.joined(separator: "\n")
+    }
+
     @ViewBuilder private var firmwareCard: some View {
         Card {
             VStack(alignment: .leading, spacing: 12) {
@@ -421,6 +440,30 @@ struct SettingsView: View {
                             .padding(.horizontal, 8).padding(.vertical, 4)
                             .background(Palette.accent).foregroundStyle(.white)
                             .clipShape(Capsule())
+                    }
+                }
+
+                // The release notes, straight from the version's CHANGELOG
+                // section in the GitHub release body — the rider sees what
+                // they're getting before tapping Install.
+                if ble.updateAvailable, !ble.otaInProgress,
+                   ble.otaPhase != .failed, ble.otaPhase != .done,
+                   let r = release.latest {
+                    let notes = Self.whatsNew(r.notes)
+                    if !notes.isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("What's new in \(r.tag)")
+                                .font(BarlowFont.text(13, .semibold))
+                                .foregroundStyle(Palette.ink)
+                            Text(notes)
+                                .font(.system(size: 12))
+                                .foregroundStyle(Palette.muted)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Palette.paper,
+                                    in: RoundedRectangle(cornerRadius: 8))
                     }
                 }
 
