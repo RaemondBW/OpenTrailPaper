@@ -2215,31 +2215,27 @@ void ui_render_workout(const RideState& s, const WorkoutView& v, uint8_t* fb) {
 
     // --- The block being executed: the hero answers "how much longer". ---
     workoutBlockTitle(cs, v.ftpW, zone, sizeof(zone), name, sizeof(name));
-    snprintf(buf, sizeof(buf), "NOW · %s", zone);
-    ui::text(&Arial_L, 24, 174, buf, fb, EPD_DRAW_ALIGN_LEFT);
     char dur[16];
     workoutFmt(dur, sizeof(dur), segDur);
-    snprintf(buf, sizeof(buf), "%s · %s BLOCK", name, dur);
-    ui::text(&Arial_L, 516, 174, buf, fb, EPD_DRAW_ALIGN_RIGHT);
 
     // --- The dark block: everything "right now" in one reversed panel —
     // your power and the correction at full size, the target under them,
     // the block's countdown and progress smaller along the bottom. One
     // repaint region instead of three.
-    const EpdRect blk = {0, 190, 540, 334};
+    const EpdRect blk = {0, 156, 540, 368};
     epd_fill_rect(blk, ui::INK, fb);
     const bool havePower = s.power3sW != 0xFFFF && s.powerConnected;
     const int tol = 8;
     int diff = havePower ? (int)s.power3sW - (int)v.targetW : 0;
 
     // Caps row: what the numbers are, and which way to go.
-    ui::text(&Arial_L, 24, 226, "YOUR POWER · 3S", fb, EPD_DRAW_ALIGN_LEFT,
+    ui::text(&Arial_L, 24, 198, "YOUR POWER · 3S", fb, EPD_DRAW_ALIGN_LEFT,
              0xFF);
     const char* dir = !havePower    ? "NO POWER"
                       : diff < -tol ? "GO HARDER"
                       : diff > tol  ? "EASE OFF"
                                     : "IN RANGE";
-    ui::text(&Arial_L, 516, 226, dir, fb, EPD_DRAW_ALIGN_RIGHT, 0xFF);
+    ui::text(&Arial_L, 516, 198, dir, fb, EPD_DRAW_ALIGN_RIGHT, 0xFF);
 
     // The two hero numbers: current power left, the correction right.
     if (havePower) snprintf(buf, sizeof(buf), "%u", s.power3sW);
@@ -2269,6 +2265,10 @@ void ui_render_workout(const RideState& s, const WorkoutView& v, uint8_t* fb) {
              v.targetW > tol ? v.targetW - tol : 0, v.targetW + tol,
              v.ftpW ? (int)v.targetW * 100 / v.ftpW : 0);
     ui::text(&Arial_L, 24, 386, buf, fb, EPD_DRAW_ALIGN_LEFT, 0xFF);
+    // What this block IS, one small line under its target: the zone and the
+    // block's full length. Used to be its own row above the panel.
+    snprintf(buf, sizeof(buf), "%s %s · %s BLOCK", zone, name, dur);
+    ui::text(&Arial_L, 24, 412, buf, fb, EPD_DRAW_ALIGN_LEFT, 0xFF);
 
     // Bottom of the block: the block's progress bar, and the countdown at a
     // deliberate step down from the power numbers.
