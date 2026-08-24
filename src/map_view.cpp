@@ -445,8 +445,26 @@ void ui_render_map(const MapScreenData& map, const RideState& s, uint8_t* fb) {
         if (f3[c] >= DF_COUNT) f3[c] = DF_SPEED;
         units3[c] = "";
         dashFieldValue(f3[c], s, vals[c], sizeof(vals[c]), &units3[c]);
+        // Time fields render compact H:MM here, as the strip always did before
+        // it was configurable. The full H:MM:SS is a dash-cell luxury: in a
+        // 156 px strip cell its worst case ("88:88:88") drags the WHOLE row's
+        // shared face down to the smallest sizes — seconds nobody reads at a
+        // glance costing half the type size of all three cells.
+        if (f3[c] == DF_RIDE_TIME || f3[c] == DF_MOVING_TIME) {
+            uint32_t sec = f3[c] == DF_RIDE_TIME ? s.elapsedS : s.movingS;
+            snprintf(vals[c], sizeof(vals[c]), "%lu:%02lu",
+                     (unsigned long)(sec / 3600), (unsigned long)((sec / 60) % 60));
+        }
         labels[c] = dashFieldLabel(f3[c]);
     }
+
+
+    // The strip's own worst-case sizing strings: dashSizingHint's, except the
+    // compact time format above.
+    auto stripHint = [](uint8_t f) {
+        return (f == DF_RIDE_TIME || f == DF_MOVING_TIME) ? "88:88"
+                                                          : dashSizingHint(f);
+    };
 
     // One caption size across the strip, as on the data page.
     const EpdFont* lf = ui::kLabelLadder[ui::LABEL_LADDER_N - 1];
@@ -459,26 +477,51 @@ void ui_render_map(const MapScreenData& map, const RideState& s, uint8_t* fb) {
     }
 
     // Common value face across the three, so the strip reads as one row —
-    // sized against each field's WORST-CASE string (dashSizingHint), not the
-    // live value. Sizing from the live value made the face step down and back
-    // as numbers crossed digit boundaries at speed ("9.8" -> "10.2", distance
-    // rolling over), which read as the whole strip breathing mid-ride.
+    // sized against each field's WORST-CASE string, not the live value, so a
+    // number crossing a digit boundary can never resize the strip mid-ride.
+    // The unit no longer sits beside the value (in a 124 px inner cell it
+    // cost two ladder steps of type size); the cell is a three-band column:
+    // caption high, big bare number, small unit on the bottom edge.
+    const int capBand = 34;    // caption band, from the cell top
+    const int unitBand = 26;   // unit band, from the cell bottom
+    // The value's side padding is 6, not CELL_PAD's 16: nothing sits beside
+    // the number, and those 20 px are exactly one ladder step of type size.
+    const int valuePad = 6;
     int vi = 0;
     for (int c = 0; c < 3; ++c) {
-        const int uw = units3[c][0] ? ui::textWidth(&Arial_B, units3[c]) + 4 : 0;
         const int idx = ui::valueFontIndex(ui::kValueLadder,
-                                           dashSizingHint(f3[c]),
-                                           colW - 2 * ui::CELL_PAD,
-                                           fh - 2 * ui::CELL_PAD - 20, uw);
+                                           stripHint(f3[c]),
+                                           colW - 2 * valuePad,
+                                           fh - capBand - unitBand, 0);
         if (idx > vi) vi = idx;
     }
+    const EpdFont* vf = ui::kValueLadder[vi];
     for (int c = 0; c < 3; ++c) {
         EpdRect r = {ui::CONTENT_X + c * (colW + ui::GUTTER), fy, colW, fh};
+        epd_draw_rect(r, ui::INK, fb);
+        epd_draw_rect({r.x + 1, r.y + 1, r.width - 2, r.height - 2}, ui::INK,
+                      fb);
+        const int cx = r.x + r.width / 2;
+        // Left-aligned caption, the dash cells' own idiom: label() centres on
+        // a point, so hand it the tracked width's midpoint.
+        const int lw = ui::labelWidth(lf, labels[c]);
+        ui::label(r.x + ui::CELL_PAD + lw / 2, r.y + 24, labels[c], fb,
+                  ui::INK, lf);
+        // Value centred in the band between caption and unit. Impact digit
+        // faces carry cap height in ascender, so baseline = centre + asc/2
+        // is optical centre.
+        const int bandTop = r.y + capBand;
+        const int bandBot = r.y + fh - unitBand;
+        const int base = (bandTop + bandBot) / 2 + vf->ascender / 2;
+        ui::text(vf, cx, base, vals[c], fb, EPD_DRAW_ALIGN_CENTER);
+        if (units3[c][0])
+            ui::text(&Arial_L, cx, r.y + fh - 10, units3[c], fb,
+                     EPD_DRAW_ALIGN_CENTER, ui::DARK);
         // Greyed like a dash cell when the source is gone — a strip cell must
         // never show a live-looking number from a dead sensor either.
-        bool stale = !dashFieldAvailable(f3[c], s) && !s.showOffline;
-        ui::cell(r, labels[c], vals[c], units3[c], fb, stale,
-                 ui::kValueLadder[vi], lf);
+        if (!dashFieldAvailable(f3[c], s) && !s.showOffline)
+            ui::fillTone({r.x + 3, bandTop, r.width - 6, bandBot - bandTop},
+                         ui::TONE_33, fb);
     }
 }
 
