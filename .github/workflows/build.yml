@@ -165,3 +165,36 @@ jobs:
             -sdk iphonesimulator \
             -configuration Debug \
             CODE_SIGNING_ALLOWED=NO
+
+  android:
+    name: Companion app (Android)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: companion-android
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # Wrapper + dependency caching, keyed on the lockable Gradle inputs.
+      - uses: gradle/actions/setup-gradle@v4
+
+      # The runner image ships the Android SDK at $ANDROID_HOME, so there is
+      # no local.properties step. Debug only: it proves the app compiles (the
+      # same bar as the iOS job) and needs no signing — keystore.properties
+      # is gitignored, and the release path falls back to env vars this job
+      # deliberately doesn't set.
+      - name: Build
+        run: ./gradlew --no-daemon assembleDebug
+
+      # Installable straight from the workflow run, the way the firmware
+      # artifact is flashable — debug-signed, so it installs on any device
+      # with unknown-sources enabled.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: companion-android-debug
+          path: companion-android/app/build/outputs/apk/debug/app-debug.apk

@@ -3,7 +3,8 @@
 [![Build](https://github.com/RaemondBW/OpenTrailPaper/actions/workflows/build.yml/badge.svg)](https://github.com/RaemondBW/OpenTrailPaper/actions/workflows/build.yml)
 
 OpenTrailPaper — a DIY e-paper bike GPS head unit for the [LilyGO T5S3 4.7" e-paper PRO](https://github.com/Xinyuan-LilyGO/T5S3-4.7-e-paper-PRO),
-plus a SwiftUI iOS companion app for maps, routes and settings.
+plus companion apps for maps, routes and settings: [SwiftUI on iOS](companion-ios/)
+and [Jetpack Compose on Android](companion-android/).
 
 **[→ Project site](https://raemondbw.github.io/OpenTrailPaper/)** — feature tour
 and an in-browser Web Serial firmware flasher (Chrome/Edge, no toolchain needed).

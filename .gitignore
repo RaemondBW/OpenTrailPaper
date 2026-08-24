@@ -76,3 +76,18 @@ sdkconfig.old
 tools/aux_test/aux_test
 
 private_keys/*
+
+# Android companion build output and machine-local SDK path
+companion-android/build/
+companion-android/app/build/
+companion-android/app/.cxx/
+companion-android/.gradle/
+companion-android/local.properties
+companion-android/.idea/
+
+# Release signing. The upload key is the one secret whose loss cannot be undone
+# by rebuilding anything, and whose leak lets someone else ship as you — so it
+# never goes in the repo, and neither do the passwords that open it.
+companion-android/keystore.properties
+*.jks
+*.keystore
