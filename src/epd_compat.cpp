@@ -13,7 +13,10 @@
 // The epdiy device build (env t5s3-pro) gets its drawing functions from epdiy
 // itself, so compiling ours there would be a duplicate definition of all
 // thirteen; its epdc_* panel shim lives in epd_compat_epdiy.cpp instead.
-#if !defined(ARDUINO) || defined(USE_EPD_PAINTER)
+// OTP_EMULATOR compiles the DRAWING half here too (the renderers are identical
+// under emulation); its PANEL half lives in epd_compat_emu.cpp instead of the
+// EPD_Painter one below.
+#if !defined(ARDUINO) || defined(USE_EPD_PAINTER) || defined(OTP_EMULATOR)
 
 namespace {
 
@@ -477,7 +480,9 @@ EpdRect epd_get_string_rect(const EpdFont* font, const char* string, int x, int 
 //
 // Only compiled for the device. The host preview harness links the rasteriser
 // above and writes PNGs itself, so it must not pull in EPD_Painter or ESP-IDF.
-#ifdef ARDUINO
+// The emulator build (OTP_EMULATOR) has its own panel half too — see
+// epd_compat_emu.cpp — and only shares the drawing functions above.
+#if defined(ARDUINO) && !defined(OTP_EMULATOR)
 
 #include <Arduino.h>
 #include <Wire.h>

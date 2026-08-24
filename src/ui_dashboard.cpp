@@ -163,7 +163,13 @@ const uint8_t kBacklightPWM[4] = {0, 12, 90, 230};
 void applyBacklight(int level) {
     if (level < 0) level = 0;
     if (level > 3) level = 3;
+#ifndef OTP_EMULATOR
+    // analogWrite is LEDC underneath, and QEMU does not model that peripheral:
+    // the divider math reads a clock register as zero and the first backlight
+    // write dies of IntegerDivideByZero (seen at the exact boot step on the
+    // first emulator bring-up). A virtual panel has no frontlight anyway.
     analogWrite(BOARD_BL_EN, kBacklightPWM[level]);
+#endif
 }
 
 void shutdownDevice(uint8_t* fb, const char* reason) {

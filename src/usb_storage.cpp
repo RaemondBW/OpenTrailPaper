@@ -1,5 +1,19 @@
 #include "usb_storage.h"
 
+#ifdef OTP_EMULATOR
+// QEMU has no USB-OTG model and the emulator console runs on UART0, so there
+// is no composite device to offer and no host to offer it to. Every entry
+// point no-ops; hostActive() false keeps the firmware's own SD path (which
+// itself no-ops without a card) in charge.
+namespace usb_storage {
+void begin() {}
+void setDriveEnabled(bool) {}
+bool driveEnabled() { return false; }
+bool hostActive() { return false; }
+void poll() {}
+}
+#else
+
 #include <Arduino.h>
 #include <SD.h>
 #include "USB.h"
@@ -187,3 +201,5 @@ void poll() {
 }
 
 }  // namespace usb_storage
+
+#endif  // !OTP_EMULATOR

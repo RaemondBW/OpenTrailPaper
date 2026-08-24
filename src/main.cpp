@@ -635,10 +635,16 @@ void setup() {
     // rail pins alone.
     if (ioExpanderOk) ioExpander.pinMode(IOEXP_PIN_SIDE_BUTTON, INPUT);
 
+#ifndef OTP_EMULATOR
     BOOT_STEP("ui_dashboard done -> ble_sensors::begin()");
     ble_sensors::begin();
     BOOT_STEP("ble_sensors done -> ble_server::begin()");
     ble_server::begin();   // GATT server for the iOS companion app
+#else
+    // QEMU has no BT controller model and esp_bt_controller_init() does not
+    // fail politely there — both NimBLE stacks stay out of the emulator build.
+    BOOT_STEP("ui_dashboard done -> BLE skipped (emulator)");
+#endif
 
     BOOT_STEP("ble_server done -> power_mgmt::begin()");
 
@@ -648,8 +654,10 @@ void setup() {
     BOOT_STEP("power_mgmt done -> creating tasks");
 
     xTaskCreatePinnedToCore(gps_service::task, "gps", 4096, nullptr, 3, nullptr, 0);
+#ifndef OTP_EMULATOR
     xTaskCreatePinnedToCore(ble_sensors::task, "ble", 6144, nullptr, 2, nullptr, 0);
     xTaskCreatePinnedToCore(ble_server::task, "srv", 4096, nullptr, 1, nullptr, 0);
+#endif
     xTaskCreatePinnedToCore(ride_recorder::task, "rec", 6144, nullptr, 3, nullptr, 1);
     xTaskCreatePinnedToCore(batteryTask, "bat", 3072, nullptr, 1, nullptr, 1);
     // No task at all when nothing is fitted — the whole feature costs an absent

@@ -19,7 +19,7 @@
 // epdiy supplies the thirteen drawing functions here, so epd_compat.cpp's own
 // rasteriser is compiled out (its top-of-file guard) and only this shim is built.
 
-#if defined(ARDUINO) && !defined(USE_EPD_PAINTER)
+#if defined(ARDUINO) && !defined(USE_EPD_PAINTER) && !defined(OTP_EMULATOR)
 
 #include "epd_compat.h"
 
