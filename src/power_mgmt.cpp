@@ -219,7 +219,10 @@ void tick() {
     {
         uint32_t heldSince = s_busyHeldSinceMs;
         static uint32_t lastWarnMs = 0;
-        if (heldSince && millis() - heldSince > 30000 &&
+        // Signed compare: busyAcquire() stamps millis()|1, which can sit 1 ms in
+        // the FUTURE of a read made in the same tick — unsigned that is ~2^32 ms
+        // "held" and logged as "bus lock held 4294967s" (seen 2026-08-22).
+        if (heldSince && (int32_t)(millis() - heldSince) > 30000 &&
             millis() - lastWarnMs > 300000) {
             lastWarnMs = millis();
             diag::log("pm: bus lock held %lus straight (count %d) — light sleep "
@@ -234,10 +237,18 @@ void tick() {
     // clock. It widens its receive window by the sleep-clock accuracy it
     // advertised, and that RC cannot hold to it, so events are missed and the
     // link dies of supervision timeout no matter what the CPU is doing.
-    // Stop the controller sleeping while the phone is attached; let it sleep
-    // again when it goes away, since that is the state a ride spends its time in.
+    // Stop the controller sleeping while the phone is attached OR any sensor
+    // link is up; let it sleep again when the radio is quiet.
+    //
+    // The sensor term is what makes a resume-from-auto-pause STICK. The
+    // 2026-08-22 ride log shows the failure without it: the CPU hold ("sens")
+    // engaged on every reconnect, but the hunt ended, modem sleep re-armed,
+    // and the fresh link died of supervision timeout (reason 520) ~5 s after
+    // EVERY connect — HR and power flapping from the first phoneless
+    // auto-pause to the end of the ride. `sensors` already goes false in a
+    // long auto-pause, so a parked ride still lets the controller sleep.
     static int btSleep = -1;                 // -1 unknown, 0 disabled, 1 enabled
-    int wantBtSleep = (phone || hunting) ? 0 : 1;
+    int wantBtSleep = (phone || hunting || sensors) ? 0 : 1;
     if (btSleep != wantBtSleep) {
         esp_err_t e = wantBtSleep ? esp_bt_sleep_enable() : esp_bt_sleep_disable();
         if (e == ESP_OK || e == ESP_ERR_INVALID_STATE) btSleep = wantBtSleep;
@@ -248,10 +259,10 @@ void tick() {
         static uint32_t lastLogMs = 0;
         if (e == ESP_OK && (lastLogMs == 0 || millis() - lastLogMs > 60000)) {
             lastLogMs = millis();
-            diag::log("pm: BT modem sleep %s (phone %s, sensor hunt %s)",
+            diag::log("pm: BT modem sleep %s (phone %s, sensor hunt %s, links %s)",
                       wantBtSleep ? "on" : "OFF",
                       s_phoneRelaxed ? "relaxed" : phoneUp ? "connected" : "gone",
-                      hunting ? "ON" : "off");
+                      hunting ? "ON" : "off", sensors ? "up" : "none");
         }
     }
     if (usb && !s_usbHeld) {
