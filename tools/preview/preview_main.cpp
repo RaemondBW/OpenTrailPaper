@@ -18,6 +18,7 @@
 #include "ride_state.h"
 #include "ui_render.h"
 #include "media_state.h"
+#include "workout.h"
 #include "map_view.h"
 #include "map_tiles.h"
 
@@ -665,6 +666,67 @@ int main(int argc, char** argv) {
         clearWhite(fb.data());
         ui_render_media(s, none, fb.data());
         emit("music_idle.png");
+    }
+
+    // WORKOUT pages, per the Claude Design "Workout View" frames: executing
+    // a block (in range and under target) and the ALL BLOCKS list.
+    {
+        static const char* kErg =
+            "[COURSE HEADER]\n"
+            "MINUTES WATTS\n"
+            "[END COURSE HEADER]\n"
+            "[COURSE DATA]\n"
+            "0 120\n10 180\n"
+            "10 260\n15 260\n15 140\n18 140\n"
+            "18 260\n23 260\n23 140\n26 140\n"
+            "26 260\n31 260\n31 140\n34 140\n"
+            "34 260\n39 260\n"
+            "39 120\n45 100\n"
+            "[END COURSE DATA]\n";
+        static Workout wk;
+        workoutParse(kErg, 250, wk);
+        snprintf(wk.name, sizeof(wk.name), "4X5 THRESHOLD");
+
+        RideState ws = s;
+        ws.powerConnected = true;
+        WorkoutView v;
+
+        ws.power3sW = 264;   // inside the band
+        workoutBuildView(wk, 20 * 60, true, 250, v);
+        clearWhite(fb.data());
+        ui_render_workout(ws, v, fb.data());
+        emit("workout_on_target.png");
+
+        ws.power3sW = 205;   // 55 W under — GO HARDER
+        workoutBuildView(wk, 27 * 60, true, 250, v);
+        clearWhite(fb.data());
+        ui_render_workout(ws, v, fb.data());
+        emit("workout_add.png");
+
+        // Paused mid-block, no meter data.
+        ws.power3sW = 0xFFFF;
+        ws.powerConnected = false;
+        workoutBuildView(wk, 21 * 60, false, 250, v);
+        v.paused = true;
+        clearWhite(fb.data());
+        ui_render_workout(ws, v, fb.data());
+        emit("workout_paused.png");
+
+        // The ALL BLOCKS list, both pages.
+        ws.power3sW = 264;
+        ws.powerConnected = true;
+        workoutBuildView(wk, 27 * 60, true, 250, v);
+        clearWhite(fb.data());
+        ui_render_workout_list(ws, v, 0, fb.data());
+        emit("workout_list.png");
+        clearWhite(fb.data());
+        ui_render_workout_list(ws, v, 1, fb.data());
+        emit("workout_list_p2.png");
+
+        WorkoutView none;
+        clearWhite(fb.data());
+        ui_render_workout(ws, none, fb.data());
+        emit("workout_none.png");
     }
 
     // BLE pairing sheet over the dashboard

@@ -24,6 +24,8 @@
 #include "map_tiles.h"
 #include "map_store.h"
 #include "media.h"
+#include "workout.h"
+#include "workout_service.h"
 #include "i2c_bus.h"
 #include "usb_storage.h"
 #include "ble_sensors.h"
@@ -86,6 +88,12 @@ bool mapFullPass = false;
 // from the tap until a COMPLETE map frame has been drawn.
 int zoomHeld = 0;
 bool mapTrackUp = false;
+
+// The workout page's ALL BLOCKS list: open/closed and which page of eight
+// rows is showing. UI state, not workout state — closing it changes nothing
+// about the session.
+bool workoutAllOpen = false;
+int workoutListPage = 0;
 
 // Serial test hooks: drive the UI over the CDC serial port to profile the map
 // without physical taps. Toggle timing logs with 't'; single-char commands
@@ -553,6 +561,56 @@ void handleTap(int x, int y) {
                     // and repaint rather than waiting the round trip to the
                     // phone — its state report will correct us if it disagrees.
                     if (cmd == MC_TOGGLE) media::toggleLocal();
+                    forceDraw = true;
+                }
+                break;
+            }
+            // The WORKOUT page, same shape as the music block above.
+            // Everything here answers on the glass at once; there is no
+            // phone round trip to wait for. Navigation is the prev/next
+            // block strips themselves; the footer holds pause and the
+            // ALL BLOCKS list, whose rows start the block they name.
+            if (screen == SCREEN_DASH &&
+                dash_config::page(dashPage).kind == DP_WORKOUT &&
+                y >= ui::STATUS_H) {
+                WorkoutView wv;
+                workout_service::view(wv);
+                if (workoutAllOpen) {
+                    if (inRect(kWorkoutPageUp, x, y)) {
+                        if (workoutListPage > 0) --workoutListPage;
+                    } else if (inRect(kWorkoutPageDown, x, y)) {
+                        if ((workoutListPage + 1) * kWorkoutRowsPerPage <
+                            wv.segCount)
+                            ++workoutListPage;
+                    } else if (inRect(kWorkoutClose, x, y)) {
+                        workoutAllOpen = false;
+                    } else if (y >= kWorkoutRowTop &&
+                               y < kWorkoutRowTop +
+                                       kWorkoutRowH * kWorkoutRowsPerPage) {
+                        int idx = workoutListPage * kWorkoutRowsPerPage +
+                                  (y - kWorkoutRowTop) / kWorkoutRowH;
+                        if (wv.loaded && idx < wv.segCount) {
+                            workout_service::jumpToSeg(idx);
+                            workoutAllOpen = false;
+                        }
+                    }
+                    forceDraw = true;
+                    break;
+                }
+                if (inRect(kWorkoutRedo, x, y)) {
+                    if (wv.loaded) workout_service::jumpToSeg(wv.segIdx - 1);
+                    forceDraw = true;
+                } else if (inRect(kWorkoutStartNext, x, y)) {
+                    if (wv.loaded) workout_service::jumpToSeg(wv.segIdx + 1);
+                    forceDraw = true;
+                } else if (inRect(kWorkoutPause, x, y)) {
+                    workout_service::toggle();
+                    forceDraw = true;
+                } else if (inRect(kWorkoutAll, x, y)) {
+                    if (wv.loaded) {
+                        workoutAllOpen = true;
+                        workoutListPage = wv.segIdx / kWorkoutRowsPerPage;
+                    }
                     forceDraw = true;
                 }
                 break;
@@ -1619,6 +1677,7 @@ static void printConsoleHelp() {
     Serial.println("  mesh channel <name> [key]   set the channel (where — retunes)");
     Serial.println("  mesh <on|off>        power the LoRa radio");
     Serial.println("  autopause [sec|off]  ride timer pause after N s stopped (0/off disables)");
+    Serial.println("  workout <list|load <f>|start|pause|resume|stop|skip|back|goto <n>|ftp [W]>");
     Serial.println("  sleepexp [on|off]    re-arm the light-sleep-with-phone experiment (this boot)");
     Serial.println("  disconnect <kind>    drop the link (hr|power|cadence|all); stays paired");
     Serial.println("  forget <kind|mac>    unpair and drop (hr|power|cadence|all|aa:bb:..)");
@@ -1907,6 +1966,83 @@ static void runConsoleLine(char* line) {
         int cur = settings::autoPauseSec();
         if (cur) Serial.printf("[autopause] after %d s stopped\n", cur);
         else     Serial.println("[autopause] off");
+    } else if (!strcasecmp(cmd, "workout")) {
+        // workout                      status
+        // workout list                 files in /workouts
+        // workout load <file>          make it active (extension included)
+        // workout start|stop|skip      run control
+        // workout ftp [watts]          show / set the FTP the targets scale by
+        if (arg && !strcasecmp(arg, "list")) {
+            char names[512];
+            int n = workout_service::list(names, sizeof(names));
+            Serial.printf("[workout] %d file(s) in /workouts:\n%s", n, names);
+        } else if (arg && !strcasecmp(arg, "load")) {
+            char* name = strtok(nullptr, " \t");
+            if (!name) { Serial.println("[workout] load <file.erg>"); return; }
+            const char* reason = "";
+            if (workout_service::load(name, &reason)) {
+                WorkoutView v;
+                workout_service::view(v);
+                Serial.printf("[workout] loaded %s: %d intervals, %lu:%02lu, "
+                              "'workout start' begins\n", v.name, v.segCount,
+                              (unsigned long)(v.totalSec / 60),
+                              (unsigned long)(v.totalSec % 60));
+            } else {
+                Serial.printf("[workout] load failed: %s\n", reason);
+            }
+        } else if (arg && !strcasecmp(arg, "start")) {
+            workout_service::start();
+            Serial.println(workout_service::running()
+                               ? "[workout] running"
+                               : "[workout] nothing loaded");
+        } else if (arg && !strcasecmp(arg, "stop")) {
+            workout_service::stop();
+            Serial.println("[workout] stopped");
+        } else if (arg && !strcasecmp(arg, "pause")) {
+            workout_service::pause();
+        } else if (arg && !strcasecmp(arg, "resume")) {
+            workout_service::resume();
+        } else if (arg && !strcasecmp(arg, "skip")) {
+            workout_service::skip();
+        } else if (arg && !strcasecmp(arg, "back")) {
+            workout_service::prevInterval();
+        } else if (arg && !strcasecmp(arg, "goto")) {
+            char* n = strtok(nullptr, " \t");
+            WorkoutView v;
+            workout_service::view(v);
+            if (!n || !v.loaded) {
+                Serial.println("[workout] goto <interval 1..N>");
+            } else {
+                int idx = atoi(n) - 1;
+                if (idx < 0) idx = 0;
+                if (idx >= v.segCount) idx = v.segCount - 1;
+                workout_service::jumpToFraction(
+                    v.totalSec ? ((float)v.wk->segs[idx].startSec + 0.5f) /
+                                     (float)v.totalSec
+                               : 0.f);
+                Serial.printf("[workout] at interval %d/%d\n", idx + 1,
+                              v.segCount);
+            }
+        } else if (arg && !strcasecmp(arg, "ftp")) {
+            char* w = strtok(nullptr, " \t");
+            if (w) settings::setFtpWatts(atoi(w));
+            Serial.printf("[workout] ftp %d W%s\n", settings::ftpWatts(),
+                          w ? " (reload the workout to rescale an .mrc)" : "");
+        } else {
+            WorkoutView v;
+            workout_service::view(v);
+            if (!v.loaded) {
+                Serial.println("[workout] none loaded — 'workout list', then "
+                               "'workout load <file>'");
+            } else {
+                Serial.printf("[workout] %s: %s, interval %d/%d, target %u W, "
+                              "%lu/%lu s\n", v.name,
+                              v.done ? "DONE" : v.running ? "RUNNING" : "ready",
+                              v.segIdx + 1, v.segCount, v.targetW,
+                              (unsigned long)v.elapsedSec,
+                              (unsigned long)v.totalSec);
+            }
+        }
     } else if (!strcasecmp(cmd, "reboot")) {
         Serial.println("[cmd] rebooting");
         Serial.flush(); delay(80); esp_restart();
@@ -2357,6 +2493,14 @@ void task(void*) {
                                            : (uint16_t)(m.posSec + adv);
                         }
                         ui_render_media(s, m, fb);
+                    } else if (pg.kind == DP_WORKOUT) {
+                        WorkoutView wv;
+                        workout_service::view(wv);
+                        if (!wv.loaded) workoutAllOpen = false;
+                        if (workoutAllOpen)
+                            ui_render_workout_list(s, wv, workoutListPage, fb);
+                        else
+                            ui_render_workout(s, wv, fb);
                     } else {
                         // Compact hero whenever a banner (turn OR pause) owns
                         // the band, so no field hides underneath it.
@@ -2505,8 +2649,21 @@ void task(void*) {
                 toned && (prevScreen != SCREEN_DASH || modalClosed || !prevToned);
             prevToned = toned;
 
+            // Every page flip in the Home-key carousel gets the quick scrub
+            // too: the pages are visually unrelated (fields, music art,
+            // workout's solid block), and DU-driving one over another leaves
+            // the old page as haze under the new. Scoped to what actually
+            // changed, so it stays quick; the 1 Hz in-page redraws never fire
+            // it (same page → same value).
+            static int prevDashPage = -1;
+            const bool dashPageFlip =
+                screen == SCREEN_DASH &&
+                (prevScreen != SCREEN_DASH || dashPage != prevDashPage);
+            prevDashPage = screen == SCREEN_DASH ? dashPage : -1;
+
             refresh(screenChanged, fastInPage, listFast, wantClean,
-                    navPromptAppearing, mapTransition || tonedTransition);
+                    navPromptAppearing,
+                    mapTransition || tonedTransition || dashPageFlip);
         }
 
         // The epdiy path managed panel rails by hand here — poweron before an

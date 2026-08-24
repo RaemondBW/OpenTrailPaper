@@ -137,6 +137,24 @@ void ui_render_dashboard(const RideState& s, bool navActive,
 // targets exported for the dashboard's hit-testing, same as the sheets'.
 struct MediaState;
 void ui_render_media(const RideState& s, const MediaState& m, uint8_t* fb);
+
+// The WORKOUT pages, from the Claude Design "Workout View" frames: the
+// executing view (hero countdown, reversed power band, session profile,
+// prev/next block strips) and the ALL BLOCKS list (88 px rows, paged by 8,
+// tap a row to start that block). Touch targets exported like the media
+// row's; the list's rows are hit-tested from kWorkoutRowTop/kWorkoutRowH.
+struct WorkoutView;
+void ui_render_workout(const RideState& s, const WorkoutView& v, uint8_t* fb);
+void ui_render_workout_list(const RideState& s, const WorkoutView& v, int page,
+                            uint8_t* fb);
+extern const EpdRect kWorkoutRedo;
+extern const EpdRect kWorkoutStartNext;
+extern const EpdRect kWorkoutPause;
+extern const EpdRect kWorkoutAll;
+extern const EpdRect kWorkoutPageUp;
+extern const EpdRect kWorkoutPageDown;
+extern const EpdRect kWorkoutClose;
+extern const int kWorkoutRowTop, kWorkoutRowH, kWorkoutRowsPerPage;
 extern const EpdRect kMediaVolDown;
 extern const EpdRect kMediaPrev;
 extern const EpdRect kMediaPlay;

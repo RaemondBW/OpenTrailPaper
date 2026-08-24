@@ -132,6 +132,15 @@ struct DashboardEditorView: View {
                     }
                     .padding(.vertical, 4)
                 }
+            } else if config.pages.indices.contains(pageIx), config.pages[pageIx].isWorkout {
+                Section {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label("Workout", systemImage: "figure.outdoor.cycle")
+                        Text("Runs a structured workout: block countdown, live power against the target, and the whole session as a profile. Load workouts from the Workouts screen or drop .erg/.mrc files in /workouts on the SD card.")
+                            .font(TypeScale.body).foregroundStyle(Palette.muted)
+                    }
+                    .padding(.vertical, 4)
+                }
             } else if config.pages.indices.contains(pageIx) {
                 Section {
                     ForEach(config.pages[pageIx].layout.items) { item in
@@ -213,6 +222,7 @@ struct DashboardEditorView: View {
             switch config.pages[i].kind {
             case .music: MusicPreview()
             case .map: MapPagePreview(fields: config.mapFields)
+            case .workout: WorkoutPagePreview()
             case .fields: DashPreview(layout: config.pages[i].layout)
             }
         }
@@ -286,6 +296,13 @@ struct DashboardEditorView: View {
                     addPage(.music, proxy)
                 } label: {
                     Label("Music controls", systemImage: "music.note")
+                }
+            }
+            if !config.hasWorkoutPage {
+                Button {
+                    addPage(.workout, proxy)
+                } label: {
+                    Label("Workout", systemImage: "figure.outdoor.cycle")
                 }
             }
         } label: {
@@ -755,6 +772,79 @@ private func previewSample(_ id: String) -> String {
     case "clock": return "14:25"
     case "routeleft": return "12.4"
     default: return "--"
+    }
+}
+
+/// Miniature of the device's workout page: countdown hero, reversed power
+/// band, session profile, block strips. Static — it's a card, not a sim.
+struct WorkoutPagePreview: View {
+    var body: some View {
+        GeometryReader { geo in
+            let k = geo.size.width / 540
+            ZStack(alignment: .topLeading) {
+                Text("14:25").font(.system(size: 30 * k, weight: .bold))
+                    .offset(x: 14 * k, y: 14 * k)
+                Text("76%").font(.system(size: 30 * k, weight: .bold))
+                    .offset(x: 440 * k, y: 14 * k)
+                Rectangle().fill(.black)
+                    .frame(width: 540 * k, height: 3 * k)
+                    .offset(y: 61 * k)
+
+                Text("BLOCK 3 OF 9").font(.system(size: 24 * k, weight: .bold))
+                    .offset(x: 24 * k, y: 90 * k)
+                Text("5:12").font(.system(size: 150 * k, weight: .black))
+                    .offset(x: 24 * k, y: 150 * k)
+                Text("LEFT").font(.system(size: 24 * k, weight: .bold))
+                    .offset(x: 440 * k, y: 290 * k)
+                Rectangle().stroke(.black, lineWidth: max(1, 2 * k))
+                    .frame(width: 492 * k, height: 20 * k)
+                    .offset(x: 24 * k, y: 352 * k)
+                Rectangle().fill(.black)
+                    .frame(width: 190 * k, height: 20 * k)
+                    .offset(x: 24 * k, y: 352 * k)
+
+                Rectangle().fill(.black)
+                    .frame(width: 540 * k, height: 132 * k)
+                    .offset(y: 392 * k)
+                Text("246").font(.system(size: 66 * k, weight: .black))
+                    .foregroundStyle(.white)
+                    .offset(x: 24 * k, y: 412 * k)
+                Text("IN RANGE").font(.system(size: 20 * k, weight: .bold))
+                    .foregroundStyle(.white)
+                    .offset(x: 380 * k, y: 400 * k)
+
+                // Session profile bars
+                ForEach(0..<9, id: \.self) { i in
+                    let hts: [CGFloat] = [50, 70, 110, 40, 110, 40, 124, 40, 34]
+                    let wds: [CGFloat] = [80, 40, 64, 24, 64, 24, 33, 24, 48]
+                    let xs: [CGFloat]  = [24, 106, 148, 214, 240, 306, 332, 367, 393]
+                    Rectangle()
+                        .fill(i == 4 ? Color.black : Color.black.opacity(i < 4 ? 0.45 : 0.18))
+                        .frame(width: wds[i] * k, height: hts[i] * k)
+                        .offset(x: xs[i] * k, y: (706 - hts[i]) * k)
+                }
+                Rectangle().fill(.black)
+                    .frame(width: 492 * k, height: 3 * k)
+                    .offset(x: 24 * k, y: 703 * k)
+
+                ForEach(0..<2, id: \.self) { i in
+                    Rectangle().stroke(.black, lineWidth: max(1, 2 * k))
+                        .frame(width: 240 * k, height: 104 * k)
+                        .offset(x: (24 + CGFloat(i) * 252) * k, y: 754 * k)
+                }
+                ForEach(0..<2, id: \.self) { i in
+                    ZStack {
+                        Rectangle().stroke(.black, lineWidth: max(1, 3 * k))
+                        Text(i == 0 ? "PAUSE" : "ALL BLOCKS")
+                            .font(.system(size: 20 * k, weight: .bold))
+                    }
+                    .frame(width: 240 * k, height: 80 * k)
+                    .offset(x: (24 + CGFloat(i) * 252) * k, y: 868 * k)
+                }
+            }
+            .foregroundStyle(.black)
+        }
+        .background(Color(hex: 0xF7F5EF))
     }
 }
 

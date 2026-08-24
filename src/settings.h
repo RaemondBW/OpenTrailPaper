@@ -11,6 +11,9 @@ namespace settings {
 void begin();
 
 int ftpWatts();
+// Structured workout: hold at every block boundary until resumed.
+bool workoutPauseEachBlock();
+void setWorkoutPauseEachBlock(bool on);
 void setFtpWatts(int w);
 
 // Auto-pause: seconds of no movement before the ride timer stops counting.

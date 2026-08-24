@@ -9,6 +9,7 @@
 
 #include "config.h"
 #include "ride_state.h"
+#include "workout.h"
 // Faces at the design system's ACTUAL sizes. The drop's specimens are drawn 1:1
 // with the panel, so its CSS px are device px — and the previously compiled
 // faces were 2.1-2.4x those sizes (Impact_40 rendered a 68 px cap where the
@@ -2116,4 +2117,346 @@ void ui_render_pause_banner(uint8_t* fb) {
     // say so, or the only rider who finds out is the one who taps by accident.
     ui::text(&Arial_L, textX, top + 116, "TAP TO RESUME", fb,
              EPD_DRAW_ALIGN_LEFT, 0xFF);
+}
+
+// --- Workout page ------------------------------------------------------------
+// The Zwift-style trainer view, in e-paper terms: the current 3 s power huge,
+// the target under it, a full-width ADD/EASE banner that flips to inverse video
+// when the rider is out of the band (the panel's strongest possible signal),
+// and the whole workout's profile as a strip with elapsed time shaded. All
+// tones are INK/DARK/LIGHT — nibbles 4+ read as white on this glass.
+
+// Touch targets, exported for ui_dashboard's hit-testing. From the Claude
+// Design "Workout View" frames: the prev/next BLOCK strips are themselves the
+// navigation (tap the block you want and it starts), and the footer holds
+// only pause and the full-session list. The list screen pages eight 88 px
+// rows at a time with its own footer controls.
+const EpdRect kWorkoutRedo = {24, 754, 240, 104};        // <- redo prev block
+const EpdRect kWorkoutStartNext = {276, 754, 240, 104};  // start next block ->
+const EpdRect kWorkoutPause = {24, 868, 240, 80};
+const EpdRect kWorkoutAll = {276, 868, 240, 80};
+const EpdRect kWorkoutPageUp = {24, 868, 80, 80};
+const EpdRect kWorkoutPageDown = {116, 868, 80, 80};
+const EpdRect kWorkoutClose = {368, 868, 148, 80};
+// The list's row band: rows are 88 px starting here (see workoutListRow).
+const int kWorkoutRowTop = 143, kWorkoutRowH = 88, kWorkoutRowsPerPage = 8;
+
+namespace {
+
+// The design's three block states are TONE, not colour: done is hatched,
+// now is solid, upcoming is dotted. Both textures stay legible at the
+// panel's 1-bit end of the tone range.
+void hatchRect(const EpdRect& r, uint8_t* fb) {
+    for (int y = 0; y < r.height; ++y)
+        for (int x = (6 - ((r.x + r.y + y) % 6)) % 6; x < r.width; x += 6)
+            epd_draw_pixel(r.x + x, r.y + y, ui::INK, fb);
+}
+void dotRect(const EpdRect& r, uint8_t* fb) {
+    for (int y = (4 - (r.y % 4)) % 4; y < r.height; y += 4)
+        for (int x = (4 - (r.x % 4)) % 4; x < r.width; x += 4)
+            epd_draw_pixel(r.x + x, r.y + y, ui::INK, fb);
+}
+
+uint16_t workoutBlockWatts(const WorkoutSeg& s) {
+    return (uint16_t)(((int)s.startW + (int)s.endW) / 2);
+}
+
+// A block's display name is its zone's — ERG files carry no titles.
+void workoutBlockTitle(const WorkoutSeg& s, uint16_t ftp, char* zone,
+                       size_t zcap, char* name, size_t ncap) {
+    int z = workoutZone(workoutBlockWatts(s), ftp);
+    snprintf(zone, zcap, z ? "Z%d" : "--", z);
+    snprintf(name, ncap, "%s", z ? workoutZoneName(z) : "BLOCK");
+}
+
+void workoutFmt(char* out, size_t cap, uint32_t sec) {
+    snprintf(out, cap, "%lu:%02lu", (unsigned long)(sec / 60),
+             (unsigned long)(sec % 60));
+}
+
+}  // namespace
+
+void ui_render_workout(const RideState& s, const WorkoutView& v, uint8_t* fb) {
+    ui::statusBar(s, fb);
+    char buf[64], zone[8], name[24];
+
+    if (!v.loaded) {
+        ui::text(&Impact_T, 270, 400, "NO WORKOUT LOADED", fb,
+                 EPD_DRAW_ALIGN_CENTER);
+        ui::text(&Arial_B, 270, 456, "Put .erg / .mrc files in /workouts",
+                 fb, EPD_DRAW_ALIGN_CENTER, ui::DARK);
+        ui::text(&Arial_B, 270, 492, "then: workout list / workout load",
+                 fb, EPD_DRAW_ALIGN_CENTER, ui::DARK);
+        return;
+    }
+
+    const WorkoutSeg& cs = v.wk->segs[v.segIdx];
+    const uint32_t segDur = cs.endSec - cs.startSec;
+
+    // --- Header: what session, where in it, total elapsed. ---------------
+    ui::text(&Arial_L, 24, 92, v.name, fb, EPD_DRAW_ALIGN_LEFT);
+    snprintf(buf, sizeof(buf), "BLOCK %d OF %d", v.segIdx + 1, v.segCount);
+    ui::text(&Arial_B, 24, 126, buf, fb, EPD_DRAW_ALIGN_LEFT);
+    ui::text(&Arial_L, 516, 92, "ELAPSED", fb, EPD_DRAW_ALIGN_RIGHT);
+    workoutFmt(buf, sizeof(buf), v.elapsedSec);
+    ui::text(&Impact_T, 516, 134, buf, fb, EPD_DRAW_ALIGN_RIGHT);
+    epd_fill_rect({0, 140, 540, 3}, ui::INK, fb);
+
+    // --- The block being executed: the hero answers "how much longer". ---
+    workoutBlockTitle(cs, v.ftpW, zone, sizeof(zone), name, sizeof(name));
+    snprintf(buf, sizeof(buf), "NOW · %s", zone);
+    ui::text(&Arial_L, 24, 174, buf, fb, EPD_DRAW_ALIGN_LEFT);
+    char dur[16];
+    workoutFmt(dur, sizeof(dur), segDur);
+    snprintf(buf, sizeof(buf), "%s · %s BLOCK", name, dur);
+    ui::text(&Arial_L, 516, 174, buf, fb, EPD_DRAW_ALIGN_RIGHT);
+
+    // --- The dark block: everything "right now" in one reversed panel —
+    // your power and the correction at full size, the target under them,
+    // the block's countdown and progress smaller along the bottom. One
+    // repaint region instead of three.
+    const EpdRect blk = {0, 190, 540, 334};
+    epd_fill_rect(blk, ui::INK, fb);
+    const bool havePower = s.power3sW != 0xFFFF && s.powerConnected;
+    const int tol = 8;
+    int diff = havePower ? (int)s.power3sW - (int)v.targetW : 0;
+
+    // Caps row: what the numbers are, and which way to go.
+    ui::text(&Arial_L, 24, 226, "YOUR POWER · 3S", fb, EPD_DRAW_ALIGN_LEFT,
+             0xFF);
+    const char* dir = !havePower    ? "NO POWER"
+                      : diff < -tol ? "GO HARDER"
+                      : diff > tol  ? "EASE OFF"
+                                    : "IN RANGE";
+    ui::text(&Arial_L, 516, 226, dir, fb, EPD_DRAW_ALIGN_RIGHT, 0xFF);
+
+    // The two hero numbers: current power left, the correction right.
+    if (havePower) snprintf(buf, sizeof(buf), "%u", s.power3sW);
+    else snprintf(buf, sizeof(buf), "--");
+    ui::text(&Impact_H, 24, 342, buf, fb, EPD_DRAW_ALIGN_LEFT, 0xFF);
+    int vw = ui::textWidth(&Impact_H, buf);
+    ui::text(&Arial_B, 24 + vw + 10, 342, "W", fb, EPD_DRAW_ALIGN_LEFT, 0xFF);
+    if (havePower) {
+        snprintf(buf, sizeof(buf), "%d",
+                 diff < -tol || diff > tol ? (diff < 0 ? -diff : diff) : 0);
+        ui::text(&Impact_H, 462, 342, buf, fb, EPD_DRAW_ALIGN_RIGHT, 0xFF);
+        const int ax = 494, ay = 300;
+        if (diff < -tol)
+            epd_fill_triangle(ax, ay - 26, ax - 22, ay + 16, ax + 22, ay + 16,
+                              0xFF, fb);
+        else if (diff > tol)
+            epd_fill_triangle(ax, ay + 26, ax - 22, ay - 16, ax + 22, ay - 16,
+                              0xFF, fb);
+        else {
+            epd_fill_rect({ax - 20, ay - 14, 40, 9}, 0xFF, fb);
+            epd_fill_rect({ax - 20, ay + 7, 40, 9}, 0xFF, fb);
+        }
+    }
+
+    // Target, in words the numbers above are measured against.
+    snprintf(buf, sizeof(buf), "TARGET %d-%d W · %d%% FTP",
+             v.targetW > tol ? v.targetW - tol : 0, v.targetW + tol,
+             v.ftpW ? (int)v.targetW * 100 / v.ftpW : 0);
+    ui::text(&Arial_L, 24, 386, buf, fb, EPD_DRAW_ALIGN_LEFT, 0xFF);
+
+    // Bottom of the block: the block's progress bar, and the countdown at a
+    // deliberate step down from the power numbers.
+    epd_draw_rect({24, 452, 300, 20}, 0xFF, fb);
+    epd_draw_rect({25, 453, 298, 18}, 0xFF, fb);
+    if (segDur) {
+        int w = (int)((int64_t)296 * (segDur - v.segRemainSec) / segDur);
+        if (w > 0) epd_fill_rect({26, 454, w, 16}, 0xFF, fb);
+    }
+    const char* timeLabel = v.done      ? "DONE"
+                            : v.paused  ? "PAUSED"
+                            : v.running ? "LEFT"
+                                        : "READY";
+    ui::text(&Arial_L, 516, 434, timeLabel, fb, EPD_DRAW_ALIGN_RIGHT, 0xFF);
+    workoutFmt(buf, sizeof(buf), v.segRemainSec);
+    ui::text(&Impact_T, 516, 496, buf, fb, EPD_DRAW_ALIGN_RIGHT, 0xFF);
+
+    // --- Session profile: width is duration, height is intensity, state is
+    // tone (done hatched / now solid / upcoming dotted). ------------------
+    ui::text(&Arial_L, 24, 562, "SESSION PROFILE", fb,
+             EPD_DRAW_ALIGN_LEFT);
+    {
+        const int cx0 = 24, cw = 492, cbase = 706, ctop = 574;
+        uint16_t maxW = 1;
+        for (int i = 0; i < v.segCount; ++i) {
+            uint16_t w = workoutBlockWatts(v.wk->segs[i]);
+            if (w > maxW) maxW = w;
+        }
+        const int gaps = 2 * (v.segCount - 1);
+        int x = cx0;
+        for (int i = 0; i < v.segCount; ++i) {
+            const WorkoutSeg& b = v.wk->segs[i];
+            int bw = (int)((int64_t)(cw - gaps) * (b.endSec - b.startSec) /
+                           v.totalSec);
+            if (i == v.segCount - 1) bw = cx0 + cw - x;   // absorb rounding
+            if (bw < 4) bw = 4;
+            int bh = 24 + (int)(100.0f * workoutBlockWatts(b) / maxW);
+            EpdRect bar = {x, cbase - bh, bw, bh};
+            if (i < v.segIdx) hatchRect(bar, fb);
+            else if (i == v.segIdx) epd_fill_rect(bar, ui::INK, fb);
+            else dotRect(bar, fb);
+            epd_draw_rect(bar, ui::INK, fb);
+            if (i == v.segIdx)
+                epd_draw_rect({bar.x + 1, bar.y + 1, bar.width - 2,
+                               bar.height - 2}, ui::INK, fb);
+            x += bw + 2;
+        }
+        epd_fill_rect({cx0, cbase - 3, cw, 3}, ui::INK, fb);
+        if (v.totalSec) {
+            int mx = cx0 + (int)((int64_t)cw * v.elapsedSec / v.totalSec);
+            if (mx > cx0 + cw - 3) mx = cx0 + cw - 3;
+            epd_fill_rect({mx, ctop - 6, 3, cbase - ctop + 6}, ui::INK, fb);
+        }
+    }
+    ui::text(&Arial_L, 24, 726, "0:00", fb, EPD_DRAW_ALIGN_LEFT);
+    workoutFmt(buf, sizeof(buf), v.totalSec);
+    ui::text(&Arial_L, 516, 726, buf, fb, EPD_DRAW_ALIGN_RIGHT);
+    epd_fill_rect({0, 744, 540, 3}, ui::INK, fb);
+
+    // --- Prev / next block strips — tap to start them. -------------------
+    epd_draw_rect(kWorkoutRedo, ui::INK, fb);
+    epd_draw_rect({kWorkoutRedo.x + 1, kWorkoutRedo.y + 1,
+                   kWorkoutRedo.width - 2, kWorkoutRedo.height - 2}, ui::INK,
+                  fb);
+    hatchRect({kWorkoutRedo.x + 2, kWorkoutRedo.y + 2, kWorkoutRedo.width - 4,
+               kWorkoutRedo.height - 4}, fb);
+    {
+        // White chips under the hatched button's text keep it readable.
+        auto chip = [&](const EpdFont* f, int x, int y, const char* t) {
+            epd_fill_rect({x - 2, y - f->ascender - 2,
+                           ui::textWidth(f, t) + 10, f->ascender + 8}, 0xFF,
+                          fb);
+            ui::text(f, x, y, t, fb, EPD_DRAW_ALIGN_LEFT);
+        };
+        if (v.segIdx > 0) {
+            const WorkoutSeg& pb = v.wk->segs[v.segIdx - 1];
+            workoutBlockTitle(pb, v.ftpW, zone, sizeof(zone), name,
+                              sizeof(name));
+            snprintf(buf, sizeof(buf), "< REDO · %s", zone);
+            chip(&Arial_L, 38, 780, buf);
+            chip(&Arial_B, 38, 812, name);
+            snprintf(buf, sizeof(buf), "%u W", workoutBlockWatts(pb));
+            epd_fill_rect({36, 820, ui::textWidth(&Impact_T, buf) + 10, 34},
+                          0xFF, fb);
+            ui::text(&Impact_T, 38, 848, buf, fb, EPD_DRAW_ALIGN_LEFT);
+        } else {
+            chip(&Arial_L, 38, 780, "< REDO");
+            chip(&Arial_B, 38, 812, "SESSION START");
+        }
+    }
+    epd_draw_rect(kWorkoutStartNext, ui::INK, fb);
+    epd_draw_rect({kWorkoutStartNext.x + 1, kWorkoutStartNext.y + 1,
+                   kWorkoutStartNext.width - 2, kWorkoutStartNext.height - 2},
+                  ui::INK, fb);
+    if (v.segIdx + 1 < v.segCount) {
+        const WorkoutSeg& nb = v.wk->segs[v.segIdx + 1];
+        workoutBlockTitle(nb, v.ftpW, zone, sizeof(zone), name, sizeof(name));
+        snprintf(buf, sizeof(buf), "START NEXT · %s >", zone);
+        ui::text(&Arial_L, 290, 780, buf, fb, EPD_DRAW_ALIGN_LEFT);
+        workoutFmt(dur, sizeof(dur), nb.endSec - nb.startSec);
+        snprintf(buf, sizeof(buf), "%s · %s", name, dur);
+        char fit[32];
+        truncToWidth(&Arial_B, buf, 216, fit, sizeof(fit));
+        ui::text(&Arial_B, 290, 812, fit, fb, EPD_DRAW_ALIGN_LEFT);
+        snprintf(buf, sizeof(buf), "%u W", workoutBlockWatts(nb));
+        ui::text(&Impact_T, 290, 848, buf, fb, EPD_DRAW_ALIGN_LEFT);
+    } else {
+        ui::text(&Arial_L, 290, 780, "NEXT >", fb, EPD_DRAW_ALIGN_LEFT);
+        ui::text(&Arial_B, 290, 812, "SESSION COMPLETE", fb,
+                 EPD_DRAW_ALIGN_LEFT);
+    }
+
+    // --- Footer: pause, and the whole session as a list. -----------------
+    for (int e = 0; e < 3; ++e) {
+        epd_draw_rect({kWorkoutPause.x + e, kWorkoutPause.y + e,
+                       kWorkoutPause.width - 2 * e, kWorkoutPause.height - 2 * e},
+                      ui::INK, fb);
+        epd_draw_rect({kWorkoutAll.x + e, kWorkoutAll.y + e,
+                       kWorkoutAll.width - 2 * e, kWorkoutAll.height - 2 * e},
+                      ui::INK, fb);
+    }
+    ui::text(&Arial_B, kWorkoutPause.x + kWorkoutPause.width / 2, 914,
+             v.running ? "PAUSE BLOCK" : "START BLOCK", fb,
+             EPD_DRAW_ALIGN_CENTER);
+    ui::text(&Arial_B, kWorkoutAll.x + kWorkoutAll.width / 2, 914,
+             "ALL BLOCKS", fb, EPD_DRAW_ALIGN_CENTER);
+}
+
+void ui_render_workout_list(const RideState& s, const WorkoutView& v, int page,
+                            uint8_t* fb) {
+    ui::statusBar(s, fb);
+    char buf[64], zone[8], name[24];
+
+    ui::text(&Arial_L, 24, 92, "START A BLOCK", fb, EPD_DRAW_ALIGN_LEFT);
+    char total[16];
+    workoutFmt(total, sizeof(total), v.totalSec);
+    snprintf(buf, sizeof(buf), "%s · %s", v.name, total);
+    ui::text(&Impact_T, 24, 134, buf, fb, EPD_DRAW_ALIGN_LEFT);
+    epd_fill_rect({0, 140, 540, 3}, ui::INK, fb);
+
+    const int first = page * kWorkoutRowsPerPage;
+    for (int r = 0; r < kWorkoutRowsPerPage; ++r) {
+        int i = first + r;
+        if (i >= v.segCount) break;
+        const WorkoutSeg& b = v.wk->segs[i];
+        const int top = kWorkoutRowTop + r * kWorkoutRowH;
+        const bool done = i < v.segIdx, now = i == v.segIdx;
+        epd_fill_rect({0, top + kWorkoutRowH - 1, 540, 1}, ui::INK, fb);
+        int x = 24;
+        if (now) {
+            epd_fill_rect({0, top, 8, kWorkoutRowH}, ui::INK, fb);
+            x = 16;
+        }
+        // Tone chip: the same done/now/upcoming vocabulary as the chart.
+        EpdRect tc = {x, top + 18, 10, 52};
+        if (done) hatchRect(tc, fb);
+        else if (now) epd_fill_rect(tc, ui::INK, fb);
+        epd_draw_rect(tc, ui::INK, fb);
+        epd_draw_rect({tc.x + 1, tc.y + 1, tc.width - 2, tc.height - 2},
+                      ui::INK, fb);
+        workoutBlockTitle(b, v.ftpW, zone, sizeof(zone), name, sizeof(name));
+        ui::text(&Arial_B, x + 24, top + 52, zone, fb,
+                 EPD_DRAW_ALIGN_LEFT);
+        ui::text(&Arial_B, x + 82, top + 40, name, fb,
+                 EPD_DRAW_ALIGN_LEFT);
+        ui::text(&Arial_L, x + 82, top + 66,
+                 done ? "DONE" : now ? "RUNNING NOW" : "TAP TO START", fb,
+                 EPD_DRAW_ALIGN_LEFT, ui::DARK);
+        workoutFmt(buf, sizeof(buf), b.endSec - b.startSec);
+        ui::text(&Impact_T, 396, top + 58, buf, fb, EPD_DRAW_ALIGN_RIGHT);
+        snprintf(buf, sizeof(buf), "%uW", workoutBlockWatts(b));
+        ui::text(&Impact_T, 516, top + 58, buf, fb, EPD_DRAW_ALIGN_RIGHT);
+    }
+
+    epd_fill_rect({0, 857, 540, 3}, ui::INK, fb);
+    for (int e = 0; e < 3; ++e) {
+        epd_draw_rect({kWorkoutPageUp.x + e, kWorkoutPageUp.y + e,
+                       kWorkoutPageUp.width - 2 * e,
+                       kWorkoutPageUp.height - 2 * e}, ui::INK, fb);
+        epd_draw_rect({kWorkoutPageDown.x + e, kWorkoutPageDown.y + e,
+                       kWorkoutPageDown.width - 2 * e,
+                       kWorkoutPageDown.height - 2 * e}, ui::INK, fb);
+        epd_draw_rect({208 + e, 868 + e, 148 - 2 * e, 80 - 2 * e}, ui::INK, fb);
+        epd_draw_rect({kWorkoutClose.x + e, kWorkoutClose.y + e,
+                       kWorkoutClose.width - 2 * e,
+                       kWorkoutClose.height - 2 * e}, ui::INK, fb);
+    }
+    {
+        int cx = kWorkoutPageUp.x + kWorkoutPageUp.width / 2, cy = 908;
+        epd_fill_triangle(cx, cy - 16, cx - 16, cy + 10, cx + 16, cy + 10,
+                          ui::INK, fb);
+        cx = kWorkoutPageDown.x + kWorkoutPageDown.width / 2;
+        epd_fill_triangle(cx, cy + 16, cx - 16, cy - 10, cx + 16, cy - 10,
+                          ui::INK, fb);
+    }
+    int last = first + kWorkoutRowsPerPage;
+    if (last > v.segCount) last = v.segCount;
+    snprintf(buf, sizeof(buf), "%d-%d / %d", first + 1, last, v.segCount);
+    ui::text(&Arial_B, 208 + 74, 914, buf, fb, EPD_DRAW_ALIGN_CENTER);
+    ui::text(&Arial_B, kWorkoutClose.x + kWorkoutClose.width / 2, 914,
+             "CLOSE", fb, EPD_DRAW_ALIGN_CENTER);
 }

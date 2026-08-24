@@ -26,6 +26,7 @@
 #include "sd_bus.h"
 #include "usb_storage.h"
 #include "power_mgmt.h"
+#include "workout_service.h"
 #include "aux_sensors.h"
 #include "mesh_service.h"
 #include "diag.h"
@@ -671,6 +672,7 @@ void loop() {
     usb_storage::poll();   // reclaim the SD when the host disconnects
     ride_recorder::retryMountIfNeeded();   // pick a dropped card back up
     power_mgmt::tick();    // hold light sleep off while the USB console is open
+    workout_service::tick();   // pause-at-block-boundary mode
     vTaskDelay(pdMS_TO_TICKS(1000));
 }
 

@@ -19,6 +19,7 @@ enum BikeUUID {
     static let dash     = CBUUID(string: "B1C50009-9E0F-4B7A-9C6D-1F2E3A4B5C6D")
     static let mesh     = CBUUID(string: "B1C5000A-9E0F-4B7A-9C6D-1F2E3A4B5C6D")
     static let media    = CBUUID(string: "B1C5000B-9E0F-4B7A-9C6D-1F2E3A4B5C6D")
+    static let workout  = CBUUID(string: "B1C5000C-9E0F-4B7A-9C6D-1F2E3A4B5C6D")
 }
 
 // A cycling sensor known to the head unit (HR / power / cadence).
@@ -329,6 +330,25 @@ final class BLEManager: NSObject, ObservableObject {
     // MARK: Meshtastic
     private var meshChar: CBCharacteristic?
     private var mediaChar: CBCharacteristic?
+    private var workoutChar: CBCharacteristic?
+
+    // MARK: workout state (published for WorkoutsView)
+    struct WorkoutStatus: Equatable {
+        var loaded = false, running = false, paused = false, done = false
+        var blockIndex = 0, blockCount = 0
+        var elapsedSec: UInt32 = 0, totalSec: UInt32 = 0
+        var targetW: UInt16 = 0, ftpW: UInt16 = 0
+        var pauseEachBlock = false
+        var name = ""
+    }
+    @Published var workoutStatus = WorkoutStatus()
+    @Published var deviceWorkouts: [String] = []
+    @Published var workoutMessage: String?
+    private var workoutListBuild: [String] = []
+    struct FetchedWorkout: Equatable { let name: String; let text: String }
+    @Published var fetchedWorkout: FetchedWorkout?
+    private var workoutFetchBuf = Data()
+    private var workoutFetchName = ""
     private lazy var mediaRemote = MediaRemote(ble: self)
     /// Rebuilt from the device's stream, then published in one go at the end
     /// marker — publishing per message would redraw the chat mid-list.
@@ -1704,6 +1724,113 @@ final class BLEManager: NSObject, ObservableObject {
         }
     }
 
+    // MARK: workouts (upload, control, live status — CHR_WORKOUT)
+
+    private func workoutWrite(_ d: Data) {
+        guard let c = workoutChar, let p = peripheral else { return }
+        p.writeValue(d, for: c, type: .withResponse)
+    }
+
+    /// One snapshot of files + session state; also runs when notifications
+    /// first come up so the Workouts screen opens populated.
+    func refreshWorkouts() {
+        workoutWrite(Data([0x06]))
+        workoutWrite(Data([0x30]))
+    }
+
+    /// Send an .erg/.mrc to the device; it saves to /workouts and loads it.
+    func uploadWorkout(name: String, text: String) {
+        guard let c = workoutChar, let p = peripheral else {
+            workoutMessage = "Not connected"; return
+        }
+        let data = Data(text.utf8)
+        let maxLen = max(20, p.maximumWriteValueLength(for: .withResponse)) - 1
+        var packets: [Data] = [Data([0x01]) + Data(name.utf8).prefix(40)]
+        var i = 0
+        while i < data.count {
+            let end = min(i + maxLen, data.count)
+            packets.append(Data([0x02]) + data[i..<end])
+            i = end
+        }
+        packets.append(Data([0x03]))
+        Task { @MainActor in
+            for packet in packets {
+                p.writeValue(packet, for: c, type: .withResponse)
+                try? await Task.sleep(nanoseconds: 12_000_000)
+            }
+            // The list refresh rides on the device's save ack (0xA0), so the
+            // reply always includes the file this upload just created.
+        }
+    }
+
+    func loadWorkout(_ name: String)   { workoutWrite(Data([0x11]) + Data(name.utf8)) }
+
+    /// Pull a workout file off the device so the builder can edit it.
+    func fetchWorkout(_ name: String) {
+        workoutFetchBuf = Data()
+        workoutFetchName = name
+        fetchedWorkout = nil
+        workoutWrite(Data([0x12]) + Data(name.utf8))
+    }
+    func deleteWorkout(_ name: String) {
+        workoutWrite(Data([0x07]) + Data(name.utf8))
+        workoutWrite(Data([0x06]))
+    }
+    func workoutStart()  { workoutWrite(Data([0x20])) }
+    func workoutPause()  { workoutWrite(Data([0x21])) }
+    func workoutResume() { workoutWrite(Data([0x22])) }
+    func workoutStop()   { workoutWrite(Data([0x23])) }
+    /// Stop AND unload — the device page returns to its no-workout state.
+    func workoutUnload() { workoutWrite(Data([0x27])) }
+    func workoutSkip()   { workoutWrite(Data([0x24])) }
+    func workoutJump(block: Int) { workoutWrite(Data([0x25, UInt8(clamping: block)])) }
+    func setWorkoutPauseEachBlock(_ on: Bool) {
+        workoutStatus.pauseEachBlock = on   // answer locally; status confirms
+        workoutWrite(Data([0x26, on ? 1 : 0]))
+    }
+
+    private func handleWorkoutNotify(_ d: Data) {
+        guard let op = d.first else { return }
+        let body = d.dropFirst()
+        switch op {
+        case 0xA0:   // ack: [ok/fail][msg]
+            let ok = body.first == 1
+            let msg = String(data: body.dropFirst(), encoding: .utf8) ?? ""
+            workoutMessage = ok ? "Loaded \(msg)" : "Failed: \(msg)"
+            if ok { workoutWrite(Data([0x06])) }   // list now includes it
+        case 0xB0: workoutListBuild = []
+        case 0xB1:
+            if let name = String(data: body, encoding: .utf8), !name.isEmpty {
+                workoutListBuild.append(name)
+            }
+        case 0xB2: deviceWorkouts = workoutListBuild.sorted()
+        case 0xD1: workoutFetchBuf.append(contentsOf: body)
+        case 0xD2:
+            if let text = String(data: workoutFetchBuf, encoding: .utf8) {
+                fetchedWorkout = FetchedWorkout(name: workoutFetchName, text: text)
+            }
+            workoutFetchBuf = Data()
+        case 0xC0:
+            guard body.count >= 18 else { return }
+            let b = Data(body)   // rebase indices at 0
+            var s = WorkoutStatus()
+            s.loaded = b[0] != 0
+            s.running = b[1] != 0
+            s.paused = b[2] != 0
+            s.done = b[3] != 0
+            s.blockIndex = Int(b[4])
+            s.blockCount = Int(b[5])
+            s.elapsedSec = b.subdata(in: 6..<10).withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }
+            s.totalSec = b.subdata(in: 10..<14).withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }
+            s.targetW = b.subdata(in: 14..<16).withUnsafeBytes { $0.loadUnaligned(as: UInt16.self) }
+            s.ftpW = b.subdata(in: 16..<18).withUnsafeBytes { $0.loadUnaligned(as: UInt16.self) }
+            if b.count > 18 { s.pauseEachBlock = b[18] != 0 }
+            if b.count > 19 { s.name = String(data: b.subdata(in: 19..<b.count), encoding: .utf8) ?? "" }
+            workoutStatus = s
+        default: break
+        }
+    }
+
     // MARK: route upload (chunked with a 1-byte opcode per packet)
 
     // One turn cue: where it happens + what to do.
@@ -1908,6 +2035,8 @@ extension BLEManager: CBPeripheralDelegate {
                 case BikeUUID.media:
                     mediaChar = ch; p.setNotifyValue(true, for: ch)
                     updateMediaRemote()
+                case BikeUUID.workout:
+                    workoutChar = ch; p.setNotifyValue(true, for: ch)
                 default: break
                 }
             }
@@ -1930,6 +2059,7 @@ extension BLEManager: CBPeripheralDelegate {
             // notification, so asking before notifications are on throws the
             // reply away and the Messages tab sits empty until it is opened.
             if ch.uuid == BikeUUID.mesh { refreshMesh() }
+            if ch.uuid == BikeUUID.workout { refreshWorkouts() }
         }
     }
 
@@ -1957,6 +2087,7 @@ extension BLEManager: CBPeripheralDelegate {
             case BikeUUID.dash: parseDashLayout(data)
             case BikeUUID.mesh: handleMeshNotify(data)
             case BikeUUID.media: handleMediaNotify(data)
+            case BikeUUID.workout: handleWorkoutNotify(data)
             default: break
             }
         }

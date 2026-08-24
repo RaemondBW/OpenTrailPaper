@@ -15,6 +15,8 @@
 #include "gps_service.h"
 #include "ble_sensors.h"
 #include "map_select.h"
+#include "workout.h"
+#include "workout_service.h"
 #include "map_store.h"
 #include "media.h"
 #include "ams_client.h"
@@ -39,6 +41,7 @@ const char* CHR_AGNSS     = "b1c50008-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
 const char* CHR_DASH      = "b1c50009-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
 const char* CHR_MESH      = "b1c5000a-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
 const char* CHR_MEDIA     = "b1c5000b-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
+const char* CHR_WORKOUT   = "b1c5000c-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
 
 NimBLECharacteristic* statusChr = nullptr;
 NimBLECharacteristic* sensorsChr = nullptr;
@@ -367,6 +370,92 @@ class RouteCb : public NimBLECharacteristicCallbacks {
                 st.phoneFixValid = true;
                 st.phoneFixMs = nowMs;
             });
+        }
+    }
+};
+
+// Structured workouts (phone <-> device). The app uploads .erg/.mrc files,
+// starts/stops the session and reads live progress.
+//   Phone -> device:  [0x01]<name> begin upload   [0x02]<bytes> chunk
+//                     [0x03] end (save to /workouts + load)
+//                     [0x06] list files           [0x07]<name> delete
+//                     [0x11]<name> load           [0x30] status request
+//                     [0x12]<name> fetch file (for the app's editor)
+//                     [0x20] start [0x21] pause [0x22] resume [0x23] stop
+//                     [0x24] skip  [0x25]<u8 idx> start block idx
+//                     [0x26]<u8 0|1> pause after every block
+//                     [0x27] stop + unload (page returns to no-workout)
+//   Device -> phone (notify):
+//     [0xA0][1 ok|2 fail]<utf8 msg>   upload/load/delete outcome
+//     [0xB0] list begin  [0xB1]<name> per file  [0xB2] list end
+//     [0xD1]<bytes> fetched-file chunk  [0xD2] fetch end (0xA0 fail if missing)
+//     [0xC0][loaded][running][paused][done][segIdx][segCount]
+//           [elapsed u32][total u32][target u16][ftp u16][pauseEach]<utf8 name>
+// File writes and directory scans run in the server task, not the BLE
+// callback (same discipline as routes/rides — SD work wedges the host task).
+NimBLECharacteristic* workoutChr = nullptr;
+enum WorkoutReq { WREQ_NONE, WREQ_DELETE, WREQ_LOAD, WREQ_FETCH };
+volatile WorkoutReq workoutReq = WREQ_NONE;   // the name-carrying ops
+volatile bool workoutSavePending = false;     // 0x03 — end of an upload
+volatile bool workoutListPending = false;     // 0x06 — may follow 0x03 at once
+char workoutReqName[48];
+constexpr size_t WORKOUT_UPLOAD_MAX = 16 * 1024;
+char* workoutUpBuf = nullptr;
+volatile size_t workoutUpLen = 0;
+volatile bool workoutStatusDirty = false;
+
+class WorkoutCb : public NimBLECharacteristicCallbacks {
+    void onWrite(NimBLECharacteristic* c, NimBLEConnInfo&) override {
+        std::string v = c->getValue();
+        if (v.empty()) return;
+        uint8_t op = v[0];
+        const char* payload = v.data() + 1;
+        size_t plen = v.size() - 1;
+        if (op == 0x01) {              // begin upload
+            noteBulk();
+            if (!workoutUpBuf)
+                workoutUpBuf = (char*)heap_caps_malloc(WORKOUT_UPLOAD_MAX,
+                                                       MALLOC_CAP_SPIRAM);
+            workoutUpLen = 0;
+            size_t n = plen < sizeof(workoutReqName) - 1
+                           ? plen : sizeof(workoutReqName) - 1;
+            memcpy(workoutReqName, payload, n);
+            workoutReqName[n] = 0;
+            Serial.printf("[srv] workout upload start: %s\n", workoutReqName);
+        } else if (op == 0x02) {       // chunk
+            noteBulk();
+            if (workoutUpBuf && workoutUpLen + plen <= WORKOUT_UPLOAD_MAX) {
+                memcpy(workoutUpBuf + workoutUpLen, payload, plen);
+                workoutUpLen += plen;
+            }
+        } else if (op == 0x03) {       // end -> save + load in the task
+            workoutSavePending = true;
+        } else if (op == 0x06) {
+            workoutListPending = true;
+        } else if ((op == 0x07 || op == 0x11 || op == 0x12) && plen > 0) {
+            size_t n = plen < sizeof(workoutReqName) - 1
+                           ? plen : sizeof(workoutReqName) - 1;
+            memcpy(workoutReqName, payload, n);
+            workoutReqName[n] = 0;
+            workoutReq = op == 0x07   ? WREQ_DELETE
+                         : op == 0x11 ? WREQ_LOAD
+                                      : WREQ_FETCH;
+        } else if (op == 0x20) { workout_service::start();  workoutStatusDirty = true; }
+        else if (op == 0x21) { workout_service::pause();  workoutStatusDirty = true; }
+        else if (op == 0x22) { workout_service::resume(); workoutStatusDirty = true; }
+        else if (op == 0x23) { workout_service::stop();   workoutStatusDirty = true; }
+        else if (op == 0x24) { workout_service::skip();   workoutStatusDirty = true; }
+        else if (op == 0x25 && plen >= 1) {
+            workout_service::jumpToSeg((int)(uint8_t)payload[0]);
+            workoutStatusDirty = true;
+        } else if (op == 0x26 && plen >= 1) {
+            settings::setWorkoutPauseEachBlock(payload[0] != 0);
+            workoutStatusDirty = true;
+        } else if (op == 0x27) {
+            workout_service::unload();
+            workoutStatusDirty = true;
+        } else if (op == 0x30) {
+            workoutStatusDirty = true;
         }
     }
 };
@@ -756,6 +845,132 @@ uint8_t quickUnencDrops = 0;
 // timestamp bounds it so an abandoned dialog can't pin the sheet forever.
 volatile uint32_t pairCode = 0;
 volatile uint32_t pairCodeAtMs = 0;
+
+void workoutAck(bool ok, const char* msg) {
+    if (!workoutChr) return;
+    uint8_t buf[80];
+    buf[0] = 0xA0;
+    buf[1] = ok ? 1 : 2;
+    size_t n = strlen(msg);
+    if (n > sizeof(buf) - 2) n = sizeof(buf) - 2;
+    memcpy(buf + 2, msg, n);
+    workoutChr->setValue(buf, n + 2);
+    workoutChr->notify();
+}
+
+void sendWorkoutStatus() {
+    if (!workoutChr) return;
+    WorkoutView v;
+    workout_service::view(v);
+    uint8_t buf[64];
+    buf[0] = 0xC0;
+    buf[1] = v.loaded;
+    buf[2] = v.running;
+    buf[3] = v.paused;
+    buf[4] = v.done;
+    buf[5] = (uint8_t)v.segIdx;
+    buf[6] = (uint8_t)v.segCount;
+    memcpy(buf + 7, &v.elapsedSec, 4);
+    memcpy(buf + 11, &v.totalSec, 4);
+    memcpy(buf + 15, &v.targetW, 2);
+    memcpy(buf + 17, &v.ftpW, 2);
+    buf[19] = settings::workoutPauseEachBlock() ? 1 : 0;
+    size_t n = strlen(v.name);
+    if (n > sizeof(buf) - 20) n = sizeof(buf) - 20;
+    memcpy(buf + 20, v.name, n);
+    workoutChr->setValue(buf, 20 + n);
+    workoutChr->notify();
+}
+
+void sendWorkoutList() {
+    if (!workoutChr) return;
+    uint8_t b = 0xB0;
+    workoutChr->setValue(&b, 1);
+    workoutChr->notify();
+    sdLock();
+    File dir = SD.open("/workouts");
+    if (dir) {
+        for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
+            if (f.isDirectory()) continue;
+            const char* base = strrchr(f.name(), '/');
+            base = base ? base + 1 : f.name();
+            if (base[0] == '.') continue;   // macOS AppleDouble noise
+            uint8_t buf[64];
+            buf[0] = 0xB1;
+            size_t n = strlen(base);
+            if (n > sizeof(buf) - 1) n = sizeof(buf) - 1;
+            memcpy(buf + 1, base, n);
+            workoutChr->setValue(buf, n + 1);
+            workoutChr->notify();
+            vTaskDelay(pdMS_TO_TICKS(15));   // pace notifies, same as rides
+        }
+        dir.close();
+    }
+    sdUnlock();
+    b = 0xB2;
+    workoutChr->setValue(&b, 1);
+    workoutChr->notify();
+}
+
+// Stream /workouts/<name> back to the app, MTU-sized 0xD1 chunks then 0xD2.
+// The app's editor needs the actual text: blocks, ramps, percent-vs-watts.
+void sendWorkoutFile(const char* name) {
+    char path[96];
+    snprintf(path, sizeof(path), "/workouts/%s", name);
+    sdLock();
+    File f = SD.open(path, FILE_READ);
+    if (!f) {
+        sdUnlock();
+        workoutAck(false, "file not found");
+        return;
+    }
+    // notify payload budget: MTU-3, minus our 1-byte opcode.
+    size_t chunk = negotiatedMTU > 24 ? (size_t)negotiatedMTU - 4 : 20;
+    if (chunk > 200) chunk = 200;
+    uint8_t buf[204];
+    buf[0] = 0xD1;
+    size_t n;
+    while ((n = f.read(buf + 1, chunk)) > 0) {
+        workoutChr->setValue(buf, n + 1);
+        workoutChr->notify();
+        vTaskDelay(pdMS_TO_TICKS(15));   // pace notifies, same as the log send
+    }
+    f.close();
+    sdUnlock();
+    uint8_t end = 0xD2;
+    workoutChr->setValue(&end, 1);
+    workoutChr->notify();
+}
+
+void saveUploadedWorkout() {
+    if (!workoutUpBuf || workoutUpLen == 0 || !workoutReqName[0]) {
+        workoutAck(false, "empty upload");
+        return;
+    }
+    char path[96];
+    snprintf(path, sizeof(path), "/workouts/%s", workoutReqName);
+    sdLock();
+    if (!SD.exists("/workouts")) SD.mkdir("/workouts");
+    File f = SD.open(path, FILE_WRITE);
+    bool ok = false;
+    if (f) {
+        ok = f.write((const uint8_t*)workoutUpBuf, workoutUpLen) == workoutUpLen;
+        f.close();
+    }
+    sdUnlock();
+    if (!ok) {
+        workoutAck(false, "SD write failed");
+        return;
+    }
+    diag::log("workout: received %s (%u bytes) from the app", workoutReqName,
+              (unsigned)workoutUpLen);
+    const char* reason = "";
+    if (workout_service::load(workoutReqName, &reason))
+        workoutAck(true, workoutReqName);
+    else
+        workoutAck(false, reason);
+    workoutStatusDirty = true;
+}
 
 class ServerCb : public NimBLEServerCallbacks {
     uint32_t onPassKeyDisplay() override {
@@ -1721,6 +1936,11 @@ void begin() {
         NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::NOTIFY);
     mediaChr->setCallbacks(new MediaCb());
 
+    workoutChr = svc->createCharacteristic(
+        CHR_WORKOUT,
+        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::NOTIFY);
+    workoutChr->setCallbacks(new WorkoutCb());
+
     svc->start();
 
     NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
@@ -1875,6 +2095,36 @@ void task(void*) {
                 routeReq = RREQ_NONE;
                 deleteRoute(routeReqName);
             }
+            // Save FIRST, list LAST: a list requested in the same breath
+            // as an upload must include the file that upload created.
+            if (workoutSavePending) {
+                workoutSavePending = false;
+                saveUploadedWorkout();
+            }
+            if (workoutReq == WREQ_DELETE) {
+                workoutReq = WREQ_NONE;
+                char path[96];
+                snprintf(path, sizeof(path), "/workouts/%s", workoutReqName);
+                sdLock();
+                bool ok = SD.remove(path);
+                sdUnlock();
+                workoutAck(ok, ok ? "deleted" : "delete failed");
+            } else if (workoutReq == WREQ_LOAD) {
+                workoutReq = WREQ_NONE;
+                const char* reason = "";
+                if (workout_service::load(workoutReqName, &reason))
+                    workoutAck(true, workoutReqName);
+                else
+                    workoutAck(false, reason);
+                workoutStatusDirty = true;
+            } else if (workoutReq == WREQ_FETCH) {
+                workoutReq = WREQ_NONE;
+                sendWorkoutFile(workoutReqName);
+            }
+            if (workoutListPending) {
+                workoutListPending = false;
+                sendWorkoutList();
+            }
         }
         if (sensorReq == SREQ_LIST) {
             sensorReq = SREQ_NONE;
@@ -1885,6 +2135,18 @@ void task(void*) {
         if (routeChr && pendingRouteAck) {
             int a = pendingRouteAck; pendingRouteAck = 0;
             notifyByte2(a == 1 ? 0x23 : 0x24);
+        }
+        // Workout progress: pushed on any command, and each second while the
+        // session clock runs so the app's screen counts down live. RAM only.
+        {
+            static uint32_t lastWkStatus = 0;
+            bool tick = workout_service::running() &&
+                        millis() - lastWkStatus > 1000;
+            if (workoutChr && phoneConnected && (workoutStatusDirty || tick)) {
+                workoutStatusDirty = false;
+                lastWkStatus = millis();
+                sendWorkoutStatus();
+            }
         }
         // Mesh messaging. Touches no SD and no flash, so it runs regardless of
         // who owns the card. A message that arrived (or a send that changed

@@ -60,6 +60,7 @@
 		E3824F33E70991FAC6B09EBF /* h3Assert.c in Sources */ = {isa = PBXBuildFile; fileRef = 89FCEFD5F2F255C490F8E615 /* h3Assert.c */; };
 		E53264DC25E80F7DA0499687 /* localij.c in Sources */ = {isa = PBXBuildFile; fileRef = B8D421E4B1C588F4073BC375 /* localij.c */; };
 		E8B02637D663F1BB063A4D60 /* iterators.c in Sources */ = {isa = PBXBuildFile; fileRef = F2E1BEE825D22D8612B19893 /* iterators.c */; };
+		F48BC7C4FF775911CE8FE038 /* WorkoutsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA682C44407CE9C7FF852A4F /* WorkoutsView.swift */; };
 		F5E522C16FCFE097E2072926 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE5C27C920995C9292457A9C /* SettingsView.swift */; };
 		F6958E6E296967C90F9CDC75 /* TileCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = E15692F37161BEC610966D47 /* TileCache.swift */; };
 		F71D1CFFCC25AD4A7A19D698 /* DiagnosticsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 336612AF0918144CAB1C1FCD /* DiagnosticsView.swift */; };
@@ -134,6 +135,7 @@
 		C4E83FB3A70437DD5D0F8629 /* RideView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RideView.swift; sourceTree = "<group>"; };
 		C74406B4D6CC045B23CAA7BA /* MeshChannels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshChannels.swift; sourceTree = "<group>"; };
 		C79A61A359DA1F3938DE464C /* mathExtensions.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = mathExtensions.c; sourceTree = "<group>"; };
+		CA682C44407CE9C7FF852A4F /* WorkoutsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkoutsView.swift; sourceTree = "<group>"; };
 		CB3F4FE4971EC341C310BFBE /* polygon.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = polygon.h; sourceTree = "<group>"; };
 		CB4C7FC4CD9B1C363CD59A20 /* baseCells.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = baseCells.c; sourceTree = "<group>"; };
 		CBBFA5634178A1D43462F629 /* BLEManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BLEManager.swift; sourceTree = "<group>"; };
@@ -233,6 +235,7 @@
 				73ECF60CAA9C73957BC40AC2 /* SketchIcon.swift */,
 				79F3F907C8247AC1B8A63959 /* Theme.swift */,
 				E15692F37161BEC610966D47 /* TileCache.swift */,
+				CA682C44407CE9C7FF852A4F /* WorkoutsView.swift */,
 				80ACFA8CA9080B22457972EF /* Fonts */,
 				AB3D8101160CEE2B90CCFEE3 /* H3 */,
 			);
@@ -402,6 +405,7 @@
 				C7F7382D5542409C17015EFB /* SketchIcon.swift in Sources */,
 				D017F03AE055F1971F5815BA /* Theme.swift in Sources */,
 				F6958E6E296967C90F9CDC75 /* TileCache.swift in Sources */,
+				F48BC7C4FF775911CE8FE038 /* WorkoutsView.swift in Sources */,
 				B1BE7F5A245A3C270036C6E2 /* algos.c in Sources */,
 				E1BBBE95FA5BC48203720329 /* baseCells.c in Sources */,
 				42D0BA08D929EAF01939F014 /* bbox.c in Sources */,
