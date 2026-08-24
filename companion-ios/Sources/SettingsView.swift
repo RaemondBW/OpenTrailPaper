@@ -7,6 +7,7 @@ struct SettingsView: View {
     @EnvironmentObject var appState: AppState
     @AppStorage(UnitPref.key) private var useMiles = false
     @State private var confirmUpdate = false
+    @State private var notesExpanded = false
     @State private var showSensors = false
     @State private var showMaps = false
 
@@ -451,19 +452,44 @@ struct SettingsView: View {
                    let r = release.latest {
                     let notes = Self.whatsNew(r.notes)
                     if !notes.isEmpty {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("What's new in \(r.tag)")
-                                .font(BarlowFont.text(13, .semibold))
-                                .foregroundStyle(Palette.ink)
-                            Text(notes)
-                                .font(.system(size: 12))
-                                .foregroundStyle(Palette.muted)
-                                .fixedSize(horizontal: false, vertical: true)
+                        // Collapsed by default: the header plus a two-line
+                        // taste of the top change, so the card stays compact
+                        // but never says "update" without saying why. Tap
+                        // anywhere on the panel to expand/collapse.
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                notesExpanded.toggle()
+                            }
+                        } label: {
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack {
+                                    Text("What's new in \(r.tag)")
+                                        .font(BarlowFont.text(13, .semibold))
+                                        .foregroundStyle(Palette.ink)
+                                    Spacer()
+                                    Image(systemName: notesExpanded
+                                          ? "chevron.up" : "chevron.down")
+                                        .font(.system(size: 11, weight: .semibold))
+                                        .foregroundStyle(Palette.faint)
+                                }
+                                Text(notes)
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(Palette.muted)
+                                    .lineLimit(notesExpanded ? nil : 2)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                if !notesExpanded {
+                                    Text("Show all")
+                                        .font(BarlowFont.text(12, .semibold))
+                                        .foregroundStyle(Palette.accent)
+                                }
+                            }
+                            .padding(10)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Palette.paper,
+                                        in: RoundedRectangle(cornerRadius: 8))
+                            .contentShape(Rectangle())
                         }
-                        .padding(10)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Palette.paper,
-                                    in: RoundedRectangle(cornerRadius: 8))
+                        .buttonStyle(.plain)
                     }
                 }
 
