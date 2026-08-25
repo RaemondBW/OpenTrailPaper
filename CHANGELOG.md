@@ -5,6 +5,18 @@ released version into the GitHub release body (see .github/workflows/build.yml),
 and the app shows it under Settings → Firmware when an update is available —
 so write for the rider, newest version first, one `## vX.YY` heading each.
 
+## v1.16
+
+- Workouts auto-pause when you stop: five seconds with no power and no
+  movement holds the workout clock, and it resumes the moment you pedal
+  or roll again.
+- The auto-pause banner no longer covers the music or workout pages —
+  those pages keep their content and show the pause in the top bar.
+- Cleaner workout page: everything about the current block lives in one
+  dark panel, with the zone and block length under the target.
+- The music page top bar shows sensor and pause status instead of a title.
+- No more ghost of the pause banner after resuming.
+
 ## v1.15
 
 - Structured workouts: ride .erg/.mrc workouts with a live target, block
