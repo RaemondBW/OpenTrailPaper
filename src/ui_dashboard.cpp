@@ -40,6 +40,9 @@
 #include "aux_sensors.h"
 #include "diag.h"
 #include "smooth_epd.h"
+#ifdef OTP_EMULATOR
+#include "emu_input.h"
+#endif
 #include "power_mgmt.h"
 #include "dash_config.h"
 
@@ -155,6 +158,18 @@ void IRAM_ATTR onBoardBtnIrq() { boardBtnIrq = true; uiWakeFromIsr(); }
 // Power/shutdown dialog overlay (opened by holding BOOT 1.5 s).
 bool powerOverlay = false;
 
+// Physical-button levels, behind one pair of helpers so the emulator build
+// can substitute the web page's buttons (emu_input, fed over UART1) while the
+// debounce and long-press logic above them runs UNCHANGED — a held on-screen
+// button opens the power dialog exactly like a held physical one.
+#ifdef OTP_EMULATOR
+bool bootBtnDown() { return emu_input::bootDown(); }
+bool sideBtnDown() { return emu_input::sideDown(); }
+#else
+bool bootBtnDown() { return digitalRead(BOARD_BOOT_BTN) == LOW; }
+bool sideBtnDown() { return board_side_button_pressed(); }
+#endif
+
 // Backlight: 4 levels cycled by the GPIO48 button.
 // Off / Low / Med / Bright. Low is deliberately very dim — it is for reading the
 // panel at night, where 50/255 was still dazzling; e-paper needs far less
@@ -266,7 +281,7 @@ void shutdownDevice(uint8_t* fb, const char* reason) {
     // rider taps Shut down — and ext0 waits for LOW, which a held button already
     // satisfies. Bounded, so a stuck button can't hang the shutdown.
     for (uint32_t t0 = millis();
-         digitalRead(BOARD_BOOT_BTN) == LOW && millis() - t0 < 3000; ) {
+         bootBtnDown() && millis() - t0 < 3000; ) {
         delay(20);
     }
 
@@ -2255,6 +2270,11 @@ void task(void*) {
         // backlight. Interrupt-driven, with a 200 ms fallback poll; two
         // consecutive LOW reads debounce noise.
         {
+#ifdef OTP_EMULATOR
+            // Web events land here, before the button logic reads the levels.
+            emu_input::pump();
+            if (emu_input::takeHomePress()) homeKeyPressed = true;
+#endif
             bool irq = boardBtnIrq;
             boardBtnIrq = false;
 
@@ -2263,7 +2283,7 @@ void task(void*) {
             static bool bootLong = false;
             if (irq || bootLow > 0 || millis() - bootPoll > 200) {
                 bootPoll = millis();
-                if (digitalRead(BOARD_BOOT_BTN) == LOW) {
+                if (bootBtnDown()) {
                     if (bootLow < 200) bootLow++;
                     if (bootLow == 1) {            // press start
                         bootDownAt = millis();
@@ -2292,7 +2312,7 @@ void task(void*) {
             static uint32_t sidePoll = 0;
             if (irq || sideLow > 0 || millis() - sidePoll > 200) {
                 sidePoll = millis();
-                if (board_side_button_pressed()) {
+                if (sideBtnDown()) {
                     if (sideLow < 200) sideLow++;
                 } else {
                     if (sideLow >= 1) { noteActivity(); cycleBacklight(); }  // see above
@@ -2300,6 +2320,30 @@ void task(void*) {
                 }
             }
         }
+
+#ifdef OTP_EMULATOR
+        // Touch, emulator flavour: the web page's pointer events stand in for
+        // the GT911 (which QEMU does not model). Down/up transitions feed the
+        // SAME tap dispatch the hardware path uses below.
+        {
+            static int16_t lastX = 0, lastY = 0;
+            int16_t tx = 0, ty = 0;
+            const bool down = emu_input::touchDown(&tx, &ty);
+            if (down) { lastX = tx; lastY = ty; }
+            static uint32_t lastTapMs = 0;
+            if (down && !touchWasDown) {
+                touchDownAt = millis();
+            } else if (!down && touchWasDown) {
+                if (millis() - lastTapMs > 350) {
+                    lastTapMs = millis();
+                    noteActivity();
+                    if (powerOverlay) handlePowerTap(lastX, lastY);
+                    else handleTap(lastX, lastY);
+                }
+            }
+            touchWasDown = down;
+        }
+#endif
 
         // Touch: interrupt-driven. getPoint() (an I2C read) runs when the
         // GT911 INT fired, while a touch is ongoing (to catch the release),

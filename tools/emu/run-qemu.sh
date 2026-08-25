@@ -28,7 +28,9 @@ python3 "$ESPTOOL" --chip esp32s3 merge_bin -o "$BUILD/flash.bin" \
     0xe000 "$BOOT_APP0" \
     0x10000 "$BUILD/firmware.bin"
 
-exec "$QEMU" -M esp32s3 \
+# -gdb: the input path. QEMU's esp32s3 UART model delivers no RX, so the
+# bridge pokes events into the firmware's mailbox ring through the gdbstub.
+exec "$QEMU" -M esp32s3 -gdb tcp::3333 \
     -drive file="$BUILD/flash.bin",if=mtd,format=raw \
     -serial mon:stdio \
     -serial tcp::5556,server,nowait \

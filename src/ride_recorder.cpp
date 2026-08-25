@@ -425,6 +425,13 @@ void sdSpiForceIdle() {
 }
 
 bool mountLocked(bool logFailures) {
+#ifdef OTP_EMULATOR
+    // QEMU models no SD peripheral, so SD.begin() can never succeed and each
+    // attempt spins esp_vfs_fat's multi-second timeouts (>130 s of boot before
+    // the UI ran). Fail fast — a cardless device is a supported state.
+    (void)logFailures;
+    return false;
+#endif
     // settleMs is waited BEFORE the attempt. The old schedule (three tries, 50 ms
     // apart) gave the card ~100 ms to come up and then declared it absent, which
     // on this board is simply too early: measured on a cold boot with a known-good

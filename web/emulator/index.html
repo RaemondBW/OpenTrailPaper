@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenTrailPaper Emulator</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <header>
+    <h1>OpenTrailPaper</h1>
+    <p class="sub">the real firmware, running in an emulated ESP32-S3</p>
+  </header>
+
+  <!-- The site's own device mock (docs/style.css .device-mock — white LilyGO
+       body, round home button, side buttons on the case edges), with every
+       control live: the glass is the touchscreen, the home button is the home
+       key, the left edge is the side/backlight button, the right edge BOOT. -->
+  <div class="device-mock">
+    <div class="device">
+      <button class="side-btn side-left" id="btn-side" title="Side button — backlight"></button>
+      <button class="side-btn side-right" id="btn-boot" title="BOOT — tap: start/stop ride · hold: power"></button>
+      <div class="screen">
+        <canvas id="panel" class="live-panel ready" width="540" height="960"></canvas>
+      </div>
+      <button class="home" id="btn-home" title="Home key"></button>
+    </div>
+  </div>
+
+  <div class="controls">
+    <label class="row sim">
+      <input type="checkbox" id="ride-sim">
+      <span>Ride: feed a moving GPS fix</span>
+    </label>
+    <label class="row sim">
+      <input type="checkbox" id="sensor-sim">
+      <span>Sensors: spoof HR / power / cadence</span>
+    </label>
+    <div class="row sliders" id="sensor-sliders" hidden>
+      <label>HR <input type="range" id="s-hr" min="60" max="200" value="152">
+        <output id="o-hr">152</output></label>
+      <label>PWR <input type="range" id="s-pwr" min="0" max="600" value="235">
+        <output id="o-pwr">235</output></label>
+      <label>CAD <input type="range" id="s-cad" min="0" max="130" value="88">
+        <output id="o-cad">88</output></label>
+      <label>BAT <input type="range" id="s-bat" min="0" max="100" value="76">
+        <output id="o-bat">76</output></label>
+    </div>
+    <div id="status" class="status">connecting…</div>
+  </div>
+
+  <footer>
+    <p>Tap the glass to use the touchscreen. The right edge is <b>BOOT</b>
+    (tap: start/stop a ride · hold: power dialog), the left edge cycles the
+    backlight, and the round button is the home key.</p>
+  </footer>
+</main>
+<script src="emulator.js"></script>
+</body>
+</html>

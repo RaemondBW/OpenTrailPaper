@@ -13,7 +13,15 @@
 #include "board_power.h"
 #include "diag.h"
 
+#ifdef OTP_EMULATOR
+// QEMU wires no third serial: the emulator wire feeds a ring that stands in
+// for the receiver (see emu_input.h). Everything below is unchanged — the
+// parser cannot tell the difference, which is the point.
+#include "emu_input.h"
+#define SerialGPS EmuSerialGPS
+#else
 #define SerialGPS Serial2
+#endif
 
 namespace {
 
