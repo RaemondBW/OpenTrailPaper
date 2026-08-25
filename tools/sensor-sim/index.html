@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sensor-sim</title>
+<style>
+  :root { --bg:#14161a; --card:#1e2127; --line:#2c3038; --fg:#e6e6e6; --dim:#8b919c;
+          --ok:#3ccf7a; --warn:#f0b429; --bad:#e5484d; --acc:#5b9cff; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.4 -apple-system,system-ui,sans-serif; }
+  header { padding:12px 20px; border-bottom:1px solid var(--line); display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  header h1 { font-size:16px; margin:0; font-weight:600; }
+  .dim { color:var(--dim); font-size:12px; }
+  main { display:grid; grid-template-columns:repeat(auto-fit,minmax(360px,620px)); gap:16px; padding:16px 20px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; }
+  .card h2 { font-size:14px; margin:0 0 10px; display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; }
+  .card h2 code { color:var(--dim); font-size:11px; font-weight:normal; }
+  .dev { border-top:1px solid var(--line); padding:10px 0 4px; }
+  .row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:6px; }
+  .name { font-weight:600; }
+  .addr { color:var(--dim); font-size:11px; font-family:ui-monospace,monospace; }
+  .pill { font-size:11px; padding:1px 7px; border-radius:99px; border:1px solid var(--line); color:var(--dim); }
+  .pill.on { border-color:var(--ok); color:var(--ok); }
+  .pill.warn { border-color:var(--warn); color:var(--warn); }
+  .pill.bad { border-color:var(--bad); color:var(--bad); }
+  .ctl { display:grid; grid-template-columns:70px 1fr 56px; gap:8px; align-items:center; margin:4px 0; }
+  .ctl label { color:var(--dim); }
+  .ctl output { text-align:right; font-variant-numeric:tabular-nums; }
+  .ctl output small { display:block; color:var(--dim); font-size:10px; }
+  input[type=range] { width:100%; accent-color:var(--acc); }
+  button, select { background:#2a2e36; color:var(--fg); border:1px solid var(--line); border-radius:6px;
+                   padding:4px 10px; font:inherit; cursor:pointer; }
+  button:hover { border-color:var(--acc); }
+  button:disabled { opacity:.5; cursor:default; }
+  button.primary { background:var(--acc); border-color:var(--acc); color:#fff; }
+  button.danger { border-color:var(--bad); color:var(--bad); }
+  button.arm { border-color:var(--warn); color:var(--warn); }
+  .spacer { flex:1; }
+  .raw { display:flex; gap:6px; margin-top:10px; }
+  .raw input { flex:1; background:#111318; color:var(--fg); border:1px solid var(--line); border-radius:6px;
+               padding:4px 8px; font:12px ui-monospace,monospace; }
+  pre.log { background:#111318; border:1px solid var(--line); border-radius:6px; padding:8px; margin:6px 0 0;
+            font-size:11px; max-height:110px; overflow:auto; color:var(--dim); white-space:pre-wrap; }
+  .empty { color:var(--dim); padding:40px; text-align:center; grid-column:1/-1; }
+  .mode { display:flex; gap:6px; align-items:center; margin:6px 0 8px; }
+  .chk { display:flex; gap:5px; align-items:center; color:var(--dim); cursor:pointer; }
+  .chk input { accent-color:var(--acc); }
+  .job { margin:0 20px 20px; background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px 16px; }
+  .job pre { max-height:260px; }
+  .job.ok .title { color:var(--ok); } .job.bad .title { color:var(--bad); }
+  progress { width:100%; height:6px; accent-color:var(--acc); }
+</style>
+</head>
+<body>
+<header>
+  <h1>sensor-sim</h1><span id="hdr" class="dim"></span>
+  <button class="primary" id="connectBtn" onclick="connectBoard()">Connect board…</button>
+  <span class="spacer"></span>
+  <span id="fw" class="dim"></span>
+  <button id="buildBtn" onclick="build()">Rebuild firmware</button>
+</header>
+<main id="main"></main>
+<section id="jobbox" class="job" hidden>
+  <div class="row"><span class="title" id="jobtitle"></span><span class="spacer"></span><button onclick="hideJob()">hide</button></div>
+  <progress id="jobprog" value="0" max="1" hidden></progress>
+  <pre id="joblog" class="log"></pre>
+</section>
+
+<script type="module">
+// ---------------------------------------------------------------------------
+// Boards: one Web Serial port each. The page owns the port (nothing else on the
+// Mac may open it while connected); it polls `state`, sends console lines, and
+// hands the port to esptool-js for flashing.
+// ---------------------------------------------------------------------------
+const $ = s => document.querySelector(s);
+const enc = new TextEncoder();
+const ROLE_NAME = {1:'hr', 2:'pwr', 3:'both'};
+const boards = []; window._boards = boards;   // exposed for debugging from the console
+let armed = null, job = null, jobHidden = false, fw = null, buildJob = {};
+
+class Board {
+  constructor(port) { this.port = port; this.state = null; this.log = ''; this.buf = ''; this.pending = null;
+                      this.busy = false; this.flashing = false; this.err = null; this.gone = false;
+                      this.id = Board.seq = (Board.seq || 0) + 1; }
+  get role() { return this.state ? ROLE_NAME[this.state.role] : null; }
+  async open() {
+    await this.port.open({baudRate: 115200});
+    // Both lines LOW. On the ESP32's USB-JTAG unit DTR/RTS drive the EN and boot
+    // straps (that is how esptool resets it); DTR asserted parks the chip and
+    // nothing ever comes back on the console.
+    try { await this.port.setSignals({dataTerminalReady: false, requestToSend: false}); } catch {}
+    this.err = null;
+    this.readLoop();
+  }
+  async readLoop() {
+    const dec = new TextDecoder();
+    while (this.port.readable && !this.flashing) {
+      this.reader = this.port.readable.getReader();
+      try {
+        for (;;) {
+          const {value, done} = await this.reader.read();
+          if (done) break;
+          this.buf += dec.decode(value, {stream: true});
+          if (this.pending && this.buf.trimEnd().endsWith('sim>')) { const p = this.pending; this.pending = null; p(this.buf); this.buf = ''; }
+          if (this.buf.length > 8000) this.buf = this.buf.slice(-4000);
+        }
+      } catch (e) { this.err = String(e); this.gone = true; }
+      finally { this.reader.releaseLock(); this.reader = null; }
+      if (this.gone) break;
+    }
+  }
+  async cmd(line, timeout = 900) {
+    while (this.busy) await sleep(20);
+    this.busy = true;
+    try {
+      this.buf = '';
+      const w = this.port.writable.getWriter();
+      await w.write(enc.encode(line.trim() + '\n'));
+      w.releaseLock();
+      const text = await new Promise(res => { this.pending = res; setTimeout(() => { if (this.pending === res) { this.pending = null; res(this.buf); this.buf = ''; } }, timeout); });
+      return text.split('\n').map(l => l.replace(/\r/g, '').replace(/sim>$/, '').trimEnd())
+        .filter(l => l && l !== line.trim() && !/^[IWE] \(/.test(l)).join('\n');
+    } finally { this.busy = false; }
+  }
+  async refresh() {
+    const r = await this.cmd('state');
+    const j = r.split('\n').find(l => l.startsWith('{'));
+    if (!j) return false;
+    try { this.state = JSON.parse(j); return true; } catch { return false; }
+  }
+  async close() {
+    this.flashing = true;                          // stops readLoop from re-acquiring
+    try { await this.reader?.cancel(); } catch {}
+    while (this.reader) await sleep(10);
+    try { await this.port.close(); } catch {}
+  }
+  async reopen() { this.flashing = false; await this.open(); }
+}
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+async function addPort(port) {
+  if (boards.some(b => b.port === port)) return;
+  const b = new Board(port);
+  boards.push(b);
+  try { await b.open(); await sleep(800); await b.refresh(); } catch (e) { b.err = String(e); }
+  render();
+}
+window.connectBoard = async () => {
+  try { await addPort(await navigator.serial.requestPort({filters: [{usbVendorId: 0x303A}]})); }
+  catch (e) { if (!/No port selected/.test(e)) alertLine(String(e)); }
+};
+window.arm = i => { armed = i; render(); };
+window.hideJob = () => { jobHidden = true; render(); };
+window.forget = async i => { const b = boards[i]; await b.close(); try { await b.port.forget(); } catch {} boards.splice(i, 1); render(); };
+
+async function send(i, cmd) {
+  const b = boards[i]; if (!b || b.flashing) return;
+  const reply = await b.cmd(cmd);
+  b.log = (b.log + `> ${cmd}\n${reply}\n`).split('\n').slice(-30).join('\n');
+  await b.refresh();
+  render();
+}
+window.send = send;
+
+// ---------------------------------------------------------------------------
+// Flashing with esptool-js over the same port.
+// ---------------------------------------------------------------------------
+window.flash = async i => {
+  const b = boards[i]; if (!b || job) return;
+  armed = null; jobHidden = false;
+  job = {title: `flash board ${b.id}`, log: '', running: true, ok: null, prog: null};
+  render();
+  const term = {clean() {}, writeLine(l) { jobLog(l + '\n'); }, write(d) { jobLog(d); }};
+  let transport;
+  try {
+    const args = await (await fetch('/fw/flash_args')).text();
+    const opt = k => (args.match(new RegExp(`--${k}\\s+(\\S+)`)) || [])[1] || 'keep';
+    const files = [];
+    for (const l of args.split('\n')) {
+      const m = l.trim().match(/^(0x[0-9a-f]+)\s+(\S+)$/i);
+      if (!m) continue;
+      const r = await fetch('/fw/' + m[2]);
+      if (!r.ok) throw new Error(`missing ${m[2]} — build first`);
+      // esptool-js 0.6 wants bytes here. A binary string (the 0.5 convention)
+      // is accepted silently and written to flash as all zeros.
+      files.push({address: parseInt(m[1], 16), data: new Uint8Array(await r.arrayBuffer()), name: m[2]});
+    }
+    jobLog(`images: ${files.map(f => `${f.name}@0x${f.address.toString(16)} (${f.data.length} B)`).join(', ')}\n`);
+    await b.close();
+    const {ESPLoader, Transport} = await import('./vendor/esptool-js.bundle.js');
+    transport = new Transport(b.port, false);
+    // USB-JTAG is a USB link: baud is meaningless, and asking for 460800 +
+    // compression made the stub drop blocks mid-write (status 201). Plain
+    // uncompressed writes at the default rate are reliable, if a bit slower.
+    const loader = new ESPLoader({transport, baudrate: 115200, romBaudrate: 115200, terminal: term});
+    const chip = await loader.main();
+    if (!/ESP32-C6/.test(chip)) throw new Error(`this is a ${chip}, not an ESP32-C6 — refusing to flash`);
+    await loader.writeFlash({fileArray: files, flashSize: opt('flash_size'), flashMode: opt('flash_mode'),
+      flashFreq: opt('flash_freq'), eraseAll: false, compress: false,
+      reportProgress: (fi, written, total) => { job.prog = (fi + written / total) / files.length; render(); }});
+    await loader.after('hard_reset');
+    job.ok = true; jobLog('done, board rebooted\n');
+  } catch (e) { job.ok = false; jobLog('\nERROR ' + (e.message || e) + '\n'); }
+  finally {
+    try { await transport?.disconnect(); } catch {}
+    job.running = false;
+    await sleep(1500);
+    try { await b.reopen(); b.state = null; for (let n = 0; n < 5 && !(await b.refresh()); n++) await sleep(700); }
+    catch (e) { b.err = String(e); }
+    render();
+  }
+};
+function jobLog(t) { if (!job) return; job.log = (job.log + t).slice(-20000); render(); }
+
+window.build = async () => {
+  jobHidden = false;
+  await fetch('/api/build', {method: 'POST', body: '{}'});
+};
+
+// ---------------------------------------------------------------------------
+// Rendering
+// ---------------------------------------------------------------------------
+const pill = (t, c) => `<span class="pill ${c || ''}">${t}</span>`;
+function slider(i, cmd, label, min, max, val, unit = '', live) {
+  const air = live !== undefined && live !== val ? `<small>${live}${unit}</small>` : '';
+  return `<div class="ctl"><label>${label}</label>
+    <input type="range" min="${min}" max="${max}" value="${val}"
+      oninput="this.nextElementSibling.firstChild.nodeValue=this.value+'${unit}'"
+      onchange="send(${i},'${cmd} '+this.value)"><output>${val}${unit}${air}</output></div>`;
+}
+function devHtml(i, s, d) {
+  const status = !d.enabled ? pill('asleep', 'bad') : d.conn ? pill(d.sub ? 'connected · streaming' : 'connected', 'on')
+               : d.adv ? pill('advertising', 'warn') : pill('idle');
+  const ctl = d.id === 'hr' ? `
+    ${slider(i, 'hr', 'HR bpm', 30, 220, s.hr, '', s.out && s.out.hr)}
+    <div class="ctl"><label>contact</label><div>
+      <button onclick="send(${i},'contact ${s.contact ? 'off' : 'on'}')">${s.contact ? 'skin contact: yes' : 'skin contact: NO'}</button></div><output></output></div>`
+  : `
+    ${slider(i, 'pwr', 'watts', 0, 1200, s.watts, '', s.out && s.out.watts)}
+    ${slider(i, 'cad', 'cadence', 0, 160, s.cad, '', s.out && s.out.cad)}
+    ${slider(i, 'bal', 'L balance', 30, 70, s.bal, '%', s.out && s.out.bal)}`;
+  return `<div class="dev">
+    <div class="row"><span class="name">${d.name}</span><span class="addr">${d.addr}</span>${status}<span class="spacer"></span>
+      ${d.enabled ? `<button class="danger" onclick="send(${i},'off ${d.id}')">Sleep</button>`
+                  : `<button class="primary" onclick="send(${i},'on ${d.id}')">Wake</button>`}
+    </div>${ctl}
+    <div class="ctl"><label>battery</label><input type="range" min="0" max="100" value="${d.batt}"
+      oninput="this.nextElementSibling.value=this.value+'%'" onchange="send(${i},'batt ${d.id} '+this.value)"><output>${d.batt}%</output></div>
+  </div>`;
+}
+function flashBtn(i) {
+  const b = boards[i];
+  if (job?.running || buildJob.running) return `<button disabled>${b.flashing ? 'flashing…' : 'busy'}</button>`;
+  return armed === i ? `<button class="arm" onclick="flash(${i})">Really flash board ${b.id}?</button>`
+                     : `<button onclick="arm(${i})" title="write build/ firmware to this board (esptool-js over Web Serial)">Flash</button>`;
+}
+function cardHtml(b, i) {
+  const s = b.state;
+  const head = (title) => `<h2><span>${title}</span><span><code>board ${b.id}</code>
+      ${s ? `<select onchange="send(${i},'role '+this.value)" title="which device(s) this board plays (saved to flash)">
+        ${['hr', 'pwr', 'both'].map(r => `<option ${r === b.role ? 'selected' : ''}>${r}</option>`).join('')}</select>` : ''}
+      ${flashBtn(i)} <button onclick="forget(${i})" title="disconnect and forget this port">✕</button></span></h2>`;
+  if (!s) return `<section class="card">${head(b.flashing ? 'Flashing…' : 'Unknown board')}
+    <div class="dim">${b.err ? b.err : b.flashing ? 'esptool-js has the port' : 'No sim firmware answering on this port — a blank ESP32-C6? Flash it.'}</div></section>`;
+  const devs = s.devs.filter(d => (s.role >> (d.id === 'hr' ? 0 : 1)) & 1);
+  const hidden = s.devs.filter(d => !devs.includes(d));
+  return `<section class="card">
+    ${head(b.role === 'both' ? 'HR + Power board' : b.role === 'hr' ? 'HR board' : 'Power board')}
+    <div class="mode">
+      <button class="${s.auto ? 'primary' : ''}" onclick="send(${i},'auto')">Auto ride</button>
+      <span class="pill">${s.auto ? 'scripted intervals · t=' + s.t + 's' : 'manual'}</span>
+      <span class="spacer"></span>
+      <label class="chk" title="in manual mode, wander a little around the set values like a real sensor">
+        <input type="checkbox" ${s.jitter ? 'checked' : ''} onchange="send(${i},'jitter '+(this.checked?'on':'off'))"> flutter</label>
+    </div>
+    ${devs.map(d => devHtml(i, s, d)).join('')}
+    ${hidden.length ? `<div class="dev dim">${hidden.map(d => d.name).join(', ')} disabled by role</div>` : ''}
+    <div class="raw"><input placeholder="raw console command (help, status, cad 0 …)"
+      onkeydown="if(event.key==='Enter'){send(${i},this.value);this.value='';}"></div>
+    <pre class="log">${b.log}</pre>
+  </section>`;
+}
+function alertLine(t) { $('#hdr').textContent = t; }
+
+window.render = function render() {
+  if (!('serial' in navigator)) { $('#main').innerHTML = '<div class="empty">This page needs Web Serial — use Chrome or Edge.</div>'; $('#connectBtn').disabled = true; return; }
+  $('#hdr').textContent = boards.length ? `${boards.length} board(s)` : 'no boards connected';
+  $('#fw').textContent = fw ? `firmware built ${fw.built} · ${(fw.bytes / 1024).toFixed(0)} KB` : 'no firmware built';
+  $('#buildBtn').disabled = !!(buildJob.running || job?.running);
+  $('#buildBtn').textContent = buildJob.running ? 'building…' : 'Rebuild firmware';
+  if (!document.activeElement.matches('input[type=range]'))
+    $('#main').innerHTML = boards.length ? boards.map(cardHtml).join('')
+      : '<div class="empty">Click <b>Connect board…</b> and pick the ESP32-C6\'s USB JTAG port. Previously approved ports reconnect on their own.</div>';
+  const cur = job || (buildJob.started ? {title: 'build', log: buildJob.log, running: buildJob.running, ok: buildJob.ok} : null);
+  const jb = $('#jobbox');
+  jb.hidden = !cur || jobHidden;
+  if (cur && !jobHidden) {
+    jb.className = 'job ' + (cur.running ? '' : cur.ok ? 'ok' : 'bad');
+    $('#jobtitle').textContent = `${cur.title}: ${cur.running ? 'running…' : cur.ok ? 'done' : 'FAILED'}`;
+    const pr = $('#jobprog'); pr.hidden = cur.prog == null; if (cur.prog != null) pr.value = cur.prog;
+    const log = $('#joblog'); const atEnd = log.scrollTop + log.clientHeight >= log.scrollHeight - 4;
+    if (log.textContent !== cur.log) { log.textContent = cur.log; if (atEnd) log.scrollTop = log.scrollHeight; }
+  }
+};
+
+// ---------------------------------------------------------------------------
+// Background: state polling, server relay (CLI commands), build job status.
+// ---------------------------------------------------------------------------
+function findBoard(key) {
+  if (/^\d+$/.test(key)) return boards[+key] || boards.find(b => b.id === +key);
+  return boards.find(b => b.role === key) || boards.find(b => b.role === 'both');
+}
+async function tick() {
+  for (const b of boards) if (!b.flashing && !b.busy && !b.gone) { try { await b.refresh(); } catch {} }
+  try {
+    const q = await (await fetch('/api/queue')).json();
+    for (const c of q.cmds || []) {
+      const b = findBoard(c.board);
+      const reply = b && !b.flashing ? await b.cmd(c.cmd) : `no board '${c.board}' (have ${boards.map(b => b.id + '=' + b.role).join(', ') || 'none'})`;
+      if (b) { b.log = (b.log + `> ${c.cmd}   [cli]\n${reply}\n`).split('\n').slice(-30).join('\n'); await b.refresh(); }
+      await fetch('/api/result', {method: 'POST', body: JSON.stringify({id: c.id, reply})});
+    }
+    await fetch('/api/report', {method: 'POST', body: JSON.stringify({boards: boards.map(b => ({id: b.id, role: b.role, state: b.state}))})});
+    const j = await (await fetch('/api/job')).json();
+    fw = j.firmware; buildJob = j.job;
+  } catch {}
+  render();
+  setTimeout(tick, job?.running ? 500 : 1500);
+}
+(async () => {
+  if ('serial' in navigator) {
+    for (const p of await navigator.serial.getPorts()) addPort(p);
+    navigator.serial.addEventListener('disconnect', e => { const i = boards.findIndex(b => b.port === e.target); if (i >= 0) { boards.splice(i, 1); render(); } });
+  }
+  render();
+  tick();
+})();
+</script>
+</body>
+</html>
