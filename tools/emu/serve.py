@@ -28,11 +28,54 @@ ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
 WEB = os.path.join(ROOT, "web", "emulator")
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 FRAMES_PORT = 5556          # QEMU's second -serial: UART1 TX, the frame stream
+CONSOLE_PORT = 5555         # QEMU's first -serial: UART0, the boot log / console
 GDB_PORT = 3333             # QEMU's gdbstub: our way INTO the guest
+
+# Connected browsers, each with a lock serialising writes to its socket (the
+# frame pump and the console reader both send on it from different threads).
+_clients = {}
+_clients_lock = threading.Lock()
+
+
+def _broadcast(payload: bytes):
+    with _clients_lock:
+        items = list(_clients.items())
+    for ws, lock in items:
+        try:
+            with lock:
+                ws_send(ws, payload)
+        except OSError:
+            pass
+
+
+def console_reader():
+    """Forward QEMU's UART0 (the firmware's Serial / boot log) to every browser
+    as channel 2, and echo it to our stdout so it's in the run log too."""
+    import time
+    while True:
+        try:
+            c = socket.create_connection(("127.0.0.1", CONSOLE_PORT), timeout=3)
+        except OSError:
+            time.sleep(0.5)
+            continue
+        c.settimeout(None)
+        try:
+            while True:
+                data = c.recv(4096)
+                if not data:
+                    break
+                sys.stdout.buffer.write(data)
+                sys.stdout.buffer.flush()
+                _broadcast(b"\x02" + data)
+        except OSError:
+            pass
+        c.close()
+        import time as _t
+        _t.sleep(0.5)   # QEMU may have restarted — reconnect
 ELF = os.path.join(ROOT, ".pio", "build", "t5s3-emu", "firmware.elf")
 NM = os.path.expanduser(
     "~/.platformio/packages/toolchain-xtensa-esp32s3/bin/xtensa-esp32s3-elf-nm")
-MAILBOX_SIZE = 4096
+MAILBOX_SIZE = 512   # MUST match EMU_MAILBOX_SIZE in src/emu_input.h
 _mailbox_addr = None
 
 
@@ -169,6 +212,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
+    def end_headers(self):
+        # The page + emulator.js change often during development; never let the
+        # browser serve a stale cached copy (that shows old controls / footer).
+        self.send_header("Cache-Control", "no-store, must-revalidate")
+        super().end_headers()
+
     def do_GET(self):
         if self.path != "/ws":
             return super().do_GET()
@@ -195,6 +244,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             print(f"[serve] gdb mailbox unavailable ({e}) — input disabled")
             mailbox = None
         stop = threading.Event()
+        send_lock = threading.Lock()
+        with _clients_lock:
+            _clients[ws] = send_lock
 
         def pump():
             try:
@@ -202,7 +254,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     data = frames.recv(4096)
                     if not data:
                         break
-                    ws_send(ws, b"\x00" + data)
+                    with send_lock:
+                        ws_send(ws, b"\x00" + data)
             except OSError:
                 pass
             stop.set()
@@ -218,9 +271,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         except (ConnectionError, OSError):
             pass
         stop.set()
+        with _clients_lock:
+            _clients.pop(ws, None)
         frames.close()
-        if mailbox:
-            mailbox.sock.close()
 
 
 def main():
@@ -233,6 +286,8 @@ def main():
     if args.launch:
         subprocess.Popen([os.path.join(ROOT, "tools", "emu", "run-qemu.sh")],
                          stdout=sys.stdout, stderr=sys.stderr)
+
+    threading.Thread(target=console_reader, daemon=True).start()
 
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     print(f"[serve] http://localhost:{args.port}/  (ws bridge on /ws)")

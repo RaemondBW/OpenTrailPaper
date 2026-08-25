@@ -143,7 +143,15 @@ SemaphoreHandle_t uiWake = nullptr;
 // Idle block length. 200 ms is the loop's own touch-poll backstop, so nothing
 // inside it is starved; input latency is unaffected because the ISRs release
 // the semaphore immediately.
+#ifdef OTP_EMULATOR
+// QEMU delivers no input IRQs, so web taps/buttons land in the DRAM mailbox
+// with nothing to release uiWake — the loop would only notice them on this
+// fallback tick. Poll fast so input feels live. refresh() still emits a frame
+// only when the shadow buffer changes, so a quick tick costs polling, not draws.
+constexpr uint32_t UI_IDLE_TICK_MS = 16;
+#else
 constexpr uint32_t UI_IDLE_TICK_MS = 200;
+#endif
 
 inline void IRAM_ATTR uiWakeFromIsr() {
     if (!uiWake) return;
@@ -1250,9 +1258,13 @@ bool beginPanel() {
 
     EPDC_STEP("backlight");
 
+#ifdef OTP_EMULATOR
+    touchOk = false;   // touch arrives over the mailbox; no GT911 to probe in QEMU
+#else
     touch.setPins(BOARD_TOUCH_RST, BOARD_TOUCH_INT);
     touchOk = touch.begin(Wire, GT911_SLAVE_ADDRESS_L, BOARD_SDA, BOARD_SCL);
     if (!touchOk) Serial.println("[ui] GT911 touch not found");
+#endif
 
     EPDC_STEP("touch");
 
@@ -2274,6 +2286,11 @@ void task(void*) {
             // Web events land here, before the button logic reads the levels.
             emu_input::pump();
             if (emu_input::takeHomePress()) homeKeyPressed = true;
+            // QEMU raises no GPIO interrupt for a web button, so without this the
+            // button levels would only be sampled on the 200 ms backstop poll —
+            // the source of the "laggy buttons". Force a read every loop; the
+            // levels come from the mailbox (no I2C), so it is cheap.
+            boardBtnIrq = true;
 #endif
             bool irq = boardBtnIrq;
             boardBtnIrq = false;
@@ -2323,25 +2340,18 @@ void task(void*) {
 
 #ifdef OTP_EMULATOR
         // Touch, emulator flavour: the web page's pointer events stand in for
-        // the GT911 (which QEMU does not model). Down/up transitions feed the
-        // SAME tap dispatch the hardware path uses below.
+        // the GT911 (which QEMU does not model). A completed down->up is latched
+        // in emu_input as a whole TAP (takeTap), so it survives the mailbox being
+        // drained in one pass — sampling the live down/up state would drop taps
+        // whose two events arrived together, which is why the workout/map
+        // on-screen buttons felt dead.
         {
-            static int16_t lastX = 0, lastY = 0;
             int16_t tx = 0, ty = 0;
-            const bool down = emu_input::touchDown(&tx, &ty);
-            if (down) { lastX = tx; lastY = ty; }
-            static uint32_t lastTapMs = 0;
-            if (down && !touchWasDown) {
-                touchDownAt = millis();
-            } else if (!down && touchWasDown) {
-                if (millis() - lastTapMs > 350) {
-                    lastTapMs = millis();
-                    noteActivity();
-                    if (powerOverlay) handlePowerTap(lastX, lastY);
-                    else handleTap(lastX, lastY);
-                }
+            if (emu_input::takeTap(&tx, &ty)) {
+                noteActivity();
+                if (powerOverlay) handlePowerTap(tx, ty);
+                else handleTap(tx, ty);
             }
-            touchWasDown = down;
         }
 #endif
 
@@ -2727,6 +2737,15 @@ void task(void*) {
             const bool pauseCleared = prevPauseBanner && !pauseBannerNow;
             prevPauseBanner = pauseBannerNow;
 
+#ifdef OTP_EMULATOR
+            // Tell the page whether it's the map screen (which the browser draws
+            // itself via WASM, since QEMU has no PSRAM for the projector), and at
+            // what zoom / orientation — so its on-screen zoom + north-up buttons,
+            // handled here as normal taps, drive the browser-rendered map too.
+            epdc_emit_view(screen == SCREEN_MAP ? 2 : 0);
+            if (screen == SCREEN_MAP)
+                epdc_emit_mapstate((int)mapMpp, mapTrackUp ? 1 : 0);
+#endif
             refresh(screenChanged, fastInPage, listFast, wantClean,
                     navPromptAppearing,
                     mapTransition || tonedTransition || dashPageFlip ||

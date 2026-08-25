@@ -52,11 +52,35 @@ h1 { font-size: 22px; letter-spacing: .5px; }
   content: ""; position: absolute; top: 0; bottom: 0; width: 4px;
   border-radius: 3px; background: #cccfd4;
 }
-.side-btn:active::after { background: var(--accent); }
-.side-left  { left: -14px; top: 39%; height: 48px; }
+.side-btn:active::after, .side-btn.pressed::after {
+  background: var(--accent); width: 6px; box-shadow: 0 0 8px var(--accent);
+}
+
+/* A labelled pill that flashes over the device when a button is pressed, so a
+   press is unmistakable even when its on-device effect isn't visible. */
+#press-hud {
+  position: absolute; left: 50%; top: 20%; transform: translate(-50%, -6px);
+  padding: 6px 14px; border-radius: 999px;
+  background: var(--accent); color: #fff; font-weight: 700; font-size: 13px;
+  letter-spacing: 0.03em; pointer-events: none; opacity: 0; z-index: 5;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+}
+#press-hud.show { animation: hud-flash 0.6s ease-out; }
+@keyframes hud-flash {
+  0%   { opacity: 0; transform: translate(-50%, 2px) scale(0.9); }
+  15%  { opacity: 1; transform: translate(-50%, -6px) scale(1); }
+  70%  { opacity: 1; transform: translate(-50%, -6px) scale(1); }
+  100% { opacity: 0; transform: translate(-50%, -10px) scale(1); }
+}
+.device-mock .home.pressed {
+  box-shadow: inset 0 0 0 2px var(--accent), inset 0 2px 6px rgba(0, 0, 0, 0.15);
+}
+/* Both hardware buttons sit on the LEFT case edge: BOOT on top, the
+   side/backlight button below it. */
+.side-right { left: -14px; top: 30%; height: 40px; }   /* BOOT */
+.side-right::after { left: 11px; }
+.side-left  { left: -14px; top: 46%; height: 40px; }   /* side / backlight */
 .side-left::after  { left: 11px; }
-.side-right { right: -14px; top: 44%; height: 28px; }
-.side-right::after { right: 11px; }
 
 .device-mock .screen {
   position: relative;
@@ -70,6 +94,22 @@ h1 { font-size: 22px; letter-spacing: .5px; }
   width: calc(100% - 14px); height: calc(100% - 14px);
   background: #fff;
   touch-action: none; cursor: pointer;
+}
+
+/* Tap ripple overlay — sits over the glass, ignores pointer events itself. */
+#ripple-layer {
+  position: absolute; left: 7px; top: 7px;
+  width: calc(100% - 14px); height: calc(100% - 14px);
+  pointer-events: none; overflow: hidden; border-radius: 4px; z-index: 3;
+}
+#ripple-layer .ripple {
+  position: absolute; width: 10px; height: 10px; margin: -5px 0 0 -5px;
+  border-radius: 50%; background: var(--accent);
+  animation: ripple 0.45s ease-out forwards;
+}
+@keyframes ripple {
+  0%   { transform: scale(0.4); opacity: 0.55; }
+  100% { transform: scale(4);   opacity: 0; }
 }
 
 .device-mock .home {
@@ -108,3 +148,40 @@ footer p { font-size: 12.5px; color: #999; max-width: 430px; margin: 0 auto; }
 footer b { color: var(--ink-soft); }
 
 .sliders[hidden] { display: none; }
+
+/* Tabbed device panel: Console + Filesystem. */
+.panel-tabs { margin-top: 8px; width: 100%; max-width: 460px; text-align: left; }
+.tabbar { display: flex; align-items: flex-end; gap: 2px; }
+.tab {
+  font-size: 12px; font-weight: 600; padding: 5px 12px; cursor: pointer;
+  border: none; background: none; color: #999;
+  border-bottom: 2px solid transparent;
+}
+.tab.active { color: var(--ink); border-bottom-color: var(--accent); }
+.tab-action {
+  margin-left: auto; font-size: 11px; padding: 1px 8px; align-self: center;
+  border: 1px solid #d5d5cf; border-radius: 6px; background: var(--paper-dim);
+  color: var(--ink-soft); cursor: pointer;
+}
+.tabpane { display: none; }
+.tabpane.active { display: block; }
+#serial-log {
+  margin: 6px 0 0; height: 180px; overflow-y: auto;
+  background: #14130f; color: #d8d4c8; border-radius: 8px; padding: 8px 10px;
+  font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre-wrap; word-break: break-word;
+}
+#fs-view {
+  margin: 6px 0 0; height: 180px; overflow-y: auto;
+  background: #14130f; border-radius: 8px; padding: 10px 12px;
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: #d8d4c8;
+}
+#fs-view .fs-status {
+  color: #f0b060; margin-bottom: 8px; white-space: pre-wrap; font-size: 11px;
+}
+#fs-view .fs-row { display: flex; gap: 8px; padding: 2px 0; }
+#fs-view .fs-path { color: #9fd0ff; }
+#fs-view .fs-meta { color: #8a8778; margin-left: auto; text-align: right; }
+#fs-view .fs-note { color: #8a8778; }
+#fs-view .fs-dir { color: #d8d4c8; font-weight: 700; margin-top: 6px; }

@@ -208,6 +208,15 @@ bool begin() {
     SerialGPS.begin(9600, SERIAL_8N1, BOARD_GPS_RXD, BOARD_GPS_TXD);
     delay(100);
 
+#ifdef OTP_EMULATOR
+    // NMEA is fed straight into the ring over the mailbox; there is no module to
+    // probe, and the detection path (initL76K + 2×2 s waitForBytes) would only
+    // stall boot. Declare a module so the parser consumes the fed stream.
+    moduleDetected = true;
+    moduleKind = GPS_UBLOX;
+    return true;
+#endif
+
     if (initL76K()) {
         Serial.println("[gps] CASIC/L76K initialized @9600");
         moduleDetected = true;

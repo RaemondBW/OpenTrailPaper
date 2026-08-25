@@ -26,6 +26,12 @@ int list(char* out, size_t cap);
 // half a workout is worse than none. `reason` gets a static string for logs.
 bool load(const char* name, const char** reason);
 
+#ifdef OTP_EMULATOR
+// Emulator only: load a workout from an in-memory ERG/MRC string (no SD, no
+// PSRAM). Used to inject a sample workout over the web mailbox.
+bool loadText(const char* text, const char* name);
+#endif
+
 // Start / stop the workout clock. start() from DONE (or mid-way) restarts
 // from zero — the natural meaning of pressing start again. pause()/resume()
 // hold the clock without losing the position; toggle() is the play button

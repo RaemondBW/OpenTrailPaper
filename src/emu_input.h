@@ -24,6 +24,7 @@ bool sideDown();
 
 // One-shot, mirroring the GT911 home-key callback.
 bool takeHomePress();
+bool takeTap(int16_t* x, int16_t* y);
 
 // Current touch state in the panel's portrait coordinates (540x960).
 bool touchDown(int16_t* x, int16_t* y);
@@ -37,6 +38,11 @@ void gpsFeed(uint8_t b);
 // A plain global with C linkage so `nm firmware.elf` hands the bridge its
 // address; lives in internal DRAM (uncached) so host writes are seen at once.
 #define EMU_MAILBOX_SIZE 512
+
+// Emulator: tell the web page which view is showing (map vs other). Defined in
+// epd_compat_emu.cpp; called from ui_dashboard.cpp.
+void epdc_emit_view(int view);
+void epdc_emit_mapstate(int mpp, int trackUp);
 struct EmuMailbox {
     volatile uint32_t magic;          // 'OTPM' — the bridge checks it read back
     volatile uint32_t head;           // written by the host

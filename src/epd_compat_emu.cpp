@@ -38,9 +38,33 @@
 #include <Arduino.h>
 #include <driver/uart.h>
 #include <esp_heap_caps.h>
+#include <esp_system.h>
 
 #include "diag.h"
 #include "ride_state.h"
+#include "workout_service.h"
+#include "workout.h"
+#include "ride_recorder.h"
+
+// A sample structured workout injected by the web "Load a workout" button
+// (mailbox 0xE9). Plain-text ERG: minutes/watts pairs, the same format the
+// phone app uploads. Sweet-spot 2×12 with a warmup ramp and a cooldown.
+static const char kSampleWorkout[] =
+    "[COURSE HEADER]\n"
+    "MINUTES\tWATTS\n"
+    "[END COURSE HEADER]\n"
+    "[COURSE DATA]\n"
+    "0\t100\n"
+    "5\t170\n"     // 5 min warmup ramp 100 -> 170
+    "5\t210\n"
+    "17\t210\n"    // 12 min sweet spot
+    "17\t130\n"
+    "22\t130\n"    // 5 min recovery
+    "22\t210\n"
+    "34\t210\n"    // 12 min sweet spot
+    "34\t120\n"
+    "39\t120\n"    // 5 min cooldown
+    "[END COURSE DATA]\n";
 
 namespace {
 
@@ -108,6 +132,99 @@ void epdc_paint() {
     Serial1.write(0xF6);
 }
 
+// Tell the web page which VIEW the firmware is showing, so it can substitute a
+// browser-rendered map for the map page (QEMU can't render maps — no PSRAM). One
+// byte on the same UART wire, only when it changes: 0xF5 'P' <code> 0xF6, where
+// code 2 == the map screen (DP_MAP), anything else == "a page you should draw
+// from the firmware's own frames". See web/emulator/emulator.js + map_wasm.cpp.
+static int g_viewCur = 0;    // the view most recently reported by the UI
+static int g_viewLast = -1;  // the view the page has been told about
+
+static void emitViewMarker(int view) {
+    Serial1.write(0xF5);
+    Serial1.write('P');
+    Serial1.write((uint8_t)view);
+    Serial1.write(0xF6);
+}
+
+void epdc_emit_view(int view) {
+    g_viewCur = view;
+    if (view == g_viewLast) return;
+    g_viewLast = view;
+    emitViewMarker(view);
+}
+
+// The map zoom + track-up state, so the browser-rendered map matches what the
+// firmware's own on-screen zoom / north-up buttons did (the firmware handles the
+// taps; the browser just renders at the state it reports). 0xF5 'M' <mpp> <up>.
+static int g_mppCur = 2, g_upCur = 0;
+static int g_mppLast = -1, g_upLast = -1;
+
+static void emitMapMarker(int mpp, int up) {
+    Serial1.write(0xF5);
+    Serial1.write('M');
+    Serial1.write((uint8_t)mpp);
+    Serial1.write((uint8_t)up);
+    Serial1.write(0xF6);
+}
+
+void epdc_emit_mapstate(int mpp, int trackUp) {
+    g_mppCur = mpp;
+    g_upCur = trackUp;
+    if (mpp == g_mppLast && trackUp == g_upLast) return;
+    g_mppLast = mpp;
+    g_upLast = trackUp;
+    emitMapMarker(mpp, trackUp);
+}
+
+// Re-announce the current view + map state — called from the 0xE8 repaint so a
+// page that connects mid-session (when nothing changed, so nothing would emit)
+// still learns whether it's on the map page and at what zoom.
+void epdc_repaint_view() {
+    emitViewMarker(g_viewCur);
+    emitMapMarker(g_mppCur, g_upCur);
+}
+
+// Report the device's storage inventory to the web page's Filesystem tab, as
+// lines prefixed "[FS]" on the console channel (the page routes those to the tab
+// instead of the console). The emulator has no mounted SD (QEMU has no working
+// PSRAM, so the framebuffer fills DRAM and FATFS can't fit) — so this reports
+// the device's REAL logical storage: the flash-embedded map, the loaded workout,
+// and the live ride, none of which needs the card.
+void emitFsInventory() {
+    Serial.printf("[FS] BEGIN\n");
+    Serial.printf("[FS] mount /sd | %s\n",
+                  ride_recorder::sdMounted()
+                      ? "mounted"
+                      : "not mounted \xE2\x80\x94 no PSRAM in QEMU (framebuffer "
+                        "fills DRAM); device runs cardless");
+    // The San Francisco base map is compiled into flash (board_build.embed_files
+    // = data/sf.ebm) and rendered in the browser via WASM — it is on the device
+    // without needing the card.
+    Serial.printf("[FS] file /maps/sf.ebm | 590372 | flash-embedded base map\n");
+
+    WorkoutView wv;
+    workout_service::view(wv);
+    if (wv.loaded && wv.wk) {
+        Serial.printf("[FS] file /workouts/%s.erg | %d segments | %lus | "
+                      "loaded in RAM\n",
+                      wv.wk->name, wv.segCount, (unsigned long)wv.totalSec);
+    } else {
+        Serial.printf("[FS] note /workouts | empty \xE2\x80\x94 use \"Load a "
+                      "workout\"\n");
+    }
+    if (ride_recorder::isRecording()) {
+        RideState s = g_state.snapshot();
+        Serial.printf("[FS] file /rides/current.fit | %.2f km, %lus | "
+                      "live (not persisted without the card)\n",
+                      s.distanceM / 1000.0, (unsigned long)s.elapsedS);
+    } else {
+        Serial.printf("[FS] note /rides | empty \xE2\x80\x94 tap BOOT to start "
+                      "a ride\n");
+    }
+    Serial.printf("[FS] END\n");
+}
+
 // Streaming in epdc_paint() is synchronous, so the async-drive choreography
 // the real panel needs is all no-ops here.
 void epdc_paint_wait() {}
@@ -142,12 +259,21 @@ bool bootState = false, sideState = false, homePending = false;
 bool touchState = false;
 int16_t touchX = 0, touchY = 0;
 
-// A mouse click is ~50 ms; the button poll runs at 200 ms and there is no
-// GPIO edge interrupt under emulation to vouch for a press between polls. So
-// a release is HELD BACK until the press has been visible for one full poll
-// period — the web page's quickest tap still lands, and a deliberate hold
-// (the power dialog) is unaffected.
-constexpr uint32_t MIN_HOLD_MS = 250;
+// A completed down->up tap, latched the moment the release is processed. The UI
+// loop drains the whole mailbox in one pass, so a down and its up often arrive
+// together — sampling touchState alone would then never see the transition and
+// the tap would be lost (the workout / map on-screen buttons "not working").
+// Latching here makes a tap atomic no matter how the events are batched.
+bool tapPending = false;
+int16_t tapX = 0, tapY = 0;
+
+// A release is HELD BACK until the press has been visible long enough for the
+// UI loop's two-consecutive-reads debounce to catch it, so the web page's
+// quickest tap still lands. The loop now polls the button every ~16 ms under
+// emulation (UI_IDLE_TICK_MS + a forced read each iteration), so two reads take
+// ~32 ms — 60 ms gives a comfortable margin while keeping taps feeling instant.
+// A deliberate hold (the 1.5 s power dialog) is unaffected.
+constexpr uint32_t MIN_HOLD_MS = 60;
 uint32_t bootDownAt = 0, sideDownAt = 0;
 uint32_t bootReleaseAt = 0, sideReleaseAt = 0;   // 0 = no release pending
 
@@ -180,6 +306,11 @@ int eventLen(uint8_t op) {
         case 0xE2: return 4;
         case 0xE3: return 0;
         case 0xE4: return 0;
+        case 0xE8: return 0;
+        case 0xE9: return 0;
+        case 0xEA: return 0;
+        case 0xEB: return 0;
+        case 0xEC: return 4;
         case 0xE5: return -1;
         case 0xE6: return 4;
         case 0xE7: return 2;
@@ -198,8 +329,32 @@ void applyEvent(const uint8_t* p, int op) {
             touchY = (int16_t)(p[2] | (p[3] << 8));
             touchState = true;
             break;
-        case 0xE3: touchState = false; break;
+        case 0xE3:
+            if (touchState) { tapPending = true; tapX = touchX; tapY = touchY; }
+            touchState = false;
+            break;
+        case 0xEC:                        // atomic TAP: one reliable event, not
+                                          // a down/up pair the loop must correlate
+            tapPending = true;
+            tapX = (int16_t)(p[0] | (p[1] << 8));
+            tapY = (int16_t)(p[2] | (p[3] << 8));
+            touchState = false;
+            break;
         case 0xE4: homePending = true; break;
+        case 0xE8:                        // repaint request (page just connected)
+            epdc_repaint_view();          // re-announce the view (map vs other)
+            epdc_paint();
+            break;
+        case 0xE9:                        // load + start the sample workout
+            if (workout_service::loadText(kSampleWorkout, "SWEET SPOT 2x12"))
+                workout_service::start();
+            break;
+        case 0xEA:                        // full reboot (page asked for a reset)
+            Serial.println("[emu] reboot requested from the web page");
+            Serial.flush();
+            esp_restart();
+            break;
+        case 0xEB: emitFsInventory(); break;   // storage inventory for the FS tab
         case 0xE6:
             g_state.with([&](RideState& s) {
                 const uint32_t now = millis();
@@ -289,6 +444,14 @@ bool takeHomePress() {
     const bool p = homePending;
     homePending = false;
     return p;
+}
+
+bool takeTap(int16_t* x, int16_t* y) {
+    if (!tapPending) return false;
+    tapPending = false;
+    *x = tapX;
+    *y = tapY;
+    return true;
 }
 
 bool touchDown(int16_t* x, int16_t* y) {

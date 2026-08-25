@@ -8,7 +8,7 @@
 #   gh release download -R espressif/qemu esp-develop-9.2.2-20260417 \
 #     -p 'qemu-xtensa-softmmu-*-aarch64-apple-darwin.tar.xz' && tar -xf qemu-*.tar.xz
 #
-# serial0 = UART0: boot log + console (ARDUINO_USB_CDC_ON_BOOT=0 in this env)
+# serial0 = UART0: boot log + console -> tcp:5555 (serve.py forwards to the page)
 # serial1 = UART1: the frame/event wire (web/ or tools/emu/frame2png.py)
 # serial2 = UART2: the GPS — pipe NMEA in to simulate a ride
 set -e
@@ -30,9 +30,15 @@ python3 "$ESPTOOL" --chip esp32s3 merge_bin -o "$BUILD/flash.bin" \
 
 # -gdb: the input path. QEMU's esp32s3 UART model delivers no RX, so the
 # bridge pokes events into the firmware's mailbox ring through the gdbstub.
+# NOTE: PSRAM (-m 4M) is intentionally NOT enabled. Espressif QEMU's esp32s3
+# PSRAM model is broken (github.com/espressif/qemu/issues/129): the allocations
+# succeed but heavy use HANGS the guest with both cores spinning. Maps and
+# SD-backed persistence need PSRAM, so they stay disabled under emulation until
+# that upstream bug is fixed — at which point adding `-m 4M` here is the only
+# change required (the firmware seams are already in place).
 exec "$QEMU" -M esp32s3 -gdb tcp::3333 \
     -drive file="$BUILD/flash.bin",if=mtd,format=raw \
-    -serial mon:stdio \
+    -serial tcp::5555,server,nowait \
     -serial tcp::5556,server,nowait \
     -serial tcp::5557,server,nowait \
     -display none

@@ -14,9 +14,10 @@
   </header>
 
   <!-- The site's own device mock (docs/style.css .device-mock — white LilyGO
-       body, round home button, side buttons on the case edges), with every
+       body, round home button, side buttons on the case edge), with every
        control live: the glass is the touchscreen, the home button is the home
-       key, the left edge is the side/backlight button, the right edge BOOT. -->
+       key, and the left edge has BOOT on top with the backlight button below. -->
+
   <div class="device-mock">
     <div class="device">
       <button class="side-btn side-left" id="btn-side" title="Side button — backlight"></button>
@@ -47,15 +48,37 @@
       <label>BAT <input type="range" id="s-bat" min="0" max="100" value="76">
         <output id="o-bat">76</output></label>
     </div>
+    <label class="row sim">
+      <button type="button" id="load-workout">Load a workout</button>
+      <span>press the home key to reach the workout page</span>
+    </label>
+    <label class="row sim">
+      <button type="button" id="reboot-device">Reboot device</button>
+      <span>restart the firmware (a fresh boot sequence)</span>
+    </label>
     <div id="status" class="status">connecting…</div>
+
+    <div class="panel-tabs">
+      <div class="tabbar" role="tablist">
+        <button type="button" class="tab active" data-tab="console" role="tab">Console</button>
+        <button type="button" class="tab" data-tab="filesystem" role="tab">Filesystem</button>
+        <button type="button" id="serial-clear" class="tab-action">clear</button>
+      </div>
+      <pre id="serial-log" class="tabpane active" data-tab="console" data-pinned="1"></pre>
+      <div id="fs-view" class="tabpane" data-tab="filesystem"></div>
+    </div>
   </div>
 
   <footer>
-    <p>Tap the glass to use the touchscreen. The right edge is <b>BOOT</b>
-    (tap: start/stop a ride · hold: power dialog), the left edge cycles the
-    backlight, and the round button is the home key.</p>
+    <p>Tap the glass to use the touchscreen. On the left edge, the upper button
+    is <b>BOOT</b> (tap: start/stop a ride · hold 1.5 s: power dialog) and the
+    lower one cycles the backlight. The round <b>home</b> key cycles the pages —
+    dashboard, map, workout.</p>
   </footer>
 </main>
+<!-- The firmware's own map renderer, compiled to WASM (see map_wasm.cpp). Loaded
+     before emulator.js, which draws it on the map page since QEMU can't. -->
+<script src="map_wasm.js"></script>
 <script src="emulator.js"></script>
 </body>
 </html>

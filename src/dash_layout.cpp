@@ -81,7 +81,15 @@ const DashPages& dashDefaultPages() {
         p.pages[0].kind = DP_FIELDS;
         p.pages[0].layout = dashDefaultLayout();
         p.pages[1].kind = DP_MAP;
+#ifdef OTP_EMULATOR
+        // The emulator demos all three: keep the map page (it renders now that
+        // -m 4M gives the PSRAM its scratch needs, over the embedded SF map) and
+        // add the workout page after it. Home cycles dashboard -> map -> workout.
+        p.pages[2].kind = DP_WORKOUT;
+        p.count = 3;
+#else
         p.count = 2;
+#endif
         return p;
     }();
     return d;

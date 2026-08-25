@@ -1,5 +1,85 @@
 # Web emulator — status
 
+> **UI / input fixes (this session).**
+> - **Both hardware buttons now sit on the LEFT case edge** — BOOT on top, the
+>   backlight/side button below it (`web/emulator/style.css` `.side-*`).
+> - **Long-press power dialog works.** The firmware logic was fine; the web
+>   button released the press early on `pointerleave`. `wireButton` now uses
+>   `setPointerCapture`, so a hold keeps registering and BOOT-hold (1.5 s) opens
+>   the SHUT DOWN sheet.
+> - **Map zoom + north-up buttons work.** They're drawn inside the map frame, so
+>   the firmware handles the taps (touch already routes to it) and now reports
+>   its zoom/orientation over a `0xF5 'M' <mpp> <trackUp> 0xF6` marker
+>   (`epdc_emit_mapstate`, re-sent on the `0xE8` repaint). The browser renders
+>   the WASM map at that state — verified 2 → 4 m/px (200 M → 500 M scale) and
+>   track-up toggling.
+> - **The device serial console is mirrored to the browser devtools console.**
+>   QEMU's UART0 now goes to `tcp:5555`; `serve.py`'s `console_reader` forwards
+>   it to every browser as channel 2 (and echoes it to the run log); the page
+>   prints each line as `[device] …`. (`run-qemu.sh` serial0 moved off stdio.)
+
+
+> **Ride recording + workouts work; maps need PSRAM.**
+> - **Ride recording** runs under emulation without SD: `startRide()` skips the
+>   `sdOk` gate and the `fit.begin()` open under `OTP_EMULATOR`, and the task
+>   loop already keeps the timer/distance/metrics live while the FIT handle is
+>   not open (all `fit.*` writes are `if(!file_)` no-ops). Tap BOOT to start —
+>   RIDE TIME and DISTANCE advance from the spoofed GPS. The ride just isn't
+>   persisted to a `.fit` file.
+> - **Workouts** load without SD/BLE: `workout_service::loadText()` parses an
+>   in-memory ERG string straight into `g_wk` (no PSRAM parse buffer), driven by
+>   the web "Load a workout" button (mailbox `0xE9`, a sample sweet-spot
+>   workout). The emulator layout is dashboard + map + workout (home cycles them).
+> - **Maps render in the BROWSER, not QEMU.** QEMU can't draw the map — its
+>   `ssi_psram` model never initialises (the 2nd-stage bootloader reads ID
+>   `0x00000000`, "PSRAM chip not found", in BOTH quad and octal builds; enabling
+>   it with `-m 4M` instead HANGS the guest, both cores spinning — upstream bug
+>   github.com/espressif/qemu/issues/129), so the projector's ~700 KB of
+>   `MALLOC_CAP_SPIRAM` scratch can't allocate. Solution: the firmware's OWN map
+>   renderer (`map_tiles` + `ui_render_map` + the `epd_compat` rasteriser) is
+>   compiled to WebAssembly with the SF map embedded — `web/emulator/map_wasm.cpp`,
+>   built by `tools/emu/build-map-wasm.sh` (needs emsdk). The page draws it on the
+>   map page from the same GPS/sensor state it feeds the device, producing a
+>   pixel-identical map frame (same rasteriser, same `EPD_ROT_PORTRAIT`). The
+>   firmware announces the active view over a `0xF5 'P' <code> 0xF6` marker
+>   (`epdc_emit_view`, re-sent on the `0xE8` repaint); on the map view the page
+>   ignores QEMU's "NO MAP HERE" frame and blits the WASM map instead.
+> - The old blockers still stand for on-DEVICE map/SD (they need a QEMU whose
+>   esp32s3 MSPI PSRAM works); the WASM route sidesteps them for the map DISPLAY.
+>   For the record: with real PSRAM, maps + persisted rides come
+>   alive with no further firmware change.
+
+
+> **Stability fixes (this session).** Three bugs that made the running stack
+> look broken are fixed:
+> - `tools/emu/serve.py` had `MAILBOX_SIZE = 4096` while the firmware ring is
+>   `512` (`EMU_MAILBOX_SIZE`). The bridge wrapped writes at 4096 and computed
+>   free space against the wrong size, so input events landed **past** the
+>   512-byte buffer, corrupting adjacent BSS — including `g_state`'s mutex,
+>   which then tripped a FreeRTOS `xQueueSemaphoreTake` assert in
+>   `SharedRideState::snapshot()` ~90 s in and crash-looped the guest. Sizes
+>   now match; uptime is stable and frames deliver.
+> - Removed a stale `mailbox.sock.close()` (left from the persistent-attach
+>   design) that threw `AttributeError` and killed the bridge thread on every
+>   ws disconnect.
+> - The GPS ride sim now emits a `GPGSA` sentence, so the firmware sees a **3D
+>   fix** (`type=3`) instead of `type=0`; the on-screen clock also sets from
+>   GPS time. Ride recording still needs SD (below).
+>
+> **Boot time: ~37 s → ~8 s.** QEMU models no I2C/SPI slaves, so every hardware
+> probe ran to its full timeout. Under `OTP_EMULATOR` the probes are skipped
+> (their peripherals are all spoofed): fuel gauge (`BQ27220.init`), IO expander,
+> PCF8563 RTC, GT911 touch, Qwiic sensor scan, and the GPS module-detection
+> waits (`initL76K` + 2×2 s `waitForBytes`). See `main.cpp`, `ui_dashboard.cpp`
+> (`beginPanel`), `gps_service.cpp`.
+>
+> **Input lag fixed.** The UI loop blocks on `xSemaphoreTake(uiWake, …)` released
+> by input ISRs — which QEMU never fires, so web taps were only noticed on the
+> idle-tick fallback. Under emulation: `UI_IDLE_TICK_MS` 200 → 16 (poll the
+> mailbox ~60×/s), the button levels are force-read every loop (no GPIO IRQ to
+> trigger the 200 ms-gated poll), and the emu button-release hold `MIN_HOLD_MS`
+> 250 → 60. Touch and buttons now feel live.
+
 ## Working, verified in a browser
 
 **The real firmware binary boots in QEMU and is INTERACTIVE in a web page,

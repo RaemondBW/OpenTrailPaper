@@ -264,6 +264,27 @@ bool loadFile(const char* path) {
     return true;
 }
 
+#ifdef OTP_EMULATOR
+// The emulator has no SD tiles, so it renders the San Francisco whole-map blob
+// the build embeds in flash (board_build.embed_files = data/sf.ebm). Point the
+// base layer straight at the flash blob — no PSRAM copy is needed (map_tiles::
+// load only indexes it in place; the render scratch lives in the -m 4M PSRAM).
+// activeBuf stays null so clearPrimary()/loadFile() never free a flash pointer.
+extern const uint8_t map_ebm_start[] asm("_binary_data_sf_ebm_start");
+extern const uint8_t map_ebm_end[]   asm("_binary_data_sf_ebm_end");
+void loadEmbedded() {
+    size_t len = (size_t)(map_ebm_end - map_ebm_start);
+    if (len < 36 || !map_tiles::load(map_ebm_start, len)) {
+        diag::log("map: embedded SF blob failed to load (%u B)", (unsigned)len);
+        return;
+    }
+    primaryBlob = map_ebm_start;
+    primaryLen = len;
+    haveBounds = headerBounds(map_ebm_start, loadedS, loadedW, loadedN, loadedE);
+    diag::log("map: embedded SF default (%u KB)", (unsigned)(len / 1024));
+}
+#endif
+
 // (Re)build the in-memory whole-map index from the /maps headers.
 void scanMaps() {
     g_mapCount = 0;
@@ -439,7 +460,13 @@ void begin(double lat, double lon) {
     // No tile scan. Tiles are found by computing their H3 ids from the
     // position, so boot only has to index the handful of whole maps.
     scanMaps();
-    if (!loadCovering(lat, lon)) clearPrimary();   // no fallback map
+    if (!loadCovering(lat, lon)) {
+#ifdef OTP_EMULATOR
+        loadEmbedded();   // no SD tiles under emulation — show the embedded SF map
+#else
+        clearPrimary();   // no fallback map
+#endif
+    }
 }
 
 // Hand the tile cache's PSRAM back. Costs the next few frames an SD re-read;

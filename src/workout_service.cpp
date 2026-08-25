@@ -125,6 +125,29 @@ bool load(const char* name, const char** reason) {
     return true;
 }
 
+#ifdef OTP_EMULATOR
+// Parse a workout straight from an in-memory ERG/MRC string, bypassing both SD
+// and the PSRAM parse buffer that load() needs — the emulator has neither.
+// Mirrors load()'s tail (title from the name, uppercased, g_loaded set).
+bool loadText(const char* text, const char* name) {
+    stop();
+    g_loaded = false;
+    if (!workoutParse(text, settings::ftpWatts(), g_wk)) {
+        diag::log("workout: embedded sample failed to parse");
+        return false;
+    }
+    snprintf(g_wk.name, sizeof(g_wk.name), "%s", name);
+    char* dot = strrchr(g_wk.name, '.');
+    if (dot) *dot = 0;
+    for (char* c = g_wk.name; *c; ++c)
+        if (*c >= 'a' && *c <= 'z') *c -= 32;
+    g_loaded = true;
+    diag::log("workout: loaded %s — %d segments, %lu s total", g_wk.name,
+              g_wk.count, (unsigned long)g_wk.totalSec);
+    return true;
+}
+#endif
+
 void start() {
     if (!g_loaded) return;
     g_started = true;

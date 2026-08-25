@@ -386,8 +386,21 @@ void setup() {
     g_i2cMutex = xSemaphoreCreateMutex();   // guard the shared I2C bus
     g_sdMutex = xSemaphoreCreateRecursiveMutex();  // guard the shared SD bus
     Wire.begin(BOARD_SDA, BOARD_SCL);
+#ifdef OTP_EMULATOR
+    // QEMU models no I2C slaves, so every peripheral probe (fuel gauge, RTC,
+    // Qwiic sensors, IO expander) NAKs — but at the ~1 s default bus timeout
+    // that alone cost ~30 s of boot. Fail the probes fast; each of these
+    // peripherals is spoofed over the mailbox instead.
+    Wire.setTimeOut(15);
+#endif
 
     // GPS (and LoRa) 3V3 rail is gated by the IO expander.
+#ifdef OTP_EMULATOR
+    // QEMU models no I2C slaves, so these probes only spin for seconds against
+    // an unmodeled bus. Skip them: the IO expander and fuel gauge are unused /
+    // spoofed here (battery % arrives over the mailbox as 0xE7).
+    (void)ioExpander;
+#else
     if (ioExpander.init(Wire, BOARD_SDA, BOARD_SCL, XL9555_SLAVE_ADDRESS0)) {
         ioExpanderOk = true;
         ioExpander.pinMode(IOEXP_PIN_RADIO_POWER, OUTPUT);
@@ -398,14 +411,19 @@ void setup() {
     } else {
         Serial.println("[main] IO expander not found — GPS may be unpowered");
     }
+#endif
     pinMode(BOARD_BOOT_BTN, INPUT_PULLUP);
 
+#ifdef OTP_EMULATOR
+    fuelGaugeOk = false;   // no BQ27220 in QEMU; battery % is spoofed (0xE7)
+#else
     fuelGaugeOk = fuelGauge.init();
     // init() failing kills the battery display for the whole session, so record
     // it — with the device number, which separates "wrong/absent chip" (anything
     // but 0x0220) from "right chip, but unseal or profile check refused".
     diag::log("gauge: init %s, device 0x%04x (expect 0x0220)",
               fuelGaugeOk ? "ok" : "FAILED", fuelGauge.getDeviceNumber());
+#endif
     // Prime the battery reading synchronously so the first UI frame after boot
     // (and right after an install) never shows a bogus 0%. The BQ27220 can need
     // a moment to report a valid state-of-charge, so retry briefly for non-zero.
@@ -472,7 +490,11 @@ void setup() {
     // factory it can hold LOCAL time (observed 8 h off UTC), and seeding a
     // grossly wrong time into the receiver hurts acquisition rather than helps.
     ui_dashboard::bootStep("RTC");
+#ifdef OTP_EMULATOR
+    if (false) {   // no I2C RTC in QEMU; the clock is set from fed GPS time
+#else
     if (rtc_clock::begin()) {
+#endif
 
         time_t rt;
         if (!settings::rtcTrusted()) {
@@ -536,7 +558,11 @@ void setup() {
     // was a silent no-op: the lines existed in the code and never once reached
     // the glass. Sitting ahead of the map index (the longest step of a boot)
     // also means they stay readable for a few seconds rather than flashing past.
+#ifdef OTP_EMULATOR
+    const bool auxOk = false;   // no Qwiic I2C sensors in QEMU
+#else
     const bool auxOk = aux_sensors::begin();
+#endif
     if (!auxOk) {
         // Nothing on the connector: ONE quiet line. Three "absent" rows on
         // every boot of every device that never had these fitted is noise, and

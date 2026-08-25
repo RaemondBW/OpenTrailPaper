@@ -13,6 +13,7 @@
 #include <esp_vfs_fat.h>
 #include <wear_levelling.h>
 #include <FSImpl.h>
+#include <esp_heap_caps.h>
 #endif
 #include "diag.h"
 
@@ -446,19 +447,38 @@ struct EmuFsMount : fs::FS {
 bool mountLocked(bool logFailures) {
     (void)logFailures;
     if (sdOk) return true;
+    // The FAT mount needs ~20-30 KB of internal RAM for FATFS + wear-levelling,
+    // but without PSRAM the 259 KB framebuffer fills the 327 KB DRAM region and
+    // leaves only ~14 KB free — so the SD genuinely cannot mount in the emulator
+    // (mounting before the framebuffer instead hangs on the flash format under
+    // QEMU, and then the framebuffer no longer fits). The device runs cardless,
+    // which is a supported state; see investigations/web-emulator-status.md. This
+    // fails cleanly and the dashboard/ride/workout all work without the card.
+    uint32_t freeKB = heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024;
+    if (freeKB < 40) {
+        if (logFailures)
+            diag::log("emu: SD not mounted — %u KB internal free, no PSRAM "
+                      "(cardless; see web-emulator-status.md)", freeKB);
+        return false;
+    }
     static wl_handle_t wl = WL_INVALID_HANDLE;
+    // max_files kept small: each open file holds a sector buffer, and internal
+    // RAM is precious here. The device rarely has more than a couple open.
     const esp_vfs_fat_mount_config_t cfg = {
         .format_if_mount_failed = true,   // first boot formats the blank partition
-        .max_files = 8,
+        .max_files = 4,
         .allocation_unit_size = 0,
     };
     esp_err_t e = esp_vfs_fat_spiflash_mount("/sd", "storage", &cfg, &wl);
     if (e != ESP_OK) {
-        diag::log("emu: SD (flash FAT) mount failed: %s", esp_err_to_name(e));
+        diag::log("emu: SD (flash FAT) mount failed: %s (%u KB free)",
+                  esp_err_to_name(e), freeKB);
         return false;
     }
     EmuFsMount::point(SD, "/sd");   // route SD.open/exists/mkdir at the FAT
-    diag::log("emu: SD card emulated on the flash 'storage' partition");
+    diag::log("emu: SD card emulated on the flash 'storage' partition "
+              "(%u KB internal free after mount)",
+              (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024));
     return true;
 }
 #else
@@ -541,7 +561,11 @@ bool begin() {
 }
 
 void startRide() {
+#ifdef OTP_EMULATOR
+    if (rideActive || usb_storage::hostActive()) return;   // no SD gate in QEMU
+#else
     if (!sdOk || rideActive || usb_storage::hostActive()) return;
+#endif
 
     RideState s = g_state.snapshot();
     if (!s.timeValid) {
@@ -550,6 +574,13 @@ void startRide() {
     }
 
     makeRidePath(ridePath, sizeof(ridePath), s.utc);
+#ifdef OTP_EMULATOR
+    // No SD/FIT writer under emulation. Run the ride live anyway: the task loop
+    // keeps the timer and distance advancing while the FIT handle is not open
+    // (see the isOpen() handling below), so ride time / distance / metrics all
+    // work — the ride just isn't persisted to a file.
+    diag::log("[rec] emulator ride (live, not persisted)");
+#else
     sdLock();
     bool opened = fit.begin(SD, ridePath, s.utc);
     sdUnlock();
@@ -570,6 +601,7 @@ void startRide() {
         diag::log("[rec] ride NOT started: cannot open %s", ridePath);
         return;
     }
+#endif
 
     startUtc = s.utc;
     resetStats();
