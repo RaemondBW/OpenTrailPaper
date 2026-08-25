@@ -105,8 +105,13 @@ uint32_t navPromptShownAt = 0;
 
 // Turn-by-turn banner rect (top of map/dashboard); tapping it ends nav.
 const EpdRect kNavBanner = {0, ui::STATUS_H, 540, 138};
-void drawNavBanner(uint8_t* fb);
+// onlyWithinM > 0 limits the banner to an APPROACHING turn — pages whose
+// content the band would bury (music, workout) get it as a popup instead of
+// a fixture. bandDrawnThisFrame feeds the dismissal scrub: any top-band
+// overlay leaving the glass needs its ghost cleared.
+void drawNavBanner(uint8_t* fb, float onlyWithinM = 0);
 void drawPauseBanner(const RideState& s, uint8_t* fb);
+bool bandDrawnThisFrame = false;
 void buildMapScreenData(const RideState& s, MapScreenData& map,
                         bool finalFrame = false);
 
@@ -970,12 +975,14 @@ void renderMapScreen(const RideState& s, uint8_t* fb) {
 // rather than settings:: directly. Both stay in sync today (the settings screen
 // and the phone's BLE settings write both), but reading one fact from two
 // places is what made the list and the banner disagree in the first place.
-void drawNavBanner(uint8_t* fb) {
+void drawNavBanner(uint8_t* fb, float onlyWithinM) {
     if (!routes::navActive()) return;
     char instr[routes::MANEUVER_TEXT];
     float dist = 0;
     if (routes::nextTurn(instr, sizeof(instr), dist)) {
+        if (onlyWithinM > 0 && dist > onlyWithinM) return;
         ui_render_nav_banner(instr, dist, g_state.snapshot().useMiles, fb);
+        bandDrawnThisFrame = true;
     }
 }
 
@@ -985,6 +992,7 @@ void drawNavBanner(uint8_t* fb) {
 void drawPauseBanner(const RideState& s, uint8_t* fb) {
     if (routes::navActive() || !s.ridePaused) return;
     ui_render_pause_banner(fb);
+    bandDrawnThisFrame = true;
 }
 
 void enterSensors() {
@@ -2460,6 +2468,7 @@ void task(void*) {
                 map_store::ensureForPosition(s.latitude, s.longitude);
             uint8_t* fb = epdc_framebuffer();
             memset(fb, 0xFF, epd_width() / 2 * epd_height());
+            bandDrawnThisFrame = false;
             // While the "Start navigation?" prompt is up, the base screen shows
             // the whole route fitted so it can be recognized before accepting.
             if (navPrompt && !powerOverlay) {
@@ -2508,10 +2517,14 @@ void task(void*) {
                                             routes::navActive() || s.ridePaused,
                                             pg.layout, fb);
                     }
-                    drawNavBanner(fb);  // turn cue on the data page too
-                    // The big AUTO-PAUSED band only over field pages: music
-                    // and workout are dense layouts the band would bury, and
-                    // both already carry the pause in their status bar.
+                    // Field pages carry the banners as fixtures; music
+                    // and workout are dense layouts the band would bury, so
+                    // the turn cue only POPS UP when a turn approaches
+                    // (500 m ~ a minute of warning) and the pause stays in
+                    // their status bar.
+                    const bool densePage =
+                        pg.kind == DP_MUSIC || pg.kind == DP_WORKOUT;
+                    drawNavBanner(fb, densePage ? 500.0f : 0);
                     if (pg.kind == DP_FIELDS) drawPauseBanner(s, fb);
                     break;
                 }
@@ -2664,23 +2677,20 @@ void task(void*) {
                 (prevScreen != SCREEN_DASH || dashPage != prevDashPage);
             prevDashPage = screen == SCREEN_DASH ? dashPage : -1;
 
-            // The AUTO-PAUSED band leaving the glass earns a scrub too: it is
-            // a solid black block, and the content that replaces it half-
-            // erases under a DU drive — the band's ghost sat over the top of
-            // the page until something else forced a clear.
-            static bool prevPauseBanner = false;
-            const bool pauseBannerNow =
-                s.ridePaused && !routes::navActive() &&
-                (screen == SCREEN_MAP ||
-                 (screen == SCREEN_DASH &&
-                  dash_config::page(dashPage).kind == DP_FIELDS));
-            const bool pauseCleared = prevPauseBanner && !pauseBannerNow;
-            prevPauseBanner = pauseBannerNow;
+            // Any top-band overlay (turn banner or AUTO-PAUSED) leaving the
+            // glass earns a scrub: they are solid black blocks, and the
+            // content that replaces them half-erases under a DU drive — the
+            // band's ghost sat over the page until something else forced a
+            // clear. Tracks what was actually DRAWN, so the popup turn cue
+            // on the music/workout pages is covered too.
+            static bool prevBand = false;
+            const bool bandCleared = prevBand && !bandDrawnThisFrame;
+            prevBand = bandDrawnThisFrame;
 
             refresh(screenChanged, fastInPage, listFast, wantClean,
                     navPromptAppearing,
                     mapTransition || tonedTransition || dashPageFlip ||
-                        pauseCleared);
+                        bandCleared);
         }
 
         // The epdiy path managed panel rails by hand here — poweron before an
