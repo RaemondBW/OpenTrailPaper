@@ -2208,9 +2208,8 @@ void ui_render_workout(const RideState& s, const WorkoutView& v, uint8_t* fb) {
     ui::text(&Arial_L, 24, 92, v.name, fb, EPD_DRAW_ALIGN_LEFT);
     snprintf(buf, sizeof(buf), "BLOCK %d OF %d", v.segIdx + 1, v.segCount);
     ui::text(&Arial_B, 24, 126, buf, fb, EPD_DRAW_ALIGN_LEFT);
-    ui::text(&Arial_L, 516, 92, "ELAPSED", fb, EPD_DRAW_ALIGN_RIGHT);
-    workoutFmt(buf, sizeof(buf), v.elapsedSec);
-    ui::text(&Impact_T, 516, 134, buf, fb, EPD_DRAW_ALIGN_RIGHT);
+    // No elapsed clock up here — the footer already carries elapsed/left,
+    // and the header reads cleaner as just the session and where you are.
     epd_fill_rect({0, 140, 540, 3}, ui::INK, fb);
 
     // --- The block being executed: the hero answers "how much longer". ---
