@@ -36,7 +36,7 @@ void gpsFeed(uint8_t b);
 // The host->guest event ring, written by the bridge through QEMU's gdbstub.
 // A plain global with C linkage so `nm firmware.elf` hands the bridge its
 // address; lives in internal DRAM (uncached) so host writes are seen at once.
-#define EMU_MAILBOX_SIZE 4096
+#define EMU_MAILBOX_SIZE 512
 struct EmuMailbox {
     volatile uint32_t magic;          // 'OTPM' — the bridge checks it read back
     volatile uint32_t head;           // written by the host
@@ -77,9 +77,9 @@ public:
     }
 
 private:
-    static constexpr uint32_t MASK = 4095;
+    static constexpr uint32_t MASK = 511;
     volatile uint32_t head_ = 0, tail_ = 0;
-    uint8_t buf_[4096];
+    uint8_t buf_[512];
 };
 
 extern EmuGpsSerial EmuSerialGPS;

@@ -61,10 +61,12 @@ bool epdc_begin() {
     // Serial1.begin still wants legal ones.
     Serial1.begin(921600, SERIAL_8N1, 17, 18);
 
-    // PSRAM first, like the real backends: the framebuffer is the exact
-    // allocation the shipping firmware makes, and QEMU models the PSRAM size.
+    // PSRAM first (its home on hardware); internal RAM as the emulator
+    // fallback when QEMU exposes no PSRAM. The UI task uses a static stack
+    // under emulation (main.cpp) precisely so this 259 KB internal allocation
+    // cannot starve it.
     fb = (uint8_t*)heap_caps_malloc(FB_BYTES, MALLOC_CAP_SPIRAM);
-    if (!fb) fb = (uint8_t*)malloc(FB_BYTES);
+    if (!fb) fb = (uint8_t*)heap_caps_malloc(FB_BYTES, MALLOC_CAP_INTERNAL);
     if (!fb) return false;
     memset(fb, 0xFF, FB_BYTES);   // white, matching a powered-on clean panel
 

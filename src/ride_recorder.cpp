@@ -9,6 +9,11 @@
 #include "sd_bus.h"
 #include "settings.h"
 #include "usb_storage.h"
+#ifdef OTP_EMULATOR
+#include <esp_vfs_fat.h>
+#include <wear_levelling.h>
+#include <FSImpl.h>
+#endif
 #include "diag.h"
 
 namespace {
@@ -424,14 +429,40 @@ void sdSpiForceIdle() {
     SPI.endTransaction();
 }
 
-bool mountLocked(bool logFailures) {
 #ifdef OTP_EMULATOR
-    // QEMU models no SD peripheral, so SD.begin() can never succeed and each
-    // attempt spins esp_vfs_fat's multi-second timeouts (>130 s of boot before
-    // the UI ran). Fail fast — a cardless device is a supported state.
+// The SD card, emulated. QEMU models no SD peripheral, so instead of driving
+// SPI we mount the flash "storage" FAT partition (partitions_emu.csv) at the
+// same /sd mount point the real SD uses, then point the Arduino SD object at
+// it. Every SD.* call then hits real, persistent FAT storage in the QEMU
+// flash image — rides, config, routes and logs survive reboots — and the rest
+// of the firmware cannot tell it from a card. Reaches SD's protected _impl
+// through a same-layout FS subclass (single inheritance from fs::FS).
+struct EmuFsMount : fs::FS {
+    static void point(fs::FS& f, const char* mp) {
+        reinterpret_cast<EmuFsMount&>(f)._impl->mountpoint(mp);
+    }
+};
+
+bool mountLocked(bool logFailures) {
     (void)logFailures;
-    return false;
-#endif
+    if (sdOk) return true;
+    static wl_handle_t wl = WL_INVALID_HANDLE;
+    const esp_vfs_fat_mount_config_t cfg = {
+        .format_if_mount_failed = true,   // first boot formats the blank partition
+        .max_files = 8,
+        .allocation_unit_size = 0,
+    };
+    esp_err_t e = esp_vfs_fat_spiflash_mount("/sd", "storage", &cfg, &wl);
+    if (e != ESP_OK) {
+        diag::log("emu: SD (flash FAT) mount failed: %s", esp_err_to_name(e));
+        return false;
+    }
+    EmuFsMount::point(SD, "/sd");   // route SD.open/exists/mkdir at the FAT
+    diag::log("emu: SD card emulated on the flash 'storage' partition");
+    return true;
+}
+#else
+bool mountLocked(bool logFailures) {
     // settleMs is waited BEFORE the attempt. The old schedule (three tries, 50 ms
     // apart) gave the card ~100 ms to come up and then declared it absent, which
     // on this board is simply too early: measured on a cold boot with a known-good
@@ -476,6 +507,7 @@ bool mountLocked(bool logFailures) {
     }
     return false;
 }
+#endif  // OTP_EMULATOR
 
 }  // namespace
 

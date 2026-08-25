@@ -1,0 +1,10 @@
+# Emulator partition table (16 MB) — one app slot and a big FAT "storage"
+# partition that stands in for the SD card under QEMU (no SD peripheral). The
+# firmware mounts it at /sd, so rides, maps, routes, logs and config persist
+# in the QEMU flash image across reboots. See src/ride_recorder.cpp mountLocked.
+# Name,     Type, SubType,  Offset,   Size
+nvs,        data, nvs,      0x9000,   0x5000,
+otadata,    data, ota,      0xe000,   0x2000,
+app0,       app,  ota_0,    0x10000,  0x640000,
+storage,    data, fat,      0x650000, 0x9A0000,
+coredump,   data, coredump, 0xFF0000, 0x10000,

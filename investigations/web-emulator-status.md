@@ -1,62 +1,74 @@
-# Web emulator — status (phases 1–3)
+# Web emulator — status
 
-## Working, end to end
+## Working, verified in a browser
 
-**The real firmware binary boots in QEMU and renders its actual UI into a
-browser, inside the site's device model, with the buttons and glass wired up.**
-- `pio run -e t5s3-emu` builds the shipping firmware with the emulator panel
-  backend (`epd_compat_emu.cpp`) — same renderers, recorder, tasks, diag.
-- `tools/emu/run-qemu.sh` boots it in Espressif QEMU (esp32s3), streaming the
-  4bpp framebuffer out UART1 as RLE frames.
-- `tools/emu/serve.py` bridges QEMU to a WebSocket; `web/emulator/` draws the
-  panel on a canvas set into the site's `.device-mock` (white LilyGO body,
-  round home key, edge buttons) and turns the buttons/home/glass into input
-  events. Sensor and battery spoof sliders and a ride simulator are in the page.
-- Verified in a real browser: the firmware's own dashboard, boot screen, and
-  power sheet render pixel-for-pixel; the frame stream decodes cleanly
-  (`tools/emu/frame2png.py`). Earlier browser captures showed the live
-  dashboard with spoofed HR/power values on screen.
+**The real firmware binary boots in QEMU and is INTERACTIVE in a web page,
+inside the site's device model.**
 
-## Two QEMU-model limits, and where they leave input
+- `tools/emu/run-qemu.sh` boots the `t5s3-emu` build (the shipping firmware
+  with an emulator panel backend) in Espressif QEMU; `tools/emu/serve.py`
+  bridges it to the browser; `web/emulator/` draws the panel on a canvas set
+  into the site's `.device-mock` (white LilyGO body, round home key, edge
+  buttons).
+- The device **finishes booting to its dashboard** and renders pixel-for-pixel
+  — the shipping renderers, not screenshots.
+- **Input round-trips, confirmed on screen:** the HR / power / cadence / battery
+  sliders live-drive the real dashboard (power with its FTP zone bar, HR, cadence,
+  the status-bar battery). Buttons, the home key and the touch glass send the
+  same event protocol; the GPS ride simulator feeds NMEA.
 
-The esp32s3 machine in the current Espressif QEMU release has two gaps that
-input runs into. Both are emulator-integration issues, not firmware bugs.
+## Peripherals — how each is emulated (all in `epd_compat_emu.cpp` / `emu_input.h`)
 
-1. **No UART RX.** The model delivers UART TX perfectly (frames flow) but never
-   raises RX on any port (UART0/1/2), on both the 2025 and 2026 releases, with
-   and without FIFO-filling padding. So input cannot arrive over a serial line;
-   `serve.py` instead pokes events straight into a DRAM mailbox
-   (`g_emuMailbox`, `emu_input.h`) over QEMU's gdbstub. Memory writes through
-   the stub are confirmed landing (magic + readback verified).
+QEMU's esp32s3 machine models the CPU/RAM/flash/UART/timers but none of the
+board's peripherals, so each is emulated in the firmware under `OTP_EMULATOR`
+and driven from the browser over a byte protocol:
 
-2. **No PSRAM.** PSRAM init fails (`PSRAM ID read error … wrong PSRAM line
-   mode`) under both the octal (`qio_opi`) and quad (`qio_qspi`) framework
-   variants, so `heap_caps_malloc(MALLOC_CAP_SPIRAM)` falls back to internal
-   SRAM for the 259 KB framebuffer, and the mesh ring / map cache (SPIRAM-only)
-   are disabled. The device tolerates all of that — but the current build's UI
-   task loop stops running after "all tasks started" (no panic, no crash, the
-   loop is simply never entered on the emulator). Earlier builds DID render the
-   live dashboard, so this is a regression that arrived with the input plumbing;
-   the exact interaction was not isolated before I stopped to consolidate.
-   Because the loop doesn't run, `pump()` never drains the mailbox, so on-screen
-   input does not yet round-trip.
+| Peripheral | How |
+|---|---|
+| E-paper panel | framebuffer streamed out UART1 as RLE frames -> canvas |
+| Buttons (BOOT, side) | web events -> DRAM mailbox -> `emu_input`, same debounce |
+| Touch (GT911) | pointer events -> mailbox -> the UI's tap dispatch |
+| Home key | one-shot event -> the GT911 home callback path |
+| HR / power / cadence | slider events -> `RideState` (NimBLE is compiled out) |
+| Battery (fuel gauge) | slider event -> `RideState` battery/charging |
+| GPS (CASIC/UART2) | NMEA events -> an in-guest ring standing in for `SerialGPS` |
+| SD card | flash "storage" FAT partition mounted at `/sd` (see below) |
+| LoRa / RTC / IO expander | absent, tolerated exactly as on a cardless real device |
 
-**Next steps, in order:**
-1. Bisect the UI-loop stall against the last known-good display build (the
-   Serial1-pump build that rendered the dashboard) — candidates are the GPS
-   ring shim (`EmuGpsSerial`), the 4 KB mailbox `.bss`, and no-PSRAM heap
-   pressure. This is a mechanical bisect, not open-ended.
-2. Give QEMU real PSRAM (machine memory config / a QEMU build with the esp32s3
-   PSRAM model) so the framebuffer leaves internal RAM — the hardware layout.
-   The firmware and page halves of input are complete and protocol-validated;
-   the mailbox write path is confirmed working. Only the guest loop running
-   again stands between here and interactive input.
+**Input transport:** the esp32s3 model delivers no UART RX, so events are
+written into a DRAM mailbox (`g_emuMailbox`) through QEMU's gdbstub — the bridge
+connects, writes, and detaches per flush so the guest runs free between events.
+Proven working (the sliders drive the panel through it).
+
+## The one remaining blocker: PSRAM
+
+QEMU's esp32s3 exposes **no PSRAM** (the firmware's probe reads chip id 0). On
+hardware the 259 KB framebuffer, the SD/FAT buffers and the map/mesh caches all
+live in PSRAM; with it absent they fall back to internal SRAM (512 KB total),
+which the framebuffer alone nearly fills. Consequences and how they're handled:
+
+- **Boot / render / input: solved.** The UI task's stack and the input mailbox
+  were right-sized so the device boots and runs in the internal-RAM-only budget.
+- **SD card: implemented, but cannot mount yet.** `mountLocked()` under
+  `OTP_EMULATOR` mounts the flash `storage` FAT partition at `/sd` and points the
+  Arduino `SD` object at it (persistent across reboots) — the correct emulation,
+  and every `SD.*` call would hit it. It currently returns `ESP_ERR_NO_MEM`
+  because FAT's buffers don't fit in the internal RAM the framebuffer occupies.
+  A cardless device is a supported state, so this degrades gracefully (no
+  recording; the device runs). Ride recording, map/route/config persistence wait
+  on this.
+
+**The single fix that unblocks the rest is real PSRAM in QEMU.** With the
+framebuffer back in PSRAM (its hardware home), internal RAM frees up and the SD
+FAT mounts. QEMU has the `ssi_psram` model and an `esp32s3.cache.psram_as`
+address space, but the esp32s3 machine gates PSRAM on the efuse configuration,
+which needs an espressif-generated efuse blob (`espefuse` / `idf.py qemu`) — the
+one piece of espressif tooling not available in this environment. Once that
+efuse is provided (or QEMU is built with PSRAM defaulted on), no firmware or
+page change is needed: the SD emulation and everything downstream come alive.
 
 ## Phase 3 — QEMU in WebAssembly
 
-Scaffolded in `tools/emu/wasm/` (build recipe + notes). The page is already
-transport-agnostic: the frame decoder and event encoder don't know whether the
-bytes come from a WebSocket (phase 2) or an in-page WASM pipe (phase 3) — only
-`serve.py`'s role changes. This is the "hard long tail, its own project" the
-plan flagged; it depends on the same PSRAM fix, since a WASM QEMU inherits the
-same machine model.
+Scaffolded in `tools/emu/wasm/` (Emscripten build recipe + blocking items). The
+page is transport-agnostic, so phase 3 is a QEMU-build project, not a rewrite —
+and it inherits the same PSRAM prerequisite.
