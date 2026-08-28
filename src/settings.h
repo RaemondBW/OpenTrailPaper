@@ -42,9 +42,19 @@ void setUsbDrive(bool on);
 bool showOffline();
 void setShowOffline(bool on);
 
-// kind: 0 HR, 1 Power, 2 Cadence (matches ble_sensors). "" = none saved.
+// kind: 0 HR, 1 Power, 2 Cadence (matches ble_sensors). Several sensors can be
+// paired per kind (a strap and a trainer's simulated strap, two bikes' power
+// meters): pairing ADDS, most recent first, up to SENSOR_MAX_PAIRED. The
+// scanner connects to whichever paired one is advertising. sensorAddr() is
+// the most recent — "" when none is saved.
+constexpr int SENSOR_MAX_PAIRED = 4;
 const char* sensorAddr(int kind);
-void setSensorAddr(int kind, const char* addr);
+int sensorAddrCount(int kind);
+const char* sensorAddrAt(int kind, int i);        // "" past the end
+bool sensorPaired(int kind, const char* addr);
+void addSensorAddr(int kind, const char* addr);  // dedupes; moves to front
+void removeSensorAddr(int kind, const char* addr);
+void clearSensorAddrs(int kind);
 
 // Remembered display name (vendor/model) per paired kind, so a paired sensor
 // shows its identity even before it reconnects and across reboots.

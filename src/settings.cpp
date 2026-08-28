@@ -1,4 +1,5 @@
 #include "settings.h"
+#include <string.h>
 
 #include <Arduino.h>
 #include <Preferences.h>
@@ -24,7 +25,11 @@ bool showOff = false;
 // ride timer auto-pauses. 0 disables auto-pause entirely.
 int autoPause = 10;
 bool wkPauseStep = false;
-char addrs[3][18] = {"", "", ""};
+// Per kind, a ';'-separated list of paired addresses, most recent first (max
+// SENSOR_MAX_PAIRED). Stored under the same NVS key as the old single address,
+// which parses as a one-entry list — no migration.
+char addrs[3][settings::SENSOR_MAX_PAIRED * 18 + 4] = {"", "", ""};
+char addrScratch[3][18];   // sensorAddr()/sensorAddrAt() return into these
 char names[3][32] = {"", "", ""};   // remembered vendor/model per paired kind
 double lastLat = 0, lastLon = 0;
 bool rtcSynced = false;  // has GPS ever written UTC to the coin-cell RTC?
@@ -141,14 +146,89 @@ void setShowOffline(bool on) {
     prefs.putBool("showoff", showOff);
 }
 
-const char* sensorAddr(int kind) {
-    return (kind >= 0 && kind < 3) ? addrs[kind] : "";
+// Split addrs[kind] into up to SENSOR_MAX_PAIRED entries of `out`.
+static int splitAddrs(int kind, char out[][18]) {
+    int n = 0;
+    const char* p = addrs[kind];
+    while (*p && n < SENSOR_MAX_PAIRED) {
+        const char* e = strchr(p, ';');
+        size_t len = e ? (size_t)(e - p) : strlen(p);
+        if (len > 0 && len < 18) {
+            memcpy(out[n], p, len);
+            out[n][len] = 0;
+            ++n;
+        }
+        if (!e) break;
+        p = e + 1;
+    }
+    return n;
 }
 
-void setSensorAddr(int kind, const char* addr) {
-    if (kind < 0 || kind >= 3) return;
-    snprintf(addrs[kind], sizeof(addrs[kind]), "%s", addr ? addr : "");
+static void joinAddrs(int kind, char in[][18], int n) {
+    addrs[kind][0] = 0;
+    size_t used = 0;
+    for (int i = 0; i < n; ++i) {
+        used += snprintf(addrs[kind] + used, sizeof(addrs[kind]) - used, "%s%s",
+                         i ? ";" : "", in[i]);
+    }
     prefs.putString(KEYS[kind], addrs[kind]);
+}
+
+int sensorAddrCount(int kind) {
+    if (kind < 0 || kind >= 3) return 0;
+    char list[SENSOR_MAX_PAIRED][18];
+    return splitAddrs(kind, list);
+}
+
+const char* sensorAddrAt(int kind, int i) {
+    if (kind < 0 || kind >= 3) return "";
+    char list[SENSOR_MAX_PAIRED][18];
+    int n = splitAddrs(kind, list);
+    if (i < 0 || i >= n) return "";
+    snprintf(addrScratch[kind], sizeof(addrScratch[kind]), "%s", list[i]);
+    return addrScratch[kind];
+}
+
+const char* sensorAddr(int kind) { return sensorAddrAt(kind, 0); }
+
+bool sensorPaired(int kind, const char* addr) {
+    if (kind < 0 || kind >= 3 || !addr || !addr[0]) return false;
+    char list[SENSOR_MAX_PAIRED][18];
+    int n = splitAddrs(kind, list);
+    for (int i = 0; i < n; ++i)
+        if (strcasecmp(list[i], addr) == 0) return true;
+    return false;
+}
+
+void addSensorAddr(int kind, const char* addr) {
+    if (kind < 0 || kind >= 3 || !addr || !addr[0] || strlen(addr) >= 18) return;
+    char list[SENSOR_MAX_PAIRED][18];
+    int n = splitAddrs(kind, list);
+    // Move-to-front: the newest pairing is the first the scanner reports and
+    // the one the console/app calls "the" paired sensor.
+    char next[SENSOR_MAX_PAIRED][18];
+    int m = 0;
+    snprintf(next[m++], 18, "%s", addr);
+    for (int i = 0; i < n && m < SENSOR_MAX_PAIRED; ++i)
+        if (strcasecmp(list[i], addr) != 0) snprintf(next[m++], 18, "%s", list[i]);
+    joinAddrs(kind, next, m);
+}
+
+void removeSensorAddr(int kind, const char* addr) {
+    if (kind < 0 || kind >= 3 || !addr) return;
+    char list[SENSOR_MAX_PAIRED][18];
+    int n = splitAddrs(kind, list);
+    char next[SENSOR_MAX_PAIRED][18];
+    int m = 0;
+    for (int i = 0; i < n; ++i)
+        if (strcasecmp(list[i], addr) != 0) snprintf(next[m++], 18, "%s", list[i]);
+    joinAddrs(kind, next, m);
+}
+
+void clearSensorAddrs(int kind) {
+    if (kind < 0 || kind >= 3) return;
+    addrs[kind][0] = 0;
+    prefs.putString(KEYS[kind], "");
 }
 
 const char* sensorName(int kind) {

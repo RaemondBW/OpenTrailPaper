@@ -308,8 +308,7 @@ class ScanCallbacks : public NimBLEScanCallbacks {
             // this kind. With nothing paired we never auto-adopt a device
             // (that used to grab strangers' sensors). Pairing happens on
             // the Sensors screen.
-            const char* saved = settings::sensorAddr(k);
-            if (!saved[0] || strcasecmp(saved, addr.c_str()) != 0) continue;
+            if (!settings::sensorPaired(k, addr.c_str())) continue;
             sensor.addr = dev->getAddress();
             sensor.found = true;
             std::string advName = dev->getName();
@@ -469,7 +468,7 @@ void task(void*) {
         // exist. Only paired kinds gate scanning; once they're up, scanning stops.
         bool allConnected = true;
         for (int k = 0; k < KIND_COUNT; ++k) {
-            bool paired = settings::sensorAddr(k)[0] != 0;
+            bool paired = settings::sensorAddrCount(k) > 0;
             if (paired && !sensors[k].connected) allConnected = false;
         }
 
@@ -658,7 +657,7 @@ int getCandidates(Candidate* out, int maxOut) {
                            candidates[i].addr) == 0) {
                 out[i].connected = true;
             }
-            if (strcasecmp(settings::sensorAddr(k), candidates[i].addr) == 0) {
+            if (settings::sensorPaired(k, candidates[i].addr)) {
                 out[i].paired = true;
             }
         }
@@ -674,9 +673,11 @@ int getCandidates(Candidate* out, int maxOut) {
     // persistent row for every paired kind whose address isn't already listed,
     // marking its live connection state. This keeps paired sensors visible
     // (connected or not) whether or not they're currently advertising.
-    for (int k = 0; k < KIND_COUNT && n < maxOut; ++k) {
-        const char* paddr = settings::sensorAddr(k);
-        if (!paddr || !paddr[0]) continue;
+    for (int k = 0; k < KIND_COUNT; ++k) {
+      for (int pi = 0; pi < settings::sensorAddrCount(k) && n < maxOut; ++pi) {
+        char paddr[18];
+        snprintf(paddr, sizeof(paddr), "%s", settings::sensorAddrAt(k, pi));
+        if (!paddr[0]) continue;
         bool already = false;
         for (int i = 0; i < n; ++i) {
             if (strcasecmp(out[i].addr, paddr) == 0) { already = true; break; }
@@ -685,24 +686,25 @@ int getCandidates(Candidate* out, int maxOut) {
         Candidate& c = out[n++];
         memset(&c, 0, sizeof(c));
         snprintf(c.addr, sizeof(c.addr), "%s", paddr);
-        // Live make (this session) > remembered name (NVS, survives reboot /
-        // shows before reconnect) > advertised name > generic kind label.
-        const char* nm = sensors[k].make[0]        ? sensors[k].make
-                       : settings::sensorName(k)[0] ? settings::sensorName(k)
-                       : sensors[k].advName[0]      ? sensors[k].advName
-                                                    : sensors[k].name;
+        const bool live = sensors[k].connected &&
+            strcasecmp(sensors[k].addr.toString().c_str(), paddr) == 0;
+        // Live make (this session) > remembered name (NVS — kept for the most
+        // recent pairing only) > advertised name > generic kind label.
+        const char* nm = live && sensors[k].make[0]      ? sensors[k].make
+                       : pi == 0 && settings::sensorName(k)[0]
+                                                        ? settings::sensorName(k)
+                       : live && sensors[k].advName[0]  ? sensors[k].advName
+                                                        : sensors[k].name;
         snprintf(c.name, sizeof(c.name), "%s", nm);
         c.kindsMask = (uint8_t)(1 << k);
         c.paired = true;
-        c.connected = sensors[k].connected &&
-                      strcasecmp(sensors[k].addr.toString().c_str(), paddr) == 0;
+        c.connected = live;
         c.rssi = 0;
         // Fold in any other kinds paired to the same address (e.g. power+cadence).
         for (int k2 = k + 1; k2 < KIND_COUNT; ++k2) {
-            if (strcasecmp(settings::sensorAddr(k2), paddr) == 0) {
-                c.kindsMask |= (uint8_t)(1 << k2);
-            }
+            if (settings::sensorPaired(k2, paddr)) c.kindsMask |= (uint8_t)(1 << k2);
         }
+      }
     }
     return n;
 }
@@ -722,10 +724,13 @@ void pairCandidate(const char* addr) {
 
     for (int k = 0; k < KIND_COUNT; ++k) {
         if (!(mask & (1 << k))) continue;
-        settings::setSensorAddr(k, addr);
+        // ADDS to the kind's paired set (most recent first) — pairing a
+        // trainer's simulated strap must not forget the real one, or the
+        // real one never comes back on the road.
+        settings::addSensorAddr(k, addr);
         // Remember the advertised name now; upgraded to the DIS make on connect.
         if (advName[0]) settings::setSensorName(k, advName);
-        // drop a different currently-connected device for this kind
+        // Switch to the newly paired device now if a different one is up.
         if (sensors[k].connected &&
             strcasecmp(sensors[k].addr.toString().c_str(), addr) != 0) {
             sensors[k].client->disconnect();
@@ -737,7 +742,7 @@ void pairCandidate(const char* addr) {
 
 void forgetAll() {
     for (int k = 0; k < KIND_COUNT; ++k) {
-        settings::setSensorAddr(k, "");
+        settings::clearSensorAddrs(k);
         if (sensors[k].connected) sensors[k].client->disconnect();
         sensors[k].found = false;
     }
@@ -747,8 +752,8 @@ void forgetAll() {
 void forget(const char* addr) {
     if (!addr || !addr[0]) return;
     for (int k = 0; k < KIND_COUNT; ++k) {
-        if (strcasecmp(settings::sensorAddr(k), addr) != 0) continue;
-        settings::setSensorAddr(k, "");
+        if (!settings::sensorPaired(k, addr)) continue;
+        settings::removeSensorAddr(k, addr);
         if (sensors[k].connected &&
             strcasecmp(sensors[k].addr.toString().c_str(), addr) == 0) {
             sensors[k].client->disconnect();

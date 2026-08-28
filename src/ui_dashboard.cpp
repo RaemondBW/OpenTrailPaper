@@ -1620,10 +1620,15 @@ static void printSensorReport() {
         Serial.printf("  %-8s %-17s %-13s %s\n", l.kind,
                       l.pairedAddr[0] ? l.pairedAddr : "(not paired)",
                       l.connected ? "CONNECTED" : "not connected", l.name);
+        // Further pairings of the same kind (a trainer's simulated strap, a
+        // second bike's meter) — the scanner takes whichever advertises.
+        for (int i = 1; i < settings::sensorAddrCount(k); ++i)
+            Serial.printf("  %-8s %-17s also paired\n", "",
+                          settings::sensorAddrAt(k, i));
         // A live link to an address we never saved cannot happen through the
         // scan path — if it ever prints, that IS the bug, so say so loudly
         // rather than folding it into the line above.
-        if (l.connected && strcasecmp(l.liveAddr, l.pairedAddr) != 0)
+        if (l.connected && !settings::sensorPaired(k, l.liveAddr))
             Serial.printf("  %-8s ** live link is %s, NOT the saved address **\n",
                           "", l.liveAddr);
     }
