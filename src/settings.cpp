@@ -33,6 +33,8 @@ bool rtcSynced = false;  // has GPS ever written UTC to the coin-cell RTC?
 // happen because a firmware update landed — it is a choice, so the device waits to
 // be asked. The Mesh tab has the switch.
 bool meshOn = false;
+char fmKey[48] = "";
+bool fmOn = false;
 // "" = no explicit channel; mesh_service derives the name from the modem preset.
 char meshChan[16] = "";
 uint8_t meshKey = 1;
@@ -74,6 +76,8 @@ void begin() {
     lastLon = prefs.getDouble("lastlon", 0);
     rtcSynced = prefs.getBool("rtcok", false);
     meshOn = prefs.getBool("meshon", false);
+    prefs.getString("fmkey", fmKey, sizeof(fmKey));
+    fmOn = prefs.getBool("fmon", false);
     prefs.getString("meshchan", meshChan, sizeof(meshChan));   // "" = use the preset
     meshKey = (uint8_t)constrain(prefs.getUChar("meshkey", 1), 1, 10);
     meshPresetIdx = prefs.getUChar("meshpreset", MESH_PRESET_DEFAULT);
@@ -182,6 +186,17 @@ void setCompassOffsetDeg(float deg) {
     // when the learned offset has actually drifted a few degrees.
     compassOff = deg;
     prefs.putFloat("cmpoff", deg);
+}
+
+const char* findMyKey() { return fmKey; }
+void setFindMyKey(const char* b64) {
+    snprintf(fmKey, sizeof(fmKey), "%s", b64 ? b64 : "");
+    prefs.putString("fmkey", fmKey);
+}
+bool findMyEnabled() { return fmOn; }
+void setFindMyEnabled(bool on) {
+    fmOn = on;
+    prefs.putBool("fmon", on);
 }
 
 bool meshEnabled() { return meshOn; }

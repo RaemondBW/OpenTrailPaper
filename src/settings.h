@@ -51,6 +51,13 @@ void setSensorAddr(int kind, const char* addr);
 const char* sensorName(int kind);
 void setSensorName(int kind, const char* name);
 
+// Apple Find My (OpenHaystack-style) beacon: the 28-byte public key as
+// base64, and whether the head unit should broadcast it. "" = no key.
+const char* findMyKey();
+void setFindMyKey(const char* b64);
+bool findMyEnabled();
+void setFindMyEnabled(bool on);
+
 // Last known GPS position (map center across reboots). Returns false if
 // no position has ever been saved.
 bool lastPosition(double& lat, double& lon);

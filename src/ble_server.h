@@ -19,6 +19,11 @@ void task(void* arg);
 // Mirror a device-side settings edit (FTP/tz/units/backlight) to the phone.
 void pushSettingsToPhone();
 
+// Apple Find My beacon (OpenHaystack): re-read the key/enable settings, and
+// whether a valid key is currently being broadcast.
+void findMyRefresh();
+bool findMyBeaconing();
+
 // True while a phone (the companion app) is connected — used to hold off
 // auto-sleep during transfers.
 bool isPhoneConnected();

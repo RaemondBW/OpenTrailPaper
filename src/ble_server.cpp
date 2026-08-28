@@ -6,6 +6,7 @@
 #include <Update.h>
 #include <esp_heap_caps.h>
 #include <esp_ota_ops.h>
+#include <mbedtls/base64.h>
 
 #include "config.h"
 #include "ride_state.h"
@@ -832,6 +833,85 @@ namespace ble_server {
 void otaAbortIfDownloading();
 void mapAbortReceive();
 
+// --- Apple Find My beacon (OpenHaystack) ------------------------------------
+// The head unit broadcasts Apple's offline-finding advertisement for a public
+// key the rider generated in OpenHaystack; any iPhone that hears it relays an
+// encrypted location to Apple, and the OpenHaystack tools on the rider's Mac
+// decrypt it. The format is public (Heinrich et al., 2021) and this is the
+// same payload OpenHaystack's own ESP32 firmware sends:
+//   address  : random static, bytes = key[0]|0xC0, key[1..5]
+//   ADV data : 1E FF 4C 00 12 19 <status> key[6..27] (key[0]>>6) 00
+// The beacon needs its OWN address, and this NimBLE build has no extended
+// advertising (one advertiser), so it time-shares with the GATT advertising:
+// ~0.8 s of beacon every ~3 s. iPhones scan continuously and catch it within
+// seconds; the app's discovery survives the gaps (it scans by service UUID
+// until it sees us). While the phone is connected, GATT advertising is off
+// anyway and the beacon runs in its slot alone. Only while the device is ON —
+// deep-sleep power-off silences BLE entirely.
+namespace findmy {
+uint8_t key[28];
+bool keyValid = false;
+bool beaconing = false;
+uint32_t phaseUntilMs = 0;
+constexpr uint32_t BEACON_MS = 800, GAP_MS = 2200;
+
+// Re-read the settings (boot, and after the console changes the key).
+void refresh() {
+    keyValid = false;
+    const char* b64 = settings::findMyKey();
+    if (!b64[0]) return;
+    size_t olen = 0;
+    if (mbedtls_base64_decode(key, sizeof(key), &olen, (const uint8_t*)b64,
+                              strlen(b64)) == 0 && olen == 28)
+        keyValid = true;
+    else
+        diag::log("findmy: key is not 28 base64 bytes — beacon off");
+}
+
+bool active() { return keyValid && settings::findMyEnabled(); }
+}  // namespace findmy
+
+// (Re)start ordinary GATT advertising: public address, connectable, service
+// UUID + name in the scan response. Also what the beacon hands back to.
+void startGattAdvertising() {
+    NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
+    if (!adv) return;
+    if (adv->isAdvertising()) adv->stop();
+    adv->reset();
+    NimBLEDevice::setOwnAddrType(BLE_OWN_ADDR_PUBLIC);
+    adv->setConnectableMode(BLE_GAP_CONN_MODE_UND);
+    adv->addServiceUUID(SVC_UUID);
+    adv->setName("OpenTrailPaper");
+    adv->enableScanResponse(true);
+    adv->start();
+}
+
+bool startFindMyBeacon() {
+    NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
+    if (!adv) return false;
+    if (adv->isAdvertising()) adv->stop();
+    // NimBLE addresses are little-endian: val[5] is the first byte on air.
+    uint8_t val[6] = {findmy::key[5], findmy::key[4], findmy::key[3],
+                      findmy::key[2], findmy::key[1],
+                      (uint8_t)(findmy::key[0] | 0xC0)};
+    NimBLEDevice::setOwnAddrType(BLE_OWN_ADDR_RANDOM);
+    NimBLEDevice::setOwnAddr(NimBLEAddress(val, BLE_ADDR_RANDOM));
+    uint8_t mfg[29];
+    mfg[0] = 0x4C; mfg[1] = 0x00;         // Apple
+    mfg[2] = 0x12; mfg[3] = 0x19;         // offline finding, length
+    mfg[4] = 0x00;                        // status (battery full)
+    memcpy(mfg + 5, findmy::key + 6, 22);
+    mfg[27] = findmy::key[0] >> 6;
+    mfg[28] = 0x00;                       // hint
+    adv->reset();
+    NimBLEAdvertisementData data;
+    data.setManufacturerData(std::string((const char*)mfg, sizeof(mfg)));
+    adv->setAdvertisementData(data);
+    adv->enableScanResponse(false);
+    adv->setConnectableMode(BLE_GAP_CONN_MODE_NON);
+    return adv->start();
+}
+
 // Stale-bond loop detector. When the PHONE holds pairing keys we no longer
 // match, iOS auto-reconnects, fails encryption, and drops the link within
 // seconds — forever, and nothing device-side can delete the phone's keys.
@@ -1058,8 +1138,10 @@ class ServerCb : public NimBLEServerCallbacks {
             ble_sensors::setScanAlways(false);
         }
         // Advertising stops once a central connects; restart it so the phone
-        // can find and reconnect to the device after disconnecting.
-        NimBLEDevice::startAdvertising();
+        // can find and reconnect to the device after disconnecting. If the
+        // Find My beacon owns the advertiser this instant, its slot end
+        // restores GATT advertising instead.
+        if (!findmy::beaconing) startGattAdvertising();
     }
 };
 
@@ -1943,16 +2025,17 @@ void begin() {
 
     svc->start();
 
-    NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
-    adv->addServiceUUID(SVC_UUID);
-    adv->setName("OpenTrailPaper");
-    adv->enableScanResponse(true);
-    NimBLEDevice::startAdvertising();
+    startGattAdvertising();
+    findmy::refresh();
+    if (findmy::active()) diag::log("findmy: beacon on");
 
     Serial.println("[srv] GATT server advertising as OpenTrailPaper");
 }
 
 void pushSettingsToPhone() { settingsDirty = true; }
+
+void findMyRefresh() { findmy::refresh(); }
+bool findMyBeaconing() { return findmy::active(); }
 
 bool isPhoneConnected() { return phoneConnected; }
 bool linkRelaxed() { return linkIntervalLong; }
@@ -2163,6 +2246,30 @@ void task(void*) {
             serviceMeshRequests();
         }
 
+        // Find My beacon time-share (see namespace findmy). Held off during
+        // transfers: an OTA or map upload must keep the link's full attention.
+        if (findmy::active() && otaPhase == 0 && mapBufLen == 0 && !mapCommitPending) {
+            const uint32_t now = millis();
+            if (!findmy::beaconing && now >= findmy::phaseUntilMs) {
+                findmy::beaconing = startFindMyBeacon();
+                findmy::phaseUntilMs = now + (findmy::beaconing
+                                                  ? findmy::BEACON_MS
+                                                  : findmy::GAP_MS);
+            } else if (findmy::beaconing && now >= findmy::phaseUntilMs) {
+                findmy::beaconing = false;
+                NimBLEDevice::getAdvertising()->stop();
+                NimBLEDevice::setOwnAddrType(BLE_OWN_ADDR_PUBLIC);
+                if (!phoneConnected) startGattAdvertising();
+                findmy::phaseUntilMs = now + findmy::GAP_MS;
+            }
+        } else if (findmy::beaconing) {
+            // Switched off (or a transfer began) mid-slot: hand back now.
+            findmy::beaconing = false;
+            NimBLEDevice::getAdvertising()->stop();
+            NimBLEDevice::setOwnAddrType(BLE_OWN_ADDR_PUBLIC);
+            if (!phoneConnected) startGattAdvertising();
+        }
+
         vTaskDelay(pdMS_TO_TICKS(100));
         if (!statusChr || millis() - lastStatus < 1000) continue;
         lastStatus = millis();
@@ -2180,9 +2287,9 @@ void task(void*) {
 
         // Safety net: make sure we're discoverable whenever no phone is
         // connected, in case a disconnect ever slips past onDisconnect.
-        if (!phoneConnected) {
+        if (!phoneConnected && !findmy::beaconing) {
             NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
-            if (adv && !adv->isAdvertising()) NimBLEDevice::startAdvertising();
+            if (adv && !adv->isAdvertising()) startGattAdvertising();
         }
 
         RideState s = g_state.snapshot();

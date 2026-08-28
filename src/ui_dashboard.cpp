@@ -1686,6 +1686,7 @@ static void printConsoleHelp() {
     Serial.println("  mesh <on|off>        power the LoRa radio");
     Serial.println("  autopause [sec|off]  ride timer pause after N s stopped (0/off disables)");
     Serial.println("  workout <list|load <f>|start|pause|resume|stop|skip|back|goto <n>|ftp [W]>");
+    Serial.println("  findmy [key <b64>|on|off]   Apple Find My beacon (OpenHaystack key)");
     Serial.println("  sleepexp [on|off]    re-arm the light-sleep-with-phone experiment (this boot)");
     Serial.println("  disconnect <kind>    drop the link (hr|power|cadence|all); stays paired");
     Serial.println("  forget <kind|mac>    unpair and drop (hr|power|cadence|all|aa:bb:..)");
@@ -2051,6 +2052,23 @@ static void runConsoleLine(char* line) {
                               (unsigned long)v.totalSec);
             }
         }
+    } else if (!strcasecmp(cmd, "findmy")) {
+        // findmy                  status
+        // findmy key <base64>     28-byte OpenHaystack public key
+        // findmy on|off           broadcast it (needs a key)
+        if (arg && !strcasecmp(arg, "key")) {
+            char* k = strtok(nullptr, " \t");
+            if (!k) { Serial.println("[findmy] key <base64 public key>"); return; }
+            settings::setFindMyKey(k);
+            ble_server::findMyRefresh();
+        } else if (arg && (!strcasecmp(arg, "on") || !strcasecmp(arg, "off"))) {
+            settings::setFindMyEnabled(!strcasecmp(arg, "on"));
+            ble_server::findMyRefresh();
+        }
+        Serial.printf("[findmy] key %s, %s -> beacon %s\n",
+                      settings::findMyKey()[0] ? "set" : "NOT set",
+                      settings::findMyEnabled() ? "enabled" : "disabled",
+                      ble_server::findMyBeaconing() ? "BROADCASTING" : "off");
     } else if (!strcasecmp(cmd, "reboot")) {
         Serial.println("[cmd] rebooting");
         Serial.flush(); delay(80); esp_restart();
