@@ -22,21 +22,7 @@
 //   Impact_T  row/button = drop's impact_40      (cap 29)
 //   Impact_V  cell value = drop's impact_64      (cap 46)
 //   Impact_H  hero       = drop's impact_128     (cap 95)
-#include "fonts/arial_l.h"
-#include "fonts/arial_b.h"
-#include "fonts/impact_s.h"
-#include "fonts/impact_t.h"
-#include "fonts/impact_m.h"
-#include "fonts/impact_v.h"
-#include "fonts/impact_h.h"
-#include "fonts/impact_a.h"
-#include "fonts/impact_b.h"
-#include "fonts/impact_c.h"
-#include "fonts/impact_xl.h"
-#include "fonts/arialbold_14.h"
-#include "fonts/arialbold_20.h"
-#include "fonts/impact_40.h"
-#include "fonts/impact_128.h"
+#include "vfont_faces.h"
 
 // Summary footer touch targets (design 1g: two 100+ px tall actions)
 // BUTTON — h 96, three across the content column with a 12 px gutter:

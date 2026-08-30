@@ -10,13 +10,7 @@
 #include "routes.h"
 #include "map_store.h"
 #include "ui_render.h"
-#include "fonts/arial_l.h"
-#include "fonts/arial_b.h"
-#include "fonts/impact_v.h"
-#include "fonts/impact_h.h"
-#include "fonts/arialbold_14.h"
-#include "fonts/arialbold_20.h"
-#include "fonts/impact_40.h"
+#include "vfont_faces.h"
 
 namespace {
 
