@@ -560,6 +560,58 @@ void renderInto(double lat, double lon, float metersPerPixel, int centerX,
     }
 }
 
+// Write `len` bytes to `path`, replacing any existing file. Caller holds the
+// SD lock (diag::log is safe under it — that lock order is the established
+// one, see diag.cpp). A field log showed 11 consecutive save failures and
+// then a success in a single session, with reads working throughout and each
+// failure instant — and the old one-line log couldn't say whether open or
+// write failed, let alone why. So every attempt logs its phase, offset and
+// errno. Retries are cheap insurance against a transient card-level error:
+// the tile is already in PSRAM, so one retry costs ~0.2 s against the ~8 s
+// BLE re-send the phone otherwise performs.
+static bool writeAll(const char* what, const char* path,
+                     const uint8_t* data, size_t len) {
+    for (int attempt = 1; attempt <= 3; ++attempt) {
+        if (attempt > 1) vTaskDelay(pdMS_TO_TICKS(150));
+        SD.remove(path);
+        errno = 0;
+        File f = SD.open(path, FILE_WRITE);
+        if (!f) {
+            diag::log("%s save: open failed %s (errno %d) attempt %d",
+                      what, path, errno, attempt);
+            continue;
+        }
+        bool ok = true;
+        size_t wrote = 0;
+        while (ok && wrote < len) {
+            size_t chunk = len - wrote < 4096 ? len - wrote : 4096;
+            errno = 0;
+            if (f.write(data + wrote, chunk) != chunk) ok = false;
+            else wrote += chunk;
+            // Come up for air every 16 KB. This runs on the BLE server task,
+            // and a big tile is a lot of uninterrupted SD work: a 177 KB tile
+            // measured seconds of it, the idle task never ran, and the TASK
+            // WATCHDOG reset the device mid-transfer — inside
+            // spiTransferBytesNL, which busy-waits on the SPI peripheral and
+            // cannot be interrupted from our side. Worse, resetting mid-write
+            // is what leaves the card garbled for the next boot (see
+            // sdSpiForceIdle), so this failure fed itself.
+            if ((wrote & 0x3FFF) == 0) vTaskDelay(1);
+        }
+        int e = errno;
+        f.close();
+        if (ok) {
+            if (attempt > 1)
+                diag::log("%s save: succeeded on attempt %d", what, attempt);
+            return true;
+        }
+        SD.remove(path);
+        diag::log("%s save: write failed %s at %u/%u (errno %d) attempt %d",
+                  what, path, (unsigned)wrote, (unsigned)len, e, attempt);
+    }
+    return false;
+}
+
 bool saveAndActivate(const char* name, const uint8_t* data, size_t len) {
     MapGuard g;
     if (len < 36 || memcmp(data, "EBM2", 4) != 0) {
@@ -572,27 +624,9 @@ bool saveAndActivate(const char* name, const uint8_t* data, size_t len) {
 
     sdLock();
     if (!SD.exists(MAP_DIR)) SD.mkdir(MAP_DIR);
-    SD.remove(path);
-    File f = SD.open(path, FILE_WRITE);
-    bool ok = (bool)f;
-    size_t wrote = 0;
-    while (ok && wrote < len) {
-        size_t chunk = len - wrote < 4096 ? len - wrote : 4096;
-        if (f.write(data + wrote, chunk) != chunk) ok = false;
-        else wrote += chunk;
-        // Come up for air every 16 KB. This runs on the BLE server task, and a
-        // big tile is a lot of uninterrupted SD work: a 177 KB tile measured
-        // seconds of it, the idle task never ran, and the TASK WATCHDOG reset
-        // the device mid-transfer — inside spiTransferBytesNL, which busy-waits
-        // on the SPI peripheral and cannot be interrupted from our side. Worse,
-        // resetting mid-write is what leaves the card garbled for the next boot
-        // (see sdSpiForceIdle), so this failure fed itself.
-        if ((wrote & 0x3FFF) == 0) vTaskDelay(1);
-    }
-    if (f) f.close();
-    if (!ok) SD.remove(path);
+    bool ok = writeAll("map", path, data, len);
     sdUnlock();
-    if (!ok) { diag::log("map save: write failed %s", path); return false; }
+    if (!ok) return false;
     diag::log("map saved: %s (%u KB)", path, (unsigned)(len / 1024));
     scanMaps();   // index the new map so ensureForPosition can find it later
     return loadFile(path);
@@ -632,27 +666,9 @@ bool saveTile(const char* id, const uint8_t* data, size_t len) {
             snprintf(ensured, sizeof(ensured), "%s", dir);
         }
     }
-    SD.remove(path);
-    File f = SD.open(path, FILE_WRITE);
-    bool ok = (bool)f;
-    size_t wrote = 0;
-    while (ok && wrote < len) {
-        size_t chunk = len - wrote < 4096 ? len - wrote : 4096;
-        if (f.write(data + wrote, chunk) != chunk) ok = false;
-        else wrote += chunk;
-        // Come up for air every 16 KB. This runs on the BLE server task, and a
-        // big tile is a lot of uninterrupted SD work: a 177 KB tile measured
-        // seconds of it, the idle task never ran, and the TASK WATCHDOG reset
-        // the device mid-transfer — inside spiTransferBytesNL, which busy-waits
-        // on the SPI peripheral and cannot be interrupted from our side. Worse,
-        // resetting mid-write is what leaves the card garbled for the next boot
-        // (see sdSpiForceIdle), so this failure fed itself.
-        if ((wrote & 0x3FFF) == 0) vTaskDelay(1);
-    }
-    if (f) f.close();
-    if (!ok) SD.remove(path);
+    bool ok = writeAll("tile", path, data, len);
     sdUnlock();
-    if (!ok) { diag::log("tile save: write failed %s", path); return false; }
+    if (!ok) return false;
     diag::log("tile saved: %s (%u KB)", path, (unsigned)(len / 1024));
     // Renders immediately: forget the cached "no tile here" and any stale blob
     // for this cell, and the next frame that wants it reads the new file.

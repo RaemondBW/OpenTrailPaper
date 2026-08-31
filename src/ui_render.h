@@ -211,6 +211,7 @@ struct MenuInfo {
     bool hr = false, pwr = false, cad = false;
     uint8_t batteryPercent = 0;
     double rideDistanceM = 0;
+    uint32_t rideElapsedS = 0;
     bool useMiles = false;
     char routeLine[40] = "no route loaded";
 };

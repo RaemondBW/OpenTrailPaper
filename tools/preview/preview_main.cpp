@@ -144,10 +144,11 @@ RideState sampleState() {
 }
 
 RideSummary sampleSummary() {
+    const RideState s = sampleState();
     RideSummary r;
-    r.distanceM = 67400.0;
-    r.movingS = 2 * 3600 + 11 * 60 + 38;
-    r.elapsedS = r.movingS + 6 * 60;
+    r.distanceM = s.distanceM;
+    r.movingS = s.movingS;
+    r.elapsedS = s.elapsedS;
     r.avgSpeedKmh = 30.7f;
     r.avgPowerW = 231;
     r.normPowerW = 248;
@@ -512,11 +513,21 @@ int main(int argc, char** argv) {
     menu.hr = menu.pwr = true;
     menu.cad = false;
     menu.batteryPercent = 78;
+    menu.rideDistanceM = s.distanceM;
+    menu.rideElapsedS = s.elapsedS;
     snprintf(menu.routeLine, sizeof(menu.routeLine), "coastal.gpx · 26.4 km left");
     clearWhite(fb.data());
     ui_render_menu(menu, fb.data());
     ui::statusBar(s, fb.data(), "MENU");
     emit("menu.png");
+
+    // The same menu during a recorded ride. The website walkthrough uses this
+    // state after leaving sensor pairing so END RIDE can lead to the summary.
+    menu.recording = true;
+    clearWhite(fb.data());
+    ui_render_menu(menu, fb.data());
+    ui::statusBar(s, fb.data(), "MENU");
+    emit("menu_recording.png");
 
     // Sensors list
     ListRow sensors[3] = {};

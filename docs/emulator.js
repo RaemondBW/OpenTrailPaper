@@ -1,110 +1,120 @@
-// Interactive device walkthrough for the "Take the tour" section. It auto-plays
-// through the real firmware screens (the same rendered PNGs the gallery uses):
-// each step shows a screen, flashes a tap where you'd touch the panel, then the
-// screen actually updates to the result of that tap. An always-visible list
-// expands the step it's currently on.
+// Interactive device walkthrough for the "Device controls" section. Each list
+// item selects the screen it describes. The visitor then presses the real
+// control highlighted on the mock device to see where that control leads.
 //
-// tap coordinates are percentages of the 540x960 screen, matching the on-device
-// touch zones in src/ui_dashboard.cpp:
-//   - status bar (y < 64 px  -> ~3.5%) opens the menu
-//   - menu rows: top 96, height 148 (row centres ~18%, ~33%, ~48.5%, ~64%, ~79%)
-//   - ride-summary buttons sit at y 830..960 (~93%)
-//   - the nav prompt's START button sits at ~79%
-// Coordinates outside 0–100% point at the hardware: negative x is the side
-// button on the left edge, and y ≈ 109% is the Home key below the glass.
+// Screen coordinates are percentages of the firmware's 540x960 display:
+//   - the status bar is the top 64 px
+//   - menu rows start at y=64 and are 148 px high
+//   - summary actions begin at y=700; SAVE is the upper-left action
+//   - the route prompt's START action is centred around 79% height
 const steps = [
   {
-    // Tapping the dashboard used to flip to the map; that gesture is gone —
-    // "the flip now has deliberate targets — that strip, and the Home key"
-    // (ui_dashboard.cpp). Teaching the old gesture left a first-time rider
-    // prodding a screen that does nothing.
-    from: "dashboard", to: "map", tap: [50, 109],
+    view: "dashboard", control: "home", next: 1,
     title: "The dashboard",
-    text: "Power, heart rate, speed, distance and ride time — big enough to read mid-pedal. Press the Home button below the screen to toggle between the dashboard and the map.",
-    hint: "Press the Home button",
+    text: "Shows power, heart rate, speed, distance and ride time. Change the screen order, fields and field sizes in the phone app or by editing /config/dashboard.cfg on the SD card.",
+    hint: "Press Home to open the workout page",
   },
   {
-    from: "map", to: "menu", tap: [50, 3.5],
-    title: "The map",
-    text: "An offline map that follows your GPS, drawn from tiles on the SD card — no signal needed. Tap the status bar up top to open the menu.",
-    hint: "Tap the top status bar",
+    view: "workout_on_target", control: "home", next: 2,
+    title: "Structured workout",
+    text: "Shows the current target, your live power, time remaining in the block and the full workout profile. Workouts can be created in the app or loaded from the SD card.",
+    hint: "Press Home to continue to the map",
   },
   {
-    from: "menu", to: "sensors", tap: [50, 48.5],
-    title: "The menu",
-    text: "Start a ride, load a route, pair sensors, browse history or change settings. Tap Sensors to manage your gear.",
-    hint: "Tap the Sensors row",
+    view: "map", control: "screen", tap: [50, 3.333], size: [100, 6.667], next: 3,
+    title: "Offline map",
+    text: "Reads map tiles from the SD card and follows the device GPS. The map works without a data connection in areas you loaded beforehand.",
+    hint: "Tap the status bar to open the menu",
   },
   {
-    from: "summary", to: "dashboard", tap: [50, 93],
+    view: "menu_recording", control: "screen", tap: [50, 45.208], size: [100, 15.417], next: 4,
+    title: "Main menu",
+    text: "During a ride, the menu can stop recording, load a route, open sensor pairing, list saved rides or open settings.",
+    hint: "Tap Sensors to open sensor pairing",
+  },
+  {
+    view: "sensors", control: "home", next: 5,
+    title: "Sensor pairing",
+    text: "Scans for compatible Bluetooth heart-rate, power and cadence sensors. Tap a listed sensor to save it for reconnection.",
+    hint: "Press Home to return to the ride menu",
+  },
+  {
+    view: "menu_recording", control: "screen", tap: [50, 14.375], size: [100, 15.417], next: 6,
+    title: "Stop the ride",
+    text: "While a ride is recording, the first menu row reads Stop Ride. Tapping it opens the summary before anything is saved. The upper side button is a shortcut for starting or stopping a ride.",
+    hint: "Tap Stop Ride to review the ride",
+  },
+  {
+    view: "summary", control: "screen", tap: [26.667, 77.917], size: [44.444, 10], next: 7,
     title: "Ride summary",
-    text: "Finish a ride and you get distance, moving time, average and normalized power, heart rate and ascent. Tap Save to keep it as a .fit file.",
-    hint: "Tap Save",
+    text: "The summary shows distance, total ride time, power, heart rate and estimated ascent. Save ends the recording and writes a FIT file to the SD card.",
+    hint: "Tap Save to return to the dashboard",
   },
   {
-    from: "nav_prompt", to: "nav_banner", tap: [50, 79],
-    title: "Turn-by-turn navigation",
-    text: "Send a route from the phone and the device asks to start. Tap START and the first turn drops in over the map with the distance to go.",
-    hint: "Tap START",
+    view: "nav_prompt", result: "nav_banner", control: "screen", tap: [50, 77.917], size: [91.111, 10], next: 8,
+    title: "Route navigation",
+    text: "Load a GPX route from the phone app to show turn prompts over the map. Guidance depends on the route file and GPS accuracy.",
+    hint: "Tap Start to see the first turn prompt",
   },
   {
-    from: "dashboard", to: "dashboard", tap: [-6, 46], backlight: true,
-    title: "Ride after dark",
-    text: "Press the side button to switch on the backlight — the e-paper stays readable at night. Press again to turn it off.",
-    hint: "Press the side button",
+    view: "nav_banner", control: "side", backlight: true,
+    title: "Front light",
+    text: "The lower side button switches the built-in front light on or off. Using it reduces battery life.",
+    hint: "Press the lower side button to turn on the light",
   },
 ];
 
-const STEP_MS = 4600;   // total dwell per step
-const TAP_AT = 1100;    // when the tap flashes
-const RESULT_AT = 1650; // when the screen updates to the result of the tap
-
 const $ = (id) => document.getElementById(id);
+const SCREEN_ASSET_VERSION = "2";
 
 if ($("emu")) init();
 
 function init() {
-  const img = $("emu-img"), tap = $("emu-tap"), flash = $("emu-flash"), glow = $("emu-glow");
-  const stepsEl = $("emu-steps"), dotsEl = $("emu-dots"), root = $("emu");
-  let i = 0, advanceTimer = null, tapTimer = null, resultTimer = null;
+  const img = $("emu-img");
+  const tap = $("emu-tap");
+  const flash = $("emu-flash");
+  const glow = $("emu-glow");
+  const stepsEl = $("emu-steps");
+  const dotsEl = $("emu-dots");
+  const home = $("emu-home");
+  const side = $("emu-side");
+  const help = $("emu-help");
+  let i = 0;
+  let actionTimer = null;
 
-  // The dashboard step gets the live panel rather than its screenshot: it is
-  // the one screen in the tour whose whole point is that the numbers are
-  // moving, and "the dashboard" illustrated by a frozen 247 W argues against
-  // itself. Every other screen stays a real capture from the firmware.
+  // Keep the walkthrough on one fixed ride so the dashboard, menu and summary
+  // show exactly the same distance and elapsed time. The hero above remains
+  // live; the tour deliberately uses the firmware-rendered still.
   const panel = $("emu-panel");
-  const live = panel && window.OTPPanel ? window.OTPPanel.live(panel) : null;
-  if (panel && !live) panel.hidden = true;
+  if (panel) panel.hidden = true;
 
   function show(name) {
-    img.src = "img/" + name + ".png";
-    if (!live) return;
-    const isDash = name === "dashboard";
-    panel.hidden = !isDash;
-    if (isDash) live.paint();
+    img.src = "img/" + name + ".png?v=" + SCREEN_ASSET_VERSION;
+    img.alt = steps[i].title + " device screen";
   }
 
-  // Build the always-visible step list (an accordion; the active row expands).
-  steps.forEach((s, k) => {
+  steps.forEach((step, index) => {
     const li = document.createElement("li");
     li.className = "emu-step";
+
     const head = document.createElement("button");
     head.type = "button";
     head.className = "emu-step-head";
-    head.innerHTML = `<span class="emu-step-n">${k + 1}</span><span class="emu-step-title"></span>`;
-    head.querySelector(".emu-step-title").textContent = s.title;
-    head.addEventListener("click", () => select(k, true));
+    head.innerHTML = `<span class="emu-step-n">${index + 1}</span><span class="emu-step-title"></span>`;
+    head.querySelector(".emu-step-title").textContent = step.title;
+    head.setAttribute("aria-expanded", "false");
+    head.addEventListener("click", () => select(index));
 
     const body = document.createElement("div");
     body.className = "emu-step-body";
     const inner = document.createElement("div");
-    const p = document.createElement("p");
-    p.textContent = s.text;
+    const description = document.createElement("p");
+    description.textContent = step.text;
     const hint = document.createElement("p");
     hint.className = "emu-hint";
     hint.innerHTML = `<span class="emu-hand" aria-hidden="true">☝</span><span></span>`;
-    hint.querySelector("span:last-child").textContent = s.hint;
-    inner.append(p, hint);
+    hint.querySelector("span:last-child").textContent = step.hint;
+    inner.append(description, hint);
     body.append(inner);
     li.append(head, body);
     stepsEl.append(li);
@@ -112,58 +122,87 @@ function init() {
     const dot = document.createElement("button");
     dot.type = "button";
     dot.className = "emu-dot";
-    dot.setAttribute("aria-label", "Step " + (k + 1) + ": " + s.title);
-    dot.addEventListener("click", () => select(k, true));
+    dot.setAttribute("aria-label", "View " + (index + 1) + ": " + step.title);
+    dot.addEventListener("click", () => select(index));
     dotsEl.append(dot);
   });
+
   const items = [...stepsEl.children];
   const dots = [...dotsEl.children];
 
   function replay(el, cls) {
     el.classList.remove(cls);
-    void el.offsetWidth;     // reflow so the one-shot animation restarts
+    void el.offsetWidth;
     el.classList.add(cls);
   }
 
-  function select(k, manual) {
-    i = (k + steps.length) % steps.length;
-    const s = steps[i];
-    show(s.from);
+  // Selecting a list item resets the image to that item's named screen. This
+  // keeps every label, description and screenshot in sync.
+  function select(index) {
+    i = (index + steps.length) % steps.length;
+    const step = steps[i];
+    clearTimeout(actionTimer);
+    show(step.view);
     glow.classList.remove("on");
-    items.forEach((li, k2) => li.classList.toggle("on", k2 === i));
-    dots.forEach((d, k2) => d.classList.toggle("on", k2 === i));
-
-    clearTimeout(tapTimer);
-    clearTimeout(resultTimer);
+    items.forEach((item, itemIndex) => {
+      const active = itemIndex === i;
+      item.classList.toggle("on", active);
+      item.querySelector(".emu-step-head").setAttribute("aria-expanded", String(active));
+    });
+    dots.forEach((dot, dotIndex) => {
+      dot.classList.toggle("on", dotIndex === i);
+      if (dotIndex === i) dot.setAttribute("aria-current", "step");
+      else dot.removeAttribute("aria-current");
+    });
     tap.classList.remove("go");
+    tap.hidden = step.control !== "screen";
+    home.classList.toggle("is-target", step.control === "home");
+    side.classList.toggle("is-target", step.control === "side");
 
-    // 1) flash the tap point, 2) then apply the result of that tap.
-    tap.style.left = s.tap[0] + "%";
-    tap.style.top = s.tap[1] + "%";
-    tapTimer = setTimeout(() => replay(tap, "go"), TAP_AT);
-    resultTimer = setTimeout(() => {
-      if (s.backlight) {
-        glow.classList.add("on");        // the backlight comes on, screen unchanged
-      } else {
-        show(s.to);
-        replay(flash, "go");             // brief e-paper-style refresh flash
+    if (step.control === "screen") {
+      tap.style.left = step.tap[0] + "%";
+      tap.style.top = step.tap[1] + "%";
+      tap.style.width = step.size[0] + "%";
+      tap.style.height = step.size[1] + "%";
+      tap.setAttribute("aria-label", step.hint);
+    }
+    help.textContent = step.hint;
+  }
+
+  function activate(control) {
+    const step = steps[i];
+    if (step.control !== control) return;
+    const target = control === "screen" ? tap : control === "home" ? home : side;
+    replay(target, "go");
+    // A result screen (currently the route's START action) stays visible for a
+    // beat before the walkthrough advances. Its old hit target belongs to the
+    // prompt, not the result, so remove it as soon as it has been pressed.
+    if (control === "screen" && step.result) tap.hidden = true;
+    clearTimeout(actionTimer);
+    actionTimer = setTimeout(() => {
+      if (step.backlight) {
+        const on = glow.classList.toggle("on");
+        help.textContent = on
+          ? "Front light on — press again to turn it off"
+          : step.hint;
+      } else if (step.result) {
+        show(step.result);
+        replay(flash, "go");
+        help.textContent = "Turn prompt shown — Front light is next";
+        if (Number.isInteger(step.next)) {
+          actionTimer = setTimeout(() => select(step.next), 900);
+        }
+      } else if (Number.isInteger(step.next)) {
+        select(step.next);
       }
-    }, RESULT_AT);
-
-    schedule();
+    }, 280);
   }
 
-  function schedule() {
-    clearTimeout(advanceTimer);
-    advanceTimer = setTimeout(() => select(i + 1, false), STEP_MS);
-  }
+  tap.addEventListener("click", () => activate("screen"));
+  home.addEventListener("click", () => activate("home"));
+  side.addEventListener("click", () => activate("side"));
+  $("emu-prev").addEventListener("click", () => select(i - 1));
+  $("emu-next").addEventListener("click", () => select(i + 1));
 
-  $("emu-prev").addEventListener("click", () => select(i - 1, true));
-  $("emu-next").addEventListener("click", () => select(i + 1, true));
-
-  // Pause auto-play while the visitor is reading (hovering the component).
-  root.addEventListener("mouseenter", () => clearTimeout(advanceTimer));
-  root.addEventListener("mouseleave", schedule);
-
-  select(0, false);
+  select(0);
 }

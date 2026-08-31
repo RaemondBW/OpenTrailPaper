@@ -3,10 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>OpenTrailPaper — open e-paper bike computer</title>
-<meta name="description" content="OpenTrailPaper — a DIY e-paper bike GPS head unit for the LilyGO T5S3 4.7&quot; e-paper PRO. Offline maps, GPX routes, FIT recording, BLE sensors. Flash the firmware straight from your browser over USB.">
+<title>OpenTrailPaper — DIY e-paper bike computer</title>
+<meta name="description" content="OpenTrailPaper is open-source bike computer firmware for the LilyGO T5S3 4.7&quot; E-Paper PRO. It supports offline maps, GPX routes, FIT recording and Bluetooth sensors.">
 <meta property="og:title" content="OpenTrailPaper">
-<meta property="og:description" content="OpenTrailPaper — a hackable e-paper bike GPS. Offline maps, routes, FIT recording — flash it from the browser.">
+<meta property="og:description" content="Open-source bike computer firmware for the LilyGO T5S3 4.7&quot; E-Paper PRO, with offline maps, GPX routes, FIT recording and Bluetooth sensors.">
 <meta property="og:type" content="website">
 <link rel="icon" type="image/png" sizes="32x32" href="img/favicon-32.png">
 <link rel="icon" type="image/png" href="img/favicon.png">
@@ -14,7 +14,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="style.css?v=8">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
       integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
 </head>
@@ -27,9 +27,6 @@
       OpenTrailPaper
     </a>
     <nav>
-      <a href="#features">Tour</a>
-      <a href="#app">The app</a>
-      <a href="#split">Phone&nbsp;/&nbsp;device</a>
       <a href="setup.html">Set up device</a>
       <a href="https://discord.gg/N6rp9v8xtJ">Discord</a>
       <a class="gh" href="https://github.com/RaemondBW/OpenTrailPaper">GitHub</a>
@@ -40,18 +37,9 @@
 <section class="hero">
   <div class="wrap">
     <div class="copy">
-      <span class="tag">Open source</span>
-      <h1>Open Source E‑Ink Bike Computer</h1>
-      <p class="lede">Offline maps, GPX routes, FIT ride recording and BLE sensors on a 4.7&quot; e-paper panel — fully standalone, no subscription, no phone required.</p>
-      <div class="cta-row">
-        <a class="btn accent" href="setup.html">Set up your device →</a>
-        <a class="btn secondary" href="#features">See what it does</a>
-        <a class="btn secondary" href="https://github.com/RaemondBW/OpenTrailPaper">View source</a>
-      </div>
-      <p class="badge-row">
-        <a href="https://github.com/RaemondBW/OpenTrailPaper/actions/workflows/build.yml">CI builds</a> ·
-        <a href="https://github.com/RaemondBW/OpenTrailPaper/blob/main/LICENSE">open source</a>
-      </p>
+      <span class="tag">DIY hardware · open-source firmware</span>
+      <h1>A DIY e‑paper bike computer</h1>
+      <p class="lede">OpenTrailPaper is firmware for the LilyGO T5S3 4.7&quot; E-Paper PRO. It shows ride data and offline maps, follows GPX routes, records FIT files and connects to Bluetooth sensors. You buy and protect the board yourself.</p>
     </div>
     <div class="device-mock" aria-hidden="true">
       <div class="device">
@@ -76,9 +64,9 @@
 
 <section id="features">
   <div class="wrap">
-    <p class="kicker">01 — Take the tour</p>
-    <h2>See how it works, tap by tap.</h2>
-    <p class="sub">Step through the real on-device screens and see exactly where you touch the panel to get around.</p>
+    <p class="kicker">01 — Device controls</p>
+    <h2>Device walkthrough</h2>
+    <p class="sub">Each item shows the screen it describes. Use the orange touch target on the device to move between related screens.</p>
 
     <div class="emu" id="emu">
       <div class="device-mock emu-device">
@@ -86,22 +74,26 @@
         <div class="device">
           <div class="screen">
             <div class="emu-screen">
-              <img id="emu-img" src="img/dashboard.png" alt="Device screen">
+              <img id="emu-img" src="img/dashboard.png?v=2" alt="Device screen">
               <canvas id="emu-panel" class="live-panel" width="540" height="960"
                       aria-hidden="true"></canvas>
               <span id="emu-glow" class="emu-glow"></span>
               <span id="emu-flash" class="emu-flash"></span>
-              <span id="emu-tap" class="tap-pulse"></span>
+              <button id="emu-tap" class="tap-pulse" type="button"
+                      aria-label="Interactive touch target" hidden></button>
             </div>
           </div>
-          <span class="home"></span>
+          <button class="home" id="emu-home" type="button" aria-label="Home button"></button>
+          <span class="emu-side-upper" aria-hidden="true"></span>
+          <button class="emu-side" id="emu-side" type="button" aria-label="Lower side light button"></button>
         </div>
         <button class="emu-arrow" id="emu-next" type="button" aria-label="Next step">›</button>
       </div>
 
       <div class="emu-panel">
+        <p class="emu-help" id="emu-help" aria-live="polite"></p>
         <ol class="emu-steps" id="emu-steps" aria-label="Walkthrough steps"></ol>
-        <div class="emu-dots" id="emu-dots" role="tablist" aria-label="Walkthrough steps"></div>
+        <div class="emu-dots" id="emu-dots" aria-label="Select a device screen"></div>
       </div>
     </div>
   </div>
@@ -109,11 +101,11 @@
 
 <section id="app" class="dim">
   <div class="wrap">
-    <p class="kicker">02 — The companion app</p>
-    <h2>The phone does the typing. The bike does the riding.</h2>
-    <p class="sub">A free iOS app handles everything that&rsquo;s fiddly on a touch e-paper screen — planning routes, building offline maps, and reviewing rides — then streams it all to the head unit over Bluetooth.</p>
+    <p class="kicker">02 — Optional iPhone app</p>
+    <h2>Use the app for setup and file transfer.</h2>
+    <p class="sub">The iOS companion can plan and transfer routes, build offline maps, copy recorded rides, change settings and install firmware updates over Bluetooth. The head unit does not need the phone during a ride.</p>
     <div class="cta-row app-cta">
-      <a class="btn accent" href="https://apps.apple.com/us/app/opentrailpaper/id6793646642">Download on the App Store →</a>
+      <a class="btn accent" href="https://apps.apple.com/us/app/opentrailpaper/id6793646642">View in the App Store →</a>
       <span class="app-cta-note">Free · iPhone · iOS 17 or later</span>
       <span class="app-cta-note android-note">Android is in closed beta — <a href="https://discord.gg/N6rp9v8xtJ">ask in the Discord</a> to join.</span>
     </div>
@@ -122,19 +114,19 @@
         <div class="iphone">
           <img loading="lazy" src="img/app_route.png" alt="Route preview after searching a destination">
         </div>
-        <figcaption><strong>Plan a route</strong>Search a destination, preview the route it draws, and send it to the device as GPX.</figcaption>
+        <figcaption><strong>Plan a route</strong>Search for a destination, check the proposed route and send the GPX file to the device.</figcaption>
       </figure>
       <figure class="app-shot">
         <div class="iphone">
           <img loading="lazy" src="img/app_ride.png" alt="Rides list in the app">
         </div>
-        <figcaption><strong>Review your rides</strong>Browse every ride you&rsquo;ve recorded, then open one for the map, distance, power, HR and ascent.</figcaption>
+        <figcaption><strong>Copy recorded rides</strong>Transfer rides from the device, then review the map, distance, power, heart rate and estimated ascent.</figcaption>
       </figure>
       <figure class="app-shot">
         <div class="iphone">
           <img loading="lazy" src="img/app_settings.png" alt="Settings with a firmware update pending">
         </div>
-        <figcaption><strong>Tune &amp; update</strong>FTP, timezone, units and backlight — plus a one-tap over-the-air update when a new build is ready.</figcaption>
+        <figcaption><strong>Settings and updates</strong>Set FTP, timezone, units and backlight level, or install a firmware update over Bluetooth.</figcaption>
       </figure>
     </div>
   </div>
@@ -142,9 +134,9 @@
 
 <section id="split">
   <div class="wrap">
-    <p class="kicker">03 — What runs where</p>
-    <h2>Everything you need on the bike. The phone just helps you set up.</h2>
-    <p class="sub">Once it&rsquo;s loaded, the head unit rides completely on its own — no phone, no signal, no account. You only reach for the app now and then: to plan a new route, add maps for a new area, or change a setting.</p>
+    <p class="kicker">03 — Device and phone</p>
+    <h2>What works without a phone</h2>
+    <p class="sub">After routes and maps are loaded, the head unit can record and navigate by itself. There is no account or subscription. The app is used when you want to prepare or transfer data.</p>
     <div class="split-grid">
       <div class="split-col device">
         <div class="head">On the device — every ride</div>
@@ -152,28 +144,31 @@
           <li>GPS tracking with speed, distance and a live map</li>
           <li>Records each ride to a <code>.fit</code> file on the SD card</li>
           <li>Turn-by-turn prompts along a loaded route</li>
+          <li>Runs structured workouts from <code>.erg</code> or <code>.mrc</code> files</li>
           <li>Pairs with heart-rate &amp; power sensors over Bluetooth</li>
-          <li>Runs fully offline — no phone or signal needed</li>
+          <li>Works without a phone or data signal once maps and routes are loaded</li>
         </ul>
       </div>
       <div class="split-col phone">
-        <div class="head">In the app — now and then</div>
+        <div class="head">In the app — setup and transfer</div>
         <ul>
           <li>Plan a route and send it to the device</li>
           <li>Build offline maps for a new area</li>
+          <li>Create workouts and arrange the device screens</li>
           <li>Pull rides off the device and review them</li>
           <li>Change settings and update the firmware</li>
         </ul>
       </div>
     </div>
+
   </div>
 </section>
 
 <section id="hardware">
   <div class="wrap">
     <p class="kicker">04 — Supported hardware</p>
-    <h2>One board today.</h2>
-    <p class="sub">OpenTrailPaper runs on off-the-shelf hardware you buy and flash yourself.</p>
+    <h2>Currently supported on one board</h2>
+    <p class="sub">OpenTrailPaper currently targets the LilyGO board below. It is a development project, not a finished or weatherproof retail product.</p>
 
     <div class="hw-grid">
       <article class="hw-card">
@@ -189,11 +184,11 @@
           <div class="hw-col">
             <p class="hw-label">Strengths</p>
             <ul class="hw-list is-good">
-              <li>A 4.7&quot; e-paper panel that stays readable in direct sun and sips power</li>
-              <li>Enough flash and PSRAM to hold offline map tiles for a whole region</li>
-              <li>Capacitive touch, an SD slot and USB-C, so no extra parts to solder</li>
+              <li>A 4.7&quot; e-paper panel that is readable in direct sunlight</li>
+              <li>An SD card slot for offline maps, routes, ride files and logs</li>
+              <li>GPS, capacitive touch, a front light, battery and USB-C on one board</li>
               <li>Bluetooth 5 for heart-rate, power and cadence sensors</li>
-              <li>Cheap, easy to buy, and flashable straight from your browser</li>
+              <li>Firmware can be installed from a desktop Chromium browser over USB</li>
             </ul>
           </div>
           <div class="hw-col">
@@ -202,7 +197,7 @@
               <li><strong>No pressure sensor.</strong> There&rsquo;s no barometric altimeter, so climbing is derived from elevation baked into the map tiles rather than measured — total ascent is an estimate.</li>
               <li><strong>Basic GPS.</strong> The receiver works, but a modern multi-band module would lock on faster and hold a fix better under tree cover or between buildings.</li>
               <li><strong>No magnetometer.</strong> Without a compass the map can only orient from your direction of travel, so it can&rsquo;t point the right way while you&rsquo;re stopped.</li>
-              <li><strong>Modest battery.</strong> Fine for a long day out, but a bigger cell would carry you through multi-day trips without a recharge.</li>
+              <li><strong>Measured baseline: about eight hours.</strong> A 1,500 mAh build ran for roughly 7.4 usable hours with the front light off. Power work is ongoing, so newer builds may differ.</li>
               <li><strong>Weak hardware buttons.</strong> Most interaction goes through the touch panel, which is fiddly with winter gloves or in the rain.</li>
               <li><strong>No waterproofing.</strong> The board ships bare with no seal or IP rating, so it needs a case or a bag of its own before you ride it in the wet.</li>
             </ul>
@@ -218,7 +213,7 @@
           </div>
           <span class="hw-badge">Help wanted</span>
         </div>
-        <p class="hw-note">There&rsquo;s nothing sacred about this particular board. If you know hardware that would make a better bike computer — a barometric altimeter for real ascent, a multi-band GPS, a magnetometer for a true compass, a bigger battery, proper tactile buttons, or a case that survives the rain — <a href="https://github.com/RaemondBW/OpenTrailPaper/issues">open an issue and suggest it</a>. Or add support yourself: it&rsquo;s all <a href="https://github.com/RaemondBW/OpenTrailPaper">open source</a>, so port it to your board and send a pull request.</p>
+        <p class="hw-note">A better target board would include a barometric altimeter, multi-band GPS, magnetometer, larger battery, usable hardware buttons and a weatherproof case. If you know of one, <a href="https://github.com/RaemondBW/OpenTrailPaper/issues">open an issue</a>. Board ports are also welcome in the <a href="https://github.com/RaemondBW/OpenTrailPaper">source repository</a>.</p>
       </article>
     </div>
   </div>
@@ -228,10 +223,28 @@
   <div class="wrap cta-band">
     <div>
       <p class="kicker">Have the hardware?</p>
-      <h2>Flash it and load maps — all in your browser.</h2>
-      <p class="sub">Flash the firmware over USB and bake offline maps onto the SD card, no app or command line needed.</p>
+      <h2>Install the firmware and prepare an SD card.</h2>
+      <p class="sub">The setup page flashes the board over USB and can build basic offline maps. It requires a desktop Chromium browser; the iOS app produces maps with elevation data.</p>
     </div>
-    <a class="btn accent" href="setup.html">Set up your device →</a>
+    <a class="btn accent" href="setup.html">Read setup instructions →</a>
+  </div>
+</section>
+
+<section id="sponsors">
+  <div class="wrap">
+    <p class="kicker">05 — Sponsors</p>
+    <h2>Project sponsors</h2>
+    <p class="sub">Thank you to the organizations supporting OpenTrailPaper.</p>
+    <div class="sponsor-grid">
+      <a class="sponsor-card" href="https://ridecall.bike/">
+        <strong>RideCall</strong>
+        <span>ridecall.bike <span aria-hidden="true">↗</span></span>
+      </a>
+      <a class="sponsor-card" href="https://hummingbirdfuels.com/">
+        <strong>Hummingbird Fuels</strong>
+        <span>hummingbirdfuels.com <span aria-hidden="true">↗</span></span>
+      </a>
+    </div>
   </div>
 </section>
 
@@ -249,6 +262,6 @@
 </footer>
 
 <script src="panel.js"></script>
-<script type="module" src="emulator.js"></script>
+<script type="module" src="emulator.js?v=13"></script>
 </body>
 </html>
