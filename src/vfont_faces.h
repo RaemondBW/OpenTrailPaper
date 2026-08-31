@@ -10,11 +10,10 @@
 #include "fonts/vf/anton.h"
 #include "fonts/vf/arimo_700.h"
 // -DVFONT_VALUES=<name> draws every value face from that generated font
-// instead of Anton. Tried so far: JBMono_800 / RMono_700 (monospaced, digits
-// keep their column as they tick) and Geologica_700 (clean geometric).
+// instead of Anton. Tried so far: JBMono_800 (monospaced, digits keep their
+// column as they tick) and Geologica_700 (clean geometric).
 #ifdef VFONT_VALUES
 #include "fonts/vf/jbmono_800.h"
-#include "fonts/vf/rmono_700.h"
 #include "fonts/vf/geologica_700.h"
 #define VF_VALUES (&VFONT_VALUES)
 #else
