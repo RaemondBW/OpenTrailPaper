@@ -2547,6 +2547,7 @@ void task(void*) {
                     m.cad = s.cadenceConnected;
                     m.batteryPercent = s.batteryPercent;
                     m.rideDistanceM = s.distanceM;
+                    m.rideElapsedS = s.elapsedS;
                     m.useMiles = s.useMiles;
                     if (routes::active()) {
                         snprintf(m.routeLine, sizeof(m.routeLine),

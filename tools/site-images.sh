@@ -22,7 +22,7 @@ cd "$(dirname "$0")/.."
 DEST=${1:-docs/img}
 mkdir -p "$DEST"
 
-for f in dashboard map summary menu sensors nav_banner nav_prompt; do
+for f in dashboard map summary menu menu_recording sensors nav_banner nav_prompt workout_on_target; do
     cp "tools/preview/out/$f.png" "$DEST/$f.png"
 done
 

@@ -11,7 +11,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="style.css?v=8">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
       integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
 </head>
@@ -25,9 +25,6 @@
     </a>
     <nav>
       <a href="index.html">← Home</a>
-      <a href="#flash">Flash</a>
-      <a href="#maps">Maps</a>
-      <a href="#mount">Mount</a>
       <a class="gh" href="https://github.com/RaemondBW/OpenTrailPaper">GitHub</a>
     </nav>
   </div>
@@ -184,6 +181,85 @@
   </div>
 </section>
 
+<section id="sd-card">
+  <div class="wrap">
+    <p class="kicker">04 — SD card files</p>
+    <h2>SD card layout</h2>
+    <p class="sub">The device uses ordinary files and folders. The app transfers them over Bluetooth, but you can also manage the card directly.</p>
+
+    <div class="sd-layout">
+      <div class="sd-layout-copy">
+        <h3>Card root</h3>
+        <p>Folders are created as they are needed. Copy routes, workouts and firmware updates to the paths shown here.</p>
+      </div>
+      <pre class="sd-tree" aria-label="SD card folder structure"><code>/
+├── rides/
+│   └── YYYYMMDD-HHMMSS.fit
+├── routes/
+│   └── *.gpx
+├── workouts/
+│   └── *.erg or *.mrc
+├── maps/
+│   ├── tiles/
+│   │   └── 862830/
+│   │       └── 827ffffff.ebm
+│   └── *.ebm
+├── config/
+│   └── dashboard.cfg
+├── logs/
+│   └── YYYYMMDD.log
+└── firmware.bin</code></pre>
+      <div class="sd-key" aria-label="SD card contents">
+        <button class="sd-file" type="button" data-format="fit" aria-haspopup="dialog" aria-controls="file-format-dialog">
+          <span class="sd-file-head"><code>/rides</code><span>FIT format →</span></span>
+          <span class="sd-file-summary">Recorded rides, named with a UTC timestamp.</span>
+        </button>
+        <button class="sd-file" type="button" data-format="gpx" aria-haspopup="dialog" aria-controls="file-format-dialog">
+          <span class="sd-file-head"><code>/routes</code><span>GPX format →</span></span>
+          <span class="sd-file-summary">GPX files listed on the Navigate screen.</span>
+        </button>
+        <button class="sd-file" type="button" data-format="workout" aria-haspopup="dialog" aria-controls="file-format-dialog">
+          <span class="sd-file-head"><code>/workouts</code><span>ERG / MRC →</span></span>
+          <span class="sd-file-summary">Structured workouts created in the app or copied to the card.</span>
+        </button>
+        <button class="sd-file" type="button" data-format="ebm" aria-haspopup="dialog" aria-controls="file-format-dialog">
+          <span class="sd-file-head"><code>/maps</code><span>EBM format →</span></span>
+          <span class="sd-file-summary">Offline H3 tiles and optional whole-region maps.</span>
+        </button>
+        <button class="sd-file" type="button" data-format="dashboard" aria-haspopup="dialog" aria-controls="file-format-dialog">
+          <span class="sd-file-head"><code>/config</code><span>CFG format →</span></span>
+          <span class="sd-file-summary"><code>dashboard.cfg</code> defines the screen order, fields and map data strip.</span>
+        </button>
+        <div class="sd-file sd-file-static">
+          <span class="sd-file-head"><code>/logs</code></span>
+          <span class="sd-file-summary">Daily diagnostic logs.</span>
+        </div>
+        <div class="sd-file sd-file-static">
+          <span class="sd-file-head"><code>/firmware.bin</code></span>
+          <span class="sd-file-summary">Only used for SD-card-based OTA updates. Other update methods do not require you to add this file.</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<dialog class="format-dialog" id="file-format-dialog" aria-labelledby="format-title">
+  <div class="format-dialog-head">
+    <div>
+      <p class="kicker" id="format-path">File format</p>
+      <h2 id="format-title">SD card file</h2>
+    </div>
+    <button class="format-close" id="format-close" type="button" aria-label="Close file format explanation">Close ×</button>
+  </div>
+  <p class="format-intro" id="format-intro"></p>
+  <ul class="format-facts" id="format-facts"></ul>
+  <div class="format-example" id="format-example" hidden>
+    <p class="format-label" id="format-example-label">Example</p>
+    <pre><code id="format-example-code"></code></pre>
+  </div>
+  <p class="format-note" id="format-note" hidden></p>
+</dialog>
+
 <footer>
   <div class="wrap">
     <span>OpenTrailPaper — <a href="https://github.com/RaemondBW/OpenTrailPaper/blob/main/LICENSE">open source</a>.</span>
@@ -200,5 +276,6 @@
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script type="module" src="mapgen-ui.js"></script>
+<script type="module" src="setup-files.js?v=1"></script>
 </body>
 </html>

@@ -1247,16 +1247,17 @@ void ui_render_summary(const RideSummary& r, uint8_t* fb) {
     ui::text(&Impact_M, x, y + heroH, buf, fb, EPD_DRAW_ALIGN_LEFT, ui::INK);
     y += heroH + 12;
 
-    char moving[16];
-    snprintf(moving, sizeof(moving), "%lu:%02lu",
-             (unsigned long)(r.movingS / 3600),
-             (unsigned long)((r.movingS / 60) % 60));
+    char rideTime[16];
+    snprintf(rideTime, sizeof(rideTime), "%lu:%02lu:%02lu",
+             (unsigned long)(r.elapsedS / 3600),
+             (unsigned long)((r.elapsedS / 60) % 60),
+             (unsigned long)(r.elapsedS % 60));
     if (r.avgPowerW > 0)
-        snprintf(buf, sizeof(buf), "%s moving · %.0f %s ascent · %d W avg", moving,
+        snprintf(buf, sizeof(buf), "%s ride · %.0f %s ascent · %d W avg", rideTime,
                  units::elev(r.climbedM, r.useMiles), r.useMiles ? "ft" : "m",
                  r.avgPowerW);
     else
-        snprintf(buf, sizeof(buf), "%s moving · %.0f %s ascent · %d bpm", moving,
+        snprintf(buf, sizeof(buf), "%s ride · %.0f %s ascent · %d bpm", rideTime,
                  units::elev(r.climbedM, r.useMiles), r.useMiles ? "ft" : "m",
                  r.avgHrBpm);
     char line[72];
@@ -1379,7 +1380,11 @@ void ui_render_menu(const MenuInfo& m, uint8_t* fb) {
 
     char startSub[64], sensorSub[64], historySub[64], settingsSub[64];
     if (m.recording) {
-        snprintf(startSub, sizeof(startSub), "recording · %.1f %s",
+        const uint32_t sec = m.rideElapsedS;
+        snprintf(startSub, sizeof(startSub), "%lu:%02lu:%02lu · %.1f %s",
+                 (unsigned long)(sec / 3600),
+                 (unsigned long)((sec / 60) % 60),
+                 (unsigned long)(sec % 60),
                  units::distM(m.rideDistanceM, m.useMiles),
                  m.useMiles ? "mi" : "km");
     } else {

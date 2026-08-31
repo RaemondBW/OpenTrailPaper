@@ -68,9 +68,17 @@ header.nav nav { display: flex; gap: 22px; margin-left: auto; flex-wrap: wrap; a
 }
 /* Phones: drop the in-page section links, keep the logo + Set up + GitHub. */
 @media (max-width: 720px) {
-  header.nav .wrap { flex-wrap: nowrap; }
-  header.nav nav { gap: 16px; }
-  header.nav nav a[href^="#"] { display: none; }
+  header.nav .wrap { min-height: 60px; padding: 0 16px; flex-wrap: nowrap; gap: 10px; }
+  header.nav .brand { gap: 7px; font-size: 1rem; }
+  header.nav .brand .brand-mark { width: 26px; height: 26px; }
+  header.nav nav { gap: 10px; flex-wrap: nowrap; }
+  header.nav nav a { font-size: 0.82rem; white-space: nowrap; }
+  header.nav nav a[href^="#"],
+  header.nav nav a[href^="https://discord.gg/"] { display: none; }
+  header.nav nav a.gh { padding: 6px 10px; }
+}
+@media (max-width: 350px) {
+  header.nav nav a[href="setup.html"] { display: none; }
 }
 header.nav nav a { text-decoration: none; color: var(--ink-soft); font-size: 0.95rem; font-weight: 500; }
 header.nav nav a:hover { color: var(--ink); }
@@ -79,6 +87,10 @@ header.nav nav a.gh {
   padding: 8px 16px; border-radius: 6px;
 }
 header.nav nav a.gh:hover { background: #000; color: #fff; }
+@media (max-width: 720px) {
+  header.nav .wrap nav a { font-size: 0.82rem; }
+  header.nav .wrap nav a.gh { padding: 6px 10px; }
+}
 
 /* --- hero --- */
 .hero {
@@ -87,10 +99,11 @@ header.nav nav a.gh:hover { background: #000; color: #fff; }
 }
 .hero .wrap {
   display: grid; grid-template-columns: 1fr 380px; gap: 48px;
-  align-items: end; padding-top: 72px;
+  align-items: center; padding-top: 72px;
 }
 @media (max-width: 860px) {
   .hero .wrap { grid-template-columns: 1fr; gap: 0; padding-top: 44px; }
+  .hero .device-mock { order: -1; margin-bottom: 36px; }
   .hero .copy { padding-bottom: 36px; }
   .hero h1 { font-size: clamp(2.5rem, 11vw, 3rem); }
   .hero p.lede { font-size: 1.03rem; }
@@ -99,7 +112,7 @@ header.nav nav a.gh:hover { background: #000; color: #fff; }
   /* smaller device on narrow screens */
   .hero .device-mock .device { width: 232px; }
 }
-.hero .copy { padding-bottom: 64px; }
+.hero .copy { padding-bottom: 0; }
 .hero .tag {
   display: inline-flex; align-items: center; gap: 8px;
   border: 2px solid var(--rule); padding: 5px 12px;
@@ -113,8 +126,18 @@ header.nav nav a.gh:hover { background: #000; color: #fff; }
   margin: 0 0 20px;
 }
 .hero p.lede { font-size: 1.19rem; color: var(--ink-soft); max-width: 46ch; margin: 0 0 32px; }
+.hero .copy > :last-child { margin-bottom: 0; }
 .cta-row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
 .badge-row { margin-top: 20px; color: var(--ink-soft); font-size: 0.9rem; }
+@media (max-width: 860px) {
+  .hero .copy { padding-bottom: 36px; }
+}
+@media (max-width: 350px) {
+  .hero .tag {
+    display: flex; max-width: 100%; justify-content: center; text-align: center;
+    font-size: .7rem; letter-spacing: .08em;
+  }
+}
 
 /* --- buttons --- */
 .btn {
@@ -145,12 +168,12 @@ header.nav nav a.gh:hover { background: #000; color: #fff; }
               inset 0 0 0 1px rgba(255, 255, 255, 0.7),
               inset 0 0 0 2px rgba(0, 0, 0, 0.06);
 }
-/* side buttons on the case edges (left one long, right one short) */
+/* two small hardware buttons on the left edge */
 .device-mock .device::before, .device-mock .device::after {
   content: ""; position: absolute; width: 3px; border-radius: 3px; background: #cccfd4;
 }
-.device-mock .device::before { left: -3px; top: 39%; height: 48px; }
-.device-mock .device::after { right: -3px; top: 44%; height: 28px; }
+.device-mock .device::before { left: -3px; top: 40%; height: 28px; }
+.device-mock .device::after { left: -3px; top: 48%; height: 28px; }
 .device-mock .screen {
   position: relative;                            /* holds the live panel */
   aspect-ratio: 540 / 960; background: #f4f3ee;  /* panel's inactive glass border */
@@ -179,6 +202,7 @@ header.nav nav a.gh:hover { background: #000; color: #fff; }
 /* round home button, centred beneath the screen */
 .device-mock .home {
   display: block; width: 44px; height: 44px; margin: 12px auto 15px;
+  padding: 0; border: 0; cursor: default;
   border-radius: 50%; background: linear-gradient(#fafbfc, #eaecef);
   box-shadow: inset 0 0 0 2px #cbced3, inset 0 2px 4px rgba(0, 0, 0, 0.05),
               0 1px 1px rgba(255, 255, 255, 0.8);
@@ -239,6 +263,11 @@ section .sub { color: var(--ink-soft); font-size: 1.06rem; margin: 0 0 40px; max
 .emu-glow.on { opacity: 1; }
 
 .tap-pulse { position: absolute; left: 50%; top: 50%; width: 0; height: 0; pointer-events: none; }
+.emu-screen .tap-pulse {
+  z-index: 4; transform: translate(-50%, -50%); padding: 0; pointer-events: auto;
+  border: 3px solid var(--accent); border-radius: 3px;
+  background: rgba(244, 80, 30, 0.08); cursor: pointer;
+}
 .tap-pulse::before, .tap-pulse::after {
   content: ""; position: absolute; left: 0; top: 0; border-radius: 50%;
   transform: translate(-50%, -50%); opacity: 0;
@@ -250,6 +279,12 @@ section .sub { color: var(--ink-soft); font-size: 1.06rem; margin: 0 0 40px; max
 .tap-pulse::after { width: 18px; height: 18px; border: 3px solid var(--accent); }
 .tap-pulse.go::before { animation: tapdot 1.1s ease-out; }
 .tap-pulse.go::after { animation: tapring 1.1s ease-out; }
+.emu-screen .tap-pulse::before {
+  left: 50%; top: 50%; width: 14px; height: 14px; display: none;
+}
+.emu-screen .tap-pulse::after { left: 50%; top: 50%; display: none; }
+.emu-screen .tap-pulse.go::before { display: block; animation: tapdot 0.7s ease-out; }
+.emu-screen .tap-pulse.go::after { display: block; animation: tapring 0.7s ease-out; }
 @keyframes tapdot {
   0%   { transform: translate(-50%, -50%) scale(0);   opacity: 0; }
   18%  { transform: translate(-50%, -50%) scale(1.15); opacity: 1; }
@@ -265,6 +300,13 @@ section .sub { color: var(--ink-soft); font-size: 1.06rem; margin: 0 0 40px; max
 
 /* always-visible step list; the active row expands to show its detail */
 .emu-panel { max-width: 46ch; align-self: center; }
+.emu-help {
+  margin: 0 0 10px; color: var(--ink); font-size: 0.88rem; font-weight: 600;
+}
+.emu-help::before {
+  content: "TRY IT · "; color: var(--accent); font-family: var(--display);
+  letter-spacing: .08em;
+}
 .emu-steps { list-style: none; margin: 0; padding: 0; }
 .emu-step { border-top: 1px solid var(--line); }
 .emu-step:last-child { border-bottom: 1px solid var(--line); }
@@ -289,6 +331,34 @@ section .sub { color: var(--ink-soft); font-size: 1.06rem; margin: 0 0 40px; max
   color: var(--ink-soft); font-size: 0.96rem; line-height: 1.55; }
 .emu-hint { display: flex; align-items: center; gap: 8px; color: var(--ink); font-weight: 600; }
 .emu-hand { font-size: 1.25rem; line-height: 1; }
+
+/* Real controls on the tutorial device. The orange ring marks only the control
+   described by the selected row. */
+.emu-device .home { cursor: pointer; position: relative; }
+.emu-device .home.is-target,
+.emu-device .emu-side.is-target {
+  box-shadow: 0 0 0 4px var(--paper), 0 0 0 7px var(--accent);
+}
+.emu-device .home.is-target { animation: controlpulse 1.8s ease-in-out infinite; }
+.emu-device .home.go,
+.emu-device .emu-side.go { animation: controlpress .35s ease-out; }
+.emu-side,
+.emu-side-upper {
+  position: absolute; z-index: 5; left: -7px; width: 12px; height: 28px;
+  border: 0; border-radius: 5px; padding: 0; background: #cccfd4; cursor: pointer;
+}
+.emu-side-upper { top: 40%; cursor: default; pointer-events: none; }
+.emu-side { top: 48%; }
+.emu-device .device::before,
+.emu-device .device::after { display: none; }
+@keyframes controlpulse {
+  0%, 100% { box-shadow: 0 0 0 3px var(--paper), 0 0 0 5px var(--accent); }
+  50% { box-shadow: 0 0 0 4px var(--paper), 0 0 0 8px var(--accent); }
+}
+@keyframes controlpress {
+  0%, 100% { transform: scale(1); }
+  45% { transform: scale(.86); }
+}
 
 /* step dots — hidden on desktop (the accordion is the nav), shown on mobile */
 .emu-dots { display: none; gap: 9px; margin-top: 18px; }
@@ -320,6 +390,7 @@ section .sub { color: var(--ink-soft); font-size: 1.06rem; margin: 0 0 40px; max
   .emu-arrow:active { background: var(--paper-dim); transform: scale(0.94); }
   .emu-device .device { width: 200px; flex: none; }   /* never squeeze the device */
   .emu-panel { max-width: 400px; width: 100%; }
+  .emu-help { text-align: center; }
   .emu-steps { text-align: center; }
   .emu-step { border: 0; }
   .emu-step:not(.on) { display: none; }        /* show only the current step */
@@ -399,6 +470,96 @@ section .sub { color: var(--ink-soft); font-size: 1.06rem; margin: 0 0 40px; max
 .split-col.phone .head { background: var(--accent); }
 .split-col ul { margin: 0; padding: 20px; list-style: none; display: flex; flex-direction: column; gap: 12px; }
 .split-col li { font-size: 0.95rem; color: var(--ink-soft); }
+
+/* --- SD card structure --- */
+.sd-layout {
+  display: grid; grid-template-columns: minmax(220px, .75fr) minmax(280px, 1fr);
+  margin-top: 28px; border: 2px solid var(--rule); background: var(--panel);
+}
+.sd-layout-copy { padding: 20px; border-right: 2px solid var(--rule); }
+.sd-layout h3 {
+  margin: 0 0 8px; font-family: var(--display); font-size: 1.5rem;
+  line-height: 1.1;
+}
+.sd-layout-copy p { margin: 0; color: var(--ink-soft); font-size: .94rem; }
+.sd-tree {
+  margin: 0; padding: 20px; overflow-x: auto; border: 0;
+  background: var(--ink); color: var(--paper); font: .82rem/1.55 var(--mono);
+}
+.sd-tree code { padding: 0; background: transparent; color: inherit; font: inherit; }
+.sd-key {
+  grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, 1fr);
+  gap: 1px; margin: 0; border-top: 2px solid var(--rule); background: var(--line);
+}
+.sd-file {
+  min-width: 0; display: flex; flex-direction: column; gap: 6px; padding: 14px 16px;
+  border: 0; border-radius: 0; background: var(--panel); color: var(--ink);
+  font: inherit; text-align: left; cursor: pointer;
+}
+.sd-file:last-child { grid-column: 1 / -1; }
+.sd-file:hover { background: var(--paper-dim); }
+.sd-file-static { cursor: default; }
+.sd-file-static:hover { background: var(--panel); }
+.sd-file:focus-visible { position: relative; z-index: 1; outline: 3px solid var(--accent); outline-offset: -3px; }
+.sd-file-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.sd-file-head > code { font-weight: 700; }
+.sd-file-head > span {
+  color: var(--accent-dark); font-family: var(--mono); font-size: .7rem;
+  font-weight: 600; text-transform: uppercase; white-space: nowrap;
+}
+.sd-file-summary { color: var(--ink-soft); font-size: .84rem; line-height: 1.4; }
+@media (max-width: 860px) {
+  .sd-key { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 620px) {
+  .sd-layout { grid-template-columns: 1fr; }
+  .sd-layout-copy { border-right: 0; border-bottom: 2px solid var(--rule); }
+  .sd-key { grid-template-columns: 1fr; }
+}
+
+/* --- SD file-format modal --- */
+.format-dialog {
+  width: min(680px, calc(100% - 32px)); max-height: calc(100dvh - 32px);
+  margin: auto; padding: 26px; overflow: auto; border: 2px solid var(--rule);
+  border-radius: 0; background: var(--paper); color: var(--ink);
+  box-shadow: 12px 12px 0 rgba(20, 20, 20, .22);
+}
+.format-dialog::backdrop { background: rgba(20, 20, 20, .72); }
+.format-dialog-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; }
+.format-dialog h2 {
+  margin: 0; font-family: var(--display); font-size: clamp(2rem, 6vw, 3rem);
+  line-height: 1; letter-spacing: -.01em;
+}
+.format-close {
+  flex: none; padding: 8px 10px; border: 2px solid var(--rule); border-radius: 0;
+  background: transparent; color: var(--ink); font: 700 .78rem var(--sans);
+  text-transform: uppercase; cursor: pointer;
+}
+.format-close:hover { background: var(--ink); color: var(--paper); }
+.format-intro { margin: 22px 0 14px; color: var(--ink-soft); font-size: 1.02rem; }
+.format-facts { margin: 0; padding-left: 22px; }
+.format-facts li { margin: 0 0 8px; color: var(--ink-soft); }
+.format-example { margin-top: 22px; }
+.format-label {
+  margin: 0 0 7px; font-family: var(--display); font-size: .82rem;
+  font-weight: 700; letter-spacing: .14em; text-transform: uppercase;
+}
+.format-example pre {
+  max-height: 280px; margin: 0; padding: 16px; overflow: auto;
+  background: var(--ink); color: var(--paper); border: 0;
+  font: .76rem/1.55 var(--mono); white-space: pre;
+}
+.format-example code { padding: 0; background: transparent; color: inherit; font: inherit; }
+.format-note {
+  margin: 20px 0 0; padding: 12px 14px; border-left: 4px solid var(--accent);
+  background: var(--paper-dim); color: var(--ink-soft); font-size: .9rem;
+}
+@media (max-width: 520px) {
+  .format-dialog { width: calc(100% - 20px); max-height: calc(100dvh - 20px); padding: 20px; box-shadow: none; }
+  .format-dialog-head { gap: 14px; }
+  .format-dialog h2 { font-size: 2rem; }
+  .format-close { padding: 6px 8px; }
+}
 
 /* --- cards / two-col tool sections --- */
 .flash-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 26px; }
@@ -491,6 +652,29 @@ section.dark select {
    strong inherit the link colour rather than fighting it. */
 section.dark .hw-list li { color: #b5b2a8; }
 section.dark .hw-list a strong { color: inherit; }
+
+/* --- sponsors --- */
+.sponsor-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.sponsor-card {
+  min-width: 0; display: flex; align-items: center; justify-content: space-between;
+  gap: 20px; padding: 22px 24px; border: 2px solid var(--rule);
+  background: var(--panel); color: var(--ink); text-decoration: none;
+}
+.sponsor-card:hover { background: var(--ink); color: var(--paper); }
+.sponsor-card strong {
+  font-family: var(--display); font-size: 1.7rem; line-height: 1;
+  letter-spacing: .01em;
+}
+.sponsor-card > span {
+  flex: none; font-family: var(--mono); font-size: .78rem; color: var(--ink-soft);
+}
+.sponsor-card:hover > span { color: var(--paper); }
+@media (max-width: 760px) {
+  .sponsor-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 430px) {
+  .sponsor-card { align-items: flex-start; flex-direction: column; gap: 8px; }
+}
 
 /* --- mapgen --- */
 .pickmap {
