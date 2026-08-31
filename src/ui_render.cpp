@@ -1203,7 +1203,7 @@ static void sheetButton(const EpdRect& r, const char* text, bool primary,
              text, fb, EPD_DRAW_ALIGN_CENTER, primary ? ui::PAPER : ui::INK);
 }
 
-void ui_render_summary(const RideSummary& r, uint8_t* fb) {
+void ui_render_summary(const RideSummary& r, uint8_t* fb, bool interrupted) {
     const int W = epd_rotated_display_width();
     const int H = epd_rotated_display_height();
     char buf[64];
@@ -1223,8 +1223,9 @@ void ui_render_summary(const RideSummary& r, uint8_t* fb) {
 
     // Tracked label, then the hero figure with its unit set INLINE in impact —
     // the specimen reads "54.8 KM" as one line, not a value with a superscript.
-    const int lw = ui::labelWidth(&Arial_L, "END OF RIDE");
-    ui::label(x + lw / 2, y + Arial_L.ascender, "END OF RIDE", fb);
+    const char* title = interrupted ? "RIDE INTERRUPTED" : "END OF RIDE";
+    const int lw = ui::labelWidth(&Arial_L, title);
+    ui::label(x + lw / 2, y + Arial_L.ascender, title, fb);
     y += Arial_L.ascender + 8;
 
     snprintf(buf, sizeof(buf), "%.1f %s", units::distM(r.distanceM, r.useMiles),
@@ -1253,7 +1254,7 @@ void ui_render_summary(const RideSummary& r, uint8_t* fb) {
 
     sheetButton(kSaveButton, "SAVE", true, fb);
     sheetButton(kDiscardButton, "DISCARD", false, fb);
-    sheetButton(kResumeButton, "RESUME", false, fb);
+    sheetButton(kResumeButton, interrupted ? "CONTINUE" : "RESUME", false, fb);
 }
 
 void ui_render_update_overlay(const char* phase, int pct, uint8_t* fb) {

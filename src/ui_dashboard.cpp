@@ -79,6 +79,10 @@ int mapSlot() {
     return dash_config::pageCount() - 1;
 }
 RideSummary pendingSummary;
+// The summary sheet is doing boot-recovery duty: it shows the ride a reset cut
+// short, and its buttons resolve that ride (CONTINUE / SAVE / DISCARD) instead
+// of stopping a live one.
+bool recoveryPrompt = false;
 
 float mapMpp = 2.0f;  // map zoom: 1/2/4/8/16/32 m per px (wide levels show tiles)
 // Whether the next map frame may read tiles off the card. See renderMapScreen:
@@ -445,7 +449,15 @@ void goBack() {
             break;
         // Back on the summary resumes the ride (non-destructive); SAVE / DISCARD
         // must be tapped explicitly.
-        case SCREEN_SUMMARY:  screen = SCREEN_DASH; break;
+        case SCREEN_SUMMARY:
+            // Backing out of the recovery prompt settles it the safe way:
+            // finalize and keep the ride. Same philosophy as power-off.
+            if (recoveryPrompt) {
+                recoveryPrompt = false;
+                ride_recorder::resolveRecovery(ride_recorder::RECOVERY_SAVE);
+            }
+            screen = SCREEN_DASH;
+            break;
         case SCREEN_DASH:     break;  // already home
     }
 }
@@ -456,6 +468,7 @@ void toggleRide() {
         pendingSummary = ride_recorder::summary();
         screen = SCREEN_SUMMARY;
     } else {
+        recoveryPrompt = false;   // startRide() saves any still-pending ride
         ride_recorder::startRide();
         screen = SCREEN_DASH;
     }
@@ -659,14 +672,29 @@ void handleTap(int x, int y) {
             break;
         case SCREEN_SUMMARY:
             if (inRect(kResumeButton, x, y)) {
-                // Ride is still recording in the background — just go back to the
+                if (recoveryPrompt) {
+                    // CONTINUE: reopen the interrupted file and keep recording.
+                    recoveryPrompt = false;
+                    ride_recorder::resolveRecovery(ride_recorder::RECOVERY_CONTINUE);
+                }
+                // Live ride: it never stopped recording — just go back to the
                 // dashboard and keep going.
                 screen = SCREEN_DASH;
             } else if (inRect(kSaveButton, x, y)) {
-                ride_recorder::stopRide(true);
+                if (recoveryPrompt) {
+                    recoveryPrompt = false;
+                    ride_recorder::resolveRecovery(ride_recorder::RECOVERY_SAVE);
+                } else {
+                    ride_recorder::stopRide(true);
+                }
                 screen = SCREEN_DASH;
             } else if (inRect(kDiscardButton, x, y)) {
-                ride_recorder::stopRide(false);
+                if (recoveryPrompt) {
+                    recoveryPrompt = false;
+                    ride_recorder::resolveRecovery(ride_recorder::RECOVERY_DISCARD);
+                } else {
+                    ride_recorder::stopRide(false);
+                }
                 screen = SCREEN_DASH;
             }
             break;
@@ -2126,6 +2154,12 @@ void task(void*) {
     // mid-recovery tears another file, every reboot found more to do than the
     // last. Off the boot path a slow recovery costs time, not a brick.
     ride_recorder::recoverRides();
+    // A ride the reset cut short: put the question on screen before anything
+    // else happens to the file.
+    if (ride_recorder::pendingRecovery(&pendingSummary)) {
+        recoveryPrompt = true;
+        screen = SCREEN_SUMMARY;
+    }
     applySdUpdate();          // flash a firmware.bin from the SD card, if present
     usb_storage::begin();     // THEN expose the SD to a host computer over USB
     bool lastHostActive = false;
@@ -2152,6 +2186,10 @@ void task(void*) {
         if (ride_recorder::consumeLateMount()) {
             diag::log("sd: late mount — loading routes/maps, exposing USB drive");
             ride_recorder::recoverRides();
+            if (ride_recorder::pendingRecovery(&pendingSummary)) {
+                recoveryPrompt = true;
+                screen = SCREEN_SUMMARY;
+            }
             routes::begin();
             map_store::rescanCard();
             applySdUpdate();      // a firmware.bin may have been on the card
@@ -2538,7 +2576,7 @@ void task(void*) {
                     // Modal: the ride screen stays behind the sheet, scrimmed.
                     ui_render_dashboard(s, routes::navActive(),
                                         dash_config::current(), fb);
-                    ui_render_summary(pendingSummary, fb);
+                    ui_render_summary(pendingSummary, fb, recoveryPrompt);
                     break;
                 case SCREEN_MENU: {
                     MenuInfo m;

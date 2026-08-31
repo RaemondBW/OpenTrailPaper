@@ -187,7 +187,9 @@ bool ui_render_dashboard_toned();
 extern const EpdRect kResumeButton;
 extern const EpdRect kSaveButton;
 extern const EpdRect kDiscardButton;
-void ui_render_summary(const RideSummary& r, uint8_t* fb);
+// interrupted=true renders the boot-recovery variant of the sheet: the ride a
+// reset cut short, with CONTINUE in place of RESUME.
+void ui_render_summary(const RideSummary& r, uint8_t* fb, bool interrupted = false);
 
 // Menu (design 1h). Rows are kMenuRowH tall starting at kMenuRowTop;
 // row 0 (Start/Stop Ride) is the only action today, the rest show live

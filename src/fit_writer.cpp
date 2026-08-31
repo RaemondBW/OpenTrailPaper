@@ -239,22 +239,31 @@ void FitWriter::writeRecord(const Record& r) {
     writeBytes(buf, sizeof(buf));
 }
 
-FitWriter::RepairResult FitWriter::repair(fs::FS& fs, const char* path) {
-    RepairResult res;
-
-    File f = fs.open(path, "r+");  // read/write, no truncate
-    if (!f) return res;            // INVALID
+// Open `path` with `mode`, validate the prologue, and replay the record
+// stream, filling `res` with everything the stream can testify to: distance,
+// end time, and the stats the live recorder would have accumulated (records
+// are 1 Hz while the timer runs, so `records` doubles as timer seconds; the
+// moving bar and climb hysteresis mirror ride_recorder's accumulateStats).
+// Returns true with the handle open and `res.status` still INVALID when the
+// file is an unfinished ride with records to keep; returns false — handle
+// closed, status terminal — for everything else.
+static uint16_t get16(const uint8_t* p) { return (uint16_t)(p[0] | (p[1] << 8)); }
+static bool scanUnfinished(fs::FS& fs, const char* path, const char* mode,
+                           File& f, FitWriter::RepairResult& res) {
+    using RR = FitWriter::RepairResult;
+    f = fs.open(path, mode);
+    if (!f) return false;                    // INVALID
     uint32_t fileSize = f.size();
-    if (fileSize < PROLOGUE_BYTES) { f.close(); return res; }
+    if (fileSize < PROLOGUE_BYTES) { f.close(); return false; }
 
     uint8_t prologue[PROLOGUE_BYTES];
     if (f.read(prologue, PROLOGUE_BYTES) != (int)PROLOGUE_BYTES) {
         f.close();
-        return res;
+        return false;
     }
     if (prologue[0] != 12 || memcmp(&prologue[8], ".FIT", 4) != 0) {
         f.close();
-        return res;  // not one of ours
+        return false;  // not one of ours
     }
 
     // A finished ride is exactly header + data_size + the 2-byte CRC. Anything
@@ -263,65 +272,117 @@ FitWriter::RepairResult FitWriter::repair(fs::FS& fs, const char* path) {
     uint32_t headerDataSize = get32(&prologue[4]);
     if (fileSize == 12 + headerDataSize + 2) {
         f.close();
-        res.status = RepairResult::ALREADY_FINISHED;
-        return res;
+        res.status = RR::ALREADY_FINISHED;
+        return false;
     }
 
     res.startUtc = utcFromFit(get32(&prologue[43]));  // file_id.time_created
 
     // Walk the record stream. A reset can leave a torn final record, so only
-    // whole ones count; the tail written below overwrites any partial bytes.
+    // whole ones count; whatever follows the last whole record is overwritten
+    // by the caller (finish tail, or the first resumed record).
+    //
+    // NO seek() in this loop. The prologue read above already left the handle
+    // at PROLOGUE_BYTES and every record is consumed in order — per-record
+    // seeks once made recovery slow enough to blow the interrupt watchdog.
     uint32_t records = (fileSize - PROLOGUE_BYTES) / RECORD_BYTES;
     time_t   endUtc = res.startUtc;
     double   distanceM = 0;
     uint32_t good = 0;
     uint8_t  rec[RECORD_BYTES];
-    // NO seek() in this loop. The prologue read above already left the handle at
-    // PROLOGUE_BYTES and every record is consumed in order, so seeking per record
-    // was redundant — and expensive: it made each 25-byte record a separate
-    // seek+read round-trip through FatFs to the card. A 2 h ride is ~7,200
-    // records, and with up to 32 files to repair that was enough to blow the
-    // interrupt watchdog and reboot the device mid-recovery, which then left one
-    // more torn file for the next boot to find. Straight sequential reads let
-    // FatFs serve most records from its sector cache.
+    float climbBase = 0;
+    bool climbBaseValid = false;
     for (uint32_t i = 0; i < records; ++i) {
         if (f.read(rec, RECORD_BYTES) != (int)RECORD_BYTES) break;
         if (rec[0] != L_RECORD) break;  // stream desynced — salvage what we have
         endUtc = utcFromFit(get32(&rec[REC_OFF_TIMESTAMP]));
         distanceM = get32(&rec[REC_OFF_DISTANCE]) / 100.0;
+        uint16_t pw = get16(&rec[21]);
+        if (pw != 0xFFFF) { res.powerSum += pw; res.powerCount++; }
+        if (rec[23] != 0xFF) { res.hrSum += rec[23]; res.hrCount++; }
+        uint16_t sp = get16(&rec[19]);              // mm/s
+        if (sp != 0xFFFF && sp >= 833) res.movingS++;   // 3 km/h, recorder's bar
+        uint16_t altRaw = get16(&rec[13]);
+        if (altRaw != 0xFFFF) {
+            float alt = altRaw / 5.0f - 500.0f;
+            if (!climbBaseValid) { climbBase = alt; climbBaseValid = true; }
+            else if (alt > climbBase + 3.0f) { res.climbM += alt - climbBase; climbBase = alt; }
+            else if (alt < climbBase - 3.0f) climbBase = alt;
+        }
         good = i + 1;
         // Let the scheduler breathe on a long file. Recovery can legitimately
-        // walk hundreds of thousands of records, and it must never be the reason
-        // a watchdog fires.
+        // walk hundreds of thousands of records, and it must never be the
+        // reason a watchdog fires.
         if ((i & 0x3FF) == 0x3FF) delay(0);
     }
 
     if (good == 0) {
         f.close();
-        res.status = RepairResult::EMPTY;
-        return res;
+        res.status = RR::EMPTY;
+        return false;
     }
 
     res.records = (int)good;
     res.distanceM = distanceM;
+    res.endUtc = endUtc;
     // The true timer count died with the reset; elapsed time is the honest
     // stand-in, and matches what the record stream actually spans.
     res.elapsedS = (uint32_t)(endUtc - res.startUtc);
+    return true;
+}
+
+FitWriter::RepairResult FitWriter::repair(fs::FS& fs, const char* path) {
+    RepairResult res;
+    File f;
+    if (!scanUnfinished(fs, path, "r+", f, res)) return res;
 
     // Hand the open handle to a writer positioned just past the last whole
     // record, so finish() appends the usual tail and fixes up size + CRC.
     FitWriter w;
     w.file_ = f;
     w.startUtc_ = res.startUtc;
-    w.dataSize_ = PROLOGUE_BYTES - 12 + good * RECORD_BYTES;
-    if (!w.file_.seek(PROLOGUE_BYTES + good * RECORD_BYTES)) {
+    w.dataSize_ = PROLOGUE_BYTES - 12 + (uint32_t)res.records * RECORD_BYTES;
+    if (!w.file_.seek(PROLOGUE_BYTES + (uint32_t)res.records * RECORD_BYTES)) {
         f.close();
         return res;  // INVALID
     }
-    if (!w.finish(endUtc, distanceM, res.elapsedS, {})) return res;  // no roll-up on repair
+    if (!w.finish(res.endUtc, res.distanceM, res.elapsedS, {})) return res;  // no roll-up on repair
 
     res.status = RepairResult::REPAIRED;
     return res;
+}
+
+FitWriter::RepairResult FitWriter::analyze(fs::FS& fs, const char* path) {
+    RepairResult res;
+    File f;
+    if (!scanUnfinished(fs, path, "r", f, res)) return res;
+    f.close();
+    res.status = RepairResult::UNFINISHED;
+    return res;
+}
+
+bool FitWriter::resume(fs::FS& fs, const char* path, RepairResult* out) {
+    RepairResult res;
+    File f;
+    bool ok = scanUnfinished(fs, path, "r+", f, res);
+    if (ok) {
+        if (f.seek(PROLOGUE_BYTES + (uint32_t)res.records * RECORD_BYTES)) {
+            // Take over as if the reset never happened: the next writeRecord
+            // lands right after the last whole record, overwriting any torn
+            // bytes. If the resumed leg is shorter than the torn tail, stale
+            // bytes can survive past the new CRC; the next boot's scan then
+            // re-walks and re-finalizes the same records — idempotent.
+            file_ = f;
+            startUtc_ = res.startUtc;
+            dataSize_ = PROLOGUE_BYTES - 12 + (uint32_t)res.records * RECORD_BYTES;
+            res.status = RepairResult::UNFINISHED;
+        } else {
+            f.close();
+            ok = false;
+        }
+    }
+    if (out) *out = res;
+    return ok;
 }
 
 bool FitWriter::finish(time_t endUtc, double totalDistanceM, uint32_t timerS,

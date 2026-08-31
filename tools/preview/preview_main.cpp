@@ -440,6 +440,14 @@ int main(int argc, char** argv) {
     ui_render_summary(sampleSummary(), fb.data());
     emit("summary.png");
 
+    // Interrupted-ride recovery prompt (boot): same sheet, different question.
+    {
+        RideSummary rs = sampleSummary();
+        clearWhite(fb.data());
+        ui_render_summary(rs, fb.data(), true);
+        emit("summary_recovery.png");
+    }
+
     // Firmware update modal
     clearWhite(fb.data());
     ui_render_update_overlay("Downloading", 100, fb.data());

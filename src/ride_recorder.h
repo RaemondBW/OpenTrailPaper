@@ -50,6 +50,18 @@ bool remount(const char* why);
 // once at boot, so any drop was permanent for the session.
 void retryMountIfNeeded();
 
+// What boot found when a reset or power cut interrupted a recording ride.
+// recoverRides() auto-repairs older leftovers but holds the NEWEST one for a
+// decision; pendingRecovery() then hands its replayed stats to the UI, which
+// shows the interrupted-ride sheet and answers with resolveRecovery().
+enum RecoveryAction {
+    RECOVERY_CONTINUE,   // reopen the file and keep recording into it
+    RECOVERY_SAVE,       // finalize it as a complete ride (repair)
+    RECOVERY_DISCARD,    // delete it
+};
+bool pendingRecovery(RideSummary* out);
+void resolveRecovery(RecoveryAction action);
+
 // Rebuild rides that a reset or power cut left half-written. MUST NOT be called
 // from setup(): the work is proportional to what is on the card and once blew
 // the interrupt watchdog, and a reset mid-recovery tears one more file, so the
