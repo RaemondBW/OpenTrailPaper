@@ -5,6 +5,7 @@
 // project is Apache-2.0.
 
 #include "epd_compat.h"
+#include "vfont.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -273,6 +274,8 @@ namespace {
 
 const EpdGlyph* findGlyph(const EpdFont* font, uint32_t cp) {
     if (!font) return nullptr;
+    // Vector faces rasterise their glyphs on first use (see vfont.h).
+    if (const EpdGlyph* vg = vf_glyph(font, cp)) return vg;
     for (uint32_t i = 0; i < font->interval_count; ++i) {
         const EpdUnicodeInterval& iv = font->intervals[i];
         if (cp >= iv.first && cp <= iv.last)

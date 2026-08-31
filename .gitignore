@@ -91,3 +91,5 @@ companion-android/.idea/
 companion-android/keystore.properties
 *.jks
 *.keystore
+.venv-font/
+tools/vfont/out/
