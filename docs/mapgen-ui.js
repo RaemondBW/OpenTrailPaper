@@ -75,14 +75,19 @@ function init() {
 
   // --- Leaflet map: the area is chosen entirely by drawing a box or using the
   //     current view — there are no manual lat/lon fields. -------------------
-  if (typeof L !== "undefined") {
-    map = L.map("pickmap", { zoomControl: true }).setView([37.7625, -122.44], 12);
-    // A clean, minimal light basemap (CARTO Positron); the CSS greyscales it so
-    // the picker reads as a simple monotone map that matches the e-paper theme.
-    L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", {
-      maxZoom: 19,
-      subdomains: "abcd",
-      attribution: "&copy; OpenStreetMap contributors &copy; CARTO",
+  if (typeof L !== "undefined" && typeof maplibregl !== "undefined" && typeof L.maplibreGL === "function") {
+    map = L.map("pickmap", {
+      zoomControl: true,
+      minZoom: 2,
+      maxBounds: [[-85, -180], [85, 180]],
+      maxBoundsViscosity: 1,
+    }).setView([37.7625, -122.44], 12);
+    // OpenFreeMap's keyless Positron style intentionally omits POIs, transit
+    // stops and mountain peaks. It leaves roads and place names visible, which
+    // is enough context for choosing a download area without covering the map
+    // in labels. Generated .ebm files still come from Overpass data below.
+    L.maplibreGL({
+      style: "https://tiles.openfreemap.org/styles/positron",
     }).addTo(map);
     // Recompute size once laid out (in case the section was display:none-ish).
     setTimeout(() => map.invalidateSize(), 200);
@@ -114,8 +119,8 @@ function init() {
       setBbox(b.getSouth(), b.getWest(), b.getNorth(), b.getEast(), false);
     });
   } else {
-    // No Leaflet (offline / blocked CDN): the box is the only way to pick an
-    // area, so without the map there's nothing to do here.
+    // No map libraries (offline / blocked CDN): the box is the only way to pick
+    // an area, so without the map there's nothing to do here.
     const pm = $("pickmap");
     if (pm) pm.style.display = "none";
     drawBtn.style.display = "none";
