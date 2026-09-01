@@ -5,6 +5,29 @@ released version into the GitHub release body (see .github/workflows/build.yml),
 and the app shows it under Settings → Firmware when an update is available —
 so write for the rider, newest version first, one `## vX.YY` heading each.
 
+## v1.17
+
+- If the device resets or runs out of battery mid-ride, the next boot asks
+  what to do with the interrupted ride: continue recording right where it
+  left off, save it as a complete ride, or discard it. Distance, time and
+  averages carry over on continue.
+- Rides interrupted long ago are also found now, even with a full card —
+  recovery used to stop looking after the 32 oldest files.
+- Stopping a ride answers instantly: SAVE and DISCARD show what they're
+  doing while the ride is written to the card, and powering off shows
+  POWERING OFF right away instead of sitting still for a few seconds.
+- The powered-off screen always finishes drawing — it could freeze
+  half-written — and now shows the OpenTrailPaper mark above the map.
+- New typefaces, drawn on the device at exactly the size each field needs.
+  They look like the old ones on purpose, but they're open fonts, they're
+  sharper at every size, and the firmware is about 1 MB smaller.
+- The device now remembers several paired sensors of the same kind — both
+  bikes' power meters can stay paired, and whichever wakes up connects.
+- Turn directions pop up on the music and workout pages too, instead of
+  only on pages that had a spot reserved for them.
+- Map and tile saves retry automatically on a card hiccup, and log enough
+  to tell what actually failed — a phone re-send was the slow fallback.
+
 ## v1.16
 
 - Workouts auto-pause when you stop: five seconds with no power and no
