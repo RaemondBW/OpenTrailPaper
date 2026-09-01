@@ -1849,13 +1849,7 @@ void ui_render_shutdown_screen(uint8_t* fb) {
     // The device's front door, on the way out too: mark and wordmark above the
     // band, over the map. The icon gets a white halo shell and the wordmark a
     // white outline — both sit on whatever the map drew there.
-    drawAppIcon(cx, 176, 168, fb, /*halo=*/true);
-    // Wordmark on a white plate that runs flush into the band's top rule — an
-    // offset-halo outline came out ragged against the map hatching.
-    const char* wm = "OPEN TRAIL PAPER";
-    const int ww = ui::labelWidth(&Impact_T, wm);
-    epd_fill_rect({cx - ww / 2 - 12, 348, (uint16_t)(ww + 24), 51}, 0xFF, fb);
-    ui::label(cx, 382, wm, fb, ui::INK, &Impact_T);
+    drawAppIcon(cx, 200, 168, fb, /*halo=*/true);
 
     // A solid band so the text stays legible over the map backdrop behind it.
     const int bandY = 402, bandH = 116;
