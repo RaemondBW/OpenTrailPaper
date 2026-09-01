@@ -64,6 +64,7 @@ public:
         enum Status {
             ALREADY_FINISHED,  // has a trailing CRC — left untouched
             REPAIRED,          // records salvaged and finish() applied
+            UNFINISHED,        // analyze(): records present, file NOT touched
             EMPTY,             // valid prologue but no records to salvage
             INVALID,           // not a file this writer produced
         };
@@ -72,6 +73,18 @@ public:
         double   distanceM = 0;
         uint32_t elapsedS = 0;
         time_t   startUtc = 0;
+        time_t   endUtc = 0;
+        // Stats replayed from the record stream, so a recovered ride can show
+        // (and resume) real numbers instead of blanks. Records are written at
+        // 1 Hz only while the timer runs, so `records` doubles as timer
+        // seconds; movingS counts records whose speed clears the same 3 km/h
+        // bar the live recorder uses, and climbM applies its 3 m hysteresis.
+        uint64_t powerSum = 0;
+        uint32_t powerCount = 0;
+        uint64_t hrSum = 0;
+        uint32_t hrCount = 0;
+        uint32_t movingS = 0;
+        double   climbM = 0;
     };
 
     // Finalizes, in place, a ride left unfinished by a reset or power loss.
@@ -79,6 +92,20 @@ public:
     // writes the same tail finish() would have. Safe to call on any file: an
     // already-finished ride is reported as ALREADY_FINISHED and not rewritten.
     static RepairResult repair(fs::FS& fs, const char* path);
+
+    // The same walk as repair() but STRICTLY read-only: reports UNFINISHED
+    // (with recovered stats) where repair() would have written the tail. This
+    // is what lets boot ask the rider what to do with an interrupted ride
+    // before anything irreversible happens to the file.
+    static RepairResult analyze(fs::FS& fs, const char* path);
+
+    // Re-arm this writer on an unfinished ride so recording APPENDS to it:
+    // walks to the last whole record and takes over from there, as if the
+    // reset never happened. On success the writer is open (writeRecord /
+    // checkpoint / finish work as usual) and `out` holds the replayed stats
+    // for the recorder to restore. Fails (false) on a finished or invalid
+    // file, leaving it untouched.
+    bool resume(fs::FS& fs, const char* path, RepairResult* out);
 
 private:
     void writeBytes(const uint8_t* data, size_t len);

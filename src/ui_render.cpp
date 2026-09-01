@@ -1203,7 +1203,7 @@ static void sheetButton(const EpdRect& r, const char* text, bool primary,
              text, fb, EPD_DRAW_ALIGN_CENTER, primary ? ui::PAPER : ui::INK);
 }
 
-void ui_render_summary(const RideSummary& r, uint8_t* fb) {
+void ui_render_summary(const RideSummary& r, uint8_t* fb, bool interrupted) {
     const int W = epd_rotated_display_width();
     const int H = epd_rotated_display_height();
     char buf[64];
@@ -1223,8 +1223,9 @@ void ui_render_summary(const RideSummary& r, uint8_t* fb) {
 
     // Tracked label, then the hero figure with its unit set INLINE in impact —
     // the specimen reads "54.8 KM" as one line, not a value with a superscript.
-    const int lw = ui::labelWidth(&Arial_L, "END OF RIDE");
-    ui::label(x + lw / 2, y + Arial_L.ascender, "END OF RIDE", fb);
+    const char* title = interrupted ? "RIDE INTERRUPTED" : "END OF RIDE";
+    const int lw = ui::labelWidth(&Arial_L, title);
+    ui::label(x + lw / 2, y + Arial_L.ascender, title, fb);
     y += Arial_L.ascender + 8;
 
     snprintf(buf, sizeof(buf), "%.1f %s", units::distM(r.distanceM, r.useMiles),
@@ -1253,7 +1254,7 @@ void ui_render_summary(const RideSummary& r, uint8_t* fb) {
 
     sheetButton(kSaveButton, "SAVE", true, fb);
     sheetButton(kDiscardButton, "DISCARD", false, fb);
-    sheetButton(kResumeButton, "RESUME", false, fb);
+    sheetButton(kResumeButton, interrupted ? "CONTINUE" : "RESUME", false, fb);
 }
 
 void ui_render_update_overlay(const char* phase, int pct, uint8_t* fb) {
@@ -1820,15 +1821,43 @@ void ui_render_power_sheet(bool recording, uint8_t* fb) {
     sheetButton(kPowerCancel, "CANCEL", false, fb);
 }
 
+// Instant acknowledgment band for a tap that triggers seconds of work before
+// the next repaint (saving a ride, powering off). Painted over whatever is on
+// the glass; without it the press got no visible response and read as a
+// missed tap. Same geometry as the farewell screen's band.
+void ui_render_busy_band(const char* title, const char* sub, uint8_t* fb,
+                         int bandY, int bandH) {
+    const int W = epd_rotated_display_width();
+    epd_fill_rect({0, bandY, W, bandH}, 0x00, fb);
+    epd_fill_rect({0, bandY - 3, W, 3}, 0xFF, fb);
+    epd_fill_rect({0, bandY + bandH, W, 3}, 0xFF, fb);
+    ui::label(W / 2, bandY + bandH / 2 - 8, title, fb, 0xFF, &Arial_B);
+    ui::text(&Arial_L, W / 2, bandY + bandH / 2 + 32, sub, fb,
+             EPD_DRAW_ALIGN_CENTER, 0xFF);
+}
+
+void ui_render_shutdown_ack(bool savingRide, uint8_t* fb) {
+    ui_render_busy_band("POWERING OFF",
+                        savingRide ? "saving ride..." : "one moment...", fb);
+}
+
+static void drawAppIcon(int cx, int topY, int height, uint8_t* fb, bool halo);
+
 void ui_render_shutdown_screen(uint8_t* fb) {
     const int W = epd_rotated_display_width();
+    const int cx = W / 2;
+    // The device's front door, on the way out too: mark and wordmark above the
+    // band, over the map. The icon gets a white halo shell and the wordmark a
+    // white outline — both sit on whatever the map drew there.
+    drawAppIcon(cx, 200, 168, fb, /*halo=*/true);
+
     // A solid band so the text stays legible over the map backdrop behind it.
     const int bandY = 402, bandH = 116;
     epd_fill_rect({0, bandY, W, bandH}, 0x00, fb);
     epd_fill_rect({0, bandY - 3, W, 3}, 0xFF, fb);
     epd_fill_rect({0, bandY + bandH, W, 3}, 0xFF, fb);
-    ui::label(W / 2, bandY + 50, "POWERED OFF", fb, 0xFF, &Arial_B);
-    ui::text(&Arial_L, W / 2, bandY + 90, "press the BOOT button to wake", fb,
+    ui::label(cx, bandY + 50, "POWERED OFF", fb, 0xFF, &Arial_B);
+    ui::text(&Arial_L, cx, bandY + 90, "press the BOOT button to wake", fb,
              EPD_DRAW_ALIGN_CENTER, 0xFF);   // white on the black band
 }
 
@@ -1841,7 +1870,8 @@ void ui_render_shutdown_screen(uint8_t* fb) {
 //
 // A 264 px bitmap of the same thing cost 35 KB of flash and resampled badly on a
 // 4-grey panel; this costs nothing and stays crisp at any size.
-static void drawAppIcon(int cx, int topY, int height, uint8_t* fb) {
+static void drawAppIcon(int cx, int topY, int height, uint8_t* fb,
+                        bool halo = false) {
     const float k = (float)height / 358.0f;          // reference shape is 358 tall
     auto S = [&](float v) { return (int)(v * k + 0.5f); };
     const int W = S(290);
@@ -1859,6 +1889,10 @@ static void drawAppIcon(int cx, int topY, int height, uint8_t* fb) {
     };
 
     const int border = S(30), radius = S(46);
+    // On a busy backdrop (the farewell map) the black shell needs separation:
+    // a white shell inflated by 6 px behind it reads as an outline.
+    if (halo)
+        roundRect(x0 - 6, y0 - 6, W + 12, S(358) + 12, radius + 6, 0xFF);
     roundRect(x0, y0, W, S(358), radius, 0x00);                     // shell
     roundRect(x0 + border, y0 + border, W - 2 * border, S(358) - 2 * border,
               radius - border > 2 ? radius - border : 2, 0xFF);     // inner face
@@ -1892,8 +1926,6 @@ static void drawAppIcon(int cx, int topY, int height, uint8_t* fb) {
 // Composition: the mark and wordmark sit on the upper third, the step list runs
 // from the optical centre, and the version anchors the foot. Only 0x00 and the
 // 0x22/0x33 greys are used — this panel renders 0x44 and lighter as plain white.
-static void drawAppIcon(int cx, int topY, int height, uint8_t* fb);
-
 void ui_render_boot_screen(const char* version, const char* const* lines,
                            const int8_t* state, const char (*detail)[28],
                            const uint32_t* ms, int count, uint8_t* fb) {

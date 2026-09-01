@@ -78,6 +78,13 @@ int npRingCount = 0, npRingHead = 0;
 double npSum4 = 0;
 uint32_t npCount = 0;
 
+// The interrupted ride boot found, held for the rider's CONTINUE / SAVE /
+// DISCARD (see recoverInterruptedRides). The scan's replayed stats stay here
+// so the prompt can show real numbers and CONTINUE can restore them.
+char pendingRecPath[48] = "";
+FitWriter::RepairResult pendingScan;
+bool havePendingRec = false;
+
 // Grade: altitude change over the last ~30 m of travel
 double gradeMarkDist = 0;
 float gradeMarkAlt = 0;
@@ -118,15 +125,21 @@ void makeRidePath(char* out, size_t len, time_t utc) {
 // is still iterating is a known way to wedge / corrupt the ESP32 SD (FatFs)
 // stack — which showed up as "the device can't recognize the SD card".
 void recoverInterruptedRides() {
+    // Keep the NEWEST files when the directory outgrows the scan window, not
+    // the first ones FAT happens to hand back. FAT iterates in entry order
+    // (roughly oldest-first), so "stop after 32" meant a card with 32+ rides
+    // never scanned recent files at all — this morning's interrupted ride
+    // included, silently. Basenames are timestamps, so lexical order IS
+    // chronological: evict the smallest name when the window is full.
     constexpr int MAX_SCAN = 32;
     char names[MAX_SCAN][40];
     int nameCount = 0;
+    int totalSeen = 0;
 
     sdLock();
     File dir = SD.open(RIDE_DIR);
     if (dir) {
-        for (File f = dir.openNextFile(); f && nameCount < MAX_SCAN;
-             f = dir.openNextFile()) {
+        for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
             if (!f.isDirectory()) {
                 const char* nm = f.name();
                 const char* base = strrchr(nm, '/');
@@ -138,17 +151,33 @@ void recoverInterruptedRides() {
                     f.close();
                     continue;
                 }
-                strncpy(names[nameCount], base, sizeof(names[0]) - 1);
-                names[nameCount][sizeof(names[0]) - 1] = 0;
-                nameCount++;
+                totalSeen++;
+                int slot = -1;
+                if (nameCount < MAX_SCAN) {
+                    slot = nameCount++;
+                } else {
+                    int minIdx = 0;
+                    for (int i = 1; i < MAX_SCAN; ++i)
+                        if (strcmp(names[i], names[minIdx]) < 0) minIdx = i;
+                    if (strcmp(base, names[minIdx]) > 0) slot = minIdx;
+                }
+                if (slot >= 0) {
+                    strncpy(names[slot], base, sizeof(names[0]) - 1);
+                    names[slot][sizeof(names[0]) - 1] = 0;
+                }
             }
             f.close();
         }
         dir.close();   // directory fully closed before any repair opens a file
     }
+    if (totalSeen > MAX_SCAN)
+        diag::log("ride recovery: %d files on card, scanning the newest %d",
+                  totalSeen, MAX_SCAN);
 
     char toDelete[8][48];
+    char toRepair[8][48];
     int deleteCount = 0;
+    int repairCount = 0;
     int repaired = 0;
     for (int i = 0; i < nameCount; ++i) {
         char path[48];
@@ -168,12 +197,24 @@ void recoverInterruptedRides() {
         }
         { File m = SD.open(mark, FILE_WRITE); if (m) m.close(); }
 
-        FitWriter::RepairResult r = FitWriter::repair(SD, path);
+        // Read-only scan first: an unfinished ride is NOT finalized here any
+        // more. The newest one is held for the rider to CONTINUE / SAVE /
+        // DISCARD on the boot prompt; only older leftovers (a previous prompt
+        // the rider never answered, then another reset) are quietly repaired.
+        FitWriter::RepairResult r = FitWriter::analyze(SD, path);
         SD.remove(mark);   // survived — this file is not the problem
-        if (r.status == FitWriter::RepairResult::REPAIRED) {
-            repaired++;
-            diag::log("ride recovered: %s — %.2f km, %lu s (%d pts)", path,
-                      r.distanceM / 1000.0, (unsigned long)r.elapsedS, r.records);
+        if (r.status == FitWriter::RepairResult::UNFINISHED) {
+            if (!havePendingRec || strcmp(path, pendingRecPath) > 0) {
+                // Demote the previous candidate — repair it below.
+                if (havePendingRec && repairCount < 8)
+                    snprintf(toRepair[repairCount++], sizeof(toRepair[0]), "%s",
+                             pendingRecPath);
+                snprintf(pendingRecPath, sizeof(pendingRecPath), "%s", path);
+                pendingScan = r;
+                havePendingRec = true;
+            } else if (repairCount < 8) {
+                snprintf(toRepair[repairCount++], sizeof(toRepair[0]), "%s", path);
+            }
         } else if (r.status == FitWriter::RepairResult::EMPTY) {
             // Died before the first GPS fix: a header and nothing else.
             if (deleteCount < 8) {
@@ -181,9 +222,22 @@ void recoverInterruptedRides() {
             }
         }
     }
+    for (int i = 0; i < repairCount; ++i) {
+        FitWriter::RepairResult r = FitWriter::repair(SD, toRepair[i]);
+        if (r.status == FitWriter::RepairResult::REPAIRED) {
+            repaired++;
+            diag::log("ride recovered: %s — %.2f km, %lu s (%d pts)", toRepair[i],
+                      r.distanceM / 1000.0, (unsigned long)r.elapsedS, r.records);
+        }
+    }
     for (int i = 0; i < deleteCount; ++i) SD.remove(toDelete[i]);
     sdUnlock();
 
+    if (havePendingRec) {
+        diag::log("ride interrupted: %s — %.2f km, %lu s — awaiting rider",
+                  pendingRecPath, pendingScan.distanceM / 1000.0,
+                  (unsigned long)pendingScan.records);
+    }
     if (repaired) {
         Serial.printf("[rec] recovered %d interrupted ride(s)\n", repaired);
     }
@@ -502,6 +556,10 @@ bool begin() {
 }
 
 void startRide() {
+    // A new ride while an interrupted one still awaits a decision settles it
+    // the safe way: finalize and keep it. Its file must be closed before a
+    // new one opens anyway.
+    if (havePendingRec) resolveRecovery(RECOVERY_SAVE);
     if (!sdOk || rideActive || usb_storage::hostActive()) return;
 
     RideState s = g_state.snapshot();
@@ -682,6 +740,94 @@ bool consumeLateMount() {
     if (!lateMount) return false;
     lateMount = false;
     return true;
+}
+
+bool pendingRecovery(RideSummary* out) {
+    if (!havePendingRec) return false;
+    if (out) {
+        RideSummary r;
+        r.distanceM = pendingScan.distanceM;
+        r.movingS = pendingScan.movingS;
+        r.elapsedS = (uint32_t)pendingScan.records;   // 1 Hz => timer seconds
+        r.avgSpeedKmh = pendingScan.movingS
+                            ? (float)(pendingScan.distanceM / 1000.0 /
+                                      (pendingScan.movingS / 3600.0))
+                            : 0.0f;
+        r.avgPowerW = pendingScan.powerCount
+                          ? (uint16_t)(pendingScan.powerSum / pendingScan.powerCount)
+                          : 0;
+        r.normPowerW = 0;   // the 30 s rolling window died with the reset
+        r.avgHrBpm = pendingScan.hrCount
+                         ? (uint8_t)(pendingScan.hrSum / pendingScan.hrCount)
+                         : 0;
+        r.climbedM = (float)pendingScan.climbM;
+        r.startUtc = pendingScan.startUtc;
+        r.endUtc = pendingScan.endUtc;
+        RideState s = g_state.snapshot();
+        r.tzMin = s.tzMin;
+        r.useMiles = s.useMiles;
+        *out = r;
+    }
+    return true;
+}
+
+void resolveRecovery(RecoveryAction action) {
+    if (!havePendingRec) return;
+    havePendingRec = false;
+    if (!sdOk) return;
+
+    if (action == RECOVERY_CONTINUE && !rideActive && !usb_storage::hostActive()) {
+        sdLock();
+        FitWriter::RepairResult r;
+        bool ok = fit.resume(SD, pendingRecPath, &r);
+        sdUnlock();
+        if (ok) {
+            // Take the ride back over exactly where the record stream ends.
+            // NP restarts empty (its 30 s window is gone); everything else the
+            // stream testified to is restored, so the dashboard and the final
+            // summary carry on from the reset instead of from zero.
+            snprintf(ridePath, sizeof(ridePath), "%s", pendingRecPath);
+            resetStats();
+            startUtc = r.startUtc;
+            endUtc = 0;
+            distanceM = r.distanceM;
+            timerS = (uint32_t)r.records;
+            movingS = r.movingS;
+            powerSum = r.powerSum;
+            powerCount = r.powerCount;
+            hrSum = r.hrSum;
+            hrCount = r.hrCount;
+            climbedM = r.climbM;
+            rideActive = true;
+            loggedFileLost = false;
+            g_state.with([](RideState& st) {
+                st.recording = true;
+                st.ridePaused = false;
+                st.distanceM = distanceM;
+                st.elapsedS = timerS;
+                st.movingS = movingS;
+                st.climbedM = (float)climbedM;
+                st.gradeValid = false;
+            });
+            diag::log("ride continued after reset: %s (%.2f km, %lu s)",
+                      ridePath, distanceM / 1000.0, (unsigned long)timerS);
+            return;
+        }
+        diag::log("ride continue failed — saving instead: %s", pendingRecPath);
+        // fall through: finalize-and-save beats losing the ride
+    }
+
+    sdLock();
+    if (action == RECOVERY_DISCARD) {
+        SD.remove(pendingRecPath);
+        diag::log("interrupted ride discarded: %s", pendingRecPath);
+    } else {
+        FitWriter::RepairResult r = FitWriter::repair(SD, pendingRecPath);
+        diag::log("interrupted ride saved: %s (%s)", pendingRecPath,
+                  r.status == FitWriter::RepairResult::REPAIRED ? "ok"
+                                                                : "repair failed");
+    }
+    sdUnlock();
 }
 
 // Put interrupted rides back together. Called from the UI task, NOT from

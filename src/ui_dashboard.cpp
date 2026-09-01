@@ -79,6 +79,10 @@ int mapSlot() {
     return dash_config::pageCount() - 1;
 }
 RideSummary pendingSummary;
+// The summary sheet is doing boot-recovery duty: it shows the ride a reset cut
+// short, and its buttons resolve that ride (CONTINUE / SAVE / DISCARD) instead
+// of stopping a live one.
+bool recoveryPrompt = false;
 
 float mapMpp = 2.0f;  // map zoom: 1/2/4/8/16/32 m per px (wide levels show tiles)
 // Whether the next map frame may read tiles off the card. See renderMapScreen:
@@ -184,6 +188,14 @@ void shutdownDevice(uint8_t* fb, const char* reason) {
     // sleep". Taking the lock first means no idle can arm anything from here on.
     power_mgmt::busyAcquire();   // deliberately never released — we don't return
 
+    // Answer the tap NOW, before the slow part. Saving the ride and flushing
+    // the diag log are seconds of SD work, and with nothing on the glass in
+    // that window the press read as a miss (and got pressed again). The paint
+    // is asynchronous on this backend, so the band is drawing while the ride
+    // saves — acknowledgment costs no extra wall-clock.
+    ui_render_shutdown_ack(ride_recorder::isRecording(), fb);
+    epdc_paint();
+
     // Log WHY we're powering off and flush it to SD before deep sleep, so the
     // next boot's log distinguishes a user shutdown / auto-sleep from a reset
     // or a power loss (which leave no such line).
@@ -192,11 +204,6 @@ void shutdownDevice(uint8_t* fb, const char* reason) {
         ride_recorder::stopRide(true);  // never lose a ride to power-off
     }
     diag::flushToSD();
-
-    // Shorten the panel's idle power-off before painting, so the farewell frame
-    // arms a one-second countdown instead of the default five. The rails cannot be
-    // dropped directly — see epd_compat.h.
-    epdc_power_off_soon();
 
     // Leave a static farewell on the glass — e-paper keeps it for free.
     // Full-screen map backdrop (last known position) with a POWERED OFF plate.
@@ -237,8 +244,10 @@ void shutdownDevice(uint8_t* fb, const char* reason) {
     // Then let the panel's rails come down. Without this the TPS65185 sits
     // generating VPOS/VNEG/VGH/VGL for the entire sleep — the enables are latched
     // in the expander, which is on the always-on 3V3, and the driver's own
-    // power-off timer never gets to run because we stop the CPU first. Armed
-    // before the paint above; see epd_compat.h. The image survives regardless:
+    // power-off timer never gets to run because we stop the CPU first. This
+    // waits out the driver's stock idle countdown, deliberately armed by the
+    // paint above and never shortened — see epd_compat.h for the mid-drive
+    // rail-cut race that shortening it caused. The image survives regardless:
     // e-paper needs no power to hold a frame, which is the whole premise of the
     // farewell screen.
     epdc_power_off_wait();
@@ -445,9 +454,27 @@ void goBack() {
             break;
         // Back on the summary resumes the ride (non-destructive); SAVE / DISCARD
         // must be tapped explicitly.
-        case SCREEN_SUMMARY:  screen = SCREEN_DASH; break;
+        case SCREEN_SUMMARY:
+            // Backing out of the recovery prompt settles it the safe way:
+            // finalize and keep the ride. Same philosophy as power-off.
+            if (recoveryPrompt) {
+                recoveryPrompt = false;
+                ride_recorder::resolveRecovery(ride_recorder::RECOVERY_SAVE);
+            }
+            screen = SCREEN_DASH;
+            break;
         case SCREEN_DASH:     break;  // already home
     }
+}
+
+// Paint the acknowledgment band NOW, before a tap handler runs seconds of SD
+// work (finalizing or discarding a FIT). The paint is asynchronous, so the
+// band draws while the work runs; the next frame repaints over it.
+void paintBusyBand(const char* title) {
+    // 440/180: start at the summary sheet's top edge and cover its label and
+    // hero line whole — a half-clipped hero read as a rendering glitch.
+    ui_render_busy_band(title, "one moment...", epdc_framebuffer(), 440, 180);
+    epdc_paint();
 }
 
 // BOOT short-press: start a ride, or stop it (via the save/discard summary).
@@ -456,6 +483,7 @@ void toggleRide() {
         pendingSummary = ride_recorder::summary();
         screen = SCREEN_SUMMARY;
     } else {
+        recoveryPrompt = false;   // startRide() saves any still-pending ride
         ride_recorder::startRide();
         screen = SCREEN_DASH;
     }
@@ -659,14 +687,33 @@ void handleTap(int x, int y) {
             break;
         case SCREEN_SUMMARY:
             if (inRect(kResumeButton, x, y)) {
-                // Ride is still recording in the background — just go back to the
+                if (recoveryPrompt) {
+                    // CONTINUE: reopen the interrupted file and keep recording.
+                    // Resuming replays the whole record stream first.
+                    paintBusyBand("RESUMING RIDE");
+                    recoveryPrompt = false;
+                    ride_recorder::resolveRecovery(ride_recorder::RECOVERY_CONTINUE);
+                }
+                // Live ride: it never stopped recording — just go back to the
                 // dashboard and keep going.
                 screen = SCREEN_DASH;
             } else if (inRect(kSaveButton, x, y)) {
-                ride_recorder::stopRide(true);
+                paintBusyBand("SAVING RIDE");
+                if (recoveryPrompt) {
+                    recoveryPrompt = false;
+                    ride_recorder::resolveRecovery(ride_recorder::RECOVERY_SAVE);
+                } else {
+                    ride_recorder::stopRide(true);
+                }
                 screen = SCREEN_DASH;
             } else if (inRect(kDiscardButton, x, y)) {
-                ride_recorder::stopRide(false);
+                paintBusyBand("DISCARDING RIDE");
+                if (recoveryPrompt) {
+                    recoveryPrompt = false;
+                    ride_recorder::resolveRecovery(ride_recorder::RECOVERY_DISCARD);
+                } else {
+                    ride_recorder::stopRide(false);
+                }
                 screen = SCREEN_DASH;
             }
             break;
@@ -2126,6 +2173,12 @@ void task(void*) {
     // mid-recovery tears another file, every reboot found more to do than the
     // last. Off the boot path a slow recovery costs time, not a brick.
     ride_recorder::recoverRides();
+    // A ride the reset cut short: put the question on screen before anything
+    // else happens to the file.
+    if (ride_recorder::pendingRecovery(&pendingSummary)) {
+        recoveryPrompt = true;
+        screen = SCREEN_SUMMARY;
+    }
     applySdUpdate();          // flash a firmware.bin from the SD card, if present
     usb_storage::begin();     // THEN expose the SD to a host computer over USB
     bool lastHostActive = false;
@@ -2152,6 +2205,10 @@ void task(void*) {
         if (ride_recorder::consumeLateMount()) {
             diag::log("sd: late mount — loading routes/maps, exposing USB drive");
             ride_recorder::recoverRides();
+            if (ride_recorder::pendingRecovery(&pendingSummary)) {
+                recoveryPrompt = true;
+                screen = SCREEN_SUMMARY;
+            }
             routes::begin();
             map_store::rescanCard();
             applySdUpdate();      // a firmware.bin may have been on the card
@@ -2538,7 +2595,7 @@ void task(void*) {
                     // Modal: the ride screen stays behind the sheet, scrimmed.
                     ui_render_dashboard(s, routes::navActive(),
                                         dash_config::current(), fb);
-                    ui_render_summary(pendingSummary, fb);
+                    ui_render_summary(pendingSummary, fb, recoveryPrompt);
                     break;
                 case SCREEN_MENU: {
                     MenuInfo m;

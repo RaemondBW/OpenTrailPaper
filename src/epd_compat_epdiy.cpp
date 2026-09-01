@@ -68,7 +68,6 @@ void epdc_paint_wait() {}
 // Already down — this backend powers the rails on and off around every paint
 // (above), which is why the deep-sleep drain the EPD_Painter port introduced was
 // never a problem here. Kept so the shutdown path can stay backend-agnostic.
-void epdc_power_off_soon() {}
 void epdc_power_off_wait() {
     if (!g_ready) return;
     epd_poweroff();   // belt and braces if a future paint path forgets
