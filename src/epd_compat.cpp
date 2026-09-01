@@ -722,18 +722,22 @@ void epdc_paint_wait() {
 // The driver's idle timer re-arms to `_idle_timeout_s` on every paint, so
 // shortening it here means the farewell paint that follows arms one second rather
 // than five.
-void epdc_power_off_soon() {
-    if (g_painter) g_painter->setIdleTimeout(1);
-}
-
 void epdc_power_off_wait() {
     if (!g_painter) return;
     // A blind wait, deliberately: the driver exposes no rail-state getter, so
-    // there is nothing to poll. Its `panel_idle_off` task ticks at 1 Hz and powers
-    // off when the count armed above reaches zero, which is two ticks away worst
-    // case. That task runs at priority 1 and this is the UI task at 2, so the
-    // delay is what lets it be scheduled at all.
-    vTaskDelay(pdMS_TO_TICKS(2400));
+    // there is nothing to poll. Its `panel_idle_off` task ticks at 1 Hz against
+    // a countdown that every clear/paint re-arms to the idle timeout AT DRIVE
+    // START — and keeps decrementing while the rows are still being clocked.
+    // This used to be paired with a "shorten the timeout to 1 s first" call
+    // made BEFORE the farewell paint, and that was a mid-drive rail cut waiting
+    // for a tick to land: the hard clear and the farewell frame both take
+    // longer than a second, so sometimes the panel powered off before the
+    // shutdown screen finished drawing (and an interrupted clear is how ghosts
+    // get baked in). So nothing shortens the timeout any more; the last paint
+    // arms the default 5 s count, and this waits it out: 5 ticks + up to one
+    // tick of task phase + margin. The task runs at priority 1 and this is the
+    // UI task at 2, so the delay is also what lets it be scheduled at all.
+    vTaskDelay(pdMS_TO_TICKS(6500));
 }
 
 void epdc_clear(int passes) {

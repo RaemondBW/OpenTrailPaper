@@ -70,12 +70,18 @@ void epdc_paint_wait();
 // either. (The epdiy backend powered the rails down around every paint, which is
 // why this only became a problem with the EPD_Painter port.)
 //
-// Two calls because of how that timer works: it is armed at paint time, so the
-// countdown has to be shortened BEFORE the last paint, and waited for after it.
+// One call, after the last paint has fully completed:
 //
-//   epdc_power_off_soon();   // then paint the farewell screen
-//   epdc_paint_wait();
-//   epdc_power_off_wait();
+//   epdc_paint_wait();       // farewell frame fully driven
+//   epdc_power_off_wait();   // sit out the driver's own 5 s idle countdown
+//
+// There USED to be an epdc_power_off_soon() that shortened the driver's idle
+// timeout to 1 s before the farewell paint, to make this wait short. That was
+// a race: the countdown is re-armed at DRIVE START and keeps ticking while
+// rows are still being clocked, so a clear or paint pass longer than the tick
+// phase had its rails cut mid-drive — the farewell screen sometimes froze
+// half-written. Waiting out the stock 5 s countdown after the drive is done
+// is slower but cannot cut a frame short.
 //
 // powerOff() itself is private to the driver, and reproducing it here would mean
 // duplicating its TPS-register-then-expander sequencing — so this drives the
@@ -83,7 +89,6 @@ void epdc_paint_wait();
 //
 // Safe for the image: e-paper holds its last frame with no power at all, which is
 // the whole premise of the farewell screen.
-void epdc_power_off_soon();
 void epdc_power_off_wait();
 
 // Drive the whole panel to white. `passes` > 1 repeats it: e-paper keeps its
