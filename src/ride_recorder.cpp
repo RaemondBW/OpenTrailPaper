@@ -125,15 +125,21 @@ void makeRidePath(char* out, size_t len, time_t utc) {
 // is still iterating is a known way to wedge / corrupt the ESP32 SD (FatFs)
 // stack — which showed up as "the device can't recognize the SD card".
 void recoverInterruptedRides() {
+    // Keep the NEWEST files when the directory outgrows the scan window, not
+    // the first ones FAT happens to hand back. FAT iterates in entry order
+    // (roughly oldest-first), so "stop after 32" meant a card with 32+ rides
+    // never scanned recent files at all — this morning's interrupted ride
+    // included, silently. Basenames are timestamps, so lexical order IS
+    // chronological: evict the smallest name when the window is full.
     constexpr int MAX_SCAN = 32;
     char names[MAX_SCAN][40];
     int nameCount = 0;
+    int totalSeen = 0;
 
     sdLock();
     File dir = SD.open(RIDE_DIR);
     if (dir) {
-        for (File f = dir.openNextFile(); f && nameCount < MAX_SCAN;
-             f = dir.openNextFile()) {
+        for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
             if (!f.isDirectory()) {
                 const char* nm = f.name();
                 const char* base = strrchr(nm, '/');
@@ -145,14 +151,28 @@ void recoverInterruptedRides() {
                     f.close();
                     continue;
                 }
-                strncpy(names[nameCount], base, sizeof(names[0]) - 1);
-                names[nameCount][sizeof(names[0]) - 1] = 0;
-                nameCount++;
+                totalSeen++;
+                int slot = -1;
+                if (nameCount < MAX_SCAN) {
+                    slot = nameCount++;
+                } else {
+                    int minIdx = 0;
+                    for (int i = 1; i < MAX_SCAN; ++i)
+                        if (strcmp(names[i], names[minIdx]) < 0) minIdx = i;
+                    if (strcmp(base, names[minIdx]) > 0) slot = minIdx;
+                }
+                if (slot >= 0) {
+                    strncpy(names[slot], base, sizeof(names[0]) - 1);
+                    names[slot][sizeof(names[0]) - 1] = 0;
+                }
             }
             f.close();
         }
         dir.close();   // directory fully closed before any repair opens a file
     }
+    if (totalSeen > MAX_SCAN)
+        diag::log("ride recovery: %d files on card, scanning the newest %d",
+                  totalSeen, MAX_SCAN);
 
     char toDelete[8][48];
     char toRepair[8][48];
