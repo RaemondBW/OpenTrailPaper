@@ -1821,6 +1821,22 @@ void ui_render_power_sheet(bool recording, uint8_t* fb) {
     sheetButton(kPowerCancel, "CANCEL", false, fb);
 }
 
+// Instant acknowledgment for the shutdown tap: the same band as the farewell
+// screen, painted over whatever is on the glass BEFORE the slow part of
+// shutdown (saving the ride, flushing logs) runs. Without it the press got no
+// visible response for seconds and read as a missed tap.
+void ui_render_shutdown_ack(bool savingRide, uint8_t* fb) {
+    const int W = epd_rotated_display_width();
+    const int bandY = 402, bandH = 116;
+    epd_fill_rect({0, bandY, W, bandH}, 0x00, fb);
+    epd_fill_rect({0, bandY - 3, W, 3}, 0xFF, fb);
+    epd_fill_rect({0, bandY + bandH, W, 3}, 0xFF, fb);
+    ui::label(W / 2, bandY + 50, "POWERING OFF", fb, 0xFF, &Arial_B);
+    ui::text(&Arial_L, W / 2, bandY + 90,
+             savingRide ? "saving ride..." : "one moment...", fb,
+             EPD_DRAW_ALIGN_CENTER, 0xFF);
+}
+
 void ui_render_shutdown_screen(uint8_t* fb) {
     const int W = epd_rotated_display_width();
     // A solid band so the text stays legible over the map backdrop behind it.

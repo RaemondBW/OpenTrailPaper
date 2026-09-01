@@ -188,6 +188,14 @@ void shutdownDevice(uint8_t* fb, const char* reason) {
     // sleep". Taking the lock first means no idle can arm anything from here on.
     power_mgmt::busyAcquire();   // deliberately never released — we don't return
 
+    // Answer the tap NOW, before the slow part. Saving the ride and flushing
+    // the diag log are seconds of SD work, and with nothing on the glass in
+    // that window the press read as a miss (and got pressed again). The paint
+    // is asynchronous on this backend, so the band is drawing while the ride
+    // saves — acknowledgment costs no extra wall-clock.
+    ui_render_shutdown_ack(ride_recorder::isRecording(), fb);
+    epdc_paint();
+
     // Log WHY we're powering off and flush it to SD before deep sleep, so the
     // next boot's log distinguishes a user shutdown / auto-sleep from a reset
     // or a power loss (which leave no such line).

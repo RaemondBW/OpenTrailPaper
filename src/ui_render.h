@@ -322,6 +322,7 @@ extern const EpdRect kPowerCancel;     // CANCEL button
 void ui_render_power_sheet(bool recording, uint8_t* fb);
 
 // Static farewell left on the glass through deep sleep.
+void ui_render_shutdown_ack(bool savingRide, uint8_t* fb);
 void ui_render_shutdown_screen(uint8_t* fb);
 
 // "Start navigation?" bottom sheet shown when a route with turn cues
