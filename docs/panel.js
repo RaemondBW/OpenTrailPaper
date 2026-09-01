@@ -351,44 +351,48 @@
   }
 
   function statusBar(ctx, r) {
-    // Sized off the caption ladder rather than by eye: at the size this was
-    // first drawn, the battery ran into "PWR".
-    var face = LABEL_LADDER[0];                 // the panel's biggest caption face
-    var px = face.cap / CAP;
-    var baseline = PAD + face.cap;
+    // Firmware geometry, from ui_render.cpp statusBar(): the clock and the
+    // battery % are Impact_S (cap 20, baseline 41), the " . HR . PWR" chips
+    // are Arial_L (cap 11, baseline 40), GPS dots r=5 spaced 16 at cy=32,
+    // phone glyph 15x26 on cy=30, battery body 44x24 + 5x10 tip ending at
+    // W-12. This used to draw the whole bar at the caption ladder's cap-28
+    // face with oversized glyphs, which read far heavier than the device
+    // (compare the tutorial stills, which are firmware renders).
+    var clockPx = 20 / CAP, labelPx = 11 / CAP;
     ctx.textAlign = "left";
-    ctx.font = font(COND, px);
-    var x = 14;
+    ctx.font = font(COND, clockPx);
+    var x = 16;
     var clock = hm(r.clock);
-    ctx.fillText(clock, x, baseline);
-    x += ctx.measureText(clock).width + 12;
+    ctx.fillText(clock, x, 41);
+    x += ctx.measureText(clock).width + 14;
 
-    ctx.lineWidth = 3;
-    ctx.strokeRect(x + 1.5, baseline - 26, 16, 28);   // the phone-link glyph
-    x += 30;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x + 1, 18, 13, 24);   // the phone-link glyph, 15x26 box
+    x += 15 + 14;
 
     // Satellites: filled dots for lock quality, hollow for the rest, so the row
     // never changes width as the sky opens and closes.
     var lit = Math.max(0, Math.min(4, r.sats - 8));
     for (var i = 0; i < 4; i++) {
       ctx.beginPath();
-      ctx.arc(x + 6, baseline - 11, 5.5, 0, Math.PI * 2);
+      ctx.arc(x + i * 16, 32, 5, 0, Math.PI * 2);
       if (i < lit) ctx.fill(); else ctx.stroke();
-      x += 17;
     }
+    x += 4 * 16;
 
-    ctx.font = font(COND, px);
-    ctx.fillText("· HR · PWR", x + 4, baseline);
+    ctx.font = font(LABEL, labelPx);
+    ctx.fillText("\u00b7 HR \u00b7 PWR", x + 4, 40);
 
-    var bw = 52, bh = 26, bx = W - 14 - 6 - bw, by = baseline - 24;
-    ctx.lineWidth = 3.5;
+    var bw = 44, bh = 24, bx = W - 12 - 6 - bw, by = 30 - bh / 2;
+    ctx.lineWidth = 2;
     ctx.strokeRect(bx, by, bw, bh);
     ctx.fillRect(bx + 4, by + 4, (bw - 8) * r.battery / 100, bh - 8);
-    ctx.fillRect(bx + bw + 2, by + 8, 5, 10);
+    ctx.fillRect(bx + bw, 25, 5, 10);    // tip
     ctx.textAlign = "right";
-    ctx.font = font(COND, px);
-    ctx.fillText(r.battery + "%", bx - 10, baseline);
+    ctx.font = font(COND, clockPx);
+    ctx.fillText(r.battery + "%", W - 70, 41);
   }
+
 
   // --- driving it -------------------------------------------------------
 
