@@ -420,6 +420,13 @@ int main(int argc, char** argv) {
     ui_render_shutdown_ack(true, fb.data());
     emit("shutdown_ack.png");
 
+    // Ride save/discard acknowledgment over the summary sheet
+    clearWhite(fb.data());
+    ui_render_dashboard(s, false, dashDefaultLayout(), fb.data());
+    ui_render_summary(sampleSummary(), fb.data());
+    ui_render_busy_band("DISCARDING RIDE", "one moment...", fb.data(), 440, 180);
+    emit("ride_ack.png");
+
     // Zoomed-out overview: whole SF, ocean (west) + bay (east) both in frame.
     if (mf) {
         map_tiles::project(37.765, -122.435, 32.0f, 270, 430, 0, map);

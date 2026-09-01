@@ -322,6 +322,10 @@ extern const EpdRect kPowerCancel;     // CANCEL button
 void ui_render_power_sheet(bool recording, uint8_t* fb);
 
 // Static farewell left on the glass through deep sleep.
+// bandY 402 matches the farewell screen; the summary sheet passes its own top
+// edge (440) so the band aligns with the sheet instead of clipping its hero.
+void ui_render_busy_band(const char* title, const char* sub, uint8_t* fb,
+                         int bandY = 402, int bandH = 116);
 void ui_render_shutdown_ack(bool savingRide, uint8_t* fb);
 void ui_render_shutdown_screen(uint8_t* fb);
 

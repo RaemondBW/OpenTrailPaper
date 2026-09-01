@@ -1821,20 +1821,24 @@ void ui_render_power_sheet(bool recording, uint8_t* fb) {
     sheetButton(kPowerCancel, "CANCEL", false, fb);
 }
 
-// Instant acknowledgment for the shutdown tap: the same band as the farewell
-// screen, painted over whatever is on the glass BEFORE the slow part of
-// shutdown (saving the ride, flushing logs) runs. Without it the press got no
-// visible response for seconds and read as a missed tap.
-void ui_render_shutdown_ack(bool savingRide, uint8_t* fb) {
+// Instant acknowledgment band for a tap that triggers seconds of work before
+// the next repaint (saving a ride, powering off). Painted over whatever is on
+// the glass; without it the press got no visible response and read as a
+// missed tap. Same geometry as the farewell screen's band.
+void ui_render_busy_band(const char* title, const char* sub, uint8_t* fb,
+                         int bandY, int bandH) {
     const int W = epd_rotated_display_width();
-    const int bandY = 402, bandH = 116;
     epd_fill_rect({0, bandY, W, bandH}, 0x00, fb);
     epd_fill_rect({0, bandY - 3, W, 3}, 0xFF, fb);
     epd_fill_rect({0, bandY + bandH, W, 3}, 0xFF, fb);
-    ui::label(W / 2, bandY + 50, "POWERING OFF", fb, 0xFF, &Arial_B);
-    ui::text(&Arial_L, W / 2, bandY + 90,
-             savingRide ? "saving ride..." : "one moment...", fb,
+    ui::label(W / 2, bandY + bandH / 2 - 8, title, fb, 0xFF, &Arial_B);
+    ui::text(&Arial_L, W / 2, bandY + bandH / 2 + 32, sub, fb,
              EPD_DRAW_ALIGN_CENTER, 0xFF);
+}
+
+void ui_render_shutdown_ack(bool savingRide, uint8_t* fb) {
+    ui_render_busy_band("POWERING OFF",
+                        savingRide ? "saving ride..." : "one moment...", fb);
 }
 
 void ui_render_shutdown_screen(uint8_t* fb) {

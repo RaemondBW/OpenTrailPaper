@@ -470,6 +470,16 @@ void goBack() {
     }
 }
 
+// Paint the acknowledgment band NOW, before a tap handler runs seconds of SD
+// work (finalizing or discarding a FIT). The paint is asynchronous, so the
+// band draws while the work runs; the next frame repaints over it.
+void paintBusyBand(const char* title) {
+    // 440/180: start at the summary sheet's top edge and cover its label and
+    // hero line whole — a half-clipped hero read as a rendering glitch.
+    ui_render_busy_band(title, "one moment...", epdc_framebuffer(), 440, 180);
+    epdc_paint();
+}
+
 // BOOT short-press: start a ride, or stop it (via the save/discard summary).
 void toggleRide() {
     if (ride_recorder::isRecording()) {
@@ -682,6 +692,8 @@ void handleTap(int x, int y) {
             if (inRect(kResumeButton, x, y)) {
                 if (recoveryPrompt) {
                     // CONTINUE: reopen the interrupted file and keep recording.
+                    // Resuming replays the whole record stream first.
+                    paintBusyBand("RESUMING RIDE");
                     recoveryPrompt = false;
                     ride_recorder::resolveRecovery(ride_recorder::RECOVERY_CONTINUE);
                 }
@@ -689,6 +701,7 @@ void handleTap(int x, int y) {
                 // dashboard and keep going.
                 screen = SCREEN_DASH;
             } else if (inRect(kSaveButton, x, y)) {
+                paintBusyBand("SAVING RIDE");
                 if (recoveryPrompt) {
                     recoveryPrompt = false;
                     ride_recorder::resolveRecovery(ride_recorder::RECOVERY_SAVE);
@@ -697,6 +710,7 @@ void handleTap(int x, int y) {
                 }
                 screen = SCREEN_DASH;
             } else if (inRect(kDiscardButton, x, y)) {
+                paintBusyBand("DISCARDING RIDE");
                 if (recoveryPrompt) {
                     recoveryPrompt = false;
                     ride_recorder::resolveRecovery(ride_recorder::RECOVERY_DISCARD);
