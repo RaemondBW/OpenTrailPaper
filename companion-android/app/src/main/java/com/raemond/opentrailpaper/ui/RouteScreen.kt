@@ -257,6 +257,11 @@ fun RouteScreen(ble: BleManager) {
                     scope.launch {
                         val built = Routing.route(from, place.coordinate)
                         building = false
+                        // The file button is live while this is in flight, so an
+                        // import can land first. A search tap only starts from an
+                        // empty preview: if one exists by now the rider moved on,
+                        // and their route must not be overwritten by this one.
+                        if (preview != null) return@launch
                         if (built == null) {
                             error = "Couldn't build a route there"
                         } else {
