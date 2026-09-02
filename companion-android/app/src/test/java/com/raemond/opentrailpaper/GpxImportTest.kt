@@ -2,6 +2,7 @@ package com.raemond.opentrailpaper
 
 import com.raemond.opentrailpaper.ble.Maneuver
 import com.raemond.opentrailpaper.data.DeviceText
+import com.raemond.opentrailpaper.data.GpxExporter
 import com.raemond.opentrailpaper.data.GpxImporter
 import com.raemond.opentrailpaper.data.ImportResult
 import com.raemond.opentrailpaper.data.LatLon
@@ -10,6 +11,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.Locale
 
 /**
  * Reading someone else's GPX.
@@ -212,6 +214,44 @@ class GpxImportTest {
         """.trimIndent()
         assertEquals("", ok(noType).mode)
         assertNull(ok(noType).activityType)
+    }
+
+    @Test
+    fun `an external entity gets nothing, whatever it names`() {
+        val xxe = """
+            <?xml version="1.0"?>
+            <!DOCTYPE gpx [<!ENTITY leak SYSTEM "file:///etc/passwd">]>
+            <gpx version="1.1" xmlns="http://www.topografix.com/GPX/1/1">
+              <trk><trkseg>
+                <trkpt lat="52.1" lon="21.1"></trkpt>
+                <trkpt lat="52.2" lon="21.2"></trkpt>
+              </trkseg><name>&leak;</name></trk>
+            </gpx>
+        """.trimIndent()
+        // A .gpx arrives from any app on the phone, so a file that names a path
+        // must come back with the entity empty rather than the file in it.
+        // On the JVM the factory feature alone already refuses it — the parser
+        // here is Xerces, which is exactly why this cannot stand in for the
+        // device. It guards the property, not the mechanism.
+        assertEquals("fallback", ok(xxe).name)
+    }
+
+    @Test
+    fun `a german phone still round-trips a route through a dot`() {
+        val original = Locale.getDefault()
+        try {
+            // Both halves have to hold under a comma-decimal locale: the parse
+            // reads a dotted attribute as a number, and the export writes it
+            // back dotted for the device's scanner.
+            Locale.setDefault(Locale.GERMANY)
+            val r = ok(komoot)
+            val gpx = GpxExporter.make("ride", r.points)
+            assertTrue(gpx, gpx.contains("lat=\"49.337633\""))
+            assertTrue(gpx, gpx.contains("lon=\"20.005195\""))
+            assertTrue(gpx, !gpx.contains(","))
+        } finally {
+            Locale.setDefault(original)
+        }
     }
 
     // MARK: device text budgets

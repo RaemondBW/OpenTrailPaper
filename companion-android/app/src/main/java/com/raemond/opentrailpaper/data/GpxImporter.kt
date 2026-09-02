@@ -1,10 +1,13 @@
 package com.raemond.opentrailpaper.data
 
 import org.xml.sax.Attributes
+import org.xml.sax.InputSource
 import org.xml.sax.SAXNotRecognizedException
 import org.xml.sax.SAXNotSupportedException
 import org.xml.sax.helpers.DefaultHandler
 import java.io.InputStream
+import java.io.StringReader
+import javax.xml.XMLConstants
 import javax.xml.parsers.SAXParserFactory
 import kotlin.math.ceil
 
@@ -64,13 +67,22 @@ object GpxImporter {
         try {
             val factory = SAXParserFactory.newInstance().apply {
                 isNamespaceAware = false
-                // A GPX is data, not a document that gets to name external files.
-                // This is a Xerces feature name; Android's SAX (Expat-based) doesn't
-                // recognise it and throws SAXNotRecognizedException, so it must not
-                // share the outer try — that would report every real-device parse
-                // as NotGpx while the JVM tests (which use a Xerces parser) stayed
-                // green.
+                // A GPX is data, not a document that gets to name external
+                // files, nor to expand one entity into gigabytes of text.
+                // Neither may share the outer try: the second is a Xerces
+                // feature name, Android's SAX (Expat-based) doesn't recognise it
+                // and throws SAXNotRecognizedException, which would report every
+                // real-device parse as NotGpx while the JVM tests (which use a
+                // Xerces parser) stayed green. Secure processing is asked for
+                // first for that same reason — it is the standard name, and a
+                // throw on the Xerces one must not cost us a parser that would
+                // have honoured it.
+                //
+                // Which is why neither is the fence that actually holds against
+                // external entities: [Handler.resolveEntity] is, needing no
+                // feature support from either parser.
                 try {
+                    setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true)
                     setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false)
                 } catch (_: SAXNotRecognizedException) {
                 } catch (_: SAXNotSupportedException) {
@@ -79,8 +91,7 @@ object GpxImporter {
             factory.newSAXParser().parse(input, handler)
         } catch (_: Exception) {
             // A truncated file that already yielded a usable track is still a
-            // route; anything else is not GPX as far as the rider is concerned.
-            if (!handler.sawGpx) return ImportResult.NotGpx
+            // route; anything else the check below rejects as not GPX.
         }
         if (!handler.sawGpx) return ImportResult.NotGpx
 
@@ -133,6 +144,19 @@ object GpxImporter {
         private var text: StringBuilder? = null
 
         private fun parent() = stack.getOrNull(stack.size - 2)
+
+        /**
+         * Refuses every external entity, on whichever parser we were handed.
+         *
+         * The factory features above are advisory — one of them is a Xerces
+         * name the device's parser throws on — so the guarantee lives here
+         * instead, in plain SAX that both parsers honour: a file naming
+         * file:///etc/passwd gets an empty string back, not the file. This
+         * input arrives from any app on the phone through the VIEW/SEND
+         * filters, so it cannot rest on a feature the target platform ignores.
+         */
+        override fun resolveEntity(publicId: String?, systemId: String?): InputSource =
+            InputSource(StringReader(""))
 
         override fun startElement(uri: String?, l: String?, qName: String, a: Attributes?) {
             val name = qName.substringAfter(':').lowercase()
