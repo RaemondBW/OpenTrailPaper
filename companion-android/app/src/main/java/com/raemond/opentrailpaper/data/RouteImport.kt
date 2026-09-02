@@ -49,15 +49,35 @@ object RouteImport {
     var error by mutableStateOf<String?>(null)
         private set
 
+    /**
+     * Bumped on every [offer], and what the Route screen keys on.
+     *
+     * [pending] cannot do that job: ImportedRoute is a data class, so
+     * re-importing the same file offers an equal value, the screen's effect
+     * never restarts, and [fresh] is left stuck true — which makes the next
+     * redraw look like an arrival and wrongly clears the "sent to device"
+     * confirmation.
+     */
+    var arrival by mutableStateOf(0)
+        private set
+
     fun offer(route: ImportedRoute) {
         error = null
         pending = route
         cues = null
         fresh = true
+        arrival++
     }
 
+    /**
+     * Report a file we could not read, without touching [pending].
+     *
+     * Clearing here would orphan a route the rider is looking at: the screen
+     * keeps drawing it, this object no longer owns it, and the next tab tap
+     * loses it with no explanation. A bad second file is not a reason to throw
+     * away a good first one.
+     */
     fun fail(message: String) {
-        clear()
         error = message
     }
 

@@ -138,7 +138,7 @@ fun RouteScreen(ble: BleManager) {
     // in this composable dies on a tab tap, and a rider who leaves for the Ride
     // tab to connect the head unit has to find their route still here when they
     // come back. RouteImport holds it until they clear it.
-    LaunchedEffect(RouteImport.pending, cardHeightPx > 0) {
+    LaunchedEffect(RouteImport.arrival, cardHeightPx > 0) {
         val imported = RouteImport.pending ?: return@LaunchedEffect
         results = emptyList()
         destination = null
