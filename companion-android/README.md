@@ -2,19 +2,23 @@
 
 Jetpack Compose app that pairs with the OpenTrailPaper device over BLE to control
 settings, push routes (searched on the phone or imported from a `.gpx`) and
-build offline maps. Feature-for-feature with [`companion-ios`](../companion-ios),
-against the same firmware and the same `.ebm` tile format.
+build offline maps. Feature-for-feature with [`companion-ios`](../companion-ios)
+on device control and maps, against the same firmware and the same `.ebm` tile
+format.
 
 ## What it does
 
 - **Ride** — live device status over BLE: connection, speed, battery, heart rate,
   power, GPS lock, and active-route distance remaining. The dashboard card opens
   the layout editor.
-- **Route** — search a destination, build a cycling route, preview it, and send it
-  to the head unit. The route is exported as GPX and streamed over BLE; the device
-  saves it to `/routes` (and rides it even without an SD card). Turn cues go with
-  it. Hexagons appear over any part of the route neither the phone nor the device
-  has map coverage for.
+- **Route** — search a destination and build a cycling route, or import a `.gpx`
+  (file picker, or opened from another app); preview it and send it to the head
+  unit. The route is exported as GPX and streamed over BLE; the device saves it
+  to `/routes` (and rides it even without an SD card). A searched route comes
+  with turn cues built in; an imported route draws, tracks progress and reports
+  remaining distance without them, unless turn cues are added afterward (derived
+  from OSRM). Hexagons appear over any part of the route neither the phone nor
+  the device has map coverage for.
 - **Rides** — lists recorded `.fit` files, downloads them over BLE, decodes them
   (distance, moving time, power, normalized power, HR, DEM ascent) and shows the
   track on a map. Downloaded rides stay cached for offline viewing and can be
