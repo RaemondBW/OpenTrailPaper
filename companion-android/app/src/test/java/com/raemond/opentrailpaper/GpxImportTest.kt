@@ -1,8 +1,11 @@
 package com.raemond.opentrailpaper
 
+import com.raemond.opentrailpaper.ble.Maneuver
 import com.raemond.opentrailpaper.data.DeviceText
 import com.raemond.opentrailpaper.data.GpxImporter
 import com.raemond.opentrailpaper.data.ImportResult
+import com.raemond.opentrailpaper.data.LatLon
+import com.raemond.opentrailpaper.routing.Routing
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -277,5 +280,79 @@ class GpxImportTest {
         assertTrue("${bytes.size}", bytes.size <= 15)
         assertEquals(fitted, String(bytes, Charsets.UTF_8))
         assertEquals(7, fitted.length)
+    }
+
+    // MARK: cue derivation (the pure parts — the OSRM call itself is network)
+
+    private fun line(n: Int) = (0 until n).map { LatLon(52.0 + it * 0.001, 21.0) }
+
+    @Test
+    fun `via sampling keeps the ends and returns the count asked for`() {
+        val s = Routing.sampleByDistance(line(1000), 50)
+        assertEquals(50, s.size)
+        assertEquals(52.0, s.first().lat, 1e-9)
+        assertEquals(line(1000).last().lat, s.last().lat, 1e-9)
+    }
+
+    @Test
+    fun `via sampling spaces points by distance, not by index`() {
+        // Dense at the start, sparse after: sampling by index would put almost
+        // every via in the first kilometre.
+        val dense = (0 until 500).map { LatLon(52.0 + it * 0.00001, 21.0) }
+        val sparse = (1..100).map { LatLon(52.005 + it * 0.001, 21.0) }
+        val s = Routing.sampleByDistance(dense + sparse, 10)
+        assertEquals(10, s.size)
+        val firstHalf = s.count { it.lat < 52.005 }
+        assertTrue("$firstHalf of 10 vias landed in the dense head", firstHalf <= 3)
+    }
+
+    @Test
+    fun `via sampling copes with a track shorter than the sample count`() {
+        val s = Routing.sampleByDistance(line(3), 50)
+        assertTrue(s.size in 2..3)
+        assertEquals(line(3).last().lat, s.last().lat, 1e-9)
+    }
+
+    private fun cue(i: Int, filler: Boolean = false, slight: Boolean = false) =
+        Routing.Cue(Maneuver(52.0 + i * 0.001, 21.0, "Turn left"), filler, slight)
+
+    @Test
+    fun `triage keeps everything when the cues fit`() {
+        val r = Routing.triage((0 until 90).map { cue(it) }, cap = 128)
+        assertEquals(90, r.maneuvers.size)
+        assertTrue(!r.truncated)
+    }
+
+    @Test
+    fun `triage drops filler before real turns`() {
+        val cues = (0 until 100).map { cue(it) } + (100 until 140).map { cue(it, filler = true) }
+        val r = Routing.triage(cues, cap = 128)
+        assertEquals(100, r.maneuvers.size)
+        assertTrue(!r.truncated)
+    }
+
+    @Test
+    fun `triage drops slight turns only after filler is gone`() {
+        val cues = (0 until 120).map { cue(it) } +
+            (120 until 140).map { cue(it, slight = true) } +
+            (140 until 150).map { cue(it, filler = true) }
+        val r = Routing.triage(cues, cap = 128)
+        assertEquals(120, r.maneuvers.size)
+        assertTrue(!r.truncated)
+    }
+
+    @Test
+    fun `triage truncates and says so when even the real turns overflow`() {
+        val r = Routing.triage((0 until 200).map { cue(it) }, cap = 128)
+        assertEquals(128, r.maneuvers.size)
+        assertTrue(r.truncated)
+    }
+
+    @Test
+    fun `triage fits every cue's text to the device budget`() {
+        val long = "Turn slightly right onto Jakuba Ignacego Łaszczyńskiego"
+        val r = Routing.triage(listOf(Routing.Cue(Maneuver(52.0, 21.0, long), false, false)), 128)
+        val bytes = r.maneuvers[0].text.toByteArray(Charsets.UTF_8)
+        assertTrue("${bytes.size}", bytes.size <= DeviceText.MANEUVER_BUDGET)
     }
 }
