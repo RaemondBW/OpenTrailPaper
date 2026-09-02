@@ -22,6 +22,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -35,6 +36,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import com.raemond.opentrailpaper.ble.BleManager
 import com.raemond.opentrailpaper.data.Prefs
+import com.raemond.opentrailpaper.data.RouteImport
 
 private class Tab(val label: String, val icon: ImageVector)
 
@@ -67,6 +69,11 @@ fun RootScreen(
     }
 
     val overlay = rememberOverlayHostState()
+    // An import can arrive from another app while any tab is up; the route it
+    // produced is only meaningful on the one that draws routes.
+    LaunchedEffect(RouteImport.pending, RouteImport.error) {
+        if (RouteImport.pending != null || RouteImport.error != null) tab = 1
+    }
     CompositionLocalProvider(LocalOverlayHost provides overlay) {
     Box(Modifier.fillMaxSize().background(Palette.paper)) {
         Scaffold(
