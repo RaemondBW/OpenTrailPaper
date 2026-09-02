@@ -34,6 +34,7 @@ import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
 import com.raemond.opentrailpaper.data.DashConfig
 import com.raemond.opentrailpaper.data.DashLayout
+import com.raemond.opentrailpaper.data.DeviceText
 import com.raemond.opentrailpaper.data.FirmwareRelease
 import com.raemond.opentrailpaper.data.Prefs
 import kotlinx.coroutines.CoroutineScope
@@ -1393,7 +1394,10 @@ class BleManager(private val app: Application) {
             p.u8(0x04)
             p.i32((m.lat * 1e7).roundToLong().toInt())
             p.i32((m.lon * 1e7).roundToLong().toInt())
-            val text = m.text.toByteArray(Charsets.UTF_8)
+            // Trimmed to the device's own maneuver buffer (routes.h
+            // MANEUVER_TEXT), on a codepoint boundary — the firmware's snprintf
+            // would otherwise cut a two-byte character in half.
+            val text = DeviceText.maneuverText(m.text).toByteArray(Charsets.UTF_8)
             p.raw(text.copyOf(min(text.size, maxLen - 8)))
             packets += p.bytes()
         }

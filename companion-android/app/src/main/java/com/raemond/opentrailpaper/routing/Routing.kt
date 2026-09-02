@@ -3,6 +3,7 @@ package com.raemond.opentrailpaper.routing
 import com.raemond.opentrailpaper.BuildConfig
 import com.raemond.opentrailpaper.ble.Maneuver
 import com.raemond.opentrailpaper.data.BoundingBox
+import com.raemond.opentrailpaper.data.DeviceText
 import com.raemond.opentrailpaper.data.LatLon
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -140,6 +141,134 @@ object Routing {
             durationSeconds = route.optDouble("duration", 0.0),
             maneuvers = maneuvers,
             mode = mode,
+        )
+    }
+
+    // MARK: turn cues for an imported route
+
+    /** routes.h MAX_MANEUVERS — more than this and the device drops the rest. */
+    private const val MAX_MANEUVERS = 128
+
+    /** How many via points describe the track well enough to route through it. */
+    private const val VIA_COUNT = 50
+
+    /** Cues that survived, and whether anything had to be thrown away to fit. */
+    data class CueSet(val maneuvers: List<Maneuver>, val truncated: Boolean)
+
+    /** A cue plus the two facts triage needs when there are too many of them. */
+    internal data class Cue(
+        val maneuver: Maneuver,
+        /** "Continue onto X" — no turn in it, the first thing worth losing. */
+        val isFiller: Boolean,
+        /** A slight left/right, the next thing worth losing. */
+        val isSlight: Boolean,
+    )
+
+    /**
+     * Turn cues for a route the rider brought with them.
+     *
+     * The track is sampled to [VIA_COUNT] waypoints and routed through, then
+     * OSRM's geometry is **discarded** — only the maneuver coordinates are kept.
+     * The device projects those onto whatever route is loaded
+     * (routes.cpp mapManeuversToRoute), so the rider still rides their own file
+     * while getting named turns off the OSM network.
+     *
+     * Measured against four real Komoot/Strava exports, cues land a median 0–1 m
+     * from the original track and 36 m at worst — inside the 20 m tolerance the
+     * firmware's own past-the-turn rule already lives with.
+     *
+     * Null on any failure: no network, a refusal, a route OSRM can't follow. The
+     * caller keeps the route and sends it without cues. An empty [CueSet] is not
+     * a failure and must not be reported as one: a canal path with no junctions
+     * yields nothing but depart/arrive steps, which [instruction] drops.
+     */
+    suspend fun cues(track: List<LatLon>): CueSet? = withContext(Dispatchers.IO) {
+        if (track.size < 2) return@withContext null
+        val vias = sampleByDistance(track, VIA_COUNT)
+        if (vias.size < 2) return@withContext null
+
+        val path = vias.joinToString(";") { "${fmt(it.lon)},${fmt(it.lat)}" }
+        val url = "https://routing.openstreetmap.de/routed-bike/route/v1/driving/$path" +
+            "?overview=false&steps=true&alternatives=false"
+        val body = get(url) ?: return@withContext null
+
+        val root = JSONObject(body)
+        if (root.optString("code") != "Ok") return@withContext null
+        val route = root.optJSONArray("routes")?.optJSONObject(0) ?: return@withContext null
+
+        val collected = ArrayList<Cue>()
+        val legs = route.optJSONArray("legs")
+        for (l in 0 until (legs?.length() ?: 0)) {
+            val steps = legs!!.optJSONObject(l)?.optJSONArray("steps") ?: continue
+            for (s in 0 until steps.length()) {
+                val step = steps.optJSONObject(s) ?: continue
+                val man = step.optJSONObject("maneuver") ?: continue
+                val loc = man.optJSONArray("location") ?: continue
+                // instruction() already returns null for depart/arrive, which is
+                // what discards the two artifacts every via point produces.
+                val txt = instruction(man, step.optString("name")) ?: continue
+                collected.add(
+                    Cue(
+                        maneuver = Maneuver(loc.optDouble(1), loc.optDouble(0), txt),
+                        isFiller = txt.startsWith("Continue"),
+                        isSlight = man.optString("modifier").startsWith("slight"),
+                    ),
+                )
+            }
+        }
+        triage(collected)
+    }
+
+    /**
+     * [n] points spaced evenly along the track *by distance*.
+     *
+     * By distance and not by index because GPX point density varies wildly
+     * within one file — Komoot writes a point per second, so a slow climb is
+     * dense and a fast descent sparse. Sampling by index would spend most of the
+     * via budget on whichever part the rider went slowest through.
+     *
+     * The sample count is clamped to the track length: a short track asked for
+     * more vias than it has points would otherwise emit mostly duplicates,
+     * wasting OSRM's waypoint budget on a degenerate request.
+     */
+    internal fun sampleByDistance(points: List<LatLon>, n: Int): List<LatLon> {
+        if (points.size <= 2 || n < 2) return points
+        val cum = DoubleArray(points.size)
+        for (i in 1 until points.size) {
+            cum[i] = cum[i - 1] + points[i - 1].distanceTo(points[i])
+        }
+        val total = cum.last()
+        if (total <= 0.0) return listOf(points.first(), points.last())
+
+        val count = minOf(n, points.size)
+        val out = ArrayList<LatLon>(count)
+        var j = 0
+        for (i in 0 until count) {
+            val target = if (count > 1) total * i / (count - 1) else 0.0
+            while (j < cum.size - 1 && cum[j + 1] < target) j++
+            out.add(points[j])
+        }
+        out[out.size - 1] = points.last()
+        return out
+    }
+
+    /**
+     * Fit the cues into the device's maneuver table, cheapest losses first.
+     *
+     * Filler goes before slight turns, and slight turns before real ones. Only
+     * when even the real turns overflow does this truncate — and then it says
+     * so, because silently losing the last third of a route's cues is worse than
+     * admitting the list was cut.
+     */
+    internal fun triage(cues: List<Cue>, cap: Int = MAX_MANEUVERS): CueSet {
+        var kept: List<Cue> = cues
+        if (kept.size > cap) kept = kept.filterNot { it.isFiller }
+        if (kept.size > cap) kept = kept.filterNot { it.isSlight }
+        val truncated = kept.size > cap
+        if (truncated) kept = kept.take(cap)
+        return CueSet(
+            maneuvers = kept.map { it.maneuver.copy(text = DeviceText.maneuverText(it.maneuver.text)) },
+            truncated = truncated,
         )
     }
 

@@ -181,7 +181,8 @@ remaining), framed **route**, **map-tile**, **log** and **OTA** transfers, and a
   optional track-up rotation. See [Map tiles](#map-tiles).
 - **Map-cached elevation** — altitude and climb come from a DEM grid baked into
   each map tile, not the GPS chip's noisy barometric/ellipsoidal altitude.
-- **GPX routes** — plan on the phone or drop `.gpx` in `/routes`; pick one under
+- **GPX routes** — plan on the phone, import a `.gpx` (Android: file picker or
+  opening one from another app) or drop `.gpx` in `/routes`; pick one under
   Navigate. Route draws on the map (ridden solid / ahead dashed) with
   km-remaining in the footer and optional turn banners.
 - **On-device settings** — units (mi/km), 12/24 h clock, FTP (power zone bar),

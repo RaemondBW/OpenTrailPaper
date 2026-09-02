@@ -146,6 +146,53 @@ fun PrimaryButton(
     }
 }
 
+/**
+ * Full-width secondary action — [PrimaryButton]'s pill, outlined rather than
+ * filled.
+ *
+ * Same geometry on purpose: an optional action stacked above a primary one has
+ * to read as a button of the same family, or it reads as a link. Colour carries
+ * the hierarchy instead — vermilion on paper rather than paper on vermilion —
+ * so the eye still lands on the primary action first. Slightly shorter than
+ * [PrimaryButton] for the same reason.
+ */
+@Composable
+fun SecondaryButton(
+    title: String,
+    modifier: Modifier = Modifier,
+    icon: ImageVector? = null,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
+    Button(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = modifier
+            .fillMaxWidth()
+            .border(
+                1.5.dp,
+                if (enabled) Palette.accent else Palette.hairline,
+                RoundedCornerShape(26.dp),
+            ),
+        shape = RoundedCornerShape(26.dp),
+        contentPadding = PaddingValues(vertical = 13.dp),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = Palette.surface,
+            contentColor = Palette.accent,
+            disabledContainerColor = Palette.surface,
+            disabledContentColor = Palette.faint,
+        ),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            if (icon != null) Icon(icon, contentDescription = null)
+            Text(title, style = condensed(18.sp, FontWeight.SemiBold))
+        }
+    }
+}
+
 private val LightScheme = lightColorScheme(
     primary = Palette.accent,
     onPrimary = Palette.accentInk,

@@ -5,6 +5,15 @@ released version into the GitHub release body (see .github/workflows/build.yml),
 and the app shows it under Settings → Firmware when an update is available —
 so write for the rider, newest version first, one `## vX.YY` heading each.
 
+## Unreleased
+
+- Android: import a `.gpx` route — pick one in the app or open it from Files,
+  Komoot or Strava. The route is previewed, sent to the head unit exactly as it
+  came, and can optionally be given turn cues derived from OSRM.
+- Android: route names and turn cues are now trimmed to the firmware's byte
+  budgets on codepoint boundaries, so a long non-ASCII street name can no longer
+  put a half character on the panel.
+
 ## v1.17
 
 - If the device resets or runs out of battery mid-ride, the next boot asks

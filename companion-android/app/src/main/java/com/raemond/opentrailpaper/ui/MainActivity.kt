@@ -12,9 +12,13 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.app.ActivityCompat
+import androidx.core.content.IntentCompat
+import androidx.lifecycle.lifecycleScope
 import com.raemond.opentrailpaper.OpenTrailPaperApp
 import com.raemond.opentrailpaper.ble.BleManager
 import com.raemond.opentrailpaper.data.Prefs
+import com.raemond.opentrailpaper.data.RouteImport
+import kotlinx.coroutines.launch
 
 /**
  * The single activity.
@@ -59,6 +63,36 @@ class MainActivity : ComponentActivity() {
                 )
             }
         }
+        handleImport(intent)
+    }
+
+    /**
+     * singleTask, so an ACTION_VIEW from Files arrives here rather than in a
+     * second copy of the activity. setIntent keeps getIntent() honest for
+     * anything that reads it later.
+     */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleImport(intent)
+    }
+
+    /** A .gpx opened from another app. Parsed off the main thread. */
+    private fun handleImport(intent: Intent?) {
+        intent ?: return
+        val uri = when (intent.action) {
+            Intent.ACTION_VIEW -> intent.data
+            Intent.ACTION_SEND -> IntentCompat.getParcelableExtra(
+                intent, Intent.EXTRA_STREAM, Uri::class.java,
+            )
+            else -> null
+        } ?: return
+        // Spent as it is read: getIntent() still holds the VIEW intent after a
+        // rotation or a process restart, and re-parsing the file would replace
+        // the preview the rider has since annotated with cues.
+        intent.data = null
+        intent.removeExtra(Intent.EXTRA_STREAM)
+        lifecycleScope.launch { RouteImport.read(this@MainActivity, uri) }
     }
 
     override fun onResume() {
