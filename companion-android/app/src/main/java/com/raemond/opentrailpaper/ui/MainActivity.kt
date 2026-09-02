@@ -79,13 +79,19 @@ class MainActivity : ComponentActivity() {
 
     /** A .gpx opened from another app. Parsed off the main thread. */
     private fun handleImport(intent: Intent?) {
-        val uri = when (intent?.action) {
+        intent ?: return
+        val uri = when (intent.action) {
             Intent.ACTION_VIEW -> intent.data
             Intent.ACTION_SEND -> IntentCompat.getParcelableExtra(
                 intent, Intent.EXTRA_STREAM, Uri::class.java,
             )
             else -> null
         } ?: return
+        // Spent as it is read: getIntent() still holds the VIEW intent after a
+        // rotation or a process restart, and re-parsing the file would replace
+        // the preview the rider has since annotated with cues.
+        intent.data = null
+        intent.removeExtra(Intent.EXTRA_STREAM)
         lifecycleScope.launch { RouteImport.read(this@MainActivity, uri) }
     }
 

@@ -178,7 +178,9 @@ object Routing {
      * firmware's own past-the-turn rule already lives with.
      *
      * Null on any failure: no network, a refusal, a route OSRM can't follow. The
-     * caller keeps the route and sends it without cues.
+     * caller keeps the route and sends it without cues. An empty [CueSet] is not
+     * a failure and must not be reported as one: a canal path with no junctions
+     * yields nothing but depart/arrive steps, which [instruction] drops.
      */
     suspend fun cues(track: List<LatLon>): CueSet? = withContext(Dispatchers.IO) {
         if (track.size < 2) return@withContext null
@@ -214,7 +216,6 @@ object Routing {
                 )
             }
         }
-        if (collected.isEmpty()) return@withContext null
         triage(collected)
     }
 

@@ -6,6 +6,7 @@ import android.provider.OpenableColumns
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import com.raemond.opentrailpaper.routing.Routing
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -17,6 +18,11 @@ import kotlinx.coroutines.withContext
  * tab — so the result has to sit somewhere above both. An `object` rather than
  * something hung off BleManager: a file import is not Bluetooth, and that class
  * is past 2,000 lines already. Same idiom as [Prefs] and EInkTileStore.
+ *
+ * It owns the route until the rider clears it, rather than handing it to the
+ * first screen that draws it: a tab tap destroys everything the Route screen
+ * remembers, and a search can be retyped where an import cannot be re-derived.
+ * The cues fetched for it are parked here for the same reason.
  */
 object RouteImport {
 
@@ -26,21 +32,46 @@ object RouteImport {
     var pending by mutableStateOf<ImportedRoute?>(null)
         private set
 
+    /** Turn cues the rider already paid an OSRM request for, if they asked. */
+    var cues by mutableStateOf<Routing.CueSet?>(null)
+        private set
+
+    /**
+     * True until the Route screen has drawn [pending] once.
+     *
+     * Lets the screen tell an import arriving from one being redrawn after a
+     * tab round-trip: only an arrival invalidates what was last sent to the
+     * device.
+     */
+    var fresh by mutableStateOf(false)
+        private set
+
     var error by mutableStateOf<String?>(null)
         private set
 
     fun offer(route: ImportedRoute) {
         error = null
         pending = route
+        cues = null
+        fresh = true
     }
 
     fun fail(message: String) {
-        pending = null
+        clear()
         error = message
     }
 
-    /** Taken by the Route screen once it has drawn it. */
-    fun consume(): ImportedRoute? = pending?.also { pending = null }
+    /** The Route screen has drawn this import; anything after is a redraw. */
+    fun markDrawn() { fresh = false }
+
+    fun noteCues(set: Routing.CueSet) { cues = set }
+
+    /** The rider dismissed the route — the only way an import leaves. */
+    fun clear() {
+        pending = null
+        cues = null
+        fresh = false
+    }
 
     fun clearError() { error = null }
 

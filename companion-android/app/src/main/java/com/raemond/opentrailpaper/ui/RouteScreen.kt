@@ -104,18 +104,30 @@ fun RouteScreen(ble: BleManager) {
 
     // A route imported from a file, whether picked here or opened from another
     // app. Framed the same way a searched route is.
+    //
+    // Rebuilt from RouteImport rather than taken from it: everything remembered
+    // in this composable dies on a tab tap, and a rider who leaves for the Ride
+    // tab to connect the head unit has to find their route still here when they
+    // come back. RouteImport holds it until they clear it.
     LaunchedEffect(RouteImport.pending) {
-        RouteImport.consume()?.let { imported ->
-            results = emptyList()
-            destination = null
-            error = null
+        val imported = RouteImport.pending ?: return@LaunchedEffect
+        results = emptyList()
+        destination = null
+        error = null
+        derivingCues = false
+        preview = imported.asPreview(RouteImport.cues)
+        if (RouteImport.fresh) {
+            RouteImport.markDrawn()
+            // Only an arrival invalidates the last upload. A redraw is the same
+            // route the rider already sent, and still says so.
             ble.routeSent = false
             ble.routeReceived = false
-            derivingCues = false
-            preview = imported.asPreview()
-            BoundingBox.around(imported.points)?.let {
-                camera = MapCamera.box(it.paddedForDisplay())
-            }
+        }
+        // Framed on every redraw, not only on arrival: the camera is remembered
+        // here too, so a tab round-trip would otherwise restore the route with
+        // the map sitting somewhere else entirely.
+        BoundingBox.around(imported.points)?.let {
+            camera = MapCamera.box(it.paddedForDisplay())
         }
     }
 
@@ -307,20 +319,30 @@ fun RouteScreen(ble: BleManager) {
                         error = null
                         scope.launch {
                             val set = Routing.cues(p.points)
+                            derivingCues = false
                             // The rider can clear this route, or import another,
                             // while OSRM is still thinking. A slow request must
                             // not resurrect a route they dismissed — nor report
-                            // its failure over whatever replaced it. Whoever
-                            // moved the preview on resets the spinner.
+                            // its failure over whatever replaced it.
                             if (preview !== p) return@launch
-                            derivingCues = false
-                            if (set == null) {
-                                error = "Couldn't fetch turn cues — check your connection"
-                            } else {
-                                preview = p.copy(
-                                    maneuvers = set.maneuvers,
-                                    cuesTruncated = set.truncated,
-                                )
+                            when {
+                                set == null ->
+                                    error = "Couldn't fetch turn cues — check your connection"
+                                // Not a failure: a path with no junctions in it
+                                // has nothing to call out, and saying the network
+                                // broke would send the rider chasing a fault
+                                // that isn't there.
+                                set.maneuvers.isEmpty() ->
+                                    error = "This route has no turns to call out"
+                                else -> {
+                                    // Parked so a tab round-trip doesn't quietly
+                                    // cost a second request for the same cues.
+                                    RouteImport.noteCues(set)
+                                    preview = p.copy(
+                                        maneuvers = set.maneuvers,
+                                        cuesTruncated = set.truncated,
+                                    )
+                                }
                             }
                         }
                     },
@@ -333,6 +355,9 @@ fun RouteScreen(ble: BleManager) {
                         )
                     },
                     onClear = {
+                        // The import outlives this screen, so clearing it here
+                        // is not enough — it would come back on the next tab.
+                        RouteImport.clear()
                         preview = null
                         destination = null
                         error = null
@@ -377,14 +402,15 @@ private fun Routing.Route.asPreview(name: String) = Preview(
     imported = false,
 )
 
-private fun ImportedRoute.asPreview() = Preview(
+private fun ImportedRoute.asPreview(cues: Routing.CueSet?) = Preview(
     name = name,
     points = points,
     distanceMeters = distanceMeters,
     minutes = null,
     mode = mode,
-    maneuvers = emptyList(),
+    maneuvers = cues?.maneuvers.orEmpty(),
     imported = true,
+    cuesTruncated = cues?.truncated == true,
 )
 
 /**
