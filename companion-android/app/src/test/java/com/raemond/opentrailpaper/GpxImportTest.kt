@@ -1,5 +1,6 @@
 package com.raemond.opentrailpaper
 
+import com.raemond.opentrailpaper.data.DeviceText
 import com.raemond.opentrailpaper.data.GpxImporter
 import com.raemond.opentrailpaper.data.ImportResult
 import org.junit.Assert.assertEquals
@@ -208,5 +209,73 @@ class GpxImportTest {
         """.trimIndent()
         assertEquals("", ok(noType).mode)
         assertNull(ok(noType).activityType)
+    }
+
+    // MARK: device text budgets
+
+    @Test
+    fun `route filename folds accents away and stays inside the name budget`() {
+        val n = DeviceText.routeFileName("From Poronin to Kościelisko")
+        assertEquals("from_poronin_to_koscielisko.gpx", n)
+        assertTrue(n, n.toByteArray(Charsets.UTF_8).size <= 31)
+        assertTrue(n, n.all { it.code < 128 })
+    }
+
+    @Test
+    fun `route filename truncates by bytes and never ends in an underscore`() {
+        val n = DeviceText.routeFileName("Petla z Leszna na polnoc i jeszcze dalej na wschod")
+        assertTrue(n, n.toByteArray(Charsets.UTF_8).size <= 31)
+        assertTrue(n, n.endsWith(".gpx"))
+        assertTrue(n, !n.removeSuffix(".gpx").endsWith("_"))
+    }
+
+    @Test
+    fun `route filename falls back when the title has nothing usable in it`() {
+        assertEquals("route.gpx", DeviceText.routeFileName(null))
+        assertEquals("route.gpx", DeviceText.routeFileName("   "))
+        assertEquals("route.gpx", DeviceText.routeFileName("!!! ???"))
+    }
+
+    /**
+     * The firmware copies cue text into a char[48] with snprintf, which cuts at
+     * 47 bytes with no regard for UTF-8. "Ł" is two bytes; splitting it puts an
+     * invalid sequence on the panel. Already reachable from search-built routes
+     * down any long Polish street — imports only make it common.
+     */
+    @Test
+    fun `maneuver text truncates on a codepoint boundary`() {
+        val long = "Turn slightly right onto Jakuba Ignacego Łaszczyńskiego"
+        assertTrue(long.toByteArray(Charsets.UTF_8).size > DeviceText.MANEUVER_BUDGET)
+
+        val fitted = DeviceText.maneuverText(long)
+        val bytes = fitted.toByteArray(Charsets.UTF_8)
+        assertTrue("${bytes.size} bytes", bytes.size <= DeviceText.MANEUVER_BUDGET)
+        // Round-trips cleanly: no half-character at the end.
+        assertEquals(fitted, String(bytes, Charsets.UTF_8))
+        assertTrue(fitted, fitted.startsWith("Turn slightly right"))
+    }
+
+    @Test
+    fun `maneuver text leaves a cue that already fits completely alone`() {
+        val short = "Turn left onto Ustup"
+        assertEquals(short, DeviceText.maneuverText(short))
+    }
+
+    @Test
+    fun `maneuver text prefers to cut at a word boundary`() {
+        val fitted = DeviceText.maneuverText("Turn right onto Aleja Krakowska Wschodnia Poludniowa")
+        assertTrue(fitted, !fitted.endsWith(" "))
+        assertTrue(fitted, fitted.toByteArray(Charsets.UTF_8).size <= DeviceText.MANEUVER_BUDGET)
+    }
+
+    @Test
+    fun `fitUtf8 never splits a multi-byte character`() {
+        // 20 two-byte characters against a 15-byte budget.
+        val accented = "ą".repeat(20)
+        val fitted = DeviceText.fitUtf8(accented, 15)
+        val bytes = fitted.toByteArray(Charsets.UTF_8)
+        assertTrue("${bytes.size}", bytes.size <= 15)
+        assertEquals(fitted, String(bytes, Charsets.UTF_8))
+        assertEquals(7, fitted.length)
     }
 }

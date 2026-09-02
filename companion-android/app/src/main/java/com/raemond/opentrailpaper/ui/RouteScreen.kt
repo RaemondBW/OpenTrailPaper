@@ -48,6 +48,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.raemond.opentrailpaper.ble.BleManager
 import com.raemond.opentrailpaper.data.BoundingBox
+import com.raemond.opentrailpaper.data.DeviceText
 import com.raemond.opentrailpaper.data.GpxExporter
 import com.raemond.opentrailpaper.data.LatLon
 import com.raemond.opentrailpaper.data.Units
@@ -241,7 +242,7 @@ fun RouteScreen(ble: BleManager) {
                     canSend = ble.state == BleManager.ConnState.CONNECTED,
                     useMiles = ble.useMiles,
                     onSend = {
-                        val name = fileName(destination?.name)
+                        val name = DeviceText.routeFileName(destination?.name)
                         ble.uploadRoute(
                             name = name,
                             gpx = GpxExporter.make(name, r.coordinates),
@@ -277,14 +278,6 @@ private fun BoundingBox.paddedForDisplay(
     val padLat = maxOf((north - south) * fraction, (minimumSpanDeg - (north - south)) / 2, 0.0)
     val padLon = maxOf((east - west) * fraction, (minimumSpanDeg - (east - west)) / 2, 0.0)
     return BoundingBox(south - padLat, west - padLon, north + padLat, east + padLon)
-}
-
-private fun fileName(destination: String?): String {
-    val base = destination?.takeIf { it.isNotBlank() } ?: "route"
-    val safe = base.lowercase(Locale.US)
-        .replace(' ', '_')
-        .filter { it.isLetterOrDigit() || it == '_' }
-    return safe.take(24) + ".gpx"
 }
 
 @Composable
