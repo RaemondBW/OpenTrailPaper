@@ -111,6 +111,7 @@ fun RouteScreen(ble: BleManager) {
             error = null
             ble.routeSent = false
             ble.routeReceived = false
+            derivingCues = false
             preview = imported.asPreview()
             BoundingBox.around(imported.points)?.let {
                 camera = MapCamera.box(it.paddedForDisplay())
@@ -301,6 +302,12 @@ fun RouteScreen(ble: BleManager) {
                         error = null
                         scope.launch {
                             val set = Routing.cues(p.points)
+                            // The rider can clear this route, or import another,
+                            // while OSRM is still thinking. A slow request must
+                            // not resurrect a route they dismissed — nor report
+                            // its failure over whatever replaced it. Whoever
+                            // moved the preview on resets the spinner.
+                            if (preview !== p) return@launch
                             derivingCues = false
                             if (set == null) {
                                 error = "Couldn't fetch turn cues — check your connection"
@@ -324,6 +331,7 @@ fun RouteScreen(ble: BleManager) {
                         preview = null
                         destination = null
                         error = null
+                        derivingCues = false
                     },
                 )
             }
