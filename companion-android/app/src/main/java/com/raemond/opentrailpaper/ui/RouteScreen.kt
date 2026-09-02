@@ -21,10 +21,12 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.FileOpen
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Signpost
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
@@ -44,9 +46,11 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -61,6 +65,7 @@ import com.raemond.opentrailpaper.data.RouteImport
 import com.raemond.opentrailpaper.data.Units
 import com.raemond.opentrailpaper.map.EInkTileStore
 import com.raemond.opentrailpaper.map.H3Tiles
+import com.raemond.opentrailpaper.map.MapTile
 import com.raemond.opentrailpaper.map.OutlineHex
 import com.raemond.opentrailpaper.routing.Routing
 import kotlinx.coroutines.launch
@@ -86,7 +91,26 @@ fun RouteScreen(ble: BleManager) {
     }
     /** Hexes the planned route crosses that NOTHING covers — see below. */
     var gapHexes by remember { mutableStateOf<List<OutlineHex>>(emptyList()) }
+    /** The same gaps as tiles, for seeding a download. Kept even when the
+     *  overlay above is deliberately empty — see [recomputeCoverage]. */
+    var gapTiles by remember { mutableStateOf<List<MapTile>>(emptyList()) }
     var showSaved by remember { mutableStateOf(false) }
+    var showMaps by remember { mutableStateOf(false) }
+    /**
+     * The gaps as they stood when the rider tapped download.
+     *
+     * A snapshot, not [gapTiles] itself: opening the Maps sheet refreshes the
+     * tile store and the device's tile list, both of which rebuild [gapTiles]
+     * as a new list — and handing a sheet a parameter that changes identity
+     * underneath it recomposes the whole sheet, map included, in a loop.
+     */
+    var mapsSeed by remember { mutableStateOf<List<MapTile>>(emptyList()) }
+    /**
+     * Measured height of the floating stack at the bottom. The map runs
+     * full-bleed underneath it, so without this a route frames itself to the
+     * whole screen and lands half-hidden behind the card.
+     */
+    var cardHeightPx by remember { mutableStateOf(0) }
     var didCentre by remember { mutableStateOf(false) }
 
     val here: LatLon? = ble.lastLocation?.let { LatLon(it.latitude, it.longitude) }
@@ -109,7 +133,7 @@ fun RouteScreen(ble: BleManager) {
     // in this composable dies on a tab tap, and a rider who leaves for the Ride
     // tab to connect the head unit has to find their route still here when they
     // come back. RouteImport holds it until they clear it.
-    LaunchedEffect(RouteImport.pending) {
+    LaunchedEffect(RouteImport.pending, cardHeightPx > 0) {
         val imported = RouteImport.pending ?: return@LaunchedEffect
         results = emptyList()
         destination = null
@@ -126,6 +150,12 @@ fun RouteScreen(ble: BleManager) {
         // Framed on every redraw, not only on arrival: the camera is remembered
         // here too, so a tab round-trip would otherwise restore the route with
         // the map sitting somewhere else entirely.
+        //
+        // Also re-runs once the card has been measured, because a route that
+        // arrives before first layout would otherwise be framed against a
+        // zero inset and sit behind the card. Keyed on the boolean, not the
+        // height, so the later shrink when a button disappears doesn't yank
+        // the camera out from under someone reading the map.
         BoundingBox.around(imported.points)?.let {
             camera = MapCamera.box(it.paddedForDisplay())
         }
@@ -148,22 +178,28 @@ fun RouteScreen(ble: BleManager) {
     fun recomputeCoverage() {
         val coords = preview?.points
         if (coords.isNullOrEmpty()) {
+            gapTiles = emptyList()
             gapHexes = emptyList()
             return
         }
         val covered = EInkTileStore.ids + ble.deviceTileIds
-        if (covered.isEmpty()) {
-            // Nothing downloaded at all. Papering the whole route in hexagons
-            // would say only what the empty Maps screen already says.
-            gapHexes = emptyList()
-            return
-        }
         val seen = HashSet<String>()
-        gapHexes = coords.mapNotNull { c ->
+        gapTiles = coords.mapNotNull { c ->
             val id = H3Tiles.idAt(c) ?: return@mapNotNull null
             if (id in covered || !seen.add(id)) return@mapNotNull null
-            val t = H3Tiles.tile(id) ?: return@mapNotNull null
-            OutlineHex(id, t.hexagon, t.center, synced = false, missing = true)
+            H3Tiles.tile(id)
+        }
+        // The OVERLAY stays silent when nothing is downloaded at all: papering
+        // the whole route in hexagons would say only what the empty Maps screen
+        // already says. The download button deliberately does not follow that
+        // rule — a rider carrying no maps is exactly who needs it, and they are
+        // the one person the overlay never speaks to.
+        gapHexes = if (covered.isEmpty()) {
+            emptyList()
+        } else {
+            gapTiles.map {
+                OutlineHex(it.id, it.hexagon, it.center, synced = false, missing = true)
+            }
         }
     }
 
@@ -191,6 +227,7 @@ fun RouteScreen(ble: BleManager) {
             destination = destination?.let { MapDestination(it.name, it.coordinate) },
             camera = camera,
             showUserLocation = ble.locationPermission.isGranted,
+            bottomInsetPx = cardHeightPx,
         )
 
         // "Route" title pill, floated top-left.
@@ -209,6 +246,7 @@ fun RouteScreen(ble: BleManager) {
         Column(
             Modifier
                 .align(Alignment.BottomCenter)
+                .onSizeChanged { cardHeightPx = it.height }
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
@@ -239,18 +277,26 @@ fun RouteScreen(ble: BleManager) {
                 }
             }
 
-            SearchField(
-                value = query,
-                onValueChange = { query = it },
-                searching = searching,
-            ) {
-                if (query.isBlank()) return@SearchField
-                searching = true
-                error = null
-                scope.launch {
-                    results = Routing.search(query, here)
-                    searching = false
-                    if (results.isEmpty()) error = "Nothing found for “$query”"
+            // Hidden while an imported route is up. Searching would build a
+            // different route and throw this one away, and the rider who just
+            // opened a file did not come here to type a destination — the
+            // card's clear button is the way back to searching. A route this
+            // screen built itself keeps the field: the query that produced it
+            // is still the obvious thing to edit.
+            if (preview?.imported != true) {
+                SearchField(
+                    value = query,
+                    onValueChange = { query = it },
+                    searching = searching,
+                ) {
+                    if (query.isBlank()) return@SearchField
+                    searching = true
+                    error = null
+                    scope.launch {
+                        results = Routing.search(query, here)
+                        searching = false
+                        if (results.isEmpty()) error = "Nothing found for “$query”"
+                    }
                 }
             }
 
@@ -309,6 +355,11 @@ fun RouteScreen(ble: BleManager) {
                     cueCount = if (p.imported) p.maneuvers.size else null,
                     cuesTruncated = p.cuesTruncated,
                     derivingCues = derivingCues,
+                    mapGapCount = gapTiles.size,
+                    onDownloadMaps = {
+                        mapsSeed = gapTiles
+                        showMaps = true
+                    },
                     progress = ble.lastUploadProgress,
                     sent = ble.routeSent,
                     received = ble.routeReceived,
@@ -370,6 +421,12 @@ fun RouteScreen(ble: BleManager) {
 
     if (showSaved) {
         SavedRoutesSheet(ble) { showSaved = false }
+    }
+
+    // The Maps tool, opened with this route's uncovered hexes already selected
+    // so the rider lands on the download rather than on an empty drawing board.
+    if (showMaps) {
+        MapsSheet(ble = ble, seed = mapsSeed) { showMaps = false }
     }
 }
 
@@ -521,6 +578,8 @@ private fun RouteSummaryCard(
     cueCount: Int?,
     cuesTruncated: Boolean,
     derivingCues: Boolean,
+    mapGapCount: Int,
+    onDownloadMaps: () -> Unit,
     progress: Double?,
     sent: Boolean,
     received: Boolean,
@@ -580,26 +639,58 @@ private fun RouteSummaryCard(
         }
         // Imported routes arrive with no turn cues. Fetching them sends the
         // shape of this route to a third party, so it is a thing the rider
-        // asks for, named in the button, rather than something that happens.
+        // asks for — and the service is named under the button, in front of
+        // them before they tap, rather than buried in a dialog after.
         if (cueCount == 0) {
             Spacer(Modifier.size(12.dp))
             if (derivingCues) {
                 Row(
+                    Modifier.fillMaxWidth().padding(vertical = 13.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    horizontalArrangement = Arrangement.Center,
                 ) {
                     CircularProgressIndicator(Modifier.size(18.dp), color = Palette.accent)
-                    Text("Fetching turn cues…", style = barlow(12.sp), color = Palette.muted)
+                    Spacer(Modifier.size(12.dp))
+                    Text("Fetching turn cues…", style = barlow(13.sp), color = Palette.muted)
                 }
             } else {
-                TextButton(onClick = onAddCues) {
-                    Text(
-                        "Add turn cues via routing.openstreetmap.de",
-                        style = barlow(13.sp, FontWeight.SemiBold),
-                        color = Palette.accent,
-                    )
-                }
+                SecondaryButton(
+                    title = "Add turn cues",
+                    icon = Icons.Filled.Signpost,
+                    onClick = onAddCues,
+                )
+                Text(
+                    "Fetched from routing.openstreetmap.de",
+                    style = barlow(11.sp),
+                    color = Palette.faint,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 6.dp),
+                    textAlign = TextAlign.Center,
+                )
             }
+        }
+        // The route crosses ground the head unit can't draw. Offering the fix
+        // here rather than only in Settings, because this is the screen where a
+        // rider finds out — the gap hexagons are already on the map behind this
+        // card. The download itself still belongs to the Maps tool; this only
+        // opens it with the route's own gaps already selected.
+        if (mapGapCount > 0) {
+            Spacer(Modifier.size(12.dp))
+            SecondaryButton(
+                title = "Download $mapGapCount map area${if (mapGapCount == 1) "" else "s"}",
+                icon = Icons.Filled.Download,
+                onClick = onDownloadMaps,
+            )
+            Text(
+                "This route crosses ground the device has no map for",
+                style = barlow(11.sp),
+                color = Palette.faint,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 6.dp),
+                textAlign = TextAlign.Center,
+            )
         }
         Spacer(Modifier.size(12.dp))
         when {
