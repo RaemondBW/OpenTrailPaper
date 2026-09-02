@@ -117,8 +117,13 @@ fun RouteScreen(ble: BleManager) {
 
     // Frame the rider as soon as there is a fix, instead of sitting on the
     // fallback region until the first tap of "recenter".
-    LaunchedEffect(here) {
-        if (!didCentre && here != null) {
+    //
+    // Never over a route, though. The first fix can land a second or two after
+    // an import — long enough for the rider to see their route framed and then
+    // watch the map slide away to wherever they are standing, which on an
+    // imported route is usually a different part of the country.
+    LaunchedEffect(here, preview == null) {
+        if (!didCentre && here != null && preview == null) {
             didCentre = true
             camera = MapCamera.region(here, 0.08)
         }
