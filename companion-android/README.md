@@ -1,9 +1,9 @@
 # OpenTrailPaper — Android Companion App
 
 Jetpack Compose app that pairs with the OpenTrailPaper device over BLE to control
-settings, push routes and build offline maps. Feature-for-feature with
-[`companion-ios`](../companion-ios), against the same firmware and the same
-`.ebm` tile format.
+settings, push routes (searched on the phone or imported from a `.gpx`) and
+build offline maps. Feature-for-feature with [`companion-ios`](../companion-ios),
+against the same firmware and the same `.ebm` tile format.
 
 ## What it does
 
