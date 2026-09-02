@@ -72,12 +72,22 @@
             </intent-filter>
 
             <!-- Opening a .gpx from Files, mail, Komoot or Strava.
-                 Deliberately narrow: GPX is served as gpx+xml, octet-stream,
-                 text/xml or nothing depending on the provider, and matching
-                 all of those outright would put this app in the chooser for
-                 every XML and every binary on the phone. The exact type is
-                 matched directly; the generic ones only with a .gpx path. What
-                 actually decides is the file's first bytes, in RouteImport. -->
+
+                 GPX is served as gpx+xml, octet-stream, text/xml or nothing at
+                 all depending on the provider, so the exact type alone is not
+                 enough: on a real device 7 of 8 .gpx files came back as
+                 application/octet-stream, and only a Suunto export as
+                 application/gpx+xml. Hence the second filter.
+
+                 The pathPattern on it does NOT narrow anything. Android ignores
+                 path matching once an intent carries a MIME type, so that filter
+                 is in practice "any octet-stream file" and this app is offered
+                 for .bin and .jpg too — verified with `cmd package
+                 query-activities`. The pattern is kept only for the type-less
+                 case. What actually decides is the file's first bytes, in
+                 RouteImport, which rejects a non-GPX with a readable message.
+                 Dropping the filter would trade that chooser noise for losing
+                 open-with on almost every real .gpx. -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
