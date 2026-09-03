@@ -78,7 +78,7 @@ class BleManager(private val app: Application) {
 
     var ftpWatts by mutableStateOf(250); private set
     var tzMinutes by mutableStateOf(-420); private set
-    var backlight by mutableStateOf(2); private set     // 0 off .. 3 bright (mirrors device)
+    var backlight by mutableStateOf(0); private set     // 0 off .. 3 bright (mirrors device)
     var clock24h by mutableStateOf(true); private set   // device status-bar clock format
     var usbDrive by mutableStateOf(true); private set   // expose device SD as a USB drive
     var useMiles by mutableStateOf(false); private set  // mirrored into Prefs
