@@ -5,6 +5,16 @@ released version into the GitHub release body (see .github/workflows/build.yml),
 and the app shows it under Settings → Firmware when an update is available —
 so write for the rider, newest version first, one `## vX.YY` heading each.
 
+## v1.18
+
+- New or factory-reset devices start with the frontlight off. E-paper needs
+  no light in daylight, and the light was burning battery on units nobody
+  had asked to light up. Riders who set a level keep it.
+- Dashboard fields for sensors that aren't connected stay on the panel as
+  "no data" by default, so the layout you configured is the layout you see
+  and a missing strap or power meter is obvious. Riders who turned this off
+  keep that choice.
+
 ## v1.17
 
 - If the device resets or runs out of battery mid-ride, the next boot asks
