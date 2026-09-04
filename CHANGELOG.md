@@ -5,6 +5,13 @@ released version into the GitHub release body (see .github/workflows/build.yml),
 and the app shows it under Settings → Firmware when an update is available —
 so write for the rider, newest version first, one `## vX.YY` heading each.
 
+## v1.19
+
+- A device with no paired sensors can find its first one again. Scanning
+  from the app or the Sensors screen did nothing on a brand-new or
+  factory-reset unit, so nothing could ever be paired. Devices that already
+  had sensors were unaffected.
+
 ## v1.18
 
 - New or factory-reset devices start with the frontlight off. E-paper needs
