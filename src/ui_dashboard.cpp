@@ -1739,6 +1739,7 @@ static void printConsoleHelp() {
     Serial.println("  autopause [sec|off]  ride timer pause after N s stopped (0/off disables)");
     Serial.println("  workout <list|load <f>|start|pause|resume|stop|skip|back|goto <n>|ftp [W]>");
     Serial.println("  sleepexp [on|off]    re-arm the light-sleep-with-phone experiment (this boot)");
+    Serial.println("  scan <on|off>        force the sensor scan (what the Sensors screen does)");
     Serial.println("  disconnect <kind>    drop the link (hr|power|cadence|all); stays paired");
     Serial.println("  forget <kind|mac>    unpair and drop (hr|power|cadence|all|aa:bb:..)");
     Serial.println("  bootloader           reboot into download mode for flashing");
@@ -2109,6 +2110,11 @@ static void runConsoleLine(char* line) {
     } else if (!strcasecmp(cmd, "timing")) {
         dbgTiming = !dbgTiming;
         diag::log("dbg timing %s", dbgTiming ? "ON" : "OFF");
+    } else if (!strcasecmp(cmd, "scan")) {
+        bool on = arg && !strcasecmp(arg, "on");
+        ble_sensors::setScanAlways(on);
+        if (on) ble_sensors::noteActivity();
+        Serial.printf("[cmd] sensor scan %s — 'sensors' lists what it hears\n", on ? "ON" : "off");
     } else if (!strcasecmp(cmd, "screen")) {
         if (!arg) { Serial.println("[cmd] screen <map|dash|menu|settings|gps>"); return; }
         if      (!strcasecmp(arg, "map"))      screen = SCREEN_MAP;
