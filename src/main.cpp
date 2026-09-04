@@ -18,6 +18,7 @@
 #include "settings.h"
 #include "routes.h"
 #include "ble_sensors.h"
+#include "ant_sensors.h"
 #include "ble_server.h"
 #include "ride_recorder.h"
 #include "ui_dashboard.h"
@@ -637,6 +638,7 @@ void setup() {
 
     BOOT_STEP("ui_dashboard done -> ble_sensors::begin()");
     ble_sensors::begin();
+    ant_sensors::begin();   // ANT+ on the same radio; node starts on demand
     BOOT_STEP("ble_sensors done -> ble_server::begin()");
     ble_server::begin();   // GATT server for the iOS companion app
 

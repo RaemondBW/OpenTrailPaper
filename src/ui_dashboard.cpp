@@ -29,6 +29,7 @@
 #include "i2c_bus.h"
 #include "usb_storage.h"
 #include "ble_sensors.h"
+#include "ant_sensors.h"
 #include <esp_random.h>
 
 #include "lora_radio.h"
@@ -1105,6 +1106,12 @@ void renderListScreen(uint8_t* fb) {
                 } else if (c.paired) {
                     snprintf(rows[i].subtitle, sizeof(rows[i].subtitle),
                              "%s · %s", c.rssi ? "In range" : "Saved", kinds);
+                } else if (!strncmp(c.addr, "ant:pair:", 9)) {
+                    // The "Pair ANT+ ..." action row (see ble_sensors::
+                    // getCandidates): no address, no rssi to show.
+                    snprintf(rows[i].subtitle, sizeof(rows[i].subtitle),
+                             "%s", c.name[0] == '*' ? "searching nearby..."
+                                                    : "tap to search nearby");
                 } else {
                     snprintf(rows[i].subtitle, sizeof(rows[i].subtitle),
                              "%s · %d dBm", kinds, c.rssi);
@@ -1728,6 +1735,7 @@ static void printConsoleHelp() {
     Serial.println("  power                battery voltage + draw (mA) + full fuel-gauge state");
     Serial.println("  aux                  optional Qwiic sensors: baro / accel / compass");
     Serial.println("  sensors              paired/connected MACs + everything seen this session");
+    Serial.println("  ant [pair|forget <kind>]  ANT+ sensors on the ESP32 radio: status / pair nearby / forget");
     Serial.println("  mesh                 node state, neighbours, messages, counters");
     Serial.println("  mesh send <text>     broadcast a message to the channel");
     Serial.println("  mesh preset [name]   list / set the modem preset (how fast)");
@@ -1910,6 +1918,73 @@ static void runConsoleLine(char* line) {
         }
     } else if (!strcasecmp(cmd, "sensors")) {
         printSensorReport();
+        ant_sensors::printReport();
+    } else if (!strcasecmp(cmd, "ant")) {
+        // ANT+ on the ESP32's own radio (ant_sensors.h). `ant pair hr` runs a
+        // proximity-limited search and remembers what it finds; `ant forget`
+        // drops it; bare `ant` reports.
+        char* sub = arg;
+        char* what = sub ? strtok(nullptr, " \t") : nullptr;
+        int want = sensorKindArg(what);
+        if (sub && !strcasecmp(sub, "pair")) {
+            if (want < 0) Serial.println("[cmd] ant pair <hr|power|cadence>");
+            else ant_sensors::pair(want);
+        } else if (sub && !strcasecmp(sub, "em")) {
+            char* len = what ? strtok(nullptr, " \t") : nullptr;
+            ant_sensors::dumpEm(what ? strtoul(what, nullptr, 16) : 0x400,
+                                len ? strtoul(len, nullptr, 0) : 256);
+        } else if (sub && !strcasecmp(sub, "prox")) {
+            ant_sensors::setProximity(what ? (int8_t)atoi(what) : -70);
+        } else if (sub && !strcasecmp(sub, "fmt")) {
+            ant_sensors::setCsFormat(what ? (uint8_t)strtoul(what, nullptr, 16) : 0);
+        } else if (sub && !strcasecmp(sub, "mhz")) {
+            ant_sensors::setMhz(what ? (uint16_t)atoi(what) : 0);
+        } else if (sub && !strcasecmp(sub, "sync")) {
+            ant_sensors::setSyncOverride(what && strcasecmp(what, "off") ? what : nullptr);
+        } else if (sub && !strcasecmp(sub, "patch")) {
+            ant_sensors::setPatchMask(what ? (uint8_t)strtoul(what, nullptr, 16) : 0);
+        } else if (sub && !strcasecmp(sub, "crc")) {
+            ant_sensors::setKeepCrc(what && !strcasecmp(what, "keep"));
+        } else if (sub && !strcasecmp(sub, "ch")) {
+            ant_sensors::setCoexistChannel(what ? (uint8_t)atoi(what) : 0);
+        } else if (sub && !strcasecmp(sub, "csw")) {
+            char* val = what ? strtok(nullptr, " \t") : nullptr;
+            if (what && !strcasecmp(what, "clear")) ant_sensors::setCsOverride(0xFF, 0);
+            else if (what && val) ant_sensors::setCsOverride((uint8_t)strtoul(what, nullptr, 0),
+                                                            (uint8_t)strtoul(val, nullptr, 16));
+            else Serial.println("[cmd] ant csw <byte offset> <hex value> | ant csw clear");
+        } else if (sub && !strcasecmp(sub, "hold")) {
+            // Bench: keep sensors "wanted" (as if the Sensors screen were open)
+            // so the arbiter leaves the ANT radio up without touching the panel.
+            bool on = what && !strcasecmp(what, "on");
+            ant_sensors::setHold(on);
+            Serial.printf("[ant] hold %s\n", on ? "on (sensors wanted)" : "off");
+        } else if (sub && !strcasecmp(sub, "adopt")) {
+            // ant adopt <type> <device number>: pair by id, as the list rows do.
+            char* num = what ? strtok(nullptr, " \t") : nullptr;
+            if (!what || !num) Serial.println("[cmd] ant adopt <type> <device number>");
+            else {
+                char addr[24];
+                snprintf(addr, sizeof(addr), "ant:%u:%u", (unsigned)atoi(what), (unsigned)atoi(num));
+                ble_sensors::pairCandidate(addr);
+            }
+        } else if (sub && !strcasecmp(sub, "scan")) {
+            if (what && !strcasecmp(what, "on")) ant_sensors::scanSet(true);
+            else if (what && !strcasecmp(what, "off")) ant_sensors::scanSet(false);
+            ant_sensors::printReport();
+        } else if (sub && !strcasecmp(sub, "trace")) {
+            ant_sensors::printBootTrace();
+        } else if (sub && !strcasecmp(sub, "types")) {
+            ant_sensors::types(what && !strcasecmp(what, "start"));
+        } else if (sub && !strcasecmp(sub, "tap")) {
+            ant_sensors::tap(what ? atoi(what) : 10);
+        } else if (sub && !strcasecmp(sub, "forget")) {
+            if (want == KIND_ALL) ant_sensors::forgetAll();
+            else if (want < 0) Serial.println("[cmd] ant forget <hr|power|cadence|all>");
+            else if (!ant_sensors::forget(want)) Serial.println("[ant] nothing paired");
+        } else {
+            ant_sensors::printReport();
+        }
     } else if (!strcasecmp(cmd, "disconnect")) {
         int want = sensorKindArg(arg);
         if (want == KIND_BAD) {

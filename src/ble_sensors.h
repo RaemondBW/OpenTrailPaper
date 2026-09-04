@@ -82,4 +82,28 @@ bool radioBusy();
 // power_mgmt.cpp).
 bool anyConnected();
 
+// --- Shared sensor feed -----------------------------------------------------
+// The ANT+ path (ant_sensors) delivers the same readings from a different
+// radio. It publishes through these so RideState is written in exactly one
+// place per field and the dashboard / recorder / FIT writer never learn which
+// radio a number came from.
+struct CrankState {
+    uint16_t revs = 0;
+    uint16_t eventTime = 0;   // 1/1024 s (BLE CSC/CPS and ANT+ agree on this)
+    bool primed = false;
+};
+// Cadence from two cumulative crank samples; 0xFF = nothing to say yet.
+uint8_t cadenceFromCrank(CrankState& cs, uint16_t revs, uint16_t eventTime);
+void feedHr(uint16_t bpm);
+// hasCrank: this meter is a cadence source (flag, not a derived number);
+// cad 0xFF = no rpm this sample; crankStopped: report a real zero.
+void feedPower(uint16_t watts, bool hasCrank, uint8_t cad, bool crankStopped);
+void feedCadence(uint8_t rpm);
+void feedWheelMove();
+// Raise or drop a kind's connected flag (dropping also blanks its values).
+// A drop is ignored while the OTHER radio still serves that kind.
+void feedConnected(int kind, bool on);
+// A BLE link is up for this kind (ant_sensors asks before blanking a field).
+bool kindConnected(int kind);
+
 }

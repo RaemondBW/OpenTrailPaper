@@ -8,6 +8,7 @@
 #include "ride_recorder.h"
 #include "routes.h"
 #include "diag.h"
+#include "ant_sensors.h"
 
 namespace {
 
@@ -43,30 +44,11 @@ Sensor sensors[KIND_COUNT] = {
     {"Cadence", SVC_CSC, CHR_CSC},
 };
 
-// Crank state for cadence-from-power-meter and CSC. Event time is 1/1024 s.
-struct CrankState {
-    uint16_t revs = 0;
-    uint16_t eventTime = 0;
-    bool primed = false;
-};
+// Crank state for cadence-from-power-meter and CSC (ble_sensors::CrankState,
+// shared with the ANT+ path). Event time is 1/1024 s.
+using ble_sensors::CrankState;
+using ble_sensors::cadenceFromCrank;
 CrankState crankFromPower, crankFromCsc;
-
-uint8_t cadenceFromCrank(CrankState& cs, uint16_t revs, uint16_t eventTime) {
-    if (!cs.primed) {
-        cs.revs = revs;
-        cs.eventTime = eventTime;
-        cs.primed = true;
-        return 0xFF;
-    }
-    uint16_t dRevs = revs - cs.revs;
-    uint16_t dTime = eventTime - cs.eventTime;  // wraps correctly, unsigned
-    cs.revs = revs;
-    cs.eventTime = eventTime;
-    if (dTime == 0) return 0xFF;
-    if (dRevs == 0) return 0;
-    uint32_t rpm = (uint32_t)dRevs * 60 * 1024 / dTime;
-    return rpm > 254 ? 254 : (uint8_t)rpm;
-}
 
 // Last HR measurement payload, for the `sensors` console command.
 ble_sensors::HrPacket lastHr{};
@@ -114,10 +96,7 @@ void onHrNotify(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool) {
                   hr, hex);
     }
 
-    g_state.with([&](RideState& s) {
-        s.heartRateBpm = hr > 254 ? 254 : (uint8_t)hr;
-        s.hrMs = millis();
-    });
+    ble_sensors::feedHr(hr);
 }
 
 // 3 s rolling power average for the hero display (design: "POWER · 3S").
@@ -191,25 +170,7 @@ void onPowerNotify(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool)
         haveLastRevs = true;
     }
 
-    uint16_t w = watts < 0 ? 0 : (uint16_t)watts;
-    addPowerSample(w);
-    uint16_t w3s = power3sAvg();
-    g_state.with([&](RideState& s) {
-        s.powerW = w;
-        s.power3sW = w3s;
-        s.powerMs = millis();
-        // A power meter with crank data IS a cadence sensor. Marking it
-        // connected here is what makes the rest of the device agree: the
-        // dashboard field, the menu's sensor line and the status bar all read
-        // cadenceConnected, so without this a meter supplying cadence still
-        // reported "Cadence --" and the field never counted as live.
-        if (hasCrank) {
-            s.cadenceConnected = true;
-            s.cadenceMs = millis();
-            if (cad != 0xFF) s.cadenceRpm = cad;
-            else if (crankStopped) s.cadenceRpm = 0;
-        }
-    });
+    ble_sensors::feedPower(watts < 0 ? 0 : (uint16_t)watts, hasCrank, cad, crankStopped);
 }
 
 void onCscNotify(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool) {
@@ -227,9 +188,7 @@ void onCscNotify(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool) {
                         ((uint32_t)data[off + 3] << 24);
         static uint32_t lastWheelRevs = 0;
         static bool haveWheelRevs = false;
-        if (haveWheelRevs && revs != lastWheelRevs) {
-            g_state.with([&](RideState& s) { s.wheelMoveMs = millis(); });
-        }
+        if (haveWheelRevs && revs != lastWheelRevs) ble_sensors::feedWheelMove();
         lastWheelRevs = revs;
         haveWheelRevs = true;
     }
@@ -238,13 +197,7 @@ void onCscNotify(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool) {
         uint16_t revs = data[off] | (data[off + 1] << 8);
         uint16_t t = data[off + 2] | (data[off + 3] << 8);
         uint8_t cad = cadenceFromCrank(crankFromCsc, revs, t);
-        if (cad != 0xFF) {
-            g_state.with([&](RideState& s) {
-                s.cadenceRpm = cad;
-                s.cadenceMs = millis();
-                s.cadenceConnected = true;   // any CSC device is a cadence source
-            });
-        }
+        if (cad != 0xFF) ble_sensors::feedCadence(cad);
     }
 }
 
@@ -321,6 +274,9 @@ class ScanCallbacks : public NimBLEScanCallbacks {
 } scanCallbacks;
 
 void markDisconnected(SensorKind kind) {
+    // The ANT+ path may be serving this kind at the same time (a rider with
+    // both a BLE strap and an ANT+ one paired); its readings stay up.
+    if (ant_sensors::tracking(kind)) return;
     g_state.with([&](RideState& s) {
         switch (kind) {
             case KIND_HR:
@@ -477,7 +433,10 @@ void task(void*) {
         // an HR strap that drops NEAR the end of a long ride still counts as
         // recent afterwards.
         for (int k = 0; k < KIND_COUNT; ++k) {
-            if (sensors[k].connected) { lastLinkMs = millis(); everLinked = true; }
+            if (sensors[k].connected || ant_sensors::tracking(k)) {
+                lastLinkMs = millis();
+                everLinked = true;
+            }
         }
 
         // Only scan when it's actually useful: while recording or navigating,
@@ -503,10 +462,10 @@ void task(void*) {
         // at full radio quality.
         const bool ridingNow = ride_recorder::isRecording() &&
                                !ride_recorder::longAutoPaused();
-        bool wantScan = !allConnected &&
-                        (scanAlways || ridingNow ||
-                         routes::navActive() || millis() < 90000 ||
-                         (millis() - lastActivityMs < 30000 && sensorsRecent));
+        const bool sensorsWanted = scanAlways || ridingNow ||
+                                   routes::navActive() || millis() < 90000 ||
+                                   (millis() - lastActivityMs < 30000 && sensorsRecent);
+        bool wantScan = !allConnected && sensorsWanted;
 
         // A sensor that is actually coming back — the meter waking on the first
         // pedal stroke, a strap re-wetting — starts advertising within seconds,
@@ -538,14 +497,50 @@ void task(void*) {
         for (int k = 0; k < KIND_COUNT; ++k)
             if (sensors[k].found && !sensors[k].connected) pendingConnect = true;
 
+        // ANT+ shares this radio (see ant_sensors.h): it receives on the
+        // windows of a perpetual PASSIVE scan and, while it does, no BLE
+        // advertisement is heard. So the two take turns, and this loop is the
+        // only place that decides who has the scan. ANT gets it whenever it has
+        // a paired sensor and sensors are in play — the same terms that arm a
+        // BLE hunt, plus "already tracking" (a live ANT strap is a link, and is
+        // held like one) — except while a BLE hunt or connect is running, which
+        // takes priority: it is short and duty-cycled, and ANT reacquires its
+        // remembered device without a search when it gets the radio back. A
+        // pair request is the one thing that pre-empts the hunt: the rider is
+        // standing there waiting for it.
+        // While a sensors list is open (screen or phone) both radios get to
+        // discover: the BLE hunt and the ANT+ scan alternate in 5 s turns.
+        ant_sensors::scanWhileListOpen(scanAlways);
+        const bool antScanTurn = scanAlways && ((millis() / 5000) & 1);
+        if (antScanTurn) lookNow = false;
+        const bool antPairing = ant_sensors::pairPending();
+        const bool antWant = ant_sensors::wanted() &&
+                             (antPairing || ant_sensors::anyTracking() || sensorsWanted ||
+                              ant_sensors::hold() || ant_sensors::scanning());
+        if (antPairing) lookNow = false;
+        const bool antNow = antWant && !lookNow && !pendingConnect;
+        if (!antNow && ant_sensors::radioActive()) {
+            ant_sensors::setRadio(false);
+            if (scan->isScanning()) scan->stop();   // the perpetual passive one
+            // (antScan is reset below, where the scan for the hunt is started)
+        }
+
         // Keep the radio awake for the whole hunt — the scan AND the connect
         // attempts that follow it. Both need the controller listening on time.
         huntingRadio = lookNow || pendingConnect;
 
+        // Which scan is running: ours (a BLE hunt, active, 5 s, 30 % duty) or
+        // ANT's (passive, endless, continuous). NimBLE only knows "scanning".
+        static bool antScan = false;
         if (lookNow && !scan->isScanning()) {
+            scan->setActiveScan(true);
+            scan->setInterval(160);
+            scan->setWindow(48);
             scan->start(5000, false, true);
-        } else if (!lookNow && scan->isScanning()) {
+            antScan = false;
+        } else if (!lookNow && scan->isScanning() && !antNow) {
             scan->stop();
+            antScan = false;
         }
 
         // Connecting while a scan runs is unreliable; stop it first.
@@ -553,6 +548,32 @@ void task(void*) {
             if (sensors[k].found && !sensors[k].connected) {
                 if (scan->isScanning()) scan->stop();
                 connectSensor((SensorKind)k);
+            }
+        }
+
+        // ANT's turn: a passive scan with no end (interval == window, so the
+        // radio listens continuously — an ANT+ strap sends 4 pages a second
+        // and a slot missed is a slot lost) and the node on top of it. The
+        // scan must be up BEFORE the node starts (the coexist backend hooks the
+        // scan path of a running host), and it is restarted here if a connect
+        // above stopped it.
+        if (antNow) {
+            if (scan->isScanning() && !antScan) scan->stop();   // a hunt's tail
+            // Node BEFORE scan: the controller calls the scan's window-start
+            // and -cancel callbacks through pointers captured when the scan
+            // is created, so the ANT hooks must be installed first or the
+            // windows are never retargeted (only the reschedule hook, which
+            // goes through the function table, would fire).
+            if (!ant_sensors::radioActive()) {
+                if (scan->isScanning()) { scan->stop(); antScan = false; }
+                ant_sensors::setRadio(true);
+            }
+            if (!scan->isScanning()) {
+                scan->setActiveScan(false);
+                scan->setInterval(16);   // 10 ms == window: listen continuously
+                scan->setWindow(16);
+                scan->start(0, false, true);
+                antScan = true;
             }
         }
 
@@ -581,7 +602,7 @@ void task(void*) {
 
         // Keep the 3 s power average current even between notifications so it
         // decays within 3 s when you stop pedaling (not "much longer").
-        if (sensors[KIND_POWER].connected) {
+        if (sensors[KIND_POWER].connected || ant_sensors::tracking(KIND_POWER)) {
             uint16_t w3s = power3sAvg();
             g_state.with([&](RideState& s) {
                 if (s.powerW != 0xFFFF) s.power3sW = w3s;
@@ -594,12 +615,103 @@ void task(void*) {
 
 void setScanAlways(bool on) { scanAlways = on; }
 void noteActivity() { lastActivityMs = millis(); }
-bool radioBusy() { return huntingRadio; }
+// An ANT node that is up but not yet hearing its sensor is a hunt too: the
+// scan windows are its radio, and light sleep would move them off the ANT
+// slots exactly as it moves a BLE scan window off an advertisement.
+bool radioBusy() {
+    return huntingRadio || (ant_sensors::radioActive() && !ant_sensors::anyTracking());
+}
 
 bool anyConnected() {
     for (int k = 0; k < KIND_COUNT; ++k)
         if (sensors[k].connected) return true;
-    return false;
+    return ant_sensors::anyTracking();
+}
+
+bool kindConnected(int kind) {
+    return kind >= 0 && kind < KIND_COUNT && sensors[kind].connected;
+}
+
+// --- Shared sensor feed (header) --------------------------------------------
+
+uint8_t cadenceFromCrank(CrankState& cs, uint16_t revs, uint16_t eventTime) {
+    if (!cs.primed) {
+        cs.revs = revs;
+        cs.eventTime = eventTime;
+        cs.primed = true;
+        return 0xFF;
+    }
+    uint16_t dRevs = revs - cs.revs;
+    uint16_t dTime = eventTime - cs.eventTime;  // wraps correctly, unsigned
+    cs.revs = revs;
+    cs.eventTime = eventTime;
+    if (dTime == 0) return 0xFF;
+    if (dRevs == 0) return 0;
+    uint32_t rpm = (uint32_t)dRevs * 60 * 1024 / dTime;
+    return rpm > 254 ? 254 : (uint8_t)rpm;
+}
+
+void feedHr(uint16_t bpm) {
+    g_state.with([&](RideState& s) {
+        s.heartRateBpm = bpm > 254 ? 254 : (uint8_t)bpm;
+        s.hrMs = millis();
+    });
+}
+
+void feedPower(uint16_t w, bool hasCrank, uint8_t cad, bool crankStopped) {
+    addPowerSample(w);
+    uint16_t w3s = power3sAvg();
+    g_state.with([&](RideState& s) {
+        s.powerW = w;
+        s.power3sW = w3s;
+        s.powerMs = millis();
+        // A power meter with crank data IS a cadence sensor. Marking it
+        // connected here is what makes the rest of the device agree: the
+        // dashboard field, the menu's sensor line and the status bar all read
+        // cadenceConnected, so without this a meter supplying cadence still
+        // reported "Cadence --" and the field never counted as live.
+        if (hasCrank) {
+            s.cadenceConnected = true;
+            s.cadenceMs = millis();
+            if (cad != 0xFF) s.cadenceRpm = cad;
+            else if (crankStopped) s.cadenceRpm = 0;
+        }
+    });
+}
+
+void feedCadence(uint8_t rpm) {
+    g_state.with([&](RideState& s) {
+        s.cadenceRpm = rpm;
+        s.cadenceMs = millis();
+        s.cadenceConnected = true;   // any CSC device is a cadence source
+    });
+}
+
+void feedWheelMove() {
+    g_state.with([&](RideState& s) { s.wheelMoveMs = millis(); });
+}
+
+void feedConnected(int kind, bool on) {
+    if (kind < 0 || kind >= KIND_COUNT) return;
+    if (!on) {
+        // markDisconnected already refuses while ANT tracks the kind; the BLE
+        // side of the same question is kindConnected(), which the caller asks.
+        if (sensors[kind].connected) return;
+        g_state.with([&](RideState& s) {
+            switch (kind) {
+                case KIND_HR:    s.hrConnected = false; s.heartRateBpm = 0xFF; break;
+                case KIND_POWER: s.powerConnected = false; s.powerW = s.power3sW = 0xFFFF; break;
+                case KIND_CSC:   s.cadenceConnected = false; break;
+                default: break;
+            }
+        });
+        return;
+    }
+    g_state.with([&](RideState& s) {
+        if (kind == KIND_HR) s.hrConnected = true;
+        if (kind == KIND_POWER) s.powerConnected = true;
+        if (kind == KIND_CSC) s.cadenceConnected = true;
+    });
 }
 
 HrPacket lastHrPacket() { return lastHr; }
@@ -706,10 +818,96 @@ int getCandidates(Candidate* out, int maxOut) {
         }
       }
     }
+
+    // ANT+ rows. Addresses are "ant:<kind>" for a paired device and
+    // "ant:pair:<kind>" for the action that pairs one, so the same pair/forget
+    // entry points serve the Sensors screen and the phone app unchanged. A
+    // paired ANT+ device is listed like a paired BLE one (connected = pages
+    // arriving); a kind with nothing paired gets a "Pair ANT+ ..." row, but
+    // only while a list screen is open (scanAlways) — the phone's snapshot
+    // request and the console report do not need three permanent buttons.
+    ant_sensors::Link al[ant_sensors::KIND_COUNT];
+    ant_sensors::links(al);
+    for (int k = 0; k < ant_sensors::KIND_COUNT && n < maxOut; ++k) {
+        Candidate& c = out[n];
+        memset(&c, 0, sizeof(c));
+        c.kindsMask = (uint8_t)(1 << k);
+        if (al[k].paired) {
+            snprintf(c.addr, sizeof(c.addr), "ant:%d", k);
+            snprintf(c.name, sizeof(c.name), "ANT+ %s %u", al[k].kind, al[k].deviceNum);
+            c.paired = true;
+            c.connected = al[k].tracking;
+            c.rssi = al[k].tracking ? al[k].rssi : 0;
+            n++;
+        } else if (scanAlways) {
+            snprintf(c.addr, sizeof(c.addr), "ant:pair:%d", k);
+            snprintf(c.name, sizeof(c.name), "%sPair ANT+ %s",
+                     al[k].pairing ? "* " : "", al[k].kind);
+            n++;
+        }
+    }
+    // Devices the ANT+ scan has heard (ant_sensors::scanSet): "ant:<type>:<num>".
+    // Pairing one remembers it by id, no search needed.
+    ant_sensors::Candidate ac[12];
+    int an = ant_sensors::candidates(ac, 12);
+    for (int i = 0; i < an && n < maxOut; ++i) {
+        int k = ant_sensors::kindForType(ac[i].devType);
+        if (k < 0) continue;                       // a type the dashboard has no field for
+        if (al[k].paired && al[k].deviceNum == ac[i].devNum) continue;   // listed above
+        if (millis() - ac[i].lastMs > 60000) continue;                    // gone
+        Candidate& c = out[n++];
+        memset(&c, 0, sizeof(c));
+        snprintf(c.addr, sizeof(c.addr), "ant:%u:%u", ac[i].devType, ac[i].devNum);
+        snprintf(c.name, sizeof(c.name), "ANT+ %s %u", ant_sensors::typeName(ac[i].devType),
+                 ac[i].devNum);
+        c.kindsMask = (uint8_t)(1 << k);
+        c.rssi = ac[i].rssi;
+    }
     return n;
 }
 
+// "ant:<kind>" / "ant:pair:<kind>" / "ant:<type>:<num>" — see getCandidates.
+// -1 when not an ANT row; for the device form *devNum is set (else 0).
+static int antKindOf(const char* addr, bool* pairAction, uint8_t* devType = nullptr,
+                     uint16_t* devNum = nullptr) {
+    if (devNum) *devNum = 0;
+    if (strncmp(addr, "ant:", 4) != 0) return -1;
+    const char* p = addr + 4;
+    *pairAction = strncmp(p, "pair:", 5) == 0;
+    if (*pairAction) p += 5;
+    unsigned a = 0, b = 0;
+    if (!*pairAction && sscanf(p, "%u:%u", &a, &b) == 2 && b) {
+        if (devType) *devType = (uint8_t)a;
+        if (devNum) *devNum = (uint16_t)b;
+        return ant_sensors::kindForType((uint8_t)a);
+    }
+    int k = atoi(p);
+    return (k >= 0 && k < ant_sensors::KIND_COUNT) ? k : -1;
+}
+
 void pairCandidate(const char* addr) {
+    {
+        bool pairAction = false;
+        uint8_t devType = 0;
+        uint16_t devNum = 0;
+        int k = antKindOf(addr, &pairAction, &devType, &devNum);
+        if (k >= 0 && devNum) {
+            // A scanned device: its transmission type from the scan tally.
+            ant_sensors::Candidate ac[12];
+            int an = ant_sensors::candidates(ac, 12);
+            uint8_t trans = 0;
+            for (int i = 0; i < an; ++i)
+                if (ac[i].devType == devType && ac[i].devNum == devNum) trans = ac[i].trans;
+            ant_sensors::pairDevice(devType, devNum, trans);
+            return;
+        }
+        if (k >= 0) {
+            // Tapping a paired ANT+ row re-pairs it (a fresh proximity search
+            // replaces the remembered device), like the button on a head unit.
+            ant_sensors::pair(k);
+            return;
+        }
+    }
     xSemaphoreTake(candMutex, portMAX_DELAY);
     uint8_t mask = 0;
     char advName[32] = "";
@@ -746,11 +944,20 @@ void forgetAll() {
         if (sensors[k].connected) sensors[k].client->disconnect();
         sensors[k].found = false;
     }
+    ant_sensors::forgetAll();
     Serial.println("[ble] pairings cleared");
 }
 
 void forget(const char* addr) {
     if (!addr || !addr[0]) return;
+    {
+        bool pairAction = false;
+        int k = antKindOf(addr, &pairAction);
+        if (k >= 0) {
+            ant_sensors::forget(k);
+            return;
+        }
+    }
     for (int k = 0; k < KIND_COUNT; ++k) {
         if (!settings::sensorPaired(k, addr)) continue;
         settings::removeSensorAddr(k, addr);
