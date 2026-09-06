@@ -14,13 +14,16 @@ Preferences prefs;
 float compassOff = NAN;
 int ftp = FTP_WATTS;
 int tz = TIMEZONE_OFFSET_MINUTES;
-int bl = 2;  // backlight level 0-3
+int bl = 0;  // backlight level 0-3; OFF until the rider turns it on — e-paper
+             // needs no light in daylight, and a lit panel drains a fresh device
 bool miles = false;  // false = km, true = miles
 bool clk24 = true;   // true = 24-hour clock, false = 12-hour
 bool usbDrv = true;  // true = expose SD as USB drive when plugged into a host
 // false = a field whose sensor is unpaired is dropped from the dashboard and
-// the rest re-pack; true = it stays, showing no data.
-bool showOff = false;
+// the rest re-pack; true = it stays, showing no data. ON by default: a new
+// device should show the layout the rider configured, gaps and all, rather
+// than a silently re-packed one that hides which sensors are missing.
+bool showOff = true;
 // Seconds of no movement (power, cadence, wheel and GPS all quiet) before the
 // ride timer auto-pauses. 0 disables auto-pause entirely.
 int autoPause = 10;
@@ -61,14 +64,14 @@ void begin() {
     compassOff = prefs.getFloat("cmpoff", NAN);
     ftp = prefs.getInt("ftp", FTP_WATTS);
     tz = prefs.getInt("tz", TIMEZONE_OFFSET_MINUTES);
-    bl = prefs.getInt("bl", 2);
+    bl = prefs.getInt("bl", 0);
     miles = prefs.getBool("miles", false);
     clk24 = prefs.getBool("clk24", true);
     // Key bumped to usbdrv2 so the new OFF default takes effect even on devices
     // that had the old (default-ON) "usbdrv" value stored. OFF = the device
     // keeps the SD (logs/recording) when plugged in.
     usbDrv = prefs.getBool("usbdrv2", false);
-    showOff = prefs.getBool("showoff", false);
+    showOff = prefs.getBool("showoff", true);
     autoPause = prefs.getInt("apause", 10);
     wkPauseStep = prefs.getBool("wkpstep", false);
     for (int k = 0; k < 3; ++k) {

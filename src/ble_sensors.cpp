@@ -503,10 +503,15 @@ void task(void*) {
         // at full radio quality.
         const bool ridingNow = ride_recorder::isRecording() &&
                                !ride_recorder::longAutoPaused();
-        bool wantScan = !allConnected &&
-                        (scanAlways || ridingNow ||
-                         routes::navActive() || millis() < 90000 ||
-                         (millis() - lastActivityMs < 30000 && sensorsRecent));
+        // scanAlways stands on its own, OUTSIDE the allConnected gate. That
+        // gate is vacuously true with nothing paired, and the Sensors screen
+        // and the app's scan exist precisely to pair the first sensor — a
+        // factory-fresh device that cannot scan can never pair anything.
+        // (Every device had pairings until a factory reset exposed this.)
+        bool wantScan = scanAlways ||
+                        (!allConnected &&
+                         (ridingNow || routes::navActive() || millis() < 90000 ||
+                          (millis() - lastActivityMs < 30000 && sensorsRecent)));
 
         // A sensor that is actually coming back — the meter waking on the first
         // pedal stroke, a strap re-wetting — starts advertising within seconds,

@@ -5,14 +5,22 @@ released version into the GitHub release body (see .github/workflows/build.yml),
 and the app shows it under Settings → Firmware when an update is available —
 so write for the rider, newest version first, one `## vX.YY` heading each.
 
-## Unreleased
+## v1.19
 
-- Android: import a `.gpx` route — pick one in the app or open it from Files,
-  Komoot or Strava. The route is previewed, sent to the head unit exactly as it
-  came, and can optionally be given turn cues derived from OSRM.
-- Android: route names and turn cues are now trimmed to the firmware's byte
-  budgets on codepoint boundaries, so a long non-ASCII street name can no longer
-  put a half character on the panel.
+- A device with no paired sensors can find its first one again. Scanning
+  from the app or the Sensors screen did nothing on a brand-new or
+  factory-reset unit, so nothing could ever be paired. Devices that already
+  had sensors were unaffected.
+
+## v1.18
+
+- New or factory-reset devices start with the frontlight off. E-paper needs
+  no light in daylight, and the light was burning battery on units nobody
+  had asked to light up. Riders who set a level keep it.
+- Dashboard fields for sensors that aren't connected stay on the panel as
+  "no data" by default, so the layout you configured is the layout you see
+  and a missing strap or power meter is obvious. Riders who turned this off
+  keep that choice.
 
 ## v1.17
 
