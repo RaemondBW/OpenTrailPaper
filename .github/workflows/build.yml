@@ -183,6 +183,12 @@ jobs:
       # Wrapper + dependency caching, keyed on the lockable Gradle inputs.
       - uses: gradle/actions/setup-gradle@v4
 
+      # The format tests are the only thing standing between a wrong byte order
+      # and a route that transfers cleanly then draws the wrong line. Cheap
+      # enough (~10s) to gate every push.
+      - name: Unit tests
+        run: ./gradlew --no-daemon testDebugUnitTest
+
       # The runner image ships the Android SDK at $ANDROID_HOME, so there is
       # no local.properties step. Debug only: it proves the app compiles (the
       # same bar as the iOS job) and needs no signing — keystore.properties

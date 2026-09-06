@@ -79,9 +79,26 @@ import kotlin.math.min
  * by its H3 id and renders them straight off the SD card, so map coverage is
  * limited by the card, not memory — and re-selecting an overlapping area only
  * ever sends the genuinely new tiles.
+ *
+ * [seed] pre-fills the selection instead of asking for a box, which is how the
+ * Route screen hands over the hexes a planned route crosses. Everything after
+ * the selection — what counts as new, the OSM fetch, the streaming, progress,
+ * cancel — is the same code either way; only the way the rider names an area
+ * differs.
+ *
+ * It must be a value that does not change while this sheet is open. Opening the
+ * sheet refreshes the tile store and the device's tile list, so a caller that
+ * passes a list derived from those recomputes it as a NEW list the moment this
+ * sheet appears — and a changing unstable parameter recomposes this whole
+ * screen, map and all, in a loop that pins the main thread. Snapshot it at the
+ * tap instead.
  */
 @Composable
-fun MapsSheet(ble: BleManager, onDismiss: () -> Unit) {
+fun MapsSheet(
+    ble: BleManager,
+    seed: List<MapTile> = emptyList(),
+    onDismiss: () -> Unit,
+) {
     val scope = rememberCoroutineScope()
     val projector = remember { MapProjector() }
     val haptics = LocalHapticFeedback.current
@@ -106,8 +123,11 @@ fun MapsSheet(ble: BleManager, onDismiss: () -> Unit) {
     var drawMode by remember { mutableStateOf(false) }
     var dragStart by remember { mutableStateOf<Offset?>(null) }
     var dragEnd by remember { mutableStateOf<Offset?>(null) }
-    var box by remember { mutableStateOf<BoundingBox?>(null) }
-    var tiles by remember { mutableStateOf<List<MapTile>>(emptyList()) }
+    // Seeded too, not just [tiles]: the card is gated on having a box, so
+    // without one a seeded selection draws its hexes on the map and then offers
+    // the rider nothing to tap.
+    var box by remember { mutableStateOf(BoundingBox.around(seed.flatMap { it.hexagon })) }
+    var tiles by remember { mutableStateOf(seed) }
     var excluded by remember { mutableStateOf<Set<String>>(emptySet()) }
     var converted by remember { mutableStateOf<Set<String>>(emptySet()) }
     var failedHexes by remember { mutableStateOf<Set<String>>(emptySet()) }
@@ -122,6 +142,22 @@ fun MapsSheet(ble: BleManager, onDismiss: () -> Unit) {
         ble.refreshDeviceTiles()
         EInkTileStore.refresh()
         onDispose { }
+    }
+
+    // A seeded selection frames itself, and claims the framing flag so the
+    // frame-all-coverage shot below doesn't pull the camera off it a moment
+    // later. Declared before that effect so it wins the flag.
+    //
+    // Waits for the map to report a region, which is the first moment it has a
+    // size. Framing before that runs zoomToBoundingBox against a zero-sized
+    // MapView, which spins the main thread until the system reports the app as
+    // not responding. The frame-all-coverage effect below is safe for exactly
+    // the same reason — it sits behind the same region guard.
+    LaunchedEffect(region != null) {
+        if (region == null || didFrameCoverage) return@LaunchedEffect
+        val bounds = BoundingBox.around(seed.flatMap { it.hexagon }) ?: return@LaunchedEffect
+        didFrameCoverage = true
+        camera = MapCamera.box(bounds, paddingPx = 32)
     }
 
     // Hexes in the drawn box that aren't on the device yet, in whichever state the

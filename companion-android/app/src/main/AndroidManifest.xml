@@ -61,6 +61,7 @@
         <activity
             android:name=".ui.MainActivity"
             android:exported="true"
+            android:launchMode="singleTask"
             android:screenOrientation="portrait"
             android:label="@string/app_name"
             android:theme="@style/Theme.OpenTrailPaper"
@@ -68,6 +69,48 @@
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- Opening a .gpx from Files, mail, Komoot or Strava.
+
+                 GPX is served as gpx+xml, octet-stream, text/xml or nothing at
+                 all depending on the provider, so the exact type alone is not
+                 enough: on a real device 7 of 8 .gpx files came back as
+                 application/octet-stream, and only a Suunto export as
+                 application/gpx+xml. Hence the second filter.
+
+                 The pathPattern on it does NOT narrow anything. Android ignores
+                 path matching once an intent carries a MIME type, so that filter
+                 is in practice "any octet-stream file" and this app is offered
+                 for .bin and .jpg too — verified with `cmd package
+                 query-activities`. The pattern is kept only for the type-less
+                 case. What actually decides is the file's first bytes, in
+                 RouteImport, which rejects a non-GPX with a readable message.
+                 Dropping the filter would trade that chooser noise for losing
+                 open-with on almost every real .gpx. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" android:mimeType="application/gpx+xml" />
+                <data android:scheme="file" android:mimeType="application/gpx+xml" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data
+                    android:scheme="content"
+                    android:mimeType="application/octet-stream"
+                    android:pathPattern=".*\\.gpx" />
+                <data
+                    android:scheme="file"
+                    android:mimeType="application/octet-stream"
+                    android:pathPattern=".*\\.gpx" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="application/gpx+xml" />
             </intent-filter>
         </activity>
 

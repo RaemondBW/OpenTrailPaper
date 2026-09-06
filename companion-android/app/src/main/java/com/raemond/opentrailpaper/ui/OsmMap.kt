@@ -4,7 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
@@ -13,6 +13,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -279,18 +280,25 @@ fun OsmMap(
         },
     )
 
-    // Required by OpenStreetMap and by CARTO, and quiet enough to live under the
-    // screen's own title without competing with it. Bottom-left is where a map
-    // would normally put this and where every screen here has its controls.
+    // Required by OpenStreetMap and by CARTO. Bottom-right, which is where a map
+    // conventionally puts this and the one corner no screen here floats a
+    // control over — top-left put it adrift in the middle of the view, under
+    // the screen's title rather than beside it.
+    //
+    // Lifted by the same inset the camera uses, so it sits just above whatever
+    // card is floating over the map instead of behind it.
     Text(
         MapStyle.attribution,
         style = barlow(9.sp),
         color = Palette.muted,
         maxLines = 1,
         modifier = Modifier
-            .align(Alignment.TopStart)
-            .windowInsetsPadding(WindowInsets.statusBars)
-            .padding(start = 18.dp, top = 66.dp)
+            .align(Alignment.BottomEnd)
+            .windowInsetsPadding(WindowInsets.navigationBars)
+            .padding(
+                end = 10.dp,
+                bottom = 8.dp + with(LocalDensity.current) { bottomInsetPx.toDp() },
+            )
             .background(Palette.paper.copy(alpha = 0.72f), RoundedCornerShape(4.dp))
             .padding(horizontal = 5.dp, vertical = 2.dp),
     )

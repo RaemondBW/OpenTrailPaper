@@ -82,6 +82,8 @@ companion-android/build/
 companion-android/app/build/
 companion-android/app/.cxx/
 companion-android/.gradle/
+# Kotlin compile-daemon scratch (sessions, error logs), recreated by every build.
+companion-android/.kotlin/
 companion-android/local.properties
 companion-android/.idea/
 
