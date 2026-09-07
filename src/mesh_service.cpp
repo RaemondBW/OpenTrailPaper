@@ -83,6 +83,9 @@ uint8_t chanHash = 0;
 // note in config.h. Bandwidth comes from here too, so the preset also moves the
 // frequency whenever it changes the bandwidth.
 uint8_t presetIdx = MESH_PRESET_DEFAULT;
+uint8_t regionIdx = 0;                 // into mesh::kRegions; settings resolve the name
+int8_t  txDbmSetting = 0;              // 0 = as much as region and radio allow
+uint8_t slotOverride = 0;              // 0 = derive the slot from the channel name
 
 // Recently seen (sender, id) pairs. The mesh floods, so the same packet arrives
 // more than once whenever anyone rebroadcasts it; without this the phone shows
@@ -125,6 +128,9 @@ SemaphoreHandle_t wake = nullptr;
 // transmission, which spans startSend / irq / finishSend and cannot survive it.
 // So they are staged here and picked up at the top of the task loop.
 volatile int8_t reqPreset = -1;        // -1 = nothing, else a preset index
+volatile int8_t reqRegion = -1;        // -1 = nothing, else a region index
+volatile int16_t reqTxDbm = -1;        // -1 = nothing, else 0..MESH_TX_DBM_MAX
+volatile int16_t reqSlot = -1;         // -1 = nothing, else 0 (auto) or a 1-based slot
 volatile int8_t reqEnable = -1;        // -1 = nothing, 0 = off, 1 = on
 char reqChanName[16] = {};
 volatile uint8_t reqChanKey = 0;
@@ -271,10 +277,37 @@ int chanForHash(uint8_t h) {
     return -1;
 }
 
+uint32_t slotCountNow() {
+    const mesh::Region& r = mesh::region(regionIdx);
+    return mesh::channelCount(mesh::preset(presetIdx).bwKhz, r.startMHz, r.endMHz,
+                              r.spacingMHz);
+}
+
+// 0-based. An override past the end of a narrower band (set under a wider one,
+// or a wider bandwidth) is clamped to the last slot rather than wrapped: the
+// rider asked for "as high as it goes", and a wrap would land them somewhere
+// they never chose.
+uint32_t slotNow() {
+    const uint32_t n = slotCountNow();
+    if (slotOverride == 0) return mesh::slotForName(effectiveChan(), n);
+    return slotOverride > n ? n - 1 : (uint32_t)slotOverride - 1;
+}
+
 float channelFreq() {
-    return mesh::channelFrequencyMHz(effectiveChan(), mesh::preset(presetIdx).bwKhz,
-                                     MESH_FREQ_START_MHZ, MESH_FREQ_END_MHZ,
-                                     MESH_SPACING_MHZ);
+    const mesh::Region& r = mesh::region(regionIdx);
+    return mesh::slotFrequencyMHz(slotNow(), mesh::preset(presetIdx).bwKhz,
+                                  r.startMHz, r.spacingMHz);
+}
+
+int8_t txLimitNow() {
+    const int8_t lim = mesh::region(regionIdx).powerLimitDbm;
+    return lim < MESH_TX_DBM_MAX ? lim : (int8_t)MESH_TX_DBM_MAX;
+}
+
+int8_t txDbmNow() {
+    const int8_t lim = txLimitNow();
+    if (txDbmSetting <= 0 || txDbmSetting > lim) return lim;
+    return txDbmSetting;
 }
 
 bool startRadio() {
@@ -286,7 +319,7 @@ bool startRadio() {
     c.cr = p.cr;
     c.syncWord = MESH_SYNC_WORD;
     c.preambleLen = MESH_PREAMBLE_LEN;
-    c.powerDbm = MESH_TX_DBM;
+    c.powerDbm = txDbmNow();
     return lora_radio::begin(c);
 }
 
@@ -710,6 +743,9 @@ bool begin() {
     meshEnabled = settings::meshEnabled();
     chanPskIndex = settings::meshChannelKey();
     presetIdx = settings::meshPreset();
+    regionIdx = settings::meshRegion();
+    txDbmSetting = settings::meshTxPower();
+    slotOverride = settings::meshFreqSlot();
     posMask = settings::meshPositionChannels();
     snprintf(chanExplicit, sizeof(chanExplicit), "%s", settings::meshChannel());
     snprintf(myLongName, sizeof(myLongName), "%s", settings::meshLongName());
@@ -739,12 +775,18 @@ bool begin() {
     }
     radioUp = startRadio();
     if (radioUp)
-        diag::log("mesh: %s region, %.4f MHz", MESH_REGION_NAME, channelFreq());
+        diag::log("mesh: %s region, slot %u/%u%s, %.4f MHz, %d dBm",
+                  mesh::region(regionIdx).name, (unsigned)slotNow() + 1,
+                  (unsigned)slotCountNow(), slotOverride ? " (pinned)" : "",
+                  channelFreq(), txDbmNow());
     return true;
 }
 
 void applyEnabled(bool on);
 void applyPreset(uint8_t index);
+void applyRegion(uint8_t index);
+void applyTxPower(int8_t dbm);
+void applyFreqSlot(uint8_t slot);
 void applyPrivateChannel(uint8_t index, const char* name, const uint8_t* psk,
                          size_t pskLen, bool remove);
 void applyChannelChange(const char* name, uint8_t pskIndex);
@@ -771,6 +813,21 @@ void applyPendingConfig() {
         const uint8_t idx = (uint8_t)reqPreset;
         reqPreset = -1;
         applyPreset(idx);
+    }
+    if (reqRegion >= 0) {
+        const uint8_t idx = (uint8_t)reqRegion;
+        reqRegion = -1;
+        applyRegion(idx);
+    }
+    if (reqTxDbm >= 0) {
+        const int8_t dbm = (int8_t)reqTxDbm;
+        reqTxDbm = -1;
+        applyTxPower(dbm);
+    }
+    if (reqSlot >= 0) {
+        const uint8_t slot = (uint8_t)reqSlot;
+        reqSlot = -1;
+        applyFreqSlot(slot);
     }
     if (reqPrivIdx >= 0) {
         char name[sizeof(reqPrivName)];
@@ -991,6 +1048,30 @@ void setPreset(uint8_t index) {
     if (wake) xSemaphoreGive(wake);
 }
 
+uint8_t regionIndex() { return regionIdx; }
+void setRegion(uint8_t index) {
+    if (index >= mesh::REGION_COUNT) return;
+    reqRegion = (int8_t)index;
+    if (wake) xSemaphoreGive(wake);
+}
+
+int8_t txPowerDbm() { return txDbmNow(); }
+int8_t txPowerLimitDbm() { return txLimitNow(); }
+void setTxPower(int8_t dbm) {
+    if (dbm < 0) return;
+    reqTxDbm = dbm > MESH_TX_DBM_MAX ? MESH_TX_DBM_MAX : dbm;
+    if (wake) xSemaphoreGive(wake);
+}
+
+uint8_t freqSlot() { return slotOverride; }
+void setFreqSlot(uint8_t slot) {
+    reqSlot = slot;
+    if (wake) xSemaphoreGive(wake);
+}
+
+uint32_t slotCount() { return slotCountNow(); }
+uint32_t activeSlot() { return slotNow() + 1; }
+
 void setChannel(const char* name, uint8_t pskIndex) {
     // Only a null pointer is refused. An EMPTY name is the meaningful request to
     // stop pinning a channel and follow the modem preset again — rejecting it here
@@ -1035,6 +1116,63 @@ void applyPreset(uint8_t index) {
     if (meshEnabled) {
         // Restarted rather than tweaked: bandwidth is part of a preset, and a
         // bandwidth change moves the frequency slot as well as the modem.
+        radioUp = startRadio();
+        nextNodeInfoMs = millis() + 5000;
+    }
+}
+
+// The frequency moved, so the mesh we were part of is gone: neighbours and
+// messages belong to the old one, and anything queued was framed for it.
+void forgetMesh() {
+    take();
+    outboxCount = 0;
+    msgCount = msgHead = unread = 0;
+    nodeUsed = 0;
+    memset(seen, 0, sizeof(seen));
+    changed = true;
+    give();
+}
+
+// Applies a staged region change. Mesh task only.
+void applyRegion(uint8_t index) {
+    if (index >= mesh::REGION_COUNT || index == regionIdx) return;
+    regionIdx = index;
+    settings::setMeshRegion(index);
+    forgetMesh();
+    diag::log("mesh: region %s (%.3f-%.3f MHz, limit %d dBm) -> slot %u/%u, "
+              "%.4f MHz, %d dBm", mesh::region(regionIdx).name,
+              mesh::region(regionIdx).startMHz, mesh::region(regionIdx).endMHz,
+              mesh::region(regionIdx).powerLimitDbm, (unsigned)slotNow() + 1,
+              (unsigned)slotCountNow(), channelFreq(), txDbmNow());
+    if (meshEnabled) {
+        radioUp = startRadio();
+        nextNodeInfoMs = millis() + 5000;
+    }
+}
+
+// Applies a staged power change. Mesh task only. Restarted rather than
+// re-programmed in place: lora_radio::begin() is the one path that is known to
+// leave the SX1262 in a consistent state, and a power change is rare.
+void applyTxPower(int8_t dbm) {
+    if (dbm == txDbmSetting) return;
+    txDbmSetting = dbm;
+    settings::setMeshTxPower(dbm);
+    diag::log("mesh: tx power %d dBm (asked %d, limit %d)", txDbmNow(), dbm,
+              txLimitNow());
+    if (meshEnabled && radioUp) radioUp = startRadio();
+}
+
+// Applies a staged slot override. Mesh task only. 0 goes back to the name.
+void applyFreqSlot(uint8_t slot) {
+    if (slot == slotOverride) return;
+    const uint32_t before = slotNow();
+    slotOverride = slot;
+    settings::setMeshFreqSlot(slot);
+    if (slotNow() != before) forgetMesh();
+    diag::log("mesh: slot %s%u -> %u/%u, %.4f MHz", slot ? "pinned to " : "auto, ",
+              (unsigned)slot, (unsigned)slotNow() + 1, (unsigned)slotCountNow(),
+              channelFreq());
+    if (meshEnabled && slotNow() != before) {
         radioUp = startRadio();
         nextNodeInfoMs = millis() + 5000;
     }

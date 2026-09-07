@@ -1599,6 +1599,15 @@ static void printMeshReport() {
     const mesh::ModemPreset& mp = mesh::preset(mesh_service::presetIndex());
     Serial.printf("[mesh] modem %s: SF%u BW%.0f CR4/%u\n", mp.name, mp.sf, mp.bwKhz,
                   mp.cr);
+    // The band, and where in it. Slot numbers are 1-based as Meshtastic shows
+    // them; "pinned" means the rider chose the number, otherwise the name did.
+    const mesh::Region& rg = mesh::region(mesh_service::regionIndex());
+    Serial.printf("[mesh] region %s %.3f-%.3f MHz, slot %u/%u%s, %d dBm (limit %d)\n",
+                  rg.name, rg.startMHz, rg.endMHz,
+                  (unsigned)mesh_service::activeSlot(),
+                  (unsigned)mesh_service::slotCount(),
+                  mesh_service::freqSlot() ? " pinned" : "",
+                  mesh_service::txPowerDbm(), mesh_service::txPowerLimitDbm());
 
     // Every channel we can decrypt. All share the frequency above — only the
     // primary's name decides that; the rest are told apart by their hash.
@@ -1889,6 +1898,40 @@ static void runConsoleLine(char* line) {
             const int idx = mesh::presetIndexByName(want);
             if (idx < 0) { Serial.printf("[cmd] unknown preset '%s'\n", want); return; }
             mesh_service::setPreset((uint8_t)idx);
+        } else if (arg && !strcasecmp(arg, "region")) {
+            char* want = strtok(nullptr, " \t");
+            if (!want) {
+                Serial.println("[cmd] mesh region <name>. Must match BOTH the country");
+                Serial.println("      and the LoRa module's hardware band. Available:");
+                for (int i = 0; i < mesh::REGION_COUNT; ++i) {
+                    const mesh::Region& r = mesh::kRegions[i];
+                    Serial.printf("  %-8s %8.3f-%8.3f MHz  limit %2d dBm%s\n", r.name,
+                                  r.startMHz, r.endMHz, r.powerLimitDbm,
+                                  i == mesh_service::regionIndex() ? "  <- current" : "");
+                }
+                return;
+            }
+            const int idx = mesh::regionIndexByName(want);
+            if (idx < 0) { Serial.printf("[cmd] unknown region '%s'\n", want); return; }
+            mesh_service::setRegion((uint8_t)idx);
+        } else if (arg && !strcasecmp(arg, "power")) {
+            char* want = strtok(nullptr, " \t");
+            if (!want) {
+                Serial.printf("[cmd] mesh power <dBm|max>   (now %d, limit %d)\n",
+                              mesh_service::txPowerDbm(), mesh_service::txPowerLimitDbm());
+                return;
+            }
+            mesh_service::setTxPower(!strcasecmp(want, "max") ? 0 : (int8_t)atoi(want));
+        } else if (arg && !strcasecmp(arg, "slot")) {
+            char* want = strtok(nullptr, " \t");
+            if (!want) {
+                Serial.printf("[cmd] mesh slot <1-%u|auto>   (now %u%s)\n",
+                              (unsigned)mesh_service::slotCount(),
+                              (unsigned)mesh_service::activeSlot(),
+                              mesh_service::freqSlot() ? ", pinned" : ", from the name");
+                return;
+            }
+            mesh_service::setFreqSlot(!strcasecmp(want, "auto") ? 0 : (uint8_t)atoi(want));
         } else if (arg && !strcasecmp(arg, "channel")) {
             char* want = strtok(nullptr, " \t");
             if (!want) {

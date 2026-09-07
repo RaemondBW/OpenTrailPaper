@@ -50,6 +50,11 @@ uint8_t meshPresetIdx = MESH_PRESET_DEFAULT;
 // Bitmask of channels we share our position on. 0 = none, which is the default:
 // telling a public mesh where you are should be a decision, not an accident.
 uint8_t meshPosMask = 0;
+// Region index (resolved from the stored NAME at load), TX power (0 = max the
+// region and radio allow) and frequency-slot override (0 = from the name).
+uint8_t meshRegionIdx = 0;
+int8_t  meshTxDbm = 0;
+uint8_t meshSlot = 0;
 char meshLong[40] = "";
 char meshShort[8] = "";
 const char* KEYS[3] = {"sens_hr", "sens_pwr", "sens_cad"};
@@ -89,6 +94,18 @@ void begin() {
     // A preset written by a newer firmware that knew more of them must not leave
     // this build driving the radio with garbage.
     if (meshPresetIdx >= mesh::PRESET_COUNT) meshPresetIdx = MESH_PRESET_DEFAULT;
+    {
+        // Stored by name: a region this build does not know (written by a newer
+        // one) must not leave the radio on an index that means something else
+        // here, so it falls back to the build default rather than to slot 0.
+        char rn[16] = "";
+        prefs.getString("meshregion", rn, sizeof(rn));
+        int ri = mesh::regionIndexByName(rn);
+        if (ri < 0) ri = mesh::regionIndexByName(MESH_REGION_DEFAULT);
+        meshRegionIdx = ri < 0 ? 0 : (uint8_t)ri;
+    }
+    meshTxDbm = (int8_t)constrain(prefs.getChar("meshtxdbm", 0), 0, MESH_TX_DBM_MAX);
+    meshSlot = prefs.getUChar("meshslot", 0);
     prefs.getString("meshlong", meshLong, sizeof(meshLong));
     prefs.getString("meshshort", meshShort, sizeof(meshShort));
     Serial.printf("[cfg] ftp=%dW tz=%dmin sensors=[%s|%s|%s]\n", ftp, tz,
@@ -318,6 +335,25 @@ void setMeshPreset(uint8_t index) {
     if (index >= mesh::PRESET_COUNT) return;
     meshPresetIdx = index;
     prefs.putUChar("meshpreset", index);
+}
+
+uint8_t meshRegion() { return meshRegionIdx; }
+void setMeshRegion(uint8_t index) {
+    if (index >= mesh::REGION_COUNT) return;
+    meshRegionIdx = index;
+    prefs.putString("meshregion", mesh::kRegions[index].name);
+}
+
+int8_t meshTxPower() { return meshTxDbm; }
+void setMeshTxPower(int8_t dbm) {
+    meshTxDbm = (int8_t)constrain(dbm, 0, MESH_TX_DBM_MAX);
+    prefs.putChar("meshtxdbm", meshTxDbm);
+}
+
+uint8_t meshFreqSlot() { return meshSlot; }
+void setMeshFreqSlot(uint8_t slot) {
+    meshSlot = slot;
+    prefs.putUChar("meshslot", slot);
 }
 
 const char* meshLongName() { return meshLong; }

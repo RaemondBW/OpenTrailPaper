@@ -217,6 +217,48 @@ uint32_t channelCount(float bwKhz, float freqStartMHz, float freqEndMHz,
 float channelFrequencyMHz(const char* channelName, float bwKhz,
                           float freqStartMHz, float freqEndMHz,
                           float spacingMHz);
+// The two halves of the above, for a node that pins its slot by hand the way
+// Meshtastic's channel_num does: the hash picks a 0-based slot, and a slot has a
+// centre frequency whether or not a hash chose it.
+uint32_t slotForName(const char* channelName, uint32_t slotCount);
+float slotFrequencyMHz(uint32_t slot, float bwKhz, float freqStartMHz,
+                       float spacingMHz);
+
+// ---------------------------------------------------------------------------
+// Regions
+// ---------------------------------------------------------------------------
+//
+// Meshtastic's regulatory table, minus LORA_24 (a 2.4 GHz band the SX1262
+// cannot reach) and UNSET (a node that refuses to transmit; this firmware
+// defaults to MESH_REGION_DEFAULT instead). The band decides how many slots a
+// bandwidth divides into, so the SAME channel name lands on a different
+// frequency in every region — and a US node and an EU node on "LongFast" are not
+// on the same frequency at all.
+//
+// Which region is lawful is a fact about where the rider is AND about which
+// hardware variant they bought: an 868 MHz module's matching network cannot be
+// retuned to 915 by software. The firmware cannot detect the variant, so the
+// choice is the rider's and the app says so before applying it.
+struct Region {
+    const char* name;        // spelled exactly as Meshtastic spells it
+    float  startMHz;
+    float  endMHz;
+    float  spacingMHz;
+    int8_t powerLimitDbm;    // the regulatory ceiling; the radio's own cap
+                             // (22 dBm on the SX1262) binds where it is lower
+};
+
+// ORDER IS A CONTRACT for the BLE index; the persisted setting is the NAME, so
+// the table may grow without moving an existing rider's band.
+constexpr int REGION_COUNT = 25;
+extern const Region kRegions[REGION_COUNT];
+
+// Index of a region by name (case-insensitive), or -1.
+int regionIndexByName(const char* name);
+
+// Always returns a usable region, falling back to US (index 0) for an index
+// this build does not know.
+const Region& region(int index);
 
 // Meshtastic encodes the well-known channel keys as a single byte 1..10 (the
 // default channel's "AQ==" is byte 1). Byte N means the 16-byte default key
