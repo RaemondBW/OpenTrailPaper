@@ -409,6 +409,9 @@ section .sub { color: var(--ink-soft); font-size: 1.06rem; margin: 0 0 40px; max
 .app-cta-note { color: var(--ink-soft); font-size: 0.9rem; }
 /* Full flex row so the Android line breaks below the App Store button + note. */
 .app-cta-note.android-note { flex-basis: 100%; }
+/* Button + its one-line note wrap as a unit, so a narrow viewport never
+   strands a note under the other platform's button. */
+.app-store { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
 /* Below 860px .cta-row stacks and centres its button, so the note follows it. */
 @media (max-width: 860px) {
   .app-cta { margin-bottom: 24px; }
