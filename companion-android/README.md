@@ -43,8 +43,8 @@ format.
 
 ## Install without building
 
-CI builds a signed release APK from every push to `main` and publishes it as an
-`app-v<version>` prerelease on the [Releases page](https://github.com/RaemondBW/OpenTrailPaper/releases);
+Each `android-v<version>` tag makes CI build a signed release APK and publish it
+as a prerelease on the [Releases page](https://github.com/RaemondBW/OpenTrailPaper/releases);
 the project site serves the newest one at a fixed URL:
 <https://raemondbw.github.io/OpenTrailPaper/app/OpenTrailPaper.apk>. Open it on
 the phone and allow the install when Android asks. It is signed with a

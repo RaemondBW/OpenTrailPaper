@@ -71,11 +71,24 @@ bump it — and by this repo's convention the iOS side moves with it.
 ## Sideload builds (CI)
 
 Separate from Play: `.github/workflows/build.yml` builds `assembleRelease` on
-every push and PR, and on a push to `main` publishes the APK as the
-`app-v<versionName>` GitHub **prerelease** (prerelease so it never becomes
-`/releases/latest`, which both companion apps read to find `firmware.bin`).
-`pages.yml` then copies the newest one to
+every push and PR as a compile check, and publishes an APK **only when an
+`android-v<versionName>` tag is pushed**. The release it creates is a GitHub
+**prerelease** (so it never becomes `/releases/latest`, which both companion
+apps read to find `firmware.bin`). `pages.yml` then copies the newest one to
 `https://raemondbw.github.io/OpenTrailPaper/app/OpenTrailPaper.apk`.
+
+To cut one:
+
+```sh
+# 1. bump versionCode and versionName in app/build.gradle.kts, merge to main
+# 2. tag that commit — the tag must match versionName or CI refuses it
+git tag android-v0.4
+git push origin android-v0.4
+```
+
+Pushing the tag runs only the Android job; the firmware, iOS and mesh jobs
+skip on `android-v*` refs. Nothing published on `main` ever changes the
+download — a rider gets a new build only when you tag one.
 
 It is signed with a **dedicated sideload key**, not the upload key above, for
 two reasons: under Play App Signing the upload key is not the signature a
@@ -102,10 +115,10 @@ printf sideload | gh secret set OTP_KEY_ALIAS
 Losing this key means sideload users must uninstall before their next update;
 that is annoying, not fatal, which is the point of keeping it separate.
 
-Every push to `main` with the same `versionName` refreshes the same release, so
-the APK's `versionCode` only moves when you bump it here. Android lets a
-same-`versionCode` build install over itself, so riders can still pick up a
-fresh CI build; bump the version whenever a change is worth telling them about.
+Re-tagging the same version (delete and recreate the tag) refreshes that
+release in place, but every tag should normally come with a `versionCode`
+bump: Android decides whether an install is an update by `versionCode`, and the
+iOS build number moves with it by this repo's convention.
 
 ## 4. Play Console, one-time setup
 

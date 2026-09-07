@@ -12,11 +12,14 @@ on:
       - "docs/**"
       - ".github/workflows/pages.yml"
   # Redeploy after a firmware build publishes a Release, so the flasher's
-  # bundled firmware/ directory picks up the new version (see "Bundle firmware").
+  # bundled firmware/ directory picks up the new version (see "Bundle firmware"),
+  # and after an android-v* tag publishes an APK (see "Bundle the Android APK").
+  # For a tag-triggered run, head_branch is the tag name, which is what the
+  # branches filter matches against.
   workflow_run:
     workflows: ["Build"]
     types: [completed]
-    branches: [main]
+    branches: ["main", "android-v*"]
   workflow_dispatch:
 
 permissions:
@@ -98,9 +101,9 @@ jobs:
 
       # Serve the newest sideload APK from a fixed path too, so the site's
       # Android button never has to know a version number. Release tags are
-      # app-v<versionName> (see build.yml); the newest such release wins.
+      # android-v<versionName> (see build.yml); the newest such release wins.
       # No release yet is not an error — the button just 404s until the first
-      # push to main publishes one, and the workflow_run trigger above redeploys
+      # android-v* tag publishes one, and the workflow_run trigger above redeploys
       # as soon as that happens.
       - name: Bundle the Android APK
         env:
@@ -108,7 +111,7 @@ jobs:
         run: |
           mkdir -p _site/app
           tag=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 50 \
-                  --json tagName --jq '[.[].tagName | select(startswith("app-v"))][0] // empty')
+                  --json tagName --jq '[.[].tagName | select(startswith("android-v"))][0] // empty')
           if [ -n "$tag" ] && gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
                --pattern 'OpenTrailPaper-*.apk' --dir _site/app; then
             mv _site/app/OpenTrailPaper-*.apk _site/app/OpenTrailPaper.apk
