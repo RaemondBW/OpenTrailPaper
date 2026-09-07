@@ -10,7 +10,7 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# Needed so the firmware job can publish a Release on push to main.
+# Needed so the firmware and Android jobs can publish Releases on push to main.
 permissions:
   contents: write
 
@@ -190,17 +190,88 @@ jobs:
         run: ./gradlew --no-daemon testDebugUnitTest
 
       # The runner image ships the Android SDK at $ANDROID_HOME, so there is
-      # no local.properties step. Debug only: it proves the app compiles (the
-      # same bar as the iOS job) and needs no signing — keystore.properties
-      # is gitignored, and the release path falls back to env vars this job
-      # deliberately doesn't set.
+      # no local.properties step.
+      #
+      # Release, not debug, so the APK is the minified build riders actually
+      # get — R8 stripping a class the app reflects on would otherwise only
+      # surface after a merge. It is signed with a dedicated *sideload* key
+      # held in repo secrets: not the Play upload key, which (under Play App
+      # Signing) is not the key Play-installed copies carry anyway, and whose
+      # leak would be far worse than this one's. A fork PR has no secrets, so
+      # there the build comes out unsigned (app/build.gradle.kts tolerates
+      # that) and simply proves it compiles.
+      - name: Install sideload signing key
+        if: ${{ secrets.OTP_KEYSTORE_B64 != '' }}
+        env:
+          OTP_KEYSTORE_B64: ${{ secrets.OTP_KEYSTORE_B64 }}
+        run: |
+          echo "$OTP_KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/sideload.jks"
+          echo "OTP_KEYSTORE_FILE=$RUNNER_TEMP/sideload.jks" >> "$GITHUB_ENV"
+
       - name: Build
-        run: ./gradlew --no-daemon assembleDebug
+        env:
+          OTP_KEYSTORE_PASSWORD: ${{ secrets.OTP_KEYSTORE_PASSWORD }}
+          OTP_KEY_ALIAS: ${{ secrets.OTP_KEY_ALIAS }}
+          OTP_KEY_PASSWORD: ${{ secrets.OTP_KEY_PASSWORD }}
+        run: ./gradlew --no-daemon assembleRelease
+
+      # Read versionName out of the built APK rather than re-parsing the
+      # gradle file, so the tag below can never disagree with what installs.
+      - name: Read app version
+        id: app
+        run: |
+          aapt=$(ls "$ANDROID_HOME"/build-tools/*/aapt | sort -V | tail -1)
+          v=$("$aapt" dump badging app/build/outputs/apk/release/app-release.apk \
+                | sed -n "s/.*versionName='\([^']*\)'.*/\1/p")
+          echo "version=$v"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          cp app/build/outputs/apk/release/app-release.apk "OpenTrailPaper-$v.apk"
 
       # Installable straight from the workflow run, the way the firmware
-      # artifact is flashable — debug-signed, so it installs on any device
-      # with unknown-sources enabled.
+      # artifact is flashable. Only useful when signed (see above).
       - uses: actions/upload-artifact@v4
         with:
-          name: companion-android-debug
-          path: companion-android/app/build/outputs/apk/debug/app-debug.apk
+          name: companion-android-apk
+          path: companion-android/OpenTrailPaper-*.apk
+          if-no-files-found: error
+
+      # An unsigned APK will not install on any phone, so publishing one would
+      # be a broken download with a green check next to it. Fail loudly on
+      # main instead: the secrets have gone missing, which is a config problem
+      # to fix, not a build to ship.
+      - name: Verify the APK is signed
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          apksigner=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)
+          if ! "$apksigner" verify --print-certs "OpenTrailPaper-${{ steps.app.outputs.version }}.apk"; then
+            echo "::error::release APK is unsigned — OTP_KEYSTORE_* secrets missing or wrong"
+            exit 1
+          fi
+
+      # Publish the APK as a GitHub Release so anyone can sideload it without a
+      # GitHub login (Actions artifacts need auth and expire). One release per
+      # versionName, refreshed on every push to main, same as the firmware.
+      #
+      # prerelease is load-bearing: both companion apps fetch
+      # /releases/latest to find firmware.bin, and GitHub excludes prereleases
+      # from "latest". Without it the newest APK release would shadow the
+      # firmware and every in-app update check would find nothing.
+      - name: Write release notes
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          cat > relnotes.md <<EOF
+          Android companion app ${{ steps.app.outputs.version }}, built from ${GITHUB_SHA}.
+
+          Download the APK below and open it on your phone; Android will ask you to allow installs from your browser or file manager the first time. Updates install over the top of an earlier sideloaded copy. This build is signed with a different key from the Play Store version, so it cannot update a Play-installed copy (uninstall that one first).
+          EOF
+
+      - name: Publish APK release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: app-v${{ steps.app.outputs.version }}
+          name: Android app ${{ steps.app.outputs.version }}
+          body_path: companion-android/relnotes.md
+          prerelease: true
+          files: companion-android/OpenTrailPaper-${{ steps.app.outputs.version }}.apk
+          fail_on_unmatched_files: true

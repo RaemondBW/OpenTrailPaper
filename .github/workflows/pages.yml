@@ -96,6 +96,28 @@ jobs:
           echo "]" >> _site/firmware/index.json
           echo "--- index.json ---"; cat _site/firmware/index.json
 
+      # Serve the newest sideload APK from a fixed path too, so the site's
+      # Android button never has to know a version number. Release tags are
+      # app-v<versionName> (see build.yml); the newest such release wins.
+      # No release yet is not an error — the button just 404s until the first
+      # push to main publishes one, and the workflow_run trigger above redeploys
+      # as soon as that happens.
+      - name: Bundle the Android APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p _site/app
+          tag=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 50 \
+                  --json tagName --jq '[.[].tagName | select(startswith("app-v"))][0] // empty')
+          if [ -n "$tag" ] && gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
+               --pattern 'OpenTrailPaper-*.apk' --dir _site/app; then
+            mv _site/app/OpenTrailPaper-*.apk _site/app/OpenTrailPaper.apk
+            printf '{"tag": "%s", "url": "app/OpenTrailPaper.apk"}\n' "$tag" > _site/app/index.json
+            echo "bundled $tag"
+          else
+            echo "no Android app release yet"
+          fi
+
       - name: Upload site artifact
         uses: actions/upload-pages-artifact@v3
         with:

@@ -68,6 +68,45 @@ Nothing printed means unsigned — step 2 did not take.
 strictly higher than the last one Play has seen**, so the second release must
 bump it — and by this repo's convention the iOS side moves with it.
 
+## Sideload builds (CI)
+
+Separate from Play: `.github/workflows/build.yml` builds `assembleRelease` on
+every push and PR, and on a push to `main` publishes the APK as the
+`app-v<versionName>` GitHub **prerelease** (prerelease so it never becomes
+`/releases/latest`, which both companion apps read to find `firmware.bin`).
+`pages.yml` then copies the newest one to
+`https://raemondbw.github.io/OpenTrailPaper/app/OpenTrailPaper.apk`.
+
+It is signed with a **dedicated sideload key**, not the upload key above, for
+two reasons: under Play App Signing the upload key is not the signature a
+Play-installed copy carries, so an upload-key APK could not update one anyway;
+and a leaked repo secret should cost a sideload key, not the Play one. The key
+lives with the other secrets:
+
+```
+private_keys/opentrailpaper-sideload.jks     # PKCS12, alias "sideload"
+private_keys/opentrailpaper-sideload.pass    # store and key password
+```
+
+CI reads it from four repo secrets — `OTP_KEYSTORE_B64` (the `.jks`,
+base64), `OTP_KEYSTORE_PASSWORD`, `OTP_KEY_ALIAS`, `OTP_KEY_PASSWORD` — which
+`gradle.kts` consumes through the same `OTP_*` env vars as step 2. To rotate:
+
+```sh
+base64 -i private_keys/opentrailpaper-sideload.jks | gh secret set OTP_KEYSTORE_B64
+gh secret set OTP_KEYSTORE_PASSWORD < private_keys/opentrailpaper-sideload.pass
+gh secret set OTP_KEY_PASSWORD      < private_keys/opentrailpaper-sideload.pass
+printf sideload | gh secret set OTP_KEY_ALIAS
+```
+
+Losing this key means sideload users must uninstall before their next update;
+that is annoying, not fatal, which is the point of keeping it separate.
+
+Every push to `main` with the same `versionName` refreshes the same release, so
+the APK's `versionCode` only moves when you bump it here. Android lets a
+same-`versionCode` build install over itself, so riders can still pick up a
+fresh CI build; bump the version whenever a change is worth telling them about.
+
 ## 4. Play Console, one-time setup
 
 A closed test still needs most of the store paperwork done.

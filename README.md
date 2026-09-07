@@ -10,6 +10,11 @@ and [Jetpack Compose on Android](companion-android/).
 and an in-browser Web Serial firmware flasher (Chrome/Edge, no toolchain needed).
 Source in [`docs/`](docs/).
 
+The iOS app is on the [App Store](https://apps.apple.com/us/app/opentrailpaper/id6793646642).
+The Android app is a sideloadable APK, built by CI from every push to `main`:
+grab it from the [project site](https://raemondbw.github.io/OpenTrailPaper/app/OpenTrailPaper.apk)
+or from the `app-v*` entries on the [Releases page](https://github.com/RaemondBW/OpenTrailPaper/releases).
+
 The board has everything onboard: ESP32-S3 (16 MB flash / 8 MB PSRAM, BLE 5),
 960×540 e-paper (driven in 540×960 portrait) with GT911 touch, GPS (u-blox
 MIA-M10Q or L76K/CASIC — autodetected), SD card slot, PCF8563 RTC, BQ25896
