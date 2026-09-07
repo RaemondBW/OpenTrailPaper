@@ -41,6 +41,16 @@ format.
 - **Dashboard editor** — reorder and resize the fields the panel shows, with a
   preview that runs the firmware's own layout algorithm in device pixels.
 
+## Install without building
+
+Each `android-v<version>` tag makes CI build a signed release APK and publish it
+as a prerelease on the [Releases page](https://github.com/RaemondBW/OpenTrailPaper/releases);
+the project site serves the newest one at a fixed URL:
+<https://raemondbw.github.io/OpenTrailPaper/app/OpenTrailPaper.apk>. Open it on
+the phone and allow the install when Android asks. It is signed with a
+dedicated sideload key (see [RELEASING.md](RELEASING.md)), so it updates over an
+earlier sideloaded copy but not over one installed from Play.
+
 ## Build & run
 
 Requires JDK 17, the Android SDK (platform 35, build-tools 35), CMake 3.22.1 and
