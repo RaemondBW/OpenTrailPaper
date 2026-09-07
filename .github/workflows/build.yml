@@ -200,11 +200,16 @@ jobs:
       # leak would be far worse than this one's. A fork PR has no secrets, so
       # there the build comes out unsigned (app/build.gradle.kts tolerates
       # that) and simply proves it compiles.
+      # (Guarded in the shell: the secrets context is not allowed in a
+      # step-level `if`.)
       - name: Install sideload signing key
-        if: ${{ secrets.OTP_KEYSTORE_B64 != '' }}
         env:
           OTP_KEYSTORE_B64: ${{ secrets.OTP_KEYSTORE_B64 }}
         run: |
+          if [ -z "$OTP_KEYSTORE_B64" ]; then
+            echo "::warning::OTP_KEYSTORE_B64 not available — release APK will be unsigned"
+            exit 0
+          fi
           echo "$OTP_KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/sideload.jks"
           echo "OTP_KEYSTORE_FILE=$RUNNER_TEMP/sideload.jks" >> "$GITHUB_ENV"
 
