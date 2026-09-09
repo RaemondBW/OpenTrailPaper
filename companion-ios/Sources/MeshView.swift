@@ -710,9 +710,32 @@ private struct MeshSettingsSheet: View {
     /// on tap because it retunes the radio, and on a bandwidth change it moves
     /// the frequency too — not something to do on a mis-tap.
     @State private var pendingPreset: MeshPreset? = nil
+    /// Same again for the region, which moves the radio further than any modem
+    /// does — and is a legal setting, so it gets the sternest of the alerts.
+    @State private var pendingRegion: MeshRegion? = nil
+    /// The region list is folded away by default: twenty-five bands is a wall
+    /// for a setting almost nobody changes twice, and what a rider wants to see
+    /// is where the radio is right now.
+    @State private var regionsExpanded = false
+    /// Local copies of the radio knobs, so a stepper tap does not wait on the
+    /// device's round trip before the number moves.
+    @State private var txPower: Int = 22
+    @State private var slotText = ""
+    /// Sends the power a moment after the last tap rather than on every one.
+    @State private var txPowerSend: Task<Void, Never>? = nil
 
     private var activePreset: MeshPreset? {
         ble.meshPresets.first { $0.index == ble.meshState.presetIndex }
+    }
+    private var activeRegion: MeshRegion? {
+        guard let i = ble.meshState.regionIndex else { return nil }
+        return ble.meshRegions.first { $0.index == i }
+    }
+    private var maxTxDbm: Int { Int(activeRegion?.maxTxDbm ?? 22) }
+    /// "Slot 19 of 104 · 906.875 MHz" — the one line that says where the radio is.
+    private var slotLine: String? {
+        guard let n = ble.meshState.activeSlot, let of = ble.meshState.slotCount else { return nil }
+        return String(format: "Slot %d of %d · %.3f MHz", Int(n), Int(of), ble.meshState.frequencyMHz)
     }
 
     var body: some View {
@@ -737,9 +760,125 @@ private struct MeshSettingsSheet: View {
                             }
                             row("Modem", activePreset.map { "\($0.name) · SF\($0.sf)" }
                                          ?? "—")
+                            if ble.meshState.hasRadioConfig {
+                                row("Region", activeRegion.map { "\($0.name) · \($0.band)" } ?? "—")
+                            }
                             row("Frequency",
                                 String(format: "%.3f MHz", ble.meshState.frequencyMHz))
+                            if let line = slotLine {
+                                row("Slot", line)
+                            }
                             row("Status", ble.meshState.radioOk ? "up" : "not found")
+                        }
+                    }
+
+                    // Region, power and slot exist only on firmware that lets the
+                    // phone set them; older builds compiled the region in and
+                    // would ignore every write, so the card is not shown at all.
+                    if ble.meshState.hasRadioConfig {
+                        Card {
+                            VStack(alignment: .leading, spacing: 10) {
+                                Text("Region · which band").trackedLabel()
+                                // Folded: one row, the band we are on and the
+                                // frequency inside it, with a chevron to open
+                                // the full list.
+                                Button {
+                                    withAnimation(.easeInOut(duration: 0.2)) { regionsExpanded.toggle() }
+                                } label: {
+                                    HStack {
+                                        VStack(alignment: .leading, spacing: 1) {
+                                            Text(activeRegion?.name ?? "—")
+                                                .font(BarlowFont.condensed(19, .semibold))
+                                                .foregroundStyle(Palette.ink)
+                                            Text(activeRegion.map {
+                                                String(format: "%@ · %.3f MHz", $0.band, ble.meshState.frequencyMHz)
+                                            } ?? "Ask the device for its region list by reconnecting.")
+                                                .font(BarlowFont.text(14))
+                                                .foregroundStyle(Palette.muted)
+                                        }
+                                        Spacer()
+                                        Image(systemName: regionsExpanded ? "chevron.up" : "chevron.down")
+                                            .foregroundStyle(Palette.muted)
+                                    }
+                                    .padding(.vertical, 3)
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                if regionsExpanded {
+                                    ForEach(ble.meshRegions) { r in
+                                        Button { pendingRegion = r } label: {
+                                            HStack {
+                                                VStack(alignment: .leading, spacing: 1) {
+                                                    Text(r.name)
+                                                        .font(BarlowFont.condensed(19, .semibold))
+                                                        .foregroundStyle(Palette.ink)
+                                                    Text("\(r.band) · max \(r.maxTxDbm) dBm")
+                                                        .font(BarlowFont.text(14))
+                                                        .foregroundStyle(Palette.muted)
+                                                }
+                                                Spacer()
+                                                if r.index == ble.meshState.regionIndex {
+                                                    Image(systemName: "checkmark")
+                                                        .foregroundStyle(Palette.accent)
+                                                }
+                                            }
+                                            .padding(.vertical, 3)
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+                                    Text("Which band the radio may use is a legal question, decided by the country you ride in — and by the hardware: the LoRa module is built for one band, and an 868 MHz module cannot be talked onto 915 MHz by software. The numbers are Meshtastic's, so a stock node set to the same region is on the same frequencies.")
+                                        .font(BarlowFont.text(14)).foregroundStyle(Palette.muted)
+                                }
+                            }
+                        }
+
+                        Card {
+                            VStack(alignment: .leading, spacing: 10) {
+                                Text("Transmit power").trackedLabel()
+                                Stepper("\(txPower) dBm", value: $txPower, in: 2...max(2, maxTxDbm))
+                                    .font(BarlowFont.text(16))
+                                    .onChange(of: txPower) { _, v in
+                                        guard v != Int(ble.meshState.txPowerDbm ?? 0) else { return }
+                                        txPowerSend?.cancel()
+                                        txPowerSend = Task { @MainActor in
+                                            try? await Task.sleep(nanoseconds: 400_000_000)
+                                            if !Task.isCancelled { ble.setMeshTxPower(Int8(v)) }
+                                        }
+                                    }
+                                Text("Up to \(maxTxDbm) dBm here — the region's limit, or the radio's 22 dBm, whichever is lower. Less power is quieter on the battery and on the band; more reaches further.")
+                                    .font(BarlowFont.text(13)).foregroundStyle(Palette.muted)
+                            }
+                        }
+
+                        Card {
+                            VStack(alignment: .leading, spacing: 10) {
+                                Text("Frequency slot").trackedLabel()
+                                if let line = slotLine {
+                                    row(ble.meshState.slotOverride == 0 ? "From the channel name" : "Pinned", line)
+                                }
+                                HStack(spacing: 12) {
+                                    TextField("1–\(Int(ble.meshState.slotCount ?? 1))", text: $slotText)
+                                        .font(BarlowFont.text(16))
+                                        .keyboardType(.numberPad)
+                                    Button("Pin") {
+                                        if let n = Int(slotText), n >= 1,
+                                           n <= Int(ble.meshState.slotCount ?? 1) {
+                                            ble.setMeshFreqSlot(UInt8(n))
+                                        }
+                                    }
+                                    .disabled(Int(slotText).map { $0 < 1 || $0 > Int(ble.meshState.slotCount ?? 1) } ?? true)
+                                    if (ble.meshState.slotOverride ?? 0) != 0 {
+                                        Button("Automatic") {
+                                            slotText = ""
+                                            ble.setMeshFreqSlot(0)
+                                        }
+                                    }
+                                }
+                                .font(BarlowFont.condensed(18, .semibold))
+                                .foregroundStyle(Palette.accent)
+                                Text("Normally the channel name picks the slot, exactly as on a stock node — leave it automatic to reach other people. Pin a slot only to match a node that has done the same; it is Meshtastic's \"frequency slot\" number, counted from 1.")
+                                    .font(BarlowFont.text(13)).foregroundStyle(Palette.muted)
+                            }
                         }
                     }
 
@@ -860,6 +999,19 @@ private struct MeshSettingsSheet: View {
                      ? "The channel name will follow the modem preset again. The device retunes its radio and clears the messages and neighbours it learned on the old channel."
                      : "The device retunes its radio and clears the messages and neighbours it learned on the old channel.")
             }
+            .alert("Change region?", isPresented: Binding(
+                get: { pendingRegion != nil },
+                set: { if !$0 { pendingRegion = nil } })) {
+                Button("Change", role: .destructive) {
+                    if let r = pendingRegion { ble.setMeshRegion(r.index) }
+                    pendingRegion = nil
+                }
+                Button("Cancel", role: .cancel) { pendingRegion = nil }
+            } message: {
+                Text(pendingRegion.map { r in
+                    "Switch to \(r.name) (\(r.band))? The region is a legal setting: it has to match the country you are in, and the band your LoRa module was built for — an 868 MHz module cannot be tuned to 915 MHz by software. The device retunes and clears the messages and neighbours it learned on the old band."
+                } ?? "")
+            }
             .alert("Switch modem?", isPresented: Binding(
                 get: { pendingPreset != nil },
                 set: { if !$0 { pendingPreset = nil } })) {
@@ -880,7 +1032,13 @@ private struct MeshSettingsSheet: View {
                 // state rather than looking like a pinned custom channel.
                 channel = ble.meshState.channelFollowsPreset ? "" : ble.meshState.channel
                 channelKey = ble.meshState.channelKey
+                if let p = ble.meshState.txPowerDbm { txPower = Int(p) }
                 ble.requestMeshStats()
+            }
+            // The device answers a change with fresh state; keep the stepper on
+            // what it actually chose (it may have clamped to the region's limit).
+            .onChange(of: ble.meshState.txPowerDbm) { _, v in
+                if let v { txPower = Int(v) }
             }
         }
     }

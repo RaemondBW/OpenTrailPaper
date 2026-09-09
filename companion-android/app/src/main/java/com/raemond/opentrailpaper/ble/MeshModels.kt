@@ -128,9 +128,26 @@ data class MeshState(
     val unread: Int = 0,
     /** Index into `BleManager.meshPresets`. */
     val presetIndex: Int = 0,
+    // The radio configuration a newer firmware appends to the state packet. Null
+    // means it did not — an older firmware whose region is fixed at build time —
+    // and the controls for these stay hidden rather than showing a guess.
+    /** Index into `BleManager.meshRegions`. */
+    val regionIndex: Int? = null,
+    /** The power actually in use, in dBm — never the "maximum" request value 0. */
+    val txPowerDbm: Int? = null,
+    /** 0 = the slot is the hash of the channel name; otherwise a pinned slot, 1-based. */
+    val slotOverride: Int? = null,
+    /** How many bandwidth-wide slots the region has at the current modem. */
+    val slotCount: Int? = null,
+    /** The slot the radio is on, 1-based, whichever way it was chosen. */
+    val activeSlot: Int? = null,
 ) {
     val nodeId: String get() = meshNodeId(nodeNum)
     val frequencyMHz: Double get() = frequencyHz / 1_000_000.0
+
+    /** The firmware lets the phone set region, power and slot. */
+    val hasRadioConfig: Boolean get() = regionIndex != null
+    val slotIsAutomatic: Boolean get() = (slotOverride ?: 0) == 0
 
     /** Nothing has been heard from the device yet. */
     val isUnknown: Boolean get() = nodeNum == 0
@@ -154,6 +171,45 @@ data class MeshPreset(
     val codingRate: Int,
 ) {
     val detail: String get() = String.format(Locale.US, "SF%d · %.0f kHz", sf, bandwidthKhz)
+}
+
+/**
+ * A regulatory region the device can be set to: the band its frequency slots are
+ * cut from and the power it may use there. Streamed from the device for the same
+ * reason the presets are — the firmware owns the table (`mesh::kRegions`), and a
+ * copy of Meshtastic's region list on the phone is a copy that drifts.
+ */
+data class MeshRegion(
+    val index: Int,
+    val name: String,
+    val startHz: Long,
+    val endHz: Long,
+    val spacingHz: Long,
+    /** The region's legal limit, which is above what the radio can do in most of them. */
+    val powerLimitDbm: Int,
+) {
+    val startMHz: Double get() = startHz / 1_000_000.0
+    val endMHz: Double get() = endHz / 1_000_000.0
+
+    /** "902–928 MHz", with decimals only where the edges have them. */
+    val band: String
+        get() = "${mhz(startMHz)}–${mhz(endMHz)} MHz"
+
+    /** What TX power can actually be set: the region's ceiling or the SX1262's 22 dBm. */
+    val maxTxDbm: Int get() = minOf(powerLimitDbm, RADIO_MAX_DBM)
+
+    val detail: String get() = "$band · max $maxTxDbm dBm"
+
+    private fun mhz(v: Double): String =
+        if (v == Math.floor(v)) String.format(Locale.US, "%.0f", v)
+        else String.format(Locale.US, "%.3f", v).trimEnd('0')
+
+    companion object {
+        /** The SX1262's hardware ceiling; the region limit only binds below it. */
+        const val RADIO_MAX_DBM = 22
+        /** Below this the PA is barely on; Meshtastic's own floor is the same. */
+        const val MIN_TX_DBM = 2
+    }
 }
 
 /**

@@ -174,6 +174,7 @@ class BleManager(private val app: Application) {
     var meshNodes by mutableStateOf<List<MeshNode>>(emptyList()); private set
     var meshChannels by mutableStateOf<List<MeshChannel>>(emptyList()); private set
     var meshPresets by mutableStateOf<List<MeshPreset>>(emptyList()); private set
+    var meshRegions by mutableStateOf<List<MeshRegion>>(emptyList()); private set
     var meshStats by mutableStateOf(MeshStats()); private set
 
     /** The device refused the last send — radio off, or its outbox is full. */
@@ -224,6 +225,7 @@ class BleManager(private val app: Application) {
     private val meshNodesBuilding = ArrayList<MeshNode>()
     private val meshChannelsBuilding = ArrayList<MeshChannel>()
     private val meshPresetsBuilding = ArrayList<MeshPreset>()
+    private val meshRegionsBuilding = ArrayList<MeshRegion>()
 
     /** Negotiated ATT payload; one byte of every packet is the opcode. */
     private var mtu = 23
@@ -1628,8 +1630,10 @@ class BleManager(private val app: Application) {
         writeChar(meshChar, byteArrayOf(0x03))     // history
         writeChar(meshChar, byteArrayOf(0x04))     // nodes
         writeChar(meshChar, byteArrayOf(0x0c))     // channels
-        // Fixed for the life of the firmware, so once is enough.
+        // Fixed for the life of the firmware, so once is enough. An older
+        // firmware ignores 0x10 and simply never answers it.
         if (meshPresets.isEmpty()) writeChar(meshChar, byteArrayOf(0x0a))
+        if (meshRegions.isEmpty()) writeChar(meshChar, byteArrayOf(0x10))
     }
 
     /** Sends to one node, or to the whole channel when [to] is null. */
@@ -1705,6 +1709,22 @@ class BleManager(private val app: Application) {
     fun setMeshPreset(index: Int) = writeChar(meshChar, byteArrayOf(0x0b, index.toByte()))
 
     /**
+     * Sets the regulatory region. A legal setting, not a preference: it must match
+     * both the country and the band the LoRa module was built for. The device
+     * retunes and forgets everything it heard on the old band.
+     */
+    fun setMeshRegion(index: Int) = writeChar(meshChar, byteArrayOf(0x11, index.toByte()))
+
+    /** TX power in dBm; 0 asks for the most the region and the radio allow. */
+    fun setMeshTxPower(dbm: Int) = writeChar(meshChar, byteArrayOf(0x12, dbm.toByte()))
+
+    /**
+     * Pins the frequency slot (1-based, like Meshtastic's channel number), or 0
+     * to go back to deriving it from the channel name.
+     */
+    fun setMeshFreqSlot(slot: Int) = writeChar(meshChar, byteArrayOf(0x13, slot.toByte()))
+
+    /**
      * Adds or replaces a private channel. Slot 0 is the primary and is refused by
      * the firmware — it decides the frequency.
      */
@@ -1762,6 +1782,13 @@ class BleManager(private val app: Application) {
                     shortName = short,
                     longName = long,
                     presetIndex = if (i < d.size) d[i].toInt() and 0xFF else 0,
+                    // Five more trailing bytes from a firmware that lets the phone
+                    // set the radio up; absent from one that fixes the region.
+                    regionIndex = if (i + 5 < d.size) d[i + 1].toInt() and 0xFF else null,
+                    txPowerDbm = if (i + 5 < d.size) d[i + 2].toInt() else null,
+                    slotOverride = if (i + 5 < d.size) d[i + 3].toInt() and 0xFF else null,
+                    slotCount = if (i + 5 < d.size) d[i + 4].toInt() and 0xFF else null,
+                    activeSlot = if (i + 5 < d.size) d[i + 5].toInt() and 0xFF else null,
                 )
             }
 
@@ -1870,6 +1897,25 @@ class BleManager(private val app: Application) {
             0x9a -> {                                             // end of presets
                 meshPresets = meshPresetsBuilding.toList()
                 meshPresetsBuilding.clear()
+            }
+
+            0x9d -> {                                             // one region
+                if (d.size < 15) return
+                meshRegionsBuilding.add(
+                    MeshRegion(
+                        index = d[1].toInt() and 0xFF,
+                        startHz = le32(d, 2).toLong() and 0xFFFF_FFFFL,
+                        endHz = le32(d, 6).toLong() and 0xFFFF_FFFFL,
+                        spacingHz = le32(d, 10).toLong() and 0xFFFF_FFFFL,
+                        powerLimitDbm = d[14].toInt(),
+                        name = lenStringAt(d, 15).first,
+                    ),
+                )
+            }
+
+            0x9e -> {                                             // end of regions
+                meshRegions = meshRegionsBuilding.toList()
+                meshRegionsBuilding.clear()
             }
 
             0x9b -> {                                             // one channel, with its key

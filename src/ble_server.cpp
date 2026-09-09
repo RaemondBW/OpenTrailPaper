@@ -1353,9 +1353,18 @@ class AgnssCb : public NimBLECharacteristicCallbacks {
 //     [0x0d][u8 idx][u8 nameLen][name][psk]    add / replace a private channel
 //     [0x0e][u8 idx]                           forget a private channel
 //     [0x0f][u8 idx][u8 on]                    share our position on a channel
+//     [0x10]                                   send me the region list
+//     [0x11][u8 index]                         set the region
+//     [0x12][i8 dBm]                           set TX power (0 = the maximum
+//                                              the region and radio allow)
+//     [0x13][u8 slot]                          pin the frequency slot, 1-based
+//                                              (0 = derive it from the name)
 //
 //   Device -> phone (notify):
-//     [0x90] state    flags, node number, frequency, channel, our names
+//     [0x90] state    flags, node number, frequency, channel, our names, then
+//                     preset index and (appended later, optional for an older
+//                     app) region index, TX dBm, slot override, slot count,
+//                     active slot
 //     [0x91] message  one per message, oldest first
 //     [0x92]          end of history
 //     [0x93] node     one per known neighbour, with its position if it has sent one
@@ -1369,6 +1378,8 @@ class AgnssCb : public NimBLECharacteristicCallbacks {
 //     [0x9b] channel  one channel, WITH its key — the phone needs it to build a
 //                     share QR, and this link is already the trusted one
 //     [0x9c]          end of the channel list
+//     [0x9d] region   one region the device offers: index, band, power limit, name
+//     [0x9e]          end of the region list
 NimBLECharacteristic* meshChr = nullptr;
 
 // Requests staged by the write callback, serviced in the task. A bitmask rather
@@ -1380,6 +1391,7 @@ constexpr uint8_t MREQ_NODES   = 0x04;
 constexpr uint8_t MREQ_STATS   = 0x08;
 constexpr uint8_t MREQ_PRESETS = 0x10;
 constexpr uint8_t MREQ_CHANNELS = 0x20;
+constexpr uint8_t MREQ_REGIONS = 0x40;
 volatile uint8_t meshReq = 0;
 
 // Outgoing text, staged the same way. queueText() is cheap enough to call from a
@@ -1402,6 +1414,9 @@ volatile uint8_t meshSetKey = 1;
 volatile bool meshChanPending = false;
 volatile int8_t meshEnablePending = -1;   // -1 nothing, 0 off, 1 on
 volatile int8_t meshPresetPending = -1;   // -1 nothing, else a preset index
+volatile int8_t meshRegionPending = -1;   // -1 nothing, else a region index
+volatile int16_t meshTxPending = -1;      // -1 nothing, else dBm (0 = max)
+volatile int16_t meshSlotPending = -1;    // -1 nothing, else 0 (auto) or a slot
 
 // Staged private-channel edits. pskLen 0xFF is the delete marker.
 volatile int8_t meshChanIdxPending = -1;
@@ -1451,7 +1466,38 @@ void sendMeshState() {
     // Appended last so the layout above stays stable: the modem is a second,
     // independent axis from the channel and the app shows both.
     pkt[p++] = mesh_service::presetIndex();
+    // And after it, the radio configuration an app that predates it simply
+    // does not read. Slot numbers are 1-based here as in Meshtastic's UI.
+    pkt[p++] = mesh_service::regionIndex();
+    pkt[p++] = (uint8_t)mesh_service::txPowerDbm();
+    pkt[p++] = mesh_service::freqSlot();
+    const uint32_t nslots = mesh_service::slotCount();
+    pkt[p++] = (uint8_t)(nslots > 255 ? 255 : nslots);
+    const uint32_t aslot = mesh_service::activeSlot();
+    pkt[p++] = (uint8_t)(aslot > 255 ? 255 : aslot);
     meshNotify(pkt, p);
+}
+
+void sendMeshRegions() {
+    for (int i = 0; i < mesh::REGION_COUNT; ++i) {
+        const mesh::Region& r = mesh::kRegions[i];
+        uint8_t pkt[40];
+        int p = 0;
+        pkt[p++] = 0x9d;
+        pkt[p++] = (uint8_t)i;
+        // Hz, like the state packet's frequency: integers, nothing to parse.
+        const uint32_t s = (uint32_t)(r.startMHz * 1e6f + 0.5f);
+        const uint32_t e = (uint32_t)(r.endMHz * 1e6f + 0.5f);
+        const uint32_t g = (uint32_t)(r.spacingMHz * 1e6f + 0.5f);
+        memcpy(pkt + p, &s, 4); p += 4;
+        memcpy(pkt + p, &e, 4); p += 4;
+        memcpy(pkt + p, &g, 4); p += 4;
+        pkt[p++] = (uint8_t)r.powerLimitDbm;
+        p += (int)putStr(pkt + p, r.name, 15);
+        sendChunk(meshChr, pkt, p);
+    }
+    uint8_t end = 0x9e;
+    sendChunk(meshChr, &end, 1);
 }
 
 void sendMeshHistory() {
@@ -1624,6 +1670,16 @@ class MeshCb : public NimBLECharacteristicCallbacks {
         case 0x0b:                                     // set the modem preset
             if (n >= 2) meshPresetPending = (int8_t)p[1];
             break;
+        case 0x10: meshReq |= MREQ_REGIONS; break;
+        case 0x11:                                     // set the region
+            if (n >= 2 && p[1] < mesh::REGION_COUNT) meshRegionPending = (int8_t)p[1];
+            break;
+        case 0x12:                                     // set TX power
+            if (n >= 2 && (int8_t)p[1] >= 0) meshTxPending = (int8_t)p[1];
+            break;
+        case 0x13:                                     // pin the frequency slot
+            if (n >= 2) meshSlotPending = p[1];
+            break;
         case 0x02: {                                   // send a text message
             // [op][u32 dest][u8 channel][utf8]
             if (n < 6) return;
@@ -1728,6 +1784,23 @@ void serviceMeshRequests() {
         // The frequency moves with the bandwidth, so the app needs the new state.
         meshReq |= MREQ_STATE;
     }
+    if (meshRegionPending >= 0) {
+        mesh_service::setRegion((uint8_t)meshRegionPending);
+        meshRegionPending = -1;
+        // A new band is a new mesh: the device forgets its neighbours and
+        // messages, so the app must too.
+        meshReq |= MREQ_STATE | MREQ_HISTORY | MREQ_NODES;
+    }
+    if (meshTxPending >= 0) {
+        mesh_service::setTxPower((int8_t)meshTxPending);
+        meshTxPending = -1;
+        meshReq |= MREQ_STATE;
+    }
+    if (meshSlotPending >= 0) {
+        mesh_service::setFreqSlot((uint8_t)meshSlotPending);
+        meshSlotPending = -1;
+        meshReq |= MREQ_STATE | MREQ_HISTORY | MREQ_NODES;
+    }
     // Taken and cleared in one pass, before any of the streaming below: each
     // send yields for tens of milliseconds, and clearing a bit after that window
     // would drop a request the phone made during it.
@@ -1739,6 +1812,7 @@ void serviceMeshRequests() {
     if (req & MREQ_NODES)   sendMeshNodes();
     if (req & MREQ_STATS)   sendMeshStats();
     if (req & MREQ_PRESETS) sendMeshPresets();
+    if (req & MREQ_REGIONS) sendMeshRegions();
     if (req & MREQ_CHANNELS) sendMeshChannels();
 }
 

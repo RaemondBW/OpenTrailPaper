@@ -73,8 +73,6 @@ bool rtcTrusted();
 void setRtcTrusted(bool ok);
 
 // --- Meshtastic mesh messaging (see mesh_service.h) ------------------------
-// The region is NOT here: it is a compile-time constant in config.h, because
-// which band the radio may use is a legal question, not a preference.
 
 bool meshEnabled();               // false = the LoRa radio is never powered up
 void setMeshEnabled(bool on);
@@ -102,6 +100,23 @@ void setMeshPositionChannels(uint8_t mask);
 // Separate from the channel, which decides where. MESH_PRESET_DEFAULT until set.
 uint8_t meshPreset();
 void setMeshPreset(uint8_t index);
+
+// LoRa region: an index into mesh::kRegions. Persisted by NAME so the table can
+// grow without moving an existing rider's band; an unknown stored name falls
+// back to MESH_REGION_DEFAULT.
+uint8_t meshRegion();
+void setMeshRegion(uint8_t index);
+
+// Transmit power in dBm. 0 (the default) means the most the region and the
+// radio allow; mesh_service resolves that against the region's limit.
+int8_t meshTxPower();
+void setMeshTxPower(int8_t dbm);
+
+// Frequency slot override, 1-based like Meshtastic's channel_num. 0 (the
+// default) means the slot is derived from the channel name, which is what keeps
+// two nodes that only agreed on a name on the same frequency.
+uint8_t meshFreqSlot();
+void setMeshFreqSlot(uint8_t slot);
 
 // How this node introduces itself on the mesh. Empty until first set, at which
 // point mesh_service derives a default from the node number.

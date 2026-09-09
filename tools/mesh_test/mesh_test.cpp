@@ -102,6 +102,55 @@ static void testDefaultPsk() {
 
 // The two hashes that decide where a default node listens. Both are checked
 // against the published behaviour of a stock US node on the primary channel:
+// The region table is what decides where a channel name lands, and its numbers
+// are regulatory: a typo here is a node transmitting outside its band while
+// reporting success. Pinned against values Meshtastic publishes.
+static void testRegions() {
+    check(mesh::REGION_COUNT == 25, "25 sub-GHz regions");
+    check(mesh::regionIndexByName("US") == 0, "US is region 0");
+    check(mesh::regionIndexByName("eu_868") >= 0, "region lookup is case-insensitive");
+    check(mesh::regionIndexByName("LORA_24") < 0, "2.4 GHz is not offered on an SX1262");
+    check(&mesh::region(200) == &mesh::kRegions[0], "unknown region index falls back to US");
+
+    // EU_868 is 869.4-869.65 MHz: exactly one 250 kHz slot, so every channel
+    // name lands on 869.525 MHz — the frequency Meshtastic documents for EU_868.
+    const mesh::Region& eu = mesh::region(mesh::regionIndexByName("EU_868"));
+    const uint32_t n = mesh::channelCount(250.0f, eu.startMHz, eu.endMHz, eu.spacingMHz);
+    check(n == 1, "EU_868 has one 250 kHz slot");
+    const float f = mesh::channelFrequencyMHz("LongFast", 250.0f, eu.startMHz,
+                                              eu.endMHz, eu.spacingMHz);
+    printf("      EU_868 LongFast = %.4f MHz\n", f);
+    check(std::fabs(f - 869.525f) < 0.0005f, "EU_868 LongFast is 869.525 MHz");
+
+    // The split helpers must reproduce the one-shot function, and an explicit
+    // slot must count from the band edge the same way the hash does.
+    const uint32_t us = mesh::channelCount(250.0f, 902.0f, 928.0f, 0.0f);
+    check(mesh::slotForName("LongFast", us) == 19, "slotForName matches the hash placement");
+    check(std::fabs(mesh::slotFrequencyMHz(19, 250.0f, 902.0f, 0.0f) - 906.875f) < 0.0005f,
+          "slot 19 of US/250 kHz is 906.875 MHz");
+    check(std::fabs(mesh::slotFrequencyMHz(0, 250.0f, 902.0f, 0.0f) - 902.125f) < 0.0005f,
+          "slot 0 is centred half a bandwidth above the band edge");
+
+    // Every band must hold at least one slot at every bandwidth we offer, or a
+    // rider picking that preset would have a modulo-by-zero waiting.
+    for (int r = 0; r < mesh::REGION_COUNT; ++r)
+        for (int i = 0; i < mesh::PRESET_COUNT; ++i) {
+            const mesh::Region& rg = mesh::kRegions[r];
+            const uint32_t c = mesh::channelCount(mesh::kPresets[i].bwKhz, rg.startMHz,
+                                                  rg.endMHz, rg.spacingMHz);
+            if (c < 1) { check(false, "a region/preset pair has no slots"); return; }
+            const float fc = mesh::channelFrequencyMHz("LongFast", mesh::kPresets[i].bwKhz,
+                                                       rg.startMHz, rg.endMHz, rg.spacingMHz);
+            if (fc < rg.startMHz || fc > rg.endMHz) {
+                printf("      %s @ %.0f kHz -> %.4f MHz is outside %.3f-%.3f\n", rg.name,
+                       mesh::kPresets[i].bwKhz, fc, rg.startMHz, rg.endMHz);
+                check(false, "a channel centre falls outside its band");
+                return;
+            }
+        }
+    check(true, "every region/preset pair yields an in-band centre frequency");
+}
+
 // LongFast lands on slot 19 of 104, which is 906.875 MHz.
 static void testChannelPlacement() {
     const uint32_t n = mesh::channelCount(250.0f, 902.0f, 928.0f, 0.0f);
@@ -670,6 +719,7 @@ int main() {
     testCtrRoundTrip();
     testDefaultPsk();
     testChannelPlacement();
+    testRegions();
     testPresets();
     testBayMeshSettings();
     testChannelSet();

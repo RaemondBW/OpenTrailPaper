@@ -57,26 +57,39 @@ device waits to be asked.
 Everything else survives being switched off: channels, keys, names and the modem
 choice are all persisted, so turning it back on resumes where you were.
 
-## Region
+## Region, power and slot
 
-`MESH_REGION_NAME` and the frequency bounds in `src/config.h` are **compile-time
-constants**, deliberately: which band the radio may use is a legal question, not
-a preference, and a phone-selectable region would let a US-certified unit be
-switched onto EU frequencies. The default is US (902–928 MHz).
+The band the radio uses is a **setting**, chosen in either app (Mesh → settings
+→ Region) or on the console (`mesh region <name>`), from Meshtastic's own region
+table (`mesh::kRegions` in `src/mesh_proto.cpp`). A new or factory-reset device
+starts on `MESH_REGION_DEFAULT` from `src/config.h` (US, 902–928 MHz). The
+setting is stored by name, so a firmware that adds regions never moves anyone's
+band.
 
-To build for another region, change these in `config.h` and rebuild:
+Two things have to be true of the region you pick, and the firmware can check
+neither:
 
-```c
-#define MESH_REGION_NAME    "US"
-#define MESH_FREQ_START_MHZ 902.0f
-#define MESH_FREQ_END_MHZ   928.0f
-#define MESH_SPACING_MHZ    0.0f
-#define MESH_TX_DBM         22
-```
+- **It must be lawful where you ride.** The table carries each region's power
+  limit and the radio is driven at the lower of that and its own 22 dBm ceiling.
+  Duty-cycle limits (EU_868 is 10 %) are not enforced; this firmware only
+  transmits what you type plus a six-hourly announcement.
+- **It must match the hardware.** The LoRa module's matching network is built
+  for one band — a 915 MHz module cannot be talked onto 868 MHz by software (it
+  will mostly work, several dB down and out of spec) and a 433 MHz module is a
+  different chip altogether. The app says so before it applies a change.
 
-Meshtastic's own region table is the reference for the numbers. Note the radio
-must also be the right hardware variant — a 915 MHz module cannot be talked onto
-868 MHz by software.
+Changing region retunes the radio and clears messages and neighbours: a new band
+is a new mesh.
+
+Alongside it, two knobs a stock node also has:
+
+- **TX power** (`mesh power <dBm|max>`) — default is the maximum allowed.
+- **Frequency slot** (`mesh slot <n|auto>`) — Meshtastic's `channel_num`. By
+  default the slot is derived from the channel name (below), which is what keeps
+  two nodes that only agreed on a name on the same frequency. Pinning a number
+  does what it says; a pinned slot past the end of a narrower band is clamped.
+
+The 2.4 GHz `LORA_24` region is not offered: the SX1262 cannot reach it.
 
 ## How a channel becomes a frequency
 
@@ -152,7 +165,7 @@ recommended settings, and this firmware's defaults now match them:
 
 | Their setting | Value | Here |
 |---|---|---|
-| Region | US | `MESH_REGION_NAME`, compile-time |
+| Region | US | Mesh settings in the app, or `mesh region`; stored by name |
 | Preset | Medium Range Fast | pick **MediumFast** in the app |
 | Primary channel name | blank (default) | leave the channel field empty |
 | Encryption key | `AQ==` | key 1, the default |

@@ -81,17 +81,16 @@
 
 // Meshtastic mesh messaging (see docs/meshtastic.md).
 //
-// The region is a COMPILE-TIME choice because it is a legal one, not a
-// preference: US_915 is 902-928 MHz and shipping a device that can be switched
-// onto EU_868 from the phone would put it outside its certification. Change it
-// here (and rebuild) for another region.
-#define MESH_REGION_NAME    "US"
-#define MESH_FREQ_START_MHZ 902.0f
-#define MESH_FREQ_END_MHZ   928.0f
-#define MESH_SPACING_MHZ    0.0f
-// Region power limit is 30 dBm; the SX1262 tops out at 22, which is the cap that
-// actually binds. Meshtastic's own US default is the same.
-#define MESH_TX_DBM         22
+// The region (which band the radio may use) is a persisted setting chosen from
+// the app or the console, from Meshtastic's own table in mesh_proto.cpp — the
+// same choice a stock Meshtastic node asks its owner to make. This is only the
+// value a fresh or factory-reset device starts on. It is a NAME, not an index,
+// so the table can grow without moving anyone's band.
+#define MESH_REGION_DEFAULT "US"
+// The SX1262's own output ceiling. A region's legal limit is often higher (US:
+// 30 dBm); the lower of the two is what the radio is driven at unless the rider
+// turns it down.
+#define MESH_TX_DBM_MAX     22
 // --- Channel name, and the modem it is spoken with -------------------------
 //
 // These are TWO INDEPENDENT settings and conflating them is a trap worth

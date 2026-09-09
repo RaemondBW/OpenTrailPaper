@@ -129,6 +129,20 @@ uint8_t presetIndex();
 const char* presetName();
 void setPreset(uint8_t index);
 
+// Radio configuration beyond the modem: which band (mesh::kRegions), how loud,
+// and — optionally — which slot in the band, pinned by number the way
+// Meshtastic's channel_num does instead of derived from the channel name. All
+// persisted; all applied by the mesh task, like the preset.
+uint8_t regionIndex();
+void setRegion(uint8_t index);
+int8_t txPowerDbm();                 // the value the radio is actually driven at
+int8_t txPowerLimitDbm();            // the most this region and radio allow
+void setTxPower(int8_t dbm);         // 0 = the maximum allowed
+uint8_t freqSlot();                  // the override, 0 = follow the channel name
+void setFreqSlot(uint8_t slot);      // 1-based; 0 clears the override
+uint32_t slotCount();                // how many slots this region/bandwidth has
+uint32_t activeSlot();               // the one in use, 1-based
+
 // Queues a text message and returns its packet id (0 if the outbox is full, the
 // text is empty, the channel is not one we hold, or the radio is down). Safe to
 // call from another task. `channel` 0 is the primary; 1.. are private channels.

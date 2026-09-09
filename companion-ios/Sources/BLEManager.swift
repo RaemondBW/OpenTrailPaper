@@ -148,11 +148,48 @@ struct MeshState: Equatable {
     var unread = 0
     /// Index into `BLEManager.meshPresets`.
     var presetIndex: UInt8 = 0
+    /// Radio configuration, sent by firmware that lets the phone choose it. All
+    /// nil on older firmware, which compiled the region in — the sheet hides the
+    /// controls rather than offering a change the device would ignore.
+    var regionIndex: UInt8? = nil
+    /// The power actually in use — never the "maximum" sentinel the setter takes.
+    var txPowerDbm: Int8? = nil
+    /// 0 = the slot comes from the channel name, as on a stock node.
+    var slotOverride: UInt8? = nil
+    var slotCount: UInt8? = nil
+    /// 1-based, like Meshtastic's channel_num.
+    var activeSlot: UInt8? = nil
 
     var nodeId: String { "!" + String(format: "%08x", nodeNum) }
     var frequencyMHz: Double { Double(frequencyHz) / 1_000_000 }
     /// Nothing has been heard from the device yet.
     var isUnknown: Bool { nodeNum == 0 }
+    var hasRadioConfig: Bool { regionIndex != nil }
+}
+
+/// A regulatory region the device can run in: the band, and the power the law
+/// there allows. Streamed from the device like the presets, for the same reason —
+/// the firmware owns the table, and a copy here would drift. The numbers are
+/// Meshtastic's, so a region here means the same frequencies as on a stock node.
+struct MeshRegion: Identifiable, Equatable {
+    let index: UInt8
+    let name: String
+    let startHz: UInt32
+    let endHz: UInt32
+    let spacingHz: UInt32
+    let powerLimitDbm: Int8
+
+    var id: UInt8 { index }
+    /// "902–928 MHz". Sub-MHz edges (EU_868 is 869.4–869.65) keep their decimals.
+    var band: String {
+        func mhz(_ hz: UInt32) -> String {
+            let v = Double(hz) / 1_000_000
+            return v == v.rounded() ? String(format: "%.0f", v) : String(format: "%g", v)
+        }
+        return "\(mhz(startHz))–\(mhz(endHz)) MHz"
+    }
+    /// The SX1262 tops out at 22 dBm, so that is what binds in most regions.
+    var maxTxDbm: Int8 { min(powerLimitDbm, 22) }
 }
 
 /// A position a node broadcast over the mesh.
@@ -360,6 +397,8 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var meshStats = MeshStats()
     @Published var meshPresets: [MeshPreset] = []
     private var meshPresetsBuilding: [MeshPreset] = []
+    @Published var meshRegions: [MeshRegion] = []
+    private var meshRegionsBuilding: [MeshRegion] = []
     @Published var meshChannels: [MeshChannel] = []
     private var meshChannelsBuilding: [MeshChannel] = []
     /// Set when the device refuses a message (radio off, or its outbox is full),
@@ -1135,6 +1174,11 @@ final class BLEManager: NSObject, ObservableObject {
             // Fixed for the life of the firmware, so once is enough.
             p.writeValue(Data([0x0a]), for: c, type: .withResponse)
         }
+        if meshRegions.isEmpty {
+            // Likewise. Older firmware never answers, and the sheet then shows no
+            // region control — which is right, since it has none to change.
+            p.writeValue(Data([0x10]), for: c, type: .withResponse)
+        }
     }
 
     /// Adds or replaces a private channel on the device. Slot 0 is the primary and
@@ -1179,6 +1223,25 @@ final class BLEManager: NSObject, ObservableObject {
     func requestMeshStats() {
         guard let c = meshChar, let p = peripheral else { return }
         p.writeValue(Data([0x09]), for: c, type: .withResponse)
+    }
+
+    /// Moves the radio to another regulatory band. The device retunes, drops the
+    /// messages and neighbours it learned on the old band, and pushes fresh state.
+    func setMeshRegion(_ index: UInt8) {
+        guard let c = meshChar, let p = peripheral else { return }
+        p.writeValue(Data([0x11, index]), for: c, type: .withResponse)
+    }
+
+    /// Transmit power in dBm; 0 asks for the most the region and radio allow.
+    func setMeshTxPower(_ dbm: Int8) {
+        guard let c = meshChar, let p = peripheral else { return }
+        p.writeValue(Data([0x12, UInt8(bitPattern: dbm)]), for: c, type: .withResponse)
+    }
+
+    /// Pins the frequency slot (1-based); 0 lets the channel name choose again.
+    func setMeshFreqSlot(_ slot: UInt8) {
+        guard let c = meshChar, let p = peripheral else { return }
+        p.writeValue(Data([0x13, slot]), for: c, type: .withResponse)
     }
 
     /// Sends a message to one node, or to the whole channel when `to` is nil.
@@ -1341,6 +1404,14 @@ final class BLEManager: NSObject, ObservableObject {
             s.shortName = d.lenString(at: &i)
             s.longName = d.lenString(at: &i)
             if i < d.count { s.presetIndex = d[i] }
+            // Radio config trails the preset; five bytes, all or nothing.
+            if i + 5 < d.count {
+                s.regionIndex = d[i + 1]
+                s.txPowerDbm = Int8(bitPattern: d[i + 2])
+                s.slotOverride = d[i + 3]
+                s.slotCount = d[i + 4]
+                s.activeSlot = d[i + 5]
+            }
             meshState = s
 
         case 0x91:  // one message
@@ -1430,6 +1501,19 @@ final class BLEManager: NSObject, ObservableObject {
         case 0x9a:  // end of the preset list
             meshPresets = meshPresetsBuilding
             meshPresetsBuilding = []
+
+        case 0x9d:  // one region
+            guard d.count >= 15 else { return }
+            var i = 15
+            let name = d.lenString(at: &i)
+            meshRegionsBuilding.append(MeshRegion(
+                index: d[1], name: name,
+                startHz: d.le32(at: 2), endHz: d.le32(at: 6), spacingHz: d.le32(at: 10),
+                powerLimitDbm: Int8(bitPattern: d[14])))
+
+        case 0x9e:  // end of the region list
+            meshRegions = meshRegionsBuilding
+            meshRegionsBuilding = []
 
         case 0x9b:  // one channel, with its key
             guard d.count >= 3 else { return }

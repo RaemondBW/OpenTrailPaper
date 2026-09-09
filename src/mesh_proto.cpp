@@ -1,6 +1,7 @@
 #include "mesh_proto.h"
 
 #include <cmath>
+#include <cctype>
 #include <cstring>
 
 namespace {
@@ -609,12 +610,74 @@ uint32_t channelCount(float bwKhz, float freqStartMHz, float freqEndMHz,
     return n < 1.0f ? 1u : (uint32_t)n;
 }
 
+uint32_t slotForName(const char* channelName, uint32_t slotCount) {
+    if (slotCount == 0) return 0;
+    return nameHash(channelName) % slotCount;
+}
+
+float slotFrequencyMHz(uint32_t slot, float bwKhz, float freqStartMHz,
+                       float spacingMHz) {
+    // Meshtastic: freqStart + bw/2000 + channel_num * (spacing + bw/1000).
+    // Every region it ships has spacing 0, so the term is carried for fidelity
+    // rather than because any current band needs it.
+    return freqStartMHz + bwKhz / 2000.0f +
+           (float)slot * (spacingMHz + bwKhz / 1000.0f);
+}
+
 float channelFrequencyMHz(const char* channelName, float bwKhz,
                           float freqStartMHz, float freqEndMHz,
                           float spacingMHz) {
     const uint32_t n = channelCount(bwKhz, freqStartMHz, freqEndMHz, spacingMHz);
-    const uint32_t slot = nameHash(channelName) % n;
-    return freqStartMHz + bwKhz / 2000.0f + (float)slot * (bwKhz / 1000.0f);
+    return slotFrequencyMHz(slotForName(channelName, n), bwKhz, freqStartMHz,
+                            spacingMHz);
+}
+
+// Values verbatim from Meshtastic firmware src/mesh/RadioInterface.cpp
+// (regions[]), September 2026. Duty-cycle limits (EU_868 10 %, UA_868 1 %) are
+// not enforced here: this firmware only transmits what the rider types plus a
+// six-hourly node announcement, which is far inside any of them.
+const Region kRegions[REGION_COUNT] = {
+    {"US",      902.0f,   928.0f,   0.0f, 30},
+    {"EU_868",  869.4f,   869.65f,  0.0f, 27},
+    {"EU_433",  433.0f,   434.0f,   0.0f, 10},
+    {"ANZ",     915.0f,   928.0f,   0.0f, 30},
+    {"ANZ_433", 433.05f,  434.79f,  0.0f, 14},
+    {"CN",      470.0f,   510.0f,   0.0f, 19},
+    {"JP",      920.5f,   923.5f,   0.0f, 13},
+    {"KR",      920.0f,   923.0f,   0.0f, 23},
+    {"TW",      920.0f,   925.0f,   0.0f, 27},
+    {"RU",      868.7f,   869.2f,   0.0f, 20},
+    {"IN",      865.0f,   867.0f,   0.0f, 30},
+    {"NZ_865",  864.0f,   868.0f,   0.0f, 36},
+    {"TH",      920.0f,   925.0f,   0.0f, 27},
+    {"UA_433",  433.0f,   434.7f,   0.0f, 10},
+    {"UA_868",  868.0f,   868.6f,   0.0f, 14},
+    {"MY_433",  433.0f,   435.0f,   0.0f, 20},
+    {"MY_919",  919.0f,   924.0f,   0.0f, 27},
+    {"SG_923",  917.0f,   925.0f,   0.0f, 20},
+    {"PH_433",  433.0f,   434.7f,   0.0f, 10},
+    {"PH_868",  868.0f,   869.4f,   0.0f, 14},
+    {"PH_915",  915.0f,   918.0f,   0.0f, 24},
+    {"KZ_433",  433.075f, 434.775f, 0.0f, 10},
+    {"KZ_863",  863.0f,   868.0f,   0.0f, 30},
+    {"NP_865",  865.0f,   868.0f,   0.0f, 30},
+    {"BR_902",  902.0f,   907.5f,   0.0f, 30},
+};
+
+int regionIndexByName(const char* name) {
+    if (!name) return -1;
+    for (int i = 0; i < REGION_COUNT; ++i) {
+        const char* a = kRegions[i].name;
+        const char* b = name;
+        while (*a && *b && std::tolower((unsigned char)*a) == std::tolower((unsigned char)*b)) { ++a; ++b; }
+        if (!*a && !*b) return i;
+    }
+    return -1;
+}
+
+const Region& region(int index) {
+    if (index < 0 || index >= REGION_COUNT) return kRegions[0];
+    return kRegions[index];
 }
 
 void defaultPsk(uint8_t index, uint8_t out[16]) {
