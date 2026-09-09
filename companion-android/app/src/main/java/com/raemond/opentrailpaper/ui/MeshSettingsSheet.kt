@@ -13,6 +13,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Slider
@@ -65,6 +67,12 @@ fun MeshSettingsSheet(ble: BleManager, onDismiss: () -> Unit) {
     var pendingPreset by remember { mutableStateOf<MeshPreset?>(null) }
     /** Same for "switch region?": a wrong band is a legal problem, not just a deaf radio. */
     var pendingRegion by remember { mutableStateOf<MeshRegion?>(null) }
+    /**
+     * The region list is folded away by default. Twenty-five bands is a wall of
+     * text for a setting almost nobody changes twice, and what a rider actually
+     * wants to see is where the radio is right now.
+     */
+    var regionsExpanded by remember { mutableStateOf(false) }
     /**
      * Slider position while the thumb is down. Sent on release, not per pixel:
      * each write re-tunes the PA, and the device pushes a fresh state back that
@@ -140,44 +148,68 @@ fun MeshSettingsSheet(ble: BleManager, onDismiss: () -> Unit) {
                 Card {
                     TrackedLabel("Region · which band")
                     Spacer(Modifier.size(6.dp))
-                    // Listed from the device, like the modems: the firmware owns
-                    // the table, and it is the firmware that has to be right.
-                    if (ble.meshRegions.isEmpty()) {
+                    // Folded: one row, the band we are on and the frequency
+                    // inside it, with a chevron to open the full list.
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable { regionsExpanded = !regionsExpanded }
+                            .padding(vertical = 3.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                activeRegion?.name ?: "—",
+                                style = condensed(19.sp, FontWeight.SemiBold),
+                                color = Palette.ink,
+                            )
+                            Text(
+                                activeRegion?.let {
+                                    String.format(Locale.US, "%s · %.3f MHz", it.band, state.frequencyMHz)
+                                } ?: "Ask the device for its region list by reconnecting.",
+                                style = barlow(14.sp),
+                                color = Palette.muted,
+                            )
+                        }
+                        Icon(
+                            if (regionsExpanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
+                            contentDescription = if (regionsExpanded) "Hide regions" else "Choose a region",
+                            tint = Palette.muted,
+                        )
+                    }
+                    if (regionsExpanded) {
+                        // Listed from the device, like the modems: the firmware owns
+                        // the table, and it is the firmware that has to be right.
+                        for (r in ble.meshRegions) {
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .clickable { pendingRegion = r }
+                                    .padding(vertical = 3.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        r.name,
+                                        style = condensed(19.sp, FontWeight.SemiBold),
+                                        color = Palette.ink,
+                                    )
+                                    Text(r.detail, style = barlow(14.sp), color = Palette.muted)
+                                }
+                                if (r.index == state.regionIndex) {
+                                    Icon(Icons.Filled.Check, contentDescription = null, tint = Palette.accent)
+                                }
+                            }
+                        }
                         Text(
-                            "Ask the device for its region list by reconnecting.",
-                            style = barlow(15.sp),
+                            "A legal setting, not a preference: it has to match the " +
+                                "country you ride in AND the band the LoRa module was " +
+                                "built for. An 868 MHz module cannot be talked onto 915 " +
+                                "by software — it will just be deaf and out of spec.",
+                            style = barlow(14.sp),
                             color = Palette.muted,
                         )
                     }
-                    for (r in ble.meshRegions) {
-                        Row(
-                            Modifier
-                                .fillMaxWidth()
-                                .clickable { pendingRegion = r }
-                                .padding(vertical = 3.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Column(Modifier.weight(1f)) {
-                                Text(
-                                    r.name,
-                                    style = condensed(19.sp, FontWeight.SemiBold),
-                                    color = Palette.ink,
-                                )
-                                Text(r.detail, style = barlow(14.sp), color = Palette.muted)
-                            }
-                            if (r.index == state.regionIndex) {
-                                Icon(Icons.Filled.Check, contentDescription = null, tint = Palette.accent)
-                            }
-                        }
-                    }
-                    Text(
-                        "A legal setting, not a preference: it has to match the " +
-                            "country you ride in AND the band the LoRa module was " +
-                            "built for. An 868 MHz module cannot be talked onto 915 " +
-                            "by software — it will just be deaf and out of spec.",
-                        style = barlow(14.sp),
-                        color = Palette.muted,
-                    )
                 }
 
                 Card {

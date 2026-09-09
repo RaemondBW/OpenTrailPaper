@@ -713,6 +713,10 @@ private struct MeshSettingsSheet: View {
     /// Same again for the region, which moves the radio further than any modem
     /// does — and is a legal setting, so it gets the sternest of the alerts.
     @State private var pendingRegion: MeshRegion? = nil
+    /// The region list is folded away by default: twenty-five bands is a wall
+    /// for a setting almost nobody changes twice, and what a rider wants to see
+    /// is where the radio is right now.
+    @State private var regionsExpanded = false
     /// Local copies of the radio knobs, so a stepper tap does not wait on the
     /// device's round trip before the number moves.
     @State private var txPower: Int = 22
@@ -775,34 +779,56 @@ private struct MeshSettingsSheet: View {
                         Card {
                             VStack(alignment: .leading, spacing: 10) {
                                 Text("Region · which band").trackedLabel()
-                                if ble.meshRegions.isEmpty {
-                                    Text("Ask the device for its region list by reconnecting.")
-                                        .font(BarlowFont.text(15))
-                                        .foregroundStyle(Palette.muted)
-                                }
-                                ForEach(ble.meshRegions) { r in
-                                    Button { pendingRegion = r } label: {
-                                        HStack {
-                                            VStack(alignment: .leading, spacing: 1) {
-                                                Text(r.name)
-                                                    .font(BarlowFont.condensed(19, .semibold))
-                                                    .foregroundStyle(Palette.ink)
-                                                Text("\(r.band) · max \(r.maxTxDbm) dBm")
-                                                    .font(BarlowFont.text(14))
-                                                    .foregroundStyle(Palette.muted)
-                                            }
-                                            Spacer()
-                                            if r.index == ble.meshState.regionIndex {
-                                                Image(systemName: "checkmark")
-                                                    .foregroundStyle(Palette.accent)
-                                            }
+                                // Folded: one row, the band we are on and the
+                                // frequency inside it, with a chevron to open
+                                // the full list.
+                                Button {
+                                    withAnimation(.easeInOut(duration: 0.2)) { regionsExpanded.toggle() }
+                                } label: {
+                                    HStack {
+                                        VStack(alignment: .leading, spacing: 1) {
+                                            Text(activeRegion?.name ?? "—")
+                                                .font(BarlowFont.condensed(19, .semibold))
+                                                .foregroundStyle(Palette.ink)
+                                            Text(activeRegion.map {
+                                                String(format: "%@ · %.3f MHz", $0.band, ble.meshState.frequencyMHz)
+                                            } ?? "Ask the device for its region list by reconnecting.")
+                                                .font(BarlowFont.text(14))
+                                                .foregroundStyle(Palette.muted)
                                         }
-                                        .padding(.vertical, 3)
+                                        Spacer()
+                                        Image(systemName: regionsExpanded ? "chevron.up" : "chevron.down")
+                                            .foregroundStyle(Palette.muted)
                                     }
-                                    .buttonStyle(.plain)
+                                    .padding(.vertical, 3)
+                                    .contentShape(Rectangle())
                                 }
-                                Text("Which band the radio may use is a legal question, decided by the country you ride in — and by the hardware: the LoRa module is built for one band, and an 868 MHz module cannot be talked onto 915 MHz by software. The numbers are Meshtastic's, so a stock node set to the same region is on the same frequencies.")
-                                    .font(BarlowFont.text(14)).foregroundStyle(Palette.muted)
+                                .buttonStyle(.plain)
+                                if regionsExpanded {
+                                    ForEach(ble.meshRegions) { r in
+                                        Button { pendingRegion = r } label: {
+                                            HStack {
+                                                VStack(alignment: .leading, spacing: 1) {
+                                                    Text(r.name)
+                                                        .font(BarlowFont.condensed(19, .semibold))
+                                                        .foregroundStyle(Palette.ink)
+                                                    Text("\(r.band) · max \(r.maxTxDbm) dBm")
+                                                        .font(BarlowFont.text(14))
+                                                        .foregroundStyle(Palette.muted)
+                                                }
+                                                Spacer()
+                                                if r.index == ble.meshState.regionIndex {
+                                                    Image(systemName: "checkmark")
+                                                        .foregroundStyle(Palette.accent)
+                                                }
+                                            }
+                                            .padding(.vertical, 3)
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+                                    Text("Which band the radio may use is a legal question, decided by the country you ride in — and by the hardware: the LoRa module is built for one band, and an 868 MHz module cannot be talked onto 915 MHz by software. The numbers are Meshtastic's, so a stock node set to the same region is on the same frequencies.")
+                                        .font(BarlowFont.text(14)).foregroundStyle(Palette.muted)
+                                }
                             }
                         }
 
