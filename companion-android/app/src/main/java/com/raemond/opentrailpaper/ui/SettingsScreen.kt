@@ -1,6 +1,10 @@
 package com.raemond.opentrailpaper.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.animation.animateContentSize
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -296,6 +300,25 @@ private fun tzLabel(minutes: Int): String {
 
 // MARK: firmware
 
+/**
+ * Release-body markdown -> compact plain text: drop the trailing
+ * "Built from <sha>..." line CI appends, bullet the list items, unwrap the
+ * hard line breaks inside each item. Mirrors SettingsView.whatsNew on iOS.
+ */
+private fun whatsNew(body: String): String {
+    val items = mutableListOf<String>()
+    for (raw in body.split("\n")) {
+        val line = raw.trim()
+        if (line.isEmpty() || line.startsWith("Built from ")) continue
+        when {
+            line.startsWith("- ") -> items.add("\u2022 " + line.drop(2))
+            items.isNotEmpty() -> items[items.size - 1] = items.last() + " " + line
+            else -> items.add(line)
+        }
+    }
+    return items.joinToString("\n")
+}
+
 @Composable
 private fun FirmwareCard(ble: BleManager, onInstall: () -> Unit) {
     Card {
@@ -333,6 +356,61 @@ private fun FirmwareCard(ble: BleManager, onInstall: () -> Unit) {
             }
         }
         Spacer(Modifier.size(12.dp))
+
+        // The release notes, straight from the version's CHANGELOG section in
+        // the GitHub release body — the rider sees what they're getting before
+        // tapping Install. Collapsed by default: the header plus a two-line
+        // taste of the top change, so the card stays compact but never says
+        // "update" without saying why. Tap the panel to expand/collapse.
+        val notesRelease = FirmwareRelease.latest
+        if (ble.updateAvailable && !ble.otaInProgress &&
+            ble.otaPhase != BleManager.OtaPhase.FAILED &&
+            ble.otaPhase != BleManager.OtaPhase.DONE && notesRelease != null
+        ) {
+            val notes = remember(notesRelease.notes) { whatsNew(notesRelease.notes) }
+            if (notes.isNotEmpty()) {
+                var expanded by remember { mutableStateOf(false) }
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .background(Palette.paper, RoundedCornerShape(8.dp))
+                        .clickable { expanded = !expanded }
+                        .padding(10.dp)
+                        .animateContentSize(),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "What's new in ${notesRelease.tag}",
+                            style = barlow(13.sp, FontWeight.SemiBold),
+                            color = Palette.ink,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Icon(
+                            if (expanded) Icons.Filled.KeyboardArrowUp
+                            else Icons.Filled.KeyboardArrowDown,
+                            contentDescription = null,
+                            tint = Palette.faint,
+                        )
+                    }
+                    Text(
+                        notes,
+                        style = barlow(12.sp),
+                        color = Palette.muted,
+                        maxLines = if (expanded) Int.MAX_VALUE else 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    if (!expanded) {
+                        Text(
+                            "Show all",
+                            style = barlow(12.sp, FontWeight.SemiBold),
+                            color = Palette.accent,
+                        )
+                    }
+                }
+                Spacer(Modifier.size(12.dp))
+            }
+        }
 
         val downloadProgress = FirmwareRelease.downloadProgress
         when {
