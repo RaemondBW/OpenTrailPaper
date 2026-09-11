@@ -62,6 +62,7 @@ import java.util.Locale
 fun SettingsScreen(ble: BleManager, host: HostActions, onShowTutorial: () -> Unit) {
     var showSensors by remember { mutableStateOf(false) }
     var showMaps by remember { mutableStateOf(false) }
+    var showUploadServices by remember { mutableStateOf(false) }
     var confirmUpdate by remember { mutableStateOf(false) }
     val connected = ble.state == BleManager.ConnState.CONNECTED
 
@@ -94,6 +95,7 @@ fun SettingsScreen(ble: BleManager, host: HostActions, onShowTutorial: () -> Uni
         // fetching OSM works offline, and the Maps screen only needs the link for
         // the upload itself.
         NavCard("Maps", mapsSummary(ble), icon = Icons.Filled.Map) { showMaps = true }
+        NavCard("Upload services", "Connect Intervals.icu for saved ride uploads") { showUploadServices = true }
 
         Card {
             TrackedLabel("Units")
@@ -194,6 +196,7 @@ fun SettingsScreen(ble: BleManager, host: HostActions, onShowTutorial: () -> Uni
 
     if (showSensors) SensorsSheet(ble) { showSensors = false }
     if (showMaps) MapsSheet(ble) { showMaps = false }
+    if (showUploadServices) UploadServicesSheet { showUploadServices = false }
     ble.logFile?.let { file ->
         DiagnosticsSheet(file) { ble.logFile = null }
     }

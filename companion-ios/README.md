@@ -54,3 +54,9 @@ Service `B1C50000-9E0F-4B7A-9C6D-1F2E3A4B5C6D`:
   a natural seam to drop in a dedicated bike router later.
 - Route upload is paced (~12 ms/packet) for reliability over BLE; a long
   cross-town route of a few thousand points takes a couple of seconds.
+
+## Direct ride uploads
+
+Connect your personal Intervals.icu API key in Settings → Upload services, then
+open a downloaded ride and tap Upload to Intervals.icu. See
+[ride uploads](../docs/ride-uploads.md) for storage, retry behavior and provider extension.

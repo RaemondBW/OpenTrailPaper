@@ -142,6 +142,7 @@ fun RideDetailSheet(
                 Spacer(Modifier.weight(1f))
             }
 
+            RideUploadButtons(file)
             PrimaryButton("Share .fit file", icon = Icons.Filled.Share) {
                 Share.fit(context, file)
             }

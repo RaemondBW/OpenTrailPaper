@@ -65,6 +65,8 @@ struct RideDetailView: View {
                         Color.clear
                     }
 
+                    RideUploadButtons(file: fileURL)
+
                     PrimaryButton(title: "Share .fit file",
                                   systemImage: "square.and.arrow.up") {
                         showShare = true

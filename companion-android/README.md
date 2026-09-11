@@ -127,3 +127,9 @@ Service `B1C50000-9E0F-4B7A-9C6D-1F2E3A4B5C6D`:
 - Map building is memory-hungry: an Overpass region is streamed straight into
   primitive arrays rather than a JSON tree (`map/OsmData.kt`), which is what keeps
   a large selection inside a phone's heap.
+
+## Direct ride uploads
+
+Connect your personal Intervals.icu API key in Settings → Upload services, then
+open a downloaded ride and tap Upload to Intervals.icu. See
+[ride uploads](../docs/ride-uploads.md) for storage, retry behavior and provider extension.

@@ -10,6 +10,7 @@ struct SettingsView: View {
     @State private var notesExpanded = false
     @State private var showSensors = false
     @State private var showMaps = false
+    @State private var showUploadServices = false
 
     var body: some View {
         NavigationStack {
@@ -33,6 +34,12 @@ struct SettingsView: View {
                     // with no connection from the Route page too, so gating it
                     // here would be a quiet regression.
                     mapsCard
+                    Button { showUploadServices = true } label: {
+                        Card {
+                            Label("Upload services", systemImage: "arrow.up.circle")
+                                .font(TypeScale.title).foregroundStyle(Palette.ink)
+                        }
+                    }.buttonStyle(.plain)
                     Card {
                         VStack(alignment: .leading, spacing: 10) {
                             Text("Units").trackedLabel()
@@ -136,6 +143,7 @@ struct SettingsView: View {
             .sheet(item: $ble.logFileURL) { url in DiagnosticsView(url: url) }
             .sheet(isPresented: $showSensors) { SensorsView() }
             .sheet(isPresented: $showMaps) { MapsView() }
+            .sheet(isPresented: $showUploadServices) { UploadServicesView() }
         }
     }
 
