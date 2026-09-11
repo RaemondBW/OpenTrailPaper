@@ -72,6 +72,7 @@ struct DashItem: Identifiable, Hashable {
     var size: DashSize
     var half: Bool
     var vertical: Bool = false
+    var heightPercent: Int = 100
     var isVertical: Bool { vertical || field == "radar" }
 
     var fieldLabel: String { DashField.named(field)?.label ?? field }
@@ -112,7 +113,8 @@ struct DashLayout: Equatable {
             let size = tok.count > 1 ? DashSize(rawValue: String(tok[1])) ?? .medium : .medium
             let half = tok.dropFirst().contains { $0 == "half" }
             out.append(DashItem(field: String(first), size: size, half: half,
-                                vertical: tok.dropFirst().contains { $0 == "vertical" }))
+                                vertical: tok.dropFirst().contains { $0 == "vertical" },
+                                heightPercent: tok.dropFirst().compactMap { ["height=50": 50, "height=75": 75, "height=100": 100][String($0)] }.last ?? 100))
             if out.count >= DashLayout.maxItems { break }
         }
         items = out
@@ -123,19 +125,19 @@ struct DashLayout: Equatable {
     /// dashSerialize() so a round trip through the device changes nothing.
     var configText: String {
         var s = "# OpenTrailPaper dashboard layout\n"
-        s += "# <field> <small|medium|large|hero> [half]\n"
+        s += "# <field> <small|medium|large|hero> [half|vertical] [height=50|75|100]\n"
         s += "# 'half' shares the row with the next 'half' field.\n"
         for it in normalizedItems {
             let field = it.field.padding(toLength: max(10, it.field.count),
                                          withPad: " ", startingAt: 0)
             let size = it.size.rawValue.padding(toLength: max(6, it.size.rawValue.count),
                                                 withPad: " ", startingAt: 0)
-            s += "\(field) \(size)\(it.isVertical ? " vertical" : it.half ? " half" : "")\n"
+            s += "\(field) \(size)\(it.isVertical ? " vertical" : it.half ? " half" : "")\(it.heightPercent == 100 ? "" : " height=\(it.heightPercent)")\n"
         }
         return s
     }
 
-    // Mirrors dashNormalizeLayout: one full-height tile per page.
+    // Mirrors dashNormalizeLayout: one vertical tile per page.
     var normalizedItems: [DashItem] {
         var rail = false
         var result: [DashItem] = []
@@ -146,6 +148,7 @@ struct DashLayout: Equatable {
                 item.half = false
                 rail = true
             }
+            if !item.vertical || ![50, 75, 100].contains(item.heightPercent) { item.heightPercent = 100 }
             result.append(item)
         }
         return result
@@ -280,7 +283,7 @@ struct DashConfig: Equatable {
         // Byte-identical with dash_layout.cpp's kHeader — `==` between the
         // app's config and the device's echo is a string comparison.
         var s = "# OpenTrailPaper dashboard layout\n"
-        s += "# <field> <small|medium|large|hero> [half|vertical]; 'page' or 'page music' starts a new page\n"
+        s += "# <field> <small|medium|large|hero> [half|vertical] [height=50|75|100]; 'page' or 'page music' starts a new page\n"
         s += "map \(mapFields[0]) \(mapFields[1]) \(mapFields[2])\n"
         for (i, page) in pages.enumerated() {
             if page.isMusic {
@@ -298,7 +301,7 @@ struct DashConfig: Equatable {
                                                  withPad: " ", startingAt: 0)
                     let size = it.size.rawValue.padding(toLength: max(6, it.size.rawValue.count),
                                                         withPad: " ", startingAt: 0)
-                    s += "\(field) \(size)\(it.isVertical ? " vertical" : it.half ? " half" : "")\n"
+                    s += "\(field) \(size)\(it.isVertical ? " vertical" : it.half ? " half" : "")\(it.heightPercent == 100 ? "" : " height=\(it.heightPercent)")\n"
                 }
             }
         }

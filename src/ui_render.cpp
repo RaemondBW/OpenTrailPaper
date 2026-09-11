@@ -837,11 +837,13 @@ void ui_render_radar(const RideState& s, const EpdRect& r, uint8_t* fb) {
     else snprintf(count, sizeof(count), "--");
     ui::text(&Impact_T, cx, r.y + 63, count, fb, EPD_DRAW_ALIGN_CENTER, ink);
     epd_fill_rect({r.x, r.y + 74, r.width, 2}, ui::INK, fb);
-    epd_fill_triangle(r.x + 32, r.y + 91, r.x + 19, r.y + 110,
-                      r.x + 45, r.y + 110, ui::INK, fb);
-    ui::text(&Arial_B, r.x + 58, r.y + 110, "YOU", fb);
-    epd_fill_rect({r.x, r.y + 130, r.width, 2}, ui::INK, fb);
-    const int laneTop = r.y + 148, laneBottom = r.y + r.height - 78;
+    const int riderBottom = r.height < 600 ? 120 : 130;
+    epd_fill_triangle(r.x + 32, r.y + riderBottom - 39, r.x + 19, r.y + riderBottom - 20,
+                      r.x + 45, r.y + riderBottom - 20, ui::INK, fb);
+    ui::text(&Arial_B, r.x + 58, r.y + riderBottom - 20, "YOU", fb);
+    epd_fill_rect({r.x, r.y + riderBottom, r.width, 2}, ui::INK, fb);
+    // Keep zero-distance labels below YOU and far labels above the range legend.
+    const int laneTop = r.y + riderBottom + 34, laneBottom = r.y + r.height - 78;
     const int laneHeight = laneBottom - laneTop;
     epd_fill_rect({r.x + 13, laneTop, 2, laneHeight + 1}, ui::INK, fb);
     for (int i = 1; i <= 3; ++i)
@@ -855,7 +857,7 @@ void ui_render_radar(const RideState& s, const EpdRect& r, uint8_t* fb) {
     // Marks stay at measured distance even when several cars overlap. Labels
     // are suppressed when crowded, nearest first; the header still counts all
     // tracks. Nothing is displaced to imply a distance the radar did not report.
-    int labelBottom = laneTop - 1;
+    int labelBottom = laneTop - 31;
     for (int i = 0; i < radar.count; ++i) {
         const RadarTarget& target = radar.targets[i];
         const int d = target.distanceM < 150 ? target.distanceM : 150;
@@ -914,11 +916,11 @@ void ui_render_dashboard(const RideState& s, bool navActive,
         if (s.showOffline || dashFieldAvailable(src.items[i].field, s))
             L.items[L.count++] = src.items[i];
     }
-    const int contentW = vertical >= 0 ? DASH_VERTICAL_X - ui::GUTTER - ui::CONTENT_X
-                                        : ui::CONTENT_W;
+    const int railHeight = (H - top - 2 * ui::MARGIN + ui::STEP) *
+                           (vertical >= 0 ? src.items[vertical].heightPercent : 100) / 100;
+    const EpdRect rail = {DASH_VERTICAL_X, top + ui::MARGIN - ui::STEP,
+                          DASH_VERTICAL_W, railHeight};
     if (vertical >= 0) {
-        const EpdRect rail = {DASH_VERTICAL_X, top + ui::MARGIN - ui::STEP,
-                              DASH_VERTICAL_W, H - top - 2 * ui::MARGIN + ui::STEP};
         const DashItem& item = src.items[vertical];
         if (item.field == DF_RADAR) ui_render_radar(s, rail, fb);
     }
@@ -983,6 +985,8 @@ void ui_render_dashboard(const RideState& s, bool navActive,
         int rowH = (r == rowCount - 1) ? (H - ui::MARGIN - y)
                                        : availH * rows[r].weight / totalWeight;
         const DashRow& row = rows[r];
+        const int contentW = vertical >= 0 && y < rail.y + rail.height + ui::GUTTER
+                             ? DASH_VERTICAL_X - ui::GUTTER - ui::CONTENT_X : ui::CONTENT_W;
         const int halfW = (contentW - ui::GUTTER) / 2;
         for (int c = 0; c < row.count; ++c) {
             const DashItem& it = L.items[row.first + c];
@@ -1017,8 +1021,7 @@ void ui_render_dashboard(const RideState& s, bool navActive,
     if (vertical >= 0 && src.items[vertical].field != DF_RADAR) {
         const DashItem& item = src.items[vertical];
         Placed& p = placed[placedN++];
-        p.r = {DASH_VERTICAL_X, top + ui::MARGIN - ui::STEP,
-               DASH_VERTICAL_W, H - top - 2 * ui::MARGIN + ui::STEP};
+        p.r = rail;
         p.field = item.field; p.size = item.size; p.hero = false;
         dashFieldValue(p.field, s, p.value, sizeof(p.value), &p.unit);
         p.stale = !dashFieldAvailable(p.field, s) ||

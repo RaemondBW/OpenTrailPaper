@@ -5,6 +5,23 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class RadarLayoutTest {
+    @Test fun `tile heights survive sync and legacy layouts remain full height`() {
+        for (height in listOf(50, 75, 100)) {
+            val text = "speed large\nradar medium half vertical height=$height\n"
+            val layout = DashLayout.parse(text)
+            assertEquals(height, layout.verticalItem?.heightPercent)
+            assertEquals(false, layout.verticalItem?.half)
+            assertEquals(layout, DashLayout.parse(layout.configText))
+            val config = DashConfig.parse(text)
+            assertEquals(height, config.pages[0].layout.verticalItem?.heightPercent)
+            assertEquals(config, DashConfig.parse(config.configText))
+        }
+        assertEquals(100, DashLayout.parse("radar medium").verticalItem?.heightPercent)
+        assertEquals(100, DashLayout.parse("radar medium vertical height=12").verticalItem?.heightPercent)
+        val normalized = DashLayout.parse("speed small height=50\nhr medium vertical height=75\npower medium vertical height=50")
+        assertEquals(listOf(100, 75, 100), normalized.items.map { it.heightPercent })
+    }
+
     @Test fun `radar shares the page with existing numeric rows and round trips`() {
         val config = DashConfig.parse("speed large\nhr medium half\ncadence medium half\nradar medium vertical\npage map\n")
         assertEquals(2, config.pages.size)

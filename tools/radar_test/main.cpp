@@ -1,3 +1,4 @@
+#include <initializer_list>
 #include "radar.h"
 #include "dash_layout.h"
 #include <cassert>
@@ -63,5 +64,22 @@ int main() {
     assert(bad.count == 2 && bad.items[0].vertical && !bad.items[1].vertical);
     assert(dashParsePages("map radar hr clock\nspeed hero\n", pages));
     assert(pages.mapFields[0] == DF_SPEED && pages.mapFields[1] == DF_HEART_RATE);
+    // Height survives both wire formats; old/invalid configs keep full height.
+    for (int height : {50, 75, 100}) {
+        char input[160];
+        snprintf(input, sizeof(input), "speed large\nradar medium half vertical height=%d\n", height);
+        DashLayout sized;
+        assert(dashParse(input, sized) && sized.items[1].heightPercent == height);
+        assert(!sized.items[1].half);
+        assert(dashSerialize(sized, config, sizeof(config)));
+        assert(dashParse(config, bad) && bad.items[1].heightPercent == height);
+        assert(dashParsePages(input, pages));
+        assert(dashSerializePages(pages, config, sizeof(config)));
+        assert(dashParsePages(config, again) && again.pages[0].layout.items[1].heightPercent == height);
+    }
+    assert(dashParse("radar medium vertical height=12\n", bad) && bad.items[0].heightPercent == 100);
+    assert(dashParse("radar medium\n", bad) && bad.items[0].heightPercent == 100);
+    assert(dashParse("speed small height=50\nhr medium vertical height=75\npower medium vertical height=50\n", bad));
+    assert(bad.items[0].heightPercent == 100 && bad.items[1].heightPercent == 75 && bad.items[2].heightPercent == 100);
     puts("Radar protocol and layout tests passed");
 }

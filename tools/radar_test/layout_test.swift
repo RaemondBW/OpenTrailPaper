@@ -16,6 +16,19 @@ import Foundation
         precondition(strip.mapFields == ["speed", "hr", "clock"])
         let only = DashLayout(text: "radar medium\n")
         precondition(only.verticalItem?.field == "radar" && only.rows[0][0].field == "speed")
+        for height in [50, 75, 100] {
+            let text = "speed large\nradar medium half vertical height=\(height)\n"
+            let sized = DashLayout(text: text)
+            precondition(sized.verticalItem?.heightPercent == height && sized.verticalItem?.half == false)
+            precondition(DashLayout(text: sized.configText) == sized)
+            let pages = DashConfig(text: text)
+            precondition(DashConfig(text: pages.configText) == pages)
+            precondition(pages.pages[0].layout.verticalItem?.heightPercent == height)
+        }
+        precondition(only.verticalItem?.heightPercent == 100)
+        precondition(DashLayout(text: "radar medium vertical height=12").verticalItem?.heightPercent == 100)
+        let normalized = DashLayout(text: "speed small height=50\nhr medium vertical height=75\npower medium vertical height=50")
+        precondition(normalized.items.map(\.heightPercent) == [100, 75, 100])
         print("Swift radar layout tests passed")
     }
 }

@@ -365,23 +365,33 @@ private struct DashItemRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(item.fieldLabel).font(TypeScale.bodyStrong).foregroundStyle(Palette.ink)
-            HStack(spacing: 10) {
-                Picker("", selection: $item.size) {
-                    ForEach(DashSize.allCases) { Text($0.label).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .onChange(of: item.size) { changed() }
-                .disabled(item.isVertical)
+            if !item.isVertical {
+                HStack(spacing: 10) {
+                    Picker("", selection: $item.size) {
+                        ForEach(DashSize.allCases) { Text($0.label).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    .onChange(of: item.size) { changed() }
 
-                Toggle(isOn: $item.half) { Text("Half").font(.system(size: 13)) }
-                    .toggleStyle(.button)
-                    .onChange(of: item.half) { changed() }
-                    .disabled(item.isVertical)
+                    Toggle(isOn: $item.half) { Text("Half").font(.system(size: 13)) }
+                        .toggleStyle(.button)
+                        .onChange(of: item.half) { changed() }
+                }
             }
         }
         .padding(.vertical, 4)
+        if item.isVertical {
+            Text("Tile height").font(.footnote).foregroundStyle(Palette.muted)
+            Picker("Tile height", selection: $item.heightPercent) {
+                Text("Half").tag(50)
+                Text("Three-quarter").tag(75)
+                Text("Full").tag(100)
+            }
+            .pickerStyle(.segmented)
+            .onChange(of: item.heightPercent) { changed() }
+        }
         if item.field == "radar" {
-            Text("Full-height traffic tile · pair a Varia in Sensors")
+            Text("Traffic tile · pair a Varia in Sensors")
                 .font(.footnote).foregroundStyle(Palette.muted)
         } else {
             Toggle("Vertical tile", isOn: $item.vertical)
@@ -549,14 +559,15 @@ struct DashPreview: View {
         let total = max(weights.reduce(0, +), 1)
         let gutters = CGFloat(rows.count - 1) * gutter
         let availH = (panelH - statusH - margin) - gutters
-        let mainW = layout.verticalItem == nil ? contentW : 284
-        let halfW = (mainW - gutter) / 2
+        let railH = CGFloat(860 * (layout.verticalItem?.heightPercent ?? 100) / 100)
 
         var out: [Placed] = []
         var y = statusH + margin - step
         for (r, row) in rows.enumerated() {
             let rowH = r == rows.count - 1 ? panelH - margin - y
-                                           : availH * CGFloat(weights[r]) / CGFloat(total)
+                                           : (availH * CGFloat(weights[r]) / CGFloat(total)).rounded(.down)
+            let mainW = layout.verticalItem != nil && y < 76 + railH + gutter ? 284 : contentW
+            let halfW = ((mainW - gutter) / 2).rounded(.down)
             for (c, item) in row.enumerated() {
                 let w = row.count == 2 ? halfW : mainW
                 let x = row.count == 2 ? (c == 0 ? margin : margin + halfW + gutter)
@@ -571,7 +582,7 @@ struct DashPreview: View {
             y += rowH + gutter
         }
         if let item = layout.verticalItem {
-            out.append(Placed(x: 320, y: 76, w: 192, h: 860, item: item, hero: false,
+            out.append(Placed(x: 320, y: 76, w: 192, h: railH, item: item, hero: false,
                               value: kValueLadder.last!, label: kLabelLadder.last!))
         }
         return sized(out)
@@ -663,22 +674,27 @@ struct DashPreview: View {
     }
 
     private func radarSample(k: CGFloat, height: CGFloat) -> some View {
-        ZStack(alignment: .topLeading) {
+        let riderBottom: CGFloat = height < 600 ? 120 : 130
+        let laneTop = riderBottom + 34
+        let laneHeight = height - 78 - laneTop
+        return ZStack(alignment: .topLeading) {
             Text("BEHIND · 2").font(.system(size: 17 * k, weight: .bold))
                 .frame(width: 192 * k, height: 74 * k)
             Rectangle().frame(width: 192 * k, height: 2 * k).offset(y: 74 * k)
             Text("▲  YOU").font(.system(size: 20 * k, weight: .bold))
-                .offset(x: 20 * k, y: 94 * k)
-            Rectangle().frame(width: 2 * k, height: (height - 226) * k)
-                .offset(x: 13 * k, y: 148 * k)
+                .offset(x: 20 * k, y: (riderBottom - 36) * k)
+            Rectangle().frame(width: 2 * k, height: laneHeight * k)
+                .offset(x: 13 * k, y: laneTop * k)
             ForEach([52, 118], id: \.self) { distance in
-                let y = (148 + (height - 226) * CGFloat(distance) / 150) * k
+                let y = (laneTop + laneHeight * CGFloat(distance) / 150) * k
                 Rectangle().strokeBorder(Color.black, lineWidth: 2 * k)
                     .frame(width: 62 * k, height: 22 * k).offset(x: 28 * k, y: y - 11 * k)
-                Text("\(distance)").font(.system(size: 30 * k, weight: .bold))
-                    .frame(width: 80 * k).offset(x: 100 * k, y: y - 22 * k)
-                Text("m").font(.system(size: 14 * k))
-                    .frame(width: 80 * k).offset(x: 100 * k, y: y + 15 * k)
+                if distance == 52 || laneHeight * 66 / 150 > 66 {
+                    Text("\(distance)").font(.system(size: 30 * k, weight: .bold))
+                        .frame(width: 80 * k).offset(x: 100 * k, y: y - 22 * k)
+                    Text("m").font(.system(size: 14 * k))
+                        .frame(width: 80 * k).offset(x: 100 * k, y: y + 15 * k)
+                }
             }
             Text("150 M+").font(.system(size: 14 * k, weight: .bold))
                 .offset(x: 62 * k, y: (height - 31) * k)

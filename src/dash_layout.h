@@ -36,7 +36,7 @@ enum DashField : uint8_t {
     DF_SATELLITES,
     DF_CLOCK,
     DF_ROUTE_LEFT,   // distance remaining on the loaded route
-    DF_RADAR,       // rear traffic, always a full-height vertical tile
+    DF_RADAR,       // rear traffic, always a vertical tile
     DF_COUNT
 };
 
@@ -57,7 +57,8 @@ struct DashItem {
     uint8_t field = DF_SPEED;   // DashField
     uint8_t size = DZ_MEDIUM;   // DashSize
     bool    half = false;       // share its row with the next half field
-    bool    vertical = false;   // full-height right column (one per page)
+    bool    vertical = false;   // right column (one per page)
+    uint8_t heightPercent = 100; // vertical tile height: 50, 75 or 100; default preserves old configs
 };
 
 // 12 is well past what fits legibly on a 540x960 panel (the default uses 5) and

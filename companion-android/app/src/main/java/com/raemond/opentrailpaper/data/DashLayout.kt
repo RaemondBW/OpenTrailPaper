@@ -65,6 +65,7 @@ data class DashItem(
     val vertical: Boolean = false,
     /** Stable across edits, so a reorder animates rather than rebuilding rows. */
     val key: Long = nextKey++,
+    val heightPercent: Int = 100,
 ) {
     // `this.` is load-bearing: inside a property accessor the bare name `field`
     // is Kotlin's backing-field keyword, not this class's `field` property, and
@@ -90,10 +91,11 @@ data class DashLayout(val items: List<DashItem>) {
     val normalizedItems: List<DashItem>
         get() {
             var rail = false
-            return items.take(MAX_ITEMS).mapNotNull { item ->
+            return items.take(MAX_ITEMS).mapNotNull { original ->
+                val item = original.copy(heightPercent = if (original.isVertical && original.heightPercent in listOf(50, 75, 100)) original.heightPercent else 100)
                 if (!item.isVertical) item
                 else if (rail && item.field == "radar") null
-                else item.copy(vertical = !rail, half = false).also { rail = true }
+                else item.copy(vertical = !rail, half = false, heightPercent = if (rail) 100 else item.heightPercent).also { rail = true }
             }
         }
     val verticalItem: DashItem? get() = normalizedItems.firstOrNull { it.vertical }
@@ -106,13 +108,14 @@ data class DashLayout(val items: List<DashItem>) {
     val configText: String
         get() = buildString {
             append("# OpenTrailPaper dashboard layout\n")
-            append("# <field> <small|medium|large|hero> [half]\n")
+            append("# <field> <small|medium|large|hero> [half|vertical] [height=50|75|100]\n")
             append("# 'half' shares the row with the next 'half' field.\n")
             for (it in normalizedItems) {
                 append(it.field.padEnd(10))
                 append(' ')
                 append(it.size.token.padEnd(6))
                 if (it.isVertical) append(" vertical") else if (it.half) append(" half")
+                if (it.heightPercent != 100) append(" height=${it.heightPercent}")
                 append('\n')
             }
         }
@@ -168,7 +171,8 @@ data class DashLayout(val items: List<DashItem>) {
                 if (DashField.named(first) == null) continue
                 val size = tok.getOrNull(1)?.let { DashSize.fromToken(it) } ?: DashSize.MEDIUM
                 val half = tok.drop(1).any { it == "half" }
-                out.add(DashItem(first, size, half, vertical = tok.drop(1).contains("vertical")))
+                out.add(DashItem(first, size, half, vertical = tok.drop(1).contains("vertical"),
+                    heightPercent = tok.drop(1).mapNotNull { mapOf("height=50" to 50, "height=75" to 75, "height=100" to 100)[it] }.lastOrNull() ?: 100))
                 if (out.size >= MAX_ITEMS) break
             }
             return DashLayout(DashLayout(out).normalizedItems)
@@ -269,7 +273,7 @@ data class DashConfig(
     val configText: String
         get() = buildString {
             append("# OpenTrailPaper dashboard layout\n")
-            append("# <field> <small|medium|large|hero> [half|vertical]; 'page' or 'page music' starts a new page\n")
+            append("# <field> <small|medium|large|hero> [half|vertical] [height=50|75|100]; 'page' or 'page music' starts a new page\n")
             append("map ${mapFields[0]} ${mapFields[1]} ${mapFields[2]}\n")
             pages.forEachIndexed { i, page ->
                 when {
@@ -284,6 +288,7 @@ data class DashConfig(
                         append(' ')
                         append(it.size.token.padEnd(6))
                         if (it.isVertical) append(" vertical") else if (it.half) append(" half")
+                        if (it.heightPercent != 100) append(" height=${it.heightPercent}")
                         append('\n')
                     }
                 }

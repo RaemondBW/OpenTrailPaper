@@ -100,6 +100,8 @@ void dashNormalizeLayout(DashLayout& layout) {
             item.half = false;
             hasVertical = true;
         }
+        if (!item.vertical || (item.heightPercent != 50 && item.heightPercent != 75))
+            item.heightPercent = 100;
         layout.items[n++] = item;
     }
     layout.count = n;
@@ -118,11 +120,11 @@ bool dashParse(const char* text, DashLayout& out) {
         while (cut < lineEnd && *cut != '#') ++cut;
 
         // Field, size and placement tokens (vertical overrides half).
-        const char* tok[4] = {nullptr, nullptr, nullptr, nullptr};
-        size_t tokLen[4] = {0, 0, 0, 0};
+        const char* tok[5] = {};
+        size_t tokLen[5] = {};
         int ntok = 0;
         const char* q = p;
-        while (q < cut && ntok < 4) {
+        while (q < cut && ntok < 5) {
             while (q < cut && (*q == ' ' || *q == '\t' || *q == '\r')) ++q;
             if (q >= cut) break;
             const char* start = q;
@@ -151,6 +153,11 @@ bool dashParse(const char* text, DashLayout& out) {
                     if (tokenEq(tok[i], tokLen[i], "half")) it.half = true;
                 for (int i = 1; i < ntok; ++i)
                     if (tokenEq(tok[i], tokLen[i], "vertical")) it.vertical = true;
+                for (int i = 1; i < ntok; ++i) {
+                    if (tokenEq(tok[i], tokLen[i], "height=50")) it.heightPercent = 50;
+                    if (tokenEq(tok[i], tokLen[i], "height=75")) it.heightPercent = 75;
+                    if (tokenEq(tok[i], tokLen[i], "height=100")) it.heightPercent = 100;
+                }
                 out.items[out.count++] = it;
             }
         }
@@ -174,8 +181,9 @@ bool serializeItems(const DashLayout& input, char* out, size_t cap, size_t& n) {
     for (int i = 0; i < layout.count; ++i) {
         const DashItem& it = layout.items[i];
         if (it.field >= DF_COUNT || it.size >= DZ_COUNT) continue;
-        int w = snprintf(out + n, cap - n, "%-10s %-6s%s\n", dashFieldId(it.field),
-                         dashSizeId(it.size), it.vertical ? " vertical" : it.half ? " half" : "");
+        int w = snprintf(out + n, cap - n, "%-10s %-6s%s%s\n", dashFieldId(it.field),
+                         dashSizeId(it.size), it.vertical ? " vertical" : it.half ? " half" : "",
+                         it.heightPercent == 50 ? " height=50" : it.heightPercent == 75 ? " height=75" : "");
         if (w < 0 || (size_t)w >= cap - n) return false;
         n += (size_t)w;
     }
@@ -186,7 +194,7 @@ bool serializeItems(const DashLayout& input, char* out, size_t cap, size_t& n) {
 // budget matters more than prose — the format is documented in dash_layout.h.
 const char kHeader[] =
     "# OpenTrailPaper dashboard layout\n"
-    "# <field> <small|medium|large|hero> [half|vertical]; 'page' or 'page music' starts a new page\n";
+    "# <field> <small|medium|large|hero> [half|vertical] [height=50|75|100]; 'page' or 'page music' starts a new page\n";
 
 }  // namespace
 
@@ -229,12 +237,12 @@ bool dashParsePages(const char* text, DashPages& out) {
         const char* cut = p;
         while (cut < lineEnd && *cut != '#') ++cut;
 
-        // 4 tokens: `map` carries three field ids after its keyword.
-        const char* tok[4] = {nullptr, nullptr, nullptr, nullptr};
-        size_t tokLen[4] = {0, 0, 0, 0};
+        // Field, size, half, vertical and optional height; map uses four tokens.
+        const char* tok[5] = {};
+        size_t tokLen[5] = {};
         int ntok = 0;
         const char* q = p;
-        while (q < cut && ntok < 4) {
+        while (q < cut && ntok < 5) {
             while (q < cut && (*q == ' ' || *q == '\t' || *q == '\r')) ++q;
             if (q >= cut) break;
             const char* start = q;
@@ -276,6 +284,11 @@ bool dashParsePages(const char* text, DashPages& out) {
                     if (tokenEq(tok[i], tokLen[i], "half")) it.half = true;
                 for (int i = 1; i < ntok; ++i)
                     if (tokenEq(tok[i], tokLen[i], "vertical")) it.vertical = true;
+                for (int i = 1; i < ntok; ++i) {
+                    if (tokenEq(tok[i], tokLen[i], "height=50")) it.heightPercent = 50;
+                    if (tokenEq(tok[i], tokLen[i], "height=75")) it.heightPercent = 75;
+                    if (tokenEq(tok[i], tokLen[i], "height=100")) it.heightPercent = 100;
+                }
                 cur.layout.items[cur.layout.count++] = it;
             }
         }

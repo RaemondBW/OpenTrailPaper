@@ -7,8 +7,11 @@ rides, just as it does for heart-rate and power sensors. **Forget** removes the
 pairing. The phone is not needed after pairing.
 
 In the phone's dashboard editor, add **Radar** to a data page and save it to the
-head unit. The radar occupies a full-height tile on the right; existing fields
-pack on the left. A numeric field can also be given **Vertical tile** placement.
+head unit. Choose **Tile height**: **Half**, **Three-quarter**, or **Full** (the default).
+The radar sits at the top right and uses that fraction of the available dashboard
+height, including when navigation reduces the available area. Fields beside it
+pack on the left; rows starting below the tile expand across the page. A numeric
+field can also be given **Vertical tile** placement.
 Only one vertical tile is allowed per page. Remove it or turn off its vertical
 placement before adding a different one. A page containing only the radar shows
 speed beside it.
@@ -54,16 +57,22 @@ change the radar's light settings or add audio alerts.
 
 ## Config and implementation
 
-The existing dashboard text format gains `vertical` alongside `half`:
+The dashboard text format supports `vertical` alongside `half`, plus optional
+`height=50`, `height=75`, or `height=100` for vertical tiles:
 
 ```
 speed      large
 power3s    medium
 hr         medium
 ridetime   medium
-radar      medium vertical
+radar      medium vertical height=50
 page map
 ```
+
+Missing or unsupported heights default to full height, preserving older configs.
+Height is ignored for ordinary rows. Numeric vertical tiles have the same height
+control. Short radar tiles compress the distance lane while retaining the full
+150 m scale and count; overlapping labels favor the nearest vehicle.
 
 Radar is always vertical, including a bare `radar` line. First vertical wins;
 additional numeric vertical fields fall back to full-width rows, and duplicate
@@ -87,7 +96,8 @@ and unsigned timestamps handle fragmented messages and millis rollover.
   streams, rollover, target bounds, config round trips and legacy configs.
 - Android `:app:testDebugUnitTest` includes matching `RadarLayoutTest` cases.
 - `sh tools/preview/render_preview.sh`: real renderer previews for traffic,
-  clear, no signal, offline, imperial and eight crowded targets with navigation.
+  clear, no signal, offline, imperial and eight crowded targets with navigation,
+  plus half/three-quarter tiles and minimum-height navigation range endpoints.
 - Both companion app builds and `pio run -e t5s3-painter` validate integration.
 - Hardware follow-up: pair the actual Varia, verify recorded packet distances,
   drive targets in demo mode, turn the radar off/on, check simultaneous HR/power/
