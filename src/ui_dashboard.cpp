@@ -1068,10 +1068,11 @@ void leaveList() {
 }
 
 const char* kindsText(uint8_t mask) {
-    switch (mask & 0x7) {
+    switch (mask & 0xf) {
         case 1: return "heart rate";
         case 2: return "power";
         case 3: return "HR + power";
+        case 8: return "radar";
         case 4: return "cadence";
         case 6: return "power + cadence";
         case 7: return "HR + power + cadence";
@@ -1082,10 +1083,11 @@ const char* kindsText(uint8_t mask) {
 // Compact kind label for the Sensors row subtitle (must stay short so the row
 // fits the screen width).
 const char* shortKinds(uint8_t mask) {
-    switch (mask & 0x7) {
+    switch (mask & 0xf) {
         case 1: return "HR";
         case 2: return "Power";
         case 3: return "HR+Power";
+        case 8: return "Radar";
         case 4: return "Cadence";
         case 5: return "HR+Cadence";
         case 6: return "Power+Cad";
@@ -1572,6 +1574,7 @@ static long agnssRxRemaining = 0;
 constexpr int KIND_ALL = -1, KIND_BAD = -2;
 static int sensorKindArg(const char* a) {
     if (!a) return KIND_BAD;
+    if (!strcasecmp(a, "radar") || !strcasecmp(a, "varia")) return ble_sensors::KIND_RADAR;
     if (!strcasecmp(a, "all")) return KIND_ALL;
     if (!strcasecmp(a, "hr") || !strcasecmp(a, "heart")) return ble_sensors::KIND_HR;
     if (!strcasecmp(a, "power") || !strcasecmp(a, "pwr")) return ble_sensors::KIND_POWER;
@@ -1736,7 +1739,7 @@ static void printSensorReport() {
                       cs[i].connected ? "CONNECTED " : "",
                       cs[i].name);
     }
-    Serial.println("[sensors] 'disconnect <hr|power|cadence|all>' drops a link, "
+    Serial.println("[sensors] 'disconnect <hr|power|cadence|radar|all>' drops a link, "
                    "'forget <kind|mac|all>' unpairs for good");
 }
 
@@ -1773,8 +1776,8 @@ static void printConsoleHelp() {
     Serial.println("  sensorsleep [on|off] sensor-link sleep experiment, this boot; status without argument");
     Serial.println("  sleepexp [on|off]    re-arm the light-sleep-with-phone experiment (this boot)");
     Serial.println("  scan <on|off>        force the sensor scan (what the Sensors screen does)");
-    Serial.println("  disconnect <kind>    drop the link (hr|power|cadence|all); stays paired");
-    Serial.println("  forget <kind|mac>    unpair and drop (hr|power|cadence|all|aa:bb:..)");
+    Serial.println("  disconnect <kind>    drop the link (hr|power|cadence|radar|all); stays paired");
+    Serial.println("  forget <kind|mac>    unpair and drop (hr|power|cadence|radar|all|aa:bb:..)");
     Serial.println("  bootloader           reboot into download mode for flashing");
     Serial.println("  reboot               restart the device");
     Serial.println("  timing               toggle frame-timing logs");
@@ -1989,7 +1992,7 @@ static void runConsoleLine(char* line) {
     } else if (!strcasecmp(cmd, "disconnect")) {
         int want = sensorKindArg(arg);
         if (want == KIND_BAD) {
-            Serial.println("[cmd] disconnect <hr|power|cadence|all>");
+            Serial.println("[cmd] disconnect <hr|power|cadence|radar|all>");
             return;
         }
         ble_sensors::Link ls[ble_sensors::KIND_COUNT];
@@ -2020,7 +2023,7 @@ static void runConsoleLine(char* line) {
         }
         int want = sensorKindArg(arg);
         if (!arg) {
-            Serial.println("[cmd] forget <hr|power|cadence|all|phone|aa:bb:..>");
+            Serial.println("[cmd] forget <hr|power|cadence|radar|all|phone|aa:bb:..>");
         } else if (want == KIND_ALL) {
             ble_sensors::forgetAll();
             Serial.println("[sensors] every pairing cleared");
@@ -2642,6 +2645,7 @@ void task(void*) {
             // Generous window: power meters are quiet when you stop pedalling.
             constexpr uint32_t kSensorStaleMs = 15000;
             const uint32_t nowMs = millis();
+            radarExpire(s.radar, nowMs);
             if (s.powerConnected && nowMs - s.powerMs > kSensorStaleMs)
                 s.powerConnected = false;
             if (s.hrConnected && nowMs - s.hrMs > kSensorStaleMs)
@@ -2734,6 +2738,7 @@ void task(void*) {
                     m.hr = s.hrConnected;
                     m.pwr = s.powerConnected;
                     m.cad = s.cadenceConnected;
+                    m.radar = s.radar.connected;
                     m.batteryPercent = s.batteryPercent;
                     m.rideDistanceM = s.distanceM;
                     m.rideElapsedS = s.elapsedS;

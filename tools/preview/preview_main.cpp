@@ -268,6 +268,38 @@ int main(int argc, char** argv) {
     ui_render_dashboard(s, false, dashDefaultLayout(), fb.data());
     emit("dashboard.png");
 
+    // Radar reference: one full-height rail beside ordinary ride fields.
+    {
+        DashLayout radarLayout;
+        dashParse("speed large\npower3s medium\nhr medium\nridetime medium\nradar medium vertical\n", radarLayout);
+        RideState st = s;
+        st.showOffline = true;
+        st.radar.connected = st.radar.received = st.radar.live = true;
+        st.radar.count = 3;
+        st.radar.targets[0] = {1, 28, 1000};
+        st.radar.targets[1] = {2, 70, 1000};
+        st.radar.targets[2] = {3, 118, 1000};
+        clearWhite(fb.data()); ui_render_dashboard(st, false, radarLayout, fb.data()); emit("radar_traffic.png");
+        st.useMiles = true;
+        clearWhite(fb.data()); ui_render_dashboard(st, false, radarLayout, fb.data()); emit("radar_imperial.png");
+        st.useMiles = false;
+        st.radar.count = 8;
+        for (int i = 0; i < 8; ++i) st.radar.targets[i] = {uint8_t(i), uint8_t(21 + i * 2), 1000};
+        clearWhite(fb.data()); ui_render_dashboard(st, true, radarLayout, fb.data());
+        ui_render_nav_banner("LEFT ONTO QUEENSFERRY RD", 400, false, fb.data());
+        emit("radar_crowded_nav.png");
+        st.radar.count = 0;
+        clearWhite(fb.data()); ui_render_dashboard(st, false, radarLayout, fb.data()); emit("radar_clear.png");
+        DashLayout numeric;
+        dashParse("speed large\npower3s medium\nhr medium\nridetime medium vertical\n", numeric);
+        clearWhite(fb.data()); ui_render_dashboard(st, false, numeric, fb.data()); emit("dashboard_vertical.png");
+        st.radar.live = false;
+        clearWhite(fb.data()); ui_render_dashboard(st, false, radarLayout, fb.data()); emit("radar_no_signal.png");
+        st.radar.connected = false;
+        st.showOffline = false;
+        clearWhite(fb.data()); ui_render_dashboard(st, false, radarLayout, fb.data()); emit("radar_offline.png");
+    }
+
     // Dashboard in imperial units, no power meter (speed hero)
     {
         RideState sm = s;

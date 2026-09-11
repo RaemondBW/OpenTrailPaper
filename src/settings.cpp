@@ -1,4 +1,5 @@
 #include "settings.h"
+#include "ble_sensors.h"
 #include <string.h>
 
 #include <Arduino.h>
@@ -31,9 +32,9 @@ bool wkPauseStep = false;
 // Per kind, a ';'-separated list of paired addresses, most recent first (max
 // SENSOR_MAX_PAIRED). Stored under the same NVS key as the old single address,
 // which parses as a one-entry list — no migration.
-char addrs[3][settings::SENSOR_MAX_PAIRED * 18 + 4] = {"", "", ""};
-char addrScratch[3][18];   // sensorAddr()/sensorAddrAt() return into these
-char names[3][32] = {"", "", ""};   // remembered vendor/model per paired kind
+char addrs[ble_sensors::KIND_COUNT][settings::SENSOR_MAX_PAIRED * 18 + 4] = {};
+char addrScratch[ble_sensors::KIND_COUNT][18];   // sensorAddr()/sensorAddrAt() return into these
+char names[ble_sensors::KIND_COUNT][32] = {};   // remembered vendor/model per paired kind
 double lastLat = 0, lastLon = 0;
 bool rtcSynced = false;  // has GPS ever written UTC to the coin-cell RTC?
 // Mesh messaging, OFF until the rider turns it on. Joining a public mesh means
@@ -57,8 +58,8 @@ int8_t  meshTxDbm = 0;
 uint8_t meshSlot = 0;
 char meshLong[40] = "";
 char meshShort[8] = "";
-const char* KEYS[3] = {"sens_hr", "sens_pwr", "sens_cad"};
-const char* NAME_KEYS[3] = {"snm_hr", "snm_pwr", "snm_cad"};
+const char* KEYS[ble_sensors::KIND_COUNT] = {"sens_hr", "sens_pwr", "sens_cad", "sens_rdr"};
+const char* NAME_KEYS[ble_sensors::KIND_COUNT] = {"snm_hr", "snm_pwr", "snm_cad", "snm_rdr"};
 
 }  // namespace
 
@@ -79,7 +80,7 @@ void begin() {
     showOff = prefs.getBool("showoff", true);
     autoPause = prefs.getInt("apause", 10);
     wkPauseStep = prefs.getBool("wkpstep", false);
-    for (int k = 0; k < 3; ++k) {
+    for (int k = 0; k < ble_sensors::KIND_COUNT; ++k) {
         prefs.getString(KEYS[k], addrs[k], sizeof(addrs[k]));
         prefs.getString(NAME_KEYS[k], names[k], sizeof(names[k]));
     }
@@ -108,8 +109,8 @@ void begin() {
     meshSlot = prefs.getUChar("meshslot", 0);
     prefs.getString("meshlong", meshLong, sizeof(meshLong));
     prefs.getString("meshshort", meshShort, sizeof(meshShort));
-    Serial.printf("[cfg] ftp=%dW tz=%dmin sensors=[%s|%s|%s]\n", ftp, tz,
-                  addrs[0], addrs[1], addrs[2]);
+    Serial.printf("[cfg] ftp=%dW tz=%dmin sensors=[%s|%s|%s|%s]\n", ftp, tz,
+                  addrs[0], addrs[1], addrs[2], addrs[3]);
 }
 
 int ftpWatts() { return ftp; }
@@ -195,13 +196,13 @@ static void joinAddrs(int kind, char in[][18], int n) {
 }
 
 int sensorAddrCount(int kind) {
-    if (kind < 0 || kind >= 3) return 0;
+    if (kind < 0 || kind >= ble_sensors::KIND_COUNT) return 0;
     char list[SENSOR_MAX_PAIRED][18];
     return splitAddrs(kind, list);
 }
 
 const char* sensorAddrAt(int kind, int i) {
-    if (kind < 0 || kind >= 3) return "";
+    if (kind < 0 || kind >= ble_sensors::KIND_COUNT) return "";
     char list[SENSOR_MAX_PAIRED][18];
     int n = splitAddrs(kind, list);
     if (i < 0 || i >= n) return "";
@@ -212,7 +213,7 @@ const char* sensorAddrAt(int kind, int i) {
 const char* sensorAddr(int kind) { return sensorAddrAt(kind, 0); }
 
 bool sensorPaired(int kind, const char* addr) {
-    if (kind < 0 || kind >= 3 || !addr || !addr[0]) return false;
+    if (kind < 0 || kind >= ble_sensors::KIND_COUNT || !addr || !addr[0]) return false;
     char list[SENSOR_MAX_PAIRED][18];
     int n = splitAddrs(kind, list);
     for (int i = 0; i < n; ++i)
@@ -221,7 +222,7 @@ bool sensorPaired(int kind, const char* addr) {
 }
 
 void addSensorAddr(int kind, const char* addr) {
-    if (kind < 0 || kind >= 3 || !addr || !addr[0] || strlen(addr) >= 18) return;
+    if (kind < 0 || kind >= ble_sensors::KIND_COUNT || !addr || !addr[0] || strlen(addr) >= 18) return;
     char list[SENSOR_MAX_PAIRED][18];
     int n = splitAddrs(kind, list);
     // Move-to-front: the newest pairing is the first the scanner reports and
@@ -235,7 +236,7 @@ void addSensorAddr(int kind, const char* addr) {
 }
 
 void removeSensorAddr(int kind, const char* addr) {
-    if (kind < 0 || kind >= 3 || !addr) return;
+    if (kind < 0 || kind >= ble_sensors::KIND_COUNT || !addr) return;
     char list[SENSOR_MAX_PAIRED][18];
     int n = splitAddrs(kind, list);
     char next[SENSOR_MAX_PAIRED][18];
@@ -246,17 +247,17 @@ void removeSensorAddr(int kind, const char* addr) {
 }
 
 void clearSensorAddrs(int kind) {
-    if (kind < 0 || kind >= 3) return;
+    if (kind < 0 || kind >= ble_sensors::KIND_COUNT) return;
     addrs[kind][0] = 0;
     prefs.putString(KEYS[kind], "");
 }
 
 const char* sensorName(int kind) {
-    return (kind >= 0 && kind < 3) ? names[kind] : "";
+    return (kind >= 0 && kind < ble_sensors::KIND_COUNT) ? names[kind] : "";
 }
 
 void setSensorName(int kind, const char* name) {
-    if (kind < 0 || kind >= 3 || !name || !name[0]) return;
+    if (kind < 0 || kind >= ble_sensors::KIND_COUNT || !name || !name[0]) return;
     snprintf(names[kind], sizeof(names[kind]), "%s", name);
     prefs.putString(NAME_KEYS[kind], names[kind]);
 }

@@ -101,7 +101,7 @@ fun SensorsSheet(ble: BleManager, onDismiss: () -> Unit) {
             if (available.isEmpty()) {
                 Text(
                     if (ble.scanningSensors) {
-                        "Wake your sensor (spin the cranks / touch the strap)."
+                        "Wake your sensor (spin the cranks / touch the strap), or put your Varia in Bluetooth pairing mode."
                     } else {
                         "Tap Scan to search for nearby sensors."
                     },

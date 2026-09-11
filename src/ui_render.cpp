@@ -208,6 +208,11 @@ void statusBar(const RideState& s, uint8_t* fb, const char* title) {
         if (!title) text(&Arial_L, x, 40, " · PWR", fb);
         x += textWidth(&Arial_L, " · PWR");
     }
+    if (!title && s.radar.connected && !s.ridePaused) {
+        const char* label = s.radar.live ? " · RDR" : " · RDR?";
+        if (x + textWidth(&Arial_L, label) < W - 132)
+            text(&Arial_L, x, 40, label, fb);
+    }
     // Auto-pause: the frozen ride timer is the real signal, but a frozen number
     // needs a caption or it reads as a hang. Same label cluster as HR/PWR.
     if (s.ridePaused) {
@@ -814,6 +819,66 @@ void dashCell(int x0, int y0, int x1, int y1, const char* labelStr,
 // plain file-static because only the UI task ever renders.
 bool g_dashToned = false;
 
+void ui_render_radar(const RideState& s, const EpdRect& r, uint8_t* fb) {
+    const RadarState& radar = s.radar;
+    const int cx = r.x + r.width / 2;
+    const bool live = radar.connected && radar.live;
+    const bool near = live && radar.count && radar.targets[0].distanceM < 40;
+    epd_fill_rect(r, ui::PAPER, fb);
+    epd_draw_rect(r, ui::INK, fb);
+    epd_draw_rect({r.x + 1, r.y + 1, r.width - 2, r.height - 2}, ui::INK, fb);
+    if (near) epd_fill_rect({r.x + 2, r.y + 2, r.width - 4, 72}, ui::INK, fb);
+    const uint8_t ink = near ? ui::PAPER : ui::INK;
+    const char* title = !radar.connected ? "OFFLINE" : !live ? "NO SIGNAL"
+                         : !radar.count ? "ALL CLEAR" : near ? "CAR BACK" : "BEHIND";
+    ui::label(cx, r.y + 25, title, fb, ink);
+    char count[8];
+    if (live) snprintf(count, sizeof(count), "%u", radar.count);
+    else snprintf(count, sizeof(count), "--");
+    ui::text(&Impact_T, cx, r.y + 63, count, fb, EPD_DRAW_ALIGN_CENTER, ink);
+    epd_fill_rect({r.x, r.y + 74, r.width, 2}, ui::INK, fb);
+    epd_fill_triangle(r.x + 32, r.y + 91, r.x + 19, r.y + 110,
+                      r.x + 45, r.y + 110, ui::INK, fb);
+    ui::text(&Arial_B, r.x + 58, r.y + 110, "YOU", fb);
+    epd_fill_rect({r.x, r.y + 130, r.width, 2}, ui::INK, fb);
+    const int laneTop = r.y + 148, laneBottom = r.y + r.height - 78;
+    const int laneHeight = laneBottom - laneTop;
+    epd_fill_rect({r.x + 13, laneTop, 2, laneHeight + 1}, ui::INK, fb);
+    for (int i = 1; i <= 3; ++i)
+        epd_fill_rect({r.x + 5, laneTop + laneHeight * i / 3, 10, 2}, ui::INK, fb);
+    ui::label(cx, r.y + r.height - 17, s.useMiles ? "164 YD+" : "150 M+", fb);
+    if (!live) {
+        ui::label(cx, laneTop + laneHeight / 2, "CHECK", fb);
+        ui::label(cx, laneTop + laneHeight / 2 + 25, "RADAR", fb);
+        return;
+    }
+    // Marks stay at measured distance even when several cars overlap. Labels
+    // are suppressed when crowded, nearest first; the header still counts all
+    // tracks. Nothing is displaced to imply a distance the radar did not report.
+    int labelBottom = laneTop - 1;
+    for (int i = 0; i < radar.count; ++i) {
+        const RadarTarget& target = radar.targets[i];
+        const int d = target.distanceM < 150 ? target.distanceM : 150;
+        const int y = laneTop + laneHeight * d / 150;
+        const EpdRect car = {r.x + 28, y - 11, 62, 22};
+        if (target.distanceM < 40) epd_fill_rect(car, ui::INK, fb);
+        else {
+            epd_fill_rect(car, ui::PAPER, fb);
+            if (target.distanceM <= 100) ui::fillTone(car, ui::TONE_25, fb);
+            epd_draw_rect(car, ui::INK, fb);
+            epd_draw_rect({car.x + 1, car.y + 1, car.width - 2, car.height - 2}, ui::INK, fb);
+        }
+        epd_fill_rect({r.x + 13, y, 14, 2}, ui::INK, fb);
+        if (y - 30 <= labelBottom) continue;
+        char distance[16];
+        const int value = s.useMiles ? int(target.distanceM * 1.0936133f + 0.5f) : target.distanceM;
+        snprintf(distance, sizeof(distance), "%d", value);
+        ui::text(&Impact_T, r.x + 140, y + 8, distance, fb, EPD_DRAW_ALIGN_CENTER);
+        ui::text(&Arial_L, r.x + 140, y + 29, s.useMiles ? "yd" : "m", fb, EPD_DRAW_ALIGN_CENTER);
+        labelBottom = y + 36;
+    }
+}
+
 void ui_render_dashboard(const RideState& s, bool navActive,
                          const DashLayout& layout, uint8_t* fb) {
     const int W = epd_rotated_display_width();
@@ -827,7 +892,8 @@ void ui_render_dashboard(const RideState& s, bool navActive,
     // the fields pack into whatever is left rather than being drawn over it.
     const int top = ui::STATUS_H + (navActive ? 138 : 0);
 
-    const DashLayout& src = layout.count > 0 ? layout : dashDefaultLayout();
+    DashLayout src = layout.count > 0 ? layout : dashDefaultLayout();
+    dashNormalizeLayout(src);
 
     // --- Drop fields with nothing behind them ----------------------------
     // A configured field whose sensor is not paired is REMOVED, and what is
@@ -840,9 +906,22 @@ void ui_render_dashboard(const RideState& s, bool navActive,
     // caption is the only clue, and nobody reads the caption on a number they
     // check at 30 km/h.
     DashLayout L;
-    for (int i = 0; i < src.count; ++i)
+    int vertical = -1;
+    for (int i = 0; i < src.count; ++i) {
+        // Vertical tiles never disappear on disconnect: no-signal is useful
+        // information and the traffic lane must not jump between layouts.
+        if (src.items[i].vertical) { vertical = i; continue; }
         if (s.showOffline || dashFieldAvailable(src.items[i].field, s))
             L.items[L.count++] = src.items[i];
+    }
+    const int contentW = vertical >= 0 ? DASH_VERTICAL_X - ui::GUTTER - ui::CONTENT_X
+                                        : ui::CONTENT_W;
+    if (vertical >= 0) {
+        const EpdRect rail = {DASH_VERTICAL_X, top + ui::MARGIN - ui::STEP,
+                              DASH_VERTICAL_W, H - top - 2 * ui::MARGIN + ui::STEP};
+        const DashItem& item = src.items[vertical];
+        if (item.field == DF_RADAR) ui_render_radar(s, rail, fb);
+    }
 
     // Everything configured is unavailable — a fresh device with a power-only
     // layout and no sensors yet. Speed always has a source, so the panel shows
@@ -904,7 +983,7 @@ void ui_render_dashboard(const RideState& s, bool navActive,
         int rowH = (r == rowCount - 1) ? (H - ui::MARGIN - y)
                                        : availH * rows[r].weight / totalWeight;
         const DashRow& row = rows[r];
-        const int halfW = (ui::CONTENT_W - ui::GUTTER) / 2;
+        const int halfW = (contentW - ui::GUTTER) / 2;
         for (int c = 0; c < row.count; ++c) {
             const DashItem& it = L.items[row.first + c];
             Placed& p = placed[placedN++];
@@ -915,7 +994,7 @@ void ui_render_dashboard(const RideState& s, bool navActive,
                 p.r.width = halfW;
             } else {
                 p.r.x = ui::CONTENT_X;
-                p.r.width = ui::CONTENT_W;
+                p.r.width = contentW;
             }
             p.field = it.field;
             p.size = it.size;
@@ -931,6 +1010,20 @@ void ui_render_dashboard(const RideState& s, bool navActive,
             if (p.stale) g_dashToned = true;
         }
         y += rowH + ui::GUTTER;
+    }
+
+    // Numeric vertical tiles take part in the same font sizing pass as the
+    // other cells, matching both companion previews. Radar has its own drawing.
+    if (vertical >= 0 && src.items[vertical].field != DF_RADAR) {
+        const DashItem& item = src.items[vertical];
+        Placed& p = placed[placedN++];
+        p.r = {DASH_VERTICAL_X, top + ui::MARGIN - ui::STEP,
+               DASH_VERTICAL_W, H - top - 2 * ui::MARGIN + ui::STEP};
+        p.field = item.field; p.size = item.size; p.hero = false;
+        dashFieldValue(p.field, s, p.value, sizeof(p.value), &p.unit);
+        p.stale = !dashFieldAvailable(p.field, s) ||
+                  (p.value[0] == '-' && p.value[1] == '-');
+        if (p.stale) g_dashToned = true;
     }
 
     // Smallest face any cell of each (size class, width) needs.
@@ -1375,13 +1468,17 @@ void ui_render_menu(const MenuInfo& m, uint8_t* fb) {
                  units::distM(m.rideDistanceM, m.useMiles),
                  m.useMiles ? "mi" : "km");
     } else {
-        int n = (m.hr ? 1 : 0) + (m.pwr ? 1 : 0) + (m.cad ? 1 : 0);
+        int n = (m.hr ? 1 : 0) + (m.pwr ? 1 : 0) + (m.cad ? 1 : 0) + (m.radar ? 1 : 0);
         snprintf(startSub, sizeof(startSub), "%s · %d sensor%s connected",
                  m.gpsReady ? "GPS ready" : "waiting for GPS", n,
                  n == 1 ? "" : "s");
     }
-    snprintf(sensorSub, sizeof(sensorSub), "HR %s · Power %s · Cadence %s",
-             m.hr ? "OK" : "--", m.pwr ? "OK" : "--", m.cad ? "OK" : "--");
+    if (m.radar)
+        snprintf(sensorSub, sizeof(sensorSub), "HR %s · PWR %s · CAD %s · RDR OK",
+                 m.hr ? "OK" : "--", m.pwr ? "OK" : "--", m.cad ? "OK" : "--");
+    else
+        snprintf(sensorSub, sizeof(sensorSub), "HR %s · Power %s · Cadence %s",
+                 m.hr ? "OK" : "--", m.pwr ? "OK" : "--", m.cad ? "OK" : "--");
     if (m.sdOk) snprintf(historySub, sizeof(historySub), "%d ride%s on card",
                          m.rideCount, m.rideCount == 1 ? "" : "s");
     else snprintf(historySub, sizeof(historySub), "no SD card");

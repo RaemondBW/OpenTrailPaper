@@ -279,7 +279,7 @@ fun DashboardEditorSheet(ble: BleManager, onDismiss: () -> Unit) {
 
                         Text(
                             "Long-press the handle to reorder. “Half width” pairs a field with " +
-                                "the next half-width field; on its own it spans the row.",
+                                "the next half-width field; on its own it spans the row. One vertical tile can occupy the right side of each page.",
                             style = barlow(12.sp),
                             color = Palette.muted,
                         )
@@ -311,9 +311,10 @@ fun DashboardEditorSheet(ble: BleManager, onDismiss: () -> Unit) {
 
     if (showAdd) {
         FieldPickerSheet(
+            allowRadar = config.pages.getOrNull(pageIx)?.layout?.verticalItem == null,
             onDismiss = { showAdd = false },
             onPick = { id ->
-                mutateAt(pageIx) { l -> DashLayout(l.items + DashItem(id, DashSize.MEDIUM, true)) }
+                mutateAt(pageIx) { l -> DashLayout(l.items + DashItem(id, DashSize.MEDIUM, id != "radar", vertical = id == "radar")) }
                 showAdd = false
             },
         )
@@ -554,7 +555,7 @@ private fun MapStripSection(config: DashConfig, onPick: (Int, String) -> Unit) {
                 )
             }
             DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-                DashField.all.forEach { f ->
+                DashField.all.filter { it.id != "radar" }.forEach { f ->
                     DropdownMenuItem(
                         text = { Text(f.label, style = TypeScale.body) },
                         onClick = { open = false; onPick(slot, f.id) },
@@ -674,6 +675,7 @@ private fun ReorderableItems(
             ) {
                 DashItemRow(
                     item = item,
+                    canVertical = items.none { it.key != item.key && it.isVertical },
                     onChange = { onChange(index, it) },
                     onDelete = { onDelete(index) },
                     dragModifier = Modifier.pointerInput(index, items.size) {
@@ -703,6 +705,7 @@ private fun ReorderableItems(
 @Composable
 private fun DashItemRow(
     item: DashItem,
+    canVertical: Boolean,
     onChange: (DashItem) -> Unit,
     onDelete: () -> Unit,
     dragModifier: Modifier,
@@ -725,7 +728,7 @@ private fun DashItemRow(
                 Icon(Icons.Filled.Close, contentDescription = "Remove", tint = Palette.muted)
             }
         }
-        Row(
+        if (!item.isVertical) Row(
             Modifier.padding(top = 6.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -735,6 +738,13 @@ private fun DashItemRow(
             }
             Spacer(Modifier.weight(1f))
             SmallChip("Half", item.half) { onChange(item.copy(half = !item.half)) }
+        }
+        if (item.field == "radar") {
+            Text("Full-height traffic tile · pair a Varia in Sensors", style = TypeScale.body)
+        } else if (canVertical || item.vertical) {
+            SmallChip("Vertical tile", item.vertical) {
+                onChange(item.copy(vertical = !item.vertical, half = false))
+            }
         }
     }
 }
@@ -756,10 +766,10 @@ private fun SmallChip(label: String, selected: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-private fun FieldPickerSheet(onDismiss: () -> Unit, onPick: (String) -> Unit) {
+private fun FieldPickerSheet(allowRadar: Boolean, onDismiss: () -> Unit, onPick: (String) -> Unit) {
     FullScreenSheet(title = "Add a field", onDismiss = onDismiss, confirmLabel = "Cancel") {
         LazyColumn {
-            items(DashField.all, key = { it.id }) { field ->
+            items(DashField.all.filter { allowRadar || it.id != "radar" }, key = { it.id }) { field ->
                 Column(
                     Modifier
                         .fillMaxWidth()

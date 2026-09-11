@@ -35,7 +35,7 @@ struct SensorsView: View {
                         sectionLabel(ble.scanningSensors ? "Scanning for sensors…" : "Available")
                         if available.isEmpty {
                             Text(ble.scanningSensors
-                                 ? "Wake your sensor (spin the cranks / touch the strap)."
+                                 ? "Wake your sensor (spin the cranks / touch the strap), or put your Varia in Bluetooth pairing mode."
                                  : "Tap Scan to search for nearby sensors.")
                                 .font(BarlowFont.text(13)).foregroundStyle(Palette.muted)
                                 .frame(maxWidth: .infinity, alignment: .leading)

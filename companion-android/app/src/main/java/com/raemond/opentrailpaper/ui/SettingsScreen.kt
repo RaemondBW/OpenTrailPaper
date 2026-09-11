@@ -257,7 +257,7 @@ private fun sensorSummary(ble: BleManager): String {
     if (connected.isNotEmpty()) return connected.joinToString(", ") { it.name } + " connected"
     val paired = ble.sensors.filter { it.paired }
     if (paired.isNotEmpty()) return "${paired.size} saved · none connected"
-    return "Scan & pair heart rate, power, cadence"
+    return "Scan & pair heart rate, power, cadence, radar"
 }
 
 /** The cached device tile list means this still reads correctly while

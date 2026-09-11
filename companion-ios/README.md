@@ -59,3 +59,9 @@ Music controls and now-playing metadata use the iPhone's Apple Media Service
 (AMS) directly over the head unit's BLE link. The companion app does not request
 Apple Music library access, send Apple Music metadata/artwork, or relay music
 commands. The head unit's music page still supports AMS playback controls.
+
+## Radar tiles
+
+Pair a BLE Varia in Sensors, then add Radar in the dashboard editor. Numeric
+fields can also occupy a vertical tile. Requires the matching head-unit firmware;
+see [Varia setup and compatibility](../docs/varia-radar.md).

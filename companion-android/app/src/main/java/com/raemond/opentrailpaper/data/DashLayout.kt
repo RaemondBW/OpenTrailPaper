@@ -37,6 +37,7 @@ data class DashField(
             DashField("sats", "Satellites", "GPS"),
             DashField("clock", "Clock", "Time of day"),
             DashField("routeleft", "Route left", "Distance to the end of the route"),
+            DashField("radar", "Radar", "Varia rear traffic · vertical tile"),
         )
 
         fun named(id: String): DashField? = all.firstOrNull { it.id == id }
@@ -61,12 +62,14 @@ data class DashItem(
     val field: String,
     val size: DashSize,
     val half: Boolean,
+    val vertical: Boolean = false,
     /** Stable across edits, so a reorder animates rather than rebuilding rows. */
     val key: Long = nextKey++,
 ) {
     // `this.` is load-bearing: inside a property accessor the bare name `field`
     // is Kotlin's backing-field keyword, not this class's `field` property, and
     // reading it there would demand a backing field that doesn't exist.
+    val isVertical: Boolean get() = vertical || this.field == "radar"
     val fieldLabel: String get() = DashField.named(this.field)?.label ?: this.field
 
     /**
@@ -84,6 +87,17 @@ data class DashItem(
 }
 
 data class DashLayout(val items: List<DashItem>) {
+    val normalizedItems: List<DashItem>
+        get() {
+            var rail = false
+            return items.take(MAX_ITEMS).mapNotNull { item ->
+                if (!item.isVertical) item
+                else if (rail && item.field == "radar") null
+                else item.copy(vertical = !rail, half = false).also { rail = true }
+            }
+        }
+    val verticalItem: DashItem? get() = normalizedItems.firstOrNull { it.vertical }
+
 
     /**
      * Serialize back to the config file's text, byte-compatible with
@@ -94,11 +108,11 @@ data class DashLayout(val items: List<DashItem>) {
             append("# OpenTrailPaper dashboard layout\n")
             append("# <field> <small|medium|large|hero> [half]\n")
             append("# 'half' shares the row with the next 'half' field.\n")
-            for (it in items) {
+            for (it in normalizedItems) {
                 append(it.field.padEnd(10))
                 append(' ')
                 append(it.size.token.padEnd(6))
-                if (it.half) append(" half")
+                if (it.isVertical) append(" vertical") else if (it.half) append(" half")
                 append('\n')
             }
         }
@@ -111,6 +125,7 @@ data class DashLayout(val items: List<DashItem>) {
      */
     val rows: List<List<DashItem>>
         get() {
+            val items = normalizedItems.filter { !it.vertical }.ifEmpty { listOf(DashItem("speed", DashSize.HERO, false)) }
             val out = mutableListOf<List<DashItem>>()
             var i = 0
             while (i < items.size) {
@@ -153,10 +168,10 @@ data class DashLayout(val items: List<DashItem>) {
                 if (DashField.named(first) == null) continue
                 val size = tok.getOrNull(1)?.let { DashSize.fromToken(it) } ?: DashSize.MEDIUM
                 val half = tok.drop(1).any { it == "half" }
-                out.add(DashItem(first, size, half))
+                out.add(DashItem(first, size, half, vertical = tok.drop(1).contains("vertical")))
                 if (out.size >= MAX_ITEMS) break
             }
-            return DashLayout(out)
+            return DashLayout(DashLayout(out).normalizedItems)
         }
 
         /** The device's built-in default, for the "reset" action. */
@@ -254,7 +269,7 @@ data class DashConfig(
     val configText: String
         get() = buildString {
             append("# OpenTrailPaper dashboard layout\n")
-            append("# <field> <small|medium|large|hero> [half]; 'page' or 'page music' starts a new page\n")
+            append("# <field> <small|medium|large|hero> [half|vertical]; 'page' or 'page music' starts a new page\n")
             append("map ${mapFields[0]} ${mapFields[1]} ${mapFields[2]}\n")
             pages.forEachIndexed { i, page ->
                 when {
@@ -264,11 +279,11 @@ data class DashConfig(
                     i > 0 -> append("page\n")
                 }
                 if (page.kind == PageKind.FIELDS) {
-                    for (it in page.layout.items) {
+                    for (it in page.layout.normalizedItems) {
                         append(it.field.padEnd(10))
                         append(' ')
                         append(it.size.token.padEnd(6))
-                        if (it.half) append(" half")
+                        if (it.isVertical) append(" vertical") else if (it.half) append(" half")
                         append('\n')
                     }
                 }
@@ -322,7 +337,7 @@ data class DashConfig(
                     tok.firstOrNull() == "map" -> {
                         for (i in 0 until 3) {
                             val f = tok.getOrNull(i + 1) ?: continue
-                            if (DashField.named(f) != null) strip[i] = f
+                            if (f != "radar" && DashField.named(f) != null) strip[i] = f
                         }
                     }
                     else -> chunk.append(rawLine).append('\n')

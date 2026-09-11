@@ -24,6 +24,7 @@ const FieldInfo kFields[DF_COUNT] = {
     {"sats",       "SATELLITES"},
     {"clock",      "CLOCK"},
     {"routeleft",  "ROUTE LEFT"},
+    {"radar",      "RADAR"},
 };
 
 const char* kSizes[DZ_COUNT] = {"small", "medium", "large", "hero"};
@@ -87,6 +88,23 @@ const DashPages& dashDefaultPages() {
     return d;
 }
 
+void dashNormalizeLayout(DashLayout& layout) {
+    bool hasVertical = false;
+    int n = 0;
+    for (int i = 0; i < layout.count && i < DASH_MAX_ITEMS; ++i) {
+        DashItem item = layout.items[i];
+        if (item.field == DF_RADAR) item.vertical = true;
+        if (item.vertical) {
+            if (hasVertical && item.field == DF_RADAR) continue;
+            item.vertical = !hasVertical;
+            item.half = false;
+            hasVertical = true;
+        }
+        layout.items[n++] = item;
+    }
+    layout.count = n;
+}
+
 bool dashParse(const char* text, DashLayout& out) {
     out.count = 0;
     if (!text) return false;
@@ -99,12 +117,12 @@ bool dashParse(const char* text, DashLayout& out) {
         const char* cut = p;
         while (cut < lineEnd && *cut != '#') ++cut;
 
-        // Up to three whitespace-separated tokens: field, size, "half".
-        const char* tok[3] = {nullptr, nullptr, nullptr};
-        size_t tokLen[3] = {0, 0, 0};
+        // Field, size and placement tokens (vertical overrides half).
+        const char* tok[4] = {nullptr, nullptr, nullptr, nullptr};
+        size_t tokLen[4] = {0, 0, 0, 0};
         int ntok = 0;
         const char* q = p;
-        while (q < cut && ntok < 3) {
+        while (q < cut && ntok < 4) {
             while (q < cut && (*q == ' ' || *q == '\t' || *q == '\r')) ++q;
             if (q >= cut) break;
             const char* start = q;
@@ -131,6 +149,8 @@ bool dashParse(const char* text, DashLayout& out) {
                 }
                 for (int i = 1; i < ntok; ++i)
                     if (tokenEq(tok[i], tokLen[i], "half")) it.half = true;
+                for (int i = 1; i < ntok; ++i)
+                    if (tokenEq(tok[i], tokLen[i], "vertical")) it.vertical = true;
                 out.items[out.count++] = it;
             }
         }
@@ -141,18 +161,21 @@ bool dashParse(const char* text, DashLayout& out) {
 
     // An empty result means the file was blank, all comments, or all typos —
     // in every case the caller is better off with the default than a blank panel.
+    dashNormalizeLayout(out);
     return out.count > 0;
 }
 
 namespace {
 
 // Append one layout's item lines; returns false on truncation.
-bool serializeItems(const DashLayout& layout, char* out, size_t cap, size_t& n) {
+bool serializeItems(const DashLayout& input, char* out, size_t cap, size_t& n) {
+    DashLayout layout = input;
+    dashNormalizeLayout(layout);
     for (int i = 0; i < layout.count; ++i) {
         const DashItem& it = layout.items[i];
         if (it.field >= DF_COUNT || it.size >= DZ_COUNT) continue;
         int w = snprintf(out + n, cap - n, "%-10s %-6s%s\n", dashFieldId(it.field),
-                         dashSizeId(it.size), it.half ? " half" : "");
+                         dashSizeId(it.size), it.vertical ? " vertical" : it.half ? " half" : "");
         if (w < 0 || (size_t)w >= cap - n) return false;
         n += (size_t)w;
     }
@@ -163,7 +186,7 @@ bool serializeItems(const DashLayout& layout, char* out, size_t cap, size_t& n) 
 // budget matters more than prose — the format is documented in dash_layout.h.
 const char kHeader[] =
     "# OpenTrailPaper dashboard layout\n"
-    "# <field> <small|medium|large|hero> [half]; 'page' or 'page music' starts a new page\n";
+    "# <field> <small|medium|large|hero> [half|vertical]; 'page' or 'page music' starts a new page\n";
 
 }  // namespace
 
@@ -189,6 +212,7 @@ bool dashParsePages(const char* text, DashPages& out) {
     DashPage cur;
     bool sawMap = false;
     auto commit = [&] {
+        dashNormalizeLayout(cur.layout);
         bool keep = cur.kind != DP_FIELDS || cur.layout.count > 0;
         if (cur.kind == DP_MAP) {
             if (sawMap) keep = false;   // exactly one map, first wins
@@ -234,7 +258,7 @@ bool dashParsePages(const char* text, DashPages& out) {
             // default rather than dropping the line.
             for (int i = 0; i < 3 && i + 1 < ntok; ++i) {
                 uint8_t f = dashFieldFromId(tok[i + 1], tokLen[i + 1]);
-                if (f < DF_COUNT) out.mapFields[i] = f;
+                if (f < DF_COUNT && f != DF_RADAR) out.mapFields[i] = f;
             }
         } else if (ntok >= 1 && cur.kind == DP_FIELDS &&
                    cur.layout.count < DASH_MAX_ITEMS) {
@@ -250,6 +274,8 @@ bool dashParsePages(const char* text, DashPages& out) {
                 }
                 for (int i = 1; i < ntok; ++i)
                     if (tokenEq(tok[i], tokLen[i], "half")) it.half = true;
+                for (int i = 1; i < ntok; ++i)
+                    if (tokenEq(tok[i], tokLen[i], "vertical")) it.vertical = true;
                 cur.layout.items[cur.layout.count++] = it;
             }
         }

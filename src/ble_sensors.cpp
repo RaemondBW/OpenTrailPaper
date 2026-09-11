@@ -13,6 +13,9 @@
 
 namespace {
 
+const NimBLEUUID SVC_RADAR("6a4e3200-667b-11e3-949a-0800200c9a66");
+const NimBLEUUID CHR_RADAR("6a4e3203-667b-11e3-949a-0800200c9a66");
+
 const NimBLEUUID SVC_HR("180D");
 const NimBLEUUID CHR_HR("2A37");
 const NimBLEUUID SVC_POWER("1818");
@@ -24,6 +27,7 @@ using ble_sensors::KIND_HR;
 using ble_sensors::KIND_POWER;
 using ble_sensors::KIND_CSC;
 using ble_sensors::KIND_COUNT;
+using ble_sensors::KIND_RADAR;
 using SensorKind = ble_sensors::Kind;
 
 struct Sensor {
@@ -36,6 +40,7 @@ struct Sensor {
     char make[32] = "";      // "Manufacturer Model" from Device Info Service
     bool found = false;      // discovered by scan, awaiting connect
     std::atomic<bool> connected{false};
+    uint32_t connectedAtMs = 0;
     NimBLEClient* client = nullptr;
 };
 
@@ -43,6 +48,7 @@ Sensor sensors[KIND_COUNT] = {
     {"HR", SVC_HR, CHR_HR},
     {"Power", SVC_POWER, CHR_POWER},
     {"Cadence", SVC_CSC, CHR_CSC},
+    {"Radar", SVC_RADAR, CHR_RADAR},
 };
 
 // Cross-task telemetry: callbacks update counters; the sensor task reports them.
@@ -300,6 +306,11 @@ void onCscNotify(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool) {
     }
 }
 
+void onRadarNotify(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool) {
+    noteNotification(KIND_RADAR);
+    g_state.with([&](RideState& s) { radarIngest(s.radar, data, len, millis()); });
+}
+
 // Candidate registry for the Sensors screen
 constexpr int MAX_CANDIDATES = 12;
 ble_sensors::Candidate candidates[MAX_CANDIDATES];
@@ -348,6 +359,14 @@ class ScanCallbacks : public NimBLEScanCallbacks {
         for (int k = 0; k < KIND_COUNT; ++k) {
             if (dev->isAdvertisingService(sensors[k].svc)) mask |= 1 << k;
         }
+        // Some Varia adverts expose only Garmin's member UUID. Limit the
+        // fallback by model name; a Garmin watch must not become a radar.
+        if (dev->isAdvertisingService(NimBLEUUID((uint16_t)0xfe1f))) {
+            const std::string name = dev->getName();
+            if (name.find("RTL") == 0 || name.find("RVR") == 0 ||
+                name.find("RCT") == 0 || name.find("RearVue") == 0 ||
+                name.find("Varia") == 0) mask |= 1 << KIND_RADAR;
+        }
         if (!mask) return;
         noteCandidate(dev, mask);
 
@@ -375,6 +394,9 @@ class ScanCallbacks : public NimBLEScanCallbacks {
 void markDisconnected(SensorKind kind) {
     g_state.with([&](RideState& s) {
         switch (kind) {
+            case KIND_RADAR:
+                s.radar = RadarState{};
+                break;
             case KIND_HR:
                 s.hrConnected = false;
                 s.heartRateBpm = 0xFF;
@@ -415,13 +437,14 @@ private:
     SensorKind kind_;
 };
 
-ClientCallbacks hrCb(KIND_HR), powerCb(KIND_POWER), cscCb(KIND_CSC);
-ClientCallbacks* clientCbs[KIND_COUNT] = {&hrCb, &powerCb, &cscCb};
+ClientCallbacks hrCb(KIND_HR), powerCb(KIND_POWER), cscCb(KIND_CSC), radarCb(KIND_RADAR);
+ClientCallbacks* clientCbs[KIND_COUNT] = {&hrCb, &powerCb, &cscCb, &radarCb};
 
 bool connectSensor(SensorKind kind) {
     Sensor& sensor = sensors[kind];
     if (!sensor.client) {
         sensor.client = NimBLEDevice::createClient();
+        if (!sensor.client) { sensor.found = false; return false; }
         sensor.client->setClientCallbacks(clientCbs[kind], false);
         sensor.client->setConnectTimeout(5000);
     }
@@ -441,20 +464,26 @@ bool connectSensor(SensorKind kind) {
     sleepWatch[kind].sleepAtConnect = sleepCount();
     sleepWatch[kind].lastMs = millis();
     ++sleepWatch[kind].connections;
+    if (kind == KIND_RADAR) {
+        g_state.with([](RideState& s) { s.radar = RadarState{}; s.radar.connected = true; });
+    }
     bool ok = false;
     switch (kind) {
         case KIND_HR:     ok = chr->subscribe(true, onHrNotify); break;
         case KIND_POWER:  ok = chr->subscribe(true, onPowerNotify); break;
         case KIND_CSC:    ok = chr->subscribe(true, onCscNotify); break;
+        case KIND_RADAR:  ok = chr->subscribe(true, onRadarNotify); break;
         default: break;
     }
     if (!ok) {
+        markDisconnected(kind);
         sensor.client->disconnect();
         sensor.found = false;
         return false;
     }
 
     sensor.connected = true;
+    sensor.connectedAtMs = millis();
 
     // Read the Device Information Service (0x180A) for a human-readable make:
     // Manufacturer Name (0x2A29) + Model Number (0x2A24). Many sensors have no
@@ -484,7 +513,7 @@ bool connectSensor(SensorKind kind) {
         if (kind == KIND_POWER) s.powerConnected = true;
         if (kind == KIND_CSC) s.cadenceConnected = true;
     });
-    static const char* kn[KIND_COUNT] = {"HR", "power", "cadence"};
+    static const char* kn[KIND_COUNT] = {"HR", "power", "cadence", "radar"};
     diag::log("%s connected: %s [%s] make='%s', notify %s", kn[kind], sensor.advName,
               sensor.addr.toString().c_str(), sensor.make, ok ? "on" : "off");
     return true;
@@ -619,6 +648,17 @@ void task(void*) {
             }
         }
 
+        // Recover a nominally connected radar that never subscribed cleanly
+        // or stopped notifying. Never disconnect while holding g_state's lock.
+        if (sensors[KIND_RADAR].connected) {
+            const RadarState radar = g_state.snapshot().radar;
+            const uint32_t last = radar.received ? radar.packetMs : sensors[KIND_RADAR].connectedAtMs;
+            if (uint32_t(millis() - last) > 5000) {
+                diag::log("radar stream silent; reconnecting");
+                sensors[KIND_RADAR].client->disconnect();
+            }
+        }
+
         // Invalidate a reading whose packets have stopped arriving. Nothing
         // else does this while the LINK is still up: markDisconnected only runs
         // from the BLE disconnect callback, and ui_dashboard's staleness sweep
@@ -634,6 +674,7 @@ void task(void*) {
         constexpr uint32_t kStaleMs = 15000;   // ui_dashboard greys out at the same age
         g_state.with([&](RideState& s) {
             uint32_t now = millis();
+            radarExpire(s.radar, now);
             if (s.heartRateBpm != 0xFF && now - s.hrMs > kStaleMs)
                 s.heartRateBpm = 0xFF;
             if (s.powerW != 0xFFFF && now - s.powerMs > kStaleMs)

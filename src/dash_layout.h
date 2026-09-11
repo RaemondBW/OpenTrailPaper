@@ -36,6 +36,7 @@ enum DashField : uint8_t {
     DF_SATELLITES,
     DF_CLOCK,
     DF_ROUTE_LEFT,   // distance remaining on the loaded route
+    DF_RADAR,       // rear traffic, always a full-height vertical tile
     DF_COUNT
 };
 
@@ -56,6 +57,7 @@ struct DashItem {
     uint8_t field = DF_SPEED;   // DashField
     uint8_t size = DZ_MEDIUM;   // DashSize
     bool    half = false;       // share its row with the next half field
+    bool    vertical = false;   // full-height right column (one per page)
 };
 
 // 12 is well past what fits legibly on a 540x960 panel (the default uses 5) and
@@ -67,6 +69,14 @@ struct DashLayout {
     DashItem items[DASH_MAX_ITEMS];
     int count = 0;
 };
+
+// Both edges are 8-pixel aligned so a changing radar tile stays separate
+// from the numeric cells in the display driver's dirty regions.
+constexpr int DASH_VERTICAL_X = 320;
+constexpr int DASH_VERTICAL_W = 192;
+// Radar is always vertical. First vertical wins; extra numeric vertical items
+// become full-width rows, and duplicate radar tiles are discarded.
+void dashNormalizeLayout(DashLayout& layout);
 
 // --- Multiple pages ---------------------------------------------------------
 // The dashboard is a short carousel of pages the Home key steps through. Each

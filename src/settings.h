@@ -42,7 +42,7 @@ void setUsbDrive(bool on);
 bool showOffline();
 void setShowOffline(bool on);
 
-// kind: 0 HR, 1 Power, 2 Cadence (matches ble_sensors). Several sensors can be
+// kind: 0 HR, 1 Power, 2 Cadence, 3 Radar (matches ble_sensors). Several sensors can be
 // paired per kind (a strap and a trainer's simulated strap, two bikes' power
 // meters): pairing ADDS, most recent first, up to SENSOR_MAX_PAIRED. The
 // scanner connects to whichever paired one is advertising. sensorAddr() is
