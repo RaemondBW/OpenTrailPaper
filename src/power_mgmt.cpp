@@ -40,8 +40,8 @@ static volatile bool s_phone = false, s_hunt = false;
 // active). Not a holder — shown on the battery line as "prlx" so a sample
 // can't be misread as "app wasn't connected".
 static volatile bool s_phoneRelaxed = false;
-// Any BLE sensor link up (holds sleep off — see tick()).
-static volatile bool s_sens = false;
+// Established sensor hold, plus informational sleep-eligible link state.
+static volatile bool s_sens = false, s_sensorRelaxed = false;
 
 // 80 MHz keeps APB at 80 MHz throughout DFS. Lower minima require a separate
 // audit of SPI, display, USB and UART clocks; do not silently enable them.
@@ -210,6 +210,8 @@ void tick() {
     // sensor is missing and the device is actually looking for it. Once
     // everything is connected the hunt stops and the CPU sleeps again.
     bool hunting = ble_sensors::radioBusy();
+    // Historical RTC-slow-clock behavior below. The MAIN_XTAL candidate can
+    // now release this established-link hold; discovery stays protected.
     // 2026-08-21, learned on the road: an ESTABLISHED sensor link dies under
     // light sleep exactly like the phone's does. A ride ran 1h45m rock-solid
     // while the connected phone held sleep off — then the phone left, sleep
@@ -226,8 +228,15 @@ void tick() {
     // way; what matters is that the hold and the hunt come back the moment
     // the ride resumes, which they do — this flag flips false on the resume
     // tick, before the sensors have woken enough to reconnect.
-    bool sensors = ble_sensors::anyConnected() &&
-                   !ride_recorder::longAutoPaused();
+    bool sensorLinks = ble_sensors::anyConnected();
+    bool sensorReady = false;
+#ifdef PM_BLE_XTAL
+    sensorReady = board_ble_xtal_clock_ready() && ble_sensors::sleepAllowed();
+#endif
+    // Established links only: hunt/connect remains an unconditional hold.
+    // Preserve the old long-auto-pause behavior outside the new experiment.
+    bool sensors = sensorLinks && !ride_recorder::longAutoPaused() && !sensorReady;
+    s_sensorRelaxed = sensorLinks && sensorReady;
     bool grace = millis() < USB_GRACE_MS;
     bool cdc = (bool)Serial;
     // VBUS is independent of DTR/RTS: an unopened console and a suspended
@@ -318,7 +327,7 @@ void tick() {
             diag::log("pm: BT modem sleep %s (phone %s, sensor hunt %s, links %s)",
                       wantBtSleep ? "on" : "OFF",
                       s_phoneRelaxed ? "relaxed" : phoneUp ? "connected" : "gone",
-                      hunting ? "ON" : "off", sensors ? "up" : "none");
+                      hunting ? "ON" : "off", s_sensorRelaxed ? "sleep eligible" : sensorLinks ? "up" : "none");
         }
     }
     if (usb && !s_usbHeld) {
@@ -402,6 +411,7 @@ void stateStr(char* out, size_t n) {
     if (s_sens) add("sens");
     // Info, not a holder: phone attached on the relaxed link, CPU sleeping.
     if (s_phoneRelaxed) add("prlx");
+    if (s_sensorRelaxed) add("srlx"); // information, not a sleep hold
     const int busy = s_busyCount.load();
     if (busy > 0) {
         char b[8];

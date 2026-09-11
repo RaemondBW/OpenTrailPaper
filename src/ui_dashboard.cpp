@@ -1757,6 +1757,7 @@ static void printConsoleHelp() {
     Serial.println("  mesh <on|off>        power the LoRa radio");
     Serial.println("  autopause [sec|off]  ride timer pause after N s stopped (0/off disables)");
     Serial.println("  workout <list|load <f>|start|pause|resume|stop|skip|back|goto <n>|ftp [W]>");
+    Serial.println("  sensorsleep [on|off] sensor-link sleep experiment, this boot; status without argument");
     Serial.println("  sleepexp [on|off]    re-arm the light-sleep-with-phone experiment (this boot)");
     Serial.println("  scan <on|off>        force the sensor scan (what the Sensors screen does)");
     Serial.println("  disconnect <kind>    drop the link (hr|power|cadence|all); stays paired");
@@ -2070,6 +2071,15 @@ static void runConsoleLine(char* line) {
         }
     } else if (!strcasecmp(cmd, "bootloader") || !strcasecmp(cmd, "boot")) {
         rebootToBootloader();
+    } else if (!strcasecmp(cmd, "sensorsleep")) {
+        if (arg) {
+            if (strcasecmp(arg, "on") && strcasecmp(arg, "off")) {
+                Serial.println("[cmd] sensorsleep [on|off]");
+                return;
+            }
+            ble_sensors::setSleepAllowed(!strcasecmp(arg, "on"));
+        }
+        ble_sensors::reportSleep();
     } else if (!strcasecmp(cmd, "sleepexp")) {
         if (arg) ble_server::setRelaxedSleepExperiment(
             !strcasecmp(arg, "on") || !strcasecmp(arg, "1"));

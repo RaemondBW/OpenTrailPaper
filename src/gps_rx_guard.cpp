@@ -21,7 +21,11 @@ DRAM_ATTR bool ready = false, held = false;
 DRAM_ATTR int64_t lastActivity = 0;
 DRAM_ATTR uint32_t starts = 0, deferred = 0, releases = 0;
 static_assert(BOARD_GPS_RXD >= 32 && BOARD_GPS_RXD < 49, "RX pin must be in GPIO.in1");
+#ifdef PM_GPS_EVENT_RX
+constexpr int64_t QUIET_US = 10000;
+#else
 constexpr int64_t QUIET_US = 50000;
+#endif
 
 bool IRAM_ATTR rxActive() {
     return !(GPIO.in1.val & (1UL << (BOARD_GPS_RXD - 32))) ||
@@ -47,7 +51,7 @@ void gps_rx_guard::begin() {
         return;
     }
     ready = true;
-    diag::log("gps RX guard: GPIO%d low-level wake; hold through RX + 50ms quiet; UART2 XTAL required", BOARD_GPS_RXD);
+    diag::log("gps RX guard: GPIO%d low-level wake; hold through RX + %lums quiet; UART2 XTAL required", BOARD_GPS_RXD, (unsigned long)(QUIET_US / 1000));
 }
 
 bool IRAM_ATTR gps_rx_guard::beforeSleep() {
@@ -79,6 +83,12 @@ void gps_rx_guard::tick(bool receivedBytes) {
     }
     portEXIT_CRITICAL(&mux);
 }
+uint32_t gps_rx_guard::waitMs() {
+    portENTER_CRITICAL(&mux);
+    bool active = held;
+    portEXIT_CRITICAL(&mux);
+    return active ? QUIET_US / 1000 : 1000;
+}
 void gps_rx_guard::report() {
     portENTER_CRITICAL(&mux);
     bool isHeld = held; uint32_t a = starts, d = deferred, r = releases;
@@ -93,4 +103,5 @@ void gps_rx_guard::tick(bool) {}
 bool gps_rx_guard::beforeSleep() { return true; }
 void gps_rx_guard::afterSleep() {}
 void gps_rx_guard::report() {}
+uint32_t gps_rx_guard::waitMs() { return 50; }
 #endif

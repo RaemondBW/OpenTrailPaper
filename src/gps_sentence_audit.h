@@ -7,7 +7,7 @@
 // increment its checksum-error count. Track complete GGA/RMC epochs as well.
 class GpsSentenceAudit {
 public:
-    struct Counts { uint32_t gga=0, rmc=0, bad=0, truncated=0, missingGga=0, missingRmc=0; } counts;
+    struct Counts { uint32_t gga=0, rmc=0, bad=0, truncated=0, missingGga=0, missingRmc=0, gsa=0, gsv=0, other=0; } counts;
     void feed(char c) {
         if (c == '$') {
             if (collecting && used) ++counts.truncated;
@@ -53,7 +53,10 @@ private:
         if(hi<0||lo<0||ck!=(hi*16+lo)) { ++counts.bad; return; }
         if(used>12 && line[5]==',') {
             if(!memcmp(line+2,"GGA",3)) { ++counts.gga; epoch(previousGga,counts.missingGga); }
-            if(!memcmp(line+2,"RMC",3)) { ++counts.rmc; epoch(previousRmc,counts.missingRmc); }
+            else if(!memcmp(line+2,"RMC",3)) { ++counts.rmc; epoch(previousRmc,counts.missingRmc); }
+            else if(!memcmp(line+2,"GSA",3)) ++counts.gsa;
+            else if(!memcmp(line+2,"GSV",3)) ++counts.gsv;
+            else ++counts.other;
         }
     }
 };

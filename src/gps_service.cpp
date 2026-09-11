@@ -10,6 +10,7 @@
 #include <soc/io_mux_reg.h>
 #include "power_mgmt.h"
 #include "gps_rx_guard.h"
+#include "gps_output_profile.h"
 #include "gps_sentence_audit.h"
 
 #include "config.h"
@@ -168,6 +169,16 @@ bool waitForBytes(uint32_t timeoutMs) {
 }
 
 // L76K modules talk PCAS at 9600; if that fails assume u-blox M10Q at 38400.
+void configureL76KOutput() {
+#ifdef PM_GPS_LEAN_NMEA
+    const char* body = gps_output_profile::lean;
+    SerialGPS.printf("$%s*%02X\r\n", body, gps_output_profile::checksum(body));
+    diag::log("gps output requested: GGA/RMC/GSA 1Hz, GSV every 5 fixes; other periodic sentences off");
+#else
+    SerialGPS.write("$PCAS03,1,1,1,1,1,1,1,1,1,1,,,0,0*02\r\n");
+#endif
+}
+
 bool initL76K() {
     for (int i = 0; i < 3; ++i) {
         SerialGPS.write("$PCAS03,0,0,0,0,0,0,0,0,0,0,,,0,0*02\r\n");
@@ -182,11 +193,10 @@ bool initL76K() {
         SerialGPS.setTimeout(50);
         String ver = SerialGPS.readStringUntil('\n');
         if (ver.startsWith("$GPTXT,01,01,02")) {
-            // GPS + BDS + GLONASS (all three constellations), all NMEA
-            // sentences on, vehicle dynamics
+            // GPS + BDS + GLONASS, vehicle dynamics; output profile below.
             SerialGPS.write("$PCAS04,7*1E\r\n");
             delay(250);
-            SerialGPS.write("$PCAS03,1,1,1,1,1,1,1,1,1,1,,,0,0*02\r\n");
+            configureL76KOutput();
             delay(250);
             SerialGPS.write("$PCAS11,3*1E\r\n");
             return true;
@@ -230,6 +240,13 @@ bool begin() {
             default: break;
         }
     });
+#ifdef PM_GPS_EVENT_RX
+    // Arduino defaults to a one-byte FIFO threshold at 9600 baud. Batch
+    // interrupts while retaining a short RX timeout for the end of a burst.
+    bool fifoOk = SerialGPS.setRxFIFOFull(64);
+    bool timeoutOk = SerialGPS.setRxTimeout(2);
+    diag::log("gps UART events: FIFO=64 timeout=2 symbols configured=%d/%d", fifoOk, timeoutOk);
+#endif
     gps_rx_guard::begin();
     delay(100);
 
@@ -543,6 +560,13 @@ void sendColdStartCommand() {
 }
 
 void task(void*) {
+#ifdef PM_GPS_EVENT_RX
+    // HardwareSerial invokes this on its event task, never in the ISR. A
+    // counting notification retains events arriving before our blocking wait.
+    TaskHandle_t receiverTask = xTaskGetCurrentTaskHandle();
+    SerialGPS.onReceive([receiverTask]() { xTaskNotifyGive(receiverTask); });
+    diag::log("gps receive: UART task notifications; 1s housekeeping timeout; 10ms quiet guard");
+#endif
     logBanner();
     acqStartMs = millis();
     for (;;) {
@@ -555,6 +579,7 @@ void task(void*) {
             diag::log("gps cold-start test: %s", mode == 1 ? "AIDED" : "unaided");
             sendColdStartCommand();
             vTaskDelay(pdMS_TO_TICKS(600));   // let the cold start take effect
+            if (moduleKind == GPS_CASIC) configureL76KOutput();
             aidState.count = 0;               // TTFF context reflects THIS test
             aidState.skipped = 0;
             if (mode == 1) seedFromSaved();
@@ -588,6 +613,9 @@ void task(void*) {
             board_radio_power(true);
             vTaskDelay(pdMS_TO_TICKS(400));
             begin();
+#ifdef PM_GPS_EVENT_RX
+            SerialGPS.onReceive([receiverTask]() { xTaskNotifyGive(receiverTask); });
+#endif
             aidState.count = 0;
             aidState.skipped = 0;
             seedFromSaved();
@@ -762,6 +790,10 @@ void task(void*) {
                           (unsigned long)(audit.bad-previousAudit.bad), (unsigned long)(audit.truncated-previousAudit.truncated),
                           (unsigned long)(audit.missingGga-previousAudit.missingGga),
                           (unsigned long)(audit.missingRmc-previousAudit.missingRmc));
+                diag::log("gps output window: gsa=%lu gsv=%lu other=%lu",
+                          (unsigned long)(audit.gsa-previousAudit.gsa),
+                          (unsigned long)(audit.gsv-previousAudit.gsv),
+                          (unsigned long)(audit.other-previousAudit.other));
                 bool auditLoss = false;
 #ifdef PM_GPS_RX_GUARD
                 // Once one full awake 1 Hz window establishes the stream,
@@ -846,7 +878,13 @@ void task(void*) {
             }
         }
 
+#ifdef PM_GPS_EVENT_RX
+        // While RX is held, revisit the quiet deadline. Otherwise wait for
+        // actual UART data, with a bounded delay for commands/fix expiry.
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(gps_rx_guard::waitMs()));
+#else
         vTaskDelay(pdMS_TO_TICKS(50));
+#endif
     }
 }
 

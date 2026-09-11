@@ -95,7 +95,9 @@ int esp_bt_sleep_disable(){return ESP_OK;}
 namespace diag { void log(const char*, ...) {} }
 bool phoneUp=false, phoneLong=false, sleepAllowed=false, xtalReady=false, hunt=false;
 extern "C" bool board_ble_xtal_clock_ready(){return xtalReady;}
-namespace ble_sensors { bool anyConnected(){return false;} bool radioBusy(){return hunt;} }
+bool sensorUp=false, sensorAllowed=false;
+namespace ble_sensors { bool anyConnected(){return sensorUp;} bool radioBusy(){return hunt;}
+ bool sleepAllowed(){return sensorAllowed;} }
 namespace ble_server { bool isPhoneConnected(){return phoneUp;} bool linkRelaxed(){return phoneLong;}
  bool relaxedSleepAllowed(){return sleepAllowed;} }
 namespace ride_recorder { bool longAutoPaused(){return false;} bool sdMounted(){return true;} }
@@ -141,7 +143,14 @@ int main(int argc,char** argv) {
   sleepAllowed=false; power_mgmt::tick(); assert(locks[0]->count==1); // fallback
   sleepAllowed=true; xtalReady=false; phoneLong=true;
   power_mgmt::tick(); assert(locks[0]->count==1); // no controller, even long link
-  xtalReady=true; hunt=true;
+  xtalReady=true; phoneUp=false; sensorUp=true;
+  power_mgmt::tick(); assert(locks[0]->count==1); // default sensor hold
+  sensorAllowed=true; power_mgmt::tick(); assert(locks[0]->count==0);
+  power_mgmt::stateStr(state,sizeof(state)); assert(strstr(state,"srlx"));
+  xtalReady=false; power_mgmt::tick(); assert(locks[0]->count==1);
+  xtalReady=true; sensorAllowed=false;
+  power_mgmt::tick(); assert(locks[0]->count==1); // timeout/stale fallback
+  sensorAllowed=true; hunt=true;
   power_mgmt::tick(); assert(locks[0]->count==1); // sensor hunt still protected
 #endif
  }
@@ -457,22 +466,23 @@ int main(int argc,char** argv) {
  if(argc>1) setupFailure=atoi(argv[1]);
  gps_rx_guard::begin();
  if(setupFailure){assert(permanentHold==1);return 0;}
- assert(!skipCallback());
+ assert(!skipCallback()); assert(gps_rx_guard::waitMs()==1000);
  GPIO.in1.val=0; assert(!gps_rx_guard::beforeSleep());
- GPIO.in1.val=1<<12; microsNow=49999; gps_rx_guard::tick(false); assert(skipCallback());
+ assert(gps_rx_guard::waitMs()==QUIET_US/1000);
+ GPIO.in1.val=1<<12; microsNow=QUIET_US-1; gps_rx_guard::tick(false); assert(skipCallback());
  // Repeated callbacks must not extend the quiet deadline indefinitely.
- microsNow=50000; gps_rx_guard::tick(false); assert(!skipCallback());
+ microsNow=QUIET_US; gps_rx_guard::tick(false); assert(!skipCallback());
  // The wake level may already be high when the wrapper returns.
  wakeCause=ESP_SLEEP_WAKEUP_GPIO; gps_rx_guard::afterSleep(); assert(skipCallback());
- wakeCause=0; microsNow=100000; UART2.status.rxfifo_cnt=1;
+ wakeCause=0; microsNow=2*QUIET_US; UART2.status.rxfifo_cnt=1;
  gps_rx_guard::tick(false); assert(skipCallback());
- UART2.status.rxfifo_cnt=0; microsNow=149999; gps_rx_guard::tick(false); assert(skipCallback());
- microsNow=150000; gps_rx_guard::tick(false); assert(!skipCallback());
+ UART2.status.rxfifo_cnt=0; microsNow=3*QUIET_US-1; gps_rx_guard::tick(false); assert(skipCallback());
+ microsNow=3*QUIET_US; gps_rx_guard::tick(false); assert(!skipCallback());
  // A UART frame in progress is protected even while RX is temporarily high.
  UART2.fsm_status.st_urx_out=1; assert(!gps_rx_guard::beforeSleep());
- UART2.fsm_status.st_urx_out=0; microsNow=200000;
+ UART2.fsm_status.st_urx_out=0; microsNow=4*QUIET_US;
  gps_rx_guard::tick(true); assert(skipCallback());
- microsNow=250000; gps_rx_guard::tick(false); assert(!skipCallback());
+ microsNow=5*QUIET_US; gps_rx_guard::tick(false); assert(!skipCallback());
  gps_rx_guard::afterSleep(); assert(!skipCallback());
  gps_rx_guard::report();
 }
@@ -481,3 +491,56 @@ rx_guard_binary=build('gps-rx-guard',rx_guard_test)
 for scenario in ['0','1','2','3']:
     subprocess.run([str(rx_guard_binary),scenario],check=True)
 print('GPS RX guard wake/entry-race/FIFO/frame/quiet/setup-failure checks passed')
+
+event_guard_binary=build('gps-event-rx-guard','#define PM_GPS_EVENT_RX 1\n'+rx_guard_test)
+for scenario in ['0','1','2','3']:
+    subprocess.run([str(event_guard_binary),scenario],check=True)
+print('GPS event RX quiet-deadline/idle-wait/failure checks passed')
+
+# Exercise the production callback/task observation state, including unsigned
+# timer wrap and conservative fallback only after measured sleep on this link.
+sensor_source = (ROOT / 'src/ble_sensors.cpp').read_text()
+sensor_watch = sensor_source[sensor_source.index('struct SleepWatch {'):sensor_source.index('// Crank state for cadence-from-power-meter')]
+sensor_test = common + r'''
+#define PM_SENSOR_SLEEP 1
+#define PM_BLE_XTAL 1
+using SensorKind=int;
+constexpr int KIND_COUNT=3;
+struct {const char* name="test";} sensors[KIND_COUNT];
+uint32_t measuredSleep=0;
+namespace power_mgmt {
+ void sleepStats(uint32_t& ok,uint32_t& rejected,uint64_t& us){ok=measuredSleep;rejected=0;us=0;}
+}
+int fallbacks=0;
+namespace diag {void log(const char*,...){++fallbacks;}}
+''' + sensor_watch + r'''
+int main() {
+ auto& w=sleepWatch[0]; w.lastMs=100; w.sleepAtConnect=4;
+ assert(!w.silentAfterSleep(20000,4)); // no actual sleep
+ assert(!w.silentAfterSleep(15100,5)); // exact boundary
+ assert(w.silentAfterSleep(15101,5));
+ assert(!w.silentAfterSleep(99,5)); // callback timestamp newer than sampled now
+ assert(w.ageMs(99)==0);
+ assert(!w.timeoutAfterSleep(520,4));
+ assert(!w.timeoutAfterSleep(531,5)); // intentional disconnect
+ assert(w.timeoutAfterSleep(520,5));
+ w.lastMs=0xfffffff0; assert(!w.silentAfterSleep(100,5));
+ assert(w.silentAfterSleep(16000,5));
+ nowMs=1000; noteNotification(0); nowMs=2000; noteNotification(0);
+ assert(w.notifications==2 && w.lastMs==2000 && w.maxGapMs==1000);
+ assert(!w.silentAfterSleep(3000,5));
+ sensorSleepFallback(0,"test"); assert(!sensorSleepEnabled && fallbacks==1);
+ sensorSleepFallback(0,"again"); assert(fallbacks==1);
+}
+'''
+subprocess.run([str(build('sensor-sleep-watch',sensor_test))],check=True)
+print('Sensor sleep timeout/silent-data/timer-wrap/notification/fallback checks passed')
+
+no_guard = common + '\n#include "gps_rx_guard.h"\n' + production('gps_rx_guard.cpp') + r'''
+int main() {
+ gps_rx_guard::begin(); gps_rx_guard::tick(true); gps_rx_guard::afterSleep();
+ assert(gps_rx_guard::beforeSleep() && gps_rx_guard::waitMs()==50);
+}
+'''
+subprocess.run([str(build('gps-no-guard',no_guard))],check=True)
+print('Stock GPS guard no-op checks passed')

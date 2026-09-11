@@ -3,6 +3,13 @@
 Branch: `codex/battery-sd-sleep`, based on `19ea78c`.
 Worktree: `/Users/raemond/Documents/tdisplay/.worktrees/battery-sd-sleep`.
 
+**Follow-up candidate, updated 21:13:** the board now runs `t5s3-painter-battery-opt`
+with reduced GPS output, UART notifications and established-sensor sleep.
+Unplugged GPS/SD/phone checks passed; sensor sleep ran for ~13 minutes before
+a power-sensor timeout triggered its fallback. See the
+[follow-up report](battery-opt-2026-09-10.md). The results below describe the
+previous, hardware-validated GPS-wake profile.
+
 **Current result:** the GPS receive guard now preserves complete 1 Hz GPS data
 through CPU light sleep on this T5's CASIC/L76K module. The unplugged run recorded
 **2,442 successful sleep calls**, **5,769 valid NMEA sentences**, **361 GGA and

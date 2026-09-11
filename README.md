@@ -537,3 +537,8 @@ crystal, fixed 240 MHz CPU frequency, and a GPIO RX wake guard. This is a separa
 build profile; the shipping/CI default remains unchanged. Build commands,
 firmware hashes, measured results and remaining validation limits are in the
 [battery and SD investigation](investigations/battery-sd-sleep-2026-09-10.md).
+
+The follow-up `t5s3-painter-battery-opt` candidate reduces L76K message volume,
+uses UART task notifications and a 10 ms receive guard, and permits established
+cycling-sensor links to sleep with a per-boot failure fallback. Its battery and
+sensor acceptance status is tracked in the [follow-up report](investigations/battery-opt-2026-09-10.md).

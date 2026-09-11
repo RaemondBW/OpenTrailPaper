@@ -7,4 +7,5 @@ void tick(bool receivedBytes);
 bool beforeSleep();
 void afterSleep();
 void report();
+uint32_t waitMs();  // task context: quiet-deadline check or idle housekeeping
 }

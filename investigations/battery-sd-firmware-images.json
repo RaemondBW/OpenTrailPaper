@@ -25,8 +25,8 @@
   },
   "stock-no-pm": {
     "path": ".pio/build-stock/t5s3-painter/firmware.bin",
-    "bytes": 1039584,
-    "sha256": "4b161babb79ce409d46451ddec6a6ceef6b6f26496c682ae611fa8bd0ebda6b7",
+    "bytes": 1041920,
+    "sha256": "11f77dc022c2600c2c1e4cebe7cf1b9e2f1b09b4302bff5a65d7030b1f52e087",
     "display_idle_work_wait": true,
     "display_dependency_commit": "6335a149c5a9b3be4150880e0be64ef2529ba62a",
     "gps_uart_error_logging": true,
@@ -205,5 +205,29 @@
     "note": "9600-baud CASIC RX verified across 2442 light-sleep calls: complete GGA/RMC epochs, same phone ID, persisted SD logging, and three subsequent SD integrity passes. Receiver was searching; deep-sleep and navigation acceptance remain separate.",
     "flashed_local": "2026-09-10 19:01",
     "evidence": "battery-sd-gps-rx-guard-result-2026-09-10.log"
+  },
+  "pm-battery-opt-candidate": {
+    "path": ".pio/build/t5s3-painter-battery-opt/firmware.bin",
+    "bytes": 1051952,
+    "sha256": "d62b86ebaf483a6a9d242a95a8334bafa7a212235715fe8e9f7b7981e3bff74b",
+    "cpu_min_mhz": 240,
+    "cpu_max_mhz": 240,
+    "light_sleep_default": true,
+    "gps_rx_guard": true,
+    "gps_quiet_guard_ms": 10,
+    "gps_uart_notifications": true,
+    "gps_fifo_threshold": 64,
+    "gps_rx_timeout_symbols": 2,
+    "gps_casic_output": "GGA/RMC/GSA every fix; GSV every 5 fixes; other periodic output disabled",
+    "sensor_sleep_default": true,
+    "sensor_sleep_fallback": "timeout or >15s notification silence after measured sleep on link; per-boot latch",
+    "flashed_local": "2026-09-10 21:13",
+    "hardware_validated": false,
+    "evidence": "investigations/battery-opt-2026-09-10.md",
+    "note": "GPS/SD/phone passed actual sleep. Both cycling links ran ~13 minutes; final power timeout triggered fallback. Cause unconfirmed. Sensor sleep OFF this boot; HR holds sleep off.",
+    "gps_sleep_hardware_validated": true,
+    "sd_after_sleep_passes": 206,
+    "phone_sleep_link_validated": true,
+    "sensor_sleep_hardware_validated": false
   }
 }
