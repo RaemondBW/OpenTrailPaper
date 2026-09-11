@@ -75,6 +75,8 @@ struct DashLayout {
 // from the numeric cells in the display driver's dirty regions.
 constexpr int DASH_VERTICAL_X = 320;
 constexpr int DASH_VERTICAL_W = 192;
+// Round a requested vertical height up to the bottom of a complete grid row.
+int dashVerticalHeight(const int* rowHeights, int rowCount, int gutter, uint8_t heightPercent);
 // Radar is always vertical. First vertical wins; extra numeric vertical items
 // become full-width rows, and duplicate radar tiles are discarded.
 void dashNormalizeLayout(DashLayout& layout);

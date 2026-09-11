@@ -740,7 +740,7 @@ private fun DashItemRow(
             SmallChip("Half", item.half) { onChange(item.copy(half = !item.half)) }
         }
         if (item.isVertical) {
-            Text("Tile height", style = TypeScale.body)
+            Text("Tile height · fills whole grid rows", style = TypeScale.body)
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 listOf(50 to "Half", 75 to "Three-quarter", 100 to "Full").forEach { (height, label) ->
                     SmallChip(label, item.heightPercent == height) { onChange(item.copy(heightPercent = height)) }

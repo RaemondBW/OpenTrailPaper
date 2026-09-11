@@ -29,6 +29,20 @@ import Foundation
         precondition(DashLayout(text: "radar medium vertical height=12").verticalItem?.heightPercent == 100)
         let normalized = DashLayout(text: "speed small height=50\nhr medium vertical height=75\npower medium vertical height=50")
         precondition(normalized.items.map(\.heightPercent) == [100, 75, 100])
+        let half = DashLayout(text: "radar medium vertical height=50")
+        let threeQuarter = DashLayout(text: "radar medium vertical height=75")
+        let full = DashLayout(text: "radar medium vertical")
+        let grid = [257, 192, 192, 183]
+        let navGrid = [214, 161, 161, 150]
+        precondition(half.verticalHeight(rowHeights: grid, gutter: 12) == 461)
+        precondition(threeQuarter.verticalHeight(rowHeights: grid, gutter: 12) == 665)
+        precondition(full.verticalHeight(rowHeights: grid, gutter: 12) == 860)
+        precondition(half.verticalHeight(rowHeights: navGrid, gutter: 12) == 387)
+        precondition(threeQuarter.verticalHeight(rowHeights: navGrid, gutter: 12) == 560)
+        precondition(full.verticalHeight(rowHeights: navGrid, gutter: 12) == 722)
+        precondition(half.verticalHeight(rowHeights: [424, 424], gutter: 12) == 424)
+        precondition(half.verticalHeight(rowHeights: [860], gutter: 12) == 860)
+        precondition(half.verticalHeight(rowHeights: [], gutter: 12) == 0)
         print("Swift radar layout tests passed")
     }
 }

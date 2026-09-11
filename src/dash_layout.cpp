@@ -88,6 +88,21 @@ const DashPages& dashDefaultPages() {
     return d;
 }
 
+int dashVerticalHeight(const int* rowHeights, int rowCount, int gutter, uint8_t heightPercent) {
+    if (rowCount <= 0) return 0;
+    int total = (rowCount - 1) * gutter;
+    for (int i = 0; i < rowCount; ++i) total += rowHeights[i];
+    if (heightPercent >= 100) return total;
+    const int wanted = total * heightPercent / 100;
+    int bottom = 0;
+    for (int i = 0; i < rowCount; ++i) {
+        bottom += rowHeights[i];
+        if (bottom + gutter >= wanted || i == rowCount - 1) return bottom;
+        bottom += gutter;
+    }
+    return total;
+}
+
 void dashNormalizeLayout(DashLayout& layout) {
     bool hasVertical = false;
     int n = 0;

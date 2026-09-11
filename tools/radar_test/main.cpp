@@ -81,5 +81,20 @@ int main() {
     assert(dashParse("radar medium\n", bad) && bad.items[0].heightPercent == 100);
     assert(dashParse("speed small height=50\nhr medium vertical height=75\npower medium vertical height=50\n", bad));
     assert(bad.items[0].heightPercent == 100 && bad.items[1].heightPercent == 75 && bad.items[2].heightPercent == 100);
+    // Actual weighted grid used by the preview; include navigation and a
+    // requested edge in the gutter between two equal rows.
+    const int grid[] = {257, 192, 192, 183};
+    const int navGrid[] = {214, 161, 161, 150};
+    const int equalGrid[] = {424, 424};
+    const int single[] = {860};
+    assert(dashVerticalHeight(grid, 4, 12, 50) == 461);
+    assert(dashVerticalHeight(grid, 4, 12, 75) == 665);
+    assert(dashVerticalHeight(grid, 4, 12, 100) == 860);
+    assert(dashVerticalHeight(navGrid, 4, 12, 50) == 387);
+    assert(dashVerticalHeight(navGrid, 4, 12, 75) == 560);
+    assert(dashVerticalHeight(navGrid, 4, 12, 100) == 722);
+    assert(dashVerticalHeight(equalGrid, 2, 12, 50) == 424);
+    assert(dashVerticalHeight(single, 1, 12, 50) == 860);
+    assert(dashVerticalHeight(nullptr, 0, 12, 50) == 0);
     puts("Radar protocol and layout tests passed");
 }

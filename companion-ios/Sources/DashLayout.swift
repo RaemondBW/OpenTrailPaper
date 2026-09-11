@@ -155,6 +155,22 @@ struct DashLayout: Equatable {
     }
     var verticalItem: DashItem? { normalizedItems.first { $0.vertical } }
 
+    /// Match the device: fill every grid row touched by the requested height.
+    func verticalHeight(rowHeights: [Int], gutter: Int) -> Int {
+        guard !rowHeights.isEmpty else { return 0 }
+        let total = rowHeights.reduce(0, +) + (rowHeights.count - 1) * gutter
+        let percent = verticalItem?.heightPercent ?? 100
+        if percent >= 100 { return total }
+        let wanted = total * percent / 100
+        var bottom = 0
+        for (index, height) in rowHeights.enumerated() {
+            bottom += height
+            if bottom + gutter >= wanted || index == rowHeights.count - 1 { return bottom }
+            bottom += gutter
+        }
+        return total
+    }
+
     /// The device's built-in default, for the "reset" action.
     static var deviceDefault: DashLayout {
         DashLayout(items: [

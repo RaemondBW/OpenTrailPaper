@@ -381,7 +381,7 @@ private struct DashItemRow: View {
         }
         .padding(.vertical, 4)
         if item.isVertical {
-            Text("Tile height").font(.footnote).foregroundStyle(Palette.muted)
+            Text("Tile height · fills whole grid rows").font(.footnote).foregroundStyle(Palette.muted)
             Picker("Tile height", selection: $item.heightPercent) {
                 Text("Half").tag(50)
                 Text("Three-quarter").tag(75)
@@ -559,13 +559,19 @@ struct DashPreview: View {
         let total = max(weights.reduce(0, +), 1)
         let gutters = CGFloat(rows.count - 1) * gutter
         let availH = (panelH - statusH - margin) - gutters
-        let railH = CGFloat(860 * (layout.verticalItem?.heightPercent ?? 100) / 100)
+        var gridY = statusH + margin - step
+        let rowHeights = rows.indices.map { r in
+            let height = r == rows.count - 1 ? panelH - margin - gridY
+                : (availH * CGFloat(weights[r]) / CGFloat(total)).rounded(.down)
+            gridY += height + gutter
+            return Int(height)
+        }
+        let railH = CGFloat(layout.verticalHeight(rowHeights: rowHeights, gutter: Int(gutter)))
 
         var out: [Placed] = []
         var y = statusH + margin - step
         for (r, row) in rows.enumerated() {
-            let rowH = r == rows.count - 1 ? panelH - margin - y
-                                           : (availH * CGFloat(weights[r]) / CGFloat(total)).rounded(.down)
+            let rowH = CGFloat(rowHeights[r])
             let mainW = layout.verticalItem != nil && y < 76 + railH + gutter ? 284 : contentW
             let halfW = ((mainW - gutter) / 2).rounded(.down)
             for (c, item) in row.enumerated() {

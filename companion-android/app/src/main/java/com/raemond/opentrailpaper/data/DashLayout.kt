@@ -100,6 +100,22 @@ data class DashLayout(val items: List<DashItem>) {
         }
     val verticalItem: DashItem? get() = normalizedItems.firstOrNull { it.vertical }
 
+    /** Match the device: fill every grid row touched by the requested height. */
+    fun verticalHeight(rowHeights: List<Int>, gutter: Int): Int {
+        if (rowHeights.isEmpty()) return 0
+        val total = rowHeights.sum() + (rowHeights.size - 1) * gutter
+        val percent = verticalItem?.heightPercent ?: 100
+        if (percent >= 100) return total
+        val wanted = total * percent / 100
+        var bottom = 0
+        for ((index, height) in rowHeights.withIndex()) {
+            bottom += height
+            if (bottom + gutter >= wanted || index == rowHeights.lastIndex) return bottom
+            bottom += gutter
+        }
+        return total
+    }
+
 
     /**
      * Serialize back to the config file's text, byte-compatible with

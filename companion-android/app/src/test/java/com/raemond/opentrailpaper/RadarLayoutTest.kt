@@ -5,6 +5,23 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class RadarLayoutTest {
+    @Test fun `vertical tiles fill whole weighted rows including navigation and gutter boundaries`() {
+        val half = DashLayout.parse("radar medium vertical height=50")
+        val threeQuarter = DashLayout.parse("radar medium vertical height=75")
+        val full = DashLayout.parse("radar medium vertical")
+        val grid = listOf(257, 192, 192, 183)
+        val navGrid = listOf(214, 161, 161, 150)
+        assertEquals(461, half.verticalHeight(grid, 12))
+        assertEquals(665, threeQuarter.verticalHeight(grid, 12))
+        assertEquals(860, full.verticalHeight(grid, 12))
+        assertEquals(387, half.verticalHeight(navGrid, 12))
+        assertEquals(560, threeQuarter.verticalHeight(navGrid, 12))
+        assertEquals(722, full.verticalHeight(navGrid, 12))
+        assertEquals(424, half.verticalHeight(listOf(424, 424), 12))
+        assertEquals(860, half.verticalHeight(listOf(860), 12))
+        assertEquals(0, half.verticalHeight(emptyList(), 12))
+    }
+
     @Test fun `tile heights survive sync and legacy layouts remain full height`() {
         for (height in listOf(50, 75, 100)) {
             val text = "speed large\nradar medium half vertical height=$height\n"

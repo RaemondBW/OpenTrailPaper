@@ -8,8 +8,10 @@ pairing. The phone is not needed after pairing.
 
 In the phone's dashboard editor, add **Radar** to a data page and save it to the
 head unit. Choose **Tile height**: **Half**, **Three-quarter**, or **Full** (the default).
-The radar sits at the top right and uses that fraction of the available dashboard
-height, including when navigation reduces the available area. Fields beside it
+The radar sits at the top right and rounds the requested fraction up to a whole
+number of grid rows. Its bottom border aligns with the last adjacent tile, with
+only the normal gutter before the next row. This also applies during navigation;
+with just one numeric row, all height choices fill that row. Fields beside it
 pack on the left; rows starting below the tile expand across the page. A numeric
 field can also be given **Vertical tile** placement.
 Only one vertical tile is allowed per page. Remove it or turn off its vertical

@@ -311,16 +311,19 @@ private fun place(layout: DashLayout): List<Placed> {
     val total = maxOf(weights.sum(), 1)
     val gutters = (rows.size - 1) * GUTTER
     val availH = (PANEL_H - STATUS_H - MARGIN) - gutters
-    val railH = (860 * (layout.verticalItem?.heightPercent ?: 100) / 100).toFloat()
+    var gridY = STATUS_H + MARGIN - STEP
+    val rowHeights = rows.indices.map { r ->
+        val height = if (r == rows.lastIndex) PANEL_H - MARGIN - gridY
+                     else (availH * weights[r] / total).toInt().toFloat()
+        gridY += height + GUTTER
+        height.toInt()
+    }
+    val railH = layout.verticalHeight(rowHeights, GUTTER.toInt()).toFloat()
 
     val out = ArrayList<Placed>()
     var y = STATUS_H + MARGIN - STEP
     for ((r, row) in rows.withIndex()) {
-        val rowH = if (r == rows.size - 1) {
-            PANEL_H - MARGIN - y
-        } else {
-            (availH * weights[r] / total).toInt().toFloat()
-        }
+        val rowH = rowHeights[r].toFloat()
         val mainW = if (layout.verticalItem != null && y < 76 + railH + GUTTER) 284f else CONTENT_W
         val halfW = ((mainW - GUTTER) / 2).toInt().toFloat()
         for ((c, item) in row.withIndex()) {

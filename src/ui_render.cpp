@@ -916,14 +916,6 @@ void ui_render_dashboard(const RideState& s, bool navActive,
         if (s.showOffline || dashFieldAvailable(src.items[i].field, s))
             L.items[L.count++] = src.items[i];
     }
-    const int railHeight = (H - top - 2 * ui::MARGIN + ui::STEP) *
-                           (vertical >= 0 ? src.items[vertical].heightPercent : 100) / 100;
-    const EpdRect rail = {DASH_VERTICAL_X, top + ui::MARGIN - ui::STEP,
-                          DASH_VERTICAL_W, railHeight};
-    if (vertical >= 0) {
-        const DashItem& item = src.items[vertical];
-        if (item.field == DF_RADAR) ui_render_radar(s, rail, fb);
-    }
 
     // Everything configured is unavailable — a fresh device with a power-only
     // layout and no sensors yet. Speed always has a source, so the panel shows
@@ -980,10 +972,24 @@ void ui_render_dashboard(const RideState& s, bool navActive,
 
     const int gutters = (rowCount - 1) * ui::GUTTER;
     const int availH = (H - top - ui::MARGIN) - gutters;
-    int y = top + ui::MARGIN - ui::STEP;
+    const int gridTop = top + ui::MARGIN - ui::STEP;
+    int rowHeights[DASH_MAX_ITEMS];
+    int gridY = gridTop;
     for (int r = 0; r < rowCount; ++r) {
-        int rowH = (r == rowCount - 1) ? (H - ui::MARGIN - y)
-                                       : availH * rows[r].weight / totalWeight;
+        rowHeights[r] = r == rowCount - 1 ? H - ui::MARGIN - gridY
+                                          : availH * rows[r].weight / totalWeight;
+        gridY += rowHeights[r] + ui::GUTTER;
+    }
+    // The rail spans whole rows, including their gutters. Its lower border is
+    // the same border as the last adjacent numeric row, even with navigation.
+    const EpdRect rail = {DASH_VERTICAL_X, gridTop, DASH_VERTICAL_W,
+        dashVerticalHeight(rowHeights, rowCount, ui::GUTTER,
+                           vertical >= 0 ? src.items[vertical].heightPercent : 100)};
+    if (vertical >= 0 && src.items[vertical].field == DF_RADAR)
+        ui_render_radar(s, rail, fb);
+    int y = gridTop;
+    for (int r = 0; r < rowCount; ++r) {
+        const int rowH = rowHeights[r];
         const DashRow& row = rows[r];
         const int contentW = vertical >= 0 && y < rail.y + rail.height + ui::GUTTER
                              ? DASH_VERTICAL_X - ui::GUTTER - ui::CONTENT_X : ui::CONTENT_W;
