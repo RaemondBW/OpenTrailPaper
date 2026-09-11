@@ -1,0 +1,53 @@
+//! The Memfault SDK tracks a few select heartbeat metrics by default to compute
+//! default health statistics for the fleet. All other metrics are provided by the user
+//! of the sdk via the MEMFAULT_METRICS_USER_HEARTBEAT_DEFS_FILE file
+
+#include "memfault/config.h"
+
+// The time since the last heartbeat was collected in ms
+MEMFAULT_METRICS_KEY_DEFINE(MemfaultSdkMetric_IntervalMs, kMemfaultMetricType_Timer)
+// The number of reboots that have taken place since the last heartbeat was collected
+MEMFAULT_METRICS_KEY_DEFINE(MemfaultSdkMetric_UnexpectedRebootCount, kMemfaultMetricType_Unsigned)
+
+#if MEMFAULT_METRICS_SYNC_SUCCESS
+MEMFAULT_METRICS_KEY_DEFINE(sync_successful, kMemfaultMetricType_Unsigned)
+MEMFAULT_METRICS_KEY_DEFINE(sync_failure, kMemfaultMetricType_Unsigned)
+#endif
+
+#if MEMFAULT_METRICS_MEMFAULT_SYNC_SUCCESS
+MEMFAULT_METRICS_KEY_DEFINE(sync_memfault_successful, kMemfaultMetricType_Unsigned)
+MEMFAULT_METRICS_KEY_DEFINE(sync_memfault_failure, kMemfaultMetricType_Unsigned)
+#endif
+
+#if MEMFAULT_METRICS_CONNECTIVITY_CONNECTED_TIME
+MEMFAULT_METRICS_KEY_DEFINE(connectivity_connected_time_ms, kMemfaultMetricType_Timer)
+MEMFAULT_METRICS_KEY_DEFINE(connectivity_expected_time_ms, kMemfaultMetricType_Timer)
+#endif
+
+#if MEMFAULT_METRICS_BLE_SESSION
+MEMFAULT_METRICS_SESSION_KEY_DEFINE(bt_conn)
+MEMFAULT_METRICS_KEY_DEFINE_WITH_SESSION(bt_conn_disconnect_reason_code, kMemfaultMetricType_Unsigned, bt_conn)
+#endif
+
+// Operational hours accumulated since the last heartbeat
+MEMFAULT_METRICS_KEY_DEFINE(operational_hours, kMemfaultMetricType_Unsigned)
+// Operational hours without a crash since the last heartbeat
+MEMFAULT_METRICS_KEY_DEFINE(operational_crashfree_hours, kMemfaultMetricType_Unsigned)
+
+#if MEMFAULT_METRICS_BATTERY_ENABLE
+// State of Charge drop since the last heartbeat was collected, use scale factor for non 0-100% representations
+MEMFAULT_METRICS_KEY_DEFINE_WITH_SCALE_VALUE(battery_soc_pct_drop, kMemfaultMetricType_Unsigned, MEMFAULT_METRICS_BATTERY_SOC_PCT_SCALE_VALUE)
+MEMFAULT_METRICS_KEY_DEFINE(battery_discharge_duration_ms, kMemfaultMetricType_Unsigned)
+// Intentionally leave the range unset for this metric. Some platforms will
+// require a 0-100% range, some will require 0-1000 (0-100.0%), etc. Use scale factor for non 0-100% representations
+MEMFAULT_METRICS_KEY_DEFINE_WITH_SCALE_VALUE(battery_soc_pct, kMemfaultMetricType_Unsigned, MEMFAULT_METRICS_BATTERY_SOC_PCT_SCALE_VALUE)
+#endif
+
+#if MEMFAULT_METRICS_LOGS_ENABLE
+MEMFAULT_METRICS_KEY_DEFINE(MemfaultSDKMetric_log_dropped_lines, kMemfaultMetricType_Unsigned)
+MEMFAULT_METRICS_KEY_DEFINE(MemfaultSDKMetric_log_recorded_lines, kMemfaultMetricType_Unsigned)
+#endif
+
+#if MEMFAULT_METRICS_UPTIME_ENABLE
+MEMFAULT_METRICS_KEY_DEFINE(uptime_s, kMemfaultMetricType_Unsigned)
+#endif

@@ -1,4 +1,6 @@
 #include "diag.h"
+#include "crash_report.h"
+#include "memfault_service.h"
 
 #include <Arduino.h>
 #include <SD.h>
@@ -28,6 +30,7 @@ char previous[SNAPSHOT_CAP + 96] = {};
 size_t previousLen = 0;
 bool checkpointSaved = false;
 uint32_t retryAfterMs = 0;
+uint32_t lastFlushMs = 0;
 bool retryWaiting = false;
 constexpr size_t CAP = 48 * 1024;         // in-RAM staging before an SD flush
 SemaphoreHandle_t mtx = nullptr;
@@ -122,6 +125,8 @@ void log(const char* fmt, ...) {
     size_t n = strlen(line);
     line[n++] = '\n';
     line[n] = 0;
+    crash_report::recordLine(line, n);
+    memfault_service::recordLine(line, n);
     Serial.print(line);
 
     if (!buf || !mtx) return;
@@ -210,7 +215,7 @@ void flushToSD() {
     xSemaphoreTake(mtx, portMAX_DELAY);
     if ((retryWaiting && (int32_t)(millis() - retryAfterMs) < 0) ||
         (pending.size == 0 && previousLen == 0) ||
-        (ride_recorder::isRecording() && pending.size < pending.capacity / 2)) {
+        (ride_recorder::isRecording() && pending.size < pending.capacity / 2 && millis()-lastFlushMs < 30000)) {
         xSemaphoreGive(mtx); sdUnlock(); return;
     }
     // If a long outage evicted boot lines, replay the protected boot copy once.
@@ -244,6 +249,7 @@ void flushToSD() {
         f.flush();
         f.close();
     }
+    if (!failed) lastFlushMs = millis();
     retryWaiting = failed;
     retryAfterMs = millis() + 30000;
     xSemaphoreGive(mtx);

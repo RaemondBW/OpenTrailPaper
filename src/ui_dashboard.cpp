@@ -40,6 +40,8 @@
 #include "settings.h"
 #include "aux_sensors.h"
 #include "diag.h"
+#include "crash_report.h"
+#include "memfault_service.h"
 #include "smooth_epd.h"
 #include "power_mgmt.h"
 #include "dash_config.h"
@@ -1738,6 +1740,8 @@ static void printConsoleHelp() {
     Serial.println("  gpsraw <on|off>      echo raw receiver bytes");
     Serial.println("  sd                   SD mount/USB ownership state (see diag for failures)");
     Serial.println("  sdtest [seconds|status] SD/sleep/phone verification, 30..1800s (default 180)");
+    Serial.println("  crashlog [panic]     report status; panic deliberately reboots (no active ride)");
+    Serial.println("  memfault [export]    offline crash status or non-destructive SDK chunk export");
     Serial.println("  diag                dump retained boot/recent/flash diagnostics (no SD needed)");
     Serial.println("  diag sd [bytes]     read daily SD log over serial (default last 128 KiB)");
     Serial.println("  pm [on|off]         report PM/driver locks, or request light-sleep A/B");
@@ -1806,6 +1810,14 @@ static void runConsoleLine(char* line) {
         agnssRxRemaining = n;
         gps_service::agnssBegin();
         Serial.printf("[cmd] AGNSS: send %ld raw bytes now\n", n);
+    } else if (!strcasecmp(cmd, "memfault")) {
+        if (!arg || !strcasecmp(arg,"status")) memfault_service::requestStatus();
+        else if (!strcasecmp(arg,"export")) memfault_service::requestStatus(true);
+        else Serial.println("[memfault] use memfault [status|export]");
+    } else if (!strcasecmp(cmd, "crashlog")) {
+        if(arg && !strcasecmp(arg,"panic"))crash_report::requestTestPanic();
+        else if(!arg || !strcasecmp(arg,"status"))crash_report::requestStatus();
+        else Serial.println("[crashlog] use crashlog [status|panic]");
     } else if (!strcasecmp(cmd, "power")) {
         uint16_t mv = 0; int16_t ma = 0;
         if (board_read_power(mv, ma))

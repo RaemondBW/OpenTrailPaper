@@ -21,14 +21,16 @@ extern "C" int __wrap_log_printf(const char* format, ...) {
     int length = vsnprintf(line, sizeof(line), format, copy);
     va_end(copy);
     if (strstr(line, "sd_diskio.cpp:") || strstr(line, "SD.cpp:") ||
-        strstr(line, "vfs_api.cpp:")) {
+        strstr(line, "vfs_api.cpp:") || strstr(line, "HardwareSerial.cpp:")) {
         size_t n = strnlen(line, sizeof(line) - 1);
         if (n && line[n - 1] != '\n') line[n - 1] = '\n';
         portENTER_CRITICAL(&mux);
         queued.append(line, n);
         portEXIT_CRITICAL(&mux);
-        // drainDriverLogs echoes these to CDC and the persistent logger. Avoid
-        // the default UART0 route, which shares the GPS pins on this board.
+        // UART errors run on a small event-task stack. Forwarding them to
+        // log_printfv formats twice more (and may allocate/lock UART0), which
+        // was on the captured UART panic path. Defer these like SD messages.
+        // drainDriverLogs echoes to CDC/SD later, outside the event task.
     } else {
         length = log_printfv(format, args);
     }
@@ -51,10 +53,10 @@ void diag::drainDriverLogs() {
         uint32_t dropped = queued.dropped;
         queued.dropped = 0;
         portEXIT_CRITICAL(&mux);
-        if (dropped) diag::log("sd driver: %lu log bytes dropped", (unsigned long)dropped);
+        if (dropped) diag::log("driver: %lu log bytes dropped", (unsigned long)dropped);
         if (!n) break;
         while (n && (line[n - 1] == '\n' || line[n - 1] == '\r')) --n;
         line[n] = 0;
-        diag::log("sd driver: %s", line);
+        diag::log("driver: %s", line);
     }
 }

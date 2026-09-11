@@ -21,7 +21,7 @@ void checkpoint(const char* reason); // bounded NVS fallback, at most once/boot
 // printf-style; also echoed to Serial. Keep messages short.
 void log(const char* fmt, ...);
 
-// Append to /logs/YYYYMMDD.log. Retain short writes; defer small ride flushes.
+// Append to /logs/YYYYMMDD.log. Retain short writes; batch ride logs for at most 30 seconds.
 void flushToSD();
 
 const char* logPath();   // current /logs/YYYYMMDD.log (or pending.log before clock sync)

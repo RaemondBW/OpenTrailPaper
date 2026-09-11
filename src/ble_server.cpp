@@ -789,7 +789,9 @@ void sendLogFile(const char* name) {
     }
     diag::flushToSD();
     char path[64];
-    snprintf(path, sizeof(path), "/logs/%.40s", name);
+    // Match the 47-byte request-name capacity; Memfault export names are
+    // 45 bytes. The old 40-byte limit cut off their suffix during download.
+    snprintf(path, sizeof(path), "/logs/%.47s", name);
     streamFileWindowed(path, name);
 }
 

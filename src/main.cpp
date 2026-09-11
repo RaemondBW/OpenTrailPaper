@@ -31,6 +31,8 @@
 #include "aux_sensors.h"
 #include "mesh_service.h"
 #include "diag.h"
+#include "crash_report.h"
+#include "memfault_service.h"
 #include <esp_sleep.h>
 #include <driver/gpio.h>
 #include <soc/rtc_cntl_reg.h>
@@ -293,35 +295,8 @@ static const char* wakeCauseStr(esp_sleep_wakeup_cause_t c) {
     }
 }
 
-// After a panic, the ESP32 auto-writes a full core dump to the `coredump`
-// flash partition (enabled in the Arduino sdkconfig). At the next boot we
-// summarize it — crashing task + program counter + backtrace — into the SD
-// diag log so a crash is diagnosable without a serial monitor, then erase it.
-// Decode the backtrace PCs offline with:
-//   xtensa-esp32s3-elf-addr2line -e .pio/build/t5s3-pro/firmware.elf <PC …>
-static void logCoreDumpIfAny() {
-#ifdef HAVE_COREDUMP
-    esp_core_dump_summary_t* s =
-        (esp_core_dump_summary_t*)malloc(sizeof(esp_core_dump_summary_t));
-    if (!s) return;
-    if (esp_core_dump_get_summary(s) == ESP_OK) {
-        diag::log("CRASH dump: task '%s' PC=0x%08x", s->exc_task,
-                  (unsigned)s->exc_pc);
-        char bt[220];
-        int o = 0;
-        for (uint32_t i = 0; i < s->exc_bt_info.depth &&
-                             o < (int)sizeof(bt) - 12; ++i) {
-            o += snprintf(bt + o, sizeof(bt) - o, "0x%08x ",
-                          (unsigned)s->exc_bt_info.bt[i]);
-        }
-        diag::log("CRASH backtrace%s: %s",
-                  s->exc_bt_info.corrupted ? " (corrupt)" : "", bt);
-        esp_core_dump_image_erase();   // consumed — don't re-log next boot
-    }
-    free(s);
-#endif
-}
-
+// Crash reports are staged durably before SD initialization; the main loop
+// delivers them once the card is available (including a later successful retry).
 void setup() {
     // NOTE: the CPU runs at the default 240 MHz. An experimental 160 MHz
     // downclock (for power saving) was REMOVED — the OPI PSRAM couldn't handle
@@ -381,8 +356,8 @@ void setup() {
         esp_sleep_wakeup_cause_t wc = esp_sleep_get_wakeup_cause();
         diag::log("woke by: %s [%d]", wakeCauseStr(wc), (int)wc);
     }
-    if (rr == ESP_RST_PANIC || rr == ESP_RST_INT_WDT || rr == ESP_RST_TASK_WDT)
-        logCoreDumpIfAny();          // save the backtrace to SD after a crash
+    memfault_service::begin((int)rr);
+    crash_report::begin((int)rr, resetReasonStr(rr), FIRMWARE_VERSION);
     diag::log("cpu %d MHz", getCpuFrequencyMhz());
     // Undo the SD CS latch used for deep sleep before any driver touches SPI.
     gpio_hold_dis((gpio_num_t)BOARD_SD_CS);
@@ -679,6 +654,8 @@ void loop() {
     ride_recorder::retryMountIfNeeded();   // pick a dropped card back up
     power_mgmt::tick();    // hold light sleep off while the USB console is open
     sd_diagnostics::tick();
+    crash_report::tick();
+    memfault_service::tick();
     workout_service::tick();   // pause-at-block-boundary mode
     vTaskDelay(pdMS_TO_TICKS(1000));
 }

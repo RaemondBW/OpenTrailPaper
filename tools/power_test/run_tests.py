@@ -207,6 +207,8 @@ struct Preferences {
  size_t putBytes(const char*,const void* p,size_t n){++flashWrites;flash.assign((const char*)p,n);return n;}
  void end(){}
 };
+namespace crash_report {void recordLine(const char*,size_t){}}
+namespace memfault_service {void recordLine(const char*,size_t){}}
 void diag::drainDriverLogs(){}
 ''' + production('diag.cpp') + r'''
 int main(int argc,char** argv){
@@ -237,6 +239,14 @@ int main(int argc,char** argv){
  assert(pending.dropped>0); assert(std::string(boot,bootLen).find("boot sentinel")!=std::string::npos);
  cardMounted=true; diag::flushToSD(); assert(disk.find("retained boot after log overflow")!=std::string::npos);
  assert(pending.size==0); assert(flashWrites==1);
+ // Sparse ride diagnostics must flush within 30 s, including millis wrap.
+ recording=true;nowMs=lastFlushMs+1000;diag::log("ride breadcrumb");
+ previousOpens=opens;diag::flushToSD();assert(opens==previousOpens);
+ nowMs=lastFlushMs+29999;diag::flushToSD();assert(opens==previousOpens);
+ ++nowMs;diag::flushToSD();assert(pending.size==0&&opens>previousOpens);
+ lastFlushMs=UINT32_MAX-10000;nowMs=19998;diag::log("wrap breadcrumb");
+ previousOpens=opens;diag::flushToSD();assert(opens==previousOpens);
+ ++nowMs;diag::flushToSD();assert(pending.size==0&&opens>previousOpens);
  free(buf); free(boot); delete mtx;
  puts("Logger missing-card/short-write/open-failure/overflow/checkpoint checks passed");
 }
@@ -279,6 +289,8 @@ int main(){
  __wrap_log_printf("[%s:%u] %s\n","sd_diskio.cpp",805,"f_mount failed");
  assert(forwarded==0 && lines.empty());
  diag::drainDriverLogs(); assert(lines.size()==1 && lines[0].find("f_mount failed")!=std::string::npos);
+ __wrap_log_printf("[%s:%u] %s\n","HardwareSerial.cpp",317,"UART2 Buffer Full");
+ assert(forwarded==0);diag::drainDriverLogs();assert(lines.back().find("UART2 Buffer Full")!=std::string::npos);
  __wrap_log_printf("unrelated log\n"); assert(forwarded==1);
  for(int i=0;i<1000;++i) __wrap_log_printf("[sd_diskio.cpp:10] failure %d\n",i);
  diag::drainDriverLogs();
