@@ -164,6 +164,7 @@ fun DashboardEditorSheet(ble: BleManager, onDismiss: () -> Unit) {
                 .padding(vertical = 16.dp),
         ) {
             PageCarousel(
+                useMiles = ble.useMiles,
                 config = config,
                 pageIx = pageIx,
                 onSelect = { pageIx = it },
@@ -329,6 +330,7 @@ fun DashboardEditorSheet(ble: BleManager, onDismiss: () -> Unit) {
  */
 @Composable
 private fun PageCarousel(
+    useMiles: Boolean,
     config: DashConfig,
     pageIx: Int,
     onSelect: (Int) -> Unit,
@@ -397,6 +399,7 @@ private fun PageCarousel(
                     },
             ) {
                 PageCard(
+                    useMiles = useMiles,
                     config = config,
                     page = page,
                     selected = pageIx == i,
@@ -419,6 +422,7 @@ private fun PageCarousel(
 
 @Composable
 private fun PageCard(
+    useMiles: Boolean,
     config: DashConfig,
     page: DashConfig.Page,
     selected: Boolean,
@@ -454,6 +458,7 @@ private fun PageCard(
                 DashConfig.PageKind.FIELDS -> DashPreview(
                     page.layout,
                     Modifier.fillMaxWidth().aspectRatio(DASH_PANEL_ASPECT),
+                    useMiles = useMiles,
                 )
             }
         }

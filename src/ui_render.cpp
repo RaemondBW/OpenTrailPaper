@@ -848,7 +848,7 @@ void ui_render_radar(const RideState& s, const EpdRect& r, uint8_t* fb) {
     epd_fill_rect({r.x + 13, laneTop, 2, laneHeight + 1}, ui::INK, fb);
     for (int i = 1; i <= 3; ++i)
         epd_fill_rect({r.x + 5, laneTop + laneHeight * i / 3, 10, 2}, ui::INK, fb);
-    ui::label(cx, r.y + r.height - 17, s.useMiles ? "164 YD+" : "150 M+", fb);
+    ui::label(cx, r.y + r.height - 17, s.useMiles ? "492 FT+" : "150 M+", fb);
     if (!live) {
         ui::label(cx, laneTop + laneHeight / 2, "CHECK", fb);
         ui::label(cx, laneTop + laneHeight / 2 + 25, "RADAR", fb);
@@ -873,10 +873,10 @@ void ui_render_radar(const RideState& s, const EpdRect& r, uint8_t* fb) {
         epd_fill_rect({r.x + 13, y, 14, 2}, ui::INK, fb);
         if (y - 30 <= labelBottom) continue;
         char distance[16];
-        const int value = s.useMiles ? int(target.distanceM * 1.0936133f + 0.5f) : target.distanceM;
+        const int value = int(units::elev(target.distanceM, s.useMiles) + 0.5);
         snprintf(distance, sizeof(distance), "%d", value);
         ui::text(&Impact_T, r.x + 140, y + 8, distance, fb, EPD_DRAW_ALIGN_CENTER);
-        ui::text(&Arial_L, r.x + 140, y + 29, s.useMiles ? "yd" : "m", fb, EPD_DRAW_ALIGN_CENTER);
+        ui::text(&Arial_L, r.x + 140, y + 29, s.useMiles ? "ft" : "m", fb, EPD_DRAW_ALIGN_CENTER);
         labelBottom = y + 36;
     }
 }

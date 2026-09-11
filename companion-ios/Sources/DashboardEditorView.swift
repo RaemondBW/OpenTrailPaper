@@ -500,6 +500,7 @@ private let kLabelLadder: [LabelFace] = [
 private let kUnitFace = LabelFace(cap: 15, ascender: 19, perChar: 13.5)
 
 struct DashPreview: View {
+    @AppStorage(UnitPref.key) private var useMiles = false
     let layout: DashLayout
 
     /// A ride to read the numbers off, for the tutorial's live head unit. The
@@ -696,13 +697,13 @@ struct DashPreview: View {
                 Rectangle().strokeBorder(Color.black, lineWidth: 2 * k)
                     .frame(width: 62 * k, height: 22 * k).offset(x: 28 * k, y: y - 11 * k)
                 if distance == 52 || laneHeight * 66 / 150 > 66 {
-                    Text("\(distance)").font(.system(size: 30 * k, weight: .bold))
+                    Text("\(Int(Units.elevation(Double(distance), miles: useMiles).rounded()))").font(.system(size: 30 * k, weight: .bold))
                         .frame(width: 80 * k).offset(x: 100 * k, y: y - 22 * k)
-                    Text("m").font(.system(size: 14 * k))
+                    Text(useMiles ? "ft" : "m").font(.system(size: 14 * k))
                         .frame(width: 80 * k).offset(x: 100 * k, y: y + 15 * k)
                 }
             }
-            Text("150 M+").font(.system(size: 14 * k, weight: .bold))
+            Text(useMiles ? "492 FT+" : "150 M+").font(.system(size: 14 * k, weight: .bold))
                 .offset(x: 62 * k, y: (height - 31) * k)
         }
     }

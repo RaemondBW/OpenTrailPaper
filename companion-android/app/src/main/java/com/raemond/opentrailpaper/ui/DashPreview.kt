@@ -42,6 +42,8 @@ import com.raemond.opentrailpaper.data.DashItem
 import com.raemond.opentrailpaper.data.DashLayout
 import com.raemond.opentrailpaper.data.DashSize
 import com.raemond.opentrailpaper.data.RideSim
+import com.raemond.opentrailpaper.data.Units
+import kotlin.math.roundToInt
 
 // A scaled likeness of the panel, drawn to the SAME rules ui_render.cpp uses.
 //
@@ -156,6 +158,7 @@ fun DashPreview(
     layout: DashLayout,
     modifier: Modifier = Modifier,
     live: RideSim? = null,
+    useMiles: Boolean = false,
 ) {
     BoxWithConstraints(
         modifier
@@ -177,7 +180,7 @@ fun DashPreview(
                         .offset(x = (p.x * k).dp, y = ((p.y - STATUS_H) * k).dp)
                         .size(width = (p.w * k).dp, height = (p.h * k).dp),
                 ) {
-                    Cell(p, k, live)
+                    Cell(p, k, live, useMiles)
                 }
             }
         }
@@ -185,14 +188,14 @@ fun DashPreview(
 }
 
 @Composable
-private fun Cell(p: Placed, k: Float, live: RideSim?) {
+private fun Cell(p: Placed, k: Float, live: RideSim?, useMiles: Boolean) {
     Box(
         Modifier
             .fillMaxSize()
             .border((RULE * k).dp, Color.Black),
     ) {
         if (p.item.field == "radar") {
-            RadarSample(k, p.h)
+            RadarSample(k, p.h, useMiles)
         } else if (p.hero) {
             Column(
                 Modifier
@@ -277,7 +280,7 @@ private fun ZoneBar(k: Float, width: Float, filled: Int) {
 }
 
 @Composable
-private fun RadarSample(k: Float, height: Float) {
+private fun RadarSample(k: Float, height: Float, useMiles: Boolean) {
     val riderBottom = if (height < 600) 120f else 130f
     val laneTop = riderBottom + 34
     val laneHeight = height - 78 - laneTop
@@ -292,13 +295,13 @@ private fun RadarSample(k: Float, height: Float) {
         Box(Modifier.offset((28 * k).dp, ((y - 11) * k).dp)
             .size((62 * k).dp, (22 * k).dp).border((2 * k).dp, Color.Black))
         if (distance == 52 || laneHeight * 66 / 150 > 66) {
-            Text("$distance", fontSize = (30 * k).sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center,
+            Text("${Units.elevation(distance.toDouble(), useMiles).roundToInt()}", fontSize = (30 * k).sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center,
                 modifier = Modifier.offset((100 * k).dp, ((y - 22) * k).dp).width((80 * k).dp))
-            Text("m", fontSize = (14 * k).sp, textAlign = TextAlign.Center,
+            Text(if (useMiles) "ft" else "m", fontSize = (14 * k).sp, textAlign = TextAlign.Center,
                 modifier = Modifier.offset((100 * k).dp, ((y + 15) * k).dp).width((80 * k).dp))
         }
     }
-    Text("150 M+", fontSize = (14 * k).sp, fontWeight = FontWeight.Bold,
+    Text(if (useMiles) "492 FT+" else "150 M+", fontSize = (14 * k).sp, fontWeight = FontWeight.Bold,
         modifier = Modifier.offset((62 * k).dp, ((height - 31) * k).dp))
 }
 

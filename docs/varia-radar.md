@@ -24,7 +24,7 @@ use outline (>100 m), dotted (40–100 m), and solid (<40 m) ink. The header sho
 the track count and changes to CAR BACK when the nearest target is under 40 m.
 Each marker stays at the reported distance. Crowded distance labels are omitted,
 nearest first, so a label never overwrites another car. Metric distances use
-metres; imperial distances use yards. The 150 m / 164 yd scale saturates at its
+metres; standard (imperial) distances use feet. The 150 m / 492 ft scale saturates at its
 far end (marked +); the number still shows the reported distance beyond it.
 
 A configured radar tile stays visible even with Hide offline fields enabled.
