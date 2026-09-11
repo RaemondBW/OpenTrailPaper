@@ -42,9 +42,16 @@ This is also the engine behind `pio run -t upload`; see tools/pio_upload.py.
 from __future__ import annotations
 
 import argparse
+import json
+import subprocess
 import os
 import sys
 import time
+try:
+    import termios
+    PORT_TRANSITION_ERRORS = (OSError, termios.error)
+except ImportError:  # Windows
+    PORT_TRANSITION_ERRORS = (OSError,)
 
 try:
     import serial
@@ -153,7 +160,7 @@ def enter_download_mode() -> str:
                 with serial.Serial(app, 115200, timeout=1) as s:
                     s.write(b"\nbootloader\n")
                     s.flush()
-            except (serial.SerialException, OSError) as e:
+            except (serial.SerialException, *PORT_TRANSITION_ERRORS) as e:
                 # Expected while the board is mid-reset; only worth reporting if
                 # we never get in at all.
                 last_err = e
@@ -169,17 +176,25 @@ def enter_download_mode() -> str:
 
 # --- esptool plumbing -------------------------------------------------------
 def _esptool(args: list[str]) -> None:
-    """Run esptool in-process, preferring PlatformIO's pinned copy."""
-    try:
-        import esptool  # noqa: F401
-    except ImportError:
-        pio_esptool = os.path.expanduser("~/.platformio/packages/tool-esptoolpy")
-        if not os.path.isdir(pio_esptool):
-            raise SystemExit("[flash] esptool not importable: pip install esptool")
-        sys.path.insert(0, pio_esptool)
-        import esptool  # noqa: F811
+    """Prefer the pinned PlatformIO tool in the selected core, including worktrees.
 
-    esptool.main(args)
+    Run it in a fresh interpreter. Importing a different global esptool in the
+    upload hook can pull newer dependencies after the flash already succeeded.
+    """
+    core = os.environ.get("PLATFORMIO_CORE_DIR", os.path.expanduser("~/.platformio"))
+    for name in ("tool-esptoolpy@1.40501.0", "tool-esptoolpy"):
+        directory = os.path.join(core, "packages", name)
+        metadata = os.path.join(directory, "package.json")
+        script = os.path.join(directory, "esptool.py")
+        if not os.path.isfile(metadata) or not os.path.isfile(script):
+            continue
+        with open(metadata) as f:
+            version = json.load(f).get("version", "")
+        if str(version).startswith("1.40501."):
+            subprocess.run([sys.executable, script, *args], check=True)
+            return
+    # Standalone use without PlatformIO: respect an explicitly installed module.
+    subprocess.run([sys.executable, "-m", "esptool", *args], check=True)
 
 
 def clear_force_download_boot(port: str) -> None:

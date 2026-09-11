@@ -54,3 +54,8 @@ Service `B1C50000-9E0F-4B7A-9C6D-1F2E3A4B5C6D`:
   a natural seam to drop in a dedicated bike router later.
 - Route upload is paced (~12 ms/packet) for reliability over BLE; a long
   cross-town route of a few thousand points takes a couple of seconds.
+
+Music controls and now-playing metadata use the iPhone's Apple Media Service
+(AMS) directly over the head unit's BLE link. The companion app does not request
+Apple Music library access, send Apple Music metadata/artwork, or relay music
+commands. The head unit's music page still supports AMS playback controls.

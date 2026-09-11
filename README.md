@@ -525,3 +525,15 @@ support cloned into `vendor/` at build time, which carries its own licenses
 Map data is derived from OpenStreetMap, © OpenStreetMap contributors, under the
 [ODbL](https://www.openstreetmap.org/copyright). Generated maps are subject to
 the ODbL independently of this project's license.
+
+
+### GPS reception with CPU light sleep
+
+The battery investigation's `t5s3-painter-gps-wake` build keeps GPS running while
+allowing CPU light sleep between received bursts. On the tested T5/L76K board,
+2,442 sleep calls preserved all GGA/RMC epochs, the same phone connection, and
+SD logging. It uses the private PM-enabled IDF 4.4.6 framework, a retained main
+crystal, fixed 240 MHz CPU frequency, and a GPIO RX wake guard. This is a separate
+build profile; the shipping/CI default remains unchanged. Build commands,
+firmware hashes, measured results and remaining validation limits are in the
+[battery and SD investigation](investigations/battery-sd-sleep-2026-09-10.md).

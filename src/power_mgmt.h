@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stddef.h>
+#include <stdint.h>
 
 // Automatic light-sleep power management for the ESP32-S3.
 //
@@ -13,27 +14,24 @@
 // is rebuilt with power management enabled.
 namespace power_mgmt {
 
-// Configure automatic light sleep. Call once from setup(), AFTER the peripherals
-// (especially SerialGPS) are begun, so the UART driver is installed. Returns
-// true only if PM was actually enabled by the running framework.
+// Create guards before peripheral/background task initialization.
+bool prepare();
+// Configure automatic light sleep after peripherals have started.
+// Returns false on a stock framework or any guard/configuration failure.
 bool begin();
+void requestSleep(bool enabled); // applied by tick(); on/off A/B without reflashing
+void report(); // configuration and IDF driver locks to Serial + buffered SD log
 
 // Call periodically from loop(): holds a no-light-sleep lock while the USB-CDC
-// console is connected, so the serial monitor survives on the bench (light sleep
-// drops the native-USB PHY and churns the CDC link). Released on battery so the
-// CPU is free to sleep.
+// console or VBUS is present, so the serial monitor survives on the bench.
+// Released on battery once BLE and bus guards allow sleeping.
 void tick();
 
 // Hold light sleep off across a bus transaction that must not be interrupted.
 //
-// WHY: the SD card is driven by sd_diskio.cpp -> Arduino SPIClass ->
-// esp32-hal-spi.c, which — unlike ESP-IDF's own spi_master — never takes a PM
-// lock. With light sleep armed the SoC can therefore sleep in the middle of an
-// SD command, gating the SPI clock and leaving the card mid-transaction. The
-// card then refuses CMD0/GO_IDLE_STATE on every subsequent mount, reporting
-// cardType=NONE, and stays that way until it is physically power-cycled —
-// surviving reboots, reflashes and even a revert to a non-PM framework, which
-// makes it look like a permanent hardware fault.
+// Arduino SPI does not acquire IDF PM locks. Guard the whole SD operation,
+// including retries/delays, not just individual clock bursts. A protocol fault
+// is possible without this guard; it does not prove a permanently wedged card.
 //
 // Recursive-safe: esp_pm_lock keeps a count, so nested acquire/release pairs
 // balance. Both are no-ops when PM is unavailable (stock framework).
@@ -48,5 +46,8 @@ void busyRelease();
 // hid for a week). Never contains '%' — the phone's battery-line parser
 // keys on that character.
 void stateStr(char* out, size_t n);
+
+// Successful light-sleep calls and time inside them (includes entry/exit overhead).
+void sleepStats(uint32_t& ok, uint32_t& rejected, uint64_t& us);
 
 }  // namespace power_mgmt

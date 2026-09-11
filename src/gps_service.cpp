@@ -4,6 +4,13 @@
 #include <TinyGPS++.h>
 #include <freertos/FreeRTOS.h>
 #include <esp_heap_caps.h>
+#include <driver/gpio.h>
+#include <soc/uart_struct.h>
+#include <atomic>
+#include <soc/io_mux_reg.h>
+#include "power_mgmt.h"
+#include "gps_rx_guard.h"
+#include "gps_sentence_audit.h"
 
 #include "config.h"
 #include "ride_state.h"
@@ -18,6 +25,8 @@
 namespace {
 
 TinyGPSPlus gps;
+GpsSentenceAudit rxAudit;
+std::atomic<uint32_t> rxFifoErrors{0}, rxBufferErrors{0}, rxFrameErrors{0}, rxParityErrors{0};
 // Satellites in view, per constellation (GSV term 3 repeats the total).
 TinyGPSCustom gpgsvInView(gps, "GPGSV", 3);   // GPS
 TinyGPSCustom glgsvInView(gps, "GLGSV", 3);   // GLONASS
@@ -198,6 +207,30 @@ bool begin() {
     // whole second of fix confirmation. Must be set before begin().
     SerialGPS.setRxBufferSize(1024);
     SerialGPS.begin(9600, SERIAL_8N1, BOARD_GPS_RXD, BOARD_GPS_TXD);
+    // Preserve GPS pins on SDKs that enable GPIO isolation. This SDK already
+    // has SLP_SEL clear; log registers so this is not mistaken for a proven fix.
+    // Keeping XTAL/pins active alone does not guarantee UART RX through sleep.
+    uint32_t rxBefore = REG_READ(GPIO_PIN_MUX_REG[BOARD_GPS_RXD]);
+    uint32_t txBefore = REG_READ(GPIO_PIN_MUX_REG[BOARD_GPS_TXD]);
+    esp_err_t rxKeep = gpio_sleep_sel_dis((gpio_num_t)BOARD_GPS_RXD);
+    esp_err_t txKeep = gpio_sleep_sel_dis((gpio_num_t)BOARD_GPS_TXD);
+    diag::log("gps UART2: retain RX=%d TX=%d -> %s/%s mux=%08lx/%08lx -> %08lx/%08lx",
+              BOARD_GPS_RXD, BOARD_GPS_TXD, esp_err_to_name(rxKeep), esp_err_to_name(txKeep),
+              (unsigned long)rxBefore, (unsigned long)txBefore,
+              (unsigned long)REG_READ(GPIO_PIN_MUX_REG[BOARD_GPS_RXD]),
+              (unsigned long)REG_READ(GPIO_PIN_MUX_REG[BOARD_GPS_TXD]));
+    // The serial event task only counts errors; SD/serial logging stays on
+    // the GPS task to avoid re-entering the UART driver or diagnostic locks.
+    SerialGPS.onReceiveError([](hardwareSerial_error_t error) {
+        switch (error) {
+            case UART_FIFO_OVF_ERROR: ++rxFifoErrors; break;
+            case UART_BUFFER_FULL_ERROR: ++rxBufferErrors; break;
+            case UART_FRAME_ERROR: ++rxFrameErrors; break;
+            case UART_PARITY_ERROR: ++rxParityErrors; break;
+            default: break;
+        }
+    });
+    gps_rx_guard::begin();
     delay(100);
 
     if (initL76K()) {
@@ -457,6 +490,7 @@ int waitForCasicAck(uint32_t timeoutMs) {
     while (millis() - start < timeoutMs) {
         while (SerialGPS.available()) {
             uint8_t c = SerialGPS.read();
+            rxAudit.feed(c);
             gps.encode(c);
             switch (st) {
                 case 0: st = (c == 0xBA) ? 1 : 0; break;
@@ -575,15 +609,20 @@ void task(void*) {
             }
         }
 
+        bool receivedBytes = false;
         while (SerialGPS.available()) {
+            receivedBytes = true;
             char c = SerialGPS.read();
 #if GPS_ECHO_NMEA
             Serial.write(c);
 #else
             if (g_rawEcho) Serial.write(c);
 #endif
+            rxAudit.feed(c);
             gps.encode(c);
         }
+
+        gps_rx_guard::tick(receivedBytes);
 
         // A completed AGNSS blob is sent here, ACK-gated (blocks this loop for
         // the ~seconds of injection, which is fine — we're not fixing meanwhile).
@@ -707,11 +746,67 @@ void task(void*) {
                 diag::log("gps module: %s", moduleName());
             }
             bool haveFix = gps.location.isValid() && gps.location.age() < 3000;
+#ifdef PM_GPS_RX_GUARD
+            uint32_t interval = 15000;
+#else
             uint32_t interval = haveFix ? 120000 : 15000;
+#endif
             if (millis() - lastGpsLog > interval) {
+                uint32_t windowMs = millis() - lastGpsLog;
                 lastGpsLog = millis();
+                gps_rx_guard::report();
+                static GpsSentenceAudit::Counts previousAudit;
+                auto audit = rxAudit.counts;
+                diag::log("gps sentence window: gga=%lu rmc=%lu bad=%lu truncated=%lu missing_gga=%lu missing_rmc=%lu",
+                          (unsigned long)(audit.gga-previousAudit.gga), (unsigned long)(audit.rmc-previousAudit.rmc),
+                          (unsigned long)(audit.bad-previousAudit.bad), (unsigned long)(audit.truncated-previousAudit.truncated),
+                          (unsigned long)(audit.missingGga-previousAudit.missingGga),
+                          (unsigned long)(audit.missingRmc-previousAudit.missingRmc));
+                bool auditLoss = false;
+#ifdef PM_GPS_RX_GUARD
+                // Once one full awake 1 Hz window establishes the stream,
+                // losing whole GGA/RMC epochs also stops the sleep experiment.
+                static bool auditPrimed = false;
+                if (auditPrimed) {
+                    auditLoss = audit.gga-previousAudit.gga < 8 || audit.rmc-previousAudit.rmc < 8 ||
+                                audit.bad-previousAudit.bad >= 3 ||
+                                audit.missingGga-previousAudit.missingGga >= 2 ||
+                                audit.missingRmc-previousAudit.missingRmc >= 2;
+                }
+                if (audit.gga-previousAudit.gga >= 10 && audit.rmc-previousAudit.rmc >= 10) auditPrimed = true;
+#endif
+                previousAudit = audit;
                 GpsDebug d;
                 getDebug(d);
+                static uint32_t prevChars = 0, prevGood = 0, prevBad = 0, prevSleep = 0;
+                uint32_t sleepCalls, rejected; uint64_t sleepUs;
+                power_mgmt::sleepStats(sleepCalls, rejected, sleepUs);
+                diag::log("gps RX window: %lums bytes=%lu good=%lu bad=%lu sleep_calls=%lu",
+                          (unsigned long)windowMs, (unsigned long)(d.chars - prevChars),
+                          (unsigned long)(d.passedCksum - prevGood),
+                          (unsigned long)(d.failedCksum - prevBad),
+                          (unsigned long)(sleepCalls - prevSleep));
+                diag::log("gps UART state: clock=%08lx rxmux=%08lx txmux=%08lx errors fifo=%lu buffer=%lu frame=%lu parity=%lu",
+                          (unsigned long)UART2.clk_conf.val,
+                          (unsigned long)REG_READ(GPIO_PIN_MUX_REG[BOARD_GPS_RXD]),
+                          (unsigned long)REG_READ(GPIO_PIN_MUX_REG[BOARD_GPS_TXD]),
+                          (unsigned long)rxFifoErrors.load(), (unsigned long)rxBufferErrors.load(),
+                          (unsigned long)rxFrameErrors.load(), (unsigned long)rxParityErrors.load());
+                static bool rxSleepFallback = false;
+                uint32_t badDelta = d.failedCksum - prevBad;
+                uint32_t goodDelta = d.passedCksum - prevGood;
+                // Observed sleep regression: >70 corrupt sentences per 15s.
+                // Stop the experiment for this boot if it recurs, retain the
+                // evidence, and allow GPS RX to recover in the awake state.
+                if (!rxSleepFallback && sleepCalls != prevSleep && (auditLoss || (badDelta >= 20 && badDelta > goodDelta))) {
+                    rxSleepFallback = true;
+                    power_mgmt::requestSleep(false);
+                    diag::log("gps: RX corruption or missing epochs after sleep; requesting pm off for this boot (good=%lu bad=%lu)",
+                              (unsigned long)goodDelta, (unsigned long)badDelta);
+                    diag::checkpoint("GPS RX corruption after light sleep");
+                }
+                prevChars = d.chars; prevGood = d.passedCksum;
+                prevBad = d.failedCksum; prevSleep = sleepCalls;
                 diag::log("gps %s: chars=%lu ck=%lu/%lu sats=%d/%d snr=%d hdop=%.1f",
                           haveFix ? "FIX" : "searching", (unsigned long)d.chars,
                           (unsigned long)d.passedCksum, (unsigned long)d.failedCksum,

@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <SD.h>
 #include <SPI.h>
+#include <driver/gpio.h>
 
 #include "config.h"
 #include "fit_writer.h"
@@ -428,54 +429,60 @@ namespace ride_recorder {
 
 namespace {
 
-// Mount the card. Caller holds sdLock.
-//
-// Retry: the SPI card-init handshake is flaky right after power-on and can fail
-// the first time or two, especially if a prior session left the card
-// mid-transaction (only a clean re-init clears it). Stay at the library's proven
-// 4 MHz — the same clock the recorder has always used — and just give it a few
-// gentle attempts with a settle delay, dropping to 1 MHz last-ditch. (Do NOT
-// start high: a too-fast probe can wedge a marginal card so the slower retries
-// then also fail.)
-//
-// `logFailures` is off for the background retry, which would otherwise write
-// three lines every 30 s for as long as a card is simply absent.
-// Shove the card back to a known state before asking the library to mount it.
-//
-// WHY. This device cannot power-cycle its SD card — there is no gate on that
-// rail (the XL9555 gates GPS/LoRa only). So when the firmware resets in the
-// MIDDLE of an SD transaction, which is exactly what a watchdog reset during
-// spiTransferBytesNL() does, the card keeps the state it was left in: mid
-// command, and with CRC checking still enabled from the previous session. The
-// SD spec only allows CRC on for CMD0 and CMD8, so the mount sequence's first
-// command comes back a CRC error and the whole mount aborts — on a card that is
-// perfectly healthy and mounts fine in a reader. That is espressif/esp-idf
-// #14000; the tolerant behaviour landed in IDF 5.x and this build is on 4.4.
-//
-// The sequence is the one the SD physical-layer spec prescribes for entering
-// SPI mode, and it is what a power cycle would otherwise have done for us:
-//   * >= 74 clocks with CS and MOSI HIGH, to let the card's internal state
-//     machine finish whatever it was doing (80 here, ten 0xFF bytes);
-//   * then CMD0 GO_IDLE_STATE, which carries a FIXED, always-valid CRC (0x95)
-//     and so is the one command a card still in CRC mode will accept.
-//
-// Cheap (a few hundred microseconds at 400 kHz) and harmless on a card that is
-// already idle, so it runs before every attempt rather than only after a crash.
-void sdSpiForceIdle() {
-    SPI.beginTransaction(SPISettings(400000, MSBFIRST, SPI_MODE0));
-    digitalWrite(BOARD_SD_CS, HIGH);
-    for (int i = 0; i < 10; ++i) SPI.transfer(0xFF);   // >= 74 clocks, CS high
+// Arduino SD/SPI recovery, under sdLock. The card stays powered across an
+// ESP reset on this board. CMD0 has a valid CRC even if the previous session
+// enabled CRC checking. This is NOT IDF's CMD52 issue (#14000): Arduino SD
+// does not issue CMD52. Capture real wire responses instead of cardType(),
+// which is always NONE after SD.begin() has cleaned up a failed mount.
+struct SdProbe {
+    uint8_t r1 = 0xff;
+    uint8_t cmd8 = 0xff;
+    uint32_t echo = 0;
+    bool ready = false;
+    uint32_t waitMs = 0;
+};
 
-    digitalWrite(BOARD_SD_CS, LOW);
-    SPI.transfer(0xFF);
-    static const uint8_t kCmd0[] = {0x40, 0x00, 0x00, 0x00, 0x00, 0x95};
-    for (uint8_t b : kCmd0) SPI.transfer(b);
-    for (int i = 0; i < 10; ++i) {                     // R1, bit7 clear
-        if ((SPI.transfer(0xFF) & 0x80) == 0) break;
-    }
+SdProbe sdSpiForceIdle() {
+    SdProbe probe;
+    SPI.beginTransaction(SPISettings(400000, MSBFIRST, SPI_MODE0));
+    digitalWrite(BOARD_LORA_CS, HIGH);
     digitalWrite(BOARD_SD_CS, HIGH);
-    SPI.transfer(0xFF);                                // release the bus
+    for (int i = 0; i < 10; ++i) SPI.transfer(0xFF);
+    digitalWrite(BOARD_SD_CS, LOW);
+    uint32_t start = millis();
+    // Let any previous write finish before issuing reset. Yield between polls;
+    // the caller's PM guard stays held across each yield.
+    do {
+        if (SPI.transfer(0xFF) == 0xFF) { probe.ready = true; break; }
+        delay(1);
+    } while (millis() - start < 500);
+    probe.waitMs = millis() - start;
+    auto command = [](const uint8_t* packet) {
+        for (int i = 0; i < 6; ++i) SPI.transfer(packet[i]);
+        uint8_t r1 = 0xff;
+        for (int i = 0; i < 10; ++i) {
+            r1 = SPI.transfer(0xff);
+            if (!(r1 & 0x80)) break;
+        }
+        return r1;
+    };
+    static const uint8_t cmd0[] = {0x40, 0, 0, 0, 0, 0x95};
+    probe.r1 = command(cmd0);
+    digitalWrite(BOARD_SD_CS, HIGH);
+    SPI.transfer(0xFF);
+    if (probe.r1 == 1) {
+        digitalWrite(BOARD_SD_CS, LOW);
+        SPI.transfer(0xFF);
+        static const uint8_t cmd8[] = {0x48, 0, 0, 1, 0xaa, 0x87};
+        probe.cmd8 = command(cmd8);
+        if (probe.cmd8 == 1)
+            for (int i = 0; i < 4; ++i)
+                probe.echo = (probe.echo << 8) | SPI.transfer(0xff);
+        digitalWrite(BOARD_SD_CS, HIGH);
+        SPI.transfer(0xFF);
+    }
     SPI.endTransaction();
+    return probe;
 }
 
 bool mountLocked(bool logFailures) {
@@ -499,15 +506,35 @@ bool mountLocked(bool logFailures) {
         {800,  4000000},
         {1000, 1000000},   // last-ditch, slow clock for a marginal card
     };
+    unsigned attempt = 0;
     for (auto& a : kAttempts) {
+        ++attempt;
         uint32_t f = a.freq;
         if (a.settleMs) delay(a.settleMs);   // let the card/bus settle first
-        sdSpiForceIdle();                    // clear a garbled prior transaction
+        uint32_t start = millis();
+        diag::storageStage(2, attempt);
+        SdProbe probe = sdSpiForceIdle();
+        if (logFailures)
+            diag::log("sd probe: try=%u uptime=%lu ready=%d wait=%lu cmd0=0x%02x "
+                      "cmd8=0x%02x echo=0x%08lx CS=%d/%d MISO=%d",
+                      attempt, (unsigned long)start, probe.ready,
+                      (unsigned long)probe.waitMs, probe.r1, probe.cmd8,
+                      (unsigned long)probe.echo, digitalRead(BOARD_SD_CS),
+                      digitalRead(BOARD_LORA_CS), digitalRead(BOARD_SPI_MISO));
         // max_files: the library default is 5 open files for the WHOLE firmware,
         // and a ride holds one of them open from start to finish. Ten leaves room
         // for a map tile, a route, a diag flush and a BLE download at the same
         // time without opens starting to fail mid-ride.
-        if (SD.begin(BOARD_SD_CS, SPI, f, "/sd", 10)) return true;
+        diag::storageStage(3, attempt, probe.r1);
+        bool mounted = SD.begin(BOARD_SD_CS, SPI, f, "/sd", 10);
+        diag::storageStage(mounted ? 4 : 5, attempt, probe.r1);
+        diag::drainDriverLogs();
+        if (mounted) {
+            diag::log("sd mount: OK try=%u clock=%luHz duration=%lums type=%u size=%lluMB",
+                      attempt, (unsigned long)f, (unsigned long)(millis() - start),
+                      SD.cardType(), SD.cardSize() / (1024ULL * 1024ULL));
+            return true;
+        }
         if (logFailures) {
             // Deliberately NOT logging cardType()/cardSize() here. A previous
             // version did, to tell "card not talking" from "bad filesystem", but
@@ -516,10 +543,13 @@ bool mountLocked(bool logFailures) {
             // early-return on that sentinel. They report NONE/0 unconditionally,
             // so the line only ever looked like a dead card. (Arduino-esp32
             // SD.cpp: begin() 38-42, cardType() 62, cardSize() 70.)
-            diag::log("[rec] SD.begin failed @%uMHz (settle %ums)",
-                      (unsigned)(f / 1000000), (unsigned)a.settleMs);
+            diag::log("sd mount: FAILED try=%u clock=%luHz duration=%lums settle=%lu "
+                      "(CMD0 idle=%d; later SD init/FAT failure still possible)",
+                      attempt, (unsigned long)f, (unsigned long)(millis() - start),
+                      (unsigned long)a.settleMs, probe.r1 == 1);
         }
         SD.end();
+        diag::drainDriverLogs();
     }
     return false;
 }
@@ -527,23 +557,27 @@ bool mountLocked(bool logFailures) {
 }  // namespace
 
 bool begin() {
+    sdLock();
     // SD and LoRa share the SPI bus; a floating LoRa CS corrupts SD traffic.
     pinMode(BOARD_LORA_CS, OUTPUT);
     digitalWrite(BOARD_LORA_CS, HIGH);
     pinMode(BOARD_SD_CS, OUTPUT);
     digitalWrite(BOARD_SD_CS, HIGH);
 
+    // Keep the chip selects driven in automatic light sleep. Do not latch
+    // them with gpio_hold here: normal SPI traffic must still toggle CS.
+    gpio_sleep_sel_dis((gpio_num_t)BOARD_SD_CS);
+    gpio_sleep_sel_dis((gpio_num_t)BOARD_LORA_CS);
     SPI.begin(BOARD_SPI_SCLK, BOARD_SPI_MISO, BOARD_SPI_MOSI);
-    sdLock();
     sdOk = mountLocked(true);
     if (sdOk && !SD.exists(RIDE_DIR)) SD.mkdir(RIDE_DIR);
     sdUnlock();
     if (!sdOk) {
-        Serial.println("[rec] SD mount failed — recording disabled");
+        diag::log("sd: boot mount failed; recording unavailable, diagnostics in RAM/flash; use 'diag'");
+        diag::checkpoint("boot SD mount failed");
         return false;
     }
-    Serial.printf("[rec] SD ready, %llu MB free\n",
-                  (SD.totalBytes() - SD.usedBytes()) / (1024ULL * 1024ULL));
+    diag::log("sd: ready, %lu MB free", (unsigned long)sdFreeMB());
     // Recovery deliberately does NOT run here. It used to, and a card carrying
     // interrupted rides could then take longer than the interrupt watchdog
     // allows — the device reset mid-recovery, which tore one more file, and the

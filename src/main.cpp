@@ -24,6 +24,7 @@
 #include "board_power.h"
 #include "i2c_bus.h"
 #include "sd_bus.h"
+#include "sd_diagnostics.h"
 #include "usb_storage.h"
 #include "power_mgmt.h"
 #include "workout_service.h"
@@ -31,6 +32,7 @@
 #include "mesh_service.h"
 #include "diag.h"
 #include <esp_sleep.h>
+#include <driver/gpio.h>
 #include <soc/rtc_cntl_reg.h>
 #ifdef DEBUG_EARLY_USB
 #include "USB.h"
@@ -57,8 +59,8 @@
 //   failed!" printed immediately before the library's own while(1) hang)
 //       -> newlib stdout -> UART0 -> GPIO43. That is BOARD_GPS_TXD: the console
 //          UART shares pins with the GPS. Before gps_service::begin() those
-//          bytes are transmitted into the GPS module's RX; after it, Serial1
-//          re-muxes GPIO43 to UART1 and the console is left driving no pin at
+//          bytes are transmitted into the GPS module's RX; after it, Serial2
+//          re-muxes GPIO43 to UART2 and the console is left driving no pin at
 //          all. Either way we never see a character of it.
 //
 // setDebugOutput(true) fixes the first. The second needs stdout itself pointed
@@ -382,9 +384,12 @@ void setup() {
     if (rr == ESP_RST_PANIC || rr == ESP_RST_INT_WDT || rr == ESP_RST_TASK_WDT)
         logCoreDumpIfAny();          // save the backtrace to SD after a crash
     diag::log("cpu %d MHz", getCpuFrequencyMhz());
+    // Undo the SD CS latch used for deep sleep before any driver touches SPI.
+    gpio_hold_dis((gpio_num_t)BOARD_SD_CS);
     g_state.begin();
     g_i2cMutex = xSemaphoreCreateMutex();   // guard the shared I2C bus
     g_sdMutex = xSemaphoreCreateRecursiveMutex();  // guard the shared SD bus
+    power_mgmt::prepare();
     Wire.begin(BOARD_SDA, BOARD_SCL);
 
     // GPS (and LoRa) 3V3 rail is gated by the IO expander.
@@ -665,13 +670,15 @@ void setup() {
                                 nullptr, 0);
     xTaskCreatePinnedToCore(ui_dashboard::task, "ui", 8192, nullptr, 2, nullptr, 1);
 
-    Serial.println("[main] all tasks started");
+    diag::log("boot: all tasks started");
+    diag::finishBoot();
 }
 
 void loop() {
     usb_storage::poll();   // reclaim the SD when the host disconnects
     ride_recorder::retryMountIfNeeded();   // pick a dropped card back up
     power_mgmt::tick();    // hold light sleep off while the USB console is open
+    sd_diagnostics::tick();
     workout_service::tick();   // pause-at-block-boundary mode
     vTaskDelay(pdMS_TO_TICKS(1000));
 }
@@ -743,4 +750,17 @@ bool board_side_button_pressed() {
         }
     }
     return first && second;
+}
+
+// BQ25896 REG11 bit 7 is VBUS_GD, a live status bit independent of ADC mode.
+// Read only: do not reset/reconfigure the charger owned by the panel driver.
+bool board_usb_power_present(bool& present) {
+    i2cLock();
+    Wire.beginTransmission(0x6B);
+    Wire.write(0x11);
+    bool ok = Wire.endTransmission(false) == 0;
+    if (ok) ok = Wire.requestFrom((uint8_t)0x6B, (uint8_t)1) == 1;
+    if (ok) present = (Wire.read() & 0x80) != 0;
+    i2cUnlock();
+    return ok;
 }

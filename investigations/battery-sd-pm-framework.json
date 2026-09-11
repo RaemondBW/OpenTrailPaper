@@ -1,0 +1,44 @@
+{
+  "framework": "/Users/raemond/Documents/tdisplay/.worktrees/battery-sd-sleep/.pio/core/packages/framework-arduinoespressif32",
+  "package": {
+    "type": "tool",
+    "name": "framework-arduinoespressif32",
+    "version": "3.20014.231204",
+    "spec": {
+      "owner": "platformio",
+      "id": 8070,
+      "name": "framework-arduinoespressif32",
+      "requirements": null,
+      "uri": null
+    }
+  },
+  "esp_pm_configure_bytes": 223,
+  "pm_configure_is_stub": false,
+  "config": [
+    "#define CONFIG_BT_CTRL_MODEM_SLEEP 1",
+    "#define CONFIG_BT_CTRL_MODEM_SLEEP_MODE_1 1",
+    "#define CONFIG_BT_CTRL_LPCLK_SEL_RTC_SLOW 1",
+    "#define CONFIG_SPIRAM_SPEED_80M 1",
+    "#define CONFIG_ESP32S3_RTC_CLK_SRC_INT_RC 1",
+    "#define CONFIG_ESP32S3_RTC_CLK_CAL_CYCLES 576",
+    "#define CONFIG_PM_ENABLE 1",
+    "#define CONFIG_PM_SLP_IRAM_OPT 1",
+    "#define CONFIG_PM_RTOS_IDLE_OPT 1",
+    "#define CONFIG_PM_POWER_DOWN_CPU_IN_LIGHT_SLEEP 1",
+    "#define CONFIG_PM_POWER_DOWN_TAGMEM_IN_LIGHT_SLEEP 1",
+    "#define CONFIG_FREERTOS_USE_TICKLESS_IDLE 1",
+    "#define CONFIG_ESP_SYSTEM_PM_POWER_DOWN_CPU CONFIG_PM_POWER_DOWN_CPU_IN_LIGHT_SLEEP"
+  ],
+  "sha256": {
+    ".piopm": "455fb11669c907ae700433c47a31c1fd39f28c65372ceac60ef44053cbe371b7",
+    "tools/platformio-build-esp32s3.py": "cd6d6beb05dca911e0227e104ed4391cdcbe38b5cbefec239214dcca4952d563",
+    "libraries/SD/src/sd_diskio.cpp": "aaaade8f55c0c33ab702d08eb1cc8a9bdbaab000eda95f2cfaef041f082c465b",
+    "cores/esp32/esp32-hal-spi.c": "48683c0ab06f203e98cfc26fec20215fb3d2c2824f469079a2c7aae875621289",
+    "tools/sdk/esp32s3/sdkconfig": "08c50c02f3a0f286ff8c078a7eb017a1dc28e18d729203c0d3f82f97c836dad7",
+    "tools/sdk/esp32s3/qio_opi/include/sdkconfig.h": "f725d858f18389a95165df6c5fbbb211b4b5338b6dbd7847f9614fa17939ce56",
+    "tools/sdk/esp32s3/lib/libesp_pm.a": "2b8fd6f017c6c11d60013da3ad0c016391bb29bf9b8a171a28d41c27d3ba6801",
+    "tools/sdk/esp32s3/qio_opi/libfreertos.a": "c9fea9fde571d7422c81bde7af4141a8293affdac2231cfac528c4989c39c4fa",
+    "tools/sdk/esp32s3/lib/libdriver.a": "b4baf09d7ab8ac33ca076a6530db4101d7245dec26b35187ec577ac5953efa31",
+    "tools/sdk/esp32s3/qio_opi/libesp_hw_support.a": "f59cb3f87570c48c257bf61b85fb25144469d7cf7eeafec43ccc17331729a8e3"
+  }
+}

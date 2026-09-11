@@ -95,3 +95,13 @@ companion-android/keystore.properties
 *.keystore
 .venv-font/
 tools/vfont/out/
+
+# Private device diagnostics: logs and memory dumps can contain GPS positions.
+# Keep raw captures/exports local, even when troubleshooting a public branch.
+*.log
+*.mflt
+*.core
+*.dmp
+*.elf
+investigations/results/
+investigations/*-results.json
