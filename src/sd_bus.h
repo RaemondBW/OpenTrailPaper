@@ -18,8 +18,8 @@
 
 // These also hold light sleep off for the duration. The SD path runs through
 // Arduino's SPIClass, which — unlike ESP-IDF's spi_master — takes no PM lock, so
-// a light sleep landing mid-command gates the SPI clock and wedges the card
-// until it is physically power-cycled. Since every SD access is already wrapped
+// a light sleep during a command/retry can interrupt the protocol. Keep the
+// whole operation protected. Since every SD access is already wrapped
 // here, this is the one place that needs to know. No-op without PM.
 // See power_mgmt::busyAcquire().
 

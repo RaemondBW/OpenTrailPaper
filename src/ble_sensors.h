@@ -76,10 +76,12 @@ void forgetAll();
 // power_mgmt.cpp).
 bool radioBusy();
 
-// True while any sensor LINK is up. power_mgmt holds light sleep off for the
-// duration — an established sensor connection does not survive the CPU
-// sleeping any better than the phone's does (see the 2026-08-21 note in
-// power_mgmt.cpp).
+// True while any sensor link is up. PM normally holds sleep off; the explicit
+// MAIN_XTAL sensor-sleep profile can release that hold with a per-boot fallback.
 bool anyConnected();
+// Per-boot established-link experiment; PM also requires the retained crystal.
+bool sleepAllowed();
+void setSleepAllowed(bool on);
+void reportSleep();
 
 }

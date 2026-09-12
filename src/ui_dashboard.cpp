@@ -12,6 +12,7 @@
 #include "ride_state.h"
 #include "ride_recorder.h"
 #include "sd_bus.h"
+#include "sd_diagnostics.h"
 #include "gps_service.h"
 #include "board_power.h"
 #include <esp_sleep.h>
@@ -39,6 +40,8 @@
 #include "settings.h"
 #include "aux_sensors.h"
 #include "diag.h"
+#include "crash_report.h"
+#include "memfault_service.h"
 #include "smooth_epd.h"
 #include "power_mgmt.h"
 #include "dash_config.h"
@@ -252,15 +255,23 @@ void shutdownDevice(uint8_t* fb, const char* reason) {
     // farewell screen.
     epdc_power_off_wait();
 
-    // Close the SD cleanly before the card loses its host. An interrupted SD
-    // transaction leaves the card's controller refusing CMD0 on the next boot —
-    // cardType=NONE, unrecoverable by retrying, and it survives power cycles
-    // until the card is reformatted. This cannot help an unexpected reset, but
-    // the planned paths (power-off dialog, auto-sleep) have no excuse to leave
-    // the card mid-transaction.
+    // Drain users, then KEEP the bus lock through deep sleep. Releasing it
+    // after SD.end() lets recorder/diag/MSC/LoRa tasks start new work while the
+    // card is unmounted and power-down is in progress.
     sdLock();
+    diag::log("sleep: final SD flush; mounted=%d host=%d CS=%d/%d",
+              ride_recorder::sdMounted(), usb_storage::hostActive(),
+              digitalRead(BOARD_SD_CS), digitalRead(BOARD_LORA_CS));
+    diag::flushToSD();
+    diag::checkpoint("entering deep sleep");
+    diag::storageStage(6);
     SD.end();
-    sdUnlock();
+    diag::drainDriverLogs();
+    diag::checkpoint("SD unmount diagnostics");
+    digitalWrite(BOARD_SD_CS, HIGH);
+    digitalWrite(BOARD_LORA_CS, HIGH);
+    gpio_hold_en((gpio_num_t)BOARD_SD_CS);
+    // sdUnlock intentionally omitted: no bus work may begin before CPU stops.
 
     // Peripherals down, matching the factory sleep sequence
     i2cLock(); touch.sleep(); i2cUnlock();
@@ -297,6 +308,7 @@ void shutdownDevice(uint8_t* fb, const char* reason) {
     // simply re-armed for deep sleep. The button is the ONLY way back on.
     esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
     esp_sleep_enable_ext0_wakeup((gpio_num_t)BOARD_BOOT_BTN, 0);
+    diag::storageStage(7);
     esp_deep_sleep_start();
 }
 
@@ -318,6 +330,9 @@ bool touchWasDown = false;
 // a quiet period (unless riding / navigating / phone connected).
 uint32_t lastActivityMs = 0;
 constexpr uint32_t AUTO_SLEEP_MS = 10 * 60 * 1000;   // 10 minutes idle
+// Console override for bench/battery testing. UI task owns both this flag and
+// the command parser. RAM only: every reset restores automatic shutdown.
+bool autoSleepEnabled = true;
 // Set by any input so the next loop iteration redraws immediately instead of
 // waiting for the 1 Hz periodic tick — otherwise an in-place change (zoom, a
 // map toggle) can sit up to a second before the panel repaints.
@@ -1732,7 +1747,15 @@ static void printConsoleHelp() {
     Serial.println("  gpsoff <sec>         cut GPS power for N s, then re-seed (retention test)");
     Serial.println("  gpsver               query GPS module firmware version");
     Serial.println("  gpsraw <on|off>      echo raw receiver bytes");
-    Serial.println("  sd                   SD mount state + cardType (NONE = card not answering)");
+    Serial.println("  sd                   SD mount/USB ownership state (see diag for failures)");
+    Serial.println("  sdtest [seconds|status] SD/sleep/phone verification, 30..1800s (default 180)");
+    Serial.println("  crashlog [panic]     report status; panic deliberately reboots (no active ride)");
+    Serial.println("  memfault [export]    offline crash status or non-destructive SDK chunk export");
+    Serial.println("  diag                dump retained boot/recent/flash diagnostics (no SD needed)");
+    Serial.println("  diag sd [bytes]     read daily SD log over serial (default last 128 KiB)");
+    Serial.println("  pm [on|off]         report PM/driver locks, or request light-sleep A/B");
+    Serial.println("  bleinterval [status|fast]  measured link or transient fast request");
+    Serial.println("  autosleep [on|off]   idle auto-shutdown, this boot only (default on)");
     Serial.println("  usbdrive [on|off]    expose the SD to a host; off takes the card back");
     Serial.println("  power                battery voltage + draw (mA) + full fuel-gauge state");
     Serial.println("  aux                  optional Qwiic sensors: baro / accel / compass");
@@ -1747,6 +1770,7 @@ static void printConsoleHelp() {
     Serial.println("  mesh <on|off>        power the LoRa radio");
     Serial.println("  autopause [sec|off]  ride timer pause after N s stopped (0/off disables)");
     Serial.println("  workout <list|load <f>|start|pause|resume|stop|skip|back|goto <n>|ftp [W]>");
+    Serial.println("  sensorsleep [on|off] sensor-link sleep experiment, this boot; status without argument");
     Serial.println("  sleepexp [on|off]    re-arm the light-sleep-with-phone experiment (this boot)");
     Serial.println("  scan <on|off>        force the sensor scan (what the Sensors screen does)");
     Serial.println("  disconnect <kind>    drop the link (hr|power|cadence|all); stays paired");
@@ -1795,6 +1819,14 @@ static void runConsoleLine(char* line) {
         agnssRxRemaining = n;
         gps_service::agnssBegin();
         Serial.printf("[cmd] AGNSS: send %ld raw bytes now\n", n);
+    } else if (!strcasecmp(cmd, "memfault")) {
+        if (!arg || !strcasecmp(arg,"status")) memfault_service::requestStatus();
+        else if (!strcasecmp(arg,"export")) memfault_service::requestStatus(true);
+        else Serial.println("[memfault] use memfault [status|export]");
+    } else if (!strcasecmp(cmd, "crashlog")) {
+        if(arg && !strcasecmp(arg,"panic"))crash_report::requestTestPanic();
+        else if(!arg || !strcasecmp(arg,"status"))crash_report::requestStatus();
+        else Serial.println("[crashlog] use crashlog [status|panic]");
     } else if (!strcasecmp(cmd, "power")) {
         uint16_t mv = 0; int16_t ma = 0;
         if (board_read_power(mv, ma))
@@ -2004,17 +2036,54 @@ static void runConsoleLine(char* line) {
             else
                 ble_sensors::forget(ls[want].pairedAddr);
         }
+    } else if (!strcasecmp(cmd, "bleinterval")) {
+        if ((arg && strcasecmp(arg, "status") && strcasecmp(arg, "fast")) || strtok(nullptr, " \t")) {
+            Serial.println("[cmd] bleinterval [status|fast]");
+            return;
+        }
+        if (arg && !strcasecmp(arg, "fast")) ble_server::requestFastInterval();
+        else ble_server::reportInterval();
+    } else if (!strcasecmp(cmd, "autosleep")) {
+        if (arg) {
+            if (strtok(nullptr, " \t") ||
+                (strcasecmp(arg, "on") && strcasecmp(arg, "off"))) {
+                Serial.println("[cmd] autosleep [on|off]");
+                return;
+            }
+            autoSleepEnabled = !strcasecmp(arg, "on");
+            // Re-enabling always grants a full idle window, even if the board
+            // has already spent hours on the bench with auto-shutdown off.
+            if (autoSleepEnabled) lastActivityMs = millis();
+        }
+        diag::log("autosleep: %s (this boot only; idle timeout %lus; CPU light sleep unchanged)",
+                  autoSleepEnabled ? "ON" : "OFF", (unsigned long)(AUTO_SLEEP_MS / 1000));
+    } else if (!strcasecmp(cmd, "sdtest")) {
+        if (arg && !strcasecmp(arg, "status")) sd_diagnostics::status();
+        else {
+            char* end = nullptr;
+            unsigned long seconds = arg ? strtoul(arg, &end, 10) : 180;
+            if (arg && (!*arg || *end || seconds < 30 || seconds > 1800))
+                Serial.println("[cmd] sdtest [30..1800|status]");
+            else sd_diagnostics::start((unsigned)seconds);
+        }
+    } else if (!strcasecmp(cmd, "diag")) {
+        if (!arg) diag::dumpToSerial();
+        else if (!strcasecmp(arg, "sd")) {
+            const char* amount = strtok(nullptr, " \t");
+            char* end = nullptr;
+            unsigned long bytes = amount ? strtoul(amount, &end, 10) : 131072;
+            if ((amount && (!*amount || *end || bytes < 256 || bytes > 262144)) || strtok(nullptr, " \t"))
+                Serial.println("[cmd] diag sd [256..262144 bytes]");
+            else diag::dumpSDToSerial((size_t)bytes);
+        } else Serial.println("[cmd] diag [sd [bytes]]");
+    } else if (!strcasecmp(cmd, "pm")) {
+        if (arg && !strcasecmp(arg, "on")) power_mgmt::requestSleep(true);
+        else if (arg && !strcasecmp(arg, "off")) power_mgmt::requestSleep(false);
+        else if (arg) { Serial.println("[cmd] pm [on|off]"); return; }
+        power_mgmt::report();
     } else if (!strcasecmp(cmd, "sd")) {
-        // SD status without needing a boot log. The mount happens ~1.4 s into
-        // boot, long before a USB-CDC host can attach, so for a long time the
-        // only way to know why the card was missing was to win a race against
-        // the console coming up. cardType is the useful bit: NONE means the card
-        // is not answering at all (seating / wedged / dead), a real type with no
-        // mount means the filesystem is the problem.
-        // Under sdLock like every other SD touch: the LoRa radio shares the SPI
-        // bus, and an unlocked cardType/cardSize interleaving with a radio
-        // transfer is the exact two-chip-selects-low wedge the boot-freeze fix
-        // hunted down everywhere else.
+        // SD.cardType() is cached metadata. After a failed SD.begin() it is
+        // NONE regardless of which initialization or filesystem stage failed.
         sdLock();
         uint8_t ct = SD.cardType();
         uint64_t sizeMB = SD.cardSize() / (1024ULL * 1024ULL);
@@ -2031,7 +2100,7 @@ static void runConsoleLine(char* line) {
                                "or toggle the USB drive off/on ('usbdrive off' then 'on')");
             else
                 Serial.println("[sd] not mounted by the firmware — cardType=NONE means "
-                               "the card is not answering (seating / wedged / dead)");
+                               "the driver cleaned up; use diag for command responses");
         }
         if (ride_recorder::sdMounted()) {
             sdLock();
@@ -2057,6 +2126,15 @@ static void runConsoleLine(char* line) {
         }
     } else if (!strcasecmp(cmd, "bootloader") || !strcasecmp(cmd, "boot")) {
         rebootToBootloader();
+    } else if (!strcasecmp(cmd, "sensorsleep")) {
+        if (arg) {
+            if (strcasecmp(arg, "on") && strcasecmp(arg, "off")) {
+                Serial.println("[cmd] sensorsleep [on|off]");
+                return;
+            }
+            ble_sensors::setSleepAllowed(!strcasecmp(arg, "on"));
+        }
+        ble_sensors::reportSleep();
     } else if (!strcasecmp(cmd, "sleepexp")) {
         if (arg) ble_server::setRelaxedSleepExperiment(
             !strcasecmp(arg, "on") || !strcasecmp(arg, "1"));
@@ -2347,7 +2425,7 @@ void task(void*) {
         // left on a desk otherwise burns power on GPS + BLE + CPU. Held off
         // while recording, navigating, moving, or a phone is connected. Wake
         // with BOOT.
-        if (millis() - lastActivityMs > AUTO_SLEEP_MS &&
+        if (autoSleepEnabled && millis() - lastActivityMs > AUTO_SLEEP_MS &&
             !ride_recorder::isRecording() && !routes::navActive() &&
             !ble_server::isPhoneConnected()) {
             uint8_t* fb = epdc_framebuffer();

@@ -22,3 +22,6 @@ bool board_read_power(uint16_t& mv, int16_t& ma);
 // missing / stuck battery percentage without waiting for the 2 min sample.
 // Writes into `out`; returns false (with a reason in `out`) if init() failed.
 bool board_gauge_report(char* out, size_t n);
+
+// Read charger VBUS_GD. On I2C failure returns false and leaves output alone.
+bool board_usb_power_present(bool& present);

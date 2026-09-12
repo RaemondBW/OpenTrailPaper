@@ -1,0 +1,37 @@
+{
+  "framework": "/Users/raemond/Documents/tdisplay/.worktrees/battery-sd-sleep/.pio/core-stock/packages/framework-arduinoespressif32",
+  "package": {
+    "type": "tool",
+    "name": "framework-arduinoespressif32",
+    "version": "3.20014.231204",
+    "spec": {
+      "owner": "platformio",
+      "id": 8070,
+      "name": "framework-arduinoespressif32",
+      "requirements": null,
+      "uri": null
+    }
+  },
+  "esp_pm_configure_bytes": 8,
+  "pm_configure_is_stub": true,
+  "config": [
+    "#define CONFIG_SPIRAM_SPEED_80M 1",
+    "#define CONFIG_ESP32S3_RTC_CLK_SRC_INT_RC 1",
+    "#define CONFIG_ESP32S3_RTC_CLK_CAL_CYCLES 576",
+    "#define CONFIG_PM_POWER_DOWN_CPU_IN_LIGHT_SLEEP 1",
+    "#define CONFIG_PM_POWER_DOWN_TAGMEM_IN_LIGHT_SLEEP 1",
+    "#define CONFIG_ESP_SYSTEM_PM_POWER_DOWN_CPU CONFIG_PM_POWER_DOWN_CPU_IN_LIGHT_SLEEP"
+  ],
+  "sha256": {
+    ".piopm": "455fb11669c907ae700433c47a31c1fd39f28c65372ceac60ef44053cbe371b7",
+    "tools/platformio-build-esp32s3.py": "4fd36c9a1f465d10f9d30cbfacdbfe2e5458636fc2c4c8e7ce8329889a55827f",
+    "libraries/SD/src/sd_diskio.cpp": "aaaade8f55c0c33ab702d08eb1cc8a9bdbaab000eda95f2cfaef041f082c465b",
+    "cores/esp32/esp32-hal-spi.c": "48683c0ab06f203e98cfc26fec20215fb3d2c2824f469079a2c7aae875621289",
+    "tools/sdk/esp32s3/sdkconfig": "b967289ef51c64186e65a3d30cb86199c3f48965064b6277e718a8c1fc644507",
+    "tools/sdk/esp32s3/qio_opi/include/sdkconfig.h": "6bf812bb4e41ebbe0c3d931c1ed9181edf1498102f7abcb3538b8e09c677ca94",
+    "tools/sdk/esp32s3/lib/libesp_pm.a": "27fd6fe4ea5ebc49d11e26f3e255a08b41921bf130aa7696a9cf351e4dd92c00",
+    "tools/sdk/esp32s3/qio_opi/libfreertos.a": "d68d6291f358b3fa1ac486c174d39989e9a1acd2b3239a4c071f9345e8f20c5c",
+    "tools/sdk/esp32s3/lib/libdriver.a": "1b1d7ad3daa25fd9ec1dd9829cd05cab40f4b58c6658bad82887387d5cc82ec3",
+    "tools/sdk/esp32s3/qio_opi/libesp_hw_support.a": "5ddda706799f097d7a03facff5008ad33ede5c3bcbaa6ea9c2c383ff6f280523"
+  }
+}

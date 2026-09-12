@@ -14,6 +14,12 @@
 #include "ble_server.h"
 #include "diag.h"
 #include "ride_recorder.h"
+#include "usb_storage.h"
+#include "board_power.h"
+
+#ifdef PM_BLE_XTAL
+extern "C" bool board_ble_xtal_clock_ready();
+#endif
 
 namespace power_mgmt {
 
@@ -28,84 +34,84 @@ static bool s_enabled = false;
 // call or two, which does not matter for "has this been held for 30 seconds".
 static std::atomic<int> s_busyCount{0};
 static volatile uint32_t s_busyHeldSinceMs = 0;   // 0 = not held
-static volatile bool s_grace = false, s_serial = false;
+static volatile bool s_grace = false, s_serial = false, s_vbus = false;
 static volatile bool s_phone = false, s_hunt = false;
 // Phone connected but NOT holding sleep off (relaxed-interval experiment
 // active). Not a holder — shown on the battery line as "prlx" so a sample
 // can't be misread as "app wasn't connected".
 static volatile bool s_phoneRelaxed = false;
-// Any BLE sensor link up (holds sleep off — see tick()).
-static volatile bool s_sens = false;
+// Established sensor hold, plus informational sleep-eligible link state.
+static volatile bool s_sens = false, s_sensorRelaxed = false;
 
-bool begin() {
-    // Light sleep ONLY — no dynamic frequency scaling. min == max == 240 MHz
-    // keeps the 80 MHz octal (OPI) PSRAM's timing valid at all times: the PLL is
-    // fully restored to 240 MHz before any post-wake code touches PSRAM, so the
-    // SoC still power-gates between the ~1 Hz workloads without the reduced-clock
-    // instability that boot-looped the OPI PSRAM at 160 MHz (see main.cpp setup).
-    // BISECTION SWITCH. Build with -DPM_LIGHT_SLEEP=0 to link and configure the
-    // whole PM stack — locks, tickless-idle-capable FreeRTOS, PM-aware drivers —
-    // but never actually light-sleep. That separates the two things a PM build
-    // changes at once:
-    //
-    //   SD works with PM_LIGHT_SLEEP=0, fails with 1  -> light sleep is landing
-    //       mid-SPI-transaction. Expected, because sd_diskio.cpp drives the card
-    //       through Arduino's SPIClass (esp32-hal-spi.c), which contains ZERO
-    //       references to esp_pm_lock, while IDF's own spi_master in libdriver.a
-    //       has 32. The Arduino path is simply not PM-aware.
-    //   SD fails both ways -> it is the rebuilt libraries or their config, not
-    //       sleep, and no amount of PM-lock work in our code will help.
-    //
-    // Costs nothing to run and it is the only way to tell those apart.
+// 80 MHz keeps APB at 80 MHz throughout DFS. Lower minima require a separate
+// audit of SPI, display, USB and UART clocks; do not silently enable them.
+#ifndef PM_MIN_CPU_MHZ
+#define PM_MIN_CPU_MHZ 240
+#endif
+static_assert(PM_MIN_CPU_MHZ == 80 || PM_MIN_CPU_MHZ == 240,
+              "Only 80 or 240 MHz idle CPU profiles have been audited");
+
 #ifndef PM_LIGHT_SLEEP
 #define PM_LIGHT_SLEEP 1
 #endif
-    esp_pm_config_esp32s3_t cfg = {};
-    cfg.max_freq_mhz = 240;
-    cfg.min_freq_mhz = 240;
-    cfg.light_sleep_enable = (PM_LIGHT_SLEEP != 0);
+static bool s_prepared = false;
+static std::atomic<bool> s_sleepRequested{PM_LIGHT_SLEEP != 0};
+static std::atomic<bool> s_sleepConfigured{false};
+static portMUX_TYPE s_busyMux = portMUX_INITIALIZER_UNLOCKED;
 
-    esp_err_t err = esp_pm_configure(&cfg);
-    s_enabled = (err == ESP_OK);
-    if (err == ESP_ERR_NOT_SUPPORTED) {
-        diag::log("pm: light sleep UNAVAILABLE — framework lacks CONFIG_PM_ENABLE"
-                  "/TICKLESS_IDLE (rebuild required; see investigations/archive/cpu-sleep-spike.md)");
+// Run before any peripheral starts a background task. Never enable sleep until
+// BOTH locks exist and the setup/USB guard is already acquired.
+bool prepare() {
+    if (s_prepared) return s_usbLock && s_busyLock;
+    s_prepared = true;
+    esp_pm_config_esp32s3_t awake = {};
+    awake.max_freq_mhz = awake.min_freq_mhz = 240;
+    esp_err_t err = esp_pm_configure(&awake);
+    if (err != ESP_OK) {
+        diag::log("pm: unavailable, configure awake -> %s (IDF %s)",
+                  esp_err_to_name(err), esp_get_idf_version());
         return false;
     }
-    diag::log("pm: esp_pm_configure(min=max=240, light_sleep=%d) -> %s",
-              PM_LIGHT_SLEEP != 0, esp_err_to_name(err));
-
-    // Keep the USB-CDC serial console alive while plugged in. Light sleep gates
-    // the USB-OTG PHY, dropping the CDC link; hold a no-light-sleep lock whenever
-    // the host has the port open. On battery (USB absent) the lock stays released
-    // so the CPU can sleep. (Returns NOT_SUPPORTED and a null handle on a stock
-    // framework — tick() then no-ops.)
-    if (esp_pm_lock_create(ESP_PM_NO_LIGHT_SLEEP, 0, "usbcdc", &s_usbLock) != ESP_OK) {
-        s_usbLock = nullptr;
-    } else {
-        // START HELD. Light sleep is armed by the esp_pm_configure() above, but
-        // the first tick() does not run until loop() starts — several hundred ms
-        // later, after the remaining setup() work. A sleep in that gap gates the
-        // USB-OTG PHY and kills the CDC link that has only just enumerated, and
-        // TinyUSB does not bring it back. Acquiring here means the SoC cannot
-        // sleep until tick() decides it may.
-        esp_pm_lock_acquire(s_usbLock);
-        s_usbHeld = true;
+    err = esp_pm_lock_create(ESP_PM_NO_LIGHT_SLEEP, 0, "usbcdc", &s_usbLock);
+    if (err == ESP_OK) {
+        err = esp_pm_lock_acquire(s_usbLock);
+        s_usbHeld = err == ESP_OK;
+        s_grace = s_usbHeld;
     }
+    if (err == ESP_OK)
+        err = esp_pm_lock_create(ESP_PM_NO_LIGHT_SLEEP, 0, "bus", &s_busyLock);
+    if (err != ESP_OK) {
+        // The awake configuration remains in effect. A missing guard must not
+        // silently turn all future sdLock() calls into unprotected transfers.
+        diag::log("pm: lock setup FAILED (%s); automatic sleep stays OFF",
+                  esp_err_to_name(err));
+        return false;
+    }
+    diag::log("pm: guards ready before peripherals; IDF %s, build %s %s",
+              esp_get_idf_version(), __DATE__, __TIME__);
+    return true;
+}
 
-    // Bus-transaction lock — see busyAcquire() in the header for why the SD
-    // card specifically needs one. Created unheld.
-    if (esp_pm_lock_create(ESP_PM_NO_LIGHT_SLEEP, 0, "bus", &s_busyLock) != ESP_OK)
-        s_busyLock = nullptr;
+bool begin() {
+    if (!prepare() || !s_usbHeld) return false;
+    esp_pm_config_esp32s3_t cfg = {};
+    cfg.max_freq_mhz = 240;
+    cfg.min_freq_mhz = PM_MIN_CPU_MHZ;
+    cfg.light_sleep_enable = s_sleepRequested.load();
+    esp_err_t err = esp_pm_configure(&cfg);
+    s_enabled = err == ESP_OK;
+    s_sleepConfigured = s_enabled && cfg.light_sleep_enable;
+    diag::log("pm: configure CPU min=%d max=%dMHz APB=80MHz light_sleep=%d -> %s; setup guard held",
+              cfg.min_freq_mhz, cfg.max_freq_mhz, cfg.light_sleep_enable, esp_err_to_name(err));
+#ifdef PM_BLE_XTAL
+    diag::log("pm: BLE clock MAIN_XTAL retained in light sleep; controller_ready=%d",
+              board_ble_xtal_clock_ready());
+#endif
 
 #ifdef PM_GPS_UART_WAKEUP
-    // OPTIONAL belt-and-suspenders against NMEA loss: wake on GPS RX so the
-    // 128-byte UART hardware FIFO is drained before it can overflow (~133 ms at
-    // 9600 baud). The S3 can only wake from UART0/UART1, but SerialGPS currently
-    // lives on UART2 — move it to Serial1 in gps_service.cpp to use this. NOT
-    // required as long as a task polls faster than the FIFO fill time: the GPS
-    // task's own 50 ms poll (gps_service.cpp task loop) already bounds every
-    // sleep to <= ~50 ms (~48 bytes), well under the 128-byte FIFO.
+    // Optional wake source, not a lossless RX guarantee: the triggering bytes
+    // are lost. GPS currently uses UART2, which cannot wake this S3. Its pins
+    // are retained in gps_service::begin(); validate RX checksums during sleep.
     uart_set_wakeup_threshold((uart_port_t)PM_GPS_UART_WAKEUP, 3);
     esp_sleep_enable_uart_wakeup(PM_GPS_UART_WAKEUP);
 #endif
@@ -153,7 +159,18 @@ bool begin() {
 static constexpr uint32_t USB_GRACE_MS = 30000;
 
 void tick() {
-    if (!s_usbLock) return;
+    if (!s_enabled) return;
+    if (s_sleepRequested.load() != s_sleepConfigured.load()) {
+        esp_pm_config_esp32s3_t cfg = {};
+        cfg.max_freq_mhz = 240;
+        cfg.min_freq_mhz = PM_MIN_CPU_MHZ;
+        cfg.light_sleep_enable = s_sleepRequested.load();
+        esp_err_t err = esp_pm_configure(&cfg);
+        if (err == ESP_OK) s_sleepConfigured = cfg.light_sleep_enable;
+        else s_sleepRequested = s_sleepConfigured.load();
+        diag::log("pm: requested light_sleep=%d -> %s", cfg.light_sleep_enable,
+                  esp_err_to_name(err));
+    }
     // Held during the boot grace window, while a serial host is attached, and
     // for as long as the phone is connected (see the note above).
     // Ask ble_server DIRECTLY, not via g_state. The shared state's copy is
@@ -167,7 +184,13 @@ void tick() {
     // 2026-08-02 supervision-timeout storm — so let the CPU sleep through a
     // connected-but-idle link and find out. Three timeouts in a boot flips
     // relaxedSleepAllowed() off and this degrades to the old always-hold.
-    bool phone = phoneUp && !(ble_server::linkRelaxed() &&
+    bool phoneSleepReady = ble_server::linkRelaxed();
+#ifdef PM_BLE_XTAL
+    phoneSleepReady = board_ble_xtal_clock_ready();
+#endif
+    // The stable main crystal supports connection timing at fast intervals
+    // too. Retain the existing experiment switch and timeout fallback.
+    bool phone = phoneUp && !(phoneSleepReady &&
                               ble_server::relaxedSleepAllowed());
     s_phoneRelaxed = phoneUp && !phone;
     // The SAME suppression the phone gets, for the same reason, extended to the
@@ -187,6 +210,8 @@ void tick() {
     // sensor is missing and the device is actually looking for it. Once
     // everything is connected the hunt stops and the CPU sleeps again.
     bool hunting = ble_sensors::radioBusy();
+    // Historical RTC-slow-clock behavior below. The MAIN_XTAL candidate can
+    // now release this established-link hold; discovery stays protected.
     // 2026-08-21, learned on the road: an ESTABLISHED sensor link dies under
     // light sleep exactly like the phone's does. A ride ran 1h45m rock-solid
     // while the connected phone held sleep off — then the phone left, sleep
@@ -203,13 +228,53 @@ void tick() {
     // way; what matters is that the hold and the hunt come back the moment
     // the ride resumes, which they do — this flag flips false on the resume
     // tick, before the sensors have woken enough to reconnect.
-    bool sensors = ble_sensors::anyConnected() &&
-                   !ride_recorder::longAutoPaused();
+    bool sensorLinks = ble_sensors::anyConnected();
+    bool sensorReady = false;
+#ifdef PM_BLE_XTAL
+    sensorReady = board_ble_xtal_clock_ready() && ble_sensors::sleepAllowed();
+#endif
+    // Established links only: hunt/connect remains an unconditional hold.
+    // Preserve the old long-auto-pause behavior outside the new experiment.
+    bool sensors = sensorLinks && !ride_recorder::longAutoPaused() && !sensorReady;
+    s_sensorRelaxed = sensorLinks && sensorReady;
     bool grace = millis() < USB_GRACE_MS;
-    bool serial = (bool)Serial;
-    bool usb = grace || serial || phone || hunting || sensors;
+    bool cdc = (bool)Serial;
+    // VBUS is independent of DTR/RTS: an unopened console and a suspended
+    // host still need the PHY. Keep the guard on a failed charger read.
+    bool vbus = true;
+    bool vbusKnown = board_usb_power_present(vbus);
+    // Native USB's cached DTR state can survive physical unplug. A known
+    // absent VBUS overrides it; unknown charger state still fails closed.
+    bool serial = cdc && (!vbusKnown || vbus);
+    static int lastUsbState = -1;
+    int usbState = (vbusKnown ? 4 : 0) | (vbus ? 2 : 0) | (cdc ? 1 : 0);
+    if (usbState != lastUsbState) {
+        diag::log("pm USB: vbus=%d known=%d cdc=%d serial_hold=%d", vbus, vbusKnown, cdc, serial);
+        lastUsbState = usbState;
+    }
+    static bool lastVbusKnown = true;
+    if (vbusKnown != lastVbusKnown) {
+        diag::log("pm: charger VBUS read %s", vbusKnown ? "recovered" : "FAILED; sleep held off");
+        lastVbusKnown = vbusKnown;
+    }
+    s_vbus = vbus;
+    bool usb = grace || serial || vbus || usb_storage::hostActive() ||
+               phone || hunting || sensors;
     s_grace = grace; s_serial = serial; s_phone = phone; s_hunt = hunting;
     s_sens = sensors;
+    static uint32_t lastReportMs = 0, lastOk = 0, lastRejected = 0;
+    static uint64_t lastSleepUs = 0;
+    uint32_t now = millis();
+    if (now - lastReportMs >= 60000) {
+        uint32_t ok, rejected; uint64_t us;
+        sleepStats(ok, rejected, us);
+        char state[64]; stateStr(state, sizeof(state));
+        diag::log("pm window: %lums calls=%lu rejected=%lu sleep_call_ms=%llu holders=%s sd=%d host=%d",
+                  (unsigned long)(now - lastReportMs), (unsigned long)(ok - lastOk),
+                  (unsigned long)(rejected - lastRejected), (us - lastSleepUs) / 1000,
+                  state, ride_recorder::sdMounted(), usb_storage::hostActive());
+        lastReportMs = now; lastOk = ok; lastRejected = rejected; lastSleepUs = us;
+    }
 
     // A busy (bus) lock held for half a minute straight is not a transaction,
     // it is a leak — or a host copying files over MSC, which the log line lets
@@ -262,7 +327,7 @@ void tick() {
             diag::log("pm: BT modem sleep %s (phone %s, sensor hunt %s, links %s)",
                       wantBtSleep ? "on" : "OFF",
                       s_phoneRelaxed ? "relaxed" : phoneUp ? "connected" : "gone",
-                      hunting ? "ON" : "off", sensors ? "up" : "none");
+                      hunting ? "ON" : "off", s_sensorRelaxed ? "sleep eligible" : sensorLinks ? "up" : "none");
         }
     }
     if (usb && !s_usbHeld) {
@@ -275,21 +340,70 @@ void tick() {
 }
 
 void busyAcquire() {
-    if (s_busyLock) esp_pm_lock_acquire(s_busyLock);
+    // PM lock operations on the same handle require external serialization.
+    // Bus, panel and shutdown callers can run on different cores.
+    portENTER_CRITICAL(&s_busyMux);
+    if (s_busyLock) ESP_ERROR_CHECK(esp_pm_lock_acquire(s_busyLock));
     if (s_busyCount.fetch_add(1) == 0) s_busyHeldSinceMs = millis() | 1;
+    portEXIT_CRITICAL(&s_busyMux);
 }
 void busyRelease() {
-    if (s_busyCount.fetch_sub(1) == 1) s_busyHeldSinceMs = 0;
-    if (s_busyLock) esp_pm_lock_release(s_busyLock);
+    portENTER_CRITICAL(&s_busyMux);
+    const int count = s_busyCount.load();
+    if (count > 0) {
+        if (s_busyCount.fetch_sub(1) == 1) s_busyHeldSinceMs = 0;
+        if (s_busyLock) ESP_ERROR_CHECK(esp_pm_lock_release(s_busyLock));
+    }
+    portEXIT_CRITICAL(&s_busyMux);
+    if (count <= 0) diag::log("pm: ERROR unbalanced busyRelease");
+}
+
+void requestSleep(bool enabled) { s_sleepRequested = enabled; }
+
+void report() {
+    char state[64];
+    stateStr(state, sizeof(state));
+    diag::log("pm: available=%d sleep_configured=%d requested=%d holders=%s "
+              "busy=%d; clear means eligible, not measured sleep",
+              s_enabled, s_sleepConfigured.load(), s_sleepRequested.load(),
+              state, s_busyCount.load());
+    diag::log("pm CPU policy: min=%d max=240MHz APB=80MHz (frequency scaling; not a sleep counter)",
+              PM_MIN_CPU_MHZ);
+    uint32_t ok, rejected; uint64_t us;
+    sleepStats(ok, rejected, us);
+    diag::log("pm sleep: successful_calls=%lu rejected=%lu time_in_calls_ms=%llu (includes overhead)",
+              (unsigned long)ok, (unsigned long)rejected, us / 1000);
+    // IDF includes its driver locks, which stateStr() cannot see. No SD lock:
+    // acquiring one here would contaminate the report with our own bus hold.
+    char* buffer = (char*)malloc(4096);
+    if (!buffer) return;
+    FILE* stream = fmemopen(buffer, 4096, "w+");
+    if (stream) {
+        esp_err_t err = esp_pm_dump_locks(stream);
+        long size = ftell(stream);
+        fclose(stream);
+        if (size >= 0 && size < 4096) {
+            buffer[size] = 0;
+            char* save = nullptr;
+            for (char* line = strtok_r(buffer, "\n", &save); line;
+                 line = strtok_r(nullptr, "\n", &save))
+                diag::log("pm locks: %s", line);
+        }
+        if (err != ESP_OK) diag::log("pm: lock dump -> %s", esp_err_to_name(err));
+    }
+    free(buffer);
 }
 
 void stateStr(char* out, size_t n) {
+    if (n == 0) return;
     if (!s_enabled) { snprintf(out, n, "off"); return; }
     size_t p = 0;
     out[0] = 0;
     auto add = [&](const char* tok) {
         if (p < n) p += snprintf(out + p, n - p, "%s%s", p ? "+" : "", tok);
     };
+    if (!s_sleepConfigured.load()) add("disabled");
+    if (s_vbus) add("vbus");
     if (s_grace) add("grace");
     if (s_serial) add("serial");
     if (s_phone) add("phone");
@@ -297,6 +411,7 @@ void stateStr(char* out, size_t n) {
     if (s_sens) add("sens");
     // Info, not a holder: phone attached on the relaxed link, CPU sleeping.
     if (s_phoneRelaxed) add("prlx");
+    if (s_sensorRelaxed) add("srlx"); // information, not a sleep hold
     const int busy = s_busyCount.load();
     if (busy > 0) {
         char b[8];

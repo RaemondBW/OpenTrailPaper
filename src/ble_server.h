@@ -22,20 +22,21 @@ void pushSettingsToPhone();
 // True while a phone (the companion app) is connected — used to hold off
 // auto-sleep during transfers.
 bool isPhoneConnected();
+// Monotonic within a boot; reconnects get a new ID even if a sample missed
+// the disconnected period. Used to verify sleep on an uninterrupted link.
+unsigned long phoneConnectionId();
 
-// True while the connection is MEASURED to be running at a long interval
-// (>= 100 ms — the relaxed state the conn-param governor asks for while
-// riding). power_mgmt uses this to allow CPU light sleep with the phone
-// attached: the supervision-timeout failures that forced the always-hold
-// happened at a 30 ms interval, where the sleep clock's drift budget is 10x
-// tighter.
+// Actual negotiated interval >= 100 ms; used by the legacy sleep gate.
+// The MAIN_XTAL build can maintain the phone at either interval.
 bool linkRelaxed();
 
-// The light-sleep-with-phone experiment gate. DEFAULT OFF since 2026-08-19:
-// the relaxed interval did not save the link (3 supervision timeouts in 41 s),
-// so power_mgmt holds sleep off whenever the phone is connected. Re-armable
-// from the console (`sleepexp on`) for a future run after a controller-clock
-// fix; three timeouts while armed turn it back off for the boot.
+// Queue diagnostics or a transient fast request (returns to idle policy after
+// eight seconds without bulk traffic). Mutable policy stays on the BLE task.
+void reportInterval();
+void requestFastInterval();
+
+// Per-boot connected-sleep experiment. Default off on legacy clock builds,
+// on with MAIN_XTAL; three supervision timeouts disable it for this boot.
 bool relaxedSleepAllowed();
 void setRelaxedSleepExperiment(bool on);
 

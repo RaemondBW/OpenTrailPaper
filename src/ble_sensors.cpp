@@ -8,6 +8,8 @@
 #include "ride_recorder.h"
 #include "routes.h"
 #include "diag.h"
+#include "power_mgmt.h"
+#include <atomic>
 
 namespace {
 
@@ -33,7 +35,7 @@ struct Sensor {
     char advName[24] = "";   // the device's advertised name (e.g. assioma…)
     char make[32] = "";      // "Manufacturer Model" from Device Info Service
     bool found = false;      // discovered by scan, awaiting connect
-    bool connected = false;
+    std::atomic<bool> connected{false};
     NimBLEClient* client = nullptr;
 };
 
@@ -42,6 +44,53 @@ Sensor sensors[KIND_COUNT] = {
     {"Power", SVC_POWER, CHR_POWER},
     {"Cadence", SVC_CSC, CHR_CSC},
 };
+
+// Cross-task telemetry: callbacks update counters; the sensor task reports them.
+struct SleepWatch {
+    std::atomic<uint32_t> notifications{0}, lastMs{0}, maxGapMs{0};
+    std::atomic<uint32_t> sleepAtConnect{0}, connections{0}, disconnects{0};
+    uint32_t ageMs(uint32_t now) const {
+        // A callback may publish a newer timestamp after the task samples now.
+        int32_t age = static_cast<int32_t>(now - lastMs.load());
+        return age > 0 ? static_cast<uint32_t>(age) : 0;
+    }
+    bool silentAfterSleep(uint32_t now, uint32_t slept) const {
+        return ageMs(now) > 15000 && slept != sleepAtConnect.load();
+    }
+    bool timeoutAfterSleep(int reason, uint32_t slept) const {
+        return reason == 520 && slept != sleepAtConnect.load();
+    }
+};
+SleepWatch sleepWatch[KIND_COUNT];
+#ifdef PM_SENSOR_SLEEP
+#ifndef PM_BLE_XTAL
+#error "Sensor sleep requires the MAIN_XTAL controller profile"
+#endif
+std::atomic<bool> sensorSleepEnabled{true};
+#else
+std::atomic<bool> sensorSleepEnabled{false};
+#endif
+uint32_t sleepCount() {
+    uint32_t ok, rejected; uint64_t us;
+    power_mgmt::sleepStats(ok, rejected, us);
+    return ok;
+}
+void sensorSleepFallback(SensorKind kind, const char* reason) {
+    if (!sensorSleepEnabled.exchange(false)) return;
+    // A conservative correlation, not proof that sleep caused the loss. The
+    // PM task restores CPU/modem holds; retain the reason even if SD is down.
+    diag::log("sensor sleep fallback: %s %s after sleep; established-link sleep OFF this boot", sensors[kind].name, reason);
+}
+void noteNotification(SensorKind kind) {
+    auto& w = sleepWatch[kind];
+    uint32_t now = millis(), before = w.lastMs.exchange(now);
+    if (w.notifications.fetch_add(1) && before) {
+        int32_t elapsed = static_cast<int32_t>(now - before);
+        uint32_t gap = elapsed > 0 ? static_cast<uint32_t>(elapsed) : 0;
+        uint32_t peak = w.maxGapMs.load();
+        while (gap > peak && !w.maxGapMs.compare_exchange_weak(peak, gap)) {}
+    }
+}
 
 // Crank state for cadence-from-power-meter and CSC. Event time is 1/1024 s.
 struct CrankState {
@@ -72,6 +121,7 @@ uint8_t cadenceFromCrank(CrankState& cs, uint16_t revs, uint16_t eventTime) {
 ble_sensors::HrPacket lastHr{};
 
 void onHrNotify(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool) {
+    noteNotification(KIND_HR);
     if (len < 2) return;
     uint8_t flags = data[0];
     const bool wide = flags & 0x01;
@@ -148,6 +198,7 @@ uint16_t power3sAvg() {
 }
 
 void onPowerNotify(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool) {
+    noteNotification(KIND_POWER);
     if (len < 4) return;
     uint16_t flags = data[0] | (data[1] << 8);
     int16_t watts = (int16_t)(data[2] | (data[3] << 8));
@@ -213,6 +264,7 @@ void onPowerNotify(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool)
 }
 
 void onCscNotify(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool) {
+    noteNotification(KIND_CSC);
     if (len < 1) return;
     uint8_t flags = data[0];
     size_t off = 1;
@@ -351,6 +403,9 @@ public:
         // answering (asleep, out of range) rather than closing the link.
         diag::log("%s sensor disconnected (reason %d)", sensors[kind_].name,
                   reason);
+        ++sleepWatch[kind_].disconnects;
+        if (sleepWatch[kind_].timeoutAfterSleep(reason, sleepCount()))
+            sensorSleepFallback(kind_, "supervision timeout");
         sensors[kind_].connected = false;
         sensors[kind_].found = false;  // rediscover on next scan
         markDisconnected(kind_);
@@ -383,6 +438,9 @@ bool connectSensor(SensorKind kind) {
         return false;
     }
 
+    sleepWatch[kind].sleepAtConnect = sleepCount();
+    sleepWatch[kind].lastMs = millis();
+    ++sleepWatch[kind].connections;
     bool ok = false;
     switch (kind) {
         case KIND_HR:     ok = chr->subscribe(true, onHrNotify); break;
@@ -593,6 +651,16 @@ void task(void*) {
             });
         }
 
+        uint32_t now = millis(), slept = sleepCount();
+        for (int k = 0; k < KIND_COUNT; ++k) {
+            if (sensors[k].connected && sleepWatch[k].silentAfterSleep(now, slept))
+                sensorSleepFallback(static_cast<SensorKind>(k), "no notifications for 15s");
+        }
+        static uint32_t lastSleepReport = 0;
+        if (now - lastSleepReport >= 60000) {
+            lastSleepReport = now;
+            reportSleep();
+        }
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
@@ -600,6 +668,35 @@ void task(void*) {
 void setScanAlways(bool on) { scanAlways = on; }
 void noteActivity() { lastActivityMs = millis(); }
 bool radioBusy() { return huntingRadio; }
+bool sleepAllowed() { return sensorSleepEnabled.load(); }
+void setSleepAllowed(bool on) {
+#ifdef PM_SENSOR_SLEEP
+    // Restart observation windows when manually re-arming after a fallback.
+    for (auto& w : sleepWatch) { w.sleepAtConnect = sleepCount(); w.lastMs = millis(); }
+    sensorSleepEnabled = on;
+#else
+    sensorSleepEnabled = false;
+    if (on) diag::log("sensor sleep: unavailable in this build profile");
+#endif
+    diag::log("sensor sleep: %s this boot", sensorSleepEnabled ? "armed" : "OFF");
+}
+void reportSleep() {
+    diag::log("sensor sleep: %s; hunt/connect still protected", sensorSleepEnabled ? "armed" : "OFF");
+    for (int k = 0; k < KIND_COUNT; ++k) {
+        auto& w = sleepWatch[k];
+        // Include paired-but-offline sensors, so absence cannot look like a
+        // successful connected-sensor test. Unpaired kinds add no periodic log.
+        if (!sensors[k].connected && !settings::sensorAddr(k)[0] && !w.connections.load()) continue;
+        auto* c = sensors[k].client;
+        float interval = sensors[k].connected && c ? c->getConnInfo().getConnInterval() * 1.25f : 0;
+        diag::log("sensor sleep link: %s up=%d connections=%lu drops=%lu notifications=%lu age_ms=%lu max_gap_ms=%lu interval=%.1fms sleep_since_connect=%lu",
+                  sensors[k].name, (int)sensors[k].connected.load(),
+                  (unsigned long)w.connections.load(), (unsigned long)w.disconnects.load(),
+                  (unsigned long)w.notifications.load(), (unsigned long)w.ageMs(millis()),
+                  (unsigned long)w.maxGapMs.load(), interval,
+                  (unsigned long)(sleepCount()-w.sleepAtConnect.load()));
+    }
+}
 
 bool anyConnected() {
     for (int k = 0; k < KIND_COUNT; ++k)
