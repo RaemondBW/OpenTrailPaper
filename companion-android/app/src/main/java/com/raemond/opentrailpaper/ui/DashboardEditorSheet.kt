@@ -164,6 +164,7 @@ fun DashboardEditorSheet(ble: BleManager, onDismiss: () -> Unit) {
                 .padding(vertical = 16.dp),
         ) {
             PageCarousel(
+                useMiles = ble.useMiles,
                 config = config,
                 pageIx = pageIx,
                 onSelect = { pageIx = it },
@@ -279,7 +280,7 @@ fun DashboardEditorSheet(ble: BleManager, onDismiss: () -> Unit) {
 
                         Text(
                             "Long-press the handle to reorder. “Half width” pairs a field with " +
-                                "the next half-width field; on its own it spans the row.",
+                                "the next half-width field; on its own it spans the row. Adding Radar automatically fits the fields around it.",
                             style = barlow(12.sp),
                             color = Palette.muted,
                         )
@@ -311,9 +312,10 @@ fun DashboardEditorSheet(ble: BleManager, onDismiss: () -> Unit) {
 
     if (showAdd) {
         FieldPickerSheet(
+            allowRadar = config.pages.getOrNull(pageIx)?.layout?.verticalItem == null,
             onDismiss = { showAdd = false },
             onPick = { id ->
-                mutateAt(pageIx) { l -> DashLayout(l.items + DashItem(id, DashSize.MEDIUM, true)) }
+                mutateAt(pageIx) { l -> DashLayout(l.items + DashItem(id, DashSize.MEDIUM, id != "radar", vertical = id == "radar")) }
                 showAdd = false
             },
         )
@@ -328,6 +330,7 @@ fun DashboardEditorSheet(ble: BleManager, onDismiss: () -> Unit) {
  */
 @Composable
 private fun PageCarousel(
+    useMiles: Boolean,
     config: DashConfig,
     pageIx: Int,
     onSelect: (Int) -> Unit,
@@ -396,6 +399,7 @@ private fun PageCarousel(
                     },
             ) {
                 PageCard(
+                    useMiles = useMiles,
                     config = config,
                     page = page,
                     selected = pageIx == i,
@@ -418,6 +422,7 @@ private fun PageCarousel(
 
 @Composable
 private fun PageCard(
+    useMiles: Boolean,
     config: DashConfig,
     page: DashConfig.Page,
     selected: Boolean,
@@ -453,6 +458,7 @@ private fun PageCard(
                 DashConfig.PageKind.FIELDS -> DashPreview(
                     page.layout,
                     Modifier.fillMaxWidth().aspectRatio(DASH_PANEL_ASPECT),
+                    useMiles = useMiles,
                 )
             }
         }
@@ -554,7 +560,7 @@ private fun MapStripSection(config: DashConfig, onPick: (Int, String) -> Unit) {
                 )
             }
             DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-                DashField.all.forEach { f ->
+                DashField.all.filter { it.id != "radar" }.forEach { f ->
                     DropdownMenuItem(
                         text = { Text(f.label, style = TypeScale.body) },
                         onClick = { open = false; onPick(slot, f.id) },
@@ -725,7 +731,7 @@ private fun DashItemRow(
                 Icon(Icons.Filled.Close, contentDescription = "Remove", tint = Palette.muted)
             }
         }
-        Row(
+        if (!item.isVertical) Row(
             Modifier.padding(top = 6.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -735,6 +741,22 @@ private fun DashItemRow(
             }
             Spacer(Modifier.weight(1f))
             SmallChip("Half", item.half) { onChange(item.copy(half = !item.half)) }
+        }
+        if (item.isVertical) {
+            Text("Height", style = TypeScale.body)
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                listOf(50 to "Half", 75 to "Three-quarter", 100 to "Full").forEach { (height, label) ->
+                    SmallChip(label, item.heightPercent == height) { onChange(item.copy(heightPercent = height)) }
+                }
+            }
+        }
+        if (item.field == "radar") {
+            Text("Alignment", style = TypeScale.body)
+            if (item.heightPercent < 100) Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                SmallChip("Top", !item.bottomAligned) { onChange(item.copy(bottomAligned = false)) }
+                SmallChip("Bottom", item.bottomAligned) { onChange(item.copy(bottomAligned = true)) }
+            } else Text("Full height", style = TypeScale.body)
+            Text("Fits whole dashboard rows. Pair your radar in Sensors.", style = TypeScale.body)
         }
     }
 }
@@ -756,10 +778,10 @@ private fun SmallChip(label: String, selected: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-private fun FieldPickerSheet(onDismiss: () -> Unit, onPick: (String) -> Unit) {
+private fun FieldPickerSheet(allowRadar: Boolean, onDismiss: () -> Unit, onPick: (String) -> Unit) {
     FullScreenSheet(title = "Add a field", onDismiss = onDismiss, confirmLabel = "Cancel") {
         LazyColumn {
-            items(DashField.all, key = { it.id }) { field ->
+            items(DashField.all.filter { allowRadar || it.id != "radar" }, key = { it.id }) { field ->
                 Column(
                     Modifier
                         .fillMaxWidth()

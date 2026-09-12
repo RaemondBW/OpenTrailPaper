@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <ctime>
+#include "radar.h"
 
 // Single shared snapshot of everything the UI and recorder consume.
 // Producers (GPS task, BLE callbacks, battery poll) take the lock, update
@@ -65,6 +66,8 @@ struct RideState {
     // advancing). Movement evidence for auto-pause — no wheel circumference
     // needed, since "is it turning" is the only question asked of it.
     uint32_t wheelMoveMs = 0;
+
+    RadarState radar;
 
     // Ride accumulation (owned by the recorder)
     bool     recording = false;

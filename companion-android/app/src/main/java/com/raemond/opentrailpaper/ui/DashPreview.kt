@@ -42,6 +42,8 @@ import com.raemond.opentrailpaper.data.DashItem
 import com.raemond.opentrailpaper.data.DashLayout
 import com.raemond.opentrailpaper.data.DashSize
 import com.raemond.opentrailpaper.data.RideSim
+import com.raemond.opentrailpaper.data.Units
+import kotlin.math.roundToInt
 
 // A scaled likeness of the panel, drawn to the SAME rules ui_render.cpp uses.
 //
@@ -156,6 +158,7 @@ fun DashPreview(
     layout: DashLayout,
     modifier: Modifier = Modifier,
     live: RideSim? = null,
+    useMiles: Boolean = false,
 ) {
     BoxWithConstraints(
         modifier
@@ -177,7 +180,7 @@ fun DashPreview(
                         .offset(x = (p.x * k).dp, y = ((p.y - STATUS_H) * k).dp)
                         .size(width = (p.w * k).dp, height = (p.h * k).dp),
                 ) {
-                    Cell(p, k, live)
+                    Cell(p, k, live, useMiles)
                 }
             }
         }
@@ -185,13 +188,15 @@ fun DashPreview(
 }
 
 @Composable
-private fun Cell(p: Placed, k: Float, live: RideSim?) {
+private fun Cell(p: Placed, k: Float, live: RideSim?, useMiles: Boolean) {
     Box(
         Modifier
             .fillMaxSize()
             .border((RULE * k).dp, Color.Black),
     ) {
-        if (p.hero) {
+        if (p.item.field == "radar") {
+            RadarSample(k, p.h, useMiles)
+        } else if (p.hero) {
             Column(
                 Modifier
                     .fillMaxSize()
@@ -274,6 +279,32 @@ private fun ZoneBar(k: Float, width: Float, filled: Int) {
     }
 }
 
+@Composable
+private fun RadarSample(k: Float, height: Float, useMiles: Boolean) {
+    val riderBottom = if (height < 600) 120f else 130f
+    val laneTop = riderBottom + 34
+    val laneHeight = height - 78 - laneTop
+    Text("BEHIND · 2", fontSize = (17 * k).sp, fontWeight = FontWeight.Bold,
+        modifier = Modifier.offset((16 * k).dp, (25 * k).dp))
+    Text("▲  YOU", fontSize = (20 * k).sp, fontWeight = FontWeight.Bold,
+        modifier = Modifier.offset((20 * k).dp, ((riderBottom - 36) * k).dp))
+    Box(Modifier.offset((13 * k).dp, (laneTop * k).dp)
+        .size((2 * k).dp, (laneHeight * k).dp).background(Color.Black))
+    for (distance in listOf(52, 118)) {
+        val y = laneTop + laneHeight * distance / 150
+        Box(Modifier.offset((24 * k).dp, ((y - 11) * k).dp)
+            .size((44 * k).dp, (22 * k).dp).border((2 * k).dp, Color.Black))
+        if (distance == 52 || laneHeight * 66 / 150 > 66) {
+            Text("${Units.elevation(distance.toDouble(), useMiles).roundToInt()}", fontSize = (30 * k).sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center,
+                modifier = Modifier.offset((80 * k).dp, ((y - 22) * k).dp).width((72 * k).dp))
+            Text(if (useMiles) "ft" else "m", fontSize = (14 * k).sp, textAlign = TextAlign.Center,
+                modifier = Modifier.offset((80 * k).dp, ((y + 15) * k).dp).width((72 * k).dp))
+        }
+    }
+    Text(if (useMiles) "492 FT+" else "150 M+", fontSize = (14 * k).sp, fontWeight = FontWeight.Bold,
+        modifier = Modifier.offset((42 * k).dp, ((height - 31) * k).dp))
+}
+
 // MARK: layout — ui_render.cpp's packer, verbatim in device pixels
 
 private fun place(layout: DashLayout): List<Placed> {
@@ -283,18 +314,24 @@ private fun place(layout: DashLayout): List<Placed> {
     val total = maxOf(weights.sum(), 1)
     val gutters = (rows.size - 1) * GUTTER
     val availH = (PANEL_H - STATUS_H - MARGIN) - gutters
-    val halfW = (CONTENT_W - GUTTER) / 2
+    var gridY = STATUS_H + MARGIN - STEP
+    val rowHeights = rows.indices.map { r ->
+        val height = if (r == rows.lastIndex) PANEL_H - MARGIN - gridY
+                     else (availH * weights[r] / total).toInt().toFloat()
+        gridY += height + GUTTER
+        height.toInt()
+    }
+    val railH = layout.verticalHeight(rowHeights, GUTTER.toInt()).toFloat()
+    val railY = if (layout.verticalItem?.bottomAligned == true) PANEL_H - MARGIN - railH else STATUS_H + MARGIN - STEP
 
     val out = ArrayList<Placed>()
     var y = STATUS_H + MARGIN - STEP
     for ((r, row) in rows.withIndex()) {
-        val rowH = if (r == rows.size - 1) {
-            PANEL_H - MARGIN - y
-        } else {
-            availH * weights[r] / total
-        }
+        val rowH = rowHeights[r].toFloat()
+        val mainW = if (layout.verticalItem != null && y + rowH > railY && y < railY + railH) 316f else CONTENT_W
+        val halfW = ((mainW - GUTTER) / 2).toInt().toFloat()
         for ((c, item) in row.withIndex()) {
-            val w = if (row.size == 2) halfW else CONTENT_W
+            val w = if (row.size == 2) halfW else mainW
             val x = if (row.size == 2) {
                 if (c == 0) MARGIN else MARGIN + halfW + GUTTER
             } else {
@@ -313,6 +350,9 @@ private fun place(layout: DashLayout): List<Placed> {
         }
         y += rowH + GUTTER
     }
+    layout.verticalItem?.let { item ->
+        out.add(Placed(352f, railY, 160f, railH, item, false, VALUE_LADDER.last(), LABEL_LADDER.last()))
+    }
     return sized(out)
 }
 
@@ -325,7 +365,7 @@ private fun sized(out: List<Placed>): List<Placed> {
     var labelIdx = 0
 
     for (p in out) {
-        if (p.hero) continue
+        if (p.hero || p.item.field == "radar") continue
         val availW = p.w - 2 * PAD
         val unitW = unitFor(p.item.field)?.let { UNIT_FACE.perChar * it.length + 6 } ?: 0f
         val valH = p.h - PAD * 2 - LABEL_LADDER[1].ascender - HALF_STEP

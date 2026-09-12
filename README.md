@@ -177,6 +177,8 @@ remaining), framed **route**, **map-tile**, **log** and **OTA** transfers, and a
   last-known position, and optionally the phone's location as a fallback).
 - **BLE sensors** — heart rate, cycling power (incl. cadence from crank data),
   speed/cadence. Pair from the Sensors screen; pairings persist in flash.
+- **Varia radar** — pair a BLE radar from Sensors and add a vertical traffic tile
+  in either companion's dashboard editor. See [compatibility and setup](docs/varia-radar.md).
 - **Ride recording** — 1 Hz FIT files on the SD card (`/rides/*.fit`),
   uploadable to Strava / intervals.icu. Moving time, avg/normalized power,
   avg HR and climbing tracked for the summary (SAVE / DISCARD). Rides cut short

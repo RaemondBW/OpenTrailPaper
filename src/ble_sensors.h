@@ -6,6 +6,7 @@
 //   Heart Rate           0x180D / measurement 0x2A37
 //   Cycling Power        0x1818 / measurement 0x2A63 (also yields cadence
 //                        when the meter reports crank revolutions)
+//   Varia legacy radar   6a4e3200 / measurement 6a4e3203
 //   Speed & Cadence      0x1816 / measurement 0x2A5B
 //
 // Pairing: we connect ONLY to the address saved for a kind. With nothing
@@ -17,7 +18,7 @@
 
 namespace ble_sensors {
 
-enum Kind { KIND_HR = 0, KIND_POWER = 1, KIND_CSC = 2, KIND_COUNT = 3 };
+enum Kind { KIND_HR = 0, KIND_POWER = 1, KIND_CSC = 2, KIND_RADAR = 3, KIND_COUNT = 4 };
 
 struct Candidate {
     char name[32];      // advertised name, or "Manufacturer Model" once connected

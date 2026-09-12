@@ -36,6 +36,7 @@ struct BikeSensor: Identifiable, Equatable {
         if kindsMask & 1 != 0 { parts.append("Heart rate") }
         if kindsMask & 2 != 0 { parts.append("Power") }
         if kindsMask & 4 != 0 { parts.append("Cadence") }
+        if kindsMask & 8 != 0 { parts.append("Radar") }
         return parts.isEmpty ? "Sensor" : parts.joined(separator: " + ")
     }
 }

@@ -170,6 +170,7 @@ void ui_render_pairing(uint32_t code, uint8_t* fb);
 void dashFieldValue(uint8_t field, const RideState& s, char* val, size_t valCap,
                     const char** unit);
 bool dashFieldAvailable(uint8_t field, const RideState& s);
+void ui_render_radar(const RideState& s, const EpdRect& rect, uint8_t* fb);
 // The WIDEST string a field can produce — what type is sized against, so a
 // value crossing a digit boundary can never resize its cell mid-ride.
 const char* dashSizingHint(uint8_t field);
@@ -210,7 +211,7 @@ struct MenuInfo {
     bool sdOk = false;
     int rideCount = 0;
     uint32_t sdFreeMB = 0;
-    bool hr = false, pwr = false, cad = false;
+    bool hr = false, pwr = false, cad = false, radar = false;
     uint8_t batteryPercent = 0;
     double rideDistanceM = 0;
     uint32_t rideElapsedS = 0;

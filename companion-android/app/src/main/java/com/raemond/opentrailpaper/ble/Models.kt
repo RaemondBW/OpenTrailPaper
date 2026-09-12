@@ -39,6 +39,7 @@ data class BikeSensor(
                 if (kindsMask and 1 != 0) add("Heart rate")
                 if (kindsMask and 2 != 0) add("Power")
                 if (kindsMask and 4 != 0) add("Cadence")
+                if (kindsMask and 8 != 0) add("Radar")
             }
             return if (parts.isEmpty()) "Sensor" else parts.joinToString(" + ")
         }

@@ -35,6 +35,7 @@ struct DashField: Identifiable, Hashable {
         .init(id: "sats",       label: "Satellites",   detail: "GPS"),
         .init(id: "clock",      label: "Clock",        detail: "Time of day"),
         .init(id: "routeleft",  label: "Route left",   detail: "Distance to the end of the route"),
+        .init(id: "radar", label: "Radar", detail: "Varia rear traffic · vertical tile"),
     ]
 
     static func named(_ id: String) -> DashField? { all.first { $0.id == id } }
@@ -70,6 +71,10 @@ struct DashItem: Identifiable, Hashable {
     var field: String
     var size: DashSize
     var half: Bool
+    var vertical: Bool = false
+    var heightPercent: Int = 100
+    var bottomAligned: Bool = false
+    var isVertical: Bool { field == "radar" }
 
     var fieldLabel: String { DashField.named(field)?.label ?? field }
 
@@ -108,26 +113,71 @@ struct DashLayout: Equatable {
             guard let first = tok.first, DashField.named(String(first)) != nil else { continue }
             let size = tok.count > 1 ? DashSize(rawValue: String(tok[1])) ?? .medium : .medium
             let half = tok.dropFirst().contains { $0 == "half" }
-            out.append(DashItem(field: String(first), size: size, half: half))
+            out.append(DashItem(field: String(first), size: size, half: half,
+                                vertical: tok.dropFirst().contains { $0 == "vertical" },
+                                heightPercent: tok.dropFirst().compactMap { ["height=50": 50, "height=75": 75, "height=100": 100][String($0)] }.last ?? 100,
+                                bottomAligned: tok.dropFirst().filter { $0 == "position=top" || $0 == "position=bottom" }.last == "position=bottom"))
             if out.count >= DashLayout.maxItems { break }
         }
         items = out
+        items = normalizedItems
     }
 
     /// Serialize back to the config file's text, byte-compatible with
     /// dashSerialize() so a round trip through the device changes nothing.
     var configText: String {
         var s = "# OpenTrailPaper dashboard layout\n"
-        s += "# <field> <small|medium|large|hero> [half]\n"
+        s += "# <field> <small|medium|large|hero> [half|vertical] [height=50|75|100]\n"
         s += "# 'half' shares the row with the next 'half' field.\n"
-        for it in items {
+        for it in normalizedItems {
             let field = it.field.padding(toLength: max(10, it.field.count),
                                          withPad: " ", startingAt: 0)
             let size = it.size.rawValue.padding(toLength: max(6, it.size.rawValue.count),
                                                 withPad: " ", startingAt: 0)
-            s += "\(field) \(size)\(it.half ? " half" : "")\n"
+            s += "\(field) \(size)\(it.isVertical ? " vertical" : it.half ? " half" : "")\(it.heightPercent == 100 ? "" : " height=\(it.heightPercent)")\(it.bottomAligned ? " position=bottom" : "")\n"
         }
         return s
+    }
+
+    // Mirrors dashNormalizeLayout: one vertical tile per page.
+    var normalizedItems: [DashItem] {
+        var rail = false
+        var result: [DashItem] = []
+        for var item in items.prefix(Self.maxItems) {
+            if item.vertical { item.half = false }
+            item.vertical = item.field == "radar"
+            if item.vertical {
+                if rail { continue }
+                item.half = false
+                rail = true
+            }
+            if !item.vertical || ![50, 75, 100].contains(item.heightPercent) { item.heightPercent = 100 }
+            if !item.vertical { item.bottomAligned = false }
+            result.append(item)
+        }
+        return result
+    }
+    var verticalItem: DashItem? { normalizedItems.first { $0.vertical } }
+
+    /// Match the device: fill every grid row touched by the requested height.
+    func verticalHeight(rowHeights: [Int], gutter: Int) -> Int {
+        guard !rowHeights.isEmpty else { return 0 }
+        let total = rowHeights.reduce(0, +) + (rowHeights.count - 1) * gutter
+        let percent = verticalItem?.heightPercent ?? 100
+        if percent >= 100 { return total }
+        let wanted = total * percent / 100
+        var bottom = 0
+        let heights = verticalItem?.bottomAligned == true ? Array(rowHeights.reversed()) : rowHeights
+        for (index, height) in heights.enumerated() {
+            let previous = index > 0 ? bottom - gutter : 0
+            bottom += height
+            if bottom + gutter >= wanted || index == rowHeights.count - 1 {
+                if verticalItem?.bottomAligned == true && previous >= 300 && wanted - previous < bottom - wanted { return previous }
+                return bottom
+            }
+            bottom += gutter
+        }
+        return total
     }
 
     /// The device's built-in default, for the "reset" action.
@@ -146,6 +196,8 @@ struct DashLayout: Equatable {
     /// spans. Duplicated here so the preview shows what the panel will actually
     /// do — including the surprise that a lone `half` takes the full width.
     var rows: [[DashItem]] {
+        var items = normalizedItems.filter { !$0.vertical }
+        if items.isEmpty { items = [DashItem(field: "speed", size: .hero, half: false)] }
         var out: [[DashItem]] = []
         var i = 0
         while i < items.count {
@@ -232,7 +284,7 @@ struct DashConfig: Equatable {
                 else if tok.count > 1, tok[1] == "workout" { kind = .workout }
             } else if tok.first == "map" {
                 for i in 0..<3 where tok.count > i + 1 {
-                    if DashField.named(String(tok[i + 1])) != nil {
+                    if tok[i + 1] != "radar", DashField.named(String(tok[i + 1])) != nil {
                         strip[i] = String(tok[i + 1])
                     }
                 }
@@ -256,7 +308,7 @@ struct DashConfig: Equatable {
         // Byte-identical with dash_layout.cpp's kHeader — `==` between the
         // app's config and the device's echo is a string comparison.
         var s = "# OpenTrailPaper dashboard layout\n"
-        s += "# <field> <small|medium|large|hero> [half]; 'page' or 'page music' starts a new page\n"
+        s += "# <field> <small|medium|large|hero> [half|vertical] [height=50|75|100]; 'page' or 'page music' starts a new page\n"
         s += "map \(mapFields[0]) \(mapFields[1]) \(mapFields[2])\n"
         for (i, page) in pages.enumerated() {
             if page.isMusic {
@@ -269,12 +321,12 @@ struct DashConfig: Equatable {
                 s += "page\n"
             }
             if page.kind == .fields {
-                for it in page.layout.items {
+                for it in page.layout.normalizedItems {
                     let field = it.field.padding(toLength: max(10, it.field.count),
                                                  withPad: " ", startingAt: 0)
                     let size = it.size.rawValue.padding(toLength: max(6, it.size.rawValue.count),
                                                         withPad: " ", startingAt: 0)
-                    s += "\(field) \(size)\(it.half ? " half" : "")\n"
+                    s += "\(field) \(size)\(it.isVertical ? " vertical" : it.half ? " half" : "")\(it.heightPercent == 100 ? "" : " height=\(it.heightPercent)")\(it.bottomAligned ? " position=bottom" : "")\n"
                 }
             }
         }

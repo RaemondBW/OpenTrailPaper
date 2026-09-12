@@ -77,8 +77,8 @@ struct DashboardEditorView: View {
                 }
             }
             .sheet(isPresented: $showAdd) {
-                FieldPicker { id in
-                    mutateAt(pageIx) { $0.items.append(DashItem(field: id, size: .medium, half: true)) }
+                FieldPicker(allowRadar: config.pages.indices.contains(pageIx) && config.pages[pageIx].layout.verticalItem == nil) { id in
+                    mutateAt(pageIx) { $0.items.append(DashItem(field: id, size: .medium, half: id != "radar", vertical: id == "radar")) }
                 }
             }
         }
@@ -113,7 +113,7 @@ struct DashboardEditorView: View {
                                selection: Binding(
                                    get: { config.mapFields[slot] },
                                    set: { config.mapFields[slot] = $0; dirty = true })) {
-                            ForEach(DashField.all) { f in
+                            ForEach(DashField.all.filter { $0.id != "radar" }) { f in
                                 Text(f.label).tag(f.id)
                             }
                         }
@@ -163,7 +163,7 @@ struct DashboardEditorView: View {
                     Text("Fields")
                 } footer: {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("Drag to reorder, swipe to remove. “Half width” pairs a field with the next half-width field; on its own it spans the row.")
+                        Text("Drag to reorder, swipe to remove. “Half width” pairs a field with the next half-width field; on its own it spans the row. Adding Radar automatically fits the fields around it.")
                         Text("Fields that need a sensor — power, heart rate, cadence — are hidden on the device until it connects, and the rest expand to fill the space. Route left hides when no route is loaded.")
                     }
                 }
@@ -363,16 +363,36 @@ private struct DashItemRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(item.fieldLabel).font(TypeScale.bodyStrong).foregroundStyle(Palette.ink)
-            HStack(spacing: 10) {
-                Picker("", selection: $item.size) {
-                    ForEach(DashSize.allCases) { Text($0.label).tag($0) }
+            if item.field == "radar" {
+                Text("Height").font(.footnote).foregroundStyle(Palette.muted)
+                Picker("Radar height", selection: $item.heightPercent) {
+                    Text("Half").tag(50)
+                    Text("Three-quarter").tag(75)
+                    Text("Full").tag(100)
                 }
                 .pickerStyle(.segmented)
-                .onChange(of: item.size) { changed() }
-
-                Toggle(isOn: $item.half) { Text("Half").font(.system(size: 13)) }
-                    .toggleStyle(.button)
-                    .onChange(of: item.half) { changed() }
+                .onChange(of: item.heightPercent) { changed() }
+                Text("Alignment").font(.footnote).foregroundStyle(Palette.muted)
+                Picker("Radar alignment", selection: $item.bottomAligned) {
+                    Text("Top").tag(false)
+                    Text("Bottom").tag(true)
+                }
+                .pickerStyle(.segmented)
+                .disabled(item.heightPercent == 100)
+                .onChange(of: item.bottomAligned) { changed() }
+                Text("Fits whole dashboard rows. Pair your radar in Sensors.")
+                    .font(.footnote).foregroundStyle(Palette.muted)
+            } else {
+                HStack(spacing: 10) {
+                    Picker("Size", selection: $item.size) {
+                        ForEach(DashSize.allCases) { Text($0.label).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    .onChange(of: item.size) { changed() }
+                    Toggle(isOn: $item.half) { Text("Half").font(.system(size: 13)) }
+                        .toggleStyle(.button)
+                        .onChange(of: item.half) { changed() }
+                }
             }
         }
         .padding(.vertical, 4)
@@ -381,11 +401,12 @@ private struct DashItemRow: View {
 
 private struct FieldPicker: View {
     @Environment(\.dismiss) private var dismiss
+    var allowRadar = true
     let pick: (String) -> Void
 
     var body: some View {
         NavigationStack {
-            List(DashField.all) { f in
+            List(DashField.all.filter { allowRadar || $0.id != "radar" }) { f in
                 Button {
                     pick(f.id)
                     dismiss()
@@ -474,6 +495,7 @@ private let kLabelLadder: [LabelFace] = [
 private let kUnitFace = LabelFace(cap: 15, ascender: 19, perChar: 13.5)
 
 struct DashPreview: View {
+    @AppStorage(UnitPref.key) private var useMiles = false
     let layout: DashLayout
 
     /// A ride to read the numbers off, for the tutorial's live head unit. The
@@ -533,15 +555,24 @@ struct DashPreview: View {
         let total = max(weights.reduce(0, +), 1)
         let gutters = CGFloat(rows.count - 1) * gutter
         let availH = (panelH - statusH - margin) - gutters
-        let halfW = (contentW - gutter) / 2
+        var gridY = statusH + margin - step
+        let rowHeights = rows.indices.map { r in
+            let height = r == rows.count - 1 ? panelH - margin - gridY
+                : (availH * CGFloat(weights[r]) / CGFloat(total)).rounded(.down)
+            gridY += height + gutter
+            return Int(height)
+        }
+        let railH = CGFloat(layout.verticalHeight(rowHeights: rowHeights, gutter: Int(gutter)))
+        let railY = layout.verticalItem?.bottomAligned == true ? panelH - margin - railH : statusH + margin - step
 
         var out: [Placed] = []
         var y = statusH + margin - step
         for (r, row) in rows.enumerated() {
-            let rowH = r == rows.count - 1 ? panelH - margin - y
-                                           : availH * CGFloat(weights[r]) / CGFloat(total)
+            let rowH = CGFloat(rowHeights[r])
+            let mainW = layout.verticalItem != nil && y + rowH > railY && y < railY + railH ? 316 : contentW
+            let halfW = ((mainW - gutter) / 2).rounded(.down)
             for (c, item) in row.enumerated() {
-                let w = row.count == 2 ? halfW : contentW
+                let w = row.count == 2 ? halfW : mainW
                 let x = row.count == 2 ? (c == 0 ? margin : margin + halfW + gutter)
                                        : margin
                 // The hero only gets hero treatment when it is alone on a row
@@ -553,6 +584,10 @@ struct DashPreview: View {
             }
             y += rowH + gutter
         }
+        if let item = layout.verticalItem {
+            out.append(Placed(x: 352, y: railY, w: 160, h: railH, item: item, hero: false,
+                              value: kValueLadder.last!, label: kLabelLadder.last!))
+        }
         return sized(out)
     }
 
@@ -563,7 +598,7 @@ struct DashPreview: View {
         var classIdx: [String: Int] = [:]
         var labelIdx = 0
 
-        for p in out where !p.hero {
+        for p in out where !p.hero && p.item.field != "radar" {
             let availW = p.w - 2 * pad
             let unitW = unit(p.item.field).map { kUnitFace.perChar * CGFloat($0.count) + 6 } ?? 0
             let valH = p.h - pad * 2 - kLabelLadder[1].ascender - halfStep
@@ -615,7 +650,9 @@ struct DashPreview: View {
             Rectangle()
                 .strokeBorder(Color.black, lineWidth: rule * k)
 
-            if p.hero {
+            if p.item.field == "radar" {
+                radarSample(k: k, height: p.h)
+            } else if p.hero {
                 VStack(spacing: 0) {
                     caption(p, k: k)
                         .frame(maxWidth: .infinity)            // hero caption centres
@@ -636,6 +673,34 @@ struct DashPreview: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .padding(.top, (pad + p.label.ascender) * k)
             }
+        }
+    }
+
+    private func radarSample(k: CGFloat, height: CGFloat) -> some View {
+        let riderBottom: CGFloat = height < 600 ? 120 : 130
+        let laneTop = riderBottom + 34
+        let laneHeight = height - 78 - laneTop
+        return ZStack(alignment: .topLeading) {
+            Text("BEHIND · 2").font(.system(size: 17 * k, weight: .bold))
+                .frame(width: 160 * k, height: 74 * k)
+            Rectangle().frame(width: 160 * k, height: 2 * k).offset(y: 74 * k)
+            Text("▲  YOU").font(.system(size: 20 * k, weight: .bold))
+                .offset(x: 20 * k, y: (riderBottom - 36) * k)
+            Rectangle().frame(width: 2 * k, height: laneHeight * k)
+                .offset(x: 13 * k, y: laneTop * k)
+            ForEach([52, 118], id: \.self) { distance in
+                let y = (laneTop + laneHeight * CGFloat(distance) / 150) * k
+                Rectangle().strokeBorder(Color.black, lineWidth: 2 * k)
+                    .frame(width: 44 * k, height: 22 * k).offset(x: 24 * k, y: y - 11 * k)
+                if distance == 52 || laneHeight * 66 / 150 > 66 {
+                    Text("\(Int(Units.elevation(Double(distance), miles: useMiles).rounded()))").font(.system(size: 30 * k, weight: .bold))
+                        .frame(width: 72 * k).offset(x: 80 * k, y: y - 22 * k)
+                    Text(useMiles ? "ft" : "m").font(.system(size: 14 * k))
+                        .frame(width: 72 * k).offset(x: 80 * k, y: y + 15 * k)
+                }
+            }
+            Text(useMiles ? "492 FT+" : "150 M+").font(.system(size: 14 * k, weight: .bold))
+                .offset(x: 42 * k, y: (height - 31) * k)
         }
     }
 

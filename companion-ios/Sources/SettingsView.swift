@@ -306,7 +306,7 @@ struct SettingsView: View {
         if !paired.isEmpty {
             return "\(paired.count) saved · none connected"
         }
-        return "Scan & pair heart rate, power, cadence"
+        return "Scan & pair heart rate, power, cadence, radar"
     }
 
     @ViewBuilder private var diagnosticsCard: some View {

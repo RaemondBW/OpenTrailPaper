@@ -24,6 +24,7 @@ const FieldInfo kFields[DF_COUNT] = {
     {"sats",       "SATELLITES"},
     {"clock",      "CLOCK"},
     {"routeleft",  "ROUTE LEFT"},
+    {"radar",      "RADAR"},
 };
 
 const char* kSizes[DZ_COUNT] = {"small", "medium", "large", "hero"};
@@ -87,6 +88,48 @@ const DashPages& dashDefaultPages() {
     return d;
 }
 
+int dashVerticalHeight(const int* rowHeights, int rowCount, int gutter, uint8_t heightPercent, bool bottomAligned) {
+    if (rowCount <= 0) return 0;
+    int total = (rowCount - 1) * gutter;
+    for (int i = 0; i < rowCount; ++i) total += rowHeights[i];
+    if (heightPercent >= 100) return total;
+    const int wanted = total * heightPercent / 100;
+    int bottom = 0;
+    for (int i = 0; i < rowCount; ++i) {
+        const int previous = i ? bottom - gutter : 0;
+        bottom += rowHeights[bottomAligned ? rowCount - 1 - i : i];
+        if (bottom + gutter >= wanted || i == rowCount - 1) {
+            // A large hero above the bottom rows must not force a half-height
+            // radar to fill the page. Prefer the closer row edge if readable.
+            if (bottomAligned && previous >= 300 && wanted - previous < bottom - wanted)
+                return previous;
+            return bottom;
+        }
+        bottom += gutter;
+    }
+    return total;
+}
+
+void dashNormalizeLayout(DashLayout& layout) {
+    bool hasVertical = false;
+    int n = 0;
+    for (int i = 0; i < layout.count && i < DASH_MAX_ITEMS; ++i) {
+        DashItem item = layout.items[i];
+        if (item.vertical) item.half = false; // migrate old numeric side tiles
+        item.vertical = item.field == DF_RADAR;
+        if (item.vertical) {
+            if (hasVertical) continue;
+            item.half = false;
+            hasVertical = true;
+        }
+        if (!item.vertical || (item.heightPercent != 50 && item.heightPercent != 75))
+            item.heightPercent = 100;
+        if (!item.vertical) item.bottomAligned = false;
+        layout.items[n++] = item;
+    }
+    layout.count = n;
+}
+
 bool dashParse(const char* text, DashLayout& out) {
     out.count = 0;
     if (!text) return false;
@@ -99,12 +142,12 @@ bool dashParse(const char* text, DashLayout& out) {
         const char* cut = p;
         while (cut < lineEnd && *cut != '#') ++cut;
 
-        // Up to three whitespace-separated tokens: field, size, "half".
-        const char* tok[3] = {nullptr, nullptr, nullptr};
-        size_t tokLen[3] = {0, 0, 0};
+        // Field, size and placement tokens (vertical overrides half).
+        const char* tok[6] = {};
+        size_t tokLen[6] = {};
         int ntok = 0;
         const char* q = p;
-        while (q < cut && ntok < 3) {
+        while (q < cut && ntok < 6) {
             while (q < cut && (*q == ' ' || *q == '\t' || *q == '\r')) ++q;
             if (q >= cut) break;
             const char* start = q;
@@ -131,6 +174,15 @@ bool dashParse(const char* text, DashLayout& out) {
                 }
                 for (int i = 1; i < ntok; ++i)
                     if (tokenEq(tok[i], tokLen[i], "half")) it.half = true;
+                for (int i = 1; i < ntok; ++i)
+                    if (tokenEq(tok[i], tokLen[i], "vertical")) it.vertical = true;
+                for (int i = 1; i < ntok; ++i) {
+                    if (tokenEq(tok[i], tokLen[i], "height=50")) it.heightPercent = 50;
+                    if (tokenEq(tok[i], tokLen[i], "height=75")) it.heightPercent = 75;
+                    if (tokenEq(tok[i], tokLen[i], "height=100")) it.heightPercent = 100;
+                    if (tokenEq(tok[i], tokLen[i], "position=bottom")) it.bottomAligned = true;
+                    if (tokenEq(tok[i], tokLen[i], "position=top")) it.bottomAligned = false;
+                }
                 out.items[out.count++] = it;
             }
         }
@@ -141,18 +193,23 @@ bool dashParse(const char* text, DashLayout& out) {
 
     // An empty result means the file was blank, all comments, or all typos —
     // in every case the caller is better off with the default than a blank panel.
+    dashNormalizeLayout(out);
     return out.count > 0;
 }
 
 namespace {
 
 // Append one layout's item lines; returns false on truncation.
-bool serializeItems(const DashLayout& layout, char* out, size_t cap, size_t& n) {
+bool serializeItems(const DashLayout& input, char* out, size_t cap, size_t& n) {
+    DashLayout layout = input;
+    dashNormalizeLayout(layout);
     for (int i = 0; i < layout.count; ++i) {
         const DashItem& it = layout.items[i];
         if (it.field >= DF_COUNT || it.size >= DZ_COUNT) continue;
-        int w = snprintf(out + n, cap - n, "%-10s %-6s%s\n", dashFieldId(it.field),
-                         dashSizeId(it.size), it.half ? " half" : "");
+        int w = snprintf(out + n, cap - n, "%-10s %-6s%s%s%s\n", dashFieldId(it.field),
+                         dashSizeId(it.size), it.vertical ? " vertical" : it.half ? " half" : "",
+                         it.heightPercent == 50 ? " height=50" : it.heightPercent == 75 ? " height=75" : "",
+                         it.bottomAligned ? " position=bottom" : "");
         if (w < 0 || (size_t)w >= cap - n) return false;
         n += (size_t)w;
     }
@@ -163,7 +220,7 @@ bool serializeItems(const DashLayout& layout, char* out, size_t cap, size_t& n) 
 // budget matters more than prose — the format is documented in dash_layout.h.
 const char kHeader[] =
     "# OpenTrailPaper dashboard layout\n"
-    "# <field> <small|medium|large|hero> [half]; 'page' or 'page music' starts a new page\n";
+    "# <field> <small|medium|large|hero> [half|vertical] [height=50|75|100]; 'page' or 'page music' starts a new page\n";
 
 }  // namespace
 
@@ -189,6 +246,7 @@ bool dashParsePages(const char* text, DashPages& out) {
     DashPage cur;
     bool sawMap = false;
     auto commit = [&] {
+        dashNormalizeLayout(cur.layout);
         bool keep = cur.kind != DP_FIELDS || cur.layout.count > 0;
         if (cur.kind == DP_MAP) {
             if (sawMap) keep = false;   // exactly one map, first wins
@@ -205,12 +263,12 @@ bool dashParsePages(const char* text, DashPages& out) {
         const char* cut = p;
         while (cut < lineEnd && *cut != '#') ++cut;
 
-        // 4 tokens: `map` carries three field ids after its keyword.
-        const char* tok[4] = {nullptr, nullptr, nullptr, nullptr};
-        size_t tokLen[4] = {0, 0, 0, 0};
+        // Field, size, half, vertical and optional height; map uses four tokens.
+        const char* tok[6] = {};
+        size_t tokLen[6] = {};
         int ntok = 0;
         const char* q = p;
-        while (q < cut && ntok < 4) {
+        while (q < cut && ntok < 6) {
             while (q < cut && (*q == ' ' || *q == '\t' || *q == '\r')) ++q;
             if (q >= cut) break;
             const char* start = q;
@@ -234,7 +292,7 @@ bool dashParsePages(const char* text, DashPages& out) {
             // default rather than dropping the line.
             for (int i = 0; i < 3 && i + 1 < ntok; ++i) {
                 uint8_t f = dashFieldFromId(tok[i + 1], tokLen[i + 1]);
-                if (f < DF_COUNT) out.mapFields[i] = f;
+                if (f < DF_COUNT && f != DF_RADAR) out.mapFields[i] = f;
             }
         } else if (ntok >= 1 && cur.kind == DP_FIELDS &&
                    cur.layout.count < DASH_MAX_ITEMS) {
@@ -250,6 +308,15 @@ bool dashParsePages(const char* text, DashPages& out) {
                 }
                 for (int i = 1; i < ntok; ++i)
                     if (tokenEq(tok[i], tokLen[i], "half")) it.half = true;
+                for (int i = 1; i < ntok; ++i)
+                    if (tokenEq(tok[i], tokLen[i], "vertical")) it.vertical = true;
+                for (int i = 1; i < ntok; ++i) {
+                    if (tokenEq(tok[i], tokLen[i], "height=50")) it.heightPercent = 50;
+                    if (tokenEq(tok[i], tokLen[i], "height=75")) it.heightPercent = 75;
+                    if (tokenEq(tok[i], tokLen[i], "height=100")) it.heightPercent = 100;
+                    if (tokenEq(tok[i], tokLen[i], "position=bottom")) it.bottomAligned = true;
+                    if (tokenEq(tok[i], tokLen[i], "position=top")) it.bottomAligned = false;
+                }
                 cur.layout.items[cur.layout.count++] = it;
             }
         }
