@@ -144,8 +144,7 @@ struct DashboardEditorView: View {
             } else if config.pages.indices.contains(pageIx) {
                 Section {
                     ForEach(config.pages[pageIx].layout.items) { item in
-                        DashItemRow(item: bindingFor(item, in: pageIx),
-                                    canVertical: !config.pages[pageIx].layout.items.contains { $0.id != item.id && $0.isVertical }) { dirty = true }
+                        DashItemRow(item: bindingFor(item, in: pageIx)) { dirty = true }
                     }
                     .onMove { from, to in
                         mutateAt(pageIx) { $0.items.move(fromOffsets: from, toOffset: to) }
@@ -164,7 +163,7 @@ struct DashboardEditorView: View {
                     Text("Fields")
                 } footer: {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("Drag to reorder, swipe to remove. “Half width” pairs a field with the next half-width field; on its own it spans the row. One vertical tile can occupy the right side of each page.")
+                        Text("Drag to reorder, swipe to remove. “Half width” pairs a field with the next half-width field; on its own it spans the row. Adding Radar automatically fits the fields around it.")
                         Text("Fields that need a sensor — power, heart rate, cadence — are hidden on the device until it connects, and the rest expand to fill the space. Route left hides when no route is loaded.")
                     }
                 }
@@ -359,20 +358,29 @@ struct DashboardEditorView: View {
 // One configurable row: field name, size, and whether it shares its row.
 private struct DashItemRow: View {
     @Binding var item: DashItem
-    let canVertical: Bool
     let changed: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(item.fieldLabel).font(TypeScale.bodyStrong).foregroundStyle(Palette.ink)
-            if !item.isVertical {
+            if item.field == "radar" {
+                Text("Height").font(.footnote).foregroundStyle(Palette.muted)
+                Picker("Radar height", selection: $item.heightPercent) {
+                    Text("Half").tag(50)
+                    Text("Three-quarter").tag(75)
+                    Text("Full").tag(100)
+                }
+                .pickerStyle(.segmented)
+                .onChange(of: item.heightPercent) { changed() }
+                Text("Fits whole dashboard rows. Pair your radar in Sensors.")
+                    .font(.footnote).foregroundStyle(Palette.muted)
+            } else {
                 HStack(spacing: 10) {
-                    Picker("", selection: $item.size) {
+                    Picker("Size", selection: $item.size) {
                         ForEach(DashSize.allCases) { Text($0.label).tag($0) }
                     }
                     .pickerStyle(.segmented)
                     .onChange(of: item.size) { changed() }
-
                     Toggle(isOn: $item.half) { Text("Half").font(.system(size: 13)) }
                         .toggleStyle(.button)
                         .onChange(of: item.half) { changed() }
@@ -380,27 +388,6 @@ private struct DashItemRow: View {
             }
         }
         .padding(.vertical, 4)
-        if item.isVertical {
-            Text("Tile height · fills whole grid rows").font(.footnote).foregroundStyle(Palette.muted)
-            Picker("Tile height", selection: $item.heightPercent) {
-                Text("Half").tag(50)
-                Text("Three-quarter").tag(75)
-                Text("Full").tag(100)
-            }
-            .pickerStyle(.segmented)
-            .onChange(of: item.heightPercent) { changed() }
-        }
-        if item.field == "radar" {
-            Text("Traffic tile · pair a Varia in Sensors")
-                .font(.footnote).foregroundStyle(Palette.muted)
-        } else {
-            Toggle("Vertical tile", isOn: $item.vertical)
-                .disabled(!canVertical && !item.vertical)
-                .onChange(of: item.vertical) {
-                    if item.vertical { item.half = false }
-                    changed()
-                }
-        }
     }
 }
 
@@ -573,7 +560,7 @@ struct DashPreview: View {
         var y = statusH + margin - step
         for (r, row) in rows.enumerated() {
             let rowH = CGFloat(rowHeights[r])
-            let mainW = layout.verticalItem != nil && y < 76 + railH + gutter ? 284 : contentW
+            let mainW = layout.verticalItem != nil && y < 76 + railH + gutter ? 316 : contentW
             let halfW = ((mainW - gutter) / 2).rounded(.down)
             for (c, item) in row.enumerated() {
                 let w = row.count == 2 ? halfW : mainW
@@ -589,7 +576,7 @@ struct DashPreview: View {
             y += rowH + gutter
         }
         if let item = layout.verticalItem {
-            out.append(Placed(x: 320, y: 76, w: 192, h: railH, item: item, hero: false,
+            out.append(Placed(x: 352, y: 76, w: 160, h: railH, item: item, hero: false,
                               value: kValueLadder.last!, label: kLabelLadder.last!))
         }
         return sized(out)
@@ -686,8 +673,8 @@ struct DashPreview: View {
         let laneHeight = height - 78 - laneTop
         return ZStack(alignment: .topLeading) {
             Text("BEHIND · 2").font(.system(size: 17 * k, weight: .bold))
-                .frame(width: 192 * k, height: 74 * k)
-            Rectangle().frame(width: 192 * k, height: 2 * k).offset(y: 74 * k)
+                .frame(width: 160 * k, height: 74 * k)
+            Rectangle().frame(width: 160 * k, height: 2 * k).offset(y: 74 * k)
             Text("▲  YOU").font(.system(size: 20 * k, weight: .bold))
                 .offset(x: 20 * k, y: (riderBottom - 36) * k)
             Rectangle().frame(width: 2 * k, height: laneHeight * k)
@@ -695,16 +682,16 @@ struct DashPreview: View {
             ForEach([52, 118], id: \.self) { distance in
                 let y = (laneTop + laneHeight * CGFloat(distance) / 150) * k
                 Rectangle().strokeBorder(Color.black, lineWidth: 2 * k)
-                    .frame(width: 62 * k, height: 22 * k).offset(x: 28 * k, y: y - 11 * k)
+                    .frame(width: 44 * k, height: 22 * k).offset(x: 24 * k, y: y - 11 * k)
                 if distance == 52 || laneHeight * 66 / 150 > 66 {
                     Text("\(Int(Units.elevation(Double(distance), miles: useMiles).rounded()))").font(.system(size: 30 * k, weight: .bold))
-                        .frame(width: 80 * k).offset(x: 100 * k, y: y - 22 * k)
+                        .frame(width: 72 * k).offset(x: 80 * k, y: y - 22 * k)
                     Text(useMiles ? "ft" : "m").font(.system(size: 14 * k))
-                        .frame(width: 80 * k).offset(x: 100 * k, y: y + 15 * k)
+                        .frame(width: 72 * k).offset(x: 80 * k, y: y + 15 * k)
                 }
             }
             Text(useMiles ? "492 FT+" : "150 M+").font(.system(size: 14 * k, weight: .bold))
-                .offset(x: 62 * k, y: (height - 31) * k)
+                .offset(x: 42 * k, y: (height - 31) * k)
         }
     }
 

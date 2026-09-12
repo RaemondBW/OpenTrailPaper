@@ -108,10 +108,10 @@ void dashNormalizeLayout(DashLayout& layout) {
     int n = 0;
     for (int i = 0; i < layout.count && i < DASH_MAX_ITEMS; ++i) {
         DashItem item = layout.items[i];
-        if (item.field == DF_RADAR) item.vertical = true;
+        if (item.vertical) item.half = false; // migrate old numeric side tiles
+        item.vertical = item.field == DF_RADAR;
         if (item.vertical) {
-            if (hasVertical && item.field == DF_RADAR) continue;
-            item.vertical = !hasVertical;
+            if (hasVertical) continue;
             item.half = false;
             hasVertical = true;
         }

@@ -280,7 +280,7 @@ fun DashboardEditorSheet(ble: BleManager, onDismiss: () -> Unit) {
 
                         Text(
                             "Long-press the handle to reorder. “Half width” pairs a field with " +
-                                "the next half-width field; on its own it spans the row. One vertical tile can occupy the right side of each page.",
+                                "the next half-width field; on its own it spans the row. Adding Radar automatically fits the fields around it.",
                             style = barlow(12.sp),
                             color = Palette.muted,
                         )
@@ -680,7 +680,6 @@ private fun ReorderableItems(
             ) {
                 DashItemRow(
                     item = item,
-                    canVertical = items.none { it.key != item.key && it.isVertical },
                     onChange = { onChange(index, it) },
                     onDelete = { onDelete(index) },
                     dragModifier = Modifier.pointerInput(index, items.size) {
@@ -710,7 +709,6 @@ private fun ReorderableItems(
 @Composable
 private fun DashItemRow(
     item: DashItem,
-    canVertical: Boolean,
     onChange: (DashItem) -> Unit,
     onDelete: () -> Unit,
     dragModifier: Modifier,
@@ -745,7 +743,7 @@ private fun DashItemRow(
             SmallChip("Half", item.half) { onChange(item.copy(half = !item.half)) }
         }
         if (item.isVertical) {
-            Text("Tile height · fills whole grid rows", style = TypeScale.body)
+            Text("Height", style = TypeScale.body)
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 listOf(50 to "Half", 75 to "Three-quarter", 100 to "Full").forEach { (height, label) ->
                     SmallChip(label, item.heightPercent == height) { onChange(item.copy(heightPercent = height)) }
@@ -753,11 +751,7 @@ private fun DashItemRow(
             }
         }
         if (item.field == "radar") {
-            Text("Traffic tile · pair a Varia in Sensors", style = TypeScale.body)
-        } else if (canVertical || item.vertical) {
-            SmallChip("Vertical tile", item.vertical) {
-                onChange(item.copy(vertical = !item.vertical, half = false))
-            }
+            Text("Fits whole dashboard rows. Pair your radar in Sensors.", style = TypeScale.body)
         }
     }
 }

@@ -862,7 +862,7 @@ void ui_render_radar(const RideState& s, const EpdRect& r, uint8_t* fb) {
         const RadarTarget& target = radar.targets[i];
         const int d = target.distanceM < 150 ? target.distanceM : 150;
         const int y = laneTop + laneHeight * d / 150;
-        const EpdRect car = {r.x + 28, y - 11, 62, 22};
+        const EpdRect car = {r.x + 24, y - 11, 44, 22};
         if (target.distanceM < 40) epd_fill_rect(car, ui::INK, fb);
         else {
             epd_fill_rect(car, ui::PAPER, fb);
@@ -870,13 +870,13 @@ void ui_render_radar(const RideState& s, const EpdRect& r, uint8_t* fb) {
             epd_draw_rect(car, ui::INK, fb);
             epd_draw_rect({car.x + 1, car.y + 1, car.width - 2, car.height - 2}, ui::INK, fb);
         }
-        epd_fill_rect({r.x + 13, y, 14, 2}, ui::INK, fb);
+        epd_fill_rect({r.x + 13, y, 10, 2}, ui::INK, fb);
         if (y - 30 <= labelBottom) continue;
         char distance[16];
         const int value = int(units::elev(target.distanceM, s.useMiles) + 0.5);
         snprintf(distance, sizeof(distance), "%d", value);
-        ui::text(&Impact_T, r.x + 140, y + 8, distance, fb, EPD_DRAW_ALIGN_CENTER);
-        ui::text(&Arial_L, r.x + 140, y + 29, s.useMiles ? "ft" : "m", fb, EPD_DRAW_ALIGN_CENTER);
+        ui::text(&Impact_T, r.x + 116, y + 8, distance, fb, EPD_DRAW_ALIGN_CENTER);
+        ui::text(&Arial_L, r.x + 116, y + 29, s.useMiles ? "ft" : "m", fb, EPD_DRAW_ALIGN_CENTER);
         labelBottom = y + 36;
     }
 }
@@ -1020,19 +1020,6 @@ void ui_render_dashboard(const RideState& s, bool navActive,
             if (p.stale) g_dashToned = true;
         }
         y += rowH + ui::GUTTER;
-    }
-
-    // Numeric vertical tiles take part in the same font sizing pass as the
-    // other cells, matching both companion previews. Radar has its own drawing.
-    if (vertical >= 0 && src.items[vertical].field != DF_RADAR) {
-        const DashItem& item = src.items[vertical];
-        Placed& p = placed[placedN++];
-        p.r = rail;
-        p.field = item.field; p.size = item.size; p.hero = false;
-        dashFieldValue(p.field, s, p.value, sizeof(p.value), &p.unit);
-        p.stale = !dashFieldAvailable(p.field, s) ||
-                  (p.value[0] == '-' && p.value[1] == '-');
-        if (p.stale) g_dashToned = true;
     }
 
     // Smallest face any cell of each (size class, width) needs.

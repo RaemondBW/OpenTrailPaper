@@ -7,16 +7,15 @@ rides, just as it does for heart-rate and power sensors. **Forget** removes the
 pairing. The phone is not needed after pairing.
 
 In the phone's dashboard editor, add **Radar** to a data page and save it to the
-head unit. Choose **Tile height**: **Half**, **Three-quarter**, or **Full** (the default).
+head unit. Choose **Height**: **Half**, **Three-quarter**, or **Full** (the default).
 The radar sits at the top right and rounds the requested fraction up to a whole
 number of grid rows. Its bottom border aligns with the last adjacent tile, with
 only the normal gutter before the next row. This also applies during navigation;
 with just one numeric row, all height choices fill that row. Fields beside it
-pack on the left; rows starting below the tile expand across the page. A numeric
-field can also be given **Vertical tile** placement.
-Only one vertical tile is allowed per page. Remove it or turn off its vertical
-placement before adding a different one. A page containing only the radar shows
-speed beside it.
+pack on the left; rows starting below the tile expand across the page. Adding
+Radar automatically arranges the other fields; they have only the usual size and
+half-width controls. Radar has its own height control in its editor row. Only one
+radar tile is allowed per page. A page containing only radar shows speed beside it.
 
 The traffic view follows the supplied Radar View.html reference: the rider is
 at the top, traffic moves upward as distance decreases, and rectangular markers
@@ -32,7 +31,7 @@ OFFLINE means no link, NO SIGNAL means no fresh measurements, and ALL CLEAR
 requires a live stream with no remaining tracks. Tracks expire after two seconds;
 a silent stream becomes NO SIGNAL by that same deadline, rather than appearing
 clear. After five seconds of silence the BLE task reconnects. The UI samples at
-1 Hz and uses the existing display delta engine; the 192 px tile begins at x=320,
+1 Hz and uses the existing display delta engine; the 160 px tile begins at x=352,
 with both edges aligned to eight pixels. The layout stays fixed on disconnect.
 
 ## Compatibility
@@ -72,13 +71,11 @@ page map
 ```
 
 Missing or unsupported heights default to full height, preserving older configs.
-Height is ignored for ordinary rows. Numeric vertical tiles have the same height
-control. Short radar tiles compress the distance lane while retaining the full
+Height is ignored for ordinary rows. Short radar tiles compress the distance lane while retaining the full
 150 m scale and count; overlapping labels favor the nearest vehicle.
 
-Radar is always vertical, including a bare `radar` line. First vertical wins;
-additional numeric vertical fields fall back to full-width rows, and duplicate
-radar fields are discarded. Both app parsers mirror firmware normalization.
+Radar is always vertical, including a bare `radar` line. Legacy numeric vertical
+fields return to ordinary full-width rows; duplicate radar fields are discarded. Both app parsers mirror firmware normalization.
 Radar is excluded from the map's short numeric strip. Existing field IDs and
 sensor kinds retain their original values. Pairings use separate NVS keys
 `sens_rdr` and `snm_rdr`, preserving all previous pairings.

@@ -70,7 +70,7 @@ data class DashItem(
     // `this.` is load-bearing: inside a property accessor the bare name `field`
     // is Kotlin's backing-field keyword, not this class's `field` property, and
     // reading it there would demand a backing field that doesn't exist.
-    val isVertical: Boolean get() = vertical || this.field == "radar"
+    val isVertical: Boolean get() = this.field == "radar"
     val fieldLabel: String get() = DashField.named(this.field)?.label ?: this.field
 
     /**
@@ -91,11 +91,15 @@ data class DashLayout(val items: List<DashItem>) {
     val normalizedItems: List<DashItem>
         get() {
             var rail = false
-            return items.take(MAX_ITEMS).mapNotNull { original ->
-                val item = original.copy(heightPercent = if (original.isVertical && original.heightPercent in listOf(50, 75, 100)) original.heightPercent else 100)
-                if (!item.isVertical) item
-                else if (rail && item.field == "radar") null
-                else item.copy(vertical = !rail, half = false, heightPercent = if (rail) 100 else item.heightPercent).also { rail = true }
+            return items.take(MAX_ITEMS).mapNotNull { item ->
+                if (item.field != "radar") {
+                    item.copy(vertical = false, half = item.half && !item.vertical, heightPercent = 100)
+                } else if (rail) null
+                else {
+                    rail = true
+                    item.copy(vertical = true, half = false,
+                        heightPercent = if (item.heightPercent in listOf(50, 75, 100)) item.heightPercent else 100)
+                }
             }
         }
     val verticalItem: DashItem? get() = normalizedItems.firstOrNull { it.vertical }

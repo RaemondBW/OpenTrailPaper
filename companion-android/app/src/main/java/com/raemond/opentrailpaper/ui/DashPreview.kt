@@ -285,24 +285,24 @@ private fun RadarSample(k: Float, height: Float, useMiles: Boolean) {
     val laneTop = riderBottom + 34
     val laneHeight = height - 78 - laneTop
     Text("BEHIND · 2", fontSize = (17 * k).sp, fontWeight = FontWeight.Bold,
-        modifier = Modifier.offset((32 * k).dp, (25 * k).dp))
+        modifier = Modifier.offset((16 * k).dp, (25 * k).dp))
     Text("▲  YOU", fontSize = (20 * k).sp, fontWeight = FontWeight.Bold,
         modifier = Modifier.offset((20 * k).dp, ((riderBottom - 36) * k).dp))
     Box(Modifier.offset((13 * k).dp, (laneTop * k).dp)
         .size((2 * k).dp, (laneHeight * k).dp).background(Color.Black))
     for (distance in listOf(52, 118)) {
         val y = laneTop + laneHeight * distance / 150
-        Box(Modifier.offset((28 * k).dp, ((y - 11) * k).dp)
-            .size((62 * k).dp, (22 * k).dp).border((2 * k).dp, Color.Black))
+        Box(Modifier.offset((24 * k).dp, ((y - 11) * k).dp)
+            .size((44 * k).dp, (22 * k).dp).border((2 * k).dp, Color.Black))
         if (distance == 52 || laneHeight * 66 / 150 > 66) {
             Text("${Units.elevation(distance.toDouble(), useMiles).roundToInt()}", fontSize = (30 * k).sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center,
-                modifier = Modifier.offset((100 * k).dp, ((y - 22) * k).dp).width((80 * k).dp))
+                modifier = Modifier.offset((80 * k).dp, ((y - 22) * k).dp).width((72 * k).dp))
             Text(if (useMiles) "ft" else "m", fontSize = (14 * k).sp, textAlign = TextAlign.Center,
-                modifier = Modifier.offset((100 * k).dp, ((y + 15) * k).dp).width((80 * k).dp))
+                modifier = Modifier.offset((80 * k).dp, ((y + 15) * k).dp).width((72 * k).dp))
         }
     }
     Text(if (useMiles) "492 FT+" else "150 M+", fontSize = (14 * k).sp, fontWeight = FontWeight.Bold,
-        modifier = Modifier.offset((62 * k).dp, ((height - 31) * k).dp))
+        modifier = Modifier.offset((42 * k).dp, ((height - 31) * k).dp))
 }
 
 // MARK: layout — ui_render.cpp's packer, verbatim in device pixels
@@ -327,7 +327,7 @@ private fun place(layout: DashLayout): List<Placed> {
     var y = STATUS_H + MARGIN - STEP
     for ((r, row) in rows.withIndex()) {
         val rowH = rowHeights[r].toFloat()
-        val mainW = if (layout.verticalItem != null && y < 76 + railH + GUTTER) 284f else CONTENT_W
+        val mainW = if (layout.verticalItem != null && y < 76 + railH + GUTTER) 316f else CONTENT_W
         val halfW = ((mainW - GUTTER) / 2).toInt().toFloat()
         for ((c, item) in row.withIndex()) {
             val w = if (row.size == 2) halfW else mainW
@@ -350,7 +350,7 @@ private fun place(layout: DashLayout): List<Placed> {
         y += rowH + GUTTER
     }
     layout.verticalItem?.let { item ->
-        out.add(Placed(320f, 76f, 192f, railH, item, false, VALUE_LADDER.last(), LABEL_LADDER.last()))
+        out.add(Placed(352f, 76f, 160f, railH, item, false, VALUE_LADDER.last(), LABEL_LADDER.last()))
     }
     return sized(out)
 }

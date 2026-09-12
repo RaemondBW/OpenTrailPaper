@@ -62,6 +62,7 @@ commands. The head unit's music page still supports AMS playback controls.
 
 ## Radar tiles
 
-Pair a BLE Varia in Sensors, then add Radar in the dashboard editor. Numeric
-fields can also occupy a vertical tile. Requires the matching head-unit firmware;
+Pair a BLE Varia in Sensors, then add Radar in the dashboard editor. Other fields
+automatically fit around it; adjust height on the radar row. Requires the matching
+head-unit firmware;
 see [Varia setup and compatibility](../docs/varia-radar.md).

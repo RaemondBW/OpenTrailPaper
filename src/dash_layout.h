@@ -73,12 +73,12 @@ struct DashLayout {
 
 // Both edges are 8-pixel aligned so a changing radar tile stays separate
 // from the numeric cells in the display driver's dirty regions.
-constexpr int DASH_VERTICAL_X = 320;
-constexpr int DASH_VERTICAL_W = 192;
+constexpr int DASH_VERTICAL_X = 352;
+constexpr int DASH_VERTICAL_W = 160;
 // Round a requested vertical height up to the bottom of a complete grid row.
 int dashVerticalHeight(const int* rowHeights, int rowCount, int gutter, uint8_t heightPercent);
-// Radar is always vertical. First vertical wins; extra numeric vertical items
-// become full-width rows, and duplicate radar tiles are discarded.
+// Radar alone owns the side column. Legacy numeric vertical fields become
+// ordinary rows, and duplicate radar tiles are discarded.
 void dashNormalizeLayout(DashLayout& layout);
 
 // --- Multiple pages ---------------------------------------------------------

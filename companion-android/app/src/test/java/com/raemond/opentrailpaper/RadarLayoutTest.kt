@@ -36,7 +36,7 @@ class RadarLayoutTest {
         assertEquals(100, DashLayout.parse("radar medium").verticalItem?.heightPercent)
         assertEquals(100, DashLayout.parse("radar medium vertical height=12").verticalItem?.heightPercent)
         val normalized = DashLayout.parse("speed small height=50\nhr medium vertical height=75\npower medium vertical height=50")
-        assertEquals(listOf(100, 75, 100), normalized.items.map { it.heightPercent })
+        assertEquals(listOf(100, 100, 100), normalized.items.map { it.heightPercent })
     }
 
     @Test fun `radar shares the page with existing numeric rows and round trips`() {
@@ -49,11 +49,15 @@ class RadarLayoutTest {
         assertEquals(2, layout.rows[1].size)
         assertEquals(config, DashConfig.parse(config.configText))
     }
-    @Test fun `first vertical wins and radar cannot occupy the map strip`() {
+    @Test fun `numeric tiles migrate to rows and radar alone takes the side column`() {
         val layout = DashLayout.parse("speed small vertical\npower medium vertical\nradar medium\n")
-        assertEquals(2, layout.items.size)
-        assertEquals("speed", layout.verticalItem?.field)
-        assertEquals("power", layout.rows[0][0].field)
+        assertEquals(3, layout.items.size)
+        assertEquals("radar", layout.verticalItem?.field)
+        assertEquals("speed", layout.rows[0][0].field)
+        assertEquals("power", layout.rows[1][0].field)
+        val duplicates = DashLayout.parse("radar medium height=50\nradar medium height=75")
+        assertEquals(1, duplicates.items.size)
+        assertEquals(50, duplicates.verticalItem?.heightPercent)
         val strip = DashConfig.parse("map radar hr clock\nspeed hero\n")
         assertEquals(listOf("speed", "hr", "clock"), strip.mapFields)
         val only = DashLayout.parse("radar medium\n")

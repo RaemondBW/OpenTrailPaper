@@ -73,7 +73,7 @@ struct DashItem: Identifiable, Hashable {
     var half: Bool
     var vertical: Bool = false
     var heightPercent: Int = 100
-    var isVertical: Bool { vertical || field == "radar" }
+    var isVertical: Bool { field == "radar" }
 
     var fieldLabel: String { DashField.named(field)?.label ?? field }
 
@@ -142,9 +142,10 @@ struct DashLayout: Equatable {
         var rail = false
         var result: [DashItem] = []
         for var item in items.prefix(Self.maxItems) {
-            if item.isVertical {
-                if rail && item.field == "radar" { continue }
-                item.vertical = !rail
+            if item.vertical { item.half = false }
+            item.vertical = item.field == "radar"
+            if item.vertical {
+                if rail { continue }
                 item.half = false
                 rail = true
             }

@@ -61,7 +61,9 @@ int main() {
     assert(dashParsePages(config, again) && again.pages[0].layout.items[3].field == DF_RADAR);
     DashLayout bad;
     assert(dashParse("speed small vertical\npower medium vertical\nradar medium\n", bad));
-    assert(bad.count == 2 && bad.items[0].vertical && !bad.items[1].vertical);
+    assert(bad.count == 3 && !bad.items[0].vertical && !bad.items[1].vertical && bad.items[2].vertical);
+    assert(dashParse("radar medium height=50\nradar medium height=75\n", bad));
+    assert(bad.count == 1 && bad.items[0].heightPercent == 50);
     assert(dashParsePages("map radar hr clock\nspeed hero\n", pages));
     assert(pages.mapFields[0] == DF_SPEED && pages.mapFields[1] == DF_HEART_RATE);
     // Height survives both wire formats; old/invalid configs keep full height.
@@ -80,7 +82,7 @@ int main() {
     assert(dashParse("radar medium vertical height=12\n", bad) && bad.items[0].heightPercent == 100);
     assert(dashParse("radar medium\n", bad) && bad.items[0].heightPercent == 100);
     assert(dashParse("speed small height=50\nhr medium vertical height=75\npower medium vertical height=50\n", bad));
-    assert(bad.items[0].heightPercent == 100 && bad.items[1].heightPercent == 75 && bad.items[2].heightPercent == 100);
+    assert(bad.items[0].heightPercent == 100 && bad.items[1].heightPercent == 100 && bad.items[2].heightPercent == 100);
     // Actual weighted grid used by the preview; include navigation and a
     // requested edge in the gutter between two equal rows.
     const int grid[] = {257, 192, 192, 183};
