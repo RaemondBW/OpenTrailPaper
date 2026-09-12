@@ -66,6 +66,7 @@ data class DashItem(
     /** Stable across edits, so a reorder animates rather than rebuilding rows. */
     val key: Long = nextKey++,
     val heightPercent: Int = 100,
+    val bottomAligned: Boolean = false,
 ) {
     // `this.` is load-bearing: inside a property accessor the bare name `field`
     // is Kotlin's backing-field keyword, not this class's `field` property, and
@@ -93,7 +94,7 @@ data class DashLayout(val items: List<DashItem>) {
             var rail = false
             return items.take(MAX_ITEMS).mapNotNull { item ->
                 if (item.field != "radar") {
-                    item.copy(vertical = false, half = item.half && !item.vertical, heightPercent = 100)
+                    item.copy(vertical = false, half = item.half && !item.vertical, heightPercent = 100, bottomAligned = false)
                 } else if (rail) null
                 else {
                     rail = true
@@ -112,9 +113,14 @@ data class DashLayout(val items: List<DashItem>) {
         if (percent >= 100) return total
         val wanted = total * percent / 100
         var bottom = 0
-        for ((index, height) in rowHeights.withIndex()) {
+        val heights = if (verticalItem?.bottomAligned == true) rowHeights.reversed() else rowHeights
+        for ((index, height) in heights.withIndex()) {
+            val previous = if (index > 0) bottom - gutter else 0
             bottom += height
-            if (bottom + gutter >= wanted || index == rowHeights.lastIndex) return bottom
+            if (bottom + gutter >= wanted || index == rowHeights.lastIndex) {
+                if (verticalItem?.bottomAligned == true && previous >= 300 && wanted - previous < bottom - wanted) return previous
+                return bottom
+            }
             bottom += gutter
         }
         return total
@@ -136,6 +142,7 @@ data class DashLayout(val items: List<DashItem>) {
                 append(it.size.token.padEnd(6))
                 if (it.isVertical) append(" vertical") else if (it.half) append(" half")
                 if (it.heightPercent != 100) append(" height=${it.heightPercent}")
+                if (it.bottomAligned) append(" position=bottom")
                 append('\n')
             }
         }
@@ -192,7 +199,8 @@ data class DashLayout(val items: List<DashItem>) {
                 val size = tok.getOrNull(1)?.let { DashSize.fromToken(it) } ?: DashSize.MEDIUM
                 val half = tok.drop(1).any { it == "half" }
                 out.add(DashItem(first, size, half, vertical = tok.drop(1).contains("vertical"),
-                    heightPercent = tok.drop(1).mapNotNull { mapOf("height=50" to 50, "height=75" to 75, "height=100" to 100)[it] }.lastOrNull() ?: 100))
+                    heightPercent = tok.drop(1).mapNotNull { mapOf("height=50" to 50, "height=75" to 75, "height=100" to 100)[it] }.lastOrNull() ?: 100,
+                    bottomAligned = tok.drop(1).lastOrNull { it == "position=top" || it == "position=bottom" } == "position=bottom"))
                 if (out.size >= MAX_ITEMS) break
             }
             return DashLayout(DashLayout(out).normalizedItems)
@@ -309,6 +317,7 @@ data class DashConfig(
                         append(it.size.token.padEnd(6))
                         if (it.isVertical) append(" vertical") else if (it.half) append(" half")
                         if (it.heightPercent != 100) append(" height=${it.heightPercent}")
+                        if (it.bottomAligned) append(" position=bottom")
                         append('\n')
                     }
                 }

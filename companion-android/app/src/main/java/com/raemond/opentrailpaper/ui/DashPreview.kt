@@ -322,12 +322,13 @@ private fun place(layout: DashLayout): List<Placed> {
         height.toInt()
     }
     val railH = layout.verticalHeight(rowHeights, GUTTER.toInt()).toFloat()
+    val railY = if (layout.verticalItem?.bottomAligned == true) PANEL_H - MARGIN - railH else STATUS_H + MARGIN - STEP
 
     val out = ArrayList<Placed>()
     var y = STATUS_H + MARGIN - STEP
     for ((r, row) in rows.withIndex()) {
         val rowH = rowHeights[r].toFloat()
-        val mainW = if (layout.verticalItem != null && y < 76 + railH + GUTTER) 316f else CONTENT_W
+        val mainW = if (layout.verticalItem != null && y + rowH > railY && y < railY + railH) 316f else CONTENT_W
         val halfW = ((mainW - GUTTER) / 2).toInt().toFloat()
         for ((c, item) in row.withIndex()) {
             val w = if (row.size == 2) halfW else mainW
@@ -350,7 +351,7 @@ private fun place(layout: DashLayout): List<Placed> {
         y += rowH + GUTTER
     }
     layout.verticalItem?.let { item ->
-        out.add(Placed(352f, 76f, 160f, railH, item, false, VALUE_LADDER.last(), LABEL_LADDER.last()))
+        out.add(Placed(352f, railY, 160f, railH, item, false, VALUE_LADDER.last(), LABEL_LADDER.last()))
     }
     return sized(out)
 }

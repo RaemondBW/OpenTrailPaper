@@ -288,6 +288,24 @@ int main(int argc, char** argv) {
         st.useMiles = true;
         clearWhite(fb.data()); ui_render_dashboard(st, false, radarLayout, fb.data()); emit("radar_imperial.png");
         st.useMiles = false;
+        DashLayout heroRadar;
+        dashParse("power3s hero\nhr medium\nridetime medium\nradar medium\n", heroRadar);
+        clearWhite(fb.data()); ui_render_dashboard(st, false, heroRadar, fb.data()); emit("radar_power_hero.png");
+        // A full-height radar reserves this gutter for the entire page. The
+        // power-zone bar must not draw a single pixel outside its hero cell.
+        for (int y = 76; y < 936; ++y) for (int x = 340; x < 352; ++x) {
+            if (gray[y * W + x] != 255) {
+                fprintf(stderr, "Hero power drawing escaped into radar gutter at %d,%d\n", x, y);
+                exit(1);
+            }
+        }
+        heroRadar.items[3].heightPercent = 50;
+        clearWhite(fb.data()); ui_render_dashboard(st, false, heroRadar, fb.data()); emit("radar_power_hero_half.png");
+        heroRadar.items[3].bottomAligned = true;
+        clearWhite(fb.data()); ui_render_dashboard(st, false, heroRadar, fb.data()); emit("radar_power_hero_bottom.png");
+        clearWhite(fb.data()); ui_render_dashboard(st, true, heroRadar, fb.data());
+        ui_render_nav_banner("LEFT ONTO QUEENSFERRY RD", 400, false, fb.data());
+        emit("radar_power_hero_bottom_nav.png");
         st.radar.count = 8;
         for (int i = 0; i < 8; ++i) st.radar.targets[i] = {uint8_t(i), uint8_t(21 + i * 2), 1000};
         clearWhite(fb.data()); ui_render_dashboard(st, true, radarLayout, fb.data());

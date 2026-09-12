@@ -59,6 +59,7 @@ struct DashItem {
     bool    half = false;       // share its row with the next half field
     bool    vertical = false;   // right column (one per page)
     uint8_t heightPercent = 100; // vertical tile height: 50, 75 or 100; default preserves old configs
+    bool bottomAligned = false; // radar position; old layouts remain top-aligned
 };
 
 // 12 is well past what fits legibly on a 540x960 panel (the default uses 5) and
@@ -76,7 +77,7 @@ struct DashLayout {
 constexpr int DASH_VERTICAL_X = 352;
 constexpr int DASH_VERTICAL_W = 160;
 // Round a requested vertical height up to the bottom of a complete grid row.
-int dashVerticalHeight(const int* rowHeights, int rowCount, int gutter, uint8_t heightPercent);
+int dashVerticalHeight(const int* rowHeights, int rowCount, int gutter, uint8_t heightPercent, bool bottomAligned = false);
 // Radar alone owns the side column. Legacy numeric vertical fields become
 // ordinary rows, and duplicate radar tiles are discarded.
 void dashNormalizeLayout(DashLayout& layout);

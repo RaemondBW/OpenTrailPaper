@@ -751,6 +751,11 @@ private fun DashItemRow(
             }
         }
         if (item.field == "radar") {
+            Text("Position", style = TypeScale.body)
+            if (item.heightPercent < 100) Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                SmallChip("Top", !item.bottomAligned) { onChange(item.copy(bottomAligned = false)) }
+                SmallChip("Bottom", item.bottomAligned) { onChange(item.copy(bottomAligned = true)) }
+            } else Text("Full height", style = TypeScale.body)
             Text("Fits whole dashboard rows. Pair your radar in Sensors.", style = TypeScale.body)
         }
     }

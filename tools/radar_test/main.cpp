@@ -98,5 +98,20 @@ int main() {
     assert(dashVerticalHeight(equalGrid, 2, 12, 50) == 424);
     assert(dashVerticalHeight(single, 1, 12, 50) == 860);
     assert(dashVerticalHeight(nullptr, 0, 12, 50) == 0);
+    const int heroGrid[] = {484, 181, 171};
+    assert(dashVerticalHeight(heroGrid, 3, 12, 50, true) == 364);
+    assert(dashVerticalHeight(grid, 4, 12, 50, true) == 387);
+    assert(dashVerticalHeight(navGrid, 4, 12, 50, true) == 323);
+    assert(dashVerticalHeight(equalGrid, 2, 12, 50, true) == 424);
+    assert(dashVerticalHeight(grid, 4, 12, 100, true) == 860);
+    assert(dashParse("radar medium half vertical height=50 position=bottom\n", bad));
+    assert(bad.items[0].bottomAligned && bad.items[0].heightPercent == 50);
+    assert(dashSerialize(bad, config, sizeof(config)));
+    assert(dashParse(config, bad) && bad.items[0].bottomAligned);
+    assert(dashParsePages(config, pages));
+    assert(dashSerializePages(pages, config, sizeof(config)));
+    assert(dashParsePages(config, again) && again.pages[0].layout.items[0].bottomAligned);
+    assert(dashParse("radar medium position=top\n", bad) && !bad.items[0].bottomAligned);
+    assert(dashParse("power hero position=bottom\n", bad) && !bad.items[0].bottomAligned);
     puts("Radar protocol and layout tests passed");
 }

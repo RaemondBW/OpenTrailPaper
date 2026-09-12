@@ -8,13 +8,15 @@ pairing. The phone is not needed after pairing.
 
 In the phone's dashboard editor, add **Radar** to a data page and save it to the
 head unit. Choose **Height**: **Half**, **Three-quarter**, or **Full** (the default).
-The radar sits at the top right and rounds the requested fraction up to a whole
-number of grid rows. Its bottom border aligns with the last adjacent tile, with
+For shorter tiles, choose **Position: Top or Bottom** in the radar row. Full-height
+tiles fill the page in either position. Existing layouts default to Top.
+The radar sits on the right and fits whole grid rows. Bottom placement chooses
+the closest readable row boundary, so a large hero above it can remain full-width. Its bottom border aligns with the last adjacent tile, with
 only the normal gutter before the next row. This also applies during navigation;
 with just one numeric row, all height choices fill that row. Fields beside it
 pack on the left; rows starting below the tile expand across the page. Adding
 Radar automatically arranges the other fields; they have only the usual size and
-half-width controls. Radar has its own height control in its editor row. Only one
+half-width controls. Radar has its own height and position controls in its editor row. Only one
 radar tile is allowed per page. A page containing only radar shows speed beside it.
 
 The traffic view follows the supplied Radar View.html reference: the rider is
@@ -59,14 +61,15 @@ change the radar's light settings or add audio alerts.
 ## Config and implementation
 
 The dashboard text format supports `vertical` alongside `half`, plus optional
-`height=50`, `height=75`, or `height=100` for vertical tiles:
+`height=50`, `height=75`, or `height=100` for vertical tiles. Add `position=bottom`
+to anchor radar to the final grid rows; omitted or `position=top` keeps it at the top:
 
 ```
 speed      large
 power3s    medium
 hr         medium
 ridetime   medium
-radar      medium vertical height=50
+radar      medium vertical height=50 position=bottom
 page map
 ```
 
@@ -96,7 +99,8 @@ and unsigned timestamps handle fragmented messages and millis rollover.
 - Android `:app:testDebugUnitTest` includes matching `RadarLayoutTest` cases.
 - `sh tools/preview/render_preview.sh`: real renderer previews for traffic,
   clear, no signal, offline, imperial and eight crowded targets with navigation,
-  plus half/three-quarter tiles and minimum-height navigation range endpoints.
+  plus half/three-quarter tiles, bottom alignment, navigation range endpoints,
+  and a pixel check that hero power indicators stay out of the radar gutter.
 - Both companion app builds and `pio run -e t5s3-painter` validate integration.
 - Hardware follow-up: pair the actual Varia, verify recorded packet distances,
   drive targets in demo mode, turn the radar off/on, check simultaneous HR/power/

@@ -443,8 +443,7 @@ bool isPowerField(uint8_t f) { return f == DF_POWER3S || f == DF_POWER; }
 
 // Seven FTP zone segments, filled up to the current zone. Only drawn under a
 // hero-sized power cell — at grid size the segments are too fine to read.
-void drawPowerZoneBar(const RideState& s, int y, uint8_t* fb) {
-    const int W = ui::CONTENT_W + 2 * ui::CONTENT_X;
+void drawPowerZoneBar(const RideState& s, const EpdRect& cell, int y, uint8_t* fb) {
     uint16_t p = s.power3sW != 0xFFFF ? s.power3sW : s.powerW;
     int ftp = s.ftpW;
     int zone = 0;
@@ -454,8 +453,8 @@ void drawPowerZoneBar(const RideState& s, int y, uint8_t* fb) {
                : pct < 120 ? 5 : pct < 150 ? 6 : 7;
     }
     // Seven segments across the hero cell's inner width, on the 12 px step.
-    const int barX = ui::CONTENT_X + ui::CELL_PAD;
-    const int barW = ui::CONTENT_W - 2 * ui::CELL_PAD;
+    const int barX = cell.x + ui::CELL_PAD;
+    const int barW = cell.width - 2 * ui::CELL_PAD;
     const int segW = (barW - 6 * ui::HALF_STEP) / 7;
     for (int i = 0; i < 7; ++i) {
         EpdRect seg = {barX + i * (segW + ui::HALF_STEP), y, segW, 18};
@@ -646,7 +645,7 @@ void heroCell(const EpdRect& r, const char* labelStr, const char* value,
     if (unitW)
         ui::text(&Arial_B, startX + vw + 10, baseline, unit, fb,
                  EPD_DRAW_ALIGN_LEFT, ui::INK);
-    if (zoneBar) drawPowerZoneBar(s, r.y + r.height - ui::CELL_PAD - 18, fb);
+    if (zoneBar) drawPowerZoneBar(s, r, r.y + r.height - ui::CELL_PAD - 18, fb);
 }
 
 // The WIDEST string a field can ever produce, used to choose its type size.
@@ -982,16 +981,18 @@ void ui_render_dashboard(const RideState& s, bool navActive,
     }
     // The rail spans whole rows, including their gutters. Its lower border is
     // the same border as the last adjacent numeric row, even with navigation.
-    const EpdRect rail = {DASH_VERTICAL_X, gridTop, DASH_VERTICAL_W,
-        dashVerticalHeight(rowHeights, rowCount, ui::GUTTER,
-                           vertical >= 0 ? src.items[vertical].heightPercent : 100)};
+    const bool bottomAligned = vertical >= 0 && src.items[vertical].bottomAligned;
+    const int railHeight = dashVerticalHeight(rowHeights, rowCount, ui::GUTTER,
+        vertical >= 0 ? src.items[vertical].heightPercent : 100, bottomAligned);
+    const EpdRect rail = {DASH_VERTICAL_X,
+        bottomAligned ? H - ui::MARGIN - railHeight : gridTop, DASH_VERTICAL_W, railHeight};
     if (vertical >= 0 && src.items[vertical].field == DF_RADAR)
         ui_render_radar(s, rail, fb);
     int y = gridTop;
     for (int r = 0; r < rowCount; ++r) {
         const int rowH = rowHeights[r];
         const DashRow& row = rows[r];
-        const int contentW = vertical >= 0 && y < rail.y + rail.height + ui::GUTTER
+        const int contentW = vertical >= 0 && y + rowH > rail.y && y < rail.y + rail.height
                              ? DASH_VERTICAL_X - ui::GUTTER - ui::CONTENT_X : ui::CONTENT_W;
         const int halfW = (contentW - ui::GUTTER) / 2;
         for (int c = 0; c < row.count; ++c) {

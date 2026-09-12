@@ -372,6 +372,14 @@ private struct DashItemRow: View {
                 }
                 .pickerStyle(.segmented)
                 .onChange(of: item.heightPercent) { changed() }
+                Text("Position").font(.footnote).foregroundStyle(Palette.muted)
+                Picker("Radar position", selection: $item.bottomAligned) {
+                    Text("Top").tag(false)
+                    Text("Bottom").tag(true)
+                }
+                .pickerStyle(.segmented)
+                .disabled(item.heightPercent == 100)
+                .onChange(of: item.bottomAligned) { changed() }
                 Text("Fits whole dashboard rows. Pair your radar in Sensors.")
                     .font(.footnote).foregroundStyle(Palette.muted)
             } else {
@@ -555,12 +563,13 @@ struct DashPreview: View {
             return Int(height)
         }
         let railH = CGFloat(layout.verticalHeight(rowHeights: rowHeights, gutter: Int(gutter)))
+        let railY = layout.verticalItem?.bottomAligned == true ? panelH - margin - railH : statusH + margin - step
 
         var out: [Placed] = []
         var y = statusH + margin - step
         for (r, row) in rows.enumerated() {
             let rowH = CGFloat(rowHeights[r])
-            let mainW = layout.verticalItem != nil && y < 76 + railH + gutter ? 316 : contentW
+            let mainW = layout.verticalItem != nil && y + rowH > railY && y < railY + railH ? 316 : contentW
             let halfW = ((mainW - gutter) / 2).rounded(.down)
             for (c, item) in row.enumerated() {
                 let w = row.count == 2 ? halfW : mainW
@@ -576,7 +585,7 @@ struct DashPreview: View {
             y += rowH + gutter
         }
         if let item = layout.verticalItem {
-            out.append(Placed(x: 352, y: 76, w: 160, h: railH, item: item, hero: false,
+            out.append(Placed(x: 352, y: railY, w: 160, h: railH, item: item, hero: false,
                               value: kValueLadder.last!, label: kLabelLadder.last!))
         }
         return sized(out)

@@ -5,6 +5,19 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class RadarLayoutTest {
+    @Test fun `bottom radar spans the final rows and position survives sync`() {
+        val layout = DashLayout.parse("radar medium half vertical height=50 position=bottom")
+        assertEquals(true, layout.verticalItem?.bottomAligned)
+        assertEquals(364, layout.verticalHeight(listOf(484, 181, 171), 12))
+        assertEquals(387, layout.verticalHeight(listOf(257, 192, 192, 183), 12))
+        assertEquals(323, layout.verticalHeight(listOf(214, 161, 161, 150), 12))
+        assertEquals(layout, DashLayout.parse(layout.configText))
+        val config = DashConfig.parse(layout.configText)
+        assertEquals(config, DashConfig.parse(config.configText))
+        assertEquals(false, DashLayout.parse("radar medium position=top").verticalItem?.bottomAligned)
+        assertEquals(false, DashLayout.parse("power hero position=bottom").items[0].bottomAligned)
+    }
+
     @Test fun `vertical tiles fill whole weighted rows including navigation and gutter boundaries`() {
         val half = DashLayout.parse("radar medium vertical height=50")
         val threeQuarter = DashLayout.parse("radar medium vertical height=75")

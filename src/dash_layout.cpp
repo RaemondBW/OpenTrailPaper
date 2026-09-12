@@ -88,7 +88,7 @@ const DashPages& dashDefaultPages() {
     return d;
 }
 
-int dashVerticalHeight(const int* rowHeights, int rowCount, int gutter, uint8_t heightPercent) {
+int dashVerticalHeight(const int* rowHeights, int rowCount, int gutter, uint8_t heightPercent, bool bottomAligned) {
     if (rowCount <= 0) return 0;
     int total = (rowCount - 1) * gutter;
     for (int i = 0; i < rowCount; ++i) total += rowHeights[i];
@@ -96,8 +96,15 @@ int dashVerticalHeight(const int* rowHeights, int rowCount, int gutter, uint8_t 
     const int wanted = total * heightPercent / 100;
     int bottom = 0;
     for (int i = 0; i < rowCount; ++i) {
-        bottom += rowHeights[i];
-        if (bottom + gutter >= wanted || i == rowCount - 1) return bottom;
+        const int previous = i ? bottom - gutter : 0;
+        bottom += rowHeights[bottomAligned ? rowCount - 1 - i : i];
+        if (bottom + gutter >= wanted || i == rowCount - 1) {
+            // A large hero above the bottom rows must not force a half-height
+            // radar to fill the page. Prefer the closer row edge if readable.
+            if (bottomAligned && previous >= 300 && wanted - previous < bottom - wanted)
+                return previous;
+            return bottom;
+        }
         bottom += gutter;
     }
     return total;
@@ -117,6 +124,7 @@ void dashNormalizeLayout(DashLayout& layout) {
         }
         if (!item.vertical || (item.heightPercent != 50 && item.heightPercent != 75))
             item.heightPercent = 100;
+        if (!item.vertical) item.bottomAligned = false;
         layout.items[n++] = item;
     }
     layout.count = n;
@@ -135,11 +143,11 @@ bool dashParse(const char* text, DashLayout& out) {
         while (cut < lineEnd && *cut != '#') ++cut;
 
         // Field, size and placement tokens (vertical overrides half).
-        const char* tok[5] = {};
-        size_t tokLen[5] = {};
+        const char* tok[6] = {};
+        size_t tokLen[6] = {};
         int ntok = 0;
         const char* q = p;
-        while (q < cut && ntok < 5) {
+        while (q < cut && ntok < 6) {
             while (q < cut && (*q == ' ' || *q == '\t' || *q == '\r')) ++q;
             if (q >= cut) break;
             const char* start = q;
@@ -172,6 +180,8 @@ bool dashParse(const char* text, DashLayout& out) {
                     if (tokenEq(tok[i], tokLen[i], "height=50")) it.heightPercent = 50;
                     if (tokenEq(tok[i], tokLen[i], "height=75")) it.heightPercent = 75;
                     if (tokenEq(tok[i], tokLen[i], "height=100")) it.heightPercent = 100;
+                    if (tokenEq(tok[i], tokLen[i], "position=bottom")) it.bottomAligned = true;
+                    if (tokenEq(tok[i], tokLen[i], "position=top")) it.bottomAligned = false;
                 }
                 out.items[out.count++] = it;
             }
@@ -196,9 +206,10 @@ bool serializeItems(const DashLayout& input, char* out, size_t cap, size_t& n) {
     for (int i = 0; i < layout.count; ++i) {
         const DashItem& it = layout.items[i];
         if (it.field >= DF_COUNT || it.size >= DZ_COUNT) continue;
-        int w = snprintf(out + n, cap - n, "%-10s %-6s%s%s\n", dashFieldId(it.field),
+        int w = snprintf(out + n, cap - n, "%-10s %-6s%s%s%s\n", dashFieldId(it.field),
                          dashSizeId(it.size), it.vertical ? " vertical" : it.half ? " half" : "",
-                         it.heightPercent == 50 ? " height=50" : it.heightPercent == 75 ? " height=75" : "");
+                         it.heightPercent == 50 ? " height=50" : it.heightPercent == 75 ? " height=75" : "",
+                         it.bottomAligned ? " position=bottom" : "");
         if (w < 0 || (size_t)w >= cap - n) return false;
         n += (size_t)w;
     }
@@ -253,11 +264,11 @@ bool dashParsePages(const char* text, DashPages& out) {
         while (cut < lineEnd && *cut != '#') ++cut;
 
         // Field, size, half, vertical and optional height; map uses four tokens.
-        const char* tok[5] = {};
-        size_t tokLen[5] = {};
+        const char* tok[6] = {};
+        size_t tokLen[6] = {};
         int ntok = 0;
         const char* q = p;
-        while (q < cut && ntok < 5) {
+        while (q < cut && ntok < 6) {
             while (q < cut && (*q == ' ' || *q == '\t' || *q == '\r')) ++q;
             if (q >= cut) break;
             const char* start = q;
@@ -303,6 +314,8 @@ bool dashParsePages(const char* text, DashPages& out) {
                     if (tokenEq(tok[i], tokLen[i], "height=50")) it.heightPercent = 50;
                     if (tokenEq(tok[i], tokLen[i], "height=75")) it.heightPercent = 75;
                     if (tokenEq(tok[i], tokLen[i], "height=100")) it.heightPercent = 100;
+                    if (tokenEq(tok[i], tokLen[i], "position=bottom")) it.bottomAligned = true;
+                    if (tokenEq(tok[i], tokLen[i], "position=top")) it.bottomAligned = false;
                 }
                 cur.layout.items[cur.layout.count++] = it;
             }

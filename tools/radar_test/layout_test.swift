@@ -45,6 +45,16 @@ import Foundation
         precondition(half.verticalHeight(rowHeights: [424, 424], gutter: 12) == 424)
         precondition(half.verticalHeight(rowHeights: [860], gutter: 12) == 860)
         precondition(half.verticalHeight(rowHeights: [], gutter: 12) == 0)
+        let bottom = DashLayout(text: "radar medium half vertical height=50 position=bottom")
+        precondition(bottom.verticalItem?.bottomAligned == true)
+        precondition(bottom.verticalHeight(rowHeights: [484, 181, 171], gutter: 12) == 364)
+        precondition(bottom.verticalHeight(rowHeights: grid, gutter: 12) == 387)
+        precondition(bottom.verticalHeight(rowHeights: navGrid, gutter: 12) == 323)
+        precondition(DashLayout(text: bottom.configText) == bottom)
+        let bottomPages = DashConfig(text: bottom.configText)
+        precondition(DashConfig(text: bottomPages.configText) == bottomPages)
+        precondition(DashLayout(text: "radar medium position=top").verticalItem?.bottomAligned == false)
+        precondition(DashLayout(text: "power hero position=bottom").items[0].bottomAligned == false)
         print("Swift radar layout tests passed")
     }
 }

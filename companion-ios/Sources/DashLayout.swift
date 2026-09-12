@@ -73,6 +73,7 @@ struct DashItem: Identifiable, Hashable {
     var half: Bool
     var vertical: Bool = false
     var heightPercent: Int = 100
+    var bottomAligned: Bool = false
     var isVertical: Bool { field == "radar" }
 
     var fieldLabel: String { DashField.named(field)?.label ?? field }
@@ -114,7 +115,8 @@ struct DashLayout: Equatable {
             let half = tok.dropFirst().contains { $0 == "half" }
             out.append(DashItem(field: String(first), size: size, half: half,
                                 vertical: tok.dropFirst().contains { $0 == "vertical" },
-                                heightPercent: tok.dropFirst().compactMap { ["height=50": 50, "height=75": 75, "height=100": 100][String($0)] }.last ?? 100))
+                                heightPercent: tok.dropFirst().compactMap { ["height=50": 50, "height=75": 75, "height=100": 100][String($0)] }.last ?? 100,
+                                bottomAligned: tok.dropFirst().filter { $0 == "position=top" || $0 == "position=bottom" }.last == "position=bottom"))
             if out.count >= DashLayout.maxItems { break }
         }
         items = out
@@ -132,7 +134,7 @@ struct DashLayout: Equatable {
                                          withPad: " ", startingAt: 0)
             let size = it.size.rawValue.padding(toLength: max(6, it.size.rawValue.count),
                                                 withPad: " ", startingAt: 0)
-            s += "\(field) \(size)\(it.isVertical ? " vertical" : it.half ? " half" : "")\(it.heightPercent == 100 ? "" : " height=\(it.heightPercent)")\n"
+            s += "\(field) \(size)\(it.isVertical ? " vertical" : it.half ? " half" : "")\(it.heightPercent == 100 ? "" : " height=\(it.heightPercent)")\(it.bottomAligned ? " position=bottom" : "")\n"
         }
         return s
     }
@@ -150,6 +152,7 @@ struct DashLayout: Equatable {
                 rail = true
             }
             if !item.vertical || ![50, 75, 100].contains(item.heightPercent) { item.heightPercent = 100 }
+            if !item.vertical { item.bottomAligned = false }
             result.append(item)
         }
         return result
@@ -164,9 +167,14 @@ struct DashLayout: Equatable {
         if percent >= 100 { return total }
         let wanted = total * percent / 100
         var bottom = 0
-        for (index, height) in rowHeights.enumerated() {
+        let heights = verticalItem?.bottomAligned == true ? Array(rowHeights.reversed()) : rowHeights
+        for (index, height) in heights.enumerated() {
+            let previous = index > 0 ? bottom - gutter : 0
             bottom += height
-            if bottom + gutter >= wanted || index == rowHeights.count - 1 { return bottom }
+            if bottom + gutter >= wanted || index == rowHeights.count - 1 {
+                if verticalItem?.bottomAligned == true && previous >= 300 && wanted - previous < bottom - wanted { return previous }
+                return bottom
+            }
             bottom += gutter
         }
         return total
@@ -318,7 +326,7 @@ struct DashConfig: Equatable {
                                                  withPad: " ", startingAt: 0)
                     let size = it.size.rawValue.padding(toLength: max(6, it.size.rawValue.count),
                                                         withPad: " ", startingAt: 0)
-                    s += "\(field) \(size)\(it.isVertical ? " vertical" : it.half ? " half" : "")\(it.heightPercent == 100 ? "" : " height=\(it.heightPercent)")\n"
+                    s += "\(field) \(size)\(it.isVertical ? " vertical" : it.half ? " half" : "")\(it.heightPercent == 100 ? "" : " height=\(it.heightPercent)")\(it.bottomAligned ? " position=bottom" : "")\n"
                 }
             }
         }
