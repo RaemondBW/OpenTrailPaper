@@ -404,8 +404,8 @@ private struct RideParseErrorView: View {
             Text("Couldn't read this ride")
                 .font(TypeScale.title).foregroundStyle(Palette.ink)
             Text(canRetry
-                 ? "The app couldn't parse this file. Download it again from the device, or share the raw .fit so it can be analyzed."
-                 : "The full file downloaded but the app couldn't parse it. Share the raw .fit file so it can be analyzed.")
+                 ? "The app couldn't parse this file. Download it again from the device, or export the raw .fit so it can be analyzed."
+                 : "The full file downloaded but the app couldn't parse it. Export the raw .fit file so it can be analyzed.")
                 .font(TypeScale.body).foregroundStyle(Palette.muted)
                 .multilineTextAlignment(.center)
             if canRetry {
@@ -423,7 +423,7 @@ private struct RideParseErrorView: View {
                 }
             }
             ShareLink(item: url) {
-                Label("Share .fit file", systemImage: "square.and.arrow.up")
+                Label("Export", systemImage: "square.and.arrow.up")
                     .font(.system(size: 17, weight: .semibold))
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 14)

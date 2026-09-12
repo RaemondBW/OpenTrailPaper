@@ -2,9 +2,10 @@
 
 On iOS and Android, open **Settings → Upload services**, enter your personal
 Intervals.icu API key (Intervals.icu Settings → Developer Settings), and save.
-Download a ride from the head unit, open its details, then tap **Upload to
-Intervals.icu**. Cached rides can be uploaded without the head unit connected;
-the phone needs internet access. The original Share FIT action remains available.
+Download a ride from the head unit, open its details, then tap **Share →
+Intervals.icu**. Share lists only connected services; Manage services lets you
+connect or disconnect them. Cached rides can be uploaded without the head unit connected;
+the phone needs internet access. The **Export** button opens the system share sheet for the original FIT file.
 Disconnect removes the saved key. It does not delete rides on either service.
 
 Uploads are manual. An in-flight request survives closing the detail sheet and
@@ -20,7 +21,7 @@ API keys are stored in iOS Keychain (unlocked, this device only) or in an atomic
 AES-GCM encrypted file under Android's no-backup directory, with the encryption
 key held in Android Keystore. They are never stored on the head unit or logged.
 The FIT file contains the recorded GPS track and sensor readings and is sent only
-to the selected service when Upload is tapped. Tests use synthetic credentials
+to the service selected in Share; opening the picker does not upload anything. Tests use synthetic credentials
 and do not post rides to live accounts.
 
 ## Adding providers

@@ -95,7 +95,7 @@ fun SettingsScreen(ble: BleManager, host: HostActions, onShowTutorial: () -> Uni
         // fetching OSM works offline, and the Maps screen only needs the link for
         // the upload itself.
         NavCard("Maps", mapsSummary(ble), icon = Icons.Filled.Map) { showMaps = true }
-        NavCard("Upload services", "Connect Intervals.icu for saved ride uploads") { showUploadServices = true }
+        UploadNavigationCard("Upload services", "Connect services to share your rides") { showUploadServices = true }
 
         Card {
             TrackedLabel("Units")

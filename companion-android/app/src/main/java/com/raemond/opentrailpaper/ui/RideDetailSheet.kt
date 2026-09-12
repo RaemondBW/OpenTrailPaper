@@ -17,7 +17,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -41,7 +41,7 @@ import java.util.Locale
 
 /**
  * Preview of a downloaded ride: the track on a map plus summary stats, with a
- * Share button for the original .fit file.
+ * Share action for connected services and Export for the original .fit file.
  */
 @Composable
 fun RideDetailSheet(
@@ -142,8 +142,8 @@ fun RideDetailSheet(
                 Spacer(Modifier.weight(1f))
             }
 
-            RideUploadButtons(file)
-            PrimaryButton("Share .fit file", icon = Icons.Filled.Share) {
+            RideShareButton(file)
+            PrimaryButton("Export", icon = Icons.Filled.FileDownload) {
                 Share.fit(context, file)
             }
         }
@@ -209,9 +209,9 @@ fun RideParseErrorSheet(
             Text(
                 if (canRetry) {
                     "The app couldn't parse this file. Download it again from the device, " +
-                        "or share the raw .fit so it can be analyzed."
+                        "or export the raw .fit so it can be analyzed."
                 } else {
-                    "The full file downloaded but the app couldn't parse it. Share the raw " +
+                    "The full file downloaded but the app couldn't parse it. Export the raw " +
                         ".fit file so it can be analyzed."
                 },
                 style = TypeScale.body,
@@ -221,10 +221,10 @@ fun RideParseErrorSheet(
             if (canRetry) {
                 PrimaryButton("Download again", icon = Icons.Filled.Refresh, onClick = onRetry)
                 TextButton(onClick = { Share.fit(context, file) }) {
-                    Text("Share .fit file", color = Palette.ink, style = barlow(14.sp))
+                    Text("Export", color = Palette.ink, style = barlow(14.sp))
                 }
             } else {
-                PrimaryButton("Share .fit file", icon = Icons.Filled.Share) {
+                PrimaryButton("Export", icon = Icons.Filled.FileDownload) {
                     Share.fit(context, file)
                 }
             }

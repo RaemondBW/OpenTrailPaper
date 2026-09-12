@@ -2,13 +2,13 @@ import SwiftUI
 import MapKit
 
 // Preview of a downloaded ride: the track on a map plus summary stats,
-// with a Share button for the original .fit file.
+// with Share for connected services and Export for the original .fit file.
 struct RideDetailView: View {
     let fileURL: URL
     let preview: RidePreview
     @Environment(\.dismiss) private var dismiss
     @AppStorage(UnitPref.key) private var useMiles = false
-    @State private var showShare = false
+    @State private var showExport = false
 
     private var polyline: MKPolyline {
         MKPolyline(coordinates: preview.coordinates, count: preview.coordinates.count)
@@ -65,11 +65,11 @@ struct RideDetailView: View {
                         Color.clear
                     }
 
-                    RideUploadButtons(file: fileURL)
+                    RideShareButton(file: fileURL)
 
-                    PrimaryButton(title: "Share .fit file",
+                    PrimaryButton(title: "Export",
                                   systemImage: "square.and.arrow.up") {
-                        showShare = true
+                        showExport = true
                     }
                 }
                 .padding(16)
@@ -82,7 +82,7 @@ struct RideDetailView: View {
                     Button("Done") { dismiss() }
                 }
             }
-            .sheet(isPresented: $showShare) { ShareSheet(items: [fileURL]) }
+            .sheet(isPresented: $showExport) { ShareSheet(items: [fileURL]) }
         }
     }
 

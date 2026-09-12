@@ -34,12 +34,9 @@ struct SettingsView: View {
                     // with no connection from the Route page too, so gating it
                     // here would be a quiet regression.
                     mapsCard
-                    Button { showUploadServices = true } label: {
-                        Card {
-                            Label("Upload services", systemImage: "arrow.up.circle")
-                                .font(TypeScale.title).foregroundStyle(Palette.ink)
-                        }
-                    }.buttonStyle(.plain)
+                    UploadNavigationCard(title: "Upload services", summary: "Connect services to share your rides") {
+                        showUploadServices = true
+                    }
                     Card {
                         VStack(alignment: .leading, spacing: 10) {
                             Text("Units").trackedLabel()

@@ -1,11 +1,27 @@
 package com.raemond.opentrailpaper.ui
 
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Link
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.OpenInNew
+import androidx.compose.material3.Icon
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.ui.Alignment
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -29,7 +45,7 @@ fun UploadServicesSheet(onDismiss: () -> Unit) {
     FullScreenSheet(title = "Upload services", onDismiss = onDismiss) {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            Text("Upload saved rides directly from their ride details. Uploads only happen when you tap Upload.",
+            Text("Connect your accounts, then choose Share on a saved ride.",
                 style = TypeScale.body, color = Palette.muted)
             uploads.services.forEach { service -> UploadServiceSettings(uploads, service) }
         }
@@ -61,37 +77,125 @@ private fun UploadServiceSettings(uploads: RideUploads, service: RideUploadServi
         }
     }
     Card {
-        Text(service.name, style = TypeScale.title, color = Palette.ink)
-        Text(if (saved) "API key saved on this phone" else "No API key saved", style = TypeScale.body)
-        TextButton(onClick = { uri.openUri(service.credentialHelpURL) }) {
-            Text("Get an API key in ${service.name} Settings → Developer Settings")
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Icon(Icons.Filled.Link, contentDescription = null, tint = Palette.accent)
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(service.name, style = TypeScale.title, color = Palette.ink)
+                Text(if (saved) "Connected" else "Not connected", style = TypeScale.bodyStrong,
+                    color = if (saved) Palette.good else Palette.muted)
+            }
         }
+        HorizontalDivider(color = Palette.hairline)
+        TrackedLabel(if (saved) "Replace API key" else "API key")
         OutlinedTextField(value = credential, onValueChange = { credential = it },
-            label = { Text(if (saved) "Replace API key" else "API key") },
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = { Text("Paste your API key", style = TypeScale.body) },
+            leadingIcon = { Icon(Icons.Filled.Lock, contentDescription = null) },
+            textStyle = TypeScale.body,
+            shape = RoundedCornerShape(14.dp),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedTextColor = Palette.ink, unfocusedTextColor = Palette.ink,
+                focusedContainerColor = Palette.paper, unfocusedContainerColor = Palette.paper,
+                focusedBorderColor = Palette.accent, unfocusedBorderColor = Palette.hairline,
+                cursorColor = Palette.accent, focusedLeadingIconColor = Palette.muted,
+                unfocusedLeadingIconColor = Palette.muted,
+                focusedPlaceholderColor = Palette.muted, unfocusedPlaceholderColor = Palette.muted),
             visualTransformation = PasswordVisualTransformation(), singleLine = true, enabled = !busy)
-        TextButton(enabled = !busy && credential.isNotBlank(), onClick = { save(credential.trim()) }) {
-            Text("Save API key")
+        Text("Stored securely on this phone.", style = TypeScale.body, color = Palette.muted)
+        PrimaryButton(if (saved) "Update connection" else "Connect", icon = Icons.Filled.Link,
+            enabled = !busy && credential.isNotBlank(), onClick = { save(credential.trim()) })
+        if (saved) SecondaryButton("Disconnect", enabled = !busy, onClick = { save("") })
+        TextButton(modifier = Modifier.fillMaxWidth(), onClick = { uri.openUri(service.credentialHelpURL) }) {
+            Text("Get an API key", style = TypeScale.bodyStrong, color = Palette.accent)
+            Spacer(Modifier.size(8.dp))
+            Icon(Icons.Filled.OpenInNew, contentDescription = null, tint = Palette.accent, modifier = Modifier.size(16.dp))
         }
-        if (saved) TextButton(enabled = !busy, onClick = { save("") }) { Text("Disconnect") }
-        if (message.isNotEmpty()) Text(message, style = TypeScale.body)
+        if (message.isNotEmpty()) Text(message, style = TypeScale.body, color = Palette.ink)
     }
 }
 
 @Composable
-fun RideUploadButtons(file: File) {
+fun RideShareButton(file: File) {
+    var showShare by remember { mutableStateOf(false) }
+    PrimaryButton("Share", icon = Icons.Filled.Share) { showShare = true }
+    if (showShare) RideShareSheet(file) { showShare = false }
+}
+
+@Composable
+private fun RideShareSheet(file: File, onDismiss: () -> Unit) {
     val uploads = RideUploads.get(LocalContext.current)
     var showServices by remember { mutableStateOf(false) }
-    Card {
-        TrackedLabel("Upload ride")
-        uploads.services.forEach { service ->
-            val state = uploads.status[uploads.actionID(service.id, file)]
-            TextButton(enabled = state?.busy != true, onClick = { uploads.upload(service, file) }) {
-                if (state?.busy == true) CircularProgressIndicator(Modifier.size(20.dp))
-                Text(if (state?.busy == true) "Uploading…" else "Upload to ${service.name}")
+    var connectedIDs by remember { mutableStateOf(setOf<String>()) }
+    var connectionErrors by remember { mutableStateOf(listOf<String>()) }
+    var loading by remember { mutableStateOf(true) }
+    // Refresh after managing connections, including newly connected services.
+    LaunchedEffect(showServices) {
+        if (showServices) return@LaunchedEffect
+        loading = true
+        val (connected, errors) = withContext(Dispatchers.IO) {
+            val ids = mutableSetOf<String>()
+            val failures = mutableListOf<String>()
+            uploads.services.forEach { service ->
+                try {
+                    if (uploads.credentials.read(service.id).isNotEmpty()) ids.add(service.id)
+                } catch (e: Exception) {
+                    failures.add("${service.name}: ${e.message ?: "Could not read the saved connection."}")
+                }
             }
-            state?.message?.takeIf { it.isNotEmpty() }?.let { Text(it, style = TypeScale.body) }
+            ids.toSet() to failures.toList()
         }
-        TextButton(onClick = { showServices = true }) { Text("Upload services") }
+        connectedIDs = connected
+        connectionErrors = errors
+        loading = false
+    }
+    FullScreenSheet(title = "Share ride", onDismiss = onDismiss) {
+        Column(Modifier.verticalScroll(rememberScrollState()).padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            Text("Choose a service to upload this ride to.", style = TypeScale.body, color = Palette.muted)
+            if (loading) {
+                CircularProgressIndicator()
+            } else {
+                if (connectedIDs.isEmpty()) {
+                    Card {
+                        Text("No connected services", style = TypeScale.title, color = Palette.ink)
+                        Text("Connect a service to share your ride.", style = TypeScale.body, color = Palette.muted)
+                    }
+                }
+                uploads.services.filter { it.id in connectedIDs }.forEach { service ->
+                    val state = uploads.status[uploads.actionID(service.id, file)]
+                    Card(Modifier.clickable(enabled = state?.busy != true) { uploads.upload(service, file) }) {
+                        Row(verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Icon(Icons.Filled.ArrowUpward, contentDescription = null, tint = Palette.accent)
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(service.name, style = TypeScale.title, color = Palette.ink)
+                                Text(if (state?.busy == true) "Uploading ride…" else "Upload this ride",
+                                    style = TypeScale.body, color = Palette.muted)
+                            }
+                            if (state?.busy == true) CircularProgressIndicator(Modifier.size(20.dp), color = Palette.accent)
+                            else Icon(Icons.Filled.ChevronRight, contentDescription = null, tint = Palette.muted)
+                        }
+                    }
+                    state?.message?.takeIf { it.isNotEmpty() }?.let { Text(it, style = TypeScale.body, color = Palette.ink) }
+                }
+                connectionErrors.forEach { Text(it, style = TypeScale.body) }
+            }
+            UploadNavigationCard("Manage services", "Connect or update your accounts") { showServices = true }
+        }
     }
     if (showServices) UploadServicesSheet { showServices = false }
+}
+
+@Composable
+fun UploadNavigationCard(title: String, summary: String, onClick: () -> Unit) {
+    Card(Modifier.clickable(onClick = onClick)) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Icon(Icons.Filled.Link, contentDescription = null, tint = Palette.accent)
+            Column(Modifier.weight(1f)) {
+                TrackedLabel(title)
+                Text(summary, style = TypeScale.bodyStrong, color = Palette.ink)
+            }
+            Icon(Icons.Filled.ChevronRight, contentDescription = null, tint = Palette.muted)
+        }
+    }
 }
