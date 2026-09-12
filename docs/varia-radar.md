@@ -8,7 +8,7 @@ pairing. The phone is not needed after pairing.
 
 In the phone's dashboard editor, add **Radar** to a data page and save it to the
 head unit. Choose **Height**: **Half**, **Three-quarter**, or **Full** (the default).
-For shorter tiles, choose **Position: Top or Bottom** in the radar row. Full-height
+For shorter tiles, choose **Alignment: Top or Bottom** in the radar row. Full-height
 tiles fill the page in either position. Existing layouts default to Top.
 The radar sits on the right and fits whole grid rows. Bottom placement chooses
 the closest readable row boundary, so a large hero above it can remain full-width. Its bottom border aligns with the last adjacent tile, with
@@ -16,7 +16,7 @@ only the normal gutter before the next row. This also applies during navigation;
 with just one numeric row, all height choices fill that row. Fields beside it
 pack on the left; rows starting below the tile expand across the page. Adding
 Radar automatically arranges the other fields; they have only the usual size and
-half-width controls. Radar has its own height and position controls in its editor row. Only one
+half-width controls. Radar has its own height and alignment controls in its editor row. Only one
 radar tile is allowed per page. A page containing only radar shows speed beside it.
 
 The traffic view follows the supplied Radar View.html reference: the rider is

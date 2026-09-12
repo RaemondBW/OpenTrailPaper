@@ -372,8 +372,8 @@ private struct DashItemRow: View {
                 }
                 .pickerStyle(.segmented)
                 .onChange(of: item.heightPercent) { changed() }
-                Text("Position").font(.footnote).foregroundStyle(Palette.muted)
-                Picker("Radar position", selection: $item.bottomAligned) {
+                Text("Alignment").font(.footnote).foregroundStyle(Palette.muted)
+                Picker("Radar alignment", selection: $item.bottomAligned) {
                     Text("Top").tag(false)
                     Text("Bottom").tag(true)
                 }

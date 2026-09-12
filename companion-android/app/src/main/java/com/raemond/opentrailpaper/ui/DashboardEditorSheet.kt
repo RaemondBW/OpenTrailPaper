@@ -751,7 +751,7 @@ private fun DashItemRow(
             }
         }
         if (item.field == "radar") {
-            Text("Position", style = TypeScale.body)
+            Text("Alignment", style = TypeScale.body)
             if (item.heightPercent < 100) Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 SmallChip("Top", !item.bottomAligned) { onChange(item.copy(bottomAligned = false)) }
                 SmallChip("Bottom", item.bottomAligned) { onChange(item.copy(bottomAligned = true)) }
