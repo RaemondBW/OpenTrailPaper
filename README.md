@@ -531,16 +531,27 @@ the ODbL independently of this project's license.
 
 ### GPS reception with CPU light sleep
 
-The battery investigation's `t5s3-painter-gps-wake` build keeps GPS running while
-allowing CPU light sleep between received bursts. On the tested T5/L76K board,
-2,442 sleep calls preserved all GGA/RMC epochs, the same phone connection, and
-SD logging. It uses the private PM-enabled IDF 4.4.6 framework, a retained main
-crystal, fixed 240 MHz CPU frequency, and a GPIO RX wake guard. This is a separate
-build profile; the shipping/CI default remains unchanged. Build commands,
-firmware hashes, measured results and remaining validation limits are in the
-[battery and SD investigation](investigations/battery-sd-sleep-2026-09-10.md).
+The shipping `t5s3-painter` build (plain `pio run`, including CI releases)
+keeps GPS running while allowing CPU light sleep between received bursts and
+while phone and established cycling-sensor links are connected. It uses the
+pinned PM-enabled IDF 4.4.6 framework, a retained main crystal, fixed 240 MHz CPU
+frequency, and a GPIO RX wake guard. Lean L76K output, UART task notifications,
+and a 10 ms receive guard reduce wake time. The UART event task has a 4096-byte
+stack; sensor timeouts or stale data trigger a conservative per-boot fallback.
+USB activity and other active work can still prevent sleep.
 
-The follow-up `t5s3-painter-battery-opt` candidate reduces L76K message volume,
-uses UART task notifications and a 10 ms receive guard, and permits established
-cycling-sensor links to sleep with a per-boot failure fallback. Its battery and
-sensor acceptance status is tracked in the [follow-up report](investigations/battery-opt-2026-09-10.md).
+For a local build, install the framework and apply the pinned PM overlay first:
+
+```sh
+pio pkg install -e t5s3-painter
+tools/apply-pm-framework.sh
+pio run
+```
+
+`t5s3-painter-battery-opt` is an alias of the shipping profile. The narrower
+`ble-xtal`, `gps-wake`, `ble-dfs`, and `pm-awake` profiles remain available for
+A/B troubleshooting. The build verifies the linked Bluetooth clock adapter;
+CI also checks shipping feature flags and rejects a stub power-management SDK.
+Hardware measurements and their validation limits are in the
+[battery and SD investigation](investigations/battery-sd-sleep-2026-09-10.md)
+and [battery follow-up report](investigations/battery-opt-2026-09-10.md).

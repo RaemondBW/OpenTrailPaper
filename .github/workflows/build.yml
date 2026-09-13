@@ -62,6 +62,9 @@ jobs:
           pio pkg install -e t5s3-painter
           tools/apply-pm-framework.sh
 
+      - name: Verify shipping battery configuration
+        run: python3 tools/power_test/check_shipping_config.py
+
       - name: Build
         run: pio run
 

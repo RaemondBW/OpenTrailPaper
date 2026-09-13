@@ -10,7 +10,8 @@ SHA-256: `47625a3558e51afe0cf11588907228b0fe9bed9bdcdeca88e70e9ea4c01553ad`
 
 License: Apache-2.0, reproduced in `LICENSE`.
 
-Only `t5s3-painter-ble-xtal` compiles this source, through
+The shipping `t5s3-painter` profile and the diagnostic profiles derived from
+`t5s3-painter-ble-xtal` compile this source through
 `src/ble_clock_xtal.c`. It selects the main crystal and retains that crystal
 during light sleep, using the upstream controller's supported configuration.
 The application init entry point also changes the caller's sleep-clock field
@@ -19,4 +20,4 @@ framework files remain untouched. Application definitions satisfy all references
 to this adapter so the old `libbt.a(bt.c.obj)` must not be pulled into the link.
 The post-link verification enforces that and the source fingerprint.
 
-The baseline environment continues to link its original controller adapter.
+The `t5s3-painter-pm-awake` baseline continues to link its original controller adapter.
