@@ -63,12 +63,13 @@ struct DashboardPageEditorView: View {
                         .transition(.opacity)
                 }
             }
-            .frame(maxHeight: .infinity)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding(.horizontal, 24)
             .padding(.vertical, 6)
 
+            // Hugs its content; the panel above takes everything else.
             inspector(placement: placement, selected: selected)
-                .frame(minHeight: 232)
+                .fixedSize(horizontal: false, vertical: true)
                 .padding(.horizontal, 16)
                 .padding(.top, 6)
                 .padding(.bottom, 16)
@@ -78,16 +79,15 @@ struct DashboardPageEditorView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
-                Button {
+                // The bar draws its own capsule around toolbar buttons, so the
+                // vermilion comes from the tint rather than a second pill
+                // drawn inside it.
+                Button("Send") {
                     onSend()
                     withAnimation { toast = "Sent — waiting for the head unit to echo" }
-                } label: {
-                    Text("Send")
-                        .font(BarlowFont.condensed(17, .semibold))
-                        .foregroundStyle(Palette.accentInk)
-                        .padding(.horizontal, 14).padding(.vertical, 6)
-                        .background(canSend ? Palette.accent : Palette.faint.opacity(0.55), in: Capsule())
                 }
+                .buttonStyle(.borderedProminent)
+                .tint(Palette.accent)
                 .disabled(!canSend)
             }
         }
@@ -145,12 +145,12 @@ struct DashboardPageEditorView: View {
         VStack(alignment: .leading, spacing: 0) {
             Text("Tap a cell to edit it. Hold and drag to move — drop on the left or right half of a full-width cell to pair them.")
                 .font(BarlowFont.text(14)).foregroundStyle(Palette.muted)
-            Spacer(minLength: 8)
             HStack {
                 Spacer()
                 Button("Reset to default") { layout = .deviceDefault; sel = nil }
                     .font(BarlowFont.text(14, .semibold)).foregroundStyle(Palette.muted)
             }
+            .padding(.top, 10)
             .padding(.bottom, 8)
             let hasRadar = placement.cells.contains { $0.isRadar }
             let canAdd = layout.items.count < DashLayout.maxItems
@@ -197,8 +197,7 @@ struct DashboardPageEditorView: View {
         let item = cell.item
         let row = placement.rows.first { $0.ids.contains(item.id) }
         let unpaired = placement.isUnpaired(cell)
-        return ScrollView(showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 0) {
+        return VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .lastTextBaseline) {
                     Button { tray = .change } label: {
                         HStack(alignment: .lastTextBaseline, spacing: 6) {
@@ -238,13 +237,11 @@ struct DashboardPageEditorView: View {
                         .foregroundStyle(item.half && unpaired ? Palette.accent : Palette.muted)
                 }
                 .padding(.top, 8)
-            }
         }
     }
 
     private func radarInspector(placement: DashPreview.Placement, item: DashItem) -> some View {
-        ScrollView(showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .lastTextBaseline) {
                     Text("Radar").font(TypeScale.title).foregroundStyle(Palette.ink)
                     Text("Varia · right column").font(BarlowFont.text(13, .medium)).foregroundStyle(Palette.muted)
@@ -278,7 +275,6 @@ struct DashboardPageEditorView: View {
                         .font(BarlowFont.text(12.5)).foregroundStyle(Palette.muted)
                 }
                 .padding(.top, 8)
-            }
         }
     }
 
