@@ -66,7 +66,7 @@ import kotlin.math.roundToInt
  * textWidth() returns. Printed straight out of the host build's font tables —
  * guessing these is how the preview drifted last time.
  */
-private class Face(val cap: Float, val w8: Float, val w1: Float, val wDot: Float, val wColon: Float) {
+internal class Face(val cap: Float, val w8: Float, val w1: Float, val wDot: Float, val wColon: Float) {
     fun width(s: String): Float = s.sumOf {
         when (it) {
             '.' -> wDot.toDouble()
@@ -97,7 +97,7 @@ private val HERO_LADDER =
 
 /** kLabelLadder. [perChar] is the tracked caption's average advance, taken from
  *  the width of "HEART RATE" in each face. */
-private class LabelFace(val cap: Float, val ascender: Float, val perChar: Float)
+internal class LabelFace(val cap: Float, val ascender: Float, val perChar: Float)
 
 private val LABEL_LADDER = listOf(
     LabelFace(28f, 38f, 30.1f),   // ArialBold_20
@@ -108,17 +108,18 @@ private val LABEL_LADDER = listOf(
 /** Arial_B, the face the unit caption is set in. */
 private val UNIT_FACE = LabelFace(15f, 19f, 13.5f)
 
-// Device geometry (ui_render.h). Everything is computed in these units.
-private const val PANEL_W = 540f
-private const val PANEL_H = 960f
-private const val MARGIN = 24f
-private const val GUTTER = 12f
-private const val PAD = 16f
-private const val STATUS_H = 64f
-private const val STEP = 12f
-private const val HALF_STEP = 6f
+// Device geometry (ui_render.h). Everything is computed in these units. Shared
+// with the page editor, which lays its drop targets over the same grid.
+internal const val PANEL_W = 540f
+internal const val PANEL_H = 960f
+internal const val MARGIN = 24f
+internal const val GUTTER = 12f
+internal const val PAD = 16f
+internal const val STATUS_H = 64f
+internal const val STEP = 12f
+internal const val HALF_STEP = 6f
 private const val RULE = 2f
-private const val CONTENT_W = PANEL_W - 2 * MARGIN
+internal const val CONTENT_W = PANEL_W - 2 * MARGIN
 private const val BODY_H = PANEL_H - STATUS_H
 
 /** Barlow's cap height is 0.72 em, so this converts a device cap height into the
@@ -132,16 +133,36 @@ val PanelPaper = Color(0xFFF7F5EF)
  *  bar. Callers apply it so the preview is always the shape of the real screen. */
 const val DASH_PANEL_ASPECT = PANEL_W / BODY_H
 
-private class Placed(
+internal class Placed(
     val x: Float,
     val y: Float,
     val w: Float,
     val h: Float,
     val item: DashItem,
     val hero: Boolean,
-    var value: Face,
-    var label: LabelFace,
-)
+    internal var value: Face,
+    internal var label: LabelFace,
+) {
+    val isRadar: Boolean get() = item.field == "radar"
+}
+
+/** One grid row as the packer built it: where it sits, how wide its cells are
+ *  (narrower beside the radar rail) and which items it holds, by key. The editor
+ *  reads these to decide what a dragged cell is being dropped onto. */
+internal class RowBox(val y: Float, val h: Float, val mainW: Float, val keys: List<Long>, val weight: Int)
+
+/** Everything [place] decided, for anyone who needs more than the cells. */
+internal class Placement(
+    val cells: List<Placed>,
+    val rows: List<RowBox>,
+    val totalWeight: Int,
+    val railY: Float,
+    val railH: Float,
+) {
+    /** A half-width item alone on its row spans it; the editor flags that. */
+    fun isUnpaired(p: Placed): Boolean =
+        !p.isRadar && p.item.half && rows.any { it.keys.size == 1 && it.keys[0] == p.item.key }
+}
 
 /**
  * @param live a ride to read the numbers off, for the tutorial's head unit. The
@@ -174,7 +195,7 @@ fun DashPreview(
             LocalDensity provides Density(density.density, fontScale = 1f),
             LocalTextStyle provides LocalTextStyle.current.copy(color = Color.Black),
         ) {
-            for (p in place(layout)) {
+            for (p in place(layout).cells) {
                 Box(
                     Modifier
                         .offset(x = (p.x * k).dp, y = ((p.y - STATUS_H) * k).dp)
@@ -187,8 +208,13 @@ fun DashPreview(
     }
 }
 
+/**
+ * One cell as the device draws it, filling its parent. Shared with the page
+ * editor, which puts its own chrome (selection, badge, drop targets) on top and
+ * changes nothing inside — that is the point of editing on the panel.
+ */
 @Composable
-private fun Cell(p: Placed, k: Float, live: RideSim?, useMiles: Boolean) {
+internal fun Cell(p: Placed, k: Float, live: RideSim?, useMiles: Boolean) {
     Box(
         Modifier
             .fillMaxSize()
@@ -307,9 +333,9 @@ private fun RadarSample(k: Float, height: Float, useMiles: Boolean) {
 
 // MARK: layout — ui_render.cpp's packer, verbatim in device pixels
 
-private fun place(layout: DashLayout): List<Placed> {
+internal fun place(layout: DashLayout): Placement {
     val rows = layout.rows
-    if (rows.isEmpty()) return emptyList()
+    if (rows.isEmpty()) return Placement(emptyList(), emptyList(), 1, 0f, 0f)
     val weights = rows.map { row -> row.maxOfOrNull { it.size.weight } ?: 1 }
     val total = maxOf(weights.sum(), 1)
     val gutters = (rows.size - 1) * GUTTER
@@ -325,11 +351,13 @@ private fun place(layout: DashLayout): List<Placed> {
     val railY = if (layout.verticalItem?.bottomAligned == true) PANEL_H - MARGIN - railH else STATUS_H + MARGIN - STEP
 
     val out = ArrayList<Placed>()
+    val boxes = ArrayList<RowBox>()
     var y = STATUS_H + MARGIN - STEP
     for ((r, row) in rows.withIndex()) {
         val rowH = rowHeights[r].toFloat()
         val mainW = if (layout.verticalItem != null && y + rowH > railY && y < railY + railH) 316f else CONTENT_W
         val halfW = ((mainW - GUTTER) / 2).toInt().toFloat()
+        boxes.add(RowBox(y, rowH, mainW, row.map { it.key }, weights[r]))
         for ((c, item) in row.withIndex()) {
             val w = if (row.size == 2) halfW else mainW
             val x = if (row.size == 2) {
@@ -353,7 +381,7 @@ private fun place(layout: DashLayout): List<Placed> {
     layout.verticalItem?.let { item ->
         out.add(Placed(352f, railY, 160f, railH, item, false, VALUE_LADDER.last(), LABEL_LADDER.last()))
     }
-    return sized(out)
+    return Placement(sized(out), boxes, total, railY, railH)
 }
 
 /**
