@@ -144,7 +144,7 @@ Answer it from what the code does; these are the places it leaves the phone:
 
 | Goes to | Where in the code | What is sent |
 |---|---|---|
-| CARTO basemap tiles | `map/MapStyle.kt` | tile coordinates being viewed |
+| Basemap tiles (Esri, or CARTO with a key) | `map/MapStyle.kt` | tile coordinates being viewed |
 | Nominatim (search) | `routing/Routing.kt` | the typed query, and current position as a bias |
 | OSRM (directions) | `routing/Routing.kt` | start and destination coordinates |
 | Overpass (map building) | `map/MapBuilder.kt`, `map/OsmData.kt` | the bounding box being downloaded |
