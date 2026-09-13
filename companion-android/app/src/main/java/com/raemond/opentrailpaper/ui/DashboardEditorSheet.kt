@@ -95,7 +95,8 @@ fun DashboardEditorSheet(ble: BleManager, onDismiss: () -> Unit) {
     var config by remember { mutableStateOf(ble.dashConfig ?: DashConfig(emptyList())) }
     var pageIx by remember { mutableIntStateOf(0) }
     var dirty by remember { mutableStateOf(false) }
-    var showAdd by remember { mutableStateOf(false) }
+    // The page editor, pushed over this sheet for the selected data page.
+    var editing by remember { mutableStateOf(false) }
 
     // The device is the source of truth: if it corrects or rejects what we sent,
     // adopt what it actually holds rather than keeping a local fiction on screen.
@@ -167,7 +168,12 @@ fun DashboardEditorSheet(ble: BleManager, onDismiss: () -> Unit) {
                 useMiles = ble.useMiles,
                 config = config,
                 pageIx = pageIx,
-                onSelect = { pageIx = it },
+                onSelect = { i ->
+                    pageIx = i
+                    // A data page is edited on the panel itself; the other
+                    // kinds have nothing to lay out and stay here.
+                    if (config.pages.getOrNull(i)?.kind == DashConfig.PageKind.FIELDS) editing = true
+                },
                 onRemove = { i ->
                     config = config.copy(
                         pages = config.pages.toMutableList().also { it.removeAt(i) },
@@ -247,77 +253,37 @@ fun DashboardEditorSheet(ble: BleManager, onDismiss: () -> Unit) {
                         )
                     }
 
-                    else -> {
-                        TrackedLabel("Fields")
-                        ReorderableItems(
-                            items = page.layout.items,
-                            onMove = { from, to ->
-                                mutateAt(pageIx) { l ->
-                                    DashLayout(l.items.toMutableList().also {
-                                        it.add(to, it.removeAt(from))
-                                    })
-                                }
-                            },
-                            onChange = { index, item ->
-                                mutateAt(pageIx) { l ->
-                                    DashLayout(l.items.toMutableList().also { it[index] = item })
-                                }
-                            },
-                            onDelete = { index ->
-                                mutateAt(pageIx) { l ->
-                                    DashLayout(l.items.toMutableList().also { it.removeAt(index) })
-                                }
-                            },
-                        )
-
-                        if (page.layout.items.size < DashLayout.MAX_ITEMS) {
-                            TextButton(onClick = { showAdd = true }) {
-                                Icon(Icons.Filled.Add, contentDescription = null, tint = Palette.accent)
-                                Spacer(Modifier.size(6.dp))
-                                Text("Add a field", style = TypeScale.bodyStrong, color = Palette.accent)
-                            }
-                        }
-
+                    else -> Card {
+                        Text("Fields", style = TypeScale.bodyStrong, color = Palette.ink)
                         Text(
-                            "Long-press the handle to reorder. “Half width” pairs a field with " +
-                                "the next half-width field; on its own it spans the row. Adding Radar automatically fits the fields around it.",
-                            style = barlow(12.sp),
+                            "This page is laid out on the panel itself: tap its card to open " +
+                                "the editor, then tap a cell to size it or hold and drag to move it.",
+                            style = TypeScale.body,
                             color = Palette.muted,
                         )
-                        Text(
-                            "Fields that need a sensor — power, heart rate, cadence — are hidden " +
-                                "on the device until it connects, and the rest expand to fill the " +
-                                "space. Route left hides when no route is loaded.",
-                            style = barlow(12.sp),
-                            color = Palette.muted,
-                        )
-
-                        HorizontalDivider(color = Palette.hairline)
-                        TextButton(onClick = {
-                            config = DashConfig.deviceDefault
-                            pageIx = 0
-                            dirty = true
-                        }) {
-                            Text(
-                                "Reset to the default layout",
-                                style = TypeScale.bodyStrong,
-                                color = Palette.accent,
-                            )
-                        }
+                        Spacer(Modifier.height(10.dp))
+                        PrimaryButton("Edit page") { editing = true }
                     }
                 }
             }
         }
     }
 
-    if (showAdd) {
-        FieldPickerSheet(
-            allowRadar = config.pages.getOrNull(pageIx)?.layout?.verticalItem == null,
-            onDismiss = { showAdd = false },
-            onPick = { id ->
-                mutateAt(pageIx) { l -> DashLayout(l.items + DashItem(id, DashSize.MEDIUM, id != "radar", vertical = id == "radar")) }
-                showAdd = false
+    val page = config.pages.getOrNull(pageIx)
+    if (editing && page != null && page.kind == DashConfig.PageKind.FIELDS) {
+        // "Page N" counts data pages only, as the device's page dots do.
+        val n = config.pages.take(pageIx + 1).count { it.kind == DashConfig.PageKind.FIELDS }
+        DashboardPageEditor(
+            pageTitle = "Page $n",
+            layout = page.layout,
+            useMiles = ble.useMiles,
+            canSend = config.pages.isNotEmpty() && config != ble.dashConfig,
+            onChange = { l -> mutateAt(pageIx) { l } },
+            onSend = {
+                ble.sendDashConfig(config)
+                dirty = false
             },
+            onBack = { editing = false },
         )
     }
 }
@@ -649,150 +615,4 @@ private fun Modifier.animatePlacement(enabled: Boolean): Modifier = composed {
             }
             a.value - t
         }
-}
-
-/**
- * The field rows, reorderable by long-pressing the handle.
- *
- * A plain Column rather than a reorderable list library: the layout is capped at
- * 12 items, so there is nothing to virtualise, and the drag maths reduces to
- * "how many row heights has the finger travelled".
- */
-@Composable
-private fun ReorderableItems(
-    items: List<DashItem>,
-    onMove: (Int, Int) -> Unit,
-    onChange: (Int, DashItem) -> Unit,
-    onDelete: (Int) -> Unit,
-) {
-    var dragIndex by remember { mutableIntStateOf(-1) }
-    var dragOffset by remember { mutableFloatStateOf(0f) }
-    var rowHeight by remember { mutableFloatStateOf(1f) }
-
-    Column {
-        items.forEachIndexed { index, item ->
-            val dragging = index == dragIndex
-            Box(
-                Modifier
-                    .onSizeChanged { if (it.height > 0) rowHeight = it.height.toFloat() }
-                    .offset { IntOffset(0, if (dragging) dragOffset.roundToInt() else 0) }
-                    .alpha(if (dragging) 0.85f else 1f),
-            ) {
-                DashItemRow(
-                    item = item,
-                    onChange = { onChange(index, it) },
-                    onDelete = { onDelete(index) },
-                    dragModifier = Modifier.pointerInput(index, items.size) {
-                        detectDragGesturesAfterLongPress(
-                            onDragStart = { dragIndex = index; dragOffset = 0f },
-                            onDragEnd = {
-                                val shift = (dragOffset / rowHeight).roundToInt()
-                                val target = (index + shift).coerceIn(0, items.size - 1)
-                                if (target != index) onMove(index, target)
-                                dragIndex = -1
-                                dragOffset = 0f
-                            },
-                            onDragCancel = { dragIndex = -1; dragOffset = 0f },
-                            onDrag = { change, amount ->
-                                change.consume()
-                                dragOffset += amount.y
-                            },
-                        )
-                    },
-                )
-            }
-        }
-    }
-}
-
-/** One configurable row: field name, size, and whether it shares its row. */
-@Composable
-private fun DashItemRow(
-    item: DashItem,
-    onChange: (DashItem) -> Unit,
-    onDelete: () -> Unit,
-    dragModifier: Modifier,
-) {
-    Card(Modifier.padding(vertical = 4.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(
-                Icons.Filled.DragHandle,
-                contentDescription = "Reorder",
-                tint = Palette.faint,
-                modifier = dragModifier.padding(end = 10.dp),
-            )
-            Text(
-                item.fieldLabel,
-                style = TypeScale.bodyStrong,
-                color = Palette.ink,
-                modifier = Modifier.weight(1f),
-            )
-            IconButton(onClick = onDelete) {
-                Icon(Icons.Filled.Close, contentDescription = "Remove", tint = Palette.muted)
-            }
-        }
-        if (!item.isVertical) Row(
-            Modifier.padding(top = 6.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            DashSize.entries.forEach { size ->
-                SmallChip(size.label, item.size == size) { onChange(item.copy(size = size)) }
-            }
-            Spacer(Modifier.weight(1f))
-            SmallChip("Half", item.half) { onChange(item.copy(half = !item.half)) }
-        }
-        if (item.isVertical) {
-            Text("Height", style = TypeScale.body)
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                listOf(50 to "Half", 75 to "Three-quarter", 100 to "Full").forEach { (height, label) ->
-                    SmallChip(label, item.heightPercent == height) { onChange(item.copy(heightPercent = height)) }
-                }
-            }
-        }
-        if (item.field == "radar") {
-            Text("Alignment", style = TypeScale.body)
-            if (item.heightPercent < 100) Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                SmallChip("Top", !item.bottomAligned) { onChange(item.copy(bottomAligned = false)) }
-                SmallChip("Bottom", item.bottomAligned) { onChange(item.copy(bottomAligned = true)) }
-            } else Text("Full height", style = TypeScale.body)
-            Text("Fits whole dashboard rows. Pair your radar in Sensors.", style = TypeScale.body)
-        }
-    }
-}
-
-@Composable
-private fun SmallChip(label: String, selected: Boolean, onClick: () -> Unit) {
-    FilterChip(
-        selected = selected,
-        onClick = onClick,
-        label = { Text(label, style = barlow(12.sp, FontWeight.SemiBold)) },
-        shape = RoundedCornerShape(50),
-        colors = FilterChipDefaults.filterChipColors(
-            containerColor = Palette.paper,
-            labelColor = Palette.muted,
-            selectedContainerColor = Palette.accentWash,
-            selectedLabelColor = Palette.accent,
-        ),
-    )
-}
-
-@Composable
-private fun FieldPickerSheet(allowRadar: Boolean, onDismiss: () -> Unit, onPick: (String) -> Unit) {
-    FullScreenSheet(title = "Add a field", onDismiss = onDismiss, confirmLabel = "Cancel") {
-        LazyColumn {
-            items(DashField.all.filter { allowRadar || it.id != "radar" }, key = { it.id }) { field ->
-                Column(
-                    Modifier
-                        .fillMaxWidth()
-                        .clickable { onPick(field.id) }
-                        .padding(horizontal = 20.dp, vertical = 14.dp),
-                ) {
-                    Text(field.label, style = TypeScale.body, color = Palette.ink)
-                    Text(field.detail, style = barlow(12.sp), color = Palette.muted)
-                }
-                HorizontalDivider(color = Palette.hairline)
-            }
-        }
-    }
 }

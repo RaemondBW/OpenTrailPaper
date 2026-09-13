@@ -18,7 +18,8 @@ struct DashboardEditorView: View {
 
     @State private var config = DashConfig(pages: [])
     @State private var pageIx = 0
-    @State private var showAdd = false
+    // The page editor, pushed over this sheet for the selected data page.
+    @State private var editing = false
     // Reorder is the SYSTEM drag interaction (onDrag/onDrop): UIKit-backed
     // like a context menu, so it cannot eat the scroll view's pan — pan first
     // scrolls, hold first lifts — which every SwiftUI drag composition tried
@@ -76,9 +77,20 @@ struct DashboardEditorView: View {
                     if pageIx >= config.pages.count { pageIx = 0 }
                 }
             }
-            .sheet(isPresented: $showAdd) {
-                FieldPicker(allowRadar: config.pages.indices.contains(pageIx) && config.pages[pageIx].layout.verticalItem == nil) { id in
-                    mutateAt(pageIx) { $0.items.append(DashItem(field: id, size: .medium, half: id != "radar", vertical: id == "radar")) }
+            .navigationDestination(isPresented: $editing) {
+                if config.pages.indices.contains(pageIx), config.pages[pageIx].kind == .fields {
+                    // "Page N" counts data pages only, as the device's page dots do.
+                    let n = config.pages.prefix(pageIx + 1).filter { $0.kind == .fields }.count
+                    DashboardPageEditorView(
+                        pageTitle: "Page \(n)",
+                        layout: Binding(
+                            get: { config.pages.indices.contains(pageIx) ? config.pages[pageIx].layout : DashLayout(items: []) },
+                            set: { l in mutateAt(pageIx) { $0 = l } }),
+                        canSend: !config.pages.isEmpty && config != ble.dashConfig,
+                        onSend: {
+                            ble.sendDashConfig(config)
+                            dirty = false
+                        })
                 }
             }
         }
@@ -143,41 +155,17 @@ struct DashboardEditorView: View {
                 }
             } else if config.pages.indices.contains(pageIx) {
                 Section {
-                    ForEach(config.pages[pageIx].layout.items) { item in
-                        DashItemRow(item: bindingFor(item, in: pageIx)) { dirty = true }
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Fields").font(TypeScale.bodyStrong).foregroundStyle(Palette.ink)
+                        Text("This page is laid out on the panel itself: tap its card to open the editor, then tap a cell to size it or drag it to move it.")
+                            .font(TypeScale.body).foregroundStyle(Palette.muted)
+                        PrimaryButton(title: "Edit page") { editing = true }
+                            .padding(.top, 2)
                     }
-                    .onMove { from, to in
-                        mutateAt(pageIx) { $0.items.move(fromOffsets: from, toOffset: to) }
-                    }
-                    .onDelete { idx in
-                        mutateAt(pageIx) { $0.items.remove(atOffsets: idx) }
-                    }
-                    if config.pages[pageIx].layout.items.count < DashLayout.maxItems {
-                        Button {
-                            showAdd = true
-                        } label: {
-                            Label("Add a field", systemImage: "plus.circle.fill")
-                        }
-                    }
-                } header: {
-                    Text("Fields")
-                } footer: {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Drag to reorder, swipe to remove. “Half width” pairs a field with the next half-width field; on its own it spans the row. Adding Radar automatically fits the fields around it.")
-                        Text("Fields that need a sensor — power, heart rate, cadence — are hidden on the device until it connects, and the rest expand to fill the space. Route left hides when no route is loaded.")
-                    }
-                }
-
-                Section {
-                    Button("Reset to the default layout") {
-                        config = .deviceDefault
-                        pageIx = 0
-                        dirty = true
-                    }
+                    .padding(.vertical, 4)
                 }
             }
         }
-        .environment(\.editMode, .constant(.active))
     }
 
 
@@ -258,7 +246,12 @@ struct DashboardEditorView: View {
                 .accessibilityLabel("Remove this page")
             }
         }
-        .onTapGesture { pageIx = i }
+        .onTapGesture {
+            pageIx = i
+            // A data page is edited on the panel itself; the other kinds
+            // have nothing to lay out and stay here.
+            if config.pages[i].kind == .fields { editing = true }
+        }
         // The card fades while its drag session is live, so the system's
         // floating snapshot reads as THE card in motion rather than a copy
         // hovering over an unmoved original. Not 0: if a cancelled session
@@ -334,98 +327,6 @@ struct DashboardEditorView: View {
               config.pages[i].kind == .fields else { return }
         f(&config.pages[i].layout)
         dirty = true
-    }
-
-    /// A binding into page `i`'s copy of `item` — ForEach($...) can't reach
-    /// through the pages array.
-    private func bindingFor(_ item: DashItem, in i: Int) -> Binding<DashItem> {
-        Binding(
-            get: {
-                config.pages.indices.contains(i)
-                    ? config.pages[i].layout.items.first(where: { $0.id == item.id }) ?? item
-                    : item
-            },
-            set: { new in
-                mutateAt(i) { l in
-                    if let ix = l.items.firstIndex(where: { $0.id == item.id }) {
-                        l.items[ix] = new
-                    }
-                }
-            })
-    }
-}
-
-// One configurable row: field name, size, and whether it shares its row.
-private struct DashItemRow: View {
-    @Binding var item: DashItem
-    let changed: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(item.fieldLabel).font(TypeScale.bodyStrong).foregroundStyle(Palette.ink)
-            if item.field == "radar" {
-                Text("Height").font(.footnote).foregroundStyle(Palette.muted)
-                Picker("Radar height", selection: $item.heightPercent) {
-                    Text("Half").tag(50)
-                    Text("Three-quarter").tag(75)
-                    Text("Full").tag(100)
-                }
-                .pickerStyle(.segmented)
-                .onChange(of: item.heightPercent) { changed() }
-                Text("Alignment").font(.footnote).foregroundStyle(Palette.muted)
-                Picker("Radar alignment", selection: $item.bottomAligned) {
-                    Text("Top").tag(false)
-                    Text("Bottom").tag(true)
-                }
-                .pickerStyle(.segmented)
-                .disabled(item.heightPercent == 100)
-                .onChange(of: item.bottomAligned) { changed() }
-                Text("Fits whole dashboard rows. Pair your radar in Sensors.")
-                    .font(.footnote).foregroundStyle(Palette.muted)
-            } else {
-                HStack(spacing: 10) {
-                    Picker("Size", selection: $item.size) {
-                        ForEach(DashSize.allCases) { Text($0.label).tag($0) }
-                    }
-                    .pickerStyle(.segmented)
-                    .onChange(of: item.size) { changed() }
-                    Toggle(isOn: $item.half) { Text("Half").font(.system(size: 13)) }
-                        .toggleStyle(.button)
-                        .onChange(of: item.half) { changed() }
-                }
-            }
-        }
-        .padding(.vertical, 4)
-    }
-}
-
-private struct FieldPicker: View {
-    @Environment(\.dismiss) private var dismiss
-    var allowRadar = true
-    let pick: (String) -> Void
-
-    var body: some View {
-        NavigationStack {
-            List(DashField.all.filter { allowRadar || $0.id != "radar" }) { f in
-                Button {
-                    pick(f.id)
-                    dismiss()
-                } label: {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(f.label).foregroundStyle(Palette.ink)
-                        Text(f.detail).font(.system(size: 12)).foregroundStyle(Palette.muted)
-                    }
-                }
-            }
-            .navigationTitle("Add a field")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-            }
-        }
-        .presentationDetents([.medium, .large])
     }
 }
 
@@ -510,30 +411,58 @@ struct DashPreview: View {
     var live: RideSim? = nil
 
     // Device geometry (ui_render.h). Everything is computed in these units.
-    private let panelW: CGFloat = 540, panelH: CGFloat = 960
-    private let margin: CGFloat = 24, gutter: CGFloat = 12, pad: CGFloat = 16
-    private let statusH: CGFloat = 64, step: CGFloat = 12, halfStep: CGFloat = 6
+    // Not private: the page editor lays its drop targets over the same grid.
+    let panelW: CGFloat = 540, panelH: CGFloat = 960
+    let margin: CGFloat = 24, gutter: CGFloat = 12, pad: CGFloat = 16
+    let statusH: CGFloat = 64, step: CGFloat = 12, halfStep: CGFloat = 6
     private let rule: CGFloat = 2
-    private var contentW: CGFloat { panelW - 2 * margin }
-    private var bodyH: CGFloat { panelH - statusH }
+    var contentW: CGFloat { panelW - 2 * margin }
+    var bodyH: CGFloat { panelH - statusH }
 
     /// Barlow's cap height is 0.72 em, so this converts a device cap height into
     /// the point size that draws the same-sized capital.
     private let capRatio: CGFloat = 0.72
 
-    private struct Placed {
+    struct Placed {
         var x, y, w, h: CGFloat
         var item: DashItem
         var hero: Bool
-        var value: Face
-        var label: LabelFace
+        fileprivate var value: Face
+        fileprivate var label: LabelFace
+        var isRadar: Bool { item.field == "radar" }
     }
+
+    /// One grid row as the packer built it: where it sits, how wide its cells
+    /// are (narrower beside the radar rail) and which items it holds. The
+    /// editor reads these to decide what a dragged cell is being dropped onto.
+    struct RowBox {
+        var y, h, mainW: CGFloat
+        var ids: [UUID]
+        var weight: Int
+    }
+
+    /// Everything `place()` decided, for anyone who needs more than the cells.
+    struct Placement {
+        var cells: [Placed]
+        var rows: [RowBox]
+        var totalWeight: Int
+        var railY: CGFloat
+        var railH: CGFloat
+
+        /// A half-width item alone on its row spans it; the editor flags that.
+        func isUnpaired(_ p: Placed) -> Bool {
+            !p.isRadar && p.item.half && rows.contains { $0.ids.count == 1 && $0.ids[0] == p.item.id }
+        }
+    }
+
+    /// The layout as the device would pack it. Exposed for the page editor.
+    var placement: Placement { place() }
 
     var body: some View {
         GeometryReader { geo in
             let k = geo.size.width / panelW
             ZStack(alignment: .topLeading) {
-                ForEach(Array(place().enumerated()), id: \.offset) { _, p in
+                ForEach(Array(place().cells.enumerated()), id: \.offset) { _, p in
                     cell(p, k: k)
                         .frame(width: p.w * k, height: p.h * k)
                         .offset(x: p.x * k, y: (p.y - statusH) * k)
@@ -548,9 +477,9 @@ struct DashPreview: View {
 
     // MARK: layout — ui_render.cpp's packer, verbatim in device pixels
 
-    private func place() -> [Placed] {
+    private func place() -> Placement {
         let rows = layout.rows
-        guard !rows.isEmpty else { return [] }
+        guard !rows.isEmpty else { return Placement(cells: [], rows: [], totalWeight: 1, railY: 0, railH: 0) }
         let weights = rows.map { $0.map(\.size.weight).max() ?? 1 }
         let total = max(weights.reduce(0, +), 1)
         let gutters = CGFloat(rows.count - 1) * gutter
@@ -566,11 +495,13 @@ struct DashPreview: View {
         let railY = layout.verticalItem?.bottomAligned == true ? panelH - margin - railH : statusH + margin - step
 
         var out: [Placed] = []
+        var boxes: [RowBox] = []
         var y = statusH + margin - step
         for (r, row) in rows.enumerated() {
             let rowH = CGFloat(rowHeights[r])
             let mainW = layout.verticalItem != nil && y + rowH > railY && y < railY + railH ? 316 : contentW
             let halfW = ((mainW - gutter) / 2).rounded(.down)
+            boxes.append(RowBox(y: y, h: rowH, mainW: mainW, ids: row.map(\.id), weight: weights[r]))
             for (c, item) in row.enumerated() {
                 let w = row.count == 2 ? halfW : mainW
                 let x = row.count == 2 ? (c == 0 ? margin : margin + halfW + gutter)
@@ -588,7 +519,7 @@ struct DashPreview: View {
             out.append(Placed(x: 352, y: railY, w: 160, h: railH, item: item, hero: false,
                               value: kValueLadder.last!, label: kLabelLadder.last!))
         }
-        return sized(out)
+        return Placement(cells: sized(out), rows: boxes, totalWeight: total, railY: railY, railH: railH)
     }
 
     /// Second pass: equalise type across each size class, as the device does.
@@ -644,8 +575,11 @@ struct DashPreview: View {
 
     // MARK: drawing
 
+    /// One cell as the device draws it. Shared with the page editor, which puts
+    /// its own chrome (selection, badge, drop targets) on top and changes
+    /// nothing inside — that is the point of editing on the panel.
     @ViewBuilder
-    private func cell(_ p: Placed, k: CGFloat) -> some View {
+    func cell(_ p: Placed, k: CGFloat) -> some View {
         ZStack(alignment: .topLeading) {
             Rectangle()
                 .strokeBorder(Color.black, lineWidth: rule * k)
