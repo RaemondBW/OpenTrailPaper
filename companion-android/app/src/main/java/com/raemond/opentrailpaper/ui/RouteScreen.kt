@@ -49,6 +49,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.input.ImeAction
@@ -220,19 +226,37 @@ fun RouteScreen(ble: BleManager) {
         if (uri != null) scope.launch { RouteImport.read(context, uri) }
     }
 
+    val focusManager = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
+
     Box(Modifier.fillMaxSize().background(Palette.paper)) {
         // Same map component as the Maps screen, but showing only the GAP hexes —
         // the ground a planned route crosses that nothing covers. That is the
         // question this page is for ("will I ride off my maps?"); ordinary
         // coverage would just be noise over the route.
         OsmMap(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxSize()
+                // A finger on the map is a finger off the search field: drop the
+                // keyboard. Watched in the initial pass because the MapView
+                // underneath consumes every touch it gets, and this must not
+                // stop it panning — it only listens, never consumes.
+                .pointerInput(Unit) {
+                    awaitEachGesture {
+                        awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                        focusManager.clearFocus()
+                        keyboard?.hide()
+                    }
+                },
             outlines = gapHexes,
             route = preview?.points,
             destination = destination?.let { MapDestination(it.name, it.coordinate) },
             camera = camera,
             showUserLocation = ble.locationPermission.isGranted,
             bottomInsetPx = cardHeightPx,
+            // Placed in the tools row below instead: bottom-right here is where
+            // this screen's round buttons are.
+            showAttribution = false,
         )
 
         // "Route" title pill, floated top-left.
@@ -255,7 +279,12 @@ fun RouteScreen(ble: BleManager) {
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            // Attribution at the left, buttons at the right, both sitting
+            // directly on the search field below.
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
+                Box(Modifier.weight(1f), contentAlignment = Alignment.BottomStart) {
+                    MapAttribution()
+                }
                 RoundMapButton(Icons.Filled.FileOpen, enabled = true) {
                     pickGpx.launch(
                         arrayOf(
@@ -521,6 +550,8 @@ private fun SearchField(
     searching: Boolean,
     onSubmit: () -> Unit,
 ) {
+    val keyboard = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
     TextField(
         value = value,
         onValueChange = onValueChange,
@@ -538,7 +569,13 @@ private fun SearchField(
         // free service and a request per character is exactly what its usage
         // policy asks clients not to do.
         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-        keyboardActions = KeyboardActions(onSearch = { onSubmit() }),
+        // The search runs on its own; the keyboard has nothing left to do and
+        // would otherwise cover the results it is about to produce.
+        keyboardActions = KeyboardActions(onSearch = {
+            keyboard?.hide()
+            focusManager.clearFocus()
+            onSubmit()
+        }),
         colors = TextFieldDefaults.colors(
             focusedContainerColor = Color.Transparent,
             unfocusedContainerColor = Color.Transparent,

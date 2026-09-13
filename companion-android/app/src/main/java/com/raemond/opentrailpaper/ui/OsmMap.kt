@@ -137,6 +137,12 @@ fun OsmMap(
      * instead of centring it behind one.
      */
     bottomInsetPx: Int = 0,
+    /**
+     * Draw the provider's attribution bottom-right, lifted by [bottomInsetPx].
+     * A screen whose floating controls already live in that corner passes false
+     * and places [MapAttribution] itself, where it will not fight them.
+     */
+    showAttribution: Boolean = true,
     projector: MapProjector? = null,
     onTap: ((LatLon) -> Unit)? = null,
     onLongPress: ((LatLon) -> Unit)? = null,
@@ -287,29 +293,39 @@ fun OsmMap(
         },
     )
 
-    // Required by OpenStreetMap and by CARTO. Bottom-right, which is where a map
-    // conventionally puts this and the one corner no screen here floats a
-    // control over — top-left put it adrift in the middle of the view, under
-    // the screen's title rather than beside it.
+    // Required by OpenStreetMap and by every tile provider. Bottom-right, which
+    // is where a map conventionally puts this — top-left put it adrift in the
+    // middle of the view, under the screen's title rather than beside it.
     //
     // Lifted by the same inset the camera uses, so it sits just above whatever
     // card is floating over the map instead of behind it.
+    if (showAttribution) {
+        MapAttribution(
+            Modifier
+                .align(Alignment.BottomEnd)
+                .windowInsetsPadding(WindowInsets.navigationBars)
+                .padding(
+                    end = 10.dp,
+                    bottom = 8.dp + with(LocalDensity.current) { bottomInsetPx.toDp() },
+                ),
+        )
+    }
+    }
+}
+
+/** The tile provider's copyright line, as the small paper-backed chip every map
+ *  in the app shows. Placement is the caller's. */
+@Composable
+fun MapAttribution(modifier: Modifier = Modifier) {
     Text(
         MapStyle.attribution,
         style = barlow(9.sp),
         color = Palette.muted,
         maxLines = 1,
-        modifier = Modifier
-            .align(Alignment.BottomEnd)
-            .windowInsetsPadding(WindowInsets.navigationBars)
-            .padding(
-                end = 10.dp,
-                bottom = 8.dp + with(LocalDensity.current) { bottomInsetPx.toDp() },
-            )
+        modifier = modifier
             .background(Palette.paper.copy(alpha = 0.72f), RoundedCornerShape(4.dp))
             .padding(horizontal = 5.dp, vertical = 2.dp),
     )
-    }
 }
 
 /**
