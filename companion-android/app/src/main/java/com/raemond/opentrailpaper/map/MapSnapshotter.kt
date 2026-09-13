@@ -35,7 +35,7 @@ import kotlin.math.max
  */
 object MapSnapshotter {
 
-    private val TILE = MapStyle.TILE_SIZE
+    private val TILE = MapStyle.tileSize
     private const val MAX_TILES = 24        // a thumbnail is never worth more
 
     /** ~12 MB of thumbnails; a row is ~340×170 at 3x. */
@@ -44,9 +44,10 @@ object MapSnapshotter {
     }
 
     private val tileDir: File by lazy {
-        // Versioned by style: a cache of the old basemap would leave half the ride
+        // Named by provider: a cache of the old basemap would leave half the ride
         // list in one design and half in another.
-        File(Configuration.getInstance().osmdroidBasePath, "snapshots-v2").apply { mkdirs() }
+        File(Configuration.getInstance().osmdroidBasePath, "snapshots-${MapStyle.active.id}")
+            .apply { mkdirs() }
     }
 
     /**

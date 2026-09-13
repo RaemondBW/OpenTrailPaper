@@ -36,6 +36,7 @@ import org.osmdroid.events.ScrollEvent
 import org.osmdroid.events.ZoomEvent
 import org.osmdroid.tileprovider.MapTileProviderBasic
 import org.osmdroid.util.GeoPoint
+import org.osmdroid.util.TileSystem
 import org.osmdroid.views.CustomZoomButtonsController
 import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.MapEventsOverlay
@@ -136,6 +137,12 @@ fun OsmMap(
      * instead of centring it behind one.
      */
     bottomInsetPx: Int = 0,
+    /**
+     * Draw the provider's attribution bottom-right, lifted by [bottomInsetPx].
+     * A screen whose floating controls already live in that corner passes false
+     * and places [MapAttribution] itself, where it will not fight them.
+     */
+    showAttribution: Boolean = true,
     projector: MapProjector? = null,
     onTap: ((LatLon) -> Unit)? = null,
     onLongPress: ((LatLon) -> Unit)? = null,
@@ -146,7 +153,13 @@ fun OsmMap(
 
     val mapView = remember {
         MapView(context).apply {
+            // Before the tile source: scaling changes the tile size osmdroid
+            // works in, and the source's own size is what it scales from.
+            isTilesScaledToDpi = MapStyle.active.scaleToDpi
             setTileSource(MapStyle.base)
+            // osmdroid will happily zoom past the deepest tile a provider has
+            // and blow the last one up into pixel mush; stop where the data does.
+            maxZoomLevel = MapStyle.base.maximumZoomLevel.toDouble()
             setMultiTouchControls(true)
             zoomController.setVisibility(CustomZoomButtonsController.Visibility.NEVER)
             // osmdroid repeats the world sideways by default, which puts a second
@@ -280,29 +293,39 @@ fun OsmMap(
         },
     )
 
-    // Required by OpenStreetMap and by CARTO. Bottom-right, which is where a map
-    // conventionally puts this and the one corner no screen here floats a
-    // control over — top-left put it adrift in the middle of the view, under
-    // the screen's title rather than beside it.
+    // Required by OpenStreetMap and by every tile provider. Bottom-right, which
+    // is where a map conventionally puts this — top-left put it adrift in the
+    // middle of the view, under the screen's title rather than beside it.
     //
     // Lifted by the same inset the camera uses, so it sits just above whatever
     // card is floating over the map instead of behind it.
+    if (showAttribution) {
+        MapAttribution(
+            Modifier
+                .align(Alignment.BottomEnd)
+                .windowInsetsPadding(WindowInsets.navigationBars)
+                .padding(
+                    end = 10.dp,
+                    bottom = 8.dp + with(LocalDensity.current) { bottomInsetPx.toDp() },
+                ),
+        )
+    }
+    }
+}
+
+/** The tile provider's copyright line, as the small paper-backed chip every map
+ *  in the app shows. Placement is the caller's. */
+@Composable
+fun MapAttribution(modifier: Modifier = Modifier) {
     Text(
         MapStyle.attribution,
         style = barlow(9.sp),
         color = Palette.muted,
         maxLines = 1,
-        modifier = Modifier
-            .align(Alignment.BottomEnd)
-            .windowInsetsPadding(WindowInsets.navigationBars)
-            .padding(
-                end = 10.dp,
-                bottom = 8.dp + with(LocalDensity.current) { bottomInsetPx.toDp() },
-            )
+        modifier = modifier
             .background(Palette.paper.copy(alpha = 0.72f), RoundedCornerShape(4.dp))
             .padding(horizontal = 5.dp, vertical = 2.dp),
     )
-    }
 }
 
 /**
@@ -473,7 +496,7 @@ private fun apply(map: MapView, state: MapState, camera: MapCamera, bottomInsetP
 /** The zoom level at which [spanDeg] of longitude fills [widthPx]. */
 private fun zoomForSpan(spanDeg: Double, widthPx: Int): Double {
     val width = if (widthPx > 0) widthPx else 1080
-    val tile = MapStyle.TILE_SIZE.toDouble()
+    val tile = TileSystem.getTileSize().toDouble()
     val z = kotlin.math.ln(width * 360.0 / (tile * spanDeg)) / kotlin.math.ln(2.0)
     return z.coerceIn(2.0, 19.0)
 }
@@ -481,7 +504,7 @@ private fun zoomForSpan(spanDeg: Double, widthPx: Int): Double {
 /** The largest zoom at which [box] fits the view, less its border and the band
  *  the floating card covers. */
 private fun zoomToFit(box: BoundingBox, map: MapView, borderPx: Int, bottomInsetPx: Int): Double {
-    val tile = MapStyle.TILE_SIZE.toDouble()
+    val tile = TileSystem.getTileSize().toDouble()
     val w = ((if (map.width > 0) map.width else 1080) - 2 * borderPx).coerceAtLeast(1)
     val h = ((if (map.height > 0) map.height else 1920) - 2 * borderPx - bottomInsetPx)
         .coerceAtLeast(1)
@@ -501,7 +524,7 @@ private fun zoomToFit(box: BoundingBox, map: MapView, borderPx: Int, bottomInset
  */
 private fun liftedCentre(centre: LatLon, zoom: Double, bottomInsetPx: Int): GeoPoint {
     if (bottomInsetPx <= 0) return GeoPoint(centre.lat, centre.lon)
-    val worldPx = MapStyle.TILE_SIZE * 2.0.pow(zoom)
+    val worldPx = TileSystem.getTileSize() * 2.0.pow(zoom)
     val y = MercatorWorld.y(centre.lat) / MercatorWorld.WORLD * worldPx + bottomInsetPx / 2.0
     return GeoPoint(MercatorWorld.latFromY(y / worldPx * MercatorWorld.WORLD), centre.lon)
 }

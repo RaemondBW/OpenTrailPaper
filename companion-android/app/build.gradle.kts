@@ -27,6 +27,14 @@ fun signingValue(key: String, env: String): String? =
     keystoreProperties.getProperty(key) ?: System.getenv(env)
 
 val releaseStoreFile = signingValue("storeFile", "OTP_KEYSTORE_FILE")
+
+// CARTO basemaps key, optional. With one the map is CARTO Voyager; without, the
+// keyless Esri canvas (see map/MapStyle.kt). local.properties is gitignored,
+// so a developer's key stays on their machine; CI supplies OTP_CARTO_KEY.
+val cartoKey: String = Properties().apply {
+    val f = rootProject.file("local.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}.getProperty("carto.key") ?: System.getenv("OTP_CARTO_KEY") ?: ""
 val hasReleaseKey = releaseStoreFile != null && file(releaseStoreFile).exists()
 
 android {
@@ -42,6 +50,8 @@ android {
         // CURRENT_PROJECT_VERSION), so the two companions read as one release.
         versionCode = 10
         versionName = "0.3"
+
+        buildConfigField("String", "CARTO_KEY", "\"${cartoKey.trim()}\"")
 
         externalNativeBuild {
             cmake {

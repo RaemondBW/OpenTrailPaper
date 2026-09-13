@@ -224,6 +224,8 @@ jobs:
           OTP_KEYSTORE_PASSWORD: ${{ secrets.OTP_KEYSTORE_PASSWORD }}
           OTP_KEY_ALIAS: ${{ secrets.OTP_KEY_ALIAS }}
           OTP_KEY_PASSWORD: ${{ secrets.OTP_KEY_PASSWORD }}
+          # Optional: CARTO Voyager basemap instead of the keyless Esri canvas.
+          OTP_CARTO_KEY: ${{ secrets.OTP_CARTO_KEY }}
         run: ./gradlew --no-daemon assembleRelease
 
       # Read versionName out of the built APK rather than re-parsing the

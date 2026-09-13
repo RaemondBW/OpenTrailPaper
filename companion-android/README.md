@@ -63,7 +63,10 @@ cd companion-android
 ```
 
 `local.properties` needs `sdk.dir=…` pointing at your SDK (Android Studio writes
-it for you).
+it for you). Optionally add `carto.key=…` — a free [CARTO basemaps
+key](https://carto.com/basemaps/apikey) — to get the CARTO Voyager basemap; without
+one the map uses Esri's keyless Light Gray canvas (see `map/MapStyle.kt`). CI reads
+the same key from the `OTP_CARTO_KEY` secret, if set.
 
 Run on a real phone: BLE needs one, and the emulator has no Bluetooth. The app
 auto-scans for the device by its GATT service UUID once Bluetooth is allowed.
@@ -79,7 +82,7 @@ platforms do.
   destination search and the FOSSGIS-hosted **OSRM** instances for directions.
   Cycling is the primary routing profile everywhere, with walking as the fallback
   — a small improvement on iOS, which falls back to walking geometry wherever
-  Apple has no cycling coverage. All three services are free and keyless; searches
+  Apple has no cycling coverage. Search and routing are free and keyless; searches
   fire on submit rather than per keystroke, and thumbnails are cached, to stay
   inside their usage policies.
 - **BLE flow control.** CoreBluetooth lets you fire writes freely and reports when
