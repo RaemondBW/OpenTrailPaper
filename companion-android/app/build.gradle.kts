@@ -37,6 +37,14 @@ val cartoKey: String = Properties().apply {
 }.getProperty("carto.key") ?: System.getenv("OTP_CARTO_KEY") ?: ""
 val hasReleaseKey = releaseStoreFile != null && file(releaseStoreFile).exists()
 
+// Public address of the sync-auth service (cloud/sync-auth), the broker for
+// Strava / RideWithGPS sign-in. A URL, not a secret; the secrets stay on the
+// service. Empty = the Accounts card explains uploads are unavailable.
+val syncUrl: String = Properties().apply {
+    val f = rootProject.file("local.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}.getProperty("sync.url") ?: System.getenv("OTP_SYNC_SERVICE_URL") ?: ""
+
 android {
     namespace = "com.raemond.opentrailpaper"
     compileSdk = 35
@@ -52,6 +60,7 @@ android {
         versionName = "0.3"
 
         buildConfigField("String", "CARTO_KEY", "\"${cartoKey.trim()}\"")
+        buildConfigField("String", "SYNC_SERVICE_URL", "\"${syncUrl.trim()}\"")
 
         externalNativeBuild {
             cmake {
@@ -141,6 +150,10 @@ dependencies {
     implementation(libs.androidx.camera.camera2)
     implementation(libs.androidx.camera.lifecycle)
     implementation(libs.androidx.camera.view)
+    // Strava / RideWithGPS sign-in: the consent page opens in a Custom Tab and
+    // the user's tokens live in EncryptedSharedPreferences (data/SyncAccounts.kt).
+    implementation(libs.androidx.browser)
+    implementation(libs.androidx.security.crypto)
     debugImplementation(libs.androidx.ui.tooling)
     // The byte formats shared with the firmware are pure Kotlin, so they are
     // testable on the JVM with no device and no network.

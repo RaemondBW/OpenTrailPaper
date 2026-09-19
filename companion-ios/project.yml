@@ -11,6 +11,10 @@ settings:
     SWIFT_VERSION: "5.0"
     DEVELOPMENT_TEAM: "G5JFC849XY"
     CODE_SIGN_STYLE: Automatic
+    # Public address of the sync-auth service (cloud/sync-auth), the broker
+    # for Strava / RideWithGPS sign-in. Fill in after `deploy.sh`; it is a URL,
+    # not a secret. Empty = the Accounts card explains uploads are unavailable.
+    OTP_SYNC_SERVICE_URL: ""
     GENERATE_INFOPLIST_FILE: NO
 targets:
   OpenTrailPaper:

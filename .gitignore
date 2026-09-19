@@ -106,3 +106,7 @@ tools/vfont/out/
 *.elf
 investigations/results/
 investigations/*-results.json
+
+# sync-auth service: local credentials only, never the repo
+cloud/sync-auth/.env
+cloud/sync-auth/node_modules/

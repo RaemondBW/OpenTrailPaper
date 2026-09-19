@@ -18,6 +18,19 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.raemond.opentrailpaper.sync</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>opentrailpaper</string>
+			</array>
+		</dict>
+	</array>
+	<key>SyncServiceURL</key>
+	<string>$(OTP_SYNC_SERVICE_URL)</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>LSRequiresIPhoneOS</key>

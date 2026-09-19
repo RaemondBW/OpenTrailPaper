@@ -112,6 +112,17 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="application/gpx+xml" />
             </intent-filter>
+
+            <!-- Strava / RideWithGPS sign-in coming back from the browser:
+                 opentrailpaper://sync/<provider>?handoff=...&state=... (see
+                 data/SyncAccounts.kt). singleTask above is what routes it to
+                 the running activity's onNewIntent instead of a second copy. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="opentrailpaper" android:host="sync" />
+            </intent-filter>
         </activity>
 
         <service
