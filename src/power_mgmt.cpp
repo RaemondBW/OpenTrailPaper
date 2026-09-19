@@ -1,3 +1,4 @@
+#include "soc/timer_group_struct.h"
 #include "power_mgmt.h"
 
 #include <Arduino.h>
@@ -89,6 +90,11 @@ bool prepare() {
     }
     diag::log("pm: guards ready before peripherals; IDF %s, build %s %s",
               esp_get_idf_version(), __DATE__, __TIME__);
+    // Ground truth for the interrupt-watchdog stretch (src/int_wdt_stretch.cpp):
+    // stage 0 as the hardware holds it, in MWDT1's 500 us ticks.
+    diag::log("pm: interrupt watchdog stage0=%u ticks (%u ms; framework default %d ms)",
+              (unsigned)TIMERG1.wdtconfig2.wdt_stg0_hold,
+              (unsigned)TIMERG1.wdtconfig2.wdt_stg0_hold / 2, CONFIG_ESP_INT_WDT_TIMEOUT_MS);
     return true;
 }
 
