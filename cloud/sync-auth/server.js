@@ -5,16 +5,30 @@
 // never ship inside a phone app, and RideWithGPS additionally wants its API
 // key on every request. So the phones never see either. The service:
 //
-//   GET  /v1/auth/:provider/start?state=S      -> 302 to the provider's consent page
-//   GET  /v1/auth/:provider/callback           <- the provider sends the code here
+//   POST /v1/auth/:provider/begin {state:S}    [App Check] -> {url}: the consent
+//        URL, carrying a ticket only an attested app can obtain
+//   GET  /v1/auth/:provider/start?ticket=T      -> 302 to the provider's consent page
+//   GET  /v1/auth/:provider/callback            <- the provider sends the code here
 //        exchanges it (secret stays here), wraps the tokens in a short-lived
-//        AES-GCM "handoff" and 302s to  opentrailpaper://sync/:provider?handoff=..&state=S
-//   POST /v1/auth/handoff        {handoff}     -> {provider, tokens..., athlete}
-//   POST /v1/auth/strava/refresh {refresh_token}
-//   POST /v1/auth/strava/revoke  {access_token}
-//   POST /v1/rwgps/trips         (multipart, Bearer user token) -> proxied upload,
-//                                the API key added here
-//   GET  /v1/rwgps/me            (Bearer user token) -> the account, for display
+//        AES-GCM "handoff" and 302s to  https://<host>/app/sync/:provider?handoff=..&state=S
+//        - a Universal Link / App Link only the signed apps can claim
+//   GET  /app/sync/:provider                    fallback page when no app claimed it
+//   POST /v1/auth/handoff        {handoff}      [App Check] -> {provider, tokens..., athlete}
+//   POST /v1/auth/strava/refresh {refresh_token} [App Check]
+//   POST /v1/auth/strava/revoke  {access_token}  [App Check]
+//   POST /v1/rwgps/trips         (multipart, Bearer user token) [App Check] -> proxied
+//                                upload, the API key added here
+//   GET  /v1/rwgps/me            (Bearer user token) [App Check] -> the account
+//   GET  /.well-known/apple-app-site-association, /.well-known/assetlinks.json
+//
+// "Only my apps": two layers. [App Check] routes require a Firebase App Check
+// token (App Attest on iOS, Play Integrity on Android) minted for one of this
+// project's apps, verified here against Firebase's public keys; without a
+// valid one there is no ticket to start a flow and no way to redeem a handoff.
+// And the handoff travels back on an https link on this host, which iOS and
+// Android only hand to apps whose signing identity the well-known files list.
+// App Check is on whenever APP_CHECK_PROJECT_NUMBER is set; unset it only for
+// a local run against the tests' fakes.
 //
 // Stateless on purpose: nothing is stored server-side, so there is no user
 // database to protect. What the app keeps is its own user's tokens; what the
@@ -34,6 +48,22 @@ const PORT = Number(process.env.PORT || 8080);
 const APP_SCHEME = process.env.APP_SCHEME || 'opentrailpaper';
 const HANDOFF_TTL_S = 120;
 const STATE_TTL_S = 600;
+
+// App identity, for the well-known files and App Check.
+const APP = {
+    appleTeamId: process.env.APPLE_TEAM_ID || 'G5JFC849XY',
+    iosBundleId: process.env.IOS_BUNDLE_ID || 'com.raemond.opentrailpaper',
+    androidPackage: process.env.ANDROID_PACKAGE || 'com.raemond.opentrailpaper',
+    // SHA-256 fingerprints of every certificate the Android app may be signed
+    // with: the Play app-signing key (from Play Console > App integrity) plus
+    // the sideload key CI signs with. Comma separated, colon-hex.
+    androidCertSha256: (process.env.ANDROID_CERT_SHA256 || '').split(',').map((s) => s.trim()).filter(Boolean),
+    appCheckProjectNumber: process.env.APP_CHECK_PROJECT_NUMBER || '',
+    // Optional: Firebase app ids (1:123:ios:abc...) allowed as the token's
+    // subject. Empty = any app of the project.
+    appCheckAppIds: (process.env.APP_CHECK_APP_IDS || '').split(',').map((s) => s.trim()).filter(Boolean),
+    appCheckJwks: process.env.APP_CHECK_JWKS_URL || 'https://firebaseappcheck.googleapis.com/v1/jwks',
+};
 
 // ---- provider definitions ---------------------------------------------------
 // URLs per the Strava API v3 docs and the RideWithGPS API v1 docs
@@ -60,7 +90,7 @@ const PROVIDERS = {
 
 function env(name) {
     const v = process.env[name];
-    if (!v) throw new HttpError(503, `${name} is not configured`);
+    if (!v || v === 'TODO') throw new HttpError(503, `${name} is not configured`);   // TODO = deploy.sh placeholder
     return v;
 }
 
@@ -200,6 +230,102 @@ async function rwgpsCurrentUser(userToken) {
     return { id: u.id, name: u.name || u.display_name || null };
 }
 
+// ---- Firebase App Check -----------------------------------------------------
+// A token is an RS256 JWT from Firebase: iss https://firebaseappcheck.googleapis.com/<n>,
+// aud includes projects/<n>, sub = the app id. Keys come from the JWKS
+// endpoint (cached; refetched on an unknown kid). No SDK needed.
+
+let jwksCache = { keys: [], at: 0 };
+
+async function jwks(forceRefresh) {
+    if (!forceRefresh && jwksCache.keys.length && now() - jwksCache.at < 6 * 3600) return jwksCache.keys;
+    const r = await fetch(APP.appCheckJwks, { headers: { accept: 'application/json' } });
+    if (!r.ok) throw new HttpError(503, 'app check keys unavailable');
+    const json = await r.json();
+    jwksCache = { keys: json.keys || [], at: now() };
+    return jwksCache.keys;
+}
+
+async function verifyAppCheck(token) {
+    const parts = String(token || '').split('.');
+    if (parts.length !== 3) throw new HttpError(401, 'app check token malformed');
+    let header, claims;
+    try {
+        header = JSON.parse(b64u.dec(parts[0]).toString('utf8'));
+        claims = JSON.parse(b64u.dec(parts[1]).toString('utf8'));
+    } catch { throw new HttpError(401, 'app check token malformed'); }
+    if (header.alg !== 'RS256' || header.typ !== 'JWT') throw new HttpError(401, 'app check token unsupported');
+    let key = (await jwks(false)).find((k) => k.kid === header.kid);
+    if (!key) key = (await jwks(true)).find((k) => k.kid === header.kid);
+    if (!key) throw new HttpError(401, 'app check key unknown');
+    const pub = crypto.createPublicKey({ key, format: 'jwk' });
+    const ok = crypto.verify('RSA-SHA256', Buffer.from(`${parts[0]}.${parts[1]}`), pub, b64u.dec(parts[2]));
+    if (!ok) throw new HttpError(401, 'app check signature invalid');
+    const n = APP.appCheckProjectNumber;
+    if (claims.iss !== `https://firebaseappcheck.googleapis.com/${n}`) throw new HttpError(401, 'app check issuer');
+    const aud = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
+    if (!aud.includes(`projects/${n}`)) throw new HttpError(401, 'app check audience');
+    if (!claims.exp || claims.exp < now()) throw new HttpError(401, 'app check token expired');
+    if (APP.appCheckAppIds.length && !APP.appCheckAppIds.includes(claims.sub)) throw new HttpError(401, 'app check app');
+    return claims.sub;
+}
+
+/* Gate: throws unless the request carries a valid App Check token (or App
+ * Check is not configured, which only a local run should ever be). */
+async function requireApp(req) {
+    if (!APP.appCheckProjectNumber) {
+        if (!requireApp.warned) { console.warn('APP_CHECK_PROJECT_NUMBER unset: accepting unattested callers'); requireApp.warned = true; }
+        return 'unverified';
+    }
+    return verifyAppCheck(req.headers['x-firebase-appcheck']);
+}
+
+// ---- Universal Links / App Links ---------------------------------------------
+
+function appleAppSiteAssociation() {
+    const appID = `${APP.appleTeamId}.${APP.iosBundleId}`;
+    return {
+        applinks: {
+            details: [{ appIDs: [appID], components: [{ '/': '/app/sync/*', comment: 'Strava / RideWithGPS sign-in return' }] }],
+        },
+        webcredentials: { apps: [appID] },
+    };
+}
+
+function assetLinks() {
+    return [{
+        relation: ['delegate_permission/common.handle_all_urls'],
+        target: {
+            namespace: 'android_app',
+            package_name: APP.androidPackage,
+            sha256_cert_fingerprints: APP.androidCertSha256,
+        },
+    }];
+}
+
+/* Where the callback sends the user. Only the signed apps can claim this
+ * https link (see the well-known files); it also works with no app installed,
+ * as a page (below). */
+function appReturnUrl(req, provider) {
+    return new URL(`${baseUrl(req)}/app/sync/${provider}`);
+}
+
+function returnPage(provider, query) {
+    // Shown only when nothing claimed the link: the app is not installed, or
+    // this is a developer build that is not associated with the domain. The
+    // button re-sends the same parameters on the custom scheme. A hijacking app
+    // gets nothing from that: redeeming the handoff needs App Check.
+    const deep = `${APP_SCHEME}://sync/${provider}${query ? `?${query}` : ''}`;
+    const esc = (s) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    return `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>OpenTrailPaper</title>
+<style>body{font-family:-apple-system,system-ui,sans-serif;background:#EDEAE1;color:#1A1A1A;margin:0;padding:48px 24px;text-align:center}
+a.b{display:inline-block;margin-top:24px;padding:14px 22px;background:#F4501E;color:#fff;border-radius:12px;text-decoration:none;font-weight:600}p{color:#5C564B}</style>
+<h1>Almost there</h1><p>Finish connecting ${esc(provider === 'strava' ? 'Strava' : 'RideWithGPS')} in the OpenTrailPaper app.</p>
+<a class="b" href="${esc(deep)}">Open OpenTrailPaper</a>
+<p>No app? This link only does something on a phone with OpenTrailPaper installed.</p>`;
+}
+
 // ---- request plumbing -------------------------------------------------------
 
 function baseUrl(req) {
@@ -264,12 +390,37 @@ async function handle(req, res) {
     const m = (method, re) => req.method === method && re.exec(path);
     let r;
 
-    if (m('GET', /^\/healthz$/)) return send(res, 200, 'ok');
+    if (m('GET', /^\/health$/)) return send(res, 200, 'ok');
+
+    if (m('GET', /^\/\.well-known\/apple-app-site-association$/)) {
+        return send(res, 200, appleAppSiteAssociation(), { 'content-type': 'application/json' });
+    }
+    if (m('GET', /^\/\.well-known\/assetlinks\.json$/)) {
+        return send(res, 200, assetLinks());
+    }
+    if ((r = m('GET', /^\/app\/sync\/([a-z]+)$/))) {
+        providerOf(r[1]);
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+        return res.end(returnPage(r[1], url.searchParams.toString()));
+    }
+
+    if ((r = m('POST', /^\/v1\/auth\/([a-z]+)\/begin$/))) {
+        // The only way to get a ticket, and a ticket is the only way to start.
+        const provider = providerOf(r[1]);
+        await requireApp(req);
+        const { state } = await readJson(req);
+        if (!/^[A-Za-z0-9_-]{8,128}$/.test(state || '')) throw new HttpError(400, 'state must be 8-128 url-safe chars');
+        const u = new URL(`${baseUrl(req)}/v1/auth/${provider}/start`);
+        u.searchParams.set('ticket', signState(state, provider));
+        return send(res, 200, { url: u.toString() });
+    }
 
     if ((r = m('GET', /^\/v1\/auth\/([a-z]+)\/start$/))) {
         const provider = providerOf(r[1]);
-        const appState = url.searchParams.get('state') || '';
-        if (!/^[A-Za-z0-9_-]{8,128}$/.test(appState)) throw new HttpError(400, 'state must be 8-128 url-safe chars');
+        // The browser cannot carry an App Check header, so the proof is the
+        // ticket /begin issued to an attested app; verifying it re-signs the
+        // same state for the provider round trip.
+        const appState = verifyState(url.searchParams.get('ticket'), provider);
         const p = PROVIDERS[provider];
         const q = new URLSearchParams({
             client_id: p.clientId(),
@@ -285,7 +436,7 @@ async function handle(req, res) {
     if ((r = m('GET', /^\/v1\/auth\/([a-z]+)\/callback$/))) {
         const provider = providerOf(r[1]);
         const appState = verifyState(url.searchParams.get('state'), provider);
-        const back = new URL(`${APP_SCHEME}://sync/${provider}`);
+        const back = appReturnUrl(req, provider);
         back.searchParams.set('state', appState);
         const denied = url.searchParams.get('error');
         if (denied) {
@@ -315,18 +466,21 @@ async function handle(req, res) {
     }
 
     if (m('POST', /^\/v1\/auth\/handoff$/)) {
+        await requireApp(req);
         const { handoff } = await readJson(req);
         if (!handoff) throw new HttpError(400, 'missing handoff');
         return send(res, 200, openHandoff(handoff));
     }
 
     if (m('POST', /^\/v1\/auth\/strava\/refresh$/)) {
+        await requireApp(req);
         const { refresh_token } = await readJson(req);
         if (!refresh_token) throw new HttpError(400, 'missing refresh_token');
         return send(res, 200, await stravaRefresh(refresh_token));
     }
 
     if (m('POST', /^\/v1\/auth\/strava\/revoke$/)) {
+        await requireApp(req);
         const { access_token } = await readJson(req);
         if (!access_token) throw new HttpError(400, 'missing access_token');
         await stravaRevoke(access_token);
@@ -334,12 +488,14 @@ async function handle(req, res) {
     }
 
     if (m('GET', /^\/v1\/rwgps\/me$/)) {
+        await requireApp(req);
         return send(res, 200, await rwgpsCurrentUser(bearer(req)));
     }
 
     if (m('POST', /^\/v1\/rwgps\/trips$/)) {
         // Pass the multipart body through untouched: the phone builds the
         // form (file + trip[name]) exactly as RWGPS wants it; we add the key.
+        await requireApp(req);
         const token = bearer(req);
         const ct = req.headers['content-type'] || '';
         if (!ct.startsWith('multipart/form-data')) throw new HttpError(415, 'multipart/form-data expected');
@@ -375,4 +531,4 @@ if (require.main === module) {
     createServer().listen(PORT, () => console.log(`sync-auth listening on :${PORT}`));
 }
 
-module.exports = { createServer, PROVIDERS, signState, verifyState, sealHandoff, openHandoff };
+module.exports = { createServer, PROVIDERS, APP, signState, verifyState, sealHandoff, openHandoff, verifyAppCheck };

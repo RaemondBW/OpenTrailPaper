@@ -12,6 +12,7 @@ camerax = "1.4.1"
 zxing = "3.5.3"
 browser = "1.8.0"
 securityCrypto = "1.1.0-alpha06"
+firebaseBom = "33.7.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -36,6 +37,10 @@ androidx-camera-view = { group = "androidx.camera", name = "camera-view", versio
 zxing-core = { group = "com.google.zxing", name = "core", version.ref = "zxing" }
 androidx-browser = { group = "androidx.browser", name = "browser", version.ref = "browser" }
 androidx-security-crypto = { group = "androidx.security", name = "security-crypto", version.ref = "securityCrypto" }
+firebase-bom = { group = "com.google.firebase", name = "firebase-bom", version.ref = "firebaseBom" }
+firebase-appcheck-playintegrity = { group = "com.google.firebase", name = "firebase-appcheck-playintegrity" }
+firebase-appcheck-debug = { group = "com.google.firebase", name = "firebase-appcheck-debug" }
+kotlinx-coroutines-play-services = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-play-services", version.ref = "coroutines" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

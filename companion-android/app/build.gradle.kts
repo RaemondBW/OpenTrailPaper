@@ -40,10 +40,21 @@ val hasReleaseKey = releaseStoreFile != null && file(releaseStoreFile).exists()
 // Public address of the sync-auth service (cloud/sync-auth), the broker for
 // Strava / RideWithGPS sign-in. A URL, not a secret; the secrets stay on the
 // service. Empty = the Accounts card explains uploads are unavailable.
-val syncUrl: String = Properties().apply {
+val localProps = Properties().apply {
     val f = rootProject.file("local.properties")
     if (f.exists()) f.inputStream().use { load(it) }
-}.getProperty("sync.url") ?: System.getenv("OTP_SYNC_SERVICE_URL") ?: ""
+}
+val syncUrl: String = (localProps.getProperty("sync.url") ?: System.getenv("OTP_SYNC_SERVICE_URL")
+    ?: "https://sync.opentrailpaper.com").trim().trimEnd('/')
+// Firebase App Check identifiers for the Android app (Firebase project
+// `opentrailpaper`). Identifiers, not secrets: the API key is restricted in
+// Google Cloud to the App Check and Installations APIs and to this package's
+// signing certificates, and a token is only minted for an app that passes Play
+// Integrity. Override per build with firebase.* in local.properties.
+val firebaseAppId = localProps.getProperty("firebase.appId") ?: "1:357305860460:android:8ada00c3af7ac9ca073349"
+val firebaseApiKey = localProps.getProperty("firebase.apiKey") ?: "AIzaSyCPFkwR9pn8raJ-wLr8GrCgF9eRCEdgYtI"
+val firebaseProjectId = localProps.getProperty("firebase.projectId") ?: "opentrailpaper"
+val firebaseSenderId = localProps.getProperty("firebase.senderId") ?: "357305860460"
 
 android {
     namespace = "com.raemond.opentrailpaper"
@@ -60,7 +71,13 @@ android {
         versionName = "0.3"
 
         buildConfigField("String", "CARTO_KEY", "\"${cartoKey.trim()}\"")
-        buildConfigField("String", "SYNC_SERVICE_URL", "\"${syncUrl.trim()}\"")
+        buildConfigField("String", "SYNC_SERVICE_URL", "\"$syncUrl\"")
+        buildConfigField("String", "FIREBASE_APP_ID", "\"$firebaseAppId\"")
+        buildConfigField("String", "FIREBASE_API_KEY", "\"$firebaseApiKey\"")
+        buildConfigField("String", "FIREBASE_PROJECT_ID", "\"$firebaseProjectId\"")
+        buildConfigField("String", "FIREBASE_SENDER_ID", "\"$firebaseSenderId\"")
+        // The App Link host for the sign-in return (AndroidManifest.xml).
+        manifestPlaceholders["syncHost"] = syncUrl.removePrefix("https://").removePrefix("http://")
 
         externalNativeBuild {
             cmake {
@@ -154,6 +171,14 @@ dependencies {
     // the user's tokens live in EncryptedSharedPreferences (data/SyncAccounts.kt).
     implementation(libs.androidx.browser)
     implementation(libs.androidx.security.crypto)
+    // Firebase App Check: proves to the sync service that a call comes from
+    // this app (Play Integrity on a real install, a registered debug token on
+    // an emulator / debug build). Only App Check is linked, no google-services
+    // plugin: Firebase is configured in code from BuildConfig.
+    implementation(platform(libs.firebase.bom))
+    implementation(libs.firebase.appcheck.playintegrity)
+    debugImplementation(libs.firebase.appcheck.debug)
+    implementation(libs.kotlinx.coroutines.play.services)
     debugImplementation(libs.androidx.ui.tooling)
     // The byte formats shared with the firmware are pure Kotlin, so they are
     // testable on the JVM with no device and no network.

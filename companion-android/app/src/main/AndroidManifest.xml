@@ -117,6 +117,15 @@
                  opentrailpaper://sync/<provider>?handoff=...&state=... (see
                  data/SyncAccounts.kt). singleTask above is what routes it to
                  the running activity's onNewIntent instead of a second copy. -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:host="${syncHost}" android:pathPrefix="/app/sync/" />
+            </intent-filter>
+            <!-- The service's fallback page reopens the app on this scheme when
+                 the App Link above was not claimed (a build whose signing key is
+                 not in assetlinks.json). Still safe: redeeming needs App Check. -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />

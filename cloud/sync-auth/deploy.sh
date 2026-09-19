@@ -29,6 +29,11 @@ secret() {   # secret <NAME> <prompt>   - create or (with --rotate) add a versio
     if [[ "$name" == HANDOFF_KEY ]]; then
         value=$(openssl rand -hex 32)
         echo "  $name: generated"
+    elif [[ ! -t 0 ]]; then
+        # Non-interactive first deploy: a placeholder the service refuses at
+        # runtime (503 "not configured") until `deploy.sh --rotate` fills it.
+        value=TODO
+        echo "  $name: placeholder (fill in with --rotate)"
     else
         read -r -s -p "  $prompt: " value; echo
         [[ -n "$value" ]] || { echo "empty, aborting"; exit 1; }
@@ -57,6 +62,14 @@ for s in STRAVA_CLIENT_ID STRAVA_CLIENT_SECRET RWGPS_CLIENT_ID RWGPS_CLIENT_SECR
         --role=roles/secretmanager.secretAccessor >/dev/null
 done
 
+# Not secrets: who the apps are. App Check tokens must come from this Firebase
+# project; the Android App Link is claimable only by these signing certs (the
+# Play app-signing cert from Play Console > App integrity, plus the sideload
+# key CI signs with). Override with ANDROID_CERT_SHA256 in the environment.
+PROJECT_NUMBER=$(gcloud projects describe "$PROJECT" --format 'value(projectNumber)')
+ANDROID_CERT_SHA256=${ANDROID_CERT_SHA256:-"BC:F2:78:B6:50:AE:6F:55:0A:69:55:61:43:90:77:B0:A8:11:A8:1D:73:F9:AB:9C:8C:13:6B:C3:B1:E4:FA:E4,1B:F3:F1:43:09:60:8D:EF:C3:57:79:7A:13:20:D5:D7:F7:D9:09:9C:A1:80:73:E7:E1:D1:56:F6:56:A2:E6:5C"}
+BASE_URL=${BASE_URL:-https://sync.opentrailpaper.com}
+
 echo "deploying $SERVICE to $REGION..."
 gcloud run deploy "$SERVICE" \
     --source "$(dirname "$0")" \
@@ -64,19 +77,21 @@ gcloud run deploy "$SERVICE" \
     --service-account "$SA" \
     --allow-unauthenticated \
     --min-instances 0 --max-instances 3 --memory 256Mi --cpu 1 \
+    --set-env-vars "^|^APP_CHECK_PROJECT_NUMBER=$PROJECT_NUMBER|ANDROID_CERT_SHA256=$ANDROID_CERT_SHA256|BASE_URL=$BASE_URL" \
     --set-secrets "STRAVA_CLIENT_ID=STRAVA_CLIENT_ID:latest,STRAVA_CLIENT_SECRET=STRAVA_CLIENT_SECRET:latest,RWGPS_CLIENT_ID=RWGPS_CLIENT_ID:latest,RWGPS_CLIENT_SECRET=RWGPS_CLIENT_SECRET:latest,RWGPS_API_KEY=RWGPS_API_KEY:latest,HANDOFF_KEY=HANDOFF_KEY:latest"
 
-URL=$(gcloud run services describe "$SERVICE" --region "$REGION" --format 'value(status.url)')
-HOST=${URL#https://}
+RUN_URL=$(gcloud run services describe "$SERVICE" --region "$REGION" --format 'value(status.url)')
+HOST=${BASE_URL#https://}
 cat <<MSG
 
-Deployed: $URL
+Deployed: $RUN_URL, serving as $BASE_URL once the domain mapping is in place:
+  gcloud domains verify ${HOST#*.}        # once: Search Console, a TXT record
+  gcloud beta run domain-mappings create --service $SERVICE --domain $HOST --region $REGION
+  then in DNS: $HOST  CNAME  ghs.googlehosted.com   (DNS only, not proxied)
 
 Register these with the providers (once):
   Strava     Authorization Callback Domain:  $HOST
-  RideWithGPS OAuth redirect URI:            $URL/v1/auth/ridewithgps/callback
+  RideWithGPS OAuth redirect URI:            $BASE_URL/v1/auth/ridewithgps/callback
 
-Point the apps at it (not a secret, safe to commit):
-  companion-ios/project.yml     OTP_SYNC_SERVICE_URL: $URL
-  companion-android             sync.url=$URL   (local.properties or OTP_SYNC_SERVICE_URL in CI)
+The apps already point at $BASE_URL (project.yml / build.gradle.kts).
 MSG

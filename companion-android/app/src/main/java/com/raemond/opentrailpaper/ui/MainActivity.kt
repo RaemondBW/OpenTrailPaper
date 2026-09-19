@@ -84,7 +84,7 @@ class MainActivity : ComponentActivity() {
         // The Strava / RideWithGPS consent page bouncing back through our URL
         // scheme; spent the same way a file intent is, below.
         val data = intent.data
-        if (intent.action == Intent.ACTION_VIEW && data?.scheme == SyncAccounts.CALLBACK_SCHEME) {
+        if (intent.action == Intent.ACTION_VIEW && SyncAccounts.isReturnLink(data)) {
             intent.data = null
             lifecycleScope.launch { SyncAccounts.handleCallback(data) }
             return

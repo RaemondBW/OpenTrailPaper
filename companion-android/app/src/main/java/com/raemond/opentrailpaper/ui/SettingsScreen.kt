@@ -281,11 +281,18 @@ private fun AccountsCard() {
                     SyncAccounts.isConnected(p) -> TextButton(onClick = {
                         scope.launch { SyncAccounts.disconnect(p) }
                     }) { Text("Disconnect", style = barlow(14.sp), color = Palette.muted) }
-                    else -> TextButton(onClick = { SyncAccounts.connect(context, p) }) {
+                    else -> TextButton(onClick = { scope.launch { SyncAccounts.connect(context, p) } }) {
                         Text("Connect", style = barlow(14.sp), color = Palette.accent)
                     }
                 }
             }
+        }
+        if (!SyncAccounts.attested) {
+            Spacer(Modifier.size(8.dp))
+            Text(
+                "This build has no App Check identity, so the service will refuse it.",
+                style = barlow(12.sp), color = Palette.accentDark,
+            )
         }
         SyncAccounts.lastError?.let {
             Spacer(Modifier.size(8.dp))

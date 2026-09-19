@@ -31,6 +31,14 @@
 	</array>
 	<key>SyncServiceURL</key>
 	<string>$(OTP_SYNC_SERVICE_URL)</string>
+	<key>FirebaseAppID</key>
+	<string>$(OTP_FIREBASE_APP_ID)</string>
+	<key>FirebaseAPIKey</key>
+	<string>$(OTP_FIREBASE_API_KEY)</string>
+	<key>FirebaseProjectID</key>
+	<string>$(OTP_FIREBASE_PROJECT_ID)</string>
+	<key>FirebaseSenderID</key>
+	<string>$(OTP_FIREBASE_SENDER_ID)</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>LSRequiresIPhoneOS</key>

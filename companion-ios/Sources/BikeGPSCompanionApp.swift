@@ -7,6 +7,8 @@ struct BikeGPSCompanionApp: App {
     @StateObject private var appState = AppState()
     @Environment(\.scenePhase) private var scenePhase
 
+    init() { SyncAccounts.configureAppCheck() }
+
     var body: some Scene {
         WindowGroup {
             RootView()

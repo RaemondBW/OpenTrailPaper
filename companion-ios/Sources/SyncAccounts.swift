@@ -1,4 +1,6 @@
 import AuthenticationServices
+import FirebaseAppCheck
+import FirebaseCore
 import Foundation
 import Security
 import SwiftUI
@@ -18,6 +20,11 @@ import UIKit
 // Uploads: Strava takes the FIT straight from the phone with the user's bearer
 // token; RideWithGPS goes through the service, because every RWGPS request
 // also needs the API key.
+//
+// Only this app: every call to the service carries a Firebase App Check token
+// (App Attest on a device; a registered debug token on the simulator), and
+// the sign-in return is a Universal Link on the service's host that iOS hands
+// to this app alone. The service refuses anything else.
 
 enum SyncProvider: String, CaseIterable, Identifiable {
     case strava, ridewithgps
@@ -68,6 +75,34 @@ final class SyncAccounts: NSObject, ObservableObject {
     }()
     static var isConfigured: Bool { serviceURL != nil }
     static let callbackScheme = "opentrailpaper"
+    static let returnPathPrefix = "/app/sync/"
+
+    /// Firebase (App Check only) from the Info.plist identifiers. Call once at
+    /// launch, before anything asks for a token. A build without the ids runs
+    /// unattested, which the service rejects; the Accounts card says so.
+    static func configureAppCheck() {
+        let info = Bundle.main.infoDictionary ?? [:]
+        guard let appId = info["FirebaseAppID"] as? String, appId.contains(":"),
+              let apiKey = info["FirebaseAPIKey"] as? String, !apiKey.isEmpty,
+              let sender = info["FirebaseSenderID"] as? String, !sender.isEmpty else { return }
+        let opts = FirebaseOptions(googleAppID: appId, gcmSenderID: sender)
+        opts.apiKey = apiKey
+        opts.projectID = info["FirebaseProjectID"] as? String
+        #if targetEnvironment(simulator)
+        // No Secure Enclave: the debug provider prints a token to the console
+        // once; register it under App Check > Apps > Manage debug tokens.
+        AppCheck.setAppCheckProviderFactory(AppCheckDebugProviderFactory())
+        #else
+        AppCheck.setAppCheckProviderFactory(AppAttestProviderFactory())
+        #endif
+        FirebaseApp.configure(options: opts)
+        attested = true
+    }
+    private(set) static var attested = false
+
+    private final class AppAttestProviderFactory: NSObject, AppCheckProviderFactory {
+        func createProvider(with app: FirebaseApp) -> AppCheckProvider? { AppAttestProvider(app: app) }
+    }
 
     @Published private(set) var tokens: [SyncProvider: SyncTokens] = [:]
     @Published private(set) var busy: SyncProvider?
@@ -91,13 +126,25 @@ final class SyncAccounts: NSObject, ObservableObject {
         guard let base = Self.serviceURL else { lastError = SyncError.notConfigured.localizedDescription; return }
         let state = Self.randomState()
         pendingState[p] = state
-        var comps = URLComponents(url: base.appendingPathComponent("v1/auth/\(p.rawValue)/start"), resolvingAgainstBaseURL: false)!
-        comps.queryItems = [URLQueryItem(name: "state", value: state)]
-        guard let url = comps.url else { return }
-
         busy = p
         lastError = nil
-        let s = ASWebAuthenticationSession(url: url, callbackURLScheme: Self.callbackScheme) { [weak self] cb, err in
+        Task {
+            do {
+                // The consent URL is issued only to an attested app (the ticket
+                // in it is what /start accepts), so the flow cannot be started
+                // by anything but this app.
+                let json = try await post("v1/auth/\(p.rawValue)/begin", json: ["state": state])
+                guard let s = json["url"] as? String, let url = URL(string: s) else { throw SyncError.exchange("no url") }
+                open(url, base: base, provider: p)
+            } catch {
+                busy = nil
+                lastError = error.localizedDescription
+            }
+        }
+    }
+
+    private func open(_ url: URL, base: URL, provider p: SyncProvider) {
+        let done: ASWebAuthenticationSession.CompletionHandler = { [weak self] cb, err in
             Task { @MainActor in
                 guard let self else { return }
                 self.session = nil
@@ -111,6 +158,17 @@ final class SyncAccounts: NSObject, ObservableObject {
                 if let cb { await self.handle(callback: cb) } else { self.busy = nil }
             }
         }
+        // The service sends the user back on https://<host>/app/sync/<p> - a
+        // Universal Link. iOS 17.4+ lets the auth session catch that itself;
+        // earlier systems get the service's page, whose button reopens the app
+        // on the custom scheme (still safe: redeeming needs App Check).
+        let s: ASWebAuthenticationSession
+        if #available(iOS 17.4, *), let host = base.host {
+            s = ASWebAuthenticationSession(url: url, callback: .https(host: host, path: Self.returnPathPrefix + p.rawValue),
+                                           completionHandler: done)
+        } else {
+            s = ASWebAuthenticationSession(url: url, callbackURLScheme: Self.callbackScheme, completionHandler: done)
+        }
         s.presentationContextProvider = self
         // Not ephemeral: an existing Strava web login saves typing a password.
         s.prefersEphemeralWebBrowserSession = false
@@ -118,11 +176,21 @@ final class SyncAccounts: NSObject, ObservableObject {
         s.start()
     }
 
-    /// The `opentrailpaper://sync/<provider>?...` redirect. ASWebAuthenticationSession
-    /// delivers it itself; onOpenURL covers a browser that sent it to the app instead.
+    /// The sign-in return: `https://<service host>/app/sync/<provider>?...` (a
+    /// Universal Link) or `opentrailpaper://sync/<provider>?...` (the page's
+    /// fallback button). The auth session delivers it itself on iOS 17.4+;
+    /// onOpenURL covers the rest.
     func handle(callback url: URL) async {
-        guard url.scheme == Self.callbackScheme, url.host == "sync",
-              let p = SyncProvider(rawValue: url.lastPathComponent) else { return }
+        let p: SyncProvider?
+        if url.scheme == Self.callbackScheme, url.host == "sync" {
+            p = SyncProvider(rawValue: url.lastPathComponent)
+        } else if url.scheme == "https", url.host == Self.serviceURL?.host,
+                  url.path.hasPrefix(Self.returnPathPrefix) {
+            p = SyncProvider(rawValue: url.lastPathComponent)
+        } else {
+            p = nil
+        }
+        guard let p else { return }
         defer { busy = nil }
         let q = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
         func item(_ n: String) -> String? { q.first { $0.name == n }?.value }
@@ -242,6 +310,13 @@ final class SyncAccounts: NSObject, ObservableObject {
         var req = req
         req.setValue("application/json", forHTTPHeaderField: "Accept")
         req.timeoutInterval = 60
+        // Prove this is the app: only calls to our own service get the token.
+        if let host = req.url?.host, host == Self.serviceURL?.host {
+            if Self.attested {
+                let t = try await AppCheck.appCheck().token(forcingRefresh: false)
+                req.setValue(t.token, forHTTPHeaderField: "X-Firebase-AppCheck")
+            }
+        }
         let (data, resp) = try await URLSession.shared.data(for: req)
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
         let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
@@ -357,6 +432,10 @@ struct SyncAccountsCard: View {
                 } else {
                     Text("Strava and RideWithGPS uploads need the sync service, which this build was not pointed at. The share button still works.")
                         .font(.system(size: 12)).foregroundStyle(Palette.muted)
+                }
+                if SyncAccounts.isConfigured && !SyncAccounts.attested {
+                    Text("This build has no App Check identity, so the service will refuse it.")
+                        .font(.system(size: 12)).foregroundStyle(Palette.accentDark)
                 }
             }
         }

@@ -5,92 +5,134 @@ The companion apps can upload a ride's `.fit` straight to Strava or RideWithGPS
 use OAuth 2.0 with a **client secret**, and RideWithGPS also wants an **API
 key** on every request. Neither can go inside an app: anything in an IPA or
 APK is readable, and a leaked secret lets anyone act as the app. So a small
-service holds them, and the phones hold only their own user's tokens.
+service at `https://sync.opentrailpaper.com` holds them, and the phones hold
+only their own user's tokens.
 
 ```
- phone                         sync-auth (Cloud Run)                provider
- ─────                         ─────────────────────                ────────
- Connect ──► /v1/auth/<p>/start ──302──────────────────────────► consent page
-                                 /v1/auth/<p>/callback  ◄──code──┘
-                                    │ exchange (client secret here)
-                                    │ tokens sealed in a 120 s AES-GCM handoff
- opentrailpaper://sync/<p>?handoff=…&state=…  ◄──302──┘
- POST /v1/auth/handoff {handoff} ──► tokens (Keychain / EncryptedSharedPreferences)
+ phone (attested)                 sync-auth (Cloud Run)                     provider
+ ────────────────                 ─────────────────────                     ────────
+ POST /v1/auth/<p>/begin {state} ──App Check──► ticket ──► {url}
+ open url ──► /v1/auth/<p>/start?ticket ──302───────────────────────────► consent page
+                                   /v1/auth/<p>/callback  ◄────────code───┘
+                                      │ exchange (client secret stays here)
+                                      │ tokens sealed in a 120 s AES-GCM handoff
+ https://sync.opentrailpaper.com/app/sync/<p>?handoff=…&state=…  ◄──302──┘
+   (a Universal Link / App Link: only the signed apps can claim it)
+ POST /v1/auth/handoff {handoff} ──App Check──► tokens (Keychain / EncryptedSharedPreferences)
 
  Upload to Strava:      phone ──bearer──► strava.com/api/v3/uploads
- Upload to RideWithGPS: phone ──bearer──► /v1/rwgps/trips ──+ API key──► ridewithgps.com
+ Upload to RideWithGPS: phone ──bearer + App Check──► /v1/rwgps/trips ──+ API key──► ridewithgps.com
 ```
 
+## Only these apps
+
+Two independent layers, both enforced by the service:
+
+1. **App Check.** Every call to the service carries a Firebase App Check token
+   in `X-Firebase-AppCheck`: on iOS from App Attest (the Secure Enclave
+   attests the app's identity to Apple), on Android from Play Integrity
+   (Google attests the APK's signature and the device). The service verifies
+   the token against Firebase's public keys, its issuer and audience
+   (project `opentrailpaper`, number 357305860460) and expiry. No token, no
+   ticket to start a sign-in, no way to redeem a handoff, no proxied upload.
+   The consent page itself is opened in a browser, which cannot carry a
+   header, so `/start` accepts only a *ticket* that `/begin` issues to an
+   attested app.
+2. **Signed-app links.** The sign-in return is an https link on the
+   service's own host. iOS opens `sync.opentrailpaper.com/app/sync/*` only in
+   the app whose Apple team + bundle id the service's
+   `/.well-known/apple-app-site-association` names; Android does the same
+   for the package + signing certificates in `/.well-known/assetlinks.json`.
+   If nothing claims the link (no app installed, or a build signed with an
+   unlisted key) the service shows a page whose button retries on the
+   `opentrailpaper://` scheme, and layer 1 still applies to whatever answers.
+
+What the Firebase side needs is an app *identity* in each build (app id,
+API key, project id, sender id). Those are identifiers, not secrets: the API
+key is restricted in Google Cloud to the App Check and Installations APIs
+and to this bundle id / these signing certificates, and a token is only
+minted for an app that passes attestation. They sit in
+`companion-ios/project.yml` and `companion-android/app/build.gradle.kts`.
+
+Simulators and emulators cannot attest. There the apps install Firebase's
+*debug provider*, which prints a debug token to the console once; register
+it under Firebase console > App Check > Apps > Manage debug tokens and that
+one device is accepted. (Android does this for every debug build, iOS only
+on the simulator.)
+
 The service is **stateless**: no database, no user records. It knows the
-secrets (from Secret Manager) and nothing else. `state` is HMAC-signed so the
-callback only accepts codes for a flow this service started, and the app
-checks the same `state` on the way back so a stray redirect cannot plant a
-token. The handoff is opaque and expires in two minutes.
+secrets (from Secret Manager) and nothing else. `state` is HMAC-signed so
+the callback only accepts codes for a flow this service started, and the
+app checks the same `state` on the way back. The handoff is opaque and
+expires in two minutes.
 
 Source: [`cloud/sync-auth/`](../cloud/sync-auth/) (Node 20, no dependencies,
-`npm test` runs it against fake providers). Apps:
+`npm test` runs it against fake providers and a fake Firebase). Apps:
 `companion-ios/Sources/SyncAccounts.swift`,
 `companion-android/.../data/SyncAccounts.kt`.
 
-## Deploying (once)
+## What exists (2026-09-19)
 
-You need `gcloud` and a Google Cloud project with billing.
+- Google Cloud project `opentrailpaper` (357305860460), billing linked,
+  Cloud Run + Secret Manager enabled.
+- Firebase on that project with the iOS app (`1:…:ios:b875…`, team
+  G5JFC849XY, App Attest on) and the Android app (`1:…:android:8ada…`, Play
+  Integrity on, upload + sideload certificate fingerprints registered).
+- The service deployed to Cloud Run (`us-central1`) with the provider
+  secrets as **placeholders** that make it answer 503 "not configured" until
+  filled in.
 
-```
-cd cloud/sync-auth
-./deploy.sh <gcp-project> [region]
-```
+## Finishing the setup
 
-The script prompts (without echo) for each provider value, stores them in
-Secret Manager, creates a service account whose only right is reading those
-secrets, and deploys the service with them mounted as environment variables.
-It prints the service URL and the two values to register with the providers:
+1. **Domain.** Verify `opentrailpaper.com` with Google once
+   (`gcloud domains verify opentrailpaper.com` opens Search Console; add the
+   TXT record it gives you in Cloudflare). Then:
 
-- **Strava** — <https://www.strava.com/settings/api>: *Authorization
-  Callback Domain* = the service host (`sync-auth-….a.run.app`). Note the
-  Client ID and Client Secret; the app is registered once, for both phone
-  platforms.
-- **RideWithGPS** — <https://ridewithgps.com/settings/developers>: an API key
-  for the app plus an OAuth client whose redirect URI is
-  `https://<service host>/v1/auth/ridewithgps/callback`.
+   ```
+   gcloud beta run domain-mappings create --service sync-auth \
+       --domain sync.opentrailpaper.com --region us-central1 --project opentrailpaper
+   ```
 
-Re-running `deploy.sh` redeploys the code and leaves the secrets alone;
-`--rotate` prompts for new values. The handoff key is generated on the
-machine running the script and never shown.
+   and in Cloudflare: `sync` CNAME `ghs.googlehosted.com`, **DNS only**
+   (grey cloud). Google issues the certificate within about an hour.
+2. **Provider registration.**
+   - Strava — <https://www.strava.com/settings/api>: *Authorization
+     Callback Domain* = `sync.opentrailpaper.com`.
+   - RideWithGPS — <https://ridewithgps.com/settings/developers>: an API
+     key, plus an OAuth client with redirect URI
+     `https://sync.opentrailpaper.com/v1/auth/ridewithgps/callback`.
+3. **Secrets.** From your own terminal (the values are prompted without
+   echo and go straight into Secret Manager):
 
-## Pointing the apps at it
+   ```
+   cd cloud/sync-auth && ./deploy.sh opentrailpaper --rotate
+   ```
+4. **Play app-signing certificate.** Play re-signs releases with its own
+   key. Copy its SHA-256 from Play Console > App integrity into
+   `ANDROID_CERT_SHA256` (deploy.sh) and add it to the Firebase Android app,
+   or App Links and Play Integrity will only recognise sideloaded builds.
+5. **Debug tokens** for the simulator / emulator you test on (above).
 
-The service URL is public and safe to commit. It is the one thing the apps
-need:
-
-| App     | Where                                                          |
-|---------|----------------------------------------------------------------|
-| iOS     | `companion-ios/project.yml` → `OTP_SYNC_SERVICE_URL`            |
-| Android | `local.properties` → `sync.url=…`, or `OTP_SYNC_SERVICE_URL` in CI |
-
-With it empty the Accounts card says uploads are unavailable and the share
-button keeps working.
+Re-running `deploy.sh` redeploys the code and leaves the secrets alone.
 
 ## What must never be committed
 
 - `STRAVA_CLIENT_SECRET`, `RWGPS_CLIENT_SECRET`, `RWGPS_API_KEY`,
   `HANDOFF_KEY` — Secret Manager only. `cloud/sync-auth/.env` is gitignored
   for local runs.
-- The Strava client ID is not secret, but there is no reason to have it
-  anywhere but the service either.
 
-If a secret does leak: rotate it with the provider, then `deploy.sh --rotate`.
-Users stay signed in (their tokens are unaffected by a client-secret change;
-a new RWGPS API key needs no app update because the key never left the
-service).
+If a secret does leak: rotate it with the provider, then `deploy.sh
+--rotate`. Users stay signed in (their tokens are unaffected by a
+client-secret change; a new RWGPS API key needs no app update because the
+key never left the service).
 
 ## Running locally
 
 ```
 cd cloud/sync-auth
-cp .env.example .env         # fill in test-app credentials
+cp .env.example .env         # test-app credentials; leave APP_CHECK_PROJECT_NUMBER unset
 set -a; . ./.env; set +a
-npm start                    # http://localhost:8080
+npm start                    # http://localhost:8080, accepts unattested callers
 ```
 
 The providers must be able to reach the callback, so for a real end-to-end

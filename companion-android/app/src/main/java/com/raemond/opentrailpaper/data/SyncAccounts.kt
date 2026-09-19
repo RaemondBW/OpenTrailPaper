@@ -10,7 +10,13 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import com.google.firebase.FirebaseApp
+import com.google.firebase.FirebaseOptions
+import com.google.firebase.appcheck.FirebaseAppCheck
+import com.google.firebase.appcheck.debug.DebugAppCheckProviderFactory
+import com.google.firebase.appcheck.playintegrity.PlayIntegrityAppCheckProviderFactory
 import com.raemond.opentrailpaper.BuildConfig
+import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -37,6 +43,11 @@ import android.util.Base64
  * Uploads: Strava takes the FIT straight from the phone with the user's bearer
  * token; RideWithGPS goes through the service, because every RWGPS request also
  * needs the API key.
+ *
+ * Only this app: every call to the service carries a Firebase App Check token
+ * (Play Integrity on a real install; a registered debug token on an emulator or
+ * debug build), and the sign-in return is an App Link on the service's host
+ * that Android hands to this app alone. The service refuses anything else.
  */
 object SyncAccounts {
     enum class Provider(val id: String, val title: String) {
@@ -63,6 +74,10 @@ object SyncAccounts {
     val serviceUrl: String? = BuildConfig.SYNC_SERVICE_URL.trim().takeIf { it.startsWith("http") }?.trimEnd('/')
     val isConfigured get() = serviceUrl != null
     const val CALLBACK_SCHEME = "opentrailpaper"
+    const val RETURN_PATH_PREFIX = "/app/sync/"
+    val serviceHost: String? get() = serviceUrl?.let { Uri.parse(it).host }
+    var attested = false
+        private set
 
     private const val FILE = "opentrailpaper.sync"
     private lateinit var prefs: SharedPreferences
@@ -92,27 +107,71 @@ object SyncAccounts {
             app.getSharedPreferences(FILE, Context.MODE_PRIVATE)
         }
         for (p in Provider.entries) read(p)?.let { tokens[p] = it }
+
+        // Firebase, for App Check only. A build without the ids runs unattested,
+        // which the service rejects; the Accounts card says so.
+        if (BuildConfig.FIREBASE_APP_ID.contains(":") && BuildConfig.FIREBASE_API_KEY.isNotEmpty()) {
+            runCatching {
+                if (FirebaseApp.getApps(app).isEmpty()) {
+                    FirebaseApp.initializeApp(
+                        app,
+                        FirebaseOptions.Builder()
+                            .setApplicationId(BuildConfig.FIREBASE_APP_ID)
+                            .setApiKey(BuildConfig.FIREBASE_API_KEY)
+                            .setProjectId(BuildConfig.FIREBASE_PROJECT_ID)
+                            .setGcmSenderId(BuildConfig.FIREBASE_SENDER_ID)
+                            .build(),
+                    )
+                }
+                FirebaseAppCheck.getInstance().installAppCheckProviderFactory(
+                    if (BuildConfig.DEBUG) {
+                        // Prints a debug token to logcat once; register it under
+                        // App Check > Apps > Manage debug tokens.
+                        DebugAppCheckProviderFactory.getInstance()
+                    } else {
+                        PlayIntegrityAppCheckProviderFactory.getInstance()
+                    },
+                )
+                attested = true
+            }.onFailure { lastError = "App Check unavailable: ${it.message}" }
+        }
+    }
+
+    /** Is this an `https://<service host>/app/sync/...` or `opentrailpaper://sync/...` link? */
+    fun isReturnLink(uri: Uri?): Boolean {
+        uri ?: return false
+        if (uri.scheme == CALLBACK_SCHEME && uri.host == "sync") return true
+        return uri.scheme == "https" && uri.host == serviceHost && (uri.path ?: "").startsWith(RETURN_PATH_PREFIX)
     }
 
     fun isConnected(p: Provider) = tokens.containsKey(p)
 
     // --- connect / disconnect -----------------------------------------------
 
-    fun connect(context: Context, p: Provider) {
-        val base = serviceUrl ?: run { lastError = "This build has no sync service configured."; return }
+    suspend fun connect(context: Context, p: Provider) {
+        if (serviceUrl == null) { lastError = "This build has no sync service configured."; return }
         val state = randomState()
         pendingState[p] = state
         lastError = null
         busy = p
-        val url = Uri.parse("$base/v1/auth/${p.id}/start").buildUpon()
-            .appendQueryParameter("state", state).build()
-        CustomTabsIntent.Builder().setShowTitle(true).build().launchUrl(context, url)
+        try {
+            // The consent URL is issued only to an attested app (the ticket in
+            // it is what /start accepts), so nothing but this app can start a flow.
+            val json = postJson("/v1/auth/${p.id}/begin", JSONObject().put("state", state))
+            val url = json.optString("url").takeIf { it.startsWith("http") }
+                ?: throw SyncException("Sign-in failed: no url")
+            CustomTabsIntent.Builder().setShowTitle(true).build().launchUrl(context, Uri.parse(url))
+        } catch (e: Exception) {
+            busy = null
+            pendingState.remove(p)
+            lastError = e.message ?: "Sign-in failed."
+        }
     }
 
-    /** True when the intent was ours (an `opentrailpaper://sync/...` redirect). */
+    /** True when the intent was ours (the sign-in return, see isReturnLink). */
     suspend fun handleCallback(uri: Uri?): Boolean {
-        if (uri?.scheme != CALLBACK_SCHEME || uri.host != "sync") return false
-        val p = Provider.byId(uri.lastPathSegment) ?: return true
+        if (!isReturnLink(uri)) return false
+        val p = Provider.byId(uri!!.lastPathSegment) ?: return true
         try {
             val state = uri.getQueryParameter("state")
             if (state == null || state != pendingState[p]) {
@@ -248,9 +307,9 @@ object SyncAccounts {
         finish(c)
     }
 
-    private fun getJson(url: String, token: String): JSONObject = finish(open(url, "GET", token))
+    private suspend fun getJson(url: String, token: String): JSONObject = finish(open(url, "GET", token))
 
-    private fun multipart(url: String, token: String, fields: Map<String, String>, file: File): JSONObject {
+    private suspend fun multipart(url: String, token: String, fields: Map<String, String>, file: File): JSONObject {
         val boundary = "otp-" + System.nanoTime()
         val c = open(url, "POST", token)
         c.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
@@ -275,7 +334,7 @@ object SyncAccounts {
         return finish(c)
     }
 
-    private fun open(url: String, method: String, token: String?): HttpURLConnection {
+    private suspend fun open(url: String, method: String, token: String?): HttpURLConnection {
         val c = URL(url).openConnection() as HttpURLConnection
         c.requestMethod = method
         c.connectTimeout = 15_000
@@ -283,6 +342,12 @@ object SyncAccounts {
         c.setRequestProperty("Accept", "application/json")
         c.setRequestProperty("User-Agent", "OpenTrailPaper/${BuildConfig.VERSION_NAME} (Android)")
         if (token != null) c.setRequestProperty("Authorization", "Bearer $token")
+        // Prove this is the app: only calls to our own service get the token.
+        if (attested && URL(url).host == serviceHost) {
+            val t = runCatching { FirebaseAppCheck.getInstance().getAppCheckToken(false).await().token }
+                .getOrElse { throw SyncException("App Check failed: ${it.message}") }
+            c.setRequestProperty("X-Firebase-AppCheck", t)
+        }
         return c
     }
 
