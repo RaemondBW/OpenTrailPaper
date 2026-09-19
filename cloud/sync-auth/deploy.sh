@@ -1,19 +1,29 @@
 #!/usr/bin/env bash
 # Deploy sync-auth to Cloud Run with its secrets in Secret Manager.
 #
-#   ./deploy.sh <gcp-project> [region]
+#   ./deploy.sh <gcp-project> [region] [--rotate [SECRET ...]]
 #
-# First run: creates the secrets (prompting for each value without echo) and
-# the service. Later runs: redeploys the code; secrets are left alone unless
-# you pass --rotate, which prompts for new values. Nothing here writes a
-# secret to disk, the shell history, or the build.
+# First run: creates the secrets (prompting for each value without echo, or
+# as TODO placeholders when not on a terminal) and the service. Later runs:
+# redeploys the code; secrets are left alone unless you pass --rotate, which
+# prompts for new values - all of them, or only the names given after it,
+# e.g. `--rotate STRAVA_CLIENT_ID STRAVA_CLIENT_SECRET`. Nothing here writes
+# a secret to disk, the shell history, or the build.
 set -euo pipefail
 
-PROJECT=${1:?usage: deploy.sh <gcp-project> [region] [--rotate]}
-REGION=${2:-us-central1}
+PROJECT=${1:?usage: deploy.sh <gcp-project> [region] [--rotate [SECRET ...]]}
+shift
+REGION=us-central1
 ROTATE=false
-[[ "${3:-}" == "--rotate" || "${2:-}" == "--rotate" ]] && ROTATE=true
-[[ "$REGION" == "--rotate" ]] && REGION=us-central1
+ROTATE_ONLY=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --rotate) ROTATE=true ;;
+        [A-Z_]*) $ROTATE && ROTATE_ONLY+=("$1") || REGION=$1 ;;
+        *) REGION=$1 ;;
+    esac
+    shift
+done
 SERVICE=sync-auth
 
 gcloud config set project "$PROJECT" >/dev/null
@@ -22,9 +32,13 @@ gcloud services enable run.googleapis.com secretmanager.googleapis.com \
 
 secret() {   # secret <NAME> <prompt>   - create or (with --rotate) add a version
     local name=$1 prompt=$2 value
-    if gcloud secrets describe "$name" >/dev/null 2>&1 && ! $ROTATE; then
-        echo "  $name: exists"
-        return
+    if gcloud secrets describe "$name" >/dev/null 2>&1; then
+        local wanted=false
+        if $ROTATE; then
+            if [[ ${#ROTATE_ONLY[@]} -eq 0 ]]; then wanted=true; fi
+            for n in "${ROTATE_ONLY[@]:-}"; do [[ "$n" == "$name" ]] && wanted=true; done
+        fi
+        if ! $wanted; then echo "  $name: exists"; return; fi
     fi
     if [[ "$name" == HANDOFF_KEY ]]; then
         value=$(openssl rand -hex 32)
