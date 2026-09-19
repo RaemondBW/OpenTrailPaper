@@ -133,6 +133,9 @@ object SyncAccounts {
                     },
                 )
                 attested = true
+                // Debug builds: ask once now so the debug token is printed at
+                // launch (the provider only logs it on the first request).
+                if (BuildConfig.DEBUG) FirebaseAppCheck.getInstance().getAppCheckToken(false)
             }.onFailure { lastError = "App Check unavailable: ${it.message}" }
         }
     }

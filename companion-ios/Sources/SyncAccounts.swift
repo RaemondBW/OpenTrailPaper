@@ -97,6 +97,13 @@ final class SyncAccounts: NSObject, ObservableObject {
         #endif
         FirebaseApp.configure(options: opts)
         attested = true
+        #if targetEnvironment(simulator)
+        // Ask once now so the debug token is printed at launch (the provider
+        // only logs it on the first request) and cached for the first Connect.
+        AppCheck.appCheck().token(forcingRefresh: false) { _, err in
+            if let err { print("[sync] app check: \(err.localizedDescription)") }
+        }
+        #endif
     }
     private(set) static var attested = false
 
