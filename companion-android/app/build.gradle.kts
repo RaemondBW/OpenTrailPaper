@@ -177,7 +177,9 @@ dependencies {
     // plugin: Firebase is configured in code from BuildConfig.
     implementation(platform(libs.firebase.bom))
     implementation(libs.firebase.appcheck.playintegrity)
-    debugImplementation(libs.firebase.appcheck.debug)
+    // Linked in every variant (a release build must still compile the code
+    // that names it); it is only *installed* when BuildConfig.DEBUG is true.
+    implementation(libs.firebase.appcheck.debug)
     implementation(libs.kotlinx.coroutines.play.services)
     debugImplementation(libs.androidx.ui.tooling)
     // The byte formats shared with the firmware are pure Kotlin, so they are

@@ -161,17 +161,19 @@ jobs:
 
       # Signing off: the project pins a DEVELOPMENT_TEAM that a runner has no
       # certificate for, and this only needs to prove the app compiles.
-      # Built by -target against the simulator SDK rather than
-      # -scheme/-destination: no scheme is committed (project.yml declares
-      # none, so schemes are synthesized per-invocation) and this form needs
-      # neither scheme autocreation nor run-destination resolution.
+      # Built by -scheme, not -target: a -target build does not build Swift
+      # package dependencies (FirebaseAppCheck since the sync accounts work),
+      # so their generated module maps are missing and the app fails to
+      # compile. No scheme is committed; xcodebuild synthesizes one for the
+      # target when none exists.
       - name: Build
         run: |
           xcodebuild -version
           xcodebuild build \
             -project OpenTrailPaper.xcodeproj \
-            -target OpenTrailPaper \
+            -scheme OpenTrailPaper \
             -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
             -configuration Debug \
             CODE_SIGNING_ALLOWED=NO
 
