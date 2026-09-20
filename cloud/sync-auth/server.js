@@ -311,14 +311,18 @@ function appReturnUrl(req, provider) {
 }
 
 function returnPage(provider, query) {
-    // Shown only when nothing claimed the link: the app is not installed, or
-    // this is a developer build that is not associated with the domain. The
-    // button re-sends the same parameters on the custom scheme. A hijacking app
-    // gets nothing from that: redeeming the handoff needs App Check.
+    // Reached when the OS did not hand the link to the app directly (the
+    // in-app auth browser on iOS, a developer build not associated with the
+    // domain, or no app installed). It immediately continues on the custom
+    // scheme with the same parameters - inside ASWebAuthenticationSession or a
+    // Custom Tab that is exactly the callback the app is waiting for - and
+    // leaves a button for a browser that blocks the automatic hop. A hijacking
+    // app gets nothing from the scheme: redeeming the handoff needs App Check.
     const deep = `${APP_SCHEME}://sync/${provider}${query ? `?${query}` : ''}`;
     const esc = (s) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
     return `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>OpenTrailPaper</title>
+<script>location.replace(${JSON.stringify(deep)});</script>
 <style>body{font-family:-apple-system,system-ui,sans-serif;background:#EDEAE1;color:#1A1A1A;margin:0;padding:48px 24px;text-align:center}
 a.b{display:inline-block;margin-top:24px;padding:14px 22px;background:#F4501E;color:#fff;border-radius:12px;text-decoration:none;font-weight:600}p{color:#5C564B}</style>
 <h1>Almost there</h1><p>Finish connecting ${esc(provider === 'strava' ? 'Strava' : 'RideWithGPS')} in the OpenTrailPaper app.</p>

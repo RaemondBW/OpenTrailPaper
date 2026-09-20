@@ -157,30 +157,32 @@ final class SyncAccounts: NSObject, ObservableObject {
                 self.session = nil
                 if let err {
                     self.busy = nil
-                    if (err as? ASWebAuthenticationSessionError)?.code != .canceledLogin {
-                        self.lastError = err.localizedDescription
+                    let code = (err as? ASWebAuthenticationSessionError)?.code
+                    print("[sync] auth session ended: \(err) code=\(String(describing: code))")
+                    if code != .canceledLogin {
+                        self.lastError = "Sign-in window closed: \(err.localizedDescription)"
                     }
                     return
                 }
                 if let cb { await self.handle(callback: cb) } else { self.busy = nil }
             }
         }
-        // The service sends the user back on https://<host>/app/sync/<p> - a
-        // Universal Link. iOS 17.4+ lets the auth session catch that itself;
-        // earlier systems get the service's page, whose button reopens the app
-        // on the custom scheme (still safe: redeeming needs App Check).
-        let s: ASWebAuthenticationSession
-        if #available(iOS 17.4, *), let host = base.host {
-            s = ASWebAuthenticationSession(url: url, callback: .https(host: host, path: Self.returnPathPrefix + p.rawValue),
-                                           completionHandler: done)
-        } else {
-            s = ASWebAuthenticationSession(url: url, callbackURLScheme: Self.callbackScheme, completionHandler: done)
-        }
+        // The service sends the user back on https://<host>/app/sync/<p>. In
+        // this in-app browser that page immediately continues on the custom
+        // scheme, which is the callback the session waits for. (The https
+        // callback mode of iOS 17.4 was tried first: it refuses to start on a
+        // phone that has not fetched the domain association, silently.) Still
+        // safe: redeeming the handoff needs App Check.
+        let s = ASWebAuthenticationSession(url: url, callbackURLScheme: Self.callbackScheme, completionHandler: done)
         s.presentationContextProvider = self
         // Not ephemeral: an existing Strava web login saves typing a password.
         s.prefersEphemeralWebBrowserSession = false
         session = s
-        s.start()
+        if !s.start() {
+            session = nil
+            busy = nil
+            lastError = "Could not open the sign-in window."
+        }
     }
 
     /// The sign-in return: `https://<service host>/app/sync/<provider>?...` (a

@@ -149,6 +149,7 @@ test('the return page offers the custom-scheme fallback with the same query', as
     assert.equal(r.status, 200);
     const html = await r.text();
     assert.ok(html.includes('href="opentrailpaper://sync/strava?handoff=abc&amp;state=s1"'));
+    assert.ok(html.includes('location.replace("opentrailpaper://sync/strava?handoff=abc&state=s1")'));
     assert.equal((await get('/app/sync/nope')).status, 404);
 });
 
