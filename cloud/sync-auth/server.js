@@ -66,9 +66,10 @@ const APP = {
 };
 
 // ---- provider definitions ---------------------------------------------------
-// URLs per the Strava API v3 docs and the RideWithGPS API v1 docs
-// (https://github.com/ridewithgps/developers). Kept in one place so a doc
-// change is a one-line edit.
+// URLs per the Strava API v3 docs, the RideWithGPS API v1 docs
+// (https://github.com/ridewithgps/developers) and the Intervals.icu OAuth
+// thread (forum.intervals.icu/t/intervals-icu-oauth-support/2759). Kept in one
+// place so a doc change is a one-line edit.
 const PROVIDERS = {
     strava: {
         authorize: 'https://www.strava.com/oauth/authorize',
@@ -77,6 +78,17 @@ const PROVIDERS = {
         scope: 'read,activity:write',
         clientId: () => env('STRAVA_CLIENT_ID'),
         clientSecret: () => env('STRAVA_CLIENT_SECRET'),
+    },
+    // Intervals.icu: tokens do not expire and there is no refresh token; the
+    // token response carries the athlete. Uploads go straight from the phone
+    // (bearer only, no app key), like Strava. Revoke: DELETE
+    // /api/v1/disconnect-app with the user's bearer, which the app does itself.
+    intervals: {
+        authorize: 'https://intervals.icu/oauth/authorize',
+        token: 'https://intervals.icu/api/oauth/token',
+        scope: 'ACTIVITY:WRITE',
+        clientId: () => env('INTERVALS_CLIENT_ID'),
+        clientSecret: () => env('INTERVALS_CLIENT_SECRET'),
     },
     ridewithgps: {
         authorize: 'https://ridewithgps.com/oauth/authorize',
@@ -456,6 +468,9 @@ async function handle(req, res) {
                 payload.refresh_token = tok.refresh_token;
                 payload.expires_at = tok.expires_at;
                 if (tok.athlete) payload.athlete = { id: tok.athlete.id, name: [tok.athlete.firstname, tok.athlete.lastname].filter(Boolean).join(' ') };
+            } else if (provider === 'intervals') {
+                // Athlete ids are strings there ("i12345"); keep them verbatim.
+                if (tok.athlete) payload.athlete = { id: tok.athlete.id, name: tok.athlete.name || null };
             } else {
                 if (tok.refresh_token) payload.refresh_token = tok.refresh_token;
                 if (tok.expires_in) payload.expires_at = now() + Number(tok.expires_in);

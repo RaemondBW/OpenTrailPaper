@@ -11,6 +11,8 @@ process.env.STRAVA_CLIENT_SECRET = 'ssecret';
 process.env.RWGPS_CLIENT_ID = 'rid';
 process.env.RWGPS_CLIENT_SECRET = 'rsecret';
 process.env.RWGPS_API_KEY = 'rkey';
+process.env.INTERVALS_CLIENT_ID = 'iid';
+process.env.INTERVALS_CLIENT_SECRET = 'isecret';
 process.env.APP_CHECK_PROJECT_NUMBER = '424242';
 process.env.ANDROID_CERT_SHA256 = 'AA:BB, CC:DD';
 
@@ -52,6 +54,12 @@ before(async () => {
         }
         if (req.url === '/jwks') return res.end(JSON.stringify({ keys: [jwk] }));
         if (req.url === '/rwgps/oauth/token') return res.end(JSON.stringify({ access_token: 'ra1' }));
+        if (req.url === '/intervals/api/oauth/token') {
+            const p = new URLSearchParams(body);
+            assert.equal(p.get('client_secret'), 'isecret');
+            return res.end(JSON.stringify({ token_type: 'Bearer', access_token: 'ia1', scope: 'ACTIVITY:WRITE',
+                athlete: { id: 'i2049151', name: 'Ada' } }));
+        }
         if (req.url === '/rwgps/api/v1/users/current.json') {
             assert.equal(req.headers['x-rwgps-api-key'], 'rkey');
             return res.end(JSON.stringify({ user: { id: 42, name: 'Ada' } }));
@@ -69,6 +77,7 @@ before(async () => {
     srv.PROVIDERS.strava.token = `${fakeUrl}/strava/oauth/token`;
     srv.PROVIDERS.ridewithgps.token = `${fakeUrl}/rwgps/oauth/token`;
     srv.PROVIDERS.ridewithgps.api = `${fakeUrl}/rwgps/api/v1`;
+    srv.PROVIDERS.intervals.token = `${fakeUrl}/intervals/api/oauth/token`;
     srv.APP.appCheckJwks = `${fakeUrl}/jwks`;
 
     app = srv.createServer();
@@ -191,6 +200,21 @@ test('ridewithgps callback also looks up the account name', async () => {
     const back = new URL(r.headers.get('location'));
     const tok = await (await post('/v1/auth/handoff', { handoff: back.searchParams.get('handoff') }, APPCHECK)).json();
     assert.deepEqual(tok, { provider: 'ridewithgps', access_token: 'ra1', athlete: { id: 42, name: 'Ada' } });
+});
+
+test('intervals.icu: consent url carries the ACTIVITY:WRITE scope, callback keeps the string athlete id', async () => {
+    const { url } = await (await begin('intervals', 'appstate4')).json();
+    const r0 = await fetch(url, { redirect: 'manual' });
+    const consent = new URL(r0.headers.get('location'));
+    assert.equal(consent.origin + consent.pathname, 'https://intervals.icu/oauth/authorize');
+    assert.equal(consent.searchParams.get('scope'), 'ACTIVITY:WRITE');
+    assert.equal(consent.searchParams.get('client_id'), 'iid');
+    const state = srv.signState('appstate4', 'intervals');
+    const r = await get(`/v1/auth/intervals/callback?code=c0de&state=${encodeURIComponent(state)}`);
+    const back = new URL(r.headers.get('location'));
+    assert.equal(back.pathname, '/app/sync/intervals');
+    const tok = await (await post('/v1/auth/handoff', { handoff: back.searchParams.get('handoff') }, APPCHECK)).json();
+    assert.deepEqual(tok, { provider: 'intervals', access_token: 'ia1', athlete: { id: 'i2049151', name: 'Ada' } });
 });
 
 test('a handoff expires and a tampered one is rejected', async () => {

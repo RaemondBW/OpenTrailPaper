@@ -40,9 +40,9 @@ import android.util.Base64
  * handoff for the tokens over HTTPS. Only this user's tokens ever reach the
  * phone, and they sit in EncryptedSharedPreferences.
  *
- * Uploads: Strava takes the FIT straight from the phone with the user's bearer
- * token; RideWithGPS goes through the service, because every RWGPS request also
- * needs the API key.
+ * Uploads: Strava and Intervals.icu take the FIT straight from the phone with
+ * the user's bearer token; RideWithGPS goes through the service, because every
+ * RWGPS request also needs the API key.
  *
  * Only this app: every call to the service carries a Firebase App Check token
  * (Play Integrity on a real install; a registered debug token on an emulator or
@@ -52,6 +52,7 @@ import android.util.Base64
 object SyncAccounts {
     enum class Provider(val id: String, val title: String) {
         STRAVA("strava", "Strava"),
+        INTERVALS("intervals", "Intervals.icu"),
         RIDEWITHGPS("ridewithgps", "RideWithGPS");
 
         companion object {
@@ -213,10 +214,19 @@ object SyncAccounts {
     }
 
     suspend fun disconnect(p: Provider) {
-        val t = tokens[p]
+        val t = tokens[p] ?: run { store(p, null); return }
         store(p, null)
-        if (p == Provider.STRAVA && t != null) {
-            runCatching { postJson("/v1/auth/strava/revoke", JSONObject().put("access_token", t.accessToken)) }
+        // Best effort: tell the provider too, so the app disappears from its list.
+        when (p) {
+            Provider.STRAVA -> runCatching {
+                postJson("/v1/auth/strava/revoke", JSONObject().put("access_token", t.accessToken))
+            }
+            Provider.INTERVALS -> runCatching {
+                withContext(Dispatchers.IO) {
+                    finish(open("https://intervals.icu/api/v1/disconnect-app", "DELETE", t.accessToken))
+                }
+            }
+            Provider.RIDEWITHGPS -> Unit
         }
     }
 
@@ -289,6 +299,21 @@ object SyncAccounts {
                     if (act != 0L) return@withContext "Uploaded: strava.com/activities/$act"
                 }
                 "Uploaded to Strava (still processing)."
+            }
+            Provider.INTERVALS -> {
+                // Athlete "0" is the bearer's own athlete. device_name is what the
+                // activity shows as recorded on; external_id lets Intervals spot a
+                // re-upload of the same ride (it also matches by content).
+                val url = Uri.parse("https://intervals.icu/api/v1/athlete/0/activities").buildUpon()
+                    .appendQueryParameter("name", name)
+                    .appendQueryParameter("device_name", "OpenTrailPaper")
+                    .appendQueryParameter("external_id", "otp-${file.name}")
+                    .build().toString()
+                val json = multipart(url, token, fields = emptyMap(), file = file)
+                // 201 created / 200 duplicate; either way activities[0].id (or id).
+                val first = json.optJSONArray("activities")?.optJSONObject(0) ?: json
+                val id = first.optString("id")
+                if (id.isNotEmpty()) "Uploaded: intervals.icu/activities/$id" else "Uploaded to Intervals.icu."
             }
             Provider.RIDEWITHGPS -> {
                 val base = serviceUrl ?: throw SyncException("This build has no sync service configured.")

@@ -17,9 +17,9 @@ import UIKit
 // short-lived handoff for the tokens over HTTPS. Only this user's tokens ever
 // reach the phone, and they are kept in the Keychain.
 //
-// Uploads: Strava takes the FIT straight from the phone with the user's bearer
-// token; RideWithGPS goes through the service, because every RWGPS request
-// also needs the API key.
+// Uploads: Strava and Intervals.icu take the FIT straight from the phone with
+// the user's bearer token; RideWithGPS goes through the service, because every
+// RWGPS request also needs the API key.
 //
 // Only this app: every call to the service carries a Firebase App Check token
 // (App Attest on a device; a registered debug token on the simulator), and
@@ -27,9 +27,15 @@ import UIKit
 // to this app alone. The service refuses anything else.
 
 enum SyncProvider: String, CaseIterable, Identifiable {
-    case strava, ridewithgps
+    case strava, intervals, ridewithgps
     var id: String { rawValue }
-    var title: String { self == .strava ? "Strava" : "RideWithGPS" }
+    var title: String {
+        switch self {
+        case .strava: return "Strava"
+        case .intervals: return "Intervals.icu"
+        case .ridewithgps: return "RideWithGPS"
+        }
+    }
 }
 
 struct SyncTokens: Codable, Equatable {
@@ -233,9 +239,18 @@ final class SyncAccounts: NSObject, ObservableObject {
     func disconnect(_ p: SyncProvider) {
         let t = tokens[p]
         store(nil, for: p)
-        // Best effort: tell Strava too, so the app disappears from its list.
-        if p == .strava, let t {
+        // Best effort: tell the provider too, so the app disappears from its list.
+        guard let t else { return }
+        switch p {
+        case .strava:
             Task { _ = try? await post("v1/auth/strava/revoke", json: ["access_token": t.accessToken]) }
+        case .intervals:
+            var req = URLRequest(url: URL(string: "https://intervals.icu/api/v1/disconnect-app")!)
+            req.httpMethod = "DELETE"
+            req.setValue("Bearer \(t.accessToken)", forHTTPHeaderField: "Authorization")
+            Task { _ = try? await send(req) }
+        case .ridewithgps:
+            break
         }
     }
 
@@ -291,6 +306,27 @@ final class SyncAccounts: NSObject, ObservableObject {
                 }
             }
             return "Uploaded to Strava (still processing)."
+        case .intervals:
+            // Athlete "0" is the bearer's own athlete. device_name is what the
+            // activity shows as recorded on; external_id lets Intervals spot a
+            // re-upload of the same ride (it also matches by content).
+            var comps = URLComponents(string: "https://intervals.icu/api/v1/athlete/0/activities")!
+            comps.queryItems = [URLQueryItem(name: "name", value: name),
+                                URLQueryItem(name: "device_name", value: "OpenTrailPaper"),
+                                URLQueryItem(name: "external_id", value: "otp-" + fileURL.lastPathComponent)]
+            var form = Multipart()
+            form.file("file", filename: fileURL.lastPathComponent, mime: "application/octet-stream", data: data)
+            var req = URLRequest(url: comps.url!)
+            req.httpMethod = "POST"
+            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            form.apply(to: &req)
+            let json = try await send(req)
+            // 201 created / 200 duplicate; either way activities[0].id (or id).
+            let first = (json["activities"] as? [[String: Any]])?.first ?? json
+            if let id = first["id"] as? String ?? (first["id"] as? NSNumber).map({ $0.stringValue }) {
+                return "Uploaded: intervals.icu/activities/\(id)"
+            }
+            return "Uploaded to Intervals.icu."
         case .ridewithgps:
             guard let base = Self.serviceURL else { throw SyncError.notConfigured }
             var form = Multipart()

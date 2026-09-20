@@ -183,8 +183,8 @@ remaining), framed **route**, **map-tile**, **log** and **OTA** transfers, and a
   uploadable to Strava / intervals.icu. Moving time, avg/normalized power,
   avg HR and climbing tracked for the summary (SAVE / DISCARD). Rides cut short
   by a crash or dead battery are repaired on the next boot. The companion apps
-  can also upload a ride straight to Strava or RideWithGPS once an account is
-  connected; the OAuth secrets live in a small Cloud Run service, not in the
+  can also upload a ride straight to Strava, Intervals.icu or RideWithGPS once
+  an account is connected; the OAuth secrets live in a small Cloud Run service, not in the
   apps (see `docs/sync-accounts.md`).
 - **Offline maps** — H3 hexagonal tiles on the SD card, authored on the phone
   or by `tools/maps/build_map.py`. 1-bit rendering, zoom 1–32 m/px, follows GPS,

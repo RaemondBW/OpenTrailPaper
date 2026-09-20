@@ -1,9 +1,9 @@
-# Strava and RideWithGPS accounts
+# Strava, Intervals.icu and RideWithGPS accounts
 
-The companion apps can upload a ride's `.fit` straight to Strava or RideWithGPS
-(Settings > Accounts, then "Upload to …" on a ride's page). Both providers
-use OAuth 2.0 with a **client secret**, and RideWithGPS also wants an **API
-key** on every request. Neither can go inside an app: anything in an IPA or
+The companion apps can upload a ride's `.fit` straight to Strava, Intervals.icu
+or RideWithGPS (Settings > Accounts, then "Upload to …" on a ride's page). All
+three use OAuth 2.0 with a **client secret**, and RideWithGPS also wants an
+**API key** on every request. Neither can go inside an app: anything in an IPA or
 APK is readable, and a leaked secret lets anyone act as the app. So a small
 service at `https://sync.opentrailpaper.com` holds them, and the phones hold
 only their own user's tokens.
@@ -20,8 +20,9 @@ only their own user's tokens.
    (a Universal Link / App Link: only the signed apps can claim it)
  POST /v1/auth/handoff {handoff} ──App Check──► tokens (Keychain / EncryptedSharedPreferences)
 
- Upload to Strava:      phone ──bearer──► strava.com/api/v3/uploads
- Upload to RideWithGPS: phone ──bearer + App Check──► /v1/rwgps/trips ──+ API key──► ridewithgps.com
+ Upload to Strava:        phone ──bearer──► strava.com/api/v3/uploads
+ Upload to Intervals.icu: phone ──bearer──► intervals.icu/api/v1/athlete/0/activities?device_name=OpenTrailPaper
+ Upload to RideWithGPS:   phone ──bearer + App Check──► /v1/rwgps/trips ──+ API key──► ridewithgps.com
 ```
 
 ## Only these apps
@@ -83,22 +84,29 @@ Source: [`cloud/sync-auth/`](../cloud/sync-auth/) (Node 20, no dependencies,
   the domain mapping is up with its certificate, and Cloudflare holds
   `sync` CNAME `ghs.googlehosted.com` (proxied; that turned out to work, the
   certificate provisioned through it).
-- Strava's client id and secret are in Secret Manager (client 280563); the
-  attested flow through the domain reaches Strava's consent page.
-  RideWithGPS's three values are still **placeholders**, so its sign-in
-  answers 503 "not configured".
+- Strava (client 280563) and RideWithGPS secrets are in Secret Manager; the
+  attested flow through the domain reaches both consent pages, and the
+  RideWithGPS API key is accepted. Intervals.icu's two values are still
+  **placeholders**, so its sign-in answers 503 "not configured".
 
 ## Finishing the setup
 
-1. **RideWithGPS.** <https://ridewithgps.com/settings/developers>: an API
-   key, plus an OAuth client with redirect URI
-   `https://sync.opentrailpaper.com/v1/auth/ridewithgps/callback`. Then, from
-   your own terminal (values prompted without echo, straight into Secret
-   Manager, and the service redeployed):
+1. **Intervals.icu.** Apply for an OAuth app at
+   <https://intervals.icu/oauth/apply> (logged in as the owning athlete; apps
+   are managed at <https://intervals.icu/settings/apps>) with redirect URI
+   `https://sync.opentrailpaper.com/v1/auth/intervals/callback`. The service
+   asks for scope `ACTIVITY:WRITE`; tokens do not expire and there is no
+   refresh token. Then, from your own terminal (values prompted without echo,
+   straight into Secret Manager, and the service redeployed):
 
    ```
-   cd cloud/sync-auth && ./deploy.sh opentrailpaper --rotate RWGPS_CLIENT_ID RWGPS_CLIENT_SECRET RWGPS_API_KEY
+   cd cloud/sync-auth && ./deploy.sh opentrailpaper --rotate INTERVALS_CLIENT_ID INTERVALS_CLIENT_SECRET
    ```
+
+   The upload itself needs nothing from the service: the phone posts the
+   FIT to `athlete/0/activities` with the user's bearer token, `device_name=
+   OpenTrailPaper` and an `external_id` of the ride's filename (Intervals
+   answers 201 for a new activity, 200 for one it already had).
 2. **Strava** — <https://www.strava.com/settings/api>: confirm
    *Authorization Callback Domain* is `sync.opentrailpaper.com`. The access
    and refresh tokens shown on that page are your own account's and are not
@@ -116,7 +124,7 @@ Re-running `deploy.sh` redeploys the code and leaves the secrets alone.
 ## What must never be committed
 
 - `STRAVA_CLIENT_SECRET`, `RWGPS_CLIENT_SECRET`, `RWGPS_API_KEY`,
-  `HANDOFF_KEY` — Secret Manager only. `cloud/sync-auth/.env` is gitignored
+  `INTERVALS_CLIENT_SECRET`, `HANDOFF_KEY` — Secret Manager only. `cloud/sync-auth/.env` is gitignored
   for local runs.
 
 If a secret does leak: rotate it with the provider, then `deploy.sh

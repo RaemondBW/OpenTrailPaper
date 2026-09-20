@@ -65,13 +65,15 @@ secret STRAVA_CLIENT_SECRET "Strava client secret"
 secret RWGPS_CLIENT_ID      "RideWithGPS OAuth client ID"
 secret RWGPS_CLIENT_SECRET  "RideWithGPS OAuth client secret"
 secret RWGPS_API_KEY        "RideWithGPS API key"
+secret INTERVALS_CLIENT_ID  "Intervals.icu OAuth client ID"
+secret INTERVALS_CLIENT_SECRET "Intervals.icu OAuth client secret"
 secret HANDOFF_KEY          ""
 
 # The service runs as its own account with exactly one right: reading these.
 SA="$SERVICE@$PROJECT.iam.gserviceaccount.com"
 gcloud iam service-accounts describe "$SA" >/dev/null 2>&1 || \
     gcloud iam service-accounts create "$SERVICE" --display-name "sync-auth runtime" >/dev/null
-for s in STRAVA_CLIENT_ID STRAVA_CLIENT_SECRET RWGPS_CLIENT_ID RWGPS_CLIENT_SECRET RWGPS_API_KEY HANDOFF_KEY; do
+for s in STRAVA_CLIENT_ID STRAVA_CLIENT_SECRET RWGPS_CLIENT_ID RWGPS_CLIENT_SECRET RWGPS_API_KEY INTERVALS_CLIENT_ID INTERVALS_CLIENT_SECRET HANDOFF_KEY; do
     gcloud secrets add-iam-policy-binding "$s" --member="serviceAccount:$SA" \
         --role=roles/secretmanager.secretAccessor >/dev/null
 done
@@ -92,7 +94,7 @@ gcloud run deploy "$SERVICE" \
     --allow-unauthenticated \
     --min-instances 0 --max-instances 3 --memory 256Mi --cpu 1 \
     --set-env-vars "^|^APP_CHECK_PROJECT_NUMBER=$PROJECT_NUMBER|ANDROID_CERT_SHA256=$ANDROID_CERT_SHA256|BASE_URL=$BASE_URL" \
-    --set-secrets "STRAVA_CLIENT_ID=STRAVA_CLIENT_ID:latest,STRAVA_CLIENT_SECRET=STRAVA_CLIENT_SECRET:latest,RWGPS_CLIENT_ID=RWGPS_CLIENT_ID:latest,RWGPS_CLIENT_SECRET=RWGPS_CLIENT_SECRET:latest,RWGPS_API_KEY=RWGPS_API_KEY:latest,HANDOFF_KEY=HANDOFF_KEY:latest"
+    --set-secrets "STRAVA_CLIENT_ID=STRAVA_CLIENT_ID:latest,STRAVA_CLIENT_SECRET=STRAVA_CLIENT_SECRET:latest,RWGPS_CLIENT_ID=RWGPS_CLIENT_ID:latest,RWGPS_CLIENT_SECRET=RWGPS_CLIENT_SECRET:latest,RWGPS_API_KEY=RWGPS_API_KEY:latest,INTERVALS_CLIENT_ID=INTERVALS_CLIENT_ID:latest,INTERVALS_CLIENT_SECRET=INTERVALS_CLIENT_SECRET:latest,HANDOFF_KEY=HANDOFF_KEY:latest"
 
 RUN_URL=$(gcloud run services describe "$SERVICE" --region "$REGION" --format 'value(status.url)')
 HOST=${BASE_URL#https://}
@@ -106,6 +108,7 @@ Deployed: $RUN_URL, serving as $BASE_URL once the domain mapping is in place:
 Register these with the providers (once):
   Strava     Authorization Callback Domain:  $HOST
   RideWithGPS OAuth redirect URI:            $BASE_URL/v1/auth/ridewithgps/callback
+  Intervals.icu OAuth redirect URI:          $BASE_URL/v1/auth/intervals/callback
 
 The apps already point at $BASE_URL (project.yml / build.gradle.kts).
 MSG
