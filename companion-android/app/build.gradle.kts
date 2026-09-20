@@ -181,6 +181,11 @@ dependencies {
     // that names it); it is only *installed* when BuildConfig.DEBUG is true.
     implementation(libs.firebase.appcheck.debug)
     implementation(libs.kotlinx.coroutines.play.services)
+    // Not used directly. camera-view drags in appcompat 1.1.0 and with it
+    // androidx.fragment 1.1.0, and androidx.activity's release lint (fatal
+    // since the App Check / Custom Tabs artifacts raised it) refuses
+    // registerForActivityResult next to a fragment older than 1.3.0.
+    implementation(libs.androidx.fragment)
     debugImplementation(libs.androidx.ui.tooling)
     // The byte formats shared with the firmware are pure Kotlin, so they are
     // testable on the JVM with no device and no network.
