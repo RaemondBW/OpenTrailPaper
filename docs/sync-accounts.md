@@ -78,40 +78,38 @@ Source: [`cloud/sync-auth/`](../cloud/sync-auth/) (Node 20, no dependencies,
 - Firebase on that project with the iOS app (`1:…:ios:b875…`, team
   G5JFC849XY, App Attest on) and the Android app (`1:…:android:8ada…`, Play
   Integrity on, upload + sideload certificate fingerprints registered).
-- The service deployed to Cloud Run (`us-central1`) with the provider
-  secrets as **placeholders** that make it answer 503 "not configured" until
-  filled in.
+- The service on Cloud Run (`us-central1`), reachable as
+  `https://sync.opentrailpaper.com`: `opentrailpaper.com` is Google-verified,
+  the domain mapping is up with its certificate, and Cloudflare holds
+  `sync` CNAME `ghs.googlehosted.com` (proxied; that turned out to work, the
+  certificate provisioned through it).
+- Strava's client id and secret are in Secret Manager (client 280563); the
+  attested flow through the domain reaches Strava's consent page.
+  RideWithGPS's three values are still **placeholders**, so its sign-in
+  answers 503 "not configured".
 
 ## Finishing the setup
 
-1. **Domain.** Verify `opentrailpaper.com` with Google once
-   (`gcloud domains verify opentrailpaper.com` opens Search Console; add the
-   TXT record it gives you in Cloudflare). Then:
+1. **RideWithGPS.** <https://ridewithgps.com/settings/developers>: an API
+   key, plus an OAuth client with redirect URI
+   `https://sync.opentrailpaper.com/v1/auth/ridewithgps/callback`. Then, from
+   your own terminal (values prompted without echo, straight into Secret
+   Manager, and the service redeployed):
 
    ```
-   gcloud beta run domain-mappings create --service sync-auth \
-       --domain sync.opentrailpaper.com --region us-central1 --project opentrailpaper
+   cd cloud/sync-auth && ./deploy.sh opentrailpaper --rotate RWGPS_CLIENT_ID RWGPS_CLIENT_SECRET RWGPS_API_KEY
    ```
-
-   and in Cloudflare: `sync` CNAME `ghs.googlehosted.com`, **DNS only**
-   (grey cloud). Google issues the certificate within about an hour.
-2. **Provider registration.**
-   - Strava — <https://www.strava.com/settings/api>: *Authorization
-     Callback Domain* = `sync.opentrailpaper.com`.
-   - RideWithGPS — <https://ridewithgps.com/settings/developers>: an API
-     key, plus an OAuth client with redirect URI
-     `https://sync.opentrailpaper.com/v1/auth/ridewithgps/callback`.
-3. **Secrets.** From your own terminal (the values are prompted without
-   echo and go straight into Secret Manager):
-
-   ```
-   cd cloud/sync-auth && ./deploy.sh opentrailpaper --rotate
-   ```
-4. **Play app-signing certificate.** Play re-signs releases with its own
+2. **Strava** — <https://www.strava.com/settings/api>: confirm
+   *Authorization Callback Domain* is `sync.opentrailpaper.com`. The access
+   and refresh tokens shown on that page are your own account's and are not
+   used; riders get theirs through Connect.
+3. **Play app-signing certificate.** Play re-signs releases with its own
    key. Copy its SHA-256 from Play Console > App integrity into
    `ANDROID_CERT_SHA256` (deploy.sh) and add it to the Firebase Android app,
    or App Links and Play Integrity will only recognise sideloaded builds.
-5. **Debug tokens** for the simulator / emulator you test on (above).
+4. **Debug tokens** for any other simulator / emulator you test on (above).
+   This Mac's iPhone 16 Pro Max simulator and the `scanner` emulator are
+   registered.
 
 Re-running `deploy.sh` redeploys the code and leaves the secrets alone.
 

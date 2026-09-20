@@ -4,7 +4,7 @@
 <dict>
 	<key>com.apple.developer.associated-domains</key>
 	<array>
-		<string>applinks:sync.opentrailpaper.com</string>
+		<string>applinks:sync.opentrailpaper.com?mode=developer</string>
 	</array>
 	<key>com.apple.developer.devicecheck.appattest-environment</key>
 	<string>production</string>

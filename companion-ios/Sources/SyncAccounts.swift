@@ -198,6 +198,10 @@ final class SyncAccounts: NSObject, ObservableObject {
             p = nil
         }
         guard let p else { return }
+        // Reached through onOpenURL (the page's fallback button) while the auth
+        // session is still showing that page: dismiss it.
+        session?.cancel()
+        session = nil
         defer { busy = nil }
         let q = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
         func item(_ n: String) -> String? { q.first { $0.name == n }?.value }

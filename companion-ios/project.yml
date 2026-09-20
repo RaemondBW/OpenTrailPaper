@@ -45,8 +45,11 @@ targets:
       properties:
         # Universal Links: sync.opentrailpaper.com/app/sync/* opens in this app
         # and no other, which is what makes the sign-in return trustworthy.
+        # ?mode=developer lets developer-signed builds (simulator, Xcode
+        # installs) fetch the association directly instead of through Apple's
+        # CDN; App Store builds ignore the flag.
         com.apple.developer.associated-domains:
-          - applinks:sync.opentrailpaper.com
+          - applinks:sync.opentrailpaper.com?mode=developer
         com.apple.developer.devicecheck.appattest-environment: production
     settings:
       base:
