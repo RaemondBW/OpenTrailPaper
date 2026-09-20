@@ -6,3 +6,6 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+
+// repair() yields to the watchdog between chunks on the device.
+inline void delay(unsigned long) {}

@@ -18,6 +18,12 @@
 
 namespace {
 
+// Header + file_id + device_info + timer-start event + record definition; must
+// match PROLOGUE_BYTES in fit_writer.cpp.
+constexpr size_t PROLOGUE = 158;
+// Ride stats the writer puts in the session; the values do not matter here.
+const FitWriter::Summary SUM{1, 20.0f, 0, 0, 0, 0.0f};
+
 const char* OUT_DIR = "tools/fit_test/out";
 fs::FS host(OUT_DIR);
 
@@ -81,10 +87,10 @@ void simulateCrash(const char* dst, int records, int extraBytes,
         if (extraBytes > 0) w.writeRecord(makeRecord(records, dist));
         // finish() only serves to close the handle here — everything it appends
         // lands past `keep` and is truncated away.
-        w.finish(RIDE_START + records, dist, (uint32_t)records);
+        w.finish(RIDE_START + records, dist, (uint32_t)records, SUM);
     }
     std::vector<uint8_t> buf = readAll("/scratch.fit");
-    size_t keep = 106 + (size_t)records * 25 + (size_t)extraBytes;
+    size_t keep = PROLOGUE + (size_t)records * 25 + (size_t)extraBytes;
     if (buf.size() < keep) { printf("FAIL: scratch too small\n"); exit(1); }
     buf.resize(keep);
     buf[4] = staleDataSize & 0xFF;
@@ -100,7 +106,7 @@ void simulateCrash(const char* dst, int records, int extraBytes,
 }  // namespace
 
 int main() {
-    printf("prologue = %u bytes, record = 25 bytes\n\n", (unsigned)106);
+    printf("prologue = %u bytes, record = 25 bytes\n\n", (unsigned)PROLOGUE);
 
     // 1. A clean ride, closed properly.
     {
@@ -108,16 +114,16 @@ int main() {
         if (!w.begin(host, "/normal.fit", RIDE_START)) { printf("FAIL: open\n"); return 1; }
         double dist = 0;
         for (int i = 0; i < 345; ++i) w.writeRecord(makeRecord(i, dist));
-        check(w.finish(RIDE_START + 345, dist, 345), "finish() succeeds");
+        check(w.finish(RIDE_START + 345, dist, 345, SUM), "finish() succeeds");
         printf("normal.fit   %6u bytes  clean finish\n", fileSize("/normal.fit"));
     }
 
     // 2. The issue #5 ride: 345 whole samples on disk, data_size frozen at the
     //    last checkpoint (345 = 23 checkpoints of 15 records: 340 records in).
-    simulateCrash("/crashed.fit", 345, 0, 106 - 12 + 340 * 25);
+    simulateCrash("/crashed.fit", 345, 0, PROLOGUE - 12 + 340 * 25);
     printf("crashed.fit  %6u bytes  watchdog reset, never finished\n",
            fileSize("/crashed.fit"));
-    check(fileSize("/crashed.fit") == 8731, "crashed size matches the 8731 in the log");
+    check(fileSize("/crashed.fit") == PROLOGUE + 345 * 25, "crashed size = prologue + 345 records");
     {
         FitWriter::RepairResult r = FitWriter::repair(host, "/crashed.fit");
         printf("             -> %s: %d records, %.2f km, %lu s\n",
@@ -145,7 +151,7 @@ int main() {
         FitWriter::RepairResult r = FitWriter::repair(host, "/empty.fit");
         printf("empty.fit    %6u bytes  -> %s\n", fileSize("/empty.fit"),
                r.status == FitWriter::RepairResult::EMPTY ? "EMPTY" : "unexpected");
-        check(fileSize("/empty.fit") == 106, "empty size matches the 106 in the log");
+        check(fileSize("/empty.fit") == PROLOGUE, "empty size matches the prologue");
         check(r.status == FitWriter::RepairResult::EMPTY, "empty ride reported EMPTY");
     }
 
