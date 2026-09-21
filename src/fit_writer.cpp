@@ -1,5 +1,7 @@
 #include "fit_writer.h"
 
+#include "config.h"   // FIRMWARE_VERSION, written into device_info
+
 namespace {
 
 constexpr uint32_t FIT_EPOCH_OFFSET = 631065600;  // 1989-12-31T00:00:00Z
@@ -9,6 +11,7 @@ constexpr double   SEMICIRCLES_PER_DEG = 2147483648.0 / 180.0;
 // Base types
 constexpr uint8_t T_ENUM = 0x00;
 constexpr uint8_t T_U8   = 0x02;
+constexpr uint8_t T_STRING = 0x07;
 constexpr uint8_t T_S32  = 0x85;
 constexpr uint8_t T_U16  = 0x84;
 constexpr uint8_t T_U32  = 0x86;
@@ -20,6 +23,7 @@ constexpr uint16_t MSG_SESSION  = 18;
 constexpr uint16_t MSG_LAP      = 19;
 constexpr uint16_t MSG_RECORD   = 20;
 constexpr uint16_t MSG_EVENT    = 21;
+constexpr uint16_t MSG_DEVICE_INFO = 23;
 constexpr uint16_t MSG_ACTIVITY = 34;
 
 // Local message types (assigned once, definitions written up front)
@@ -29,6 +33,7 @@ constexpr uint8_t L_EVENT    = 2;
 constexpr uint8_t L_LAP      = 3;
 constexpr uint8_t L_SESSION  = 4;
 constexpr uint8_t L_ACTIVITY = 5;
+constexpr uint8_t L_DEVICE_INFO = 6;
 
 // {field number, size, base type}
 const uint8_t FIELDS_FILE_ID[][3] = {
@@ -37,6 +42,20 @@ const uint8_t FIELDS_FILE_ID[][3] = {
     {2, 2, T_U16},    // product
     {3, 4, T_U32Z},   // serial_number
     {4, 4, T_U32},    // time_created
+};
+
+// Who recorded the ride. file_id can only say "development / product 1", which
+// Strava, intervals.icu and RideWithGPS render as no device at all; the
+// device_info message carries a product_name string for exactly that case, so
+// the activity reads "OpenTrailPaper" wherever the file lands.
+constexpr uint8_t PRODUCT_NAME_LEN = 16;   // "OpenTrailPaper" + NUL, padded
+const uint8_t FIELDS_DEVICE_INFO[][3] = {
+    {253, 4, T_U32},                // timestamp
+    {0, 1, T_U8},                   // device_index = 0 (creator)
+    {2, 2, T_U16},                  // manufacturer = 255 (development)
+    {4, 2, T_U16},                  // product
+    {5, 2, T_U16},                  // software_version (x100)
+    {27, PRODUCT_NAME_LEN, T_STRING}, // product_name
 };
 
 const uint8_t FIELDS_RECORD[][3] = {
@@ -120,6 +139,23 @@ void put32(uint8_t* p, uint32_t v) {
     p[0] = v & 0xFF; p[1] = (v >> 8) & 0xFF;
     p[2] = (v >> 16) & 0xFF; p[3] = (v >> 24) & 0xFF;
 }
+// "v1.19" -> 119, the FIT software_version convention (x100). Anything that
+// does not parse becomes 0, which readers show as no version.
+uint16_t softwareVersion() {
+    const char* s = FIRMWARE_VERSION;
+    while (*s && (*s < '0' || *s > '9')) ++s;
+    unsigned major = 0, minor = 0;
+    while (*s >= '0' && *s <= '9') major = major * 10 + (unsigned)(*s++ - '0');
+    if (*s == '.') {
+        ++s;
+        int digits = 0;
+        while (*s >= '0' && *s <= '9' && digits < 2) { minor = minor * 10 + (unsigned)(*s++ - '0'); ++digits; }
+        if (digits == 1) minor *= 10;
+    }
+    unsigned v = major * 100 + minor;
+    return v > 0xFFFE ? 0 : (uint16_t)v;
+}
+
 uint32_t get32(const uint8_t* p) {
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
            ((uint32_t)p[3] << 24);
@@ -133,6 +169,8 @@ uint32_t get32(const uint8_t* p) {
 constexpr uint32_t PROLOGUE_BYTES = 12 +          // header
                                     (6 + 5 * 3) + // file_id definition
                                     14 +          // file_id message
+                                    (6 + 6 * 3) + // device_info definition
+                                    (1 + 4 + 1 + 2 + 2 + 2 + PRODUCT_NAME_LEN) + // device_info message
                                     (6 + 4 * 3) + // event definition
                                     8 +           // timer-start event
                                     (6 + 9 * 3);  // record definition
@@ -185,6 +223,17 @@ bool FitWriter::begin(fs::FS& fs, const char* path, time_t startUtc) {
     put32(&fid[6], 0x54355333);       // serial ("T5S3")
     put32(&fid[10], fitTime(startUtc));
     writeBytes(fid, sizeof(fid));
+
+    writeDefinition(L_DEVICE_INFO, MSG_DEVICE_INFO, FIELDS_DEVICE_INFO, 6);
+    uint8_t dev[1 + 4 + 1 + 2 + 2 + 2 + PRODUCT_NAME_LEN] = {};
+    dev[0] = L_DEVICE_INFO;
+    put32(&dev[1], fitTime(startUtc));
+    dev[5] = 0;                       // device_index: creator
+    put16(&dev[6], 255);              // manufacturer: development
+    put16(&dev[8], 1);                // product
+    put16(&dev[10], softwareVersion());
+    memcpy(&dev[12], "OpenTrailPaper", 15);   // includes the NUL; rest stays zero
+    writeBytes(dev, sizeof(dev));
 
     writeDefinition(L_EVENT, MSG_EVENT, FIELDS_EVENT, 4);
     uint8_t evt[8];
