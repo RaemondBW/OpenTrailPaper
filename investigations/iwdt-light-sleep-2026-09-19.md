@@ -1,29 +1,34 @@
-# Interrupt-watchdog resets on the v1.19 light-sleep build (2026-09-19 ride)
 
-Decoded from the card's `crash-*.log` + `memfault-*.log` with the matching ELF
-(`.worktrees/main-battery-default/.pio/memfault-symbols/84c54018…/d882f257….elf`,
-build Sep 12 2026 23:31:22, sha matches the crash report).
+## 2026-09-20: another one, with the watchdog already at 1000 ms
 
-Three interrupt-watchdog resets on this build, all the same shape:
+Build Sep 19 12:20 (PR #79's stretch active — boot logged `stage0=2000 ticks
+(1000 ms)`), interrupt-watchdog reset at 19:11 mid-ride, dump
+`memfault-1013aeda…`, decoded against the exact ELF (sha 665bd5f0…).
 
-| when | core 0 (current task `gps`) | core 1 | light sleep just before |
-|---|---|---|---|
-| 09-13 12:12 | `i2c_isr_handler_default` i2c.c:491 (`addi.n a11,a1,4`) | `esp_pm_impl_waiti` (IDLE) | no — `holders=vbus+prlx calls=0` (on USB) |
-| 09-13 16:11 | `i2c_isr_handler_default` i2c.c:510 (`beqi`) | `esp_pm_impl_waiti` (IDLE) | yes — 1400 calls, 23 s/min; "sensor sleep: armed" 12 s earlier |
-| 09-19 08:14 | `esp_pm_impl_isr_hook` → inlined `leave_idle` pm_impl.c:567 (`beqz`) | `esp_pm_impl_waiti` (IDLE) | yes — 955 calls, 18 s/min; "sensor sleep: armed" 10 s earlier, HR+power links up |
+| core 0 (task `gps`) | core 1 | sleep state |
+|---|---|---|
+| `_xt_lowint1` dispatcher (xtensa_vectors.S:1114), a0 = `i2c_isr_handler_default` i2c.c:553 — i.e. just returned from the I2C ISR into the level-1 dispatcher | `esp_pm_impl_waiti` (IDLE) | light sleep active: 636 calls/min, 18.5 s/min, `holders=prlx`, **no sensor links** ("sensor sleep" armed but HR/Power up=0) |
 
-Core 0 is always frozen on a plain register instruction inside a level-1
-interrupt handler — nothing that can hang on its own — and core 1 is always
-back in idle. That is what a core looks like after `esp_light_sleep_start()`
-(sleep_modes.c:732, IDF v4.4.6) has stalled it via `esp_ipc_isr_stall_other_cpu`
-for longer than `CONFIG_ESP_INT_WDT_TIMEOUT_MS=300`: the stall and the
-interrupt watchdog are both level-4 interrupts, so the WDT fires the instant the
-stall lifts, at the interrupted instruction, with core 1 already idle again.
+So the tripled budget did not help, and the I2C ISR is now in four of five
+dumps. Two mechanisms remain, and the dump cannot tell them apart:
 
-The 12:12 case had light sleep held off by USB, so it needs another stall source
-(flash erase/write also stalls the other core) or another cause; not pinned.
+1. **Stall longer than the budget.** Each light-sleep call stalls core 0 for
+   its whole length. With no sensor links the only 1 Hz wake is the GPS burst,
+   so a single call can approach 1 s — over the 1000 ms budget if MWDT1 keeps
+   counting through light sleep. `sleep_stats` records only the sum, not the
+   longest call; that number would settle this.
+2. **I2C interrupt storm after sleep.** The IDF I2C driver holds only an
+   APB-frequency PM lock (i2c.c:314), not a no-light-sleep lock, and our
+   `i2cLock()` holds no sleep lock either — so light sleep can gate the I2C
+   peripheral mid-transaction (gauge poll, IO-expander button read, RTC). A
+   peripheral that comes back with an un-clearable status re-asserts its
+   level-1 interrupt forever; the dispatcher services ONE interrupt per entry,
+   MSB first (xtensa_vectors.S `dispatch_c_isr`), so a storming I2C source
+   with a higher interrupt number starves the tick ISR that feeds the
+   watchdog. That is exactly "core 0 sitting in the dispatcher just after the
+   I2C ISR, core 1 idle", and it does not care how long the budget is.
 
-Not a panic in our code: no application frame is on either core. The feature in
-play is established-link sleep (#74, on by default since #76; console
-`sensorsleep off` disables it for one boot). Same build also logged
-"sensor sleep fallback: HR supervision timeout after sleep" at 08:48.
+Both are cheap to address at once: hold light sleep off across every I2C
+transaction (`i2cLock`/`i2cUnlock` → `busyAcquire`/`busyRelease`, as sdLock
+already does), cap single sleep calls below the watchdog with a periodic
+esp_timer wake, and log the longest sleep call per pm window.

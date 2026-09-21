@@ -4,6 +4,8 @@
 #include <Arduino.h>
 #include <esp_pm.h>
 #include <esp_sleep.h>
+#include <esp_timer.h>
+#include "config.h"
 #include <esp_err.h>
 #include <driver/uart.h>
 
@@ -109,6 +111,23 @@ bool begin() {
     s_sleepConfigured = s_enabled && cfg.light_sleep_enable;
     diag::log("pm: configure CPU min=%d max=%dMHz APB=80MHz light_sleep=%d -> %s; setup guard held",
               cfg.min_freq_mhz, cfg.max_freq_mhz, cfg.light_sleep_enable, esp_err_to_name(err));
+#if PM_SLEEP_CAP_MS > 0
+    if (s_sleepConfigured) {
+        // A periodic esp_timer is a wake source vApplicationSleep honours
+        // (pm_impl.c: sleep_time = min(idle time, next esp_timer alarm)), so no
+        // single sleep call — and no stall of the other core — can outlast it.
+        static esp_timer_handle_t capTimer = nullptr;
+        esp_timer_create_args_t args = {};
+        args.callback = [](void*) {};
+        args.name = "sleepcap";
+        args.dispatch_method = ESP_TIMER_TASK;
+        args.skip_unhandled_events = false;
+        esp_err_t te = esp_timer_create(&args, &capTimer);
+        if (te == ESP_OK) te = esp_timer_start_periodic(capTimer, (uint64_t)PM_SLEEP_CAP_MS * 1000ULL);
+        diag::log("pm: light-sleep call cap %d ms (interrupt watchdog %d ms) -> %s",
+                  PM_SLEEP_CAP_MS, INT_WDT_TIMEOUT_MS, esp_err_to_name(te));
+    }
+#endif
 #ifdef PM_BLE_XTAL
     diag::log("pm: BLE clock MAIN_XTAL retained in light sleep; controller_ready=%d",
               board_ble_xtal_clock_ready());
@@ -275,9 +294,11 @@ void tick() {
         uint32_t ok, rejected; uint64_t us;
         sleepStats(ok, rejected, us);
         char state[64]; stateStr(state, sizeof(state));
-        diag::log("pm window: %lums calls=%lu rejected=%lu sleep_call_ms=%llu holders=%s sd=%d host=%d",
+        uint32_t maxMs, longCalls; sleepStatsMax(maxMs, longCalls);
+        diag::log("pm window: %lums calls=%lu rejected=%lu sleep_call_ms=%llu max_call_ms=%lu long_calls=%lu holders=%s sd=%d host=%d",
                   (unsigned long)(now - lastReportMs), (unsigned long)(ok - lastOk),
                   (unsigned long)(rejected - lastRejected), (us - lastSleepUs) / 1000,
+                  (unsigned long)maxMs, (unsigned long)longCalls,
                   state, ride_recorder::sdMounted(), usb_storage::hostActive());
         lastReportMs = now; lastOk = ok; lastRejected = rejected; lastSleepUs = us;
     }

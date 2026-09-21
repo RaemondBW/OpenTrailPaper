@@ -49,5 +49,8 @@ void stateStr(char* out, size_t n);
 
 // Successful light-sleep calls and time inside them (includes entry/exit overhead).
 void sleepStats(uint32_t& ok, uint32_t& rejected, uint64_t& us);
+// Longest single light-sleep call since the previous read (resets on read),
+// and the running count of calls longer than half INT_WDT_TIMEOUT_MS.
+void sleepStatsMax(uint32_t& maxMs, uint32_t& longCallsTotal);
 
 }  // namespace power_mgmt
