@@ -3,6 +3,7 @@ package com.raemond.opentrailpaper
 import android.app.Application
 import com.raemond.opentrailpaper.ble.BleManager
 import com.raemond.opentrailpaper.data.Prefs
+import com.raemond.opentrailpaper.data.SyncAccounts
 import com.raemond.opentrailpaper.map.TileCache
 import org.osmdroid.config.Configuration
 
@@ -23,6 +24,7 @@ class OpenTrailPaperApp : Application() {
         super.onCreate()
         instance = this
         Prefs.init(this)
+        SyncAccounts.init(this)
         TileCache.init(this)
 
         // osmdroid keeps its tile cache in app-private storage (no storage

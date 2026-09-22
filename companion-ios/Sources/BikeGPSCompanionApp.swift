@@ -7,12 +7,17 @@ struct BikeGPSCompanionApp: App {
     @StateObject private var appState = AppState()
     @Environment(\.scenePhase) private var scenePhase
 
+    init() { SyncAccounts.configureAppCheck() }
+
     var body: some Scene {
         WindowGroup {
             RootView()
                 .environmentObject(ble)
                 .environmentObject(appState)
                 .tint(Palette.accent)
+                // Strava / RideWithGPS sign-in returning through the URL scheme
+                // (normally the auth session catches it; this is the fallback).
+                .onOpenURL { url in Task { await SyncAccounts.shared.handle(callback: url) } }
                 // The one Bluetooth failure the rider must fix by hand: iOS
                 // holding a pairing the head unit no longer matches. Nothing on
                 // either side can delete the phone's keys, so the only honest

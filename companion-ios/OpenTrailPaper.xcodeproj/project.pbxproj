@@ -30,6 +30,7 @@
 		4608B467E047801D5219DD54 /* faceijk.c in Sources */ = {isa = PBXBuildFile; fileRef = 21F000263728C013838D0605 /* faceijk.c */; };
 		50C29F659BE2ACD7B9B29D73 /* Barlow-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = F21BF62E40922CF797D8119D /* Barlow-Regular.ttf */; };
 		578D5A6227F3573A17A1CE9B /* MeshScanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2ACAD995F312514690C2FF16 /* MeshScanner.swift */; };
+		592497FD48D74D86C61AC752 /* FirebaseAppCheck in Frameworks */ = {isa = PBXBuildFile; productRef = 880B86FA551AFFB25164DF8A /* FirebaseAppCheck */; };
 		59AED5C1500B37FB3E7E3010 /* vec3d.c in Sources */ = {isa = PBXBuildFile; fileRef = 85064AEE7F2DEAD8495F5FDC /* vec3d.c */; };
 		5BC98F4BF77D1A33EF8F546B /* BLEManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = CBBFA5634178A1D43462F629 /* BLEManager.swift */; };
 		5D1E2FE5B8652DC846C39AF7 /* SensorsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D0FC030F1FACFFD44C96837 /* SensorsView.swift */; };
@@ -40,6 +41,7 @@
 		8885B18C0FC6E6E98283CD24 /* DashboardEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F99E928FB741D98CDD96ABA0 /* DashboardEditorView.swift */; };
 		8F39135FF7E1E777F4833280 /* Barlow-Medium.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 9D58367A52D10F5F1C035423 /* Barlow-Medium.ttf */; };
 		90BE2D6324721EC08C93E435 /* GPXExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05C73BCF289591ECA86720C6 /* GPXExporter.swift */; };
+		937C33A6DB0DBC569E69366E /* SyncAccounts.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8892300C56FF2C207FA2543 /* SyncAccounts.swift */; };
 		9A51A79216A6D77B6B223CE3 /* Barlow-SemiBold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 42632703DAE05E73F934FFE1 /* Barlow-SemiBold.ttf */; };
 		A44F34DFEC944328672D82B2 /* FITDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 590A2666A030966B6741EDAF /* FITDecoder.swift */; };
 		ABE6FDB260BAA3609F5C5516 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 756CD94A1C875E17A3321CC8 /* OnboardingView.swift */; };
@@ -105,6 +107,7 @@
 		7E1EE5B5FE7A084D0C8BA153 /* h3Index.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = h3Index.h; sourceTree = "<group>"; };
 		8023062657D19B0163482E22 /* baseCells.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = baseCells.h; sourceTree = "<group>"; };
 		82FADE55692F39B30C21D313 /* vec2d.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = vec2d.h; sourceTree = "<group>"; };
+		83D3B5218D4B7A1C4035B1B2 /* OpenTrailPaper.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = OpenTrailPaper.entitlements; sourceTree = "<group>"; };
 		85064AEE7F2DEAD8495F5FDC /* vec3d.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = vec3d.c; sourceTree = "<group>"; };
 		861D40F3D0D6EE123389E135 /* vertex.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = vertex.c; sourceTree = "<group>"; };
 		878E3C8F7719672814B9A1C2 /* linkedGeo.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = linkedGeo.c; sourceTree = "<group>"; };
@@ -148,11 +151,23 @@
 		F21BF62E40922CF797D8119D /* Barlow-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Barlow-Regular.ttf"; sourceTree = "<group>"; };
 		F2E1BEE825D22D8612B19893 /* iterators.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = iterators.c; sourceTree = "<group>"; };
 		F42E0A1FDF3C1CED966A8893 /* vertexGraph.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = vertexGraph.h; sourceTree = "<group>"; };
+		F8892300C56FF2C207FA2543 /* SyncAccounts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncAccounts.swift; sourceTree = "<group>"; };
 		F897B750389038E18EE9AC09 /* RidesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RidesView.swift; sourceTree = "<group>"; };
 		F993B08CE32DB569E2279B90 /* BikeGPS-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "BikeGPS-Bridging-Header.h"; sourceTree = "<group>"; };
 		F99E928FB741D98CDD96ABA0 /* DashboardEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardEditorView.swift; sourceTree = "<group>"; };
 		FB4FCCF15F9E57B3747DD159 /* linkedGeo.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = linkedGeo.h; sourceTree = "<group>"; };
 /* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		8BEE8A9B2F3F3206900B6C75 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				592497FD48D74D86C61AC752 /* FirebaseAppCheck in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
 		18CC695DF5F6C2584F4E3869 = {
@@ -221,6 +236,7 @@
 				2ACAD995F312514690C2FF16 /* MeshScanner.swift */,
 				0641658A779893A7975FA99F /* MeshView.swift */,
 				756CD94A1C875E17A3321CC8 /* OnboardingView.swift */,
+				83D3B5218D4B7A1C4035B1B2 /* OpenTrailPaper.entitlements */,
 				4B4C752C73B32E5B3E92EAE4 /* PhoneMock.swift */,
 				E1B62C507D47EAD0BDDDD24F /* RideDetailView.swift */,
 				A1B38F0A13FA33BFE4E04416 /* RideSim.swift */,
@@ -230,6 +246,7 @@
 				0D0FC030F1FACFFD44C96837 /* SensorsView.swift */,
 				BE5C27C920995C9292457A9C /* SettingsView.swift */,
 				73ECF60CAA9C73957BC40AC2 /* SketchIcon.swift */,
+				F8892300C56FF2C207FA2543 /* SyncAccounts.swift */,
 				79F3F907C8247AC1B8A63959 /* Theme.swift */,
 				E15692F37161BEC610966D47 /* TileCache.swift */,
 				CA682C44407CE9C7FF852A4F /* WorkoutsView.swift */,
@@ -302,6 +319,7 @@
 			buildPhases = (
 				2ABCFDB68F0BDE6533A99F34 /* Sources */,
 				DB1DAE7FDCB80F57D75AF147 /* Resources */,
+				8BEE8A9B2F3F3206900B6C75 /* Frameworks */,
 			);
 			buildRules = (
 			);
@@ -309,6 +327,7 @@
 			);
 			name = OpenTrailPaper;
 			packageProductDependencies = (
+				880B86FA551AFFB25164DF8A /* FirebaseAppCheck */,
 			);
 			productName = OpenTrailPaper;
 			productReference = 6AEE6D137CDDF2F463F27932 /* OpenTrailPaper.app */;
@@ -338,6 +357,9 @@
 			);
 			mainGroup = 18CC695DF5F6C2584F4E3869;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				B8F27F0FC5266ADB974E291A /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 50CE6737CF57F2CA89F9BC4F /* Products */;
 			projectDirPath = "";
@@ -399,6 +421,7 @@
 				5D1E2FE5B8652DC846C39AF7 /* SensorsView.swift in Sources */,
 				F5E522C16FCFE097E2072926 /* SettingsView.swift in Sources */,
 				C7F7382D5542409C17015EFB /* SketchIcon.swift in Sources */,
+				937C33A6DB0DBC569E69366E /* SyncAccounts.swift in Sources */,
 				D017F03AE055F1971F5815BA /* Theme.swift in Sources */,
 				F6958E6E296967C90F9CDC75 /* TileCache.swift in Sources */,
 				F48BC7C4FF775911CE8FE038 /* WorkoutsView.swift in Sources */,
@@ -431,6 +454,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = Sources/OpenTrailPaper.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				ENABLE_PREVIEWS = YES;
 				GCC_WARN_INHIBIT_ALL_WARNINGS = YES;
@@ -509,6 +533,11 @@
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
+				OTP_FIREBASE_API_KEY = AIzaSyBKyetp7u_SWqWXpxrpBnTPLSQjs9OABs0;
+				OTP_FIREBASE_APP_ID = "1:357305860460:ios:b87502618ab5d246073349";
+				OTP_FIREBASE_PROJECT_ID = opentrailpaper;
+				OTP_FIREBASE_SENDER_ID = 357305860460;
+				OTP_SYNC_SERVICE_URL = "https://sync.opentrailpaper.com";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
@@ -570,6 +599,11 @@
 				MARKETING_VERSION = 0.5;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
+				OTP_FIREBASE_API_KEY = AIzaSyBKyetp7u_SWqWXpxrpBnTPLSQjs9OABs0;
+				OTP_FIREBASE_APP_ID = "1:357305860460:ios:b87502618ab5d246073349";
+				OTP_FIREBASE_PROJECT_ID = opentrailpaper;
+				OTP_FIREBASE_SENDER_ID = 357305860460;
+				OTP_SYNC_SERVICE_URL = "https://sync.opentrailpaper.com";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
 				SWIFT_COMPILATION_MODE = wholemodule;
@@ -582,6 +616,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = Sources/OpenTrailPaper.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				ENABLE_PREVIEWS = YES;
 				GCC_WARN_INHIBIT_ALL_WARNINGS = YES;
@@ -622,6 +657,25 @@
 			defaultConfigurationName = Debug;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		B8F27F0FC5266ADB974E291A /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/firebase/firebase-ios-sdk";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 11.6.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		880B86FA551AFFB25164DF8A /* FirebaseAppCheck */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B8F27F0FC5266ADB974E291A /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseAppCheck;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 8BA9E00CC1259C370A1A3517 /* Project object */;
 }

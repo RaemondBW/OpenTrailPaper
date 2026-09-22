@@ -1,0 +1,13 @@
+{
+  "name": "opentrailpaper-sync-auth",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OAuth broker for the OpenTrailPaper companion apps: Strava and RideWithGPS secrets stay here, on Cloud Run.",
+  "main": "server.js",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test/"
+  },
+  "license": "MIT"
+}

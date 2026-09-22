@@ -18,6 +18,7 @@ import com.raemond.opentrailpaper.OpenTrailPaperApp
 import com.raemond.opentrailpaper.ble.BleManager
 import com.raemond.opentrailpaper.data.Prefs
 import com.raemond.opentrailpaper.data.RouteImport
+import com.raemond.opentrailpaper.data.SyncAccounts
 import kotlinx.coroutines.launch
 
 /**
@@ -77,9 +78,17 @@ class MainActivity : ComponentActivity() {
         handleImport(intent)
     }
 
-    /** A .gpx opened from another app. Parsed off the main thread. */
+    /** A .gpx opened from another app, or a sign-in redirect. Off the main thread. */
     private fun handleImport(intent: Intent?) {
         intent ?: return
+        // The Strava / RideWithGPS consent page bouncing back through our URL
+        // scheme; spent the same way a file intent is, below.
+        val data = intent.data
+        if (intent.action == Intent.ACTION_VIEW && SyncAccounts.isReturnLink(data)) {
+            intent.data = null
+            lifecycleScope.launch { SyncAccounts.handleCallback(data) }
+            return
+        }
         val uri = when (intent.action) {
             Intent.ACTION_VIEW -> intent.data
             Intent.ACTION_SEND -> IntentCompat.getParcelableExtra(
@@ -97,6 +106,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        SyncAccounts.noteResumed()
         // Coming back from system Settings is the one way a permission changes
         // without anything telling us, and it's exactly the path our own "Open
         // Settings" buttons send people down.
