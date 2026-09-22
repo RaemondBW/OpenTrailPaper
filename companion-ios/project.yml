@@ -11,13 +11,46 @@ settings:
     SWIFT_VERSION: "5.0"
     DEVELOPMENT_TEAM: "G5JFC849XY"
     CODE_SIGN_STYLE: Automatic
+    # Public address of the sync-auth service (cloud/sync-auth), the broker
+    # for Strava / RideWithGPS sign-in. A URL, not a secret. Empty = the
+    # Accounts card explains uploads are unavailable.
+    OTP_SYNC_SERVICE_URL: "https://sync.opentrailpaper.com"
+    # Firebase App Check identifiers for the iOS app (Firebase project
+    # `opentrailpaper`). These are identifiers, not secrets: the API key is
+    # restricted in Google Cloud to the App Check and Installations APIs and to
+    # this bundle id, and a token is only ever minted for an app that passes
+    # App Attest. What they unlock is the sync service's proof that a caller
+    # is this app.
+    OTP_FIREBASE_APP_ID: "1:357305860460:ios:b87502618ab5d246073349"
+    OTP_FIREBASE_API_KEY: "AIzaSyBKyetp7u_SWqWXpxrpBnTPLSQjs9OABs0"
+    OTP_FIREBASE_PROJECT_ID: "opentrailpaper"
+    OTP_FIREBASE_SENDER_ID: "357305860460"
     GENERATE_INFOPLIST_FILE: NO
+packages:
+  # Only FirebaseAppCheck is linked (App Attest tokens for the sync service).
+  firebase-ios-sdk:
+    url: https://github.com/firebase/firebase-ios-sdk
+    from: 11.6.0
 targets:
   OpenTrailPaper:
     type: application
     platform: iOS
     sources:
       - Sources
+    dependencies:
+      - package: firebase-ios-sdk
+        product: FirebaseAppCheck
+    entitlements:
+      path: Sources/OpenTrailPaper.entitlements
+      properties:
+        # Universal Links: sync.opentrailpaper.com/app/sync/* opens in this app
+        # and no other, which is what makes the sign-in return trustworthy.
+        # ?mode=developer lets developer-signed builds (simulator, Xcode
+        # installs) fetch the association directly instead of through Apple's
+        # CDN; App Store builds ignore the flag.
+        com.apple.developer.associated-domains:
+          - applinks:sync.opentrailpaper.com?mode=developer
+        com.apple.developer.devicecheck.appattest-environment: production
     settings:
       base:
         INFOPLIST_FILE: Sources/Info.plist

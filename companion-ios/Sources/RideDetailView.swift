@@ -65,6 +65,9 @@ struct RideDetailView: View {
                         Color.clear
                     }
 
+                    // Straight to a connected account (Settings > Accounts);
+                    // the share sheet below stays for everything else.
+                    SyncUploadButtons(fileURL: fileURL, name: dateTitle)
                     PrimaryButton(title: "Share .fit file",
                                   systemImage: "square.and.arrow.up") {
                         showShare = true

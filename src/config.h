@@ -70,6 +70,20 @@
 // while the branch is unmerged; on merge it goes back to being the real version.
 #define FIRMWARE_VERSION    "v1.19"
 
+// Interrupt watchdog budget, in place of the framework's 300 ms. Light sleep
+// stalls core 0 for the whole sleep call, and with sensor links up a call can
+// wait most of a BLE connection interval; 300 ms was resetting the device
+// mid-ride at the end of an otherwise harmless stall (see src/int_wdt_stretch.cpp).
+// The hard-reset stage stays at twice this. Must not be below 300.
+#define INT_WDT_TIMEOUT_MS  1000
+
+// Longest single light-sleep call, in ms, enforced with a periodic esp_timer
+// wake. Each call stalls the other core for its whole length, so this keeps
+// every stall well inside INT_WDT_TIMEOUT_MS regardless of what else is
+// scheduled (with no sensor links the next natural wake can be the 1 Hz GPS
+// burst). Costs a wake every PM_SLEEP_CAP_MS while sleeping. 0 disables.
+#define PM_SLEEP_CAP_MS     400
+
 // Rider settings
 #define FTP_WATTS           250     // for the power zone bar (Coggan zones)
 #define TIMEZONE_OFFSET_MINUTES (-420)  // clock display; PDT = UTC-7

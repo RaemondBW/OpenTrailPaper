@@ -148,7 +148,8 @@ void writeRide(const char* path, const std::vector<float>& demElev,
         r.cadence = FitWriter::INVALID_U8;
         w.writeRecord(r);
     }
-    w.finish(RIDE_START + (time_t)demElev.size(), dist, (uint32_t)demElev.size());
+    w.finish(RIDE_START + (time_t)demElev.size(), dist, (uint32_t)demElev.size(),
+             FitWriter::Summary{1, 20.0f, 0, 0, 0, 0.0f});
 }
 
 }  // namespace

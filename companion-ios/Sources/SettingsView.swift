@@ -33,6 +33,7 @@ struct SettingsView: View {
                     // with no connection from the Route page too, so gating it
                     // here would be a quiet regression.
                     mapsCard
+                    SyncAccountsCard()
                     Card {
                         VStack(alignment: .leading, spacing: 10) {
                             Text("Units").trackedLabel()

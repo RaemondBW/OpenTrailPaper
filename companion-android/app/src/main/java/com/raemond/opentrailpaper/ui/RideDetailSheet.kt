@@ -17,13 +17,19 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -33,8 +39,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.raemond.opentrailpaper.data.BoundingBox
 import com.raemond.opentrailpaper.data.RidePreview
+import com.raemond.opentrailpaper.data.SyncAccounts
 import com.raemond.opentrailpaper.data.Units
 import java.io.File
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -142,9 +150,43 @@ fun RideDetailSheet(
                 Spacer(Modifier.weight(1f))
             }
 
+            // Straight to a connected account (Settings > Accounts); the share
+            // button below stays for everything else.
+            UploadButtons(file, title)
             PrimaryButton("Share .fit file", icon = Icons.Filled.Share) {
                 Share.fit(context, file)
             }
+        }
+    }
+}
+
+@Composable
+private fun UploadButtons(file: File, name: String) {
+    val scope = rememberCoroutineScope()
+    var uploading by remember { mutableStateOf<SyncAccounts.Provider?>(null) }
+    val status = remember { mutableStateMapOf<SyncAccounts.Provider, String>() }
+    for (p in SyncAccounts.Provider.entries) {
+        if (!SyncAccounts.isConnected(p)) continue
+        PrimaryButton(
+            if (uploading == p) "Uploading to ${p.title}…" else "Upload to ${p.title}",
+            icon = Icons.Filled.CloudUpload,
+            enabled = uploading == null && status[p] == null,
+        ) {
+            uploading = p
+            scope.launch {
+                status[p] = try {
+                    SyncAccounts.upload(file, p, name)
+                } catch (e: Exception) {
+                    e.message ?: "Upload failed."
+                }
+                uploading = null
+            }
+        }
+        status[p]?.let {
+            Text(
+                it, style = barlow(12.sp),
+                color = if (it.startsWith("Uploaded")) Palette.good else Palette.accentDark,
+            )
         }
     }
 }

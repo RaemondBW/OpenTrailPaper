@@ -51,12 +51,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.raemond.opentrailpaper.ble.BleManager
 import com.raemond.opentrailpaper.ble.PermissionState
 import com.raemond.opentrailpaper.data.FirmwareRelease
+import com.raemond.opentrailpaper.data.SyncAccounts
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Locale
@@ -98,6 +100,8 @@ fun SettingsScreen(ble: BleManager, host: HostActions, onShowTutorial: () -> Uni
         // fetching OSM works offline, and the Maps screen only needs the link for
         // the upload itself.
         NavCard("Maps", mapsSummary(ble), icon = Icons.Filled.Map) { showMaps = true }
+
+        AccountsCard()
 
         Card {
             TrackedLabel("Units")
@@ -229,6 +233,73 @@ fun SettingsScreen(ble: BleManager, host: HostActions, onShowTutorial: () -> Uni
 }
 
 // MARK: cards
+
+/**
+ * Strava / RideWithGPS. Connect opens the provider's consent page in a Custom
+ * Tab; the tokens come back through the app's URL scheme (SyncAccounts). What
+ * the card shows is the account name the provider reported.
+ */
+@Composable
+private fun AccountsCard() {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    Card {
+        TrackedLabel("Accounts")
+        Spacer(Modifier.size(6.dp))
+        if (!SyncAccounts.isConfigured) {
+            Text(
+                "Strava and RideWithGPS uploads need the sync service, which this build was " +
+                    "not pointed at. The share button still works.",
+                style = barlow(12.sp), color = Palette.muted,
+            )
+            return@Card
+        }
+        Text(
+            "Connect once, then upload rides from a ride's page. Only your own sign-in is " +
+                "kept, on this phone.",
+            style = barlow(12.sp), color = Palette.muted,
+        )
+        for (p in SyncAccounts.Provider.entries) {
+            Spacer(Modifier.size(12.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(p.title, style = TypeScale.bodyStrong, color = Palette.ink)
+                    val t = SyncAccounts.tokens[p]
+                    Text(
+                        when {
+                            t == null -> "Not connected"
+                            t.athleteName != null -> "Connected as ${t.athleteName}"
+                            else -> "Connected"
+                        },
+                        style = barlow(12.sp), color = Palette.muted,
+                    )
+                }
+                when {
+                    SyncAccounts.busy == p -> CircularProgressIndicator(
+                        Modifier.size(20.dp), color = Palette.accent, strokeWidth = 2.dp,
+                    )
+                    SyncAccounts.isConnected(p) -> TextButton(onClick = {
+                        scope.launch { SyncAccounts.disconnect(p) }
+                    }) { Text("Disconnect", style = barlow(14.sp), color = Palette.muted) }
+                    else -> TextButton(onClick = { scope.launch { SyncAccounts.connect(context, p) } }) {
+                        Text("Connect", style = barlow(14.sp), color = Palette.accent)
+                    }
+                }
+            }
+        }
+        if (!SyncAccounts.attested) {
+            Spacer(Modifier.size(8.dp))
+            Text(
+                "This build has no App Check identity, so the service will refuse it.",
+                style = barlow(12.sp), color = Palette.accentDark,
+            )
+        }
+        SyncAccounts.lastError?.let {
+            Spacer(Modifier.size(8.dp))
+            Text(it, style = barlow(12.sp), color = Palette.accentDark)
+        }
+    }
+}
 
 @Composable
 private fun NavCard(
