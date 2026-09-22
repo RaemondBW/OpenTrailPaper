@@ -45,6 +45,7 @@
 		9A51A79216A6D77B6B223CE3 /* Barlow-SemiBold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 42632703DAE05E73F934FFE1 /* Barlow-SemiBold.ttf */; };
 		A44F34DFEC944328672D82B2 /* FITDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 590A2666A030966B6741EDAF /* FITDecoder.swift */; };
 		ABE6FDB260BAA3609F5C5516 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 756CD94A1C875E17A3321CC8 /* OnboardingView.swift */; };
+		B0FDE7FE636803E478340742 /* DashboardPageEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D5700252C3393AC06C9BEB9 /* DashboardPageEditorView.swift */; };
 		B1BE7F5A245A3C270036C6E2 /* algos.c in Sources */ = {isa = PBXBuildFile; fileRef = ABBED3B34B25D9BCAFA3FDB5 /* algos.c */; };
 		BE0814223F037C69E39B93D7 /* RidesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F897B750389038E18EE9AC09 /* RidesView.swift */; };
 		BF7FEB57C05E17549C09CF25 /* DashLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9D6BB31E96DD85DBE9B68CA /* DashLayout.swift */; };
@@ -93,6 +94,7 @@
 		4B4C752C73B32E5B3E92EAE4 /* PhoneMock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneMock.swift; sourceTree = "<group>"; };
 		4D6D4D7CC3D2F7CA7F2BB14A /* vec3d.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = vec3d.h; sourceTree = "<group>"; };
 		590A2666A030966B6741EDAF /* FITDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FITDecoder.swift; sourceTree = "<group>"; };
+		5D5700252C3393AC06C9BEB9 /* DashboardPageEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardPageEditorView.swift; sourceTree = "<group>"; };
 		61E9FB68F94751F3E5B65B66 /* h3Index.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = h3Index.c; sourceTree = "<group>"; };
 		6AEE6D137CDDF2F463F27932 /* OpenTrailPaper.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = OpenTrailPaper.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		6CDCF740EC9B89D5492FD0C7 /* h3Assert.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = h3Assert.h; sourceTree = "<group>"; };
@@ -218,6 +220,7 @@
 				37C3CA9775B956BC238BAA42 /* BikeGPSCompanionApp.swift */,
 				CBBFA5634178A1D43462F629 /* BLEManager.swift */,
 				F99E928FB741D98CDD96ABA0 /* DashboardEditorView.swift */,
+				5D5700252C3393AC06C9BEB9 /* DashboardPageEditorView.swift */,
 				A9D6BB31E96DD85DBE9B68CA /* DashLayout.swift */,
 				D66117B8CB78BBC0949D8DF3 /* demo.fit */,
 				E467F3BA417A6A968F920F77 /* DeviceMock.swift */,
@@ -397,6 +400,7 @@
 				021E5D177FE3BCD463AA49BF /* BikeGPSCompanionApp.swift in Sources */,
 				BF7FEB57C05E17549C09CF25 /* DashLayout.swift in Sources */,
 				8885B18C0FC6E6E98283CD24 /* DashboardEditorView.swift in Sources */,
+				B0FDE7FE636803E478340742 /* DashboardPageEditorView.swift in Sources */,
 				0F07C59EAB533AC46B37D7ED /* DeviceMock.swift in Sources */,
 				F71D1CFFCC25AD4A7A19D698 /* DiagnosticsView.swift in Sources */,
 				2593A42A317117DDFBAF716E /* EInkMapView.swift in Sources */,
