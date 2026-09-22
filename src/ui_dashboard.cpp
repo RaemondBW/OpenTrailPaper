@@ -254,14 +254,26 @@ void shutdownDevice(uint8_t* fb, const char* reason) {
     // e-paper needs no power to hold a frame, which is the whole premise of the
     // farewell screen.
     epdc_power_off_wait();
+    // Verify the rails are actually down (and force them if not) BEFORE the
+    // final SD flush, so the readback lands in the card's log. A device
+    // measured ~30 mA "off" for hours; the blind wait alone was not evidence.
+    epdc_power_off_verify();
+    // Frontlight off and HELD: analogWrite() only parks the LEDC duty at 0,
+    // and a digital pad floats in deep sleep unless held. The factory sleep
+    // sequence zeroes this pin too (vendor examples/factory ui_sleep()).
+    analogWrite(BOARD_BL_EN, 0);
+    pinMode(BOARD_BL_EN, OUTPUT);
+    digitalWrite(BOARD_BL_EN, LOW);
+    gpio_hold_en((gpio_num_t)BOARD_BL_EN);
 
     // Drain users, then KEEP the bus lock through deep sleep. Releasing it
     // after SD.end() lets recorder/diag/MSC/LoRa tasks start new work while the
     // card is unmounted and power-down is in progress.
     sdLock();
-    diag::log("sleep: final SD flush; mounted=%d host=%d CS=%d/%d",
+    diag::log("sleep: final SD flush; mounted=%d host=%d CS=%d/%d bl=%d",
               ride_recorder::sdMounted(), usb_storage::hostActive(),
-              digitalRead(BOARD_SD_CS), digitalRead(BOARD_LORA_CS));
+              digitalRead(BOARD_SD_CS), digitalRead(BOARD_LORA_CS),
+              digitalRead(BOARD_BL_EN));
     diag::flushToSD();
     diag::checkpoint("entering deep sleep");
     diag::storageStage(6);

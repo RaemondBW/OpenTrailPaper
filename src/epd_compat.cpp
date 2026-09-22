@@ -490,6 +490,8 @@ EpdRect epd_get_string_rect(const EpdFont* font, const char* string, int x, int 
 #include "EPD_Painter.h"
 
 #include "config.h"
+#include "i2c_bus.h"
+#include "diag.h"
 
 namespace {
 
@@ -645,6 +647,7 @@ bool epdc_begin() {
         return false;
     }
     g_painter = &painter;
+    painter.setIdleTimeout(PANEL_IDLE_OFF_S);
 
     epd_set_rotation(DISPLAY_ROTATION);
     Serial.printf("[epdc] ready: %d grey levels, internal left=%u psram left=%u\n",
@@ -738,6 +741,65 @@ void epdc_power_off_wait() {
     // tick of task phase + margin. The task runs at priority 1 and this is the
     // UI task at 2, so the delay is also what lets it be scheduled at all.
     vTaskDelay(pdMS_TO_TICKS(6500));
+}
+
+namespace {
+// Board addresses (vendor README: PCA9535PW at 0x20; TPS65185 at 0x68). The
+// driver's own copies live inside its config; these are the same bus and chips.
+constexpr uint8_t kPcaAddr = 0x20;
+constexpr uint8_t kTpsAddr = 0x68;
+constexpr uint8_t kPcaOut1 = 0x03;    // output port 1: panel control lines
+constexpr uint8_t kTpsEnable = 0x01;
+constexpr uint8_t kTpsPg = 0x0F;
+// Port 1 bits the driver raises to run the panel (epd_painter_powerctl.h):
+// OE bit0, MODE bit1, PWRUP bit3, VCOM bit4, WAKEUP bit5.
+constexpr uint8_t kRailBits = 0x1B;
+constexpr uint8_t kWakeupBit = 0x20;
+
+bool i2cRead8(uint8_t addr, uint8_t reg, uint8_t& val) {
+    Wire.beginTransmission(addr);
+    Wire.write(reg);
+    if (Wire.endTransmission(false) != 0) return false;
+    if (Wire.requestFrom(addr, (uint8_t)1) != 1) return false;
+    val = Wire.read();
+    return true;
+}
+bool i2cWrite8(uint8_t addr, uint8_t reg, uint8_t val) {
+    Wire.beginTransmission(addr);
+    Wire.write(reg);
+    Wire.write(val);
+    return Wire.endTransmission() == 0;
+}
+}  // namespace
+
+bool epdc_power_off_verify() {
+    if (!g_painter) return true;
+    uint8_t out1 = 0xFF, en = 0xFF, pg = 0xFF;
+    i2cLock();
+    bool okOut = i2cRead8(kPcaAddr, kPcaOut1, out1);
+    bool okEn = i2cRead8(kTpsAddr, kTpsEnable, en);
+    bool okPg = i2cRead8(kTpsAddr, kTpsPg, pg);
+    bool down = okOut && (out1 & (kRailBits | kWakeupBit)) == 0 && okEn && en == 0;
+    diag::log("panel: after idle wait pca_out1=0x%02x tps_enable=0x%02x pg=0x%02x -> %s",
+              out1, en, pg, down ? "down" : "STILL UP, forcing off");
+    if (!down) {
+        // The driver's powerOff(), replayed: rails off at the PMIC first so
+        // nothing bleeds through the panel, then the control lines, then WAKEUP
+        // last so the TPS drops into sleep.
+        i2cWrite8(kTpsAddr, kTpsEnable, 0x00);
+        if (okOut) i2cWrite8(kPcaAddr, kPcaOut1, out1 & ~kRailBits);
+        delay(1);
+        if (okOut) i2cWrite8(kPcaAddr, kPcaOut1, out1 & ~(kRailBits | kWakeupBit));
+        delay(2);
+        okOut = i2cRead8(kPcaAddr, kPcaOut1, out1);
+        okEn = i2cRead8(kTpsAddr, kTpsEnable, en);
+        i2cRead8(kTpsAddr, kTpsPg, pg);
+        down = okOut && (out1 & (kRailBits | kWakeupBit)) == 0 && okEn && en == 0;
+        diag::log("panel: forced off -> pca_out1=0x%02x tps_enable=0x%02x pg=0x%02x -> %s",
+                  out1, en, pg, down ? "down" : "NOT DOWN");
+    }
+    i2cUnlock();
+    return down;
 }
 
 void epdc_clear(int passes) {

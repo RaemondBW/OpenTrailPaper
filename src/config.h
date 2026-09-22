@@ -84,6 +84,14 @@
 // burst). Costs a wake every PM_SLEEP_CAP_MS while sleeping. 0 disables.
 #define PM_SLEEP_CAP_MS     400
 
+// Seconds of an idle panel before the driver drops the TPS65185 rails. The
+// driver arms this at DRIVE START and counts at 1 Hz with unknown phase, so the
+// earliest cut is (N-1) s after a drive begins. The longest drive is the ~1.9 s
+// 4-pass boot clear; 4 keeps a full second of margin over it where the stock
+// 5 kept two. Anything shorter needs the countdown moved to drive END, which
+// is a driver patch (see tools/epd_idle_patch.py for the precedent).
+#define PANEL_IDLE_OFF_S    4
+
 // Rider settings
 #define FTP_WATTS           250     // for the power zone bar (Coggan zones)
 #define TIMEZONE_OFFSET_MINUTES (-420)  // clock display; PDT = UTC-7
