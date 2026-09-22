@@ -539,7 +539,12 @@ private fun Inspector(
                         "right half of a full-width cell to pair them.",
                     style = barlow(14.sp), color = Palette.muted,
                 )
-                Spacer(Modifier.weight(1f))
+                // A fixed gap, not weight(1f): the inspector is not a weighted
+                // child of the screen column, so it is measured before the
+                // panel with the whole remaining height on offer, and a
+                // weighted spacer here took all of it - the panel was left
+                // with a sliver and this card filled the screen.
+                Spacer(Modifier.height(14.dp))
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                     Text(
                         "Reset to default",
