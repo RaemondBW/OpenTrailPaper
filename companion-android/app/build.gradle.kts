@@ -76,6 +76,14 @@ android {
         buildConfigField("String", "FIREBASE_API_KEY", "\"$firebaseApiKey\"")
         buildConfigField("String", "FIREBASE_PROJECT_ID", "\"$firebaseProjectId\"")
         buildConfigField("String", "FIREBASE_SENDER_ID", "\"$firebaseSenderId\"")
+        // App Check's debug provider in a RELEASE build, for a sideloaded test
+        // install on a developer's own phone: Play Integrity only vouches for
+        // apps Google Play installed, so a sideloaded release is refused by the
+        // sync service. Build with `-Pappcheck.debug=true`, then register the
+        // token the phone prints. Never for a published APK: the property
+        // defaults to false and CI does not set it.
+        buildConfigField("boolean", "APP_CHECK_DEBUG",
+            (project.findProperty("appcheck.debug")?.toString() == "true").toString())
         // The App Link host for the sign-in return (AndroidManifest.xml).
         manifestPlaceholders["syncHost"] = syncUrl.removePrefix("https://").removePrefix("http://")
 

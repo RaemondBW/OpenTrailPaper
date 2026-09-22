@@ -27,6 +27,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.security.SecureRandom
 import android.util.Base64
+import android.util.Log
 
 /**
  * Strava and RideWithGPS accounts: connect, keep the tokens, upload rides.
@@ -87,7 +88,15 @@ object SyncAccounts {
     val tokens = mutableStateMapOf<Provider, Tokens>()
     var busy by mutableStateOf<Provider?>(null)
         private set
-    var lastError by mutableStateOf<String?>(null)
+    private var lastErrorState by mutableStateOf<String?>(null)
+    var lastError: String?
+        get() = lastErrorState
+        set(value) {
+            lastErrorState = value
+            // Also to logcat: the card's text is the only other place it goes.
+            if (value != null) Log.w(TAG, value)
+        }
+    private const val TAG = "SyncAccounts"
 
     private val pendingState = mutableMapOf<Provider, String>()
 
@@ -125,7 +134,7 @@ object SyncAccounts {
                     )
                 }
                 FirebaseAppCheck.getInstance().installAppCheckProviderFactory(
-                    if (BuildConfig.DEBUG) {
+                    if (BuildConfig.DEBUG || BuildConfig.APP_CHECK_DEBUG) {
                         // Prints a debug token to logcat once; register it under
                         // App Check > Apps > Manage debug tokens.
                         DebugAppCheckProviderFactory.getInstance()
@@ -136,7 +145,7 @@ object SyncAccounts {
                 attested = true
                 // Debug builds: ask once now so the debug token is printed at
                 // launch (the provider only logs it on the first request).
-                if (BuildConfig.DEBUG) FirebaseAppCheck.getInstance().getAppCheckToken(false)
+                if (BuildConfig.DEBUG || BuildConfig.APP_CHECK_DEBUG) FirebaseAppCheck.getInstance().getAppCheckToken(false)
             }.onFailure { lastError = "App Check unavailable: ${it.message}" }
         }
     }
@@ -373,7 +382,10 @@ object SyncAccounts {
         // Prove this is the app: only calls to our own service get the token.
         if (attested && URL(url).host == serviceHost) {
             val t = runCatching { FirebaseAppCheck.getInstance().getAppCheckToken(false).await().token }
-                .getOrElse { throw SyncException("App Check failed: ${it.message}") }
+                .getOrElse {
+                    Log.w(TAG, "App Check token", it)
+                    throw SyncException("App Check failed: ${it.message}")
+                }
             c.setRequestProperty("X-Firebase-AppCheck", t)
         }
         return c
