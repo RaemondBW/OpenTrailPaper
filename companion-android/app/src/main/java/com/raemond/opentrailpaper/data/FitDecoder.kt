@@ -25,7 +25,7 @@ data class RidePreview(
         val cadence: Int?,
     )
 
-    val coordinates: List<LatLon> get() = points.map { it.coordinate }
+    val coordinates: List<LatLon> by lazy(LazyThreadSafetyMode.NONE) { points.map { it.coordinate } }
 }
 
 /**

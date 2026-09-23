@@ -455,6 +455,19 @@ private fun rebuildContent(
     }
 }
 
+private fun fitBox(map: MapView, b: BoundingBox, paddingPx: Int) {
+    if (map.width <= 0 || map.height <= 0) {
+        // schedule self for the next update until the map is ready
+        map.post { fitBox(map, b, paddingPx) }
+        return
+    }
+    map.zoomToBoundingBox(
+        org.osmdroid.util.BoundingBox(b.north, b.east, b.south, b.west),
+        false,
+        paddingPx,
+    )
+}
+
 private fun apply(map: MapView, state: MapState, camera: MapCamera, bottomInsetPx: Int) {
     // Only break follow mode if it is actually engaged.
     fun stopFollowing() {
@@ -474,11 +487,7 @@ private fun apply(map: MapView, state: MapState, camera: MapCamera, bottomInsetP
             stopFollowing()
             val b = target.box
             if (bottomInsetPx <= 0) {
-                map.zoomToBoundingBox(
-                    org.osmdroid.util.BoundingBox(b.north, b.east, b.south, b.west),
-                    true,
-                    target.paddingPx,
-                )
+                fitBox(map, b, target.paddingPx)
             } else {
                 // zoomToBoundingBox only takes a uniform border, which would centre
                 // the box behind the floating card. Fit it into the band ABOVE the
