@@ -5,6 +5,25 @@ released version into the GitHub release body (see .github/workflows/build.yml),
 and the app shows it under Settings → Firmware when an update is available —
 so write for the rider, newest version first, one `## vX.YY` heading each.
 
+## v1.20
+
+- Garmin Varia radar support. Pair a Varia from the app or the Sensors
+  screen and add a radar tile to any dashboard page: a column down the
+  right side that shows cars coming up behind you and how far back they
+  are, in feet or metres to match your units. You can make it full, three-
+  quarter or half height, and pin it to the top or bottom of the page.
+- Longer battery life. The device now sleeps between GPS updates and
+  while the phone and sensors are connected but quiet, instead of staying
+  fully awake the whole time it is on.
+- Mesh messaging works outside the US. Choose your LoRa region, transmit
+  power and frequency slot from the app's Mesh settings instead of
+  rebuilding the firmware. Existing devices stay on the US band until you
+  change it.
+- Rides uploaded to Strava, intervals.icu and RideWithGPS now show
+  OpenTrailPaper as the recording device, with the firmware version.
+- If the device crashes, it saves a crash report to the SD card on the
+  next boot, so a problem can be tracked down after the ride.
+
 ## v1.19
 
 - A device with no paired sensors can find its first one again. Scanning
