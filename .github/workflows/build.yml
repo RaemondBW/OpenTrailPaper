@@ -235,15 +235,20 @@ jobs:
 
       # Read versionName out of the built APK rather than re-parsing the
       # gradle file, so the tag below can never disagree with what installs.
+      # Gradle names the file app-release-unsigned.apk when no signing key was
+      # configured - a fork PR, which has no secrets - so accept either.
       - name: Read app version
         id: app
         run: |
+          apk=$(ls app/build/outputs/apk/release/app-release.apk \
+                   app/build/outputs/apk/release/app-release-unsigned.apk 2>/dev/null | head -1)
+          [ -n "$apk" ] || { echo "::error::no release APK under app/build/outputs/apk/release"; exit 1; }
           aapt=$(ls "$ANDROID_HOME"/build-tools/*/aapt | sort -V | tail -1)
-          v=$("$aapt" dump badging app/build/outputs/apk/release/app-release.apk \
+          v=$("$aapt" dump badging "$apk" \
                 | sed -n "s/.*versionName='\([^']*\)'.*/\1/p")
-          echo "version=$v"
+          echo "version=$v ($apk)"
           echo "version=$v" >> "$GITHUB_OUTPUT"
-          cp app/build/outputs/apk/release/app-release.apk "OpenTrailPaper-$v.apk"
+          cp "$apk" "OpenTrailPaper-$v.apk"
 
       # Installable straight from the workflow run, the way the firmware
       # artifact is flashable. Only useful when signed (see above).
