@@ -91,6 +91,14 @@ void epdc_paint_wait();
 // the whole premise of the farewell screen.
 void epdc_power_off_wait();
 
+// After epdc_power_off_wait(): read back what the PMIC and the expander's panel
+// control lines actually hold, and if any rail is still enabled, drive the
+// driver's own power-off sequence from here (TPS ENABLE=0, then OE/MODE/PWRUP/
+// VCOM low, then WAKEUP low). Logs before and after. Returns true when the
+// panel is verifiably down. The blind wait used to be the only evidence, and a
+// device measured ~30 mA "off" says it was not always enough.
+bool epdc_power_off_verify();
+
 // Drive the whole panel to white. `passes` > 1 repeats it: e-paper keeps its
 // image through power-off, so the first boot after a different firmware needs
 // several passes to shift what is physically on the glass (one was not enough,
