@@ -366,6 +366,8 @@ void tick() {
     }
 }
 
+bool busyReady() { return s_busyLock != nullptr; }
+
 void busyAcquire() {
     // PM lock operations on the same handle require external serialization.
     // Bus, panel and shutdown callers can run on different cores.
