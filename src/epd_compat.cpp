@@ -6,6 +6,9 @@
 
 #include "epd_compat.h"
 #include "vfont.h"
+#include "power_mgmt.h"
+
+#include <esp_timer.h>
 
 #include <stdlib.h>
 #include <string.h>
@@ -685,8 +688,69 @@ static void expandLevels() {
 #define PAINT_TRACE(msg) ((void)0)
 #endif
 
+// --- Light sleep and the panel driver's I2C ---------------------------------
+//
+// Every paint or clear makes the driver raise the panel rails (PCA9535 control
+// lines + TPS65185 enable, over I2C, on the calling task) and re-arm a
+// countdown; its `panel_idle_off` task ticks that down at 1 Hz and lowers the
+// rails again (more I2C) when it reaches zero. None of that goes through
+// i2cLock(), so PR #83's "hold light sleep off across I2C" never covered it —
+// and a transaction gated by light sleep mid-way leaves the I2C peripheral
+// re-asserting an interrupt it cannot clear. The 2026-09-25 08:07 ride reset
+// (dump memfault-8622fb96…) is core 0 in the level-1 dispatcher straight after
+// the I2C ISR, core 1 idle, on a build that already had #83.
+//
+// So: hold light sleep off from the first drive until the driver has had its
+// idle-off tick — the idle timeout plus a two-second margin for the 1 Hz task
+// phase and the powerOff transaction — re-armed by every drive. Nothing here
+// touches the dependency; it wraps the calls we already make.
+namespace {
+#ifndef PANEL_IDLE_OFF_S
+constexpr int kPanelIdleOffS = 5;          // the driver's default (_idle_timeout_s)
+#else
+constexpr int kPanelIdleOffS = PANEL_IDLE_OFF_S;
+#endif
+constexpr uint64_t kPanelHoldUs = (uint64_t)(kPanelIdleOffS + 2) * 1000000ULL;
+
+portMUX_TYPE g_holdMux = portMUX_INITIALIZER_UNLOCKED;
+bool g_holdHeld = false;
+esp_timer_handle_t g_holdTimer = nullptr;
+
+void panelHoldExpired(void*) {
+    bool release = false;
+    portENTER_CRITICAL(&g_holdMux);
+    if (g_holdHeld) { g_holdHeld = false; release = true; }
+    portEXIT_CRITICAL(&g_holdMux);
+    if (release) power_mgmt::busyRelease();
+}
+
+// Called at the top of every drive. Takes the hold once (while power
+// management is up — before that the count would go unbalanced, see
+// busyReady) and pushes the release out to idle-off + margin from now.
+void panelHoldArm() {
+    if (!g_holdTimer) {
+        const esp_timer_create_args_t args = {
+            .callback = panelHoldExpired, .arg = nullptr,
+            .dispatch_method = ESP_TIMER_TASK, .name = "panel_hold", .skip_unhandled_events = false,
+        };
+        if (esp_timer_create(&args, &g_holdTimer) != ESP_OK) return;
+    }
+    bool take = false;
+    portENTER_CRITICAL(&g_holdMux);
+    if (!g_holdHeld && power_mgmt::busyReady()) { g_holdHeld = true; take = true; }
+    const bool held = g_holdHeld;
+    portEXIT_CRITICAL(&g_holdMux);
+    if (take) power_mgmt::busyAcquire();
+    if (held) {
+        esp_timer_stop(g_holdTimer);            // no-op when not running
+        esp_timer_start_once(g_holdTimer, kPanelHoldUs);
+    }
+}
+}  // namespace
+
 void epdc_paint() {
     if (!g_painter) return;
+    panelHoldArm();
     PAINT_TRACE("expand enter");
     expandLevels();
     PAINT_TRACE("expand done, paint enter");
@@ -696,6 +760,7 @@ void epdc_paint() {
 
 void epdc_clear_dirty(int tolerance) {
     if (!g_painter) return;
+    panelHoldArm();
     // clearDirtyAreas() compacts this frame into the driver's paintbuffer to
     // diff it against the screenbuffer, then whitens the rectangles that differ.
     // It does NOT paint the new content — paint() recompacts the same frame, so
@@ -743,6 +808,7 @@ void epdc_power_off_wait() {
 void epdc_clear(int passes) {
     if (!g_painter) return;
     if (passes < 1) passes = 1;
+    panelHoldArm();
     for (int i = 0; i < passes; ++i) {
 #ifdef EPDC_BOOT_WAIT
         // BRING-UP TRACE. EPD_Painter::clear() contains two unbounded waits: a

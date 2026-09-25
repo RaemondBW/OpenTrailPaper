@@ -37,6 +37,11 @@ void tick();
 // balance. Both are no-ops when PM is unavailable (stock framework).
 void busyAcquire();
 void busyRelease();
+// True once begin() has created the busy lock. A hold taken before that and
+// released after it would release a lock that was never acquired (the count
+// is kept, the lock is not), which ESP_ERROR_CHECK turns into a reset — so
+// anything whose hold can straddle boot must ask first.
+bool busyReady();
 
 // One-line summary of everything currently holding light sleep off — "grace",
 // "serial", "phone", "hunt", "busy=N" — or "clear" when the CPU is free to
