@@ -63,7 +63,7 @@ Nothing printed means unsigned — step 2 did not take.
 
 ### Versioning
 
-`versionCode`/`versionName` are `10`/`0.3`, kept in step with
+`versionCode`/`versionName` are `14`/`0.6`, kept in step with
 `companion-ios/project.yml` on purpose. **Every upload needs a `versionCode`
 strictly higher than the last one Play has seen**, so the second release must
 bump it — and by this repo's convention the iOS side moves with it.
@@ -201,4 +201,3 @@ Worth doing once the first manual upload has proved the listing is complete —
   by unit test to Meshtastic's own published bytes, but no packet has crossed a
   radio. A closed test is a reasonable place to learn that; it should be a
   decision, not a surprise.
-- The branch `android-companion` is **not merged to `main`**.
