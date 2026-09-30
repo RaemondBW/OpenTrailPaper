@@ -79,7 +79,7 @@ OpenTrailPaper pairs with the DIY OpenTrailPaper head unit. Build instructions, 
 
 ---
 
-## What's New (≤4000 chars) — 0.6 (build 14)
+## What's New (≤4000 chars) — 0.6 (build 15)
 
 Source: the current section of `../CHANGELOG.md`, expanded for the store.
 

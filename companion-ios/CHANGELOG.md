@@ -6,7 +6,7 @@ written for the rider. The current version's section is the source for the
 App Store "What's New" text — paste it (minus build-only entries) when
 submitting.
 
-## 0.6 (build 14)
+## 0.6 (build 15)
 
 - Accounts: connect Strava, RideWithGPS and Intervals.icu in Settings and
   upload any ride from its detail view. Sign-in runs through

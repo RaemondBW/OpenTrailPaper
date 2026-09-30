@@ -63,7 +63,7 @@ Nothing printed means unsigned — step 2 did not take.
 
 ### Versioning
 
-`versionCode`/`versionName` are `14`/`0.6`, kept in step with
+`versionCode`/`versionName` are `15`/`0.6`, kept in step with
 `companion-ios/project.yml` on purpose. **Every upload needs a `versionCode`
 strictly higher than the last one Play has seen**, so the second release must
 bump it — and by this repo's convention the iOS side moves with it.
