@@ -58,17 +58,17 @@ val firebaseSenderId = localProps.getProperty("firebase.senderId") ?: "357305860
 
 android {
     namespace = "com.raemond.opentrailpaper"
-    compileSdk = 35
+    compileSdk = 36
     ndkVersion = "26.3.11579264"
 
     defaultConfig {
         applicationId = "com.raemond.opentrailpaper"
         minSdk = 26
-        targetSdk = 35
+        targetSdk = 36
         // Kept in step with companion-ios/project.yml (MARKETING_VERSION /
         // CURRENT_PROJECT_VERSION), so the two companions read as one release.
-        versionCode = 10
-        versionName = "0.3"
+        versionCode = 15
+        versionName = "0.6"
 
         buildConfigField("String", "CARTO_KEY", "\"${cartoKey.trim()}\"")
         buildConfigField("String", "SYNC_SERVICE_URL", "\"$syncUrl\"")

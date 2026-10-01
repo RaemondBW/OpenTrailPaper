@@ -6,6 +6,23 @@ written for the rider. The current version's section is the source for the
 App Store "What's New" text — paste it (minus build-only entries) when
 submitting.
 
+## 0.6 (build 15)
+
+- Accounts: connect Strava, RideWithGPS and Intervals.icu in Settings and
+  upload any ride from its detail view. Sign-in runs through
+  sync.opentrailpaper.com; the app never holds a provider secret, and
+  Strava shows the activity as recorded on an OpenTrailPaper.
+- Garmin Varia radar: pair a radar in Sensors and add a radar tile to a
+  dashboard page, with adjustable height and top/bottom alignment.
+  Distances follow your unit setting.
+- Dashboard editor: edit a data page on the panel itself — tap a cell to
+  select it, hold and drag to move it, drop onto half of a wide cell to
+  pair them, tap the size badge to resize.
+- Mesh: choose the LoRa region, TX power and frequency slot from the
+  Radio section of Mesh settings.
+- Music: the Apple Music companion integration is gone; media controls go
+  straight through the device's Bluetooth media link.
+
 ## 0.5 (build 13)
 
 - The firmware "What's new" panel starts collapsed with a preview of the
