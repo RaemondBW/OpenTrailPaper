@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Privacy Policy — OpenTrailPaper</title>
-<meta name="description" content="OpenTrailPaper privacy policy. No accounts, no tracking, no cloud — your rides, routes and location stay on your phone and your device.">
+<meta name="description" content="OpenTrailPaper privacy policy. No tracking, no required account, and no user data stored on our servers — your rides, routes and location stay on your phone and your device.">
 <meta property="og:title" content="OpenTrailPaper — Privacy Policy">
-<meta property="og:description" content="No accounts, no tracking, no cloud. Your rides, routes and location stay on your phone and your device.">
+<meta property="og:description" content="No tracking, no required account, no user data stored on our servers. Your rides, routes and location stay on your phone and your device.">
 <meta property="og:type" content="website">
 <link rel="icon" type="image/png" sizes="32x32" href="img/favicon-32.png">
 <link rel="icon" type="image/png" href="img/favicon.png">
@@ -36,8 +36,8 @@
   <div class="wrap">
     <p class="kicker">Legal</p>
     <h1>Privacy Policy</h1>
-    <p class="lede">This policy covers the OpenTrailPaper apps for iPhone and Android, the OpenTrailPaper firmware that runs on the head unit, and this website. In short: there are no accounts, no tracking, and no cloud. Your rides, routes and location stay on your phone and your device.</p>
-    <p class="policy-date">Last updated: August 16, 2026</p>
+    <p class="lede">This policy covers the OpenTrailPaper apps for iPhone and Android, the OpenTrailPaper firmware that runs on the head unit, and this website. In short: there is no OpenTrailPaper account, no tracking, and nothing of yours stored on our servers. Your rides, routes and location stay on your phone and your device. The one optional exception is connecting a Strava, RideWithGPS or Intervals.icu account to upload rides, described in section 2.</p>
+    <p class="policy-date">Last updated: October 1, 2026</p>
   </div>
 </section>
 
@@ -45,9 +45,11 @@
   <div class="wrap policy">
 
     <div class="notice">
-      <strong>The short version.</strong> OpenTrailPaper has no user accounts and no servers of ours. We do not collect,
+      <strong>The short version.</strong> OpenTrailPaper has no user accounts of its own. We do not collect,
       store, sell or share your personal information. Location and ride data are used on your phone and your device to
-      make the thing work, and they stay there. The app contains no analytics, tracking or advertising code.
+      make the thing work, and they stay there. If you choose to connect a Strava, RideWithGPS or Intervals.icu account,
+      a small sign-in service we run brokers that connection without keeping your data. The app contains no analytics,
+      tracking or advertising code.
     </div>
 
     <h2>1. Information the app collects and how it is used</h2>
@@ -85,15 +87,15 @@
       stored on your phone and on the device's SD card. None of it is uploaded anywhere by us.</p>
 
     <h2>2. Information sharing</h2>
-    <p><strong>We do not sell, rent or share your personal information.</strong> We do not operate servers that collect it.</p>
+    <p><strong>We do not sell, rent or share your personal information.</strong> We do not operate servers that collect it; the one service we run (section 2a) keeps nothing of yours.</p>
     <p>Some features do need to reach the internet, and those requests go directly from your phone to the third party
       concerned. We do not receive a copy. Specifically:</p>
     <ul>
       <li><strong>Apple Maps (MapKit) — iPhone app.</strong> The map you see while planning, the destination search, and
         turn-by-turn route calculation are provided by Apple. Apple receives the search terms and the coordinates
         involved, handled under <a href="https://www.apple.com/legal/privacy/">Apple's privacy policy</a>.</li>
-      <li><strong>CARTO basemap tiles — Android app.</strong> The map you see while planning is drawn from CARTO's
-        OpenStreetMap tile service, which receives the coordinates of the map areas you look at.</li>
+      <li><strong>Basemap tiles (Esri, or CARTO) — Android app.</strong> The map you see while planning is drawn from a public
+        tile service, which receives the coordinates of the map areas you look at.</li>
       <li><strong>Nominatim (OpenStreetMap) — Android app.</strong> Destination search sends your typed query, along with
         your current position so nearby results rank first, to the public Nominatim geocoding service.</li>
       <li><strong>OSRM — Android app.</strong> Turn-by-turn route calculation sends the start and destination coordinates
@@ -109,6 +111,33 @@
     </ul>
     <p>These services see only what is needed to answer the request. They do not receive an account, a name, or a device
       identifier from us, because the app does not have any.</p>
+
+    <h2 id="connected-accounts">2a. Connected accounts (optional)</h2>
+    <p>You can connect a <strong>Strava</strong>, <strong>RideWithGPS</strong> or <strong>Intervals.icu</strong> account in
+      Settings and then upload a recorded ride to it from the ride's page. This is entirely optional; the app works fully
+      without it, and nothing is uploaded unless you tap Upload on a specific ride.</p>
+    <ul>
+      <li><strong>Sign-in.</strong> Connecting an account opens that provider's own sign-in page in your browser. You
+        authorise OpenTrailPaper there; we never see your password. The provider then hands an access token to a small
+        sign-in service we run at <code>sync.opentrailpaper.com</code> (hosted on Google Cloud), which passes it to the
+        app encrypted. The service exists only because providers require a server-held application secret; it does not
+        keep the token, your identity, or anything else after the handoff, which expires within two minutes.</li>
+      <li><strong>Uploads.</strong> When you upload a ride, the ride file (track, times, speed, and any heart-rate, power
+        and cadence you recorded) goes to the provider you chose and is then governed by that provider's privacy policy:
+        <a href="https://www.strava.com/legal/privacy">Strava</a>,
+        <a href="https://ridewithgps.com/privacy">RideWithGPS</a>,
+        <a href="https://intervals.icu/privacy">Intervals.icu</a>. Strava and Intervals.icu uploads go directly from your
+        phone; RideWithGPS uploads pass through our sign-in service, which forwards the file without storing it.</li>
+      <li><strong>Tokens stay on your phone.</strong> The provider's access token is stored in your phone's secure
+        storage (the iOS Keychain or Android's encrypted preferences). Disconnecting the account in Settings deletes it
+        and, for Strava, revokes it at the provider.</li>
+      <li><strong>App attestation.</strong> To make sure only the genuine OpenTrailPaper apps can use the sign-in
+        service, each request carries a Firebase App Check token issued by Apple's App Attest or Google Play Integrity.
+        That check tells Google that a legitimate copy of the app is running on a real device; it does not identify you
+        to us.</li>
+      <li><strong>Logs.</strong> Like any web service, the sign-in service keeps standard request logs (IP address,
+        time, request path) for up to 30 days for debugging and abuse prevention. They contain no ride data.</li>
+    </ul>
     <p><strong>Mesh radio.</strong> If you choose to join a mesh channel, your head unit broadcasts your position and
       messages over its LoRa radio to the other members of that channel, encrypted with the channel's shared key. This
       is radio-to-radio between the channel's own devices, not a service of ours — leave the channel and the
@@ -119,7 +148,9 @@
       third-party trackers. We do not build a profile of you and there is nothing to opt out of.</p>
 
     <h2>4. Social logins</h2>
-    <p>Social login is not available in the app. There are no accounts of any kind.</p>
+    <p>There is no OpenTrailPaper account and no "sign in with" option. Connecting Strava, RideWithGPS or Intervals.icu
+      (section 2a) authorises the app to upload rides to that account; it does not sign you in to OpenTrailPaper and we
+      receive no profile information from the provider.</p>
 
     <h2>5. In-app purchases</h2>
     <p>The app contains no in-app purchases and no subscriptions. It does not handle payment information.</p>
@@ -132,13 +163,14 @@
     <h2>7. Data retention</h2>
     <p>We do not store your personal information, so there is nothing for us to retain. Data lives in two places you
       control: your phone and your head unit's SD card. Deleting the app removes the data it stored on your phone;
-      formatting or deleting files from the SD card removes it from the device.</p>
+      formatting or deleting files from the SD card removes it from the device. The sign-in service for connected
+      accounts stores nothing; its encrypted handoffs expire within two minutes and its request logs within 30 days.</p>
 
     <h2>8. Data protection</h2>
     <p>Our main protection is not collecting things in the first place. Data stays on hardware you own, and the phone-to-device
       link is a direct Bluetooth connection rather than a trip through the internet. Data stored on your phone is protected
-      by your phone's operating system and passcode. No method of storage or transmission is perfectly secure, but there is no central
-      store of user data to breach.</p>
+      by your phone's operating system and passcode. Connected-account tokens live in your phone's secure storage and travel only over HTTPS. No method of storage or
+      transmission is perfectly secure, but there is no central store of user data to breach.</p>
 
     <h2>9. This website</h2>
     <p>opentrailpaper.com is a static site hosted on GitHub Pages. We do not run analytics on it and we set no tracking
