@@ -258,6 +258,10 @@ void shutdownDevice(uint8_t* fb, const char* reason) {
     // final SD flush, so the readback lands in the card's log. A device
     // measured ~30 mA "off" for hours; the blind wait alone was not evidence.
     epdc_power_off_verify();
+    // Then the ESP32 side of the panel bus. The driver leaves CKV/SPV high,
+    // and gpio_deep_sleep_hold_en() below would hold them high into the
+    // panel's dead logic rail for the whole sleep.
+    epdc_park_pins();
     // Frontlight off and HELD: analogWrite() only parks the LEDC duty at 0,
     // and a digital pad floats in deep sleep unless held. The factory sleep
     // sequence zeroes this pin too (vendor examples/factory ui_sleep()).
