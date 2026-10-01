@@ -112,9 +112,25 @@ Source: [`cloud/sync-auth/`](../cloud/sync-auth/) (Node 20, no dependencies,
    and refresh tokens shown on that page are your own account's and are not
    used; riders get theirs through Connect.
 3. **Play app-signing certificate.** Play re-signs releases with its own
-   key. Copy its SHA-256 from Play Console > App integrity into
-   `ANDROID_CERT_SHA256` (deploy.sh) and add it to the Firebase Android app,
-   or App Links and Play Integrity will only recognise sideloaded builds.
+   key, so a Play install carries neither the upload nor the sideload cert.
+   Its fingerprints (Play Console > Test and release > App integrity >
+   App signing, read 2026-10-01) are already the third entry in deploy.sh's
+   `ANDROID_CERT_SHA256` default; the two live registrations are:
+
+   ```sh
+   # Firebase Android app: App Check / Play Integrity match this cert
+   TOKEN=$(gcloud auth print-access-token)
+   curl -X POST -H "Authorization: Bearer $TOKEN" -H "x-goog-user-project: opentrailpaper" \
+     -H "Content-Type: application/json" \
+     https://firebase.googleapis.com/v1beta1/projects/opentrailpaper/androidApps/1:357305860460:android:8ada00c3af7ac9ca073349/sha \
+     -d '{"shaHash":"8c4dcc1119486c10a1ab8e2db3f8a326f6f836ab1e695578758638d10abacd2fa","certType":"SHA_256"}'
+   # Firebase Android API key: add the SHA-1 07:2A:AD:38:AB:23:18:B7:BB:02:96:1D:23:5E:4E:40:BD:BC:8E:96
+   # for com.raemond.opentrailpaper under Google Cloud > APIs & Services > Credentials >
+   # "Android key (auto created by Firebase)" (the key is restricted per signing cert).
+   # Broker: accept the cert for App Links (or just re-run deploy.sh)
+   gcloud run services update sync-auth --project opentrailpaper --region us-central1 \
+     --update-env-vars "^|^ANDROID_CERT_SHA256=$(grep -o 'ANDROID_CERT_SHA256:-\"[^\"]*' cloud/sync-auth/deploy.sh | cut -d'\"' -f2)"
+   ```
 4. **Debug tokens** for any other simulator / emulator you test on (above).
    This Mac's iPhone 16 Pro Max simulator and the `scanner` emulator are
    registered.

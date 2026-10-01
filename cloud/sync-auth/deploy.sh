@@ -81,9 +81,10 @@ done
 # Not secrets: who the apps are. App Check tokens must come from this Firebase
 # project; the Android App Link is claimable only by these signing certs (the
 # Play app-signing cert from Play Console > App integrity, plus the sideload
-# key CI signs with). Override with ANDROID_CERT_SHA256 in the environment.
+# key CI signs with, and the Play app-signing cert since 2026-10-01). Override
+# with ANDROID_CERT_SHA256 in the environment.
 PROJECT_NUMBER=$(gcloud projects describe "$PROJECT" --format 'value(projectNumber)')
-ANDROID_CERT_SHA256=${ANDROID_CERT_SHA256:-"BC:F2:78:B6:50:AE:6F:55:0A:69:55:61:43:90:77:B0:A8:11:A8:1D:73:F9:AB:9C:8C:13:6B:C3:B1:E4:FA:E4,1B:F3:F1:43:09:60:8D:EF:C3:57:79:7A:13:20:D5:D7:F7:D9:09:9C:A1:80:73:E7:E1:D1:56:F6:56:A2:E6:5C"}
+ANDROID_CERT_SHA256=${ANDROID_CERT_SHA256:-"BC:F2:78:B6:50:AE:6F:55:0A:69:55:61:43:90:77:B0:A8:11:A8:1D:73:F9:AB:9C:8C:13:6B:C3:B1:E4:FA:E4,1B:F3:F1:43:09:60:8D:EF:C3:57:79:7A:13:20:D5:D7:F7:D9:09:9C:A1:80:73:E7:E1:D1:56:F6:56:A2:E6:5C,8C:4D:CC:11:19:48:6C:10:A1:AB:8E:2D:B3:F8:A3:26:F6:F8:36:AB:1E:69:55:78:75:63:8D:10:AB:AC:D2:FA"}
 BASE_URL=${BASE_URL:-https://sync.opentrailpaper.com}
 
 echo "deploying $SERVICE to $REGION..."
