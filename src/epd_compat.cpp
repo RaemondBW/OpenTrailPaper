@@ -845,10 +845,19 @@ bool epdc_power_off_verify() {
     i2cLock();
     bool okOut = i2cRead8(kPcaAddr, kPcaOut1, out1);
     bool okEn = i2cRead8(kTpsAddr, kTpsEnable, en);
-    bool okPg = i2cRead8(kTpsAddr, kTpsPg, pg);
-    bool down = okOut && (out1 & (kRailBits | kWakeupBit)) == 0 && okEn && en == 0;
-    diag::log("panel: after idle wait pca_out1=0x%02x tps_enable=0x%02x pg=0x%02x -> %s",
-              out1, en, pg, down ? "down" : "STILL UP, forcing off");
+    i2cRead8(kTpsAddr, kTpsPg, pg);
+    // With WAKEUP low the TPS65185 is in SLEEP and does not answer I2C at all,
+    // so a failed read there means asleep, i.e. down, not "unknown". Reading
+    // that as "still up" made every shutdown since #84 log a false NOT DOWN
+    // (tps_enable=0xff is just the untouched initial value).
+    auto isDown = [&] {
+        if (!okOut || (out1 & (kRailBits | kWakeupBit)) != 0) return false;
+        return !okEn || en == 0;
+    };
+    bool down = isDown();
+    diag::log("panel: after idle wait pca_out1=0x%02x tps=%s enable=0x%02x pg=0x%02x -> %s",
+              out1, okEn ? "awake" : "asleep(nack)", en, pg,
+              down ? "down" : "STILL UP, forcing off");
     if (!down) {
         // The driver's powerOff(), replayed: rails off at the PMIC first so
         // nothing bleeds through the panel, then the control lines, then WAKEUP
@@ -861,9 +870,9 @@ bool epdc_power_off_verify() {
         okOut = i2cRead8(kPcaAddr, kPcaOut1, out1);
         okEn = i2cRead8(kTpsAddr, kTpsEnable, en);
         i2cRead8(kTpsAddr, kTpsPg, pg);
-        down = okOut && (out1 & (kRailBits | kWakeupBit)) == 0 && okEn && en == 0;
-        diag::log("panel: forced off -> pca_out1=0x%02x tps_enable=0x%02x pg=0x%02x -> %s",
-                  out1, en, pg, down ? "down" : "NOT DOWN");
+        down = isDown();
+        diag::log("panel: forced off -> pca_out1=0x%02x tps=%s enable=0x%02x pg=0x%02x -> %s",
+                  out1, okEn ? "awake" : "asleep(nack)", en, pg, down ? "down" : "NOT DOWN");
     }
     i2cUnlock();
     return down;

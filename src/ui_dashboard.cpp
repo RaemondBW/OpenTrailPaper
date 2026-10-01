@@ -178,6 +178,54 @@ void applyBacklight(int level) {
     analogWrite(BOARD_BL_EN, kBacklightPWM[level]);
 }
 
+namespace {
+// Mean of a few gauge current samples (mA, negative = discharging). The gauge
+// averages over ~1 s itself; three of them steady it against the CPU's noise.
+int avgBatteryMa() {
+    int sum = 0, n = 0;
+    for (int i = 0; i < 3; ++i) {
+        delay(1000);
+        uint16_t mv; int16_t ma;
+        if (board_read_power(mv, ma)) { sum += ma; ++n; }
+    }
+    return n ? sum / n : 0;
+}
+
+// Edges seen on the GPS RX pin in `ms`. The module bursts its sentences once a
+// second, so a powered GPS gives hundreds of edges and a dead one gives none.
+int gpsRxEdges(uint32_t ms) {
+    int edges = 0, last = gpio_get_level((gpio_num_t)BOARD_GPS_RXD);
+    for (uint32_t t0 = millis(); millis() - t0 < ms; ) {
+        int v = gpio_get_level((gpio_num_t)BOARD_GPS_RXD);
+        if (v != last) { ++edges; last = v; }
+    }
+    return edges;
+}
+
+void radioRailOffProbe() {
+    const int maOn = avgBatteryMa();
+    const int edgesOn = gpsRxEdges(1200);
+    board_radio_power(false);
+    uint8_t out0 = 0xFF, cfg0 = 0xFF;
+    i2cLock();
+    Wire.beginTransmission(0x20); Wire.write(0x02);   // XL9555 output port 0
+    bool okOut = Wire.endTransmission(false) == 0 && Wire.requestFrom(0x20, 1) == 1;
+    if (okOut) out0 = Wire.read();
+    Wire.beginTransmission(0x20); Wire.write(0x06);   // config port 0 (1 = input)
+    bool okCfg = Wire.endTransmission(false) == 0 && Wire.requestFrom(0x20, 1) == 1;
+    if (okCfg) cfg0 = Wire.read();
+    i2cUnlock();
+    const int maOff = avgBatteryMa();
+    const int edgesOff = gpsRxEdges(1200);
+    diag::log("sleep: radio rail off -> xl9555 out0=0x%02x cfg0=0x%02x (io%d %s, %s); "
+              "battery %dmA -> %dmA (delta %d); gps rx edges %d -> %d",
+              out0, cfg0, IOEXP_PIN_RADIO_POWER,
+              (okOut && !(out0 & (1 << IOEXP_PIN_RADIO_POWER))) ? "low" : "NOT LOW",
+              (okCfg && !(cfg0 & (1 << IOEXP_PIN_RADIO_POWER))) ? "output" : "NOT OUTPUT",
+              maOn, maOff, maOff - maOn, edgesOn, edgesOff);
+}
+}  // namespace
+
 void shutdownDevice(uint8_t* fb, const char* reason) {
     // Hold light sleep off for the whole shutdown, and never release it.
     //
@@ -274,6 +322,14 @@ void shutdownDevice(uint8_t* fb, const char* reason) {
     // after SD.end() lets recorder/diag/MSC/LoRa tasks start new work while the
     // card is unmounted and power-down is in progress.
     sdLock();
+    // Cut the GPS + LoRa rail HERE, before the final flush, and log whether it
+    // actually went down. The off drain is a steady ~32 mA with the panel
+    // verified off and its pins parked, which is the size of a GPS still
+    // searching, and nothing has ever confirmed this rail drops. The sdLock
+    // above keeps LoRa SPI quiet across the cut. Evidence: the expander's
+    // port-0 output/config bits, the battery current before and after, and
+    // whether the GPS is still talking on RX afterwards.
+    radioRailOffProbe();
     diag::log("sleep: final SD flush; mounted=%d host=%d CS=%d/%d bl=%d",
               ride_recorder::sdMounted(), usb_storage::hostActive(),
               digitalRead(BOARD_SD_CS), digitalRead(BOARD_LORA_CS),
