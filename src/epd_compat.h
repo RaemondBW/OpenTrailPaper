@@ -91,6 +91,14 @@ void epdc_paint_wait();
 // the whole premise of the farewell screen.
 void epdc_power_off_wait();
 
+// Last panel step before deep sleep, after the rails are verifiably down:
+// return every ESP32 pin on the panel bus (data, CL, SPH, SPV, CKV, LE) to
+// plain GPIO driven LOW, so gpio_deep_sleep_hold_en() freezes them low. The
+// driver leaves CKV/SPV high after powerOff(), and a held-high pin back-feeds
+// the panel's unpowered logic rail for the whole sleep. The panel must not be
+// driven again after this; nothing re-inits the bus until the next boot.
+void epdc_park_pins();
+
 // After epdc_power_off_wait(): read back what the PMIC and the expander's panel
 // control lines actually hold, and if any rail is still enabled, drive the
 // driver's own power-off sequence from here (TPS ENABLE=0, then OE/MODE/PWRUP/

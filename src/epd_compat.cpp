@@ -488,6 +488,8 @@ EpdRect epd_get_string_rect(const EpdFont* font, const char* string, int x, int 
 #include <Arduino.h>
 #include <Wire.h>
 #include <esp_heap_caps.h>
+#include <driver/gpio.h>
+#include <soc/gpio_periph.h>
 
 #include "EPD_Painter_presets.h"
 #include "EPD_Painter.h"
@@ -843,10 +845,19 @@ bool epdc_power_off_verify() {
     i2cLock();
     bool okOut = i2cRead8(kPcaAddr, kPcaOut1, out1);
     bool okEn = i2cRead8(kTpsAddr, kTpsEnable, en);
-    bool okPg = i2cRead8(kTpsAddr, kTpsPg, pg);
-    bool down = okOut && (out1 & (kRailBits | kWakeupBit)) == 0 && okEn && en == 0;
-    diag::log("panel: after idle wait pca_out1=0x%02x tps_enable=0x%02x pg=0x%02x -> %s",
-              out1, en, pg, down ? "down" : "STILL UP, forcing off");
+    i2cRead8(kTpsAddr, kTpsPg, pg);
+    // With WAKEUP low the TPS65185 is in SLEEP and does not answer I2C at all,
+    // so a failed read there means asleep, i.e. down, not "unknown". Reading
+    // that as "still up" made every shutdown since #84 log a false NOT DOWN
+    // (tps_enable=0xff is just the untouched initial value).
+    auto isDown = [&] {
+        if (!okOut || (out1 & (kRailBits | kWakeupBit)) != 0) return false;
+        return !okEn || en == 0;
+    };
+    bool down = isDown();
+    diag::log("panel: after idle wait pca_out1=0x%02x tps=%s enable=0x%02x pg=0x%02x -> %s",
+              out1, okEn ? "awake" : "asleep(nack)", en, pg,
+              down ? "down" : "STILL UP, forcing off");
     if (!down) {
         // The driver's powerOff(), replayed: rails off at the PMIC first so
         // nothing bleeds through the panel, then the control lines, then WAKEUP
@@ -859,12 +870,58 @@ bool epdc_power_off_verify() {
         okOut = i2cRead8(kPcaAddr, kPcaOut1, out1);
         okEn = i2cRead8(kTpsAddr, kTpsEnable, en);
         i2cRead8(kTpsAddr, kTpsPg, pg);
-        down = okOut && (out1 & (kRailBits | kWakeupBit)) == 0 && okEn && en == 0;
-        diag::log("panel: forced off -> pca_out1=0x%02x tps_enable=0x%02x pg=0x%02x -> %s",
-                  out1, en, pg, down ? "down" : "NOT DOWN");
+        down = isDown();
+        diag::log("panel: forced off -> pca_out1=0x%02x tps=%s enable=0x%02x pg=0x%02x -> %s",
+                  out1, okEn ? "awake" : "asleep(nack)", en, pg, down ? "down" : "NOT DOWN");
     }
     i2cUnlock();
     return down;
+}
+
+// The driver leaves the ESP32 side of the panel bus live after powerOff(),
+// because that path only touches the TPS65185 and the expander. powerOn()
+// raised CKV and SPV and nothing lowers them again, and the data/clock lines
+// sit wherever the last row left them, all at drive strength 3.
+// shutdownDevice() then calls gpio_deep_sleep_hold_en(), which freezes EVERY
+// digital pad in its current state for the whole sleep. With the TPS asleep,
+// the panel's logic supply (the TPS V3P3 switch) is off, so a held-high line
+// feeds that dead rail through the gate/source drivers' input clamps. epdiy's
+// poweroff lowered STV and left the bus idle low. That is the difference from
+// the ~2.5 mA "off" measured on the last epdiy build.
+//
+// So: take every panel pin back from LCD_CAM to plain GPIO, drive it LOW at
+// minimum drive strength, and let the deep-sleep hold keep it there. Logs the
+// levels found first as a bitmask: bits 0-7 data0..7, then cl, sph, spv, ckv, le.
+void epdc_park_pins() {
+    if (!g_painter) return;
+    const EPD_Painter::Config& cfg = g_painter->getConfig();
+    int16_t pins[13];
+    int n = 0;
+    for (int i = 0; i < 8; ++i) pins[n++] = cfg.data_pins[i];
+    pins[n++] = cfg.pin_cl;
+    pins[n++] = cfg.pin_sph;
+    pins[n++] = cfg.pin_spv;
+    pins[n++] = cfg.pin_ckv;
+    pins[n++] = cfg.pin_le;
+
+    uint32_t high = 0;
+    for (int i = 0; i < n; ++i) {
+        // Negative = unused; EPD_SR_PIN() values live on a shift register.
+        if (pins[i] < 0 || !GPIO_IS_VALID_OUTPUT_GPIO(pins[i])) continue;
+        const gpio_num_t p = (gpio_num_t)pins[i];
+        PIN_INPUT_ENABLE(GPIO_PIN_MUX_REG[p]);   // read the pad without rerouting its output
+        if (gpio_get_level(p)) high |= 1u << i;
+    }
+    for (int i = 0; i < n; ++i) {
+        if (pins[i] < 0 || !GPIO_IS_VALID_OUTPUT_GPIO(pins[i])) continue;
+        const gpio_num_t p = (gpio_num_t)pins[i];
+        gpio_reset_pin(p);        // detach from LCD_CAM (this enables the pull-up)
+        gpio_pullup_dis(p);
+        gpio_set_drive_capability(p, GPIO_DRIVE_CAP_0);
+        gpio_set_direction(p, GPIO_MODE_OUTPUT);
+        gpio_set_level(p, 0);
+    }
+    diag::log("panel: pins parked low (were high mask=0x%04lx)", (unsigned long)high);
 }
 
 void epdc_clear(int passes) {

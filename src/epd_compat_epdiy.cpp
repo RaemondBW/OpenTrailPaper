@@ -73,6 +73,10 @@ void epdc_power_off_wait() {
     epd_poweroff();   // belt and braces if a future paint path forgets
 }
 
+// epd_poweroff() above already leaves the rails down and the bus idle low.
+bool epdc_power_off_verify() { return true; }
+void epdc_park_pins() {}
+
 void epdc_clear(int passes) {
     if (!g_ready) return;
     if (passes < 1) passes = 1;

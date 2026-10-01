@@ -178,6 +178,54 @@ void applyBacklight(int level) {
     analogWrite(BOARD_BL_EN, kBacklightPWM[level]);
 }
 
+namespace {
+// Mean of a few gauge current samples (mA, negative = discharging). The gauge
+// averages over ~1 s itself; three of them steady it against the CPU's noise.
+int avgBatteryMa() {
+    int sum = 0, n = 0;
+    for (int i = 0; i < 3; ++i) {
+        delay(1000);
+        uint16_t mv; int16_t ma;
+        if (board_read_power(mv, ma)) { sum += ma; ++n; }
+    }
+    return n ? sum / n : 0;
+}
+
+// Edges seen on the GPS RX pin in `ms`. The module bursts its sentences once a
+// second, so a powered GPS gives hundreds of edges and a dead one gives none.
+int gpsRxEdges(uint32_t ms) {
+    int edges = 0, last = gpio_get_level((gpio_num_t)BOARD_GPS_RXD);
+    for (uint32_t t0 = millis(); millis() - t0 < ms; ) {
+        int v = gpio_get_level((gpio_num_t)BOARD_GPS_RXD);
+        if (v != last) { ++edges; last = v; }
+    }
+    return edges;
+}
+
+void radioRailOffProbe() {
+    const int maOn = avgBatteryMa();
+    const int edgesOn = gpsRxEdges(1200);
+    board_radio_power(false);
+    uint8_t out0 = 0xFF, cfg0 = 0xFF;
+    i2cLock();
+    Wire.beginTransmission(0x20); Wire.write(0x02);   // XL9555 output port 0
+    bool okOut = Wire.endTransmission(false) == 0 && Wire.requestFrom(0x20, 1) == 1;
+    if (okOut) out0 = Wire.read();
+    Wire.beginTransmission(0x20); Wire.write(0x06);   // config port 0 (1 = input)
+    bool okCfg = Wire.endTransmission(false) == 0 && Wire.requestFrom(0x20, 1) == 1;
+    if (okCfg) cfg0 = Wire.read();
+    i2cUnlock();
+    const int maOff = avgBatteryMa();
+    const int edgesOff = gpsRxEdges(1200);
+    diag::log("sleep: radio rail off -> xl9555 out0=0x%02x cfg0=0x%02x (io%d %s, %s); "
+              "battery %dmA -> %dmA (delta %d); gps rx edges %d -> %d",
+              out0, cfg0, IOEXP_PIN_RADIO_POWER,
+              (okOut && !(out0 & (1 << IOEXP_PIN_RADIO_POWER))) ? "low" : "NOT LOW",
+              (okCfg && !(cfg0 & (1 << IOEXP_PIN_RADIO_POWER))) ? "output" : "NOT OUTPUT",
+              maOn, maOff, maOff - maOn, edgesOn, edgesOff);
+}
+}  // namespace
+
 void shutdownDevice(uint8_t* fb, const char* reason) {
     // Hold light sleep off for the whole shutdown, and never release it.
     //
@@ -258,6 +306,10 @@ void shutdownDevice(uint8_t* fb, const char* reason) {
     // final SD flush, so the readback lands in the card's log. A device
     // measured ~30 mA "off" for hours; the blind wait alone was not evidence.
     epdc_power_off_verify();
+    // Then the ESP32 side of the panel bus. The driver leaves CKV/SPV high,
+    // and gpio_deep_sleep_hold_en() below would hold them high into the
+    // panel's dead logic rail for the whole sleep.
+    epdc_park_pins();
     // Frontlight off and HELD: analogWrite() only parks the LEDC duty at 0,
     // and a digital pad floats in deep sleep unless held. The factory sleep
     // sequence zeroes this pin too (vendor examples/factory ui_sleep()).
@@ -270,6 +322,14 @@ void shutdownDevice(uint8_t* fb, const char* reason) {
     // after SD.end() lets recorder/diag/MSC/LoRa tasks start new work while the
     // card is unmounted and power-down is in progress.
     sdLock();
+    // Cut the GPS + LoRa rail HERE, before the final flush, and log whether it
+    // actually went down. The off drain is a steady ~32 mA with the panel
+    // verified off and its pins parked, which is the size of a GPS still
+    // searching, and nothing has ever confirmed this rail drops. The sdLock
+    // above keeps LoRa SPI quiet across the cut. Evidence: the expander's
+    // port-0 output/config bits, the battery current before and after, and
+    // whether the GPS is still talking on RX afterwards.
+    radioRailOffProbe();
     diag::log("sleep: final SD flush; mounted=%d host=%d CS=%d/%d bl=%d",
               ride_recorder::sdMounted(), usb_storage::hostActive(),
               digitalRead(BOARD_SD_CS), digitalRead(BOARD_LORA_CS),
@@ -291,6 +351,25 @@ void shutdownDevice(uint8_t* fb, const char* reason) {
     gpio_hold_en((gpio_num_t)BOARD_TOUCH_RST);
     gpio_deep_sleep_hold_en();
     board_radio_power(false);
+    // With the GPS + LoRa rail cut, nothing facing it may stay high: the
+    // deep-sleep hold freezes every pad as it is, and a held-high line feeds
+    // the dead rail through the parts' input clamps for the whole sleep. The
+    // UART TX to the GPS idles high, and LoRa CS was just driven high above.
+    // Outputs go low; inputs from the radios get pulled down rather than left
+    // floating. MOSI/SCLK/MISO are shared with the SD card, and low is safe for
+    // it too; SD CS stays high.
+    for (int p : {BOARD_GPS_TXD, BOARD_LORA_CS, BOARD_LORA_RST,
+                  BOARD_SPI_MOSI, BOARD_SPI_SCLK}) {
+        gpio_reset_pin((gpio_num_t)p);
+        gpio_pullup_dis((gpio_num_t)p);
+        gpio_set_direction((gpio_num_t)p, GPIO_MODE_OUTPUT);
+        gpio_set_level((gpio_num_t)p, 0);
+    }
+    for (int p : {BOARD_GPS_RXD, BOARD_LORA_IRQ, BOARD_LORA_BUSY, BOARD_SPI_MISO}) {
+        gpio_reset_pin((gpio_num_t)p);
+        gpio_pullup_dis((gpio_num_t)p);
+        gpio_pulldown_en((gpio_num_t)p);
+    }
 
     // Wait for BOOT to come back up before arming the wake on it. The power
     // dialog is opened by HOLDING BOOT, so the button can still be down when the
