@@ -295,6 +295,25 @@ void shutdownDevice(uint8_t* fb, const char* reason) {
     gpio_hold_en((gpio_num_t)BOARD_TOUCH_RST);
     gpio_deep_sleep_hold_en();
     board_radio_power(false);
+    // With the GPS + LoRa rail cut, nothing facing it may stay high: the
+    // deep-sleep hold freezes every pad as it is, and a held-high line feeds
+    // the dead rail through the parts' input clamps for the whole sleep. The
+    // UART TX to the GPS idles high, and LoRa CS was just driven high above.
+    // Outputs go low; inputs from the radios get pulled down rather than left
+    // floating. MOSI/SCLK/MISO are shared with the SD card, and low is safe for
+    // it too; SD CS stays high.
+    for (int p : {BOARD_GPS_TXD, BOARD_LORA_CS, BOARD_LORA_RST,
+                  BOARD_SPI_MOSI, BOARD_SPI_SCLK}) {
+        gpio_reset_pin((gpio_num_t)p);
+        gpio_pullup_dis((gpio_num_t)p);
+        gpio_set_direction((gpio_num_t)p, GPIO_MODE_OUTPUT);
+        gpio_set_level((gpio_num_t)p, 0);
+    }
+    for (int p : {BOARD_GPS_RXD, BOARD_LORA_IRQ, BOARD_LORA_BUSY, BOARD_SPI_MISO}) {
+        gpio_reset_pin((gpio_num_t)p);
+        gpio_pullup_dis((gpio_num_t)p);
+        gpio_pulldown_en((gpio_num_t)p);
+    }
 
     // Wait for BOOT to come back up before arming the wake on it. The power
     // dialog is opened by HOLDING BOOT, so the button can still be down when the
