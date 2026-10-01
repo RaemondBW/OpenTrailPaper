@@ -5,6 +5,18 @@ released version into the GitHub release body (see .github/workflows/build.yml),
 and the app shows it under Settings → Firmware when an update is available —
 so write for the rider, newest version first, one `## vX.YY` heading each.
 
+## v1.21
+
+- Fixes a reset that could happen mid-ride. When the screen refreshed at
+  the same moment the device dropped into its power-saving sleep, the
+  device could lock up and restart.
+- The frontlight is now held fully off while the device is powered off.
+- Battery drain while powered off is still being tracked down. This
+  version leaves the screen, GPS and mesh radio connections in a clean
+  state for power-off, and powering off takes several seconds longer for
+  now: the device measures its own power draw on the way down so the
+  remaining drain can be found.
+
 ## v1.20
 
 - Garmin Varia radar support. Pair a Varia from the app or the Sensors
