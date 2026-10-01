@@ -9,14 +9,20 @@ description plus a MESH paragraph).
 
 | File | Slot | Spec |
 |---|---|---|
-| `icon-512.png` | App icon | 512 × 512, the iOS 1024 icon downscaled on white |
-| `feature-graphic-1024x500.png` | Feature graphic | 1024 × 500, icon + name on the paper colour |
-| `shot-0N-*.png` | Phone, 7-inch and 10-inch tablet screenshots | 1350 × 2400 (exact 9:16) |
+| `icon-512.png` | App icon | 512 × 512, the iOS 1024 icon downscaled |
+| `feature-graphic.png` | Feature graphic | 1024 × 500 |
+| `phone-01..08.png` | Phone screenshots | 1080 × 1920 (9:16) |
+| `tablet-01..02.png` | 7-inch and 10-inch tablet screenshots | 1920 × 1080 (16:9), same two files in both slots |
 
-Screenshots are emulator captures (`scanner` AVD, Pixel 7 profile, 1080 × 2400)
-padded to 9:16 with the paper colour `#F2F0E8`; Play rejects anything taller
-than 2:1. The tablet slots reuse the phone set — replace with real tablet
-captures when the layout gets tablet treatment.
+These are rendered from the Claude Design file `play-store-screenshots.dc.html`
+(project "E-ink bike GPS screen", file "Play Store Screenshots"), which frames
+the raw captures below with headlines. To re-render after changing the design
+or the captures: pull the `.dc.html`, strip the `data-omelette-injected`
+blocks, extract each `[data-shot]` element into its own page with the Google
+Fonts link, and screenshot it with headless Chrome
+(`--force-device-scale-factor=2 --window-size=540,960` for phones,
+`960,540` for tablets, scale 1 at `1024,500` for the feature graphic; one
+`--user-data-dir` per run). Listing uploaded 2026-10-01.
 
 Raw 1080 × 2400 captures live in `raw/` (01–15 the plain app, 16–25 the
 seeded states below).
