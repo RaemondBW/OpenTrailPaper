@@ -53,6 +53,20 @@ class MainActivity : ComponentActivity() {
         // editor can be exercised with no head unit in range.
         //   adb shell am start ... --ez demo-dash true
         if (intent?.getBooleanExtra("demo-dash", false) == true) ble.enableDashDemo()
+        // The rest of the iOS set, for the store listing:
+        //   --ez demo-connected true   look paired (Send to device, firmware row)
+        //   --ez demo-rides true       three cached rides decoded from assets/demo.fit
+        //   --ez demo-route true       a built route to Fisherman's Wharf on the Route tab
+        //   --ez demo-accounts true    Strava / Intervals.icu / RideWithGPS show as connected
+        if (intent?.getBooleanExtra("demo-connected", false) == true) ble.enableConnectedDemo()
+        if (intent?.getBooleanExtra("demo-rides", false) == true) seedDemoRides()
+        if (intent?.getBooleanExtra("demo-route", false) == true) ble.demoRoute = true
+        if (intent?.getBooleanExtra("demo-accounts", false) == true) {
+            SyncAccounts.tokens[SyncAccounts.Provider.STRAVA] =
+                SyncAccounts.Tokens("demo", null, null, "Raemond B.")
+            SyncAccounts.tokens[SyncAccounts.Provider.INTERVALS] =
+                SyncAccounts.Tokens("demo", null, null, "Raemond B.")
+        }
 
         setContent {
             OpenTrailPaperTheme {
@@ -186,6 +200,16 @@ class MainActivity : ComponentActivity() {
                 Uri.fromParts("package", packageName, null),
             ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
         )
+    }
+    /** Screenshot demo: copy the bundled ride into the cache under three recent
+     *  names so the Rides list renders cards (all preview the same ride). */
+    private fun seedDemoRides() {
+        val dir = ble.ridesCacheDir()
+        dir.listFiles()?.filter { it.extension == "fit" }?.forEach { it.delete() }
+        val bytes = assets.open("demo.fit").use { it.readBytes() }
+        for (name in listOf("20260719-071500.fit", "20260718-163000.fit", "20260716-090000.fit")) {
+            java.io.File(dir, name).writeBytes(bytes)
+        }
     }
 }
 

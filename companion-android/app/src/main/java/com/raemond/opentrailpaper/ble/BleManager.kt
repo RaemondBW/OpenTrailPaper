@@ -163,6 +163,20 @@ class BleManager(private val app: Application) {
      */
     fun enableDashDemo() { dashConfig = DashConfig.deviceDefault }
 
+    /** Screenshot demo: look connected to a head unit with no radio traffic.
+     *  Every write goes through [writeChar], which drops on a null
+     *  characteristic, so the connected-only UI (Send to device, Settings
+     *  firmware row) renders without a GATT behind it. */
+    /** Screenshot demo: RouteScreen builds Golden Gate Park → Fisherman's Wharf
+     *  on first show, the Android twin of iOS's -demo-route. */
+    var demoRoute = false
+
+    fun enableConnectedDemo() {
+        state = ConnState.CONNECTED
+        deviceFirmware = "v1.20"
+        if (dashConfig == null) dashConfig = DashConfig.deviceDefault
+    }
+
     // MARK: Meshtastic
     //
     // The device is the node; this app is its keyboard and screen. Everything

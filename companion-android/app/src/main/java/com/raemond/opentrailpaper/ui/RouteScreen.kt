@@ -334,6 +334,24 @@ fun RouteScreen(ble: BleManager) {
                 }
             }
 
+            // Screenshot demo (`--ez demo-route true`): the route a rider would get
+            // from searching "Fisherman's Wharf" from Golden Gate Park, without
+            // a location fix or a search round trip.
+            LaunchedEffect(Unit) {
+                if (!ble.demoRoute || preview != null) return@LaunchedEffect
+                ble.demoRoute = false   // plain var, not state: clearing it must not restart this effect
+                val place = Routing.Place("Fisherman's Wharf", "San Francisco, CA", LatLon(37.8079, -122.4177))
+                destination = place
+                building = true
+                val built = Routing.route(LatLon(37.7690, -122.4830), place.coordinate)
+                building = false
+                if (built == null) error = "Couldn't build a route there"
+                else {
+                    preview = built.asPreview(place.name)
+                    built.bounds?.let { camera = MapCamera.box(it.paddedForDisplay()) }
+                }
+            }
+
             if (results.isNotEmpty() && preview == null) {
                 ResultsList(results) { place ->
                     destination = place
