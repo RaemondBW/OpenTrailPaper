@@ -23,3 +23,8 @@ target_compile_options(h3shim PRIVATE -w)
 
 find_library(log-lib log)
 target_link_libraries(h3shim ${log-lib} m)
+
+# Play requires 16 KB page-size support (Android 15+ devices): NDK 26 still
+# links with 4 KB LOAD alignment unless told otherwise. NDK 28 makes this the
+# default; drop the flag when ndkVersion moves past 27.
+target_link_options(h3shim PRIVATE "-Wl,-z,max-page-size=16384")
