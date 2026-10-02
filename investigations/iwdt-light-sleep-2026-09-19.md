@@ -32,3 +32,29 @@ Both are cheap to address at once: hold light sleep off across every I2C
 transaction (`i2cLock`/`i2cUnlock` → `busyAcquire`/`busyRelease`, as sdLock
 already does), cap single sleep calls below the watchdog with a periodic
 esp_timer wake, and log the longest sleep call per pm window.
+
+
+## 2026-10-02: two more, same signature, with #89 and #93 on board
+
+Ride 06:47–09:11, firmware v1.20 build "Sep 30 11:37:49" (build id d1f523b4,
+no local ELF — framework IRAM symbols below are from a sibling build and are
+stable across builds; app addresses were not resolved). Both resets were
+`interrupt watchdog [5]`; both rides resumed via ride recovery.
+
+| dump | time | core 0 | core 1 |
+|---|---|---|---|
+| db1e825a | 07:39:16 | pc `i2c_hal_get_intsts_mask` (i2c_hal_iram.c:73), a0 `i2c_isr_handler_default` (i2c.c:492), stack `_xt_lowint1`/`_frxt_int_enter`, current task **gps** | `esp_pm_impl_waiti` from the idle hook (light sleep) |
+| f389cddb | 09:03:57 | pc `i2c_isr_handler_default` (i2c.c:492), a0 `_xt_lowint1`, stack `esp_pm_impl_isr_hook`, current task **gps** | `esp_pm_impl_waiti` from the idle hook |
+
+Seconds before: (1) the phone link had just dropped to the 300 ms idle
+interval and BT modem sleep came on; (2) a fuel-gauge poll (`battery:` line,
+i2cLock-covered) logged 11 s earlier, sensor sleep had just gone OFF, pm
+window reported 929 sleep calls/min. Neither tail shows a paint, so #89's
+paint hold was not what was missing: the remaining uncovered I2C is the panel
+driver's own expander/rail traffic (INT-driven PCA9535 polls, TPS power-good
+checks) on its private mutex.
+
+Fix (branch `i2c-sleep-hold`): wrap the Arduino HAL entry points
+`i2cWrite`/`i2cRead`/`i2cWriteReadNonStop` with `busyAcquire`/`busyRelease`
+(`src/i2c_bus.cpp`), so every TwoWire transaction — ours, the panel driver's,
+any library's — holds light sleep off for its duration.

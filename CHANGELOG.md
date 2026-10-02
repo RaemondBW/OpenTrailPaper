@@ -5,6 +5,12 @@ released version into the GitHub release body (see .github/workflows/build.yml),
 and the app shows it under Settings → Firmware when an update is available —
 so write for the rider, newest version first, one `## vX.YY` heading each.
 
+## v1.22
+
+- Fixes another cause of the mid-ride restart: any traffic to the display
+  power chip, the button expander, the battery gauge or the clock now keeps
+  the device awake until it finishes, so a sleep can no longer interrupt it.
+
 ## v1.21
 
 - Fixes a reset that could happen mid-ride. When the screen refreshed at
