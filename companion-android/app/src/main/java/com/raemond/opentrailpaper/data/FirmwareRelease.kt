@@ -3,6 +3,7 @@ package com.raemond.opentrailpaper.data
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import com.raemond.opentrailpaper.transfer.TransferCenter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -107,7 +108,8 @@ object FirmwareRelease {
      * hand. Kept in memory only: it is ~1.8 MB, wanted once per update, and
      * caching it on disk would just be another copy to go stale.
      */
-    suspend fun image(release: Release): ByteArray {
+    /** [transferId] names the TransferCenter entry the byte counts go to. */
+    suspend fun image(release: Release, transferId: String? = null): ByteArray {
         cached?.let { if (it.first == release.tag) return it.second }
         downloadProgress = 0.0
         try {
@@ -128,6 +130,12 @@ object FirmwareRelease {
                             val n = input.read(buf)
                             if (n <= 0) break
                             out.write(buf, 0, n)
+                            if (transferId != null) {
+                                TransferCenter.update(
+                                    transferId, completed = out.size().toLong(),
+                                    total = expected.toLong().takeIf { it > 0 },
+                                )
+                            }
                             if (expected > 0) {
                                 val fraction = out.size().toDouble() / expected
                                 withContext(Dispatchers.Main) { downloadProgress = fraction }

@@ -103,6 +103,21 @@ platforms do.
   lifecycle, so it runs only while that sheet is open, and the permission is
   optional: the invite link can be pasted instead.
 
+## Long transfers in the background
+
+Ride and log downloads, firmware updates, map tiles, route sends and uploads to
+Strava / Intervals.icu / RideWithGPS all report into `transfer/TransferCenter.kt`
+(the twin of the iOS file of the same name). The first one starts
+`transfer/TransferService.kt`, a foreground service typed `connectedDevice` for
+the head-unit link and `dataSync` for HTTP, so a transfer keeps going with the
+screen off or the app in the background. Its notification shows progress, size
+and time left; on Android 16 it is a `ProgressStyle` notification that asks to
+be promoted to a Live Update. Notification permission is asked for the first
+time a transfer starts.
+
+`adb shell am start -n com.raemond.opentrailpaper/.ui.MainActivity --ez demo-transfer true`
+runs a fake 40-second download to see the notification on an emulator.
+
 ## BLE protocol (matches `src/ble_server.cpp`)
 
 Service `B1C50000-9E0F-4B7A-9C6D-1F2E3A4B5C6D`:
