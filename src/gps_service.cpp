@@ -92,6 +92,24 @@ constexpr size_t AGNSS_CAP = 32 * 1024;
 float headX = 0, headY = 0;
 bool headingPrimed = false;
 
+// A fix (and the speed that came with it) is only current for this long after
+// the last RMC/GGA that carried it. TinyGPS++ never clears isValid(): once a
+// field has been committed it stays "valid" forever, holding the last value,
+// and an RMC with status V (no fix) simply doesn't commit speed/location. So
+// validity alone would latch the last speed through a lost fix or a receiver
+// that goes silent — freshness has to be judged by age().
+constexpr uint32_t kFixStaleMs = 3000;
+
+bool fixFresh() {
+    return gps.location.isValid() && gps.location.age() < kFixStaleMs;
+}
+
+// Ground speed, or 0 when there is no current fix to back it.
+float freshSpeedKmh() {
+    if (!fixFresh() || !gps.speed.isValid() || gps.speed.age() >= kFixStaleMs) return 0.0f;
+    return (float)gps.speed.kmph();
+}
+
 // Days-from-civil (Howard Hinnant) — TinyGPS gives calendar UTC, FIT wants
 // an epoch timestamp and the RTC may not be set yet.
 time_t toUnix(int y, unsigned m, unsigned d, unsigned hh, unsigned mm, unsigned ss) {
@@ -680,14 +698,15 @@ void task(void*) {
         }
         if (gps.location.isUpdated() || gps.satellites.isUpdated()) {
             g_state.with([](RideState& s) {
-                s.gpsFix = gps.location.isValid() && gps.location.age() < 3000;
+                s.gpsFix = fixFresh();
                 if (s.gpsFix) {
                     s.latitude = gps.location.lat();
                     s.longitude = gps.location.lng();
                     s.everHadFix = true;
                 }
                 if (gps.altitude.isValid()) s.altitudeM = gps.altitude.meters();
-                if (gps.speed.isValid()) s.speedKmh = gps.speed.kmph();
+                // No fix, no speed: never carry the last moving value forward.
+                s.speedKmh = freshSpeedKmh();
 
                 // Heading: a single fix's course-over-ground is noisy, so
                 // smooth it with an exponential moving average over the
@@ -721,6 +740,25 @@ void task(void*) {
                                    gps.time.hour(), gps.time.minute(), gps.time.second());
                 }
             });
+        }
+
+        // Fix expiry. The block above only runs when the parser commits a new
+        // location or satellite count; if the receiver stops sending (or only
+        // sends sentences that commit neither) the last fix and speed would
+        // stay latched in RideState. Drop them as soon as the fix goes stale,
+        // whatever did or didn't arrive. The loop wakes at least once a second
+        // (UART notify timeout / 50 ms poll), so this lands within ~1 s of
+        // kFixStaleMs.
+        {
+            static bool publishedFresh = false;
+            const bool fresh = fixFresh();
+            if (publishedFresh && !fresh) {
+                g_state.with([](RideState& s) {
+                    s.gpsFix = false;
+                    s.speedKmh = 0.0f;
+                });
+            }
+            publishedFresh = fresh;
         }
 
         // Persist the position so the map — and the next boot's warm-start
@@ -906,7 +944,7 @@ void getDebug(GpsDebug& out) {
     out.lat = gps.location.isValid() ? gps.location.lat() : 0;
     out.lon = gps.location.isValid() ? gps.location.lng() : 0;
     out.altM = gps.altitude.isValid() ? gps.altitude.meters() : 0;
-    out.speedKmh = gps.speed.isValid() ? gps.speed.kmph() : 0;
+    out.speedKmh = freshSpeedKmh();
     if (gps.time.isValid()) {
         out.hour = gps.time.hour();
         out.minute = gps.time.minute();
