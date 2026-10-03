@@ -29,6 +29,7 @@ internal object TransferNotifications {
     const val CHANNEL_ID = "transfers"
     const val PROGRESS_ID = 43           // RideLocationService uses 42
     private const val OUTCOME_ID = 44
+    private const val SCALE = 1000
 
     /** Notification.EXTRA_REQUEST_PROMOTED_ONGOING, not in the API 36 stubs. */
     private const val EXTRA_REQUEST_PROMOTED_ONGOING = "android.requestPromotedOngoing"
@@ -104,16 +105,19 @@ internal object TransferNotifications {
         }
 
         if (Build.VERSION.SDK_INT >= 36) {
+            // ProgressStyle's scale is the sum of its segments (100 with none),
+            // so one segment of SCALE makes setProgress() per-mille like below.
             val style = Notification.ProgressStyle()
+                .addProgressSegment(Notification.ProgressStyle.Segment(SCALE))
                 .setStyledByProgress(true)
                 .setProgressIndeterminate(fraction == null)
-            if (fraction != null) style.setProgress((fraction * 1000).roundToInt())
+            if (fraction != null) style.setProgress((fraction * SCALE).roundToInt())
             b.setStyle(style)
             // The status-bar chip: as short as it gets.
             percent?.let { b.setShortCriticalText("$it%") }
             b.extras.putBoolean(EXTRA_REQUEST_PROMOTED_ONGOING, true)
         } else {
-            if (fraction != null) b.setProgress(1000, (fraction * 1000).roundToInt(), false)
+            if (fraction != null) b.setProgress(SCALE, (fraction * SCALE).roundToInt(), false)
             else b.setProgress(0, 0, true)
         }
         return b.build()
