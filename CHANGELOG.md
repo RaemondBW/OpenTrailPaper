@@ -7,9 +7,10 @@ so write for the rider, newest version first, one `## vX.YY` heading each.
 
 ## v1.22
 
-- Fixes another cause of the mid-ride restart: any traffic to the display
-  power chip, the button expander, the battery gauge or the clock now keeps
-  the device awake until it finishes, so a sleep can no longer interrupt it.
+- Fixes the mid-ride restart. A stray interrupt from the display power
+  chip's I2C bus could trap the device in an endless loop until the
+  watchdog reset it; the bus driver now clears that interrupt and carries on.
+  Any bus traffic also keeps the device awake until it finishes.
 
 ## v1.21
 

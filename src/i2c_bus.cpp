@@ -20,6 +20,22 @@
 #include <stdint.h>
 #include <esp_err.h>
 #include "power_mgmt.h"
+#include "diag.h"
+
+// Bumped by the overlaid IDF I2C ISR (src/idf_overlay/i2c.c) each time it
+// clears an interrupt the stock handler would have left storming.
+extern "C" volatile uint32_t ot_i2c_isr_unhandled;
+
+namespace {
+void noteIsrRecoveries(esp_err_t r) {
+    static uint32_t seen = 0;
+    const uint32_t n = ot_i2c_isr_unhandled;
+    if (n == seen) return;
+    seen = n;
+    diag::log("i2c: ISR cleared an unhandled interrupt (%lu so far; transaction rc=%d)",
+              (unsigned long)n, (int)r);
+}
+}
 
 extern "C" {
 esp_err_t __real_i2cWrite(uint8_t i2c_num, uint16_t address, const uint8_t* buff, size_t size, uint32_t timeOutMillis);
@@ -30,6 +46,7 @@ esp_err_t __wrap_i2cWrite(uint8_t i2c_num, uint16_t address, const uint8_t* buff
     power_mgmt::busyAcquire();
     const esp_err_t r = __real_i2cWrite(i2c_num, address, buff, size, timeOutMillis);
     power_mgmt::busyRelease();
+    noteIsrRecoveries(r);
     return r;
 }
 
@@ -37,6 +54,7 @@ esp_err_t __wrap_i2cRead(uint8_t i2c_num, uint16_t address, uint8_t* buff, size_
     power_mgmt::busyAcquire();
     const esp_err_t r = __real_i2cRead(i2c_num, address, buff, size, timeOutMillis, readCount);
     power_mgmt::busyRelease();
+    noteIsrRecoveries(r);
     return r;
 }
 
@@ -44,6 +62,7 @@ esp_err_t __wrap_i2cWriteReadNonStop(uint8_t i2c_num, uint16_t address, const ui
     power_mgmt::busyAcquire();
     const esp_err_t r = __real_i2cWriteReadNonStop(i2c_num, address, wbuff, wsize, rbuff, rsize, timeOutMillis, readCount);
     power_mgmt::busyRelease();
+    noteIsrRecoveries(r);
     return r;
 }
 }
