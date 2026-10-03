@@ -1,0 +1,175 @@
+import ActivityKit
+import SwiftUI
+import WidgetKit
+
+// Lock Screen banner + Dynamic Island for a running transfer. All state comes
+// from TransferActivityAttributes.ContentState (Shared/), pushed by the app's
+// TransferCenter.
+
+private enum Ink {
+    static let accent = Color(red: 0xF4 / 255, green: 0x50 / 255, blue: 0x1E / 255)  // vermilion
+    static let good = Color(red: 0x2E / 255, green: 0x7D / 255, blue: 0x5B / 255)
+    static let paper = Color(red: 0xFA / 255, green: 0xF8 / 255, blue: 0xF3 / 255)
+    static let ink = Color(red: 0x1A / 255, green: 0x1A / 255, blue: 0x1A / 255)
+    static let muted = Color(red: 0x5C / 255, green: 0x56 / 255, blue: 0x4B / 255)
+}
+
+private extension TransferActivityAttributes.ContentState {
+    var tint: Color {
+        switch phase {
+        case .running: return Ink.accent
+        case .finished: return Ink.good
+        case .failed: return .red
+        }
+    }
+
+    var statusSymbol: String {
+        switch phase {
+        case .running: return kind.symbol
+        case .finished: return "checkmark.circle.fill"
+        case .failed: return "exclamationmark.triangle.fill"
+        }
+    }
+
+    var othersText: String? {
+        others > 0 ? "+\(others) more" : nil
+    }
+}
+
+struct TransferLiveActivity: Widget {
+    var body: some WidgetConfiguration {
+        ActivityConfiguration(for: TransferActivityAttributes.self) { context in
+            LockScreenView(state: context.state)
+                .activityBackgroundTint(Ink.paper)
+                .activitySystemActionForegroundColor(Ink.ink)
+        } dynamicIsland: { context in
+            let s = context.state
+            return DynamicIsland {
+                DynamicIslandExpandedRegion(.leading) {
+                    Image(systemName: s.statusSymbol)
+                        .font(.title2)
+                        .foregroundStyle(s.tint)
+                        .padding(.leading, 4)
+                }
+                DynamicIslandExpandedRegion(.trailing) {
+                    Text(s.phase == .running ? s.percentText : "")
+                        .font(.title3.monospacedDigit().weight(.semibold))
+                        .foregroundStyle(s.tint)
+                        .padding(.trailing, 4)
+                }
+                DynamicIslandExpandedRegion(.center) {
+                    Text(s.title).font(.headline).lineLimit(1)
+                }
+                DynamicIslandExpandedRegion(.bottom) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ProgressBar(state: s)
+                        DetailLine(state: s, color: .white.opacity(0.7))
+                    }
+                    .padding(.horizontal, 4)
+                }
+            } compactLeading: {
+                Image(systemName: s.statusSymbol).foregroundStyle(s.tint)
+            } compactTrailing: {
+                if s.phase == .running, let f = s.fraction {
+                    Text("\(Int((f * 100).rounded(.down)))%")
+                        .font(.caption.monospacedDigit().weight(.semibold))
+                        .foregroundStyle(s.tint)
+                        .frame(minWidth: 30)
+                } else if s.phase == .running {
+                    ProgressView().progressViewStyle(.circular).tint(s.tint)
+                } else {
+                    Image(systemName: s.phase == .finished ? "checkmark" : "xmark")
+                        .foregroundStyle(s.tint)
+                }
+            } minimal: {
+                if s.phase == .running, let f = s.fraction {
+                    ProgressView(value: f) { Image(systemName: s.kind.symbol) }
+                        .progressViewStyle(.circular)
+                        .tint(s.tint)
+                } else {
+                    Image(systemName: s.statusSymbol).foregroundStyle(s.tint)
+                }
+            }
+            .keylineTint(s.tint)
+        }
+    }
+}
+
+private struct LockScreenView: View {
+    let state: TransferActivityAttributes.ContentState
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: state.statusSymbol)
+                .font(.title2)
+                .foregroundStyle(state.tint)
+                .frame(width: 30)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(state.title)
+                        .font(.headline)
+                        .foregroundStyle(Ink.ink)
+                        .lineLimit(1)
+                    Spacer(minLength: 8)
+                    if state.phase == .running {
+                        Text(state.percentText)
+                            .font(.headline.monospacedDigit())
+                            .foregroundStyle(state.tint)
+                    }
+                }
+                ProgressBar(state: state)
+                DetailLine(state: state)
+            }
+        }
+        .padding(16)
+    }
+}
+
+private struct ProgressBar: View {
+    let state: TransferActivityAttributes.ContentState
+
+    var body: some View {
+        switch state.phase {
+        case .running:
+            if let f = state.fraction {
+                ProgressView(value: f).tint(state.tint)
+            } else {
+                // Indeterminate step (installing, processing, building).
+                ProgressView(value: 0.0).tint(state.tint).opacity(0.35)
+            }
+        case .finished:
+            ProgressView(value: 1.0).tint(state.tint)
+        case .failed:
+            EmptyView()
+        }
+    }
+}
+
+private struct DetailLine: View {
+    let state: TransferActivityAttributes.ContentState
+    var color: Color = Ink.muted
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(state.detail)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 4)
+            if state.phase == .running {
+                if !state.amountText.isEmpty, state.fraction != nil {
+                    Text(state.amountText).monospacedDigit()
+                }
+                if let eta = state.eta, eta > Date() {
+                    Text("·")
+                    Text(timerInterval: Date()...eta, countsDown: true)
+                        .monospacedDigit()
+                        .frame(maxWidth: 52)
+                    Text("left")
+                }
+                if let more = state.othersText { Text("· \(more)") }
+            }
+        }
+        .font(.caption)
+        .foregroundStyle(color)
+    }
+}

@@ -278,7 +278,26 @@ final class SyncAccounts: NSObject, ObservableObject {
 
     /// Uploads a .fit. Returns a short status line for the UI ("Uploaded" with
     /// a link when the provider says so).
+    ///
+    /// Reported to TransferCenter, so the upload shows on the Lock Screen and
+    /// is given background time to finish if the rider locks the phone.
     func upload(_ fileURL: URL, to p: SyncProvider, name: String) async throws -> String {
+        let id = "cloud.\(p.rawValue).\(fileURL.lastPathComponent)"
+        let size = (try? fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        TransferCenter.shared.begin(id, kind: .cloudUpload, title: "Uploading to \(p.title)",
+                                    detail: name, total: Int64(size))
+        do {
+            let result = try await performUpload(fileURL, to: p, name: name, transferId: id)
+            TransferCenter.shared.finish(id, success: true, message: result)
+            return result
+        } catch {
+            TransferCenter.shared.finish(id, success: false, message: error.localizedDescription)
+            throw error
+        }
+    }
+
+    private func performUpload(_ fileURL: URL, to p: SyncProvider, name: String,
+                               transferId tid: String) async throws -> String {
         let token = try await accessToken(for: p)
         let data = try Data(contentsOf: fileURL)
         switch p {
@@ -291,9 +310,10 @@ final class SyncAccounts: NSObject, ObservableObject {
             req.httpMethod = "POST"
             req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
             form.apply(to: &req)
-            let json = try await send(req)
+            let json = try await send(req, progress: tid)
             if let e = json["error"] as? String, !e.isEmpty { throw SyncError.upload(e) }
             // Strava processes asynchronously: poll briefly for the activity id.
+            TransferCenter.shared.update(tid, detail: "Processing on Strava…", indeterminate: true)
             guard let id = (json["id"] as? NSNumber)?.int64Value else { return "Uploaded to Strava." }
             for _ in 0..<8 {
                 try await Task.sleep(nanoseconds: 1_500_000_000)
@@ -320,7 +340,7 @@ final class SyncAccounts: NSObject, ObservableObject {
             req.httpMethod = "POST"
             req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
             form.apply(to: &req)
-            let json = try await send(req)
+            let json = try await send(req, progress: tid)
             // 201 created / 200 duplicate; either way activities[0].id (or id).
             let first = (json["activities"] as? [[String: Any]])?.first ?? json
             if let id = first["id"] as? String ?? (first["id"] as? NSNumber).map({ $0.stringValue }) {
@@ -336,7 +356,7 @@ final class SyncAccounts: NSObject, ObservableObject {
             req.httpMethod = "POST"
             req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
             form.apply(to: &req)
-            let json = try await send(req)
+            let json = try await send(req, progress: tid)
             if let trip = json["trip"] as? [String: Any], let id = (trip["id"] as? NSNumber)?.int64Value {
                 return "Uploaded: ridewithgps.com/trips/\(id)"
             }
@@ -355,7 +375,9 @@ final class SyncAccounts: NSObject, ObservableObject {
         return try await send(req)
     }
 
-    private func send(_ req: URLRequest) async throws -> [String: Any] {
+    /// `progress` names a TransferCenter entry to report the request body's
+    /// upload progress to.
+    private func send(_ req: URLRequest, progress: String? = nil) async throws -> [String: Any] {
         var req = req
         req.setValue("application/json", forHTTPHeaderField: "Accept")
         req.timeoutInterval = 60
@@ -366,7 +388,15 @@ final class SyncAccounts: NSObject, ObservableObject {
                 req.setValue(t.token, forHTTPHeaderField: "X-Firebase-AppCheck")
             }
         }
-        let (data, resp) = try await URLSession.shared.data(for: req)
+        let (data, resp): (Data, URLResponse)
+        if let progress, let body = req.httpBody {
+            var r = req
+            r.httpBody = nil
+            (data, resp) = try await URLSession.shared.upload(
+                for: r, from: body, delegate: TransferProgressDelegate(id: progress, upload: true))
+        } else {
+            (data, resp) = try await URLSession.shared.data(for: req)
+        }
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
         let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
         guard (200..<300).contains(code) else {
