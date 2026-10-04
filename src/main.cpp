@@ -640,8 +640,11 @@ void setup() {
     // messaging on at runtime, and there has to be a task ready to service it.
     // (meshOk is false only when there was no PSRAM for the message ring, which
     // means the feature cannot work at all.)
+    // 6 KB rather than 4: the X25519 behind Meshtastic PKI (mesh_crypto.cpp) runs
+    // on this task and wants ~1.8 KB of stack of its own at the bottom of a
+    // receive path that was already most of the way down the old 4 KB.
     if (meshOk)
-        xTaskCreatePinnedToCore(mesh_service::task, "mesh", 4096, nullptr, 2,
+        xTaskCreatePinnedToCore(mesh_service::task, "mesh", 6144, nullptr, 2,
                                 nullptr, 0);
     xTaskCreatePinnedToCore(ui_dashboard::task, "ui", 8192, nullptr, 2, nullptr, 1);
 
