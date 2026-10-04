@@ -51,13 +51,22 @@ struct MapProjectStats {
     int blobsTruncated;     // blobs abandoned mid-parse because scratch filled
     int roadsOffscreen;     // rejected: no kept vertex inside the viewport
     int waterOffscreen, parksOffscreen;
+    int usedPois, poisDropped;  // cycling POIs kept / lost to MAX_POIS
     // The scratch capacities these are measured against, so a tool reporting
     // headroom reads the real numbers instead of a copy that goes stale.
     int capPoints, capPolys;
     int capWaterPoints, capWaterPolys;
     int capParkPoints, capParkPolys;
+    int capPois;
 };
 MapProjectStats projectStats();
+
+// Visit every cycling POI stored in a blob (its POI1 section), at any zoom, as
+// lat/lon. Cheap: hops section headers, reads only the POI records. Returns how
+// many were visited (0 for a tile built before POIs existed).
+using PoiVisitor = void (*)(void* ctx, uint8_t type, uint8_t flags, double lat,
+                            double lon);
+int forEachPoi(const uint8_t* blob, size_t blobLen, PoiVisitor fn, void* ctx);
 
 // Standalone geo -> screen projection around a center point (works
 // without a loaded map; used for the route overlay).

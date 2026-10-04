@@ -175,7 +175,7 @@ struct Scene {
             flat.push_back((int16_t)lroundf(p.second));
         }
         lines.push_back(std::move(flat));
-        features.push_back({cls, lines.back().data(),
+        features.push_back({cls, 0, lines.back().data(),
                             (int)lines.back().size() / 2});
     }
 
@@ -186,7 +186,7 @@ struct Scene {
             flat.push_back((int16_t)lroundf(p.second));
         }
         waterLines.push_back(std::move(flat));
-        water.push_back({MAP_WATER, waterLines.back().data(),
+        water.push_back({MAP_WATER, 0, waterLines.back().data(),
                          (int)waterLines.back().size() / 2});
     }
 };

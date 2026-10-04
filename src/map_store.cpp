@@ -560,6 +560,40 @@ void renderInto(double lat, double lon, float metersPerPixel, int centerX,
     }
 }
 
+bool nearestPoi(double lat, double lon, uint8_t typeMask, float maxM, PoiHit& out) {
+    MapGuard g;
+    // The cells around the rider out to maxM: the same selection a frame uses,
+    // with a "zoom" whose half-width is maxM.
+    static uint64_t sel[MAP_TILE_BUDGET];
+    const int n = mapSelectCells(lat, lon, maxM / 290.0f, 0.0f, MAP_TILE_BUDGET, sel);
+    struct Ctx {
+        double lat, lon, kx, best2;
+        uint8_t mask;
+        PoiHit hit;
+        bool found;
+    } c = {lat, lon, 111320.0 * cos(lat * M_PI / 180.0), (double)maxM * maxM,
+           typeMask, {}, false};
+    for (int i = 0; i < n; ++i) {
+        size_t len;
+        const uint8_t* b = ensureTileLoaded(sel[i], len, /*mayRead=*/false);
+        if (!b) continue;
+        map_tiles::forEachPoi(b, len, [](void* vp, uint8_t type, uint8_t flags,
+                                         double la, double lo) {
+            Ctx& x = *(Ctx*)vp;
+            if (type > 7 || !(x.mask & (1u << type))) return;
+            const double dx = (lo - x.lon) * x.kx, dy = (la - x.lat) * 110540.0;
+            const double d2 = dx * dx + dy * dy;
+            if (d2 >= x.best2) return;
+            x.best2 = d2;
+            x.hit = {type, flags, la, lo, (float)sqrt(d2),
+                     (float)fmod(atan2(dx, dy) * 180.0 / M_PI + 360.0, 360.0)};
+            x.found = true;
+        }, &c);
+    }
+    if (c.found) out = c.hit;
+    return c.found;
+}
+
 // Write `len` bytes to `path`, replacing any existing file. Caller holds the
 // SD lock (diag::log is safe under it — that lock order is the established
 // one, see diag.cpp). A field log showed 11 consecutive save failures and

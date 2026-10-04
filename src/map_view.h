@@ -23,10 +23,45 @@ enum MapFeatureClass : uint8_t {
     MAP_PARK = 7,            // parks/green (PRK2 section) — filled hatch dither
 };
 
+// Way flags (EBM sub-tile trailer; see docs/mapgen.js). Bits 0-1 are the
+// bike-route network level of the way.
+enum : uint8_t {
+    MAP_WF_ROUTE_MASK = 0x03,   // 0 none, 1 local, 2 regional, 3 national/intl
+    MAP_WF_CYCLEWAY = 0x04,     // dedicated cycleway (or path, bicycle=designated)
+    MAP_WF_BIKE_LANE = 0x08,    // painted lane / track along a road
+};
+
 struct MapPolyline {
     MapFeatureClass cls;
+    uint8_t flags;       // MAP_WF_* (0 for fills and for tiles without flags)
     const int16_t* pts;  // x0,y0,x1,y1,... screen px (portrait 540x960)
     int pointCount;
+};
+
+// Cycling POIs (EBM 'POI1' section). Type ids and flag bits are the on-tile
+// bytes — keep in step with docs/mapgen.js poiOf().
+enum MapPoiType : uint8_t {
+    MAP_POI_WATER = 1,       // drinking water
+    MAP_POI_TOILETS = 2,
+    MAP_POI_REPAIR = 3,      // bicycle repair station (self-service stand)
+    MAP_POI_BIKE_SHOP = 4,
+};
+enum : uint8_t {
+    MAP_PF_RESTRICTED = 0x80,   // any type: fee / customers only / seasonal
+    // MAP_POI_REPAIR (and PUMP also on MAP_POI_BIKE_SHOP)
+    MAP_PF_PUMP = 0x01, MAP_PF_TOOLS = 0x02, MAP_PF_CHAIN_TOOL = 0x04,
+    MAP_PF_STAND = 0x08,
+    // MAP_POI_BIKE_SHOP
+    MAP_PF_REPAIR = 0x02, MAP_PF_RENTAL = 0x04, MAP_PF_RETAIL = 0x08,
+    MAP_PF_SECOND_HAND = 0x10, MAP_PF_EBIKE = 0x20,
+    // MAP_POI_TOILETS
+    MAP_PF_HAS_WATER = 0x01,
+};
+
+struct MapPoi {
+    int16_t x, y;    // screen px
+    uint8_t type;    // MapPoiType
+    uint8_t flags;   // MAP_PF_*
 };
 
 struct MapScreenData {
@@ -42,6 +77,18 @@ struct MapScreenData {
     // fill beneath the water + roads. Distinct dither so it reads apart from water.
     const MapPolyline* parks = nullptr;
     int parkCount = 0;
+
+    // Cycling POIs (water, toilets, repair stands, bike shops) in view, already
+    // filtered for the zoom. Drawn as small icons over the roads.
+    const MapPoi* pois = nullptr;
+    int poiCount = 0;
+
+    // Nearest drinking water to the rider (map_store::nearestPoi), for the
+    // corner chip. nearPoiType 0 = none found / not looked up.
+    uint8_t nearPoiType = 0;
+    uint8_t nearPoiFlags = 0;
+    float nearPoiM = 0;
+    float nearPoiBearingDeg = 0;   // true bearing; the chip adds northDeg
 
     // Route polyline; the first riddenPointCount points render solid
     // (already ridden), the rest dashed (ahead) per the design.

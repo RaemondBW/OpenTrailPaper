@@ -39,6 +39,10 @@ constexpr int MAX_WATER_POINTS = 12000;
 constexpr int MAX_WATER_POLYS = 512;
 constexpr int MAX_PARK_POINTS = 24000;
 constexpr int MAX_PARK_POLYS = 512;
+// Cycling POIs (POI1). Dense downtown SF holds ~600 in 15x15 km; the widest
+// zoom that shows any (8 m/px) sees a ~4x8 km window, and tiles' bounding
+// boxes overlap so the same POI can arrive twice (deduped below).
+constexpr int MAX_POIS = 256;
 
 // The single "primary" blob used by the embedded map + route overlay path.
 const uint8_t* blob = nullptr;
@@ -50,6 +54,7 @@ int16_t* waterPts = nullptr;
 MapPolyline* waterPolys = nullptr;
 int16_t* parkPts = nullptr;
 MapPolyline* parkPolys = nullptr;
+MapPoi* poiBuf = nullptr;
 
 // Shared append cursors across a multi-tile frame (map_store drives these
 // via beginProject / projectBlobInto / endProject).
@@ -57,6 +62,7 @@ int g_usedPts = 0, g_usedPolys = 0;
 int g_clsKept[7] = {0, 0, 0, 0, 0, 0, 0};   // diag: polys kept per class this frame
 int g_usedWaterPts = 0, g_usedWaterPolys = 0;
 int g_usedParkPts = 0, g_usedParkPolys = 0;
+int g_usedPois = 0;
 map_tiles::MapProjectStats g_stats = {};
 
 // The screen rectangle a projected feature has to reach to be worth keeping,
@@ -88,6 +94,37 @@ T rd(const uint8_t* p) {
     return v;
 }
 
+// Zoomed out: shed detail to keep the feature count + draw time bounded and the
+// overview legible. Paths go first (>=4 m/px), then minor/residential (>=16),
+// then secondary/tertiary (>=32). Primary and arterial never shed — they carry
+// the overview at the widest zooms.
+//
+// Bike infrastructure outlives its road class: a signed bike route is the
+// thing a rider zooms out to FOLLOW, so regional/national routes never shed and
+// local ones last to 16 m/px; a dedicated cycleway lasts to 8 m/px. Only ever
+// keeps MORE than the plain class rule — a flag can never shed a primary road.
+inline bool shedAtZoom(uint8_t cls, uint8_t flags, float mpp) {
+    bool shed = (mpp >= 4.0f && cls == MAP_PATH) ||
+                (mpp >= 16.0f && cls == MAP_ROAD_MINOR) ||
+                (mpp >= 32.0f &&
+                 (cls == MAP_ROAD_SECONDARY || cls == MAP_ROAD_TERTIARY));
+    if (!shed || !flags) return shed;
+    const int lvl = flags & MAP_WF_ROUTE_MASK;
+    if (lvl >= 2) return false;
+    if (lvl == 1) return mpp >= 32.0f;
+    if (flags & MAP_WF_CYCLEWAY) return mpp >= 16.0f;
+    return true;
+}
+
+// Which POI types a zoom shows. Icons are ~24 px; past 8 m/px they would carpet
+// the screen. At 8 m/px only water and repair stands — the two a rider plans a
+// detour for; toilets and shops come back at 4 m/px.
+inline bool poiAtZoom(uint8_t type, float mpp) {
+    if (mpp <= 4.0f) return type >= MAP_POI_WATER && type <= MAP_POI_BIKE_SHOP;
+    if (mpp <= 8.0f) return type == MAP_POI_WATER || type == MAP_POI_REPAIR;
+    return false;
+}
+
 }  // namespace
 
 namespace map_tiles {
@@ -100,8 +137,10 @@ static bool ensureScratch() {
         waterPolys = (MapPolyline*)bigAlloc(MAX_WATER_POLYS * sizeof(MapPolyline));
         parkPts = (int16_t*)bigAlloc(MAX_PARK_POINTS * 2 * sizeof(int16_t));
         parkPolys = (MapPolyline*)bigAlloc(MAX_PARK_POLYS * sizeof(MapPolyline));
+        poiBuf = (MapPoi*)bigAlloc(MAX_POIS * sizeof(MapPoi));
     }
-    return pts && polys && waterPts && waterPolys && parkPts && parkPolys;
+    return pts && polys && waterPts && waterPolys && parkPts && parkPolys &&
+           poiBuf;
 }
 
 bool load(const uint8_t* data, size_t len) {
@@ -121,6 +160,9 @@ void beginProject(MapScreenData& out) {
     out.waterCount = 0;
     out.parks = parkPolys;
     out.parkCount = 0;
+    out.pois = poiBuf;
+    out.poiCount = 0;
+    g_usedPois = 0;
     g_usedPts = 0;
     g_usedPolys = 0;
     g_usedWaterPts = 0;
@@ -146,6 +188,8 @@ MapProjectStats projectStats() {
     s.capWaterPolys = MAX_WATER_POLYS;
     s.capParkPoints = MAX_PARK_POINTS;
     s.capParkPolys = MAX_PARK_POLYS;
+    s.usedPois = g_usedPois;
+    s.capPois = MAX_POIS;
     return s;
 }
 
@@ -153,6 +197,7 @@ void endProject(MapScreenData& out) {
     out.featureCount = g_usedPolys;
     out.waterCount = g_usedWaterPolys;
     out.parkCount = g_usedParkPolys;
+    out.poiCount = g_usedPois;
 }
 
 // Project a single EBM1 blob (with its own grid header) into the shared
@@ -215,29 +260,33 @@ void projectBlobInto(const uint8_t* b, size_t bLen, double lat, double lon,
             uint16_t count = rd<uint16_t>(p);
             p += 2;
 
+            // Way-flag trailer: exactly `count` bytes after the last polyline
+            // (docs/mapgen.js). Found by hopping the record headers — no point
+            // is read — and recognised by its exact length, which a tile
+            // without one (every tile built before it) can never have.
+            const uint8_t* wflags = nullptr;
+            {
+                const uint8_t* h = p;
+                uint16_t k = 0;
+                while (k < count && h + 3 <= end) {
+                    h += 3 + (size_t)rd<uint16_t>(h + 1) * 4;
+                    ++k;
+                }
+                if (k == count && h <= end && (size_t)(end - h) == count)
+                    wflags = h;
+            }
+
             for (uint16_t i = 0; i < count && p + 3 <= end; ++i) {
                 uint8_t cls = *p;
                 uint16_t n = rd<uint16_t>(p + 1);
                 p += 3;
                 if (p + n * 4 > end) goto done;
+                const uint8_t wf = wflags ? wflags[i] : 0;
 
-                // Zoomed out: shed detail to keep the feature count + draw time
-                // bounded and the overview legible. Paths go first (≥4), then
-                // minor/residential (≥16), then secondary/tertiary (≥32). Primary
-                // and arterial (motorway/trunk) never shed — they carry the
-                // overview at the widest zooms. Dropping the rest keeps the whole
-                // city inside the scratch buffers so the north isn't truncated.
-                if (metersPerPixel >= 4.0f && cls == MAP_PATH) {
+                // Dropping what this zoom sheds keeps the whole city inside
+                // the scratch buffers so the north isn't truncated.
+                if (shedAtZoom(cls, wf, metersPerPixel)) {
                     p += n * 4;
-                    continue;
-                }
-                if (metersPerPixel >= 16.0f && cls == MAP_ROAD_MINOR) {
-                    p += n * 4;
-                    continue;
-                }
-                if (metersPerPixel >= 32.0f &&
-                    (cls == MAP_ROAD_SECONDARY || cls == MAP_ROAD_TERTIARY)) {
-                    p += n * 4;   // primary + arterial never shed
                     continue;
                 }
 
@@ -301,6 +350,7 @@ void projectBlobInto(const uint8_t* b, size_t bLen, double lat, double lon,
                 if (kept >= 2 && !touchesViewport) g_stats.roadsOffscreen++;
                 if (kept < 2 || !touchesViewport) continue;
                 polys[usedPolys].cls = (MapFeatureClass)cls;
+                polys[usedPolys].flags = wf;
                 polys[usedPolys].pts = dst;
                 polys[usedPolys].pointCount = kept;
                 usedPolys++;
@@ -406,6 +456,7 @@ done:
             if (kept >= 3 && !overlaps) offscreen++;
             if (kept >= 3 && overlaps) {
                 dstPolys[usedPolys].cls = cls;
+                dstPolys[usedPolys].flags = 0;
                 dstPolys[usedPolys].pts = dst;
                 dstPolys[usedPolys].pointCount = kept;
                 usedPolys++;
@@ -424,6 +475,42 @@ done:
                   MAX_PARK_POINTS, MAX_PARK_POLYS, MAP_PARK,
                   g_stats.parksDropped, g_stats.parksOffscreen);
     }
+
+    // Extension sections: <magic><u32 length><payload>, skipped by length when
+    // unknown so later additions never need another firmware to stay readable.
+    while (q + 8 <= wend) {
+        const uint32_t secLen = rd<uint32_t>(q + 4);
+        const uint8_t* body = q + 8;
+        if (secLen > (size_t)(wend - body)) break;   // truncated / not a section
+        if (memcmp(q, "POI1", 4) == 0 && secLen >= 2 &&
+            poiAtZoom(MAP_POI_WATER, metersPerPixel)) {   // any POI at this zoom?
+            const uint16_t pc = rd<uint16_t>(body);
+            const uint8_t* r = body + 2;
+            for (uint16_t i = 0; i < pc && r + 6 <= body + secLen; ++i, r += 6) {
+                const uint8_t type = r[0];
+                if (!poiAtZoom(type, metersPerPixel)) continue;
+                float sx = centerX + ((float)rd<int16_t>(r + 2) - (float)px) * invMpp;
+                float sy = centerY - ((float)rd<int16_t>(r + 4) - (float)py) * invMpp;
+                if (rotateDeg != 0) {
+                    float dx = sx - centerX, dy = sy - centerY;
+                    sx = centerX + dx * rc - dy * rs;
+                    sy = centerY + dx * rs + dy * rc;
+                }
+                if (sx < -16 || sx > 556 || sy < -16 || sy > 976) continue;
+                const int ix = (int)lroundf(sx), iy = (int)lroundf(sy);
+                // H3 tiles are stored by their bounding box, and neighbouring
+                // boxes overlap: the same POI arrives from both tiles.
+                bool dup = false;
+                for (int k = 0; k < g_usedPois && !dup; ++k)
+                    dup = poiBuf[k].type == type && abs(poiBuf[k].x - ix) <= 1 &&
+                          abs(poiBuf[k].y - iy) <= 1;
+                if (dup) continue;
+                if (g_usedPois >= MAX_POIS) { g_stats.poisDropped++; continue; }
+                poiBuf[g_usedPois++] = {(int16_t)ix, (int16_t)iy, type, r[1]};
+            }
+        }
+        q = body + secLen;
+    }
 }
 
 void project(double lat, double lon, float metersPerPixel, int centerX,
@@ -434,6 +521,54 @@ void project(double lat, double lon, float metersPerPixel, int centerX,
                         centerY, rotateDeg);
     }
     endProject(out);
+}
+
+int forEachPoi(const uint8_t* b, size_t bLen, PoiVisitor fn, void* ctx) {
+    if (bLen < 36 || memcmp(b, "EBM2", 4) != 0) return 0;
+    const double lat0 = rd<double>(b + 4), lon0 = rd<double>(b + 12);
+    const double td = rd<double>(b + 20);
+    const int32_t nx = rd<int32_t>(b + 28), ny = rd<int32_t>(b + 32);
+    if (nx <= 0 || ny <= 0 || 36 + (size_t)nx * ny * 8 > bLen) return 0;
+    const double midLat = lat0 + td * ny / 2.0;
+    const double kx = 111320.0 * cos(midLat * M_PI / 180.0), ky = 110540.0;
+
+    // Walk past roads, ELV1, WTR2 and PRK2 exactly as projectBlobInto does.
+    size_t q = 36 + (size_t)nx * ny * 8;
+    for (int k = 0; k < nx * ny; ++k) {
+        uint32_t off = rd<uint32_t>(b + 36 + (size_t)k * 8);
+        uint32_t l = rd<uint32_t>(b + 36 + (size_t)k * 8 + 4);
+        if (off && (size_t)off + l > q) q = (size_t)off + l;
+    }
+    if (q + 44 <= bLen && memcmp(b + q, "ELV1", 4) == 0)
+        q += 44 + (size_t)rd<int32_t>(b + q + 4) * rd<int32_t>(b + q + 8) * 2;
+    static const char* const kFills[2] = {"WTR2", "PRK2"};
+    for (int fi = 0; fi < 2; ++fi) {
+        if (q + 6 > bLen || memcmp(b + q, kFills[fi], 4) != 0) {
+            if (fi == 0) return 0;   // no WTR2: nothing after it either
+            break;
+        }
+        const uint16_t pc = rd<uint16_t>(b + q + 4);
+        q += 6;
+        for (uint16_t i = 0; i < pc && q + 2 <= bLen; ++i)
+            q += 2 + (size_t)rd<uint16_t>(b + q) * 4;
+    }
+    int visited = 0;
+    while (q + 8 <= bLen) {
+        const uint32_t secLen = rd<uint32_t>(b + q + 4);
+        const size_t body = q + 8;
+        if (secLen > bLen - body) break;
+        if (memcmp(b + q, "POI1", 4) == 0 && secLen >= 2) {
+            const uint16_t pc = rd<uint16_t>(b + body);
+            for (uint16_t i = 0; i < pc && 2 + (size_t)(i + 1) * 6 <= secLen; ++i) {
+                const uint8_t* r = b + body + 2 + (size_t)i * 6;
+                fn(ctx, r[0], r[1], lat0 + rd<int16_t>(r + 4) / ky,
+                   lon0 + rd<int16_t>(r + 2) / kx);
+                visited++;
+            }
+        }
+        q = body + secLen;
+    }
+    return visited;
 }
 
 void geoToScreen(double lat, double lon, double centerLat, double centerLon,

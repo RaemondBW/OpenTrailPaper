@@ -19,6 +19,7 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#include <chrono>
 #include <zlib.h>
 
 #include <dirent.h>
@@ -167,6 +168,30 @@ void framebufferToPortrait(const uint8_t* fb, uint8_t* gray) {
     }
 }
 
+// The same nearest-water lookup map_store::nearestPoi runs on the device, over
+// every loaded tile instead of the device's RAM cache.
+void fillNearestWater(MapScreenData& map, double lat, double lon) {
+    struct Ctx { double lat, lon, kx, best2; uint8_t flags; double la, lo; bool found; }
+        c = {lat, lon, 111320.0 * cos(lat * M_PI / 180.0), 5000.0 * 5000.0, 0, 0, 0, false};
+    for (const Tile& t : g_tiles) {
+        map_tiles::forEachPoi(t.bytes.data(), t.bytes.size(),
+            [](void* vp, uint8_t type, uint8_t flags, double la, double lo) {
+                Ctx& x = *(Ctx*)vp;
+                if (type != MAP_POI_WATER) return;
+                double dx = (lo - x.lon) * x.kx, dy = (la - x.lat) * 110540.0;
+                if (dx * dx + dy * dy >= x.best2) return;
+                x.best2 = dx * dx + dy * dy; x.flags = flags; x.la = la; x.lo = lo;
+                x.found = true;
+            }, &c);
+    }
+    if (!c.found) return;
+    double dx = (c.lo - lon) * c.kx, dy = (c.la - lat) * 110540.0;
+    map.nearPoiType = MAP_POI_WATER;
+    map.nearPoiFlags = c.flags;
+    map.nearPoiM = (float)sqrt(c.best2);
+    map.nearPoiBearingDeg = (float)fmod(atan2(dx, dy) * 180.0 / M_PI + 360.0, 360.0);
+}
+
 // "-" when the frame drew everything it had; otherwise which budget bit.
 std::string dropSummary(const map_tiles::MapProjectStats& st, int want, int used) {
     std::string s;
@@ -186,6 +211,7 @@ std::string dropSummary(const map_tiles::MapProjectStats& st, int want, int used
     add("blobs-cut:%d", st.blobsTruncated);
     add("offscr-w:%d", st.waterOffscreen);
     add("offscr-p:%d", st.parksOffscreen);
+    add("pois:%d", st.poisDropped);
     return s.empty() ? "-" : s;
 }
 
@@ -239,7 +265,7 @@ int main(int argc, char** argv) {
             s = t.s < s ? t.s : s; n = t.n > n ? t.n : n;
             w = t.w < w ? t.w : w; e = t.e > e ? t.e : e;
         }
-        struct { int pts, polys, wpts, wpolys, ppts, ppolys, frames; } peak = {};
+        struct { int pts, polys, wpts, wpolys, ppts, ppolys, pois, frames; } peak = {};
         const float rots[] = {0.0f, -20.0f, -45.0f, -70.0f, -90.0f};
         for (int gy = 0; gy <= 12; ++gy) {
             for (int gx = 0; gx <= 12; ++gx) {
@@ -268,6 +294,7 @@ int main(int argc, char** argv) {
                         if (m.waterCount > peak.wpolys) peak.wpolys = m.waterCount;
                         if (st.usedParkPoints > peak.ppts) peak.ppts = st.usedParkPoints;
                         if (m.parkCount > peak.ppolys) peak.ppolys = m.parkCount;
+                        if (m.poiCount > peak.pois) peak.pois = m.poiCount;
                     }
                 }
             }
@@ -284,11 +311,13 @@ int main(int argc, char** argv) {
         row("water polys", peak.wpolys, cap.capWaterPolys);
         row("park points", peak.ppts, cap.capParkPoints);
         row("park polys", peak.ppolys, cap.capParkPolys);
+        row("pois", peak.pois, cap.capPois);
         return 0;
     }
 
-    printf("%-9s %-4s %5s %5s  %6s %6s  %5s %5s  %s\n",
-           "view", "mpp", "cells", "drawn", "polys", "pts", "wpoly", "wpts", "dropped");
+    printf("%-9s %-4s %5s %5s  %6s %6s  %5s %5s  %5s %5s  %6s %6s  %s\n",
+           "view", "mpp", "cells", "drawn", "polys", "pts", "wpoly", "wpts",
+           "bike", "pois", "projus", "drawus", "dropped");
     for (auto& v : views) {
         for (float mpp : zooms) {
             uint64_t sel[MAP_TILE_BUDGET];
@@ -305,6 +334,9 @@ int main(int argc, char** argv) {
             map.headingDeg = v.rot != 0 ? 0.0f : 37.0f;
             map.hasMap = true;
 
+            // Host timings: absolute numbers mean nothing for the ESP32, but the
+            // ratio between two tile sets / renderer versions does.
+            auto t0 = std::chrono::steady_clock::now();
             map_tiles::beginProject(map);
             int drawn = 0;
             for (int i = 0; i < used; ++i) {
@@ -318,13 +350,20 @@ int main(int argc, char** argv) {
             map_tiles::endProject(map);
 
             map_tiles::MapProjectStats st = map_tiles::projectStats();
-            printf("%-9s %-4d %5d %5d  %6d %6d  %5d %5d  %s\n",
-                   v.tag, (int)mpp, want, used, map.featureCount, st.usedPoints,
-                   map.waterCount, st.usedWaterPoints,
-                   dropSummary(st, want, used).c_str());
-
+            fillNearestWater(map, lat, lon);
+            int bike = 0;   // polylines carrying any cycling flag
+            for (int i = 0; i < map.featureCount; ++i) bike += map.features[i].flags != 0;
+            auto t1 = std::chrono::steady_clock::now();
             memset(fb.data(), 0xFF, fb.size());
             ui_render_map(map, s, fb.data());
+            auto t2 = std::chrono::steady_clock::now();
+            auto us = [](auto a, auto b) {
+                return (int)std::chrono::duration_cast<std::chrono::microseconds>(b - a).count();
+            };
+            printf("%-9s %-4d %5d %5d  %6d %6d  %5d %5d  %5d %5d  %6d %6d  %s\n",
+                   v.tag, (int)mpp, want, used, map.featureCount, st.usedPoints,
+                   map.waterCount, st.usedWaterPoints, bike, map.poiCount,
+                   us(t0, t1), us(t1, t2), dropSummary(st, want, used).c_str());
             framebufferToPortrait(fb.data(), gray.data());
             char path[256];
             snprintf(path, sizeof(path), "%s/map_%s_mpp%02d.png", outdir, v.tag,

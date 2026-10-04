@@ -68,6 +68,7 @@ MINUTES WATTS
       "Every current file starts with an EBM2 header describing its geographic bounds and tile grid.",
       "Roads and paths are stored as classified vector lines with compact local coordinates.",
       "Optional ELV1, WTR2 and PRK2 blocks carry elevation, water and park data.",
+      "Maps from the browser builder also mark bike routes, cycleways and bike lanes on the road lines and carry a POI1 block of drinking water, toilets, repair stations and bike shops. Older firmware ignores both.",
       "H3 tiles live under /maps/tiles/<area>/ and load as the rider moves. A whole-region .ebm can also sit directly in /maps as a fallback.",
     ],
     note: "The browser map builder omits elevation. Maps built by the companion app can include elevation used for grade and estimated ascent.",

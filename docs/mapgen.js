@@ -14,6 +14,18 @@
 //   class: 0 arterial, 1 secondary, 2 minor, 3 path.
 //   water: 'WTR2', u16 polygonCount, per polygon { u16 pointCount,
 //          i16 x,y per point (metres E/N of the grid SW origin lat0,lon0) }.
+//   parks: 'PRK2', same layout as WTR2.
+//
+// Cycling extensions (investigations/osm-pois-bike-routes.md). Both are
+// invisible to firmware that predates them, so old devices keep working:
+//   * Way flags: a sub-tile blob MAY end with a trailer of exactly
+//     polylineCount bytes, one u8 flags per polyline in order (WAY_* below).
+//     Older firmware reads `polylineCount` records and never looks past them.
+//     Written only for sub-tiles where some polyline has a non-zero flag.
+//   * Extension sections after PRK2: <4-byte magic><u32 byteLength><payload>,
+//     skipped by length when unknown. Older firmware stops reading at PRK2.
+//     'POI1': u16 count, per POI { u8 type, u8 flags, i16 x, i16 y } (metres
+//     E/N of the grid SW origin, like WTR2). Types/flags: POI_* below.
 
 export const TILE_DEG = 0.02;
 export const SIMPLIFY_M = 3.0;
@@ -30,7 +42,17 @@ export const OVERPASS_ENDPOINTS = [
 // none — no coastline ways means no sea rings, so those hexes came out blank.
 // Only the coastline filter is widened, so this does not drag in roads for the
 // whole padded area.
+//
+// Bike routes: route=bicycle relations are resolved to member WAY IDS on the
+// server and returned as three derived `bikeroute` elements (one per network
+// level, ways = "id;id;…"), not as relation bodies. Relation bodies carry every
+// member of a route that may run across a continent — 1.1 MB for central San
+// Francisco against ~60 KB this way. Member ways that the highway filter would
+// not fetch (service roads, …) are pulled in by `way(r.bk)` so a route has no
+// holes. Super-relations (EuroVelo parents) are not walked: their stages carry
+// network tags themselves.
 const QUERY = `[out:json][timeout:90];
+rel["route"="bicycle"](%S,%W,%N,%E)->.bk;
 (
   way["highway"~"^(motorway|trunk|primary|secondary|tertiary|residential|unclassified|living_street|pedestrian|cycleway|footway|path|track|steps)"](%S,%W,%N,%E);
   way["natural"="water"](%S,%W,%N,%E);
@@ -38,10 +60,29 @@ const QUERY = `[out:json][timeout:90];
   way["leisure"="park"](%S,%W,%N,%E);
   way["landuse"~"^(grass|forest|meadow|recreation_ground|cemetery|village_green)$"](%S,%W,%N,%E);
   way["natural"~"^(wood|scrub|grassland|heath)$"](%S,%W,%N,%E);
+  way(r.bk)(%S,%W,%N,%E);
+  node["amenity"~"^(drinking_water|toilets|bicycle_repair_station)$"](%S,%W,%N,%E);
+  node["man_made"="water_tap"]["drinking_water"="yes"](%S,%W,%N,%E);
+  node["amenity"="fountain"]["drinking_water"="yes"](%S,%W,%N,%E);
+  node["shop"="bicycle"](%S,%W,%N,%E);
+  way["amenity"~"^(toilets|bicycle_repair_station)$"](%S,%W,%N,%E);
+  way["shop"="bicycle"](%S,%W,%N,%E);
 );
 out body;
 >;
-out skel qt;`;
+out skel qt;
+rel.bk["network"~"^(icn|ncn)$"]->.r3;
+way(r.r3)(%S,%W,%N,%E)->.w3;
+make bikeroute level=3, ways=w3.set(id());
+out;
+rel.bk["network"="rcn"]->.r2;
+way(r.r2)(%S,%W,%N,%E)->.w2;
+make bikeroute level=2, ways=w2.set(id());
+out;
+(rel.bk; - rel.bk["network"~"^(icn|ncn|rcn)$"];)->.r1;
+way(r.r1)(%S,%W,%N,%E)->.w1;
+make bikeroute level=1, ways=w1.set(id());
+out;`;
 
 // Road tiers (device render classes). primary/secondary/tertiary are separate
 // tiers so each can be styled + shed independently per zoom.
@@ -80,6 +121,90 @@ export function isPark(tags) {
   return tags.leisure === "park" ||
          PARK_LANDUSE.has(tags.landuse || "") ||
          PARK_NATURAL.has(tags.natural || "");
+}
+
+// --- cycling extensions ------------------------------------------------------
+// Must agree with MapPolyline flags / MapPoi in src/map_view.h.
+
+// Way flags (u8, sub-tile trailer). Bits 0-1: bike-route network level.
+export const WAY_ROUTE_MASK = 0x03;   // 0 none, 1 local, 2 regional, 3 national/intl
+export const WAY_CYCLEWAY = 0x04;     // dedicated: highway=cycleway, or a path with bicycle=designated
+export const WAY_BIKE_LANE = 0x08;    // on-road lane/track: cycleway[:left|:right|:both]=lane|track
+const LANE_VALUES = new Set(["lane", "track", "opposite_lane", "opposite_track"]);
+const PATHLIKE = new Set(["path", "footway", "bridleway", "track", "pedestrian"]);
+
+// Flags for a way from its own tags plus its best route-network level (0..3).
+export function wayFlags(tags, routeLevel = 0) {
+  let f = routeLevel & WAY_ROUTE_MASK;
+  const hw = (tags && tags.highway) || "";
+  if (hw === "cycleway" || (PATHLIKE.has(hw) && tags.bicycle === "designated")) f |= WAY_CYCLEWAY;
+  for (const k of ["cycleway", "cycleway:both", "cycleway:left", "cycleway:right"]) {
+    if (LANE_VALUES.has(tags[k] || "")) { f |= WAY_BIKE_LANE; break; }
+  }
+  return f;
+}
+
+// A route member the highway filter does not classify (service road, busway,
+// bridleway…) still has to draw, or the route has holes in it.
+function classifyRouteMember(tags) {
+  const hw = (tags && tags.highway) || "";
+  if (!hw || hw === "proposed" || hw === "construction" || hw === "platform") return null;
+  return hw === "bridleway" || hw === "corridor" ? 5 : 4;
+}
+
+// POI types (u8) and their per-type flag bits (u8).
+export const POI_WATER = 1;      // amenity=drinking_water, water_tap/fountain + drinking_water=yes
+export const POI_TOILETS = 2;    // amenity=toilets
+export const POI_REPAIR = 3;     // amenity=bicycle_repair_station
+export const POI_BIKE_SHOP = 4;  // shop=bicycle
+// shared: the facility is not freely usable (fee, customers only, seasonal)
+export const POI_F_RESTRICTED = 0x80;
+// POI_REPAIR: what the stand has (service:bicycle:*)
+export const POI_F_PUMP = 0x01, POI_F_TOOLS = 0x02, POI_F_CHAIN_TOOL = 0x04, POI_F_STAND = 0x08;
+// POI_BIKE_SHOP: services (service:bicycle:*); PUMP is shared with REPAIR
+export const POI_F_REPAIR = 0x02, POI_F_RENTAL = 0x04, POI_F_RETAIL = 0x08,
+  POI_F_SECOND_HAND = 0x10, POI_F_EBIKE = 0x20;
+// POI_TOILETS
+export const POI_F_HAS_WATER = 0x01;
+
+// OSM tags -> [type, flags], or null if this is not a POI we keep.
+export function poiOf(tags) {
+  if (tags == null) return null;
+  const a = tags.amenity || "";
+  const yes = (k) => { const v = tags[k]; return v === "yes" || v === "only"; };
+  // Private / no access means a rider cannot use it — drop it outright.
+  const acc = tags.access || "";
+  if (acc === "private" || acc === "no") return null;
+  let restricted = acc === "customers" || acc === "permissive_customers" ||
+                   (tags.fee === "yes") || (tags.seasonal && tags.seasonal !== "no");
+  let type = 0, f = 0;
+  if (a === "drinking_water" ||
+      ((tags.man_made === "water_tap" || a === "fountain") && tags.drinking_water === "yes")) {
+    if (tags.drinking_water === "no") return null;
+    type = POI_WATER;
+  } else if (a === "toilets") {
+    type = POI_TOILETS;
+    if (tags.drinking_water === "yes") f |= POI_F_HAS_WATER;
+  } else if (a === "bicycle_repair_station") {
+    type = POI_REPAIR;
+    if (yes("service:bicycle:pump")) f |= POI_F_PUMP;
+    if (yes("service:bicycle:tools")) f |= POI_F_TOOLS;
+    if (yes("service:bicycle:chain_tool")) f |= POI_F_CHAIN_TOOL;
+    if (yes("service:bicycle:stand")) f |= POI_F_STAND;
+  } else if (tags.shop === "bicycle") {
+    type = POI_BIKE_SHOP;
+    if (yes("service:bicycle:pump")) f |= POI_F_PUMP;
+    if (yes("service:bicycle:repair") || yes("service:bicycle:diy")) f |= POI_F_REPAIR;
+    if (yes("service:bicycle:rental")) f |= POI_F_RENTAL;
+    if (yes("service:bicycle:retail") || yes("service:bicycle:parts")) f |= POI_F_RETAIL;
+    if (yes("service:bicycle:second_hand")) f |= POI_F_SECOND_HAND;
+    if (yes("service:bicycle:ebike") || yes("service:bicycle:charging")) f |= POI_F_EBIKE;
+    restricted = false;   // a shop is "customers only" by nature
+  } else {
+    return null;
+  }
+  if (restricted) f |= POI_F_RESTRICTED;
+  return [type, f];
 }
 
 // Ramer–Douglas–Peucker on projected metre coords. points: [[x,y], …].
@@ -408,19 +533,49 @@ export function headerOnlySize(s, w, n, e, tileDeg = TILE_DEG) {
 }
 
 // Encode an already-fetched Overpass JSON object into an .ebm Uint8Array.
-export function buildEbm(json, { s, w, n, e, tileDeg = TILE_DEG, simplifyM = SIMPLIFY_M }) {
+// `cycling: false` writes the pre-extension format byte-for-byte (no way-flag
+// trailers, no POI1) — for comparing against the other generators.
+export function buildEbm(json, { s, w, n, e, tileDeg = TILE_DEG, simplifyM = SIMPLIFY_M, cycling = true }) {
   const nodes = new Map();
   const ways = [];
   const waterWays = []; // node-id lists for natural=water polygons
   const coastWays = []; // node-id lists for natural=coastline ways
   const parkWays = [];  // node-id lists for parks / green areas
+  // Bike-route level per way id (highest network wins), from the derived
+  // `bikeroute` elements the query emits.
+  const routeLevel = new Map();
+  if (cycling) {
+    for (const el of json.elements) {
+      if (el.type !== "bikeroute" || !el.tags || !el.tags.ways) continue;
+      const lvl = Number(el.tags.level) & WAY_ROUTE_MASK;
+      for (const id of el.tags.ways.split(";")) {
+        const k = Number(id);
+        if (k && (routeLevel.get(k) || 0) < lvl) routeLevel.set(k, lvl);
+      }
+    }
+  }
+  const pois = new Map();   // "n123"/"w45" -> [type, flags, lat, lon] (lat/lon null until resolved)
+  const poiWays = [];       // [key, node ids] for POIs mapped as outlines
+  const seenWays = new Set();   // a way can arrive twice (highway filter + route member)
   for (const el of json.elements) {
     if (el.type === "node" && el.lat != null && el.lon != null) {
       nodes.set(el.id, [el.lat, el.lon]);
+      if (cycling && el.tags) {
+        const poi = poiOf(el.tags);
+        if (poi) pois.set("n" + el.id, [poi[0], poi[1], el.lat, el.lon]);
+      }
     } else if (el.type === "way" && el.nodes) {
+      if (seenWays.has(el.id)) continue;
+      seenWays.add(el.id);
       const tags = el.tags || {};
-      const cls = classify(tags);
-      if (cls != null) ways.push([cls, el.nodes]);
+      if (cycling) {
+        const poi = poiOf(tags);
+        if (poi) { poiWays.push(["w" + el.id, poi, el.nodes]); continue; }
+      }
+      let cls = classify(tags);
+      const lvl = routeLevel.get(el.id) || 0;
+      if (cls == null && lvl) cls = classifyRouteMember(tags);
+      if (cls != null) ways.push([cls, el.nodes, cycling ? wayFlags(tags, lvl) : 0]);
       else if (tags.natural === "water") waterWays.push(el.nodes);
       else if (tags.natural === "coastline") coastWays.push(el.nodes);
       else if (isPark(tags)) parkWays.push(el.nodes);
@@ -439,11 +594,11 @@ export function buildEbm(json, { s, w, n, e, tileDeg = TILE_DEG, simplifyM = SIM
   if (nx <= 0 || ny <= 0) throw new Error("empty area");
 
   const tileWm = td * kx, tileHm = td * ky;
-  const tiles = new Map(); // ty*nx+tx -> [[cls, [[x,y],…]], …]
+  const tiles = new Map(); // ty*nx+tx -> [[cls, [[x,y],…], flags], …]
 
   const tileOf = (p) => [Math.floor(p[0] / tileWm), Math.floor(p[1] / tileHm)];
 
-  const emit = (tx, ty, cls, run) => {
+  const emit = (tx, ty, cls, run, flags) => {
     if (run.length < 2 || tx < 0 || tx >= nx || ty < 0 || ty >= ny) return;
     const ox = tx * tileWm, oy = ty * tileHm;
     const pts = [];
@@ -457,11 +612,11 @@ export function buildEbm(json, { s, w, n, e, tileDeg = TILE_DEG, simplifyM = SIM
     if (pts.length >= 2) {
       const key = ty * nx + tx;
       if (!tiles.has(key)) tiles.set(key, []);
-      tiles.get(key).push([cls, pts]);
+      tiles.get(key).push([cls, pts, flags]);
     }
   };
 
-  for (const [cls, nids] of ways) {
+  for (const [cls, nids, flags] of ways) {
     const pts = [];
     for (const id of nids) { const p = nodes.get(id); if (p) pts.push(p); }
     if (pts.length < 2) continue;
@@ -474,12 +629,12 @@ export function buildEbm(json, { s, w, n, e, tileDeg = TILE_DEG, simplifyM = SIM
       const t = tileOf(p);
       run.push(p);
       if (t[0] !== cur[0] || t[1] !== cur[1]) {
-        emit(cur[0], cur[1], cls, run);
+        emit(cur[0], cur[1], cls, run, flags);
         run = [run[run.length - 2], p];
         cur = t;
       }
     }
-    emit(cur[0], cur[1], cls, run);
+    emit(cur[0], cur[1], cls, run, flags);
   }
 
   // Water polygons (natural=water) -> WTR2 section. Points are metres E/N of
@@ -553,6 +708,10 @@ export function buildEbm(json, { s, w, n, e, tileDeg = TILE_DEG, simplifyM = SIM
       b.u16(Math.min(pts.length, 0xffff));
       for (const [x, y] of pts) { b.i16(x); b.i16(y); }
     }
+    // Way-flag trailer: exactly one byte per polyline, only when one is set.
+    if (polys.some((p) => p[2])) {
+      for (let i = 0; i < Math.min(polys.length, 0xffff); i++) b.u8(polys[i][2] || 0);
+    }
     blobs.set(key, b);
   }
 
@@ -587,6 +746,34 @@ export function buildEbm(json, { s, w, n, e, tileDeg = TILE_DEG, simplifyM = SIM
   for (const poly of parkPolys) {
     out.u16(poly.length & 0xffff);
     for (const [x, y] of poly) { out.i16(x); out.i16(y); }
+  }
+
+  // POI1 extension section: POIs inside the drawn box, metres from the grid
+  // origin like WTR2. Outline-mapped POIs (a toilet block drawn as a building)
+  // sit at their vertex centroid.
+  if (cycling) {
+    for (const [key, poi, nids] of poiWays) {
+      let la = 0, lo = 0, k = 0;
+      const ring = nids.length > 1 && nids[0] === nids[nids.length - 1] ? nids.slice(0, -1) : nids;
+      for (const id of ring) { const p = nodes.get(id); if (p) { la += p[0]; lo += p[1]; k++; } }
+      if (k) pois.set(key, [poi[0], poi[1], la / k, lo / k]);
+    }
+    const list = [];
+    for (const [type, flags, lat, lon] of pois.values()) {
+      if (lat < s || lat > n || lon < w || lon > e) continue;
+      const x = Math.max(-32000, Math.min(32000, pyRound((lon - lon0) * kx)));
+      const y = Math.max(-32000, Math.min(32000, pyRound((lat - lat0) * ky)));
+      list.push([type, flags, x, y]);
+    }
+    // Stable order (y, x, type) so identical input builds identical bytes.
+    list.sort((a, b) => a[3] - b[3] || a[2] - b[2] || a[0] - b[0]);
+    if (list.length > 0xffff) list.length = 0xffff;
+    if (list.length) {
+      out.ascii("POI1");
+      out.u32(2 + list.length * 6);
+      out.u16(list.length);
+      for (const [type, flags, x, y] of list) { out.u8(type); out.u8(flags); out.i16(x); out.i16(y); }
+    }
   }
   return out.toUint8Array();
 }
