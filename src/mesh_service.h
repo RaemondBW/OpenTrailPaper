@@ -31,6 +31,11 @@ enum TxStatus : uint8_t {
     TX_FAILED  = 3,
 };
 
+// Hops value for a packet whose sender did not stamp hop_start (Meshtastic
+// firmware before 2.3), so how far it travelled cannot be worked out. Sent to the
+// phone as is; the apps treat anything above 7 (the protocol's maximum) as unknown.
+constexpr uint8_t HOPS_UNKNOWN = 0xFF;
+
 struct Message {
     uint32_t id = 0;
     uint32_t from = 0;
@@ -42,7 +47,8 @@ struct Message {
     bool     outgoing = false;
     uint8_t  channel = 0;    // which channel it belongs to; 0 = primary
     uint8_t  status = TX_PENDING;
-    uint8_t  hops = 0;       // hops taken to reach us (0 = heard directly)
+    uint8_t  hops = 0;       // hops taken to reach us (0 = heard directly,
+                             // HOPS_UNKNOWN = sender too old to say)
     char     text[mesh::MAX_TEXT_LEN + 1] = {};
 };
 
@@ -54,7 +60,7 @@ struct Node {
     uint32_t lastHeardUtc = 0;
     int8_t   snr = 0;
     int8_t   rssi = 0;
-    uint8_t  hops = 0;
+    uint8_t  hops = 0;       // from its most recent packet; see HOPS_UNKNOWN
 
     // Where the node last said it was. Nodes broadcast POSITION_APP on their own
     // schedule, so plenty of neighbours are known without ever having one —

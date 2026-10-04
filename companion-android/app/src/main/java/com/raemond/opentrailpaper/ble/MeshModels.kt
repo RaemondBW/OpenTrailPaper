@@ -103,11 +103,42 @@ data class MeshNode(
 ) {
     /** "!a4c1380c" — how Meshtastic writes a node number everywhere. */
     val nodeId: String get() = meshNodeId(num)
-    val displayName: String get() = longName.ifEmpty { nodeId }
+    val displayName: String get() = longName.ifEmpty { shortName.ifEmpty { nodeId } }
+
+    /**
+     * The node's short name, or the last four hex digits of its id until its
+     * NodeInfo arrives — which is also what Meshtastic itself defaults a short
+     * name to, so the fallback usually matches what the owner would see.
+     */
+    val shortLabel: String get() = meshShortLabel(num, shortName)
+
+    /** "direct", "2 hops", or null when the sender's firmware does not say. */
+    val hopsText: String? get() = meshHopsText(hops)
+
+    /** What a map pin carries: "ALEX · 2 hops". */
+    val mapLabel: String get() = hopsText?.let { "$shortLabel · $it" } ?: shortLabel
 }
 
 /** "!a4c1380c" — the one place a node number becomes text. */
 fun meshNodeId(num: Int): String = "!" + String.format(Locale.US, "%08x", num)
+
+/** A short name, or the last four hex digits of the node id when there is none. */
+fun meshShortLabel(num: Int, shortName: String): String =
+    shortName.ifEmpty { String.format(Locale.US, "%04x", num and 0xFFFF) }
+
+/**
+ * Meshtastic carries at most 7 hops; the device reports anything above that
+ * (0xFF) for a packet whose sender's firmware predates hop_start, where the
+ * distance is unknown rather than zero.
+ */
+fun meshHopsKnown(hops: Int): Boolean = hops in 0..7
+
+fun meshHopsText(hops: Int): String? = when {
+    !meshHopsKnown(hops) -> null
+    hops == 0 -> "direct"
+    hops == 1 -> "1 hop"
+    else -> "$hops hops"
+}
 
 /** The device's mesh configuration, as it reports it. */
 data class MeshState(

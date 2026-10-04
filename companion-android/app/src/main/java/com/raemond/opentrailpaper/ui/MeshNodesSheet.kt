@@ -24,10 +24,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.raemond.opentrailpaper.ble.BleManager
 import com.raemond.opentrailpaper.ble.MeshNode
+import com.raemond.opentrailpaper.ble.meshHopsKnown
 import java.util.Locale
 
 /**
@@ -125,7 +127,19 @@ fun MeshNodesSheet(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(5.dp),
                             ) {
-                                Text(n.displayName, style = TypeScale.title, color = Palette.ink)
+                                // Short name first: it is what the owner set to be
+                                // read at a glance, and it is never a hex id.
+                                Text(n.shortLabel, style = TypeScale.title, color = Palette.ink)
+                                if (n.longName.isNotEmpty()) {
+                                    Text(
+                                        n.longName,
+                                        style = barlow(15.sp),
+                                        color = Palette.muted,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f, fill = false),
+                                    )
+                                }
                                 // The whole point of the glyph: which of these has
                                 // told us where it is.
                                 n.position?.let { p ->
@@ -159,10 +173,10 @@ fun MeshNodesSheet(
 
 private fun nodeDetail(n: MeshNode): String {
     val parts = mutableListOf(n.nodeId)
-    if (n.hops == 0) {
-        parts.add("direct · ${n.rssi} dBm")
-    } else {
-        parts.add("${n.hops} hop${if (n.hops == 1) "" else "s"} away")
+    when {
+        n.hops == 0 -> parts.add("direct · ${n.rssi} dBm")
+        meshHopsKnown(n.hops) -> parts.add("${n.hopsText} away")
+        else -> parts.add("${n.rssi} dBm")
     }
     parts.add(
         DateUtils.getRelativeTimeSpanString(

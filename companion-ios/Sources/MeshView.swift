@@ -415,7 +415,7 @@ private struct MeshBubble: View {
                     .fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: 6) {
                     Text(message.date, style: .time)
-                    if !message.outgoing && message.hops > 0 {
+                    if !message.outgoing && (1...7).contains(message.hops) {
                         Text("· \(message.hops) hop\(message.hops == 1 ? "" : "s")")
                     }
                     if !message.outgoing && message.hops == 0 {
@@ -529,9 +529,18 @@ private struct MeshNodesSheet: View {
                                 HStack {
                                     VStack(alignment: .leading, spacing: 2) {
                                         HStack(spacing: 5) {
-                                            Text(n.displayName)
+                                            // Short name first: it is what the
+                                            // owner set to be read at a glance,
+                                            // and it is never a hex id.
+                                            Text(n.shortLabel)
                                                 .font(TypeScale.title)
                                                 .foregroundStyle(Palette.ink)
+                                            if !n.longName.isEmpty {
+                                                Text(n.longName)
+                                                    .font(BarlowFont.text(15))
+                                                    .foregroundStyle(Palette.muted)
+                                                    .lineLimit(1)
+                                            }
                                             // The whole point of the glyph: which
                                             // of these has told us where it is.
                                             if let p = n.position {
@@ -581,7 +590,8 @@ private struct MeshNodesSheet: View {
     private func detail(_ n: MeshNode) -> String {
         var parts = [n.nodeId]
         if n.hops == 0 { parts.append("direct · \(n.rssi) dBm") }
-        else { parts.append("\(n.hops) hop\(n.hops == 1 ? "" : "s") away") }
+        else if let h = n.hopsText { parts.append("\(h) away") }
+        else { parts.append("\(n.rssi) dBm") }
         parts.append(RelativeDateTimeFormatter().localizedString(for: n.lastHeard,
                                                                 relativeTo: Date()))
         return parts.joined(separator: " · ")
@@ -625,7 +635,8 @@ struct MeshMapSheet: View {
             guard let p = n.position else { return nil }
             return MeshNodePin(
                 id: n.num,
-                label: n.displayName,
+                label: n.mapLabel,
+                title: n.longName.isEmpty ? n.nodeId : n.longName,
                 detail: meshPositionLine(n, ble: ble) ?? p.shortText,
                 coordinate: p.coordinate,
                 imprecise: p.isImprecise)
@@ -644,7 +655,7 @@ struct MeshMapSheet: View {
                 if !unpositioned.isEmpty {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("No position reported").trackedLabel()
-                        Text(unpositioned.map(\.displayName).joined(separator: ", "))
+                        Text(unpositioned.map(\.shortLabel).joined(separator: ", "))
                             .font(BarlowFont.text(14))
                             .foregroundStyle(Palette.muted)
                             .fixedSize(horizontal: false, vertical: true)
