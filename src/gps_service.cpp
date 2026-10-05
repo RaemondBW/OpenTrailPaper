@@ -16,6 +16,7 @@
 #include "config.h"
 #include "ride_state.h"
 #include "routes.h"
+#include "phone_motion.h"
 #include "settings.h"
 #include "rtc_clock.h"
 #include "board_power.h"
@@ -720,6 +721,9 @@ void task(void*) {
                     s.utc = toUnix(gps.date.year(), gps.date.month(), gps.date.day(),
                                    gps.time.hour(), gps.time.minute(), gps.time.second());
                 }
+                // No fix of our own: speed and heading come from the phone (if
+                // it is streaming), not from whatever the receiver last held.
+                phone_motion::publish(s, millis());
             });
         }
 
@@ -865,6 +869,12 @@ void task(void*) {
                 }
             }
         }
+
+        // Phone-sourced speed/heading upkeep: while the receiver has no fix,
+        // re-assert the phone's values every loop (anything above that cleared
+        // speed is overridden at once) and drop the speed to 0 when the phone
+        // stream goes stale. No-op while the receiver has a fix.
+        g_state.with([](RideState& s) { phone_motion::publish(s, millis()); });
 
         // High-rate serial telemetry for live iteration: 1 Hz while searching,
         // 5 Hz-slow (5 s) once locked so the console isn't a firehose.

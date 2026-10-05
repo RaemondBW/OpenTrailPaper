@@ -14,6 +14,7 @@
 #include "settings.h"
 #include "routes.h"
 #include "gps_service.h"
+#include "phone_motion.h"
 #include "ble_sensors.h"
 #include "map_select.h"
 #include "workout.h"
@@ -285,6 +286,13 @@ class MediaCb : public NimBLECharacteristicCallbacks {
 //                      so the phone can confirm receipt instead of guessing
 //   [0x06] list      : device notifies [0x20][name].. then [0x21] done
 //   [0x07] delete    : rest is a route filename to remove
+//   [0x08] location  : the phone's live fix. Fields are positional and every
+//                      one past lat/lon is optional, so old apps and old
+//                      firmware interoperate (each side ignores what it lacks):
+//                        [i32 lat_e7][i32 lon_e7][u32 utc s][i16 alt m]
+//                        [i16 h-accuracy m][u16 speed cm/s][u16 course 0.01 deg]
+//                      speed/course 0xFFFF = the phone has no valid value
+//                      (iOS reports -1 standing still; Android may lack them).
 constexpr size_t ROUTE_MAX = 256 * 1024;  // 256 KB GPX cap (PSRAM)
 char* routeBuf = nullptr;
 size_t routeLen = 0;
@@ -368,13 +376,31 @@ class RouteCb : public NimBLECharacteristicCallbacks {
             // phone position is good enough to go in the ride file.
             int16_t accM = 0;
             if (plen >= 16) memcpy(&accM, payload + 14, 2);
+            // Speed + course (newer apps). Absent or 0xFFFF: derive instead.
+            float phoneSpeedMs = NAN, phoneCourseDeg = NAN;
+            if (plen >= 18) {
+                uint16_t v16;
+                memcpy(&v16, payload + 16, 2);
+                if (v16 != 0xFFFF) phoneSpeedMs = v16 / 100.0f;
+            }
+            if (plen >= 20) {
+                uint16_t v16;
+                memcpy(&v16, payload + 18, 2);
+                if (v16 != 0xFFFF && v16 < 36000) phoneCourseDeg = v16 / 100.0f;
+            }
             double lat = latE7 / 1e7, lon = lonE7 / 1e7;
             // Warm-start the receiver (throttled + no-fix-only inside the task).
             gps_service::seedPosition(lat, lon, (time_t)utc, haveTime, 5000.0f);
             settings::setLastPosition(lat, lon);
             // Stash as the phone fallback fix (used when the device GPS is cold).
             uint32_t nowMs = millis();
+            static phone_motion::Estimator motion;   // only this callback touches it
+            motion.update(lat, lon, accM > 0 ? (float)accM : 0.0f, nowMs,
+                          phoneSpeedMs, phoneCourseDeg);
             g_state.with([&](RideState& st) {
+                st.phoneSpeedKmh = motion.speedKmh(nowMs);
+                st.phoneCourseValid = motion.courseValid();
+                st.phoneCourseDeg = motion.courseDeg();
                 st.phoneLat = lat;
                 st.phoneLon = lon;
                 if (haveAlt) st.phoneAltM = (float)altM;
@@ -382,6 +408,8 @@ class RouteCb : public NimBLECharacteristicCallbacks {
                 st.phoneUtc = haveTime ? (time_t)utc : 0;
                 st.phoneFixValid = true;
                 st.phoneFixMs = nowMs;
+                // Speed/heading on the display while the phone is the source.
+                phone_motion::publish(st, nowMs);
             });
         }
     }
