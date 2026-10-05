@@ -36,6 +36,7 @@ const APPCHECK = { 'x-firebase-appcheck': appCheckToken() };
 
 let fake, fakeUrl, app, appUrl;
 const seen = [];   // requests the fake providers received
+const refreshCalls = {};   // refresh_token -> times the fake Strava saw it
 
 before(async () => {
     fake = http.createServer(async (req, res) => {
@@ -46,6 +47,14 @@ before(async () => {
         if (req.url === '/strava/oauth/token') {
             const p = new URLSearchParams(body);
             if (p.get('grant_type') === 'refresh_token') {
+                assert.equal(p.get('client_secret'), 'ssecret');
+                const rt = p.get('refresh_token');
+                refreshCalls[rt] = (refreshCalls[rt] || 0) + 1;
+                if (rt === 'dead') { res.statusCode = 400; return res.end(JSON.stringify({ message: 'Bad Request', errors: [{ resource: 'RefreshToken', field: 'refresh_token', code: 'invalid' }] })); }
+                if (rt === 'down') { res.statusCode = 502; res.setHeader('content-type', 'text/html'); return res.end('<html>bad gateway</html>'); }
+                if (rt === 'flaky' && refreshCalls[rt] === 1) { res.statusCode = 500; return res.end('{}'); }
+                if (rt === 'norotate') return res.end(JSON.stringify({ access_token: 'sa3', expires_at: 1999 }));
+                if (rt === 'empty') return res.end(JSON.stringify({}));
                 return res.end(JSON.stringify({ access_token: 'sa2', refresh_token: 'sr2', expires_at: 999 }));
             }
             assert.equal(p.get('client_secret'), 'ssecret');
@@ -80,6 +89,7 @@ before(async () => {
     srv.PROVIDERS.intervals.token = `${fakeUrl}/intervals/api/oauth/token`;
     srv.APP.appCheckJwks = `${fakeUrl}/jwks`;
 
+    srv.RETRY.delayMs = 0;
     app = srv.createServer();
     await new Promise((r) => app.listen(0, r));
     appUrl = `http://127.0.0.1:${app.address().port}`;
@@ -232,6 +242,47 @@ test('strava refresh proxies with the secret', async () => {
     assert.equal((await post('/v1/auth/strava/refresh', { refresh_token: 'sr1' })).status, 401);
     const r = await post('/v1/auth/strava/refresh', { refresh_token: 'sr1' }, APPCHECK);
     assert.deepEqual(await r.json(), { access_token: 'sa2', refresh_token: 'sr2', expires_at: 999 });
+});
+
+test('strava refresh: a response without a new refresh token keeps the old one', async () => {
+    const r = await post('/v1/auth/strava/refresh', { refresh_token: 'norotate' }, APPCHECK);
+    assert.equal(r.status, 200);
+    assert.deepEqual(await r.json(), { access_token: 'sa3', refresh_token: 'norotate', expires_at: 1999 });
+});
+
+test('strava refresh: a rejected refresh token is a readable 401, not a 5xx', async () => {
+    const r = await post('/v1/auth/strava/refresh', { refresh_token: 'dead' }, APPCHECK);
+    assert.equal(r.status, 401);
+    const j = await r.json();
+    assert.equal(j.reason, 'refresh_rejected');
+    assert.match(j.error, /connect Strava again/);
+    assert.equal(refreshCalls.dead, 1);   // a 4xx is final: no retry
+});
+
+test('strava refresh: a provider outage is a 503 with a reason, never a 502 (Cloudflare would eat it)', async () => {
+    const r = await post('/v1/auth/strava/refresh', { refresh_token: 'down' }, APPCHECK);
+    assert.equal(r.status, 503);
+    assert.equal(r.headers.get('retry-after'), '60');
+    const j = await r.json();
+    assert.match(j.error, /^Strava is having trouble right now \(HTTP 502\)/);
+    assert.equal(refreshCalls.down, 2);   // retried once
+});
+
+test('strava refresh: a transient 5xx is retried once and then succeeds', async () => {
+    const r = await post('/v1/auth/strava/refresh', { refresh_token: 'flaky' }, APPCHECK);
+    assert.equal(r.status, 200);
+    assert.equal((await r.json()).access_token, 'sa2');
+    assert.equal(refreshCalls.flaky, 2);
+});
+
+test('strava refresh: a 200 without an access token is a 503', async () => {
+    assert.equal((await post('/v1/auth/strava/refresh', { refresh_token: 'empty' }, APPCHECK)).status, 503);
+});
+
+test('refresh: missing token is 400, intervals has nothing to refresh', async () => {
+    assert.equal((await post('/v1/auth/strava/refresh', {}, APPCHECK)).status, 400);
+    assert.equal((await post('/v1/auth/intervals/refresh', { refresh_token: 'x' }, APPCHECK)).status, 400);
+    assert.equal((await post('/v1/auth/nope/refresh', { refresh_token: 'x' }, APPCHECK)).status, 404);
 });
 
 test('rwgps upload is proxied with the API key and the user token', async () => {

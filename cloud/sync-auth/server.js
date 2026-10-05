@@ -14,7 +14,8 @@
 //        - a Universal Link / App Link only the signed apps can claim
 //   GET  /app/sync/:provider                    fallback page when no app claimed it
 //   POST /v1/auth/handoff        {handoff}      [App Check] -> {provider, tokens..., athlete}
-//   POST /v1/auth/strava/refresh {refresh_token} [App Check]
+//   POST /v1/auth/:provider/refresh {refresh_token} [App Check] -> {access_token,
+//                                refresh_token, expires_at}  (strava, ridewithgps)
 //   POST /v1/auth/strava/revoke  {access_token}  [App Check]
 //   POST /v1/rwgps/trips         (multipart, Bearer user token) [App Check] -> proxied
 //                                upload, the API key added here
@@ -38,6 +39,12 @@
 // of the API key.
 //
 // Zero dependencies: node:http, node:crypto and the global fetch of Node 20.
+//
+// Errors: never answer 502 or 504. The public host is proxied by Cloudflare,
+// which swaps an origin's 502/504 for its own error page (a problem+json body
+// whose only content is a cloudflare.com "type" URL), so the reason never
+// reached the app. A provider that fails is reported as 503 (try again) or
+// 401 (sign in again), always with a readable {error} the apps show as is.
 
 'use strict';
 
@@ -76,6 +83,8 @@ const PROVIDERS = {
         token: 'https://www.strava.com/oauth/token',
         revoke: 'https://www.strava.com/oauth/deauthorize',
         scope: 'read,activity:write',
+        title: 'Strava',
+        refreshes: true,     // access tokens last 6 h; the refresh token may rotate
         clientId: () => env('STRAVA_CLIENT_ID'),
         clientSecret: () => env('STRAVA_CLIENT_SECRET'),
     },
@@ -87,6 +96,7 @@ const PROVIDERS = {
         authorize: 'https://intervals.icu/oauth/authorize',
         token: 'https://intervals.icu/api/oauth/token',
         scope: 'ACTIVITY:WRITE',
+        title: 'Intervals.icu',
         clientId: () => env('INTERVALS_CLIENT_ID'),
         clientSecret: () => env('INTERVALS_CLIENT_SECRET'),
     },
@@ -94,6 +104,10 @@ const PROVIDERS = {
         authorize: 'https://ridewithgps.com/oauth/authorize',
         token: 'https://ridewithgps.com/oauth/token',
         api: 'https://ridewithgps.com/api/v1',
+        title: 'RideWithGPS',
+        // Standard OAuth refresh grant, used only if RWGPS ever issues an
+        // expiring token with a refresh token (today its tokens do not expire).
+        refreshes: true,
         clientId: () => env('RWGPS_CLIENT_ID'),
         clientSecret: () => env('RWGPS_CLIENT_SECRET'),
         apiKey: () => env('RWGPS_API_KEY'),
@@ -192,26 +206,73 @@ async function exchangeCode(provider, code, redirectUri) {
     return json;
 }
 
-async function stravaRefresh(refreshToken) {
-    const p = PROVIDERS.strava;
+/* A provider answered with an error, or could not be reached. Logs what it
+ * said (status + the start of its body: error bodies carry no tokens) and
+ * turns it into something the app can show: 401 when the provider no longer
+ * accepts the user's grant, 503 for everything else (never 502: see the top). */
+function upstreamError(provider, what, status, bodyText) {
+    const title = PROVIDERS[provider].title;
+    console.error(`[${provider}] ${what} failed: ${status ?? 'unreachable'} ${String(bodyText || '').slice(0, 300)}`);
+    // 400 invalid_grant / 401: the refresh token or the grant is dead. (Not
+    // 403: a CDN or WAF says that too, and signing in again would not help.)
+    if (status === 400 || status === 401) {
+        const e = new HttpError(401, `${title} no longer accepts this sign-in. Disconnect and connect ${title} again.`);
+        e.reason = 'refresh_rejected';
+        return e;
+    }
+    const e = new HttpError(503, status
+        ? `${title} is having trouble right now (HTTP ${status}). Try again in a few minutes.`
+        : `${title} could not be reached. Try again in a few minutes.`);
+    e.retryAfter = 60;
+    return e;
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// Backoff before the one retry of a refresh; the tests set it to 0.
+const RETRY = { delayMs: 1000 };
+
+async function refreshTokens(provider, refreshToken) {
+    const p = PROVIDERS[provider];
     const form = new URLSearchParams({
         client_id: p.clientId(),
         client_secret: p.clientSecret(),
         grant_type: 'refresh_token',
         refresh_token: refreshToken,
     });
-    const r = await fetch(p.token, {
-        method: 'POST',
-        headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
-        body: form,
-    });
-    const json = await r.json().catch(() => ({}));
-    if (!r.ok) throw new HttpError(r.status === 400 || r.status === 401 ? 401 : 502, `strava refresh failed: ${r.status}`);
-    return {
-        access_token: json.access_token,
-        refresh_token: json.refresh_token,
-        expires_at: json.expires_at,
-    };
+    // One retry for what is plausibly transient (network, 429, 5xx). A 4xx
+    // is the provider's final word on this refresh token.
+    let status, text;
+    for (let attempt = 0; attempt < 2; attempt++) {
+        if (attempt) await sleep(RETRY.delayMs);
+        let r;
+        try {
+            r = await fetch(p.token, {
+                method: 'POST',
+                headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
+                body: form,
+                signal: AbortSignal.timeout(15000),
+            });
+        } catch (e) {
+            status = undefined; text = e.message;
+            continue;
+        }
+        status = r.status;
+        text = await r.text().catch(() => '');
+        if (r.ok) {
+            let json = {};
+            try { json = JSON.parse(text); } catch { /* handled below */ }
+            if (!json.access_token) throw upstreamError(provider, 'refresh (no access_token)', status, text);
+            const expiresAt = json.expires_at != null ? Number(json.expires_at)
+                : json.expires_in != null ? now() + Number(json.expires_in) : undefined;
+            const out = { access_token: json.access_token };
+            // Strava may rotate the refresh token: the app must keep this one.
+            out.refresh_token = json.refresh_token || refreshToken;
+            if (expiresAt) out.expires_at = expiresAt;
+            return out;
+        }
+        if (status !== 429 && status < 500) break;
+    }
+    throw upstreamError(provider, 'refresh', status, text);
 }
 
 async function stravaRevoke(accessToken) {
@@ -221,7 +282,7 @@ async function stravaRevoke(accessToken) {
         body: new URLSearchParams({ access_token: accessToken }),
     });
     // 401 = already gone; either way the app forgets the token.
-    if (!r.ok && r.status !== 401) throw new HttpError(502, `strava deauthorize failed: ${r.status}`);
+    if (!r.ok && r.status !== 401) throw upstreamError('strava', 'deauthorize', r.status, await r.text().catch(() => ''));
 }
 
 function rwgpsHeaders(userToken, extra = {}) {
@@ -236,7 +297,8 @@ function rwgpsHeaders(userToken, extra = {}) {
 async function rwgpsCurrentUser(userToken) {
     const r = await fetch(`${PROVIDERS.ridewithgps.api}/users/current.json`, { headers: rwgpsHeaders(userToken) });
     const json = await r.json().catch(() => ({}));
-    if (!r.ok) throw new HttpError(r.status === 401 ? 401 : 502, `ridewithgps user lookup failed: ${r.status}`);
+    if (r.status === 401) throw new HttpError(401, 'RideWithGPS no longer accepts this sign-in. Disconnect and connect RideWithGPS again.');
+    if (!r.ok) throw upstreamError('ridewithgps', 'user lookup', r.status, JSON.stringify(json));
     // v1 wraps it as {user: {...}}; be lenient.
     const u = json.user || json;
     return { id: u.id, name: u.name || u.display_name || null };
@@ -491,11 +553,13 @@ async function handle(req, res) {
         return send(res, 200, openHandoff(handoff));
     }
 
-    if (m('POST', /^\/v1\/auth\/strava\/refresh$/)) {
+    if ((r = m('POST', /^\/v1\/auth\/([a-z]+)\/refresh$/))) {
+        const provider = providerOf(r[1]);
         await requireApp(req);
+        if (!PROVIDERS[provider].refreshes) throw new HttpError(400, `${PROVIDERS[provider].title} tokens do not expire`);
         const { refresh_token } = await readJson(req);
         if (!refresh_token) throw new HttpError(400, 'missing refresh_token');
-        return send(res, 200, await stravaRefresh(refresh_token));
+        return send(res, 200, await refreshTokens(provider, refresh_token));
     }
 
     if (m('POST', /^\/v1\/auth\/strava\/revoke$/)) {
@@ -525,7 +589,10 @@ async function handle(req, res) {
             body,
         });
         const text = await up.text();
-        res.writeHead(up.ok ? 200 : (up.status === 401 ? 401 : 502), {
+        // RWGPS's own 4xx (401, 422 ...) passes through with its body; a 5xx
+        // becomes a 503 so Cloudflare does not replace it (see the top).
+        if (up.status >= 500) throw upstreamError('ridewithgps', 'upload', up.status, text);
+        res.writeHead(up.ok ? 200 : up.status, {
             'content-type': up.headers.get('content-type') || 'application/json',
             'cache-control': 'no-store',
         });
@@ -538,10 +605,13 @@ async function handle(req, res) {
 function createServer() {
     return http.createServer((req, res) => {
         handle(req, res).catch((e) => {
-            const status = e instanceof HttpError ? e.status : 500;
+            let status = e instanceof HttpError ? e.status : 500;
+            if (status === 502 || status === 504) status = 503;   // Cloudflare would replace these
             if (status >= 500) console.error(`${req.method} ${req.url}: ${e.stack || e}`);
-            if (!res.headersSent) send(res, status, { error: e.message });
-            else res.end();
+            if (res.headersSent) return res.end();
+            const body = { error: e instanceof HttpError ? e.message : 'The sync service hit an internal error.' };
+            if (e.reason) body.reason = e.reason;
+            send(res, status, body, e.retryAfter ? { 'retry-after': String(e.retryAfter) } : {});
         });
     });
 }
@@ -550,4 +620,4 @@ if (require.main === module) {
     createServer().listen(PORT, () => console.log(`sync-auth listening on :${PORT}`));
 }
 
-module.exports = { createServer, PROVIDERS, APP, signState, verifyState, sealHandoff, openHandoff, verifyAppCheck };
+module.exports = { createServer, PROVIDERS, APP, RETRY, signState, verifyState, sealHandoff, openHandoff, verifyAppCheck };

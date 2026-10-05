@@ -20,6 +20,8 @@ only their own user's tokens.
    (a Universal Link / App Link: only the signed apps can claim it)
  POST /v1/auth/handoff {handoff} ──App Check──► tokens (Keychain / EncryptedSharedPreferences)
 
+ Token refresh (Strava; 6 h tokens, the refresh token may rotate):
+                          phone ──App Check──► /v1/auth/<p>/refresh ──+ secret──► provider token endpoint
  Upload to Strava:        phone ──bearer──► strava.com/api/v3/uploads
  Upload to Intervals.icu: phone ──bearer──► intervals.icu/api/v1/athlete/0/activities?device_name=OpenTrailPaper
  Upload to RideWithGPS:   phone ──bearer + App Check──► /v1/rwgps/trips ──+ API key──► ridewithgps.com
@@ -83,7 +85,15 @@ Source: [`cloud/sync-auth/`](../cloud/sync-auth/) (Node 20, no dependencies,
   `https://sync.opentrailpaper.com`: `opentrailpaper.com` is Google-verified,
   the domain mapping is up with its certificate, and Cloudflare holds
   `sync` CNAME `ghs.googlehosted.com` (proxied; that turned out to work, the
-  certificate provisioned through it).
+  certificate provisioned through it). Because it is proxied, Cloudflare
+  replaces any 502 or 504 the service sends with its own error document (a
+  cloudflare.com "type" URL and no reason), so the service never answers
+  with those: a provider failure is a 503 with a readable `error`, a dead
+  grant a 401 with `reason: "refresh_rejected"`.
+
+The apps refresh a token five minutes before it expires, save the rotated
+refresh token before using the new access token, run one refresh at a time
+per account, and on a provider 401 refresh once and retry.
 - Strava (client 280563) and RideWithGPS secrets are in Secret Manager; the
   attested flow through the domain reaches both consent pages, and the
   RideWithGPS API key is accepted. Intervals.icu's two values are still
