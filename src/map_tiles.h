@@ -61,12 +61,23 @@ struct MapProjectStats {
 };
 MapProjectStats projectStats();
 
-// Visit every cycling POI stored in a blob (its POI1 section), at any zoom, as
-// lat/lon. Cheap: hops section headers, reads only the POI records. Returns how
-// many were visited (0 for a tile built before POIs existed).
+// Cycling POIs live in a .poi file next to each tile (format in
+// map_tiles.cpp, writer in docs/mapgen.js buildPoi), not inside the .ebm.
+constexpr size_t POI_HEADER_LEN = 40;
+// Header magic/version/length check. Also how saveTile tells a .poi apart.
+bool poiFileValid(const uint8_t* poi, size_t len);
+
+// Append the POIs of one .poi file that this zoom shows to the frame's POI
+// scratch (between beginProject and endProject, like projectBlobInto).
+void projectPoisInto(const uint8_t* poi, size_t len, double lat, double lon,
+                     float metersPerPixel, int centerX, int centerY,
+                     float rotateDeg);
+
+// Visit every POI in a .poi file, at any zoom, as lat/lon. Returns the count
+// (0 for an invalid file).
 using PoiVisitor = void (*)(void* ctx, uint8_t type, uint8_t flags, double lat,
                             double lon);
-int forEachPoi(const uint8_t* blob, size_t blobLen, PoiVisitor fn, void* ctx);
+int forEachPoi(const uint8_t* poi, size_t len, PoiVisitor fn, void* ctx);
 
 // Standalone geo -> screen projection around a center point (works
 // without a loaded map; used for the route overlay).

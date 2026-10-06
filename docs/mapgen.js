@@ -16,16 +16,21 @@
 //          i16 x,y per point (metres E/N of the grid SW origin lat0,lon0) }.
 //   parks: 'PRK2', same layout as WTR2.
 //
-// Cycling extensions (investigations/osm-pois-bike-routes.md). Both are
-// invisible to firmware that predates them, so old devices keep working:
+// Cycling extensions (investigations/osm-pois-bike-routes.md):
 //   * Way flags: a sub-tile blob MAY end with a trailer of exactly
 //     polylineCount bytes, one u8 flags per polyline in order (WAY_* below).
 //     Older firmware reads `polylineCount` records and never looks past them.
 //     Written only for sub-tiles where some polyline has a non-zero flag.
-//   * Extension sections after PRK2: <4-byte magic><u32 byteLength><payload>,
-//     skipped by length when unknown. Older firmware stops reading at PRK2.
-//     'POI1': u16 count, per POI { u8 type, u8 flags, i16 x, i16 y } (metres
-//     E/N of the grid SW origin, like WTR2). Types/flags: POI_* below.
+//   * Reserved: extension sections after PRK2, <4-byte magic><u32 byteLength>
+//     <payload>, which new firmware skips by length. None is defined yet.
+//   * POIs are NOT in the map: buildPoi() writes a separate <h3>.poi next to
+//     each <h3>.ebm, so POIs can be fetched, cached and sent on their own.
+//
+// .poi (little-endian; reader: src/map_tiles.cpp poiFileValid / forEachPoi):
+//   'EPOI', u8 version (1), u8 recordSize (6), u16 count, u64 H3 cell (0 =
+//   none), f64 lat0, f64 lon0, f32 kx, f32 ky   (40 bytes), then count x
+//   { u8 type, u8 flags, i16 x, i16 y } with x/y metres E/N of (lat0, lon0)
+//   at kx/ky metres per degree. Types/flags: POI_* below.
 
 export const TILE_DEG = 0.02;
 export const SIMPLIFY_M = 3.0;
@@ -513,6 +518,11 @@ class ByteWriter {
   i16(v) { this.u16(v & 0xffff); }
   u32(v) { this.u8(v); this.u8(v >> 8); this.u8(v >> 16); this.u8(v >> 24); }
   i32(v) { this.u32(v >>> 0); }
+  f32(v) {
+    const b = new Uint8Array(4);
+    new DataView(b.buffer).setFloat32(0, v, true);
+    for (let i = 0; i < 4; i++) this.bytes.push(b[i]);
+  }
   f64(v) {
     const b = new Uint8Array(8);
     new DataView(b.buffer).setFloat64(0, v, true);
@@ -534,7 +544,7 @@ export function headerOnlySize(s, w, n, e, tileDeg = TILE_DEG) {
 
 // Encode an already-fetched Overpass JSON object into an .ebm Uint8Array.
 // `cycling: false` writes the pre-extension format byte-for-byte (no way-flag
-// trailers, no POI1) — for comparing against the other generators.
+// trailers) — for comparing against the other generators.
 export function buildEbm(json, { s, w, n, e, tileDeg = TILE_DEG, simplifyM = SIMPLIFY_M, cycling = true }) {
   const nodes = new Map();
   const ways = [];
@@ -554,24 +564,15 @@ export function buildEbm(json, { s, w, n, e, tileDeg = TILE_DEG, simplifyM = SIM
       }
     }
   }
-  const pois = new Map();   // "n123"/"w45" -> [type, flags, lat, lon] (lat/lon null until resolved)
-  const poiWays = [];       // [key, node ids] for POIs mapped as outlines
   const seenWays = new Set();   // a way can arrive twice (highway filter + route member)
   for (const el of json.elements) {
     if (el.type === "node" && el.lat != null && el.lon != null) {
       nodes.set(el.id, [el.lat, el.lon]);
-      if (cycling && el.tags) {
-        const poi = poiOf(el.tags);
-        if (poi) pois.set("n" + el.id, [poi[0], poi[1], el.lat, el.lon]);
-      }
     } else if (el.type === "way" && el.nodes) {
       if (seenWays.has(el.id)) continue;
       seenWays.add(el.id);
       const tags = el.tags || {};
-      if (cycling) {
-        const poi = poiOf(tags);
-        if (poi) { poiWays.push(["w" + el.id, poi, el.nodes]); continue; }
-      }
+      if (cycling && poiOf(tags)) continue;   // a POI outline (buildPoi), not a map feature
       let cls = classify(tags);
       const lvl = routeLevel.get(el.id) || 0;
       if (cls == null && lvl) cls = classifyRouteMember(tags);
@@ -748,33 +749,73 @@ export function buildEbm(json, { s, w, n, e, tileDeg = TILE_DEG, simplifyM = SIM
     for (const [x, y] of poly) { out.i16(x); out.i16(y); }
   }
 
-  // POI1 extension section: POIs inside the drawn box, metres from the grid
-  // origin like WTR2. Outline-mapped POIs (a toilet block drawn as a building)
-  // sit at their vertex centroid.
-  if (cycling) {
-    for (const [key, poi, nids] of poiWays) {
-      let la = 0, lo = 0, k = 0;
-      const ring = nids.length > 1 && nids[0] === nids[nids.length - 1] ? nids.slice(0, -1) : nids;
-      for (const id of ring) { const p = nodes.get(id); if (p) { la += p[0]; lo += p[1]; k++; } }
-      if (k) pois.set(key, [poi[0], poi[1], la / k, lo / k]);
-    }
-    const list = [];
-    for (const [type, flags, lat, lon] of pois.values()) {
-      if (lat < s || lat > n || lon < w || lon > e) continue;
-      const x = Math.max(-32000, Math.min(32000, pyRound((lon - lon0) * kx)));
-      const y = Math.max(-32000, Math.min(32000, pyRound((lat - lat0) * ky)));
-      list.push([type, flags, x, y]);
-    }
-    // Stable order (y, x, type) so identical input builds identical bytes.
-    list.sort((a, b) => a[3] - b[3] || a[2] - b[2] || a[0] - b[0]);
-    if (list.length > 0xffff) list.length = 0xffff;
-    if (list.length) {
-      out.ascii("POI1");
-      out.u32(2 + list.length * 6);
-      out.u16(list.length);
-      for (const [type, flags, x, y] of list) { out.u8(type); out.u8(flags); out.i16(x); out.i16(y); }
+  return out.toUint8Array();
+}
+
+// Every POI in an Overpass response, as [type, flags, lat, lon]. Outline-mapped
+// POIs (a toilet block drawn as a building) sit at their vertex centroid.
+// Memoised per response: buildPoi runs once per tile over the same JSON.
+const poiCache = new WeakMap();
+export function collectPois(json) {
+  if (poiCache.has(json)) return poiCache.get(json);
+  const nodes = new Map();
+  const out = new Map();   // "n123" / "w45" -> [type, flags, lat, lon]
+  const outlines = [];
+  for (const el of json.elements) {
+    if (el.type === "node" && el.lat != null && el.lon != null) {
+      nodes.set(el.id, [el.lat, el.lon]);
+      const poi = el.tags && poiOf(el.tags);
+      if (poi) out.set("n" + el.id, [poi[0], poi[1], el.lat, el.lon]);
+    } else if (el.type === "way" && el.nodes && el.tags) {
+      const poi = poiOf(el.tags);
+      if (poi) outlines.push(["w" + el.id, poi, el.nodes]);
     }
   }
+  for (const [key, poi, nids] of outlines) {
+    let la = 0, lo = 0, k = 0;
+    const ring = nids.length > 1 && nids[0] === nids[nids.length - 1] ? nids.slice(0, -1) : nids;
+    for (const id of ring) { const p = nodes.get(id); if (p) { la += p[0]; lo += p[1]; k++; } }
+    if (k) out.set(key, [poi[0], poi[1], la / k, lo / k]);
+  }
+  const list = [...out.values()];
+  poiCache.set(json, list);
+  return list;
+}
+
+export const POI_HEADER_LEN = 40;
+
+// Encode one tile's .poi file. `contains(lat, lon)` picks the POIs that belong
+// to this tile — pass the H3 cell test so each POI is stored exactly once
+// (neighbouring cells' bounding boxes overlap); without it the bbox is used,
+// and the firmware drops the resulting duplicates. `cell` is the H3 id (hex
+// string) recorded in the header. Always returns a file, even with zero POIs:
+// an empty .poi says "POIs were built for this tile, and there are none".
+export function buildPoi(json, { s, w, n, e, cell = null, contains = null }) {
+  const lat0 = (s + n) / 2, lon0 = (w + e) / 2;
+  const kx = 111320.0 * Math.cos((lat0 * Math.PI) / 180), ky = 110540.0;
+  const fk = Math.fround(kx), fky = Math.fround(ky);   // what the reader sees
+  const list = [];
+  for (const [type, flags, lat, lon] of collectPois(json)) {
+    const inside = contains ? contains(lat, lon)
+                            : lat >= s && lat <= n && lon >= w && lon <= e;
+    if (!inside) continue;
+    const x = Math.max(-32000, Math.min(32000, pyRound((lon - lon0) * fk)));
+    const y = Math.max(-32000, Math.min(32000, pyRound((lat - lat0) * fky)));
+    list.push([type, flags, x, y]);
+  }
+  // Stable order (y, x, type) so identical input builds identical bytes.
+  list.sort((a, b) => a[3] - b[3] || a[2] - b[2] || a[0] - b[0]);
+  if (list.length > 0xffff) list.length = 0xffff;
+  const out = new ByteWriter();
+  out.ascii("EPOI");
+  out.u8(1);            // version
+  out.u8(6);            // record size
+  out.u16(list.length);
+  const c = cell ? BigInt("0x" + cell) : 0n;
+  out.u32(Number(c & 0xffffffffn)); out.u32(Number(c >> 32n));
+  out.f64(lat0); out.f64(lon0);
+  out.f32(kx); out.f32(ky);
+  for (const [type, flags, x, y] of list) { out.u8(type); out.u8(flags); out.i16(x); out.i16(y); }
   return out.toUint8Array();
 }
 

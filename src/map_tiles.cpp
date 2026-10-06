@@ -39,9 +39,8 @@ constexpr int MAX_WATER_POINTS = 12000;
 constexpr int MAX_WATER_POLYS = 512;
 constexpr int MAX_PARK_POINTS = 24000;
 constexpr int MAX_PARK_POLYS = 512;
-// Cycling POIs (POI1). Dense downtown SF holds ~600 in 15x15 km; the widest
-// zoom that shows any (8 m/px) sees a ~4x8 km window, and tiles' bounding
-// boxes overlap so the same POI can arrive twice (deduped below).
+// Cycling POIs (from each tile's .poi file). Dense downtown SF holds ~800 in
+// 7 tiles; the widest zoom that shows any (8 m/px) sees a ~4x8 km window.
 constexpr int MAX_POIS = 256;
 
 // The single "primary" blob used by the embedded map + route overlay path.
@@ -482,33 +481,9 @@ done:
         const uint32_t secLen = rd<uint32_t>(q + 4);
         const uint8_t* body = q + 8;
         if (secLen > (size_t)(wend - body)) break;   // truncated / not a section
-        if (memcmp(q, "POI1", 4) == 0 && secLen >= 2 &&
-            poiAtZoom(MAP_POI_WATER, metersPerPixel)) {   // any POI at this zoom?
-            const uint16_t pc = rd<uint16_t>(body);
-            const uint8_t* r = body + 2;
-            for (uint16_t i = 0; i < pc && r + 6 <= body + secLen; ++i, r += 6) {
-                const uint8_t type = r[0];
-                if (!poiAtZoom(type, metersPerPixel)) continue;
-                float sx = centerX + ((float)rd<int16_t>(r + 2) - (float)px) * invMpp;
-                float sy = centerY - ((float)rd<int16_t>(r + 4) - (float)py) * invMpp;
-                if (rotateDeg != 0) {
-                    float dx = sx - centerX, dy = sy - centerY;
-                    sx = centerX + dx * rc - dy * rs;
-                    sy = centerY + dx * rs + dy * rc;
-                }
-                if (sx < -16 || sx > 556 || sy < -16 || sy > 976) continue;
-                const int ix = (int)lroundf(sx), iy = (int)lroundf(sy);
-                // H3 tiles are stored by their bounding box, and neighbouring
-                // boxes overlap: the same POI arrives from both tiles.
-                bool dup = false;
-                for (int k = 0; k < g_usedPois && !dup; ++k)
-                    dup = poiBuf[k].type == type && abs(poiBuf[k].x - ix) <= 1 &&
-                          abs(poiBuf[k].y - iy) <= 1;
-                if (dup) continue;
-                if (g_usedPois >= MAX_POIS) { g_stats.poisDropped++; continue; }
-                poiBuf[g_usedPois++] = {(int16_t)ix, (int16_t)iy, type, r[1]};
-            }
-        }
+        // No section is defined yet: cycling POIs live in a separate .poi
+        // file per tile (projectPoisInto), not in the map. This loop only
+        // keeps future sections skippable.
         q = body + secLen;
     }
 }
@@ -523,52 +498,77 @@ void project(double lat, double lon, float metersPerPixel, int centerX,
     endProject(out);
 }
 
-int forEachPoi(const uint8_t* b, size_t bLen, PoiVisitor fn, void* ctx) {
-    if (bLen < 36 || memcmp(b, "EBM2", 4) != 0) return 0;
-    const double lat0 = rd<double>(b + 4), lon0 = rd<double>(b + 12);
-    const double td = rd<double>(b + 20);
-    const int32_t nx = rd<int32_t>(b + 28), ny = rd<int32_t>(b + 32);
-    if (nx <= 0 || ny <= 0 || 36 + (size_t)nx * ny * 8 > bLen) return 0;
-    const double midLat = lat0 + td * ny / 2.0;
-    const double kx = 111320.0 * cos(midLat * M_PI / 180.0), ky = 110540.0;
+// .poi file (docs/mapgen.js buildPoi), little-endian:
+//    0  'EPOI'
+//    4  u8  version (1)
+//    5  u8  recordSize (6; a later version may append fields to a record)
+//    6  u16 count
+//    8  u64 H3 cell the file belongs to (0 = not an H3 tile)
+//   16  f64 lat0, f64 lon0   origin of x/y
+//   32  f32 kx, f32 ky       metres per degree of lon / lat used for x/y
+//   40  count x { u8 type, u8 flags, i16 x, i16 y }   x/y metres E/N of origin
+// Self-describing: nothing about the map tile is needed to place a POI.
+bool poiFileValid(const uint8_t* b, size_t len) {
+    if (len < POI_HEADER_LEN || memcmp(b, "EPOI", 4) != 0 || b[4] != 1) return false;
+    const uint8_t recSize = b[5];
+    const uint16_t count = rd<uint16_t>(b + 6);
+    return recSize >= 6 && POI_HEADER_LEN + (size_t)count * recSize <= len &&
+           rd<float>(b + 32) > 0 && rd<float>(b + 36) > 0;
+}
 
-    // Walk past roads, ELV1, WTR2 and PRK2 exactly as projectBlobInto does.
-    size_t q = 36 + (size_t)nx * ny * 8;
-    for (int k = 0; k < nx * ny; ++k) {
-        uint32_t off = rd<uint32_t>(b + 36 + (size_t)k * 8);
-        uint32_t l = rd<uint32_t>(b + 36 + (size_t)k * 8 + 4);
-        if (off && (size_t)off + l > q) q = (size_t)off + l;
+void projectPoisInto(const uint8_t* b, size_t len, double lat, double lon,
+                     float metersPerPixel, int centerX, int centerY,
+                     float rotateDeg) {
+    if (!poiBuf || !poiFileValid(b, len)) return;
+    if (!poiAtZoom(MAP_POI_WATER, metersPerPixel)) return;   // none at this zoom
+    const uint8_t recSize = b[5];
+    const uint16_t count = rd<uint16_t>(b + 6);
+    const double lat0 = rd<double>(b + 16), lon0 = rd<double>(b + 24);
+    const double kx = rd<float>(b + 32), ky = rd<float>(b + 36);
+    // Rider position in the file's own metre frame.
+    const double px = (lon - lon0) * kx, py = (lat - lat0) * ky;
+    const float invMpp = 1.0f / metersPerPixel;
+    float rc = 1, rs = 0;
+    if (rotateDeg != 0) {
+        rc = cosf(rotateDeg * (float)M_PI / 180.0f);
+        rs = sinf(rotateDeg * (float)M_PI / 180.0f);
     }
-    if (q + 44 <= bLen && memcmp(b + q, "ELV1", 4) == 0)
-        q += 44 + (size_t)rd<int32_t>(b + q + 4) * rd<int32_t>(b + q + 8) * 2;
-    static const char* const kFills[2] = {"WTR2", "PRK2"};
-    for (int fi = 0; fi < 2; ++fi) {
-        if (q + 6 > bLen || memcmp(b + q, kFills[fi], 4) != 0) {
-            if (fi == 0) return 0;   // no WTR2: nothing after it either
-            break;
+    const uint8_t* r = b + POI_HEADER_LEN;
+    for (uint16_t i = 0; i < count; ++i, r += recSize) {
+        const uint8_t type = r[0];
+        if (!poiAtZoom(type, metersPerPixel)) continue;
+        float sx = centerX + (float)(rd<int16_t>(r + 2) - px) * invMpp;
+        float sy = centerY - (float)(rd<int16_t>(r + 4) - py) * invMpp;
+        if (rotateDeg != 0) {
+            float dx = sx - centerX, dy = sy - centerY;
+            sx = centerX + dx * rc - dy * rs;
+            sy = centerY + dx * rs + dy * rc;
         }
-        const uint16_t pc = rd<uint16_t>(b + q + 4);
-        q += 6;
-        for (uint16_t i = 0; i < pc && q + 2 <= bLen; ++i)
-            q += 2 + (size_t)rd<uint16_t>(b + q) * 4;
+        if (sx < -16 || sx > 556 || sy < -16 || sy > 976) continue;
+        const int ix = (int)lroundf(sx), iy = (int)lroundf(sy);
+        // Builders store each POI in the one H3 cell containing it, so a
+        // duplicate should not happen — but a builder that keeps the tile's
+        // whole bounding box (overlapping its neighbours') is still drawn once.
+        bool dup = false;
+        for (int k = 0; k < g_usedPois && !dup; ++k)
+            dup = poiBuf[k].type == type && abs(poiBuf[k].x - ix) <= 1 &&
+                  abs(poiBuf[k].y - iy) <= 1;
+        if (dup) continue;
+        if (g_usedPois >= MAX_POIS) { g_stats.poisDropped++; continue; }
+        poiBuf[g_usedPois++] = {(int16_t)ix, (int16_t)iy, type, r[1]};
     }
-    int visited = 0;
-    while (q + 8 <= bLen) {
-        const uint32_t secLen = rd<uint32_t>(b + q + 4);
-        const size_t body = q + 8;
-        if (secLen > bLen - body) break;
-        if (memcmp(b + q, "POI1", 4) == 0 && secLen >= 2) {
-            const uint16_t pc = rd<uint16_t>(b + body);
-            for (uint16_t i = 0; i < pc && 2 + (size_t)(i + 1) * 6 <= secLen; ++i) {
-                const uint8_t* r = b + body + 2 + (size_t)i * 6;
-                fn(ctx, r[0], r[1], lat0 + rd<int16_t>(r + 4) / ky,
-                   lon0 + rd<int16_t>(r + 2) / kx);
-                visited++;
-            }
-        }
-        q = body + secLen;
-    }
-    return visited;
+}
+
+int forEachPoi(const uint8_t* b, size_t len, PoiVisitor fn, void* ctx) {
+    if (!poiFileValid(b, len)) return 0;
+    const uint8_t recSize = b[5];
+    const uint16_t count = rd<uint16_t>(b + 6);
+    const double lat0 = rd<double>(b + 16), lon0 = rd<double>(b + 24);
+    const double kx = rd<float>(b + 32), ky = rd<float>(b + 36);
+    const uint8_t* r = b + POI_HEADER_LEN;
+    for (uint16_t i = 0; i < count; ++i, r += recSize)
+        fn(ctx, r[0], r[1], lat0 + rd<int16_t>(r + 4) / ky, lon0 + rd<int16_t>(r + 2) / kx);
+    return count;
 }
 
 void geoToScreen(double lat, double lon, double centerLat, double centerLon,

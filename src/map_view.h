@@ -38,7 +38,7 @@ struct MapPolyline {
     int pointCount;
 };
 
-// Cycling POIs (EBM 'POI1' section). Type ids and flag bits are the on-tile
+// Cycling POIs (the per-tile .poi file). Type ids and flag bits are the on-file
 // bytes — keep in step with docs/mapgen.js poiOf().
 enum MapPoiType : uint8_t {
     MAP_POI_WATER = 1,       // drinking water

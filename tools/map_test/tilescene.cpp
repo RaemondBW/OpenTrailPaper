@@ -52,9 +52,25 @@ struct Tile {
     std::string id;
     uint64_t cell = 0;
     std::vector<uint8_t> bytes;
+    std::vector<uint8_t> poi;   // the tile's <id>.poi, empty when there is none
     double s, w, n, e;
 };
 std::vector<Tile> g_tiles;
+// .poi files read during the directory walk, attached to their tiles after it
+// (the walk can meet a .poi before its .ebm).
+std::vector<std::pair<std::string, std::vector<uint8_t>>> g_pois;
+
+std::vector<uint8_t> readFile(const std::string& path) {
+    std::vector<uint8_t> v;
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return v;
+    fseek(f, 0, SEEK_END);
+    v.resize(ftell(f));
+    fseek(f, 0, SEEK_SET);
+    if (fread(v.data(), 1, v.size(), f) != v.size()) v.clear();
+    fclose(f);
+    return v;
+}
 
 // The harness resolves a cell the way the device does — by id, not by scanning
 // a list — so it exercises the same lookup rather than a stand-in for it.
@@ -105,6 +121,12 @@ void loadTileDir(const char* root) {
             DIR* d2 = opendir(sub.c_str());
             if (!d2) continue;
             for (dirent* f = readdir(d2); f; f = readdir(d2)) {
+                if (strstr(f->d_name, ".poi")) {
+                    std::string leaf(f->d_name);
+                    g_pois.push_back({std::string(e->d_name) + leaf.substr(0, leaf.find(".poi")),
+                                      readFile(sub + "/" + leaf)});
+                    continue;
+                }
                 if (!strstr(f->d_name, ".ebm")) continue;
                 std::string leaf(f->d_name);
                 loadTile(sub + "/" + leaf,
@@ -174,7 +196,8 @@ void fillNearestWater(MapScreenData& map, double lat, double lon) {
     struct Ctx { double lat, lon, kx, best2; uint8_t flags; double la, lo; bool found; }
         c = {lat, lon, 111320.0 * cos(lat * M_PI / 180.0), 5000.0 * 5000.0, 0, 0, 0, false};
     for (const Tile& t : g_tiles) {
-        map_tiles::forEachPoi(t.bytes.data(), t.bytes.size(),
+        if (t.poi.empty()) continue;
+        map_tiles::forEachPoi(t.poi.data(), t.poi.size(),
             [](void* vp, uint8_t type, uint8_t flags, double la, double lo) {
                 Ctx& x = *(Ctx*)vp;
                 if (type != MAP_POI_WATER) return;
@@ -240,6 +263,11 @@ int main(int argc, char** argv) {
 
     epd_set_rotation(EPD_ROT_INVERTED_PORTRAIT);   // same as the device UI
     loadTileDir(argv[1]);
+    size_t poiFiles = 0;
+    for (auto& [id, bytes] : g_pois)
+        for (auto& t : g_tiles)
+            if (t.id == id) { t.poi = std::move(bytes); poiFiles++; }
+    printf("%zu .poi files attached\n", poiFiles);
     if (g_tiles.empty()) { fprintf(stderr, "no tiles loaded\n"); return 1; }
     size_t bytes = 0;
     for (auto& t : g_tiles) bytes += t.bytes.size();
@@ -284,6 +312,9 @@ int main(int argc, char** argv) {
                             if (!t) continue;
                             map_tiles::projectBlobInto(t->bytes.data(), t->bytes.size(),
                                                        la, lo, mpp, 270, 430, rot);
+                            if (!t->poi.empty())
+                                map_tiles::projectPoisInto(t->poi.data(), t->poi.size(),
+                                                           la, lo, mpp, 270, 430, rot);
                         }
                         map_tiles::endProject(m);
                         map_tiles::MapProjectStats st = map_tiles::projectStats();
@@ -345,6 +376,9 @@ int main(int argc, char** argv) {
                 drawn++;
                 map_tiles::projectBlobInto(t->bytes.data(), t->bytes.size(), lat, lon,
                                            mpp, map.riderX, map.riderY, v.rot);
+                if (!t->poi.empty())
+                    map_tiles::projectPoisInto(t->poi.data(), t->poi.size(), lat, lon,
+                                               mpp, map.riderX, map.riderY, v.rot);
             }
             used = drawn;
             map_tiles::endProject(map);

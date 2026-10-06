@@ -1,6 +1,6 @@
 // DOM wiring for the in-browser offline-map generator. The encoding lives in
 // mapgen.js (a pure, testable library); this file is just the map picker + form.
-import { buildEbm, fetchOverpass } from "./mapgen.js";
+import { buildEbm, buildPoi, fetchOverpass } from "./mapgen.js";
 import { latLngToCell, gridDisk, cellToBoundary }
   from "https://cdn.jsdelivr.net/npm/h3-js@4.1.0/+esm";
 
@@ -53,10 +53,11 @@ function ebmHasContent(bytes) {
 // Where a tile lives on the card: /maps/tiles/<first 6 of id>/<rest>.ebm.
 // Must match tileDirFor() in src/map_store.cpp — an H3 id's leading characters
 // are a geographic key, so one area lands in one directory.
-function tilePath(id) {
+// `ext` ".poi" gives the tile's cycling-POI companion, which sits next to it.
+function tilePath(id, ext = ".ebm") {
   return id.length > 6
-    ? `maps/tiles/${id.slice(0, 6)}/${id.slice(6)}.ebm`
-    : `maps/tiles/${id}.ebm`;
+    ? `maps/tiles/${id.slice(0, 6)}/${id.slice(6)}${ext}`
+    : `maps/tiles/${id}${ext}`;
 }
 
 const $ = (id) => document.getElementById(id);
@@ -258,14 +259,27 @@ function init() {
       const cells = coveringCells(bb);
       log(`${cells.length} H3 tiles cover the area. Building each…`);
       const files = [];
+      let tileCount = 0, poiCount = 0;
       for (let ci = 0; ci < cells.length; ci++) {
         const c = cells[ci];
         const ebm = buildEbm(json, { s: c.s, w: c.w, n: c.n, e: c.e });
-        if (ebmHasContent(ebm)) files.push({ name: tilePath(c.id), data: ebm });
+        if (ebmHasContent(ebm)) {
+          files.push({ name: tilePath(c.id), data: ebm });
+          tileCount++;
+          // Cycling POIs (water, toilets, repair stands, bike shops) go in a
+          // separate <h3>.poi beside the map tile. Each POI is stored only in
+          // the hex that contains it, so neighbouring tiles never repeat one.
+          const poi = buildPoi(json, {
+            s: c.s, w: c.w, n: c.n, e: c.e, cell: c.id,
+            contains: (lat, lon) => latLngToCell(lat, lon, H3_RES) === c.id,
+          });
+          files.push({ name: tilePath(c.id, ".poi"), data: poi });
+          poiCount += (poi[6] | (poi[7] << 8));
+        }
         setStatus(`Building tiles… ${ci + 1}/${cells.length}`);
         if (ci % 6 === 5) await new Promise((r) => setTimeout(r, 0));  // keep UI live
       }
-      if (files.length === 0) {
+      if (tileCount === 0) {
         throw new Error("Nothing found in that area — try a different or larger box.");
       }
 
@@ -278,9 +292,9 @@ function init() {
       downloadUrl = URL.createObjectURL(blob);
       genDownload.href = downloadUrl;
       genDownload.download = `bikegps-tiles-${name}.zip`;
-      genDownload.textContent = `⬇ Download ${files.length} tiles (${fmtBytes(zip.length)})`;
+      genDownload.textContent = `⬇ Download ${tileCount} tiles (${fmtBytes(zip.length)})`;
       genDownload.hidden = false;
-      log(`Done: ${files.length} tiles, ${fmtBytes(bytes)}. Unzip onto the SD card root → /maps/tiles/<area>/. These are the same H3 tiles the app builds.`);
+      log(`Done: ${tileCount} tiles + ${poiCount} cycling POIs (water, toilets, repair stands, bike shops in .poi files), ${fmtBytes(bytes)}. Unzip onto the SD card root → /maps/tiles/<area>/. These are the same H3 tiles the app builds.`);
       setStatus("Tiles ready — download the ZIP below.", "ok");
     } catch (err) {
       log("Error: " + (err && err.message ? err.message : String(err)));

@@ -1,8 +1,11 @@
 # Cycling POIs and bike routes on the device map
 
-Status as of 2026-10-04. This is an investigation with a working prototype on
+Status as of 2026-10-06. This is an investigation with a working prototype on
 branch `feat/osm-pois-bike-routes`. The prototype covers the browser generator
-(`docs/mapgen.js`), the tile format and the firmware projector and renderer.
+(`docs/mapgen.js`), the tile format, the new per-tile `.poi` file, and the
+firmware loader, projector and renderer. POIs are stored **outside** the map
+files, in a `<h3>.poi` next to each `<h3>.ebm`. The bike-route flags stay
+inside the `.ebm`.
 The phone apps' builders (Swift and Kotlin) and `tools/maps/build_map.py` are
 **not** ported yet (see section 6).
 
@@ -122,7 +125,12 @@ property the extension below relies on.
 
 ## 2. Design
 
-### 2a. Format: two backwards-compatible extensions
+### 2a. Storage: flags in the map, POIs beside it
+
+Bike infrastructure is a property of a road line, so it stays in the `.ebm`
+as a per-line flag. POIs are stored in their own file per tile. That lets
+them be fetched, cached, sent and refreshed independently of the much larger
+map tiles: a POI refresh is a few KB per tile instead of 50 to 250 KB.
 
 **Way flags: a sub-tile trailer.** A sub-tile blob may end with exactly
 `count` bytes, one `u8` of flags per polyline, in order:
@@ -141,13 +149,34 @@ only if exactly `count` bytes remain. A tile built before the trailer existed
 always has 0 bytes left, so it cannot be mistaken for one. A trailer is
 written only for sub-tiles where some polyline has a non-zero flag.
 
-**Extension sections after PRK2:** `<4-byte magic><u32 byteLength><payload>`.
-New firmware skips any magic it does not know, by its length, so a future
-section never needs a firmware release to stay readable. Old firmware stops
-at PRK2.
+**Extension sections after PRK2 (reserved).** The layout is
+`<4-byte magic><u32 byteLength><payload>`, and none is defined yet. New
+firmware already skips any magic it does not know, by its length, so a future
+in-map section never needs a firmware release to stay readable. Old firmware
+stops at PRK2.
 
-- `POI1`: `u16 count`, then per POI `{u8 type, u8 flags, i16 x, i16 y}`
-  (6 bytes, metres from the grid origin like WTR2).
+**POIs: `<h3>.poi`.** It sits in the same directory, with the same name, as
+the tile: `/maps/tiles/<first 6 of id>/<rest>.poi`. Little-endian:
+
+| offset | field |
+|---|---|
+| 0 | magic `EPOI` |
+| 4 | `u8` version (1) |
+| 5 | `u8` record size (6). A later version may append fields to each record, and a v1 reader skips them. |
+| 6 | `u16` count |
+| 8 | `u64` H3 cell this file belongs to (0 = not an H3 tile) |
+| 16 | `f64` lat0, `f64` lon0: origin of x/y |
+| 32 | `f32` kx, `f32` ky: metres per degree of longitude / latitude used for x/y |
+| 40 | `count` records of `{u8 type, u8 flags, i16 x, i16 y}`, x/y in metres east/north of the origin |
+
+- **Self-describing.** The header holds everything needed to place a POI;
+  nothing is read from the `.ebm`.
+- **Origin.** The builder uses the centre of the tile's bounding box, so i16
+  metres cover ±32 km.
+- **Empty files.** A file with zero records is valid and is still written. It
+  says "POIs were built for this tile and there are none", which a later
+  "does this tile have POI data?" check needs.
+- **Missing files.** A missing file means no POIs.
 
 | type | OSM | flags |
 |---|---|---|
@@ -159,10 +188,23 @@ at PRK2.
 "Restricted" means `fee=yes`, `access=customers`, or a `seasonal` tag other
 than `no`. POIs tagged `access=private` or `access=no`, and water tagged
 `drinking_water=no`, are dropped. A POI mapped as an outline (a toilet block
-drawn as a building) is placed at the centroid of its vertices. A tile keeps
-the POIs inside its bounding box. Neighbouring H3 bounding boxes overlap, so a
-POI can be stored in two tiles, and the projector removes the duplicate (same
-type within 1 px).
+drawn as a building) is placed at the centroid of its vertices.
+
+**Which tile a POI belongs to.** Each POI is stored only in the H3 cell that
+contains it (`latLngToCell(lat, lon, 6) === cell`), not in every tile whose
+bounding box covers it.
+
+- **Why.** Neighbouring hexes' bounding boxes overlap. Under the
+  bounding-box rule, 36% of the SF POIs were stored twice (800 records for
+  588 POIs).
+- **What it buys.** Exact membership needs no cross-tile de-duplication, and
+  the nearest-POI search sees each POI once.
+- **Overlap is still allowed.** A builder without an H3 library can fall back
+  to the bounding box; that is `buildPoi`'s default when no `contains` test
+  is passed. The projector still drops a POI of the same type within 1 px of
+  one already placed.
+- **Consequence.** A POI only shows when the tile containing it is on the
+  card. POIs stop at the edge of the downloaded hexes, exactly like the roads.
 
 **Rejected alternatives:**
 
@@ -175,8 +217,34 @@ type within 1 px).
 - **Bumping to EBM3.** Old firmware rejects the whole tile, and the apps skip
   tiles the device already has by id, so mixed-version devices would end up
   with blank holes.
+- **POIs inside the `.ebm`.** An earlier version of this prototype stored
+  them in a `POI1` section after PRK2. It worked and was invisible to old
+  firmware, but it tied POI freshness to re-downloading the whole map tile.
+  That version never shipped, so no `.ebm` with a `POI1` section exists in
+  the field. Current firmware would simply skip one as an unknown section.
 
 ### 2b. Overpass additions
+
+The website keeps one combined query (below). `buildEbm` takes the ways and
+route flags from the response, and `buildPoi` takes the POIs. The apps are
+meant to use **two** queries, so POIs can be refreshed on their own: the map
+query with the route additions, and this small POI query:
+
+```
+[out:json][timeout:60];
+( node["amenity"~"^(drinking_water|toilets|bicycle_repair_station)$"](bbox);
+  node["man_made"="water_tap"]["drinking_water"="yes"](bbox);
+  node["amenity"="fountain"]["drinking_water"="yes"](bbox);
+  nwr["shop"="bicycle"](bbox);
+  way["amenity"~"^(toilets|bicycle_repair_station)$"](bbox); );
+out tags center;
+```
+
+`out center` has the server compute each outline's centre, so no geometry is
+downloaded. For a 15 × 15 km box over San Francisco, the POI response was
+180 KB, under 1% of the map query's response.
+
+The combined query used by the website:
 
 ```
 rel["route"="bicycle"](bbox)->.bk;
@@ -269,7 +337,7 @@ network is what remains. The before and after below are at 16 m/px:
 
 ### 2d. Interaction: nearest water
 
-`map_store::nearestPoi(lat, lon, typeMask, maxM)` scans the POI1 sections of
+`map_store::nearestPoi(lat, lon, typeMask, maxM)` scans the `.poi` files of
 tiles **already in the RAM cache** and never touches the card. That makes it
 safe every frame: it reads a few hundred 6-byte records. The map draws a chip
 in its top-left corner showing the water icon, the distance (m/km or ft/mi)
@@ -286,22 +354,25 @@ Cheap next steps:
 
 ## 3. Cost
 
-Measured on 7 H3 tiles over central San Francisco (a dense worst case: about
-800 POIs and a lcn grid on most streets). Tiles were built from the same
-Overpass response with `cycling: false` (byte-identical to today's builder)
-and with `cycling: true`.
+Measured on 7 H3 tiles over central San Francisco (a dense worst case: 588
+POIs and a lcn grid on most streets). Tiles were built from the same Overpass
+response with `cycling: false` (byte-identical to today's builder) and with
+`cycling: true`.
 
 | | today | with cycling | delta |
 |---|---|---|---|
-| tile bytes | 1 078 286 | 1 148 083 | **+69.8 KB (+6.5%)** |
-| — way-flag trailers | – | 62 030 | +5.75% |
-| — POI1 (800 POIs) | – | 4 870 | +0.45% |
+| `.ebm` bytes | 1 078 329 | 1 143 261 | **+64.9 KB (+6.0%)** |
+| — way-flag trailers | – | 62 035 | +5.75% |
 | — extra route-member geometry | – | ~2 900 | +0.27% |
-| road records | 61 974 | 62 189 | +0.35% |
+| `.poi` bytes (7 files, 588 POIs) | – | 3 808 | +0.35% of the map |
+| `.poi` if POIs were kept per bounding box | – | 5 080 (800 records) | |
+| road records | 61 979 | 62 194 | +0.35% |
 | scratch peak, road polys (5 070-frame sweep) | 16 487 / 24 000 (69%) | 18 887 (79%) | +10 pts |
 | scratch peak, road points | 36 669 / 80 000 | 42 573 | |
-| scratch peak, POIs | – | 106 / 256 | |
-| PSRAM | | +1.5 KB POI scratch; `MapPolyline` stays 12 B on ESP32 (`flags` fits in the padding after `cls`) | |
+| scratch peak, POIs | – | 107 / 256 | |
+| PSRAM | | +1.5 KB POI scratch, plus each cached tile's `.poi` (a few KB, counted in the cache's byte budget). `MapPolyline` stays 12 B on ESP32 (`flags` fits in the padding after `cls`). | |
+| internal RAM | | +512 B: `CachedTile` grows by a pointer and a length, across 64 slots | |
+| SD access | | one `SD.exists` per tile load (plus a small read when the file is present), never per frame | |
 | Overpass response | 29.18 MB | 29.38 MB | +0.7% |
 | Overpass time (same box, overpass-api.de) | 8.7 s | 9.2 s / 16.4 s | within this server's run-to-run variance |
 
@@ -311,7 +382,10 @@ into nibbles would halve it to about 2.9%, at the price of 4 spare bits. A
 rural tile pays far less, because sub-tiles with no flagged way carry no
 trailer.
 
-**Render time.** These are host timings (Apple silicon, µs, north-up).
+**Render time.** These are host timings (Apple silicon, µs, north-up),
+measured before the POIs moved to `.poi` files. The move changed where the
+records are read from, not what is drawn, and a re-run on the regenerated
+tiles gave the same numbers within noise.
 Absolute numbers mean nothing for the ESP32, but the ratio carries over
 roughly:
 
@@ -343,14 +417,29 @@ less than shipping relation bodies.
 
 | | old tiles | new tiles |
 |---|---|---|
-| **old firmware** | today | renders as today; the trailers and POI1 are never read (`oldfw_newtiles_mpp04.png`, rendered by the unmodified `map_tiles.cpp` / `map_view.cpp`). Route-member service roads appear as minor roads (+0.4% polys) |
-| **new firmware** | renders exactly as today (no trailer, no POI1) | full cycling layer |
+| **old firmware** | today | renders as today: the trailers are never read and `.poi` files are never opened. Route-member service roads appear as minor roads (+0.4% polys). See `oldfw_newtiles_mpp04.png`, rendered by the firmware sources of `dd63d43`. |
+| **new firmware** | pixel-identical to old firmware at every zoom (checked with `cmp` on the rendered PNGs) | full cycling layer; a missing `.poi` just means no icons and no water chip |
 
-The apps need one more step when they are ported. Each phone keeps a
-`TileCache-v2`, and the device dedups by tile id, so a rider keeps the tiles
-already on the card until they are rebuilt and re-sent. The cache directory
-should move to `TileCache-v3`. Re-sending existing tiles needs a decision
-(section 7).
+The device's tile listings (which the app uses for its "already on the
+device" check) match only `.ebm` names, so `.poi` files do not confuse them.
+
+The apps need more work when they are ported:
+
+- **Map cache.** Each phone keeps a `TileCache-v2`, and the device skips
+  tiles it already has by id. A rider therefore keeps the tiles already on
+  the card until they are rebuilt and re-sent. The map cache should move to
+  `TileCache-v3` (for the flags).
+- **POI cache.** `.poi` files want a cache of their own, with a shorter
+  refresh period.
+- **Existing cards.** Getting the flags onto them needs a decision
+  (section 7). POIs do not, because a `.poi` can be sent on its own next to a
+  tile that is already there.
+
+**Sending a `.poi` from the app needs no new BLE protocol.** `saveTile`
+recognises the `EPOI` magic and writes the bytes to `<id>.poi` instead of
+`<id>.ebm`. It then drops the cached tile, so the next frame reloads both
+files. The app can push POIs through the existing tile transfer, with the
+same tile id.
 
 ## 5. What the prototype covers
 
@@ -361,25 +450,42 @@ Built and exercised end to end on this branch:
   - the Overpass additions;
   - `wayFlags()` and `poiOf()`;
   - the route-member fallback class;
-  - sub-tile trailers and the POI1 section.
+  - sub-tile trailers in `buildEbm`;
+  - `collectPois()` and `buildPoi()`, which write the `.poi` file;
+  - `mapgen-ui.js` puts a `.poi` next to each `.ebm` in the SD-card ZIP,
+    with exact H3 membership, and `setup.html` / `setup-files.js` describe
+    the file.
 
-  `buildEbm(json, {cycling: false})` reproduces today's bytes exactly.
+  `buildEbm(json, {cycling: false})` reproduces today's bytes exactly. With
+  cycling on, the `.ebm` differs from today's only by the trailers and the
+  extra route-member ways.
 - **Firmware.**
-  - `map_tiles.cpp`: trailer detection, flag-aware shedding, POI1 parse with
-    zoom filter and de-duplication, `forEachPoi()`, and the generic
-    extension-section loop.
+  - `map_tiles.cpp`:
+    - trailer detection, flag-aware shedding, and the generic
+      extension-section skip loop;
+    - for `.poi` files: `poiFileValid()`, `projectPoisInto()` (zoom filter,
+      de-duplication) and `forEachPoi()`.
+  - `map_store.cpp`:
+    - `ensureTileLoaded` reads `<id>.poi` in the same visit as `<id>.ebm`,
+      into the same cache slot, with the same lifetime and eviction;
+    - `renderInto` projects the `.poi` after the tile;
+    - `saveTile` accepts `.poi` files.
   - `map_view.cpp`: bands, cycleway and lane styles, POI icons with collision
     and chrome avoidance, the nearest-water chip.
   - `map_store::nearestPoi()` and the call in `ui_dashboard.cpp`.
-  - `pio run -e t5s3-painter` builds: RAM 38.6%, flash 16.4%.
+  - `pio run -e t5s3-painter` builds: RAM 38.7%, flash 16.4%.
 - **Tools.**
-  - `tools/maps/ebm_info.py`: per-section byte breakdown of tiles.
-  - `tools/map_test/tilescene`: now reports flagged polylines, POIs, host
-    project/draw µs, the POI peak in the sweep, and fills the chip.
+  - `tools/maps/ebm_info.py`: per-section byte breakdown of tiles and `.poi`
+    files.
+  - `tools/map_test/tilescene` now:
+    - loads the `.poi` files beside the tiles;
+    - reports flagged polylines, POIs, host project/draw µs and the POI peak
+      in the sweep;
+    - fills the nearest-water chip.
 - **Screenshots.** `investigations/img/osm-pois-bike-routes/`.
 
-To reproduce, build tiles with `buildEbm` per H3 cell (as `mapgen-ui.js`
-does) and unzip them into a directory, then:
+To reproduce, build tiles with `buildEbm` and `buildPoi` per H3 cell into a
+directory (as `mapgen-ui.js` does), or unzip the website's ZIP. Then:
 
 ```
 tools/map_test/run_tilescene.sh <tiledir> <outdir> 37.7735 -122.447
@@ -400,25 +506,40 @@ python3 tools/maps/ebm_info.py <tiledir>
    Add a fixture test so all ports produce identical bytes for one Overpass
    response (`FormatTest.kt` is the natural home). Bump `TileCache-v2` to
    `-v3` in both apps.
-2. **On-glass checks.** Draw time at 8 and 16 m/px on the device. Whether the
+2. **POIs in the apps.** This needs:
+   - the separate POI query (section 2b);
+   - a `.poi` cache keyed by tile id;
+   - sending `.poi` files through the existing tile transfer, both with new
+     tiles and on their own for tiles already on the card.
+
+   The device can already store and draw them.
+3. **On-glass checks.** Draw time at 8 and 16 m/px on the device. Whether the
    checker band ghosts under DU: it is in the settle-clean mask, but it is the
    first 1-px 50% pattern on the map. Legibility of the 1 px lane dots in
    daylight.
-3. **Regenerate `data/sf.ebm`** (the whole-map sample) with the new builder
-   once `build_map.py` is ported.
-4. **Raise `MAX_PARK_POLYS`.** This is independent of this work but was found
+4. **Regenerate `data/sf.ebm`** (the whole-map sample) with the new builder
+   once `build_map.py` is ported. Whole-region maps (`/maps/*.ebm`) do not
+   load a `.poi` yet. Loading a `<name>.poi` beside them would be a few lines
+   in `loadFile`.
+5. **Raise `MAX_PARK_POLYS`.** This is independent of this work but was found
    by it.
 
 ## 7. Open decisions
 
-- **Getting the data onto existing devices.** Tiles already on the card stay
-  POI-less until they are re-sent. Options:
+- **Getting the bike-route flags onto existing devices.** Tiles already on
+  the card have no flags until they are re-sent. POIs are not affected: the
+  app can send `.poi` files for tiles that are already there. Options:
   - the app re-sends every tile once after the update. This is simple, but it
     means megabytes over BLE;
-  - the device reports a per-tile "feature level" (for example, a count of
-    tiles without POI1, found by scanning headers at boot), and the app offers
+  - the device reports which tiles lack the flags, and the app offers
     "update maps";
-  - do nothing: new downloads get the new layer and old ones age out.
+  - do nothing: new downloads get the flags and old ones age out.
+- **How the app learns which tiles have POIs.** The device's tile listing
+  returns only `.ebm` ids. Either add a `.poi` listing (one more directory
+  scan), or have the app track what it has sent.
+- **POI refresh policy.** How often should the app rebuild `.poi` files?
+  Water points and repair stands change more often than roads. Should it
+  refresh them automatically while the phone is connected?
 - **Default on or off.** Should the layer be a setting? Some riders will find
   the bands busy in a dense city at 8 m/px. Possible toggles: POIs, bands,
   the chip.
@@ -429,7 +550,8 @@ python3 tools/maps/ebm_info.py <tiledir>
 - **Which routes.** Should `route=mtb` be a separate flag bit with its own
   style? Should untagged-network `route=bicycle` relations count as local (as
   now)? In some places these are mapper-local loops, not signed routes.
-- **Nibble-packed trailer.** Halves the trailer cost (6.5% down to about
-  3.6% total) but leaves no spare flag bits. Recommendation: keep a byte.
+- **Nibble-packed trailer.** Halves the trailer cost (the map grows by about
+  3.1% instead of 6.0%) but leaves no spare flag bits. Recommendation: keep a
+  byte.
 - **Zoom rules and icon size.** The thresholds in `shedAtZoom` / `poiAtZoom`
   and the 24 px icons are first guesses, tuned only on SF screenshots.

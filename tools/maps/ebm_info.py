@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Summarise .ebm map tiles: where the bytes go, section by section.
+"""Summarise .ebm map tiles and their .poi files: where the bytes go.
 
-  python3 tools/maps/ebm_info.py <file.ebm | tile dir> [...]
+  python3 tools/maps/ebm_info.py <file.ebm | file.poi | tile dir> [...]
 
-Walks a file (or every .ebm under a directory, e.g. an unzipped
+Walks a file (or every .ebm / .poi under a directory, e.g. an unzipped
 maps/tiles/ tree) the same way src/map_tiles.cpp does and prints totals:
 road records and points, the cycling way-flag trailers (and how many ways
-carry each flag), ELV1 / WTR2 / PRK2, and the extension sections after PRK2
-(POI1 counts by type). Used for the size numbers in
+carry each flag), ELV1 / WTR2 / PRK2, any extension sections after PRK2, and
+the .poi files (POI counts by type). Used for the size numbers in
 investigations/osm-pois-bike-routes.md.
 """
 import os
@@ -76,17 +76,25 @@ def parse(b, tot):
             tot["truncated section"] += 1
             break
         name = magic.decode("ascii", "replace")
-        tot[name + " bytes"] += 8 + ln
-        if magic == b"POI1":
-            (pc,) = struct.unpack_from("<H", b, body)
-            for i in range(pc):
-                t, f = b[body + 2 + i * 6], b[body + 3 + i * 6]
-                tot["poi " + POI_NAMES.get(t, "type%d" % t)] += 1
-                if f & 0x80:
-                    tot["poi restricted"] += 1
+        tot["section " + name + " bytes"] += 8 + ln
         q = body + ln
     if q != len(b):
         tot["trailing bytes"] += len(b) - q
+
+
+def parse_poi(b, tot):
+    # 'EPOI' u8 version u8 recordSize u16 count u64 cell f64 lat0 lon0 f32 kx ky
+    if len(b) < 40 or b[:4] != b"EPOI" or b[4] != 1:
+        tot["bad .poi"] += 1
+        return
+    rec, count = b[5], struct.unpack_from("<H", b, 6)[0]
+    tot[".poi files"] += 1
+    tot[".poi bytes"] += len(b)
+    for i in range(count):
+        t, f = b[40 + i * rec], b[41 + i * rec]
+        tot["poi " + POI_NAMES.get(t, "type%d" % t)] += 1
+        if f & 0x80:
+            tot["poi restricted"] += 1
 
 
 def main():
@@ -95,10 +103,10 @@ def main():
         paths = [arg]
         if os.path.isdir(arg):
             paths = [os.path.join(d, f) for d, _, fs in os.walk(arg)
-                     for f in fs if f.endswith(".ebm")]
+                     for f in fs if f.endswith((".ebm", ".poi"))]
         for p in sorted(paths):
             with open(p, "rb") as fh:
-                parse(fh.read(), tot)
+                (parse_poi if p.endswith(".poi") else parse)(fh.read(), tot)
     width = max(len(k) for k in tot) if tot else 0
     for k in sorted(tot):
         print("%-*s %10d" % (width, k, tot[k]))
