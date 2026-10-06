@@ -353,6 +353,14 @@ and the age of the fix. A node that has never broadcast a position sends the fla
 and nothing more — "has not told us" and "is at 0,0" have to stay distinguishable,
 and 0,0 is a real place in the Atlantic.
 
+The hops byte in `0x91` messages and `0x93` nodes is `hop_start - hop_limit` from
+the packet's header — 0 means heard directly. A sender on Meshtastic firmware
+older than 2.3 leaves `hop_start` at 0, so the distance cannot be worked out;
+those come through as `0xFF`, and the apps treat anything above 7 as unknown
+rather than showing it. The apps label a node by its short name (from its
+NodeInfo), falling back to the last four hex digits of its id until one arrives,
+and the node map captions each pin with that name and its hop count.
+
 `0x96` exists so a new message costs one byte rather than a re-stream of the
 whole history the app usually already has. Messages are keyed on packet id
 because the history is rebuilt from scratch on each pull.

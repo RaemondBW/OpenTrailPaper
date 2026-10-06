@@ -51,7 +51,9 @@ fun MeshMapSheet(ble: BleManager, onDismiss: () -> Unit) {
             val p = n.position ?: return@mapNotNull null
             MeshNodePin(
                 id = n.num,
-                label = n.displayName,
+                // "ALEX · 2 hops · 1.2 km": how far, without tapping the pin.
+                label = listOfNotNull(n.mapLabel, meshDistanceText(n, ble)).joinToString(" · "),
+                title = n.longName.ifEmpty { n.nodeId },
                 detail = meshPositionLine(n, ble) ?: p.shortText,
                 coordinate = p.coordinate,
                 imprecise = p.isImprecise,
@@ -102,7 +104,7 @@ fun MeshMapSheet(ble: BleManager, onDismiss: () -> Unit) {
                 ) {
                     TrackedLabel("No position reported")
                     Text(
-                        unpositioned.joinToString(", ") { it.displayName },
+                        unpositioned.joinToString(", ") { it.shortLabel },
                         style = barlow(14.sp),
                         color = Palette.muted,
                     )

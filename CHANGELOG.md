@@ -5,6 +5,13 @@ released version into the GitHub release body (see .github/workflows/build.yml),
 and the app shows it under Settings → Firmware when an update is available —
 so write for the rider, newest version first, one `## vX.YY` heading each.
 
+## v1.22
+
+- Fixes the mid-ride restart. A stray interrupt from the display power
+  chip's I2C bus could trap the device in an endless loop until the
+  watchdog reset it; the bus driver now clears that interrupt and carries on.
+  Any bus traffic also keeps the device awake until it finishes.
+
 ## v1.21
 
 - Fixes a reset that could happen mid-ride. When the screen refreshed at

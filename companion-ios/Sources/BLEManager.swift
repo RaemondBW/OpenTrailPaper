@@ -126,7 +126,33 @@ struct MeshNode: Identifiable, Equatable {
     var id: UInt32 { num }
     /// "!a4c1380c" — how Meshtastic writes a node number everywhere.
     var nodeId: String { "!" + String(format: "%08x", num) }
-    var displayName: String { longName.isEmpty ? nodeId : longName }
+    var displayName: String {
+        !longName.isEmpty ? longName : !shortName.isEmpty ? shortName : nodeId
+    }
+    /// The node's short name, or the last four hex digits of its id until its
+    /// NodeInfo arrives — which is also what Meshtastic itself defaults a short
+    /// name to, so the fallback usually matches what the owner would see.
+    var shortLabel: String {
+        shortName.isEmpty ? String(format: "%04x", num & 0xFFFF) : shortName
+    }
+    /// "direct", "2 hops", or nil when the sender's firmware does not say.
+    var hopsText: String? { meshHopsText(hops) }
+    /// What a map pin carries: "ALEX · 2 hops".
+    var mapLabel: String { hopsText.map { "\(shortLabel) · \($0)" } ?? shortLabel }
+}
+
+/// Meshtastic carries at most 7 hops; the device reports anything above that
+/// (0xFF) for a packet whose sender's firmware predates hop_start, where the
+/// distance is unknown rather than zero.
+func meshHopsKnown(_ hops: Int) -> Bool { (0...7).contains(hops) }
+
+func meshHopsText(_ hops: Int) -> String? {
+    guard meshHopsKnown(hops) else { return nil }
+    switch hops {
+    case 0: return "direct"
+    case 1: return "1 hop"
+    default: return "\(hops) hops"
+    }
 }
 
 /// The device's mesh configuration, as it reports it.
@@ -644,6 +670,20 @@ final class BLEManager: NSObject, ObservableObject {
         payload.appendLE(Int16(max(-2000, min(9000, loc.altitude.rounded()))))
         let acc = loc.horizontalAccuracy > 0 ? loc.horizontalAccuracy : 200
         payload.appendLE(Int16(max(1, min(9999, acc.rounded()))))
+        // Speed (cm/s) and course (0.01 deg) — the device shows them while
+        // this is its position source. CoreLocation reports -1 for either when
+        // it has no valid value (course while stationary, both on a Wi-Fi/cell
+        // fix); send 0xFFFF then and the device derives or holds instead.
+        // Firmware before this ignores the trailing bytes. A cached fix (the
+        // first one delivered can be minutes old) says nothing about how we're
+        // moving now.
+        let current = -loc.timestamp.timeIntervalSinceNow < 10
+        let speedOk = current && loc.speed >= 0 && loc.speedAccuracy >= 0
+        payload.appendLE(speedOk ? UInt16(min(65534, (loc.speed * 100).rounded())) : UInt16.max)
+        let courseOk = current && loc.course >= 0 && loc.courseAccuracy >= 0
+        payload.appendLE(courseOk
+            ? UInt16(min(35999, (loc.course.truncatingRemainder(dividingBy: 360) * 100).rounded()))
+            : UInt16.max)
         p.writeValue(payload, for: c, type: .withResponse)
         lastAidingSent = Date()
     }
@@ -2430,6 +2470,9 @@ private extension Data {
     mutating func appendLE(_ v: Int16) {
         let u = UInt16(bitPattern: v)
         append(UInt8(u & 0xFF)); append(UInt8(u >> 8))
+    }
+    mutating func appendLE(_ v: UInt16) {
+        append(UInt8(v & 0xFF)); append(UInt8(v >> 8))
     }
     mutating func appendLE(_ v: Int32) {
         let u = UInt32(bitPattern: v)

@@ -175,7 +175,21 @@ const uint8_t kBacklightPWM[4] = {0, 12, 90, 230};
 void applyBacklight(int level) {
     if (level < 0) level = 0;
     if (level > 3) level = 3;
-    analogWrite(BOARD_BL_EN, kBacklightPWM[level]);
+    // Belt and braces: a pad hold left over from shutdownDevice() freezes the
+    // pin and silently swallows every duty write (main.cpp also releases it).
+    gpio_hold_dis((gpio_num_t)BOARD_BL_EN);
+    if (level > 0) {
+        // Keep the LEDC clock and the pad's PWM function alive through
+        // automatic light sleep while lit; released again when turned off so
+        // the dark device keeps its full light-sleep savings.
+        power_mgmt::frontlightHold(true);
+        gpio_sleep_sel_dis((gpio_num_t)BOARD_BL_EN);
+        analogWrite(BOARD_BL_EN, kBacklightPWM[level]);
+    } else {
+        analogWrite(BOARD_BL_EN, 0);
+        gpio_sleep_sel_en((gpio_num_t)BOARD_BL_EN);
+        power_mgmt::frontlightHold(false);
+    }
 }
 
 namespace {

@@ -41,6 +41,12 @@ struct RideState {
     // The phone's own clock at that fix. Better than ours for stamping a
     // record: with no GPS lock our time comes from the RTC, which drifts.
     time_t   phoneUtc = 0;
+    // Speed and direction of travel from the phone stream (phone_motion.h):
+    // the phone's own values when it sent them, else derived from successive
+    // fixes. Copied into speedKmh/courseDeg while the receiver has no fix.
+    float    phoneSpeedKmh = 0.0f;
+    bool     phoneCourseValid = false;   // stays set: a stopped rider keeps it
+    float    phoneCourseDeg = 0.0f;
 
     // Terrain elevation at the current position, from the DEM baked into the
     // map tiles (set by the UI task). Used for ascent/grade instead of the

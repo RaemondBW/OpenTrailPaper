@@ -361,6 +361,10 @@ void setup() {
     diag::log("cpu %d MHz", getCpuFrequencyMhz());
     // Undo the SD CS latch used for deep sleep before any driver touches SPI.
     gpio_hold_dis((gpio_num_t)BOARD_SD_CS);
+    // Same for the frontlight: shutdownDevice() drives it LOW and gpio_hold_en()s
+    // it. GPIO11 is an RTC pad, so that hold survives the deep-sleep wake and
+    // freezes the pin LOW until released -- LEDC duty writes do nothing.
+    gpio_hold_dis((gpio_num_t)BOARD_BL_EN);
     g_state.begin();
     g_i2cMutex = xSemaphoreCreateMutex();   // guard the shared I2C bus
     g_sdMutex = xSemaphoreCreateRecursiveMutex();  // guard the shared SD bus

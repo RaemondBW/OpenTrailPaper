@@ -23,7 +23,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
-import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.SecureRandom
@@ -62,17 +61,6 @@ object SyncAccounts {
         }
     }
 
-    data class Tokens(
-        val accessToken: String,
-        val refreshToken: String?,
-        val expiresAt: Long?,          // unix seconds; null = does not expire
-        val athleteName: String?,
-    ) {
-        val expiresSoon get() = expiresAt != null && System.currentTimeMillis() / 1000 > expiresAt - 300
-    }
-
-    class SyncException(message: String) : IOException(message)
-
     /** Public address of the service, from BuildConfig (local.properties `sync.url` or CI). */
     val serviceUrl: String? = BuildConfig.SYNC_SERVICE_URL.trim().takeIf { it.startsWith("http") }?.trimEnd('/')
     val isConfigured get() = serviceUrl != null
@@ -86,7 +74,7 @@ object SyncAccounts {
     private lateinit var prefs: SharedPreferences
 
     /** Compose-observable copies of what the store holds. */
-    val tokens = mutableStateMapOf<Provider, Tokens>()
+    val tokens = mutableStateMapOf<Provider, SyncTokens>()
     var busy by mutableStateOf<Provider?>(null)
         private set
     private var lastErrorState by mutableStateOf<String?>(null)
@@ -203,7 +191,7 @@ object SyncAccounts {
             val athlete = json.optJSONObject("athlete")
             store(
                 p,
-                Tokens(
+                SyncTokens(
                     accessToken = access,
                     refreshToken = json.optString("refresh_token").takeIf { it.isNotEmpty() },
                     expiresAt = if (json.has("expires_at")) json.optLong("expires_at") else null,
@@ -225,15 +213,18 @@ object SyncAccounts {
 
     suspend fun disconnect(p: Provider) {
         val t = tokens[p] ?: run { store(p, null); return }
+        // A live token, so the revoke below is not refused for having expired.
+        val access = runCatching { withContext(Dispatchers.IO) { keepers.getValue(p).accessToken() } }
+            .getOrDefault(t.accessToken)
         store(p, null)
         // Best effort: tell the provider too, so the app disappears from its list.
         when (p) {
             Provider.STRAVA -> runCatching {
-                postJson("/v1/auth/strava/revoke", JSONObject().put("access_token", t.accessToken))
+                postJson("/v1/auth/strava/revoke", JSONObject().put("access_token", access))
             }
             Provider.INTERVALS -> runCatching {
                 withContext(Dispatchers.IO) {
-                    finish(open("https://intervals.icu/api/v1/disconnect-app", "DELETE", t.accessToken))
+                    finish(open("https://intervals.icu/api/v1/disconnect-app", "DELETE", access))
                 }
             }
             Provider.RIDEWITHGPS -> Unit
@@ -242,23 +233,36 @@ object SyncAccounts {
 
     // --- tokens ---------------------------------------------------------------
 
-    private suspend fun accessToken(p: Provider): String {
-        var t = tokens[p] ?: throw SyncException("Not connected.")
-        if (t.expiresSoon && p == Provider.STRAVA && t.refreshToken != null) {
-            val json = postJson("/v1/auth/strava/refresh", JSONObject().put("refresh_token", t.refreshToken))
-            val a = json.optString("access_token").takeIf { it.isNotEmpty() }
-                ?: throw SyncException("Sign-in expired. Disconnect and connect again.")
-            t = t.copy(
-                accessToken = a,
-                refreshToken = json.optString("refresh_token").takeIf { it.isNotEmpty() } ?: t.refreshToken,
-                expiresAt = if (json.has("expires_at")) json.optLong("expires_at") else null,
-            )
-            store(p, t)
-        }
-        return t.accessToken
+    /**
+     * One [TokenKeeper] per account: refreshes ahead of expiry, saves rotated
+     * refresh tokens, retries a 401 once. Intervals.icu tokens never expire;
+     * RideWithGPS ones only refresh if RWGPS ever issued a refresh token.
+     */
+    private val keepers: Map<Provider, TokenKeeper> = Provider.entries.associateWith { p ->
+        TokenKeeper(
+            title = p.title,
+            current = { tokens[p] },
+            save = { store(p, it) },
+            refresher = if (p == Provider.INTERVALS) null else refresherFor(p),
+        )
     }
 
-    private fun store(p: Provider, t: Tokens?) {
+    private fun refresherFor(p: Provider): suspend (String) -> SyncTokens = { rt -> refresh(p, rt) }
+
+    /** The service holds the client secret, so it does the refresh (POST /v1/auth/<p>/refresh). */
+    private suspend fun refresh(p: Provider, refreshToken: String): SyncTokens {
+        val json = postJson("/v1/auth/${p.id}/refresh", JSONObject().put("refresh_token", refreshToken))
+        val access = json.optString("access_token").takeIf { it.isNotEmpty() }
+            ?: throw SyncException("${p.title} did not renew the sign-in. Try again in a few minutes.")
+        return SyncTokens(
+            accessToken = access,
+            refreshToken = json.optString("refresh_token").takeIf { it.isNotEmpty() },
+            expiresAt = if (json.isNull("expires_at")) null else json.optLong("expires_at"),
+            athleteName = null,
+        )
+    }
+
+    private fun store(p: Provider, t: SyncTokens?) {
         prefs.edit().apply {
             if (t == null) remove(p.id) else putString(
                 p.id,
@@ -273,11 +277,11 @@ object SyncAccounts {
         if (t == null) tokens.remove(p) else tokens[p] = t
     }
 
-    private fun read(p: Provider): Tokens? {
+    private fun read(p: Provider): SyncTokens? {
         val s = prefs.getString(p.id, null) ?: return null
         return runCatching {
             val j = JSONObject(s)
-            Tokens(
+            SyncTokens(
                 accessToken = j.getString("access"),
                 refreshToken = j.optString("refresh").takeIf { it.isNotEmpty() },
                 expiresAt = if (j.isNull("exp")) null else j.optLong("exp"),
@@ -315,13 +319,15 @@ object SyncAccounts {
         name: String,
         tid: String,
     ): String = withContext(Dispatchers.IO) {
-        val token = accessToken(to)
+        val keeper = keepers.getValue(to)
         when (to) {
             Provider.STRAVA -> {
-                val json = multipart(
-                    "https://www.strava.com/api/v3/uploads", token,
-                    fields = mapOf("data_type" to "fit", "name" to name), file = file, progress = tid,
-                )
+                val json = keeper.authorized { token ->
+                    multipart(
+                        "https://www.strava.com/api/v3/uploads", token,
+                        fields = mapOf("data_type" to "fit", "name" to name), file = file, progress = tid,
+                    )
+                }
                 json.optString("error").takeIf { it.isNotEmpty() }?.let { throw SyncException(it) }
                 val id = json.optLong("id", 0)
                 if (id == 0L) return@withContext "Uploaded to Strava."
@@ -329,7 +335,7 @@ object SyncAccounts {
                 // Strava processes asynchronously: poll briefly for the activity id.
                 repeat(8) {
                     delay(1500)
-                    val st = getJson("https://www.strava.com/api/v3/uploads/$id", token)
+                    val st = keeper.authorized { token -> getJson("https://www.strava.com/api/v3/uploads/$id", token) }
                     st.optString("error").takeIf { it.isNotEmpty() }?.let { throw SyncException(it) }
                     val act = st.optLong("activity_id", 0)
                     if (act != 0L) return@withContext "Uploaded: strava.com/activities/$act"
@@ -345,7 +351,7 @@ object SyncAccounts {
                     .appendQueryParameter("device_name", "OpenTrailPaper")
                     .appendQueryParameter("external_id", "otp-${file.name}")
                     .build().toString()
-                val json = multipart(url, token, fields = emptyMap(), file = file, progress = tid)
+                val json = keeper.authorized { token -> multipart(url, token, fields = emptyMap(), file = file, progress = tid) }
                 // 201 created / 200 duplicate; either way activities[0].id (or id).
                 val first = json.optJSONArray("activities")?.optJSONObject(0) ?: json
                 val id = first.optString("id")
@@ -353,7 +359,9 @@ object SyncAccounts {
             }
             Provider.RIDEWITHGPS -> {
                 val base = serviceUrl ?: throw SyncException("This build has no sync service configured.")
-                val json = multipart("$base/v1/rwgps/trips", token, fields = mapOf("trip[name]" to name), file = file, progress = tid)
+                val json = keeper.authorized { token ->
+                    multipart("$base/v1/rwgps/trips", token, fields = mapOf("trip[name]" to name), file = file, progress = tid)
+                }
                 val id = json.optJSONObject("trip")?.optLong("id", 0) ?: 0
                 if (id != 0L) "Uploaded: ridewithgps.com/trips/$id" else "Uploaded to RideWithGPS."
             }
@@ -440,13 +448,22 @@ object SyncAccounts {
         val text = (if (code in 200..299) c.inputStream else c.errorStream)
             ?.bufferedReader()?.use { it.readText() } ?: ""
         c.disconnect()
-        val json = runCatching { JSONObject(text) }.getOrElse { JSONObject() }
         if (code !in 200..299) {
-            if (code == 401) throw SyncException("Signed out by the provider. Disconnect and connect again.")
-            val msg = json.optString("error").ifEmpty { json.optString("message").ifEmpty { text.take(120) } }
-            throw SyncException("Server error $code: $msg")
+            Log.w(TAG, "${c.requestMethod} ${c.url.host}${c.url.path}: HTTP $code ${text.take(300)}")
+            val reason = runCatching { JSONObject(text).optString("reason") }.getOrNull()?.takeIf { it.isNotEmpty() }
+            throw SyncHttpException(code, SyncErrors.describe(code, text, who(c.url.host)), reason)
         }
-        return json
+        return runCatching { JSONObject(text) }.getOrElse { JSONObject() }
+    }
+
+    /** Who answered, for error wording: our service, or a provider by name. */
+    private fun who(host: String?): String = when {
+        host == null -> SyncErrors.SERVICE
+        host == serviceHost -> SyncErrors.SERVICE
+        host?.endsWith("strava.com") == true -> Provider.STRAVA.title
+        host?.endsWith("intervals.icu") == true -> Provider.INTERVALS.title
+        host?.endsWith("ridewithgps.com") == true -> Provider.RIDEWITHGPS.title
+        else -> host ?: SyncErrors.SERVICE
     }
 
     private fun randomState(): String {

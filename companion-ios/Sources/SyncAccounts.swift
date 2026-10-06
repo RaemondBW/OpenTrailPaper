@@ -45,14 +45,18 @@ struct SyncTokens: Codable, Equatable {
     var athleteName: String?
     var athleteId: Int?
 
-    var expiresSoon: Bool {
+    /// Within `margin` seconds of expiry (or past it). Unix seconds throughout.
+    func expiresWithin(_ margin: TimeInterval, now: TimeInterval = Date().timeIntervalSince1970) -> Bool {
         guard let expiresAt else { return false }
-        return Date().timeIntervalSince1970 > expiresAt - 300
+        return now >= expiresAt - margin
     }
 }
 
 enum SyncError: LocalizedError {
-    case notConfigured, notConnected, cancelled, denied(String), exchange(String), http(Int, String), upload(String)
+    /// http: a non-2xx answer, its message already worded for the user
+    /// (SyncErrors.describe); reason is the service's machine-readable tag.
+    case notConfigured, notConnected, cancelled, denied(String), exchange(String),
+         http(Int, String, reason: String?), upload(String), signedOut(String)
     var errorDescription: String? {
         switch self {
         case .notConfigured: return "This build has no sync service configured."
@@ -60,9 +64,52 @@ enum SyncError: LocalizedError {
         case .cancelled:     return "Cancelled."
         case .denied(let e): return "Access was not granted (\(e))."
         case .exchange(let e): return "Sign-in failed: \(e)"
-        case .http(let code, let body): return "Server error \(code): \(body.prefix(120))"
+        case .http(_, let message, _): return message
         case .upload(let e): return e
+        case .signedOut(let title): return "\(title) no longer accepts this phone's sign-in. Disconnect and connect \(title) again."
         }
+    }
+}
+
+/// Words a non-2xx answer for the user, without dumping bodies at them (a
+/// Cloudflare error document is a cloudflare.com "type" URL and nothing else).
+/// Mirrors SyncErrors in the Android app (data/SyncAuth.kt).
+enum SyncErrors {
+    static let service = "service"
+
+    static func describe(code: Int, body: String, who: String) -> String {
+        let detail = detail(body)
+        if who == service, let detail {
+            if code == 401, detail.lowercased().hasPrefix("app check") {
+                return "The sync service could not verify this app (\(detail))."
+            }
+            return detail
+        }
+        let from = who == service ? "The sync service" : who
+        switch code {
+        case 401: return "\(from) refused the sign-in (HTTP 401)."
+        case 429: return "\(from) is limiting requests right now. Try again in 15 minutes."
+        case 502...504, 520...530: return "\(from) could not be reached (HTTP \(code)). Try again in a few minutes."
+        case 500...: return "\(from) had a problem (HTTP \(code)). Try again later."
+        default:
+            if let detail { return "\(from): \(detail) (HTTP \(code))" }
+            return "\(from) refused the request (HTTP \(code))."
+        }
+    }
+
+    /// The human part of an error body, or nil: never HTML, never a CDN's error document.
+    static func detail(_ body: String) -> String? {
+        let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("{"),
+              let obj = (try? JSONSerialization.jsonObject(with: Data(trimmed.utf8))) as? [String: Any] else { return nil }
+        if let type = obj["type"] as? String, type.lowercased().contains("cloudflare") { return nil }
+        for k in ["error", "message", "detail", "title"] {
+            if let v = (obj[k] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !v.isEmpty, !v.hasPrefix("http") {
+                let line = v.split(separator: "\n", maxSplits: 1).first.map(String.init) ?? v
+                return String(line.prefix(160))
+            }
+        }
+        return nil
     }
 }
 
@@ -123,6 +170,11 @@ final class SyncAccounts: NSObject, ObservableObject {
 
     private var session: ASWebAuthenticationSession?
     private var pendingState: [SyncProvider: String] = [:]
+    /// The refresh in flight per account. Strava may rotate the refresh token
+    /// on every refresh, so a second, parallel refresh would spend a token the
+    /// first just replaced: callers that arrive meanwhile wait for this one.
+    private var refreshing: [SyncProvider: Task<SyncTokens, Error>] = [:]
+    static let refreshMargin: TimeInterval = 300
 
     override init() {
         super.init()
@@ -237,37 +289,96 @@ final class SyncAccounts: NSObject, ObservableObject {
     }
 
     func disconnect(_ p: SyncProvider) {
-        let t = tokens[p]
-        store(nil, for: p)
-        // Best effort: tell the provider too, so the app disappears from its list.
-        guard let t else { return }
-        switch p {
-        case .strava:
-            Task { _ = try? await post("v1/auth/strava/revoke", json: ["access_token": t.accessToken]) }
-        case .intervals:
-            var req = URLRequest(url: URL(string: "https://intervals.icu/api/v1/disconnect-app")!)
-            req.httpMethod = "DELETE"
-            req.setValue("Bearer \(t.accessToken)", forHTTPHeaderField: "Authorization")
-            Task { _ = try? await send(req) }
-        case .ridewithgps:
-            break
+        guard let t = tokens[p] else { store(nil, for: p); return }
+        // Best effort: tell the provider too, so the app disappears from its
+        // list, with a live token so the revoke is not refused for expiry.
+        Task {
+            let access = (try? await accessToken(for: p)) ?? t.accessToken
+            store(nil, for: p)
+            switch p {
+            case .strava:
+                _ = try? await post("v1/auth/strava/revoke", json: ["access_token": access])
+            case .intervals:
+                var req = URLRequest(url: URL(string: "https://intervals.icu/api/v1/disconnect-app")!)
+                req.httpMethod = "DELETE"
+                req.setValue("Bearer \(access)", forHTTPHeaderField: "Authorization")
+                _ = try? await send(req)
+            case .ridewithgps:
+                break
+            }
         }
     }
 
     // MARK: tokens
 
+    // Strava access tokens last six hours and each refresh may hand back a new
+    // refresh token that replaces the old one. So: refresh a few minutes ahead
+    // of expiry, save what comes back before using it, one refresh at a time,
+    // and on a 401 refresh once and retry. Intervals.icu tokens never expire;
+    // RideWithGPS ones refresh only if RWGPS ever issued a refresh token.
+
+    private func canRefresh(_ p: SyncProvider, _ t: SyncTokens) -> Bool {
+        p != .intervals && t.refreshToken != nil
+    }
+
     /// A bearer token that is good for at least a few minutes.
     func accessToken(for p: SyncProvider) async throws -> String {
-        guard var t = tokens[p] else { throw SyncError.notConnected }
-        if t.expiresSoon, p == .strava, let r = t.refreshToken {
-            let json = try await post("v1/auth/strava/refresh", json: ["refresh_token": r])
-            guard let a = json["access_token"] as? String else { throw SyncError.exchange("refresh failed") }
-            t.accessToken = a
-            t.refreshToken = (json["refresh_token"] as? String) ?? r
-            t.expiresAt = (json["expires_at"] as? NSNumber)?.doubleValue
-            store(t, for: p)
+        guard let t = tokens[p] else { throw SyncError.notConnected }
+        if canRefresh(p, t), t.expiresWithin(Self.refreshMargin) {
+            return try await refreshed(p, from: t).accessToken
         }
         return t.accessToken
+    }
+
+    /// Runs `call` with a token; on a 401 refreshes once and retries, and a
+    /// second 401 means the sign-in is gone.
+    private func authorized<R>(_ p: SyncProvider, _ call: (String) async throws -> R) async throws -> R {
+        let first = try await accessToken(for: p)
+        do {
+            return try await call(first)
+        } catch SyncError.http(let code, _, _) where code == 401 {}
+        guard let t = tokens[p] else { throw SyncError.notConnected }
+        let second: String
+        if t.accessToken != first {
+            second = t.accessToken                        // refreshed meanwhile
+        } else if canRefresh(p, t) {
+            second = try await refreshed(p, from: t).accessToken
+        } else {
+            throw SyncError.signedOut(p.title)
+        }
+        do {
+            return try await call(second)
+        } catch SyncError.http(let code, _, _) where code == 401 {
+            throw SyncError.signedOut(p.title)
+        }
+    }
+
+    /// New tokens from the service (it holds the client secret), saved before
+    /// they are returned. Joins a refresh already running for this account.
+    private func refreshed(_ p: SyncProvider, from t: SyncTokens) async throws -> SyncTokens {
+        if let running = refreshing[p] { return try await running.value }
+        let task = Task { () async throws -> SyncTokens in
+            guard let r = t.refreshToken else { throw SyncError.signedOut(p.title) }
+            let json: [String: Any]
+            do {
+                json = try await post("v1/auth/\(p.rawValue)/refresh", json: ["refresh_token": r])
+            } catch SyncError.http(401, _, let reason) where reason == "refresh_rejected" {
+                throw SyncError.signedOut(p.title)
+            }
+            guard let a = json["access_token"] as? String, !a.isEmpty else {
+                throw SyncError.upload("\(p.title) did not renew the sign-in. Try again in a few minutes.")
+            }
+            var n = tokens[p] ?? t
+            n.accessToken = a
+            // Rotated: the old refresh token is dead from now on.
+            n.refreshToken = (json["refresh_token"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? r
+            n.expiresAt = (json["expires_at"] as? NSNumber)?.doubleValue
+            store(n, for: p)
+            return n
+        }
+        refreshing[p] = task
+        defer { refreshing[p] = nil }
+        return try await task.value
     }
 
     private func store(_ t: SyncTokens?, for p: SyncProvider) {
@@ -298,7 +409,6 @@ final class SyncAccounts: NSObject, ObservableObject {
 
     private func performUpload(_ fileURL: URL, to p: SyncProvider, name: String,
                                transferId tid: String) async throws -> String {
-        let token = try await accessToken(for: p)
         let data = try Data(contentsOf: fileURL)
         switch p {
         case .strava:
@@ -306,20 +416,24 @@ final class SyncAccounts: NSObject, ObservableObject {
             form.field("data_type", "fit")
             form.field("name", name)
             form.file("file", filename: fileURL.lastPathComponent, mime: "application/octet-stream", data: data)
-            var req = URLRequest(url: URL(string: "https://www.strava.com/api/v3/uploads")!)
-            req.httpMethod = "POST"
-            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-            form.apply(to: &req)
-            let json = try await send(req, progress: tid)
+            let json = try await authorized(p) { token in
+                var req = URLRequest(url: URL(string: "https://www.strava.com/api/v3/uploads")!)
+                req.httpMethod = "POST"
+                req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+                form.apply(to: &req)
+                return try await send(req, progress: tid)
+            }
             if let e = json["error"] as? String, !e.isEmpty { throw SyncError.upload(e) }
             // Strava processes asynchronously: poll briefly for the activity id.
             TransferCenter.shared.update(tid, detail: "Processing on Strava…", indeterminate: true)
             guard let id = (json["id"] as? NSNumber)?.int64Value else { return "Uploaded to Strava." }
             for _ in 0..<8 {
                 try await Task.sleep(nanoseconds: 1_500_000_000)
-                var poll = URLRequest(url: URL(string: "https://www.strava.com/api/v3/uploads/\(id)")!)
-                poll.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-                let st = try await send(poll)
+                let st = try await authorized(p) { token in
+                    var poll = URLRequest(url: URL(string: "https://www.strava.com/api/v3/uploads/\(id)")!)
+                    poll.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+                    return try await send(poll)
+                }
                 if let e = st["error"] as? String, !e.isEmpty { throw SyncError.upload(e) }
                 if let act = (st["activity_id"] as? NSNumber)?.int64Value {
                     return "Uploaded: strava.com/activities/\(act)"
@@ -336,11 +450,13 @@ final class SyncAccounts: NSObject, ObservableObject {
                                 URLQueryItem(name: "external_id", value: "otp-" + fileURL.lastPathComponent)]
             var form = Multipart()
             form.file("file", filename: fileURL.lastPathComponent, mime: "application/octet-stream", data: data)
-            var req = URLRequest(url: comps.url!)
-            req.httpMethod = "POST"
-            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-            form.apply(to: &req)
-            let json = try await send(req, progress: tid)
+            let json = try await authorized(p) { token in
+                var req = URLRequest(url: comps.url!)
+                req.httpMethod = "POST"
+                req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+                form.apply(to: &req)
+                return try await send(req, progress: tid)
+            }
             // 201 created / 200 duplicate; either way activities[0].id (or id).
             let first = (json["activities"] as? [[String: Any]])?.first ?? json
             if let id = first["id"] as? String ?? (first["id"] as? NSNumber).map({ $0.stringValue }) {
@@ -352,11 +468,13 @@ final class SyncAccounts: NSObject, ObservableObject {
             var form = Multipart()
             form.field("trip[name]", name)
             form.file("file", filename: fileURL.lastPathComponent, mime: "application/octet-stream", data: data)
-            var req = URLRequest(url: base.appendingPathComponent("v1/rwgps/trips"))
-            req.httpMethod = "POST"
-            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-            form.apply(to: &req)
-            let json = try await send(req, progress: tid)
+            let json = try await authorized(p) { token in
+                var req = URLRequest(url: base.appendingPathComponent("v1/rwgps/trips"))
+                req.httpMethod = "POST"
+                req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+                form.apply(to: &req)
+                return try await send(req, progress: tid)
+            }
             if let trip = json["trip"] as? [String: Any], let id = (trip["id"] as? NSNumber)?.int64Value {
                 return "Uploaded: ridewithgps.com/trips/\(id)"
             }
@@ -400,11 +518,22 @@ final class SyncAccounts: NSObject, ObservableObject {
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
         let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
         guard (200..<300).contains(code) else {
-            if code == 401 { throw SyncError.upload("Signed out by the provider. Disconnect and connect again.") }
-            let msg = (json["error"] as? String) ?? (json["message"] as? String) ?? String(decoding: data, as: UTF8.self)
-            throw SyncError.http(code, msg)
+            let body = String(decoding: data, as: UTF8.self)
+            let host = req.url?.host
+            print("[sync] \(req.httpMethod ?? "GET") \(host ?? "")\(req.url?.path ?? ""): HTTP \(code) \(body.prefix(300))")
+            throw SyncError.http(code, SyncErrors.describe(code: code, body: body, who: Self.who(host)),
+                                 reason: json["reason"] as? String)
         }
         return json
+    }
+
+    /// Who answered, for error wording: our service, or a provider by name.
+    private static func who(_ host: String?) -> String {
+        guard let host, host != serviceURL?.host else { return SyncErrors.service }
+        if host.hasSuffix("strava.com") { return SyncProvider.strava.title }
+        if host.hasSuffix("intervals.icu") { return SyncProvider.intervals.title }
+        if host.hasSuffix("ridewithgps.com") { return SyncProvider.ridewithgps.title }
+        return host
     }
 
     private static func randomState() -> String {

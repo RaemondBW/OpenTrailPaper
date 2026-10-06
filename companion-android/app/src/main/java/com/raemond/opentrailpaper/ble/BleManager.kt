@@ -2288,10 +2288,22 @@ class BleManager(private val app: Application) {
     // seed), and serves as a fallback position + altitude source when the
     // device's own GPS has no fix. Started on connect, stopped on disconnect.
 
+    private var lastGpsProviderFixMs = 0L
+
     private val locationListener = object : LocationListener {
         override fun onLocationChanged(location: Location) {
             main.post {
                 lastLocation = location
+                // Both providers are subscribed. A network fix arriving between
+                // GPS fixes is tens of metres off and has no speed or bearing;
+                // interleaved with GPS it would read as the rider jumping about.
+                // Send it only when GPS has gone quiet.
+                val now = SystemClock.elapsedRealtime()
+                if (location.provider == LocationManager.GPS_PROVIDER) {
+                    lastGpsProviderFixMs = now
+                } else if (lastGpsProviderFixMs != 0L && now - lastGpsProviderFixMs < 10_000L) {
+                    return@post
+                }
                 if (wantsAiding) transmitAiding(location)
             }
         }
@@ -2380,6 +2392,16 @@ class BleManager(private val app: Application) {
         p.i16(loc.altitude.roundToInt().coerceIn(-2000, 9000))
         val acc = if (loc.hasAccuracy() && loc.accuracy > 0) loc.accuracy.toDouble() else 200.0
         p.i16(acc.roundToInt().coerceIn(1, 9999))
+        // Speed (cm/s) and bearing (0.01 deg): the device shows them while this
+        // is its position source. 0xFFFF = none (no speed/bearing on the fix,
+        // e.g. stationary or a network fix); the device then derives or holds.
+        // Firmware before this ignores the trailing bytes. A cached fix (the
+        // getLastKnownLocation seed) says nothing about how we're moving NOW.
+        val current = SystemClock.elapsedRealtimeNanos() - loc.elapsedRealtimeNanos < 10_000_000_000L
+        p.i16(if (current && loc.hasSpeed() && loc.speed >= 0f)
+            (loc.speed * 100f).roundToInt().coerceIn(0, 0xFFFE) else 0xFFFF)
+        p.i16(if (current && loc.hasBearing())
+            ((loc.bearing % 360f + 360f) % 360f * 100f).roundToInt().coerceIn(0, 35999) else 0xFFFF)
         writeChar(routeChar, p.bytes())
         lastAidingSent = now
     }
