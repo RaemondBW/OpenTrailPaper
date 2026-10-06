@@ -28,6 +28,8 @@ namespace power_mgmt {
 
 static esp_pm_lock_handle_t s_usbLock = nullptr;
 static esp_pm_lock_handle_t s_busyLock = nullptr;
+static esp_pm_lock_handle_t s_lightLock = nullptr;
+static bool s_lightHeld = false;
 static bool s_usbHeld = false;
 static bool s_enabled = false;
 
@@ -368,6 +370,24 @@ void tick() {
 
 bool busyReady() { return s_busyLock != nullptr; }
 
+void frontlightHold(bool on) {
+    // Called from the UI task only (boot, button, settings, phone write).
+    if (on == s_lightHeld) return;
+    if (!s_lightLock) {
+        // Lazily created: needs prepare() to have configured PM first. On a
+        // stock framework this fails NOT_SUPPORTED and the hold is a no-op.
+        if (esp_pm_lock_create(ESP_PM_NO_LIGHT_SLEEP, 0, "frontlight",
+                               &s_lightLock) != ESP_OK) {
+            s_lightLock = nullptr;
+            return;
+        }
+    }
+    esp_err_t e = on ? esp_pm_lock_acquire(s_lightLock)
+                     : esp_pm_lock_release(s_lightLock);
+    if (e == ESP_OK) s_lightHeld = on;
+    diag::log("pm: frontlight hold %s -> %s", on ? "on" : "off", esp_err_to_name(e));
+}
+
 void busyAcquire() {
     // PM lock operations on the same handle require external serialization.
     // Bus, panel and shutdown callers can run on different cores.
@@ -438,6 +458,7 @@ void stateStr(char* out, size_t n) {
     if (s_phone) add("phone");
     if (s_hunt) add("hunt");
     if (s_sens) add("sens");
+    if (s_lightHeld) add("light");
     // Info, not a holder: phone attached on the relaxed link, CPU sleeping.
     if (s_phoneRelaxed) add("prlx");
     if (s_sensorRelaxed) add("srlx"); // information, not a sleep hold
