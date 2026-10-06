@@ -43,6 +43,12 @@ void busyRelease();
 // anything whose hold can straddle boot must ask first.
 bool busyReady();
 
+// Hold light sleep off while the frontlight is lit. Its PWM is LEDC on the APB
+// clock, which is gated in light sleep, and the pad drops to its sleep config
+// -- the light goes dark (or flickers at the wake rate) whenever the CPU
+// sleeps. Idempotent; no-op on a stock (PM-less) framework.
+void frontlightHold(bool on);
+
 // One-line summary of everything currently holding light sleep off — "grace",
 // "serial", "phone", "hunt", "busy=N" — or "clear" when the CPU is free to
 // sleep. Written onto every battery log line so a drain regression names its
