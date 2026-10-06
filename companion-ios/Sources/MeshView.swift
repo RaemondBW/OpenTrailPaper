@@ -598,18 +598,20 @@ private struct MeshNodesSheet: View {
     }
 }
 
+/// "850 m" / "1.2 km" from the phone to the node, or nil without both positions.
+@MainActor
+func meshDistanceText(_ n: MeshNode, ble: BLEManager) -> String? {
+    guard let p = n.position, let d = ble.distanceMeters(to: p.coordinate) else { return nil }
+    return d < 1000 ? String(format: "%.0f m", d) : String(format: "%.1f km", d / 1000)
+}
+
 /// Where a node says it is, as a line of text. Separate from the pin's callout so
 /// the list and the map say the same thing.
 @MainActor
 func meshPositionLine(_ n: MeshNode, ble: BLEManager) -> String? {
     guard let p = n.position else { return nil }
     var parts: [String] = []
-    if let d = ble.distanceMeters(to: p.coordinate) {
-        parts.append(d < 1000 ? String(format: "%.0f m away", d)
-                              : String(format: "%.1f km away", d / 1000))
-    } else {
-        parts.append(p.shortText)
-    }
+    parts.append(meshDistanceText(n, ble: ble).map { "\($0) away" } ?? p.shortText)
     if let u = p.uncertaintyM {
         // Say how coarse it is rather than implying the coordinate is exact.
         parts.append(u < 1000 ? String(format: "±%.0f m", u)
@@ -635,7 +637,8 @@ struct MeshMapSheet: View {
             guard let p = n.position else { return nil }
             return MeshNodePin(
                 id: n.num,
-                label: n.mapLabel,
+                // "ALEX · 2 hops · 1.2 km": how far, without tapping the pin.
+                label: [n.mapLabel, meshDistanceText(n, ble: ble)].compactMap { $0 }.joined(separator: " · "),
                 title: n.longName.isEmpty ? n.nodeId : n.longName,
                 detail: meshPositionLine(n, ble: ble) ?? p.shortText,
                 coordinate: p.coordinate,

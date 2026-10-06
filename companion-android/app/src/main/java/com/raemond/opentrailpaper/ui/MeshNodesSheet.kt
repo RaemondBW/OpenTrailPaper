@@ -186,6 +186,17 @@ private fun nodeDetail(n: MeshNode): String {
     return parts.joinToString(" · ")
 }
 
+/** "850 m" / "1.2 km" from the phone to the node, or null without both positions. */
+fun meshDistanceText(n: MeshNode, ble: BleManager): String? {
+    val p = n.position ?: return null
+    val here = ble.lastLocation ?: return null
+    val out = FloatArray(1)
+    Location.distanceBetween(here.latitude, here.longitude, p.latitude, p.longitude, out)
+    val d = out[0]
+    return if (d < 1000) String.format(Locale.US, "%.0f m", d)
+    else String.format(Locale.US, "%.1f km", d / 1000)
+}
+
 /**
  * Where a node says it is, as a line of text. Separate from the map pin's callout
  * so the list and the map say the same thing.
@@ -193,18 +204,7 @@ private fun nodeDetail(n: MeshNode): String {
 fun meshPositionLine(n: MeshNode, ble: BleManager): String? {
     val p = n.position ?: return null
     val parts = mutableListOf<String>()
-    val here = ble.lastLocation
-    if (here != null) {
-        val out = FloatArray(1)
-        Location.distanceBetween(here.latitude, here.longitude, p.latitude, p.longitude, out)
-        val d = out[0]
-        parts.add(
-            if (d < 1000) String.format(Locale.US, "%.0f m away", d)
-            else String.format(Locale.US, "%.1f km away", d / 1000),
-        )
-    } else {
-        parts.add(p.shortText)
-    }
+    parts.add(meshDistanceText(n, ble)?.let { "$it away" } ?: p.shortText)
     p.uncertaintyM?.let { u ->
         // Say how coarse it is rather than implying the coordinate is exact.
         parts.add(

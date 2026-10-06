@@ -51,7 +51,8 @@ fun MeshMapSheet(ble: BleManager, onDismiss: () -> Unit) {
             val p = n.position ?: return@mapNotNull null
             MeshNodePin(
                 id = n.num,
-                label = n.mapLabel,
+                // "ALEX · 2 hops · 1.2 km": how far, without tapping the pin.
+                label = listOfNotNull(n.mapLabel, meshDistanceText(n, ble)).joinToString(" · "),
                 title = n.longName.ifEmpty { n.nodeId },
                 detail = meshPositionLine(n, ble) ?: p.shortText,
                 coordinate = p.coordinate,
