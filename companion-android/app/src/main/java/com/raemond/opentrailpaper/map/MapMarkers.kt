@@ -134,6 +134,56 @@ object MapMarkers {
             bitmap
         }
 
+    /** A bitmap plus where in it (0..1, from the top) the map point sits. */
+    class Anchored(val bitmap: Bitmap, val anchorY: Float)
+
+    /**
+     * [meshNodePin] with the node's name tag hung underneath — "ALEX · 2 hops" —
+     * so who is where reads without tapping each pin in turn. The tag is a paper
+     * pill with an ink label, which holds up over any tile.
+     */
+    fun labelledMeshNodePin(density: Float, imprecise: Boolean, label: String): Anchored {
+        val pin = meshNodePin(density, imprecise)
+        if (label.isEmpty()) return Anchored(pin, 1f)
+
+        val text = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Palette.ink.toArgb()
+            textSize = 12f * density
+            typeface = android.graphics.Typeface.create(
+                android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD,
+            )
+        }
+        val padX = 6f * density
+        val gap = 2f * density
+        val fm = text.fontMetrics
+        val tagH = (fm.descent - fm.ascent) + 4f * density
+        val tagW = text.measureText(label) + 2 * padX
+        val w = maxOf(pin.width.toFloat(), tagW + 2f * density)
+        val h = pin.height + gap + tagH + 1f * density
+
+        val bitmap = Bitmap.createBitmap(
+            kotlin.math.ceil(w).toInt(), kotlin.math.ceil(h).toInt(), Bitmap.Config.ARGB_8888,
+        )
+        val canvas = Canvas(bitmap)
+        canvas.drawBitmap(pin, (w - pin.width) / 2, 0f, null)
+
+        val left = (w - tagW) / 2
+        val top = pin.height + gap
+        val rect = android.graphics.RectF(left, top, left + tagW, top + tagH)
+        val radius = tagH / 2
+        val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Palette.surface.toArgb() }
+        canvas.drawRoundRect(rect, radius, radius, fill)
+        val edge = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = 1f * density
+            color = Palette.hairline.toArgb()
+        }
+        canvas.drawRoundRect(rect, radius, radius, edge)
+        canvas.drawText(label, left + padX, top + 2f * density - fm.ascent, text)
+
+        return Anchored(bitmap, pin.height / h)
+    }
+
     /** iOS's user-location blue, so the two companions agree on what a rider is. */
     private val LOCATION_BLUE = Color.rgb(0x0A, 0x84, 0xFF)
 }

@@ -126,7 +126,33 @@ struct MeshNode: Identifiable, Equatable {
     var id: UInt32 { num }
     /// "!a4c1380c" — how Meshtastic writes a node number everywhere.
     var nodeId: String { "!" + String(format: "%08x", num) }
-    var displayName: String { longName.isEmpty ? nodeId : longName }
+    var displayName: String {
+        !longName.isEmpty ? longName : !shortName.isEmpty ? shortName : nodeId
+    }
+    /// The node's short name, or the last four hex digits of its id until its
+    /// NodeInfo arrives — which is also what Meshtastic itself defaults a short
+    /// name to, so the fallback usually matches what the owner would see.
+    var shortLabel: String {
+        shortName.isEmpty ? String(format: "%04x", num & 0xFFFF) : shortName
+    }
+    /// "direct", "2 hops", or nil when the sender's firmware does not say.
+    var hopsText: String? { meshHopsText(hops) }
+    /// What a map pin carries: "ALEX · 2 hops".
+    var mapLabel: String { hopsText.map { "\(shortLabel) · \($0)" } ?? shortLabel }
+}
+
+/// Meshtastic carries at most 7 hops; the device reports anything above that
+/// (0xFF) for a packet whose sender's firmware predates hop_start, where the
+/// distance is unknown rather than zero.
+func meshHopsKnown(_ hops: Int) -> Bool { (0...7).contains(hops) }
+
+func meshHopsText(_ hops: Int) -> String? {
+    guard meshHopsKnown(hops) else { return nil }
+    switch hops {
+    case 0: return "direct"
+    case 1: return "1 hop"
+    default: return "\(hops) hops"
+    }
 }
 
 /// The device's mesh configuration, as it reports it.

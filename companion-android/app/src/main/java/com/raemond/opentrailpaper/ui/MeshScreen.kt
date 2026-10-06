@@ -491,7 +491,7 @@ private fun MeshBubble(message: MeshMessage, senderName: String) {
                 Text(time, style = condensed(15.sp, FontWeight.Medium), color = meta)
                 if (!message.outgoing) {
                     Text(
-                        if (message.hops > 0) {
+                        if (message.hops in 1..7) {
                             "· ${message.hops} hop${if (message.hops == 1) "" else "s"}"
                         } else {
                             "· ${message.rssi} dBm"

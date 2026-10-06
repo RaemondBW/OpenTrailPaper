@@ -95,7 +95,8 @@ data class MapDestination(val name: String, val coordinate: LatLon)
  */
 data class MeshNodePin(
     val id: Int,
-    val label: String,          // shown on the callout
+    val label: String,          // drawn under the pin, always visible: "ALEX · 2 hops"
+    val title: String,          // callout heading when tapped: long name or id
     val detail: String,         // second callout line: signal, age, precision
     val coordinate: LatLon,
     /**
@@ -432,13 +433,14 @@ private fun rebuildContent(
     for (n in meshNodes) {
         val marker = Marker(map)
         marker.position = GeoPoint(n.coordinate.lat, n.coordinate.lon)
-        marker.title = n.label
+        marker.title = n.title
         marker.snippet = n.detail
-        marker.icon = android.graphics.drawable.BitmapDrawable(
-            map.resources,
-            MapMarkers.meshNodePin(density, n.imprecise),
-        )
-        marker.setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
+        val pin = MapMarkers.labelledMeshNodePin(density, n.imprecise, n.label)
+        marker.icon = android.graphics.drawable.BitmapDrawable(map.resources, pin.bitmap)
+        // The tip of the pin, not the bottom of the bitmap: the name tag hangs
+        // below the point it marks.
+        marker.setAnchor(Marker.ANCHOR_CENTER, pin.anchorY)
+        marker.setInfoWindowAnchor(Marker.ANCHOR_CENTER, 0f)
         add(marker)
     }
 
