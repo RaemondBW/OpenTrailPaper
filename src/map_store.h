@@ -75,18 +75,6 @@ bool coversPosition(double lat, double lon);
 // the point. Call from the UI task only (shares the tile LRU cache).
 float elevationAt(double lat, double lon);
 
-// Nearest cycling POI whose type is in typeMask (bit 1<<MapPoiType) within
-// maxM of (lat, lon), searched over the tiles ALREADY IN RAM only — never the
-// card, so it is safe to call every frame. The map frame that was just drawn
-// has loaded the tiles around the rider, which is the area that matters.
-struct PoiHit {
-    uint8_t type, flags;
-    double lat, lon;
-    float distM;        // great-circle-ish (equirectangular) distance
-    float bearingDeg;   // from (lat, lon), 0 = north, clockwise
-};
-bool nearestPoi(double lat, double lon, uint8_t typeMask, float maxM, PoiHit& out);
-
 // Copy up to maxOut tile ids (H3 ids, no extension) into out for the app's
 // dedup check. Returns the count written.
 int listTileIds(char out[][24], int maxOut);

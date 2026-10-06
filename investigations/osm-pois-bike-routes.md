@@ -335,22 +335,13 @@ network is what remains. The before and after below are at 16 m/px:
 |---|---|---|---|
 | ![](img/osm-pois-bike-routes/after_mpp02.png) | ![](img/osm-pois-bike-routes/after_mpp08.png) | ![](img/osm-pois-bike-routes/after_trackup_mpp04.png) | ![](img/osm-pois-bike-routes/after_wiggle_mpp02.png) |
 
-### 2d. Interaction: nearest water
+### 2d. Interaction
 
-`map_store::nearestPoi(lat, lon, typeMask, maxM)` scans the `.poi` files of
-tiles **already in the RAM cache** and never touches the card. That makes it
-safe every frame: it reads a few hundred 6-byte records. The map draws a chip
-in its top-left corner showing the water icon, the distance (m/km or ft/mi)
-and an arrow pointing at the water in screen space, so it rotates with
-track-up. The search radius is 5 km. The chip drops below the nav banner or
-the PHONE GPS label when either is showing.
-
-Cheap next steps:
-
-- tap the chip to cycle water → toilets → repair;
-- a `water` dashboard field;
-- "next water along the route" (walk the route polyline and take the first
-  POI within 100 m of it).
+None for now. The prototype had a "nearest water" chip in the map's top-left
+corner (distance and an arrow to the closest `amenity=drinking_water` among
+the cached `.poi` files); it was removed at the user's request. The `.poi`
+files are enough to bring back a lookup like that later, or a "next water
+along the route" field.
 
 ## 3. Cost
 
@@ -418,7 +409,7 @@ less than shipping relation bodies.
 | | old tiles | new tiles |
 |---|---|---|
 | **old firmware** | today | renders as today: the trailers are never read and `.poi` files are never opened. Route-member service roads appear as minor roads (+0.4% polys). See `oldfw_newtiles_mpp04.png`, rendered by the firmware sources of `dd63d43`. |
-| **new firmware** | pixel-identical to old firmware at every zoom (checked with `cmp` on the rendered PNGs) | full cycling layer; a missing `.poi` just means no icons and no water chip |
+| **new firmware** | pixel-identical to old firmware at every zoom (checked with `cmp` on the rendered PNGs) | full cycling layer; a missing `.poi` just means no icons |
 
 The device's tile listings (which the app uses for its "already on the
 device" check) match only `.ebm` names, so `.poi` files do not confuse them.
@@ -471,8 +462,7 @@ Built and exercised end to end on this branch:
     - `renderInto` projects the `.poi` after the tile;
     - `saveTile` accepts `.poi` files.
   - `map_view.cpp`: bands, cycleway and lane styles, POI icons with collision
-    and chrome avoidance, the nearest-water chip.
-  - `map_store::nearestPoi()` and the call in `ui_dashboard.cpp`.
+    and chrome avoidance.
   - `pio run -e t5s3-painter` builds: RAM 38.7%, flash 16.4%.
 - **Tools.**
   - `tools/maps/ebm_info.py`: per-section byte breakdown of tiles and `.poi`
@@ -480,8 +470,7 @@ Built and exercised end to end on this branch:
   - `tools/map_test/tilescene` now:
     - loads the `.poi` files beside the tiles;
     - reports flagged polylines, POIs, host project/draw µs and the POI peak
-      in the sweep;
-    - fills the nearest-water chip.
+      in the sweep.
 - **Screenshots.** `investigations/img/osm-pois-bike-routes/`.
 
 To reproduce, build tiles with `buildEbm` and `buildPoi` per H3 cell into a
@@ -541,8 +530,7 @@ python3 tools/maps/ebm_info.py <tiledir>
   Water points and repair stands change more often than roads. Should it
   refresh them automatically while the phone is connected?
 - **Default on or off.** Should the layer be a setting? Some riders will find
-  the bands busy in a dense city at 8 m/px. Possible toggles: POIs, bands,
-  the chip.
+  the bands busy in a dense city at 8 m/px. Possible toggles: POIs, bands.
 - **Which POIs.** Also include `amenity=bicycle_rental` / bike share, cafés,
   or `amenity=compressed_air` (pumps at fuel stations)? Each is one more
   type id. Should shops appear at all, or only shops that offer repair or a

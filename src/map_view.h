@@ -83,13 +83,6 @@ struct MapScreenData {
     const MapPoi* pois = nullptr;
     int poiCount = 0;
 
-    // Nearest drinking water to the rider (map_store::nearestPoi), for the
-    // corner chip. nearPoiType 0 = none found / not looked up.
-    uint8_t nearPoiType = 0;
-    uint8_t nearPoiFlags = 0;
-    float nearPoiM = 0;
-    float nearPoiBearingDeg = 0;   // true bearing; the chip adds northDeg
-
     // Route polyline; the first riddenPointCount points render solid
     // (already ridden), the rest dashed (ahead) per the design.
     const int16_t* route;

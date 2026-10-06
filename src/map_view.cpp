@@ -436,44 +436,6 @@ void drawPois(const MapScreenData& map, uint8_t* fb) {
     }
 }
 
-// "Nearest water" chip: the icon, the distance and an arrow pointing at it in
-// screen space. Top-left of the map, under the nav banner / PHONE GPS label
-// when those are up.
-void drawNearPoiChip(const MapScreenData& map, bool miles, uint8_t* fb) {
-    if (!map.nearPoiType) return;
-    char buf[16];
-    const float d = map.nearPoiM;
-    if (miles) {
-        if (d < 160.9f) snprintf(buf, sizeof(buf), "%d FT", ((int)(d * 3.281f) + 5) / 10 * 10);
-        else snprintf(buf, sizeof(buf), "%.1f MI", d / 1609.34f);
-    } else {
-        if (d < 1000.0f) snprintf(buf, sizeof(buf), "%d M", ((int)d + 5) / 10 * 10);
-        else snprintf(buf, sizeof(buf), "%.1f KM", d / 1000.0f);
-    }
-    int y = MAP_TOP + 12;
-    if (map.navBannerVisible) y = 64 + 138 + 12;
-    else if (map.phonePosition) y += 30;
-    const int x = 12, h = 40;
-    const int tw = ui::textWidth(&Arial_B, buf);
-    const int w = 6 + 2 * POI_R + 8 + tw + 10 + 22 + 6;
-    epd_fill_rect({x, y, w, h}, 0xFF, fb);
-    epd_draw_rect({x, y, w, h}, 0x00, fb);
-    epd_draw_rect({x + 1, y + 1, w - 2, h - 2}, 0x00, fb);
-    MapPoi icon = {(int16_t)(x + 6 + POI_R), (int16_t)(y + h / 2), map.nearPoiType,
-                   map.nearPoiFlags};
-    drawPoiIcon(icon, fb);
-    ui::text(&Arial_B, x + 6 + 2 * POI_R + 8, y + h / 2 + 9, buf, fb,
-             EPD_DRAW_ALIGN_LEFT, 0x00);
-    // Arrow: where the water is on THIS screen (track-up rotates it).
-    const float a = (map.nearPoiBearingDeg + map.northDeg) * (float)M_PI / 180.0f;
-    const float ux = sinf(a), uy = -cosf(a);
-    const int ax = x + w - 6 - 11, ay = y + h / 2;
-    epd_fill_triangle(ax + lroundf(ux * 11), ay + lroundf(uy * 11),
-                      ax + lroundf(-ux * 7 - uy * 7), ay + lroundf(-uy * 7 + ux * 7),
-                      ax + lroundf(-ux * 7 + uy * 7), ay + lroundf(-uy * 7 - ux * 7),
-                      0x00, fb);
-}
-
 void drawRider(int x, int y, float headingDeg, uint8_t* fb) {
     float rad = (headingDeg - 90.0f) * (float)M_PI / 180.0f;
     float c = cosf(rad), s = sinf(rad);
@@ -648,7 +610,6 @@ void ui_render_map(const MapScreenData& map, const RideState& s, uint8_t* fb) {
     // clear of the banner instead of hiding it.
     drawCompass(kMapCompass.cx, mapCompassCy(map.navBannerVisible),
                 map.northDeg, map.trackUp, fb);
-    drawNearPoiChip(map, s.useMiles, fb);
 
     // No map covers this position — tell the rider how to get one instead of
     // showing a blank screen.

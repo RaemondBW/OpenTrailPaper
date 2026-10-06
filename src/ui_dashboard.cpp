@@ -1043,20 +1043,6 @@ void buildMapScreenData(const RideState& s, MapScreenData& map,
                           /*cachedOnly=*/finalFrame ? false : !mapFullPass);
     map.hasMap = map_store::coversPosition(lat, lon);
 
-    // Nearest drinking water, for the chip in the map's corner. Searches only
-    // tiles the frame above left in RAM — no card access — so it costs a scan
-    // of a few hundred 6-byte records. 5 km: past that it is planning, not a
-    // glance, and the tiles there are rarely cached anyway.
-    if (!finalFrame) {
-        map_store::PoiHit hit;
-        if (map_store::nearestPoi(lat, lon, 1u << MAP_POI_WATER, 5000.0f, hit)) {
-            map.nearPoiType = hit.type;
-            map.nearPoiFlags = hit.flags;
-            map.nearPoiM = hit.distM;
-            map.nearPoiBearingDeg = hit.bearingDeg;
-        }
-    }
-
     if (routes::active() && routeScreenPts) {
         int n = routes::pointCount();
         if (n > MAX_ROUTE_SCREEN_PTS) n = MAX_ROUTE_SCREEN_PTS;

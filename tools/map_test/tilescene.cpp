@@ -190,31 +190,6 @@ void framebufferToPortrait(const uint8_t* fb, uint8_t* gray) {
     }
 }
 
-// The same nearest-water lookup map_store::nearestPoi runs on the device, over
-// every loaded tile instead of the device's RAM cache.
-void fillNearestWater(MapScreenData& map, double lat, double lon) {
-    struct Ctx { double lat, lon, kx, best2; uint8_t flags; double la, lo; bool found; }
-        c = {lat, lon, 111320.0 * cos(lat * M_PI / 180.0), 5000.0 * 5000.0, 0, 0, 0, false};
-    for (const Tile& t : g_tiles) {
-        if (t.poi.empty()) continue;
-        map_tiles::forEachPoi(t.poi.data(), t.poi.size(),
-            [](void* vp, uint8_t type, uint8_t flags, double la, double lo) {
-                Ctx& x = *(Ctx*)vp;
-                if (type != MAP_POI_WATER) return;
-                double dx = (lo - x.lon) * x.kx, dy = (la - x.lat) * 110540.0;
-                if (dx * dx + dy * dy >= x.best2) return;
-                x.best2 = dx * dx + dy * dy; x.flags = flags; x.la = la; x.lo = lo;
-                x.found = true;
-            }, &c);
-    }
-    if (!c.found) return;
-    double dx = (c.lo - lon) * c.kx, dy = (c.la - lat) * 110540.0;
-    map.nearPoiType = MAP_POI_WATER;
-    map.nearPoiFlags = c.flags;
-    map.nearPoiM = (float)sqrt(c.best2);
-    map.nearPoiBearingDeg = (float)fmod(atan2(dx, dy) * 180.0 / M_PI + 360.0, 360.0);
-}
-
 // "-" when the frame drew everything it had; otherwise which budget bit.
 std::string dropSummary(const map_tiles::MapProjectStats& st, int want, int used) {
     std::string s;
@@ -384,7 +359,6 @@ int main(int argc, char** argv) {
             map_tiles::endProject(map);
 
             map_tiles::MapProjectStats st = map_tiles::projectStats();
-            fillNearestWater(map, lat, lon);
             int bike = 0;   // polylines carrying any cycling flag
             for (int i = 0; i < map.featureCount; ++i) bike += map.features[i].flags != 0;
             auto t1 = std::chrono::steady_clock::now();
