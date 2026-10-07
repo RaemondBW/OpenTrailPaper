@@ -68,7 +68,10 @@ struct TransferLiveActivity: Widget {
                     .padding(.horizontal, 4)
                 }
             } compactLeading: {
-                Image(systemName: s.statusSymbol).foregroundStyle(s.tint)
+                // The app's own mark rather than a stock symbol, so the island
+                // reads as OpenTrailPaper at a glance; the trailing side says
+                // how far along it is (or that it finished / failed).
+                IslandLogo(height: 22)
             } compactTrailing: {
                 if s.phase == .running, let f = s.fraction {
                     Text("\(Int((f * 100).rounded(.down)))%")
@@ -83,15 +86,31 @@ struct TransferLiveActivity: Widget {
                 }
             } minimal: {
                 if s.phase == .running, let f = s.fraction {
-                    ProgressView(value: f) { Image(systemName: s.kind.symbol) }
+                    ProgressView(value: f) { IslandLogo(height: 13) }
                         .progressViewStyle(.circular)
                         .tint(s.tint)
+                } else if s.phase == .running {
+                    IslandLogo(height: 20)
                 } else {
                     Image(systemName: s.statusSymbol).foregroundStyle(s.tint)
                 }
             }
             .keylineTint(s.tint)
         }
+    }
+}
+
+/// The device mark from the app icon, drawn white for the island's black
+/// background (TransferWidget/Assets.xcassets, vector).
+private struct IslandLogo: View {
+    let height: CGFloat
+
+    var body: some View {
+        Image("IslandLogo")
+            .resizable()
+            .scaledToFit()
+            .frame(height: height)
+            .accessibilityLabel("OpenTrailPaper")
     }
 }
 

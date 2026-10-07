@@ -67,6 +67,7 @@
 		E30ADD326442FABF6002866E /* demo.fit in Resources */ = {isa = PBXBuildFile; fileRef = D66117B8CB78BBC0949D8DF3 /* demo.fit */; };
 		E3824F33E70991FAC6B09EBF /* h3Assert.c in Sources */ = {isa = PBXBuildFile; fileRef = 89FCEFD5F2F255C490F8E615 /* h3Assert.c */; };
 		E53264DC25E80F7DA0499687 /* localij.c in Sources */ = {isa = PBXBuildFile; fileRef = B8D421E4B1C588F4073BC375 /* localij.c */; };
+		E70CE92DF5318BCD440679A9 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 13F29A55A7651044F3D95A3C /* Assets.xcassets */; };
 		E8B02637D663F1BB063A4D60 /* iterators.c in Sources */ = {isa = PBXBuildFile; fileRef = F2E1BEE825D22D8612B19893 /* iterators.c */; };
 		F48BC7C4FF775911CE8FE038 /* WorkoutsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA682C44407CE9C7FF852A4F /* WorkoutsView.swift */; };
 		F5E522C16FCFE097E2072926 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE5C27C920995C9292457A9C /* SettingsView.swift */; };
@@ -108,6 +109,7 @@
 		0CBC93C157DBF69D2E2C1823 /* polygon.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = polygon.c; sourceTree = "<group>"; };
 		0D0FC030F1FACFFD44C96837 /* SensorsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SensorsView.swift; sourceTree = "<group>"; };
 		119DE3CCD0BED37A2EED959F /* polygonAlgos.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = polygonAlgos.h; sourceTree = "<group>"; };
+		13F29A55A7651044F3D95A3C /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		158AB26E91BB4024B25490AD /* h3shim.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = h3shim.c; sourceTree = "<group>"; };
 		1727B3F48F1EFA384DE4B5C8 /* h3api.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = h3api.h; sourceTree = "<group>"; };
 		21F000263728C013838D0605 /* faceijk.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = faceijk.c; sourceTree = "<group>"; };
@@ -310,6 +312,7 @@
 		BDB3D9EDBB3314E41A35FDB3 /* TransferWidget */ = {
 			isa = PBXGroup;
 			children = (
+				13F29A55A7651044F3D95A3C /* Assets.xcassets */,
 				CAF529559DAAECFF7FFB724B /* Info.plist */,
 				82E5375DC5035B5F4E4A7D8F /* TransferLiveActivity.swift */,
 				97E8FC1262D85FFAB30C82B2 /* TransferWidgetBundle.swift */,
@@ -379,6 +382,7 @@
 			buildConfigurationList = 630FCEFD91B885C09D317E9B /* Build configuration list for PBXNativeTarget "TransferWidget" */;
 			buildPhases = (
 				178916FF96DFFAB66E272895 /* Sources */,
+				F18DB84F567E579395168A7D /* Resources */,
 			);
 			buildRules = (
 			);
@@ -468,6 +472,14 @@
 				05EFA1438A835BB33D929DF4 /* BarlowCondensed-Medium.ttf in Resources */,
 				42D2FCE22B005258F3DFCE9C /* BarlowCondensed-SemiBold.ttf in Resources */,
 				E30ADD326442FABF6002866E /* demo.fit in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F18DB84F567E579395168A7D /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E70CE92DF5318BCD440679A9 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
