@@ -111,3 +111,7 @@ investigations/*-results.json
 # sync-auth service: local credentials only, never the repo
 cloud/sync-auth/.env
 cloud/sync-auth/node_modules/
+
+# Host test binaries
+tools/wheel_speed_test/wheel_speed_test
+tools/phone_motion_test/phone_motion_test

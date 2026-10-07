@@ -264,8 +264,12 @@ void FitWriter::writeRecord(const Record& r) {
     uint8_t buf[25];
     buf[0] = L_RECORD;
     put32(&buf[1], fitTime(r.utc));
-    put32(&buf[5], (uint32_t)(int32_t)llround(r.latitudeDeg * SEMICIRCLES_PER_DEG));
-    put32(&buf[9], (uint32_t)(int32_t)llround(r.longitudeDeg * SEMICIRCLES_PER_DEG));
+    // NAN position = no position (a trainer ride on the wheel sensor alone):
+    // the FIT invalid marker, which every reader skips.
+    put32(&buf[5], isnan(r.latitudeDeg) ? 0x7FFFFFFFu
+                   : (uint32_t)(int32_t)llround(r.latitudeDeg * SEMICIRCLES_PER_DEG));
+    put32(&buf[9], isnan(r.longitudeDeg) ? 0x7FFFFFFFu
+                   : (uint32_t)(int32_t)llround(r.longitudeDeg * SEMICIRCLES_PER_DEG));
     // 0xFFFF is the FIT invalid marker: emit it rather than encoding a bogus
     // altitude, so a point with no elevation is skipped by readers instead of
     // being taken as a real value (which would corrupt ascent totals).

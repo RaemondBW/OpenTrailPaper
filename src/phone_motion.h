@@ -15,8 +15,8 @@
 //            the bearing between fixes far enough apart to mean something.
 //            Stopped, the last course is HELD — never snapped back to north.
 //
-// The receiver path (gps_service) owns speedKmh/courseDeg whenever it has a
-// fix of its own; publish() only writes them when it doesn't.
+// This estimator only fills RideState's phone* fields. Which source the rider
+// actually sees — wheel sensor, receiver, phone — is speed_source::publish().
 //
 // Plain data + maths, no Arduino dependencies: host-tested by
 // tools/phone_motion_test.
@@ -168,18 +168,5 @@ private:
     bool courseValid_ = false;
     float courseDeg_ = 0.0f;
 };
-
-// Publish the phone-derived speed/course into the ride state when the phone
-// is the position source, i.e. the device's own receiver has no fix. Call with
-// the g_state lock held: from the BLE handler as each fix lands, and from the
-// GPS task after it writes RideState (so a receiver without a fix can't
-// overwrite the phone's speed with a latched or zeroed one) and on every loop
-// (so the speed drops to 0 when the phone stream goes stale).
-inline void publish(RideState& s, uint32_t nowMs) {
-    if (s.gpsFix) return;   // the receiver owns speed/course while it has a fix
-    const bool fresh = s.phoneFixValid && nowMs - s.phoneFixMs < kStaleMs;
-    s.speedKmh = fresh ? s.phoneSpeedKmh : 0.0f;
-    if (s.phoneCourseValid) s.courseDeg = s.phoneCourseDeg;   // held when stopped
-}
 
 }  // namespace phone_motion

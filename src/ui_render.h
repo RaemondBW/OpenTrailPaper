@@ -211,7 +211,7 @@ struct MenuInfo {
     bool sdOk = false;
     int rideCount = 0;
     uint32_t sdFreeMB = 0;
-    bool hr = false, pwr = false, cad = false, radar = false;
+    bool hr = false, pwr = false, cad = false, radar = false, spd = false;
     uint8_t batteryPercent = 0;
     double rideDistanceM = 0;
     uint32_t rideElapsedS = 0;
