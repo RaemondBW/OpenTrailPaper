@@ -52,10 +52,15 @@ struct TransferLiveActivity: Widget {
                         .padding(.leading, 4)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
-                    Text(s.phase == .running ? s.percentText : "")
-                        .font(.title3.monospacedDigit().weight(.semibold))
-                        .foregroundStyle(s.tint)
-                        .padding(.trailing, 4)
+                    if s.phase == .running, let f = s.fraction {
+                        PercentRing(fraction: f, text: s.percentText, tint: s.tint)
+                            .padding(.trailing, 4)
+                    } else if s.phase == .running {
+                        // Indeterminate step: a spinner in the ring's place.
+                        ProgressView().progressViewStyle(.circular).tint(s.tint)
+                            .frame(width: PercentRing.size, height: PercentRing.size)
+                            .padding(.trailing, 4)
+                    }
                 }
                 DynamicIslandExpandedRegion(.center) {
                     Text(s.title).font(.headline).lineLimit(1)
@@ -111,6 +116,31 @@ private struct IslandLogo: View {
             .scaledToFit()
             .frame(height: height)
             .accessibilityLabel("OpenTrailPaper")
+    }
+}
+
+/// The expanded island's percentage, with the progress drawn as a ring around it.
+private struct PercentRing: View {
+    static let size: CGFloat = 46
+    let fraction: Double
+    let text: String
+    let tint: Color
+
+    var body: some View {
+        ZStack {
+            Circle().stroke(tint.opacity(0.25), lineWidth: 4)
+            Circle()
+                .trim(from: 0, to: min(max(fraction, 0), 1))
+                .stroke(tint, style: StrokeStyle(lineWidth: 4, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+            Text(text)
+                .font(.system(size: 13, weight: .semibold).monospacedDigit())
+                .foregroundStyle(tint)
+                .minimumScaleFactor(0.7)
+                .lineLimit(1)
+                .padding(.horizontal, 5)
+        }
+        .frame(width: Self.size, height: Self.size)
     }
 }
 
