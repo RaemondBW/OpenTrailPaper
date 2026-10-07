@@ -220,13 +220,20 @@ class DashCb : public NimBLECharacteristicCallbacks {
 //   [0x01] meta : [u8 flags: bit0 playing][u16 posSec][u16 durSec]
 //                 [title\0artist\0album\0]   (UTF-8, device truncates)
 //   [0x10] art begin : [u16 w][u16 h] — 8-bit grayscale, w*h bytes follow
+//   [0x13] tone art begin : [u16 w][u16 h] — tone indices already dithered
+//                    on the phone, base-5 packed 3 px/byte (media.h)
 //   [0x11] art data  : raw bytes, appended in order
-//   [0x12] art end   : device dithers + repaints (deferred to the server task)
+//   [0x12] art end   : device dithers/unpacks + repaints (server task)
 //   [0x02] clear     : no player / playback ended
+//   [0x03] caps?     : device notifies [0xA1][u8 caps]. Older firmware never
+//                      answers, which tells the app to stay on 8-bit art.
 // Device -> phone (notify): [0xA0][MediaCmd] — play/pause, next, prev.
+//                           [0xA1][caps]    — bit0: accepts 0x13 tone art.
 NimBLECharacteristic* mediaChr = nullptr;
 volatile uint8_t mediaCmdPending = 0;    // MediaCmd queued by the UI task
 volatile bool mediaArtPending = false;   // art fully received -> dither in task
+volatile bool mediaCapsPending = false;  // caps asked -> notify from the task
+constexpr uint8_t MEDIA_CAP_TONE_ART = 0x01;
 
 class MediaCb : public NimBLECharacteristicCallbacks {
     void onWrite(NimBLECharacteristic* c, NimBLEConnInfo&) override {
@@ -256,12 +263,20 @@ class MediaCb : public NimBLECharacteristicCallbacks {
             media::setMeta(playing, pos, dur, f[0], f[1], f[2]);
             break;
         }
+        // Art is up to ~90 KB: keep the link at the bulk interval while it
+        // flows, like route and tile uploads. Left to the idle interval it
+        // crawled along at 150-300 ms per connection event.
         case 0x10:
-            if (n >= 5)
-                media::beginArt((int)(p[1] | (p[2] << 8)),
-                                (int)(p[3] | (p[4] << 8)));
+        case 0x13:
+            noteBulk();
+            if (n >= 5) {
+                int w = (int)(p[1] | (p[2] << 8)), h = (int)(p[3] | (p[4] << 8));
+                if (p[0] == 0x13) media::beginToneArt(w, h);
+                else media::beginArt(w, h);
+            }
             break;
         case 0x11:
+            noteBulk();
             media::artData(p + 1, n - 1);
             break;
         case 0x12:
@@ -271,6 +286,9 @@ class MediaCb : public NimBLECharacteristicCallbacks {
             break;
         case 0x02:
             media::clearFromApp();
+            break;
+        case 0x03:
+            mediaCapsPending = true;
             break;
         }
     }
@@ -2177,6 +2195,14 @@ void task(void*) {
         if (mediaArtPending) {
             mediaArtPending = false;
             media::commitArt();
+        }
+        if (mediaCapsPending) {
+            mediaCapsPending = false;
+            if (mediaChr && phoneConnected) {
+                uint8_t pkt[2] = {0xA1, MEDIA_CAP_TONE_ART};
+                mediaChr->setValue(pkt, 2);
+                mediaChr->notify();
+            }
         }
         ams::tick();
         if (uint8_t mc = mediaCmdPending) {

@@ -17,20 +17,52 @@ constexpr uint32_t AMS_LIVE_MS = 20000;
 
 void bump() { g_version = g_version + 1; }
 
-// Incoming art staging (8-bit grayscale from the phone).
+// Incoming art staging: 8-bit grayscale, or tone indices the phone already
+// dithered (base-5, three pixels per byte — see beginToneArt).
 uint8_t* g_rx = nullptr;
 size_t g_rxLen = 0, g_rxCap = 0;
 int g_rxW = 0, g_rxH = 0;
+bool g_rxTones = false;
 
 // Published art (panel tones, one byte per pixel).
 uint8_t* g_art = nullptr;
 
 constexpr int ART_MAX = 320;   // the content column is 492 px; 320 is plenty
 
+// The tones this panel actually renders. Nibbles 0x4-0xE read as white on this
+// glass (see the panel-greys note in ui_render.h), so the palette is black,
+// the three dark greys, and white. Tone-index art uses these indices 0-4.
+const uint8_t kTone[5] = {0x00, 0x11, 0x22, 0x33, 0xFF};
+
 void freeRx() {
     if (g_rx) { heap_caps_free(g_rx); g_rx = nullptr; }
     g_rxLen = g_rxCap = 0;
     g_rxW = g_rxH = 0;
+    g_rxTones = false;
+}
+
+bool allocRx(int w, int h, size_t cap, bool tones) {
+    freeRx();
+    if (w <= 0 || h <= 0 || w > ART_MAX || h > ART_MAX) return false;
+    g_rx = (uint8_t*)heap_caps_malloc(cap, MALLOC_CAP_SPIRAM);
+    if (!g_rx) return false;
+    g_rxCap = cap;
+    g_rxW = w;
+    g_rxH = h;
+    g_rxLen = 0;
+    g_rxTones = tones;
+    return true;
+}
+
+void publishArt(uint8_t* out, const char* how) {
+    if (g_art) heap_caps_free(g_art);
+    g_art = out;
+    g_state.art = g_art;
+    g_state.artW = g_rxW;
+    g_state.artH = g_rxH;
+    diag::log("media: art %dx%d %s", g_rxW, g_rxH, how);
+    freeRx();
+    bump();
 }
 
 void copyStr(char* dst, size_t cap, const char* src) {
@@ -76,15 +108,11 @@ void setMeta(bool playing, uint16_t posSec, uint16_t durSec,
 }
 
 bool beginArt(int w, int h) {
-    freeRx();
-    if (w <= 0 || h <= 0 || w > ART_MAX || h > ART_MAX) return false;
-    g_rxCap = (size_t)w * h;
-    g_rx = (uint8_t*)heap_caps_malloc(g_rxCap, MALLOC_CAP_SPIRAM);
-    if (!g_rx) { g_rxCap = 0; return false; }
-    g_rxW = w;
-    g_rxH = h;
-    g_rxLen = 0;
-    return true;
+    return allocRx(w, h, (size_t)w * h, false);
+}
+
+bool beginToneArt(int w, int h) {
+    return allocRx(w, h, ((size_t)w * h + 2) / 3, true);
 }
 
 void artData(const uint8_t* data, size_t len) {
@@ -97,16 +125,27 @@ void artData(const uint8_t* data, size_t len) {
 void commitArt() {
     if (!g_rx || g_rxLen < g_rxCap) { freeRx(); return; }
 
-    // Floyd-Steinberg down to the tones this panel actually renders. Nibbles
-    // 0x4-0xE read as white on this glass (see the panel-greys note in
-    // ui_render.h), so the palette is black, the three dark greys, and white —
-    // with their APPROXIMATE reflectances as thresholds, not an even spread:
-    // crushing 0x11-0x33 into the midtones is what keeps faces recognisable.
-    static const uint8_t kTone[5] = {0x00, 0x11, 0x22, 0x33, 0xFF};
-    static const int kLum[5] = {0, 70, 120, 170, 255};
-
-    uint8_t* out = (uint8_t*)heap_caps_malloc(g_rxCap, MALLOC_CAP_SPIRAM);
+    const size_t px = (size_t)g_rxW * g_rxH;
+    uint8_t* out = (uint8_t*)heap_caps_malloc(px, MALLOC_CAP_SPIRAM);
     if (!out) { freeRx(); return; }
+
+    if (g_rxTones) {
+        // Already dithered on the phone: unpack base-5 triples, first pixel in
+        // the lowest digit. A digit past 4 (byte > 124) is corrupt -> white.
+        for (size_t i = 0; i < px; ++i) {
+            uint8_t b = g_rx[i / 3];
+            uint8_t d = i % 3 == 0 ? b % 5 : i % 3 == 1 ? (b / 5) % 5 : (b / 25) % 5;
+            out[i] = b > 124 ? 0xFF : kTone[d];
+        }
+        publishArt(out, "tones");
+        return;
+    }
+
+    // Floyd-Steinberg down to kTone, with their APPROXIMATE reflectances as
+    // thresholds, not an even spread: crushing 0x11-0x33 into the midtones is
+    // what keeps faces recognisable. The Android app runs the same dither
+    // (ArtDither.kt) when it sends tone art instead.
+    static const int kLum[5] = {0, 70, 120, 170, 255};
 
     // Error rows in internal RAM (2 x 322 ints), serpentine-free simple scan.
     const int W = g_rxW, H = g_rxH;
@@ -136,15 +175,7 @@ void commitArt() {
         memset(nxt - 1, 0, (W + 2) * sizeof(int16_t));
     }
     free(err);
-
-    if (g_art) heap_caps_free(g_art);
-    g_art = out;
-    g_state.art = g_art;
-    g_state.artW = W;
-    g_state.artH = H;
-    diag::log("media: art %dx%d dithered", W, H);
-    freeRx();
-    bump();
+    publishArt(out, "dithered");
 }
 
 void amsTitle(const char* title) {

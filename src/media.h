@@ -37,10 +37,14 @@ void setMeta(bool playing, uint16_t posSec, uint16_t durSec,
 // Album art arrives as 8-bit grayscale, streamed in chunks, then committed.
 // beginArt rejects silly sizes (cap 320x320) and allocates from PSRAM.
 bool beginArt(int w, int h);
+// Or as tone indices (0-4) the phone already dithered, base-5 packed three
+// pixels per byte, first pixel in the lowest digit: a third of the bytes over
+// the air, and no dither here.
+bool beginToneArt(int w, int h);
 void artData(const uint8_t* data, size_t len);
-// Dither the received grayscale to the panel's 5 usable tones and publish it.
-// Runs on the SERVER TASK (deferred, like mapCommit) — Floyd-Steinberg over
-// ~100 KB is far too much work for a BLE callback.
+// Dither the received grayscale to the panel's 5 usable tones (or unpack tone
+// art) and publish it. Runs on the SERVER TASK (deferred, like mapCommit) —
+// Floyd-Steinberg over ~100 KB is far too much work for a BLE callback.
 void commitArt();
 
 // --- AMS feed (ams_client.cpp, NimBLE host task) ----------------------------
