@@ -33,6 +33,8 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
@@ -57,6 +59,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.raemond.opentrailpaper.ble.BleManager
 import com.raemond.opentrailpaper.ble.PermissionState
+import com.raemond.opentrailpaper.ble.WheelSize
 import com.raemond.opentrailpaper.data.FirmwareRelease
 import com.raemond.opentrailpaper.data.SyncAccounts
 import kotlinx.coroutines.launch
@@ -159,6 +162,9 @@ fun SettingsScreen(ble: BleManager, host: HostActions, onShowTutorial: () -> Uni
                 onIncrease = { ble.updateFtp((ble.ftpWatts + 5).coerceAtMost(500)) },
             )
         }
+
+        val wheelMm = ble.wheelCircMm
+        if (connected && wheelMm != null) WheelSizeCard(ble, wheelMm)
 
         Card {
             TrackedLabel("Timezone")
@@ -337,6 +343,45 @@ private fun mapsSummary(ble: BleManager): String {
     val n = ble.deviceTileIds.size
     if (n == 0) return "Download map areas to your device"
     return "$n area${if (n == 1) "" else "s"} on device"
+}
+
+/**
+ * Speed-sensor wheel size: a preset for the common tyres, and a 1 mm stepper
+ * for a measured roll-out (the most accurate: mark the tyre, roll one turn,
+ * measure).
+ */
+@Composable
+private fun WheelSizeCard(ble: BleManager, mm: Int) {
+    var menuOpen by remember { mutableStateOf(false) }
+    Card {
+        TrackedLabel("Wheel size")
+        Stepper(
+            value = "$mm mm",
+            onDecrease = { ble.updateWheelCircMm(mm - 1) },
+            onIncrease = { ble.updateWheelCircMm(mm + 1) },
+        )
+        Box {
+            TextButton(onClick = { menuOpen = true }) {
+                Text(WheelSize.presetName(mm) ?: "Choose a tyre size", style = barlow(14.sp))
+            }
+            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                WheelSize.presets.forEach { p ->
+                    DropdownMenuItem(
+                        text = { Text("${p.name} · ${p.mm} mm") },
+                        onClick = {
+                            menuOpen = false
+                            ble.updateWheelCircMm(p.mm)
+                        },
+                    )
+                }
+            }
+        }
+        Text(
+            "Circumference for a Bluetooth speed sensor: speed and distance are wheel turns × this.",
+            style = barlow(12.sp),
+            color = Palette.muted,
+        )
+    }
 }
 
 @Composable

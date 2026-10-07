@@ -17,6 +17,7 @@ import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Sensors
 import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -133,6 +134,7 @@ private fun SensorRow(s: BikeSensor, ble: BleManager) {
                         s.kindsMask and 1 != 0 -> Icons.Filled.Favorite
                         s.kindsMask and 2 != 0 -> Icons.Filled.Bolt
                         s.kindsMask and 4 != 0 -> Icons.Filled.Sync
+                        s.kindsMask and 16 != 0 -> Icons.Filled.Speed
                         else -> Icons.Filled.Sensors
                     },
                     contentDescription = null,
