@@ -201,7 +201,22 @@ class MediaRemote(private val app: Application, private val ble: BleManager) {
             val p = px[i]
             // Rec. 601 luma — the same weights the device's own tools use.
             val y = (Color.red(p) * 299 + Color.green(p) * 587 + Color.blue(p) * 114) / 1000
-            y.toByte()
+            LIFT[y]
+        }
+    }
+
+    private companion object {
+        /**
+         * Tone curve applied before the art is sent (and so before either
+         * ditherer sees it). The panel's greys are darker than a screen's and
+         * most covers sit in the shadows, so straight luma came out murky.
+         * Gamma 0.75 lifts the midtones (128 -> 152) and keeps pure black and
+         * white where they are. One table, so the device's own dither of 8-bit
+         * art and ArtDither's tone art stay identical.
+         */
+        private const val GAMMA = 0.75
+        val LIFT = ByteArray(256) { i ->
+            Math.round(255.0 * Math.pow(i / 255.0, GAMMA)).toInt().toByte()
         }
     }
 }
