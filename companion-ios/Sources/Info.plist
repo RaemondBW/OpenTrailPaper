@@ -43,6 +43,8 @@
 	<false/>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSAppleMusicUsageDescription</key>
+	<string>Sends the cover of the song playing in the Music app to your OpenTrailPaper's music page.</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Connects to your OpenTrailPaper to sync routes and settings.</string>
 	<key>NSSupportsLiveActivities</key>

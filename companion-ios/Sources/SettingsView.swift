@@ -119,6 +119,8 @@ struct SettingsView: View {
                     }
                     .disabled(ble.state != .connected)
 
+                    AlbumArtLookupCard(art: ble.albumArt)
+
                     if ble.state == .connected { diagnosticsCard }
 
                     permissionsCard
@@ -599,6 +601,24 @@ struct SettingsView: View {
             return "The device restarts to install (~30 s) and reconnects on its own. Keep it powered on and close."
         default:
             return ""
+        }
+    }
+}
+
+/// The online cover lookup, where a rider looks for it. Also on the dashboard
+/// editor's music page, next to the Music app permission.
+private struct AlbumArtLookupCard: View {
+    @ObservedObject var art: AlbumArtFeeder
+
+    var body: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Album art").trackedLabel()
+                Toggle("Look up album art online", isOn: $art.onlineLookup)
+                Text("For Spotify and other players, finds the cover in Apple's iTunes catalogue. This sends the playing song's title, artist and album to Apple.")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Palette.muted)
+            }
         }
     }
 }

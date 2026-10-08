@@ -601,6 +601,8 @@ class BleManager(private val app: Application) {
             // Every workout reply is a notification too: ask only once the
             // CCCD write has landed, so the Workouts screen opens populated.
             BikeUuid.workout -> refreshWorkouts()
+            // Which art format the device takes; the answer is a notification.
+            BikeUuid.media -> writeChar(mediaChar, byteArrayOf(0x03))
         }
     }
 
@@ -636,6 +638,8 @@ class BleManager(private val app: Application) {
         settingsChar = null; statusChar = null; routeChar = null; ridesChar = null
         sensorsChar = null; mapChar = null; otaChar = null; dashChar = null
         meshChar = null; mediaChar = null; workoutChar = null
+        mediaToneArt = false   // the next device may be older firmware
+        lastMediaMeta = null
         updateMediaRemote()    // no link, no media observers
         stopLocationStream()   // no device to send the phone's position to
 
@@ -831,9 +835,18 @@ class BleManager(private val app: Application) {
     }
 
     private fun handleMediaNotify(data: ByteArray) {
-        if (data.size < 2 || data[0] != 0xA0.toByte()) return
-        mediaRemote.handleCommand(data[1].toInt())
+        if (data.size < 2) return
+        when (data[0]) {
+            0xA0.toByte() -> mediaRemote.handleCommand(data[1].toInt())
+            0xA1.toByte() -> mediaToneArt = data[1].toInt() and 0x01 != 0
+        }
     }
+
+    // Does the device take art the phone already dithered ([0x13], a third of
+    // the bytes)? Asked with [0x03] once media notifications are up; firmware
+    // that predates it never answers, so this stays false and art goes as
+    // 8-bit grayscale.
+    private var mediaToneArt = false
 
     // The editor's "grant media access" card: Android gates media sessions
     // behind notification access, and only the rider can flip that switch.
@@ -873,35 +886,58 @@ class BleManager(private val app: Application) {
             })
             out.write(0)
         }
-        writeChar(mediaChar, out.toByteArray())
+        // Players republish identical metadata in bursts (Spotify: ~40 times
+        // per track change). Each is an acknowledged write that would queue
+        // ahead of the album art, so only changes go out.
+        val packet = out.toByteArray()
+        if (packet.contentEquals(lastMediaMeta)) return
+        lastMediaMeta = packet
+        writeChar(mediaChar, packet)
     }
 
+    private var lastMediaMeta: ByteArray? = null
+
     fun sendMediaClear() {
+        lastMediaMeta = null
         writeChar(mediaChar, byteArrayOf(0x02))
     }
 
-    /** 8-bit grayscale, streamed: [0x10 w h] begin, [0x11]+bytes, [0x12] end. */
+    /**
+     * Streamed: [0x10 w h] begin, [0x11]+bytes, [0x12] end, as 8-bit
+     * grayscale — or [0x13 w h] with tone indices dithered here (ArtDither)
+     * when the device says it takes them, a third of the bytes.
+     */
     fun sendMediaArt(gray: ByteArray, width: Int, height: Int) {
         if (mediaChar == null) return
+        val tones = mediaToneArt
+        val payload = if (tones) ArtDither.pack(ArtDither.dither(gray, width, height)) else gray
+        // The link idles at 150-300 ms per connection event; art at that pace
+        // took tens of seconds. Ask for the fast interval for the transfer
+        // (the phone is the central, so this works on any firmware), and hand
+        // the link back once the last packet is out.
+        val g = gatt
+        g?.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
         writeChar(
             mediaChar,
             byteArrayOf(
-                0x10,
+                if (tones) 0x13 else 0x10,
                 (width and 0xFF).toByte(), ((width shr 8) and 0xFF).toByte(),
                 (height and 0xFF).toByte(), ((height shr 8) and 0xFF).toByte(),
             ),
         )
         var off = 0
-        while (off < gray.size) {
-            val n = minOf(chunkSize, gray.size - off)
+        while (off < payload.size) {
+            val n = minOf(chunkSize, payload.size - off)
             writeChar(
                 mediaChar,
-                byteArrayOf(0x11) + gray.copyOfRange(off, off + n),
+                byteArrayOf(0x11) + payload.copyOfRange(off, off + n),
                 withResponse = false,
             )
             off += n
         }
-        writeChar(mediaChar, byteArrayOf(0x12))
+        writeChar(mediaChar, byteArrayOf(0x12)) {
+            if (gatt === g) g?.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_BALANCED)
+        }
     }
 
     // MARK: workouts (upload, control, live status — CHR_WORKOUT)

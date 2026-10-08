@@ -8,6 +8,11 @@ submitting.
 
 ## 0.6 (build 15)
 
+- Album art on the MUSIC page: covers from the Music app (allow access in
+  the dashboard editor's music page), and — with "Look up album art online"
+  turned on — from Apple's iTunes catalogue for Spotify and other players.
+  Covers go over pre-dithered, a third of the bytes, on firmware that
+  supports it.
 - Accounts: connect Strava, RideWithGPS and Intervals.icu in Settings and
   upload any ride from its detail view. Sign-in runs through
   sync.opentrailpaper.com; the app never holds a provider secret, and
