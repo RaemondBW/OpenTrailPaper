@@ -13,6 +13,7 @@ struct SettingsView: View {
 
     var body: some View {
         NavigationStack {
+            ScrollViewReader { proxy in
             ScrollView {
                 VStack(spacing: 14) {
                     HStack {
@@ -46,6 +47,7 @@ struct SettingsView: View {
                             .pickerStyle(.segmented)
                         }
                     }
+                    .id("units")
 
                     if ble.state == .connected {
                         Card {
@@ -131,6 +133,17 @@ struct SettingsView: View {
                         .padding(.top, 4)
                 }
                 .padding(16)
+            }
+            // Screenshot hook, alongside -tab-*/-demo-* in BikeGPSCompanionApp:
+            // scrolls down to the segmented pickers, toggle and steppers so
+            // they can be captured (simctl can't scroll).
+            .onAppear {
+                if ProcessInfo.processInfo.arguments.contains("-settings-controls") {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                        proxy.scrollTo("units", anchor: .top)
+                    }
+                }
+            }
             }
             .background(Palette.paper.ignoresSafeArea())
             .navigationBarHidden(true)
