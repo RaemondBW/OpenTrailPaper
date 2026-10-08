@@ -101,6 +101,11 @@ struct SettingsView: View {
                         }
                     }
 
+                    // Never gated on a ride: the device applies a backlight
+                    // write the moment it lands, recording or not (and its own
+                    // side key does the same mid-ride). Only the link can
+                    // stop it, and then the card says why instead of just
+                    // greying out.
                     Card {
                         VStack(alignment: .leading, spacing: 10) {
                             Text("Backlight").trackedLabel()
@@ -113,9 +118,14 @@ struct SettingsView: View {
                                 Text("Bright").tag(3)
                             }
                             .pickerStyle(.segmented)
+                            .disabled(ble.state != .connected)
+                            if ble.state != .connected {
+                                LockedReason(text: ble.state == .connecting
+                                             ? "Reconnecting to your OpenTrailPaper…"
+                                             : "Connect to your OpenTrailPaper to change this.")
+                            }
                         }
                     }
-                    .disabled(ble.state != .connected)
 
                     if ble.state == .connected { diagnosticsCard }
 
@@ -330,7 +340,14 @@ struct SettingsView: View {
                     }
                     .font(.system(size: 12)).foregroundStyle(Palette.muted)
                 }
-                if ble.downloadingLog {
+                // The device refuses every SD read while it records
+                // (ble_server.cpp sendLog/sendLogList answer 0x1F), so say so
+                // up front rather than letting a tap fail a moment later. A
+                // log already downloading (started before the ride) still
+                // shows its progress.
+                if ble.status.recording && !ble.downloadingLog {
+                    LockedReason(text: "\(BLEManager.afterRideMessage) — the device keeps its SD card to itself while recording.")
+                } else if ble.downloadingLog {
                     ProgressView(value: ble.downloadProgress) {
                         Text("Downloading \(logDayLabel(ble.downloadingName ?? "log"))…")
                             .font(.system(size: 12)).foregroundStyle(Palette.muted)
@@ -503,7 +520,10 @@ struct SettingsView: View {
                             .foregroundStyle(Palette.ink)
                     }
                     PrimaryButton(title: "Try again", systemImage: "arrow.clockwise",
-                                  enabled: true) { ble.startFirmwareUpdate() }
+                                  enabled: !ble.status.recording) { ble.startFirmwareUpdate() }
+                    if ble.status.recording {
+                        LockedReason(text: BLEManager.afterRideMessage)
+                    }
                     Text("Or copy firmware.bin to the device's SD card and eject it — that path doesn't use Bluetooth.")
                         .font(.system(size: 11)).foregroundStyle(Palette.muted)
                 } else if ble.otaPhase == .done {
@@ -518,9 +538,18 @@ struct SettingsView: View {
                             .foregroundStyle(Palette.muted)
                     }
                 } else if ble.updateAvailable, let r = release.latest {
+                    // Locked mid-ride: the transfer puts the device's
+                    // "Updating firmware" modal over the ride dashboard, and the
+                    // device won't write the image to SD until the recorder
+                    // lets go of the card (ble_server.cpp, sdFree) — so the app
+                    // would sit on "Saving…" with the phone held awake while
+                    // the device's stall watchdog throws the image away.
                     PrimaryButton(title: "Install \(r.tag)",
                                   systemImage: "arrow.down.circle",
-                                  enabled: true) { confirmUpdate = true }
+                                  enabled: !ble.status.recording) { confirmUpdate = true }
+                    if ble.status.recording {
+                        LockedReason(text: BLEManager.afterRideMessage)
+                    }
                 } else if !ble.deviceFirmware.isEmpty && release.latest != nil {
                     Text("Up to date.").font(.system(size: 12)).foregroundStyle(Palette.muted)
                 } else if release.latest == nil && !release.checking {
@@ -587,5 +616,19 @@ struct SettingsView: View {
         default:
             return ""
         }
+    }
+}
+
+/// Why a control can't be used right now, shown in place of a silent grey-out.
+private struct LockedReason: View {
+    let text: String
+    var body: some View {
+        HStack(alignment: .top, spacing: 6) {
+            Image(systemName: "info.circle")
+            Text(text).fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .font(.system(size: 12))
+        .foregroundStyle(Palette.muted)
     }
 }

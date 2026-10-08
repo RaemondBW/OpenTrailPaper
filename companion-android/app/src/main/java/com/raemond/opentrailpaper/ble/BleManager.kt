@@ -1078,12 +1078,15 @@ class BleManager(private val app: Application) {
     /** Pull today's log off the device (reuses the reliable ride-transfer path). */
     fun downloadLog() {
         if (ridesChar == null) { lastMessage = "Not connected"; return }
+        // The device refuses every SD read while recording (sendLog -> 0x1F).
+        if (status.recording) { lastMessage = AFTER_RIDE_MESSAGE; return }
         enqueueTransfer(Transfer.Log(""))
     }
 
     /** List the per-day log files on the device (reply parsed via 0x30/0x31). */
     fun requestLogList() {
         if (ridesChar == null) return
+        if (status.recording) { lastMessage = AFTER_RIDE_MESSAGE; return }
         if (dlActive != null || dlQueue.isNotEmpty()) { logListPending = true; return }
         logsBuilding = mutableListOf()
         loadingLogs = true
@@ -1093,6 +1096,7 @@ class BleManager(private val app: Application) {
     /** Download one specific day's log file. */
     fun downloadLogFile(name: String) {
         if (ridesChar == null) { lastMessage = "Not connected"; return }
+        if (status.recording) { lastMessage = AFTER_RIDE_MESSAGE; return }
         enqueueTransfer(Transfer.Log(name))
     }
 
@@ -1277,6 +1281,9 @@ class BleManager(private val app: Application) {
                 // routine list-refresh fails silently mid-ride (the Rides tab
                 // shows an "in progress" banner + the already-synced rides).
                 loadingRides = false
+                // The log list shares this refusal (sendLogList); without
+                // clearing it the "Other days" spinner turned forever.
+                loadingLogs = false
                 if (dlActive == null) return
                 // A recording device refuses every file, so drop the whole queue
                 // rather than failing each one in turn with its own toast.
@@ -1444,6 +1451,11 @@ class BleManager(private val app: Application) {
 
     fun startFirmwareUpdate() {
         if (otaChar == null) { otaMessage = "Not connected"; return }
+        // The device can't install mid-ride: it only writes the image to SD
+        // once the recorder lets go of the card (ble_server.cpp, sdFree), and
+        // the transfer puts its "Updating firmware" modal over the ride
+        // dashboard. The Settings card says so first; this is the backstop.
+        if (status.recording) { otaMessage = AFTER_RIDE_MESSAGE; return }
         val release = FirmwareRelease.latest ?: run {
             otaMessage = "No release found — check for updates first"
             return
@@ -2341,6 +2353,9 @@ class BleManager(private val app: Application) {
     }
 
     companion object {
+        /** Shown for the few things the device refuses or defers while recording. */
+        const val AFTER_RIDE_MESSAGE = "Available after the ride ends"
+
         private const val INSTALL_WATCHDOG_MSG =
             "Device didn't come back after installing. Check it's powered on and nearby, " +
                 "or use the SD-card method."

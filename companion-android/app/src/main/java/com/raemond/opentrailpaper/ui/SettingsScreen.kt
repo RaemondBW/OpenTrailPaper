@@ -25,6 +25,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.automirrored.filled.HelpOutline
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Map
@@ -169,6 +170,10 @@ fun SettingsScreen(ble: BleManager, host: HostActions, onShowTutorial: () -> Uni
             )
         }
 
+        // Never gated on a ride: the device applies a backlight write the
+        // moment it lands, recording or not (its own side key does the same
+        // mid-ride). Only the link can stop it, and then the card says why
+        // instead of just greying out.
         Card {
             TrackedLabel("Backlight")
             Spacer(Modifier.size(10.dp))
@@ -178,6 +183,15 @@ fun SettingsScreen(ble: BleManager, host: HostActions, onShowTutorial: () -> Uni
                 enabled = connected,
                 onSelect = { ble.updateBacklight(it) },
             )
+            if (!connected) {
+                LockedReason(
+                    if (ble.state == BleManager.ConnState.CONNECTING) {
+                        "Reconnecting to your OpenTrailPaper…"
+                    } else {
+                        "Connect to your OpenTrailPaper to change this."
+                    },
+                )
+            }
         }
 
         if (connected) DiagnosticsCard(ble)
@@ -500,9 +514,14 @@ private fun FirmwareCard(ble: BleManager, onInstall: () -> Unit) {
                     )
                 }
                 Spacer(Modifier.size(10.dp))
-                PrimaryButton("Try again", icon = Icons.Filled.Refresh) {
+                PrimaryButton(
+                    "Try again",
+                    icon = Icons.Filled.Refresh,
+                    enabled = !ble.status.recording,
+                ) {
                     ble.startFirmwareUpdate()
                 }
+                if (ble.status.recording) LockedReason(BleManager.AFTER_RIDE_MESSAGE)
                 Text(
                     "Or copy firmware.bin to the device's SD card and eject it — that path " +
                         "doesn't use Bluetooth.",
@@ -533,11 +552,21 @@ private fun FirmwareCard(ble: BleManager, onInstall: () -> Unit) {
                 )
             }
 
-            ble.updateAvailable -> PrimaryButton(
-                "Install ${FirmwareRelease.latest?.tag}",
-                icon = Icons.Filled.Download,
-                onClick = onInstall,
-            )
+            // Locked mid-ride: the transfer puts the device's "Updating
+            // firmware" modal over the ride dashboard, and the device won't
+            // write the image to SD until the recorder lets go of the card
+            // (ble_server.cpp, sdFree) — so the app would sit on "Saving…" with
+            // the phone held awake while the device's stall watchdog throws the
+            // image away.
+            ble.updateAvailable -> {
+                PrimaryButton(
+                    "Install ${FirmwareRelease.latest?.tag}",
+                    icon = Icons.Filled.Download,
+                    enabled = !ble.status.recording,
+                    onClick = onInstall,
+                )
+                if (ble.status.recording) LockedReason(BleManager.AFTER_RIDE_MESSAGE)
+            }
 
             ble.deviceFirmware.isNotEmpty() && FirmwareRelease.latest != null ->
                 Text("Up to date.", style = barlow(12.sp), color = Palette.muted)
@@ -644,7 +673,16 @@ private fun DiagnosticsCard(ble: BleManager) {
                 modifier = Modifier.padding(bottom = 8.dp),
             )
         }
-        if (ble.downloadingLog) {
+        // The device refuses every SD read while it records (ble_server.cpp
+        // sendLog/sendLogList answer 0x1F), so say so up front rather than
+        // letting a tap fail a moment later. A log already downloading (started
+        // before the ride) still shows its progress.
+        if (ble.status.recording && !ble.downloadingLog) {
+            LockedReason(
+                "${BleManager.AFTER_RIDE_MESSAGE} — the device keeps its SD card to itself " +
+                    "while recording.",
+            )
+        } else if (ble.downloadingLog) {
             Text(
                 "Downloading ${logDayLabel(ble.downloadingName ?: "log")}…",
                 style = barlow(12.sp),
@@ -821,5 +859,23 @@ private fun PermissionRow(
                 }
             }
         }
+    }
+}
+
+/** Why a control can't be used right now, shown in place of a silent grey-out. */
+@Composable
+private fun LockedReason(text: String) {
+    Row(
+        Modifier.fillMaxWidth().padding(top = 8.dp),
+        verticalAlignment = Alignment.Top,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Icon(
+            Icons.Filled.Info,
+            contentDescription = null,
+            tint = Palette.muted,
+            modifier = Modifier.size(14.dp),
+        )
+        Text(text, style = barlow(12.sp), color = Palette.muted)
     }
 }

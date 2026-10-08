@@ -757,17 +757,23 @@ final class BLEManager: NSObject, ObservableObject {
         p.writeValue(cmd, for: c, type: .withResponse)
     }
 
+    /// Shown for the few things the device refuses or defers while recording.
+    static let afterRideMessage = "Available after the ride ends"
+
     // Pull /diag.log off the device (reuses the reliable ride-transfer path).
     func downloadLog() {
         guard ridesChar != nil, peripheral != nil else {
             lastMessage = "Not connected"; return
         }
+        // The device refuses every SD read while recording (sendLog -> 0x1F).
+        guard !status.recording else { lastMessage = Self.afterRideMessage; return }
         enqueueTransfer(.log(""))
     }
 
     // List the per-day log files on the device (reply parsed via 0x30/0x31).
     func requestLogList() {
         guard let c = ridesChar, let p = peripheral else { return }
+        guard !status.recording else { lastMessage = Self.afterRideMessage; return }
         guard dlActive == nil, dlQueue.isEmpty else { logListPending = true; return }
         logsBuilding = []
         loadingLogs = true
@@ -777,6 +783,7 @@ final class BLEManager: NSObject, ObservableObject {
     // Download one specific day's log file.
     func downloadLogFile(_ name: String) {
         guard ridesChar != nil, peripheral != nil else { lastMessage = "Not connected"; return }
+        guard !status.recording else { lastMessage = Self.afterRideMessage; return }
         enqueueTransfer(.log(name))
     }
 
@@ -807,6 +814,14 @@ final class BLEManager: NSObject, ObservableObject {
     func startFirmwareUpdate() {
         guard let c = otaChar, let p = peripheral else {
             otaMessage = "Not connected"; return
+        }
+        // The device can't install mid-ride: it only writes the image to SD
+        // once the recorder lets go of the card (ble_server.cpp, sdFree), and
+        // the transfer puts its "Updating firmware" modal over the ride
+        // dashboard. The Settings card says so before this is reachable; this
+        // is the backstop.
+        guard !status.recording else {
+            otaMessage = Self.afterRideMessage; return
         }
         guard let release = FirmwareRelease.shared.latest else {
             otaMessage = "No release found — check for updates first"; return
@@ -1751,6 +1766,9 @@ final class BLEManager: NSObject, ObservableObject {
             // routine list-refresh fails silently mid-ride (the Rides tab shows
             // an "in progress" banner + the already-synced rides instead).
             loadingRides = false
+            // The log list shares this refusal (sendLogList), and without
+            // clearing it here the "Other days" spinner turned forever.
+            loadingLogs = false
             guard dlActive != nil else { return }
             // A recording device refuses every file, so drop the whole queue
             // rather than failing each one in turn with its own toast.
