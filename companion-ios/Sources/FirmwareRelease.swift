@@ -81,14 +81,16 @@ final class FirmwareRelease: ObservableObject {
     /// The firmware image for `release`, downloading it if it isn't already in
     /// hand. Kept in memory only: it is ~1.8 MB, wanted once per update, and
     /// caching it on disk would just be another copy to go stale.
-    func image(for release: Release) async throws -> Data {
+    /// `transferId` names the TransferCenter entry the byte counts go to.
+    func image(for release: Release, transferId: String? = nil) async throws -> Data {
         if let c = cached, c.tag == release.tag { return c.data }
         downloadProgress = 0
         defer { downloadProgress = nil }
 
         var req = URLRequest(url: release.assetURL)
         req.timeoutInterval = 60
-        let (tmp, resp) = try await URLSession.shared.download(for: req)
+        let delegate = transferId.map { TransferProgressDelegate(id: $0, upload: false) }
+        let (tmp, resp) = try await URLSession.shared.download(for: req, delegate: delegate)
         guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
             throw URLError(.badServerResponse)
         }

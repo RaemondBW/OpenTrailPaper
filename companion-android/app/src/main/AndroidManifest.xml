@@ -30,6 +30,18 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Long transfers (ride/log downloads, firmware updates, map tiles, route
+         sends over BLE; uploads to Strava and friends over HTTP) run in
+         transfer/TransferService so they survive the app being backgrounded.
+         connectedDevice covers the head-unit link, dataSync the HTTP side. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- Android 16 Live Updates: lets the transfer notification be promoted
+         to the status-bar chip. Not in the API 36 stubs, hence the ignore. -->
+    <uses-permission
+        android:name="android.permission.POST_PROMOTED_NOTIFICATIONS"
+        tools:ignore="ProtectedPermissions" />
+
     <!-- Only to scan a mesh channel's QR invite, and only while that scanner is
          on screen. Not required: the link can be pasted instead. -->
     <uses-permission android:name="android.permission.CAMERA" />
@@ -138,6 +150,11 @@
             android:name=".ble.RideLocationService"
             android:exported="false"
             android:foregroundServiceType="location" />
+
+        <service
+            android:name=".transfer.TransferService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice|dataSync" />
 
         <!-- Empty on purpose: it exists because getActiveSessions() — how the
              device's MUSIC page learns what the phone is playing — is gated on

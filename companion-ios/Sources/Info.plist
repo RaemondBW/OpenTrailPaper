@@ -45,6 +45,8 @@
 	<true/>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Connects to your OpenTrailPaper to sync routes and settings.</string>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
 	<key>NSCameraUsageDescription</key>
 	<string>Scans a Meshtastic channel QR code so you can join someone's private mesh channel. The camera is only used while that scanner is open.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>

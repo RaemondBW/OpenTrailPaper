@@ -19,6 +19,7 @@ import com.raemond.opentrailpaper.ble.BleManager
 import com.raemond.opentrailpaper.data.Prefs
 import com.raemond.opentrailpaper.data.RouteImport
 import com.raemond.opentrailpaper.data.SyncAccounts
+import com.raemond.opentrailpaper.transfer.TransferCenter
 import kotlinx.coroutines.launch
 
 /**
@@ -43,6 +44,38 @@ class MainActivity : ComponentActivity() {
             ble.startCentral()
         }
 
+    /** Only Prefs-tracked, so the rider is asked once rather than per transfer. */
+    private val requestNotifications =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+
+    /**
+     * Asked the first time a transfer starts rather than up front: that is the
+     * moment a progress notification means something. Without the grant the
+     * transfer still runs; only its notification is hidden.
+     */
+    private fun askForNotificationsOnce() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        val perm = Manifest.permission.POST_NOTIFICATIONS
+        if (ActivityCompat.checkSelfPermission(this, perm) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) return
+        if (perm in Prefs.askedPermissions) return
+        Prefs.noteAsked(listOf(perm))
+        requestNotifications.launch(perm)
+    }
+
+    override fun onStart() {
+        super.onStart()
+        TransferCenter.appVisible = true
+        TransferCenter.requestNotificationPermission = ::askForNotificationsOnce
+    }
+
+    override fun onStop() {
+        TransferCenter.appVisible = false
+        TransferCenter.requestNotificationPermission = null
+        super.onStop()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -53,6 +86,10 @@ class MainActivity : ComponentActivity() {
         // editor can be exercised with no head unit in range.
         //   adb shell am start ... --ez demo-dash true
         if (intent?.getBooleanExtra("demo-dash", false) == true) ble.enableDashDemo()
+        // Same idea for the transfer notification: --ez demo-transfer true.
+        if (savedInstanceState == null && intent?.getBooleanExtra("demo-transfer", false) == true) {
+            TransferCenter.runDemo()
+        }
 
         setContent {
             OpenTrailPaperTheme {
