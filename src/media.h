@@ -12,7 +12,8 @@
 //   - The companion app (ble_server media characteristic): metadata (Apple
 //     Music only — all iOS lets an app see) and ALBUM ART, which AMS does not
 //     carry. Its metadata is ignored while AMS is live; its art is always
-//     welcome, and stale art is dropped on any title change.
+//     welcome, and stale art is dropped on any title change — including art
+//     still in flight when the title changed, which never gets published.
 //
 // All mutation happens on the BLE server task / NimBLE callbacks; the UI only
 // ever reads a snapshot, so a missed frame during an update costs one
@@ -58,6 +59,12 @@ void amsPlayback(bool playing, uint16_t posSec);
 void amsDuration(uint16_t durSec);
 // True within a grace window of the last AMS update.
 bool amsLive();
+// Bumped whenever AMS changes the title, artist or album (0 = AMS has never
+// reported a track), and when that last happened — the server task forwards
+// the track to the companion app (0xA2) once the burst settles, so an iPhone
+// app can find art for players it cannot see itself.
+uint32_t amsTrackVersion();
+uint32_t amsTrackChangedMs();
 
 // Optimistic play/pause flip from the UI task, so the button answers on the
 // glass immediately; the next real report corrects any disagreement.
