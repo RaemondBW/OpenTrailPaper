@@ -257,8 +257,17 @@ final class AlbumArtFeeder: ObservableObject {
 
 /// UIImage -> 8-bit grayscale side x side, the way the Android app makes it:
 /// stretched onto white (art with alpha lands on paper, not black), Rec. 601
-/// integer luma.
+/// integer luma, then the same midtone lift (gamma 0.75, see `lift`).
 enum ArtImage {
+    /// Tone curve applied before sending, identical to Android's
+    /// MediaRemote.LIFT. The panel's greys are darker than a screen's and most
+    /// covers sit in the shadows, so straight luma came out murky; this lifts
+    /// the midtones (128 -> 152) and keeps pure black and white.
+    static let gamma = 0.75
+    static let lift: [UInt8] = (0..<256).map { i in
+        UInt8((255.0 * pow(Double(i) / 255.0, gamma)).rounded())
+    }
+
     static func grayscale(_ image: UIImage, side: Int) -> [UInt8]? {
         let fmt = UIGraphicsImageRendererFormat()
         fmt.scale = 1
@@ -284,7 +293,7 @@ enum ArtImage {
         var gray = [UInt8](repeating: 0, count: side * side)
         for i in 0..<(side * side) {
             let r = Int(rgba[i * 4]), g = Int(rgba[i * 4 + 1]), b = Int(rgba[i * 4 + 2])
-            gray[i] = UInt8((r * 299 + g * 587 + b * 114) / 1000)
+            gray[i] = lift[(r * 299 + g * 587 + b * 114) / 1000]
         }
         return gray
     }
