@@ -493,6 +493,15 @@ int main(int argc, char** argv) {
     ui_render_shutdown_ack(true, fb.data());
     emit("shutdown_ack.png");
 
+    // The same band as it really lands on the glass after SHUT DOWN is tapped:
+    // shutdownDevice() paints it straight over the frame still in the buffer,
+    // which is the power sheet and its scrim over the dashboard.
+    clearWhite(fb.data());
+    ui_render_dashboard(s, false, dashDefaultLayout(), fb.data());
+    ui_render_power_sheet(true, fb.data());
+    ui_render_shutdown_ack(true, fb.data());
+    emit("power_off_ack.png");
+
     // Ride save/discard acknowledgment over the summary sheet
     clearWhite(fb.data());
     ui_render_dashboard(s, false, dashDefaultLayout(), fb.data());

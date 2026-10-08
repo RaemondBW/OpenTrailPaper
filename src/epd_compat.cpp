@@ -8,7 +8,9 @@
 #include "vfont.h"
 #include "power_mgmt.h"
 
-#include <esp_timer.h>
+#ifdef ARDUINO
+#include <esp_timer.h>   // panel hold timer (device-only section below)
+#endif
 
 #include <stdlib.h>
 #include <string.h>
