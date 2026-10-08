@@ -406,6 +406,14 @@ final class BLEManager: NSObject, ObservableObject {
     /// firmware that predates it never answers, so this stays false and art
     /// goes as 8-bit grayscale.
     private var mediaToneArt = false
+    /// A media notification arrived on this link: notifications are on even
+    /// if the state callback never said so. iOS keeps the link up for AMS
+    /// when the app is relaunched, and the callback has been seen missing.
+    private var mediaNotifySeen = false
+    /// [0x03] caps went out on this link.
+    private var mediaCapsAsked = false
+    /// Retries of a refused media-notification subscribe on this link.
+    private var mediaSubscribeRetries = 0
     /// What each acknowledged media write was, in order: the art pump starts
     /// on its begin's ack, so its write-without-response chunks can't overtake
     /// the begin.
@@ -2074,6 +2082,7 @@ extension BLEManager: CBCentralManagerDelegate {
             settingsChar = nil; statusChar = nil; routeChar = nil; ridesChar = nil
             sensorsChar = nil; mapChar = nil; otaChar = nil; meshChar = nil
             mediaChar = nil; mediaToneArt = false   // the next device may be older firmware
+            mediaNotifySeen = false; mediaCapsAsked = false; mediaSubscribeRetries = 0
             mediaAcks = []; artPumping = false; artPayload = Data()
             albumArt.linkDown()
             updateAlbumArt()
@@ -2186,6 +2195,7 @@ extension BLEManager: CBPeripheralDelegate {
                 case BikeUUID.workout:
                     workoutChar = ch; p.setNotifyValue(true, for: ch)
                 case BikeUUID.media:
+                    artLog.info("media char found: props=0x\(String(ch.properties.rawValue, radix: 16), privacy: .public) descriptors=\(ch.descriptors?.count ?? -1)")
                     mediaChar = ch; p.setNotifyValue(true, for: ch)
                 default: break
                 }
@@ -2212,8 +2222,23 @@ extension BLEManager: CBPeripheralDelegate {
             if ch.uuid == BikeUUID.workout { refreshWorkouts() }
             // Which art format the device takes (and whether it forwards AMS
             // tracks); the answer is a notification.
+            if ch.uuid == BikeUUID.media {
+                artLog.info("media notify state: \(ch.isNotifying) error=\(error?.localizedDescription ?? "none", privacy: .public)")
+                // Seen on a relaunch while iOS kept the link up (it does, for
+                // AMS): the device intermittently refuses the subscribe with
+                // "request not supported". Without it no AMS track ever
+                // reaches the app, so no art. A second try goes through.
+                if error != nil, !ch.isNotifying, mediaSubscribeRetries < 4,
+                   let p = peripheral {
+                    mediaSubscribeRetries += 1
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                        guard let self, self.mediaChar === ch, !ch.isNotifying else { return }
+                        p.setNotifyValue(true, for: ch)
+                    }
+                }
+            }
             if ch.uuid == BikeUUID.media, ch.isNotifying {
-                writeMedia(Data([0x03]), ack: .other)
+                askMediaCaps()
                 updateAlbumArt()
             }
         }
@@ -2267,13 +2292,32 @@ extension BLEManager: CBPeripheralDelegate {
 
     /// Art only matters to a dashboard with a music page.
     private func updateAlbumArt() {
-        albumArt.setActive(mediaChar?.isNotifying == true && dashConfig?.hasMusicPage == true)
+        let notifying = mediaChar != nil && (mediaChar?.isNotifying == true || mediaNotifySeen)
+        artLog.info("art active? notifying=\(notifying) musicPage=\(self.dashConfig?.hasMusicPage == true)")
+        albumArt.setActive(notifying && dashConfig?.hasMusicPage == true)
+    }
+
+    /// Which art format the device takes, and whether it forwards AMS tracks;
+    /// answered by notification. Once per link.
+    private func askMediaCaps() {
+        guard !mediaCapsAsked, mediaChar != nil else { return }
+        mediaCapsAsked = true
+        writeMedia(Data([0x03]), ack: .other)
     }
 
     private func handleMediaNotify(_ d: Data) {
+        // A notification arriving proves notifications are on, whatever the
+        // state callback said (or whether it came at all).
+        if !mediaNotifySeen {
+            mediaNotifySeen = true
+            askMediaCaps()
+            updateAlbumArt()
+        }
         guard d.count >= 2 else { return }
         switch d[d.startIndex] {
-        case 0xA1: mediaToneArt = d[d.startIndex + 1] & 0x01 != 0
+        case 0xA1:
+            mediaToneArt = d[d.startIndex + 1] & 0x01 != 0
+            artLog.info("device caps 0x\(String(d[d.startIndex + 1], radix: 16), privacy: .public)")
         case 0xA2: if let t = MediaTrack(packet: d) { albumArt.deviceTrackChanged(t) }
         default: break   // 0xA0 transport commands: the device uses AMS on iPhone
         }

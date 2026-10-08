@@ -1,3 +1,4 @@
+import os
 import Foundation
 import MediaPlayer
 import UIKit
@@ -46,6 +47,8 @@ struct MediaTrack: Equatable {
 /// which arrive as BLE notifications and so also wake the app in the
 /// background. Older firmware never sends one; then only the Music app's own
 /// change notifications (foreground only) can trigger a send.
+let artLog = Logger(subsystem: "com.raemond.opentrailpaper", category: "art")
+
 @MainActor
 final class AlbumArtFeeder: ObservableObject {
     static let onlineKey = "albumArtOnlineLookup"
@@ -80,6 +83,7 @@ final class AlbumArtFeeder: ObservableObject {
     /// On while connected to a device whose dashboard has a music page.
     func setActive(_ on: Bool) {
         guard on != active else { return }
+        artLog.info("art feeder \(on ? "on" : "off", privacy: .public)")
         active = on
         if on {
             observeMusicApp()
@@ -99,6 +103,7 @@ final class AlbumArtFeeder: ObservableObject {
     /// 0xA2 from the device: AMS has a (new) track.
     func deviceTrackChanged(_ t: MediaTrack) {
         guard t != deviceTrack else { return }
+        artLog.info("device track: \(t.title, privacy: .public) / \(t.artist, privacy: .public) / \(t.album, privacy: .public)")
         deviceTrack = t
         evaluate()
     }
@@ -116,8 +121,9 @@ final class AlbumArtFeeder: ObservableObject {
     // MARK: deciding what to send
 
     private func evaluate() {
-        guard active else { return }
+        guard active else { artLog.debug("evaluate: feeder off (no music page or no link)"); return }
         libraryAccess = Self.libraryState()
+        artLog.info("evaluate: library=\(String(describing: self.libraryAccess), privacy: .public) online=\(self.onlineLookup) deviceTrack=\(self.deviceTrack?.title ?? "none", privacy: .public)")
         if let t = deviceTrack {
             guard !t.title.isEmpty, t.key != sentKey, t.key != workKey else { return }
             start(key: t.key) { [weak self] in await self?.artFor(deviceTrack: t) }
@@ -154,12 +160,15 @@ final class AlbumArtFeeder: ObservableObject {
                 if bg != .invalid { UIApplication.shared.endBackgroundTask(bg) }
             }
             let gray = await produce()
+            artLog.info("art for \(key, privacy: .public): \(gray == nil ? "none found" : "ready", privacy: .public)")
             guard let self, !Task.isCancelled, self.workKey == key else { return }
             self.workKey = nil
             guard let gray else { return }
             // Still the track the device is showing?
             if let t = self.deviceTrack, t.key != key { return }
-            if self.send?(gray, Self.side, Self.side) == true {
+            let ok = self.send?(gray, Self.side, Self.side) == true
+            artLog.info("send: \(ok ? "queued" : "refused", privacy: .public)")
+            if ok {
                 self.sentKey = key
                 self.remember(key, gray)
             }
@@ -177,6 +186,8 @@ final class AlbumArtFeeder: ObservableObject {
         // The Music app can trail AMS by a moment on a track change: look
         // twice before going online (or giving up).
         for attempt in 0..<2 {
+            let np = player?.nowPlayingItem
+            artLog.info("music app now playing: \(np?.title ?? "nothing", privacy: .public) state=\(self.player?.playbackState.rawValue ?? -1) artwork=\(np?.artwork != nil) storeID=\(np?.playbackStoreID ?? "", privacy: .public)")
             if let item = musicItem(matching: t) {
                 if let img = item.artwork?.image(at: CGSize(width: Self.side, height: Self.side)),
                    let g = ArtImage.grayscale(img, side: Self.side) {
