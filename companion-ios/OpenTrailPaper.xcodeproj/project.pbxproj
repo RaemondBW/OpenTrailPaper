@@ -15,6 +15,7 @@
 		206AAAF21E4BC20EAB8D7C79 /* vertex.c in Sources */ = {isa = PBXBuildFile; fileRef = 861D40F3D0D6EE123389E135 /* vertex.c */; };
 		220B52732EE34DEE8CBA4238 /* MeshChannelsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36C9973B7C9E0A6EF2F31B32 /* MeshChannelsSheet.swift */; };
 		2593A42A317117DDFBAF716E /* EInkMapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 062C37A066E27E1DEC3AF253 /* EInkMapView.swift */; };
+		278C781B96547B2CD9B30703 /* AlbumArt.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73EFF3E7BD60E6657DC39D2F /* AlbumArt.swift */; };
 		27D3072E86C963D6934C56BA /* RideSim.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B38F0A13FA33BFE4E04416 /* RideSim.swift */; };
 		292571D164EEF9C5316E8BAB /* linkedGeo.c in Sources */ = {isa = PBXBuildFile; fileRef = 878E3C8F7719672814B9A1C2 /* linkedGeo.c */; };
 		2A3194F4903302F4B2C27D19 /* polygon.c in Sources */ = {isa = PBXBuildFile; fileRef = 0CBC93C157DBF69D2E2C1823 /* polygon.c */; };
@@ -28,6 +29,7 @@
 		431EACF518E6E7F25D9682EC /* H3Tiles.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD6BA4ACE6890EF09B9A8F6F /* H3Tiles.swift */; };
 		43AAF30082DA51F92552EE19 /* PhoneMock.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B4C752C73B32E5B3E92EAE4 /* PhoneMock.swift */; };
 		4608B467E047801D5219DD54 /* faceijk.c in Sources */ = {isa = PBXBuildFile; fileRef = 21F000263728C013838D0605 /* faceijk.c */; };
+		4C0F6C64C32AF7035999D782 /* ArtDither.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F0FA5A490092653FA6B10D1 /* ArtDither.swift */; };
 		50C29F659BE2ACD7B9B29D73 /* Barlow-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = F21BF62E40922CF797D8119D /* Barlow-Regular.ttf */; };
 		578D5A6227F3573A17A1CE9B /* MeshScanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2ACAD995F312514690C2FF16 /* MeshScanner.swift */; };
 		592497FD48D74D86C61AC752 /* FirebaseAppCheck in Frameworks */ = {isa = PBXBuildFile; productRef = 880B86FA551AFFB25164DF8A /* FirebaseAppCheck */; };
@@ -101,6 +103,7 @@
 		6FA4F76096362CE92F71ED36 /* latLng.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = latLng.h; sourceTree = "<group>"; };
 		73E0BFD770D75ABD5ABB61B8 /* alloc.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = alloc.h; sourceTree = "<group>"; };
 		73ECF60CAA9C73957BC40AC2 /* SketchIcon.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SketchIcon.swift; sourceTree = "<group>"; };
+		73EFF3E7BD60E6657DC39D2F /* AlbumArt.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlbumArt.swift; sourceTree = "<group>"; };
 		756CD94A1C875E17A3321CC8 /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
 		792C3E9270334E7AE1A24B68 /* directedEdge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = directedEdge.h; sourceTree = "<group>"; };
 		79F3F907C8247AC1B8A63959 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
@@ -119,6 +122,7 @@
 		94274D68499F022BC3F0DBC8 /* vertexGraph.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = vertexGraph.c; sourceTree = "<group>"; };
 		983A6286E04A3B9DE101DF7E /* localij.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = localij.h; sourceTree = "<group>"; };
 		9D58367A52D10F5F1C035423 /* Barlow-Medium.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Barlow-Medium.ttf"; sourceTree = "<group>"; };
+		9F0FA5A490092653FA6B10D1 /* ArtDither.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArtDither.swift; sourceTree = "<group>"; };
 		A0306F2F39F6FD2D70319F80 /* latLng.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = latLng.c; sourceTree = "<group>"; };
 		A1B38F0A13FA33BFE4E04416 /* RideSim.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RideSim.swift; sourceTree = "<group>"; };
 		A26EB50B7E6CF1B4A63235CA /* RouteView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RouteView.swift; sourceTree = "<group>"; };
@@ -215,6 +219,8 @@
 		AE187636AF6257DBD1A75F05 /* Sources */ = {
 			isa = PBXGroup;
 			children = (
+				73EFF3E7BD60E6657DC39D2F /* AlbumArt.swift */,
+				9F0FA5A490092653FA6B10D1 /* ArtDither.swift */,
 				C1BEEC4DAFA43A7B290097DE /* Assets.xcassets */,
 				F993B08CE32DB569E2279B90 /* BikeGPS-Bridging-Header.h */,
 				37C3CA9775B956BC238BAA42 /* BikeGPSCompanionApp.swift */,
@@ -396,6 +402,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				278C781B96547B2CD9B30703 /* AlbumArt.swift in Sources */,
+				4C0F6C64C32AF7035999D782 /* ArtDither.swift in Sources */,
 				5BC98F4BF77D1A33EF8F546B /* BLEManager.swift in Sources */,
 				021E5D177FE3BCD463AA49BF /* BikeGPSCompanionApp.swift in Sources */,
 				BF7FEB57C05E17549C09CF25 /* DashLayout.swift in Sources */,
@@ -512,7 +520,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 14;
+				CURRENT_PROJECT_VERSION = 15;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEVELOPMENT_TEAM = G5JFC849XY;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -585,7 +593,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 14;
+				CURRENT_PROJECT_VERSION = 15;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = G5JFC849XY;
 				ENABLE_NS_ASSERTIONS = NO;

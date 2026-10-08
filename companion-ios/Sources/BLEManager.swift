@@ -18,6 +18,7 @@ enum BikeUUID {
     static let agnss    = CBUUID(string: "B1C50008-9E0F-4B7A-9C6D-1F2E3A4B5C6D")
     static let dash     = CBUUID(string: "B1C50009-9E0F-4B7A-9C6D-1F2E3A4B5C6D")
     static let mesh     = CBUUID(string: "B1C5000A-9E0F-4B7A-9C6D-1F2E3A4B5C6D")
+    static let media    = CBUUID(string: "B1C5000B-9E0F-4B7A-9C6D-1F2E3A4B5C6D")
     static let workout  = CBUUID(string: "B1C5000C-9E0F-4B7A-9C6D-1F2E3A4B5C6D")
 }
 
@@ -379,7 +380,9 @@ final class BLEManager: NSObject, ObservableObject {
     /// nil until the device has been read, which is how the editor knows to
     /// show "connect to edit" rather than an invented default that would
     /// overwrite the rider's real one the moment they touched a control.
-    @Published var dashConfig: DashConfig?
+    @Published var dashConfig: DashConfig? {
+        didSet { updateAlbumArt() }
+    }
     /// First data page, for thumbnails (RideView's dashboard card).
     var dashLayout: DashLayout? { dashConfig?.firstFields }
     /// Version we are flashing, so the success check compares against what
@@ -393,6 +396,34 @@ final class BLEManager: NSObject, ObservableObject {
     // MARK: Meshtastic
     private var meshChar: CBCharacteristic?
     private var workoutChar: CBCharacteristic?
+
+    // MARK: album art (CHR_MEDIA)
+    /// Finds covers for the device's MUSIC page; see AlbumArt.swift.
+    let albumArt = AlbumArtFeeder()
+    private var mediaChar: CBCharacteristic?
+    /// Does the device take art the phone already dithered ([0x13], a third
+    /// of the bytes)? Asked with [0x03] once media notifications are up;
+    /// firmware that predates it never answers, so this stays false and art
+    /// goes as 8-bit grayscale.
+    private var mediaToneArt = false
+    /// A media notification arrived on this link: notifications are on even
+    /// if the state callback never said so. iOS keeps the link up for AMS
+    /// when the app is relaunched, and the callback has been seen missing.
+    private var mediaNotifySeen = false
+    /// [0x03] caps went out on this link.
+    private var mediaCapsAsked = false
+    /// Retries of a refused media-notification subscribe on this link.
+    private var mediaSubscribeRetries = 0
+    /// What each acknowledged media write was, in order: the art pump starts
+    /// on its begin's ack, so its write-without-response chunks can't overtake
+    /// the begin.
+    private enum MediaAck { case other, artBegin(Int), artEnd(Int) }
+    private var mediaAcks: [MediaAck] = []
+    private var artGen = 0              // bumps per transfer; stale acks ignored
+    private var artPayload = Data()
+    private var artOffset = 0
+    private var artChunk = 180
+    private var artPumping = false
 
     // MARK: workout state (published for WorkoutsView)
     struct WorkoutStatus: Equatable {
@@ -521,6 +552,9 @@ final class BLEManager: NSObject, ObservableObject {
         // Bluetooth" in onboarding, so the system prompt lands on that screen.
         if UserDefaults.standard.bool(forKey: Self.onboardedKey) {
             startCentral()
+        }
+        albumArt.send = { [weak self] gray, w, h in
+            self?.sendMediaArt(gray, width: w, height: h) ?? false
         }
     }
 
@@ -2047,6 +2081,11 @@ extension BLEManager: CBCentralManagerDelegate {
         MainActor.assumeIsolated {
             settingsChar = nil; statusChar = nil; routeChar = nil; ridesChar = nil
             sensorsChar = nil; mapChar = nil; otaChar = nil; meshChar = nil
+            mediaChar = nil; mediaToneArt = false   // the next device may be older firmware
+            mediaNotifySeen = false; mediaCapsAsked = false; mediaSubscribeRetries = 0
+            mediaAcks = []; artPumping = false; artPayload = Data()
+            albumArt.linkDown()
+            updateAlbumArt()
             // A half-received mesh stream must not be published on reconnect.
             meshBuilding = []; meshNodesBuilding = []; meshPresetsBuilding = []
             meshChannelsBuilding = []
@@ -2155,6 +2194,9 @@ extension BLEManager: CBPeripheralDelegate {
                     meshChar = ch; p.setNotifyValue(true, for: ch)
                 case BikeUUID.workout:
                     workoutChar = ch; p.setNotifyValue(true, for: ch)
+                case BikeUUID.media:
+                    artLog.info("media char found: props=0x\(String(ch.properties.rawValue, radix: 16), privacy: .public) descriptors=\(ch.descriptors?.count ?? -1)")
+                    mediaChar = ch; p.setNotifyValue(true, for: ch)
                 default: break
                 }
             }
@@ -2178,6 +2220,27 @@ extension BLEManager: CBPeripheralDelegate {
             // reply away and the Messages tab sits empty until it is opened.
             if ch.uuid == BikeUUID.mesh { refreshMesh() }
             if ch.uuid == BikeUUID.workout { refreshWorkouts() }
+            // Which art format the device takes (and whether it forwards AMS
+            // tracks); the answer is a notification.
+            if ch.uuid == BikeUUID.media {
+                artLog.info("media notify state: \(ch.isNotifying) error=\(error?.localizedDescription ?? "none", privacy: .public)")
+                // Seen on a relaunch while iOS kept the link up (it does, for
+                // AMS): the device intermittently refuses the subscribe with
+                // "request not supported". Without it no AMS track ever
+                // reaches the app, so no art. A second try goes through.
+                if error != nil, !ch.isNotifying, mediaSubscribeRetries < 4,
+                   let p = peripheral {
+                    mediaSubscribeRetries += 1
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                        guard let self, self.mediaChar === ch, !ch.isNotifying else { return }
+                        p.setNotifyValue(true, for: ch)
+                    }
+                }
+            }
+            if ch.uuid == BikeUUID.media, ch.isNotifying {
+                askMediaCaps()
+                updateAlbumArt()
+            }
         }
     }
 
@@ -2186,7 +2249,18 @@ extension BLEManager: CBPeripheralDelegate {
         MainActor.assumeIsolated {
             pumpOtaChunks()
             pumpMapChunks()
+            pumpArtChunks()
         }
+    }
+
+    nonisolated func peripheral(_ p: CBPeripheral,
+                                didWriteValueFor ch: CBCharacteristic,
+                                error: Error?) {
+        if let error {
+            artLog.error("write to \(ch.uuid.uuidString, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+        }
+        guard ch.uuid == BikeUUID.media else { return }
+        MainActor.assumeIsolated { mediaWriteAcked(failed: error != nil) }
     }
 
     nonisolated func peripheral(_ p: CBPeripheral,
@@ -2205,9 +2279,106 @@ extension BLEManager: CBPeripheralDelegate {
             case BikeUUID.dash: parseDashLayout(data)
             case BikeUUID.mesh: handleMeshNotify(data)
             case BikeUUID.workout: handleWorkoutNotify(data)
+            case BikeUUID.media: handleMediaNotify(data)
             default: break
             }
         }
+    }
+
+    // MARK: - Album art (the device's MUSIC page)
+    //
+    // CHR_MEDIA, phone -> device: [0x10 w h] 8-bit art begin or [0x13 w h]
+    // tone-art begin, [0x11]+bytes, [0x12] end, [0x03] caps? Device -> phone:
+    // [0xA1][caps] (bit0 tone art), [0xA2][title\0artist\0album\0] the track
+    // AMS reports (see src/ble_server.cpp). The iPhone sends no metadata:
+    // the device gets that for every player from iOS itself (AMS).
+
+    /// Art only matters to a dashboard with a music page.
+    private func updateAlbumArt() {
+        let notifying = mediaChar != nil && (mediaChar?.isNotifying == true || mediaNotifySeen)
+        artLog.info("art active? notifying=\(notifying) musicPage=\(self.dashConfig?.hasMusicPage == true)")
+        albumArt.setActive(notifying && dashConfig?.hasMusicPage == true)
+    }
+
+    /// Which art format the device takes, and whether it forwards AMS tracks;
+    /// answered by notification. Once per link.
+    private func askMediaCaps() {
+        guard !mediaCapsAsked, mediaChar != nil else { return }
+        mediaCapsAsked = true
+        writeMedia(Data([0x03]), ack: .other)
+    }
+
+    private func handleMediaNotify(_ d: Data) {
+        // A notification arriving proves notifications are on, whatever the
+        // state callback said (or whether it came at all).
+        if !mediaNotifySeen {
+            mediaNotifySeen = true
+            askMediaCaps()
+            updateAlbumArt()
+        }
+        guard d.count >= 2 else { return }
+        switch d[d.startIndex] {
+        case 0xA1:
+            mediaToneArt = d[d.startIndex + 1] & 0x01 != 0
+            artLog.info("device caps 0x\(String(d[d.startIndex + 1], radix: 16), privacy: .public)")
+        case 0xA2: if let t = MediaTrack(packet: d) { albumArt.deviceTrackChanged(t) }
+        default: break   // 0xA0 transport commands: the device uses AMS on iPhone
+        }
+    }
+
+    private func writeMedia(_ pkt: Data, ack: MediaAck) {
+        guard let c = mediaChar, let p = peripheral else { return }
+        mediaAcks.append(ack)
+        p.writeValue(pkt, for: c, type: .withResponse)
+    }
+
+    /// Streamed: begin ([0x13] tone art the device unpacks, or [0x10] 8-bit
+    /// grayscale for firmware that predates it), chunks without response as
+    /// fast as CoreBluetooth takes them, then [0x12]. iOS has no connection-
+    /// priority call; the firmware moves the link to its fast interval itself
+    /// while art writes flow (noteBulk). A newer cover simply restarts: the
+    /// device drops a half-received one on the next begin.
+    func sendMediaArt(_ gray: [UInt8], width: Int, height: Int) -> Bool {
+        guard let p = peripheral, mediaChar != nil, !otaInProgress else { return false }
+        let tones = mediaToneArt
+        artPayload = tones
+            ? Data(ArtDither.pack(ArtDither.dither(gray, width: width, height: height)))
+            : Data(gray)
+        artOffset = 0
+        artPumping = false
+        artGen += 1
+        artChunk = max(20, p.maximumWriteValueLength(for: .withoutResponse)) - 1
+        var begin = Data([tones ? 0x13 : 0x10])
+        begin.appendLE(UInt16(width))
+        begin.appendLE(UInt16(height))
+        writeMedia(begin, ack: .artBegin(artGen))
+        return true
+    }
+
+    private func mediaWriteAcked(failed: Bool) {
+        guard !mediaAcks.isEmpty else { return }
+        switch mediaAcks.removeFirst() {
+        case .artBegin(let gen) where gen == artGen:
+            if failed { artPayload = Data(); return }
+            artPumping = true
+            pumpArtChunks()
+        default: break
+        }
+    }
+
+    private func pumpArtChunks() {
+        guard artPumping, let c = mediaChar, let p = peripheral else { return }
+        while artOffset < artPayload.count {
+            guard p.canSendWriteWithoutResponse else { return }   // resume from ready
+            let end = min(artOffset + artChunk, artPayload.count)
+            var pkt = Data([0x11])
+            pkt.append(artPayload.subdata(in: artOffset..<end))
+            artOffset = end
+            p.writeValue(pkt, for: c, type: .withoutResponse)
+        }
+        artPumping = false
+        artPayload = Data()
+        writeMedia(Data([0x12]), ack: .artEnd(artGen))
     }
 
     // MARK: - Dashboard layout

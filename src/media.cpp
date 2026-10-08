@@ -23,6 +23,22 @@ uint8_t* g_rx = nullptr;
 size_t g_rxLen = 0, g_rxCap = 0;
 int g_rxW = 0, g_rxH = 0;
 bool g_rxTones = false;
+// Bumped on every title change. Art records the generation it began under and
+// is thrown away at commit if the track changed mid-transfer: art for the old
+// track must never land under the new title. (A counter, not a free, because
+// the title changes on the NimBLE host task while commit runs on the server
+// task.)
+volatile uint32_t g_trackGen = 0;
+uint32_t g_rxGen = 0;
+
+// AMS track identity changes (title/artist/album), for the app feed.
+volatile uint32_t g_amsTrackVer = 0;
+volatile uint32_t g_amsTrackMs = 0;
+void amsTrackChanged() {
+    g_amsTrackVer = g_amsTrackVer + 1;
+    if (g_amsTrackVer == 0) g_amsTrackVer = 1;   // 0 means "never"
+    g_amsTrackMs = millis();
+}
 
 // Published art (panel tones, one byte per pixel).
 uint8_t* g_art = nullptr;
@@ -51,6 +67,7 @@ bool allocRx(int w, int h, size_t cap, bool tones) {
     g_rxH = h;
     g_rxLen = 0;
     g_rxTones = tones;
+    g_rxGen = g_trackGen;
     return true;
 }
 
@@ -84,6 +101,8 @@ void dropArt() {
 }
 
 bool amsLive() { return g_amsMs && millis() - g_amsMs < AMS_LIVE_MS; }
+uint32_t amsTrackVersion() { return g_amsTrackVer; }
+uint32_t amsTrackChangedMs() { return g_amsTrackMs; }
 
 void setMeta(bool playing, uint16_t posSec, uint16_t durSec,
              const char* title, const char* artist, const char* album) {
@@ -94,8 +113,10 @@ void setMeta(bool playing, uint16_t posSec, uint16_t durSec,
     // A track change with the art from the last track under it is a lie worth
     // preventing: the phone always follows metadata with new art (or none),
     // so stale art is dropped the moment the title stops matching.
-    if (strncmp(g_state.title, title ? title : "", sizeof(g_state.title)) != 0)
+    if (strncmp(g_state.title, title ? title : "", sizeof(g_state.title)) != 0) {
         dropArt();
+        g_trackGen = g_trackGen + 1;
+    }
     g_state.present = true;
     g_state.playing = playing;
     g_state.posSec = posSec;
@@ -124,6 +145,11 @@ void artData(const uint8_t* data, size_t len) {
 
 void commitArt() {
     if (!g_rx || g_rxLen < g_rxCap) { freeRx(); return; }
+    if (g_rxGen != g_trackGen) {
+        diag::log("media: art for the previous track dropped");
+        freeRx();
+        return;
+    }
 
     const size_t px = (size_t)g_rxW * g_rxH;
     uint8_t* out = (uint8_t*)heap_caps_malloc(px, MALLOC_CAP_SPIRAM);
@@ -183,6 +209,8 @@ void amsTitle(const char* title) {
     if (strncmp(g_state.title, title ? title : "",
                 sizeof(g_state.title)) != 0) {
         dropArt();
+        g_trackGen = g_trackGen + 1;
+        amsTrackChanged();
         snprintf(g_state.title, sizeof(g_state.title), "%s",
                  title ? title : "");
         // A fresh track: elapsed restarts unless AMS says otherwise in the
@@ -196,6 +224,8 @@ void amsTitle(const char* title) {
 
 void amsArtist(const char* artist) {
     g_amsMs = millis();
+    if (strncmp(g_state.artist, artist ? artist : "", sizeof(g_state.artist)) != 0)
+        amsTrackChanged();
     snprintf(g_state.artist, sizeof(g_state.artist), "%s",
              artist ? artist : "");
     g_state.present = true;
@@ -204,6 +234,8 @@ void amsArtist(const char* artist) {
 
 void amsAlbum(const char* album) {
     g_amsMs = millis();
+    if (strncmp(g_state.album, album ? album : "", sizeof(g_state.album)) != 0)
+        amsTrackChanged();
     snprintf(g_state.album, sizeof(g_state.album), "%s", album ? album : "");
     g_state.present = true;
     bump();
