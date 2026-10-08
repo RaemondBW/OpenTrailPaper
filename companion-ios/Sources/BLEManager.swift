@@ -2256,6 +2256,9 @@ extension BLEManager: CBPeripheralDelegate {
     nonisolated func peripheral(_ p: CBPeripheral,
                                 didWriteValueFor ch: CBCharacteristic,
                                 error: Error?) {
+        if let error {
+            artLog.error("write to \(ch.uuid.uuidString, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+        }
         guard ch.uuid == BikeUUID.media else { return }
         MainActor.assumeIsolated { mediaWriteAcked(failed: error != nil) }
     }
