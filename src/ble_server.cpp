@@ -788,7 +788,7 @@ void foldName(const char* in, char* out, size_t cap) {
 
 void kickLink(uint16_t handle, const char* why) {
     diag::log("ble: refusing phone link (%s) — the device is paired with "
-              "another phone; unpair it in Settings > Phone", why);
+              "another phone; unpair it in Paired Devices > Phone", why);
     NimBLEDevice::getServer()->disconnect(handle, BLE_ERR_AUTH_FAIL);
 }
 
@@ -1296,7 +1296,7 @@ class ServerCb : public NimBLEServerCallbacks {
         recountPhoneBonds();
         if (newPairing)
             diag::log("ble: paired with phone %s — only this phone can connect "
-                      "now (unpair: Settings > Phone)",
+                      "now (unpair: Paired Devices > Phone)",
                       info.getIdAddress().toString().c_str());
         diag::log("phone connected: admitted (%s)", newPairing ? "new pairing" : "bonded");
     }

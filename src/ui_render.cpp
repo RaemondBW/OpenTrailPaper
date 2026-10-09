@@ -1470,27 +1470,30 @@ void ui_render_menu(const MenuInfo& m, uint8_t* fb) {
                  m.gpsReady ? "GPS ready" : "waiting for GPS", n,
                  n == 1 ? "" : "s");
     }
-    if (m.radar)
-        snprintf(sensorSub, sizeof(sensorSub), "HR %s · PWR %s · CAD %s · RDR OK",
-                 m.hr ? "OK" : "--", m.pwr ? "OK" : "--", m.cad ? "OK" : "--");
-    else
-        snprintf(sensorSub, sizeof(sensorSub), "HR %s · Power %s · Cadence %s",
-                 m.hr ? "OK" : "--", m.pwr ? "OK" : "--", m.cad ? "OK" : "--");
+    // PAIRED DEVICES: the phone this device belongs to (fixed pairing) and
+    // how many sensors are live. The per-sensor HR/Power/Cadence breakdown no
+    // longer fits beside the phone, and the page itself lists each one.
+    {
+        const int ns = (m.hr ? 1 : 0) + (m.pwr ? 1 : 0) + (m.cad ? 1 : 0) +
+                       (m.radar ? 1 : 0);
+        char phone[48];
+        if (m.phonePaired)
+            snprintf(phone, sizeof(phone), "Phone: %s",
+                     m.phoneName[0] ? m.phoneName : "paired");
+        else
+            snprintf(phone, sizeof(phone), "No phone paired");
+        snprintf(sensorSub, sizeof(sensorSub), "%s · %d sensor%s", phone, ns,
+                 ns == 1 ? "" : "s");
+    }
     if (m.sdOk) snprintf(historySub, sizeof(historySub), "%d ride%s on card",
                          m.rideCount, m.rideCount == 1 ? "" : "s");
     else snprintf(historySub, sizeof(historySub), "no SD card");
-    // Pairing status lives here too: the menu is where a rider looks to see
-    // whether the phone is "theirs" without opening anything.
-    if (m.phonePaired)
-        snprintf(settingsSub, sizeof(settingsSub), "Paired: %s",
-                 m.phoneName[0] ? m.phoneName : "phone");
-    else
-        snprintf(settingsSub, sizeof(settingsSub), "No phone paired · FTP · timezone");
+    snprintf(settingsSub, sizeof(settingsSub), "FTP · timezone");
 
     const Row rows[kMenuRowCount] = {
         {m.recording ? "Stop Ride" : "Start Ride", startSub, true},
         {"Navigate", m.routeLine, false},
-        {"Sensors", sensorSub, false},
+        {"Paired Devices", sensorSub, false},
         {"Ride History", historySub, false},
         {"Settings", settingsSub, false},
     };
@@ -1754,27 +1757,10 @@ void ui_render_settings(const SettingsInfo& si, uint8_t* fb) {
     // stretching the row to fill it made a single tappable line as tall as two
     // settings rows, with its text stranded at the top. The page just ends
     // instead; rows are a fixed height in this system.
-    //
-    // The row carries TWO nav cells: PHONE (fixed pairing) and GPS DEBUG. The
-    // page has no height left for a ninth row (see DENSE_ROW_H), and both are
-    // "go somewhere" cells with a word and a status line, which half a row
-    // holds. A vertical rule splits them at kSettingsNavSplitX.
     const int ny = kMenuRowTop + kSettingsGpsRow * kSettingsRowH;
-    const int lx = ui::CONTENT_X + ui::CELL_PAD;
-    const int rx = kSettingsNavSplitX + ui::CELL_PAD;
-    const int cellTextW = kSettingsNavSplitX - ui::CONTENT_X - 2 * ui::CELL_PAD;
-    char phoneSub[40];
-    if (si.phonePaired)
-        fitText(&Arial_B, si.phoneName[0] ? si.phoneName : "Paired", cellTextW,
-                phoneSub, sizeof(phoneSub));
-    else
-        fitText(&Arial_B, "Not paired", cellTextW, phoneSub, sizeof(phoneSub));
-    ui::text(&Impact_T, lx, ny + 40, "PHONE", fb);
-    ui::text(&Arial_B, lx, ny + 72, phoneSub, fb, EPD_DRAW_ALIGN_LEFT, ui::INK);
-    ui::text(&Impact_T, rx, ny + 40, "GPS DEBUG", fb);
-    ui::text(&Arial_B, rx, ny + 72, "Receiver", fb, EPD_DRAW_ALIGN_LEFT, ui::INK);
-    epd_fill_rect({kSettingsNavSplitX - ui::RULE / 2, ny + ui::STEP, ui::RULE,
-                   kSettingsRowH - 2 * ui::STEP}, ui::INK, fb);
+    ui::text(&Impact_T, ui::CONTENT_X + ui::CELL_PAD, ny + 40, "GPS DEBUG", fb);
+    ui::text(&Arial_B, ui::CONTENT_X + ui::CELL_PAD, ny + 72,
+             "Receiver diagnostics", fb, EPD_DRAW_ALIGN_LEFT, ui::INK);
     epd_fill_rect({0, ny + kSettingsRowH - ui::RULE, W, ui::RULE}, ui::INK, fb);
 }
 

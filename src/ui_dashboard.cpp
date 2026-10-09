@@ -867,10 +867,15 @@ void handleTap(int x, int y) {
             break;
         }
         case SCREEN_SENSORS: {
+            // PAIRED DEVICES: row 0 is the phone (fixed pairing), the sensor
+            // candidates follow it.
             int row = (y - kMenuRowTop) / kMenuRowH;
-            if (y >= kMenuRowTop && row >= 0 && row < sensorCandCount &&
-                row < kMenuRowCount) {
-                ble_sensors::pairCandidate(sensorCands[row].addr);
+            if (y >= kMenuRowTop && row == 0) {
+                sheetKind = SHEET_UNPAIR;   // UNPAIR PHONE? / NOT PAIRED
+                powerOverlay = true;
+            } else if (y >= kMenuRowTop && row >= 1 && row - 1 < sensorCandCount &&
+                       row < kMenuRowCount) {
+                ble_sensors::pairCandidate(sensorCands[row - 1].addr);
             } else {
                 leaveList();
             }
@@ -960,13 +965,7 @@ void handleTap(int x, int y) {
                 });
                 ble_server::pushSettingsToPhone();   // mirror the edit to the app
             } else if (y >= kMenuRowTop && row == kSettingsGpsRow) {
-                // Two nav cells share the row: PHONE left, GPS DEBUG right.
-                if (x < kSettingsNavSplitX) {
-                    sheetKind = SHEET_UNPAIR;
-                    powerOverlay = true;
-                } else {
-                    screen = SCREEN_GPSDEBUG;
-                }
+                screen = SCREEN_GPSDEBUG;
             }
             // Anything else on this screen does NOTHING. Settings is the one
             // place where a stray touch used to navigate away mid-edit — reach
@@ -1231,13 +1230,33 @@ void renderListScreen(uint8_t* fb) {
 
     switch (screen) {
         case SCREEN_SENSORS: {
-            title = "SENSORS";
+            title = "PAIRED DEVICES";
             footer = "tap a sensor to pair it · scanning...";
+            // Row 0: the phone this device belongs to (fixed pairing, see
+            // ble_server.cpp). Same row recipe as a sensor: name as the title,
+            // status first in the subtitle, inverted while connected. Tapping
+            // it opens the UNPAIR PHONE? / NOT PAIRED sheet.
+            {
+                const bool paired = ble_server::phonePaired();
+                const char* name = ble_server::pairedPhoneName();
+                snprintf(rows[0].title, sizeof(rows[0].title), "%s",
+                         paired && name[0] ? name : "Phone");
+                if (!paired)
+                    snprintf(rows[0].subtitle, sizeof(rows[0].subtitle),
+                             "Not paired · open the app to pair");
+                else if (ble_server::isPhoneConnected())
+                    snprintf(rows[0].subtitle, sizeof(rows[0].subtitle),
+                             "Connected · Phone · tap to unpair");
+                else
+                    snprintf(rows[0].subtitle, sizeof(rows[0].subtitle),
+                             "Paired · Phone · tap to unpair");
+                rows[0].inverted = paired && ble_server::isPhoneConnected();
+            }
             sensorCandCount = ble_sensors::getCandidates(sensorCands, 8);
-            count = sensorCandCount < kMenuRowCount ? sensorCandCount
-                                                    : kMenuRowCount;
-            for (int i = 0; i < count; ++i) {
-                auto& c = sensorCands[i];
+            count = 1 + (sensorCandCount < kMenuRowCount - 1 ? sensorCandCount
+                                                             : kMenuRowCount - 1);
+            for (int i = 1; i < count; ++i) {
+                auto& c = sensorCands[i - 1];
                 snprintf(rows[i].title, sizeof(rows[i].title), "%s",
                          c.name[0] ? c.name : c.addr);
                 // Status FIRST (short kind label second) so the important word
@@ -2893,7 +2912,7 @@ void task(void*) {
                 case SCREEN_DIRECTIONS:
                     renderListScreen(fb);
                     ui::statusBar(s, fb,
-                                  screen == SCREEN_SENSORS    ? "SENSORS"
+                                  screen == SCREEN_SENSORS    ? "PAIRED DEVICES"
                                   : screen == SCREEN_ROUTES   ? "NAVIGATE"
                                   : screen == SCREEN_HISTORY  ? "RIDES"
                                                               : "DIRECTIONS");
@@ -2911,9 +2930,6 @@ void task(void*) {
                                     settings::backlight(), settings::useMiles(),
                                     settings::usbDrive(),
                                     mesh_service::enabled()};
-                    si.phonePaired = ble_server::phonePaired();
-                    snprintf(si.phoneName, sizeof(si.phoneName), "%s",
-                             ble_server::pairedPhoneName());
                     ui_render_settings(si, fb);
                     ui::statusBar(s, fb, "SETTINGS");
                     break;

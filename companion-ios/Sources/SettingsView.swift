@@ -7,7 +7,7 @@ enum PairingCopy {
     static let iosForgetSteps =
         "On this iPhone: Settings › Bluetooth › tap \u{24D8} next to \u{201C}OpenTrailPaper\u{201D} › Forget This Device."
     static let deviceUnpairSteps =
-        "On the device: Menu › Settings › Phone › Unpair."
+        "On the device: Menu › Paired Devices › Phone › Unpair."
 
     static func title(_ issue: BLEManager.PairingIssue) -> String {
         switch issue {
@@ -26,7 +26,7 @@ enum PairingCopy {
     }
 
     static let forgetMessage =
-        "The app stops connecting to this device and looks for one to pair with.\n\nTo pair the device with a different phone, also unpair it on the device (Menu › Settings › Phone › Unpair). To pair this iPhone again later, first remove the old pairing: \(iosForgetSteps)"
+        "The app stops connecting to this device and looks for one to pair with.\n\nTo pair the device with a different phone, also unpair it on the device (Menu › Paired Devices › Phone › Unpair). To pair this iPhone again later, first remove the old pairing: \(iosForgetSteps)"
 }
 
 // Edit device settings (FTP, timezone) and push them over BLE.
@@ -202,7 +202,7 @@ struct SettingsView: View {
                         Text(ble.state == .connected ? "Connected" : "Not connected")
                             .font(.system(size: 12)).foregroundStyle(Palette.muted)
                     }
-                    Text("The app only connects to this device, and the device only accepts this iPhone until it is unpaired on the device (Menu › Settings › Phone).")
+                    Text("The app only connects to this device, and the device only accepts this iPhone until it is unpaired on the device (Menu › Paired Devices › Phone).")
                         .font(.system(size: 12)).foregroundStyle(Palette.muted)
                     Button(role: .destructive) { confirmForget = true } label: {
                         Text("Forget This Device")

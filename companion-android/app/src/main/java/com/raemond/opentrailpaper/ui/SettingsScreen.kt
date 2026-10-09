@@ -352,7 +352,7 @@ private fun PairedDeviceCard(ble: BleManager, connected: Boolean, onForget: () -
             Spacer(Modifier.size(6.dp))
             Text(
                 "The app only connects to this device, and the device only accepts this " +
-                    "phone until it is unpaired on the device (Menu › Settings › Phone).",
+                    "phone until it is unpaired on the device (Menu › Paired Devices › Phone).",
                 style = barlow(12.sp),
                 color = Palette.muted,
             )
@@ -381,7 +381,7 @@ private fun PairedDeviceCard(ble: BleManager, connected: Boolean, onForget: () -
 
 /** Words for fixed pairing (firmware ble_server.cpp). */
 object PairingCopy {
-    const val DEVICE_UNPAIR_STEPS = "On the device: Menu › Settings › Phone › Unpair."
+    const val DEVICE_UNPAIR_STEPS = "On the device: Menu › Paired Devices › Phone › Unpair."
 
     fun title(issue: BleManager.PairingIssue): String = when (issue) {
         BleManager.PairingIssue.PAIRED_ELSEWHERE -> "Paired with another phone"
@@ -403,7 +403,7 @@ object PairingCopy {
     const val FORGET_MESSAGE =
         "The app stops connecting to this device, removes this phone's Bluetooth pairing " +
             "with it, and looks for a device to pair with.\n\nTo pair the device with a " +
-            "different phone, also unpair it on the device: Menu › Settings › Phone › Unpair."
+            "different phone, also unpair it on the device: Menu › Paired Devices › Phone › Unpair."
 }
 
 /** The one pairing dialog, shown from anywhere in the app. */

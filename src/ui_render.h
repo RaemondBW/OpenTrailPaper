@@ -217,7 +217,7 @@ struct MenuInfo {
     uint32_t rideElapsedS = 0;
     bool useMiles = false;
     char routeLine[40] = "no route loaded";
-    // Fixed pairing status, on the Settings row's subtitle.
+    // Fixed pairing status, on the Paired Devices row's subtitle.
     bool phonePaired = false;
     char phoneName[32] = "";
 };
@@ -279,20 +279,11 @@ struct SettingsInfo {
     bool useMiles;   // false = km, true = miles
     bool usbDrive;   // expose the SD to a host as a USB drive
     bool meshOn;     // LoRa mesh radio powered up and listening
-    // Fixed pairing (ble_server): whether a phone owns the device, and its
-    // name ("" if not read yet). Shown in the PHONE half of the nav row.
-    bool phonePaired = false;
-    char phoneName[32] = "";
 };
 void ui_render_settings(const SettingsInfo& si, uint8_t* fb);
 
-// The last settings row is two navigation cells side by side: PHONE (pairing
-// status; opens the unpair sheet) on the left, GPS DEBUG on the right. Taps
-// split at this x.
-constexpr int kSettingsNavSplitX = 270;
-
-// "Unpair phone?" bottom sheet, the power sheet's component with different
-// words. Paired: UNPAIR (kPowerShutdown) / CANCEL (kPowerCancel). Not paired:
+// "Unpair phone?" bottom sheet (Paired Devices > phone row), the power sheet's
+// component with different words. Paired: UNPAIR (kPowerShutdown) / CANCEL (kPowerCancel). Not paired:
 // an explanation and CLOSE only (kPowerCancel). `count` > 1 only on a device
 // migrated with bonds to several phones.
 void ui_render_unpair_sheet(bool paired, const char* name, int count, uint8_t* fb);
@@ -305,8 +296,7 @@ constexpr int kContentBottom = 960 - ui::MARGIN;
 
 // Settings sub-page row hit-testing. Rows 0-2 are +/- steppers (FTP, timezone,
 // backlight — four backlight levels do not fit a switch); rows 3-6 are toggle
-// switches (units, USB drive, show offline, mesh); row 7 is navigation —
-// PHONE | GPS DEBUG, split at kSettingsNavSplitX.
+// switches (units, USB drive, show offline, mesh); row 7 is navigation.
 // Sensors lives on the main menu, not here.
 constexpr int kSettingsBacklightRow = 2;
 constexpr int kSettingsUnitsRow = kSettingsUnitsRowIdx;
