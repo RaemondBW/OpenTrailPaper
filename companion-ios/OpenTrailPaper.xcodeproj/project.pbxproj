@@ -55,6 +55,7 @@
 		ABE6FDB260BAA3609F5C5516 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 756CD94A1C875E17A3321CC8 /* OnboardingView.swift */; };
 		B0FDE7FE636803E478340742 /* DashboardPageEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D5700252C3393AC06C9BEB9 /* DashboardPageEditorView.swift */; };
 		B1BE7F5A245A3C270036C6E2 /* algos.c in Sources */ = {isa = PBXBuildFile; fileRef = ABBED3B34B25D9BCAFA3FDB5 /* algos.c */; };
+		B7B9A2B225320284C4D52661 /* DeviceSettingsSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78C78BE2E3D4CB0B74C0CB4D /* DeviceSettingsSync.swift */; };
 		BE0814223F037C69E39B93D7 /* RidesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F897B750389038E18EE9AC09 /* RidesView.swift */; };
 		BF7FEB57C05E17549C09CF25 /* DashLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9D6BB31E96DD85DBE9B68CA /* DashLayout.swift */; };
 		C462314C3BD9E277B9F451A9 /* MapsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7C77C595BBAE5BCBD82A004 /* MapsView.swift */; };
@@ -137,6 +138,7 @@
 		73ECF60CAA9C73957BC40AC2 /* SketchIcon.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SketchIcon.swift; sourceTree = "<group>"; };
 		73EFF3E7BD60E6657DC39D2F /* AlbumArt.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlbumArt.swift; sourceTree = "<group>"; };
 		756CD94A1C875E17A3321CC8 /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
+		78C78BE2E3D4CB0B74C0CB4D /* DeviceSettingsSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceSettingsSync.swift; sourceTree = "<group>"; };
 		792C3E9270334E7AE1A24B68 /* directedEdge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = directedEdge.h; sourceTree = "<group>"; };
 		79F3F907C8247AC1B8A63959 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		79F5CE09D7F91D2DE8AECC02 /* faceijk.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = faceijk.h; sourceTree = "<group>"; };
@@ -279,6 +281,7 @@
 				A9D6BB31E96DD85DBE9B68CA /* DashLayout.swift */,
 				D66117B8CB78BBC0949D8DF3 /* demo.fit */,
 				E467F3BA417A6A968F920F77 /* DeviceMock.swift */,
+				78C78BE2E3D4CB0B74C0CB4D /* DeviceSettingsSync.swift */,
 				336612AF0918144CAB1C1FCD /* DiagnosticsView.swift */,
 				062C37A066E27E1DEC3AF253 /* EInkMapView.swift */,
 				CDD609424C1648F1D8704550 /* EInkTileStore.swift */,
@@ -514,6 +517,7 @@
 				8885B18C0FC6E6E98283CD24 /* DashboardEditorView.swift in Sources */,
 				B0FDE7FE636803E478340742 /* DashboardPageEditorView.swift in Sources */,
 				0F07C59EAB533AC46B37D7ED /* DeviceMock.swift in Sources */,
+				B7B9A2B225320284C4D52661 /* DeviceSettingsSync.swift in Sources */,
 				F71D1CFFCC25AD4A7A19D698 /* DiagnosticsView.swift in Sources */,
 				2593A42A317117DDFBAF716E /* EInkMapView.swift in Sources */,
 				D51119ACFAB6419E07143355 /* EInkTileStore.swift in Sources */,

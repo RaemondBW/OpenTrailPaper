@@ -58,6 +58,7 @@ import androidx.compose.ui.unit.sp
 import com.raemond.opentrailpaper.ble.BleManager
 import com.raemond.opentrailpaper.ble.PermissionState
 import com.raemond.opentrailpaper.data.FirmwareRelease
+import com.raemond.opentrailpaper.data.SettingField
 import com.raemond.opentrailpaper.data.SyncAccounts
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -85,6 +86,15 @@ fun SettingsScreen(ble: BleManager, host: HostActions, onShowTutorial: () -> Uni
             Text("Settings", style = TypeScale.screenTitle, color = Palette.ink)
         }
 
+        // Device settings stay editable offline (cached per device, synced on
+        // the next connect); say when something is waiting.
+        if (ble.hasPendingSync) {
+            PendingSyncHint(
+                if (connected) "Syncing with your OpenTrailPaper…" else "Will sync when connected",
+            )
+        }
+        ble.settingsSyncNote?.let { Text(it, style = barlow(12.sp), color = Palette.muted) }
+
         // Keep the firmware card visible through the reboot/disconnect of an
         // in-progress (or just-finished) update so its status doesn't vanish.
         if (connected || ble.otaInProgress ||
@@ -94,7 +104,11 @@ fun SettingsScreen(ble: BleManager, host: HostActions, onShowTutorial: () -> Uni
             FirmwareCard(ble) { confirmUpdate = true }
         }
 
-        if (connected) NavCard("Sensors", sensorSummary(ble)) { showSensors = true }
+        if (connected) {
+            NavCard("Sensors", sensorSummary(ble)) { showSensors = true }
+        } else {
+            ConnectOnlyCard()
+        }
 
         // Not gated on the connection, unlike sensors: picking an area and
         // fetching OSM works offline, and the Maps screen only needs the link for
@@ -113,7 +127,8 @@ fun SettingsScreen(ble: BleManager, host: HostActions, onShowTutorial: () -> Uni
             )
         }
 
-        if (connected) {
+        // Shown offline too; hidden only for firmware known to lack them.
+        if (ble.supportsSetting(SettingField.CLOCK_24H)) {
             Card {
                 TrackedLabel("Clock")
                 Spacer(Modifier.size(10.dp))
@@ -123,7 +138,9 @@ fun SettingsScreen(ble: BleManager, host: HostActions, onShowTutorial: () -> Uni
                     onSelect = { ble.updateClock24h(it == 0) },
                 )
             }
+        }
 
+        if (ble.supportsSetting(SettingField.USB_DRIVE)) {
             Card {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     TrackedLabel("USB drive", Modifier.weight(1f))
@@ -175,7 +192,6 @@ fun SettingsScreen(ble: BleManager, host: HostActions, onShowTutorial: () -> Uni
             Segmented(
                 options = listOf("Off", "Low", "Med", "Bright"),
                 selected = ble.backlight.coerceIn(0, 3),
-                enabled = connected,
                 onSelect = { ble.updateBacklight(it) },
             )
         }
@@ -188,10 +204,12 @@ fun SettingsScreen(ble: BleManager, host: HostActions, onShowTutorial: () -> Uni
         }
 
         Text(
-            if (connected) {
-                "Settings sync automatically with your OpenTrailPaper, both ways."
-            } else {
-                "Connect to sync settings with your OpenTrailPaper."
+            when {
+                connected -> "Settings sync automatically with your OpenTrailPaper, both ways."
+                ble.settingsCache.device == null ->
+                    "Changes you make here are sent to your OpenTrailPaper when it first connects."
+                else -> "Showing your OpenTrailPaper's settings from the last connection. " +
+                    "Changes sync when it reconnects."
             },
             style = barlow(13.sp),
             color = Palette.muted,
@@ -233,6 +251,24 @@ fun SettingsScreen(ble: BleManager, host: HostActions, onShowTutorial: () -> Uni
 }
 
 // MARK: cards
+
+/**
+ * What needs the device's live answer and so waits for a connection: sensor
+ * scan/pairing, firmware updates and logs. (Mesh/LoRa says the same on its tab.)
+ */
+@Composable
+private fun ConnectOnlyCard() {
+    Card {
+        Text("Connect to your OpenTrailPaper", style = barlow(15.sp, FontWeight.SemiBold),
+            color = Palette.ink)
+        Text(
+            "for sensors, firmware updates and diagnostic logs. The settings below work " +
+                "offline and sync when it connects.",
+            style = barlow(12.sp),
+            color = Palette.muted,
+        )
+    }
+}
 
 /**
  * Strava / RideWithGPS. Connect opens the provider's consent page in a Custom

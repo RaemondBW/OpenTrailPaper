@@ -42,6 +42,17 @@ struct BikeGPSCompanionApp: App {
                 } message: {
                     Text("Your iPhone remembers an old pairing for the head unit, so connections keep failing.\n\nGo to Settings \u{2192} Bluetooth, tap \u{24D8} next to \u{201C}OpenTrailPaper\u{201D}, choose Forget This Device — then come back and reconnect.")
                 }
+                // The dashboard was edited in the app while disconnected AND
+                // changed on the device meanwhile: never overwrite either
+                // silently. App-wide, since the reconnect can happen anywhere.
+                .alert("Dashboard changed in both places",
+                       isPresented: Binding(get: { ble.dashConflict != nil }, set: { _ in }),
+                       presenting: ble.dashConflict) { _ in
+                    Button("Keep phone version") { ble.resolveDashConflict(keepPhone: true) }
+                    Button("Keep device version") { ble.resolveDashConflict(keepPhone: false) }
+                } message: { c in
+                    Text("You edited the dashboard layout in the app while your OpenTrailPaper was away (\(c.editedAt.formatted(date: .abbreviated, time: .shortened))), and the layout on the device has changed since. Which one should both keep?")
+                }
         }
         // Coming back from the Settings app is the one way a permission changes
         // without either framework telling us, and it's exactly the path our own

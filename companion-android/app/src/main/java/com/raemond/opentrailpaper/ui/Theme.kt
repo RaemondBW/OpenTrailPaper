@@ -9,6 +9,9 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -95,6 +98,27 @@ fun TrackedLabel(text: String, modifier: Modifier = Modifier, color: Color = Pal
         style = TypeScale.label.copy(letterSpacing = 1.2.sp),
         color = color,
     )
+}
+
+/** Small "Will sync when connected" chip for settings changed in the app that
+ *  the device hasn't taken yet. */
+@Composable
+fun PendingSyncHint(text: String, modifier: Modifier = Modifier) {
+    Row(modifier.fillMaxWidth()) {
+        Row(
+            Modifier
+                .background(Palette.accentWash, RoundedCornerShape(50))
+                .padding(horizontal = 10.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Filled.Sync, contentDescription = null,
+                tint = Palette.accentDark,
+                modifier = Modifier.padding(end = 6.dp).size(14.dp),
+            )
+            Text(text, style = barlow(12.sp, FontWeight.SemiBold), color = Palette.accentDark)
+        }
+    }
 }
 
 /** A soft content card — the mockup's rounded, hairline-bordered surface. */
