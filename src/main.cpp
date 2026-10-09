@@ -33,6 +33,8 @@
 #include "diag.h"
 #include "crash_report.h"
 #include "memfault_service.h"
+
+static TaskHandle_t g_uiTask = nullptr;   // for the stack high-water log
 #include <esp_sleep.h>
 #include <driver/gpio.h>
 #include <soc/rtc_cntl_reg.h>
@@ -71,6 +73,7 @@
 // ---------------------------------------------------------------------------
 #include <esp_heap_caps.h>
 #include <esp_vfs.h>
+
 
 static ssize_t cdcConsoleWrite(int, const void* data, size_t size) {
     return Serial.write((const uint8_t*)data, size);
@@ -653,13 +656,24 @@ void setup() {
     if (meshOk)
         xTaskCreatePinnedToCore(mesh_service::task, "mesh", 4096, nullptr, 2,
                                 nullptr, 0);
-    xTaskCreatePinnedToCore(ui_dashboard::task, "ui", 8192, nullptr, 2, nullptr, 1);
+    // 12 KB: at 8 KB the boot path (applySdUpdate -> SD.exists -> FatFS ->
+    // SPI) ran to within 64 bytes of the end once the speed-sensor UI grew,
+    // and overflowed into a boot loop (Memfault dumps, Oct 2026). loop() logs
+    // the high-water mark so the margin is visible.
+    xTaskCreatePinnedToCore(ui_dashboard::task, "ui", 12288, nullptr, 2, &g_uiTask, 1);
 
     diag::log("boot: all tasks started");
     diag::finishBoot();
 }
 
 void loop() {
+    // Stack margin of the UI task, once after boot and then every 10 min.
+    static uint32_t nextStackLog = 60000;
+    if (g_uiTask && (int32_t)(millis() - nextStackLog) >= 0) {
+        nextStackLog = millis() + 600000;
+        diag::log("stack: ui free=%u bytes (of 12288)",
+                  (unsigned)uxTaskGetStackHighWaterMark(g_uiTask));
+    }
     usb_storage::poll();   // reclaim the SD when the host disconnects
     ride_recorder::retryMountIfNeeded();   // pick a dropped card back up
     power_mgmt::tick();    // hold light sleep off while the USB console is open
