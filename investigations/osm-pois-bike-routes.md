@@ -459,6 +459,68 @@ Android draws the same scheme (`HexOverlay` / `HexBadge`, legend and chips in
 `MapsSheet`). There was no Android emulator on the build machine, so there are
 no Android screenshots.
 
+### 2g. Map layers: the rider chooses what the device draws
+
+Each cycling layer can be switched off on its own. All are on by default.
+
+| bit | layer | when off |
+|---|---|---|
+| 0 | Bike routes | no grey route bands |
+| 1 | Cycleways & bike lanes | cycleways draw as their road/path class, lanes lose their edge dots |
+| 2 | Drinking water | no water icons |
+| 3 | Toilets | no restroom icons |
+| 4 | Repair stations | no repair-stand icons |
+| 5 | Bike shops | no bike-shop icons |
+
+I kept the six requested switches. Bundling them into fewer groups saves no
+screen space on the device (one row each fits easily) and would lose
+per-type control.
+
+**Firmware.**
+- **Storage.** `settings::mapLayers()` holds the mask in NVS (key
+  `maplayers`, default `0x3F`).
+- **Applied at render time only.** `ui_dashboard` copies the mask into
+  `MapScreenData.layers`. `map_view.cpp` then skips the route bands, the
+  cycleway style, the lane edges, and each POI type whose bit is clear.
+  Tiles are parsed, projected and cached exactly as before, so a change shows
+  on the next map frame without touching the card.
+- **On the device.** A fourth button stacked above zoom +/− on the map (a
+  "stack of sheets" glyph) opens **MAP LAYERS**: one switch row per layer,
+  each with a sample of what it draws, in the Settings page's switch style.
+  Tapping a row toggles it, and Home goes back to the map. The Settings page
+  is full (eight dense rows), and the map is where a rider decides what they
+  want on it.
+- **BLE** (map characteristic, alongside the `0x08` POI listing):
+  - `[0x09]` = get;
+  - `[0x0A][u16 mask LE]` = set;
+  - the device answers both with `[0xE0][u16 mask LE]`, and also sends that
+    unasked after an edit on its own MAP LAYERS screen.
+
+  Bits 6–15 are reserved and stored as sent. This stays out of the settings
+  payload, which PRs #109 and #116 are restructuring.
+
+**Apps (iOS + Android, same behaviour).**
+- **Where the control lives.** A layers button in the Maps screen header
+  (iOS: a round icon button; Android: a "Layers" pill) opens **Device map
+  layers**, with six switches, each with a line on what it draws. I put it on
+  the Maps screen because that is where riders think about maps, and the
+  Settings screens already carry the general device settings. One place
+  avoids two copies drifting apart.
+- **When it applies.** Changes go out immediately when connected.
+- **Cached per device** (iOS: peripheral id; Android: device address):
+  - the last mask seen, shown while disconnected;
+  - whether that device answers at all;
+  - an edit made while disconnected, sent on the next connect. Last write
+    wins over the device's value.
+
+  The offline-settings work in #116 could later absorb this.
+- **Old firmware.** It never answers `0x09`, so the button stays hidden.
+- **Scope.** The app's own hex map and legend are not affected.
+
+| device: MAP LAYERS (all on / water + repair only) | device map: all layers vs water + repair only (4 m/px) | iOS sheet |
+|---|---|---|
+| ![](img/osm-pois-bike-routes/device_map_layers.png) ![](img/osm-pois-bike-routes/device_map_layers_some_off.png) | ![](img/osm-pois-bike-routes/device_map_all_layers_mpp04.png) ![](img/osm-pois-bike-routes/device_map_water_repair_only_mpp04.png) | ![](img/osm-pois-bike-routes/ios_device_map_layers_sheet.png) |
+
 ## 3. Cost
 
 Measured on 7 H3 tiles over central San Francisco (a dense worst case: 588

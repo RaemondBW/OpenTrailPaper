@@ -48,6 +48,20 @@ object Prefs {
         get() = stamps(KEY_TILE_SENT)
         set(v) = sp.edit().putStringSet(KEY_TILE_SENT, v.map { "${it.key}=${it.value}" }.toSet()).apply()
 
+    // Device map layers, per device address (see BleManager.updateMapLayers).
+    var mapLayersByDevice: Map<String, Long>
+        get() = stamps("mapLayers")
+        set(v) = sp.edit().putStringSet("mapLayers", v.map { "${it.key}=${it.value}" }.toSet()).apply()
+    var mapLayersPending: Map<String, Long>
+        get() = stamps("mapLayersPending")
+        set(v) = sp.edit().putStringSet("mapLayersPending", v.map { "${it.key}=${it.value}" }.toSet()).apply()
+    var mapLayersSupported: Set<String>
+        get() = sp.getStringSet("mapLayersSupported", emptySet()) ?: emptySet()
+        set(v) = sp.edit().putStringSet("mapLayersSupported", v).apply()
+    var mapLayersLastDevice: String?
+        get() = sp.getString("mapLayersLastDevice", null)
+        set(v) = sp.edit().putString("mapLayersLastDevice", v).apply()
+
     private fun stamps(key: String): Map<String, Long> =
         (sp.getStringSet(key, emptySet()) ?: emptySet()).mapNotNull {
             val i = it.indexOf('=')

@@ -371,6 +371,74 @@ final class BLEManager: NSObject, ObservableObject {
     // it answers the 0x08 POI listing; older firmware never does, so this stays
     // false for the connection and nothing cycling-specific is sent to it.
     @Published var deviceSupportsPois = false
+
+    // MARK: device map layers (map characteristic 0x09 get / 0x0A set,
+    // device answers [0xE0][u16 mask]). Bits: 0 bike routes, 1 cycleways &
+    // lanes, 2 water, 3 toilets, 4 repair stations, 5 bike shops (src/map_view.h
+    // MAP_LAYER_*). Kept per device: the last mask seen, whether that device
+    // answers at all, and an edit made while disconnected (sent on the next
+    // connect; last write wins).
+    /// The device's map-layer mask as this app last knew it (live when connected).
+    @Published var mapLayers: UInt16 = 0x3F
+    /// The device (or, disconnected, the last one) has firmware with map layers.
+    @Published var mapLayersSupported = false
+    private var mapLayersCache: [String: Int] =
+        (UserDefaults.standard.dictionary(forKey: "mapLayers") as? [String: Int]) ?? [:]
+    private var mapLayersPending: [String: Int] =
+        (UserDefaults.standard.dictionary(forKey: "mapLayersPending") as? [String: Int]) ?? [:]
+    private var mapLayersSeen: [String: Bool] =
+        (UserDefaults.standard.dictionary(forKey: "mapLayersSupported") as? [String: Bool]) ?? [:]
+    private var layersDeviceKey: String? {
+        peripheral?.identifier.uuidString ?? UserDefaults.standard.string(forKey: "mapLayersLastDevice")
+    }
+    /// Show the cached state for the current (or last) device.
+    private func loadMapLayersState() {
+        guard let k = layersDeviceKey else { return }
+        UserDefaults.standard.set(k, forKey: "mapLayersLastDevice")
+        mapLayers = UInt16(truncatingIfNeeded: mapLayersPending[k] ?? mapLayersCache[k] ?? 0x3F)
+        mapLayersSupported = mapLayersSeen[k] ?? false
+    }
+    private func saveMapLayersState() {
+        UserDefaults.standard.set(mapLayersCache, forKey: "mapLayers")
+        UserDefaults.standard.set(mapLayersPending, forKey: "mapLayersPending")
+        UserDefaults.standard.set(mapLayersSeen, forKey: "mapLayersSupported")
+    }
+    /// Ask the device for its mask (sent once the map characteristic notifies).
+    func requestMapLayers() {
+        guard let c = mapChar, let p = peripheral else { return }
+        p.writeValue(Data([0x09]), for: c, type: .withResponse)
+    }
+    /// Change the device's map layers: applied now when connected, otherwise
+    /// remembered and sent on the next connect.
+    func setMapLayers(_ mask: UInt16) {
+        mapLayers = mask
+        guard let k = layersDeviceKey else { return }
+        if let c = mapChar, let p = peripheral, mapLayersSupported {
+            p.writeValue(Data([0x0A, UInt8(mask & 0xFF), UInt8(mask >> 8)]), for: c, type: .withResponse)
+            mapLayersCache[k] = Int(mask)
+            mapLayersPending[k] = nil
+        } else {
+            mapLayersPending[k] = Int(mask)
+        }
+        saveMapLayersState()
+    }
+    private func handleMapLayersNotify(_ mask: UInt16) {
+        guard let k = layersDeviceKey else { return }
+        mapLayersSupported = true
+        mapLayersSeen[k] = true
+        if let pending = mapLayersPending[k], UInt16(truncatingIfNeeded: pending) != mask,
+           let c = mapChar, let p = peripheral {
+            // An edit made while disconnected: it wins over the device's value.
+            let m = UInt16(truncatingIfNeeded: pending)
+            p.writeValue(Data([0x0A, UInt8(m & 0xFF), UInt8(m >> 8)]), for: c, type: .withResponse)
+            mapLayers = m
+        } else {
+            mapLayersPending[k] = nil
+            mapLayers = mask
+            mapLayersCache[k] = Int(mask)
+        }
+        saveMapLayersState()
+    }
     @Published var devicePoiIds: Set<String> = []    // H3 ids with a .poi on the SD
     private var poiIdsBuilding: [String] = []
     /// When this phone last sent each tile's .poi, for the refresh policy.
@@ -570,6 +638,8 @@ final class BLEManager: NSObject, ObservableObject {
         guard isDemoMaps else { return }
         state = .connected
         deviceSupportsPois = true
+        mapLayersSupported = true
+        mapLayers = 0x3F & ~0x22   // cycleways and shops off, to show both states
         deviceTileIds = Set(onDevice)
         flaggedTileIds = Set(current)
         devicePoiIds = Set(withPois)
@@ -594,6 +664,7 @@ final class BLEManager: NSObject, ObservableObject {
         if let saved = UserDefaults.standard.stringArray(forKey: Self.tileCacheKey) {
             deviceTileIds = Set(saved)
         }
+        loadMapLayersState()   // last device's map layers, for the Maps screen while disconnected
         // Returning users get Bluetooth up immediately so the device auto-
         // connects. First-run users create the central when they tap "Enable
         // Bluetooth" in onboarding, so the system prompt lands on that screen.
@@ -1391,6 +1462,8 @@ final class BLEManager: NSObject, ObservableObject {
         case 0xD5:                                               // poi-list end
             devicePoiIds = Set(poiIdsBuilding)
             deviceSupportsPois = true
+        case 0xE0 where d.count >= 3:                            // map-layer mask
+            handleMapLayersNotify(UInt16(d[1]) | (UInt16(d[2]) << 8))
         case 0xC0: deviceMapsBuilding = []                        // map-list begin
         case 0xC1 where d.count >= 34:                            // entry: 4×f64 + flag
             func f64(_ i: Int) -> Double {
@@ -2445,6 +2518,7 @@ extension BLEManager: CBPeripheralDelegate {
                     sensorsChar = ch; p.setNotifyValue(true, for: ch)
                 case BikeUUID.map:
                     mapChar = ch; p.setNotifyValue(true, for: ch)
+                    loadMapLayersState()
                 case BikeUUID.mesh:
                     meshChar = ch; p.setNotifyValue(true, for: ch)
                 case BikeUUID.workout:
@@ -2474,6 +2548,9 @@ extension BLEManager: CBPeripheralDelegate {
             // notification, so asking before notifications are on throws the
             // reply away and the Messages tab sits empty until it is opened.
             if ch.uuid == BikeUUID.mesh { refreshMesh() }
+            // Map layers: firmware without them never answers, which is what
+            // keeps the app's switches hidden for it.
+            if ch.uuid == BikeUUID.map { requestMapLayers() }
             if ch.uuid == BikeUUID.workout { refreshWorkouts() }
             // Which art format the device takes (and whether it forwards AMS
             // tracks); the answer is a notification.

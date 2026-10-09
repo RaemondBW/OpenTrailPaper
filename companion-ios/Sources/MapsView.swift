@@ -62,6 +62,7 @@ struct MapsView: View {
     @State private var downloadTotal = 0            // hexes targeted this run
     @State private var downloadTask: Task<Void, Never>?
     @State private var confirmRedownload = false
+    @State private var showLayers = false
     /// Measured height of the floating card, so the map can inset for whatever
     /// the card currently is — the hint, a selection summary and a send progress
     /// card are very different heights, and this screen swaps between them.
@@ -221,12 +222,18 @@ struct MapsView: View {
                                  withPois: dev.enumerated().filter { $0.offset % 3 != 2 }.map(\.element))
                     didFrameCoverage = false
                     fitDownloadedHexes()
-                    if !ProcessInfo.processInfo.arguments.contains("-demo-maps-coverage") {
+                    if ProcessInfo.processInfo.arguments.contains("-demo-maps-layers") {
+                        showLayers = true
+                    } else if !ProcessInfo.processInfo.arguments.contains("-demo-maps-coverage") {
                         let b = (s: 37.69, w: -122.47, n: 37.77, e: -122.38)
                         box = b
                         tiles = H3Tiles.coveringTiles(south: b.s, west: b.w, north: b.n, east: b.e)
                     }
                 }
+            }
+            .sheet(isPresented: $showLayers) {
+                DeviceMapLayersSheet().environmentObject(ble)
+                    .presentationDetents([.large])
             }
             .alert("Redownload \(onDeviceCount) hexes?", isPresented: $confirmRedownload) {
                 Button("Cancel", role: .cancel) {}
@@ -329,6 +336,19 @@ struct MapsView: View {
                 .background(Palette.surface).clipShape(Capsule())
                 .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))
             Spacer()
+            // The DEVICE's map layers (what the head unit draws), not this
+            // screen's. Hidden for firmware that cannot switch them.
+            if ble.mapLayersSupported {
+                Button { showLayers = true } label: {
+                    Image(systemName: "square.3.layers.3d")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(Palette.accent)
+                        .frame(width: 40, height: 40)
+                        .background(Palette.surface).clipShape(Circle())
+                        .overlay(Circle().strokeBorder(Palette.hairline, lineWidth: 1))
+                }
+                .accessibilityLabel("Device map layers")
+            }
             Button(drawMode ? "Cancel" : "Select area") {
                 box = nil; tiles = []; excluded = []; converted = []; dragStart = nil; dragEnd = nil
                 drawMode.toggle()
@@ -852,5 +872,54 @@ private struct TileInspectorSheet: View {
             }
         }
         .presentationDetents([.medium])
+    }
+}
+
+/// The switches for what the DEVICE's map draws — bike-route bands, cycleways
+/// and lanes, and each POI type. Applied as soon as they change when the
+/// device is connected; otherwise shown as last known and sent on reconnect.
+struct DeviceMapLayersSheet: View {
+    @EnvironmentObject var ble: BLEManager
+
+    private static let rows: [(bit: UInt16, title: String, detail: String, icon: String)] = [
+        (0x01, "Bike routes", "Grey bands along signed bike routes", "point.topleft.down.to.point.bottomright.curvepath"),
+        (0x02, "Cycleways & bike lanes", "Dashed cycleways, dotted lane edges", "bicycle"),
+        (0x04, "Drinking water", "Water drop icons", "drop.fill"),
+        (0x08, "Toilets", "Restroom icons", "figure.stand.dress.line.vertical.figure"),
+        (0x10, "Repair stations", "Self-service repair stands", "wrench.adjustable.fill"),
+        (0x20, "Bike shops", "Bicycle shop icons", "storefront"),
+    ]
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    ForEach(Self.rows, id: \.bit) { row in
+                        Toggle(isOn: Binding(
+                            get: { ble.mapLayers & row.bit != 0 },
+                            set: { on in ble.setMapLayers(on ? ble.mapLayers | row.bit
+                                                              : ble.mapLayers & ~row.bit) })) {
+                            Label {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(row.title).font(BarlowFont.text(16, .semibold))
+                                    Text(row.detail).font(BarlowFont.text(12)).foregroundStyle(Palette.muted)
+                                }
+                            } icon: {
+                                Image(systemName: row.icon).foregroundStyle(Palette.ink)
+                            }
+                        }
+                        .tint(Palette.accent)
+                    }
+                } footer: {
+                    Text(ble.canUploadMap
+                         ? "What the device's map shows. Layers only appear where the downloaded hexes include them."
+                         : "Not connected — showing the last known setting. Changes are sent the next time the device connects.")
+                }
+            }
+            .scrollContentBackground(.hidden)
+            .background(Palette.paper)
+            .navigationTitle("Device map layers")
+            .navigationBarTitleDisplayMode(.inline)
+        }
     }
 }

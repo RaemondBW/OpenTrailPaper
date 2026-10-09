@@ -681,6 +681,17 @@ int main(int argc, char** argv) {
     ui::statusBar(s, fb.data(), "SETTINGS");
     emit("settings.png");
 
+    // MAP LAYERS (from the layers button on the map): everything on, and a
+    // rider who keeps water + repair only.
+    clearWhite(fb.data());
+    ui_render_map_layers(MAP_LAYERS_ALL, fb.data());
+    ui::statusBar(s, fb.data(), "MAP LAYERS");
+    emit("map_layers.png");
+    clearWhite(fb.data());
+    ui_render_map_layers(MAP_LAYER_WATER | MAP_LAYER_REPAIR, fb.data());
+    ui::statusBar(s, fb.data(), "MAP LAYERS");
+    emit("map_layers_some_off.png");
+
     // GPS debug: the "sees satellites but no fix" case
     GpsDebugView g = {};
     g.moduleDetected = true;

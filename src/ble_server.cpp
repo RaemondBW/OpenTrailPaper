@@ -1332,6 +1332,13 @@ class OtaCb : public NimBLECharacteristicCallbacks {
 //           [0x02]<bytes>  data        [0x03] end     [0x04] abort
 //           [0x05]  list whole-map coverage    [0x07]  list H3 tile ids
 //           [0x08]  list H3 ids that have a cycling-POI file (<id>.poi)
+//           [0x09]  get map layers   [0x0A][u16 mask]  set map layers
+//   map-layers reply: [0xE0][u16 mask LE] — to 0x09, to 0x0A (the mask now in
+//   force), and unasked after an edit on the device. Bits: MAP_LAYER_* in
+//   map_view.h (0 bike routes, 1 cycleways & lanes, 2 water, 3 toilets,
+//   4 repair, 5 bike shops). Firmware without layers never answers, which is
+//   how the app knows to hide its switches. Kept OUT of the settings payload
+//   on purpose: this is self-describing and needs no payload version.
 //   device notifies: [0xB0] ready, [0xB1] saved, [0xB4][u32 received], [0xBF][err]
 //   tile-list reply: [0xD0] begin, [0xD1]<h3id chars> per tile, [0xD2] end
 //   poi-list reply:  [0xD3] begin, [0xD4]<h3id chars> per tile, [0xD5] end
@@ -1347,6 +1354,7 @@ volatile bool mapIsTile = false;         // staged buffer is an H3 tile, not a w
 volatile bool mapListReq = false;
 volatile bool tileListReq = false;
 volatile bool poiListReq = false;
+volatile bool mapLayersNotify = false;   // send [0xE0][mask] from the server task
 uint32_t mapStartMs = 0, mapLastProgress = 0;
 
 void mapNotify(const uint8_t* d, size_t n) {
@@ -1429,6 +1437,15 @@ class MapCb : public NimBLECharacteristicCallbacks {
             break;
         case 0x08:                                // list H3 ids with a .poi
             poiListReq = true;
+            break;
+        case 0x09:                                // get map layers
+            mapLayersNotify = true;
+            break;
+        case 0x0A:                                // set map layers
+            if (n >= 3) {
+                settings::setMapLayers((uint16_t)(p[1] | (p[2] << 8)));
+                mapLayersNotify = true;           // echo what is now in force
+            }
             break;
         }
     }
@@ -2176,6 +2193,7 @@ void begin() {
 }
 
 void pushSettingsToPhone() { settingsDirty = true; }
+void pushMapLayersToPhone() { mapLayersNotify = true; }
 void reportInterval() { intervalReportPending = true; }
 void requestFastInterval() { noteBulk(); intervalReportPending = true; }
 
@@ -2316,6 +2334,12 @@ void task(void*) {
         if (poiListReq && sdFree) {
             poiListReq = false;          // which tiles already have their POIs
             sendTileList(true);
+        }
+        if (mapLayersNotify && mapChr) {
+            mapLayersNotify = false;
+            const uint16_t m = settings::mapLayers();
+            uint8_t pkt[3] = {0xE0, (uint8_t)(m & 0xFF), (uint8_t)(m >> 8)};
+            sendChunk(mapChr, pkt, 3);
         }
         if (otaRebootPending) {          // OTA committed — reboot into new image
             vTaskDelay(pdMS_TO_TICKS(1500));   // let the success notify flush

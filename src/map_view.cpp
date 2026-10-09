@@ -397,6 +397,16 @@ void drawPoiIcon(const MapPoi& p, uint8_t* fb) {
 // Icons in priority order with greedy collision culling: a repair stand beats a
 // water point beats a toilet beats a shop for the same patch of screen, and an
 // icon that would land under the rider marker is skipped (it is drawn over it).
+uint16_t poiLayerBit(uint8_t type) {
+    switch (type) {
+        case MAP_POI_WATER: return MAP_LAYER_WATER;
+        case MAP_POI_TOILETS: return MAP_LAYER_TOILETS;
+        case MAP_POI_REPAIR: return MAP_LAYER_REPAIR;
+        case MAP_POI_BIKE_SHOP: return MAP_LAYER_BIKE_SHOPS;
+    }
+    return 0;
+}
+
 void drawPois(const MapScreenData& map, uint8_t* fb) {
     if (!map.pois || map.poiCount <= 0) return;
     static const uint8_t order[] = {MAP_POI_REPAIR, MAP_POI_WATER,
@@ -414,7 +424,7 @@ void drawPois(const MapScreenData& map, uint8_t* fb) {
     auto underChrome = [&](int x, int y) {
         const int cdx = x - kMapCompass.cx, cdy = y - compY, cr = 28 + pad;
         if (cdx * cdx + cdy * cdy < cr * cr) return true;
-        if (x > kMapZoom.zoomX - pad && y > kMapZoom.zoomInY - pad &&
+        if (x > kMapZoom.zoomX - pad && y > kMapZoom.layersY - pad &&
             y < kMapZoom.zoomOutY + kMapZoom.size + pad) return true;
         if (x < 190 + pad && y > MAP_BOTTOM - 48 - pad) return true;   // scale bar
         if (map.navBannerVisible && y < 64 + 138 + pad) return true;
@@ -424,6 +434,7 @@ void drawPois(const MapScreenData& map, uint8_t* fb) {
         for (int i = 0; i < map.poiCount && drawn < kMaxDrawn; ++i) {
             const MapPoi& p = map.pois[i];
             if (p.type != type) continue;
+            if (!(map.layers & poiLayerBit(p.type))) continue;   // rider hid it
             if (p.y < MAP_TOP + POI_R || p.y > MAP_BOTTOM - POI_R ||
                 p.x < POI_R || p.x > 540 - POI_R) continue;
             const int rdx = p.x - map.riderX, rdy = p.y - map.riderY;
@@ -510,7 +521,7 @@ void drawCompass(int cx, int cy, float northDeg, bool trackUp, uint8_t* fb) {
 
 }  // namespace
 
-const MapTouchZones kMapZoom = {540 - 78, 560, 640, 76};
+const MapTouchZones kMapZoom = {540 - 78, 560, 640, 76, 560 - 76 - 8};
 const MapCompassZone kMapCompass = {540 - 46, 64 + 48, 34};
 // Bottom edge of the turn-by-turn banner (ui_dashboard's kNavBanner is
 // {0, STATUS_H, 540, 138}); the compass drops below this while navigating.
@@ -534,6 +545,99 @@ void ui_map_draw_zoom_button(bool zoomIn, bool pressed, uint8_t* fb) {
     if (zoomIn) epd_fill_rect({cx - 2, cy - 14, 5, 28}, mark, fb);
 }
 
+// MAP LAYERS button: same box as the zoom buttons, stacked above them, with a
+// "stack of sheets" glyph — two offset outlined squares, the front one filled.
+static void drawLayersButton(uint8_t* fb) {
+    EpdRect r = {kMapZoom.zoomX, kMapZoom.layersY, kMapZoom.size, kMapZoom.size};
+    epd_fill_rect(r, 0xFF, fb);
+    epd_draw_rect(r, 0x00, fb);
+    epd_draw_rect({r.x + 1, r.y + 1, r.width - 2, r.height - 2}, 0x00, fb);
+    const int cx = r.x + r.width / 2, cy = r.y + r.height / 2;
+    // Back sheet (outline), then the front sheet offset down-left (solid).
+    for (int b = 0; b < 3; ++b)
+        epd_draw_rect({cx - 10 + b, cy - 20 + b, 30 - 2 * b, 26 - 2 * b}, 0x00, fb);
+    epd_fill_rect({cx - 20, cy - 6, 30, 26}, 0xFF, fb);
+    epd_fill_rect({cx - 18, cy - 4, 26, 22}, 0x00, fb);
+}
+
+// ---- MAP LAYERS screen -------------------------------------------------------
+
+namespace {
+struct LayerRow { uint16_t bit; const char* label; };
+const LayerRow kLayerRows[kMapLayerCount] = {
+    {MAP_LAYER_BIKE_ROUTES, "BIKE ROUTES"},
+    {MAP_LAYER_CYCLEWAYS, "CYCLEWAYS & LANES"},
+    {MAP_LAYER_WATER, "DRINKING WATER"},
+    {MAP_LAYER_TOILETS, "TOILETS"},
+    {MAP_LAYER_REPAIR, "REPAIR STATIONS"},
+    {MAP_LAYER_BIKE_SHOPS, "BIKE SHOPS"},
+};
+constexpr int kSampleCx = 24 + 16 + 30;   // CONTENT_X + CELL_PAD + half a sample
+constexpr int kLabelX = 24 + 16 + 76;     // text starts right of the sample
+
+// A sample of what the row's layer draws, in the map's own styles.
+void drawLayerSample(int row, int cx, int cy, uint8_t* fb) {
+    switch (row) {
+        case 0: {   // route band under a residential street
+            int16_t pts[4] = {(int16_t)(cx - 28), (int16_t)cy, (int16_t)(cx + 28), (int16_t)cy};
+            drawBikeBand(pts, 2, 14, fb);
+            thickSegment(cx - 28, cy, cx + 28, cy, 2, ROAD_INK, fb);
+            break;
+        }
+        case 1: {   // dashed cycleway above a road with lane dots
+            drawSegmentStyled(cx - 28, cy - 10, cx + 28, cy - 10, {2, ROAD_INK, 7, 4, false}, fb);
+            int16_t road[4] = {(int16_t)(cx - 28), (int16_t)(cy + 10), (int16_t)(cx + 28), (int16_t)(cy + 10)};
+            thickSegment(cx - 28, cy + 10, cx + 28, cy + 10, 2, ROAD_INK, fb);
+            drawBikeLaneEdges(road, 2, 2, fb);
+            break;
+        }
+        default: {
+            static const uint8_t types[] = {MAP_POI_WATER, MAP_POI_TOILETS,
+                                            MAP_POI_REPAIR, MAP_POI_BIKE_SHOP};
+            MapPoi p = {(int16_t)cx, (int16_t)cy, types[row - 2], 0};
+            drawPoiIcon(p, fb);
+            break;
+        }
+    }
+}
+}  // namespace
+
+void ui_render_map_layers(uint16_t mask, uint8_t* fb) {
+    const int W = epd_rotated_display_width();
+    for (int i = 0; i < kMapLayerCount; ++i) {
+        const int y = kMapLayersRowTop + i * kMapLayersRowH;
+        const int midY = y + kMapLayersRowH / 2;
+        drawLayerSample(i, kSampleCx, midY, fb);
+        ui::text(&Arial_B, kLabelX, midY + 8, kLayerRows[i].label, fb,
+                 EPD_DRAW_ALIGN_LEFT, 0x00);
+        ui_settings_toggle(kSettingsToggleX, midY - kSettingsToggleH / 2,
+                           kSettingsToggleW, kSettingsToggleH,
+                           (mask & kLayerRows[i].bit) != 0, fb);
+        epd_fill_rect({0, y + kMapLayersRowH - 3, W, 3}, 0x00, fb);
+    }
+    // What the switches do and do not do — so a rider who turns everything on
+    // and sees nothing knows the tiles are the missing piece, not the setting.
+    const int fy = kMapLayersRowTop + kMapLayerCount * kMapLayersRowH + 44;
+    ui::text(&Arial_L, W / 2, fy, "Shown on the map when the downloaded", fb,
+             EPD_DRAW_ALIGN_CENTER, 0x00);
+    ui::text(&Arial_L, W / 2, fy + 30, "tiles include them. Home to go back.", fb,
+             EPD_DRAW_ALIGN_CENTER, 0x00);
+}
+
+int ui_map_layers_hit(int x, int y) {
+    if (y < kMapLayersRowTop) return -1;
+    const int row = (y - kMapLayersRowTop) / kMapLayersRowH;
+    if (row < 0 || row >= kMapLayerCount) return -1;
+    // The whole row toggles: the switch is the visual, the row the target —
+    // a gloved thumb on the label should not do nothing.
+    (void)x;
+    return row;
+}
+
+uint16_t ui_map_layer_bit(int row) {
+    return (row >= 0 && row < kMapLayerCount) ? kLayerRows[row].bit : 0;
+}
+
 // Native-fb-aligned mask of the current frame's water/park fills (1 = covered).
 // Null until the first map render. Used by the ghost settle-clean.
 const uint8_t* ui_map_dither_mask() { return s_ditherMask; }
@@ -555,7 +659,7 @@ void ui_render_map_features(const MapScreenData& map, const RideState& s,
     }
     // Bike-route bands under every road, lowest network first so a national
     // route's wider band is not covered by a local one's.
-    for (int lvl = 1; lvl <= 3; ++lvl) {
+    for (int lvl = 1; lvl <= 3 && (map.layers & MAP_LAYER_BIKE_ROUTES); ++lvl) {
         const int bw = bikeBandWidth(lvl, map.metersPerPixel);
         for (int i = 0; i < map.featureCount; ++i) {
             if ((map.features[i].flags & MAP_WF_ROUTE_MASK) != lvl) continue;
@@ -574,10 +678,13 @@ void ui_render_map_features(const MapScreenData& map, const RideState& s,
         for (int i = 0; i < map.featureCount; ++i) {
             const MapPolyline& f = map.features[i];
             if (f.cls != cls) continue;
-            const bool cycleway = (f.flags & MAP_WF_CYCLEWAY) != 0 &&
+            // With the layer off, cycleways and laned roads draw in their own
+            // class's style, exactly as on a map without the flags.
+            const bool bikeInfra = (map.layers & MAP_LAYER_CYCLEWAYS) != 0;
+            const bool cycleway = bikeInfra && (f.flags & MAP_WF_CYCLEWAY) != 0 &&
                                   (cls == MAP_PATH || cls == MAP_ROAD_MINOR);
             drawPolyline(f.pts, f.pointCount, cycleway ? cyclewayStyle : st, fb);
-            if ((f.flags & MAP_WF_BIKE_LANE) && map.metersPerPixel <= 4.0f)
+            if (bikeInfra && (f.flags & MAP_WF_BIKE_LANE) && map.metersPerPixel <= 4.0f)
                 drawBikeLaneEdges(f.pts, f.pointCount, st.width, fb);
         }
     }
@@ -639,6 +746,7 @@ void ui_render_map(const MapScreenData& map, const RideState& s, uint8_t* fb) {
 
     // Zoom buttons (design 1f, right edge)
     ui_map_draw_zoom_button(true, false, fb);
+    drawLayersButton(fb);
     ui_map_draw_zoom_button(false, false, fb);
 
     // Status bar drawn after the map (epdiy has no clipping)

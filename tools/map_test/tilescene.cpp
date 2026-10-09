@@ -339,6 +339,9 @@ int main(int argc, char** argv) {
             map.trackUp = v.rot != 0;
             map.headingDeg = v.rot != 0 ? 0.0f : 37.0f;
             map.hasMap = true;
+            // MAP_LAYERS=<mask>: render with some cycling layers switched off
+            // (MAP_LAYER_* bits), as the device's MAP LAYERS screen would.
+            if (const char* ml = getenv("MAP_LAYERS")) map.layers = (uint16_t)strtol(ml, nullptr, 0);
 
             // Host timings: absolute numbers mean nothing for the ESP32, but the
             // ratio between two tile sets / renderer versions does.

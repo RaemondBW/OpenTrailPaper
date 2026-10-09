@@ -214,6 +214,7 @@ fun MapsSheet(
         onDeviceTiles.count { ble.tileNeedsUpdate(it.id) }
     }
     var confirmRedownload by remember { mutableStateOf(false) }
+    var showLayers by remember { mutableStateOf(false) }
 
     // Ask the store what to draw for the region now on screen. Coalesced along
     // with the device's tile list, which arrives tile-by-tile during an upload:
@@ -445,6 +446,12 @@ fun MapsSheet(
             ) {
                 HeaderPill("Maps", filled = false) {}
                 Spacer(Modifier.weight(1f))
+                // The DEVICE's map layers (what the head unit draws), not this
+                // screen's. Hidden for firmware that cannot switch them.
+                if (ble.mapLayersSupported) {
+                    HeaderPill("Layers", filled = false) { showLayers = true }
+                    Spacer(Modifier.size(8.dp))
+                }
                 HeaderPill(
                     if (drawMode) "Cancel" else "Select area",
                     filled = drawMode,
@@ -525,6 +532,10 @@ fun MapsSheet(
         }
     }
 
+    if (showLayers) {
+        DeviceMapLayersDialog(ble) { showLayers = false }
+    }
+
     if (confirmRedownload) {
         AlertDialog(
             onDismissRequest = { confirmRedownload = false },
@@ -551,6 +562,56 @@ fun MapsSheet(
             clipboard.setText(AnnotatedString(id))
         }) { inspected = null }
     }
+}
+
+/**
+ * The switches for what the DEVICE's map draws — bike-route bands, cycleways
+ * and lanes, and each POI type. Applied as soon as they change when the device
+ * is connected; otherwise shown as last known and sent on reconnect.
+ */
+@Composable
+private fun DeviceMapLayersDialog(ble: BleManager, onDismiss: () -> Unit) {
+    val rows = listOf(
+        Triple(0x01, "Bike routes", "Grey bands along signed bike routes"),
+        Triple(0x02, "Cycleways & bike lanes", "Dashed cycleways, dotted lane edges"),
+        Triple(0x04, "Drinking water", "Water drop icons"),
+        Triple(0x08, "Toilets", "Restroom icons"),
+        Triple(0x10, "Repair stations", "Self-service repair stands"),
+        Triple(0x20, "Bike shops", "Bicycle shop icons"),
+    )
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Device map layers") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                for ((bit, title, detail) in rows) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(title, style = barlow(16.sp, FontWeight.SemiBold), color = Palette.ink)
+                            Text(detail, style = barlow(12.sp), color = Palette.muted)
+                        }
+                        androidx.compose.material3.Switch(
+                            checked = ble.mapLayers and bit != 0,
+                            onCheckedChange = { on ->
+                                ble.updateMapLayers(if (on) ble.mapLayers or bit else ble.mapLayers and bit.inv())
+                            },
+                        )
+                    }
+                }
+                Text(
+                    if (ble.canUploadMap) {
+                        "What the device's map shows. Layers only appear where the downloaded hexes include them."
+                    } else {
+                        "Not connected — showing the last known setting. Changes are sent the next time the device connects."
+                    },
+                    style = barlow(12.sp),
+                    color = Palette.muted,
+                )
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
+        containerColor = Palette.surface,
+    )
 }
 
 @Composable

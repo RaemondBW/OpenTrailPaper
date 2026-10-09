@@ -149,6 +149,60 @@ class BleManager(private val app: Application) {
     // it answers the 0x08 POI listing; older firmware never does, so this stays
     // false for the connection and nothing cycling-specific is sent to it.
     var deviceSupportsPois by mutableStateOf(false); private set
+
+    // Device map layers (map characteristic 0x09 get / 0x0A set; the device
+    // answers [0xE0][u16 mask]). Bits: 0 bike routes, 1 cycleways & lanes,
+    // 2 water, 3 toilets, 4 repair stations, 5 bike shops (src/map_view.h
+    // MAP_LAYER_*). Kept per device: the last mask seen, whether that device
+    // answers at all, and an edit made while disconnected (sent on the next
+    // connect; last write wins).
+    /** The device's map-layer mask as this app last knew it (live when connected). */
+    var mapLayers by mutableStateOf(0x3F); private set
+    /** The device (or, disconnected, the last one) has firmware with map layers. */
+    var mapLayersSupported by mutableStateOf(false); private set
+
+    @android.annotation.SuppressLint("MissingPermission")
+    private fun layersDeviceKey(): String? = gatt?.device?.address ?: Prefs.mapLayersLastDevice
+
+    private fun loadMapLayersState() {
+        val k = layersDeviceKey() ?: return
+        Prefs.mapLayersLastDevice = k
+        mapLayers = (Prefs.mapLayersPending[k] ?: Prefs.mapLayersByDevice[k] ?: 0x3FL).toInt()
+        mapLayersSupported = k in Prefs.mapLayersSupported
+    }
+
+    /** Ask the device for its mask (sent once the map characteristic notifies). */
+    fun requestMapLayers() = writeChar(mapChar, byteArrayOf(0x09))
+
+    /** Change the device's map layers: applied now when connected, otherwise
+     *  remembered and sent on the next connect. */
+    fun updateMapLayers(mask: Int) {
+        mapLayers = mask
+        val k = layersDeviceKey() ?: return
+        if (mapChar != null && mapLayersSupported) {
+            writeChar(mapChar, byteArrayOf(0x0A, (mask and 0xFF).toByte(), ((mask shr 8) and 0xFF).toByte()))
+            Prefs.mapLayersByDevice = Prefs.mapLayersByDevice + (k to mask.toLong())
+            Prefs.mapLayersPending = Prefs.mapLayersPending - k
+        } else {
+            Prefs.mapLayersPending = Prefs.mapLayersPending + (k to mask.toLong())
+        }
+    }
+
+    private fun handleMapLayersNotify(mask: Int) {
+        val k = layersDeviceKey() ?: return
+        mapLayersSupported = true
+        Prefs.mapLayersSupported = Prefs.mapLayersSupported + k
+        val pending = Prefs.mapLayersPending[k]?.toInt()
+        if (pending != null && pending != mask && mapChar != null) {
+            // An edit made while disconnected: it wins over the device's value.
+            writeChar(mapChar, byteArrayOf(0x0A, (pending and 0xFF).toByte(), ((pending shr 8) and 0xFF).toByte()))
+            mapLayers = pending
+        } else {
+            Prefs.mapLayersPending = Prefs.mapLayersPending - k
+            mapLayers = mask
+            Prefs.mapLayersByDevice = Prefs.mapLayersByDevice + (k to mask.toLong())
+        }
+    }
     var devicePoiIds by mutableStateOf<Set<String>>(emptySet()); private set
     private var poiIdsBuilding = mutableListOf<String>()
     private var poiSentAt: Map<String, Long> = emptyMap()
@@ -409,6 +463,7 @@ class BleManager(private val app: Application) {
         deviceTileIds = Prefs.deviceTileIds
         flaggedTileIds = Prefs.flaggedTileIds
         tileSentAt = Prefs.tileSentAt
+        loadMapLayersState()   // last device's map layers, for the Maps screen while disconnected
         poiSentAt = Prefs.poiSentAt
         refreshPermissions()
         app.registerReceiver(
@@ -623,6 +678,7 @@ class BleManager(private val app: Application) {
         otaChar = service.getCharacteristic(BikeUuid.ota)
         sensorsChar = service.getCharacteristic(BikeUuid.sensors)
         mapChar = service.getCharacteristic(BikeUuid.map)
+        loadMapLayersState()
         dashChar = service.getCharacteristic(BikeUuid.dash)
         // Absent on firmware built before the mesh landed, so every mesh call
         // below no-ops rather than crashing on an older device. Same for media
@@ -660,6 +716,9 @@ class BleManager(private val app: Application) {
             // asking before the CCCD write lands throws the answer away. The tab
             // badge needs the state whether or not the Mesh screen is on top.
             BikeUuid.mesh -> refreshMesh()
+            // Map layers: firmware without them never answers, which is what
+            // keeps the app's switches hidden for it.
+            BikeUuid.map -> requestMapLayers()
             // Every workout reply is a notification too: ask only once the
             // CCCD write has landed, so the Workouts screen opens populated.
             BikeUuid.workout -> refreshWorkouts()
@@ -2415,6 +2474,10 @@ class BleManager(private val app: Application) {
             0xD5 -> {                                             // poi-list end
                 devicePoiIds = poiIdsBuilding.toSet()
                 deviceSupportsPois = true
+            }
+
+            0xE0 -> {                                             // map-layer mask
+                if (d.size >= 3) handleMapLayersNotify((d[1].toInt() and 0xFF) or ((d[2].toInt() and 0xFF) shl 8))
             }
 
             0xC0 -> deviceMapsBuilding = mutableListOf()           // map-list begin
