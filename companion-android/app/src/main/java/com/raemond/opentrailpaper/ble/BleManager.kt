@@ -326,13 +326,80 @@ class BleManager(private val app: Application) {
      * initialised in declaration order, so it is null at exactly the same point.
      * Position is the fix.
      */
+    // MARK: fixed pairing
+    //
+    // An OpenTrailPaper belongs to one phone (firmware ble_server.cpp): the
+    // first to pair owns it until the rider unpairs on the device, and any
+    // other phone is disconnected the moment it tries to pair. The app's half:
+    // remember WHICH device is ours and only connect to that one, skip devices
+    // that advertise they belong to another phone, and when a device turns us
+    // away, say why and how to fix it.
+    //
+    // Declared above `init` for the same reason as scanCallback below: init
+    // reaches startScan(), which reads all of these.
+
+    enum class PairingIssue { PAIRED_ELSEWHERE, NOT_RECOGNISED }
+
+    /** Why the device won't have us — drives the one pairing dialog. */
+    var pairingIssue by mutableStateOf<PairingIssue?>(null)
+
+    /** MAC of OUR device, set once it has delivered data over a bonded link. */
+    var pairedDeviceAddress by mutableStateOf(Prefs.pairedDeviceAddress); private set
+    var pairedDeviceName by mutableStateOf(Prefs.pairedDeviceName); private set
+
+    /** Devices that turned us away (or were forgotten) this session. */
+    private val rejectedAddresses = mutableSetOf<String>()
+    /**
+     * Paired-to-someone devices seen while looking for a first device. If
+     * nothing unpaired shows up we try ONE of them: after a reinstall the app
+     * has forgotten the device but Android may still hold the bond, and then
+     * the device lets us straight in.
+     */
+    private val pairedElsewhereSeen = LinkedHashMap<String, BluetoothDevice>()
+    private var fallbackJob: Job? = null
+    private var onFallbackAttempt = false
+    private var forgetting = false
+    /** Connections in a row that ended before the device sent any status. */
+    private var barrenConnects = 0
+    /** Waiting for Android to finish bonding before the GATT session starts. */
+    private var awaitingBond: BluetoothGatt? = null
+
+    private val bondReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action != BluetoothDevice.ACTION_BOND_STATE_CHANGED) return
+            val dev: BluetoothDevice? = if (Build.VERSION.SDK_INT >= 33) {
+                intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+            } else {
+                @Suppress("DEPRECATION")
+                intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+            }
+            val bond = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.ERROR)
+            main.post { onBondStateChanged(dev?.address, bond) }
+        }
+    }
+
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
+            val pairedFlag = advertisesPaired(result.scanRecord?.getManufacturerSpecificData(0xFFFF))
             main.post {
-                if (gatt == null) {
-                    stopScan()
-                    connect(result.device)
+                if (gatt != null) return@post
+                val dev = result.device
+                val saved = pairedDeviceAddress
+                if (saved != null) {
+                    // Fixed pairing: ours or nothing.
+                    if (!dev.address.equals(saved, ignoreCase = true)) return@post
+                } else {
+                    if (dev.address in rejectedAddresses) return@post
+                    // Paired to someone — unless that someone is this phone
+                    // (Android still holds the bond, e.g. after a reinstall).
+                    if (pairedFlag == true && dev.bondState != BluetoothDevice.BOND_BONDED) {
+                        pairedElsewhereSeen[dev.address] = dev
+                        return@post
+                    }
                 }
+                fallbackJob?.cancel()
+                stopScan()
+                connect(dev)
             }
         }
 
@@ -352,6 +419,10 @@ class BleManager(private val app: Application) {
         app.registerReceiver(
             adapterReceiver,
             IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED),
+        )
+        app.registerReceiver(
+            bondReceiver,
+            IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED),
         )
         // Returning users get Bluetooth up immediately so the device auto-
         // connects. First-run users start it from the tutorial's Bluetooth step,
@@ -431,6 +502,18 @@ class BleManager(private val app: Application) {
         val scanner = adapter?.bluetoothLeScanner ?: return
         if (!bluetoothPermission.isGranted || adapter?.isEnabled != true) return
         if (scanning || gatt != null) return
+        // Our device, known: no scan. autoConnect has no timeout and fires the
+        // moment it is in range — the same path every reconnect takes.
+        pairedDeviceAddress?.let { saved ->
+            val dev = runCatching { adapter?.getRemoteDevice(saved) }.getOrNull()
+            if (dev != null) {
+                device = dev
+                state = ConnState.CONNECTING
+                gatt = dev.connectGatt(app, true, gattCallback, BluetoothDevice.TRANSPORT_LE)
+                queue.attach(gatt)
+                return
+            }
+        }
         scanning = true
         state = ConnState.SCANNING
         scanner.startScan(
@@ -440,6 +523,119 @@ class BleManager(private val app: Application) {
                 .build(),
             scanCallback,
         )
+        if (pairedDeviceAddress == null) armPairedFallback()
+    }
+
+    /**
+     * Looking for a first device and only paired-to-someone ones answer: after
+     * a few seconds, try one of them once (see [pairedElsewhereSeen]).
+     */
+    private fun armPairedFallback() {
+        fallbackJob?.cancel()
+        fallbackJob = scope.launch {
+            while (isActive) {
+                delay(6000)
+                if (!scanning || gatt != null || pairedDeviceAddress != null) return@launch
+                val hit = pairedElsewhereSeen.entries.firstOrNull { it.key !in rejectedAddresses }
+                    ?: continue
+                rejectedAddresses.add(hit.key)   // one try per session, success or not
+                onFallbackAttempt = true
+                stopScan()
+                connect(hit.value)
+                return@launch
+            }
+        }
+    }
+
+    /** Remember the connected device as OURS — it just admitted our bond. */
+    private fun rememberPairedDevice() {
+        val dev = device ?: return
+        onFallbackAttempt = false
+        pairingIssue = null
+        barrenConnects = 0
+        rejectedAddresses.remove(dev.address)
+        if (pairedDeviceAddress.equals(dev.address, ignoreCase = true)) return
+        pairedDeviceAddress = dev.address
+        pairedDeviceName = runCatching { dev.name }.getOrNull()
+        Prefs.pairedDeviceAddress = pairedDeviceAddress
+        Prefs.pairedDeviceName = pairedDeviceName
+    }
+
+    /**
+     * Settings › Unpair: while connected, tell the device to drop this phone
+     * ([0xFE 0x55] on settings — the same as Paired Devices › Phone › Unpair
+     * on the panel), then forget it here, which also removes Android's bond.
+     * Not connected: forget here only.
+     */
+    fun unpairDevice() {
+        val c = settingsChar
+        if (state != ConnState.CONNECTED || c == null) { forgetDevice(); return }
+        writeChar(c, byteArrayOf(0xFE.toByte(), 0x55))
+        // The device drops the link once it has acted; give the write a moment.
+        main.postDelayed({ forgetDevice() }, 1500)
+    }
+
+    /**
+     * Settings › Forget this device: stop connecting to it, remove Android's
+     * bond (so a later re-pair starts clean) and look for a device to pair
+     * with. The device keeps ITS half until the rider unpairs on the device.
+     */
+    fun forgetDevice() {
+        val addr = pairedDeviceAddress ?: device?.address
+        pairedDeviceAddress = null
+        pairedDeviceName = null
+        Prefs.pairedDeviceAddress = null
+        Prefs.pairedDeviceName = null
+        pairingIssue = null
+        barrenConnects = 0
+        pairedElsewhereSeen.clear()
+        onFallbackAttempt = false
+        rejectedAddresses.clear()
+        if (addr != null) {
+            // Not re-adopted this session; and drop Android's keys — they would
+            // only fail against a device that has been (or will be) unpaired.
+            rejectedAddresses.add(addr)
+            runCatching { adapter?.getRemoteDevice(addr) }.getOrNull()?.let(::removeBond)
+        }
+        if (gatt != null) {
+            forgetting = true
+            gatt?.disconnect()
+            // A pending autoConnect never reports a disconnect: tear it down here.
+            if (state != ConnState.CONNECTED) {
+                forgetting = false
+                device = null
+                teardownConnection(reconnect = false)
+                startScan()
+            }
+        } else {
+            stopScan()
+            startScan()
+        }
+    }
+
+    private fun onBondStateChanged(address: String?, bond: Int) {
+        val g = awaitingBond ?: return
+        if (address == null || !address.equals(g.device.address, ignoreCase = true)) return
+        when (bond) {
+            BluetoothDevice.BOND_BONDED -> {
+                awaitingBond = null
+                startGattSession(g)
+            }
+            BluetoothDevice.BOND_NONE -> {
+                // Pairing failed: cancelled, wrong code, or the device refused
+                // us (it's paired with another phone). The device drops a
+                // refused link itself; don't sit on one it didn't.
+                awaitingBond = null
+                g.disconnect()
+            }
+        }
+    }
+
+    /** MTU first, then discovery — every chunk size derives from the MTU. */
+    private fun startGattSession(g: BluetoothGatt) {
+        queue.attach(g)
+        queue.enqueue(GattQueue.Op.Mtu(517))
+        g.discoverServices()
     }
 
     private fun stopScan() {
@@ -464,12 +660,23 @@ class BleManager(private val app: Application) {
             main.post {
                 when (newState) {
                     BluetoothProfile.STATE_CONNECTED -> {
-                        // Bigger ATT payload first: every transfer's chunk size
-                        // is derived from it, and negotiating after the pumps
-                        // start would change the size mid-stream.
-                        queue.attach(g)
-                        queue.enqueue(GattQueue.Op.Mtu(517))
-                        g.discoverServices()
+                        // Fixed pairing: every characteristic needs an
+                        // encrypted link, so bond BEFORE touching any. Left to
+                        // the first read, Android's retry-after-pairing is
+                        // patchy across versions and the read just fails.
+                        // Bonded already: Android encrypts on connect.
+                        if (g.device.bondState == BluetoothDevice.BOND_BONDED) {
+                            // Bigger ATT payload first: every transfer's chunk
+                            // size is derived from it, and negotiating after
+                            // the pumps start would change it mid-stream.
+                            startGattSession(g)
+                        } else {
+                            queue.attach(g)
+                            awaitingBond = g
+                            if (g.device.bondState != BluetoothDevice.BOND_BONDING) {
+                                g.device.createBond()
+                            }
+                        }
                     }
 
                     BluetoothProfile.STATE_DISCONNECTED -> handleDisconnect()
@@ -673,7 +880,22 @@ class BleManager(private val app: Application) {
         }
 
         status = DeviceStatus()
+        val admitted = sawStatusSinceConnect
         sawStatusSinceConnect = false
+        awaitingBond = null
+        // Ours, and turning us away: a remembered device that keeps dropping
+        // us before any status (the firmware pushes nothing until the link
+        // proves the bond) was unpaired on the device, or now belongs to
+        // another phone. Three in a row, so a reboot or range drop doesn't
+        // cry wolf.
+        if (!admitted) {
+            barrenConnects += 1
+            if (barrenConnects == 3 && !onFallbackAttempt && pairedDeviceAddress != null) {
+                pairingIssue = PairingIssue.NOT_RECOGNISED
+            }
+        } else {
+            barrenConnects = 0
+        }
         rides = emptyList(); loadingRides = false
         // Nothing queued can proceed without a link, and a half-received file
         // must not be mistaken for a complete one on reconnect.
@@ -684,7 +906,40 @@ class BleManager(private val app: Application) {
         lastUploadProgress = null; routeSent = false; routeReceived = false
         sensors = emptyList(); scanningSensors = false
 
-        teardownConnection(reconnect = true)
+        // Not ours to reconnect to: forgetDevice() dropped it, or it was the
+        // one-off try at a paired-elsewhere device and it turned us away.
+        when {
+            forgetting -> {
+                forgetting = false
+                device = null
+                teardownConnection(reconnect = false)
+                startScan()
+            }
+            onFallbackAttempt && !admitted -> {
+                onFallbackAttempt = false
+                pairingIssue = PairingIssue.PAIRED_ELSEWHERE
+                device = null
+                teardownConnection(reconnect = false)
+                startScan()
+            }
+            else -> {
+                onFallbackAttempt = false
+                teardownConnection(reconnect = true)
+            }
+        }
+    }
+
+    /** Manufacturer data after the 0xFFFF company id: [0x4F][flags], bit0 =
+     *  paired. null for firmware from before fixed pairing (no flag at all). */
+    private fun advertisesPaired(data: ByteArray?): Boolean? {
+        if (data == null || data.size < 2 || data[0] != 0x4F.toByte()) return null
+        return (data[1].toInt() and 0x01) != 0
+    }
+
+    /** BluetoothDevice.removeBond() is hidden API but has been stable since
+     *  API 19 and is what every BLE accessory app uses; best effort. */
+    private fun removeBond(dev: BluetoothDevice) {
+        runCatching { dev.javaClass.getMethod("removeBond").invoke(dev) }
     }
 
     private fun teardownConnection(reconnect: Boolean) {
@@ -2451,6 +2706,7 @@ class BleManager(private val app: Application) {
         if (state != ConnState.CONNECTED || routeChar == null) return
         val firstStatus = !sawStatusSinceConnect
         sawStatusSinceConnect = true
+        if (firstStatus) rememberPairedDevice()   // the device admitted us: ours
         if (status.gpsFix) {
             // The device was ALREADY locked when we connected. We start the
             // stream the moment the route characteristic shows up, before the

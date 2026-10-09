@@ -32,15 +32,20 @@ struct BikeGPSCompanionApp: App {
                 // Strava / RideWithGPS sign-in returning through the URL scheme
                 // (normally the auth session catches it; this is the fallback).
                 .onOpenURL { url in Task { await SyncAccounts.shared.handle(callback: url) } }
-                // The one Bluetooth failure the rider must fix by hand: iOS
-                // holding a pairing the head unit no longer matches. Nothing on
-                // either side can delete the phone's keys, so the only honest
-                // move is to say exactly what to tap.
-                .alert("Bluetooth pairing is stale",
-                       isPresented: $ble.pairingLooksStale) {
+                // Fixed pairing: the device turned this phone away. Both causes
+                // need the rider's hands — on the device (unpair) and/or in iOS
+                // Settings (the old keys, which no app can delete) — so the
+                // only honest move is to say exactly what to tap.
+                .alert(ble.pairingIssue.map(PairingCopy.title) ?? "",
+                       isPresented: Binding(get: { ble.pairingIssue != nil },
+                                            set: { if !$0 { ble.pairingIssue = nil } }),
+                       presenting: ble.pairingIssue) { issue in
+                    if issue == .notRecognised && ble.pairedDeviceId != nil {
+                        Button("Forget Device in App", role: .destructive) { ble.forgetDevice() }
+                    }
                     Button("OK", role: .cancel) {}
-                } message: {
-                    Text("Your iPhone remembers an old pairing for the head unit, so connections keep failing.\n\nGo to Settings \u{2192} Bluetooth, tap \u{24D8} next to \u{201C}OpenTrailPaper\u{201D}, choose Forget This Device — then come back and reconnect.")
+                } message: { issue in
+                    Text(PairingCopy.message(issue))
                 }
         }
         // Coming back from the Settings app is the one way a permission changes

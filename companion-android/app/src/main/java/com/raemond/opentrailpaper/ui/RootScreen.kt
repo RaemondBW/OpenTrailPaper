@@ -150,6 +150,10 @@ fun RootScreen(
         // Every full-screen cover in the app is drawn here, above the tabs —
         // see Overlay.kt for why they are not windows.
         OverlayHost(overlay)
+
+        // Fixed pairing: the device turned this phone away — say why from
+        // whichever tab is up.
+        PairingIssueDialog(ble)
     }
     }
 }

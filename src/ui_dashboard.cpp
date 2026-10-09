@@ -164,8 +164,14 @@ inline void IRAM_ATTR uiWakeFromIsr() {
 void IRAM_ATTR onTouchIrq() { touchIrq = true; uiWakeFromIsr(); }
 void IRAM_ATTR onBoardBtnIrq() { boardBtnIrq = true; uiWakeFromIsr(); }
 
-// Power/shutdown dialog overlay (opened by holding BOOT 1.5 s).
+// Bottom-sheet overlay. Named for its first user, the power/shutdown dialog
+// (opened by holding BOOT 1.5 s); the unpair-phone confirmation (Settings >
+// PHONE) is the same modal with different words, so it shares every bit of
+// the overlay plumbing — tap routing, Home-key dismissal, holding still, the
+// scrub on close — and only sheetKind says which words to draw.
 bool powerOverlay = false;
+enum SheetKind { SHEET_POWER, SHEET_UNPAIR };
+SheetKind sheetKind = SHEET_POWER;
 
 // Backlight: 4 levels cycled by the GPIO48 button.
 // Off / Low / Med / Bright. Low is deliberately very dim — it is for reading the
@@ -861,10 +867,15 @@ void handleTap(int x, int y) {
             break;
         }
         case SCREEN_SENSORS: {
+            // PAIRED DEVICES: row 0 is the phone (fixed pairing), the sensor
+            // candidates follow it.
             int row = (y - kMenuRowTop) / kMenuRowH;
-            if (y >= kMenuRowTop && row >= 0 && row < sensorCandCount &&
-                row < kMenuRowCount) {
-                ble_sensors::pairCandidate(sensorCands[row].addr);
+            if (y >= kMenuRowTop && row == 0) {
+                sheetKind = SHEET_UNPAIR;   // UNPAIR PHONE? / NOT PAIRED
+                powerOverlay = true;
+            } else if (y >= kMenuRowTop && row >= 1 && row - 1 < sensorCandCount &&
+                       row < kMenuRowCount) {
+                ble_sensors::pairCandidate(sensorCands[row - 1].addr);
             } else {
                 leaveList();
             }
@@ -982,6 +993,16 @@ void handleTap(int x, int y) {
 }
 
 void handlePowerTap(int x, int y) {
+    if (sheetKind == SHEET_UNPAIR) {
+        // UNPAIR only exists while a phone is paired; on the "not paired"
+        // sheet that rect is empty paper and a tap there just closes it.
+        if (inRect(kPowerShutdown, x, y) && ble_server::phonePaired()) {
+            ble_server::requestUnpair();
+            diag::log("ui: unpair phone confirmed on the panel");
+        }
+        powerOverlay = false;   // UNPAIR, CANCEL/CLOSE or outside: done
+        return;
+    }
     if (inRect(kPowerShutdown, x, y)) {
         uint8_t* fb = epdc_framebuffer();
         shutdownDevice(fb, "user power-off (dialog)");  // does not return
@@ -1209,13 +1230,33 @@ void renderListScreen(uint8_t* fb) {
 
     switch (screen) {
         case SCREEN_SENSORS: {
-            title = "SENSORS";
+            title = "PAIRED DEVICES";
             footer = "tap a sensor to pair it · scanning...";
+            // Row 0: the phone this device belongs to (fixed pairing, see
+            // ble_server.cpp). Same row recipe as a sensor: name as the title,
+            // status first in the subtitle, inverted while connected. Tapping
+            // it opens the UNPAIR PHONE? / NOT PAIRED sheet.
+            {
+                const bool paired = ble_server::phonePaired();
+                const char* name = ble_server::pairedPhoneName();
+                snprintf(rows[0].title, sizeof(rows[0].title), "%s",
+                         paired && name[0] ? name : "Phone");
+                if (!paired)
+                    snprintf(rows[0].subtitle, sizeof(rows[0].subtitle),
+                             "Not paired · open the app to pair");
+                else if (ble_server::isPhoneConnected())
+                    snprintf(rows[0].subtitle, sizeof(rows[0].subtitle),
+                             "Connected · Phone · tap to unpair");
+                else
+                    snprintf(rows[0].subtitle, sizeof(rows[0].subtitle),
+                             "Paired · Phone · tap to unpair");
+                rows[0].inverted = paired && ble_server::isPhoneConnected();
+            }
             sensorCandCount = ble_sensors::getCandidates(sensorCands, 8);
-            count = sensorCandCount < kMenuRowCount ? sensorCandCount
-                                                    : kMenuRowCount;
-            for (int i = 0; i < count; ++i) {
-                auto& c = sensorCands[i];
+            count = 1 + (sensorCandCount < kMenuRowCount - 1 ? sensorCandCount
+                                                             : kMenuRowCount - 1);
+            for (int i = 1; i < count; ++i) {
+                auto& c = sensorCands[i - 1];
                 snprintf(rows[i].title, sizeof(rows[i].title), "%s",
                          c.name[0] ? c.name : c.addr);
                 // Status FIRST (short kind label second) so the important word
@@ -2570,6 +2611,7 @@ void task(void*) {
                     } else if (bootLow > 1 && !bootLong && !powerOverlay &&
                                millis() - bootDownAt > 1500) {
                         bootLong = true;
+                        sheetKind = SHEET_POWER;
                         powerOverlay = true;       // hold -> power dialog
                     }
                 } else {
@@ -2848,6 +2890,9 @@ void task(void*) {
                     m.rideDistanceM = s.distanceM;
                     m.rideElapsedS = s.elapsedS;
                     m.useMiles = s.useMiles;
+                    m.phonePaired = ble_server::phonePaired();
+                    snprintf(m.phoneName, sizeof(m.phoneName), "%s",
+                             ble_server::pairedPhoneName());
                     if (routes::active()) {
                         snprintf(m.routeLine, sizeof(m.routeLine),
                                  "%s · %.1f %s left", routes::activeName(),
@@ -2867,7 +2912,7 @@ void task(void*) {
                 case SCREEN_DIRECTIONS:
                     renderListScreen(fb);
                     ui::statusBar(s, fb,
-                                  screen == SCREEN_SENSORS    ? "SENSORS"
+                                  screen == SCREEN_SENSORS    ? "PAIRED DEVICES"
                                   : screen == SCREEN_ROUTES   ? "NAVIGATE"
                                   : screen == SCREEN_HISTORY  ? "RIDES"
                                                               : "DIRECTIONS");
@@ -2918,7 +2963,14 @@ void task(void*) {
                     break;
                 }
             }
-            if (powerOverlay) ui_render_power_sheet(s.recording, fb);
+            if (powerOverlay) {
+                if (sheetKind == SHEET_UNPAIR)
+                    ui_render_unpair_sheet(ble_server::phonePaired(),
+                                           ble_server::pairedPhoneName(),
+                                           ble_server::pairedPhoneCount(), fb);
+                else
+                    ui_render_power_sheet(s.recording, fb);
+            }
             // Pairing code sheet sits over everything — the phone's dialog is
             // modal on its side too.
             if (unsigned int pc = ble_server::pairingCode())

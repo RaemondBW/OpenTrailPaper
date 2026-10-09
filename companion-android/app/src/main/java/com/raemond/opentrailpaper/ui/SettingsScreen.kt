@@ -69,6 +69,7 @@ fun SettingsScreen(ble: BleManager, host: HostActions, onShowTutorial: () -> Uni
     var showSensors by remember { mutableStateOf(false) }
     var showMaps by remember { mutableStateOf(false) }
     var confirmUpdate by remember { mutableStateOf(false) }
+    var confirmForget by remember { mutableStateOf(false) }
     val connected = ble.state == BleManager.ConnState.CONNECTED
 
     LaunchedEffect(Unit) { FirmwareRelease.check() }
@@ -95,6 +96,8 @@ fun SettingsScreen(ble: BleManager, host: HostActions, onShowTutorial: () -> Uni
         }
 
         if (connected) NavCard("Sensors", sensorSummary(ble)) { showSensors = true }
+
+        PairedDeviceCard(ble, connected) { confirmForget = true }
 
         // Not gated on the connection, unlike sensors: picking an area and
         // fetching OSM works offline, and the Maps screen only needs the link for
@@ -206,6 +209,24 @@ fun SettingsScreen(ble: BleManager, host: HostActions, onShowTutorial: () -> Uni
         DiagnosticsSheet(file) { ble.logFile = null }
     }
 
+    if (confirmForget) {
+        AlertDialog(
+            onDismissRequest = { confirmForget = false },
+            title = { Text(if (connected) "Unpair this OpenTrailPaper?" else "Forget this OpenTrailPaper?") },
+            text = { Text(if (connected) PairingCopy.UNPAIR_MESSAGE else PairingCopy.FORGET_MESSAGE) },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmForget = false
+                    if (connected) ble.unpairDevice() else ble.forgetDevice()
+                }) { Text(if (connected) "Unpair" else "Forget device", color = Palette.accent) }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmForget = false }) { Text("Cancel") }
+            },
+            containerColor = Palette.surface,
+        )
+    }
+
     if (confirmUpdate) {
         AlertDialog(
             onDismissRequest = { confirmUpdate = false },
@@ -299,6 +320,122 @@ private fun AccountsCard() {
             Text(it, style = barlow(12.sp), color = Palette.accentDark)
         }
     }
+}
+
+/** Fixed pairing: which OpenTrailPaper this phone owns, and the way out. */
+@Composable
+private fun PairedDeviceCard(ble: BleManager, connected: Boolean, onForget: () -> Unit) {
+    Card {
+        TrackedLabel("Paired device")
+        Spacer(Modifier.size(8.dp))
+        if (ble.pairedDeviceAddress != null) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Filled.Bluetooth,
+                    contentDescription = null,
+                    tint = if (connected) Palette.good else Palette.muted,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(Modifier.size(8.dp))
+                Text(
+                    ble.pairedDeviceName ?: "OpenTrailPaper",
+                    style = barlow(15.sp, FontWeight.SemiBold),
+                    color = Palette.ink,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    if (connected) "Connected" else "Not connected",
+                    style = barlow(12.sp),
+                    color = Palette.muted,
+                )
+            }
+            Spacer(Modifier.size(6.dp))
+            Text(
+                "The app only connects to this device, and the device only accepts this " +
+                    "phone until it is unpaired on the device (Menu › Paired Devices › Phone).",
+                style = barlow(12.sp),
+                color = Palette.muted,
+            )
+            Spacer(Modifier.size(8.dp))
+            Text(
+                if (connected) "Unpair this device" else "Forget this device",
+                style = barlow(15.sp, FontWeight.SemiBold),
+                color = Palette.accent,
+                modifier = Modifier.clickable(onClick = onForget),
+            )
+        } else {
+            Text(
+                if (connected) {
+                    "Pairing with this OpenTrailPaper…"
+                } else {
+                    "No device yet. Turn your OpenTrailPaper on nearby — the first one that " +
+                        "isn't paired with another phone connects. Type the 6-digit code from " +
+                        "its screen into the pairing prompt."
+                },
+                style = barlow(12.sp),
+                color = Palette.muted,
+            )
+        }
+    }
+}
+
+/** Words for fixed pairing (firmware ble_server.cpp). */
+object PairingCopy {
+    const val DEVICE_UNPAIR_STEPS = "On the device: Menu › Paired Devices › Phone › Unpair."
+
+    fun title(issue: BleManager.PairingIssue): String = when (issue) {
+        BleManager.PairingIssue.PAIRED_ELSEWHERE -> "Paired with another phone"
+        BleManager.PairingIssue.NOT_RECOGNISED -> "OpenTrailPaper isn't accepting this phone"
+    }
+
+    fun message(issue: BleManager.PairingIssue): String = when (issue) {
+        BleManager.PairingIssue.PAIRED_ELSEWHERE ->
+            "This OpenTrailPaper is paired with another phone, so it won't connect to " +
+                "this one.\n\nTo use it here, unpair it first. $DEVICE_UNPAIR_STEPS It then " +
+                "shows a pairing code when this phone connects."
+        BleManager.PairingIssue.NOT_RECOGNISED ->
+            "The device no longer recognises this phone — it was unpaired on the device, " +
+                "or it's now paired with another phone.\n\nIf another phone owns it: " +
+                "$DEVICE_UNPAIR_STEPS Then tap Re-pair: the app removes this phone's old " +
+                "pairing and connects again, and the device shows a code to type in."
+    }
+
+    const val UNPAIR_MESSAGE =
+        "The device forgets this phone and opens pairing to the next phone. The app " +
+            "removes its pairing too and stops connecting to it."
+
+    const val FORGET_MESSAGE =
+        "The app stops connecting to this device, removes this phone's Bluetooth pairing " +
+            "with it, and looks for a device to pair with.\n\nTo pair the device with a " +
+            "different phone, also unpair it on the device: Menu › Paired Devices › Phone › Unpair."
+}
+
+/** The one pairing dialog, shown from anywhere in the app. */
+@Composable
+fun PairingIssueDialog(ble: BleManager) {
+    val issue = ble.pairingIssue ?: return
+    AlertDialog(
+        onDismissRequest = { ble.pairingIssue = null },
+        title = { Text(PairingCopy.title(issue)) },
+        text = { Text(PairingCopy.message(issue)) },
+        confirmButton = {
+            if (issue == BleManager.PairingIssue.NOT_RECOGNISED && ble.pairedDeviceAddress != null) {
+                TextButton(onClick = { ble.forgetDevice() }) {
+                    Text("Re-pair", color = Palette.accent)
+                }
+            } else {
+                TextButton(onClick = { ble.pairingIssue = null }) { Text("OK") }
+            }
+        },
+        dismissButton = if (issue == BleManager.PairingIssue.NOT_RECOGNISED &&
+            ble.pairedDeviceAddress != null
+        ) {
+            { TextButton(onClick = { ble.pairingIssue = null }) { Text("Not now") } }
+        } else {
+            null
+        },
+        containerColor = Palette.surface,
+    )
 }
 
 @Composable

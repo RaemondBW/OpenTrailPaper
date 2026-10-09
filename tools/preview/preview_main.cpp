@@ -632,25 +632,30 @@ int main(int argc, char** argv) {
     ui::statusBar(s, fb.data(), "MENU");
     emit("menu_recording.png");
 
-    // Sensors list
-    ListRow sensors[3] = {};
-    snprintf(sensors[0].title, sizeof(sensors[0].title), "WHOOP 4.0");
+    // PAIRED DEVICES (was SENSORS): the phone first, then sensor candidates.
+    // Mirrors renderListScreen's row recipe in ui_dashboard.cpp.
+    ListRow sensors[4] = {};
+    snprintf(sensors[0].title, sizeof(sensors[0].title), "Raemond's iPhone");
     snprintf(sensors[0].subtitle, sizeof(sensors[0].subtitle),
-             "Connected · HR");
+             "Connected · Phone · tap to unpair");
     sensors[0].inverted = true;
-    snprintf(sensors[1].title, sizeof(sensors[1].title), "Assioma DUO");
+    snprintf(sensors[1].title, sizeof(sensors[1].title), "WHOOP 4.0");
     snprintf(sensors[1].subtitle, sizeof(sensors[1].subtitle),
-             "Saved · Power+Cad");
-    snprintf(sensors[2].title, sizeof(sensors[2].title), "f0:99:1c:22:8a:01");
+             "Connected · HR");
+    sensors[1].inverted = true;
+    snprintf(sensors[2].title, sizeof(sensors[2].title), "Assioma DUO");
     snprintf(sensors[2].subtitle, sizeof(sensors[2].subtitle),
+             "Saved · Power+Cad");
+    snprintf(sensors[3].title, sizeof(sensors[3].title), "f0:99:1c:22:8a:01");
+    snprintf(sensors[3].subtitle, sizeof(sensors[3].subtitle),
              "Cadence · -80 dBm");
     clearWhite(fb.data());
-    ui_render_list("SENSORS", sensors, 3, "tap a sensor to pair it · scanning...",
+    ui_render_list("PAIRED DEVICES", sensors, 4, "tap a sensor to pair it · scanning...",
                    fb.data());
     // ui_render_list does NOT draw the title it is handed — the header is the
     // status bar, which ui_dashboard draws over every list screen. Leaving it
     // out here is why these screens looked headerless on the site.
-    ui::statusBar(s, fb.data(), "SENSORS");
+    ui::statusBar(s, fb.data(), "PAIRED DEVICES");
     emit("sensors.png");
 
     // Routes list
@@ -680,6 +685,62 @@ int main(int argc, char** argv) {
     ui_render_settings(si, fb.data());
     ui::statusBar(s, fb.data(), "SETTINGS");
     emit("settings.png");
+
+    // Fixed pairing: the phone row on PAIRED DEVICES, paired and not, the
+    // unpair sheet over it (and its migrated / not-paired variants), and the
+    // main menu's Paired Devices subtitle.
+    {
+        auto pairedPage = [&](bool paired) {
+            ListRow rows[3] = {};
+            if (paired) {
+                snprintf(rows[0].title, sizeof(rows[0].title), "Raemond's iPhone");
+                snprintf(rows[0].subtitle, sizeof(rows[0].subtitle),
+                         "Connected · Phone · tap to unpair");
+                rows[0].inverted = true;
+            } else {
+                snprintf(rows[0].title, sizeof(rows[0].title), "Phone");
+                snprintf(rows[0].subtitle, sizeof(rows[0].subtitle),
+                         "Not paired · open the app to pair");
+            }
+            snprintf(rows[1].title, sizeof(rows[1].title), "WHOOP 4.0");
+            snprintf(rows[1].subtitle, sizeof(rows[1].subtitle), "Connected · HR");
+            rows[1].inverted = true;
+            snprintf(rows[2].title, sizeof(rows[2].title), "Assioma DUO");
+            snprintf(rows[2].subtitle, sizeof(rows[2].subtitle), "Saved · Power+Cad");
+            clearWhite(fb.data());
+            ui_render_list("PAIRED DEVICES", rows, 3,
+                           "tap a sensor to pair it · scanning...", fb.data());
+            ui::statusBar(s, fb.data(), "PAIRED DEVICES");
+        };
+        pairedPage(true);
+        emit("paired_devices.png");
+        pairedPage(true);
+        ui_render_unpair_sheet(true, "Raemond's iPhone", 1, fb.data());
+        emit("unpair_sheet.png");
+        pairedPage(true);
+        ui_render_unpair_sheet(true, "", 2, fb.data());
+        emit("unpair_sheet_migrated.png");
+        pairedPage(false);
+        emit("paired_devices_unpaired.png");
+        pairedPage(false);
+        ui_render_unpair_sheet(false, "", 0, fb.data());
+        emit("unpair_sheet_not_paired.png");
+
+        MenuInfo mp = menu;
+        mp.recording = false;
+        mp.phonePaired = true;
+        snprintf(mp.phoneName, sizeof(mp.phoneName), "Raemond's iPhone");
+        clearWhite(fb.data());
+        ui_render_menu(mp, fb.data());
+        ui::statusBar(s, fb.data(), "MENU");
+        emit("menu_paired.png");
+
+        mp.phonePaired = false;
+        clearWhite(fb.data());
+        ui_render_menu(mp, fb.data());
+        ui::statusBar(s, fb.data(), "MENU");
+        emit("menu_unpaired.png");
+    }
 
     // GPS debug: the "sees satellites but no fix" case
     GpsDebugView g = {};
