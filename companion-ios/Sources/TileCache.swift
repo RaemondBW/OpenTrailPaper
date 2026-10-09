@@ -37,9 +37,25 @@ actor TileCache {
         // contain, so stale blobs cannot mask the fix. v2: tiles built before
         // the padded-coastline fetch have no sea fill — an ocean-only hex was
         // cached blank (elevation alone made it non-empty), and reusing it would
-        // look exactly like the bug still being there.
-        dir = base.appendingPathComponent("TileCache-v2", isDirectory: true)
+        // look exactly like the bug still being there. v3: tiles carry the
+        // bike-route / cycleway / bike-lane way flags.
+        dir = base.appendingPathComponent("TileCache-v3", isDirectory: true)
         try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        // v2 tiles move in already EXPIRED (mtime 1970): data(for:) never
+        // reuses one, so the next sync of that area rebuilds it with the flags,
+        // but cachedIds() still lists it, so the map keeps showing the areas
+        // this phone downloaded. trim() drops them first.
+        let old = base.appendingPathComponent("TileCache-v2", isDirectory: true)
+        if let files = try? fm.contentsOfDirectory(at: old, includingPropertiesForKeys: nil) {
+            for f in files where f.pathExtension == "ebm" {
+                let to = dir.appendingPathComponent(f.lastPathComponent)
+                if (try? fm.moveItem(at: f, to: to)) != nil {
+                    try? fm.setAttributes([.modificationDate: Date(timeIntervalSince1970: 0)],
+                                          ofItemAtPath: to.path)
+                }
+            }
+            try? fm.removeItem(at: old)
+        }
         var res = URLResourceValues()
         res.isExcludedFromBackup = true
         var d = dir
@@ -129,5 +145,75 @@ actor TileCache {
             try? FileManager.default.removeItem(at: f)
             total -= sz
         }
+    }
+}
+
+/// On-disk cache of built cycling-POI files (`<h3>.poi`), kept apart from the
+/// map tiles so POIs can be fetched, refreshed and sent on their own: a POI
+/// query is ~1% of a map query, and water points change more often than roads.
+///
+/// Entries older than `maxAge` are rebuilt from Overpass the next time the
+/// area is synced. Same location and backup rules as TileCache.
+actor PoiCache {
+    static let shared = PoiCache()
+
+    /// POIs older than this are re-fetched (and re-sent) when the area is next
+    /// synced — the refresh period for water points and repair stands.
+    static let maxAge: TimeInterval = 60 * 60 * 24 * 30   // 30 days
+
+    private let dir: URL
+
+    init() {
+        let fm = FileManager.default
+        let base = (try? fm.url(for: .applicationSupportDirectory, in: .userDomainMask,
+                                appropriateFor: nil, create: true))
+            ?? fm.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        dir = base.appendingPathComponent("PoiCache-v1", isDirectory: true)
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        var res = URLResourceValues()
+        res.isExcludedFromBackup = true
+        var d = dir
+        try? d.setResourceValues(res)
+    }
+
+    private func url(_ id: String) -> URL {
+        dir.appendingPathComponent("\(id.filter { $0.isHexDigit }).poi")
+    }
+
+    /// Cached file for `id`, or nil if absent or older than maxAge.
+    func data(for id: String) -> Data? {
+        let u = url(id)
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: u.path),
+              let modified = attrs[.modificationDate] as? Date,
+              Date().timeIntervalSince(modified) < Self.maxAge,
+              let d = try? Data(contentsOf: u), d.count >= 40
+        else { return nil }
+        return d
+    }
+
+    func store(_ files: [(id: String, data: Data)]) {
+        for f in files where !f.data.isEmpty { try? f.data.write(to: url(f.id), options: .atomic) }
+    }
+
+    func partition(_ ids: [String]) -> (cached: [(id: String, data: Data)], missing: [String]) {
+        var hit: [(id: String, data: Data)] = []
+        var miss: [String] = []
+        for id in ids {
+            if let d = data(for: id) { hit.append((id, d)) } else { miss.append(id) }
+        }
+        return (hit, miss)
+    }
+
+    func sizeBytes() -> Int {
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: [.fileSizeKey]) else { return 0 }
+        return files.reduce(0) {
+            $0 + ((try? $1.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+        }
+    }
+
+    func clear() {
+        try? FileManager.default.removeItem(at: dir)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     }
 }

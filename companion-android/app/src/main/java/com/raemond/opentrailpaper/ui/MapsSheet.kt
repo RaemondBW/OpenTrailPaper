@@ -55,7 +55,10 @@ import com.raemond.opentrailpaper.map.EInkTileStore
 import com.raemond.opentrailpaper.map.H3Tiles
 import com.raemond.opentrailpaper.map.MapBuilder
 import com.raemond.opentrailpaper.map.MapTile
+import com.raemond.opentrailpaper.map.OsmData
 import com.raemond.opentrailpaper.map.OutlineHex
+import com.raemond.opentrailpaper.map.PoiCache
+import com.raemond.opentrailpaper.map.Cycling
 import com.raemond.opentrailpaper.map.SelectionHex
 import com.raemond.opentrailpaper.map.TileCache
 import kotlinx.coroutines.CancellationException
@@ -178,12 +181,20 @@ fun MapsSheet(
         }
     }
 
-    // Tiles that will actually be sent: not already on the device and not tapped
-    // out by the user.
-    val newTiles = remember(tiles, ble.deviceTileIds, excluded) {
-        tiles.filter { it.id !in ble.deviceTileIds && it.id !in excluded }
+    // Tiles that will actually be sent: not already on the device (or on it
+    // without the bike-route flags its firmware can draw) and not tapped out by
+    // the user.
+    val newTiles = remember(tiles, ble.deviceTileIds, ble.deviceSupportsPois, excluded) {
+        tiles.filter { !ble.tileIsCurrent(it.id) && it.id !in excluded }
     }
-    val onDeviceCount = tiles.count { it.id in ble.deviceTileIds }
+    // Tiles whose cycling POIs go to the device: new ones, plus tiles already
+    // there with no POIs or POIs older than PoiCache.MAX_AGE_MS. Empty for
+    // firmware without POI support.
+    val poiTiles = remember(tiles, ble.devicePoiIds, ble.deviceSupportsPois, excluded) {
+        tiles.filter { it.id !in excluded && ble.poiNeedsSend(it.id) }
+    }
+    val poiOnlyCount = poiTiles.count { t -> newTiles.none { it.id == t.id } }
+    val onDeviceCount = tiles.count { ble.tileIsCurrent(it.id) }
 
     // Ask the store what to draw for the region now on screen. Coalesced along
     // with the device's tile list, which arrives tile-by-tile during an upload:
@@ -238,26 +249,42 @@ fun MapsSheet(
 
     fun startDownload() {
         val missing = newTiles
-        if (missing.isEmpty()) return
+        val poiWork = poiTiles
+        if (missing.isEmpty() && poiWork.isEmpty()) return
         building = true
         converted = emptySet()
         failedHexes = emptySet()
-        downloadTotal = missing.size
-        status = "Fetching map data…"
+        downloadTotal = missing.size + poiWork.size
+        status = if (missing.isEmpty()) "Fetching cycling POIs…" else "Fetching map data…"
         ble.startTileStream()            // begin sending as tiles are produced
 
         job = scope.launch {
             try {
-                downloadTiles(
-                    missing = missing,
-                    onStatus = { status = it },
-                    onBuilt = { ids ->
-                        converted = converted + ids
-                        EInkTileStore.noteDownloaded(ids)
-                    },
-                    onFailed = { ids -> failedHexes = failedHexes + ids },
-                    enqueue = { ble.enqueueTiles(it) },
-                )
+                if (missing.isNotEmpty()) {
+                    downloadTiles(
+                        missing = missing,
+                        onStatus = { status = it },
+                        onBuilt = { ids ->
+                            converted = converted + ids
+                            EInkTileStore.noteDownloaded(ids)
+                        },
+                        onFailed = { ids -> failedHexes = failedHexes + ids },
+                        enqueue = { ble.enqueueTiles(it) },
+                    )
+                }
+                // Cycling POIs, after the map tiles: their own small query, their
+                // own cache, sent through the same transfer. A failure here never
+                // fails the map download — the map is the thing that matters.
+                var poiNote: String? = null
+                if (poiWork.isNotEmpty()) {
+                    try {
+                        downloadPois(poiWork, onStatus = { status = it }, enqueue = { ble.enqueuePois(it) })
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        poiNote = "Cycling POIs could not be fetched — try again later."
+                    }
+                }
                 building = false
                 ble.finishTileStream()                     // let the queue drain
                 // The cache has a size ceiling and this is the only thing that
@@ -268,8 +295,9 @@ fun MapsSheet(
                         "${failedHexes.size} hex${if (failedHexes.size == 1) "" else "es"} had " +
                             "no map data — tap Select area and retry them."
 
+                    missing.isEmpty() -> poiNote
                     converted.isEmpty() -> "No roads found in that area."
-                    else -> null
+                    else -> poiNote
                 }
             } catch (_: CancellationException) {
                 building = false
@@ -297,7 +325,7 @@ fun MapsSheet(
                 onTap = { c ->
                     if (box != null && !drawMode) {
                         val id = H3Tiles.idAt(c)
-                        if (id != null && tiles.any { it.id == id } && id !in ble.deviceTileIds) {
+                        if (id != null && tiles.any { it.id == id } && !ble.tileIsCurrent(id)) {
                             excluded = if (id in excluded) excluded - id else excluded + id
                         }
                     }
@@ -423,6 +451,7 @@ fun MapsSheet(
                     box != null -> SelectionCard(
                         box = box!!,
                         newCount = newTiles.size,
+                        poiOnlyCount = poiOnlyCount,
                         onDeviceCount = onDeviceCount,
                         skipped = excluded.count { id -> tiles.any { it.id == id } },
                         canSend = ble.canUploadMap,
@@ -595,6 +624,43 @@ private suspend fun downloadTiles(
     }
 }
 
+/**
+ * Build (or reuse) and queue the `.poi` files for [work]. One POI query per
+ * ~0.25° group of tiles: the query is light, so groups can be far bigger than
+ * the map batches. Each POI is stored in the one H3 cell containing it.
+ */
+private suspend fun downloadPois(
+    work: List<MapTile>,
+    onStatus: (String?) -> Unit,
+    enqueue: (List<Pair<String, ByteArray>>) -> Unit,
+) {
+    val (cached, missingIds) = PoiCache.partition(work.map { it.id })
+    if (cached.isNotEmpty()) enqueue(cached)
+    val need = missingIds.toSet()
+    val groups = work.filter { it.id in need }.groupBy { t ->
+        val clat = (t.south + t.north) / 2
+        val clon = (t.west + t.east) / 2
+        "${floor(clat / 0.25).toInt()}_${floor(clon / 0.25).toInt()}"
+    }.values.toList()
+    for ((i, group) in groups.withIndex()) {
+        if (i > 0) delay(1000)   // pace the servers
+        onStatus("Fetching cycling POIs ${i + 1}/${groups.size}…")
+        val u = union(group)
+        val osm: OsmData = MapBuilder.fetchPois(u.south, u.west, u.north, u.east)
+        val files = withContext(Dispatchers.Default) {
+            // Which cell each POI is in, once (not once per tile).
+            val byCell = osm.pois.groupBy { H3Tiles.idAt(LatLon(it.lat, it.lon)) }
+            group.map { t ->
+                t.id to Cycling.buildPoi(
+                    byCell[t.id] ?: emptyList(), t.south, t.west, t.north, t.east, t.id,
+                ) { _, _ -> true }
+            }
+        }
+        PoiCache.store(files)
+        enqueue(files)
+    }
+}
+
 /** Bounding box enclosing a set of tiles, padded slightly so roads at tile edges
  *  are present in the fetch. */
 private fun union(ts: List<MapTile>): BoundingBox {
@@ -661,7 +727,7 @@ private fun StreamCard(
             trackColor = Palette.hairline,
         )
         Text(
-            "$sent of $total hexes sent" +
+            "$sent of $total sent" +
                 if (building && built > sent) " · $built built" else "",
             style = barlow(12.sp, FontWeight.SemiBold),
             color = Palette.good,
@@ -673,6 +739,7 @@ private fun StreamCard(
 private fun SelectionCard(
     box: BoundingBox,
     newCount: Int,
+    poiOnlyCount: Int,
     onDeviceCount: Int,
     skipped: Int,
     canSend: Boolean,
@@ -696,7 +763,8 @@ private fun SelectionCard(
         }
         Text(
             "$newCount to download · $onDeviceCount on device" +
-                if (skipped > 0) " · $skipped skipped" else "",
+                (if (poiOnlyCount > 0) " · $poiOnlyCount need POIs" else "") +
+                (if (skipped > 0) " · $skipped skipped" else ""),
             style = barlow(12.sp),
             color = Palette.muted,
         )
@@ -709,11 +777,12 @@ private fun SelectionCard(
         PrimaryButton(
             title = when {
                 !canSend -> "Connect device to send"
-                newCount == 0 -> "Nothing to download"
-                else -> "Download $newCount hex${if (newCount == 1) "" else "es"}"
+                newCount > 0 -> "Download $newCount hex${if (newCount == 1) "" else "es"}"
+                poiOnlyCount > 0 -> "Send POIs for $poiOnlyCount hex${if (poiOnlyCount == 1) "" else "es"}"
+                else -> "Nothing to download"
             },
             icon = Icons.Filled.Download,
-            enabled = canSend && newCount > 0,
+            enabled = canSend && (newCount > 0 || poiOnlyCount > 0),
             onClick = onDownload,
         )
         status?.let {

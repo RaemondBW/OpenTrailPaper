@@ -1,5 +1,6 @@
 package com.raemond.opentrailpaper.map
 
+import com.raemond.opentrailpaper.BuildConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -64,19 +65,62 @@ object MapBuilder {
 
     // MARK: Overpass
 
+    /**
+     * Sent on every Overpass request. overpass-api.de answers 406 to generic
+     * agents, which silently pushed every fetch onto the slower mirror.
+     */
+    val USER_AGENT = "OpenTrailPaper/${BuildConfig.VERSION_NAME} (Android)"
+
+    // `{B}` is the bbox. Bike routes: route=bicycle relations are resolved to
+    // member way ids ON THE SERVER and come back as three derived `bikeroute`
+    // elements (one per network level, ways = "id;id;…") — relation bodies list
+    // every member of a route that may cross a continent (1.1 MB for central SF
+    // against ~30 KB). `way(r.bk)` pulls in route members the highway filter
+    // misses so a route has no holes. Same as mapgen.js QUERY minus its POI
+    // clauses, which the app fetches separately (POI_QUERY).
     private val QUERY_TEMPLATE = """
         [out:json][timeout:90];
+        rel["route"="bicycle"]({B})->.bk;
         (
-          way["highway"~"^(motorway|trunk|primary|secondary|tertiary|residential|unclassified|living_street|pedestrian|cycleway|footway|path|track|steps)"](%1${'$'}s);
-          way["natural"="water"](%1${'$'}s);
-          way["natural"="coastline"](%1${'$'}s);
-          way["leisure"="park"](%1${'$'}s);
-          way["landuse"~"^(grass|forest|meadow|recreation_ground|cemetery|village_green)${'$'}"](%1${'$'}s);
-          way["natural"~"^(wood|scrub|grassland|heath)${'$'}"](%1${'$'}s);
+          way["highway"~"^(motorway|trunk|primary|secondary|tertiary|residential|unclassified|living_street|pedestrian|cycleway|footway|path|track|steps)"]({B});
+          way["natural"="water"]({B});
+          way["natural"="coastline"]({B});
+          way["leisure"="park"]({B});
+          way["landuse"~"^(grass|forest|meadow|recreation_ground|cemetery|village_green)${'$'}"]({B});
+          way["natural"~"^(wood|scrub|grassland|heath)${'$'}"]({B});
+          way(r.bk)({B});
         );
         out body;
         >;
         out skel qt;
+        rel.bk["network"~"^(icn|ncn)${'$'}"]->.r3;
+        way(r.r3)({B})->.w3;
+        make bikeroute level=3, ways=w3.set(id());
+        out;
+        rel.bk["network"="rcn"]->.r2;
+        way(r.r2)({B})->.w2;
+        make bikeroute level=2, ways=w2.set(id());
+        out;
+        (rel.bk; - rel.bk["network"~"^(icn|ncn|rcn)${'$'}"];)->.r1;
+        way(r.r1)({B})->.w1;
+        make bikeroute level=1, ways=w1.set(id());
+        out;
+    """.trimIndent()
+
+    // Cycling POIs on their own, so they refresh without rebuilding map tiles.
+    // `out tags center`: nodes come with lat/lon, outlines with the server's
+    // centre, and no geometry is downloaded (~180 KB for a 15 km box over San
+    // Francisco against ~30 MB for the map query).
+    private val POI_QUERY = """
+        [out:json][timeout:60];
+        (
+          node["amenity"~"^(drinking_water|toilets|bicycle_repair_station)${'$'}"]({B});
+          node["man_made"="water_tap"]["drinking_water"="yes"]({B});
+          node["amenity"="fountain"]["drinking_water"="yes"]({B});
+          nwr["shop"="bicycle"]({B});
+          way["amenity"~"^(toilets|bicycle_repair_station)${'$'}"]({B});
+        );
+        out tags center;
     """.trimIndent()
 
     private fun bbox(s: Double, w: Double, n: Double, e: Double) =
@@ -92,9 +136,18 @@ object MapBuilder {
         east: Double,
         onProgress: ((String) -> Unit)? = null,
     ): OsmData {
-        val q = String.format(QUERY_TEMPLATE, bbox(south, west, north, east))
+        val q = QUERY_TEMPLATE.replace("{B}", bbox(south, west, north, east))
         return overpassPost(q, onProgress)
     }
+
+    /** The cycling POIs in a box (see POI_QUERY); read them from [OsmData.pois]. */
+    suspend fun fetchPois(
+        south: Double,
+        west: Double,
+        north: Double,
+        east: Double,
+        onProgress: ((String) -> Unit)? = null,
+    ): OsmData = overpassPost(POI_QUERY.replace("{B}", bbox(south, west, north, east)), onProgress)
 
     /**
      * Coastline ways alone, over a deliberately generous bbox.
@@ -144,7 +197,7 @@ object MapBuilder {
                     conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
                         requestMethod = "POST"
                         doOutput = true
-                        setRequestProperty("User-Agent", "OpenTrailPaper-Android")
+                        setRequestProperty("User-Agent", USER_AGENT)
                         setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
                         connectTimeout = 45_000
                         readTimeout = 45_000
@@ -723,10 +776,10 @@ object MapBuilder {
         val tileWm = TILE_DEG * kx
         val tileHm = TILE_DEG * ky
 
-        // sub-tile key (ty*nx+tx) -> polylines [(cls, [(x,y) tile-local metres])]
-        val subTiles = HashMap<Int, MutableList<Pair<Int, List<IntArray>>>>()
+        // sub-tile key (ty*nx+tx) -> polylines [(cls, [(x,y) tile-local metres], flags)]
+        val subTiles = HashMap<Int, MutableList<Triple<Int, List<IntArray>, Int>>>()
 
-        fun emit(tx: Int, ty: Int, cls: Int, run: List<DoubleArray>) {
+        fun emit(tx: Int, ty: Int, cls: Int, run: List<DoubleArray>, flags: Int) {
             if (run.size < 2 || tx < 0 || tx >= nx || ty < 0 || ty >= ny) return
             val ox = tx * tileWm
             val oy = ty * tileHm
@@ -739,12 +792,17 @@ object MapBuilder {
                 pts.add(intArrayOf(lx, ly))
             }
             if (pts.size >= 2) {
-                subTiles.getOrPut(ty * nx + tx) { mutableListOf() }.add(cls to pts)
+                subTiles.getOrPut(ty * nx + tx) { mutableListOf() }.add(Triple(cls, pts, flags))
             }
         }
 
         for (way in osm.ways) {
-            if (way.roadClass < 0) continue
+            // Bike-route level from the derived `bikeroute` elements; a member
+            // the highway filter would not draw becomes a minor road / path.
+            val level = osm.routeLevels[way.id] ?: 0
+            val cls = way.classWith(level)
+            if (cls < 0) continue
+            val flags = way.baseFlags or (level and Cycling.WAY_ROUTE_MASK)
             val geo = osm.coords(way)
             if (geo.size < 2) continue
             val projected = geo.map { doubleArrayOf((it[1] - lon0) * kx, (it[0] - lat0) * ky) }
@@ -760,7 +818,7 @@ object MapBuilder {
                 val ty = floor(p[1] / tileHm).toInt()
                 run.add(p)
                 if (tx != curTx || ty != curTy) {
-                    emit(curTx, curTy, way.roadClass, run)
+                    emit(curTx, curTy, cls, run, flags)
                     // Carry the crossing segment into the next tile, so a road
                     // does not gain a gap at every tile seam.
                     run = arrayListOf(run[run.size - 2], p)
@@ -768,7 +826,7 @@ object MapBuilder {
                     curTy = ty
                 }
             }
-            emit(curTx, curTy, way.roadClass, run)
+            emit(curTx, curTy, cls, run, flags)
         }
 
         // Serialize
@@ -782,10 +840,14 @@ object MapBuilder {
         for ((key, polys) in subTiles) {
             val b = ByteArrayOutputStream(1 shl 12)
             b.u16(min(polys.size, 0xFFFF))
-            for ((cls, pts) in polys) {
+            for ((cls, pts, _) in polys) {
                 b.write(cls and 0xFF)
                 b.u16(min(pts.size, 0xFFFF))
                 for (p in pts) { b.i16(p[0]); b.i16(p[1]) }
+            }
+            // Way-flag trailer: exactly one byte per polyline, only when one is set.
+            if (polys.any { it.third != 0 }) {
+                for (p in polys.take(0xFFFF)) b.write(p.third and 0xFF)
             }
             blobs[key] = b.toByteArray()
         }

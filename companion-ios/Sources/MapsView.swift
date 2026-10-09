@@ -88,18 +88,25 @@ struct MapsView: View {
         }
     }
 
-    // Tiles that will actually be sent: not already on the device and not
-    // tapped-out by the user.
+    // Tiles that will actually be sent: not already on the device (or on it
+    // without the bike-route flags its firmware can draw) and not tapped-out by
+    // the user.
     private var newTiles: [MapTile] {
-        tiles.filter { !ble.deviceTileIds.contains($0.id) && !excluded.contains($0.id) }
+        tiles.filter { !ble.tileIsCurrent($0.id) && !excluded.contains($0.id) }
     }
-    private var onDeviceCount: Int { tiles.filter { ble.deviceTileIds.contains($0.id) }.count }
+    // Tiles whose cycling POIs go to the device: new ones, plus tiles already
+    // there with no POIs or POIs older than PoiCache.maxAge. Empty for
+    // firmware without POI support.
+    private var poiTiles: [MapTile] {
+        tiles.filter { !excluded.contains($0.id) && ble.poiNeedsSend($0.id) }
+    }
+    private var onDeviceCount: Int { tiles.filter { ble.tileIsCurrent($0.id) }.count }
 
     // Toggle whether a tapped hex is included in the download.
     private func toggleHex(at coord: CLLocationCoordinate2D) {
         guard let id = H3Tiles.id(at: coord),
               tiles.contains(where: { $0.id == id }),
-              !ble.deviceTileIds.contains(id) else { return }   // can't skip what's on-device
+              !ble.tileIsCurrent(id) else { return }   // can't skip what's on-device
         if excluded.contains(id) { excluded.remove(id) } else { excluded.insert(id) }
     }
 
@@ -331,7 +338,7 @@ struct MapsView: View {
                         .font(BarlowFont.text(14, .semibold)).foregroundStyle(Palette.accent)
                 }
                 ProgressView(value: Double(sent), total: Double(total)).tint(Palette.good)
-                Text("\(sent) of \(total) hexes sent"
+                Text("\(sent) of \(total) sent"
                      + (building && converted.count > sent ? " · \(converted.count) built" : ""))
                     .font(BarlowFont.text(12, .semibold)).foregroundStyle(Palette.good)
             }
@@ -340,6 +347,7 @@ struct MapsView: View {
 
     private func selectionCard(_ b: (s: Double, w: Double, n: Double, e: Double)) -> some View {
         let new = newTiles.count
+        let poiOnly = poiTiles.filter { t in !newTiles.contains { $0.id == t.id } }.count
         let skipped = excluded.intersection(tiles.map(\.id)).count
         return card {
             VStack(alignment: .leading, spacing: 10) {
@@ -354,6 +362,7 @@ struct MapsView: View {
                     }
                 }
                 Text("\(new) to download · \(onDeviceCount) on device"
+                     + (poiOnly > 0 ? " · \(poiOnly) need POIs" : "")
                      + (skipped > 0 ? " · \(skipped) skipped" : ""))
                     .font(BarlowFont.text(12)).foregroundStyle(Palette.muted)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -361,10 +370,11 @@ struct MapsView: View {
                     .font(BarlowFont.text(11)).foregroundStyle(Palette.faint)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 PrimaryButton(title: !ble.canUploadMap ? "Connect device to send"
-                                    : new == 0 ? "Nothing to download"
-                                    : "Download \(new) hex\(new == 1 ? "" : "es")",
+                                    : new > 0 ? "Download \(new) hex\(new == 1 ? "" : "es")"
+                                    : poiOnly > 0 ? "Send POIs for \(poiOnly) hex\(poiOnly == 1 ? "" : "es")"
+                                    : "Nothing to download",
                               systemImage: "arrow.down.circle",
-                              enabled: ble.canUploadMap && new > 0) { download() }
+                              enabled: ble.canUploadMap && (new > 0 || poiOnly > 0)) { download() }
                 if let s = status { Text(s).font(BarlowFont.text(12)).foregroundStyle(Palette.accent) }
             }
         }
@@ -412,12 +422,13 @@ struct MapsView: View {
 
     private func download() {
         let missing = newTiles
-        guard !missing.isEmpty else { return }
+        let poiWork = poiTiles
+        guard !missing.isEmpty || !poiWork.isEmpty else { return }
         building = true
         converted = []
         failedHexes = []
-        downloadTotal = missing.count
-        status = "Fetching map data…"
+        downloadTotal = missing.count + poiWork.count
+        status = missing.isEmpty ? "Fetching cycling POIs…" : "Fetching map data…"
 
         // Group tiles into bounded OSM fetches (~0.08° ≈ 9 km) so each Overpass
         // query stays light — big queries 504 on the busy public servers. Each
@@ -431,6 +442,7 @@ struct MapsView: View {
         downloadTask = Task {
             var anyBuilt = false
             do {
+              if !missing.isEmpty {
                 // Anything built before goes straight out — no Overpass, no
                 // elevation fetch, no re-encoding. This is what makes a retry
                 // after a dropped link cheap instead of a full rebuild.
@@ -545,12 +557,26 @@ struct MapsView: View {
                     store.noteDownloaded(withElev.map(\.id))
                     ble.enqueueTiles(withElev)             // send in parallel with the next fetch
                 }
+              }
+                // Cycling POIs, after the map tiles: their own small query, their
+                // own cache, sent through the same transfer. A failure here never
+                // fails the map download — the map is the thing that matters.
+                var poiNote: String? = nil
+                if !poiWork.isEmpty {
+                    do { try await sendPois(poiWork) } catch is CancellationError {
+                        throw CancellationError()
+                    } catch {
+                        poiNote = "Cycling POIs could not be fetched — try again later."
+                    }
+                }
                 building = false
                 ble.finishTileStream()                     // let the queue drain
                 if !failedHexes.isEmpty {
                     status = "\(failedHexes.count) hex\(failedHexes.count == 1 ? "" : "es") had no map data — tap Select area and retry them."
+                } else if missing.isEmpty {
+                    status = poiNote
                 } else {
-                    status = anyBuilt ? nil : "No roads found in that area."
+                    status = anyBuilt ? poiNote : "No roads found in that area."
                 }
             } catch is CancellationError {
                 building = false
@@ -561,6 +587,41 @@ struct MapsView: View {
                 ble.finishTileStream()                     // send whatever built before the error
                 status = error.localizedDescription
             }
+        }
+    }
+
+    /// Build (or reuse) and queue the `.poi` files for `work`. One POI query per
+    /// ~0.25° group of tiles: the query is light, so groups can be far bigger
+    /// than the map batches. Each POI is stored in the one H3 cell containing it.
+    private func sendPois(_ work: [MapTile]) async throws {
+        let (cached, missingIds) = await PoiCache.shared.partition(work.map(\.id))
+        ble.enqueuePois(cached)
+        let need = Set(missingIds)
+        let groups = Dictionary(grouping: work.filter { need.contains($0.id) }) { t -> String in
+            let clat = (t.south + t.north) / 2, clon = (t.west + t.east) / 2
+            return "\(Int((clat / 0.25).rounded(.down)))_\(Int((clon / 0.25).rounded(.down)))"
+        }.map { $0.value }
+        for (i, group) in groups.enumerated() {
+            if i > 0 { try? await Task.sleep(nanoseconds: 1_000_000_000) }  // pace the servers
+            try Task.checkCancellation()
+            status = "Fetching cycling POIs \(i + 1)/\(groups.count)…"
+            let u = union(group)
+            let json = try await MapBuilder.fetchPOIs(south: u.s, west: u.w, north: u.n, east: u.e)
+            let pois = try MapBuilder.collectPois(regionJSON: json)
+            // Which cell each POI is in, once (not once per tile).
+            var byCell: [String: [MapBuilder.Poi]] = [:]
+            for p in pois {
+                if let id = H3Tiles.id(at: .init(latitude: p.lat, longitude: p.lon)) {
+                    byCell[id, default: []].append(p)
+                }
+            }
+            let files = group.map { t in
+                (id: t.id, data: MapBuilder.buildPoi(byCell[t.id] ?? [], south: t.south,
+                    west: t.west, north: t.north, east: t.east, cell: t.id,
+                    contains: { _, _ in true }))
+            }
+            await PoiCache.shared.store(files)
+            ble.enqueuePois(files)
         }
     }
 

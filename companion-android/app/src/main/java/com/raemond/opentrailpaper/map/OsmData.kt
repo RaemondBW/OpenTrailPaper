@@ -24,6 +24,10 @@ class OsmData(
     private val nodeLat: DoubleArray,
     private val nodeLon: DoubleArray,
     val ways: List<Way>,
+    /** way id -> highest bike-route network level (1 local … 3 national). */
+    val routeLevels: Map<Long, Int> = emptyMap(),
+    /** Cycling POIs, in the order docs/mapgen.js collectPois produces. */
+    val pois: List<Cycling.Poi> = emptyList(),
 ) {
     /**
      * One way, reduced to the questions the encoders ask of it. Tags are dropped
@@ -37,7 +41,16 @@ class OsmData(
         val isWater: Boolean,
         val isCoastline: Boolean,
         val isPark: Boolean,
-    )
+        val id: Long = 0,
+        /** Cycleway / bike-lane way flags from the way's own tags (no route level). */
+        val baseFlags: Int = 0,
+        /** Class to draw it as if it turns out to be a bike-route member, or -1. */
+        val memberClass: Int = -1,
+    ) {
+        /** Render class once route membership is known: a route member the
+         *  highway filter does not classify (service road …) still draws. */
+        fun classWith(level: Int): Int = if (roadClass < 0 && level > 0) memberClass else roadClass
+    }
 
     /** Resolves a way's node ids to coordinates, dropping any the response omitted. */
     fun coords(way: Way): List<DoubleArray> = coords(way.nodes)
@@ -99,6 +112,12 @@ class OsmData(
             var lon = DoubleArray(1 shl 14)
             var nodeCount = 0
             val ways = ArrayList<Way>()
+            val seenWays = HashSet<Long>()
+            val routeLevels = HashMap<Long, Int>()
+            // POIs: key "n<id>"/"w<id>"/"r<id>" -> entry, in insertion order
+            // (LinkedHashMap keeps a re-put key in place, like a JS Map).
+            val poiByKey = LinkedHashMap<String, Cycling.Poi>()
+            val poiOutlines = ArrayList<Triple<String, Pair<Int, Int>, LongArray>>()
 
             JsonReader(InputStreamReader(stream, Charsets.UTF_8)).use { reader ->
                 reader.beginObject()
@@ -114,11 +133,9 @@ class OsmData(
                         var elLat = Double.NaN
                         var elLon = Double.NaN
                         var nodes: LongArray? = null
-                        var highway: String? = null
-                        var footway: String? = null
-                        var natural: String? = null
-                        var leisure: String? = null
-                        var landuse: String? = null
+                        var tags: HashMap<String, String>? = null
+                        var centerLat = Double.NaN
+                        var centerLon = Double.NaN
 
                         reader.beginObject()
                         while (reader.hasNext()) {
@@ -136,6 +153,10 @@ class OsmData(
                                 }
 
                                 "tags" -> {
+                                    // Every tag, briefly: the cycling flags and POIs
+                                    // read a dozen keys. Dropped once the element is
+                                    // classified, so the region never holds them.
+                                    val t = HashMap<String, String>()
                                     reader.beginObject()
                                     while (reader.hasNext()) {
                                         val key = reader.nextName()
@@ -143,13 +164,19 @@ class OsmData(
                                             reader.skipValue()
                                             continue
                                         }
-                                        val value = reader.nextString()
-                                        when (key) {
-                                            "highway" -> highway = value
-                                            "footway" -> footway = value
-                                            "natural" -> natural = value
-                                            "leisure" -> leisure = value
-                                            "landuse" -> landuse = value
+                                        t[key] = reader.nextString()
+                                    }
+                                    reader.endObject()
+                                    tags = t
+                                }
+
+                                "center" -> {             // `out center` (POI query)
+                                    reader.beginObject()
+                                    while (reader.hasNext()) {
+                                        when (reader.nextName()) {
+                                            "lat" -> centerLat = reader.nextDouble()
+                                            "lon" -> centerLon = reader.nextDouble()
+                                            else -> reader.skipValue()
                                         }
                                     }
                                     reader.endObject()
@@ -169,17 +196,59 @@ class OsmData(
                             lon[nodeCount] = elLon
                             nodeIndex[id] = nodeCount
                             nodeCount += 1
+                            val poi = tags?.let { Cycling.poiOf(it) }
+                            if (poi != null) {
+                                poiByKey["n$id"] = Cycling.Poi(poi.first, poi.second, elLat, elLon)
+                            }
+                        } else if ((type == "way" || type == "relation") && tags != null &&
+                            Cycling.poiOf(tags) != null
+                        ) {
+                            // A POI outline: never a map feature (mapgen.js skips
+                            // it the same way), placed at the server's centre or
+                            // else its vertex centroid once all nodes are known.
+                            if (type == "way") seenWays.add(id)
+                            val poi = Cycling.poiOf(tags)!!
+                            val key = (if (type == "way") "w" else "r") + id
+                            if (!centerLat.isNaN() && !centerLon.isNaN()) {
+                                poiByKey[key] = Cycling.Poi(poi.first, poi.second, centerLat, centerLon)
+                            } else if (type == "way" && nodes != null) {
+                                poiOutlines.add(Triple(key, poi, nodes))
+                            }
                         } else if (type == "way" && nodes != null) {
-                            val roadClass = classify(highway, footway)
+                            if (!seenWays.add(id)) continue   // arrived twice (route member)
+                            val t = tags ?: emptyMap()
+                            val natural = t["natural"]
+                            val roadClass = classify(t["highway"], t["footway"])
                             val water = natural == "water"
                             val coast = natural == "coastline"
-                            val park = isPark(leisure, landuse, natural)
+                            val park = isPark(t["leisure"], t["landuse"], natural)
+                            val memberClass = Cycling.classifyRouteMember(t)
                             // A way that is none of these is every building,
                             // barrier and boundary Overpass hands back with the
                             // recursion — dropping them here is most of the
-                            // memory saving.
-                            if (roadClass >= 0 || water || coast || park) {
-                                ways.add(Way(nodes, roadClass, water, coast, park))
+                            // memory saving. Route-member candidates stay until
+                            // the `bikeroute` elements (sent last) say which are.
+                            if (roadClass >= 0 || water || coast || park || memberClass >= 0) {
+                                ways.add(
+                                    Way(
+                                        nodes, roadClass, water, coast, park,
+                                        id = id,
+                                        baseFlags = Cycling.wayFlags(t, 0),
+                                        memberClass = memberClass,
+                                    ),
+                                )
+                            }
+                        } else if (type == "bikeroute") {
+                            // Derived element: one per network level, ways = "id;id;…".
+                            val t = tags
+                            val lvl = (t?.get("level")?.toIntOrNull() ?: 0) and 3
+                            val list = t?.get("ways")
+                            if (!list.isNullOrEmpty()) {
+                                for (part in list.split(';')) {
+                                    val k = part.toLongOrNull() ?: continue
+                                    if (k == 0L) continue
+                                    if ((routeLevels[k] ?: 0) < lvl) routeLevels[k] = lvl
+                                }
                             }
                         }
                     }
@@ -188,7 +257,20 @@ class OsmData(
                 reader.endObject()
             }
 
-            return OsmData(nodeIndex, lat, lon, ways)
+            for ((key, poi, nids) in poiOutlines) {
+                var la = 0.0
+                var lo = 0.0
+                var k = 0
+                val ring = if (nids.size > 1 && nids.first() == nids.last()) {
+                    nids.copyOf(nids.size - 1)
+                } else nids
+                for (nid in ring) {
+                    val i = nodeIndex[nid] ?: continue
+                    la += lat[i]; lo += lon[i]; k++
+                }
+                if (k > 0) poiByKey[key] = Cycling.Poi(poi.first, poi.second, la / k, lo / k)
+            }
+            return OsmData(nodeIndex, lat, lon, ways, routeLevels, poiByKey.values.toList())
         }
     }
 }

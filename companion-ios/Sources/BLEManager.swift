@@ -367,8 +367,24 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var tileMessage: String? = nil
     @Published var deviceTileIds: Set<String> = []   // H3 ids already on the SD
     private var tileIdsBuilding: [String] = []
-    private var tileQueue: [(id: String, data: Data)] = []
+    // Cycling layer (investigations/osm-pois-bike-routes.md). Firmware that has
+    // it answers the 0x08 POI listing; older firmware never does, so this stays
+    // false for the connection and nothing cycling-specific is sent to it.
+    @Published var deviceSupportsPois = false
+    @Published var devicePoiIds: Set<String> = []    // H3 ids with a .poi on the SD
+    private var poiIdsBuilding: [String] = []
+    /// When this phone last sent each tile's .poi, for the refresh policy.
+    private var poiSentAt: [String: Double] =
+        (UserDefaults.standard.dictionary(forKey: "poiSentAt") as? [String: Double]) ?? [:]
+    /// Map tiles this phone sent WITH the bike-route way flags. A tile on the
+    /// device but not in here predates them and is re-sent the next time its
+    /// area is synced (only to firmware that draws them).
+    private var flaggedTileIds: Set<String> =
+        Set(UserDefaults.standard.stringArray(forKey: "flaggedTileIds") ?? [])
+    private struct TileJob { let id: String; let data: Data; let poi: Bool }
+    private var tileQueue: [TileJob] = []
     private var currentTileId: String? = nil        // non-nil while sending a tile
+    private var currentIsPoi = false                // ...and it is a .poi file
     private var tileJobFailed = false
     private var tilesMoreComing = false             // app still building tiles to enqueue
 
@@ -1102,6 +1118,22 @@ final class BLEManager: NSObject, ObservableObject {
     func refreshDeviceTiles() {
         guard let c = mapChar, let p = peripheral else { return }
         p.writeValue(Data([0x07]), for: c, type: .withResponse)
+        p.writeValue(Data([0x08]), for: c, type: .withResponse)   // .poi files (new firmware only)
+    }
+
+    /// On the device and current: built with the bike-route flags, or the
+    /// device's firmware could not draw them anyway.
+    func tileIsCurrent(_ id: String) -> Bool {
+        deviceTileIds.contains(id) && (!deviceSupportsPois || flaggedTileIds.contains(id))
+    }
+
+    /// The tile's POIs should go to the device: it can draw them, and it has
+    /// none for this tile or this phone sent them more than PoiCache.maxAge ago.
+    func poiNeedsSend(_ id: String) -> Bool {
+        guard deviceSupportsPois else { return false }
+        guard devicePoiIds.contains(id) else { return true }
+        guard let at = poiSentAt[id] else { return false }   // someone else's: leave it
+        return Date().timeIntervalSince1970 - at > PoiCache.maxAge
     }
 
     // Streaming upload: the app produces tiles batch-by-batch while download +
@@ -1137,13 +1169,24 @@ final class BLEManager: NSObject, ObservableObject {
     // Add freshly-built tiles to the send queue; starts pumping if idle. Skips
     // tiles already on the device or already queued.
     func enqueueTiles(_ newOnes: [(id: String, data: Data)]) {
+        enqueue(newOnes.filter { !tileIsCurrent($0.id) }, poi: false)
+    }
+
+    /// Queue tiles' `.poi` files (sent through the same tile transfer — the
+    /// firmware tells them apart by their magic). Skipped for firmware without
+    /// POI support and for tiles whose POIs the device has and are fresh.
+    func enqueuePois(_ newOnes: [(id: String, data: Data)]) {
+        enqueue(newOnes.filter { poiNeedsSend($0.id) }, poi: true)
+    }
+
+    private func enqueue(_ newOnes: [(id: String, data: Data)], poi: Bool) {
         guard tilesUploading else { return }
-        let queued = Set(tileQueue.map(\.id))
+        let queued = Set(tileQueue.filter { $0.poi == poi }.map(\.id))
         let fresh = newOnes.filter {
-            !deviceTileIds.contains($0.id) && !queued.contains($0.id) && $0.id != currentTileId
+            !queued.contains($0.id) && !($0.id == currentTileId && currentIsPoi == poi)
         }
         guard !fresh.isEmpty else { return }
-        tileQueue.append(contentsOf: fresh)
+        tileQueue.append(contentsOf: fresh.map { TileJob(id: $0.id, data: $0.data, poi: poi) })
         tilesTotal += fresh.count
         if currentTileId == nil { sendNextTile() }   // pump if idle
         reportTiles()
@@ -1189,6 +1232,7 @@ final class BLEManager: NSObject, ObservableObject {
         }
         tileQueue.removeFirst()
         currentTileId = tile.id
+        currentIsPoi = tile.poi
         mapData = tile.data
         mapOffset = 0
         mapEndSent = false
@@ -1200,7 +1244,9 @@ final class BLEManager: NSObject, ObservableObject {
         var cmd = Data([0x06])         // begin-tile
         var size = UInt32(tile.data.count).littleEndian
         withUnsafeBytes(of: &size) { cmd.append(contentsOf: $0) }
-        cmd.append(Data(tile.id.utf8))
+        // A .poi goes under "<id>.poi"; saveTile strips the extension and
+        // stores it by its magic either way, the name just reads well in logs.
+        cmd.append(Data((tile.poi ? "\(tile.id).poi" : tile.id).utf8))
         p.writeValue(cmd, for: c, type: .withResponse)
     }
 
@@ -1231,7 +1277,15 @@ final class BLEManager: NSObject, ObservableObject {
         case 0xB0: pumpMapChunks()                                // device ready (map or tile)
         case 0xB1:                                                // saved + active
             if let id = currentTileId {                           // a tile finished
-                deviceTileIds.insert(id)
+                if currentIsPoi {
+                    devicePoiIds.insert(id)
+                    poiSentAt[id] = Date().timeIntervalSince1970
+                    UserDefaults.standard.set(poiSentAt, forKey: "poiSentAt")
+                } else {
+                    deviceTileIds.insert(id)
+                    flaggedTileIds.insert(id)
+                    UserDefaults.standard.set(Array(flaggedTileIds), forKey: "flaggedTileIds")
+                }
                 tilesDone += 1
                 currentTileId = nil
                 sendNextTile()
@@ -1263,6 +1317,16 @@ final class BLEManager: NSObject, ObservableObject {
         case 0xD2:                                               // tile-list end
             deviceTileIds = Set(tileIdsBuilding)
             cacheDeviceTiles()
+        case 0xD3: poiIdsBuilding = []                            // poi-list begin
+        case 0xD4 where d.count > 1:                              // comma-separated ids
+            if let s = String(data: d.subdata(in: 1..<d.count), encoding: .utf8) {
+                for id in s.split(separator: ",") where !id.isEmpty {
+                    poiIdsBuilding.append(String(id))
+                }
+            }
+        case 0xD5:                                               // poi-list end
+            devicePoiIds = Set(poiIdsBuilding)
+            deviceSupportsPois = true
         case 0xC0: deviceMapsBuilding = []                        // map-list begin
         case 0xC1 where d.count >= 34:                            // entry: 4×f64 + flag
             func f64(_ i: Int) -> Double {
@@ -2235,6 +2299,7 @@ extension BLEManager: CBCentralManagerDelegate {
                                          message: "Connection dropped")
             TransferCenter.shared.finish(Self.routeTransferId, success: false,
                                          message: "Connection dropped")
+            deviceSupportsPois = false      // re-learnt from the next 0x08 answer
             if tilesUploading {
                 tileQueue = []
                 finishTileJob(message: "Interrupted — reconnect to resume")

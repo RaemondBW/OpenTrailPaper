@@ -1,13 +1,17 @@
 # Cycling POIs and bike routes on the device map
 
-Status as of 2026-10-06. This is an investigation with a working prototype on
-branch `feat/osm-pois-bike-routes`. The prototype covers the browser generator
-(`docs/mapgen.js`), the tile format, the new per-tile `.poi` file, and the
-firmware loader, projector and renderer. POIs are stored **outside** the map
-files, in a `<h3>.poi` next to each `<h3>.ebm`. The bike-route flags stay
-inside the `.ebm`.
-The phone apps' builders (Swift and Kotlin) and `tools/maps/build_map.py` are
-**not** ported yet (see section 6).
+Status as of 2026-10-08. Implemented on branch `feat/osm-pois-bike-routes`:
+- the website builder (`docs/mapgen.js`);
+- **both phone apps** (iOS `MapBuilder.swift`, Android `MapBuilder.kt` /
+  `OsmData.kt` / `Cycling.kt`), which produce byte-identical output to the
+  website for the same Overpass input (section 5);
+- the tile format and the per-tile `.poi` file;
+- the firmware loader, projector and renderer.
+
+POIs are stored **outside** the map files, in a `<h3>.poi` next to each
+`<h3>.ebm`; the bike-route flags stay inside the `.ebm`.
+`tools/maps/build_map.py` (the whole-region builder) is not ported, and
+nothing has run on a device yet (section 6).
 
 Goal: show the things a rider stops for (drinking water, toilets,
 self-service repair stands, bike shops) as icons on the map, and draw OSM bike
@@ -118,7 +122,8 @@ property the extension below relies on.
   did not link `vfont.cpp` / `workout.cpp`. Both are fixed on this branch,
   because the screenshots below depend on them.
 - **The main Overpass instance answers `406 Not Acceptable` to
-  generic user agents** (curl's default, Node's `fetch`). The generators fell
+  generic user agents** (fixed: both apps now send
+  `User-Agent: OpenTrailPaper/<version> (iOS|Android)`) (curl's default, Node's `fetch`). The generators fell
   through to the mail.ru mirror each time. A request with an explicit
   `User-Agent: OpenTrailPaper/…` was served normally. Worth setting one
   deliberately in all three clients.
@@ -226,8 +231,8 @@ bounding box covers it.
 ### 2b. Overpass additions
 
 The website keeps one combined query (below). `buildEbm` takes the ways and
-route flags from the response, and `buildPoi` takes the POIs. The apps are
-meant to use **two** queries, so POIs can be refreshed on their own: the map
+route flags from the response, and `buildPoi` takes the POIs. The apps
+use **two** queries, so POIs can be refreshed on their own: the map
 query with the route additions, and this small POI query:
 
 ```
@@ -335,7 +340,59 @@ network is what remains. The before and after below are at 16 m/px:
 |---|---|---|---|
 | ![](img/osm-pois-bike-routes/after_mpp02.png) | ![](img/osm-pois-bike-routes/after_mpp08.png) | ![](img/osm-pois-bike-routes/after_trackup_mpp04.png) | ![](img/osm-pois-bike-routes/after_wiggle_mpp02.png) |
 
-### 2d. Interaction
+### 2d. The apps: query, cache, send, refresh
+
+Both apps do the same thing, in `MapsView.swift` / `MapsSheet.kt` (pipeline),
+`BLEManager.swift` / `BleManager.kt` (transfer) and `TileCache.swift` /
+`TileCache.kt` + `PoiCache.kt` (caches).
+
+- **Map tiles.** The map query gains the bike-route part (2b, without the
+  POI clauses). `encode` adds the way flags and trailers exactly as
+  `buildEbm` does.
+- **POIs, a separate query.** The `out tags center` POI query runs once per
+  ~0.25° group of hexes (the map query uses ~0.08° batches). Each POI is
+  assigned to the H3 cell that contains it, computed once per POI, and one
+  `.poi` per hex is built with the same bytes as `buildPoi`. A POI fetch that
+  fails leaves the map download successful and shows a note.
+- **Caches.**
+  - Map tiles: `TileCache-v3`, 90-day expiry.
+  - POIs: `PoiCache-v1`, a separate directory, 30-day expiry.
+  - On first launch the `TileCache-v2` files are moved into v3 with their
+    modification time set to 1970. So they are never reused for sending,
+    and the next sync of that area rebuilds them with the flags. But the map
+    still shows those areas as downloaded on this phone, and `trim()` drops
+    them first.
+- **What the device has.** The app sends a new BLE opcode, `0x08`, after
+  the tile list (`0x07`). The device replies with the ids that have a `.poi`
+  (`0xD3` begin / `0xD4` ids / `0xD5` end) by walking the same directories
+  as the tile list. Firmware without the cycling layer never answers, so
+  `deviceSupportsPois` stays false for that connection. Nothing
+  cycling-specific is then sent to that firmware: no `.poi` files, and no
+  re-sends.
+- **Sending.** `.poi` files go through the existing tile transfer (`0x06`,
+  named `<id>.poi`, told apart by the `EPOI` magic in `saveTile`). They are
+  queued after the map tiles of the same sync. The progress counts them as
+  items ("12 of 20 sent").
+- **POIs on their own.** Selecting an area already on the device offers
+  **"Send POIs for N hexes"** when any of its hexes need them. This rebuilds
+  no map tiles.
+- **POI refresh policy.** A hex's POIs are (re)sent when the device has none
+  for it, or when **this phone** sent them more than 30 days ago. The app
+  keeps a per-tile `poiSentAt` (UserDefaults / SharedPreferences). A `.poi`
+  the device has but this phone did not send (website ZIP, another phone) is
+  left alone. A cached `.poi` older than 30 days is re-fetched first.
+- **Tiles already on the device (the flags).** The app records which tiles
+  *it* sent with the flags (`flaggedTileIds`). For firmware that answers
+  `0x08`, a tile on the device that is not in that set counts as "to
+  download" the next time its area is synced, and is rebuilt and re-sent
+  once. Riders don't need to do anything, and a sync of an area they never
+  revisit costs nothing.
+  - Cost: one full re-send per area on the first sync after updating.
+  - Tiles from the website ZIP are re-sent once too, because the app cannot
+    tell that they already have the flags.
+  - Firmware that can't draw the flags never triggers a re-send.
+
+### 2e. Interaction
 
 None for now. The prototype had a "nearest water" chip in the map's top-left
 corner (distance and an arrow to the closest `amenity=drinking_water` among
@@ -414,23 +471,20 @@ less than shipping relation bodies.
 The device's tile listings (which the app uses for its "already on the
 device" check) match only `.ebm` names, so `.poi` files do not confuse them.
 
-The apps need more work when they are ported:
+**App and firmware combinations:**
+- **New app, old firmware.** The device never answers `0x08`, so the app
+  sends exactly what it sent before. The tiles do now carry the trailers,
+  which old firmware ignores. No `.poi` files are sent, and no tile is
+  re-sent.
+- **New app, new firmware.** Full layer. Tiles on the card from before the
+  update are re-sent once, the next time their area is synced (2d).
+- **Old app, new firmware.** Behaves as today: no flags, no POIs. The `0x08`
+  listing is simply never asked for.
 
-- **Map cache.** Each phone keeps a `TileCache-v2`, and the device skips
-  tiles it already has by id. A rider therefore keeps the tiles already on
-  the card until they are rebuilt and re-sent. The map cache should move to
-  `TileCache-v3` (for the flags).
-- **POI cache.** `.poi` files want a cache of their own, with a shorter
-  refresh period.
-- **Existing cards.** Getting the flags onto them needs a decision
-  (section 7). POIs do not, because a `.poi` can be sent on its own next to a
-  tile that is already there.
-
-**Sending a `.poi` from the app needs no new BLE protocol.** `saveTile`
-recognises the `EPOI` magic and writes the bytes to `<id>.poi` instead of
-`<id>.ebm`. It then drops the cached tile, so the next frame reloads both
-files. The app can push POIs through the existing tile transfer, with the
-same tile id.
+**Sending a `.poi`.** `saveTile` recognises the `EPOI` magic and writes the
+bytes to `<id>.poi` instead of `<id>.ebm`. It then drops the cached tile, so
+the next frame reloads both files. The only protocol addition is the `0x08`
+listing.
 
 ## 5. What the prototype covers
 
@@ -471,6 +525,31 @@ Built and exercised end to end on this branch:
     - loads the `.poi` files beside the tiles;
     - reports flagged polylines, POIs, host project/draw µs and the POI peak
       in the sweep.
+- **Apps.** iOS and Android:
+  - map query with bike routes, way flags and trailers;
+  - the separate POI query, `.poi` build, `PoiCache`;
+  - `.poi` sending, both with map tiles and on their own;
+  - the `0x08` capability/listing, `poiSentAt` refresh tracking and
+    `flaggedTileIds` upgrade tracking;
+  - `TileCache-v3` with the v2 migration;
+  - the explicit User-Agent.
+
+  Builds:
+  - `xcodebuild` (iOS Simulator, no signing) succeeds;
+  - Android `./gradlew assembleDebug testDebugUnitTest` passes, including the
+    new `CrossPortTest` (way-flag trailer, route-member class, `.poi` header
+    and records).
+- **Cross-port check.** `tools/map_test/run_crossport.sh` runs one saved
+  Overpass response through `mapgen.js`, the iOS `MapBuilder.swift` (host
+  build with the vendored H3 C) and the Android `MapBuilder.kt` (JVM test,
+  `ANDROID_CROSSPORT=1`). It compares per tile the `.ebm` road data with its
+  trailers, the bbox `.poi`, and (JS vs Swift, which have H3) the H3-cell
+  `.poi`. Results, all byte-identical across the three ports:
+
+  | input | tiles | contents |
+  |---|---|---|
+  | website combined query, 9 MB response | 3 | 9 802 road records, 9 802 trailer bytes, 1 191 route-flagged ways; 107 POIs (H3 cell) / 153 (bbox) |
+  | apps' POI query (`out tags center`), central SF | 12 | 580 POIs (H3 cell) / 816 (bbox) |
 - **Screenshots.** `investigations/img/osm-pois-bike-routes/`.
 
 To reproduce, build tiles with `buildEbm` and `buildPoi` per H3 cell into a
@@ -480,28 +559,22 @@ directory (as `mapgen-ui.js` does), or unzip the website's ZIP. Then:
 tools/map_test/run_tilescene.sh <tiledir> <outdir> 37.7735 -122.447
 TILESCENE_SWEEP=1 tools/map_test/tilescene <tiledir> /tmp
 python3 tools/maps/ebm_info.py <tiledir>
+H3JS_DIR=<dir with node_modules/h3-js> ANDROID_CROSSPORT=1 \
+  tools/map_test/run_crossport.sh <overpass.json> <s> <w> <n> <e>
 ```
 
 ## 6. What is left
 
-1. **Port the builder to Swift and Kotlin** (the path riders actually use),
-   plus `build_map.py`. Android's streaming parser in `OsmData.kt` keeps only
-   a few way tags. It needs:
-   - node tags, and `amenity`/`shop`/`access`/`fee`/`seasonal`/`drinking_water`
-     on ways;
-   - `bicycle`, `cycleway*` and `service:bicycle:*`;
-   - the derived `bikeroute` elements.
-
-   Add a fixture test so all ports produce identical bytes for one Overpass
-   response (`FormatTest.kt` is the natural home). Bump `TileCache-v2` to
-   `-v3` in both apps.
-2. **POIs in the apps.** This needs:
-   - the separate POI query (section 2b);
-   - a `.poi` cache keyed by tile id;
-   - sending `.poi` files through the existing tile transfer, both with new
-     tiles and on their own for tiles already on the card.
-
-   The device can already store and draw them.
+1. **Device test** of the whole path, with new firmware and each app:
+   - select an area already on the device: it should show "N to download"
+     (the flag upgrade), then rebuild and send tiles and `.poi` files;
+   - select it again: "Nothing to download";
+   - select an area whose tiles are current but which has no POIs: "Send
+     POIs for N hexes";
+   - with old firmware: no `.poi` sends and no re-sends;
+   - check the diag log for `poi save` / `poi list` lines and the
+     `tile save rejected` absence.
+2. **`build_map.py`** is not ported (whole-region maps only; low priority).
 3. **On-glass checks.** Draw time at 8 and 16 m/px on the device. Whether the
    checker band ghosts under DU: it is in the settle-clean mask, but it is the
    first 1-px 50% pattern on the map. Legibility of the 1 px lane dots in
@@ -515,20 +588,15 @@ python3 tools/maps/ebm_info.py <tiledir>
 
 ## 7. Open decisions
 
-- **Getting the bike-route flags onto existing devices.** Tiles already on
-  the card have no flags until they are re-sent. POIs are not affected: the
-  app can send `.poi` files for tiles that are already there. Options:
-  - the app re-sends every tile once after the update. This is simple, but it
-    means megabytes over BLE;
-  - the device reports which tiles lack the flags, and the app offers
-    "update maps";
-  - do nothing: new downloads get the flags and old ones age out.
-- **How the app learns which tiles have POIs.** The device's tile listing
-  returns only `.ebm` ids. Either add a `.poi` listing (one more directory
-  scan), or have the app track what it has sent.
-- **POI refresh policy.** How often should the app rebuild `.poi` files?
-  Water points and repair stands change more often than roads. Should it
-  refresh them automatically while the phone is connected?
+- **Decided:**
+  - existing tiles are re-sent once, when their area is next synced, and
+    only to firmware that can draw the flags;
+  - the device lists its `.poi` files (`0x08`), which doubles as the
+    capability check;
+  - POIs are refreshed after 30 days, on the next sync of the area (2d).
+
+  Still open: whether POI refresh should also happen in the background while
+  the phone is connected, without the rider opening Maps.
 - **Default on or off.** Should the layer be a setting? Some riders will find
   the bands busy in a dense city at 8 m/px. Possible toggles: POIs, bands.
 - **Which POIs.** Also include `amenity=bicycle_rental` / bike share, cafés,

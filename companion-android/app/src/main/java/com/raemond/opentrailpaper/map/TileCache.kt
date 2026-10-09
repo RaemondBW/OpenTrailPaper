@@ -42,7 +42,19 @@ object TileCache {
         // contain, so stale blobs cannot mask the fix. v2 matches the iOS cache
         // generation: tiles built before the padded-coastline fetch have no sea
         // fill, and reusing one would look exactly like the bug still being there.
-        dir = File(context.filesDir, "tiles/TileCache-v2").apply { mkdirs() }
+        // v3: tiles carry the bike-route / cycleway / bike-lane way flags.
+        dir = File(context.filesDir, "tiles/TileCache-v3").apply { mkdirs() }
+        // v2 tiles move in already EXPIRED (mtime 1970): data() never reuses
+        // one, so the next sync of that area rebuilds it with the flags, but
+        // cachedIds() still lists it, so the map keeps showing the areas this
+        // phone downloaded. trim() drops them first.
+        val old = File(context.filesDir, "tiles/TileCache-v2")
+        old.listFiles()?.filter { it.extension == "ebm" }?.forEach { f ->
+            val to = File(dir, f.name)
+            if (!to.exists() && f.renameTo(to)) to.setLastModified(0)
+        }
+        old.deleteRecursively()
+        PoiCache.init(context)
     }
 
     private fun fileFor(id: String): File {

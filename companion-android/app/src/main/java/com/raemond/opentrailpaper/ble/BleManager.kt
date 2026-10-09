@@ -32,6 +32,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
+import com.raemond.opentrailpaper.map.PoiCache
 import com.raemond.opentrailpaper.data.DashConfig
 import com.raemond.opentrailpaper.data.DashLayout
 import com.raemond.opentrailpaper.data.DeviceText
@@ -144,6 +145,29 @@ class BleManager(private val app: Application) {
     var tileMessage by mutableStateOf<String?>(null); private set
     var deviceTileIds by mutableStateOf<Set<String>>(emptySet()); private set
 
+    // Cycling layer (investigations/osm-pois-bike-routes.md). Firmware that has
+    // it answers the 0x08 POI listing; older firmware never does, so this stays
+    // false for the connection and nothing cycling-specific is sent to it.
+    var deviceSupportsPois by mutableStateOf(false); private set
+    var devicePoiIds by mutableStateOf<Set<String>>(emptySet()); private set
+    private var poiIdsBuilding = mutableListOf<String>()
+    private var poiSentAt: Map<String, Long> = emptyMap()
+    private var flaggedTileIds: Set<String> = emptySet()
+
+    /** On the device and current: built with the bike-route flags, or the
+     *  device's firmware could not draw them anyway. */
+    fun tileIsCurrent(id: String): Boolean =
+        id in deviceTileIds && (!deviceSupportsPois || id in flaggedTileIds)
+
+    /** The tile's POIs should go to the device: it can draw them, and it has
+     *  none for this tile or this phone sent them more than PoiCache.MAX_AGE_MS ago. */
+    fun poiNeedsSend(id: String): Boolean {
+        if (!deviceSupportsPois) return false
+        if (id !in devicePoiIds) return true
+        val at = poiSentAt[id] ?: return false            // someone else's: leave it
+        return System.currentTimeMillis() - at > PoiCache.MAX_AGE_MS
+    }
+
     /**
      * The device's dashboard config — the page carousel — as the text of
      * /config/dashboard.cfg. null until the device has been read, which is how
@@ -246,8 +270,10 @@ class BleManager(private val app: Application) {
     private var mapSentBytes = 0
     private var mapEndSent = false
 
-    private var tileQueue = ArrayDeque<Pair<String, ByteArray>>()
+    private class TileJob(val id: String, val data: ByteArray, val poi: Boolean)
+    private var tileQueue = ArrayDeque<TileJob>()
     private var currentTileId: String? = null
+    private var currentIsPoi = false
     private var tileJobFailed = false
     private var tilesMoreComing = false
     private var tileIdsBuilding = mutableListOf<String>()
@@ -348,6 +374,8 @@ class BleManager(private val app: Application) {
         useMiles = Prefs.useMiles
         // Show last-known on-device tiles immediately; a refresh confirms them.
         deviceTileIds = Prefs.deviceTileIds
+        flaggedTileIds = Prefs.flaggedTileIds
+        poiSentAt = Prefs.poiSentAt
         refreshPermissions()
         app.registerReceiver(
             adapterReceiver,
@@ -671,6 +699,7 @@ class BleManager(private val app: Application) {
             tileQueue.clear()
             finishTileJob("Interrupted — reconnect to resume")
         }
+        deviceSupportsPois = false      // re-learnt from the next 0x08 answer
 
         status = DeviceStatus()
         sawStatusSinceConnect = false
@@ -2118,7 +2147,10 @@ class BleManager(private val app: Application) {
      * Ask the device which H3 tile ids are already on its SD, so the caller can
      * skip re-sending them (replied via 0xD0/0xD1/0xD2 notifies).
      */
-    fun refreshDeviceTiles() = writeChar(mapChar, byteArrayOf(0x07))
+    fun refreshDeviceTiles() {
+        writeChar(mapChar, byteArrayOf(0x07))
+        writeChar(mapChar, byteArrayOf(0x08))   // .poi files (new firmware only)
+    }
 
     // Streaming upload: the app produces tiles batch-by-batch while download +
     // vectorization runs, and sends them in parallel. Call startTileStream()
@@ -2157,14 +2189,25 @@ class BleManager(private val app: Application) {
      * Add freshly-built tiles to the send queue; starts pumping if idle. Skips
      * tiles already on the device or already queued.
      */
-    fun enqueueTiles(newOnes: List<Pair<String, ByteArray>>) {
+    fun enqueueTiles(newOnes: List<Pair<String, ByteArray>>) =
+        enqueue(newOnes.filter { !tileIsCurrent(it.first) }, poi = false)
+
+    /**
+     * Queue tiles' `.poi` files (sent through the same tile transfer — the
+     * firmware tells them apart by their magic). Skipped for firmware without
+     * POI support and for tiles whose POIs the device has and are fresh.
+     */
+    fun enqueuePois(newOnes: List<Pair<String, ByteArray>>) =
+        enqueue(newOnes.filter { poiNeedsSend(it.first) }, poi = true)
+
+    private fun enqueue(newOnes: List<Pair<String, ByteArray>>, poi: Boolean) {
         if (!tilesUploading) return
-        val queued = tileQueue.map { it.first }.toSet()
+        val queued = tileQueue.filter { it.poi == poi }.map { it.id }.toSet()
         val fresh = newOnes.filter {
-            it.first !in deviceTileIds && it.first !in queued && it.first != currentTileId
+            it.first !in queued && !(it.first == currentTileId && currentIsPoi == poi)
         }
         if (fresh.isEmpty()) return
-        tileQueue.addAll(fresh)
+        tileQueue.addAll(fresh.map { TileJob(it.first, it.second, poi) })
         tilesTotal += fresh.size
         if (currentTileId == null) sendNextTile()   // pump if idle
         reportTiles()
@@ -2209,18 +2252,22 @@ class BleManager(private val app: Application) {
             refreshDeviceTiles()
             return
         }
-        currentTileId = tile.first
-        mapData = tile.second
+        currentTileId = tile.id
+        currentIsPoi = tile.poi
+        mapData = tile.data
         mapSentBytes = 0
         mapEndSent = false
         mapUploading = true            // reuse the CHR_MAP chunk pump
         tileMessage = "Sending tile ${tilesDone + 1}/$tilesTotal…"
         reportTiles()
 
-        val cmd = Packet(5 + tile.first.length)
+        // A .poi goes under "<id>.poi"; saveTile strips the extension and stores
+        // it by its magic either way, the name just reads well in logs.
+        val name = if (tile.poi) "${tile.id}.poi" else tile.id
+        val cmd = Packet(5 + name.length)
         cmd.u8(0x06)                   // begin-tile
-        cmd.u32(tile.second.size)
-        cmd.raw(tile.first.toByteArray())
+        cmd.u32(tile.data.size)
+        cmd.raw(name.toByteArray())
         writeChar(mapChar, cmd.bytes())
     }
 
@@ -2253,7 +2300,15 @@ class BleManager(private val app: Application) {
             0xB1 -> {                                             // saved + active
                 val id = currentTileId
                 if (id != null) {                                 // a tile finished
-                    deviceTileIds = deviceTileIds + id
+                    if (currentIsPoi) {
+                        devicePoiIds = devicePoiIds + id
+                        poiSentAt = poiSentAt + (id to System.currentTimeMillis())
+                        Prefs.poiSentAt = poiSentAt
+                    } else {
+                        deviceTileIds = deviceTileIds + id
+                        flaggedTileIds = flaggedTileIds + id
+                        Prefs.flaggedTileIds = flaggedTileIds
+                    }
                     tilesDone += 1
                     currentTileId = null
                     sendNextTile()
@@ -2295,6 +2350,21 @@ class BleManager(private val app: Application) {
             0xD2 -> {                                             // tile-list end
                 deviceTileIds = tileIdsBuilding.toSet()
                 Prefs.deviceTileIds = deviceTileIds
+            }
+
+            0xD3 -> poiIdsBuilding = mutableListOf()               // poi-list begin
+
+            0xD4 -> {                                             // comma-separated ids
+                if (d.size <= 1) return
+                String(d, 1, d.size - 1, Charsets.UTF_8)
+                    .split(',')
+                    .filter { it.isNotEmpty() }
+                    .forEach { poiIdsBuilding.add(it) }
+            }
+
+            0xD5 -> {                                             // poi-list end
+                devicePoiIds = poiIdsBuilding.toSet()
+                deviceSupportsPois = true
             }
 
             0xC0 -> deviceMapsBuilding = mutableListOf()           // map-list begin

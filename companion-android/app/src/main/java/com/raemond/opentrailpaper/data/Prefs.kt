@@ -16,6 +16,8 @@ object Prefs {
     private const val KEY_ONBOARDED = "didOnboard"
     private const val KEY_DEVICE_TILES = "deviceTileIds"
     private const val KEY_ASKED = "askedPermissions"
+    private const val KEY_FLAGGED_TILES = "flaggedTileIds"
+    private const val KEY_POI_SENT = "poiSentAt"
 
     private lateinit var sp: SharedPreferences
 
@@ -34,6 +36,19 @@ object Prefs {
     var deviceTileIds: Set<String>
         get() = sp.getStringSet(KEY_DEVICE_TILES, emptySet()) ?: emptySet()
         set(v) = sp.edit().putStringSet(KEY_DEVICE_TILES, v).apply()
+
+    /** Map tiles this phone sent WITH the bike-route way flags (see BleManager.tileIsCurrent). */
+    var flaggedTileIds: Set<String>
+        get() = sp.getStringSet(KEY_FLAGGED_TILES, emptySet()) ?: emptySet()
+        set(v) = sp.edit().putStringSet(KEY_FLAGGED_TILES, v).apply()
+
+    /** When this phone last sent each tile's .poi (epoch ms), as "id=ms" entries. */
+    var poiSentAt: Map<String, Long>
+        get() = (sp.getStringSet(KEY_POI_SENT, emptySet()) ?: emptySet()).mapNotNull {
+            val i = it.indexOf('=')
+            if (i <= 0) null else it.substring(0, i) to (it.substring(i + 1).toLongOrNull() ?: return@mapNotNull null)
+        }.toMap()
+        set(v) = sp.edit().putStringSet(KEY_POI_SENT, v.map { "${it.key}=${it.value}" }.toSet()).apply()
 
     /**
      * Permissions we have already put a system dialog in front of.

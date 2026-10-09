@@ -769,7 +769,8 @@ float elevationAt(double lat, double lon) {
 // already holds. Cheap by comparison with the old boot scan: this reads
 // directory NAMES only and never opens a tile, since the name is the id.
 // On demand, from the BLE server task, never on the boot path.
-int listTileIds(char out[][24], int maxOut) {
+// `ext` ".poi" lists the tiles that have a cycling-POI file instead.
+int listTileIds(char out[][24], int maxOut, const char* ext) {
     MapGuard g;
     int n = 0;
     int seen = 0;
@@ -782,9 +783,9 @@ int listTileIds(char out[][24], int maxOut) {
     // list requests simply stopping rather than failing.
     auto breathe = [&]() { if ((++seen & 0x1F) == 0) vTaskDelay(1); };
     auto take = [&](const char* prefix, const char* base) {
-        if (n >= maxOut || !strstr(base, ".ebm")) return;
+        if (n >= maxOut || !strstr(base, ext)) return;
         snprintf(out[n], 24, "%s%s", prefix, base);
-        if (char* dot = strstr(out[n], ".ebm")) *dot = 0;
+        if (char* dot = strstr(out[n], ext)) *dot = 0;
         n++;
     };
     auto walk = [&](const char* path, const char* prefix) {

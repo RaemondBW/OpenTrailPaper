@@ -753,7 +753,11 @@ export function buildEbm(json, { s, w, n, e, tileDeg = TILE_DEG, simplifyM = SIM
 }
 
 // Every POI in an Overpass response, as [type, flags, lat, lon]. Outline-mapped
-// POIs (a toilet block drawn as a building) sit at their vertex centroid.
+// POIs (a toilet block drawn as a building) sit at the `center` the server sent
+// (`out center`, the apps' POI query) or else at their vertex centroid (the
+// website's combined query). Order: insertion order of the keys "n<id>" /
+// "w<id>" / "r<id>" in element order, outlines without a centre last — the
+// Swift and Kotlin ports reproduce exactly this.
 // Memoised per response: buildPoi runs once per tile over the same JSON.
 const poiCache = new WeakMap();
 export function collectPois(json) {
@@ -766,9 +770,13 @@ export function collectPois(json) {
       nodes.set(el.id, [el.lat, el.lon]);
       const poi = el.tags && poiOf(el.tags);
       if (poi) out.set("n" + el.id, [poi[0], poi[1], el.lat, el.lon]);
-    } else if (el.type === "way" && el.nodes && el.tags) {
+    } else if ((el.type === "way" || el.type === "relation") && el.tags) {
       const poi = poiOf(el.tags);
-      if (poi) outlines.push(["w" + el.id, poi, el.nodes]);
+      if (!poi) continue;
+      const key = (el.type === "way" ? "w" : "r") + el.id;
+      // `out center` (the apps' POI-only query) gives the server's bbox centre.
+      if (el.center && el.center.lat != null) out.set(key, [poi[0], poi[1], el.center.lat, el.center.lon]);
+      else if (el.type === "way" && el.nodes) outlines.push([key, poi, el.nodes]);
     }
   }
   for (const [key, poi, nids] of outlines) {
