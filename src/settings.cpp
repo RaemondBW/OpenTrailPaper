@@ -57,6 +57,8 @@ uint8_t meshRegionIdx = 0;
 int8_t  meshTxDbm = 0;
 uint8_t meshSlot = 0;
 char meshLong[40] = "";
+char phName[32] = "";   // paired phone's GAP name, ASCII-folded
+char phId[20] = "";     // its identity address, "aa:bb:cc:dd:ee:ff"
 char meshShort[8] = "";
 const char* KEYS[ble_sensors::KIND_COUNT] = {"sens_hr", "sens_pwr", "sens_cad", "sens_rdr"};
 const char* NAME_KEYS[ble_sensors::KIND_COUNT] = {"snm_hr", "snm_pwr", "snm_cad", "snm_rdr"};
@@ -109,6 +111,8 @@ void begin() {
     meshSlot = prefs.getUChar("meshslot", 0);
     prefs.getString("meshlong", meshLong, sizeof(meshLong));
     prefs.getString("meshshort", meshShort, sizeof(meshShort));
+    prefs.getString("phname", phName, sizeof(phName));
+    prefs.getString("phid", phId, sizeof(phId));
     Serial.printf("[cfg] ftp=%dW tz=%dmin sensors=[%s|%s|%s|%s]\n", ftp, tz,
                   addrs[0], addrs[1], addrs[2], addrs[3]);
 }
@@ -260,6 +264,28 @@ void setSensorName(int kind, const char* name) {
     if (kind < 0 || kind >= ble_sensors::KIND_COUNT || !name || !name[0]) return;
     snprintf(names[kind], sizeof(names[kind]), "%s", name);
     prefs.putString(NAME_KEYS[kind], names[kind]);
+}
+
+const char* phoneName() { return phName; }
+const char* phoneId() { return phId; }
+
+void setPhoneId(const char* id) {
+    if (!id || strcmp(id, phId) == 0) return;   // no flash write per reconnect
+    snprintf(phId, sizeof(phId), "%s", id);
+    prefs.putString("phid", phId);
+}
+
+void setPhoneName(const char* name) {
+    if (!name || strcmp(name, phName) == 0) return;
+    snprintf(phName, sizeof(phName), "%s", name);
+    prefs.putString("phname", phName);
+}
+
+void clearPhone() {
+    phName[0] = 0;
+    phId[0] = 0;
+    prefs.remove("phname");
+    prefs.remove("phid");
 }
 
 bool lastPosition(double& lat, double& lon) {

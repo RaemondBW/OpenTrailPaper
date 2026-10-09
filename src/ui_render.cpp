@@ -1089,7 +1089,7 @@ void ui_render_pairing(uint32_t code, uint8_t* fb) {
              (unsigned long)(code / 1000), (unsigned long)(code % 1000));
     ui::text(&Impact_B, W / 2, card.y + 230, grouped, fb,
              EPD_DRAW_ALIGN_CENTER);
-    ui::text(&Arial_B, W / 2, card.y + 316, "Enter this code on your iPhone",
+    ui::text(&Arial_B, W / 2, card.y + 316, "Enter this code on your phone",
              fb, EPD_DRAW_ALIGN_CENTER, ui::DARK);
 }
 
@@ -1479,7 +1479,13 @@ void ui_render_menu(const MenuInfo& m, uint8_t* fb) {
     if (m.sdOk) snprintf(historySub, sizeof(historySub), "%d ride%s on card",
                          m.rideCount, m.rideCount == 1 ? "" : "s");
     else snprintf(historySub, sizeof(historySub), "no SD card");
-    snprintf(settingsSub, sizeof(settingsSub), "FTP · timezone");
+    // Pairing status lives here too: the menu is where a rider looks to see
+    // whether the phone is "theirs" without opening anything.
+    if (m.phonePaired)
+        snprintf(settingsSub, sizeof(settingsSub), "Paired: %s",
+                 m.phoneName[0] ? m.phoneName : "phone");
+    else
+        snprintf(settingsSub, sizeof(settingsSub), "No phone paired · FTP · timezone");
 
     const Row rows[kMenuRowCount] = {
         {m.recording ? "Stop Ride" : "Start Ride", startSub, true},
@@ -1748,10 +1754,27 @@ void ui_render_settings(const SettingsInfo& si, uint8_t* fb) {
     // stretching the row to fill it made a single tappable line as tall as two
     // settings rows, with its text stranded at the top. The page just ends
     // instead; rows are a fixed height in this system.
+    //
+    // The row carries TWO nav cells: PHONE (fixed pairing) and GPS DEBUG. The
+    // page has no height left for a ninth row (see DENSE_ROW_H), and both are
+    // "go somewhere" cells with a word and a status line, which half a row
+    // holds. A vertical rule splits them at kSettingsNavSplitX.
     const int ny = kMenuRowTop + kSettingsGpsRow * kSettingsRowH;
-    ui::text(&Impact_T, ui::CONTENT_X + ui::CELL_PAD, ny + 40, "GPS DEBUG", fb);
-    ui::text(&Arial_B, ui::CONTENT_X + ui::CELL_PAD, ny + 72,
-             "Receiver diagnostics", fb, EPD_DRAW_ALIGN_LEFT, ui::INK);
+    const int lx = ui::CONTENT_X + ui::CELL_PAD;
+    const int rx = kSettingsNavSplitX + ui::CELL_PAD;
+    const int cellTextW = kSettingsNavSplitX - ui::CONTENT_X - 2 * ui::CELL_PAD;
+    char phoneSub[40];
+    if (si.phonePaired)
+        fitText(&Arial_B, si.phoneName[0] ? si.phoneName : "Paired", cellTextW,
+                phoneSub, sizeof(phoneSub));
+    else
+        fitText(&Arial_B, "Not paired", cellTextW, phoneSub, sizeof(phoneSub));
+    ui::text(&Impact_T, lx, ny + 40, "PHONE", fb);
+    ui::text(&Arial_B, lx, ny + 72, phoneSub, fb, EPD_DRAW_ALIGN_LEFT, ui::INK);
+    ui::text(&Impact_T, rx, ny + 40, "GPS DEBUG", fb);
+    ui::text(&Arial_B, rx, ny + 72, "Receiver", fb, EPD_DRAW_ALIGN_LEFT, ui::INK);
+    epd_fill_rect({kSettingsNavSplitX - ui::RULE / 2, ny + ui::STEP, ui::RULE,
+                   kSettingsRowH - 2 * ui::STEP}, ui::INK, fb);
     epd_fill_rect({0, ny + kSettingsRowH - ui::RULE, W, ui::RULE}, ui::INK, fb);
 }
 
@@ -1915,6 +1938,38 @@ void ui_render_power_sheet(bool recording, uint8_t* fb) {
                         : "The device sleeps until you press the button.",
               fb);
     sheetButton(kPowerShutdown, "SHUT DOWN", true, fb);
+    sheetButton(kPowerCancel, "CANCEL", false, fb);
+}
+
+// Same sheet, same two button rows, for the fixed-pairing unpair. Destructive
+// action on the primary (filled) button, exactly where SHUT DOWN sits, so the
+// confirm step reads as the one the rider already knows.
+void ui_render_unpair_sheet(bool paired, const char* name, int count, uint8_t* fb) {
+    sheetShell(fb);
+    if (!paired) {
+        sheetHead("PHONE", "NOT PAIRED",
+                  "Open the OpenTrailPaper app to pair a phone.", fb);
+        sheetButton(kPowerCancel, "CLOSE", false, fb);
+        return;
+    }
+    char detail[72];
+    const char* who = name && name[0] ? name : "The paired phone";
+    if (count > 1)
+        snprintf(detail, sizeof(detail), "%s + %d more will be forgotten.",
+                 who, count - 1);
+    else
+        snprintf(detail, sizeof(detail), "%s will be forgotten.", who);
+    sheetHead("PHONE", "UNPAIR PHONE?", detail, fb);
+    // A second line straight under sheetHead's detail line, same face: what
+    // happens next. (The detail baseline sits 76 px below the hero's top.)
+    const int W = epd_rotated_display_width();
+    const int H = epd_rotated_display_height();
+    char next[72];
+    fitText(&Arial_B, "It disconnects now; the next phone can pair.",
+            W - 2 * ui::MARGIN, next, sizeof(next));
+    ui::text(&Arial_B, ui::MARGIN, (H - 520) + 6 + 40 + 118, next, fb,
+             EPD_DRAW_ALIGN_LEFT, ui::INK);
+    sheetButton(kPowerShutdown, "UNPAIR", true, fb);
     sheetButton(kPowerCancel, "CANCEL", false, fb);
 }
 

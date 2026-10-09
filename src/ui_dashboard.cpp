@@ -164,8 +164,14 @@ inline void IRAM_ATTR uiWakeFromIsr() {
 void IRAM_ATTR onTouchIrq() { touchIrq = true; uiWakeFromIsr(); }
 void IRAM_ATTR onBoardBtnIrq() { boardBtnIrq = true; uiWakeFromIsr(); }
 
-// Power/shutdown dialog overlay (opened by holding BOOT 1.5 s).
+// Bottom-sheet overlay. Named for its first user, the power/shutdown dialog
+// (opened by holding BOOT 1.5 s); the unpair-phone confirmation (Settings >
+// PHONE) is the same modal with different words, so it shares every bit of
+// the overlay plumbing — tap routing, Home-key dismissal, holding still, the
+// scrub on close — and only sheetKind says which words to draw.
 bool powerOverlay = false;
+enum SheetKind { SHEET_POWER, SHEET_UNPAIR };
+SheetKind sheetKind = SHEET_POWER;
 
 // Backlight: 4 levels cycled by the GPIO48 button.
 // Off / Low / Med / Bright. Low is deliberately very dim — it is for reading the
@@ -954,7 +960,13 @@ void handleTap(int x, int y) {
                 });
                 ble_server::pushSettingsToPhone();   // mirror the edit to the app
             } else if (y >= kMenuRowTop && row == kSettingsGpsRow) {
-                screen = SCREEN_GPSDEBUG;
+                // Two nav cells share the row: PHONE left, GPS DEBUG right.
+                if (x < kSettingsNavSplitX) {
+                    sheetKind = SHEET_UNPAIR;
+                    powerOverlay = true;
+                } else {
+                    screen = SCREEN_GPSDEBUG;
+                }
             }
             // Anything else on this screen does NOTHING. Settings is the one
             // place where a stray touch used to navigate away mid-edit — reach
@@ -982,6 +994,16 @@ void handleTap(int x, int y) {
 }
 
 void handlePowerTap(int x, int y) {
+    if (sheetKind == SHEET_UNPAIR) {
+        // UNPAIR only exists while a phone is paired; on the "not paired"
+        // sheet that rect is empty paper and a tap there just closes it.
+        if (inRect(kPowerShutdown, x, y) && ble_server::phonePaired()) {
+            ble_server::requestUnpair();
+            diag::log("ui: unpair phone confirmed on the panel");
+        }
+        powerOverlay = false;   // UNPAIR, CANCEL/CLOSE or outside: done
+        return;
+    }
     if (inRect(kPowerShutdown, x, y)) {
         uint8_t* fb = epdc_framebuffer();
         shutdownDevice(fb, "user power-off (dialog)");  // does not return
@@ -2570,6 +2592,7 @@ void task(void*) {
                     } else if (bootLow > 1 && !bootLong && !powerOverlay &&
                                millis() - bootDownAt > 1500) {
                         bootLong = true;
+                        sheetKind = SHEET_POWER;
                         powerOverlay = true;       // hold -> power dialog
                     }
                 } else {
@@ -2848,6 +2871,9 @@ void task(void*) {
                     m.rideDistanceM = s.distanceM;
                     m.rideElapsedS = s.elapsedS;
                     m.useMiles = s.useMiles;
+                    m.phonePaired = ble_server::phonePaired();
+                    snprintf(m.phoneName, sizeof(m.phoneName), "%s",
+                             ble_server::pairedPhoneName());
                     if (routes::active()) {
                         snprintf(m.routeLine, sizeof(m.routeLine),
                                  "%s · %.1f %s left", routes::activeName(),
@@ -2885,6 +2911,9 @@ void task(void*) {
                                     settings::backlight(), settings::useMiles(),
                                     settings::usbDrive(),
                                     mesh_service::enabled()};
+                    si.phonePaired = ble_server::phonePaired();
+                    snprintf(si.phoneName, sizeof(si.phoneName), "%s",
+                             ble_server::pairedPhoneName());
                     ui_render_settings(si, fb);
                     ui::statusBar(s, fb, "SETTINGS");
                     break;
@@ -2918,7 +2947,14 @@ void task(void*) {
                     break;
                 }
             }
-            if (powerOverlay) ui_render_power_sheet(s.recording, fb);
+            if (powerOverlay) {
+                if (sheetKind == SHEET_UNPAIR)
+                    ui_render_unpair_sheet(ble_server::phonePaired(),
+                                           ble_server::pairedPhoneName(),
+                                           ble_server::pairedPhoneCount(), fb);
+                else
+                    ui_render_power_sheet(s.recording, fb);
+            }
             // Pairing code sheet sits over everything — the phone's dialog is
             // modal on its side too.
             if (unsigned int pc = ble_server::pairingCode())

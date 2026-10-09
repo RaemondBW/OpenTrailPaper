@@ -681,6 +681,51 @@ int main(int argc, char** argv) {
     ui::statusBar(s, fb.data(), "SETTINGS");
     emit("settings.png");
 
+    // Fixed pairing: the PHONE nav cell paired / not paired, and the unpair
+    // sheet (and its "not paired" variant) over Settings.
+    {
+        SettingsInfo sp = si;
+        sp.phonePaired = true;
+        snprintf(sp.phoneName, sizeof(sp.phoneName), "Raemond's iPhone");
+        clearWhite(fb.data());
+        ui_render_settings(sp, fb.data());
+        ui::statusBar(s, fb.data(), "SETTINGS");
+        emit("settings_paired.png");
+
+        clearWhite(fb.data());
+        ui_render_settings(sp, fb.data());
+        ui::statusBar(s, fb.data(), "SETTINGS");
+        ui_render_unpair_sheet(true, sp.phoneName, 1, fb.data());
+        emit("unpair_sheet.png");
+
+        clearWhite(fb.data());
+        ui_render_settings(sp, fb.data());
+        ui::statusBar(s, fb.data(), "SETTINGS");
+        ui_render_unpair_sheet(true, "", 2, fb.data());
+        emit("unpair_sheet_migrated.png");
+
+        SettingsInfo su = si;   // phonePaired defaults to false
+        clearWhite(fb.data());
+        ui_render_settings(su, fb.data());
+        ui::statusBar(s, fb.data(), "SETTINGS");
+        emit("settings_unpaired.png");
+
+        clearWhite(fb.data());
+        ui_render_settings(su, fb.data());
+        ui::statusBar(s, fb.data(), "SETTINGS");
+        ui_render_unpair_sheet(false, "", 0, fb.data());
+        emit("unpair_sheet_not_paired.png");
+
+        MenuInfo mp = menu;
+        mp.recording = false;
+        mp.phonePaired = true;
+        snprintf(mp.phoneName, sizeof(mp.phoneName), "Raemond's iPhone");
+        clearWhite(fb.data());
+        ui_render_menu(mp, fb.data());
+        ui::statusBar(s, fb.data(), "MENU");
+        emit("menu_paired.png");
+    }
+
     // GPS debug: the "sees satellites but no fix" case
     GpsDebugView g = {};
     g.moduleDetected = true;

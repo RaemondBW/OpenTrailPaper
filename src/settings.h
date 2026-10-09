@@ -61,6 +61,17 @@ void clearSensorAddrs(int kind);
 const char* sensorName(int kind);
 void setSensorName(int kind, const char* name);
 
+// The phone this device is paired with (fixed pairing, see ble_server.cpp).
+// The NimBLE bond store is what actually admits a phone; these only remember
+// WHO it is for the panel: the identity address of the last admitted phone and
+// the name it reports over GAP (ASCII-folded, "" until read). clearPhone() is
+// part of an unpair.
+const char* phoneName();
+const char* phoneId();
+void setPhoneId(const char* id);
+void setPhoneName(const char* name);
+void clearPhone();
+
 // Last known GPS position (map center across reboots). Returns false if
 // no position has ever been saved.
 bool lastPosition(double& lat, double& lon);
