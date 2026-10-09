@@ -123,6 +123,7 @@ struct SensorsView: View {
         if mask & 1 != 0 { return "heart.fill" }
         if mask & 2 != 0 { return "bolt.fill" }
         if mask & 4 != 0 { return "arrow.triangle.2.circlepath" }
+        if mask & 16 != 0 { return "speedometer" }
         return "dot.radiowaves.left.and.right"
     }
 }

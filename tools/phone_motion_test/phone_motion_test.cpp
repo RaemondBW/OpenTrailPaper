@@ -6,6 +6,7 @@
 #include <string>
 
 #include "phone_motion.h"
+#include "speed_source.h"
 
 namespace {
 
@@ -136,16 +137,16 @@ void testPublish() {
     s.phoneCourseValid = true;
     s.phoneCourseDeg = 135.0f;
     s.gpsFix = true;
-    s.speedKmh = 30.0f;
+    s.gpsSpeedKmh = 30.0f;   // the receiver writes its own field
     s.courseDeg = 10.0f;
-    phone_motion::publish(s, 2000);
+    speed_source::publish(s, 2000);
     checkNear(s.speedKmh, 30.0f, 0.001f, "receiver speed kept");
     checkNear(s.courseDeg, 10.0f, 0.001f, "receiver course kept");
     s.gpsFix = false;
-    phone_motion::publish(s, 2000);
+    speed_source::publish(s, 2000);
     checkNear(s.speedKmh, 20.0f, 0.001f, "phone speed");
     checkNear(s.courseDeg, 135.0f, 0.001f, "phone course");
-    phone_motion::publish(s, 1000 + phone_motion::kStaleMs);
+    speed_source::publish(s, 1000 + phone_motion::kStaleMs);
     checkNear(s.speedKmh, 0.0f, 0.001f, "stale speed");
     checkNear(s.courseDeg, 135.0f, 0.001f, "course held");
 }

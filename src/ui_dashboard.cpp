@@ -38,6 +38,7 @@
 #include "ble_server.h"
 #include "routes.h"
 #include "settings.h"
+#include "speed_source.h"
 #include "aux_sensors.h"
 #include "diag.h"
 #include "crash_report.h"
@@ -1209,6 +1210,11 @@ const char* kindsText(uint8_t mask) {
 // Compact kind label for the Sensors row subtitle (must stay short so the row
 // fits the screen width).
 const char* shortKinds(uint8_t mask) {
+    // Speed & Cadence: an unidentified 0x1816 device carries both bits until
+    // it has connected and said which it is (ble_sensors.h).
+    constexpr uint8_t kCsc = 1 << ble_sensors::KIND_CSC, kSpd = 1 << ble_sensors::KIND_SPEED;
+    if ((mask & (kCsc | kSpd)) == (kCsc | kSpd)) return (mask & 0xb) ? "Sensor" : "Speed/Cad";
+    if (mask & kSpd) return (mask & 0xf) ? "Sensor" : "Speed";
     switch (mask & 0xf) {
         case 1: return "HR";
         case 2: return "Power";
@@ -1725,6 +1731,7 @@ static int sensorKindArg(const char* a) {
     if (!strcasecmp(a, "hr") || !strcasecmp(a, "heart")) return ble_sensors::KIND_HR;
     if (!strcasecmp(a, "power") || !strcasecmp(a, "pwr")) return ble_sensors::KIND_POWER;
     if (!strcasecmp(a, "cadence") || !strcasecmp(a, "cad")) return ble_sensors::KIND_CSC;
+    if (!strcasecmp(a, "speed") || !strcasecmp(a, "spd")) return ble_sensors::KIND_SPEED;
     return KIND_BAD;
 }
 
@@ -1898,7 +1905,7 @@ static void printSensorReport() {
                       cs[i].connected ? "CONNECTED " : "",
                       cs[i].name);
     }
-    Serial.println("[sensors] 'disconnect <hr|power|cadence|radar|all>' drops a link, "
+    Serial.println("[sensors] 'disconnect <hr|power|cadence|speed|radar|all>' drops a link, "
                    "'forget <kind|mac|all>' unpairs for good");
 }
 
@@ -1931,6 +1938,7 @@ static void printConsoleHelp() {
     Serial.println("  mesh channel <name> [key]   set the channel (where — retunes)");
     Serial.println("  mesh <on|off>        power the LoRa radio");
     Serial.println("  autopause [sec|off]  ride timer pause after N s stopped (0/off disables)");
+    Serial.println("  wheel [mm]           speed-sensor wheel circumference (default 2105)");
     Serial.println("  workout <list|load <f>|start|pause|resume|stop|skip|back|goto <n>|ftp [W]>");
     Serial.println("  sensorsleep [on|off] sensor-link sleep experiment, this boot; status without argument");
     Serial.println("  sleepexp [on|off]    re-arm the light-sleep-with-phone experiment (this boot)");
@@ -2151,7 +2159,7 @@ static void runConsoleLine(char* line) {
     } else if (!strcasecmp(cmd, "disconnect")) {
         int want = sensorKindArg(arg);
         if (want == KIND_BAD) {
-            Serial.println("[cmd] disconnect <hr|power|cadence|radar|all>");
+            Serial.println("[cmd] disconnect <hr|power|cadence|speed|radar|all>");
             return;
         }
         ble_sensors::Link ls[ble_sensors::KIND_COUNT];
@@ -2182,7 +2190,7 @@ static void runConsoleLine(char* line) {
         }
         int want = sensorKindArg(arg);
         if (!arg) {
-            Serial.println("[cmd] forget <hr|power|cadence|radar|all|phone|aa:bb:..>");
+            Serial.println("[cmd] forget <hr|power|cadence|speed|radar|all|phone|aa:bb:..>");
         } else if (want == KIND_ALL) {
             ble_sensors::forgetAll();
             Serial.println("[sensors] every pairing cleared");
@@ -2302,6 +2310,18 @@ static void runConsoleLine(char* line) {
             !strcasecmp(arg, "on") || !strcasecmp(arg, "1"));
         Serial.printf("[sleepexp] light sleep with phone: %s\n",
                       ble_server::relaxedSleepAllowed() ? "ARMED" : "off");
+    } else if (!strcasecmp(cmd, "wheel")) {
+        if (arg && !settings::setWheelCircMm(atoi(arg)))
+            Serial.printf("[wheel] %s refused: %d..%d mm\n", arg,
+                          wheel_speed::kMinCircMm, wheel_speed::kMaxCircMm);
+        else if (arg)
+            ble_server::pushSettingsToPhone();   // mirror to the app
+        const RideState s = g_state.snapshot();
+        Serial.printf("[wheel] circumference %d mm; speed source %s (%.1f km/h), "
+                      "wheel sensor %s, %.0f m counted since boot\n",
+                      settings::wheelCircMm(), speed_source::name(s.speedSource),
+                      s.speedKmh, s.speedSensorConnected ? "connected" : "absent",
+                      s.wheelDistM);
     } else if (!strcasecmp(cmd, "autopause")) {
         if (arg) {
             int sec = !strcasecmp(arg, "off") ? 0 : atoi(arg);
@@ -2898,6 +2918,8 @@ void task(void*) {
                     m.hr = s.hrConnected;
                     m.pwr = s.powerConnected;
                     m.cad = s.cadenceConnected;
+                    m.spd = s.speedSensorConnected &&
+                            speed_source::sensorFresh(s, millis());
                     m.radar = s.radar.connected;
                     m.batteryPercent = s.batteryPercent;
                     m.rideDistanceM = s.distanceM;

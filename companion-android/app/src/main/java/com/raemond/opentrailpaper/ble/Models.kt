@@ -24,7 +24,14 @@ object BikeUuid {
     val cccd: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 }
 
-/** A cycling sensor known to the head unit (HR / power / cadence). */
+/**
+ * A cycling sensor known to the head unit. kindsMask bits match the firmware's
+ * ble_sensors::Kind: 1 HR, 2 power, 4 cadence, 8 radar, 16 speed. Cadence and
+ * speed share one BLE service, so a device the head unit hasn't connected to
+ * yet carries both ("speed & cadence"); once it has read the sensor's feature
+ * list a speed sensor shows as Speed, a cadence sensor as Cadence, a combo as
+ * both.
+ */
 data class BikeSensor(
     val addr: String,
     val name: String,
@@ -38,7 +45,12 @@ data class BikeSensor(
             val parts = buildList {
                 if (kindsMask and 1 != 0) add("Heart rate")
                 if (kindsMask and 2 != 0) add("Power")
-                if (kindsMask and 4 != 0) add("Cadence")
+                if (kindsMask and 4 != 0 && kindsMask and 16 != 0) {
+                    add("Speed & cadence")
+                } else {
+                    if (kindsMask and 4 != 0) add("Cadence")
+                    if (kindsMask and 16 != 0) add("Speed")
+                }
                 if (kindsMask and 8 != 0) add("Radar")
             }
             return if (parts.isEmpty()) "Sensor" else parts.joinToString(" + ")
@@ -98,3 +110,34 @@ enum class PermissionState {
 
 /** One turn cue: where it happens + what to do. */
 data class Maneuver(val lat: Double, val lon: Double, val text: String)
+
+/**
+ * Speed-sensor wheel circumferences for common tyres (mm), the usual head-unit
+ * table. Limits match the firmware's wheel_speed::kMinCircMm..kMaxCircMm.
+ */
+object WheelSize {
+    const val DEFAULT_MM = 2105
+    const val MIN_MM = 800
+    const val MAX_MM = 3500
+
+    data class Preset(val name: String, val mm: Int)
+
+    val presets = listOf(
+        Preset("700x23c", 2096),
+        Preset("700x25c", 2105),
+        Preset("700x28c", 2136),
+        Preset("700x32c", 2155),
+        Preset("700x35c", 2168),
+        Preset("700x40c", 2200),
+        Preset("650b x 47", 2081),
+        Preset("26 x 2.1", 2068),
+        Preset("27.5 x 2.2", 2148),
+        Preset("29 x 2.2", 2298),
+        Preset("29 x 2.4", 2326),
+        Preset("20 x 1.75 (406)", 1515),
+        Preset("16 x 1.35 (349)", 1272),
+    )
+
+    fun clamp(mm: Int) = mm.coerceIn(MIN_MM, MAX_MM)
+    fun presetName(mm: Int): String? = presets.firstOrNull { it.mm == mm }?.name
+}

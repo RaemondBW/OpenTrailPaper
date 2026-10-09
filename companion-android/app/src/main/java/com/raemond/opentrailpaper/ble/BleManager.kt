@@ -83,6 +83,10 @@ class BleManager(private val app: Application) {
     var backlight by mutableStateOf(0); private set     // 0 off .. 3 bright (mirrors device)
     var clock24h by mutableStateOf(true); private set   // device status-bar clock format
     var usbDrive by mutableStateOf(true); private set   // expose device SD as a USB drive
+    // Speed-sensor wheel circumference, mm. null until the device reports one —
+    // firmware without speed-sensor support doesn't, and then the app neither
+    // shows the setting nor sends it.
+    var wheelCircMm by mutableStateOf<Int?>(null); private set
     var useMiles by mutableStateOf(false); private set  // mirrored into Prefs
 
     var lastUploadProgress by mutableStateOf<Double?>(null); private set  // 0..1 while sending
@@ -1002,6 +1006,7 @@ class BleManager(private val app: Application) {
     fun updateBacklight(v: Int) { backlight = v; pushSettings() }
     fun updateClock24h(v: Boolean) { clock24h = v; pushSettings() }
     fun updateUsbDrive(v: Boolean) { usbDrive = v; pushSettings() }
+    fun updateWheelCircMm(v: Int) { wheelCircMm = WheelSize.clamp(v); pushSettings() }
 
     fun updateUseMiles(v: Boolean) {
         useMiles = v
@@ -1010,13 +1015,17 @@ class BleManager(private val app: Application) {
     }
 
     fun pushSettings() {
-        val out = Packet(8)
+        val out = Packet(10)
         out.i16(ftpWatts)
         out.i16(tzMinutes)
         out.u8(if (useMiles) 1 else 0)
         out.u8(backlight.coerceIn(0, 255))
         out.u8(if (clock24h) 1 else 0)
         out.u8(if (usbDrive) 1 else 0)
+        // Appended field: only once the device has told us its value, so older
+        // firmware never gets a guess and a fresh app never overwrites the
+        // device's setting with a default.
+        wheelCircMm?.let { out.i16(it) }
         writeChar(settingsChar, out.bytes())
     }
 
@@ -1032,6 +1041,8 @@ class BleManager(private val app: Application) {
         }
         if (d.size >= 7) clock24h = d[6].toInt() != 0
         if (d.size >= 8) usbDrive = d[7].toInt() != 0
+        // Absent = firmware without speed-sensor support: hide the setting.
+        wheelCircMm = if (d.size >= 10) le16(d, 8) else null
     }
 
     private fun parseStatus(d: ByteArray) {
@@ -1964,7 +1975,7 @@ class BleManager(private val app: Application) {
     fun pairSensor(addr: String) = writeChar(sensorsChar, byteArrayOf(0x03) + addr.toByteArray())
     fun forgetSensor(addr: String) = writeChar(sensorsChar, byteArrayOf(0x04) + addr.toByteArray())
 
-    /** Connected sensors whose kind mask includes [bit] (1 HR, 2 power, 4 cadence). */
+    /** Connected sensors whose kind mask includes [bit] (1 HR, 2 power, 4 cadence, 8 radar, 16 speed). */
     fun connectedSensor(bit: Int): BikeSensor? =
         sensors.firstOrNull { it.connected && it.kindsMask and bit != 0 }
 

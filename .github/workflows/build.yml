@@ -139,6 +139,10 @@ jobs:
       - uses: actions/checkout@v4
       - name: Run host tests
         run: sh tools/mesh_test/run_mesh_test.sh
+      # Same reasoning for the wheel-speed maths and speed-source arbitration:
+      # plain C++, and a wrong answer there is a wrong speed on every ride.
+      - name: Speed sensor host tests
+        run: sh tools/wheel_speed_test/run_wheel_speed_test.sh
 
   ios:
     name: Companion app (iOS)

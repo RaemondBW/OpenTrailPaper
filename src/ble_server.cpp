@@ -15,6 +15,7 @@
 #include "routes.h"
 #include "gps_service.h"
 #include "phone_motion.h"
+#include "speed_source.h"
 #include "ble_sensors.h"
 #include "map_select.h"
 #include "workout.h"
@@ -96,10 +97,15 @@ volatile bool otaRebootPending = false;
 
 NimBLECharacteristic* settingsChr = nullptr;
 
-// Settings payload (little-endian): { int16 ftpW, int16 tzMin, u8 useMiles,
-// u8 backlight }. Mirrored both ways so the app and device stay in sync.
+// Settings payload (little-endian), mirrored both ways so the app and device
+// stay in sync:
+//   [0] int16 ftpW   [2] int16 tzMin   [4] u8 useMiles   [5] u8 backlight
+//   [6] u8 clock24h  [7] u8 usbDrive   [8] u16 wheel circumference, mm
+// Grown by appending only: a write applies only the fields it is long enough
+// to carry, so an older app (8 bytes) leaves the wheel size alone, and an
+// app only sends the wheel size once it has READ one (i.e. this firmware).
 void writeSettingsValue(NimBLECharacteristic* c) {
-    uint8_t buf[8];
+    uint8_t buf[10];
     int16_t ftp = (int16_t)settings::ftpWatts();
     int16_t tz = (int16_t)settings::tzMinutes();
     memcpy(buf, &ftp, 2);
@@ -108,6 +114,8 @@ void writeSettingsValue(NimBLECharacteristic* c) {
     buf[5] = (uint8_t)settings::backlight();
     buf[6] = settings::clock24h() ? 1 : 0;
     buf[7] = settings::usbDrive() ? 1 : 0;
+    const uint16_t wheel = (uint16_t)settings::wheelCircMm();
+    memcpy(buf + 8, &wheel, 2);
     c->setValue(buf, sizeof(buf));
 }
 
@@ -145,15 +153,23 @@ class SettingsCb : public NimBLECharacteristicCallbacks {
                 settings::setUsbDrive(v[7] != 0);
                 usb_storage::setDriveEnabled(v[7] != 0);   // apply immediately
             }
+            if (v.size() >= 10) {
+                const int mm = (uint8_t)v[8] | ((uint8_t)v[9] << 8);
+                // Out of range is refused (kept as is), not clamped: a typo of
+                // 210 mm must not become an 800 mm wheel.
+                if (!settings::setWheelCircMm(mm))
+                    Serial.printf("[srv] wheel circumference %d mm refused\n", mm);
+            }
             g_state.with([&](RideState& s) {
                 s.ftpW = (uint16_t)settings::ftpWatts();
                 s.tzMin = (int16_t)settings::tzMinutes();
                 s.useMiles = settings::useMiles();
                 s.clock24h = settings::clock24h();
             });
-            Serial.printf("[srv] settings set: ftp=%d tz=%d miles=%d bl=%d\n",
+            Serial.printf("[srv] settings set: ftp=%d tz=%d miles=%d bl=%d wheel=%dmm\n",
                           settings::ftpWatts(), settings::tzMinutes(),
-                          settings::useMiles(), settings::backlight());
+                          settings::useMiles(), settings::backlight(),
+                          settings::wheelCircMm());
         }
     }
 };
@@ -458,7 +474,7 @@ class RouteCb : public NimBLECharacteristicCallbacks {
                 st.phoneFixValid = true;
                 st.phoneFixMs = nowMs;
                 // Speed/heading on the display while the phone is the source.
-                phone_motion::publish(st, nowMs);
+                speed_source::publish(st, nowMs);
             });
         }
     }

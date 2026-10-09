@@ -320,7 +320,7 @@ void task(void*) {
                         // points, so the gap between the two is how the board
                         // sits — plus the local magnetic declination, which
                         // lands in the same number for free.
-                        if (s.gpsFix && s.speedKmh > 8.0f)
+                        if (s.gpsFix && s.gpsSpeedKmh > 8.0f)
                             mountOffset.observe(raw, s.courseDeg);
 
                         const float h = mountOffset.apply(raw);

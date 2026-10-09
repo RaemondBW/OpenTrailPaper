@@ -8,6 +8,7 @@
 
 #include "config.h"
 #include "mesh_proto.h"
+#include "wheel_speed.h"
 
 namespace {
 
@@ -28,6 +29,7 @@ bool showOff = true;
 // Seconds of no movement (power, cadence, wheel and GPS all quiet) before the
 // ride timer auto-pauses. 0 disables auto-pause entirely.
 int autoPause = 10;
+int wheelMm = wheel_speed::kDefaultCircMm;   // wheel speed sensor circumference
 bool wkPauseStep = false;
 // Per kind, a ';'-separated list of paired addresses, most recent first (max
 // SENSOR_MAX_PAIRED). Stored under the same NVS key as the old single address,
@@ -60,8 +62,8 @@ char meshLong[40] = "";
 char phName[32] = "";   // paired phone's GAP name, ASCII-folded
 char phId[20] = "";     // its identity address, "aa:bb:cc:dd:ee:ff"
 char meshShort[8] = "";
-const char* KEYS[ble_sensors::KIND_COUNT] = {"sens_hr", "sens_pwr", "sens_cad", "sens_rdr"};
-const char* NAME_KEYS[ble_sensors::KIND_COUNT] = {"snm_hr", "snm_pwr", "snm_cad", "snm_rdr"};
+const char* KEYS[ble_sensors::KIND_COUNT] = {"sens_hr", "sens_pwr", "sens_cad", "sens_rdr", "sens_spd"};
+const char* NAME_KEYS[ble_sensors::KIND_COUNT] = {"snm_hr", "snm_pwr", "snm_cad", "snm_rdr", "snm_spd"};
 
 }  // namespace
 
@@ -113,8 +115,10 @@ void begin() {
     prefs.getString("meshshort", meshShort, sizeof(meshShort));
     prefs.getString("phname", phName, sizeof(phName));
     prefs.getString("phid", phId, sizeof(phId));
-    Serial.printf("[cfg] ftp=%dW tz=%dmin sensors=[%s|%s|%s|%s]\n", ftp, tz,
-                  addrs[0], addrs[1], addrs[2], addrs[3]);
+    wheelMm = prefs.getInt("wheelmm", wheel_speed::kDefaultCircMm);
+    if (!wheel_speed::validCircMm(wheelMm)) wheelMm = wheel_speed::kDefaultCircMm;
+    Serial.printf("[cfg] ftp=%dW tz=%dmin wheel=%dmm sensors=[%s|%s|%s|%s|%s]\n", ftp, tz,
+                  wheelMm, addrs[0], addrs[1], addrs[2], addrs[3], addrs[4]);
 }
 
 int ftpWatts() { return ftp; }
@@ -133,6 +137,16 @@ int autoPauseSec() { return autoPause; }
 void setAutoPauseSec(int s) {
     autoPause = constrain(s, 0, 120);
     prefs.putInt("apause", autoPause);
+}
+
+int wheelCircMm() { return wheelMm; }
+bool setWheelCircMm(int mm) {
+    if (!wheel_speed::validCircMm(mm)) return false;
+    if (mm != wheelMm) {
+        wheelMm = mm;
+        prefs.putInt("wheelmm", wheelMm);
+    }
+    return true;
 }
 
 int tzMinutes() { return tz; }

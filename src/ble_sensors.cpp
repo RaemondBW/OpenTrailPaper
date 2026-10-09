@@ -9,6 +9,8 @@
 #include "routes.h"
 #include "diag.h"
 #include "power_mgmt.h"
+#include "speed_source.h"
+#include "wheel_speed.h"
 #include <atomic>
 
 namespace {
@@ -22,12 +24,14 @@ const NimBLEUUID SVC_POWER("1818");
 const NimBLEUUID CHR_POWER("2A63");
 const NimBLEUUID SVC_CSC("1816");
 const NimBLEUUID CHR_CSC("2A5B");
+const NimBLEUUID CHR_CSC_FEATURE("2A5C");
 
 using ble_sensors::KIND_HR;
 using ble_sensors::KIND_POWER;
 using ble_sensors::KIND_CSC;
 using ble_sensors::KIND_COUNT;
 using ble_sensors::KIND_RADAR;
+using ble_sensors::KIND_SPEED;
 using SensorKind = ble_sensors::Kind;
 
 struct Sensor {
@@ -42,6 +46,12 @@ struct Sensor {
     std::atomic<bool> connected{false};
     uint32_t connectedAtMs = 0;
     NimBLEClient* client = nullptr;
+    // Speed & Cadence links only: what this device measures. From the CSC
+    // Feature characteristic when it could be read (featureKnown), else learned
+    // from the measurement flags as packets arrive.
+    bool featureKnown = false;
+    bool hasWheel = false;
+    bool hasCrank = false;
 };
 
 Sensor sensors[KIND_COUNT] = {
@@ -49,7 +59,12 @@ Sensor sensors[KIND_COUNT] = {
     {"Power", SVC_POWER, CHR_POWER},
     {"Cadence", SVC_CSC, CHR_CSC},
     {"Radar", SVC_RADAR, CHR_RADAR},
+    // Same service as Cadence: a speed-only sensor, moved here from the
+    // Cadence slot once its CSC Feature says so (see connectSensor).
+    {"Speed", SVC_CSC, CHR_CSC},
 };
+
+bool isCsc(int kind) { return kind == KIND_CSC || kind == KIND_SPEED; }
 
 // Cross-task telemetry: callbacks update counters; the sensor task reports them.
 struct SleepWatch {
@@ -104,7 +119,9 @@ struct CrankState {
     uint16_t eventTime = 0;
     bool primed = false;
 };
-CrankState crankFromPower, crankFromCsc;
+CrankState crankFromPower;
+CrankState crankFromCsc[KIND_COUNT];   // per CSC link (Cadence / Speed slots)
+wheel_speed::Estimator wheelEst[KIND_COUNT];   // per CSC link
 
 uint8_t cadenceFromCrank(CrankState& cs, uint16_t revs, uint16_t eventTime) {
     if (!cs.primed) {
@@ -269,41 +286,84 @@ void onPowerNotify(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool)
     });
 }
 
+// Wheel data from a CSC link -> speed, distance, movement (wheel_speed.h),
+// then re-arbitrate the displayed speed (speed_source.h).
+void ingestWheel(SensorKind kind, const wheel_speed::Measurement& m) {
+    // A combo sensor on the Cadence slot steps aside for a dedicated speed
+    // sensor: two wheel sources would fight over the same fields.
+    if (kind == KIND_CSC && sensors[KIND_SPEED].connected) return;
+    wheel_speed::Estimator& est = wheelEst[kind];
+    const uint32_t now = millis();
+    const uint32_t glitchesBefore = est.glitches();
+    const float dM = est.update(m.wheelRevs, m.wheelTime, now,
+                                (uint16_t)settings::wheelCircMm());
+    const float kmh = est.speedKmh(now);
+    if (est.glitches() != glitchesBefore) {
+        diag::log("csc: %s wheel counter glitch (revs=%lu t=%u) - reseeded",
+                  sensors[kind].name, (unsigned long)m.wheelRevs, m.wheelTime);
+    }
+    g_state.with([&](RideState& s) {
+        s.speedSensorConnected = true;
+        s.wheelDataMs = now;
+        if (dM > 0.0f) {
+            s.wheelMoveMs = now;
+            s.wheelDistM += dM;
+        }
+        s.wheelSpeedKmh = kmh;
+        speed_source::publish(s, now);
+    });
+}
+
+void ingestCrank(SensorKind kind, const wheel_speed::Measurement& m) {
+    // Not turning: a real zero once the crank counter has sat still for a
+    // few seconds. cadenceFromCrank alone held the last cadence (a duplicate
+    // packet has dTime 0, which it reports as "no value") until the 15 s
+    // staleness sweep blanked it.
+    static uint16_t lastRevs[KIND_COUNT];
+    static uint32_t lastTurnMs[KIND_COUNT];
+    const uint32_t now = millis();
+    if (m.crankRevs != lastRevs[kind] || !lastTurnMs[kind]) {
+        lastRevs[kind] = m.crankRevs;
+        lastTurnMs[kind] = now;
+    }
+    const bool crankStopped = now - lastTurnMs[kind] >= 3000;
+    const uint8_t cad = cadenceFromCrank(crankFromCsc[kind], m.crankRevs, m.crankTime);
+    if (cad == 0xFF && !crankStopped) return;
+    g_state.with([&](RideState& s) {
+        s.cadenceRpm = cad != 0xFF ? cad : 0;
+        s.cadenceMs = now;
+        s.cadenceConnected = true;
+    });
+}
+
+void handleCsc(SensorKind kind, const uint8_t* data, size_t len) {
+    noteNotification(kind);
+    wheel_speed::Measurement m;
+    if (!wheel_speed::parse(data, len, m)) return;
+    Sensor& sensor = sensors[kind];
+    // No readable Feature: learn the device's abilities from what it sends.
+    if (m.hasWheel) sensor.hasWheel = true;
+    if (m.hasCrank) sensor.hasCrank = true;
+
+    // Raw values once a minute - same throttle and reason as hr/pwr above.
+    static uint32_t lastLog[KIND_COUNT];
+    if (millis() - lastLog[kind] > 60000) {
+        lastLog[kind] = millis();
+        diag::log("csc: %s len=%u flags=0x%02X wheel=%lu/%u crank=%u/%u kmh=%.1f circ=%dmm",
+                  sensor.name, (unsigned)len, data[0], (unsigned long)m.wheelRevs,
+                  m.wheelTime, m.crankRevs, m.crankTime,
+                  wheelEst[kind].speedKmh(millis()), settings::wheelCircMm());
+    }
+
+    if (m.hasWheel) ingestWheel(kind, m);
+    if (m.hasCrank) ingestCrank(kind, m);
+}
+
 void onCscNotify(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool) {
-    noteNotification(KIND_CSC);
-    if (len < 1) return;
-    uint8_t flags = data[0];
-    size_t off = 1;
-    if ((flags & 0x01) && len >= off + 6) {
-        // Wheel revolution data: cumulative revs (u32) + last event time. Only
-        // the "did the counter advance" bit is consumed — that is movement
-        // evidence for auto-pause, and unlike a speed it needs no wheel
-        // circumference configured. First notify after (re)connect only seeds
-        // the counter: a cumulative value looks like a huge advance otherwise.
-        uint32_t revs = data[off] | (data[off + 1] << 8) |
-                        ((uint32_t)data[off + 2] << 16) |
-                        ((uint32_t)data[off + 3] << 24);
-        static uint32_t lastWheelRevs = 0;
-        static bool haveWheelRevs = false;
-        if (haveWheelRevs && revs != lastWheelRevs) {
-            g_state.with([&](RideState& s) { s.wheelMoveMs = millis(); });
-        }
-        lastWheelRevs = revs;
-        haveWheelRevs = true;
-    }
-    if (flags & 0x01) off += 6;  // past the wheel revolution data
-    if ((flags & 0x02) && len >= off + 4) {
-        uint16_t revs = data[off] | (data[off + 1] << 8);
-        uint16_t t = data[off + 2] | (data[off + 3] << 8);
-        uint8_t cad = cadenceFromCrank(crankFromCsc, revs, t);
-        if (cad != 0xFF) {
-            g_state.with([&](RideState& s) {
-                s.cadenceRpm = cad;
-                s.cadenceMs = millis();
-                s.cadenceConnected = true;   // any CSC device is a cadence source
-            });
-        }
-    }
+    handleCsc(KIND_CSC, data, len);
+}
+void onSpeedNotify(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool) {
+    handleCsc(KIND_SPEED, data, len);
 }
 
 void onRadarNotify(NimBLERemoteCharacteristic*, uint8_t* data, size_t len, bool) {
@@ -380,6 +440,10 @@ class ScanCallbacks : public NimBLEScanCallbacks {
             // (that used to grab strangers' sensors). Pairing happens on
             // the Sensors screen.
             if (!settings::sensorPaired(k, addr.c_str())) continue;
+            // One link per device: a CSC device paired in both slots (should
+            // not happen - moveCscPairing re-files, never copies) is the
+            // Cadence slot's.
+            if (k == KIND_SPEED && settings::sensorPaired(KIND_CSC, addr.c_str())) continue;
             sensor.addr = dev->getAddress();
             sensor.found = true;
             std::string advName = dev->getName();
@@ -407,8 +471,17 @@ void markDisconnected(SensorKind kind) {
                 s.power3sW = 0xFFFF;
                 break;
             case KIND_CSC:
-                s.cadenceConnected = false;
+            case KIND_SPEED: {
+                if (kind == KIND_CSC) s.cadenceConnected = false;
+                // Still a wheel source if the OTHER CSC link has one.
+                const SensorKind other = kind == KIND_CSC ? KIND_SPEED : KIND_CSC;
+                if (!(sensors[other].connected && sensors[other].hasWheel)) {
+                    s.speedSensorConnected = false;
+                    s.wheelSpeedKmh = 0.0f;
+                }
+                speed_source::publish(s, millis());   // fall back right now
                 break;
+            }
             default:
                 break;
         }
@@ -437,8 +510,37 @@ private:
     SensorKind kind_;
 };
 
-ClientCallbacks hrCb(KIND_HR), powerCb(KIND_POWER), cscCb(KIND_CSC), radarCb(KIND_RADAR);
-ClientCallbacks* clientCbs[KIND_COUNT] = {&hrCb, &powerCb, &cscCb, &radarCb};
+ClientCallbacks hrCb(KIND_HR), powerCb(KIND_POWER), cscCb(KIND_CSC), radarCb(KIND_RADAR),
+    speedCb(KIND_SPEED);
+ClientCallbacks* clientCbs[KIND_COUNT] = {&hrCb, &powerCb, &cscCb, &radarCb, &speedCb};
+
+// A Speed & Cadence device found in the wrong slot moves to the right one:
+// re-file the pairing, drop this link, and let the scan connect it as `to`.
+// Only on a definitive CSC Feature read, so it cannot ping-pong.
+void moveCscPairing(SensorKind from, SensorKind to) {
+    Sensor& sensor = sensors[from];
+    std::string addr = sensor.addr.toString();
+    const char* best = sensor.make[0] ? sensor.make : sensor.advName;
+    settings::removeSensorAddr(from, addr.c_str());
+    settings::addSensorAddr(to, addr.c_str());
+    if (best[0]) settings::setSensorName(to, best);
+    diag::log("csc: %s [%s] is a %s sensor - moving it to the %s slot",
+              best[0] ? best : "(unnamed)", addr.c_str(),
+              to == KIND_SPEED ? "speed-only" : "cadence", sensors[to].name);
+    // Switch to it now if the target slot holds a different device, exactly
+    // as pairCandidate does for a fresh pairing.
+    if (sensors[to].connected &&
+        strcasecmp(sensors[to].addr.toString().c_str(), addr.c_str()) != 0) {
+        sensors[to].client->disconnect();
+    }
+    sensors[to].found = false;
+    sensor.client->disconnect();
+    sensor.found = false;
+    // Keep the hunt alive long enough to reconnect it in its new slot.
+    lastLinkMs = millis();
+    everLinked = true;
+    lastActivityMs = millis();
+}
 
 bool connectSensor(SensorKind kind) {
     Sensor& sensor = sensors[kind];
@@ -461,6 +563,36 @@ bool connectSensor(SensorKind kind) {
         return false;
     }
 
+    // Speed & Cadence: what does this device measure? The CSC Feature
+    // characteristic (0x2A5C) is mandatory, but not every sensor gets it
+    // right - unreadable means "learn from the packets" (handleCsc).
+    if (isCsc(kind)) {
+        sensor.featureKnown = sensor.hasWheel = sensor.hasCrank = false;
+        if (NimBLERemoteCharacteristic* f = svc->getCharacteristic(CHR_CSC_FEATURE)) {
+            if (f->canRead()) {
+                std::string v = f->readValue();
+                if (v.size() >= 2) {
+                    const uint16_t feat = (uint8_t)v[0] | ((uint8_t)v[1] << 8);
+                    sensor.featureKnown = true;
+                    sensor.hasWheel = feat & wheel_speed::kFeatureWheel;
+                    sensor.hasCrank = feat & wheel_speed::kFeatureCrank;
+                    diag::log("csc: %s feature 0x%04X (wheel=%d crank=%d)", sensor.name,
+                              feat, (int)sensor.hasWheel, (int)sensor.hasCrank);
+                }
+            }
+        }
+        // Wrong slot: a speed-only device in Cadence, or anything with a
+        // crank in Speed (a combo belongs in Cadence, which feeds both).
+        const bool speedOnly = sensor.featureKnown && sensor.hasWheel && !sensor.hasCrank;
+        if ((kind == KIND_CSC && speedOnly) ||
+            (kind == KIND_SPEED && sensor.featureKnown && sensor.hasCrank)) {
+            moveCscPairing(kind, kind == KIND_CSC ? KIND_SPEED : KIND_CSC);
+            return false;
+        }
+        wheelEst[kind].reset();
+        crankFromCsc[kind] = CrankState{};
+    }
+
     sleepWatch[kind].sleepAtConnect = sleepCount();
     sleepWatch[kind].lastMs = millis();
     ++sleepWatch[kind].connections;
@@ -472,6 +604,7 @@ bool connectSensor(SensorKind kind) {
         case KIND_HR:     ok = chr->subscribe(true, onHrNotify); break;
         case KIND_POWER:  ok = chr->subscribe(true, onPowerNotify); break;
         case KIND_CSC:    ok = chr->subscribe(true, onCscNotify); break;
+        case KIND_SPEED:  ok = chr->subscribe(true, onSpeedNotify); break;
         case KIND_RADAR:  ok = chr->subscribe(true, onRadarNotify); break;
         default: break;
     }
@@ -511,9 +644,17 @@ bool connectSensor(SensorKind kind) {
     g_state.with([&](RideState& s) {
         if (kind == KIND_HR) s.hrConnected = true;
         if (kind == KIND_POWER) s.powerConnected = true;
-        if (kind == KIND_CSC) s.cadenceConnected = true;
+        // A Cadence-slot link is a cadence source unless its Feature says it
+        // has no crank (a combo is both; a cadence-only sensor stays as
+        // before). Speed shows as connected once wheel data flows - or now,
+        // when the Feature promised it.
+        if (kind == KIND_CSC && !(sensor.featureKnown && !sensor.hasCrank))
+            s.cadenceConnected = true;
+        if (isCsc(kind) && sensor.featureKnown && sensor.hasWheel &&
+            !(kind == KIND_CSC && sensors[KIND_SPEED].connected))
+            s.speedSensorConnected = true;
     });
-    static const char* kn[KIND_COUNT] = {"HR", "power", "cadence", "radar"};
+    static const char* kn[KIND_COUNT] = {"HR", "power", "cadence", "radar", "speed"};
     diag::log("%s connected: %s [%s] make='%s', notify %s", kn[kind], sensor.advName,
               sensor.addr.toString().c_str(), sensor.make, ok ? "on" : "off");
     return true;
@@ -681,6 +822,10 @@ void task(void*) {
                 s.powerW = s.power3sW = 0xFFFF;
             if (s.cadenceRpm != 0xFF && now - s.cadenceMs > kStaleMs)
                 s.cadenceRpm = 0xFF;
+            // A wheel that stops, or a sensor that goes quiet, sends nothing
+            // to trigger a re-arbitration: this 1 Hz pass is what decays the
+            // speed to 0 / hands it back to GPS.
+            speed_source::publish(s, now);
         });
 
         // Keep the 3 s power average current even between notifications so it
@@ -775,6 +920,28 @@ bool disconnect(int kind) {
     return true;
 }
 
+// What a Speed & Cadence device is, as far as we know. The advert says only
+// "0x1816", so an unknown one carries both bits ("speed/cadence"). Once
+// paired, the slot it lives in says which — plus speed for a combo on the
+// Cadence slot whose live link has wheel data.
+static uint8_t refineCscMask(const char* addr, uint8_t mask) {
+    constexpr uint8_t kCsc = 1 << KIND_CSC, kSpd = 1 << KIND_SPEED;
+    if (!(mask & (kCsc | kSpd))) return mask;
+    const bool pc = settings::sensorPaired(KIND_CSC, addr);
+    const bool ps = settings::sensorPaired(KIND_SPEED, addr);
+    if (!pc && !ps) return mask | kCsc | kSpd;
+    mask &= ~(kCsc | kSpd);
+    if (ps) mask |= kSpd;
+    if (pc) {
+        const Sensor& c = sensors[KIND_CSC];
+        const bool live = c.connected &&
+                          strcasecmp(c.addr.toString().c_str(), addr) == 0;
+        if (!(live && c.featureKnown && !c.hasCrank)) mask |= kCsc;
+        if (live && c.hasWheel) mask |= kSpd;
+    }
+    return mask;
+}
+
 // The "Manufacturer Model" read from a connected sensor's Device Info Service,
 // or nullptr if that address isn't a connected sensor / had no DIS.
 static const char* makeForAddr(const char* addr) {
@@ -804,6 +971,7 @@ int getCandidates(Candidate* out, int maxOut) {
                 out[i].paired = true;
             }
         }
+        out[i].kindsMask = refineCscMask(out[i].addr, out[i].kindsMask);
         // Prefer the human-readable make once we've connected and read the DIS.
         if (const char* mk = makeForAddr(out[i].addr)) {
             snprintf(out[i].name, sizeof(out[i].name), "%s", mk);
@@ -847,6 +1015,7 @@ int getCandidates(Candidate* out, int maxOut) {
         for (int k2 = k + 1; k2 < KIND_COUNT; ++k2) {
             if (settings::sensorPaired(k2, paddr)) c.kindsMask |= (uint8_t)(1 << k2);
         }
+        c.kindsMask = refineCscMask(paddr, c.kindsMask);
       }
     }
     return n;
@@ -864,6 +1033,14 @@ void pairCandidate(const char* addr) {
         }
     }
     xSemaphoreGive(candMutex);
+
+    // A Speed & Cadence device advertises both slots' service. Pair it into
+    // ONE: the Speed slot if it already lives there (re-pairing a known speed
+    // sensor), else Cadence - connectSensor reads its Feature and moves a
+    // speed-only device across.
+    constexpr uint8_t kCsc = 1 << KIND_CSC, kSpd = 1 << KIND_SPEED;
+    if ((mask & kCsc) && (mask & kSpd))
+        mask &= settings::sensorPaired(KIND_SPEED, addr) ? ~kCsc : ~kSpd;
 
     for (int k = 0; k < KIND_COUNT; ++k) {
         if (!(mask & (1 << k))) continue;

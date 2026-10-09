@@ -126,6 +126,10 @@ struct SettingsView: View {
                         }
                     }
 
+                    if ble.state == .connected, let mm = ble.wheelCircMm {
+                        wheelCard(mm)
+                    }
+
                     Card {
                         VStack(alignment: .leading, spacing: 10) {
                             Text("Timezone").trackedLabel()
@@ -491,6 +495,34 @@ struct SettingsView: View {
         bytes >= 1024 ? "\(bytes / 1024) KB" : "\(bytes) B"
     }
 
+    // Speed sensor wheel size. A preset for the common tyres, and a 1 mm
+    // stepper for a measured roll-out (the most accurate: mark the tyre, roll
+    // one turn, measure).
+    private func wheelCard(_ mm: Int) -> some View {
+        Card {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Wheel size").trackedLabel()
+                Stepper(value: Binding(get: { ble.wheelCircMm ?? WheelSize.defaultMm },
+                                       set: { ble.setWheelCircMm($0) }),
+                        in: WheelSize.minMm...WheelSize.maxMm, step: 1) {
+                    Text("\(mm) mm")
+                        .font(TypeScale.value(30))
+                        .foregroundStyle(Palette.ink)
+                }
+                Menu {
+                    ForEach(WheelSize.presets, id: \.mm) { p in
+                        Button("\(p.name) · \(p.mm) mm") { ble.setWheelCircMm(p.mm) }
+                    }
+                } label: {
+                    Text(WheelSize.presets.first { $0.mm == mm }?.name ?? "Choose a tyre size")
+                        .font(.system(size: 14, weight: .medium))
+                }
+                Text("Circumference for a Bluetooth speed sensor: speed and distance are wheel turns × this.")
+                    .font(.system(size: 12)).foregroundStyle(Palette.muted)
+            }
+        }
+    }
+
     private var tzLabel: String {
         let h = ble.tzMinutes / 60, m = abs(ble.tzMinutes % 60)
         return m == 0 ? String(format: "UTC%+d", h)
@@ -691,6 +723,30 @@ struct SettingsView: View {
             return ""
         }
     }
+}
+
+// Wheel circumferences for common tyres (mm), the usual head-unit table.
+// Limits match the firmware's wheel_speed::kMinCircMm..kMaxCircMm.
+enum WheelSize {
+    static let defaultMm = 2105
+    static let minMm = 800
+    static let maxMm = 3500
+    struct Preset { let name: String; let mm: Int }
+    static let presets: [Preset] = [
+        .init(name: "700x23c", mm: 2096),
+        .init(name: "700x25c", mm: 2105),
+        .init(name: "700x28c", mm: 2136),
+        .init(name: "700x32c", mm: 2155),
+        .init(name: "700x35c", mm: 2168),
+        .init(name: "700x40c", mm: 2200),
+        .init(name: "650b x 47", mm: 2081),
+        .init(name: "26 x 2.1", mm: 2068),
+        .init(name: "27.5 x 2.2", mm: 2148),
+        .init(name: "29 x 2.2", mm: 2298),
+        .init(name: "29 x 2.4", mm: 2326),
+        .init(name: "20 x 1.75 (406)", mm: 1515),
+        .init(name: "16 x 1.35 (349)", mm: 1272),
+    ]
 }
 
 /// The online cover lookup, where a rider looks for it. Also on the dashboard

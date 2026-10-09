@@ -9,6 +9,7 @@
 #include "fit_writer.h"
 #include "sd_bus.h"
 #include "settings.h"
+#include "speed_source.h"
 #include "usb_storage.h"
 #include "diag.h"
 #include "crash_report.h"
@@ -40,6 +41,10 @@ uint32_t lastFixMs = 0;
 uint32_t lastPhoneFixMs = 0;
 bool phoneSourceLogged = false;
 double distanceM = 0;
+// Wheel-sensor distance baseline: RideState::wheelDistM only ever grows, so
+// each tick's travel is the difference from the last tick's value.
+double lastWheelDistM = 0;
+bool haveWheelBase = false;
 uint32_t timerS = 0;
 uint32_t lastFlushS = 0;
 
@@ -247,6 +252,7 @@ void recoverInterruptedRides() {
 
 void resetStats() {
     distanceM = 0;
+    haveWheelBase = false;
     timerS = 0;
     movingS = 0;
     lastFlushS = 0;
@@ -322,8 +328,9 @@ void accumulateStats(const RideState& s) {
 //
 // Three answers, not two. MOVING and STOPPED are positive testimony: a sensor
 // only votes while its data is fresh (a sleeping power meter abstains rather
-// than testifying "0 W"), and the wheel counter can only ever vote "moving" (a
-// silent one is indistinguishable from an absent one). BLIND is no witnesses
+// than testifying "0 W"). A wheel sensor that is still sending packets with
+// no new revolution testifies "stopped"; one that has gone silent abstains,
+// like the meter. BLIND is no witnesses
 // at all — no fix, every sensor asleep — and the CALLER decides what that
 // means, because it depends on history this function doesn't have: blind
 // moments after real movement is a tunnel and the timer should run; blind
@@ -351,10 +358,12 @@ Motion motionEvidence(const RideState& s, bool resuming) {
         witnesses++;
         if (s.cadenceRpm > 0) moving = true;
     }
+    if (speed_source::sensorFresh(s, now)) witnesses++;   // wheel sensor talking
     if (fresh(s.wheelMoveMs)) moving = true;   // rev counter advanced recently
     if (s.gpsFix) {
         witnesses++;
-        if (s.speedKmh > (resuming ? 5.0f : 3.0f)) moving = true;
+        // The receiver's own speed: the `resuming` bar exists for GPS wobble.
+        if (s.gpsSpeedKmh > (resuming ? 5.0f : 3.0f)) moving = true;
     } else if (s.phoneFixValid && now - s.phoneFixMs < 10000 &&
                s.phoneAccM > 0 && s.phoneAccM <= 50.0f) {
         // No fix of our own: the PHONE's location is the witness of last
@@ -923,6 +932,18 @@ void task(void*) {
 
         RideState s = g_state.snapshot();
 
+        // Wheel-sensor travel since the last tick, measured on EVERY tick
+        // (paused ones too) so a pause never banks distance for later. A
+        // delta past 100 m in one tick is a gap in ticking (USB host), not
+        // riding; drop it rather than draw a jump.
+        double wheelDeltaM = 0;
+        if (haveWheelBase) {
+            wheelDeltaM = s.wheelDistM - lastWheelDistM;
+            if (wheelDeltaM < 0 || wheelDeltaM > 100.0) wheelDeltaM = 0;
+        }
+        lastWheelDistM = s.wheelDistM;
+        haveWheelBase = true;
+
         // Auto-pause: freeze the timer once the bike has been demonstrably
         // stopped for the configured run of seconds; resume the moment anything
         // says it is moving again. Paused ticks write no records — the
@@ -1025,57 +1046,90 @@ void task(void*) {
         const bool phoneMode = !s.gpsFix && phoneUsable;
         const bool usePhone = phoneMode && s.phoneFixMs != lastPhoneFixMs;
 
+        // Distance policy. While the wheel sensor is the SPEED source (fresh
+        // and not contradicted by a moving fix — speed_source.h), it is also
+        // the DISTANCE source, GPS or not: revolutions x circumference does not
+        // cut corners on switchbacks, wander while stopped, or drop out under
+        // trees, which is why head units prefer a speed sensor when one is
+        // fitted. Its accuracy is the circumference setting's. Otherwise
+        // distance comes from positions, exactly as before. One source per
+        // tick, so the two never double-count.
+        const bool wheelDist = s.speedSource == speed_source::SENSOR;
+        if (wheelDist) distanceM += wheelDeltaM;
+
+        static bool wheelSourceLogged = false;
+        if (wheelDist != wheelSourceLogged) {
+            wheelSourceLogged = wheelDist;
+            diag::log("rec: distance source -> %s", wheelDist
+                          ? "WHEEL SENSOR" : "positions");
+        }
+
         if (phoneMode != phoneSourceLogged) {
             phoneSourceLogged = phoneMode;
             diag::log("rec: position source -> %s", phoneMode
                           ? "PHONE (own receiver has no fix)" : "device GPS");
         }
 
-        float grade = NAN;
-        if (s.gpsFix || usePhone) {
-            const double lat = s.gpsFix ? s.latitude : s.phoneLat;
-            const double lon = s.gpsFix ? s.longitude : s.phoneLon;
-            // Seconds since the last recorded point. The phone path needs the
-            // real gap: its updates are ~1 s while recording but 3 s otherwise,
-            // and iOS can deliver later still, so assuming the tick interval
-            // would put both the speed and the jitter window out.
-            const uint32_t nowMs = millis();
-            const float dtSec = havePrevFix && lastFixMs
-                                    ? (nowMs - lastFixMs) / 1000.0f
-                                    : (RECORD_INTERVAL_MS / 1000.0f);
-            float phoneSpeedMs = NAN;
+        // No position at all (trainer, indoors, before the first fix) but a
+        // wheel sensor: write positionless records, so the ride still has a
+        // distance and speed trace. Not in phone mode — there the record
+        // waits for the next phone fix, as before, rather than interleaving
+        // position-less points into the track.
+        const bool positionless = !s.gpsFix && !phoneMode && wheelDist;
 
-            if (havePrevFix) {
-                double d = haversineM(lastLat, lastLon, lat, lon);
-                if (s.gpsFix) {
-                    // Reject jitter when stationary and jumps from bad fixes.
-                    if (d > 0.5 && d < 100.0) distanceM += d;
-                } else if (d < 0.5) {
-                    // Below the jitter floor: the rider is stopped. Say zero —
-                    // leaving it unknown would let a reader interpolate a speed
-                    // across the stop.
-                    phoneSpeedMs = 0.0f;
-                } else if (d < 40.0 * dtSec) {
-                    // Same jitter idea as the device path, scaled to the real
-                    // gap: 40 m/s is 144 km/h, so anything past it is a fix
-                    // jumping, not a rider. No distance and no speed claim.
-                    distanceM += d;
-                    if (dtSec > 0.1f) phoneSpeedMs = (float)(d / dtSec);
+        float grade = NAN;
+        if (s.gpsFix || usePhone || positionless) {
+            double lat = NAN, lon = NAN;
+            float phoneSpeedMs = NAN;
+            if (!positionless) {
+                lat = s.gpsFix ? s.latitude : s.phoneLat;
+                lon = s.gpsFix ? s.longitude : s.phoneLon;
+                // Seconds since the last recorded point. The phone path needs the
+                // real gap: its updates are ~1 s while recording but 3 s otherwise,
+                // and iOS can deliver later still, so assuming the tick interval
+                // would put both the speed and the jitter window out.
+                const uint32_t nowMs = millis();
+                const float dtSec = havePrevFix && lastFixMs
+                                        ? (nowMs - lastFixMs) / 1000.0f
+                                        : (RECORD_INTERVAL_MS / 1000.0f);
+
+                if (havePrevFix) {
+                    double d = haversineM(lastLat, lastLon, lat, lon);
+                    if (wheelDist) {
+                        // The wheel already counted this tick: positions
+                        // only move the anchor (below), adding nothing.
+                    } else if (s.gpsFix) {
+                        // Reject jitter when stationary and jumps from bad fixes.
+                        if (d > 0.5 && d < 100.0) distanceM += d;
+                    } else if (d < 0.5) {
+                        // Below the jitter floor: the rider is stopped. Say zero —
+                        // leaving it unknown would let a reader interpolate a speed
+                        // across the stop.
+                        phoneSpeedMs = 0.0f;
+                    } else if (d < 40.0 * dtSec) {
+                        // Same jitter idea as the device path, scaled to the real
+                        // gap: 40 m/s is 144 km/h, so anything past it is a fix
+                        // jumping, not a rider. No distance and no speed claim.
+                        distanceM += d;
+                        if (dtSec > 0.1f) phoneSpeedMs = (float)(d / dtSec);
+                    }
                 }
+                lastLat = lat;
+                lastLon = lon;
+                lastFixMs = nowMs;
+                havePrevFix = true;
+                if (usePhone) lastPhoneFixMs = s.phoneFixMs;
             }
-            lastLat = lat;
-            lastLon = lon;
-            lastFixMs = nowMs;
-            havePrevFix = true;
-            if (usePhone) lastPhoneFixMs = s.phoneFixMs;
             if (s.baroValid) grade = updateGrade(s.baroAltM);
             else if (s.mapElevationValid) grade = updateGrade(s.mapElevationM);
 
             FitWriter::Record r;
             // With no lock of our own, s.utc is whatever the last fix left
             // behind. The phone sent its own clock with the position; prefer it.
+            // Positionless: neither — a stale phoneUtc would repeat a timestamp.
             r.utc = s.gpsFix ? s.utc
-                             : (s.phoneUtc ? s.phoneUtc : (uint32_t)time(nullptr));
+                  : (phoneMode && s.phoneUtc) ? s.phoneUtc
+                                              : (uint32_t)time(nullptr);
             r.latitudeDeg = lat;
             r.longitudeDeg = lon;
             // Record the map DEM elevation so the ride profile is accurate.
@@ -1091,11 +1145,13 @@ void task(void*) {
             // the thing that CALIBRATES the barometer (aux_sensors).
             r.altitudeM = s.baroValid ? s.baroAltM
                         : s.mapElevationValid ? s.mapElevationM : NAN;
-            // s.speedKmh comes from the receiver, so on the phone path it is
-            // whatever the last device fix left behind — stale, and usually the
-            // speed the rider was doing before the signal went. Derive it from
-            // the ground actually covered instead.
-            r.speedMs = s.gpsFix ? s.speedKmh / 3.6f : phoneSpeedMs;
+            // Speed from the same source as the distance: the wheel when it
+            // is counting, else the receiver's own, else — on the phone path —
+            // derived from the ground actually covered between written points
+            // (matching the track, not the phone's latest instantaneous value).
+            r.speedMs = wheelDist ? s.speedKmh / 3.6f
+                      : s.gpsFix  ? s.gpsSpeedKmh / 3.6f
+                                  : phoneSpeedMs;
             r.distanceM = distanceM;
             r.powerW = s.powerW;
             r.heartRate = s.heartRateBpm;

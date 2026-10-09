@@ -9,6 +9,7 @@
 
 #include "config.h"
 #include "ride_state.h"
+#include "speed_source.h"
 #include "workout.h"
 // Faces at the design system's ACTUAL sizes. The drop's specimens are drawn 1:1
 // with the panel, so its CSS px are device px — and the previously compiled
@@ -207,6 +208,14 @@ void statusBar(const RideState& s, uint8_t* fb, const char* title) {
     if (s.powerConnected) {
         if (!title) text(&Arial_L, x, 40, " · PWR", fb);
         x += textWidth(&Arial_L, " · PWR");
+    }
+    // The wheel sensor, only while it is what the speed reads from — the
+    // same quiet cue as the map's "PHONE GPS": a speed that is not coming
+    // from GPS says so. Dropped rather than crowding the battery %.
+    if (s.speedSource == speed_source::SENSOR) {
+        if (!title && x + textWidth(&Arial_L, " · SPD") < W - 132)
+            text(&Arial_L, x, 40, " · SPD", fb);
+        x += textWidth(&Arial_L, " · SPD");
     }
     if (!title && s.radar.connected && !s.ridePaused) {
         const char* label = s.radar.live ? " · RDR" : " · RDR?";
@@ -1465,7 +1474,8 @@ void ui_render_menu(const MenuInfo& m, uint8_t* fb) {
                  units::distM(m.rideDistanceM, m.useMiles),
                  m.useMiles ? "mi" : "km");
     } else {
-        int n = (m.hr ? 1 : 0) + (m.pwr ? 1 : 0) + (m.cad ? 1 : 0) + (m.radar ? 1 : 0);
+        int n = (m.hr ? 1 : 0) + (m.pwr ? 1 : 0) + (m.cad ? 1 : 0) + (m.radar ? 1 : 0) +
+                (m.spd ? 1 : 0);
         snprintf(startSub, sizeof(startSub), "%s · %d sensor%s connected",
                  m.gpsReady ? "GPS ready" : "waiting for GPS", n,
                  n == 1 ? "" : "s");
@@ -1475,7 +1485,7 @@ void ui_render_menu(const MenuInfo& m, uint8_t* fb) {
     // longer fits beside the phone, and the page itself lists each one.
     {
         const int ns = (m.hr ? 1 : 0) + (m.pwr ? 1 : 0) + (m.cad ? 1 : 0) +
-                       (m.radar ? 1 : 0);
+                       (m.radar ? 1 : 0) + (m.spd ? 1 : 0);
         char phone[48];
         if (m.phonePaired)
             snprintf(phone, sizeof(phone), "Phone: %s",
