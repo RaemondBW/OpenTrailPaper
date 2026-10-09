@@ -317,7 +317,7 @@ network is what remains. The before and after below are at 16 m/px:
 
 **POIs** are 24 px icons with a 2 px white halo.
 
-- **Shapes.** Circles mark comfort stops (a drop for water, "WC" for
+- **Shapes.** Circles mark comfort stops (a drop for water, a man-and-woman restroom pictogram for
   toilets). Squares mark bike service (a wrench for a repair stand, with a
   small "+" when it has a pump, and a bicycle for a shop).
 - **Fill.** A solid black icon means free to use. A hollow icon means fee,

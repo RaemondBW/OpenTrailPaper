@@ -312,17 +312,22 @@ void drawBikeLaneEdges(const int16_t* pts, int count, int roadWidth, uint8_t* fb
 // the icon off whatever road it sits on.
 constexpr int POI_R = 12;
 
-// "WC", 15x9, 2-px strokes.
-const char* const kWcGlyph[9] = {
-    "##....##.######",
-    "##....##.######",
-    "##....##.##....",
-    "##.##.##.##....",
-    "##.##.##.##....",
-    "##.##.##.##....",
-    "########.##....",
-    "###..###.######",
-    "##....##.######",
+// Toilets: the restroom pictogram (man | woman, like the 🚻 sign), 17x13.
+// Riders outside Europe don't read "WC"; the figures read everywhere.
+const char* const kToiletGlyph[13] = {
+    "..###...#...###..",
+    "..###...#...###..",
+    "........#........",
+    ".#####..#...###..",
+    ".#####..#..#####.",
+    ".#####..#..#####.",
+    ".#####..#.#######",
+    ".#####..#.#######",
+    ".#####..#.#######",
+    ".##.##..#..##.##.",
+    ".##.##..#..##.##.",
+    ".##.##..#..##.##.",
+    ".##.##..#..##.##.",
 };
 
 void drawGlyphRows(const char* const* rows, int nRows, int cx, int cy,
@@ -361,7 +366,7 @@ void drawPoiIcon(const MapPoi& p, uint8_t* fb) {
             epd_fill_triangle(cx, cy - 8, cx - 5, cy + 2, cx + 5, cy + 2, ink, fb);
             break;
         case MAP_POI_TOILETS:
-            drawGlyphRows(kWcGlyph, 9, cx, cy, ink, fb);
+            drawGlyphRows(kToiletGlyph, 13, cx, cy, ink, fb);
             break;
         case MAP_POI_REPAIR: {   // wrench, handle bottom-left to head top-right
             thickSegment(cx - 6, cy + 6, cx + 2, cy - 2, 3, ink, fb);
