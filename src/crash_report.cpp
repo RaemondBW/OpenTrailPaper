@@ -18,6 +18,15 @@
 
 namespace {
 constexpr int SLOTS=4;
+// The NVS partition is only 0x5000 bytes and also holds settings, sensor
+// pairings and NimBLE bonds. Four full-size reports (4 KiB each) would starve
+// those, so the whole queue is capped in bytes as well as in slots.
+constexpr size_t NVS_BYTE_CAP=6144;
+// While anything is undelivered, retry quickly: in a boot loop the device may
+// only live ~15 s. Back off once it is clear the card is not coming.
+constexpr uint32_t FAST_RETRY_MS=3000, SLOW_RETRY_MS=30000;
+constexpr unsigned FAST_RETRIES=20;
+unsigned failedAttempts=0;
 RTC_NOINIT_ATTR crash_record::Line tail[crash_record::TAIL_COUNT];
 portMUX_TYPE tailMux=portMUX_INITIALIZER_UNLOCKED;
 bool captureReady=false;
@@ -35,6 +44,9 @@ void add(const char* format,...) {
     if(n>0)current.length+=size_t(n)<available?size_t(n):available-1;
 }
 void keyFor(int slot,char* key){snprintf(key,12,"report%d",slot);}
+// Queue order of a slot; a missing key (older firmware) sorts as oldest.
+void orderKeyFor(int slot,char* key){snprintf(key,12,"order%d",slot);}
+size_t storedBytes(const crash_record::Record& r){return offsetof(crash_record::Record,text)+r.length+1;}
 bool readSlot(Preferences& prefs,int slot,crash_record::Record& out) {
     char key[12];keyFor(slot,key);
     size_t n=prefs.getBytesLength(key);
@@ -54,18 +66,48 @@ bool persistCurrent() {
     if(!currentPending || currentDurable){if(currentDurable)acknowledgeCore();return true;}
     Preferences prefs;
     if(!prefs.begin("crashdiag",false))return false;
-    int slot=-1;
-    for(int i=0;i<SLOTS;++i){
+    int freeSlot=-1, oldest=-1, newest=-1, occupied=0;
+    uint32_t oldestOrder=UINT32_MAX, newestOrder=0, nextOrder=1;
+    size_t used=0, newestBytes=0;
+    for(int i=0;i<SLOTS && !currentDurable;++i){
         char key[12];keyFor(i,key);
-        if(prefs.getBytesLength(key)==0){slot=i;break;}
+        size_t n=prefs.getBytesLength(key);
+        if(n==0){if(freeSlot<0)freeSlot=i;continue;}
         // A previous interrupted acknowledgement may already contain this ID.
         if(readSlot(prefs,i,scratch) && !memcmp(&scratch,&current,sizeof(current))){currentDurable=true;break;}
+        char okey[12];orderKeyFor(i,okey);
+        uint32_t order=prefs.getUInt(okey,0);
+        ++occupied;used+=n;
+        if(order>=nextOrder)nextOrder=order+1;
+        if(oldest<0 || order<oldestOrder){oldest=i;oldestOrder=order;}
+        if(newest<0 || order>=newestOrder){newest=i;newestOrder=order;newestBytes=n;}
     }
-    if(!currentDurable && slot>=0){
+    size_t n=storedBytes(current);
+    int slot=-1;
+    if(!currentDurable){
+        if(freeSlot>=0 && used+n<=NVS_BYTE_CAP)slot=freeSlot;
+        // Full (slots or bytes): keep the OLDEST report, which in a crash loop
+        // usually describes the root cause, and replace the newest with this one.
+        else if(occupied>=2 && newest!=oldest && used-newestBytes+n<=NVS_BYTE_CAP){
+            // Overwritten in place (not removed first): if the write fails the
+            // newest report survives and this one stays in RAM.
+            slot=newest;
+            if(readSlot(prefs,slot,scratch))
+                diag::log("crash report: NVS queue full (%d slots, %u bytes); replacing newest queued report %08lx with %08lx, oldest kept",
+                    occupied,unsigned(used),(unsigned long)scratch.id,(unsigned long)current.id);
+            else diag::log("crash report: NVS queue full; replacing unreadable newest slot %d with %08lx, oldest kept",slot,(unsigned long)current.id);
+        }
+    }
+    if(slot>=0){
         char key[12];keyFor(slot,key);
-        size_t n=offsetof(crash_record::Record,text)+current.length+1;
+        char okey[12];orderKeyFor(slot,okey);
+        // Order first: an orphan order key without a report is harmless.
+        prefs.putUInt(okey,nextOrder);
         currentDurable=prefs.putBytes(key,&current,n)==n &&
             readSlot(prefs,slot,scratch) && memcmp(&current,&scratch,sizeof(current))==0;
+    } else if(!currentDurable){
+        diag::log("crash report: NVS queue full (%d slots, %u/%u bytes); %08lx not queued",
+            occupied,unsigned(used),unsigned(NVS_BYTE_CAP),(unsigned long)current.id);
     }
     prefs.end();
     if(currentDurable)acknowledgeCore();
@@ -177,6 +219,69 @@ void crash_report::begin(int reason,const char* reasonName,const char* firmware)
 }
 void crash_report::requestStatus(){statusRequested=1;}
 void crash_report::requestTestPanic(){statusRequested=2;}
+namespace {
+// Main task only. Returns true when nothing remains to deliver.
+bool deliver(bool status,const char* why) {
+    power_mgmt::busyAcquire();
+    persistCurrent();
+    Preferences prefs;int queued=0,delivered=0;
+    bool sd=ride_recorder::sdMounted() && !usb_storage::hostActive();
+    bool nvsAvailable=prefs.begin("crashdiag",false);
+    if(nvsAvailable){
+        for(int i=0;i<SLOTS;++i){
+            char key[12];keyFor(i,key);
+            if(!prefs.getBytesLength(key))continue;
+            if(!readSlot(prefs,i,scratch)){
+                // Not counted as pending: an unreadable slot would otherwise keep
+                // the fast retry running forever.
+                if(status)diag::log("crash report: invalid NVS slot %d retained for investigation",i);
+                continue;
+            }
+            ++queued;
+            if(status)Serial.print(scratch.text);
+            if(sd && saveSD(scratch)){
+                if(currentPending && scratch.id==current.id)currentPending=false;
+                if(prefs.remove(key)){
+                    --queued;++delivered;
+                    char okey[12];orderKeyFor(i,okey);prefs.remove(okey);
+                    diag::log("crash report %08lx delivered to SD; NVS slot %d cleared",(unsigned long)scratch.id,i);
+                }
+                else diag::log("crash report: SD verified; NVS acknowledgement failed, will retry");
+            }
+        }
+        prefs.end();
+    }
+    if(currentPending && !currentDurable){
+        if(status)Serial.print(current.text);
+        if(sd && saveSD(current)){
+            currentPending=false;acknowledgeCore();++delivered;
+            diag::log("crash report %08lx (RAM-only) delivered to SD",(unsigned long)current.id);
+        }
+    }
+    power_mgmt::busyRelease();
+    bool remaining=queued>0 || (currentPending && !currentDurable);
+    if(why && (delivered || remaining))
+        diag::log("crash report: %s: delivered=%d still_queued_NVS=%d current_RAM=%d SD=%d host=%d",
+            why,delivered,queued,currentPending && !currentDurable,ride_recorder::sdMounted(),usb_storage::hostActive());
+    if(status && current.valid() && !currentPending)Serial.print(current.text);
+    if(status)diag::log("crash report: NVS_available=%d queued_NVS=%d current_RAM=%d SD=%d (crash-*.log appears in phone log list)",
+        nvsAvailable,queued,currentPending,ride_recorder::sdMounted());
+    return !remaining;
+}
+void schedule(bool clear) {
+    if(clear)failedAttempts=0;
+    else if(failedAttempts<FAST_RETRIES)++failedAttempts;
+    nextRetry=millis()+(clear || failedAttempts>=FAST_RETRIES?SLOW_RETRY_MS:FAST_RETRY_MS);
+}
+}
+void crash_report::onSdMounted(const char* why) {
+    // Runs on the main task right after a successful mount and BEFORE the card
+    // can be exposed to a USB host, so a boot-looping device still gets its
+    // reports and dump out within the few seconds it lives.
+    failedAttempts=0;
+    schedule(deliver(false,why));
+    memfault_service::deliverNow(why);
+}
 void crash_report::tick() {
     int action=statusRequested.exchange(0);
     if(action==2){
@@ -186,37 +291,5 @@ void crash_report::tick() {
     }
     bool status=action==1;
     if(!status && int32_t(millis()-nextRetry)<0)return;
-    nextRetry=millis()+30000;
-    power_mgmt::busyAcquire();
-    persistCurrent();
-    Preferences prefs;int queued=0;
-    bool nvsAvailable=prefs.begin("crashdiag",false);
-    if(nvsAvailable){
-        for(int i=0;i<SLOTS;++i){
-            char key[12];keyFor(i,key);
-            if(!prefs.getBytesLength(key))continue;
-            ++queued;
-            if(!readSlot(prefs,i,scratch)){
-                if(status)diag::log("crash report: invalid NVS slot %d retained for investigation",i);
-                continue;
-            }
-            if(status)Serial.print(scratch.text);
-            if(ride_recorder::sdMounted() && !usb_storage::hostActive() && saveSD(scratch)){
-                if(currentPending && scratch.id==current.id)currentPending=false;
-                if(prefs.remove(key))--queued;
-                else diag::log("crash report: SD verified; NVS acknowledgement failed, will retry");
-            }
-        }
-        prefs.end();
-    }
-    if(currentPending && !currentDurable){
-        if(status)Serial.print(current.text);
-        if(ride_recorder::sdMounted() && !usb_storage::hostActive() && saveSD(current)){
-            currentPending=false;acknowledgeCore();
-        }
-    }
-    power_mgmt::busyRelease();
-    if(status && current.valid() && !currentPending)Serial.print(current.text);
-    if(status)diag::log("crash report: NVS_available=%d queued_NVS=%d current_RAM=%d SD=%d (crash-*.log appears in phone log list)",
-        nvsAvailable,queued,currentPending,ride_recorder::sdMounted());
+    schedule(deliver(status,nullptr));
 }
