@@ -315,6 +315,15 @@ network is what remains. The before and after below are at 16 m/px:
 |---|---|
 | ![](img/osm-pois-bike-routes/before_mpp16.png) | ![](img/osm-pois-bike-routes/after_mpp16.png) |
 
+**Infrastructure first.** A way's own lane or cycleway styling wins over the
+route band wherever it is on screen; the band then marks a signed route with
+no dedicated space (a shared street). In central San Francisco 27 of the 30
+`route=bicycle` relations are the city's numbered `lcn` network, which runs
+along nearly every laned street, so drawing the band everywhere buried the
+lane dots and cycleway dashes. Laned routes keep the band zoomed out past
+4 m/px (where lane dots are not drawn), and every route keeps it when the
+Cycleways & lanes layer is switched off.
+
 **POIs** are 24 px icons with a 2 px white halo.
 
 - **Shapes.** Circles mark comfort stops (a drop for water, a man-and-woman restroom pictogram for

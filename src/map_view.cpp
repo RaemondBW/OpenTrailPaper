@@ -659,10 +659,25 @@ void ui_render_map_features(const MapScreenData& map, const RideState& s,
     }
     // Bike-route bands under every road, lowest network first so a national
     // route's wider band is not covered by a local one's.
+    //
+    // Infrastructure first: where the way's own lane / cycleway styling is on
+    // screen, it wins and the band is left off. In a city the numbered local
+    // network (SF: 27 lcn routes in the centre alone) runs along nearly every
+    // laned street, and the band — the heaviest bike style — buried the lane
+    // dots and cycleway dashes, so everything read as "bike route". The band
+    // now means "signed route with no dedicated space" (shared streets), plus
+    // laned routes zoomed out past where the lane dots draw, and every route
+    // when the Cycleways & lanes layer is off.
+    const bool infraOn = (map.layers & MAP_LAYER_CYCLEWAYS) != 0;
+    const bool laneDotsOn = infraOn && map.metersPerPixel <= 4.0f;
     for (int lvl = 1; lvl <= 3 && (map.layers & MAP_LAYER_BIKE_ROUTES); ++lvl) {
         const int bw = bikeBandWidth(lvl, map.metersPerPixel);
         for (int i = 0; i < map.featureCount; ++i) {
-            if ((map.features[i].flags & MAP_WF_ROUTE_MASK) != lvl) continue;
+            const uint8_t fl = map.features[i].flags;
+            if ((fl & MAP_WF_ROUTE_MASK) != lvl) continue;
+            if ((infraOn && (fl & MAP_WF_CYCLEWAY)) ||
+                (laneDotsOn && (fl & MAP_WF_BIKE_LANE)))
+                continue;
             drawBikeBand(map.features[i].pts, map.features[i].pointCount, bw, fb);
         }
     }
