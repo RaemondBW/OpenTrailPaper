@@ -10,19 +10,34 @@ uses [Memfault with offline SD export](memfault-offline.md). The short report co
 - the last ten diagnostic lines retained in RTC memory, with prior-boot uptime.
 
 The report is staged in the `crashdiag` NVS namespace before attempting SD
-mount. Up to four reports are queued, subject to available NVS space. Existing
-queued reports are not overwritten when full: the new one remains in RAM and
-is delivered directly if SD becomes available. If neither durable store works,
-that RAM-only report can still be lost at the next reset/power loss; this is
-logged explicitly. RTC breadcrumbs are bounded and do not survive removal of
+mount. Up to four reports are queued, and the queue is also capped at 6 KiB in
+total (the 0x5000-byte NVS partition also holds settings, sensor pairings and
+BLE bonds). When the queue is full by slots or bytes, the OLDEST report (in a
+crash loop, usually the root cause) is kept and the NEWEST queued report is
+overwritten by the current one, so the latest crash survives the next reset
+too. Only if even that does not fit (e.g. a single huge older report) does the
+new report remain RAM-only; this is logged explicitly. RTC breadcrumbs are bounded and do not survive removal of
 RTC power. A reset during a breadcrumb write invalidates that entry via CRC.
 This is normal boot-time logging, not SD access from a panic/interrupt handler.
 
 After mount, the main task writes `/logs/crash-XXXXXXXX.tmp`, closes it, reads
 back and compares every byte, then renames it to `/logs/crash-XXXXXXXX.log`.
-Only after the final file verifies does it remove the NVS copy. Failed/short
-writes retry after 30 seconds. A remount also permits retry. USB mass-storage
-ownership prevents SD access. An interrupted acknowledgement detects the same
+Only after the final file verifies does it remove the NVS copy.
+
+Delivery runs as soon as the card mounts, synchronously on the main task and
+before the card can be offered to a USB host:
+
+1. boot: `ride_recorder::begin()` mounts the card in `setup()`;
+2. `crash_report::onSdMounted("boot mount")` delivers queued/RAM reports, then
+   exports and clears the pending Memfault dump;
+3. only later does the UI task run `usb_storage::begin()` and expose the card.
+
+A card that mounts late (`retryMountIfNeeded`) is handled the same way before
+the late-mount flag lets the UI task expose it, and a card reclaimed from a USB
+host is delivered to right after the remount. While anything remains pending,
+`tick()` retries every 3 seconds for about a minute, then every 30 seconds.
+SD is never written while a USB host owns the card; the reports stay in NVS
+until it is released (or until the next boot, which delivers before exposing). An interrupted acknowledgement detects the same
 completed file and removes the NVS entry without appending duplicate content.
 A conflicting completed filename is not overwritten.
 
