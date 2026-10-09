@@ -11,6 +11,7 @@
 #include <cmath>
 
 #include "config.h"
+#include "mesh_crypto.h"
 #include "mesh_proto.h"
 
 static int failures = 0;
@@ -713,6 +714,178 @@ static void testEndToEnd() {
           "encodeData refuses a buffer it would overrun");
 }
 
+static void fromHex(const char* hex, uint8_t* out, size_t n) {
+    for (size_t i = 0; i < n; ++i) {
+        unsigned v = 0;
+        sscanf(hex + 2 * i, "%2x", &v);
+        out[i] = (uint8_t)v;
+    }
+}
+
+// Data's ids are fixed32 on the wire. Checked against hand-assembled bytes, not
+// a round trip: a round trip through our own codec passed while every ack this
+// firmware sent carried a varint request_id that nanopb on the other end refused.
+static void testDataFixed32() {
+    mesh::Data ack;
+    ack.portnum = mesh::PORT_ROUTING;
+    ack.payloadLen = mesh::encodeRouting(0, ack.payload, sizeof(ack.payload));
+    ack.requestId = 0x99887766;
+    uint8_t buf[64];
+    const size_t n = mesh::encodeData(ack, buf, sizeof(buf));
+    // 08 05 | 12 02 18 00 | 35 66 77 88 99   (field 6, wire type 5 = 0x35)
+    const uint8_t want[] = {0x08, 0x05, 0x12, 0x02, 0x18, 0x00,
+                            0x35, 0x66, 0x77, 0x88, 0x99};
+    check(n == sizeof(want), "ack Data is the expected length");
+    checkHex(buf, want, sizeof(want), "request_id is written as fixed32");
+
+    // What a stock node sends: request_id fixed32, then a bitfield.
+    const uint8_t stock[] = {0x08, 0x05, 0x12, 0x02, 0x18, 0x00, 0x35, 0x44,
+                             0x33, 0x22, 0x11, 0x48, 0x01};
+    mesh::Data d;
+    check(mesh::decodeData(stock, sizeof(stock), d) && d.portnum == mesh::PORT_ROUTING &&
+              d.requestId == 0x11223344,
+          "a stock ack's fixed32 request_id decodes");
+
+    // A pre-fix build of this firmware wrote it as a varint; still readable.
+    const uint8_t legacy[] = {0x08, 0x05, 0x30, 0x2a};
+    mesh::Data l;
+    check(mesh::decodeData(legacy, sizeof(legacy), l) && l.requestId == 42,
+          "a varint request_id is still accepted");
+
+    // want_response folded into the bitfield (bit 1), as newer firmware sends it.
+    const uint8_t viaBitfield[] = {0x08, 0x04, 0x48, 0x03};
+    mesh::Data b;
+    check(mesh::decodeData(viaBitfield, sizeof(viaBitfield), b) && b.wantResponse,
+          "want_response is read from the bitfield");
+    const uint8_t okToMqttOnly[] = {0x08, 0x04, 0x48, 0x01};
+    mesh::Data m;
+    check(mesh::decodeData(okToMqttOnly, sizeof(okToMqttOnly), m) && !m.wantResponse,
+          "the ok_to_mqtt bit alone is not want_response");
+}
+
+static void testUserPublicKey() {
+    mesh::User u;
+    mesh::nodeIdString(0x1a2b3c4d, u.id, sizeof(u.id));
+    snprintf(u.longName, sizeof(u.longName), "OT");
+    for (int i = 0; i < 32; ++i) u.publicKey[i] = (uint8_t)(0xA0 + i);
+    u.hasPublicKey = true;
+    uint8_t buf[128];
+    const size_t n = mesh::encodeUser(u, buf, sizeof(buf));
+    // The key is the last field: tag 0x42 (field 8, length-delimited), length 32.
+    check(n >= 34 && buf[n - 34] == 0x42 && buf[n - 33] == 32 &&
+              memcmp(buf + n - 32, u.publicKey, 32) == 0,
+          "User.public_key is field 8, 32 bytes");
+    mesh::User back;
+    check(mesh::decodeUser(buf, n, back) && back.hasPublicKey &&
+              memcmp(back.publicKey, u.publicKey, 32) == 0,
+          "User.public_key round-trips");
+
+    const uint8_t shortKey[] = {0x42, 0x03, 0x01, 0x02, 0x03};
+    mesh::User s;
+    check(mesh::decodeUser(shortKey, sizeof(shortKey), s) && !s.hasPublicKey,
+          "a public_key that is not 32 bytes is ignored");
+
+    mesh::User none;
+    snprintf(none.longName, sizeof(none.longName), "OT");
+    const size_t nn = mesh::encodeUser(none, buf, sizeof(buf));
+    check(nn == 4, "no key, no field 8");
+}
+
+// SHA-256 and X25519 (RFC 7748 section 6.1), against Python's hashlib and
+// cryptography.
+static void testCryptoPrimitives() {
+    uint8_t h[32], want[32];
+    mesh_crypto::sha256((const uint8_t*)"abc", 3, h);
+    fromHex("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", want, 32);
+    checkHex(h, want, 32, "SHA-256('abc')");
+    static uint8_t as[1000];
+    memset(as, 'a', sizeof(as));
+    mesh_crypto::sha256(as, sizeof(as), h);
+    fromHex("41edece42d63e8d9bf515a9ba6932e1c20cbc9f5a5d134645adb5db1b9737ea3", want, 32);
+    checkHex(h, want, 32, "SHA-256 of 1000 bytes (multi-block)");
+
+    uint8_t alice[32], bob[32], pub[32], shared[32];
+    fromHex("77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a", alice, 32);
+    fromHex("5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb", bob, 32);
+    mesh_crypto::x25519Public(pub, alice);
+    fromHex("8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a", want, 32);
+    checkHex(pub, want, 32, "X25519 public key (RFC 7748 Alice)");
+    uint8_t bobPub[32];
+    mesh_crypto::x25519Public(bobPub, bob);
+    fromHex("de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f", want, 32);
+    checkHex(bobPub, want, 32, "X25519 public key (RFC 7748 Bob)");
+    mesh_crypto::x25519(shared, alice, bobPub);
+    fromHex("4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742", want, 32);
+    checkHex(shared, want, 32, "X25519 shared secret (RFC 7748)");
+}
+
+// AES-CCM: RFC 3610 packet vector #1 (AES-128, M = 8, L = 2, 8 bytes of AAD).
+static void testCcm() {
+    uint8_t key[16], nonce[13], aad[8], pt[23], out[23], tag[8], want[31];
+    fromHex("c0c1c2c3c4c5c6c7c8c9cacbcccdcecf", key, 16);
+    fromHex("00000003020100a0a1a2a3a4a5", nonce, 13);
+    for (int i = 0; i < 8; ++i) aad[i] = (uint8_t)i;
+    for (int i = 0; i < 23; ++i) pt[i] = (uint8_t)(8 + i);
+    mesh::ccmEncrypt(key, 16, nonce, aad, 8, pt, 23, out, tag, 8);
+    fromHex("588c979a61c663d2f066d0c2c0f989806d5f6b61dac38417e8d12cfdf926e0", want, 31);
+    checkHex(out, want, 23, "CCM ciphertext (RFC 3610 #1)");
+    checkHex(tag, want + 23, 8, "CCM tag (RFC 3610 #1)");
+    uint8_t back[23];
+    check(mesh::ccmDecrypt(key, 16, nonce, aad, 8, out, 23, tag, 8, back) &&
+              memcmp(back, pt, 23) == 0,
+          "CCM decrypts and verifies");
+    tag[0] ^= 1;
+    check(!mesh::ccmDecrypt(key, 16, nonce, aad, 8, out, 23, tag, 8, back),
+          "CCM rejects a tampered tag");
+}
+
+// A whole PKI direct message, against an independent Python build of
+// CryptoEngine::encryptCurve25519 (cryptography's X25519 + AESCCM, 13-byte nonce
+// [id][extraNonce][from][0], 8-byte tag, extraNonce appended).
+static void testPki() {
+    uint8_t alice[32], bob[32], alicePub[32], bobPub[32], k1[32], k2[32], want[32];
+    fromHex("77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a", alice, 32);
+    fromHex("5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb", bob, 32);
+    mesh_crypto::x25519Public(alicePub, alice);
+    mesh_crypto::x25519Public(bobPub, bob);
+    check(mesh::pkiSharedKey(alice, bobPub, k1) && mesh::pkiSharedKey(bob, alicePub, k2) &&
+              memcmp(k1, k2, 32) == 0,
+          "PKI: both ends derive the same key");
+    fromHex("dead45a1d43d6902aa9240b43c0d75a0b5fc750660590d6d45461cbfc4010684", want, 32);
+    checkHex(k1, want, 32, "PKI: key is SHA256(X25519 shared)");
+
+    const uint8_t pt[] = {0x08, 0x01, 0x12, 0x06, 'h', 'i', ' ', 'P', 'K', 'I'};
+    uint8_t ct[64];
+    const size_t n = mesh::pkiEncrypt(k1, 0x11223344, 0xA1B2C3D4, 0x01020304, pt,
+                                      sizeof(pt), ct, sizeof(ct));
+    uint8_t wantCt[22];
+    fromHex("cf0c6f60d4b9c1536b2c7f100c02857531e804030201", wantCt, 22);
+    check(n == sizeof(pt) + mesh::PKI_OVERHEAD, "PKI: 12 bytes of overhead");
+    checkHex(ct, wantCt, sizeof(wantCt), "PKI: payload matches the reference");
+
+    uint8_t back[64];
+    size_t bn = 0;
+    check(mesh::pkiDecrypt(k2, 0x11223344, 0xA1B2C3D4, ct, n, back, bn) &&
+              bn == sizeof(pt) && memcmp(back, pt, bn) == 0,
+          "PKI: recipient decrypts it");
+    check(!mesh::pkiDecrypt(k2, 0x11223345, 0xA1B2C3D4, ct, n, back, bn),
+          "PKI: wrong sender fails the tag");
+    uint8_t zero[32] = {};
+    check(!mesh::pkiSharedKey(alice, zero, k1), "PKI: degenerate public key refused");
+}
+
+static void testBase64() {
+    char out[48];
+    const uint8_t abc[] = {'f', 'o', 'o', 'b', 'a'};
+    check(mesh::base64(abc, 5, out, sizeof(out)) == 8 && strcmp(out, "Zm9vYmE=") == 0,
+          "base64 pads a partial block");
+    uint8_t pub[32];
+    fromHex("8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a", pub, 32);
+    check(mesh::base64(pub, 32, out, sizeof(out)) == 44 &&
+              strcmp(out, "hSDwCYkwp1R0i33ctD73Wg2/Og0mOBr066SpjqqbTmo=") == 0,
+          "a public key base64s the way the Meshtastic app shows it");
+}
+
 int main() {
     printf("== Meshtastic wire format ==\n");
     testAesKnownAnswer();
@@ -729,6 +902,12 @@ int main() {
     testPosition();
     testPositionEncode();
     testEndToEnd();
+    testDataFixed32();
+    testUserPublicKey();
+    testCryptoPrimitives();
+    testCcm();
+    testPki();
+    testBase64();
     printf("\n%s (%d failure%s)\n", failures ? "FAILED" : "all passed",
            failures, failures == 1 ? "" : "s");
     return failures ? 1 : 0;

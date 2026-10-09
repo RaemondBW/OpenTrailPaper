@@ -135,6 +135,14 @@ const char* meshLongName();
 const char* meshShortName();      // up to 4 glyphs, as Meshtastic apps show it
 void setMeshNames(const char* longName, const char* shortName);
 
+// This node's Curve25519 private key for Meshtastic PKI, generated once and then
+// kept for good: stock nodes pin the first public key they hear for a node and
+// drop every later NodeInfo that carries a different one, so a key that changed
+// would make this device unreachable by DM until each peer forgot it by hand.
+// False when none is stored yet.
+bool meshPrivateKey(uint8_t out[32]);
+void setMeshPrivateKey(const uint8_t key[32]);
+
 // Compass mounting yaw, in degrees, learned from GPS course while riding (see
 // aux_math::HeadingOffset). Persisted because the board does not move between
 // rides, so re-learning it every time would leave the compass wrong for the

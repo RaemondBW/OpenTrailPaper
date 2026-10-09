@@ -397,6 +397,17 @@ void setMeshNames(const char* longName, const char* shortName) {
     }
 }
 
+bool meshPrivateKey(uint8_t out[32]) {
+    // Read straight from NVS rather than cached: it is needed once per boot, and
+    // a copy of a private key sitting in a global for no reason is one too many.
+    return prefs.getBytesLength("meshpriv") == 32 &&
+           prefs.getBytes("meshpriv", out, 32) == 32;
+}
+
+void setMeshPrivateKey(const uint8_t key[32]) {
+    prefs.putBytes("meshpriv", key, 32);
+}
+
 bool rtcTrusted() { return rtcSynced; }
 void setRtcTrusted(bool ok) {
     if (rtcSynced == ok) return;

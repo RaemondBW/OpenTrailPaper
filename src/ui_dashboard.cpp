@@ -1749,6 +1749,15 @@ static void printMeshReport() {
     mesh::nodeIdString(mesh_service::nodeNum(), id, sizeof(id));
     Serial.printf("[mesh] node %s '%s' (%s)\n", id, mesh_service::longName(),
                   mesh_service::shortName());
+    {
+        // Compare with the "Public Key" a Meshtastic app shows for this node.
+        uint8_t pub[32];
+        char b64[48];
+        if (mesh_service::publicKey(pub) && mesh::base64(pub, sizeof(pub), b64, sizeof(b64)))
+            Serial.printf("[mesh] public key %s\n", b64);
+        else
+            Serial.printf("[mesh] public key not loaded yet\n");
+    }
     uint8_t psk[16];
     mesh::defaultPsk(mesh_service::channelPskIndex(), psk);
     // Channel and modem on separate lines because they are separate settings, and
@@ -1794,6 +1803,9 @@ static void printMeshReport() {
                   (unsigned)s.rx, (unsigned)s.rxDropped,
                   (unsigned)s.rxOtherChannel, (unsigned)s.rxDuplicate,
                   (unsigned)s.tx, (unsigned)s.txFailed, (unsigned)s.acksRx);
+    Serial.printf("[mesh] pkiRx=%u pkiFailed=%u nodeInfoReplies=%u\n",
+                  (unsigned)s.pkiRx, (unsigned)s.pkiFailed,
+                  (unsigned)s.nodeInfoReplies);
 
     const int nn = mesh_service::nodeCount();
     Serial.printf("[mesh] %d neighbour%s:\n", nn, nn == 1 ? "" : "s");
@@ -1801,10 +1813,11 @@ static void printMeshReport() {
         mesh_service::Node n;
         if (!mesh_service::nodeAt(i, n)) continue;
         mesh::nodeIdString(n.num, id, sizeof(id));
-        Serial.printf("  %s %-20s %-5s %4d dBm snr %3d %d hop%s, %lus ago\n", id,
+        Serial.printf("  %s %-20s %-5s %4d dBm snr %3d %d hop%s, %lus ago%s\n", id,
                       n.longName[0] ? n.longName : "(no NodeInfo yet)",
                       n.shortName, n.rssi, n.snr, n.hops, n.hops == 1 ? "" : "s",
-                      (unsigned long)((millis() - n.lastHeardMs) / 1000));
+                      (unsigned long)((millis() - n.lastHeardMs) / 1000),
+                      n.hasPublicKey ? "  [key]" : "");
         if (n.hasPosition) {
             Serial.printf("             %.5f,%.5f  %dm  %u sats%s  (%lus ago)\n",
                           n.latitude, n.longitude, (int)n.altitudeM, n.satsInView,
