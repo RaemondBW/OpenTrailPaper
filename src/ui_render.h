@@ -217,6 +217,9 @@ struct MenuInfo {
     uint32_t rideElapsedS = 0;
     bool useMiles = false;
     char routeLine[40] = "no route loaded";
+    // Fixed pairing status, on the Paired Devices row's subtitle.
+    bool phonePaired = false;
+    char phoneName[32] = "";
 };
 void ui_render_menu(const MenuInfo& m, uint8_t* fb);
 
@@ -278,6 +281,12 @@ struct SettingsInfo {
     bool meshOn;     // LoRa mesh radio powered up and listening
 };
 void ui_render_settings(const SettingsInfo& si, uint8_t* fb);
+
+// "Unpair phone?" bottom sheet (Paired Devices > phone row), the power sheet's
+// component with different words. Paired: UNPAIR (kPowerShutdown) / CANCEL (kPowerCancel). Not paired:
+// an explanation and CLOSE only (kPowerCancel). `count` > 1 only on a device
+// migrated with bonds to several phones.
+void ui_render_unpair_sheet(bool paired, const char* name, int count, uint8_t* fb);
 
 // Sub-screens run their content to here. There is no BACK strip: the capacitive
 // Home button below the glass already goes back from every one of them, so a

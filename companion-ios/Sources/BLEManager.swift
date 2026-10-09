@@ -489,7 +489,48 @@ final class BLEManager: NSObject, ObservableObject {
     // the device no longer holds, encryption fails, iOS drops the link — and
     // only the RIDER can fix it (Forget This Device), so at three we say so.
     private var barrenConnects = 0
-    @Published var pairingLooksStale = false
+
+    // MARK: fixed pairing
+    //
+    // An OpenTrailPaper belongs to one phone (firmware ble_server.cpp): the
+    // first to pair owns it until the rider unpairs on the device, and every
+    // other phone is disconnected the moment it tries to pair. The app's half:
+    // remember WHICH device is ours and only ever connect to that one, skip
+    // devices that advertise they're paired to someone else, and when a device
+    // turns us away, say why and how to fix it.
+
+    /// Why the device won't have us — drives the one pairing alert.
+    enum PairingIssue: Identifiable, Equatable {
+        /// The only OpenTrailPaper around is paired with another phone.
+        case pairedElsewhere
+        /// Our own device keeps dropping us before any data: it was unpaired
+        /// on the device (or re-paired to another phone) and iOS still holds
+        /// the old keys, which only the rider can delete.
+        case notRecognised
+        var id: Self { self }
+    }
+    @Published var pairingIssue: PairingIssue? = nil
+    /// CBPeripheral.identifier of OUR device, set once it has delivered data
+    /// over an admitted (bonded) link. Stable across the phone's address
+    /// rotation — the device's address is fixed, and iOS keys this to it.
+    @Published private(set) var pairedDeviceId: UUID? =
+        UserDefaults.standard.string(forKey: BLEManager.pairedDeviceKey).flatMap(UUID.init)
+    @Published private(set) var pairedDeviceName: String? =
+        UserDefaults.standard.string(forKey: BLEManager.pairedDeviceNameKey)
+    static let pairedDeviceKey = "pairedDeviceId"
+    static let pairedDeviceNameKey = "pairedDeviceName"
+    /// Devices that turned us away this session — never auto-retried.
+    private var rejectedIds: Set<UUID> = []
+    /// Paired-to-someone devices seen while looking for our first device. If
+    /// nothing unpaired shows up we try ONE of them anyway: after a reinstall
+    /// the app has forgotten the device but iOS still holds the bond, and the
+    /// device would let us straight in.
+    private var pairedElsewhereSeen: [UUID: CBPeripheral] = [:]
+    private var fallbackTask: Task<Void, Never>?
+    /// The current connection is that one-off attempt.
+    private var onFallbackAttempt = false
+    /// forgetDevice() is tearing the link down: don't reconnect to it.
+    private var forgetting = false
     private var fixStableTask: Task<Void, Never>?   // debounce stopping the stream
     @Published var lastAidingSent: Date? = nil
 
@@ -751,9 +792,24 @@ final class BLEManager: NSObject, ObservableObject {
             central.connect(p)      // completes at once if iOS kept the link up
             return
         }
+        // A system-held link means iOS holds a bond with that device — with no
+        // device remembered (fresh install) that makes it ours; with one, only
+        // ours counts.
         if peripheral == nil,
-           let p = central.retrieveConnectedPeripherals(
-               withServices: [BikeUUID.service]).first {
+           let p = central.retrieveConnectedPeripherals(withServices: [BikeUUID.service])
+               .first(where: { pairedDeviceId == nil
+                   ? !rejectedIds.contains($0.identifier) : $0.identifier == pairedDeviceId }) {
+            peripheral = p
+            p.delegate = self
+            state = .connecting
+            central.connect(p)
+            return
+        }
+        // Our device, known but not connected: a pending connect has no
+        // timeout and fires the moment it is in range, whatever private
+        // address the PHONE is on — no scan needed.
+        if peripheral == nil, let saved = pairedDeviceId,
+           let p = central.retrievePeripherals(withIdentifiers: [saved]).first {
             peripheral = p
             p.delegate = self
             state = .connecting
@@ -761,11 +817,123 @@ final class BLEManager: NSObject, ObservableObject {
             return
         }
         state = .scanning
-        central.scanForPeripherals(withServices: [BikeUUID.service])
+        // Duplicates while hunting for a first device: a device that was
+        // paired-elsewhere when first seen must be noticed again the moment
+        // its rider unpairs it (its advertisement flips).
+        central.scanForPeripherals(withServices: [BikeUUID.service], options: [
+            CBCentralManagerScanOptionAllowDuplicatesKey: pairedDeviceId == nil,
+        ])
+        if pairedDeviceId == nil { armPairedFallback() }
     }
 
     func disconnect() {
         if let p = peripheral { central?.cancelPeripheralConnection(p) }
+    }
+
+    /// Manufacturer data [0xFFFF][0x4F][flags]: bit0 = paired to a phone.
+    /// nil for firmware from before fixed pairing (no flag at all).
+    nonisolated static func advertisesPaired(_ adv: [String: Any]) -> Bool? {
+        guard let d = adv[CBAdvertisementDataManufacturerDataKey] as? Data,
+              d.count >= 4, d[d.startIndex] == 0xFF, d[d.startIndex + 1] == 0xFF,
+              d[d.startIndex + 2] == 0x4F else { return nil }
+        return d[d.startIndex + 3] & 0x01 != 0
+    }
+
+    /// Looking for a first device and only paired-to-someone ones answer: after
+    /// a few seconds, try one of them once (see pairedElsewhereSeen).
+    private func armPairedFallback() {
+        fallbackTask?.cancel()
+        fallbackTask = Task { @MainActor [weak self] in
+            var found: (UUID, CBPeripheral)? = nil
+            while found == nil {
+                try? await Task.sleep(nanoseconds: 6_000_000_000)
+                guard let self, !Task.isCancelled, self.state == .scanning,
+                      self.peripheral == nil, self.pairedDeviceId == nil else { return }
+                if let hit = self.pairedElsewhereSeen.first(where: {
+                    !self.rejectedIds.contains($0.key) }) { found = (hit.key, hit.value) }
+            }
+            guard let self, let (id, p) = found else { return }
+            self.rejectedIds.insert(id)   // one try per session, success or not
+            self.onFallbackAttempt = true
+            self.peripheral = p
+            p.delegate = self
+            self.state = .connecting
+            self.central.stopScan()
+            self.central.connect(p)
+        }
+    }
+
+    /// Remember the device we're connected to as OURS. Called once it has
+    /// delivered data — proof the device admitted this phone's bond.
+    private func rememberPairedDevice() {
+        guard let p = peripheral else { return }
+        onFallbackAttempt = false
+        pairingIssue = nil
+        rejectedIds.remove(p.identifier)
+        guard pairedDeviceId != p.identifier else { return }
+        pairedDeviceId = p.identifier
+        pairedDeviceName = p.name
+        UserDefaults.standard.set(p.identifier.uuidString, forKey: Self.pairedDeviceKey)
+        UserDefaults.standard.set(p.name, forKey: Self.pairedDeviceNameKey)
+    }
+
+    /// Set after Unpair succeeds: the device dropped its bond, so iOS's copy
+    /// is now stale and only the rider can delete it (Settings › Bluetooth).
+    @Published var unpairNeedsIOSForget = false
+    private var unpairWritePending = false
+
+    /// Settings › Unpair: while connected, tell the device to drop this
+    /// iPhone ([0xFE 0x55] on settings — the same as Paired Devices › Phone ›
+    /// Unpair on the panel), then forget it here. Not connected: forget here
+    /// only; the device keeps the pairing until it is unpaired on the device.
+    func unpairDevice() {
+        guard state == .connected, let c = settingsChar, let p = peripheral else {
+            forgetDevice()
+            return
+        }
+        unpairWritePending = true
+        p.writeValue(Data([0xFE, 0x55]), for: c, type: .withResponse)
+        // The device drops the link right after it acts; don't wait forever
+        // for the acknowledgment if it went down first.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            guard let self, self.unpairWritePending else { return }
+            self.unpairDone(ok: true)
+        }
+    }
+
+    private func unpairDone(ok: Bool) {
+        unpairWritePending = false
+        forgetDevice()
+        if ok { unpairNeedsIOSForget = true }
+    }
+
+    /// Settings › Forget this device: stop connecting to it and look for a
+    /// device to pair with again. The app can't delete the iOS bond — the
+    /// rider does that in iOS Settings (the UI says so).
+    func forgetDevice() {
+        // Not re-adopted this session (the fallback / system-link paths would
+        // otherwise walk straight back into it while iOS still holds the bond).
+        let forgotten = pairedDeviceId ?? peripheral?.identifier
+        pairedDeviceId = nil
+        pairedDeviceName = nil
+        UserDefaults.standard.removeObject(forKey: Self.pairedDeviceKey)
+        UserDefaults.standard.removeObject(forKey: Self.pairedDeviceNameKey)
+        pairingIssue = nil
+        barrenConnects = 0
+        rejectedIds = forgotten.map { [$0] } ?? []
+        pairedElsewhereSeen = [:]
+        onFallbackAttempt = false
+        if let p = peripheral, p.state == .connected {
+            forgetting = true
+            central?.cancelPeripheralConnection(p)   // didDisconnect rescans
+        } else {
+            // Pending connect (device out of range): drop it here. A late
+            // didDisconnect for it finds peripheral == nil and won't revive it.
+            if let p = peripheral { central?.cancelPeripheralConnection(p) }
+            peripheral = nil
+            central?.stopScan()
+            startScan()
+        }
     }
 
     // MARK: settings
@@ -2205,8 +2373,23 @@ extension BLEManager: CBCentralManagerDelegate {
                                     didDiscover p: CBPeripheral,
                                     advertisementData: [String: Any],
                                     rssi: NSNumber) {
+        let pairedFlag = BLEManager.advertisesPaired(advertisementData)
         MainActor.assumeIsolated {
             guard peripheral == nil else { return }
+            if let saved = pairedDeviceId {
+                // Fixed pairing: ours or nothing.
+                guard p.identifier == saved else { return }
+            } else {
+                // Looking for a first device: never one that turned us away
+                // this session, and not one that says it belongs to another
+                // phone — unless nothing else turns up (armPairedFallback).
+                if rejectedIds.contains(p.identifier) { return }
+                if pairedFlag == true {
+                    pairedElsewhereSeen[p.identifier] = p
+                    return
+                }
+            }
+            fallbackTask?.cancel()
             peripheral = p
             p.delegate = self
             state = .connecting
@@ -2263,9 +2446,15 @@ extension BLEManager: CBCentralManagerDelegate {
                 finishTileJob(message: "Interrupted — reconnect to resume")
             }
             status = DeviceStatus()
-            if !sawStatusSinceConnect {
+            let admitted = sawStatusSinceConnect
+            // Ours, and turning us away: a remembered device that keeps
+            // dropping us before any data (the firmware pushes nothing until
+            // the link proves the bond) was unpaired on the device, or now
+            // belongs to another phone. Three in a row, so a reboot or a
+            // range drop doesn't cry wolf.
+            if !admitted {
                 barrenConnects += 1
-                if barrenConnects == 3 { pairingLooksStale = true }
+                if barrenConnects == 3 && !onFallbackAttempt { pairingIssue = .notRecognised }
             } else {
                 barrenConnects = 0
             }
@@ -2288,13 +2477,26 @@ extension BLEManager: CBCentralManagerDelegate {
             // what made the link look like it was cycling in and out while the
             // app was foregrounded, and what made log downloads and map sends
             // fail: they abort on disconnect and the retry raced the rescan.
-            if let known = p as CBPeripheral? {
-                peripheral = known
-                known.delegate = self
-                state = .connecting
-                c.connect(known)
-            } else {
+            //
+            // Except when the device is not (or no longer) ours to reconnect to:
+            // forgetDevice() dropped it, it was dropped already (peripheral nil),
+            // or it was the one-off try at a paired-elsewhere device and it
+            // turned us away — then say so and go back to looking.
+            if forgetting || peripheral == nil {
+                forgetting = false
+                peripheral = nil
                 startScan()
+            } else if onFallbackAttempt && !admitted {
+                onFallbackAttempt = false
+                pairingIssue = .pairedElsewhere
+                peripheral = nil
+                startScan()
+            } else {
+                onFallbackAttempt = false
+                peripheral = p
+                p.delegate = self
+                state = .connecting
+                c.connect(p)
             }
         }
     }
@@ -2407,6 +2609,12 @@ extension BLEManager: CBPeripheralDelegate {
                                 error: Error?) {
         if let error {
             artLog.error("write to \(ch.uuid.uuidString, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+        }
+        if ch.uuid == BikeUUID.settings {
+            MainActor.assumeIsolated {
+                if unpairWritePending { unpairDone(ok: error == nil) }
+            }
+            return
         }
         guard ch.uuid == BikeUUID.media else { return }
         MainActor.assumeIsolated { mediaWriteAcked(failed: error != nil) }
@@ -2592,6 +2800,7 @@ extension BLEManager: CBPeripheralDelegate {
         let firstStatus = !sawStatusSinceConnect
         sawStatusSinceConnect = true
         barrenConnects = 0   // a working link ends the stale-pairing streak
+        if firstStatus { rememberPairedDevice() }   // the device admitted us: ours
         if status.gpsFix {
             // The device was ALREADY locked when we connected. We start the
             // stream the moment the route characteristic shows up, before the

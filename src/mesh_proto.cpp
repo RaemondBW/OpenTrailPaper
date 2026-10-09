@@ -1,5 +1,7 @@
 #include "mesh_proto.h"
 
+#include "mesh_crypto.h"
+
 #include <cmath>
 #include <cctype>
 #include <cstring>
@@ -40,6 +42,15 @@ struct Writer {
         if (!v) return;
         tag(field, 0);
         varint(v);
+    }
+    // fixed32 (wire type 5), omitted when zero like any proto3 scalar.
+    void fixed32(uint32_t field, uint32_t v) {
+        if (!v) return;
+        tag(field, 5);
+        raw((uint8_t)v);
+        raw((uint8_t)(v >> 8));
+        raw((uint8_t)(v >> 16));
+        raw((uint8_t)(v >> 24));
     }
     void boolean(uint32_t field, bool v) {
         if (!v) return;
@@ -112,6 +123,16 @@ struct Reader {
                            ((uint32_t)buf[pos + 3] << 24);
         pos += 4;
         return (int32_t)v;
+    }
+    // A 32-bit scalar read by whatever wire type the sender used. Meshtastic's
+    // schema says fixed32 for Data's ids, and that is what it sends; accepting a
+    // varint as well keeps an older build of this firmware (which wrote varints)
+    // readable, rather than misparsing every field that follows.
+    uint32_t u32Any(uint8_t wire) {
+        if (wire == 5) return (uint32_t)fixed32();
+        if (wire == 0) return (uint32_t)varint();
+        skip(wire);
+        return 0;
     }
     void copyStr(char* out, size_t cap) {
         const uint8_t* p;
@@ -277,10 +298,10 @@ size_t encodeData(const Data& d, uint8_t* out, size_t cap) {
     w.u32(1, d.portnum);
     w.bytes(2, d.payload, d.payloadLen);
     w.boolean(3, d.wantResponse);
-    w.u32(4, d.dest);
-    w.u32(5, d.source);
-    w.u32(6, d.requestId);
-    w.u32(7, d.replyId);
+    w.fixed32(4, d.dest);
+    w.fixed32(5, d.source);
+    w.fixed32(6, d.requestId);
+    w.fixed32(7, d.replyId);
     return w.overflow ? 0 : w.len;
 }
 
@@ -303,10 +324,13 @@ bool decodeData(const uint8_t* in, size_t len, Data& d) {
             break;
         }
         case 3: d.wantResponse = r.varint() != 0; break;
-        case 4: d.dest = (uint32_t)r.varint(); break;
-        case 5: d.source = (uint32_t)r.varint(); break;
-        case 6: d.requestId = (uint32_t)r.varint(); break;
-        case 7: d.replyId = (uint32_t)r.varint(); break;
+        case 4: d.dest = r.u32Any(wire); break;
+        case 5: d.source = r.u32Any(wire); break;
+        case 6: d.requestId = r.u32Any(wire); break;
+        case 7: d.replyId = r.u32Any(wire); break;
+        case 9:                               // bitfield; bit 1 = want_response
+            if (r.u32Any(wire) & 0x02) d.wantResponse = true;
+            break;
         default: r.skip(wire); break;
         }
         if (r.bad) return false;
@@ -320,6 +344,7 @@ size_t encodeUser(const User& u, uint8_t* out, size_t cap) {
     w.str(2, u.longName);
     w.str(3, u.shortName);
     w.u32(5, u.hwModel);
+    if (u.hasPublicKey) w.bytes(8, u.publicKey, sizeof(u.publicKey));
     return w.overflow ? 0 : w.len;
 }
 
@@ -335,6 +360,19 @@ bool decodeUser(const uint8_t* in, size_t len, User& u) {
         case 2: r.copyStr(u.longName, sizeof(u.longName)); break;
         case 3: r.copyStr(u.shortName, sizeof(u.shortName)); break;
         case 5: u.hwModel = (uint8_t)r.varint(); break;
+        case 8: {
+            if (wire != 2) { r.skip(wire); break; }
+            const uint8_t* p;
+            size_t n;
+            if (!r.slice(p, n)) return false;
+            // Only a whole Curve25519 key is a key. Meshtastic ignores anything
+            // else (updateUser checks size == 32), and so do we.
+            if (n == sizeof(u.publicKey)) {
+                memcpy(u.publicKey, p, n);
+                u.hasPublicKey = true;
+            }
+            break;
+        }
         default: r.skip(wire); break;
         }
         if (r.bad) return false;
@@ -710,6 +748,176 @@ void ctrCrypt(const uint8_t* key, size_t keyLen, uint32_t fromNode,
         for (int i = 15; i >= 0; --i)
             if (++counter[i] != 0) break;
     }
+}
+
+// ---------------------------------------------------------------------------
+// AES-CCM and PKI
+// ---------------------------------------------------------------------------
+//
+// Mirrors hostapd's aes-ccm.c, which is what Meshtastic vendors as
+// src/mesh/aes-ccm.cpp: standard RFC 3610 with L = 2. Only the forward cipher is
+// needed — CCM is CTR plus CBC-MAC, and both run the block cipher forwards.
+
+namespace {
+
+constexpr size_t CCM_L = 2;
+
+void ccmAuth(const AesKey& k, const uint8_t nonce[13], const uint8_t* aad,
+             size_t aadLen, const uint8_t* msg, size_t len, size_t tagLen,
+             uint8_t x[16]) {
+    // B_0 = flags | nonce | l(m)
+    uint8_t b[16];
+    b[0] = (uint8_t)((aadLen ? 0x40 : 0) | (((tagLen - 2) / 2) << 3) | (CCM_L - 1));
+    memcpy(b + 1, nonce, 15 - CCM_L);
+    b[14] = (uint8_t)(len >> 8);
+    b[15] = (uint8_t)len;
+    memcpy(x, b, 16);
+    aesEncryptBlock(k, x);
+
+    if (aadLen) {
+        // Associated data, prefixed with its 2-byte length (aadLen < 0xFF00),
+        // zero-padded to a block boundary. Only the RFC vectors use this path;
+        // Meshtastic passes none.
+        size_t i = 0;
+        uint8_t blk[16] = {};
+        blk[0] = (uint8_t)(aadLen >> 8);
+        blk[1] = (uint8_t)aadLen;
+        size_t fill = 2;
+        while (i < aadLen) {
+            while (fill < 16 && i < aadLen) blk[fill++] = aad[i++];
+            for (int j = 0; j < 16; ++j) x[j] ^= blk[j];
+            aesEncryptBlock(k, x);
+            memset(blk, 0, sizeof(blk));
+            fill = 0;
+        }
+    }
+
+    for (size_t off = 0; off < len; off += 16) {
+        const size_t n = len - off < 16 ? len - off : 16;
+        for (size_t j = 0; j < n; ++j) x[j] ^= msg[off + j];
+        aesEncryptBlock(k, x);
+    }
+}
+
+// CTR half of CCM: A_i = flags(L-1) | nonce | i, with S_0 reserved for the tag.
+void ccmCtr(const AesKey& k, const uint8_t nonce[13], const uint8_t* in, size_t len,
+            uint8_t* out) {
+    uint8_t a[16];
+    a[0] = CCM_L - 1;
+    memcpy(a + 1, nonce, 15 - CCM_L);
+    uint16_t ctr = 1;
+    for (size_t off = 0; off < len; off += 16, ++ctr) {
+        uint8_t s[16];
+        memcpy(s, a, 16);
+        s[14] = (uint8_t)(ctr >> 8);
+        s[15] = (uint8_t)ctr;
+        aesEncryptBlock(k, s);
+        const size_t n = len - off < 16 ? len - off : 16;
+        for (size_t j = 0; j < n; ++j) out[off + j] = (uint8_t)(in[off + j] ^ s[j]);
+    }
+}
+
+void ccmTagMask(const AesKey& k, const uint8_t nonce[13], uint8_t s0[16]) {
+    s0[0] = CCM_L - 1;
+    memcpy(s0 + 1, nonce, 15 - CCM_L);
+    s0[14] = s0[15] = 0;
+    aesEncryptBlock(k, s0);
+}
+
+void pkiNonce(uint32_t fromNode, uint32_t packetId, uint32_t extraNonce,
+              uint8_t nonce[13]) {
+    memset(nonce, 0, 13);
+    put32(nonce + 0, packetId);
+    put32(nonce + 4, extraNonce);
+    put32(nonce + 8, fromNode);
+}
+
+}  // namespace
+
+void ccmEncrypt(const uint8_t* key, size_t keyLen, const uint8_t nonce[13],
+                const uint8_t* aad, size_t aadLen, const uint8_t* in, size_t len,
+                uint8_t* out, uint8_t* tag, size_t tagLen) {
+    AesKey k;
+    aesExpandKey(key, keyLen, k);
+    uint8_t x[16], s0[16];
+    ccmAuth(k, nonce, aad, aadLen, in, len, tagLen, x);
+    ccmCtr(k, nonce, in, len, out);
+    ccmTagMask(k, nonce, s0);
+    for (size_t i = 0; i < tagLen; ++i) tag[i] = (uint8_t)(x[i] ^ s0[i]);
+}
+
+bool ccmDecrypt(const uint8_t* key, size_t keyLen, const uint8_t nonce[13],
+                const uint8_t* aad, size_t aadLen, const uint8_t* in, size_t len,
+                const uint8_t* tag, size_t tagLen, uint8_t* out) {
+    AesKey k;
+    aesExpandKey(key, keyLen, k);
+    ccmCtr(k, nonce, in, len, out);
+    uint8_t x[16], s0[16];
+    ccmAuth(k, nonce, aad, aadLen, out, len, tagLen, x);
+    ccmTagMask(k, nonce, s0);
+    uint8_t diff = 0;
+    for (size_t i = 0; i < tagLen; ++i) diff |= (uint8_t)(tag[i] ^ x[i] ^ s0[i]);
+    if (diff) {
+        memset(out, 0, len);     // never hand back unauthenticated plaintext
+        return false;
+    }
+    return true;
+}
+
+bool pkiSharedKey(const uint8_t ourPrivate[32], const uint8_t theirPublic[32],
+                  uint8_t key[32]) {
+    uint8_t shared[32];
+    mesh_crypto::x25519(shared, ourPrivate, theirPublic);
+    uint8_t any = 0;
+    for (uint8_t b : shared) any |= b;
+    if (!any) return false;
+    mesh_crypto::sha256(shared, sizeof(shared), key);
+    memset(shared, 0, sizeof(shared));
+    return true;
+}
+
+size_t pkiEncrypt(const uint8_t key[32], uint32_t fromNode, uint32_t packetId,
+                  uint32_t extraNonce, const uint8_t* in, size_t len, uint8_t* out,
+                  size_t cap) {
+    if (len + PKI_OVERHEAD > cap) return 0;
+    uint8_t nonce[13];
+    pkiNonce(fromNode, packetId, extraNonce, nonce);
+    ccmEncrypt(key, 32, nonce, nullptr, 0, in, len, out, out + len, 8);
+    put32(out + len + 8, extraNonce);
+    return len + PKI_OVERHEAD;
+}
+
+bool pkiDecrypt(const uint8_t key[32], uint32_t fromNode, uint32_t packetId,
+                const uint8_t* in, size_t len, uint8_t* out, size_t& outLen) {
+    if (len <= PKI_OVERHEAD) return false;
+    const size_t n = len - PKI_OVERHEAD;
+    uint8_t nonce[13];
+    pkiNonce(fromNode, packetId, get32(in + n + 8), nonce);
+    if (!ccmDecrypt(key, 32, nonce, nullptr, 0, in, n, in + n, 8, out)) return false;
+    outLen = n;
+    return true;
+}
+
+size_t base64(const uint8_t* in, size_t len, char* out, size_t cap) {
+    static const char* tbl =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const size_t need = 4 * ((len + 2) / 3);
+    if (cap < need + 1) {
+        if (cap) out[0] = 0;
+        return 0;
+    }
+    size_t o = 0;
+    for (size_t i = 0; i < len; i += 3) {
+        const uint32_t v = ((uint32_t)in[i] << 16) |
+                           (i + 1 < len ? (uint32_t)in[i + 1] << 8 : 0) |
+                           (i + 2 < len ? (uint32_t)in[i + 2] : 0);
+        out[o++] = tbl[(v >> 18) & 63];
+        out[o++] = tbl[(v >> 12) & 63];
+        out[o++] = i + 1 < len ? tbl[(v >> 6) & 63] : '=';
+        out[o++] = i + 2 < len ? tbl[v & 63] : '=';
+    }
+    out[o] = 0;
+    return o;
 }
 
 void nodeIdString(uint32_t nodeNum, char* out, size_t cap) {

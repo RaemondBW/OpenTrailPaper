@@ -1,5 +1,39 @@
 import SwiftUI
 
+/// Words for fixed pairing (firmware ble_server.cpp). The app can't remove the
+/// iOS bond itself, so wherever the fix needs it, the copy names the exact
+/// iOS Settings path.
+enum PairingCopy {
+    static let iosForgetSteps =
+        "On this iPhone: Settings › Bluetooth › tap \u{24D8} next to \u{201C}OpenTrailPaper\u{201D} › Forget This Device."
+    static let deviceUnpairSteps =
+        "On the device: Menu › Paired Devices › Phone › Unpair."
+
+    static func title(_ issue: BLEManager.PairingIssue) -> String {
+        switch issue {
+        case .pairedElsewhere: return "Paired with another phone"
+        case .notRecognised: return "OpenTrailPaper isn't accepting this iPhone"
+        }
+    }
+
+    static func message(_ issue: BLEManager.PairingIssue) -> String {
+        switch issue {
+        case .pairedElsewhere:
+            return "This OpenTrailPaper is paired with another phone, so it won't connect to this iPhone.\n\nTo use it here, unpair it first. \(deviceUnpairSteps) It then shows a pairing code when this iPhone connects."
+        case .notRecognised:
+            return "The device no longer recognises this iPhone — it was unpaired on the device, or it's now paired with another phone.\n\n1. If another phone owns it: \(deviceUnpairSteps)\n2. \(iosForgetSteps)\n3. Come back here. The device shows a code to pair again."
+        }
+    }
+
+    static let unpairMessage =
+        "The device forgets this iPhone and opens pairing to the next phone, and the app stops connecting to it."
+    static let afterUnpairMessage =
+        "The device has forgotten this iPhone. One more step so they can pair again later: \(iosForgetSteps)"
+
+    static let forgetMessage =
+        "The app stops connecting to this device and looks for one to pair with.\n\nTo pair the device with a different phone, also unpair it on the device (Menu › Paired Devices › Phone › Unpair). To pair this iPhone again later, first remove the old pairing: \(iosForgetSteps)"
+}
+
 // Edit device settings (FTP, timezone) and push them over BLE.
 struct SettingsView: View {
     @EnvironmentObject var ble: BLEManager
@@ -10,6 +44,7 @@ struct SettingsView: View {
     @State private var notesExpanded = false
     @State private var showSensors = false
     @State private var showMaps = false
+    @State private var confirmForget = false
 
     var body: some View {
         NavigationStack {
@@ -28,6 +63,7 @@ struct SettingsView: View {
                     if ble.state == .connected || ble.otaInProgress
                         || ble.otaPhase == .failed || ble.otaPhase == .done { firmwareCard }
                     if ble.state == .connected { sensorsCard }
+                    pairedDeviceCard
                     // Not gated on the connection, unlike sensors: picking an
                     // area and fetching OSM works offline, and MapsView only
                     // needs the link for the upload itself. It was reachable
@@ -156,6 +192,58 @@ struct SettingsView: View {
             .sheet(item: $ble.logFileURL) { url in DiagnosticsView(url: url) }
             .sheet(isPresented: $showSensors) { SensorsView() }
             .sheet(isPresented: $showMaps) { MapsView() }
+        }
+    }
+
+    // Fixed pairing: which OpenTrailPaper this iPhone owns, and the way out.
+    @ViewBuilder private var pairedDeviceCard: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Paired device").trackedLabel()
+                if ble.pairedDeviceId != nil {
+                    HStack(spacing: 8) {
+                        Image(systemName: "lock.fill")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(ble.state == .connected ? Palette.good : Palette.muted)
+                        Text(ble.pairedDeviceName ?? "OpenTrailPaper")
+                            .font(BarlowFont.text(15, .semibold)).foregroundStyle(Palette.ink)
+                        Spacer()
+                        Text(ble.state == .connected ? "Connected" : "Not connected")
+                            .font(.system(size: 12)).foregroundStyle(Palette.muted)
+                    }
+                    Text("The app only connects to this device, and the device only accepts this iPhone until it is unpaired on the device (Menu › Paired Devices › Phone).")
+                        .font(.system(size: 12)).foregroundStyle(Palette.muted)
+                    Button(role: .destructive) { confirmForget = true } label: {
+                        Text(ble.state == .connected ? "Unpair This Device" : "Forget This Device")
+                            .font(BarlowFont.text(15, .semibold))
+                            .foregroundStyle(Palette.accent)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.top, 2)
+                } else {
+                    Text(ble.state == .connected
+                         ? "Pairing with this OpenTrailPaper…"
+                         : "No device yet. Turn your OpenTrailPaper on nearby — the first one that isn't paired with another phone connects. Type the 6-digit code from its screen into the iPhone's pairing prompt.")
+                        .font(.system(size: 12)).foregroundStyle(Palette.muted)
+                }
+            }
+        }
+        .confirmationDialog(ble.state == .connected ? "Unpair this OpenTrailPaper?"
+                                                    : "Forget this OpenTrailPaper?",
+                            isPresented: $confirmForget, titleVisibility: .visible) {
+            if ble.state == .connected {
+                Button("Unpair", role: .destructive) { ble.unpairDevice() }
+            } else {
+                Button("Forget Device", role: .destructive) { ble.forgetDevice() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(ble.state == .connected ? PairingCopy.unpairMessage : PairingCopy.forgetMessage)
+        }
+        .alert("Unpaired", isPresented: $ble.unpairNeedsIOSForget) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(PairingCopy.afterUnpairMessage)
         }
     }
 
