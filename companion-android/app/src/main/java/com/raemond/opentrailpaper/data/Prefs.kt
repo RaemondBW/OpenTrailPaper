@@ -18,6 +18,7 @@ object Prefs {
     private const val KEY_ASKED = "askedPermissions"
     private const val KEY_FLAGGED_TILES = "flaggedTileIds"
     private const val KEY_POI_SENT = "poiSentAt"
+    private const val KEY_TILE_SENT = "tileSentAt"
 
     private lateinit var sp: SharedPreferences
 
@@ -41,6 +42,18 @@ object Prefs {
     var flaggedTileIds: Set<String>
         get() = sp.getStringSet(KEY_FLAGGED_TILES, emptySet()) ?: emptySet()
         set(v) = sp.edit().putStringSet(KEY_FLAGGED_TILES, v).apply()
+
+    /** When this phone last sent each map tile (epoch ms), as "id=ms" entries. */
+    var tileSentAt: Map<String, Long>
+        get() = stamps(KEY_TILE_SENT)
+        set(v) = sp.edit().putStringSet(KEY_TILE_SENT, v.map { "${it.key}=${it.value}" }.toSet()).apply()
+
+    private fun stamps(key: String): Map<String, Long> =
+        (sp.getStringSet(key, emptySet()) ?: emptySet()).mapNotNull {
+            val i = it.indexOf('=')
+            val ms = if (i > 0) it.substring(i + 1).toLongOrNull() else null
+            if (ms == null) null else it.substring(0, i) to ms
+        }.toMap()
 
     /** When this phone last sent each tile's .poi (epoch ms), as "id=ms" entries. */
     var poiSentAt: Map<String, Long>

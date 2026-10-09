@@ -381,11 +381,21 @@ final class BLEManager: NSObject, ObservableObject {
     /// area is synced (only to firmware that draws them).
     private var flaggedTileIds: Set<String> =
         Set(UserDefaults.standard.stringArray(forKey: "flaggedTileIds") ?? [])
+    /// When this phone last sent each map tile, for "update available".
+    private var tileSentAt: [String: Double] =
+        (UserDefaults.standard.dictionary(forKey: "tileSentAt") as? [String: Double]) ?? [:]
+    /// A map tile this phone sent longer ago than this is offered as an update
+    /// (the phone's own tile cache expires at the same age).
+    static let tileRefreshAge: TimeInterval = 60 * 60 * 24 * 90   // 90 days
     private struct TileJob { let id: String; let data: Data; let poi: Bool }
     private var tileQueue: [TileJob] = []
     private var currentTileId: String? = nil        // non-nil while sending a tile
     private var currentIsPoi = false                // ...and it is a .poi file
     private var resendAll = false                   // this job is a Redownload
+    // BLE side of the download timing (see DownloadStats): bytes actually
+    // written to the device and when the job started.
+    private var tileJobStarted = Date()
+    private var tileJobBytes = 0
     private var tileJobFailed = false
     private var tilesMoreComing = false             // app still building tiles to enqueue
 
@@ -551,16 +561,21 @@ final class BLEManager: NSObject, ObservableObject {
 
     // Screenshot demo: a connected device holding part of a selected area,
     // firmware with the cycling layer, tiles that predate it. See demoMaps().
-    let isDemoMaps = ProcessInfo.processInfo.arguments.contains("-demo-maps")
+    let isDemoMaps = ProcessInfo.processInfo.arguments.contains { $0.hasPrefix("-demo-maps") }
 
-    /// `-demo-maps`: pose the device as holding `onDevice` (none of them sent
-    /// by this phone with bike-route flags) with POIs for `withPois`.
-    func demoMaps(onDevice: [String], withPois: [String]) {
+    /// `-demo-maps`: pose the device as holding `onDevice`, of which `current`
+    /// were sent by this phone with the bike-route data (the rest show as
+    /// updates), with fresh POIs for `withPois`. Memory only — never saved.
+    func demoMaps(onDevice: [String], current: [String], withPois: [String]) {
         guard isDemoMaps else { return }
         state = .connected
         deviceSupportsPois = true
         deviceTileIds = Set(onDevice)
+        flaggedTileIds = Set(current)
         devicePoiIds = Set(withPois)
+        let now = Date().timeIntervalSince1970
+        for id in current { tileSentAt[id] = now }
+        for id in withPois { poiSentAt[id] = now }
     }
 
     override init() {
@@ -1148,6 +1163,23 @@ final class BLEManager: NSObject, ObservableObject {
         deviceSupportsPois && deviceTileIds.contains(id) && !flaggedTileIds.contains(id)
     }
 
+    /// On the device, and Redownload would bring something new: it predates the
+    /// bike-route data, or this phone sent it more than tileRefreshAge ago.
+    /// Drawn ochre/hatched on the Maps screen and counted as "updates".
+    func tileNeedsUpdate(_ id: String) -> Bool {
+        guard deviceTileIds.contains(id) else { return false }
+        if tilePredatesCycling(id) { return true }
+        guard let at = tileSentAt[id] else { return false }
+        return Date().timeIntervalSince1970 - at > Self.tileRefreshAge
+    }
+
+    /// The POI drop drawn on an on-device hex: none on firmware without the POI
+    /// layer, filled when the device has fresh POIs, hollow otherwise.
+    func poiMark(_ id: String) -> HexPoiMark {
+        guard deviceSupportsPois, deviceTileIds.contains(id) else { return .none }
+        return poiNeedsSend(id) ? .missing : .present
+    }
+
     /// The tile's POIs should go to the device: it can draw them, and it has
     /// none for this tile or this phone sent them more than PoiCache.maxAge ago.
     func poiNeedsSend(_ id: String) -> Bool {
@@ -1166,6 +1198,8 @@ final class BLEManager: NSObject, ObservableObject {
     func startTileStream(resend: Bool = false) {
         guard mapChar != nil, peripheral != nil else { tileMessage = "Not connected"; return }
         resendAll = resend
+        tileJobStarted = Date()
+        tileJobBytes = 0
         tileQueue = []
         tilesTotal = 0
         tilesDone = 0
@@ -1233,6 +1267,9 @@ final class BLEManager: NSObject, ObservableObject {
 
     private func finishTileJob(message: String?) {
         if tilesUploading {
+            let secs = Date().timeIntervalSince(tileJobStarted)
+            print(String(format: "tile job: %d files, %d KB, %.1f s from first build to last ack (%.1f KB/s overall)",
+                         tilesDone, tileJobBytes / 1024, secs, Double(tileJobBytes) / 1024 / max(secs, 0.1)))
             let ok = message == "Tiles installed"
             TransferCenter.shared.finish(Self.tilesTransferId, success: ok,
                 message: ok ? "\(tilesDone) tile\(tilesDone == 1 ? "" : "s") on the device"
@@ -1301,6 +1338,7 @@ final class BLEManager: NSObject, ObservableObject {
         case 0xB0: pumpMapChunks()                                // device ready (map or tile)
         case 0xB1:                                                // saved + active
             if let id = currentTileId {                           // a tile finished
+                tileJobBytes += mapData.count
                 if currentIsPoi {
                     devicePoiIds.insert(id)
                     poiSentAt[id] = Date().timeIntervalSince1970
@@ -1309,6 +1347,8 @@ final class BLEManager: NSObject, ObservableObject {
                     deviceTileIds.insert(id)
                     flaggedTileIds.insert(id)
                     UserDefaults.standard.set(Array(flaggedTileIds), forKey: "flaggedTileIds")
+                    tileSentAt[id] = Date().timeIntervalSince1970
+                    UserDefaults.standard.set(tileSentAt, forKey: "tileSentAt")
                 }
                 tilesDone += 1
                 currentTileId = nil

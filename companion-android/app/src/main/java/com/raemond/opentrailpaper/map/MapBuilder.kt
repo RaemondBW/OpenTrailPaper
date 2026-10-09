@@ -2,8 +2,12 @@ package com.raemond.opentrailpaper.map
 
 import com.raemond.opentrailpaper.BuildConfig
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -50,10 +54,44 @@ object MapBuilder {
      * load, so we rotate through these on failure. Don't add a mirror without
      * checking it actually responds; a hung endpoint just wastes the timeout.
      */
+    // private.coffee added 2026-10 (fast, current data); mail.ru stays as the
+    // last resort — it answers, but took 20+ s for a query the others serve in
+    // 2. kumi.systems was returning 500s and is left out.
     private val OVERPASS_ENDPOINTS = listOf(
         "https://overpass-api.de/api/interpreter",
+        "https://overpass.private.coffee/api/interpreter",
         "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
     )
+
+    /**
+     * Map batches fetched at once. Overpass's usage policy allows a few
+     * concurrent requests per client (overpass-api.de: 4 slots per IP); two
+     * keeps us well inside that while elevation, encoding and the BLE link
+     * overlap with the next fetch. Each batch starts on a different mirror.
+     */
+    const val CONCURRENT_BATCHES = 2
+
+    /**
+     * Hexes whose elevation grid is fetched at once (4 calls each). Open-Meteo
+     * weights a 100-point call as 10 and rate-limits per minute (the timing run
+     * hit 429 after ~20 calls in a burst), so calls also go through
+     * [elevationGate]; this only overlaps the waiting.
+     */
+    const val CONCURRENT_ELEVATION = 2
+
+    /** Next moment an elevation call may start; calls are spaced 1.1 s apart
+     *  app-wide (~550 weighted/min against Open-Meteo's 600). */
+    private var elevationNext = 0L
+    private val elevationLock = kotlinx.coroutines.sync.Mutex()
+    private suspend fun elevationGate() {
+        val wait = elevationLock.withLock {
+            val now = System.currentTimeMillis()
+            val at = maxOf(now, elevationNext)
+            elevationNext = at + 1100
+            at - now
+        }
+        if (wait > 0) delay(wait)
+    }
 
     const val TILE_DEG = 0.02
     const val SIMPLIFY_M = 3.0
@@ -135,9 +173,10 @@ object MapBuilder {
         north: Double,
         east: Double,
         onProgress: ((String) -> Unit)? = null,
+        startMirror: Int = 0,
     ): OsmData {
         val q = QUERY_TEMPLATE.replace("{B}", bbox(south, west, north, east))
-        return overpassPost(q, onProgress)
+        return overpassPost(q, onProgress, startMirror, "map")
     }
 
     /** The cycling POIs in a box (see POI_QUERY); read them from [OsmData.pois]. */
@@ -147,7 +186,7 @@ object MapBuilder {
         north: Double,
         east: Double,
         onProgress: ((String) -> Unit)? = null,
-    ): OsmData = overpassPost(POI_QUERY.replace("{B}", bbox(south, west, north, east)), onProgress)
+    ): OsmData = overpassPost(POI_QUERY.replace("{B}", bbox(south, west, north, east)), onProgress, 1, "poi")
 
     /**
      * Coastline ways alone, over a deliberately generous bbox.
@@ -167,7 +206,7 @@ object MapBuilder {
         val q = "[out:json][timeout:60];" +
             "way[\"natural\"=\"coastline\"](${bbox(south, west, north, east)});" +
             "(._;>;);out body;"
-        return overpassPost(q, null)
+        return overpassPost(q, null, 1, "coast")
     }
 
     /**
@@ -179,6 +218,8 @@ object MapBuilder {
     private suspend fun overpassPost(
         query: String,
         onProgress: ((String) -> Unit)?,
+        startMirror: Int = 0,
+        kind: String = "map",
     ): OsmData {
         val body = ("data=" + URLEncoder.encode(query, "UTF-8")).toByteArray(Charsets.UTF_8)
         var lastStatus = 0
@@ -187,7 +228,10 @@ object MapBuilder {
 
         for (attempt in 0 until total) {
             currentCoroutineContext().ensureActive()
-            val urlStr = OVERPASS_ENDPOINTS[attempt % OVERPASS_ENDPOINTS.size]
+            val urlStr = OVERPASS_ENDPOINTS[(startMirror + attempt) % OVERPASS_ENDPOINTS.size]
+            val started = System.nanoTime()
+            var bytes = 0L
+            var status = -1
             val host = runCatching { URL(urlStr).host }.getOrNull() ?: urlStr
             onProgress?.invoke("server $host (try ${attempt + 1}/$total)")
 
@@ -204,10 +248,16 @@ object MapBuilder {
                     }
                     conn.outputStream.use { it.write(body) }
                     val code = conn.responseCode
+                    status = code
                     if (code != 200) return@withContext Result.failure(HttpStatus(code))
                     // Parsed straight off the socket: an Overpass region is far
                     // too big to hold as a String and then again as a tree.
-                    Result.success(OsmData.parse(conn.inputStream))
+                    val counting = object : java.io.FilterInputStream(conn.inputStream) {
+                        override fun read(): Int = super.read().also { if (it >= 0) bytes++ }
+                        override fun read(b: ByteArray, off: Int, len: Int): Int =
+                            super.read(b, off, len).also { if (it > 0) bytes += it }
+                    }
+                    Result.success(OsmData.parse(counting))
                 } catch (e: Exception) {
                     Result.failure(e)
                 } finally {
@@ -215,6 +265,7 @@ object MapBuilder {
                 }
             }
 
+            DownloadStats.request(kind, host, status, (System.nanoTime() - started) / 1e9, bytes)
             result.onSuccess { return it }
             result.onFailure { e ->
                 if (e is HttpStatus) lastStatus = e.code else lastError = e as? Exception
@@ -296,42 +347,59 @@ object MapBuilder {
                 lons.add(west + (east - west) * j / (gridN - 1))
             }
         }
-
+        // The 100-point calls (4 per hex) go out together rather than one after
+        // another: each is ~0.3 s of mostly waiting.
+        val started = System.nanoTime()
         val out = ShortArray(gridN * gridN)
-        var idx = 0
-        while (idx < lats.size) {
-            val end = min(idx + 100, lats.size)
-            val la = (idx until end).joinToString(",") { fmt5(lats[it]) }
-            val lo = (idx until end).joinToString(",") { fmt5(lons[it]) }
-            val body = withContext(Dispatchers.IO) {
-                val url = URL(
-                    "https://api.open-meteo.com/v1/elevation" +
-                        "?latitude=${URLEncoder.encode(la, "UTF-8")}" +
-                        "&longitude=${URLEncoder.encode(lo, "UTF-8")}",
-                )
-                val conn = (url.openConnection() as HttpURLConnection).apply {
-                    setRequestProperty("User-Agent", "OpenTrailPaper-Android")
-                    connectTimeout = 30_000
-                    readTimeout = 30_000
+        val chunks = (lats.indices step 100).map { it to min(it + 100, lats.size) }
+        val bodies = coroutineScope {
+            chunks.map { (idx, end) ->
+                async(Dispatchers.IO) {
+                    elevationGate()
+                    val body = elevationCall(lats, lons, idx, end) ?: run {
+                        // Rate-limited: one retry after the minute window moves.
+                        delay(20_000)
+                        elevationGate()
+                        elevationCall(lats, lons, idx, end) ?: throw IOException("elevation rate-limited")
+                    }
+                    idx to body
                 }
-                try {
-                    if (conn.responseCode != 200) throw IOException("elevation server error")
-                    conn.inputStream.readBytes().toString(Charsets.UTF_8)
-                } finally {
-                    conn.disconnect()
-                }
-            }
-            val arr = JSONObject(body).optJSONArray("elevation")
-            if (arr != null) {
-                for (k in 0 until arr.length()) {
-                    if (idx + k >= out.size) break
-                    val v = if (arr.isNull(k)) 0.0 else arr.optDouble(k, 0.0)
-                    out[idx + k] = rnd(v).coerceIn(-2000, 9000).toShort()
-                }
-            }
-            idx = end
+            }.awaitAll()
         }
+        for ((idx, body) in bodies) {
+            val arr = JSONObject(body).optJSONArray("elevation") ?: continue
+            for (k in 0 until arr.length()) {
+                if (idx + k >= out.size) break
+                val v = if (arr.isNull(k)) 0.0 else arr.optDouble(k, 0.0)
+                out[idx + k] = rnd(v).coerceIn(-2000, 9000).toShort()
+            }
+        }
+        DownloadStats.add("elevation", (System.nanoTime() - started) / 1e9)
         return out
+    }
+
+    /** One Open-Meteo call for points [idx, end) — blocking, run on Dispatchers.IO.
+     *  null when rate-limited (429). */
+    private fun elevationCall(lats: List<Double>, lons: List<Double>, idx: Int, end: Int): String? {
+        val la = (idx until end).joinToString(",") { fmt5(lats[it]) }
+        val lo = (idx until end).joinToString(",") { fmt5(lons[it]) }
+        val url = URL(
+            "https://api.open-meteo.com/v1/elevation" +
+                "?latitude=${URLEncoder.encode(la, "UTF-8")}" +
+                "&longitude=${URLEncoder.encode(lo, "UTF-8")}",
+        )
+        val conn = (url.openConnection() as HttpURLConnection).apply {
+            setRequestProperty("User-Agent", USER_AGENT)
+            connectTimeout = 30_000
+            readTimeout = 30_000
+        }
+        try {
+            if (conn.responseCode == 429) return null
+            if (conn.responseCode != 200) throw IOException("elevation server error")
+            return conn.inputStream.readBytes().toString(Charsets.UTF_8)
+        } finally {
+            conn.disconnect()
+        }
     }
 
     private fun fmt5(v: Double) = String.format(Locale.US, "%.5f", v)
@@ -956,4 +1024,43 @@ private fun ByteArrayOutputStream.f64(v: Double) {
         write((bits and 0xFF).toInt())
         bits = bits ushr 8
     }
+}
+
+/**
+ * Where a map download's time goes, logged at the end of each run (logcat tag
+ * "Maps") so a slow download on a real phone can be broken down: Overpass per
+ * request, elevation, encode, and the BLE drain after the last tile is built.
+ */
+object DownloadStats {
+    private class Req(val kind: String, val host: String, val status: Int, val seconds: Double, val bytes: Long)
+    private val requests = java.util.Collections.synchronizedList(ArrayList<Req>())
+    private val stages = java.util.concurrent.ConcurrentHashMap<String, Double>()
+    @Volatile private var started = System.nanoTime()
+
+    fun reset() { started = System.nanoTime(); requests.clear(); stages.clear() }
+    fun request(kind: String, host: String, status: Int, seconds: Double, bytes: Long) {
+        requests.add(Req(kind, host, status, seconds, bytes))
+    }
+    fun add(stage: String, seconds: Double) { stages.merge(stage, seconds, Double::plus) }
+
+    fun summary(hexes: Int): String {
+        val us = java.util.Locale.US
+        val sb = StringBuilder("map download: $hexes hexes in %.1f s".format(us, (System.nanoTime() - started) / 1e9))
+        val rs = synchronized(requests) { requests.toList() }
+        for (kind in listOf("map", "coast", "poi")) {
+            val k = rs.filter { it.kind == kind }
+            if (k.isEmpty()) continue
+            val ok = k.filter { it.status == 200 }
+            sb.append(
+                "\n  overpass %s: %d requests (%d failed), %.1f s summed, %.1f MB, hosts %s".format(
+                    us, kind, k.size, k.size - ok.size, k.sumOf { it.seconds },
+                    ok.sumOf { it.bytes } / 1048576.0, ok.map { it.host }.toSortedSet().joinToString(","),
+                ),
+            )
+        }
+        for ((k, v) in stages.toSortedMap()) sb.append("\n  %s: %.1f s summed".format(us, k, v))
+        return sb.toString()
+    }
+
+    fun log(hexes: Int) { android.util.Log.i("Maps", summary(hexes)) }
 }

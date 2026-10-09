@@ -153,6 +153,7 @@ class BleManager(private val app: Application) {
     private var poiIdsBuilding = mutableListOf<String>()
     private var poiSentAt: Map<String, Long> = emptyMap()
     private var flaggedTileIds: Set<String> = emptySet()
+    private var tileSentAt: Map<String, Long> = emptyMap()
 
     /** On the device. A tile there is never re-sent on its own — even one built
      *  before the bike-route flags; the rider chooses that (Redownload). */
@@ -166,6 +167,26 @@ class BleManager(private val app: Application) {
      */
     fun tilePredatesCycling(id: String): Boolean =
         deviceSupportsPois && id in deviceTileIds && id !in flaggedTileIds
+
+    /**
+     * On the device, and Redownload would bring something new: it predates the
+     * bike-route data, or this phone sent it more than [TILE_REFRESH_AGE_MS] ago.
+     * Drawn ochre/hatched on the Maps screen and counted as "updates".
+     */
+    fun tileNeedsUpdate(id: String): Boolean {
+        if (id !in deviceTileIds) return false
+        if (tilePredatesCycling(id)) return true
+        val at = tileSentAt[id] ?: return false
+        return System.currentTimeMillis() - at > TILE_REFRESH_AGE_MS
+    }
+
+    /** The POI drop drawn on an on-device hex: none on firmware without the POI
+     *  layer, filled when the device has fresh POIs, hollow otherwise. */
+    fun poiMark(id: String): com.raemond.opentrailpaper.map.HexPoiMark = when {
+        !deviceSupportsPois || id !in deviceTileIds -> com.raemond.opentrailpaper.map.HexPoiMark.NONE
+        poiNeedsSend(id) -> com.raemond.opentrailpaper.map.HexPoiMark.MISSING
+        else -> com.raemond.opentrailpaper.map.HexPoiMark.PRESENT
+    }
 
     /** The tile's POIs should go to the device: it can draw them, and it has
      *  none for this tile or this phone sent them more than PoiCache.MAX_AGE_MS ago. */
@@ -283,6 +304,9 @@ class BleManager(private val app: Application) {
     private var currentTileId: String? = null
     private var currentIsPoi = false
     private var resendAll = false                   // this job is a Redownload
+    // BLE side of the download timing (see DownloadStats).
+    private var tileJobStarted = 0L
+    private var tileJobBytes = 0L
     private var tileJobFailed = false
     private var tilesMoreComing = false
     private var tileIdsBuilding = mutableListOf<String>()
@@ -384,6 +408,7 @@ class BleManager(private val app: Application) {
         // Show last-known on-device tiles immediately; a refresh confirms them.
         deviceTileIds = Prefs.deviceTileIds
         flaggedTileIds = Prefs.flaggedTileIds
+        tileSentAt = Prefs.tileSentAt
         poiSentAt = Prefs.poiSentAt
         refreshPermissions()
         app.registerReceiver(
@@ -2170,6 +2195,8 @@ class BleManager(private val app: Application) {
     fun startTileStream(resend: Boolean = false) {
         if (mapChar == null) { tileMessage = "Not connected"; return }
         resendAll = resend
+        tileJobStarted = System.nanoTime()
+        tileJobBytes = 0
         tileQueue = ArrayDeque()
         tilesTotal = 0
         tilesDone = 0
@@ -2241,6 +2268,14 @@ class BleManager(private val app: Application) {
 
     private fun finishTileJob(message: String?) {
         if (tilesUploading) {
+            val secs = (System.nanoTime() - tileJobStarted) / 1e9
+            android.util.Log.i(
+                "Maps",
+                "tile job: %d files, %d KB, %.1f s from first build to last ack (%.1f KB/s overall)".format(
+                    java.util.Locale.US, tilesDone, tileJobBytes / 1024, secs,
+                    tileJobBytes / 1024.0 / maxOf(secs, 0.1),
+                ),
+            )
             val ok = message == "Tiles installed"
             TransferCenter.finish(
                 TILES_TRANSFER, success = ok,
@@ -2312,6 +2347,7 @@ class BleManager(private val app: Application) {
             0xB1 -> {                                             // saved + active
                 val id = currentTileId
                 if (id != null) {                                 // a tile finished
+                    tileJobBytes += mapData.size
                     if (currentIsPoi) {
                         devicePoiIds = devicePoiIds + id
                         poiSentAt = poiSentAt + (id to System.currentTimeMillis())
@@ -2320,6 +2356,8 @@ class BleManager(private val app: Application) {
                         deviceTileIds = deviceTileIds + id
                         flaggedTileIds = flaggedTileIds + id
                         Prefs.flaggedTileIds = flaggedTileIds
+                        tileSentAt = tileSentAt + (id to System.currentTimeMillis())
+                        Prefs.tileSentAt = tileSentAt
                     }
                     tilesDone += 1
                     currentTileId = null
@@ -2562,6 +2600,10 @@ class BleManager(private val app: Application) {
         // TransferCenter ids for the one-at-a-time transfers.
         private const val OTA_TRANSFER = "ble.ota"
         private const val MAP_TRANSFER = "ble.map"
+
+        /** A map tile this phone sent longer ago than this is offered as an
+         *  update (the phone's own tile cache expires at the same age). */
+        const val TILE_REFRESH_AGE_MS = 90L * 24 * 60 * 60 * 1000
         private const val TILES_TRANSFER = "ble.tiles"
         private const val ROUTE_TRANSFER = "ble.route"
 

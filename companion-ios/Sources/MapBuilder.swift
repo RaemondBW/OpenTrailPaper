@@ -27,10 +27,25 @@ enum MapBuilder {
     // Public Overpass instances (verified reachable) — the main one 504s under
     // load, so we rotate through these on failure. Don't add a mirror without
     // checking it actually responds; a hung endpoint just wastes the timeout.
+    // private.coffee added 2026-10 (fast, current data); mail.ru stays as the
+    // last resort — it answers, but took 20+ s for a query the others serve
+    // in 2. kumi.systems was returning 500s and is left out.
     static let overpassEndpoints = [
         "https://overpass-api.de/api/interpreter",
+        "https://overpass.private.coffee/api/interpreter",
         "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
     ]
+
+    /// Map batches fetched at once. Overpass's usage policy allows a few
+    /// concurrent requests per client (overpass-api.de: 4 slots per IP); two
+    /// keeps us well inside that while elevation, encoding and the BLE link
+    /// overlap with the next fetch. Each batch starts on a different mirror.
+    static let concurrentBatches = 2
+    /// Hexes whose elevation grid is fetched at once (4 calls each). Open-Meteo
+    /// weights a 100-point call as 10 and rate-limits per minute (the timing
+    /// run hit 429 after ~20 calls in a burst), so calls also go through
+    /// `ElevationGate`; this only overlaps the waiting.
+    static let concurrentElevation = 2
     static let tileDeg = 0.02
     static let simplifyM = 3.0
 
@@ -146,14 +161,15 @@ enum MapBuilder {
         let q = "[out:json][timeout:60];"
               + "way[\"natural\"=\"coastline\"](\(s),\(w),\(n),\(e));"
               + "(._;>;);out body;"
-        return try await overpassPost(q)
+        return try await overpassPost(q, startMirror: 1, kind: "coast")
     }
 
     static func fetchOSM(south s: Double, west w: Double, north n: Double, east e: Double,
+                         startMirror: Int = 0,
                          onProgress: (@Sendable (String) -> Void)? = nil) async throws -> Data {
         let bbox = [s, w, n, e].map { String($0) }.joined(separator: ",")
         let q = query.replacingOccurrences(of: "{B}", with: bbox)
-        return try await overpassPost(q, onProgress: onProgress)
+        return try await overpassPost(q, startMirror: startMirror, kind: "map", onProgress: onProgress)
     }
 
     /// Raw Overpass JSON of the cycling POIs in a box (see poiQuery).
@@ -161,14 +177,14 @@ enum MapBuilder {
                           onProgress: (@Sendable (String) -> Void)? = nil) async throws -> Data {
         let bbox = [s, w, n, e].map { String($0) }.joined(separator: ",")
         let q = poiQuery.replacingOccurrences(of: "{B}", with: bbox)
-        return try await overpassPost(q, onProgress: onProgress)
+        return try await overpassPost(q, startMirror: 1, kind: "poi", onProgress: onProgress)
     }
 
     /// POST an Overpass QL query, walking the mirror list twice so a transient
     /// failure on one server is retried elsewhere. Shared by every fetch —
     /// this retry logic used to live inside fetchOSM, so any new query either
     /// duplicated it or went without.
-    private static func overpassPost(_ q: String,
+    private static func overpassPost(_ q: String, startMirror: Int = 0, kind: String = "map",
                                      onProgress: (@Sendable (String) -> Void)? = nil
     ) async throws -> Data {
         let body = ("data=" + (q.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? q))
@@ -180,7 +196,7 @@ enum MapBuilder {
         // Two passes over the mirror list (so a transient failure gets retried).
         for attempt in 0..<total {
             try Task.checkCancellation()
-            let urlStr = overpassEndpoints[attempt % overpassEndpoints.count]
+            let urlStr = overpassEndpoints[(startMirror + attempt) % overpassEndpoints.count]
             guard let url = URL(string: urlStr) else { continue }
             let host = url.host ?? urlStr
             onProgress?("server \(host) (try \(attempt + 1)/\(total))")
@@ -189,15 +205,20 @@ enum MapBuilder {
             req.httpBody = body
             req.setValue(userAgent, forHTTPHeaderField: "User-Agent")
             req.timeoutInterval = 45          // fail a hung mirror fast, move on
+            let started = Date()
             do {
                 let (data, resp) = try await URLSession.shared.data(for: req)
                 guard let http = resp as? HTTPURLResponse else { continue }
+                await DownloadStats.shared.request(kind, host: host, status: http.statusCode,
+                    seconds: Date().timeIntervalSince(started), bytes: data.count)
                 if http.statusCode == 200 { return data }
                 lastStatus = http.statusCode
                 // 429 (rate limit) / 504 (timeout) / 5xx (overload) → back off, try next mirror.
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
+                await DownloadStats.shared.request(kind, host: host, status: -1,
+                    seconds: Date().timeIntervalSince(started), bytes: 0)
                 lastError = error
             }
             try? await Task.sleep(nanoseconds: 800_000_000)
@@ -235,6 +256,66 @@ enum MapBuilder {
         return out
     }
 
+    /// Fetch, encode and finish one batch of hexes: roads (+ way flags), DEM
+    /// elevation, water and sea fill, parks. Returns the non-empty tiles.
+    /// Runs off the main actor; the Maps screen keeps `concurrentBatches` of
+    /// these in flight. `seaRings` is awaited only after the fetch, so the
+    /// shared coastline download overlaps with the first batches.
+    static func buildBatch(_ batch: [MapTile], startMirror: Int,
+                           seaRings: Task<[[(Double, Double)]], Never>,
+                           onProgress: (@Sendable (String) -> Void)? = nil
+    ) async throws -> [(id: String, data: Data)] {
+        var s = 90.0, w = 180.0, n = -90.0, e = -180.0
+        for t in batch { s = min(s, t.south); w = min(w, t.west); n = max(n, t.north); e = max(e, t.east) }
+        let pad = 0.003
+        let json = try await fetchOSM(south: s - pad, west: w - pad, north: n + pad, east: e + pad,
+                                      startMirror: startMirror, onProgress: onProgress)
+        let t0 = Date()
+        let part = try encodeTiles(regionJSON: json, tiles: batch)
+        let waterWays = (try? extractWaterWays(regionJSON: json)) ?? []
+        let parkWays = (try? extractParkWays(regionJSON: json)) ?? []
+        await DownloadStats.shared.add("encode", Date().timeIntervalSince(t0))
+        let rings = await seaRings.value
+        // Elevation for a few hexes at a time; best-effort, as before.
+        var grids: [String: [Int16]] = [:]
+        try await withThrowingTaskGroup(of: (String, [Int16]?).self) { group in
+            var it = batch.makeIterator()
+            var running = 0
+            while running < concurrentElevation, let t = it.next() {
+                group.addTask { (t.id, try? await fetchElevationGrid(south: t.south, west: t.west,
+                                                                     north: t.north, east: t.east)) }
+                running += 1
+            }
+            for try await (id, grid) in group {
+                if let grid { grids[id] = grid }
+                if let t = it.next() {
+                    group.addTask { (t.id, try? await fetchElevationGrid(south: t.south, west: t.west,
+                                                                         north: t.north, east: t.east)) }
+                }
+            }
+        }
+        let t1 = Date()
+        var out: [(id: String, data: Data)] = []
+        for var p in part {
+            guard let t = batch.first(where: { $0.id == p.id }) else { continue }
+            if let grid = grids[t.id] {
+                appendElevation(to: &p.data, south: t.south, west: t.west, north: t.north,
+                                east: t.east, grid: grid, n: elevationGrid)
+            }
+            // WTR2 water section after any ELV1 block, then PRK2.
+            appendWater(to: &p.data, waterWays: waterWays, seaRings: rings,
+                        south: t.south, west: t.west, north: t.north, east: t.east)
+            appendParks(to: &p.data, parkWays: parkWays,
+                        south: t.south, west: t.west, north: t.north, east: t.east)
+            // Decide emptiness only now — a hex can be pure water and still
+            // be worth storing.
+            if isEmpty(p.data, tile: t) { continue }
+            out.append(p)
+        }
+        await DownloadStats.shared.add("encode", Date().timeIntervalSince(t1))
+        return out
+    }
+
     // Test hook: encode a raw Overpass JSON payload (bypasses the network).
     static func encodeForTest(jsonData: Data, s: Double, w: Double, n: Double, e: Double,
                               cycling: Bool = true) throws -> Data {
@@ -263,27 +344,43 @@ enum MapBuilder {
                 lats.append(lat); lons.append(lon)
             }
         }
+        // The 100-point calls (4 per hex) go out together rather than one
+        // after another: each is ~0.3 s of mostly waiting.
+        let started = Date()
         var out = [Int16](repeating: 0, count: gridN * gridN)
-        var idx = 0
-        while idx < lats.count {
-            let end = min(idx + 100, lats.count)
-            let la = lats[idx..<end].map { String(format: "%.5f", $0) }.joined(separator: ",")
-            let lo = lons[idx..<end].map { String(format: "%.5f", $0) }.joined(separator: ",")
-            var comp = URLComponents(string: "https://api.open-meteo.com/v1/elevation")!
-            comp.queryItems = [URLQueryItem(name: "latitude", value: la),
-                               URLQueryItem(name: "longitude", value: lo)]
-            var req = URLRequest(url: comp.url!)
-            req.timeoutInterval = 30
-            let (data, resp) = try await URLSession.shared.data(for: req)
-            guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
-                throw BuildError.overpass("elevation server error")
+        let chunks = stride(from: 0, to: lats.count, by: 100).map { ($0, min($0 + 100, lats.count)) }
+        try await withThrowingTaskGroup(of: (Int, [Double?]).self) { group in
+            for (idx, end) in chunks {
+                let la = lats[idx..<end].map { String(format: "%.5f", $0) }.joined(separator: ",")
+                let lo = lons[idx..<end].map { String(format: "%.5f", $0) }.joined(separator: ",")
+                group.addTask {
+                    await ElevationGate.shared.wait()
+                    var comp = URLComponents(string: "https://api.open-meteo.com/v1/elevation")!
+                    comp.queryItems = [URLQueryItem(name: "latitude", value: la),
+                                       URLQueryItem(name: "longitude", value: lo)]
+                    var req = URLRequest(url: comp.url!)
+                    req.timeoutInterval = 30
+                    req.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+                    var (data, resp) = try await URLSession.shared.data(for: req)
+                    if (resp as? HTTPURLResponse)?.statusCode == 429 {
+                        // Rate-limited: one retry after the minute window moves.
+                        try await Task.sleep(nanoseconds: 20_000_000_000)
+                        await ElevationGate.shared.wait()
+                        (data, resp) = try await URLSession.shared.data(for: req)
+                    }
+                    guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
+                        throw BuildError.overpass("elevation server error")
+                    }
+                    return (idx, try JSONDecoder().decode(ElevResp.self, from: data).elevation)
+                }
             }
-            let decoded = try JSONDecoder().decode(ElevResp.self, from: data)
-            for (k, ev) in decoded.elevation.enumerated() where idx + k < out.count {
-                out[idx + k] = Int16(max(-2000, min(9000, (ev ?? 0).rounded())))
+            for try await (idx, elevation) in group {
+                for (k, ev) in elevation.enumerated() where idx + k < out.count {
+                    out[idx + k] = Int16(max(-2000, min(9000, (ev ?? 0).rounded())))
+                }
             }
-            idx = end
         }
+        await DownloadStats.shared.add("elevation", Date().timeIntervalSince(started))
         return out
     }
 
@@ -1087,5 +1184,56 @@ private extension Data {
     mutating func appendF64(_ v: Double) {
         var bits = v.bitPattern
         for _ in 0..<8 { append(UInt8(bits & 0xFF)); bits >>= 8 }
+    }
+}
+
+/// Where a map download's time goes, logged at the end of each run (Console,
+/// subsystem com.raemond.opentrailpaper, category maps) so a slow download on
+/// a real phone can be broken down: Overpass per request, elevation, encode,
+/// and the BLE drain after the last tile is built.
+actor DownloadStats {
+    static let shared = DownloadStats()
+    private var started = Date()
+    private var requests: [(kind: String, host: String, status: Int, seconds: Double, bytes: Int)] = []
+    private var stages: [String: Double] = [:]
+
+    func reset() { started = Date(); requests = []; stages = [:] }
+    func request(_ kind: String, host: String, status: Int, seconds: Double, bytes: Int) {
+        requests.append((kind, host, status, seconds, bytes))
+    }
+    func add(_ stage: String, _ seconds: Double) { stages[stage, default: 0] += seconds }
+
+    func summary(hexes: Int) -> String {
+        var lines = ["map download: \(hexes) hexes in \(String(format: "%.1f", Date().timeIntervalSince(started))) s"]
+        for kind in ["map", "coast", "poi"] {
+            let rs = requests.filter { $0.kind == kind }
+            guard !rs.isEmpty else { continue }
+            let ok = rs.filter { $0.status == 200 }
+            lines.append(String(format: "  overpass %@: %d requests (%d failed), %.1f s summed, %.1f MB, hosts %@",
+                                kind, rs.count, rs.count - ok.count, rs.reduce(0) { $0 + $1.seconds },
+                                Double(ok.reduce(0) { $0 + $1.bytes }) / 1_048_576,
+                                Set(ok.map(\.host)).sorted().joined(separator: ",")))
+        }
+        for (k, v) in stages.sorted(by: { $0.key < $1.key }) {
+            lines.append(String(format: "  %@: %.1f s summed", k, v))
+        }
+        return lines.joined(separator: "\n")
+    }
+}
+
+/// Spaces Open-Meteo elevation calls at least `interval` apart across the
+/// whole app. Each 100-point call counts as 10 against its per-minute limit
+/// (600), so 1.1 s apart keeps a long download at ~550/min instead of
+/// bursting into 429s — which used to leave tiles silently without elevation.
+actor ElevationGate {
+    static let shared = ElevationGate()
+    private let interval: TimeInterval = 1.1
+    private var next = Date.distantPast
+    func wait() async {
+        let now = Date()
+        let at = max(now, next)
+        next = at.addingTimeInterval(interval)
+        let delay = at.timeIntervalSince(now)
+        if delay > 0 { try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
     }
 }

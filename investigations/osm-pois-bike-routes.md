@@ -1,6 +1,6 @@
 # Cycling POIs and bike routes on the device map
 
-Status as of 2026-10-08. Implemented on branch `feat/osm-pois-bike-routes`:
+Status as of 2026-10-09. Implemented on branch `feat/osm-pois-bike-routes`:
 - the website builder (`docs/mapgen.js`);
 - **both phone apps** (iOS `MapBuilder.swift`, Android `MapBuilder.kt` /
   `OsmData.kt` / `Cycling.kt`), which produce byte-identical output to the
@@ -402,17 +402,17 @@ Both apps do the same thing, in `MapsView.swift` / `MapsSheet.kt` (pipeline),
     replaces the card with the progress card, and the start functions refuse
     to run while a build or a transfer is in progress.
 
-![selected-area card with Redownload](img/osm-pois-bike-routes/ios_redownload_card.png)
+![selected-area card with Redownload](img/osm-pois-bike-routes/ios_map_selection_states.png)
 
 The selected-area card in each state:
 
 | Selection | Card shows |
 |---|---|
-| only new hexes | "N to download · 0 on device"; **Download N hexes** (their POIs go along automatically) |
-| new + on-device hexes | "N to download · M on device · P need POIs"; the stale hint if any; **Download N hexes**; **Redownload M hexes**. Download also sends the P pending POIs. |
-| all on device, some without (fresh) POIs | "0 to download · M on device · P need POIs"; **Send POIs for P hexes**; **Redownload M hexes** |
-| all on device, POIs current | **Nothing to download** (disabled); **Redownload M hexes** |
-| old firmware | as above without "need POIs", the hint, or POI sends |
+| only new hexes | chips "N new · 0 updates · 0 current"; **Download N hexes** (their POIs go along automatically) |
+| new + on-device hexes | chips "N new · U updates · C current", "P need POIs", the update hint if U > 0; **Download N hexes**; **Redownload M hexes** (M = U + C). Download also sends the P pending POIs. |
+| all on device, some without (fresh) POIs | chips "0 new · U updates · C current", "P need POIs"; **Send POIs for P hexes**; **Redownload M hexes** |
+| all on device, POIs current | "POIs up to date"; **Nothing to download** (disabled); **Redownload M hexes** |
+| old firmware | as above without "need POIs" or POI sends; "updates" are only hexes this phone sent over 90 days ago |
 
 ### 2e. Interaction
 
@@ -421,6 +421,43 @@ corner (distance and an arrow to the closest `amenity=drinking_water` among
 the cached `.poi` files); it was removed at the user's request. The `.poi`
 files are enough to bring back a lookup like that later, or a "next water
 along the route" field.
+
+### 2f. The app map: hex state at a glance
+
+Both apps draw every hex on the Maps screen with its state. No selection is
+needed to see it.
+
+| What | Drawn as |
+|---|---|
+| on the device, current | green fill and outline, white check in a green badge |
+| on the device, **update available** (made before the bike-route data, or sent by this phone more than 90 days ago) | ochre fill and outline, **diagonal hatching**, white up-arrow in an ochre badge |
+| on this phone only | grey (as before) |
+| POIs on the device and fresh (firmware with the POI layer only) | **filled** ink water drop beside the badge |
+| no POIs, or POIs over 30 days old | **hollow** water drop |
+| selected, new | vermilion (accent), heavier outline |
+| selected, update / current | ochre-hatched / green, heavier outline |
+| selected, skipped | faint grey |
+
+- **Shape as well as colour.** "Update" is hatched and carries an arrow
+  instead of a check, so it doesn't depend on telling ochre from green.
+- **Legend.** A compact legend sits under the header whenever there is
+  coverage or a selection.
+- **Selection.** Selected hexes the device already has are drawn in their
+  selection style instead of the coverage style, so the box reads as new vs
+  update vs current. Their badge still shows.
+- **Card counts.** The selected-area card's chips ("3 new · 2 updates · 2
+  current") count exactly the hexes drawn in each colour. Tapping a hex still
+  skips or keeps the new ones.
+- **Old firmware.** The device doesn't answer `0x08`, so there are no drops.
+  "Update" then means only "sent over 90 days ago".
+
+| on-device states (iOS, `-demo-maps-coverage`) | a selection: new / update / current (iOS, `-demo-maps`) |
+|---|---|
+| ![](img/osm-pois-bike-routes/ios_map_states.png) | ![](img/osm-pois-bike-routes/ios_map_selection_states.png) |
+
+Android draws the same scheme (`HexOverlay` / `HexBadge`, legend and chips in
+`MapsSheet`). There was no Android emulator on the build machine, so there are
+no Android screenshots.
 
 ## 3. Cost
 
@@ -637,3 +674,148 @@ H3JS_DIR=<dir with node_modules/h3-js> ANDROID_CROSSPORT=1 \
   byte.
 - **Zoom rules and icon size.** The thresholds in `shedAtZoom` / `poiAtZoom`
   and the 24 px icons are first guesses, tuned only on SF screenshots.
+
+## 8. Faster data
+
+Riders report map downloads as very slow. Measured on 2026-10-09 with
+`tools/maps/download_bench.mjs`, which replays the apps' network pipeline for
+the 15 H3 res-6 hexes nearest a point and times every request.
+
+The encode step is timed with `mapgen.js` as a stand-in for `MapBuilder`
+(same algorithm). It ran on a Mac, so on a phone expect roughly 3–5× the
+encode time — still small.
+
+### Where the time goes (before)
+
+The apps' pipeline: map batches one at a time, 1 s apart; four elevation
+calls per hex, one after another; POI groups after that; every request
+starting on overpass-api.de.
+
+| | SF, 15 hexes | rural Sierra foothills, 15 hexes |
+|---|---|---|
+| total | **606 s** | **357 s** |
+| map batches (0.08° grouping) | 11, **4 failed** after every retry | 12, 1 failed |
+| Overpass map requests | 32, 25 refused (504 busy, 429 rate limit) | 24, 13 refused |
+| Overpass waiting for a response (summed) | **482 s** | 192 s |
+| Overpass transfer (summed) | 8 s (80 MB JSON, ~13 MB on the wire gzipped) | 6 s (16 MB JSON) |
+| coastline + POI queries | 31 s + 47 s | 4 s + 119 s |
+| elevation (60 calls) | 7 s, but **40 of 60 rate-limited** (429) | — |
+| JSON parse + encode | 0.9 s | 0.4 s |
+| result | 1.1 MB `.ebm`, 689 POIs | 0.33 MB `.ebm`, 10 POIs |
+
+**Overpass dominates, and it is slow by refusal, not by bandwidth.** The
+public servers answered 504 ("too busy") or 429 to most first attempts, and
+each refusal costs 1–60 s before the retry. Transfer is under 2% of the
+time. Encoding is negligible.
+
+**Elevation is hitting a quota, not a speed limit.** Open-Meteo weighs a
+100-point call as 10 against its free limits of 600/min, 5 000/h and
+10 000/day. A hex costs 40 weighted calls (4 calls × 10), so one IP gets
+about 250 hexes a day. A burst of ~20 calls already drew 429s. The apps
+treat elevation as best-effort, so those tiles silently shipped without
+their ELV1 grid.
+
+**BLE** could not be measured here: there is no device on the bench.
+
+- The firmware comments put a dense ~180 KB tile at ~8 s, so about
+  20–25 KB/s.
+- On that estimate, the SF selection is 50–80 s of transfer and the rural
+  one about 15 s. That is small next to Overpass today, and it overlaps
+  with the fetches anyway.
+- Both apps now log `tile job: N files, X KB, Y s` (iOS console / Android
+  logcat tag `Maps`) to confirm it on a device.
+
+### Quick wins (implemented in both apps)
+
+- **Map batches two at a time, each starting on a different mirror.**
+  overpass-api.de allows 4 concurrent slots per IP; we use at most 2 for map
+  batches, plus the small coastline/POI queries.
+- **Coastline and POI queries run alongside the map batches** instead of
+  before and after them. A batch waits for the sea rings only after its own
+  fetch.
+- **Encoding and water/park assembly run off the main thread** (iOS:
+  `MapBuilder.buildBatch` in a task group; Android: `Dispatchers.Default`).
+  Each batch is cached and queued for BLE as soon as it is built.
+- **Elevation:** each hex's 4 calls go out together, 2 hexes at a time,
+  through an app-wide gate that spaces calls 1.1 s apart (~550 weighted/min).
+  On a 429 there is one retry after 20 s. This is slower in a burst than
+  before, but it stops tiles losing their elevation. It overlaps with the
+  Overpass waits, which are far longer.
+- **Mirrors:** overpass-api.de, then `overpass.private.coffee` (new), then
+  maps.mail.ru as the last resort.
+  - mail.ru answered, but took 15–60 s.
+  - private.coffee was fast for small queries early in the day, then
+    returned 500 for everything, but a 500 costs 0.5 s.
+  - `overpass.kumi.systems` returned 500 all day and is not used.
+- **Explicit User-Agent** (`OpenTrailPaper/<version> (iOS|Android)`) on
+  Overpass and Open-Meteo requests.
+- **Instrumentation:** `DownloadStats` logs one summary per download, with
+  Overpass requests per kind, failures, seconds, MB and hosts, plus summed
+  elevation and encode seconds. The BLE tile job logs its own line.
+
+**After**, measured the same way:
+
+| | SF, 15 hexes | rural, 15 hexes |
+|---|---|---|
+| before → after | 606 s → **344 s (−43%)** | 357 s → **286 s (−20%)** |
+| hexes lost to failed batches | 4 batches → **0** | 1 → 2 |
+| Overpass refusals | 25 of 32 → 21 of 32 | 13 of 24 → 20 of 30 |
+
+These are single runs against public servers whose load changed by the
+hour, so read them as indicative. The concurrency is a real 1.5–2×
+improvement while the servers accept queries at all. It cannot fix "the
+server refuses most queries", which today is the dominant cost.
+
+Elevation in the "after" runs was 100% 429. Open-Meteo had blocked this IP
+by then, after the earlier runs. That says more about the quota than about
+the change.
+
+**Query trimming (b) was looked at but not changed.**
+- Responses are gzipped on the wire. Transfer is under 2% of the time.
+- `out geom` would drop the separate node list. But it repeats shared
+  nodes, needs a parser change in all three builders, and would only trim
+  the 2%.
+- Merging the POI query back into the map query would save one round trip
+  per POI group. But it ties POI refresh to map downloads, which
+  investigations section 2d deliberately avoided.
+
+### Bigger options (not built)
+
+| | bytes per hex (dense SF / rural) | fetch time per hex | has bike routes, lanes, `bicycle=designated`? | has water / toilets / repair / bike shop? | `service:bicycle:*`, fee/access? | cost / effort |
+|---|---|---|---|---|---|---|
+| **today: Overpass** | ~1–1.5 MB gz JSON / ~0.2 MB | 10–60 s, often refused | yes | yes | yes | free; at the mercy of public servers |
+| **(c) Protomaps daily PMTiles** (`build.protomaps.com`, z15, range requests) | 4.4 MB / 0.13 MB (72–81 tiles) | 2 s | no — `roads` has `kind`/`kind_detail` (cycleway yes), no relations, lanes or `bicycle=*` | yes: `drinking_water`, `toilets`, `bicycle_repair_station`, `bicycle` | no | free to read; daily builds rotate; self-hosting a planet file on R2 is ~120 GB at ~$2/month plus a weekly re-upload |
+| **(c) OpenFreeMap** (OpenMapTiles schema, z14) | 4.3 MB / 0.13 MB (25 tiles) | 0.6–3 s | partly: `transportation.bicycle` (designated/yes) and subclass cycleway; no route relations or lanes | yes (`poi` class/subclass) | no | free, no key; a public service, not meant as a bulk offline source |
+| **(d) pre-built `.ebm` + `.poi` per H3 cell**, served from R2/CDN | ~75–160 KB / ~20 KB | **< 0.5 s** | yes (same builder) | yes | yes | build pipeline; see below |
+
+**Vector tiles (c)** are fast and reliable to fetch, but they are not a good
+fit:
+- they lose the bike-route relations and lane tags that 2a encodes, and the
+  `service:bicycle:*` details;
+- they are 3–30× *bigger* than the finished tiles in a city (buildings,
+  labels and house numbers ride along);
+- the phone would still need a full MVT → `.ebm` converter in both apps.
+
+**Recommendation: (d) pre-built cells.** The phone downloads finished
+`<h3>.ebm` + `<h3>.poi` files, a few seconds for a 15-hex selection, with no
+Overpass and no Open-Meteo. The BLE link becomes the only wait.
+
+- **Builder.** Run the same JS builder (`mapgen.js`, already the reference
+  the apps match byte for byte) over a regional extract.
+- **Input.** Geofabrik `.osm.pbf` → `osmium export` to GeoJSON, or a local
+  Overpass. Elevation is baked from a DEM (Copernicus GLO-30 or SRTM)
+  server-side.
+- **Schedule.** A weekly GitHub Action or Cloud Run job, starting with the
+  regions riders actually use. California, for example, is a 1.2 GB extract
+  and minutes of work. The whole planet is ~4 M land cells and an estimated
+  ~80–150 GB of output: ~$2/month on R2 with free egress, and roughly
+  10–20 h of a 16-vCPU machine per weekly run.
+- **Serving.** From the existing Cloudflare setup behind
+  `sync.opentrailpaper.com`, at `/tiles/v3/<h3>.ebm|.poi`.
+- **Fallback.** The app keeps Overpass for cells the CDN does not have.
+- **Freshness.** One week instead of live OSM, which riders will not notice
+  for roads and is acceptable for water points.
+
+The first step is small: build and upload the cells for one region, and add
+"try the CDN, then Overpass" to both apps. Everything downstream (cache,
+send, device) is unchanged.

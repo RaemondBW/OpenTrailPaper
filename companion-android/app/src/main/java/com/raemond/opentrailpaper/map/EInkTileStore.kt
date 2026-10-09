@@ -23,11 +23,29 @@ class OutlineHex(
      * the grid appears only where the maps run out.
      */
     val missing: Boolean = false,
-)
+    /** On the device but due an update (before the bike-route data, or older
+     *  than the refresh age). Drawn ochre and hatched. */
+    val update: Boolean = false,
+    /** Cycling-POI state of an on-device hex (firmware with the cycling layer). */
+    val poi: HexPoiMark = HexPoiMark.NONE,
+) {
+    fun withState(update: Boolean, poi: HexPoiMark) =
+        OutlineHex(id, hexagon, center, synced, missing, update, poi)
+}
 
-/** A hex in the area the user is selecting for download. */
+/** Whether the device has a hex's cycling POIs: a small water drop on the hex,
+ *  filled when it has fresh ones, hollow when not. NONE (firmware without the
+ *  POI layer, or the hex is not on the device) draws none. */
+enum class HexPoiMark { NONE, PRESENT, MISSING }
+
+/**
+ * A hex in the area the user is selecting for download. PENDING is a new hex
+ * (not on the device); UPDATE / CURRENT are hexes the device already has, due an
+ * update or not — drawn in the coverage colours but heavier, so a selection
+ * reads at a glance as new vs update vs current.
+ */
 class SelectionHex(val id: String, val hexagon: List<LatLon>, val kind: Kind) {
-    enum class Kind { PENDING, DONE, EXCLUDED }
+    enum class Kind { PENDING, DONE, EXCLUDED, UPDATE, CURRENT }
 }
 
 /**

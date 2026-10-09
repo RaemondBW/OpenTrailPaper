@@ -65,6 +65,11 @@ import com.raemond.opentrailpaper.map.SelectionHex
 import com.raemond.opentrailpaper.map.TileCache
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -169,13 +174,18 @@ fun MapsSheet(
     // download has reached. Areas already downloaded are NOT in here — they
     // already show as coverage hexagons, which says "you have this" better than a
     // selection tint would.
-    val selectionHexes = remember(tiles, ble.deviceTileIds, converted, excluded) {
-        tiles.filter { it.id !in ble.deviceTileIds }.map { t ->
+    // Every selected hex, coloured by what a download would do with it — the
+    // same states the coverage uses, drawn heavier: new (accent), update (ochre,
+    // hatched), current (green). Tapping still skips/keeps new hexes.
+    val selectionHexes = remember(tiles, ble.deviceTileIds, ble.deviceSupportsPois, converted, excluded) {
+        tiles.map { t ->
             SelectionHex(
                 t.id,
                 t.hexagon,
                 when {
                     t.id in converted -> SelectionHex.Kind.DONE
+                    ble.tileIsCurrent(t.id) ->
+                        if (ble.tileNeedsUpdate(t.id)) SelectionHex.Kind.UPDATE else SelectionHex.Kind.CURRENT
                     t.id in excluded -> SelectionHex.Kind.EXCLUDED
                     else -> SelectionHex.Kind.PENDING
                 },
@@ -200,8 +210,8 @@ fun MapsSheet(
     val onDeviceCount = onDeviceTiles.size
     // On the device but (as far as this phone knows) from before the
     // bike-route data — the hint under the Redownload button.
-    val staleCount = remember(onDeviceTiles, ble.deviceSupportsPois) {
-        onDeviceTiles.count { ble.tilePredatesCycling(it.id) }
+    val updateCount = remember(onDeviceTiles, ble.deviceSupportsPois) {
+        onDeviceTiles.count { ble.tileNeedsUpdate(it.id) }
     }
     var confirmRedownload by remember { mutableStateOf(false) }
 
@@ -209,10 +219,12 @@ fun MapsSheet(
     // with the device's tile list, which arrives tile-by-tile during an upload:
     // without this a large download rebuilds every overlay several times a second
     // and the page stutters badly once a few hundred hexes are on screen.
-    LaunchedEffect(region, EInkTileStore.version, ble.deviceTileIds) {
+    LaunchedEffect(region, EInkTileStore.version, ble.deviceTileIds, ble.devicePoiIds, ble.deviceSupportsPois) {
         delay(250)
         val r = region ?: return@LaunchedEffect
-        outlines = EInkTileStore.visibleContent(r, ble.deviceTileIds)
+        outlines = EInkTileStore.visibleContent(r, ble.deviceTileIds).map {
+            if (it.synced) it.withState(ble.tileNeedsUpdate(it.id), ble.poiMark(it.id)) else it
+        }
 
         // Frame ALL the coverage — everything the phone holds plus everything the
         // device holds — the first time this screen has something to frame.
@@ -278,7 +290,22 @@ fun MapsSheet(
         ble.startTileStream(resend = redownload)   // begin sending as tiles are produced
 
         job = scope.launch {
+            com.raemond.opentrailpaper.map.DownloadStats.reset()
             try {
+                // Cycling POIs: their own small query and cache, started NOW so
+                // they arrive while the map batches are still building. A failure
+                // here never fails the map download — the map is what matters.
+                val poisJob = async {
+                    if (poiWork.isEmpty()) return@async true
+                    try {
+                        downloadPois(poiWork, useCache = !redownload, onStatus = {}, enqueue = { ble.enqueuePois(it) })
+                        true
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        false
+                    }
+                }
                 if (missing.isNotEmpty()) {
                     downloadTiles(
                         missing = missing,
@@ -292,22 +319,9 @@ fun MapsSheet(
                         enqueue = { ble.enqueueTiles(it) },
                     )
                 }
-                // Cycling POIs, after the map tiles: their own small query, their
-                // own cache, sent through the same transfer. A failure here never
-                // fails the map download — the map is the thing that matters.
-                var poiNote: String? = null
-                if (poiWork.isNotEmpty()) {
-                    try {
-                        downloadPois(
-                            poiWork, useCache = !redownload,
-                            onStatus = { status = it }, enqueue = { ble.enqueuePois(it) },
-                        )
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (_: Exception) {
-                        poiNote = "Cycling POIs could not be fetched — try again later."
-                    }
-                }
+                val poiNote = if (poisJob.await()) null
+                              else "Cycling POIs could not be fetched — try again later."
+                com.raemond.opentrailpaper.map.DownloadStats.log(missing.size + poiWork.size)
                 building = false
                 ble.finishTileStream()                     // let the queue drain
                 // The cache has a size ceiling and this is the only thing that
@@ -447,6 +461,18 @@ fun MapsSheet(
                 HeaderPill("Done", filled = false, onClick = onDismiss)
             }
 
+            // Key to the hex colours, once there is something to explain.
+            if (outlines.isNotEmpty() || box != null) {
+                Legend(
+                    showNew = box != null,
+                    showPois = ble.deviceSupportsPois,
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .windowInsetsPadding(WindowInsets.statusBars)
+                        .padding(start = 16.dp, top = 64.dp),
+                )
+            }
+
             // A floating "modal" card at the bottom. Progress states show a
             // spinner + live hex counts; idle/selection states show the controls.
             //
@@ -476,7 +502,7 @@ fun MapsSheet(
                         newCount = newTiles.size,
                         poiOnlyCount = poiOnlyCount,
                         onDeviceCount = onDeviceCount,
-                        staleCount = staleCount,
+                        updateCount = updateCount,
                         onRedownload = {
                             if (onDeviceCount > REDOWNLOAD_CONFIRM_OVER) confirmRedownload = true
                             else startDownload(redownload = true)
@@ -590,89 +616,114 @@ private suspend fun downloadTiles(
     // batch bbox for hexes out in open water has no coastline in it, so no rings
     // could be assembled and those tiles came out blank. Padding by ~0.35° (~35 km)
     // reaches the shore from anywhere a rider would sensibly select, and is cheap
-    // because it is coastline-only.
+    // because it is coastline-only. It runs ALONGSIDE the first map batches; each
+    // batch waits for it only after its own fetch, when it needs the sea rings.
     val all = union(missing)
     val pad = 0.35
-    onStatus("Fetching coastline…")
-    val coastChains = runCatching {
-        val coastOsm = MapBuilder.fetchCoastline(
-            all.south - pad, all.west - pad, all.north + pad, all.east + pad,
-        )
-        MapBuilder.coastlineChains(coastOsm)
-    }.getOrDefault(emptyList())
-
-    // Rings are assembled against the PADDED region, not each batch's bbox, so a
-    // batch sitting entirely offshore is still inside a ring and fills.
-    val seaRings = withContext(Dispatchers.Default) {
-        MapBuilder.regionSeaPolygons(
-            coastChains,
-            all.south - pad, all.west - pad, all.north + pad, all.east + pad,
-        )
-    }
-
-    for ((i, batch) in batches.withIndex()) {
-        if (i > 0) delay(1000)   // pace the servers
-        val n = batches.size
-        onStatus("Fetching area ${i + 1}/$n…")
-        val u = union(batch)
-        val osm = MapBuilder.fetchOsm(u.south, u.west, u.north, u.east) { m ->
-            onStatus("Fetching area ${i + 1}/$n — $m")
+    coroutineScope {
+        val seaRingsAsync = async {
+            val coastChains = runCatching {
+                val coastOsm = MapBuilder.fetchCoastline(
+                    all.south - pad, all.west - pad, all.north + pad, all.east + pad,
+                )
+                MapBuilder.coastlineChains(coastOsm)
+            }.getOrDefault(emptyList())
+            // Rings are assembled against the PADDED region, not each batch's
+            // bbox, so a batch sitting entirely offshore is still inside a ring.
+            withContext(Dispatchers.Default) {
+                MapBuilder.regionSeaPolygons(
+                    coastChains,
+                    all.south - pad, all.west - pad, all.north + pad, all.east + pad,
+                )
+            }
         }
 
-        onStatus("Building tiles ${i + 1}/$n…")
-        val encoded = withContext(Dispatchers.Default) { MapBuilder.encodeTiles(osm, batch) }
-        // natural=water and park polygons for this region, resolved once and
-        // appended per tile as WTR2 / PRK2 sections (after any ELV1 block).
-        val waterWays = withContext(Dispatchers.Default) { MapBuilder.waterWays(osm) }
-        val parkWays = withContext(Dispatchers.Default) { MapBuilder.parkWays(osm) }
+        // Batches run MapBuilder.CONCURRENT_BATCHES at a time, each starting on
+        // its own mirror; each is cached and queued for sending as soon as it is
+        // built, so the link stays busy while the next fetch is in flight.
+        val gate = Semaphore(MapBuilder.CONCURRENT_BATCHES)
+        var done = 0
+        onStatus("Fetching ${batches.size} area${if (batches.size == 1) "" else "s"}…")
+        batches.mapIndexed { i, batch ->
+            launch {
+                gate.withPermit {
+                    val produced = buildBatch(batch, i, seaRingsAsync)
+                    done += 1
+                    onStatus("Built $done of ${batches.size} area${if (batches.size == 1) "" else "s"}…")
+                    // Mark ONLY what was actually produced. Marking every id in
+                    // the batch would fill the map in as downloaded and report
+                    // success while nothing had been sent or stored.
+                    val producedIds = produced.map { it.first }.toSet()
+                    onBuilt(producedIds.toList())
+                    val missed = batch.map { it.id }.filter { it !in producedIds }
+                    if (missed.isNotEmpty()) onFailed(missed)
+                    // Cache BEFORE sending: if the link drops mid-transfer the
+                    // expensive work survives and the retry is instant.
+                    TileCache.store(produced)
+                    enqueue(produced)
+                }
+            }
+        }
+    }
+}
 
-        onStatus("Elevation ${i + 1}/$n…")
-        val produced = ArrayList<Pair<String, ByteArray>>(encoded.size)
+/**
+ * Fetch, encode and finish one batch of hexes: roads (+ way flags), DEM
+ * elevation (a few hexes at a time), water and sea fill, parks. Returns the
+ * non-empty tiles.
+ */
+private suspend fun buildBatch(
+    batch: List<MapTile>,
+    index: Int,
+    seaRingsAsync: kotlinx.coroutines.Deferred<List<List<DoubleArray>>>,
+): List<Pair<String, ByteArray>> {
+    val u = union(batch)
+    val osm = MapBuilder.fetchOsm(u.south, u.west, u.north, u.east, startMirror = index)
+    val t0 = System.nanoTime()
+    val encoded = withContext(Dispatchers.Default) { MapBuilder.encodeTiles(osm, batch) }
+    // natural=water and park polygons for this region, resolved once and
+    // appended per tile as WTR2 / PRK2 sections (after any ELV1 block).
+    val waterWays = withContext(Dispatchers.Default) { MapBuilder.waterWays(osm) }
+    val parkWays = withContext(Dispatchers.Default) { MapBuilder.parkWays(osm) }
+    com.raemond.opentrailpaper.map.DownloadStats.add("encode", (System.nanoTime() - t0) / 1e9)
+    val seaRings = seaRingsAsync.await()
+    // Bake a DEM elevation grid into each tile (best-effort) so the device has
+    // elevation without GPS altitude or the phone.
+    val elevGate = Semaphore(MapBuilder.CONCURRENT_ELEVATION)
+    val grids = coroutineScope {
+        batch.map { t ->
+            async {
+                elevGate.withPermit {
+                    t.id to runCatching {
+                        MapBuilder.fetchElevationGrid(t.south, t.west, t.north, t.east)
+                    }.getOrNull()
+                }
+            }
+        }.awaitAll().toMap()
+    }
+    val t1 = System.nanoTime()
+    val produced = ArrayList<Pair<String, ByteArray>>(encoded.size)
+    withContext(Dispatchers.Default) {
         for ((id, roads) in encoded) {
             val tile = batch.first { it.id == id }
             val out = ByteArrayOutputStream(roads.size + 4096)
             out.write(roads)
-            // Bake a DEM elevation grid into each tile (best-effort) so the device
-            // has elevation without GPS altitude or the phone.
-            runCatching {
-                MapBuilder.fetchElevationGrid(tile.south, tile.west, tile.north, tile.east)
-            }.getOrNull()?.let { grid ->
+            grids[id]?.let { grid ->
                 MapBuilder.appendElevation(
-                    out, tile.south, tile.west, tile.north, tile.east,
-                    grid, MapBuilder.ELEVATION_GRID,
+                    out, tile.south, tile.west, tile.north, tile.east, grid, MapBuilder.ELEVATION_GRID,
                 )
             }
-            withContext(Dispatchers.Default) {
-                MapBuilder.appendWater(
-                    out, waterWays, seaRings,
-                    tile.south, tile.west, tile.north, tile.east,
-                )
-                MapBuilder.appendParks(
-                    out, parkWays, tile.south, tile.west, tile.north, tile.east,
-                )
-            }
+            MapBuilder.appendWater(out, waterWays, seaRings, tile.south, tile.west, tile.north, tile.east)
+            MapBuilder.appendParks(out, parkWays, tile.south, tile.west, tile.north, tile.east)
             val data = out.toByteArray()
             // Decide emptiness only now, with water/parks/sea/elevation already
             // appended — a hex can be pure water and still be worth storing.
             if (MapBuilder.isEmpty(data, tile)) continue
             produced.add(id to data)
         }
-
-        // Mark ONLY what was actually produced. Marking every id in the batch
-        // would fill the map in as downloaded and report success while nothing
-        // had been sent or stored — a rider then finds a hole in their coverage
-        // with no clue which hex is missing, and it survives reboots because the
-        // tile genuinely is not on the card.
-        val producedIds = produced.map { it.first }.toSet()
-        onBuilt(producedIds.toList())
-        val missed = batch.map { it.id }.filter { it !in producedIds }
-        if (missed.isNotEmpty()) onFailed(missed)
-
-        // Cache BEFORE sending: if the link drops mid-transfer the expensive work
-        // survives and the retry is instant.
-        TileCache.store(produced)
-        enqueue(produced)             // send in parallel with the next fetch
     }
+    com.raemond.opentrailpaper.map.DownloadStats.add("encode", (System.nanoTime() - t1) / 1e9)
+    return produced
 }
 
 /**
@@ -798,7 +849,7 @@ private fun SelectionCard(
     newCount: Int,
     poiOnlyCount: Int,
     onDeviceCount: Int,
-    staleCount: Int,
+    updateCount: Int,
     skipped: Int,
     canSend: Boolean,
     status: String?,
@@ -820,9 +871,14 @@ private fun SelectionCard(
                 Icon(Icons.Filled.Cancel, contentDescription = "Clear", tint = Palette.muted)
             }
         }
+        // The same three states the map draws, in the same colours.
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+            CountChip(newCount, "new", Palette.accent)
+            CountChip(updateCount, if (updateCount == 1) "update" else "updates", Palette.update)
+            CountChip(onDeviceCount - updateCount, "current", Palette.good)
+        }
         Text(
-            "$newCount to download · $onDeviceCount on device" +
-                (if (poiOnlyCount > 0) " · $poiOnlyCount need POIs" else "") +
+            (if (poiOnlyCount > 0) "$poiOnlyCount need POIs" else "POIs up to date") +
                 (if (skipped > 0) " · $skipped skipped" else ""),
             style = barlow(12.sp),
             color = Palette.muted,
@@ -832,10 +888,10 @@ private fun SelectionCard(
             style = barlow(11.sp),
             color = Palette.faint,
         )
-        if (staleCount > 0) {
+        if (updateCount > 0) {
             Text(
-                "$staleCount hex${if (staleCount == 1) " was" else "es were"} made before bike " +
-                    "routes & water stops — redownload to add them.",
+                "$updateCount hex${if (updateCount == 1) " has" else "es have"} an update (made before " +
+                    "bike routes & water stops, or over 90 days old) — redownload to refresh.",
                 style = barlow(12.sp),
                 color = Palette.ink,
             )
@@ -871,14 +927,66 @@ private fun SelectionCard(
 }
 
 @Composable
+private fun CountChip(n: Int, label: String, color: androidx.compose.ui.graphics.Color) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+        Box(
+            Modifier
+                .size(12.dp)
+                .background(color.copy(alpha = 0.35f), RoundedCornerShape(3.dp))
+                .border(1.5.dp, color, RoundedCornerShape(3.dp)),
+        )
+        Text("$n $label", style = barlow(13.sp, FontWeight.SemiBold), color = Palette.ink)
+    }
+}
+
+/** Compact key to the hex colours and badges, top-left under the header. */
+@Composable
+private fun Legend(showNew: Boolean, showPois: Boolean, modifier: Modifier = Modifier) {
+    Column(
+        modifier
+            .background(Palette.surface.copy(alpha = 0.92f), RoundedCornerShape(10.dp))
+            .border(1.dp, Palette.hairline, RoundedCornerShape(10.dp))
+            .padding(8.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        LegendRow(Palette.good, hatched = false, "On device")
+        LegendRow(Palette.update, hatched = true, "Update available")
+        if (showNew) LegendRow(Palette.accent, hatched = false, "New")
+        LegendRow(Palette.muted, hatched = false, "On this phone")
+        if (showPois) {
+            Text("● / ○ drop: POIs on device / none or old", style = barlow(11.sp), color = Palette.ink)
+        }
+    }
+}
+
+@Composable
+private fun LegendRow(color: androidx.compose.ui.graphics.Color, hatched: Boolean, text: String) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        androidx.compose.foundation.Canvas(Modifier.size(12.dp)) {
+            drawRect(color.copy(alpha = 0.3f))
+            if (hatched) {
+                var x = -size.height
+                while (x < size.width) {
+                    drawLine(color.copy(alpha = 0.7f), Offset(x, size.height), Offset(x + size.height, 0f), 1.5f)
+                    x += size.width / 3
+                }
+            }
+            drawRect(color, style = Stroke(width = 1.5.dp.toPx()))
+        }
+        Text(text, style = barlow(11.sp), color = Palette.ink)
+    }
+}
+
+@Composable
 private fun HintCard(drawMode: Boolean, deviceHexes: Int) {
     FloatingCard {
         Text(
             if (drawMode) {
                 "Drag a box across the area you want."
             } else {
-                "Tap “Select area”, then drag a box. Shaded hexagons are downloaded; " +
-                    "a green check means the device has them too."
+                "Tap “Select area”, then drag a box. Green hexes are on the device; ochre, " +
+                    "hatched ones have an update. A filled drop means the device has their " +
+                    "water stops and bike shops."
             },
             style = barlow(14.sp),
             color = if (drawMode) Palette.accent else Palette.muted,

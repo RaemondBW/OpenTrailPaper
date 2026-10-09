@@ -136,7 +136,7 @@ struct RootView: View {
         if a.contains("-tab-mesh") || a.contains(where: { $0.hasPrefix("-demo-mesh") }) {
             return 3
         }
-        if a.contains("-tab-settings") || a.contains("-demo-maps") { return 4 }
+        if a.contains("-tab-settings") || a.contains(where: { $0.hasPrefix("-demo-maps") }) { return 4 }
         return 0
     }
 
@@ -151,7 +151,7 @@ struct RootView: View {
                          "-demo-mesh", "-demo-mesh-settings", "-demo-mesh-map",
                          "-demo-mesh-nodes", "-demo-mesh-channels",
                          "-demo-mesh-share", "-demo-mesh-off", "-demo-transfer",
-                         "-demo-maps"]
+                         "-demo-maps", "-demo-maps-coverage"]
         if demoFlags.contains(where: a.contains) { return false }
         return !UserDefaults.standard.bool(forKey: BLEManager.onboardedKey)
     }

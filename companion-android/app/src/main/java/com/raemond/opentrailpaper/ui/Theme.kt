@@ -53,6 +53,7 @@ object Palette {
     val accentWash = Color(0xFFFBE9E0) // selected chip / accent tint bg
     val accentInk = Color.White
     val good = Color(0xFF2E7D5B)       // connected / success
+    val update = Color(0xFFC2851A)     // ochre — "update available" (map hexes)
 }
 
 // Bundled Barlow: condensed for numerals/titles/labels (athletic, echoes the

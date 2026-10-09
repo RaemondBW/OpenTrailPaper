@@ -21,6 +21,7 @@ enum Palette {
     static let accentWash = Color(hex: 0xFBE9E0)  // selected chip / accent tint bg
     static let accentInk = Color.white
     static let good = Color(hex: 0x2E7D5B)        // connected / success
+    static let update = Color(hex: 0xC2851A)      // ochre — "update available" (map hexes)
 }
 
 // Bundled Barlow: condensed for numerals/titles/labels (athletic, echoes the

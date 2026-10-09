@@ -24,6 +24,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.raemond.opentrailpaper.data.BoundingBox
 import com.raemond.opentrailpaper.data.LatLon
+import com.raemond.opentrailpaper.map.HexBadge
 import com.raemond.opentrailpaper.map.HexOverlay
 import com.raemond.opentrailpaper.map.MapMarkers
 import com.raemond.opentrailpaper.map.MapStyle
@@ -396,22 +397,35 @@ private fun rebuildContent(
                     SelectionHex.Kind.PENDING -> HexOverlay.Style.SELECTION_PENDING
                     SelectionHex.Kind.DONE -> HexOverlay.Style.SELECTION_DONE
                     SelectionHex.Kind.EXCLUDED -> HexOverlay.Style.SELECTION_EXCLUDED
+                    SelectionHex.Kind.UPDATE -> HexOverlay.Style.SELECTION_UPDATE
+                    SelectionHex.Kind.CURRENT -> HexOverlay.Style.SELECTION_CURRENT
                 },
             ),
         )
     }
+    // A selected hex is drawn once, in its selection style (the same state
+    // colour, heavier) — not again as coverage over it. Its badge still shows.
+    val selected = selection.mapTo(HashSet()) { it.id }
     for (hex in outlines) {
+        val badge = if (showChecks && hex.synced && !hex.missing) {
+            HexBadge.Badge(hex.update, hex.poi)
+        } else null
         flats.add(
             HexOverlay.Hex(
-                hex.hexagon,
+                if (hex.id in selected) emptyList() else hex.hexagon,
                 when {
                     hex.missing -> HexOverlay.Style.MISSING
+                    hex.synced && hex.update -> HexOverlay.Style.OUTLINE_UPDATE
                     hex.synced -> HexOverlay.Style.OUTLINE_SYNCED
                     else -> HexOverlay.Style.OUTLINE_PHONE
                 },
-                check = showChecks && hex.synced && !hex.missing,
+                badge,
             ),
         )
+        if (hex.id in selected && badge != null) {
+            // Badge only: the selection polygon below carries the hex itself.
+            flats.add(HexOverlay.Hex(hex.hexagon, HexOverlay.Style.BADGE_ONLY, badge))
+        }
     }
     if (flats.isNotEmpty()) add(HexOverlay(flats, density))
 

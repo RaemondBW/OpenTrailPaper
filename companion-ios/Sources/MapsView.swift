@@ -81,11 +81,16 @@ struct MapsView: View {
     // the download has reached. Areas already downloaded are NOT in here — they
     // already show as coverage hexagons, which says "you have this" better than
     // a selection tint would.
+    // Every selected hex, coloured by what a download would do with it — the
+    // same states the coverage uses, drawn heavier: new (accent), update
+    // (ochre, hatched), current (green). Tapping still skips/keeps new hexes.
     private var selectionHexes: [SelectionHex] {
-        tiles.filter { !ble.deviceTileIds.contains($0.id) }.map { t in
-            SelectionHex(id: t.id, hexagon: t.hexagon,
-                         kind: converted.contains(t.id) ? .done
-                             : excluded.contains(t.id) ? .excluded : .pending)
+        tiles.map { t in
+            let kind: SelectionHex.Kind =
+                converted.contains(t.id) ? .done
+                : ble.tileIsCurrent(t.id) ? (ble.tileNeedsUpdate(t.id) ? .update : .current)
+                : excluded.contains(t.id) ? .excluded : .pending
+            return SelectionHex(id: t.id, hexagon: t.hexagon, kind: kind)
         }
     }
 
@@ -102,6 +107,7 @@ struct MapsView: View {
         tiles.filter { !excluded.contains($0.id) && ble.poiNeedsSend($0.id) }
     }
     private var onDeviceTiles: [MapTile] { tiles.filter { ble.tileIsCurrent($0.id) } }
+    private var updateCount: Int { onDeviceTiles.filter { ble.tileNeedsUpdate($0.id) }.count }
     private var onDeviceCount: Int { onDeviceTiles.count }
     /// Hexes above this many ask before a Redownload: each one is an Overpass
     /// fetch, an elevation fetch and a BLE transfer.
@@ -182,6 +188,15 @@ struct MapsView: View {
                 }
 
                 header
+
+                // Key to the hex colours, once there is something to explain.
+                if !outlineHexes.isEmpty || box != nil {
+                    legend
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.leading, 16)
+                        .padding(.top, 74)
+                        .allowsHitTesting(false)
+                }
             }
             .navigationBarHidden(true)
             .sheet(item: Binding(
@@ -195,14 +210,22 @@ struct MapsView: View {
                 ble.refreshDeviceMaps(); ble.refreshDeviceTiles(); locator.start()
                 store.refresh()
                 fitDownloadedHexes()
-                // Screenshot hook (-demo-maps): a selected area of which the
-                // device holds two thirds, from before the bike-route data.
+                // Screenshot hooks: -demo-maps-coverage shows a device holding a
+                // mix of current / update hexes with and without POIs;
+                // -demo-maps adds a selection of new + update + current hexes.
                 if ble.isDemoMaps, box == nil {
-                    let b = (s: 37.745, w: -122.49, n: 37.79, e: -122.41)
-                    let ts = H3Tiles.coveringTiles(south: b.s, west: b.w, north: b.n, east: b.e)
-                    ble.demoMaps(onDevice: ts.prefix(ts.count * 2 / 3).map(\.id), withPois: [])
-                    box = b
-                    tiles = ts
+                    let dev = H3Tiles.coveringTiles(south: 37.74, west: -122.52, north: 37.81, east: -122.40)
+                        .map(\.id).sorted()
+                    ble.demoMaps(onDevice: dev,
+                                 current: dev.enumerated().filter { $0.offset % 2 == 0 }.map(\.element),
+                                 withPois: dev.enumerated().filter { $0.offset % 3 != 2 }.map(\.element))
+                    didFrameCoverage = false
+                    fitDownloadedHexes()
+                    if !ProcessInfo.processInfo.arguments.contains("-demo-maps-coverage") {
+                        let b = (s: 37.69, w: -122.47, n: 37.77, e: -122.38)
+                        box = b
+                        tiles = H3Tiles.coveringTiles(south: b.s, west: b.w, north: b.n, east: b.e)
+                    }
                 }
             }
             .alert("Redownload \(onDeviceCount) hexes?", isPresented: $confirmRedownload) {
@@ -219,6 +242,8 @@ struct MapsView: View {
             // and each change re-derives selectionHexes and rebuilds every
             // overlay. Coalesced for the same reason the store's version is.
             .onChange(of: ble.deviceTileIds) { scheduleRefresh() }
+            .onChange(of: ble.devicePoiIds) { scheduleRefresh() }
+            .onChange(of: ble.deviceSupportsPois) { scheduleRefresh() }
             // Center on the user's first fix, once, at our fixed tile-friendly
             // span. Only before any interaction so it never yanks the map away
             // from a box the user is drawing.
@@ -257,7 +282,13 @@ struct MapsView: View {
     /// Ask the store which coverage hexagons the region now on screen needs.
     private func refreshCoverage() {
         guard let r = visibleRegion else { return }
-        outlineHexes = store.visibleContent(in: r, synced: ble.deviceTileIds)
+        outlineHexes = store.visibleContent(in: r, synced: ble.deviceTileIds).map { o in
+            guard o.synced else { return o }
+            var h = o
+            h.update = ble.tileNeedsUpdate(o.id)
+            h.poi = ble.poiMark(o.id)
+            return h
+        }
     }
 
     /// Frame ALL the coverage — everything the phone holds plus everything the
@@ -370,7 +401,8 @@ struct MapsView: View {
         let poiOnly = poiTiles.filter { t in !newTiles.contains { $0.id == t.id } }.count
         let skipped = excluded.intersection(tiles.map(\.id)).count
         let onDevice = onDeviceCount
-        let stale = onDeviceTiles.filter { ble.tilePredatesCycling($0.id) }.count
+        let updates = updateCount
+        let current = onDevice - updates
         return card {
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
@@ -383,16 +415,22 @@ struct MapsView: View {
                         Image(systemName: "xmark.circle.fill").foregroundStyle(Palette.muted)
                     }
                 }
-                Text("\(new) to download · \(onDeviceCount) on device"
-                     + (poiOnly > 0 ? " · \(poiOnly) need POIs" : "")
+                // The same three states the map draws, in the same colours.
+                HStack(spacing: 10) {
+                    countChip(new, "new", Palette.accent)
+                    countChip(updates, updates == 1 ? "update" : "updates", Palette.update)
+                    countChip(current, "current", Palette.good)
+                    Spacer(minLength: 0)
+                }
+                Text((poiOnly > 0 ? "\(poiOnly) need POIs" : "POIs up to date")
                      + (skipped > 0 ? " · \(skipped) skipped" : ""))
                     .font(BarlowFont.text(12)).foregroundStyle(Palette.muted)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 Text("Tap a hex to skip it (or add it back).")
                     .font(BarlowFont.text(11)).foregroundStyle(Palette.faint)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                if stale > 0 {
-                    Text("\(stale) hex\(stale == 1 ? "" : "es") \(stale == 1 ? "was" : "were") made before bike routes & water stops — redownload to add them.")
+                if updates > 0 {
+                    Text("\(updates) hex\(updates == 1 ? " has" : "es have") an update (made before bike routes & water stops, or over 90 days old) — redownload to refresh.")
                         .font(BarlowFont.text(12)).foregroundStyle(Palette.ink)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -419,11 +457,58 @@ struct MapsView: View {
         }
     }
 
+    private func countChip(_ n: Int, _ label: String, _ color: Color) -> some View {
+        HStack(spacing: 5) {
+            RoundedRectangle(cornerRadius: 3).fill(color.opacity(0.35))
+                .overlay(RoundedRectangle(cornerRadius: 3).stroke(color, lineWidth: 1.5))
+                .frame(width: 12, height: 12)
+            Text("\(n) \(label)").font(BarlowFont.text(13, .semibold)).foregroundStyle(Palette.ink)
+        }
+    }
+
+    // Compact key to the hex colours and badges, top-left under the header.
+    private var legend: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            legendRow(Palette.good, hatched: false, "On device")
+            legendRow(Palette.update, hatched: true, "Update available")
+            if box != nil { legendRow(Palette.accent, hatched: false, "New") }
+            legendRow(Palette.muted, hatched: false, "On this phone")
+            if ble.deviceSupportsPois {
+                HStack(spacing: 6) {
+                    Image(systemName: "drop.fill").font(.system(size: 10))
+                    Image(systemName: "drop").font(.system(size: 10))
+                    Text("POIs on device / none or old").font(BarlowFont.text(11))
+                }.foregroundStyle(Palette.ink)
+            }
+        }
+        .padding(8)
+        .background(Palette.surface.opacity(0.92), in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Palette.hairline))
+    }
+
+    private func legendRow(_ c: Color, hatched: Bool, _ text: String) -> some View {
+        HStack(spacing: 6) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 2).fill(c.opacity(0.3))
+                if hatched {
+                    Path { p in
+                        for x in stride(from: -12.0, to: 14.0, by: 4.0) {
+                            p.move(to: CGPoint(x: x, y: 12)); p.addLine(to: CGPoint(x: x + 12, y: 0))
+                        }
+                    }.stroke(c.opacity(0.7), lineWidth: 1)
+                    .clipShape(RoundedRectangle(cornerRadius: 2))
+                }
+                RoundedRectangle(cornerRadius: 2).stroke(c, lineWidth: 1.5)
+            }.frame(width: 12, height: 12)
+            Text(text).font(BarlowFont.text(11)).foregroundStyle(Palette.ink)
+        }
+    }
+
     private var hintCard: some View {
         card {
             VStack(alignment: .leading, spacing: 3) {
                 Text(drawMode ? "Drag a box across the area you want."
-                              : "Tap “Select area”, then drag a box. Shaded hexagons are downloaded; a green check means the device has them too.")
+                              : "Tap “Select area”, then drag a box. Green hexes are on the device; ochre, hatched ones have an update. A filled drop means the device has their water stops and bike shops.")
                     .font(BarlowFont.text(14)).foregroundStyle(drawMode ? Palette.accent : Palette.muted)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 if !ble.deviceTileIds.isEmpty {
@@ -484,7 +569,18 @@ struct MapsView: View {
         ble.startTileStream(resend: redownload)   // begin sending as tiles are produced
         downloadTask = Task {
             var anyBuilt = false
+            await DownloadStats.shared.reset()
             do {
+                // Cycling POIs: their own small query and cache, started NOW so
+                // they arrive while the map batches are still building (queued
+                // behind any tiles already waiting to send). A failure here
+                // never fails the map download — the map is what matters.
+                var poiNote: String? = nil
+                async let poisDone: Bool = {
+                    guard !poiWork.isEmpty else { return true }
+                    do { try await sendPois(poiWork, fresh: redownload); return true }
+                    catch { return false }
+                }()
               if !missing.isEmpty {
                 // Anything built before goes straight out — no Overpass, no
                 // elevation fetch, no re-encoding. This is what makes a retry
@@ -505,115 +601,82 @@ struct MapsView: View {
                 // has no coastline in it, so no rings could be assembled and
                 // those tiles came out blank. Padding by ~0.35 deg (~35 km)
                 // reaches the shore from anywhere a rider would sensibly select.
-                // Coastline-only, so widening it is cheap.
+                // Coastline-only, so widening it is cheap. It runs ALONGSIDE the
+                // first map batches; each batch waits for it only after its own
+                // fetch, when it needs the sea rings.
                 let all = union(missing)
                 let pad = 0.35
-                status = "Fetching coastline…"
-                let coastJSON = try? await MapBuilder.fetchCoastline(
-                    south: all.s - pad, west: all.w - pad,
-                    north: all.n + pad, east: all.e + pad)
-                let coastChains = coastJSON.flatMap {
-                    try? MapBuilder.extractCoastlineChains(regionJSON: $0)
-                } ?? []
+                let seaRings = Task<[[(Double, Double)]], Never> {
+                    let coastJSON = try? await MapBuilder.fetchCoastline(
+                        south: all.s - pad, west: all.w - pad,
+                        north: all.n + pad, east: all.e + pad)
+                    let chains = coastJSON.flatMap {
+                        try? MapBuilder.extractCoastlineChains(regionJSON: $0)
+                    } ?? []
+                    // Rings are assembled against the PADDED region, not a
+                    // batch's bbox, so a batch sitting entirely offshore is
+                    // still inside a ring and fills.
+                    return MapBuilder.regionSeaPolygons(chains,
+                        south: all.s - pad, west: all.w - pad,
+                        north: all.n + pad, east: all.e + pad)
+                }
 
                 let cachedIds = Set(cached.map(\.id))
                 let batches = batches
                     .map { $0.filter { !cachedIds.contains($0.id) } }
                     .filter { !$0.isEmpty }
 
-                for (i, batch) in batches.enumerated() {
-                    if i > 0 { try? await Task.sleep(nanoseconds: 1_000_000_000) }  // pace the servers
-                    try Task.checkCancellation()
-                    let n = batches.count
-                    status = "Fetching area \(i + 1)/\(n)…"
-                    let u = union(batch)
-                    // Coalesce the fetch progress text. It arrives many times a
-                    // second, and every distinct value re-evaluates this view's
-                    // body; the map itself is insulated now (HexMap is Equatable)
-                    // but the rest of the body need not churn either.
-                    let tick = StatusThrottle()
-                    let json = try await MapBuilder.fetchOSM(south: u.s, west: u.w, north: u.n, east: u.e) { m in
-                        let text = "Fetching area \(i + 1)/\(n) — \(m)"
-                        Task { @MainActor in if tick.allow(text) { status = text } }
+                // Batches run `MapBuilder.concurrentBatches` at a time, each on
+                // its own mirror, off the main actor; results are handled here
+                // as each one lands (cache, then send — the link stays busy
+                // while the next fetch is in flight).
+                var done = 0
+                status = "Fetching \(batches.count) area\(batches.count == 1 ? "" : "s")…"
+                try await withThrowingTaskGroup(of: (Int, [(id: String, data: Data)]).self) { group in
+                    var next = 0
+                    while next < min(MapBuilder.concurrentBatches, batches.count) {
+                        let i = next, b = batches[i]
+                        group.addTask { (i, try await MapBuilder.buildBatch(b, startMirror: i, seaRings: seaRings)) }
+                        next += 1
                     }
-                    status = "Building tiles \(i + 1)/\(n)…"
-                    let part = try MapBuilder.encodeTiles(regionJSON: json, tiles: batch)
-                    // natural=water polygons for this region, parsed once and
-                    // appended per tile as a WTR2 section (after ELV1).
-                    let waterWays = (try? MapBuilder.extractWaterWays(regionJSON: json)) ?? []
-                    // Coastline sea-fill: assemble the ocean/bay as sea rings ONCE
-                    // for the whole fetch region (osmcoastline-style — the real
-                    // topology, so a peninsula never encloses land), then clip
-                    // each ring to the tile inside appendWater.
-                    // Rings are assembled against the PADDED region, not this
-                    // batch's bbox, so a batch sitting entirely offshore is still
-                    // inside a ring and fills.
-                    let seaRings = MapBuilder.regionSeaPolygons(coastChains,
-                        south: all.s - pad, west: all.w - pad,
-                        north: all.n + pad, east: all.e + pad)
-                    // Parks / green areas for this region, appended per tile as a
-                    // PRK2 section (after WTR2).
-                    let parkWays = (try? MapBuilder.extractParkWays(regionJSON: json)) ?? []
-                    // Bake a DEM elevation grid into each tile (best-effort) so
-                    // the device has elevation without GPS altitude or the phone.
-                    status = "Elevation \(i + 1)/\(n)…"
-                    var withElev: [(id: String, data: Data)] = []
-                    for var p in part {
-                        if let t = batch.first(where: { $0.id == p.id }) {
-                            if let grid = try? await MapBuilder.fetchElevationGrid(
-                                    south: t.south, west: t.west, north: t.north, east: t.east) {
-                                MapBuilder.appendElevation(to: &p.data, south: t.south, west: t.west,
-                                    north: t.north, east: t.east, grid: grid, n: MapBuilder.elevationGrid)
-                            }
-                            // WTR2 water section after any ELV1 block, then PRK2.
-                            MapBuilder.appendWater(to: &p.data, waterWays: waterWays,
-                                seaRings: seaRings,
-                                south: t.south, west: t.west, north: t.north, east: t.east)
-                            MapBuilder.appendParks(to: &p.data, parkWays: parkWays,
-                                south: t.south, west: t.west, north: t.north, east: t.east)
+                    for try await (i, withElev) in group {
+                        let batch = batches[i]
+                        done += 1
+                        status = "Built \(done) of \(batches.count) area\(batches.count == 1 ? "" : "s")…"
+                        // Mark ONLY what was actually produced.
+                        //
+                        // This used to mark every id in the batch, including tiles
+                        // that were never encoded or were dropped as empty — so
+                        // the map filled them in as downloaded and the run
+                        // reported success while nothing had been sent or stored.
+                        // A rider then finds a hole in their coverage, with no
+                        // clue which hex is missing, and it survives reboots
+                        // because the tile genuinely is not on the card.
+                        let produced = Set(withElev.map(\.id))
+                        converted.formUnion(produced)
+                        let missed = batch.map(\.id).filter { !produced.contains($0) }
+                        if !missed.isEmpty { failedHexes.formUnion(missed) }
+                        if !withElev.isEmpty { anyBuilt = true }
+                        // Cache BEFORE sending: if the link drops mid-transfer the
+                        // expensive work survives and the retry is instant.
+                        await TileCache.shared.store(withElev)
+                        // Draw the new areas straight away — the download IS what
+                        // "downloaded" means on this map.
+                        store.noteDownloaded(withElev.map(\.id))
+                        ble.enqueueTiles(withElev)
+                        if next < batches.count {
+                            let k = next, b = batches[k]
+                            group.addTask { (k, try await MapBuilder.buildBatch(b, startMirror: k, seaRings: seaRings)) }
+                            next += 1
                         }
-                        // Decide emptiness only now, with water/parks/sea/elevation
-                        // already appended — a hex can be pure water and still be
-                        // worth storing.
-                        if let t = batch.first(where: { $0.id == p.id }),
-                           MapBuilder.isEmpty(p.data, tile: t) { continue }
-                        withElev.append(p)
                     }
-                    // Mark ONLY what was actually produced.
-                    //
-                    // This used to mark every id in the batch, including tiles
-                    // that encodeTiles never returned and tiles dropped as empty
-                    // just above — so the map filled them in as downloaded and
-                    // the run reported success while nothing had been sent or
-                    // stored. A rider then finds a hole in their coverage, with
-                    // no clue which hex is missing or that anything went wrong,
-                    // and it survives reboots because the tile genuinely is not
-                    // on the card.
-                    let produced = Set(withElev.map(\.id))
-                    converted.formUnion(produced)
-                    let missed = batch.map(\.id).filter { !produced.contains($0) }
-                    if !missed.isEmpty { failedHexes.formUnion(missed) }
-                    if !withElev.isEmpty { anyBuilt = true }
-                    // Cache BEFORE sending: if the link drops mid-transfer the
-                    // expensive work survives and the retry is instant.
-                    await TileCache.shared.store(withElev)
-                    // Draw the new areas in the device's style straight away —
-                    // the download IS what "downloaded" means on this map.
-                    store.noteDownloaded(withElev.map(\.id))
-                    ble.enqueueTiles(withElev)             // send in parallel with the next fetch
                 }
               }
-                // Cycling POIs, after the map tiles: their own small query, their
-                // own cache, sent through the same transfer. A failure here never
-                // fails the map download — the map is the thing that matters.
-                var poiNote: String? = nil
-                if !poiWork.isEmpty {
-                    do { try await sendPois(poiWork, fresh: redownload) } catch is CancellationError {
-                        throw CancellationError()
-                    } catch {
-                        poiNote = "Cycling POIs could not be fetched — try again later."
-                    }
+                if !(await poisDone) {
+                    try Task.checkCancellation()
+                    poiNote = "Cycling POIs could not be fetched — try again later."
                 }
+                print(await DownloadStats.shared.summary(hexes: missing.count + poiWork.count))
                 building = false
                 ble.finishTileStream()                     // let the queue drain
                 if !failedHexes.isEmpty {
@@ -653,7 +716,6 @@ struct MapsView: View {
         for (i, group) in groups.enumerated() {
             if i > 0 { try? await Task.sleep(nanoseconds: 1_000_000_000) }  // pace the servers
             try Task.checkCancellation()
-            status = "Fetching cycling POIs \(i + 1)/\(groups.count)…"
             let u = union(group)
             let json = try await MapBuilder.fetchPOIs(south: u.s, west: u.w, north: u.n, east: u.e)
             let pois = try MapBuilder.collectPois(regionJSON: json)
