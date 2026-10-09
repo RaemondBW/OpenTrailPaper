@@ -14,6 +14,7 @@
 #include "settings.h"
 #include "routes.h"
 #include "gps_service.h"
+#include "phone_motion.h"
 #include "ble_sensors.h"
 #include "map_select.h"
 #include "workout.h"
@@ -219,13 +220,42 @@ class DashCb : public NimBLECharacteristicCallbacks {
 //   [0x01] meta : [u8 flags: bit0 playing][u16 posSec][u16 durSec]
 //                 [title\0artist\0album\0]   (UTF-8, device truncates)
 //   [0x10] art begin : [u16 w][u16 h] — 8-bit grayscale, w*h bytes follow
+//   [0x13] tone art begin : [u16 w][u16 h] — tone indices already dithered
+//                    on the phone, base-5 packed 3 px/byte (media.h)
 //   [0x11] art data  : raw bytes, appended in order
-//   [0x12] art end   : device dithers + repaints (deferred to the server task)
+//   [0x12] art end   : device dithers/unpacks + repaints (server task)
 //   [0x02] clear     : no player / playback ended
+//   [0x03] caps?     : device notifies [0xA1][u8 caps]. Older firmware never
+//                      answers, which tells the app to stay on 8-bit art.
 // Device -> phone (notify): [0xA0][MediaCmd] — play/pause, next, prev.
+//                           [0xA1][caps]    — bit0: accepts 0x13 tone art;
+//                                             bit1: forwards AMS tracks (0xA2).
+//                           [0xA2][title\0artist\0album\0] — the track AMS
+//                              reports, each field cut to 56 bytes. Sent only
+//                              to an app that asked [0x03] on this link (so an
+//                              app that predates it never sees one): once on
+//                              the ask, then on every track change. An iPhone
+//                              app can't see other players' now-playing info,
+//                              so this is how it learns whose art to fetch.
 NimBLECharacteristic* mediaChr = nullptr;
 volatile uint8_t mediaCmdPending = 0;    // MediaCmd queued by the UI task
 volatile bool mediaArtPending = false;   // art fully received -> dither in task
+volatile bool mediaCapsPending = false;  // caps asked -> notify from the task
+volatile bool mediaTrackFeed = false;    // this link's app asked caps -> 0xA2
+constexpr uint8_t MEDIA_CAP_TONE_ART = 0x01;
+constexpr uint8_t MEDIA_CAP_AMS_TRACK = 0x02;
+constexpr size_t MEDIA_TRACK_FIELD_MAX = 56;   // 3 fields fit a 185 MTU notify
+
+// Copy at most `cap` bytes of `src` without splitting a UTF-8 sequence, plus
+// the NUL. Returns bytes written including the NUL.
+size_t putTrackField(uint8_t* dst, const char* src, size_t cap) {
+    size_t n = strnlen(src, cap);
+    if (src[n] != 0)   // cut: back off any continuation bytes at the end
+        while (n > 0 && ((uint8_t)src[n] & 0xC0) == 0x80) --n;
+    memcpy(dst, src, n);
+    dst[n] = 0;
+    return n + 1;
+}
 
 class MediaCb : public NimBLECharacteristicCallbacks {
     void onWrite(NimBLECharacteristic* c, NimBLEConnInfo&) override {
@@ -255,12 +285,20 @@ class MediaCb : public NimBLECharacteristicCallbacks {
             media::setMeta(playing, pos, dur, f[0], f[1], f[2]);
             break;
         }
+        // Art is up to ~90 KB: keep the link at the bulk interval while it
+        // flows, like route and tile uploads. Left to the idle interval it
+        // crawled along at 150-300 ms per connection event.
         case 0x10:
-            if (n >= 5)
-                media::beginArt((int)(p[1] | (p[2] << 8)),
-                                (int)(p[3] | (p[4] << 8)));
+        case 0x13:
+            noteBulk();
+            if (n >= 5) {
+                int w = (int)(p[1] | (p[2] << 8)), h = (int)(p[3] | (p[4] << 8));
+                if (p[0] == 0x13) media::beginToneArt(w, h);
+                else media::beginArt(w, h);
+            }
             break;
         case 0x11:
+            noteBulk();
             media::artData(p + 1, n - 1);
             break;
         case 0x12:
@@ -270,6 +308,9 @@ class MediaCb : public NimBLECharacteristicCallbacks {
             break;
         case 0x02:
             media::clearFromApp();
+            break;
+        case 0x03:
+            mediaCapsPending = true;
             break;
         }
     }
@@ -285,6 +326,13 @@ class MediaCb : public NimBLECharacteristicCallbacks {
 //                      so the phone can confirm receipt instead of guessing
 //   [0x06] list      : device notifies [0x20][name].. then [0x21] done
 //   [0x07] delete    : rest is a route filename to remove
+//   [0x08] location  : the phone's live fix. Fields are positional and every
+//                      one past lat/lon is optional, so old apps and old
+//                      firmware interoperate (each side ignores what it lacks):
+//                        [i32 lat_e7][i32 lon_e7][u32 utc s][i16 alt m]
+//                        [i16 h-accuracy m][u16 speed cm/s][u16 course 0.01 deg]
+//                      speed/course 0xFFFF = the phone has no valid value
+//                      (iOS reports -1 standing still; Android may lack them).
 constexpr size_t ROUTE_MAX = 256 * 1024;  // 256 KB GPX cap (PSRAM)
 char* routeBuf = nullptr;
 size_t routeLen = 0;
@@ -368,13 +416,31 @@ class RouteCb : public NimBLECharacteristicCallbacks {
             // phone position is good enough to go in the ride file.
             int16_t accM = 0;
             if (plen >= 16) memcpy(&accM, payload + 14, 2);
+            // Speed + course (newer apps). Absent or 0xFFFF: derive instead.
+            float phoneSpeedMs = NAN, phoneCourseDeg = NAN;
+            if (plen >= 18) {
+                uint16_t v16;
+                memcpy(&v16, payload + 16, 2);
+                if (v16 != 0xFFFF) phoneSpeedMs = v16 / 100.0f;
+            }
+            if (plen >= 20) {
+                uint16_t v16;
+                memcpy(&v16, payload + 18, 2);
+                if (v16 != 0xFFFF && v16 < 36000) phoneCourseDeg = v16 / 100.0f;
+            }
             double lat = latE7 / 1e7, lon = lonE7 / 1e7;
             // Warm-start the receiver (throttled + no-fix-only inside the task).
             gps_service::seedPosition(lat, lon, (time_t)utc, haveTime, 5000.0f);
             settings::setLastPosition(lat, lon);
             // Stash as the phone fallback fix (used when the device GPS is cold).
             uint32_t nowMs = millis();
+            static phone_motion::Estimator motion;   // only this callback touches it
+            motion.update(lat, lon, accM > 0 ? (float)accM : 0.0f, nowMs,
+                          phoneSpeedMs, phoneCourseDeg);
             g_state.with([&](RideState& st) {
+                st.phoneSpeedKmh = motion.speedKmh(nowMs);
+                st.phoneCourseValid = motion.courseValid();
+                st.phoneCourseDeg = motion.courseDeg();
                 st.phoneLat = lat;
                 st.phoneLon = lon;
                 if (haveAlt) st.phoneAltM = (float)altM;
@@ -382,6 +448,8 @@ class RouteCb : public NimBLECharacteristicCallbacks {
                 st.phoneUtc = haveTime ? (time_t)utc : 0;
                 st.phoneFixValid = true;
                 st.phoneFixMs = nowMs;
+                // Speed/heading on the display while the phone is the source.
+                phone_motion::publish(st, nowMs);
             });
         }
     }
@@ -1107,6 +1175,7 @@ class ServerCb : public NimBLEServerCallbacks {
         }
         linkIntervalLong = false;
         phoneConnected = false;
+        mediaTrackFeed = false;   // the next app must ask again
         if (!connEncrypted && millis() - connAtMs < 15000) {
             if (++quickUnencDrops == 3)
                 diag::log("ble: 3 quick unencrypted drops — the phone likely "
@@ -2149,6 +2218,35 @@ void task(void*) {
         if (mediaArtPending) {
             mediaArtPending = false;
             media::commitArt();
+        }
+        static uint32_t trackSentVer = 0;
+        if (mediaCapsPending) {
+            mediaCapsPending = false;
+            if (mediaChr && phoneConnected) {
+                uint8_t pkt[2] = {0xA1, MEDIA_CAP_TONE_ART | MEDIA_CAP_AMS_TRACK};
+                mediaChr->setValue(pkt, 2);
+                mediaChr->notify();
+                mediaTrackFeed = true;
+                trackSentVer = 0;   // and tell it what AMS is playing right now
+            }
+        }
+        // AMS delivers title, artist and album as separate updates; wait for a
+        // quiet 300 ms so the app gets the whole track in one packet.
+        if (mediaTrackFeed && mediaChr && phoneConnected) {
+            uint32_t ver = media::amsTrackVersion();
+            if (ver != 0 && ver != trackSentVer &&
+                millis() - media::amsTrackChangedMs() >= 300) {
+                trackSentVer = ver;
+                const MediaState& st = media::get();
+                uint8_t pkt[1 + 3 * (MEDIA_TRACK_FIELD_MAX + 1)];
+                size_t n = 0;
+                pkt[n++] = 0xA2;
+                n += putTrackField(pkt + n, st.title, MEDIA_TRACK_FIELD_MAX);
+                n += putTrackField(pkt + n, st.artist, MEDIA_TRACK_FIELD_MAX);
+                n += putTrackField(pkt + n, st.album, MEDIA_TRACK_FIELD_MAX);
+                mediaChr->setValue(pkt, n);
+                mediaChr->notify();
+            }
         }
         ams::tick();
         if (uint8_t mc = mediaCmdPending) {

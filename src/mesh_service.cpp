@@ -534,8 +534,12 @@ void handleFrame(const uint8_t* frame, size_t len, float rssi, float snr) {
     }
     st.rx++;
 
-    const uint8_t hops = h.hopStart >= h.hopLimit
-                             ? (uint8_t)(h.hopStart - h.hopLimit) : 0;
+    // hop_start is what the sender set hop_limit to, so the difference is how
+    // many relays it took. Firmware older than Meshtastic 2.3 leaves hop_start 0,
+    // and then the distance is simply unknown — not "direct".
+    const uint8_t hops = (h.hopStart != 0 && h.hopStart >= h.hopLimit)
+                             ? (uint8_t)(h.hopStart - h.hopLimit)
+                             : mesh_service::HOPS_UNKNOWN;
     const uint32_t utc = nowUtc();
 
     take();

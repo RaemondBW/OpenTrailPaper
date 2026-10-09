@@ -8,10 +8,8 @@
 #include "vfont.h"
 #include "power_mgmt.h"
 
-// Device-only (the panel hold timer, inside #ifdef ARDUINO below). Unguarded it
-// broke the host preview / tilescene harnesses, which have no esp_timer.h.
 #ifdef ARDUINO
-#include <esp_timer.h>
+#include <esp_timer.h>   // panel hold timer (device-only section below)
 #endif
 
 #include <stdlib.h>

@@ -51,7 +51,8 @@ struct MapDestination: Equatable {
 /// MeshNode in, so the map layer stays ignorant of what a mesh is.
 struct MeshNodePin: Identifiable, Equatable {
     let id: UInt32
-    let label: String          // shown on the callout
+    let label: String          // shown under the pin, always: "ALEX · 2 hops"
+    let title: String          // callout heading when tapped: long name or id
     let detail: String         // second callout line: signal, age, precision
     let coordinate: CLLocationCoordinate2D
     /// The sender deliberately blurred this position. Drawn hollow, because a
@@ -59,7 +60,8 @@ struct MeshNodePin: Identifiable, Equatable {
     let imprecise: Bool
 
     static func == (a: Self, b: Self) -> Bool {
-        a.id == b.id && a.label == b.label && a.detail == b.detail &&
+        a.id == b.id && a.label == b.label && a.title == b.title &&
+        a.detail == b.detail &&
         a.imprecise == b.imprecise &&
         a.coordinate.latitude == b.coordinate.latitude &&
         a.coordinate.longitude == b.coordinate.longitude
@@ -369,6 +371,10 @@ struct EInkMapView: UIViewRepresentable {
                 v.annotation = node
                 v.canShowCallout = true
                 v.glyphImage = UIImage(systemName: "dot.radiowaves.left.and.right")
+                // The marker's own caption carries the short name and hops, so who
+                // is where reads without tapping each pin in turn.
+                v.titleVisibility = .visible
+                v.subtitleVisibility = .hidden
                 // A blurred position is drawn as an outline, not a solid pin: the
                 // sender rounded the coordinate off on purpose and the map should
                 // not claim more than they gave.
@@ -438,8 +444,11 @@ private final class MeshNodeAnnotation: NSObject, MKAnnotation {
     var coordinate: CLLocationCoordinate2D { pin.coordinate }
     init(pin: MeshNodePin) {
         self.pin = pin
+        // MKMarkerAnnotationView captions the pin with the title, and the callout
+        // repeats it. The short tag is the one worth seeing at a glance; the
+        // callout adds the long name to the detail line.
         title = pin.label
-        subtitle = pin.detail
+        subtitle = pin.title == pin.label ? pin.detail : "\(pin.title) · \(pin.detail)"
     }
 }
 

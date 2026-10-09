@@ -18,6 +18,7 @@ enum BikeUUID {
     static let agnss    = CBUUID(string: "B1C50008-9E0F-4B7A-9C6D-1F2E3A4B5C6D")
     static let dash     = CBUUID(string: "B1C50009-9E0F-4B7A-9C6D-1F2E3A4B5C6D")
     static let mesh     = CBUUID(string: "B1C5000A-9E0F-4B7A-9C6D-1F2E3A4B5C6D")
+    static let media    = CBUUID(string: "B1C5000B-9E0F-4B7A-9C6D-1F2E3A4B5C6D")
     static let workout  = CBUUID(string: "B1C5000C-9E0F-4B7A-9C6D-1F2E3A4B5C6D")
 }
 
@@ -126,7 +127,33 @@ struct MeshNode: Identifiable, Equatable {
     var id: UInt32 { num }
     /// "!a4c1380c" — how Meshtastic writes a node number everywhere.
     var nodeId: String { "!" + String(format: "%08x", num) }
-    var displayName: String { longName.isEmpty ? nodeId : longName }
+    var displayName: String {
+        !longName.isEmpty ? longName : !shortName.isEmpty ? shortName : nodeId
+    }
+    /// The node's short name, or the last four hex digits of its id until its
+    /// NodeInfo arrives — which is also what Meshtastic itself defaults a short
+    /// name to, so the fallback usually matches what the owner would see.
+    var shortLabel: String {
+        shortName.isEmpty ? String(format: "%04x", num & 0xFFFF) : shortName
+    }
+    /// "direct", "2 hops", or nil when the sender's firmware does not say.
+    var hopsText: String? { meshHopsText(hops) }
+    /// What a map pin carries: "ALEX · 2 hops".
+    var mapLabel: String { hopsText.map { "\(shortLabel) · \($0)" } ?? shortLabel }
+}
+
+/// Meshtastic carries at most 7 hops; the device reports anything above that
+/// (0xFF) for a packet whose sender's firmware predates hop_start, where the
+/// distance is unknown rather than zero.
+func meshHopsKnown(_ hops: Int) -> Bool { (0...7).contains(hops) }
+
+func meshHopsText(_ hops: Int) -> String? {
+    guard meshHopsKnown(hops) else { return nil }
+    switch hops {
+    case 0: return "direct"
+    case 1: return "1 hop"
+    default: return "\(hops) hops"
+    }
 }
 
 /// The device's mesh configuration, as it reports it.
@@ -353,7 +380,9 @@ final class BLEManager: NSObject, ObservableObject {
     /// nil until the device has been read, which is how the editor knows to
     /// show "connect to edit" rather than an invented default that would
     /// overwrite the rider's real one the moment they touched a control.
-    @Published var dashConfig: DashConfig?
+    @Published var dashConfig: DashConfig? {
+        didSet { updateAlbumArt() }
+    }
     /// First data page, for thumbnails (RideView's dashboard card).
     var dashLayout: DashLayout? { dashConfig?.firstFields }
     /// Version we are flashing, so the success check compares against what
@@ -367,6 +396,34 @@ final class BLEManager: NSObject, ObservableObject {
     // MARK: Meshtastic
     private var meshChar: CBCharacteristic?
     private var workoutChar: CBCharacteristic?
+
+    // MARK: album art (CHR_MEDIA)
+    /// Finds covers for the device's MUSIC page; see AlbumArt.swift.
+    let albumArt = AlbumArtFeeder()
+    private var mediaChar: CBCharacteristic?
+    /// Does the device take art the phone already dithered ([0x13], a third
+    /// of the bytes)? Asked with [0x03] once media notifications are up;
+    /// firmware that predates it never answers, so this stays false and art
+    /// goes as 8-bit grayscale.
+    private var mediaToneArt = false
+    /// A media notification arrived on this link: notifications are on even
+    /// if the state callback never said so. iOS keeps the link up for AMS
+    /// when the app is relaunched, and the callback has been seen missing.
+    private var mediaNotifySeen = false
+    /// [0x03] caps went out on this link.
+    private var mediaCapsAsked = false
+    /// Retries of a refused media-notification subscribe on this link.
+    private var mediaSubscribeRetries = 0
+    /// What each acknowledged media write was, in order: the art pump starts
+    /// on its begin's ack, so its write-without-response chunks can't overtake
+    /// the begin.
+    private enum MediaAck { case other, artBegin(Int), artEnd(Int) }
+    private var mediaAcks: [MediaAck] = []
+    private var artGen = 0              // bumps per transfer; stale acks ignored
+    private var artPayload = Data()
+    private var artOffset = 0
+    private var artChunk = 180
+    private var artPumping = false
 
     // MARK: workout state (published for WorkoutsView)
     struct WorkoutStatus: Equatable {
@@ -445,6 +502,7 @@ final class BLEManager: NSObject, ObservableObject {
             case .log(let n):  return n.isEmpty ? "diag" : n
             }
         }
+        var transferId: String { "ble.download.\(isLog ? "log" : "ride").\(displayName)" }
     }
     private var dlQueue: [Transfer] = []
     private var dlActive: Transfer? = nil
@@ -496,6 +554,9 @@ final class BLEManager: NSObject, ObservableObject {
         if UserDefaults.standard.bool(forKey: Self.onboardedKey) {
             startCentral()
         }
+        albumArt.send = { [weak self] gray, w, h in
+            self?.sendMediaArt(gray, width: w, height: h) ?? false
+        }
     }
 
     static let onboardedKey = "didOnboard"
@@ -504,8 +565,19 @@ final class BLEManager: NSObject, ObservableObject {
     /// the first time this runs. Idempotent; skipped in the update demo.
     private func startCentral() {
         guard central == nil, !isDemoUpdate else { return }
-        central = CBCentralManager(delegate: self, queue: .main)
+        // A restore identifier lets iOS relaunch the app in the background for
+        // the head unit's BLE events after it was terminated for memory while
+        // a connection was pending or up — e.g. the device rebooting at the end
+        // of a firmware update while the phone sat in a pocket.
+        central = CBCentralManager(delegate: self, queue: .main, options: [
+            CBCentralManagerOptionRestoreIdentifierKey: Self.restoreIdentifier,
+        ])
     }
+
+    static let restoreIdentifier = "com.raemond.opentrailpaper.central"
+    /// Set when iOS handed us a peripheral on relaunch, so the first scan
+    /// reconnects it instead of searching for a device we already hold.
+    private var restoredPeripheral = false
 
     /// Onboarding: bring Bluetooth up and trigger its permission prompt.
     func enableBluetooth() { startCentral() }
@@ -632,6 +704,20 @@ final class BLEManager: NSObject, ObservableObject {
         payload.appendLE(Int16(max(-2000, min(9000, loc.altitude.rounded()))))
         let acc = loc.horizontalAccuracy > 0 ? loc.horizontalAccuracy : 200
         payload.appendLE(Int16(max(1, min(9999, acc.rounded()))))
+        // Speed (cm/s) and course (0.01 deg) — the device shows them while
+        // this is its position source. CoreLocation reports -1 for either when
+        // it has no valid value (course while stationary, both on a Wi-Fi/cell
+        // fix); send 0xFFFF then and the device derives or holds instead.
+        // Firmware before this ignores the trailing bytes. A cached fix (the
+        // first one delivered can be minutes old) says nothing about how we're
+        // moving now.
+        let current = -loc.timestamp.timeIntervalSinceNow < 10
+        let speedOk = current && loc.speed >= 0 && loc.speedAccuracy >= 0
+        payload.appendLE(speedOk ? UInt16(min(65534, (loc.speed * 100).rounded())) : UInt16.max)
+        let courseOk = current && loc.course >= 0 && loc.courseAccuracy >= 0
+        payload.appendLE(courseOk
+            ? UInt16(min(35999, (loc.course.truncatingRemainder(dividingBy: 360) * 100).rounded()))
+            : UInt16.max)
         p.writeValue(payload, for: c, type: .withResponse)
         lastAidingSent = Date()
     }
@@ -644,6 +730,13 @@ final class BLEManager: NSObject, ObservableObject {
         // music info visibly syncs. Adopt the system's connection instead:
         // connect() on an already-connected peripheral completes immediately
         // and hands this app its own session over the same link.
+        if restoredPeripheral, let p = peripheral {
+            restoredPeripheral = false
+            p.delegate = self
+            state = .connecting
+            central.connect(p)      // completes at once if iOS kept the link up
+            return
+        }
         if peripheral == nil,
            let p = central.retrieveConnectedPeripherals(
                withServices: [BikeUUID.service]).first {
@@ -773,22 +866,35 @@ final class BLEManager: NSObject, ObservableObject {
         }
         keepAwake(true)
         otaMessage = "Downloading \(release.tag)…"
+        TransferCenter.shared.begin(Self.otaTransferId, kind: .firmware,
+            title: "Firmware \(release.tag)", detail: "Downloading from GitHub…",
+            total: Int64(release.size))
         Task { @MainActor in
             do {
-                let data = try await FirmwareRelease.shared.image(for: release)
+                let data = try await FirmwareRelease.shared.image(for: release,
+                                                                  transferId: Self.otaTransferId)
                 startFirmwareUpload(data, tag: release.tag)
             } catch {
                 keepAwake(false)
                 otaMessage = "Download failed — check your connection"
+                TransferCenter.shared.finish(Self.otaTransferId, success: false,
+                                             message: "Download failed")
             }
         }
     }
 
     /// Second half of startFirmwareUpdate, once the image is in hand.
+    static let otaTransferId = "ble.ota"
+
     private func startFirmwareUpload(_ data: Data, tag: String) {
         guard let c = otaChar, let p = peripheral else {
-            keepAwake(false); otaMessage = "Not connected"; return
+            keepAwake(false); otaMessage = "Not connected"
+            TransferCenter.shared.finish(Self.otaTransferId, success: false, message: "Not connected")
+            return
         }
+        TransferCenter.shared.begin(Self.otaTransferId, kind: .firmware,
+            title: "Firmware \(tag)", detail: "Sending to the device…",
+            total: Int64(data.count))
         otaTargetVersion = tag
         otaData = data
         otaOffset = 0
@@ -821,6 +927,7 @@ final class BLEManager: NSObject, ObservableObject {
             pkt.append(otaData.subdata(in: otaOffset..<end))
             otaOffset = end
             otaProgress = Double(otaOffset) / Double(otaData.count)
+            TransferCenter.shared.update(Self.otaTransferId, completed: Int64(otaOffset))
             p.writeValue(pkt, for: c, type: .withoutResponse)
         }
         if !otaCommitSent {                                        // all data sent
@@ -828,6 +935,8 @@ final class BLEManager: NSObject, ObservableObject {
             p.writeValue(Data([0x03]), for: c, type: .withResponse)   // commit
             otaPhase = .saving
             otaMessage = "Saving to the device…"
+            TransferCenter.shared.update(Self.otaTransferId, detail: "Saving to the device…",
+                                         indeterminate: true)
         }
     }
 
@@ -844,6 +953,8 @@ final class BLEManager: NSObject, ObservableObject {
         "Device didn't come back after installing. Check it's powered on and nearby, or use the SD-card method."
 
     private func otaFinish(_ phase: OTAPhase, _ msg: String) {
+        TransferCenter.shared.finish(Self.otaTransferId, success: phase == .done,
+                                     message: phase == .done ? "Updated to \(deviceFirmware)" : msg)
         otaWatchdog?.cancel(); otaWatchdog = nil
         otaInProgress = false
         otaPhase = phase
@@ -871,6 +982,9 @@ final class BLEManager: NSObject, ObservableObject {
                 // short grace for that second reboot to land on the new version.
                 otaPhase = .verifying
                 otaMessage = "Installing — flashing from the SD card…"
+                TransferCenter.shared.update(Self.otaTransferId,
+                                             detail: "Installing — flashing from the SD card…",
+                                             indeterminate: true)
                 armOtaWatchdog(seconds: 60,
                     failMessage: "Device restarted but is still on \(deviceFirmware). The install didn't take — try again, or use the SD-card method.")
             }
@@ -881,6 +995,9 @@ final class BLEManager: NSObject, ObservableObject {
             otaProgress = 1
             otaPhase = .installing
             otaMessage = "Installing — the device is restarting…"
+            TransferCenter.shared.update(Self.otaTransferId,
+                                         detail: "Installing — the device is restarting…",
+                                         indeterminate: true)
             keepAwake(false)
             armOtaWatchdog(seconds: 150, failMessage: BLEManager.installWatchdogMsg)
         case 0xA2: otaFinish(.failed, "Update canceled.")
@@ -954,6 +1071,8 @@ final class BLEManager: NSObject, ObservableObject {
         mapMessage = "Sending map…"
         keepAwake(true)
         mapChunk = max(20, p.maximumWriteValueLength(for: .withoutResponse)) - 1
+        TransferCenter.shared.begin(Self.mapTransferId, kind: .mapUpload, title: "Sending map",
+                                    detail: name, total: Int64(ebm.count))
 
         var cmd = Data([0x01])
         var size = UInt32(ebm.count).littleEndian
@@ -967,6 +1086,7 @@ final class BLEManager: NSObject, ObservableObject {
         p.writeValue(Data([0x04]), for: c, type: .withResponse)
         mapUploading = false; keepAwake(false)
         mapMessage = "Canceled"
+        TransferCenter.shared.finish(Self.mapTransferId, success: false, message: "Canceled")
     }
 
     // Ask the device which map areas it already has (streamed back via notify).
@@ -998,6 +1118,20 @@ final class BLEManager: NSObject, ObservableObject {
         tilesUploading = true
         tileMessage = "Sending tiles…"
         keepAwake(true)
+        TransferCenter.shared.begin(Self.tilesTransferId, kind: .mapTiles, title: "Map tiles",
+                                    detail: "Building tiles…", unit: .items, indeterminate: true)
+    }
+
+    static let mapTransferId = "ble.map"
+    static let tilesTransferId = "ble.tiles"
+
+    /// Mirror the tile job into TransferCenter.
+    private func reportTiles() {
+        let idle = currentTileId == nil && tileQueue.isEmpty && tilesMoreComing
+        TransferCenter.shared.update(Self.tilesTransferId,
+            completed: Int64(tilesDone), total: Int64(tilesTotal),
+            detail: idle ? "Building tiles…" : "Sending tile \(min(tilesDone + 1, tilesTotal)) of \(tilesTotal)",
+            indeterminate: tilesTotal == 0)
     }
 
     // Add freshly-built tiles to the send queue; starts pumping if idle. Skips
@@ -1012,6 +1146,7 @@ final class BLEManager: NSObject, ObservableObject {
         tileQueue.append(contentsOf: fresh)
         tilesTotal += fresh.count
         if currentTileId == nil { sendNextTile() }   // pump if idle
+        reportTiles()
     }
 
     // No more batches coming; let the queue drain and finish.
@@ -1030,6 +1165,12 @@ final class BLEManager: NSObject, ObservableObject {
     }
 
     private func finishTileJob(message: String?) {
+        if tilesUploading {
+            let ok = message == "Tiles installed"
+            TransferCenter.shared.finish(Self.tilesTransferId, success: ok,
+                message: ok ? "\(tilesDone) tile\(tilesDone == 1 ? "" : "s") on the device"
+                            : (message ?? "Stopped"))
+        }
         tilesUploading = false
         tilesMoreComing = false
         mapUploading = false
@@ -1054,6 +1195,7 @@ final class BLEManager: NSObject, ObservableObject {
         mapUploading = true            // reuse the CHR_MAP chunk pump
         mapChunk = max(20, p.maximumWriteValueLength(for: .withoutResponse)) - 1
         tileMessage = "Sending tile \(tilesDone + 1)/\(tilesTotal)…"
+        reportTiles()
 
         var cmd = Data([0x06])         // begin-tile
         var size = UInt32(tile.data.count).littleEndian
@@ -1071,6 +1213,9 @@ final class BLEManager: NSObject, ObservableObject {
             pkt.append(mapData.subdata(in: mapOffset..<end))
             mapOffset = end
             mapProgress = Double(mapOffset) / Double(max(mapData.count, 1))
+            if currentTileId == nil {
+                TransferCenter.shared.update(Self.mapTransferId, completed: Int64(mapOffset))
+            }
             p.writeValue(pkt, for: c, type: .withoutResponse)
         }
         if !mapEndSent {
@@ -1090,8 +1235,10 @@ final class BLEManager: NSObject, ObservableObject {
                 tilesDone += 1
                 currentTileId = nil
                 sendNextTile()
+                reportTiles()
             } else {
                 mapUploading = false; mapProgress = 1; mapMessage = "Map installed"
+                TransferCenter.shared.finish(Self.mapTransferId, success: true, message: "Map installed")
                 keepAwake(false); refreshDeviceMaps()
             }
         case 0xBF:
@@ -1103,6 +1250,8 @@ final class BLEManager: NSObject, ObservableObject {
             } else {
                 mapUploading = false; keepAwake(false)
                 mapMessage = "Map upload failed (\(code))"
+                TransferCenter.shared.finish(Self.mapTransferId, success: false,
+                                             message: "Map upload failed (\(code))")
             }
         case 0xD0: tileIdsBuilding = []                           // tile-list begin
         case 0xD1 where d.count > 1:                              // comma-separated ids
@@ -1570,6 +1719,11 @@ final class BLEManager: NSObject, ObservableObject {
         }
         let t = dlQueue.removeFirst()
         dlActive = t
+        TransferCenter.shared.begin(t.transferId,
+            kind: t.isLog ? .logDownload : .rideDownload,
+            title: t.isLog ? "Downloading log" : "Downloading ride",
+            detail: t.displayName, indeterminate: true)
+        TransferCenter.shared.update(t.transferId, waiting: dlQueue.count)
         dlBuffer = Data()
         dlExpected = 0
         dlNextSeq = 0
@@ -1601,6 +1755,12 @@ final class BLEManager: NSObject, ObservableObject {
     /// The active transfer ended (either way) — release the line and run the
     /// next request. Always the single exit point, so the queue can't jam.
     private func endActiveTransfer() {
+        // Every exit comes through here; a success has already been reported,
+        // so this only lands for the failures (timeout, busy, short, dropped).
+        if let t = dlActive {
+            TransferCenter.shared.finish(t.transferId, success: false,
+                                         message: lastMessage ?? "Download stopped")
+        }
         dlWatchdog?.cancel()
         dlWatchdog = nil
         dlActive = nil
@@ -1622,6 +1782,7 @@ final class BLEManager: NSObject, ObservableObject {
     private func publishQueue() {
         let names = dlQueue.map(\.displayName)
         if names != queuedDownloads { queuedDownloads = names }
+        if let t = dlActive { TransferCenter.shared.update(t.transferId, waiting: dlQueue.count) }
     }
 
     /// Run whatever asked for the line while it was busy. Called once the queue
@@ -1676,6 +1837,10 @@ final class BLEManager: NSObject, ObservableObject {
             dlExpected = Int(d[1]) | (Int(d[2]) << 8) | (Int(d[3]) << 16) | (Int(d[4]) << 24)
             dlBuffer = Data(capacity: dlExpected)
             dlNextSeq = 0
+            if let t = dlActive {
+                TransferCenter.shared.update(t.transferId, completed: 0,
+                                             total: Int64(dlExpected), indeterminate: false)
+            }
         case 0x11:  // chunk: [u16 seq][payload]
             guard dlActive != nil, dlExpected > 0, d.count > 3 else { return }
             dlLastActivity = Date()
@@ -1687,6 +1852,9 @@ final class BLEManager: NSObject, ObservableObject {
                 dlBuffer.append(d[3...])
                 dlNextSeq = seq &+ 1
                 downloadProgress = min(1, Double(dlBuffer.count) / Double(dlExpected))
+                if let t = dlActive {
+                    TransferCenter.shared.update(t.transferId, completed: Int64(dlBuffer.count))
+                }
             }
         case 0x14:  // window end — tell the device the next seq we need
             // Only ack a stream we're actually collecting — one we asked for AND
@@ -1780,6 +1948,10 @@ final class BLEManager: NSObject, ObservableObject {
         let payload = dlBuffer
         let wasLog = downloadingLog
         let name = wasLog ? (downloadingName ?? "diag") : dlName
+        if let t = dlActive {
+            TransferCenter.shared.finish(t.transferId, success: true,
+                                         message: wasLog ? "Log downloaded" : "\(name) downloaded")
+        }
         endActiveTransfer()
 
         if wasLog {                            // diagnostics log, not a ride
@@ -1915,6 +2087,8 @@ final class BLEManager: NSObject, ObservableObject {
 
     // MARK: route upload (chunked with a 1-byte opcode per packet)
 
+    static let routeTransferId = "ble.route"
+
     // One turn cue: where it happens + what to do.
     struct Maneuver { let lat: Double; let lon: Double; let text: String }
 
@@ -1948,13 +2122,21 @@ final class BLEManager: NSObject, ObservableObject {
         lastUploadProgress = 0
         routeSent = false
         routeReceived = false
+        let total = Int64(packets.reduce(0) { $0 + $1.count })
+        TransferCenter.shared.begin(Self.routeTransferId, kind: .route, title: "Sending route",
+                                    detail: name, total: total)
         Task { @MainActor in
+            var sent: Int64 = 0
             for (idx, packet) in packets.enumerated() {
                 p.writeValue(packet, for: c, type: .withResponse)
                 lastUploadProgress = Double(idx + 1) / Double(packets.count)
+                sent += Int64(packet.count)
+                TransferCenter.shared.update(Self.routeTransferId, completed: sent)
                 try? await Task.sleep(nanoseconds: 12_000_000)  // pace writes
             }
             lastUploadProgress = nil
+            TransferCenter.shared.finish(Self.routeTransferId, success: true,
+                                         message: "Route “\(name)” sent")
             // The writes are queued; the button now shows "Sent". Firmware ≥ this
             // release notifies back (0x23/0x24) so we can upgrade that to a real
             // "Received by device" confirmation — see handleRouteNotify.
@@ -1965,6 +2147,20 @@ final class BLEManager: NSObject, ObservableObject {
 }
 
 extension BLEManager: CBCentralManagerDelegate {
+    /// State restoration: iOS relaunched the app for the head unit and hands
+    /// back the peripheral it was holding. Called before DidUpdateState; the
+    /// poweredOn scan then reconnects it (see startScan).
+    nonisolated func centralManager(_ c: CBCentralManager, willRestoreState dict: [String: Any]) {
+        MainActor.assumeIsolated {
+            guard peripheral == nil,
+                  let p = (dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral])?.first
+            else { return }
+            peripheral = p
+            p.delegate = self
+            restoredPeripheral = true
+        }
+    }
+
     nonisolated func centralManagerDidUpdateState(_ c: CBCentralManager) {
         if isDemoUpdate || isDemoDash { return }   // demo holds a fake connected state
         MainActor.assumeIsolated {
@@ -2007,6 +2203,11 @@ extension BLEManager: CBCentralManagerDelegate {
         MainActor.assumeIsolated {
             settingsChar = nil; statusChar = nil; routeChar = nil; ridesChar = nil
             sensorsChar = nil; mapChar = nil; otaChar = nil; meshChar = nil
+            mediaChar = nil; mediaToneArt = false   // the next device may be older firmware
+            mediaNotifySeen = false; mediaCapsAsked = false; mediaSubscribeRetries = 0
+            mediaAcks = []; artPumping = false; artPayload = Data()
+            albumArt.linkDown()
+            updateAlbumArt()
             // A half-received mesh stream must not be published on reconnect.
             meshBuilding = []; meshNodesBuilding = []; meshPresetsBuilding = []
             meshChannelsBuilding = []
@@ -2030,6 +2231,10 @@ extension BLEManager: CBCentralManagerDelegate {
             }
             if mapUploading { mapUploading = false; keepAwake(false)
                               mapMessage = "Upload interrupted — try again" }
+            TransferCenter.shared.finish(Self.mapTransferId, success: false,
+                                         message: "Connection dropped")
+            TransferCenter.shared.finish(Self.routeTransferId, success: false,
+                                         message: "Connection dropped")
             if tilesUploading {
                 tileQueue = []
                 finishTileJob(message: "Interrupted — reconnect to resume")
@@ -2115,6 +2320,9 @@ extension BLEManager: CBPeripheralDelegate {
                     meshChar = ch; p.setNotifyValue(true, for: ch)
                 case BikeUUID.workout:
                     workoutChar = ch; p.setNotifyValue(true, for: ch)
+                case BikeUUID.media:
+                    artLog.info("media char found: props=0x\(String(ch.properties.rawValue, radix: 16), privacy: .public) descriptors=\(ch.descriptors?.count ?? -1)")
+                    mediaChar = ch; p.setNotifyValue(true, for: ch)
                 default: break
                 }
             }
@@ -2138,6 +2346,27 @@ extension BLEManager: CBPeripheralDelegate {
             // reply away and the Messages tab sits empty until it is opened.
             if ch.uuid == BikeUUID.mesh { refreshMesh() }
             if ch.uuid == BikeUUID.workout { refreshWorkouts() }
+            // Which art format the device takes (and whether it forwards AMS
+            // tracks); the answer is a notification.
+            if ch.uuid == BikeUUID.media {
+                artLog.info("media notify state: \(ch.isNotifying) error=\(error?.localizedDescription ?? "none", privacy: .public)")
+                // Seen on a relaunch while iOS kept the link up (it does, for
+                // AMS): the device intermittently refuses the subscribe with
+                // "request not supported". Without it no AMS track ever
+                // reaches the app, so no art. A second try goes through.
+                if error != nil, !ch.isNotifying, mediaSubscribeRetries < 4,
+                   let p = peripheral {
+                    mediaSubscribeRetries += 1
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                        guard let self, self.mediaChar === ch, !ch.isNotifying else { return }
+                        p.setNotifyValue(true, for: ch)
+                    }
+                }
+            }
+            if ch.uuid == BikeUUID.media, ch.isNotifying {
+                askMediaCaps()
+                updateAlbumArt()
+            }
         }
     }
 
@@ -2146,7 +2375,18 @@ extension BLEManager: CBPeripheralDelegate {
         MainActor.assumeIsolated {
             pumpOtaChunks()
             pumpMapChunks()
+            pumpArtChunks()
         }
+    }
+
+    nonisolated func peripheral(_ p: CBPeripheral,
+                                didWriteValueFor ch: CBCharacteristic,
+                                error: Error?) {
+        if let error {
+            artLog.error("write to \(ch.uuid.uuidString, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+        }
+        guard ch.uuid == BikeUUID.media else { return }
+        MainActor.assumeIsolated { mediaWriteAcked(failed: error != nil) }
     }
 
     nonisolated func peripheral(_ p: CBPeripheral,
@@ -2165,9 +2405,106 @@ extension BLEManager: CBPeripheralDelegate {
             case BikeUUID.dash: parseDashLayout(data)
             case BikeUUID.mesh: handleMeshNotify(data)
             case BikeUUID.workout: handleWorkoutNotify(data)
+            case BikeUUID.media: handleMediaNotify(data)
             default: break
             }
         }
+    }
+
+    // MARK: - Album art (the device's MUSIC page)
+    //
+    // CHR_MEDIA, phone -> device: [0x10 w h] 8-bit art begin or [0x13 w h]
+    // tone-art begin, [0x11]+bytes, [0x12] end, [0x03] caps? Device -> phone:
+    // [0xA1][caps] (bit0 tone art), [0xA2][title\0artist\0album\0] the track
+    // AMS reports (see src/ble_server.cpp). The iPhone sends no metadata:
+    // the device gets that for every player from iOS itself (AMS).
+
+    /// Art only matters to a dashboard with a music page.
+    private func updateAlbumArt() {
+        let notifying = mediaChar != nil && (mediaChar?.isNotifying == true || mediaNotifySeen)
+        artLog.info("art active? notifying=\(notifying) musicPage=\(self.dashConfig?.hasMusicPage == true)")
+        albumArt.setActive(notifying && dashConfig?.hasMusicPage == true)
+    }
+
+    /// Which art format the device takes, and whether it forwards AMS tracks;
+    /// answered by notification. Once per link.
+    private func askMediaCaps() {
+        guard !mediaCapsAsked, mediaChar != nil else { return }
+        mediaCapsAsked = true
+        writeMedia(Data([0x03]), ack: .other)
+    }
+
+    private func handleMediaNotify(_ d: Data) {
+        // A notification arriving proves notifications are on, whatever the
+        // state callback said (or whether it came at all).
+        if !mediaNotifySeen {
+            mediaNotifySeen = true
+            askMediaCaps()
+            updateAlbumArt()
+        }
+        guard d.count >= 2 else { return }
+        switch d[d.startIndex] {
+        case 0xA1:
+            mediaToneArt = d[d.startIndex + 1] & 0x01 != 0
+            artLog.info("device caps 0x\(String(d[d.startIndex + 1], radix: 16), privacy: .public)")
+        case 0xA2: if let t = MediaTrack(packet: d) { albumArt.deviceTrackChanged(t) }
+        default: break   // 0xA0 transport commands: the device uses AMS on iPhone
+        }
+    }
+
+    private func writeMedia(_ pkt: Data, ack: MediaAck) {
+        guard let c = mediaChar, let p = peripheral else { return }
+        mediaAcks.append(ack)
+        p.writeValue(pkt, for: c, type: .withResponse)
+    }
+
+    /// Streamed: begin ([0x13] tone art the device unpacks, or [0x10] 8-bit
+    /// grayscale for firmware that predates it), chunks without response as
+    /// fast as CoreBluetooth takes them, then [0x12]. iOS has no connection-
+    /// priority call; the firmware moves the link to its fast interval itself
+    /// while art writes flow (noteBulk). A newer cover simply restarts: the
+    /// device drops a half-received one on the next begin.
+    func sendMediaArt(_ gray: [UInt8], width: Int, height: Int) -> Bool {
+        guard let p = peripheral, mediaChar != nil, !otaInProgress else { return false }
+        let tones = mediaToneArt
+        artPayload = tones
+            ? Data(ArtDither.pack(ArtDither.dither(gray, width: width, height: height)))
+            : Data(gray)
+        artOffset = 0
+        artPumping = false
+        artGen += 1
+        artChunk = max(20, p.maximumWriteValueLength(for: .withoutResponse)) - 1
+        var begin = Data([tones ? 0x13 : 0x10])
+        begin.appendLE(UInt16(width))
+        begin.appendLE(UInt16(height))
+        writeMedia(begin, ack: .artBegin(artGen))
+        return true
+    }
+
+    private func mediaWriteAcked(failed: Bool) {
+        guard !mediaAcks.isEmpty else { return }
+        switch mediaAcks.removeFirst() {
+        case .artBegin(let gen) where gen == artGen:
+            if failed { artPayload = Data(); return }
+            artPumping = true
+            pumpArtChunks()
+        default: break
+        }
+    }
+
+    private func pumpArtChunks() {
+        guard artPumping, let c = mediaChar, let p = peripheral else { return }
+        while artOffset < artPayload.count {
+            guard p.canSendWriteWithoutResponse else { return }   // resume from ready
+            let end = min(artOffset + artChunk, artPayload.count)
+            var pkt = Data([0x11])
+            pkt.append(artPayload.subdata(in: artOffset..<end))
+            artOffset = end
+            p.writeValue(pkt, for: c, type: .withoutResponse)
+        }
+        artPumping = false
+        artPayload = Data()
+        writeMedia(Data([0x12]), ack: .artEnd(artGen))
     }
 
     // MARK: - Dashboard layout
@@ -2304,6 +2641,9 @@ private extension Data {
     mutating func appendLE(_ v: Int16) {
         let u = UInt16(bitPattern: v)
         append(UInt8(u & 0xFF)); append(UInt8(u >> 8))
+    }
+    mutating func appendLE(_ v: UInt16) {
+        append(UInt8(v & 0xFF)); append(UInt8(v >> 8))
     }
     mutating func appendLE(_ v: Int32) {
         let u = UInt32(bitPattern: v)

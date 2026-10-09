@@ -5,6 +5,7 @@ import com.raemond.opentrailpaper.ble.BleManager
 import com.raemond.opentrailpaper.data.Prefs
 import com.raemond.opentrailpaper.data.SyncAccounts
 import com.raemond.opentrailpaper.map.TileCache
+import com.raemond.opentrailpaper.transfer.TransferCenter
 import org.osmdroid.config.Configuration
 
 /**
@@ -26,6 +27,7 @@ class OpenTrailPaperApp : Application() {
         Prefs.init(this)
         SyncAccounts.init(this)
         TileCache.init(this)
+        TransferCenter.init(this)
 
         // osmdroid keeps its tile cache in app-private storage (no storage
         // permission) and identifies itself politely to the OSM tile servers,

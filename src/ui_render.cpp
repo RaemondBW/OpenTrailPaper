@@ -1845,11 +1845,14 @@ static void sheetShell(uint8_t* fb, bool scrim = true) {
     const int W = epd_rotated_display_width();
     const int H = epd_rotated_display_height();
     const int y = H - 520;
-    // Scrim the BODY only. Toning the status band as well made the clock and
-    // battery unreadable behind the checker — that row is chrome the rider
-    // still needs while a modal is up.
-    if (scrim)
-        fillTone({0, ui::STATUS_H, W, y - ui::STATUS_H}, ui::TONE_50, fb);
+    // Scrim EVERYTHING above the sheet, status band included. This used to
+    // start at STATUS_H to keep the clock and battery readable, which left the
+    // band crisp over a toned screen — on the power dialog (and the POWERING
+    // OFF band that shutdownDevice() paints straight over it) the device looked
+    // half still-on. The end-of-ride summary already tones from y = 0; all the
+    // sheets now read as the same object. The sheet's own words sit on the
+    // white panel below, so nothing the modal says is under the checker.
+    if (scrim) fillTone({0, 0, W, y}, ui::TONE_50, fb);
     epd_fill_rect({0, y, W, H - y}, ui::PAPER, fb);
     epd_fill_rect({0, y, W, 6}, ui::INK, fb);
 }

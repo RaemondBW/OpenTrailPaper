@@ -139,11 +139,12 @@ struct DashboardEditorView: View {
                 Section {
                     VStack(alignment: .leading, spacing: 8) {
                         Label("Music controls", systemImage: "music.note")
-                        Text("Shows what's playing on the phone — any app — with play/skip and volume, via the phone's own media service (pair when asked). Album art appears for Apple Music.")
+                        Text("Shows what's playing on the phone — any app — with play/skip and volume, via the phone's own media service (pair when asked).")
                             .font(TypeScale.body).foregroundStyle(Palette.muted)
                     }
                     .padding(.vertical, 4)
                 }
+                AlbumArtSection(art: ble.albumArt)
             } else if config.pages.indices.contains(pageIx), config.pages[pageIx].isWorkout {
                 Section {
                     VStack(alignment: .leading, spacing: 8) {
@@ -1057,5 +1058,38 @@ private struct PageDropDelegate: DropDelegate {
     func performDrop(info: DropInfo) -> Bool {
         dragged = nil
         return true
+    }
+}
+
+
+/// Where the MUSIC page's covers come from: the Music app (needs library
+/// access) and, opt-in, Apple's online catalogue for every other player.
+private struct AlbumArtSection: View {
+    @ObservedObject var art: AlbumArtFeeder
+
+    var body: some View {
+        Section {
+            switch art.libraryAccess {
+            case .granted:
+                Label("Covers from the Music app are on", systemImage: "checkmark.circle")
+                    .font(TypeScale.body).foregroundStyle(Palette.muted)
+            case .notDetermined:
+                Button("Allow covers from the Music app") { art.requestLibraryAccess() }
+            case .denied:
+                Button("Music app covers: allow in Settings") {
+                    if let url = URL(string: UIApplication.openSettingsURLString) {
+                        UIApplication.shared.open(url)
+                    }
+                }
+            case .unavailable:
+                Text("Music app covers are blocked on this phone.")
+                    .font(TypeScale.body).foregroundStyle(Palette.muted)
+            }
+            Toggle("Look up album art online", isOn: $art.onlineLookup)
+        } header: {
+            Text("Album art")
+        } footer: {
+            Text("For Spotify and other players, finds the cover in Apple's iTunes catalogue — this sends the playing song's title, artist and album to Apple.")
+        }
     }
 }

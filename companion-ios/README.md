@@ -46,6 +46,20 @@ Service `B1C50000-9E0F-4B7A-9C6D-1F2E3A4B5C6D`:
 | Status   | `…0002` | notify | `u8 flags, u8 batt, u8 sats, u8 hr, u16 power, u16 speed×10, u16 remainKm×10` |
 | Route    | `…0003` | write | framed: `0x01`+name, `0x02`+gpx chunks, `0x03` end |
 
+## Long transfers in the background
+
+Ride and log downloads, firmware updates, map tiles, route sends and uploads to
+Strava / Intervals.icu / RideWithGPS all report into `TransferCenter.swift`,
+which shows a Live Activity (Lock Screen + Dynamic Island) for anything that
+runs longer than a moment and holds background time while it runs. The
+activity is drawn by the `TransferWidget` extension; the state type it shares
+with the app lives in `Shared/`. BLE transfers keep going with the phone locked
+through the `bluetooth-central` background mode, and the central opts into
+state restoration so iOS can relaunch the app for the head unit.
+
+Launch with `-demo-transfer` to run a fake 40-second download and see the
+activity in the simulator.
+
 ## Notes / limitations
 
 - Apple offers true cycling directions only in select regions; elsewhere
