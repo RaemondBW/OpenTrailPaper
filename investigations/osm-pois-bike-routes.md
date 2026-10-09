@@ -381,16 +381,38 @@ Both apps do the same thing, in `MapsView.swift` / `MapsSheet.kt` (pipeline),
   keeps a per-tile `poiSentAt` (UserDefaults / SharedPreferences). A `.poi`
   the device has but this phone did not send (website ZIP, another phone) is
   left alone. A cached `.poi` older than 30 days is re-fetched first.
-- **Tiles already on the device (the flags).** The app records which tiles
-  *it* sent with the flags (`flaggedTileIds`). For firmware that answers
-  `0x08`, a tile on the device that is not in that set counts as "to
-  download" the next time its area is synced, and is rebuilt and re-sent
-  once. Riders don't need to do anything, and a sync of an area they never
-  revisit costs nothing.
-  - Cost: one full re-send per area on the first sync after updating.
-  - Tiles from the website ZIP are re-sent once too, because the app cannot
-    tell that they already have the flags.
-  - Firmware that can't draw the flags never triggers a re-send.
+- **Tiles already on the device: Redownload is opt-in.** A tile on the
+  device always counts as "on device", even one built before the bike-route
+  flags. "N to download" means only hexes the device doesn't have. When the
+  selection includes hexes already on the device, the selected-area card
+  shows a secondary **"Redownload N hexes"** button.
+  - **What it does.** It rebuilds those hexes from fresh Overpass and
+    elevation data, bypassing the phone's tile and POI caches, and re-sends
+    the map tiles plus their `.poi` files. Items in the progress count are
+    tiles + POIs.
+  - **Confirmation.** It asks first when more than 20 hexes are selected.
+  - **Hint.** The app still records which tiles *it* sent with the flags
+    (`flaggedTileIds`). That record only feeds a hint on the card: "K hexes
+    were made before bike routes & water stops — redownload to add them."
+    The hint shows only on firmware that answers `0x08`, and it can
+    overcount tiles that came from the website ZIP or another phone.
+  - **Old firmware.** Redownload is still offered (fresher OSM roads and
+    paths are worth having on any firmware), and it carries no POIs there.
+  - **One job at a time.** A run of Download, Redownload or Send POIs
+    replaces the card with the progress card, and the start functions refuse
+    to run while a build or a transfer is in progress.
+
+![selected-area card with Redownload](img/osm-pois-bike-routes/ios_redownload_card.png)
+
+The selected-area card in each state:
+
+| Selection | Card shows |
+|---|---|
+| only new hexes | "N to download · 0 on device"; **Download N hexes** (their POIs go along automatically) |
+| new + on-device hexes | "N to download · M on device · P need POIs"; the stale hint if any; **Download N hexes**; **Redownload M hexes**. Download also sends the P pending POIs. |
+| all on device, some without (fresh) POIs | "0 to download · M on device · P need POIs"; **Send POIs for P hexes**; **Redownload M hexes** |
+| all on device, POIs current | **Nothing to download** (disabled); **Redownload M hexes** |
+| old firmware | as above without "need POIs", the hint, or POI sends |
 
 ### 2e. Interaction
 
@@ -476,8 +498,9 @@ device" check) match only `.ebm` names, so `.poi` files do not confuse them.
   sends exactly what it sent before. The tiles do now carry the trailers,
   which old firmware ignores. No `.poi` files are sent, and no tile is
   re-sent.
-- **New app, new firmware.** Full layer. Tiles on the card from before the
-  update are re-sent once, the next time their area is synced (2d).
+- **New app, new firmware.** Full layer for new downloads, and POIs (cheap)
+  for hexes already on the card. Map tiles from before the update stay as
+  they are until the rider taps Redownload (2d).
 - **Old app, new firmware.** Behaves as today: no flags, no POIs. The `0x08`
   listing is simply never asked for.
 
@@ -566,12 +589,14 @@ H3JS_DIR=<dir with node_modules/h3-js> ANDROID_CROSSPORT=1 \
 ## 6. What is left
 
 1. **Device test** of the whole path, with new firmware and each app:
-   - select an area already on the device: it should show "N to download"
-     (the flag upgrade), then rebuild and send tiles and `.poi` files;
-   - select it again: "Nothing to download";
-   - select an area whose tiles are current but which has no POIs: "Send
-     POIs for N hexes";
-   - with old firmware: no `.poi` sends and no re-sends;
+   - select an area already on the device: "0 to download · M on device",
+     the stale hint, **Send POIs for M hexes** and **Redownload M hexes**;
+   - Send POIs: only `.poi` files go out, and the area then shows "Nothing
+     to download";
+   - Redownload: tiles and `.poi` files are rebuilt and re-sent (confirmation
+     above 20 hexes), and the hint disappears;
+   - with old firmware: no `.poi` sends and no hint; Redownload sends map
+     tiles only;
    - check the diag log for `poi save` / `poi list` lines and the
      `tile save rejected` absence.
 2. **`build_map.py`** is not ported (whole-region maps only; low priority).
@@ -589,8 +614,9 @@ H3JS_DIR=<dir with node_modules/h3-js> ANDROID_CROSSPORT=1 \
 ## 7. Open decisions
 
 - **Decided:**
-  - existing tiles are re-sent once, when their area is next synced, and
-    only to firmware that can draw the flags;
+  - map tiles already on the device are never re-sent automatically.
+    Getting the bike-route data onto them is an opt-in **Redownload** on the
+    selected-area card, with a hint when they predate it;
   - the device lists its `.poi` files (`0x08`), which doubles as the
     capability check;
   - POIs are refreshed after 30 days, on the next sync of the area (2d).

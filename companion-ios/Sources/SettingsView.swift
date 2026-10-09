@@ -152,6 +152,10 @@ struct SettingsView: View {
             .sheet(item: $ble.logFileURL) { url in DiagnosticsView(url: url) }
             .sheet(isPresented: $showSensors) { SensorsView() }
             .sheet(isPresented: $showMaps) { MapsView() }
+            .onAppear {
+                // Screenshot hook: open the maps screen straight away.
+                if ble.isDemoMaps { showMaps = true }
+            }
         }
     }
 

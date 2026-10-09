@@ -61,6 +61,7 @@ struct MapsView: View {
     @State private var failedHexes: Set<String> = []
     @State private var downloadTotal = 0            // hexes targeted this run
     @State private var downloadTask: Task<Void, Never>?
+    @State private var confirmRedownload = false
     /// Measured height of the floating card, so the map can inset for whatever
     /// the card currently is — the hint, a selection summary and a send progress
     /// card are very different heights, and this screen swaps between them.
@@ -88,9 +89,9 @@ struct MapsView: View {
         }
     }
 
-    // Tiles that will actually be sent: not already on the device (or on it
-    // without the bike-route flags its firmware can draw) and not tapped-out by
-    // the user.
+    // Tiles that will actually be sent: not already on the device and not
+    // tapped-out by the user. Tiles on the device are only rebuilt when the
+    // rider asks (Redownload).
     private var newTiles: [MapTile] {
         tiles.filter { !ble.tileIsCurrent($0.id) && !excluded.contains($0.id) }
     }
@@ -100,7 +101,11 @@ struct MapsView: View {
     private var poiTiles: [MapTile] {
         tiles.filter { !excluded.contains($0.id) && ble.poiNeedsSend($0.id) }
     }
-    private var onDeviceCount: Int { tiles.filter { ble.tileIsCurrent($0.id) }.count }
+    private var onDeviceTiles: [MapTile] { tiles.filter { ble.tileIsCurrent($0.id) } }
+    private var onDeviceCount: Int { onDeviceTiles.count }
+    /// Hexes above this many ask before a Redownload: each one is an Overpass
+    /// fetch, an elevation fetch and a BLE transfer.
+    private static let redownloadConfirmOver = 20
 
     // Toggle whether a tapped hex is included in the download.
     private func toggleHex(at coord: CLLocationCoordinate2D) {
@@ -190,6 +195,21 @@ struct MapsView: View {
                 ble.refreshDeviceMaps(); ble.refreshDeviceTiles(); locator.start()
                 store.refresh()
                 fitDownloadedHexes()
+                // Screenshot hook (-demo-maps): a selected area of which the
+                // device holds two thirds, from before the bike-route data.
+                if ble.isDemoMaps, box == nil {
+                    let b = (s: 37.745, w: -122.49, n: 37.79, e: -122.41)
+                    let ts = H3Tiles.coveringTiles(south: b.s, west: b.w, north: b.n, east: b.e)
+                    ble.demoMaps(onDevice: ts.prefix(ts.count * 2 / 3).map(\.id), withPois: [])
+                    box = b
+                    tiles = ts
+                }
+            }
+            .alert("Redownload \(onDeviceCount) hexes?", isPresented: $confirmRedownload) {
+                Button("Cancel", role: .cancel) {}
+                Button("Redownload") { download(redownload: true) }
+            } message: {
+                Text("They are rebuilt from fresh OpenStreetMap data and sent to the device again, with bike routes and water stops. This takes a while and uses data.")
             }
             // Redraw when a tile finishes decoding, or when the device's own
             // tile list arrives and flips areas to "synced". Both are also the
@@ -349,6 +369,8 @@ struct MapsView: View {
         let new = newTiles.count
         let poiOnly = poiTiles.filter { t in !newTiles.contains { $0.id == t.id } }.count
         let skipped = excluded.intersection(tiles.map(\.id)).count
+        let onDevice = onDeviceCount
+        let stale = onDeviceTiles.filter { ble.tilePredatesCycling($0.id) }.count
         return card {
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
@@ -369,12 +391,29 @@ struct MapsView: View {
                 Text("Tap a hex to skip it (or add it back).")
                     .font(BarlowFont.text(11)).foregroundStyle(Palette.faint)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                if stale > 0 {
+                    Text("\(stale) hex\(stale == 1 ? "" : "es") \(stale == 1 ? "was" : "were") made before bike routes & water stops — redownload to add them.")
+                        .font(BarlowFont.text(12)).foregroundStyle(Palette.ink)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
                 PrimaryButton(title: !ble.canUploadMap ? "Connect device to send"
                                     : new > 0 ? "Download \(new) hex\(new == 1 ? "" : "es")"
                                     : poiOnly > 0 ? "Send POIs for \(poiOnly) hex\(poiOnly == 1 ? "" : "es")"
                                     : "Nothing to download",
                               systemImage: "arrow.down.circle",
                               enabled: ble.canUploadMap && (new > 0 || poiOnly > 0)) { download() }
+                // Rebuild hexes the device already has from fresh map data —
+                // the rider's choice, never automatic: it costs a fetch and a
+                // transfer per hex. Offered on old firmware too (fresher roads),
+                // where it simply carries no POIs.
+                if onDevice > 0 {
+                    SecondaryButton(title: "Redownload \(onDevice) hex\(onDevice == 1 ? "" : "es")",
+                                    systemImage: "arrow.clockwise",
+                                    enabled: ble.canUploadMap) {
+                        if onDevice > Self.redownloadConfirmOver { confirmRedownload = true }
+                        else { download(redownload: true) }
+                    }
+                }
                 if let s = status { Text(s).font(BarlowFont.text(12)).foregroundStyle(Palette.accent) }
             }
         }
@@ -420,9 +459,13 @@ struct MapsView: View {
 
     // MARK: download
 
-    private func download() {
-        let missing = newTiles
-        let poiWork = poiTiles
+    /// `redownload`: rebuild the selected hexes the device already has from
+    /// fresh Overpass data (skipping the phone's caches) and re-send them with
+    /// their POIs. Otherwise: new hexes, plus POIs that are missing or stale.
+    private func download(redownload: Bool = false) {
+        guard !building, !ble.tilesUploading else { return }   // one job at a time
+        let missing = redownload ? onDeviceTiles : newTiles
+        let poiWork = redownload ? (ble.deviceSupportsPois ? onDeviceTiles : []) : poiTiles
         guard !missing.isEmpty || !poiWork.isEmpty else { return }
         building = true
         converted = []
@@ -438,7 +481,7 @@ struct MapsView: View {
             return "\(Int((clat / 0.08).rounded(.down)))_\(Int((clon / 0.08).rounded(.down)))"
         }.map { $0.value }
 
-        ble.startTileStream()            // begin sending as tiles are produced
+        ble.startTileStream(resend: redownload)   // begin sending as tiles are produced
         downloadTask = Task {
             var anyBuilt = false
             do {
@@ -446,7 +489,9 @@ struct MapsView: View {
                 // Anything built before goes straight out — no Overpass, no
                 // elevation fetch, no re-encoding. This is what makes a retry
                 // after a dropped link cheap instead of a full rebuild.
-                let (cached, _) = await TileCache.shared.partition(missing.map(\.id))
+                // (Not on a Redownload: that is fresh data by definition.)
+                var cached: [(id: String, data: Data)] = []
+                if !redownload { cached = await TileCache.shared.partition(missing.map(\.id)).cached }
                 if !cached.isEmpty {
                     status = "Reusing \(cached.count) cached tile\(cached.count == 1 ? "" : "s")…"
                     converted.formUnion(cached.map(\.id))
@@ -563,7 +608,7 @@ struct MapsView: View {
                 // fails the map download — the map is the thing that matters.
                 var poiNote: String? = nil
                 if !poiWork.isEmpty {
-                    do { try await sendPois(poiWork) } catch is CancellationError {
+                    do { try await sendPois(poiWork, fresh: redownload) } catch is CancellationError {
                         throw CancellationError()
                     } catch {
                         poiNote = "Cycling POIs could not be fetched — try again later."
@@ -593,8 +638,12 @@ struct MapsView: View {
     /// Build (or reuse) and queue the `.poi` files for `work`. One POI query per
     /// ~0.25° group of tiles: the query is light, so groups can be far bigger
     /// than the map batches. Each POI is stored in the one H3 cell containing it.
-    private func sendPois(_ work: [MapTile]) async throws {
-        let (cached, missingIds) = await PoiCache.shared.partition(work.map(\.id))
+    private func sendPois(_ work: [MapTile], fresh: Bool = false) async throws {
+        var cached: [(id: String, data: Data)] = []
+        var missingIds = work.map(\.id)
+        if !fresh {   // a Redownload rebuilds them from fresh data instead
+            (cached, missingIds) = await PoiCache.shared.partition(work.map(\.id))
+        }
         ble.enqueuePois(cached)
         let need = Set(missingIds)
         let groups = Dictionary(grouping: work.filter { need.contains($0.id) }) { t -> String in

@@ -154,10 +154,18 @@ class BleManager(private val app: Application) {
     private var poiSentAt: Map<String, Long> = emptyMap()
     private var flaggedTileIds: Set<String> = emptySet()
 
-    /** On the device and current: built with the bike-route flags, or the
-     *  device's firmware could not draw them anyway. */
-    fun tileIsCurrent(id: String): Boolean =
-        id in deviceTileIds && (!deviceSupportsPois || id in flaggedTileIds)
+    /** On the device. A tile there is never re-sent on its own — even one built
+     *  before the bike-route flags; the rider chooses that (Redownload). */
+    fun tileIsCurrent(id: String): Boolean = id in deviceTileIds
+
+    /**
+     * On the device, on firmware that draws the cycling layer, but not sent by
+     * this phone with the bike-route flags — so it most likely predates them.
+     * Only informs the "redownload to add them" hint; a tile from the website
+     * ZIP or another phone may already have them.
+     */
+    fun tilePredatesCycling(id: String): Boolean =
+        deviceSupportsPois && id in deviceTileIds && id !in flaggedTileIds
 
     /** The tile's POIs should go to the device: it can draw them, and it has
      *  none for this tile or this phone sent them more than PoiCache.MAX_AGE_MS ago. */
@@ -274,6 +282,7 @@ class BleManager(private val app: Application) {
     private var tileQueue = ArrayDeque<TileJob>()
     private var currentTileId: String? = null
     private var currentIsPoi = false
+    private var resendAll = false                   // this job is a Redownload
     private var tileJobFailed = false
     private var tilesMoreComing = false
     private var tileIdsBuilding = mutableListOf<String>()
@@ -2156,8 +2165,11 @@ class BleManager(private val app: Application) {
     // vectorization runs, and sends them in parallel. Call startTileStream()
     // once, enqueueTiles() per batch as they're built, finishTileStream() when
     // the last batch has been produced.
-    fun startTileStream() {
+    /** [resend]: a Redownload — tiles and POIs go out even though the device
+     *  already has them (POIs still only to firmware that draws them). */
+    fun startTileStream(resend: Boolean = false) {
         if (mapChar == null) { tileMessage = "Not connected"; return }
+        resendAll = resend
         tileQueue = ArrayDeque()
         tilesTotal = 0
         tilesDone = 0
@@ -2190,7 +2202,7 @@ class BleManager(private val app: Application) {
      * tiles already on the device or already queued.
      */
     fun enqueueTiles(newOnes: List<Pair<String, ByteArray>>) =
-        enqueue(newOnes.filter { !tileIsCurrent(it.first) }, poi = false)
+        enqueue(newOnes.filter { resendAll || !tileIsCurrent(it.first) }, poi = false)
 
     /**
      * Queue tiles' `.poi` files (sent through the same tile transfer — the
@@ -2198,7 +2210,7 @@ class BleManager(private val app: Application) {
      * POI support and for tiles whose POIs the device has and are fresh.
      */
     fun enqueuePois(newOnes: List<Pair<String, ByteArray>>) =
-        enqueue(newOnes.filter { poiNeedsSend(it.first) }, poi = true)
+        enqueue(newOnes.filter { deviceSupportsPois && (resendAll || poiNeedsSend(it.first)) }, poi = true)
 
     private fun enqueue(newOnes: List<Pair<String, ByteArray>>, poi: Boolean) {
         if (!tilesUploading) return

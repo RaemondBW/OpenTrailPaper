@@ -385,6 +385,7 @@ final class BLEManager: NSObject, ObservableObject {
     private var tileQueue: [TileJob] = []
     private var currentTileId: String? = nil        // non-nil while sending a tile
     private var currentIsPoi = false                // ...and it is a .poi file
+    private var resendAll = false                   // this job is a Redownload
     private var tileJobFailed = false
     private var tilesMoreComing = false             // app still building tiles to enqueue
 
@@ -547,6 +548,20 @@ final class BLEManager: NSObject, ObservableObject {
     // reads the layout FROM the device, so without this it can only show its
     // "connect first" empty state.
     private let isDemoDash = ProcessInfo.processInfo.arguments.contains("-demo-dash")
+
+    // Screenshot demo: a connected device holding part of a selected area,
+    // firmware with the cycling layer, tiles that predate it. See demoMaps().
+    let isDemoMaps = ProcessInfo.processInfo.arguments.contains("-demo-maps")
+
+    /// `-demo-maps`: pose the device as holding `onDevice` (none of them sent
+    /// by this phone with bike-route flags) with POIs for `withPois`.
+    func demoMaps(onDevice: [String], withPois: [String]) {
+        guard isDemoMaps else { return }
+        state = .connected
+        deviceSupportsPois = true
+        deviceTileIds = Set(onDevice)
+        devicePoiIds = Set(withPois)
+    }
 
     override init() {
         super.init()
@@ -1073,7 +1088,7 @@ final class BLEManager: NSObject, ObservableObject {
 
     // MARK: vector-map upload (phone -> device SD, mirrors the OTA transfer)
 
-    var canUploadMap: Bool { mapChar != nil && peripheral != nil }
+    var canUploadMap: Bool { (mapChar != nil && peripheral != nil) || isDemoMaps }
 
     func uploadMap(_ ebm: Data, name: String) {
         guard let c = mapChar, let p = peripheral else {
@@ -1121,10 +1136,16 @@ final class BLEManager: NSObject, ObservableObject {
         p.writeValue(Data([0x08]), for: c, type: .withResponse)   // .poi files (new firmware only)
     }
 
-    /// On the device and current: built with the bike-route flags, or the
-    /// device's firmware could not draw them anyway.
-    func tileIsCurrent(_ id: String) -> Bool {
-        deviceTileIds.contains(id) && (!deviceSupportsPois || flaggedTileIds.contains(id))
+    /// On the device. A tile there is never re-sent on its own — even one
+    /// built before the bike-route flags; the rider chooses that (Redownload).
+    func tileIsCurrent(_ id: String) -> Bool { deviceTileIds.contains(id) }
+
+    /// On the device, on firmware that draws the cycling layer, but not sent by
+    /// this phone with the bike-route flags — so it most likely predates them.
+    /// Only informs the "redownload to add them" hint; a tile from the website
+    /// ZIP or another phone may already have them.
+    func tilePredatesCycling(_ id: String) -> Bool {
+        deviceSupportsPois && deviceTileIds.contains(id) && !flaggedTileIds.contains(id)
     }
 
     /// The tile's POIs should go to the device: it can draw them, and it has
@@ -1140,8 +1161,11 @@ final class BLEManager: NSObject, ObservableObject {
     // vectorization runs, and sends them in parallel. Call startTileStream()
     // once, enqueueTiles() per batch as they're built, finishTileStream() when
     // the last batch has been produced.
-    func startTileStream() {
+    /// `resend`: a Redownload — tiles and POIs go out even though the device
+    /// already has them (POIs still only to firmware that draws them).
+    func startTileStream(resend: Bool = false) {
         guard mapChar != nil, peripheral != nil else { tileMessage = "Not connected"; return }
+        resendAll = resend
         tileQueue = []
         tilesTotal = 0
         tilesDone = 0
@@ -1169,14 +1193,14 @@ final class BLEManager: NSObject, ObservableObject {
     // Add freshly-built tiles to the send queue; starts pumping if idle. Skips
     // tiles already on the device or already queued.
     func enqueueTiles(_ newOnes: [(id: String, data: Data)]) {
-        enqueue(newOnes.filter { !tileIsCurrent($0.id) }, poi: false)
+        enqueue(newOnes.filter { resendAll || !tileIsCurrent($0.id) }, poi: false)
     }
 
     /// Queue tiles' `.poi` files (sent through the same tile transfer — the
     /// firmware tells them apart by their magic). Skipped for firmware without
     /// POI support and for tiles whose POIs the device has and are fresh.
     func enqueuePois(_ newOnes: [(id: String, data: Data)]) {
-        enqueue(newOnes.filter { poiNeedsSend($0.id) }, poi: true)
+        enqueue(newOnes.filter { deviceSupportsPois && (resendAll || poiNeedsSend($0.id)) }, poi: true)
     }
 
     private func enqueue(_ newOnes: [(id: String, data: Data)], poi: Bool) {

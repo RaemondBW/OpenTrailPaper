@@ -105,6 +105,33 @@ struct PrimaryButton: View {
     }
 }
 
+// Full-width secondary action — PrimaryButton's pill, outlined rather than
+// filled, so an optional action reads as the same family but the eye still
+// lands on the primary one first (mirrors the Android SecondaryButton).
+struct SecondaryButton: View {
+    let title: String
+    var systemImage: String? = nil
+    var enabled: Bool = true
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                if let systemImage { Image(systemName: systemImage) }
+                Text(title).font(BarlowFont.condensed(18, .semibold))
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 13)
+            .foregroundStyle(enabled ? Palette.accent : Palette.faint)
+            .background(Palette.surface)
+            .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 26, style: .continuous)
+                .strokeBorder(enabled ? Palette.accent : Palette.hairline, lineWidth: 1.5))
+        }
+        .disabled(!enabled)
+    }
+}
+
 extension Color {
     init(hex: UInt32) {
         self.init(
