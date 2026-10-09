@@ -1867,8 +1867,11 @@ static void sheetShell(uint8_t* fb, bool scrim = true) {
 }
 
 // Title + hero line + one detail line, at the summary's sizes exactly.
-static void sheetHead(const char* label, const char* hero, const char* detail,
-                      uint8_t* fb) {
+// Returns the baseline of the detail line (or where it would be), so a caller
+// can add a line under it: the hero steps down a size for long text, which
+// moves everything below it.
+static int sheetHead(const char* label, const char* hero, const char* detail,
+                     uint8_t* fb) {
     const int W = epd_rotated_display_width();
     const int H = epd_rotated_display_height();
     const int x = ui::MARGIN;
@@ -1915,6 +1918,7 @@ static void sheetHead(const char* label, const char* hero, const char* detail,
         ui::text(&Arial_B, x, y + Arial_B.ascender, line, fb,
                  EPD_DRAW_ALIGN_LEFT, ui::INK);
     }
+    return y + Arial_B.ascender;
 }
 
 void ui_render_power_sheet(bool recording, uint8_t* fb) {
@@ -1945,15 +1949,17 @@ void ui_render_unpair_sheet(bool paired, const char* name, int count, uint8_t* f
                  who, count - 1);
     else
         snprintf(detail, sizeof(detail), "%s will be forgotten.", who);
-    sheetHead("PHONE", "UNPAIR PHONE?", detail, fb);
+    const int detailBase = sheetHead("PHONE", "UNPAIR PHONE?", detail, fb);
     // A second line straight under sheetHead's detail line, same face: what
-    // happens next. (The detail baseline sits 76 px below the hero's top.)
+    // happens next. Placed from the detail's real baseline — a fixed offset
+    // assumed the smaller hero face, and "UNPAIR PHONE?" fits the big one, so
+    // this line landed on top of the phone's name.
     const int W = epd_rotated_display_width();
-    const int H = epd_rotated_display_height();
     char next[72];
     fitText(&Arial_B, "It disconnects now; the next phone can pair.",
             W - 2 * ui::MARGIN, next, sizeof(next));
-    ui::text(&Arial_B, ui::MARGIN, (H - 520) + 6 + 40 + 118, next, fb,
+    ui::text(&Arial_B, ui::MARGIN,
+             detailBase + (Arial_B.ascender - Arial_B.descender) + 6, next, fb,
              EPD_DRAW_ALIGN_LEFT, ui::INK);
     sheetButton(kPowerShutdown, "UNPAIR", true, fb);
     sheetButton(kPowerCancel, "CANCEL", false, fb);
