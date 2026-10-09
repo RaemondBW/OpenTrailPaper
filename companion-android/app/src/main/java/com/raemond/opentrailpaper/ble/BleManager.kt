@@ -562,6 +562,20 @@ class BleManager(private val app: Application) {
     }
 
     /**
+     * Settings › Unpair: while connected, tell the device to drop this phone
+     * ([0xFE 0x55] on settings — the same as Paired Devices › Phone › Unpair
+     * on the panel), then forget it here, which also removes Android's bond.
+     * Not connected: forget here only.
+     */
+    fun unpairDevice() {
+        val c = settingsChar
+        if (state != ConnState.CONNECTED || c == null) { forgetDevice(); return }
+        writeChar(c, byteArrayOf(0xFE.toByte(), 0x55))
+        // The device drops the link once it has acted; give the write a moment.
+        main.postDelayed({ forgetDevice() }, 1500)
+    }
+
+    /**
      * Settings › Forget this device: stop connecting to it, remove Android's
      * bond (so a later re-pair starts clean) and look for a device to pair
      * with. The device keeps ITS half until the rider unpairs on the device.

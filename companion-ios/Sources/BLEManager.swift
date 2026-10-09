@@ -863,6 +863,36 @@ final class BLEManager: NSObject, ObservableObject {
         UserDefaults.standard.set(p.name, forKey: Self.pairedDeviceNameKey)
     }
 
+    /// Set after Unpair succeeds: the device dropped its bond, so iOS's copy
+    /// is now stale and only the rider can delete it (Settings › Bluetooth).
+    @Published var unpairNeedsIOSForget = false
+    private var unpairWritePending = false
+
+    /// Settings › Unpair: while connected, tell the device to drop this
+    /// iPhone ([0xFE 0x55] on settings — the same as Paired Devices › Phone ›
+    /// Unpair on the panel), then forget it here. Not connected: forget here
+    /// only; the device keeps the pairing until it is unpaired on the device.
+    func unpairDevice() {
+        guard state == .connected, let c = settingsChar, let p = peripheral else {
+            forgetDevice()
+            return
+        }
+        unpairWritePending = true
+        p.writeValue(Data([0xFE, 0x55]), for: c, type: .withResponse)
+        // The device drops the link right after it acts; don't wait forever
+        // for the acknowledgment if it went down first.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            guard let self, self.unpairWritePending else { return }
+            self.unpairDone(ok: true)
+        }
+    }
+
+    private func unpairDone(ok: Bool) {
+        unpairWritePending = false
+        forgetDevice()
+        if ok { unpairNeedsIOSForget = true }
+    }
+
     /// Settings › Forget this device: stop connecting to it and look for a
     /// device to pair with again. The app can't delete the iOS bond — the
     /// rider does that in iOS Settings (the UI says so).
@@ -2556,6 +2586,12 @@ extension BLEManager: CBPeripheralDelegate {
                                 error: Error?) {
         if let error {
             artLog.error("write to \(ch.uuid.uuidString, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+        }
+        if ch.uuid == BikeUUID.settings {
+            MainActor.assumeIsolated {
+                if unpairWritePending { unpairDone(ok: error == nil) }
+            }
+            return
         }
         guard ch.uuid == BikeUUID.media else { return }
         MainActor.assumeIsolated { mediaWriteAcked(failed: error != nil) }

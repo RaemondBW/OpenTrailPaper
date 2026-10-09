@@ -25,6 +25,11 @@ enum PairingCopy {
         }
     }
 
+    static let unpairMessage =
+        "The device forgets this iPhone and opens pairing to the next phone, and the app stops connecting to it."
+    static let afterUnpairMessage =
+        "The device has forgotten this iPhone. One more step so they can pair again later: \(iosForgetSteps)"
+
     static let forgetMessage =
         "The app stops connecting to this device and looks for one to pair with.\n\nTo pair the device with a different phone, also unpair it on the device (Menu › Paired Devices › Phone › Unpair). To pair this iPhone again later, first remove the old pairing: \(iosForgetSteps)"
 }
@@ -205,7 +210,7 @@ struct SettingsView: View {
                     Text("The app only connects to this device, and the device only accepts this iPhone until it is unpaired on the device (Menu › Paired Devices › Phone).")
                         .font(.system(size: 12)).foregroundStyle(Palette.muted)
                     Button(role: .destructive) { confirmForget = true } label: {
-                        Text("Forget This Device")
+                        Text(ble.state == .connected ? "Unpair This Device" : "Forget This Device")
                             .font(BarlowFont.text(15, .semibold))
                             .foregroundStyle(Palette.accent)
                     }
@@ -219,12 +224,22 @@ struct SettingsView: View {
                 }
             }
         }
-        .confirmationDialog("Forget this OpenTrailPaper?", isPresented: $confirmForget,
-                            titleVisibility: .visible) {
-            Button("Forget Device", role: .destructive) { ble.forgetDevice() }
+        .confirmationDialog(ble.state == .connected ? "Unpair this OpenTrailPaper?"
+                                                    : "Forget this OpenTrailPaper?",
+                            isPresented: $confirmForget, titleVisibility: .visible) {
+            if ble.state == .connected {
+                Button("Unpair", role: .destructive) { ble.unpairDevice() }
+            } else {
+                Button("Forget Device", role: .destructive) { ble.forgetDevice() }
+            }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text(PairingCopy.forgetMessage)
+            Text(ble.state == .connected ? PairingCopy.unpairMessage : PairingCopy.forgetMessage)
+        }
+        .alert("Unpaired", isPresented: $ble.unpairNeedsIOSForget) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(PairingCopy.afterUnpairMessage)
         }
     }
 

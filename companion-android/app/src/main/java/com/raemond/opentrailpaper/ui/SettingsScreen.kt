@@ -212,13 +212,13 @@ fun SettingsScreen(ble: BleManager, host: HostActions, onShowTutorial: () -> Uni
     if (confirmForget) {
         AlertDialog(
             onDismissRequest = { confirmForget = false },
-            title = { Text("Forget this OpenTrailPaper?") },
-            text = { Text(PairingCopy.FORGET_MESSAGE) },
+            title = { Text(if (connected) "Unpair this OpenTrailPaper?" else "Forget this OpenTrailPaper?") },
+            text = { Text(if (connected) PairingCopy.UNPAIR_MESSAGE else PairingCopy.FORGET_MESSAGE) },
             confirmButton = {
                 TextButton(onClick = {
                     confirmForget = false
-                    ble.forgetDevice()
-                }) { Text("Forget device", color = Palette.accent) }
+                    if (connected) ble.unpairDevice() else ble.forgetDevice()
+                }) { Text(if (connected) "Unpair" else "Forget device", color = Palette.accent) }
             },
             dismissButton = {
                 TextButton(onClick = { confirmForget = false }) { Text("Cancel") }
@@ -358,7 +358,7 @@ private fun PairedDeviceCard(ble: BleManager, connected: Boolean, onForget: () -
             )
             Spacer(Modifier.size(8.dp))
             Text(
-                "Forget this device",
+                if (connected) "Unpair this device" else "Forget this device",
                 style = barlow(15.sp, FontWeight.SemiBold),
                 color = Palette.accent,
                 modifier = Modifier.clickable(onClick = onForget),
@@ -399,6 +399,10 @@ object PairingCopy {
                 "$DEVICE_UNPAIR_STEPS Then tap Re-pair: the app removes this phone's old " +
                 "pairing and connects again, and the device shows a code to type in."
     }
+
+    const val UNPAIR_MESSAGE =
+        "The device forgets this phone and opens pairing to the next phone. The app " +
+            "removes its pairing too and stops connecting to it."
 
     const val FORGET_MESSAGE =
         "The app stops connecting to this device, removes this phone's Bluetooth pairing " +

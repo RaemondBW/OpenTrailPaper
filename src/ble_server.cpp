@@ -122,6 +122,15 @@ class SettingsCb : public NimBLECharacteristicCallbacks {
     }
     void onWrite(NimBLECharacteristic* c, NimBLEConnInfo&) override {
         std::string v = c->getValue();
+        // [0xFE 0x55]: the paired phone unpairs itself (the app's "Unpair"
+        // button) — same as Paired Devices > Phone > UNPAIR on the panel.
+        // Settings is WRITE_ENC, so only a bonded phone gets here. Too short
+        // to be a settings payload (>= 4 bytes), and older firmware drops it.
+        if (v.size() == 2 && (uint8_t)v[0] == 0xFE && (uint8_t)v[1] == 0x55) {
+            diag::log("ble: unpair requested by the paired phone");
+            ble_server::requestUnpair();
+            return;
+        }
         if (v.size() >= 4) {
             int16_t ftp = (int16_t)((uint8_t)v[0] | ((uint8_t)v[1] << 8));
             int16_t tz = (int16_t)((uint8_t)v[2] | ((uint8_t)v[3] << 8));
