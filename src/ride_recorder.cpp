@@ -12,6 +12,7 @@
 #include "speed_source.h"
 #include "usb_storage.h"
 #include "diag.h"
+#include "crash_report.h"
 
 namespace {
 
@@ -766,6 +767,10 @@ void retryMountIfNeeded() {
 
     if (ok) {
         sdOk = true;
+        // Deliver crash evidence BEFORE flagging the late mount: the UI task
+        // reacts to that flag by exposing the card over USB. This runs on the
+        // main task (loop()), the only one that touches crash delivery.
+        crash_report::onSdMounted("late mount");
         lateMount = true;   // boot ran without a card — see consumeLateMount()
         diag::log("sd: card back after %u retr%s", (unsigned)tries + 1,
                   tries ? "ies" : "y");

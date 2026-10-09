@@ -438,6 +438,12 @@ void setup() {
     // say the device was busy — which is what read as a freeze.
     ui_dashboard::bootStep("SD card");
     bool sdOk = ride_recorder::begin();
+    // Crash evidence first: queued crash reports and the pending Memfault dump
+    // go to the card NOW, synchronously, before the UI task exists — and so
+    // before usb_storage::begin() can hand the card to a host. A device that
+    // crashes ~15 s after every boot would otherwise never deliver either.
+    // Bounded work: at most four short reports and one <=64 KiB dump.
+    if (sdOk) crash_report::onSdMounted("boot mount");
     if (sdOk)
         ui_dashboard::bootDetailFor("SD card", "%lu MB free · %d rides",
                                     (unsigned long)ride_recorder::sdFreeMB(),

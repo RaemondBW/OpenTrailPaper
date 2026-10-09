@@ -81,7 +81,7 @@ uint8_t notification=0;
 void streamFileWindowed(const char* path,const char*){downloadedPath=path;}
 void notifyByte(uint8_t b){notification=b;}
 // BLE LOG DOWNLOAD
-void reboot(){id[0]=0;retryAt=0;requested=0;consumed=false;memfault_packetizer_abort();}
+void reboot(){id[0]=0;retryAt=0;failedAttempts=0;requested=0;consumed=false;memfault_packetizer_abort();}
 void reset(){files.clear();flashValid=readOK=clearOK=renameOK=true;mounted=host=corruptClose=false;limit=SIZE_MAX;cleared=0;serial.clear();logs.clear();reboot();}
 void tick(){nowMs+=30001;memfault_service::tick();assert(!sdDepth&&!powerDepth);}
 int main(int argc,char** argv){
@@ -107,6 +107,14 @@ int main(int argc,char** argv){
  // A packetizer-time flash read error must not archive its 0xEF substitute.
  reset();mounted=true;memfault_service::pendingId();readOK=false;tick();assert(flashValid&&!cleared);
  reset();flashValid=false;tick();assert(files.empty()&&!cleared);
+ // Mount hook exports and clears at once, so the next crash gets a fresh dump.
+ reset();mounted=true;memfault_service::deliverNow("boot mount");assert(!flashValid&&cleared==1&&files.size()==1&&!sdDepth&&!powerDepth);
+ // Never while a USB host owns the card; then retries every ~3 s, backing off to 30 s.
+ reset();mounted=host=true;memfault_service::deliverNow("late mount");assert(flashValid&&files.empty());host=false;mounted=false;
+ for(int i=0;i<25;++i){nowMs+=3001;memfault_service::tick();}assert(int32_t(retryAt-nowMs)>3001);
+ mounted=true;nowMs+=30001;memfault_service::tick();assert(!flashValid&&files.size()==1);
+ reset();nowMs+=3001;memfault_service::tick();mounted=true;nowMs+=3001;memfault_service::tick();assert(!flashValid&&files.size()==1);
+ mounted=false;
  // Phone download must preserve the full 45-byte Memfault filename.
  mounted=true;const char* filename="memfault-e5cdc8033ebd9bfcd91ba1b95b35c269.log";
  sendLogFile(filename);assert(downloadedPath==std::string("/logs/")+filename);

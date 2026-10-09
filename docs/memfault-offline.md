@@ -32,8 +32,13 @@ is uploaded automatically.
 
 If SD fails to mount, is owned by USB mass storage, or has an I/O failure, the
 first pending dump remains in internal flash across reboot and power removal.
-Retries occur every 30 seconds. A second panic while a dump is pending preserves
-that first dump; this is a one-dump queue, not unlimited crash storage. Existing
+Export is attempted right after the SD card mounts (at boot, on a late mount
+and after a USB host releases the card), before the card is exposed over USB,
+then every 3 seconds for about a minute and every 30 seconds after that. A
+second panic while a dump is pending preserves that first dump; this is a
+one-dump queue, not unlimited crash storage. Exporting at mount time and
+clearing the flash copy as soon as the SD export verifies is what lets a
+boot-looping device record a fresh dump for each subsequent crash. Existing
 matching exports are acknowledged without duplication; conflicting files are
 not overwritten. A flash-read error aborts export even though the SDK's
 packetizer normally substitutes an error marker and continues.
