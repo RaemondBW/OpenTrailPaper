@@ -37,6 +37,7 @@ import com.raemond.opentrailpaper.data.DashLayout
 import com.raemond.opentrailpaper.data.DeviceText
 import com.raemond.opentrailpaper.data.FirmwareRelease
 import com.raemond.opentrailpaper.data.Prefs
+import com.raemond.opentrailpaper.transfer.TransferCenter
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -275,6 +276,9 @@ class BleManager(private val app: Application) {
      */
     private sealed interface Transfer {
         val displayName: String
+
+        val transferId: String
+            get() = "ble.download.${if (this is Log) "log" else "ride"}.$displayName"
 
         data class Ride(val name: String) : Transfer {
             override val displayName get() = name
@@ -601,6 +605,8 @@ class BleManager(private val app: Application) {
             // Every workout reply is a notification too: ask only once the
             // CCCD write has landed, so the Workouts screen opens populated.
             BikeUuid.workout -> refreshWorkouts()
+            // Which art format the device takes; the answer is a notification.
+            BikeUuid.media -> writeChar(mediaChar, byteArrayOf(0x03))
         }
     }
 
@@ -636,6 +642,8 @@ class BleManager(private val app: Application) {
         settingsChar = null; statusChar = null; routeChar = null; ridesChar = null
         sensorsChar = null; mapChar = null; otaChar = null; dashChar = null
         meshChar = null; mediaChar = null; workoutChar = null
+        mediaToneArt = false   // the next device may be older firmware
+        lastMediaMeta = null
         updateMediaRemote()    // no link, no media observers
         stopLocationStream()   // no device to send the phone's position to
 
@@ -661,6 +669,8 @@ class BleManager(private val app: Application) {
             keepAwake(false)
             mapMessage = "Upload interrupted — try again"
         }
+        TransferCenter.finish(MAP_TRANSFER, success = false, message = "Connection dropped")
+        TransferCenter.finish(ROUTE_TRANSFER, success = false, message = "Connection dropped")
         if (tilesUploading) {
             tileQueue.clear()
             finishTileJob("Interrupted — reconnect to resume")
@@ -836,9 +846,18 @@ class BleManager(private val app: Application) {
     }
 
     private fun handleMediaNotify(data: ByteArray) {
-        if (data.size < 2 || data[0] != 0xA0.toByte()) return
-        mediaRemote.handleCommand(data[1].toInt())
+        if (data.size < 2) return
+        when (data[0]) {
+            0xA0.toByte() -> mediaRemote.handleCommand(data[1].toInt())
+            0xA1.toByte() -> mediaToneArt = data[1].toInt() and 0x01 != 0
+        }
     }
+
+    // Does the device take art the phone already dithered ([0x13], a third of
+    // the bytes)? Asked with [0x03] once media notifications are up; firmware
+    // that predates it never answers, so this stays false and art goes as
+    // 8-bit grayscale.
+    private var mediaToneArt = false
 
     // The editor's "grant media access" card: Android gates media sessions
     // behind notification access, and only the rider can flip that switch.
@@ -878,35 +897,58 @@ class BleManager(private val app: Application) {
             })
             out.write(0)
         }
-        writeChar(mediaChar, out.toByteArray())
+        // Players republish identical metadata in bursts (Spotify: ~40 times
+        // per track change). Each is an acknowledged write that would queue
+        // ahead of the album art, so only changes go out.
+        val packet = out.toByteArray()
+        if (packet.contentEquals(lastMediaMeta)) return
+        lastMediaMeta = packet
+        writeChar(mediaChar, packet)
     }
 
+    private var lastMediaMeta: ByteArray? = null
+
     fun sendMediaClear() {
+        lastMediaMeta = null
         writeChar(mediaChar, byteArrayOf(0x02))
     }
 
-    /** 8-bit grayscale, streamed: [0x10 w h] begin, [0x11]+bytes, [0x12] end. */
+    /**
+     * Streamed: [0x10 w h] begin, [0x11]+bytes, [0x12] end, as 8-bit
+     * grayscale — or [0x13 w h] with tone indices dithered here (ArtDither)
+     * when the device says it takes them, a third of the bytes.
+     */
     fun sendMediaArt(gray: ByteArray, width: Int, height: Int) {
         if (mediaChar == null) return
+        val tones = mediaToneArt
+        val payload = if (tones) ArtDither.pack(ArtDither.dither(gray, width, height)) else gray
+        // The link idles at 150-300 ms per connection event; art at that pace
+        // took tens of seconds. Ask for the fast interval for the transfer
+        // (the phone is the central, so this works on any firmware), and hand
+        // the link back once the last packet is out.
+        val g = gatt
+        g?.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
         writeChar(
             mediaChar,
             byteArrayOf(
-                0x10,
+                if (tones) 0x13 else 0x10,
                 (width and 0xFF).toByte(), ((width shr 8) and 0xFF).toByte(),
                 (height and 0xFF).toByte(), ((height shr 8) and 0xFF).toByte(),
             ),
         )
         var off = 0
-        while (off < gray.size) {
-            val n = minOf(chunkSize, gray.size - off)
+        while (off < payload.size) {
+            val n = minOf(chunkSize, payload.size - off)
             writeChar(
                 mediaChar,
-                byteArrayOf(0x11) + gray.copyOfRange(off, off + n),
+                byteArrayOf(0x11) + payload.copyOfRange(off, off + n),
                 withResponse = false,
             )
             off += n
         }
-        writeChar(mediaChar, byteArrayOf(0x12))
+        writeChar(mediaChar, byteArrayOf(0x12)) {
+            if (gatt === g) g?.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_BALANCED)
+        }
     }
 
     // MARK: workouts (upload, control, live status — CHR_WORKOUT)
@@ -1131,6 +1173,14 @@ class BleManager(private val app: Application) {
         }
         val t = dlQueue.removeFirst()
         dlActive = t
+        TransferCenter.begin(
+            t.transferId,
+            kind = if (t is Transfer.Log) TransferCenter.Kind.LOG_DOWNLOAD else TransferCenter.Kind.RIDE_DOWNLOAD,
+            title = if (t is Transfer.Log) "Downloading log" else "Downloading ride",
+            detail = t.displayName,
+            indeterminate = true,
+        )
+        TransferCenter.update(t.transferId, waiting = dlQueue.size)
         dlBuffer = java.io.ByteArrayOutputStream()
         dlExpected = 0
         dlNextSeq = 0
@@ -1159,6 +1209,11 @@ class BleManager(private val app: Application) {
      * request. Always the single exit point, so the queue can't jam.
      */
     private fun endActiveTransfer() {
+        // Every exit comes through here; a success was already reported, so
+        // this only lands for the failures (timeout, busy, short, dropped).
+        dlActive?.let {
+            TransferCenter.finish(it.transferId, success = false, message = lastMessage ?: "Download stopped")
+        }
         dlWatchdog?.cancel()
         dlWatchdog = null
         dlActive = null
@@ -1182,6 +1237,7 @@ class BleManager(private val app: Application) {
     private fun publishQueue() {
         val names = dlQueue.map { it.displayName }
         if (names != queuedDownloads) queuedDownloads = names
+        dlActive?.let { TransferCenter.update(it.transferId, waiting = dlQueue.size) }
     }
 
     /**
@@ -1249,6 +1305,11 @@ class BleManager(private val app: Application) {
                 dlExpected = le32(d, 1)
                 dlBuffer = java.io.ByteArrayOutputStream(max(dlExpected, 1024))
                 dlNextSeq = 0
+                dlActive?.let {
+                    TransferCenter.update(
+                        it.transferId, completed = 0, total = dlExpected.toLong(), indeterminate = false,
+                    )
+                }
             }
 
             0x11 -> {   // chunk: [u16 seq][payload]
@@ -1263,6 +1324,7 @@ class BleManager(private val app: Application) {
                     dlBuffer.write(d, 3, d.size - 3)
                     dlNextSeq = (dlNextSeq + 1) and 0xFFFF
                     downloadProgress = min(1.0, dlBuffer.size().toDouble() / dlExpected)
+                    dlActive?.let { TransferCenter.update(it.transferId, completed = dlBuffer.size().toLong()) }
                 }
             }
 
@@ -1311,6 +1373,12 @@ class BleManager(private val app: Application) {
         // transfer clears it (`bytes` is already a copy).
         val wasLog = downloadingLog
         val name = if (wasLog) (downloadingName ?: "diag") else dlName
+        dlActive?.let {
+            TransferCenter.finish(
+                it.transferId, success = true,
+                message = if (wasLog) "Log downloaded" else "$name downloaded",
+            )
+        }
         endActiveTransfer()
 
         if (wasLog) {
@@ -1420,14 +1488,22 @@ class BleManager(private val app: Application) {
         routeSent = false
         routeReceived = false
         var written = 0
+        var writtenBytes = 0L
         val total = packets.size
         val ch = routeChar
+        TransferCenter.begin(
+            ROUTE_TRANSFER, TransferCenter.Kind.ROUTE, "Sending route", detail = name,
+            total = packets.sumOf { it.size }.toLong(),
+        )
         packets.forEach { pkt ->
             writeChar(ch, pkt) {
                 written += 1
+                writtenBytes += pkt.size
                 lastUploadProgress = written.toDouble() / total
+                TransferCenter.update(ROUTE_TRANSFER, completed = writtenBytes)
                 if (written == total) {
                     lastUploadProgress = null
+                    TransferCenter.finish(ROUTE_TRANSFER, success = true, message = "Route “$name” sent")
                     // The writes have landed; the button now shows "Sent".
                     // Firmware that notifies back (0x23/0x24) upgrades that to a
                     // real "Received by device" — see handleRouteNotify.
@@ -1461,20 +1537,32 @@ class BleManager(private val app: Application) {
         }
         keepAwake(true)
         otaMessage = "Downloading ${release.tag}…"
+        TransferCenter.begin(
+            OTA_TRANSFER, TransferCenter.Kind.FIRMWARE, "Firmware ${release.tag}",
+            detail = "Downloading from GitHub…", total = release.size.toLong(),
+            ble = true, network = true,
+        )
         scope.launch {
-            runCatching { FirmwareRelease.image(release) }
+            runCatching { FirmwareRelease.image(release, OTA_TRANSFER) }
                 .onSuccess { startFirmwareUpload(it, release.tag) }
                 .onFailure {
                     keepAwake(false)
                     otaMessage = "Download failed — check your connection"
+                    TransferCenter.finish(OTA_TRANSFER, success = false, message = "Download failed")
                 }
         }
     }
 
     private fun startFirmwareUpload(data: ByteArray, tag: String) {
         if (otaChar == null) {
-            keepAwake(false); otaMessage = "Not connected"; return
+            keepAwake(false); otaMessage = "Not connected"
+            TransferCenter.finish(OTA_TRANSFER, success = false, message = "Not connected")
+            return
         }
+        TransferCenter.begin(
+            OTA_TRANSFER, TransferCenter.Kind.FIRMWARE, "Firmware $tag",
+            detail = "Sending to the device…", total = data.size.toLong(),
+        )
         otaTargetVersion = tag
         otaData = data
         otaSentBytes = 0
@@ -1513,6 +1601,7 @@ class BleManager(private val app: Application) {
             writeChar(otaChar, pkt, withResponse = false) {
                 otaSentBytes += payload
                 otaProgress = otaSentBytes.toDouble() / max(total, 1)
+                TransferCenter.update(OTA_TRANSFER, completed = otaSentBytes.toLong())
             }
             offset = end
         }
@@ -1520,6 +1609,7 @@ class BleManager(private val app: Application) {
         writeChar(otaChar, byteArrayOf(0x03)) {                   // commit
             otaPhase = OtaPhase.SAVING
             otaMessage = "Saving to the device…"
+            TransferCenter.update(OTA_TRANSFER, detail = "Saving to the device…", indeterminate = true)
         }
     }
 
@@ -1533,6 +1623,10 @@ class BleManager(private val app: Application) {
     }
 
     private fun otaFinish(phase: OtaPhase, msg: String) {
+        TransferCenter.finish(
+            OTA_TRANSFER, success = phase == OtaPhase.DONE,
+            message = if (phase == OtaPhase.DONE) "Updated to $deviceFirmware" else msg,
+        )
         otaWatchdog?.cancel(); otaWatchdog = null
         otaInProgress = false
         otaPhase = phase
@@ -1561,6 +1655,9 @@ class BleManager(private val app: Application) {
                     // give it a short grace for that second reboot to land.
                     otaPhase = OtaPhase.VERIFYING
                     otaMessage = "Installing — flashing from the SD card…"
+                    TransferCenter.update(
+                        OTA_TRANSFER, detail = "Installing — flashing from the SD card…", indeterminate = true,
+                    )
                     armOtaWatchdog(
                         60,
                         "Device restarted but is still on $deviceFirmware. The install " +
@@ -1582,6 +1679,9 @@ class BleManager(private val app: Application) {
                 otaProgress = 1.0
                 otaPhase = OtaPhase.INSTALLING
                 otaMessage = "Installing — the device is restarting…"
+                TransferCenter.update(
+                    OTA_TRANSFER, detail = "Installing — the device is restarting…", indeterminate = true,
+                )
                 keepAwake(false)
                 armOtaWatchdog(150, INSTALL_WATCHDOG_MSG)
             }
@@ -2001,6 +2101,10 @@ class BleManager(private val app: Application) {
         mapProgress = 0.0
         mapMessage = "Sending map…"
         keepAwake(true)
+        TransferCenter.begin(
+            MAP_TRANSFER, TransferCenter.Kind.MAP_UPLOAD, "Sending map", detail = name,
+            total = ebm.size.toLong(),
+        )
 
         val cmd = Packet(5 + name.length)
         cmd.u8(0x01)
@@ -2015,6 +2119,7 @@ class BleManager(private val app: Application) {
         mapUploading = false
         keepAwake(false)
         mapMessage = "Canceled"
+        TransferCenter.finish(MAP_TRANSFER, success = false, message = "Canceled")
     }
 
     /** Ask the device which map areas it already has (streamed back via notify). */
@@ -2040,6 +2145,23 @@ class BleManager(private val app: Application) {
         tilesUploading = true
         tileMessage = "Sending tiles…"
         keepAwake(true)
+        TransferCenter.begin(
+            TILES_TRANSFER, TransferCenter.Kind.MAP_TILES, "Map tiles", detail = "Building tiles…",
+            unit = TransferCenter.Unit.ITEMS, indeterminate = true,
+        )
+    }
+
+    /** Mirror the tile job into TransferCenter. */
+    private fun reportTiles() {
+        val idle = currentTileId == null && tileQueue.isEmpty() && tilesMoreComing
+        TransferCenter.update(
+            TILES_TRANSFER,
+            completed = tilesDone.toLong(),
+            total = tilesTotal.toLong(),
+            detail = if (idle) "Building tiles…"
+                     else "Sending tile ${min(tilesDone + 1, tilesTotal)} of $tilesTotal",
+            indeterminate = tilesTotal == 0,
+        )
     }
 
     /**
@@ -2056,6 +2178,7 @@ class BleManager(private val app: Application) {
         tileQueue.addAll(fresh)
         tilesTotal += fresh.size
         if (currentTileId == null) sendNextTile()   // pump if idle
+        reportTiles()
     }
 
     /** No more batches coming; let the queue drain and finish. */
@@ -2073,6 +2196,14 @@ class BleManager(private val app: Application) {
     }
 
     private fun finishTileJob(message: String?) {
+        if (tilesUploading) {
+            val ok = message == "Tiles installed"
+            TransferCenter.finish(
+                TILES_TRANSFER, success = ok,
+                message = if (ok) "$tilesDone tile${if (tilesDone == 1) "" else "s"} on the device"
+                          else message ?: "Stopped",
+            )
+        }
         tilesUploading = false
         tilesMoreComing = false
         mapUploading = false
@@ -2095,6 +2226,7 @@ class BleManager(private val app: Application) {
         mapEndSent = false
         mapUploading = true            // reuse the CHR_MAP chunk pump
         tileMessage = "Sending tile ${tilesDone + 1}/$tilesTotal…"
+        reportTiles()
 
         val cmd = Packet(5 + tile.first.length)
         cmd.u8(0x06)                   // begin-tile
@@ -2115,6 +2247,7 @@ class BleManager(private val app: Application) {
             writeChar(mapChar, pkt, withResponse = false) {
                 mapSentBytes += payload
                 mapProgress = mapSentBytes.toDouble() / max(total, 1)
+                if (currentTileId == null) TransferCenter.update(MAP_TRANSFER, completed = mapSentBytes.toLong())
             }
             offset = end
         }
@@ -2135,10 +2268,12 @@ class BleManager(private val app: Application) {
                     tilesDone += 1
                     currentTileId = null
                     sendNextTile()
+                    reportTiles()
                 } else {
                     mapUploading = false
                     mapProgress = 1.0
                     mapMessage = "Map installed"
+                    TransferCenter.finish(MAP_TRANSFER, success = true, message = "Map installed")
                     keepAwake(false)
                     refreshDeviceMaps()
                 }
@@ -2154,6 +2289,7 @@ class BleManager(private val app: Application) {
                     mapUploading = false
                     keepAwake(false)
                     mapMessage = "Map upload failed ($code)"
+                    TransferCenter.finish(MAP_TRANSFER, success = false, message = "Map upload failed ($code)")
                 }
             }
 
@@ -2352,6 +2488,12 @@ class BleManager(private val app: Application) {
     }
 
     companion object {
+        // TransferCenter ids for the one-at-a-time transfers.
+        private const val OTA_TRANSFER = "ble.ota"
+        private const val MAP_TRANSFER = "ble.map"
+        private const val TILES_TRANSFER = "ble.tiles"
+        private const val ROUTE_TRANSFER = "ble.route"
+
         private const val INSTALL_WATCHDOG_MSG =
             "Device didn't come back after installing. Check it's powered on and nearby, " +
                 "or use the SD-card method."

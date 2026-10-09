@@ -37,9 +37,13 @@ targets:
     platform: iOS
     sources:
       - Sources
+      # TransferActivityAttributes, shared with the Live Activity extension.
+      - Shared
     dependencies:
       - package: firebase-ios-sdk
         product: FirebaseAppCheck
+      # Draws the transfer Live Activity (Lock Screen + Dynamic Island).
+      - target: TransferWidget
     entitlements:
       path: Sources/OpenTrailPaper.entitlements
       properties:
@@ -63,3 +67,18 @@ targets:
           - $(SRCROOT)/Sources/H3/include
         # H3 is third-party C; don't fail the build on its warnings.
         GCC_WARN_INHIBIT_ALL_WARNINGS: YES
+  # Widget extension whose only job is the transfer Live Activity. It shares
+  # nothing with the app but the ActivityAttributes type in Shared/ (ActivityKit
+  # carries the state across), so no App Group is needed.
+  TransferWidget:
+    type: app-extension
+    platform: iOS
+    sources:
+      - TransferWidget
+      - Shared
+    settings:
+      base:
+        INFOPLIST_FILE: TransferWidget/Info.plist
+        PRODUCT_BUNDLE_IDENTIFIER: com.raemond.opentrailpaper.TransferWidget
+        TARGETED_DEVICE_FAMILY: "1"
+        SKIP_INSTALL: YES

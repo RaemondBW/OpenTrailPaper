@@ -7,7 +7,12 @@ struct BikeGPSCompanionApp: App {
     @StateObject private var appState = AppState()
     @Environment(\.scenePhase) private var scenePhase
 
-    init() { SyncAccounts.configureAppCheck() }
+    init() {
+        SyncAccounts.configureAppCheck()
+        // Up before any transfer: it ends Live Activities a killed run left
+        // behind, and watches for the app leaving the foreground.
+        TransferCenter.shared.runDemoIfRequested()
+    }
 
     var body: some Scene {
         WindowGroup {
@@ -15,6 +20,15 @@ struct BikeGPSCompanionApp: App {
                 .environmentObject(ble)
                 .environmentObject(appState)
                 .tint(Palette.accent)
+                // The app is paper-and-ink by design (see Theme.swift): every
+                // Palette colour is a fixed light value. Left to follow a dark
+                // system appearance, the stock controls (segmented pickers,
+                // steppers, toggles, List/Form rows, sheets) went dark while the
+                // paper stayed cream — white-on-cream segments, invisible
+                // stepper glyphs, a black editor sheet. UIUserInterfaceStyle=Light
+                // in Info.plist pins every window and sheet; this keeps the
+                // SwiftUI environment in step with it.
+                .preferredColorScheme(.light)
                 // Strava / RideWithGPS sign-in returning through the URL scheme
                 // (normally the auth session catches it; this is the fallback).
                 .onOpenURL { url in Task { await SyncAccounts.shared.handle(callback: url) } }
@@ -136,7 +150,7 @@ struct RootView: View {
                          "-demo-route", "-demo-rides", "-demo-update", "-demo-dash",
                          "-demo-mesh", "-demo-mesh-settings", "-demo-mesh-map",
                          "-demo-mesh-nodes", "-demo-mesh-channels",
-                         "-demo-mesh-share", "-demo-mesh-off"]
+                         "-demo-mesh-share", "-demo-mesh-off", "-demo-transfer"]
         if demoFlags.contains(where: a.contains) { return false }
         return !UserDefaults.standard.bool(forKey: BLEManager.onboardedKey)
     }

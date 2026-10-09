@@ -16,6 +16,7 @@ import com.google.firebase.appcheck.FirebaseAppCheck
 import com.google.firebase.appcheck.debug.DebugAppCheckProviderFactory
 import com.google.firebase.appcheck.playintegrity.PlayIntegrityAppCheckProviderFactory
 import com.raemond.opentrailpaper.BuildConfig
+import com.raemond.opentrailpaper.transfer.TransferCenter
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -291,20 +292,46 @@ object SyncAccounts {
 
     // --- uploads --------------------------------------------------------------
 
-    /** Uploads a .fit; returns a short status line for the UI. */
-    suspend fun upload(file: File, to: Provider, name: String): String = withContext(Dispatchers.IO) {
+    /**
+     * Uploads a .fit; returns a short status line for the UI. Reported to
+     * TransferCenter, whose foreground service keeps it going if the rider
+     * leaves the app.
+     */
+    suspend fun upload(file: File, to: Provider, name: String): String {
+        val id = "cloud.${to.id}.${file.name}"
+        TransferCenter.begin(
+            id, TransferCenter.Kind.CLOUD_UPLOAD, "Uploading to ${to.title}", detail = name,
+            total = file.length(), ble = false, network = true,
+        )
+        return try {
+            performUpload(file, to, name, id).also {
+                TransferCenter.finish(id, success = true, message = it)
+            }
+        } catch (e: Exception) {
+            TransferCenter.finish(id, success = false, message = e.message ?: "Upload failed")
+            throw e
+        }
+    }
+
+    private suspend fun performUpload(
+        file: File,
+        to: Provider,
+        name: String,
+        tid: String,
+    ): String = withContext(Dispatchers.IO) {
         val keeper = keepers.getValue(to)
         when (to) {
             Provider.STRAVA -> {
                 val json = keeper.authorized { token ->
                     multipart(
                         "https://www.strava.com/api/v3/uploads", token,
-                        fields = mapOf("data_type" to "fit", "name" to name), file = file,
+                        fields = mapOf("data_type" to "fit", "name" to name), file = file, progress = tid,
                     )
                 }
                 json.optString("error").takeIf { it.isNotEmpty() }?.let { throw SyncException(it) }
                 val id = json.optLong("id", 0)
                 if (id == 0L) return@withContext "Uploaded to Strava."
+                TransferCenter.update(tid, detail = "Processing on Strava…", indeterminate = true)
                 // Strava processes asynchronously: poll briefly for the activity id.
                 repeat(8) {
                     delay(1500)
@@ -324,7 +351,7 @@ object SyncAccounts {
                     .appendQueryParameter("device_name", "OpenTrailPaper")
                     .appendQueryParameter("external_id", "otp-${file.name}")
                     .build().toString()
-                val json = keeper.authorized { token -> multipart(url, token, fields = emptyMap(), file = file) }
+                val json = keeper.authorized { token -> multipart(url, token, fields = emptyMap(), file = file, progress = tid) }
                 // 201 created / 200 duplicate; either way activities[0].id (or id).
                 val first = json.optJSONArray("activities")?.optJSONObject(0) ?: json
                 val id = first.optString("id")
@@ -333,7 +360,7 @@ object SyncAccounts {
             Provider.RIDEWITHGPS -> {
                 val base = serviceUrl ?: throw SyncException("This build has no sync service configured.")
                 val json = keeper.authorized { token ->
-                    multipart("$base/v1/rwgps/trips", token, fields = mapOf("trip[name]" to name), file = file)
+                    multipart("$base/v1/rwgps/trips", token, fields = mapOf("trip[name]" to name), file = file, progress = tid)
                 }
                 val id = json.optJSONObject("trip")?.optLong("id", 0) ?: 0
                 if (id != 0L) "Uploaded: ridewithgps.com/trips/$id" else "Uploaded to RideWithGPS."
@@ -354,7 +381,14 @@ object SyncAccounts {
 
     private suspend fun getJson(url: String, token: String): JSONObject = finish(open(url, "GET", token))
 
-    private suspend fun multipart(url: String, token: String, fields: Map<String, String>, file: File): JSONObject {
+    /** [progress] names a TransferCenter entry to report the file's bytes to. */
+    private suspend fun multipart(
+        url: String,
+        token: String,
+        fields: Map<String, String>,
+        file: File,
+        progress: String? = null,
+    ): JSONObject {
         val boundary = "otp-" + System.nanoTime()
         val c = open(url, "POST", token)
         c.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
@@ -372,7 +406,17 @@ object SyncAccounts {
             line("Content-Disposition: form-data; name=\"file\"; filename=\"${file.name}\"")
             line("Content-Type: application/octet-stream")
             line("")
-            file.inputStream().use { it.copyTo(out) }
+            file.inputStream().use { input ->
+                val buf = ByteArray(16 * 1024)
+                var sent = 0L
+                while (true) {
+                    val n = input.read(buf)
+                    if (n <= 0) break
+                    out.write(buf, 0, n)
+                    sent += n
+                    if (progress != null) TransferCenter.update(progress, completed = sent)
+                }
+            }
             line("")
             line("--$boundary--")
         }
