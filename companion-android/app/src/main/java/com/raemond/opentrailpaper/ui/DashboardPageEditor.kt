@@ -89,6 +89,8 @@ fun DashboardPageEditor(
     layout: DashLayout,
     useMiles: Boolean,
     canSend: Boolean,
+    /** Not connected: the button saves for later instead of sending now. */
+    offline: Boolean = false,
     onChange: (DashLayout) -> Unit,
     onSend: () -> Unit,
     onBack: () -> Unit,
@@ -146,11 +148,15 @@ fun DashboardPageEditor(
                             .background(if (canSend) Palette.accent else Palette.faint.copy(alpha = 0.55f))
                             .clickable(enabled = canSend) {
                                 onSend()
-                                toast = "Sent — waiting for the head unit to echo"
+                                toast = if (offline) {
+                                    "Saved — syncs when the head unit connects"
+                                } else {
+                                    "Sent — waiting for the head unit to echo"
+                                }
                             }
                             .padding(horizontal = 16.dp, vertical = 7.dp),
                     ) {
-                        Text("Send", style = condensed(17.sp, FontWeight.SemiBold), color = Palette.accentInk)
+                        Text(if (offline) "Save" else "Send", style = condensed(17.sp, FontWeight.SemiBold), color = Palette.accentInk)
                     }
                 }
 

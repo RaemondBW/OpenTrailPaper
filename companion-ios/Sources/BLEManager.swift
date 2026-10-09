@@ -292,11 +292,49 @@ final class BLEManager: NSObject, ObservableObject {
 
     @Published var state: ConnState = .idle
     @Published var status = DeviceStatus()
+    // What the Settings screen shows: the rider's pending edit, else the
+    // device's last reported value (cached per device, so it survives the
+    // link and a relaunch), else these display-only defaults — which are
+    // never sent (see DeviceSettingsSync.swift).
     @Published var ftpWatts = 250
-    @Published var tzMinutes = -420
+    @Published var tzMinutes = TimeZone.current.secondsFromGMT() / 60
     @Published var backlight = 2        // 0 off .. 3 bright (mirrors device)
     @Published var clock24h = true      // device status-bar clock format
     @Published var usbDrive = true      // expose device SD as a USB drive
+
+    // MARK: offline settings
+    private let settingsStore = DeviceSettingsStore(defaults: .standard)
+    /// The device the cache below belongs to (see setCurrentDevice).
+    private(set) var settingsDeviceID = DeviceSettingsStore.unpairedKey
+    /// Last-known device values, the rider's unsynced edits, and the layout.
+    @Published private(set) var settingsCache = DeviceSettingsCache()
+    /// Anything edited in the app the device hasn't acknowledged yet.
+    var hasPendingSync: Bool { settingsCache.hasPending }
+    /// One-line note after a sync replaced a change made on the device.
+    @Published var settingsSyncNote: String?
+    /// The rider's offline layout, while it waits for the device.
+    @Published private(set) var pendingDashConfig: DashConfig?
+    /// Offline layout edit vs. a layout that also changed on the device.
+    @Published var dashConflict: DashConflict?
+    struct DashConflict: Identifiable {
+        let id = UUID()
+        let phone: DashConfig
+        let device: DashConfig
+        let editedAt: Date
+    }
+    // Per-link sync state: nothing is pushed until the device's own values
+    // have been read on THIS connection.
+    private var settingsSeenThisLink = false
+    private var settingsWriteInFlight: [String: Int]?
+    private var settingsWriteFailedThisLink = false
+    private var dashSeenThisLink = false
+    private var dashWritesOutstanding = 0
+    private var dashWriteError = false
+    private var dashWriteText: String?
+    private var dashWriteFailedThisLink = false
+    /// Screenshot demo: disconnected, with cached values and a pending edit.
+    private let isDemoOfflineSettings =
+        ProcessInfo.processInfo.arguments.contains("-demo-offline-settings")
     @Published var lastUploadProgress: Double? = nil   // 0...1 while sending
     @Published var routeSent = false                   // last route's writes were queued
     @Published var routeReceived = false               // device confirmed it got the route
@@ -376,15 +414,18 @@ final class BLEManager: NSObject, ObservableObject {
     private var peripheral: CBPeripheral?
     private var settingsChar: CBCharacteristic?
     private var dashChar: CBCharacteristic?
-    /// The device's dashboard layout, as the text of /config/dashboard.cfg.
-    /// nil until the device has been read, which is how the editor knows to
-    /// show "connect to edit" rather than an invented default that would
-    /// overwrite the rider's real one the moment they touched a control.
+    /// The device's dashboard layout, as the text of /config/dashboard.cfg —
+    /// live while connected, the cached copy from the last connection when
+    /// not. nil only if this device's layout has never been read, which is how
+    /// the editor knows to show "connect to edit" rather than an invented
+    /// default that would overwrite the rider's real one.
     @Published var dashConfig: DashConfig? {
         didSet { updateAlbumArt() }
     }
+    /// What the editor edits: the rider's unsynced layout, else the device's.
+    var dashTarget: DashConfig? { pendingDashConfig ?? dashConfig }
     /// First data page, for thumbnails (RideView's dashboard card).
-    var dashLayout: DashLayout? { dashConfig?.firstFields }
+    var dashLayout: DashLayout? { dashTarget?.firstFields }
     /// Version we are flashing, so the success check compares against what
     /// was actually sent rather than a compile-time constant.
     private var otaTargetVersion = ""
@@ -534,6 +575,8 @@ final class BLEManager: NSObject, ObservableObject {
 
     override init() {
         super.init()
+        loadSettingsCache()
+        if isDemoOfflineSettings { seedOfflineSettingsDemo() }
         if isDemoUpdate { state = .connected; deviceFirmware = "v0.83" }
         if isDemoDash { state = .connected; dashConfig = .deviceDefault }
         locationManager.delegate = self
@@ -756,30 +799,142 @@ final class BLEManager: NSObject, ObservableObject {
 
     // MARK: settings
 
-    // Auto-sync: any app-side settings edit goes to these setters, which update
-    // the mirror and immediately push to the device. Values arriving FROM the
-    // device (parseSettings) set the @Published fields directly, so they never
-    // echo back.
-    func setFtp(_ v: Int) { ftpWatts = v; pushSettings() }
-    func setTz(_ v: Int) { tzMinutes = v; pushSettings() }
-    func setBacklight(_ v: Int) { backlight = v; pushSettings() }
+    // Every app-side edit is recorded as a pending edit for the current device
+    // (cached, timestamped), shown at once, and pushed when — and only when —
+    // this link has read the device's own values: immediately while
+    // connected, on the next connect otherwise. The merge, the payload and the
+    // conflict rule live in DeviceSettingsSync.swift. Values arriving FROM the
+    // device (parseSettings) update the cache and never echo back.
+    func setFtp(_ v: Int) { ftpWatts = v; editSetting(.ftp, v) }
+    func setTz(_ v: Int) { tzMinutes = v; editSetting(.tz, v) }
+    func setBacklight(_ v: Int) { backlight = v; editSetting(.backlight, v) }
     func setUseMiles(_ v: Bool) {
         UserDefaults.standard.set(v, forKey: UnitPref.key)
-        pushSettings()
+        editSetting(.useMiles, v ? 1 : 0)
     }
-    func setClock24h(_ v: Bool) { clock24h = v; pushSettings() }
-    func setUsbDrive(_ v: Bool) { usbDrive = v; pushSettings() }
+    func setClock24h(_ v: Bool) { clock24h = v; editSetting(.clock24h, v ? 1 : 0) }
+    func setUsbDrive(_ v: Bool) { usbDrive = v; editSetting(.usbDrive, v ? 1 : 0) }
 
-    func pushSettings() {
-        guard let c = settingsChar, let p = peripheral else { return }
-        var payload = Data()
-        payload.appendLE(Int16(ftpWatts))
-        payload.appendLE(Int16(tzMinutes))
-        payload.append(UserDefaults.standard.bool(forKey: UnitPref.key) ? 1 : 0)
-        payload.append(UInt8(clamping: backlight))
-        payload.append(clock24h ? 1 : 0)
-        payload.append(usbDrive ? 1 : 0)
+    /// Whether the device takes this field. Unknown (never connected) counts
+    /// as yes, so a first-run rider still sees every control.
+    func supportsSetting(_ f: SettingField) -> Bool {
+        settingsCache.device?.supports(f) ?? true
+    }
+
+    /// Which device the settings cache is for. Called with the peripheral's
+    /// identifier on every connect; a fixed-pairing flow calls it with the
+    /// paired device's identifier at launch, so offline edits are keyed to
+    /// that device before it is ever in range. Edits made before any device
+    /// was known move to the first one (DeviceSettingsStore.setCurrent).
+    func setCurrentDevice(_ id: String) {
+        guard id != settingsDeviceID, !isDemoOfflineSettings else { return }
+        settingsDeviceID = id
+        settingsCache = settingsStore.setCurrent(id)
+        dashConfig = settingsCache.dashText.map { DashConfig(text: $0) }
+        dashConflict = nil
+        settingsSyncNote = nil
+        applyEffectiveSettings()
+    }
+
+    private func loadSettingsCache() {
+        settingsDeviceID = settingsStore.currentDevice
+        settingsCache = settingsStore.load(settingsDeviceID)
+        if let t = settingsCache.dashText { dashConfig = DashConfig(text: t) }
+        applyEffectiveSettings()
+    }
+
+    private func saveSettingsCache() {
+        guard !isDemoOfflineSettings else { return }
+        settingsStore.save(settingsCache, for: settingsDeviceID)
+    }
+
+    /// Publish pending ?? device for every field; leave the display default
+    /// where nothing is known.
+    private func applyEffectiveSettings() {
+        let c = settingsCache
+        func v(_ f: SettingField) -> Int? {
+            SettingsMerge.effective(f, device: c.device, pending: c.pending)
+        }
+        if let x = v(.ftp), x != ftpWatts { ftpWatts = x }
+        if let x = v(.tz), x != tzMinutes { tzMinutes = x }
+        if let x = v(.backlight), x != backlight { backlight = x }
+        if let x = v(.clock24h), (x != 0) != clock24h { clock24h = x != 0 }
+        if let x = v(.usbDrive), (x != 0) != usbDrive { usbDrive = x != 0 }
+        // Units are also the app's own display preference.
+        if let x = v(.useMiles),
+           UserDefaults.standard.bool(forKey: UnitPref.key) != (x != 0) {
+            UserDefaults.standard.set(x != 0, forKey: UnitPref.key)
+        }
+        let pd = c.pendingDash.map { DashConfig(text: $0.text) }
+        if pd != pendingDashConfig { pendingDashConfig = pd }
+    }
+
+    private func editSetting(_ f: SettingField, _ v: Int) {
+        // Always recorded, even when it equals the cached device value: a
+        // write carrying an older edit may be in flight. syncSettings drops
+        // it once nothing is in flight and the device already matches.
+        settingsCache.pending[f.rawValue] = PendingEdit(value: v, editedAt: Date())
+        settingsWriteFailedThisLink = false
+        settingsSyncNote = nil
+        saveSettingsCache()
+        syncSettings()
+    }
+
+    /// Push pending edits, merged onto the device's values, as one write.
+    private func syncSettings() {
+        guard settingsSeenThisLink, settingsWriteInFlight == nil, !settingsWriteFailedThisLink,
+              let dev = settingsCache.device, let c = settingsChar, let p = peripheral
+        else { return }
+        let r = SettingsMerge.merge(device: dev, lastKnown: nil, pending: settingsCache.pending)
+        for f in r.dropped { settingsCache.pending[f.rawValue] = nil }
+        settingsCache.pending = SettingsMerge.clearSatisfied(pending: settingsCache.pending,
+                                                             device: dev)
+        saveSettingsCache()
+        applyEffectiveSettings()
+        guard let payload = r.payload else { return }
+        settingsWriteInFlight = r.pushed
         p.writeValue(payload, for: c, type: .withResponse)
+    }
+
+    /// The device acknowledged (or refused) the settings write.
+    private func settingsWriteAcked(ok: Bool) {
+        guard let pushed = settingsWriteInFlight else { return }
+        settingsWriteInFlight = nil
+        guard ok, let dev = settingsCache.device else {
+            // Keep the pending edits; the next connect (or the next edit) retries.
+            settingsWriteFailedThisLink = true
+            return
+        }
+        settingsCache.device = SettingsMerge.applyAcknowledged(device: dev, pushed: pushed)
+        settingsCache.pending = SettingsMerge.clearAcknowledged(pending: settingsCache.pending,
+                                                                pushed: pushed)
+        saveSettingsCache()
+        applyEffectiveSettings()
+        syncSettings()   // anything edited while the write was in flight
+    }
+
+    private func resetSyncLinkState() {
+        settingsSeenThisLink = false
+        settingsWriteInFlight = nil
+        settingsWriteFailedThisLink = false
+        dashSeenThisLink = false
+        dashWritesOutstanding = 0
+        dashWriteError = false
+        dashWriteText = nil
+        dashWriteFailedThisLink = false
+    }
+
+    /// -demo-offline-settings: a device seen before, disconnected now, with
+    /// backlight and FTP changed in the app since. Not persisted.
+    private func seedOfflineSettingsDemo() {
+        var c = DeviceSettingsCache()
+        c.device = DeviceSettingsValues.decode(Data([0xFA, 0x00, 0x5C, 0xFE, 0, 2, 1, 1]))
+        c.pending = ["backlight": PendingEdit(value: 0, editedAt: Date()),
+                     "ftp": PendingEdit(value: 265, editedAt: Date())]
+        c.dashText = DashConfig.deviceDefault.configText
+        settingsCache = c
+        dashConfig = DashConfig.deviceDefault
+        applyEffectiveSettings()
     }
 
     // MARK: rides (device -> phone)
@@ -2194,7 +2349,11 @@ extension BLEManager: CBCentralManagerDelegate {
 
     nonisolated func centralManager(_ c: CBCentralManager,
                                     didConnect p: CBPeripheral) {
-        MainActor.assumeIsolated { p.discoverServices([BikeUUID.service]) }
+        MainActor.assumeIsolated {
+            // Settings cache and offline edits are keyed by this identity.
+            setCurrentDevice(p.identifier.uuidString)
+            p.discoverServices([BikeUUID.service])
+        }
     }
 
     nonisolated func centralManager(_ c: CBCentralManager,
@@ -2203,6 +2362,9 @@ extension BLEManager: CBCentralManagerDelegate {
         MainActor.assumeIsolated {
             settingsChar = nil; statusChar = nil; routeChar = nil; ridesChar = nil
             sensorsChar = nil; mapChar = nil; otaChar = nil; meshChar = nil
+            dashChar = nil
+            // Pending edits stay cached; the next connect reads and merges.
+            resetSyncLinkState()
             mediaChar = nil; mediaToneArt = false   // the next device may be older firmware
             mediaNotifySeen = false; mediaCapsAsked = false; mediaSubscribeRetries = 0
             mediaAcks = []; artPumping = false; artPayload = Data()
@@ -2291,6 +2453,9 @@ extension BLEManager: CBPeripheralDelegate {
                                 didDiscoverCharacteristicsFor s: CBService,
                                 error: Error?) {
         MainActor.assumeIsolated {
+            // Again here (idempotent): a link iOS restored on relaunch reaches
+            // discovery without a didConnect.
+            setCurrentDevice(p.identifier.uuidString)
             for ch in s.characteristics ?? [] {
                 switch ch.uuid {
                 case BikeUUID.settings:
@@ -2384,6 +2549,14 @@ extension BLEManager: CBPeripheralDelegate {
                                 error: Error?) {
         if let error {
             artLog.error("write to \(ch.uuid.uuidString, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+        }
+        if ch.uuid == BikeUUID.settings {
+            MainActor.assumeIsolated { settingsWriteAcked(ok: error == nil) }
+            return
+        }
+        if ch.uuid == BikeUUID.dash {
+            MainActor.assumeIsolated { dashWriteAcked(ok: error == nil) }
+            return
         }
         guard ch.uuid == BikeUUID.media else { return }
         MainActor.assumeIsolated { mediaWriteAcked(failed: error != nil) }
@@ -2518,28 +2691,116 @@ extension BLEManager: CBPeripheralDelegate {
             return
         }
         guard let text = String(data: d, encoding: .utf8) else { return }
-        dashConfig = DashConfig(text: text)
+        let cfg = DashConfig(text: text)
+        dashConfig = cfg
+        dashSeenThisLink = true
+        settingsCache.dashText = cfg.configText
+        saveSettingsCache()
+        reconcileDash()
+    }
+
+    /// The editor's Save/Send: record the layout as pending for this device
+    /// and push it when the link allows. Pending until the device acks it.
+    func saveDashConfig(_ config: DashConfig) {
+        settingsCache.pendingDash = DashSync.saving(
+            config.configText, deviceText: dashConfig?.configText,
+            over: settingsCache.pendingDash, at: Date())
+        dashWriteFailedThisLink = false
+        saveSettingsCache()
+        applyEffectiveSettings()
+        reconcileDash()
+    }
+
+    /// Settle the offline layout against the device's: push it if the device
+    /// is unchanged since the edit started, drop it if they already match,
+    /// ask the rider if both changed.
+    private func reconcileDash() {
+        guard dashSeenThisLink, dashWritesOutstanding == 0, !dashWriteFailedThisLink,
+              dashConflict == nil, let device = dashConfig else { return }
+        let pending = settingsCache.pendingDash
+        switch DashSync.resolve(device: device.configText, pending: pending) {
+        case .adoptDevice:
+            break
+        case .alreadyInSync:
+            settingsCache.pendingDash = nil
+            saveSettingsCache()
+            applyEffectiveSettings()
+        case .pushPhone:
+            if let p = pending { writeDash(p.text) }
+        case .conflict:
+            if let p = pending {
+                dashConflict = DashConflict(phone: DashConfig(text: p.text), device: device,
+                                            editedAt: p.editedAt)
+            }
+        }
+    }
+
+    /// The rider's answer to a layout conflict.
+    func resolveDashConflict(keepPhone: Bool) {
+        guard dashConflict != nil else { return }
+        dashConflict = nil
+        if keepPhone, var p = settingsCache.pendingDash {
+            p.baseText = dashConfig?.configText   // goes over the device's current one
+            settingsCache.pendingDash = p
+        } else {
+            settingsCache.pendingDash = nil
+        }
+        saveSettingsCache()
+        applyEffectiveSettings()
+        reconcileDash()
     }
 
     /// Push a layout to the device. It writes the file, applies it to the panel,
     /// and notifies back what it actually stored — so a rejected layout corrects
     /// the editor instead of leaving it out of step.
-    func sendDashConfig(_ config: DashConfig) {
+    private func writeDash(_ text: String) {
         guard let ch = dashChar, let p = peripheral else { return }
-        guard let data = config.configText.data(using: .utf8) else { return }
+        guard let data = text.data(using: .utf8) else { return }
         // Streamed ([0x01] begin, [0x02]+bytes, [0x03] commit): a multi-page
         // config outgrows the 512-byte ceiling iOS puts on a single write.
         let chunk = max(20, p.maximumWriteValueLength(for: .withResponse)) - 1
-        p.writeValue(Data([0x01]), for: ch, type: .withResponse)
+        var packets = [Data([0x01])]
         var off = 0
         while off < data.count {
             let n = min(chunk, data.count - off)
             var pkt = Data([0x02])
             pkt.append(data.subdata(in: off..<off + n))
-            p.writeValue(pkt, for: ch, type: .withResponse)
+            packets.append(pkt)
             off += n
         }
-        p.writeValue(Data([0x03]), for: ch, type: .withResponse)
+        packets.append(Data([0x03]))
+        // Every packet is with-response and acked in order; the layout counts
+        // as delivered once the last ack lands with no error on the way.
+        dashWritesOutstanding = packets.count
+        dashWriteError = false
+        dashWriteText = text
+        for pkt in packets { p.writeValue(pkt, for: ch, type: .withResponse) }
+    }
+
+    private func dashWriteAcked(ok: Bool) {
+        guard dashWritesOutstanding > 0 else { return }
+        if !ok { dashWriteError = true }
+        dashWritesOutstanding -= 1
+        guard dashWritesOutstanding == 0, let text = dashWriteText else { return }
+        dashWriteText = nil
+        if dashWriteError {
+            dashWriteFailedThisLink = true   // stays pending; the next connect retries
+            return
+        }
+        if var p = settingsCache.pendingDash {
+            if p.text == text {
+                settingsCache.pendingDash = nil
+            } else {
+                p.baseText = text   // edited again mid-write: that goes next
+                settingsCache.pendingDash = p
+            }
+        }
+        // The device notifies what it actually stored; until then it holds this.
+        if dashConfig?.configText != text { dashConfig = DashConfig(text: text) }
+        settingsCache.dashText = text
+        saveSettingsCache()
+        applyEffectiveSettings()
+        reconcileDash()
     }
 
     private func parseStatus(_ d: Data) {
@@ -2595,17 +2856,27 @@ extension BLEManager: CBPeripheralDelegate {
     }
 
     // Values pushed from the device (on connect, or when edited on the unit).
-    // Set the mirror fields directly — no push back.
+    // They become the cache's device values — never echoed back — and then
+    // any pending app edits are merged on top and pushed (syncSettings).
     private func parseSettings(_ d: Data) {
-        guard d.count >= 4 else { return }
-        ftpWatts = Int(Int16(bitPattern: UInt16(d[0]) | (UInt16(d[1]) << 8)))
-        tzMinutes = Int(Int16(bitPattern: UInt16(d[2]) | (UInt16(d[3]) << 8)))
-        if d.count >= 6 {
-            UserDefaults.standard.set(d[4] != 0, forKey: UnitPref.key)
-            backlight = Int(d[5])
+        guard let snap = DeviceSettingsValues.decode(d) else { return }
+        let before = settingsCache.device
+        if !settingsCache.pending.isEmpty {
+            // The device keeps no change time, so an offline edit wins even
+            // over a newer change made on the device; say so rather than let
+            // the device's change vanish silently.
+            let r = SettingsMerge.merge(device: snap, lastKnown: before,
+                                        pending: settingsCache.pending)
+            if !r.replacedDeviceChange.isEmpty {
+                let names = r.replacedDeviceChange.map(\.label).joined(separator: ", ")
+                settingsSyncNote = "Your phone's \(names) change replaced the one made on the device."
+            }
         }
-        if d.count >= 7 { clock24h = d[6] != 0 }
-        if d.count >= 8 { usbDrive = d[7] != 0 }
+        settingsCache.device = snap
+        settingsSeenThisLink = true
+        saveSettingsCache()
+        applyEffectiveSettings()
+        syncSettings()
     }
 }
 

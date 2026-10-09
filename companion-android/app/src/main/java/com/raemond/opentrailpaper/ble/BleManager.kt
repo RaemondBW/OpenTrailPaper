@@ -34,7 +34,14 @@ import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
 import com.raemond.opentrailpaper.data.DashConfig
 import com.raemond.opentrailpaper.data.DashLayout
+import com.raemond.opentrailpaper.data.DashSync
+import com.raemond.opentrailpaper.data.DeviceSettingsCache
+import com.raemond.opentrailpaper.data.DeviceSettingsStore
+import com.raemond.opentrailpaper.data.DeviceSettingsValues
 import com.raemond.opentrailpaper.data.DeviceText
+import com.raemond.opentrailpaper.data.PendingEdit
+import com.raemond.opentrailpaper.data.SettingField
+import com.raemond.opentrailpaper.data.SettingsMerge
 import com.raemond.opentrailpaper.data.FirmwareRelease
 import com.raemond.opentrailpaper.data.Prefs
 import com.raemond.opentrailpaper.transfer.TransferCenter
@@ -78,9 +85,15 @@ class BleManager(private val app: Application) {
     var state by mutableStateOf(ConnState.IDLE); private set
     var status by mutableStateOf(DeviceStatus()); private set
 
+    // What the Settings screen shows: the rider's pending edit, else the
+    // device's last reported value (cached per device, so it survives the link
+    // and a relaunch), else these display-only defaults — never sent (see
+    // DeviceSettingsSync.kt).
     var ftpWatts by mutableStateOf(250); private set
-    var tzMinutes by mutableStateOf(-420); private set
-    var backlight by mutableStateOf(0); private set     // 0 off .. 3 bright (mirrors device)
+    var tzMinutes by mutableStateOf(
+        java.util.TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 60_000,
+    ); private set
+    var backlight by mutableStateOf(2); private set     // 0 off .. 3 bright (mirrors device)
     var clock24h by mutableStateOf(true); private set   // device status-bar clock format
     var usbDrive by mutableStateOf(true); private set   // expose device SD as a USB drive
     var useMiles by mutableStateOf(false); private set  // mirrored into Prefs
@@ -146,15 +159,49 @@ class BleManager(private val app: Application) {
 
     /**
      * The device's dashboard config — the page carousel — as the text of
-     * /config/dashboard.cfg. null until the device has been read, which is how
-     * the editor knows to show "connect to edit" rather than an invented
-     * default that would overwrite the rider's real one the moment they
-     * touched a control.
+     * /config/dashboard.cfg: live while connected, the cached copy from the
+     * last connection when not. null only if this device's layout has never
+     * been read, which is how the editor knows to show "connect to edit"
+     * rather than an invented default that would overwrite the rider's real one.
      */
     var dashConfig by mutableStateOf<DashConfig?>(null); private set
 
+    /** The rider's offline layout, while it waits for the device. */
+    var pendingDashConfig by mutableStateOf<DashConfig?>(null); private set
+
+    /** What the editor edits: the unsynced layout, else the device's. */
+    val dashTarget: DashConfig? get() = pendingDashConfig ?: dashConfig
+
     /** First data page, for thumbnails (RideScreen's dashboard card). */
-    val dashLayout: DashLayout? get() = dashConfig?.firstFields
+    val dashLayout: DashLayout? get() = dashTarget?.firstFields
+
+    // MARK: offline settings state
+
+    /** The device the cache belongs to (see [setCurrentDevice]). */
+    var settingsDeviceId = DeviceSettingsCache.UNPAIRED; private set
+
+    /** Last-known device values, unsynced edits, and the layout. */
+    var settingsCache by mutableStateOf(DeviceSettingsCache()); private set
+
+    /** Anything edited in the app the device hasn't acknowledged yet. */
+    val hasPendingSync: Boolean get() = settingsCache.hasPending
+
+    /** One-line note after a sync replaced a change made on the device. */
+    var settingsSyncNote by mutableStateOf<String?>(null); private set
+
+    /** Offline layout edit vs. a layout that also changed on the device. */
+    data class DashConflict(val phone: DashConfig, val device: DashConfig, val editedAt: Long)
+    var dashConflict by mutableStateOf<DashConflict?>(null); private set
+
+    // Per-link sync state: nothing is pushed until the device's own values
+    // have been read on THIS connection.
+    private var settingsSeenThisLink = false
+    private var settingsWriteInFlight: Map<String, Int>? = null
+    private var settingsWriteFailedThisLink = false
+    private var dashSeenThisLink = false
+    private var dashWriteInFlight: String? = null
+    private var dashWriteFailedThisLink = false
+    private var demoOfflineSettings = false
 
     /**
      * Screenshot/emulator demo (iOS: -demo-dash): hold the device's default
@@ -163,6 +210,25 @@ class BleManager(private val app: Application) {
      * null — which is exactly a demo's contract.
      */
     fun enableDashDemo() { dashConfig = DashConfig.deviceDefault }
+
+    /**
+     * Screenshot demo (iOS: -demo-offline-settings): a device seen before,
+     * disconnected now, with backlight and FTP changed in the app since.
+     * Not persisted.
+     */
+    fun enableOfflineSettingsDemo() {
+        demoOfflineSettings = true
+        val now = System.currentTimeMillis()
+        settingsCache = DeviceSettingsCache(
+            device = DeviceSettingsValues.decode(
+                byteArrayOf(0xFA.toByte(), 0, 0x5C, 0xFE.toByte(), 0, 2, 1, 1),
+            ),
+            pending = mapOf("backlight" to PendingEdit(0, now), "ftp" to PendingEdit(265, now)),
+            dashText = DashConfig.deviceDefault.configText,
+        )
+        dashConfig = DashConfig.deviceDefault
+        applyEffectiveSettings()
+    }
 
     // MARK: Meshtastic
     //
@@ -346,6 +412,7 @@ class BleManager(private val app: Application) {
 
     init {
         useMiles = Prefs.useMiles
+        loadSettingsCache()
         // Show last-known on-device tiles immediately; a refresh confirms them.
         deviceTileIds = Prefs.deviceTileIds
         refreshPermissions()
@@ -450,6 +517,8 @@ class BleManager(private val app: Application) {
 
     private fun connect(target: BluetoothDevice) {
         device = target
+        // Settings cache and offline edits are keyed by this identity.
+        setCurrentDevice(target.address)
         state = ConnState.CONNECTING
         gatt = target.connectGatt(app, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
         queue.attach(gatt)
@@ -630,14 +699,23 @@ class BleManager(private val app: Application) {
             dashChar?.let { queue.enqueue(GattQueue.Op.Read(it)) }
             return
         }
-        dashConfig = DashConfig.parse(String(data, Charsets.UTF_8))
+        val cfg = DashConfig.parse(String(data, Charsets.UTF_8))
+        dashConfig = cfg
+        dashSeenThisLink = true
+        settingsCache = settingsCache.copy(dashText = cfg.configText)
+        saveSettingsCache()
         updateMediaRemote()
+        reconcileDash()
     }
 
     private fun handleDisconnect() {
         settingsChar = null; statusChar = null; routeChar = null; ridesChar = null
         sensorsChar = null; mapChar = null; otaChar = null; dashChar = null
         meshChar = null; mediaChar = null; workoutChar = null
+        // Pending edits stay cached; the next connect reads and merges.
+        settingsSeenThisLink = false; settingsWriteInFlight = null
+        settingsWriteFailedThisLink = false
+        dashSeenThisLink = false; dashWriteInFlight = null; dashWriteFailedThisLink = false
         mediaToneArt = false   // the next device may be older firmware
         lastMediaMeta = null
         updateMediaRemote()    // no link, no media observers
@@ -736,47 +814,149 @@ class BleManager(private val app: Application) {
 
     // MARK: settings
 
-    // Auto-sync: any app-side settings edit goes through these, which update the
-    // mirror and immediately push to the device. Values arriving FROM the device
-    // (parseSettings) set the fields directly, so they never echo back.
+    // Every app-side edit is recorded as a pending edit for the current device
+    // (cached, timestamped), shown at once, and pushed when — and only when —
+    // this link has read the device's own values: immediately while connected,
+    // on the next connect otherwise. Merge, payload and conflict rule live in
+    // DeviceSettingsSync.kt. Values arriving FROM the device (parseSettings)
+    // update the cache and never echo back.
     //
     // Named `updateX` rather than `setX`: a `var x` already compiles to a JVM
     // `setX`, so the obvious name collides with the property's own setter.
-    fun updateFtp(v: Int) { ftpWatts = v; pushSettings() }
-    fun updateTz(v: Int) { tzMinutes = v; pushSettings() }
-    fun updateBacklight(v: Int) { backlight = v; pushSettings() }
-    fun updateClock24h(v: Boolean) { clock24h = v; pushSettings() }
-    fun updateUsbDrive(v: Boolean) { usbDrive = v; pushSettings() }
+    fun updateFtp(v: Int) { ftpWatts = v; editSetting(SettingField.FTP, v) }
+    fun updateTz(v: Int) { tzMinutes = v; editSetting(SettingField.TZ, v) }
+    fun updateBacklight(v: Int) { backlight = v; editSetting(SettingField.BACKLIGHT, v) }
+    fun updateClock24h(v: Boolean) { clock24h = v; editSetting(SettingField.CLOCK_24H, if (v) 1 else 0) }
+    fun updateUsbDrive(v: Boolean) { usbDrive = v; editSetting(SettingField.USB_DRIVE, if (v) 1 else 0) }
 
     fun updateUseMiles(v: Boolean) {
         useMiles = v
         Prefs.useMiles = v
-        pushSettings()
+        editSetting(SettingField.USE_MILES, if (v) 1 else 0)
     }
 
-    fun pushSettings() {
-        val out = Packet(8)
-        out.i16(ftpWatts)
-        out.i16(tzMinutes)
-        out.u8(if (useMiles) 1 else 0)
-        out.u8(backlight.coerceIn(0, 255))
-        out.u8(if (clock24h) 1 else 0)
-        out.u8(if (usbDrive) 1 else 0)
-        writeChar(settingsChar, out.bytes())
+    /** Whether the device takes this field. Unknown (never connected) counts
+     *  as yes, so a first-run rider still sees every control. */
+    fun supportsSetting(f: SettingField): Boolean = settingsCache.device?.supports(f) ?: true
+
+    /**
+     * Which device the settings cache is for. Called with the device address
+     * on every connect; a fixed-pairing flow calls it with the paired device's
+     * address at launch, so offline edits are keyed to that device before it
+     * is ever in range. Edits made before any device was known move to the
+     * first one (DeviceSettingsStore.setCurrent).
+     */
+    fun setCurrentDevice(id: String) {
+        if (id == settingsDeviceId || demoOfflineSettings) return
+        settingsDeviceId = id
+        settingsCache = DeviceSettingsStore.setCurrent(id)
+        dashConfig = settingsCache.dashText?.let { DashConfig.parse(it) }
+        dashConflict = null
+        settingsSyncNote = null
+        applyEffectiveSettings()
+    }
+
+    private fun loadSettingsCache() {
+        settingsDeviceId = DeviceSettingsStore.currentDevice
+        settingsCache = DeviceSettingsStore.load(settingsDeviceId)
+        settingsCache.dashText?.let { dashConfig = DashConfig.parse(it) }
+        applyEffectiveSettings()
+    }
+
+    private fun saveSettingsCache() {
+        if (!demoOfflineSettings) DeviceSettingsStore.save(settingsCache, settingsDeviceId)
+    }
+
+    /** Publish pending ?: device for every field; keep the display default
+     *  where nothing is known. */
+    private fun applyEffectiveSettings() {
+        val c = settingsCache
+        fun v(f: SettingField) = SettingsMerge.effective(f, c.device, c.pending)
+        v(SettingField.FTP)?.let { ftpWatts = it }
+        v(SettingField.TZ)?.let { tzMinutes = it }
+        v(SettingField.BACKLIGHT)?.let { backlight = it }
+        v(SettingField.CLOCK_24H)?.let { clock24h = it != 0 }
+        v(SettingField.USB_DRIVE)?.let { usbDrive = it != 0 }
+        // Units are also the app's own display preference.
+        v(SettingField.USE_MILES)?.let {
+            useMiles = it != 0
+            if (Prefs.useMiles != useMiles) Prefs.useMiles = useMiles
+        }
+        val pd = c.pendingDash?.let { DashConfig.parse(it.text) }
+        if (pd != pendingDashConfig) pendingDashConfig = pd
+    }
+
+    private fun editSetting(f: SettingField, v: Int) {
+        // Always recorded, even when it equals the cached device value: a write
+        // carrying an older edit may be in flight. syncSettings drops it once
+        // nothing is in flight and the device already matches.
+        settingsCache = settingsCache.copy(
+            pending = settingsCache.pending + (f.key to PendingEdit(v, System.currentTimeMillis())),
+        )
+        settingsWriteFailedThisLink = false
+        settingsSyncNote = null
+        saveSettingsCache()
+        syncSettings()
+    }
+
+    /** Push pending edits, merged onto the device's values, as one write. */
+    private fun syncSettings() {
+        if (!settingsSeenThisLink || settingsWriteInFlight != null || settingsWriteFailedThisLink) return
+        val dev = settingsCache.device ?: return
+        val ch = settingsChar ?: return
+        val r = SettingsMerge.merge(dev, null, settingsCache.pending)
+        val kept = SettingsMerge.clearSatisfied(
+            settingsCache.pending - r.dropped.map { it.key }.toSet(), dev,
+        )
+        settingsCache = settingsCache.copy(pending = kept)
+        saveSettingsCache()
+        applyEffectiveSettings()
+        val payload = r.payload ?: return
+        val pushed = r.pushed
+        settingsWriteInFlight = pushed
+        writeChar(ch, payload) { ok -> settingsWriteAcked(pushed, ok) }
+    }
+
+    /** The device acknowledged (or refused) the settings write. */
+    private fun settingsWriteAcked(pushed: Map<String, Int>, ok: Boolean) {
+        if (settingsWriteInFlight !== pushed) return   // a link that has since dropped
+        settingsWriteInFlight = null
+        val dev = settingsCache.device
+        if (!ok || dev == null) {
+            // Keep the pending edits; the next connect (or the next edit) retries.
+            settingsWriteFailedThisLink = true
+            return
+        }
+        settingsCache = settingsCache.copy(
+            device = SettingsMerge.applyAcknowledged(dev, pushed),
+            pending = SettingsMerge.clearAcknowledged(settingsCache.pending, pushed),
+        )
+        saveSettingsCache()
+        applyEffectiveSettings()
+        syncSettings()   // anything edited while the write was in flight
     }
 
     // Values pushed from the device (on connect, or when edited on the unit).
+    // They become the cache's device values — never echoed back — and then any
+    // pending app edits are merged on top and pushed (syncSettings).
     private fun parseSettings(d: ByteArray) {
-        if (d.size < 4) return
-        ftpWatts = le16(d, 0).toShort().toInt()
-        tzMinutes = le16(d, 2).toShort().toInt()
-        if (d.size >= 6) {
-            useMiles = d[4].toInt() != 0
-            Prefs.useMiles = useMiles
-            backlight = d[5].toInt() and 0xFF
+        val snap = DeviceSettingsValues.decode(d) ?: return
+        val before = settingsCache.device
+        if (settingsCache.pending.isNotEmpty()) {
+            // The device keeps no change time, so an offline edit wins even
+            // over a newer change made on the device; say so rather than let
+            // the device's change vanish silently.
+            val r = SettingsMerge.merge(snap, before, settingsCache.pending)
+            if (r.replacedDeviceChange.isNotEmpty()) {
+                val names = r.replacedDeviceChange.joinToString(", ") { it.label }
+                settingsSyncNote = "Your phone's $names change replaced the one made on the device."
+            }
         }
-        if (d.size >= 7) clock24h = d[6].toInt() != 0
-        if (d.size >= 8) usbDrive = d[7].toInt() != 0
+        settingsCache = settingsCache.copy(device = snap)
+        settingsSeenThisLink = true
+        saveSettingsCache()
+        applyEffectiveSettings()
+        syncSettings()
     }
 
     private fun parseStatus(d: ByteArray) {
@@ -807,16 +987,101 @@ class BleManager(private val app: Application) {
      * ([0x01] begin, [0x02]+bytes, [0x03] commit): a multi-page config
      * outgrows a single write, and the GattQueue drains the chunks in order.
      */
-    fun sendDashConfig(config: DashConfig) {
-        val data = config.configText.toByteArray(Charsets.UTF_8)
-        writeChar(dashChar, byteArrayOf(0x01))
+    private fun writeDash(text: String) {
+        val ch = dashChar ?: return
+        val data = text.toByteArray(Charsets.UTF_8)
+        // Every chunk is acknowledged in order; the layout counts as delivered
+        // when the commit's ack lands with no failure on the way.
+        var failed = false
+        val track: (Boolean) -> Unit = { ok -> if (!ok) failed = true }
+        dashWriteInFlight = text
+        writeChar(ch, byteArrayOf(0x01), onWritten = track)
         var off = 0
         while (off < data.size) {
             val n = minOf(chunkSize, data.size - off)
-            writeChar(dashChar, byteArrayOf(0x02) + data.copyOfRange(off, off + n))
+            writeChar(ch, byteArrayOf(0x02) + data.copyOfRange(off, off + n), onWritten = track)
             off += n
         }
-        writeChar(dashChar, byteArrayOf(0x03))
+        writeChar(ch, byteArrayOf(0x03)) { ok -> dashWriteAcked(text, ok && !failed) }
+    }
+
+    /**
+     * The editor's Save/Send: record the layout as pending for this device and
+     * push it when the link allows. Pending until the device acks it.
+     */
+    fun saveDashConfig(config: DashConfig) {
+        settingsCache = settingsCache.copy(
+            pendingDash = DashSync.saving(
+                config.configText, dashConfig?.configText,
+                settingsCache.pendingDash, System.currentTimeMillis(),
+            ),
+        )
+        dashWriteFailedThisLink = false
+        saveSettingsCache()
+        applyEffectiveSettings()
+        reconcileDash()
+    }
+
+    /**
+     * Settle the offline layout against the device's: push it if the device is
+     * unchanged since the edit started, drop it if they already match, ask the
+     * rider if both changed.
+     */
+    private fun reconcileDash() {
+        if (!dashSeenThisLink || dashWriteInFlight != null || dashWriteFailedThisLink) return
+        if (dashConflict != null) return
+        val device = dashConfig ?: return
+        val pending = settingsCache.pendingDash
+        when (DashSync.resolve(device.configText, pending)) {
+            DashSync.Action.ADOPT_DEVICE -> Unit
+            DashSync.Action.ALREADY_IN_SYNC -> {
+                settingsCache = settingsCache.copy(pendingDash = null)
+                saveSettingsCache()
+                applyEffectiveSettings()
+            }
+            DashSync.Action.PUSH_PHONE -> pending?.let { writeDash(it.text) }
+            DashSync.Action.CONFLICT -> pending?.let {
+                dashConflict = DashConflict(DashConfig.parse(it.text), device, it.editedAt)
+            }
+        }
+    }
+
+    /** The rider's answer to a layout conflict. */
+    fun resolveDashConflict(keepPhone: Boolean) {
+        if (dashConflict == null) return
+        dashConflict = null
+        val p = settingsCache.pendingDash
+        settingsCache = settingsCache.copy(
+            pendingDash = if (keepPhone && p != null) {
+                p.copy(baseText = dashConfig?.configText)   // goes over the device's current one
+            } else {
+                null
+            },
+        )
+        saveSettingsCache()
+        applyEffectiveSettings()
+        reconcileDash()
+    }
+
+    private fun dashWriteAcked(text: String, ok: Boolean) {
+        if (dashWriteInFlight != text) return   // a link that has since dropped
+        dashWriteInFlight = null
+        if (!ok) {
+            dashWriteFailedThisLink = true   // stays pending; the next connect retries
+            return
+        }
+        val p = settingsCache.pendingDash
+        val next = when {
+            p == null || p.text == text -> null
+            else -> p.copy(baseText = text)   // edited again mid-write: that goes next
+        }
+        // The device notifies what it actually stored; until then it holds this.
+        if (dashConfig?.configText != text) dashConfig = DashConfig.parse(text)
+        settingsCache = settingsCache.copy(pendingDash = next, dashText = text)
+        saveSettingsCache()
+        applyEffectiveSettings()
+        updateMediaRemote()
+        reconcileDash()
     }
 
     // MARK: phone media (the device's MUSIC page)
