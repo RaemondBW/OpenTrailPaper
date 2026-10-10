@@ -147,6 +147,15 @@ struct WorkoutView;
 void ui_render_workout(const RideState& s, const WorkoutView& v, uint8_t* fb);
 void ui_render_workout_list(const RideState& s, const WorkoutView& v, int page,
                             uint8_t* fb);
+// With nothing loaded the page is the PICKER: the files in /workouts, one
+// per row (title, duration, block count, intensity sparkline), paged by
+// WORKOUT_PICK_ROWS on the same row grid and footer as the block list; the
+// footer's right-hand button (kWorkoutClose) is REFRESH here. Tap a row to
+// load it. In the loaded-but-not-started (READY) state, the kWorkoutRedo
+// strip becomes "< WORKOUTS", back to this list.
+struct WorkoutPickPage;
+void ui_render_workout_picker(const RideState& s, const WorkoutPickPage& p,
+                              uint8_t* fb);
 extern const EpdRect kWorkoutRedo;
 extern const EpdRect kWorkoutStartNext;
 extern const EpdRect kWorkoutPause;
@@ -217,6 +226,9 @@ struct MenuInfo {
     uint32_t rideElapsedS = 0;
     bool useMiles = false;
     char routeLine[40] = "no route loaded";
+    // Fixed pairing status, on the Paired Devices row's subtitle.
+    bool phonePaired = false;
+    char phoneName[32] = "";
 };
 void ui_render_menu(const MenuInfo& m, uint8_t* fb);
 
@@ -281,6 +293,12 @@ void ui_render_settings(const SettingsInfo& si, uint8_t* fb);
 // The settings page's two-position switch, for other switch pages (MAP LAYERS).
 void ui_settings_toggle(int x, int y, int w, int h, bool on, uint8_t* fb,
                         const char* onText = "ON", const char* offText = "OFF");
+
+// "Unpair phone?" bottom sheet (Paired Devices > phone row), the power sheet's
+// component with different words. Paired: UNPAIR (kPowerShutdown) / CANCEL (kPowerCancel). Not paired:
+// an explanation and CLOSE only (kPowerCancel). `count` > 1 only on a device
+// migrated with bonds to several phones.
+void ui_render_unpair_sheet(bool paired, const char* name, int count, uint8_t* fb);
 
 // Sub-screens run their content to here. There is no BACK strip: the capacitive
 // Home button below the glass already goes back from every one of them, so a

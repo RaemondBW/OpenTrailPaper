@@ -103,6 +103,14 @@ bool mapTrackUp = false;
 bool workoutAllOpen = false;
 int workoutListPage = 0;
 
+// The picker (WORKOUT page, nothing loaded): which page of rows, and the
+// page last drawn — taps resolve against what the rider SAW, not a list that
+// may have rescanned since. In PSRAM: ~1.3 KB this task's stack shouldn't
+// carry. The list itself is workout_service's; it never reads SD here.
+int workoutPickIdx = 0;
+WorkoutPickPage* workoutPick = nullptr;
+bool workoutPickShown = false;   // last frame was the picker
+
 // Serial test hooks: drive the UI over the CDC serial port to profile the map
 // without physical taps. Toggle timing logs with 't'; single-char commands
 // injected in the task loop mirror button presses. See pollSerialCommands().
@@ -165,8 +173,14 @@ inline void IRAM_ATTR uiWakeFromIsr() {
 void IRAM_ATTR onTouchIrq() { touchIrq = true; uiWakeFromIsr(); }
 void IRAM_ATTR onBoardBtnIrq() { boardBtnIrq = true; uiWakeFromIsr(); }
 
-// Power/shutdown dialog overlay (opened by holding BOOT 1.5 s).
+// Bottom-sheet overlay. Named for its first user, the power/shutdown dialog
+// (opened by holding BOOT 1.5 s); the unpair-phone confirmation (Settings >
+// PHONE) is the same modal with different words, so it shares every bit of
+// the overlay plumbing — tap routing, Home-key dismissal, holding still, the
+// scrub on close — and only sheetKind says which words to draw.
 bool powerOverlay = false;
+enum SheetKind { SHEET_POWER, SHEET_UNPAIR };
+SheetKind sheetKind = SHEET_POWER;
 
 // Backlight: 4 levels cycled by the GPIO48 button.
 // Off / Low / Med / Bright. Low is deliberately very dim — it is for reading the
@@ -730,6 +744,39 @@ void handleTap(int x, int y) {
                 y >= ui::STATUS_H) {
                 WorkoutView wv;
                 workout_service::view(wv);
+                if (!wv.loaded) {
+                    // The picker. A row tap queues the load on the loop
+                    // task (the same load as the app's [0x11]); the row
+                    // reads LOADING until the page flips to READY.
+                    if (workoutPickShown && workoutPick) {
+                        const WorkoutPickPage& p = *workoutPick;
+                        if (inRect(kWorkoutPageUp, x, y)) {
+                            if (workoutPickIdx > 0) --workoutPickIdx;
+                        } else if (inRect(kWorkoutPageDown, x, y)) {
+                            if (p.first + p.count < p.total) ++workoutPickIdx;
+                        } else if (inRect(kWorkoutClose, x, y)) {
+                            if (p.state != WLIST_SCANNING)
+                                workout_service::requestListRefresh();
+                        } else if (p.state == WLIST_READY &&
+                                   y >= kWorkoutRowTop &&
+                                   y < kWorkoutRowTop +
+                                           kWorkoutRowH * kWorkoutRowsPerPage) {
+                            int r = (y - kWorkoutRowTop) / kWorkoutRowH;
+                            if (r < p.count && p.rows[r].ok)
+                                workout_service::requestLoad(p.rows[r].file);
+                        }
+                    }
+                    forceDraw = true;
+                    break;
+                }
+                if (workoutViewReady(wv) && !workoutAllOpen &&
+                    inRect(kWorkoutRedo, x, y)) {
+                    // READY's left strip: back to the picker. Unloading is
+                    // what the app's Stop does too, so the app follows.
+                    workout_service::unload();
+                    forceDraw = true;
+                    break;
+                }
                 if (workoutAllOpen) {
                     if (inRect(kWorkoutPageUp, x, y)) {
                         if (workoutListPage > 0) --workoutListPage;
@@ -868,10 +915,15 @@ void handleTap(int x, int y) {
             break;
         }
         case SCREEN_SENSORS: {
+            // PAIRED DEVICES: row 0 is the phone (fixed pairing), the sensor
+            // candidates follow it.
             int row = (y - kMenuRowTop) / kMenuRowH;
-            if (y >= kMenuRowTop && row >= 0 && row < sensorCandCount &&
-                row < kMenuRowCount) {
-                ble_sensors::pairCandidate(sensorCands[row].addr);
+            if (y >= kMenuRowTop && row == 0) {
+                sheetKind = SHEET_UNPAIR;   // UNPAIR PHONE? / NOT PAIRED
+                powerOverlay = true;
+            } else if (y >= kMenuRowTop && row >= 1 && row - 1 < sensorCandCount &&
+                       row < kMenuRowCount) {
+                ble_sensors::pairCandidate(sensorCands[row - 1].addr);
             } else {
                 leaveList();
             }
@@ -1000,6 +1052,16 @@ void handleTap(int x, int y) {
 }
 
 void handlePowerTap(int x, int y) {
+    if (sheetKind == SHEET_UNPAIR) {
+        // UNPAIR only exists while a phone is paired; on the "not paired"
+        // sheet that rect is empty paper and a tap there just closes it.
+        if (inRect(kPowerShutdown, x, y) && ble_server::phonePaired()) {
+            ble_server::requestUnpair();
+            diag::log("ui: unpair phone confirmed on the panel");
+        }
+        powerOverlay = false;   // UNPAIR, CANCEL/CLOSE or outside: done
+        return;
+    }
     if (inRect(kPowerShutdown, x, y)) {
         uint8_t* fb = epdc_framebuffer();
         shutdownDevice(fb, "user power-off (dialog)");  // does not return
@@ -1228,13 +1290,33 @@ void renderListScreen(uint8_t* fb) {
 
     switch (screen) {
         case SCREEN_SENSORS: {
-            title = "SENSORS";
+            title = "PAIRED DEVICES";
             footer = "tap a sensor to pair it · scanning...";
+            // Row 0: the phone this device belongs to (fixed pairing, see
+            // ble_server.cpp). Same row recipe as a sensor: name as the title,
+            // status first in the subtitle, inverted while connected. Tapping
+            // it opens the UNPAIR PHONE? / NOT PAIRED sheet.
+            {
+                const bool paired = ble_server::phonePaired();
+                const char* name = ble_server::pairedPhoneName();
+                snprintf(rows[0].title, sizeof(rows[0].title), "%s",
+                         paired && name[0] ? name : "Phone");
+                if (!paired)
+                    snprintf(rows[0].subtitle, sizeof(rows[0].subtitle),
+                             "Not paired · open the app to pair");
+                else if (ble_server::isPhoneConnected())
+                    snprintf(rows[0].subtitle, sizeof(rows[0].subtitle),
+                             "Connected · Phone · tap to unpair");
+                else
+                    snprintf(rows[0].subtitle, sizeof(rows[0].subtitle),
+                             "Paired · Phone · tap to unpair");
+                rows[0].inverted = paired && ble_server::isPhoneConnected();
+            }
             sensorCandCount = ble_sensors::getCandidates(sensorCands, 8);
-            count = sensorCandCount < kMenuRowCount ? sensorCandCount
-                                                    : kMenuRowCount;
-            for (int i = 0; i < count; ++i) {
-                auto& c = sensorCands[i];
+            count = 1 + (sensorCandCount < kMenuRowCount - 1 ? sensorCandCount
+                                                             : kMenuRowCount - 1);
+            for (int i = 1; i < count; ++i) {
+                auto& c = sensorCands[i - 1];
                 snprintf(rows[i].title, sizeof(rows[i].title), "%s",
                          c.name[0] ? c.name : c.addr);
                 // Status FIRST (short kind label second) so the important word
@@ -1727,6 +1809,15 @@ static void printMeshReport() {
     mesh::nodeIdString(mesh_service::nodeNum(), id, sizeof(id));
     Serial.printf("[mesh] node %s '%s' (%s)\n", id, mesh_service::longName(),
                   mesh_service::shortName());
+    {
+        // Compare with the "Public Key" a Meshtastic app shows for this node.
+        uint8_t pub[32];
+        char b64[48];
+        if (mesh_service::publicKey(pub) && mesh::base64(pub, sizeof(pub), b64, sizeof(b64)))
+            Serial.printf("[mesh] public key %s\n", b64);
+        else
+            Serial.printf("[mesh] public key not loaded yet\n");
+    }
     uint8_t psk[16];
     mesh::defaultPsk(mesh_service::channelPskIndex(), psk);
     // Channel and modem on separate lines because they are separate settings, and
@@ -1772,6 +1863,9 @@ static void printMeshReport() {
                   (unsigned)s.rx, (unsigned)s.rxDropped,
                   (unsigned)s.rxOtherChannel, (unsigned)s.rxDuplicate,
                   (unsigned)s.tx, (unsigned)s.txFailed, (unsigned)s.acksRx);
+    Serial.printf("[mesh] pkiRx=%u pkiFailed=%u nodeInfoReplies=%u\n",
+                  (unsigned)s.pkiRx, (unsigned)s.pkiFailed,
+                  (unsigned)s.nodeInfoReplies);
 
     const int nn = mesh_service::nodeCount();
     Serial.printf("[mesh] %d neighbour%s:\n", nn, nn == 1 ? "" : "s");
@@ -1779,10 +1873,11 @@ static void printMeshReport() {
         mesh_service::Node n;
         if (!mesh_service::nodeAt(i, n)) continue;
         mesh::nodeIdString(n.num, id, sizeof(id));
-        Serial.printf("  %s %-20s %-5s %4d dBm snr %3d %d hop%s, %lus ago\n", id,
+        Serial.printf("  %s %-20s %-5s %4d dBm snr %3d %d hop%s, %lus ago%s\n", id,
                       n.longName[0] ? n.longName : "(no NodeInfo yet)",
                       n.shortName, n.rssi, n.snr, n.hops, n.hops == 1 ? "" : "s",
-                      (unsigned long)((millis() - n.lastHeardMs) / 1000));
+                      (unsigned long)((millis() - n.lastHeardMs) / 1000),
+                      n.hasPublicKey ? "  [key]" : "");
         if (n.hasPosition) {
             Serial.printf("             %.5f,%.5f  %dm  %u sats%s  (%lus ago)\n",
                           n.latitude, n.longitude, (int)n.altitudeM, n.satsInView,
@@ -2590,6 +2685,7 @@ void task(void*) {
                     } else if (bootLow > 1 && !bootLong && !powerOverlay &&
                                millis() - bootDownAt > 1500) {
                         bootLong = true;
+                        sheetKind = SHEET_POWER;
                         powerOverlay = true;       // hold -> power dialog
                     }
                 } else {
@@ -2714,6 +2810,18 @@ void task(void*) {
                     forceDraw = true;
             }
         }
+        // Same for the WORKOUT page: a rescan finishing, a tapped workout
+        // landing (or failing), the app loading or unloading one.
+        {
+            static uint32_t lastWorkoutVersion = 0;
+            uint32_t wv = workout_service::version();
+            if (wv != lastWorkoutVersion) {
+                lastWorkoutVersion = wv;
+                if (screen == SCREEN_DASH &&
+                    dash_config::page(dashPage).kind == DP_WORKOUT)
+                    forceDraw = true;
+            }
+        }
 
         bool navPrompt = routes::navPending();
         if (navPrompt && !lastNavPrompt) navPromptShownAt = millis();
@@ -2787,6 +2895,7 @@ void task(void*) {
             uint8_t* fb = epdc_framebuffer();
             memset(fb, 0xFF, epd_width() / 2 * epd_height());
             bandDrawnThisFrame = false;
+            bool pickerThisFrame = false;   // set by the WORKOUT page below
             // While the "Start navigation?" prompt is up, the base screen shows
             // the whole route fitted so it can be recognized before accepting.
             if (navPrompt && !powerOverlay) {
@@ -2824,7 +2933,28 @@ void task(void*) {
                         WorkoutView wv;
                         workout_service::view(wv);
                         if (!wv.loaded) workoutAllOpen = false;
-                        if (workoutAllOpen)
+                        if (!wv.loaded && !workoutPick)
+                            workoutPick = (WorkoutPickPage*)heap_caps_calloc(
+                                1, sizeof(WorkoutPickPage), MALLOC_CAP_SPIRAM);
+                        if (!wv.loaded && workoutPick) {
+                            // The picker appearing (page opened, Back, the
+                            // app unloading) rescans: the card may have
+                            // changed since the list was read.
+                            if (!workoutPickShown) {
+                                workout_service::requestListRefresh();
+                                workoutPickIdx = 0;
+                            }
+                            pickerThisFrame = true;
+                            WorkoutPickPage& p = *workoutPick;
+                            workout_service::listPage(workoutPickIdx, p);
+                            if (p.count == 0 && p.total > 0) {
+                                // The list shrank under the page we were on.
+                                workoutPickIdx =
+                                    (p.total - 1) / WORKOUT_PICK_ROWS;
+                                workout_service::listPage(workoutPickIdx, p);
+                            }
+                            ui_render_workout_picker(s, p, fb);
+                        } else if (workoutAllOpen)
                             ui_render_workout_list(s, wv, workoutListPage, fb);
                         else
                             ui_render_workout(s, wv, fb);
@@ -2868,6 +2998,9 @@ void task(void*) {
                     m.rideDistanceM = s.distanceM;
                     m.rideElapsedS = s.elapsedS;
                     m.useMiles = s.useMiles;
+                    m.phonePaired = ble_server::phonePaired();
+                    snprintf(m.phoneName, sizeof(m.phoneName), "%s",
+                             ble_server::pairedPhoneName());
                     if (routes::active()) {
                         snprintf(m.routeLine, sizeof(m.routeLine),
                                  "%s · %.1f %s left", routes::activeName(),
@@ -2887,7 +3020,7 @@ void task(void*) {
                 case SCREEN_DIRECTIONS:
                     renderListScreen(fb);
                     ui::statusBar(s, fb,
-                                  screen == SCREEN_SENSORS    ? "SENSORS"
+                                  screen == SCREEN_SENSORS    ? "PAIRED DEVICES"
                                   : screen == SCREEN_ROUTES   ? "NAVIGATE"
                                   : screen == SCREEN_HISTORY  ? "RIDES"
                                                               : "DIRECTIONS");
@@ -2942,12 +3075,22 @@ void task(void*) {
                     break;
                 }
             }
-            if (powerOverlay) ui_render_power_sheet(s.recording, fb);
+            if (powerOverlay) {
+                if (sheetKind == SHEET_UNPAIR)
+                    ui_render_unpair_sheet(ble_server::phonePaired(),
+                                           ble_server::pairedPhoneName(),
+                                           ble_server::pairedPhoneCount(), fb);
+                else
+                    ui_render_power_sheet(s.recording, fb);
+            }
             // Pairing code sheet sits over everything — the phone's dialog is
             // modal on its side too.
             if (unsigned int pc = ble_server::pairingCode())
                 ui_render_pairing(pc, fb);
             }  // end else (normal screens)
+            // Leaving the picker (another page, a menu, a workout loading)
+            // re-arms its rescan-on-appear.
+            workoutPickShown = pickerThisFrame;
             // These three classified the frame so refresh() could pick a waveform.
             // The driver picks its own now (see refresh()), so they are inert — kept
             // because they document which screens are pure black/white and which

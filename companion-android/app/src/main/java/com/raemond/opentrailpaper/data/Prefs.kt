@@ -19,6 +19,8 @@ object Prefs {
     private const val KEY_FLAGGED_TILES = "flaggedTileIds"
     private const val KEY_POI_SENT = "poiSentAt"
     private const val KEY_TILE_SENT = "tileSentAt"
+    private const val KEY_PAIRED_ADDR = "pairedDeviceAddress"
+    private const val KEY_PAIRED_NAME = "pairedDeviceName"
 
     private lateinit var sp: SharedPreferences
 
@@ -33,6 +35,19 @@ object Prefs {
     var onboarded: Boolean
         get() = sp.getBoolean(KEY_ONBOARDED, false)
         set(v) = sp.edit().putBoolean(KEY_ONBOARDED, v).apply()
+
+    /**
+     * Fixed pairing: the MAC of the OpenTrailPaper this phone owns (null until
+     * one has admitted us). The device's address is fixed, so this stays valid
+     * for as long as the bond does; the app only ever connects to it.
+     */
+    var pairedDeviceAddress: String?
+        get() = sp.getString(KEY_PAIRED_ADDR, null)
+        set(v) = sp.edit().putString(KEY_PAIRED_ADDR, v).apply()
+
+    var pairedDeviceName: String?
+        get() = sp.getString(KEY_PAIRED_NAME, null)
+        set(v) = sp.edit().putString(KEY_PAIRED_NAME, v).apply()
 
     var deviceTileIds: Set<String>
         get() = sp.getStringSet(KEY_DEVICE_TILES, emptySet()) ?: emptySet()

@@ -61,4 +61,34 @@ bool running();
 // Fill `v` for the renderer, from the loaded workout and the clock.
 void view(WorkoutView& v);
 
+// --- The device-side picker ---------------------------------------------------
+// The WORKOUT page lists /workouts when nothing is loaded. The list is a cache
+// in PSRAM, (re)built by the loop task (see serviceFor) — never by the UI task,
+// whose stack is small and whose draw path must not wait on the card. Rebuilt
+// when the picker appears, when the app uploads or deletes a file, and when
+// the card comes back (remount, or a USB host letting go of it).
+
+// Call once from setup(), before any task touches the service.
+void begin();
+
+// Ask for a rescan of /workouts. Cheap; callable from any task.
+void requestListRefresh();
+
+// Queue a load of /workouts/<file> (a tap on the picker). The loop task runs
+// it — same as the app's [0x11] — and the page flips to the ready state.
+void requestLoad(const char* file);
+
+// Copy one page (WORKOUT_PICK_ROWS rows from page * WORKOUT_PICK_ROWS) of the
+// cached list into `out`. Never touches SD.
+void listPage(int page, WorkoutPickPage& out);
+
+// Bumped whenever the list, a pending load, or the loaded workout changes,
+// so the UI can repaint at once instead of at its next 1 Hz tick, and the BLE
+// server can push a status to the app after a device-side load / unload.
+uint32_t version();
+
+// loop()'s idle: wait up to `ms`, servicing rescans and queued loads the
+// moment they're asked for. Replaces loop()'s plain 1 s delay.
+void serviceFor(uint32_t ms);
+
 }  // namespace workout_service

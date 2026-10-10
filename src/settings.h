@@ -61,6 +61,17 @@ void clearSensorAddrs(int kind);
 const char* sensorName(int kind);
 void setSensorName(int kind, const char* name);
 
+// The phone this device is paired with (fixed pairing, see ble_server.cpp).
+// The NimBLE bond store is what actually admits a phone; these only remember
+// WHO it is for the panel: the identity address of the last admitted phone and
+// the name it reports over GAP (ASCII-folded, "" until read). clearPhone() is
+// part of an unpair.
+const char* phoneName();
+const char* phoneId();
+void setPhoneId(const char* id);
+void setPhoneName(const char* name);
+void clearPhone();
+
 // Last known GPS position (map center across reboots). Returns false if
 // no position has ever been saved.
 bool lastPosition(double& lat, double& lon);
@@ -123,6 +134,14 @@ void setMeshFreqSlot(uint8_t slot);
 const char* meshLongName();
 const char* meshShortName();      // up to 4 glyphs, as Meshtastic apps show it
 void setMeshNames(const char* longName, const char* shortName);
+
+// This node's Curve25519 private key for Meshtastic PKI, generated once and then
+// kept for good: stock nodes pin the first public key they hear for a node and
+// drop every later NodeInfo that carries a different one, so a key that changed
+// would make this device unreachable by DM until each peer forgot it by hand.
+// False when none is stored yet.
+bool meshPrivateKey(uint8_t out[32]);
+void setMeshPrivateKey(const uint8_t key[32]);
 
 // Compass mounting yaw, in degrees, learned from GPS course while riding (see
 // aux_math::HeadingOffset). Persisted because the board does not move between

@@ -5,6 +5,7 @@
 #include <string.h>
 #include <stdlib.h>
 
+#include "ble_server.h"
 #include "diag.h"
 #include "media.h"
 
@@ -133,6 +134,19 @@ void tick() {
         g_kick = false;
         NimBLEClient* client = NimBLEDevice::getServer()->getClient(g_conn);
         if (!client) { g_state = State::UNAVAILABLE; return; }
+        // While we hold the link's client view anyway: the phone's own name
+        // (GAP Device Name, 0x1800/0x2A00), for the panel's "Paired: ...".
+        // Read HERE because getClient() wipes the client's discovered
+        // services — a second caller elsewhere would pull AMS's out from under
+        // it. Android phones land here too (then find no AMS, below).
+        {
+            NimBLEAttValue name = client->getValue(NimBLEUUID((uint16_t)0x1800),
+                                                   NimBLEUUID((uint16_t)0x2A00));
+            if (name.length()) {
+                std::string s((const char*)name.data(), name.length());
+                ble_server::notePhoneName(s.c_str());
+            }
+        }
         NimBLERemoteService* svc = client->getService(AMS_SVC);
         if (!svc) {
             g_state = State::UNAVAILABLE;
