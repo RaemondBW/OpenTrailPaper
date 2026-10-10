@@ -625,7 +625,9 @@ private final class HexLayerRenderer: MKOverlayRenderer {
                 ctx.clip()
                 let box = path.boundingBox
                 let step = 9.0 / Double(zoomScale)
-                ctx.setStrokeColor(stroke.withAlphaComponent(0.55).cgColor)
+                // Ochre whatever the outline: only update hexes are hatched,
+                // and a selected one's outline is ink.
+                ctx.setStrokeColor(UIColor(Palette.update).withAlphaComponent(0.6).cgColor)
                 ctx.setLineWidth(1.4 / Double(zoomScale))
                 var x = box.minX - box.height
                 while x < box.maxX {
@@ -680,17 +682,22 @@ enum HexStyle: Equatable {
         case .missingCoverage:
             let c = UIColor(Palette.accent)
             return (c.withAlphaComponent(0.10), c.withAlphaComponent(0.7))
+        // Selected hexes: the state's colour as the fill, and an INK outline
+        // for every state. With the state colour as the outline too, a
+        // selected update/current hex was all but identical to the same hex
+        // unselected (ochre hatch 0.30 vs 0.22) — selecting an area you
+        // already have looked like nothing happened. Ink = selected.
         case .selection(.done):
-            return (UIColor(Palette.good).withAlphaComponent(0.22), UIColor(Palette.good))
+            return (UIColor(Palette.good).withAlphaComponent(0.22), UIColor(Palette.ink))
         case .selection(.excluded):
             return (UIColor(Palette.muted).withAlphaComponent(0.08),
                     UIColor(Palette.muted).withAlphaComponent(0.55))
         case .selection(.pending):
-            return (UIColor(Palette.accent).withAlphaComponent(0.16), UIColor(Palette.accent))
+            return (UIColor(Palette.accent).withAlphaComponent(0.22), UIColor(Palette.ink))
         case .selection(.update):
-            return (UIColor(Palette.update).withAlphaComponent(0.30), UIColor(Palette.update))
+            return (UIColor(Palette.update).withAlphaComponent(0.38), UIColor(Palette.ink))
         case .selection(.current):
-            return (UIColor(Palette.good).withAlphaComponent(0.34), UIColor(Palette.good))
+            return (UIColor(Palette.good).withAlphaComponent(0.38), UIColor(Palette.ink))
         }
     }
 }
