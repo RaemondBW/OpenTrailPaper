@@ -47,6 +47,28 @@ enum PrebuiltTiles {
         let ebmSize: Int, ebmHash: String, poiSize: Int, poiHash: String
     }
 
+    /// One group's index.json: its cells and the fragments (meta.json
+    /// "fragments" keys) they were built in, for the data date.
+    struct Index { var cells: [String: Entry]; var regions: [String] }
+
+    /// Group indexes, shared by every download and the Maps screen's version
+    /// check for an hour (index.json's own max-age). A group answered with 404
+    /// (or unusable JSON) is cached as nil: "not built".
+    actor IndexCache {
+        static let shared = IndexCache()
+        static let ttl: TimeInterval = 3600
+        private var cache: [String: (at: Date, index: Index?)] = [:]
+
+        /// Outer nil: not cached (or expired). Inner nil: cached as "not built".
+        func cached(_ url: URL) -> Index?? {
+            guard let c = cache[url.absoluteString],
+                  Date().timeIntervalSince(c.at) < Self.ttl else { return nil }
+            return .some(c.index)
+        }
+        func store(_ url: URL, _ index: Index?) { cache[url.absoluteString] = (Date(), index) }
+        func clear() { cache = [:] }
+    }
+
     /// Index lookups for one download, shared by the map and POI passes so
     /// each group's index.json is fetched once. Once the host proves
     /// unreachable (DNS, refused, offline, timeout), every later lookup
@@ -54,42 +76,59 @@ enum PrebuiltTiles {
     /// must not cost a timeout per group.
     actor Lookup {
         let base: URL?
-        private var indexes: [String: Task<[String: Entry]?, Never>] = [:]
+        private var indexes: [String: Task<Index?, Never>] = [:]
         private(set) var dead = false
+        private let cache: IndexCache
 
-        init(base: URL? = PrebuiltTiles.configuredBase) { self.base = base }
+        init(base: URL? = PrebuiltTiles.configuredBase, cache: IndexCache = .shared) {
+            self.base = base; self.cache = cache
+        }
 
         /// Entries for the groups of `ids` (fetched concurrently). A group
         /// with no usable index is simply absent.
         func entries(for ids: [String]) async -> [String: Entry] {
+            var out: [String: Entry] = [:]
+            for (g, idx) in await groupIndexes(for: ids) {
+                for id in ids where PrebuiltTiles.group(id) == g {
+                    if let e = idx.cells[id] { out[id] = e }
+                }
+            }
+            return out
+        }
+
+        /// The usable indexes of the groups of `ids`.
+        func groupIndexes(for ids: [String]) async -> [String: Index] {
             guard let base, !dead else { return [:] }
             let groups = Set(ids.map(PrebuiltTiles.group))
             for g in groups where indexes[g] == nil {
                 indexes[g] = Task { await self.fetchIndex(base: base, group: g) }
             }
-            var out: [String: Entry] = [:]
+            var out: [String: Index] = [:]
             for g in groups {
-                guard let m = await indexes[g]?.value else { continue }
-                for id in ids where PrebuiltTiles.group(id) == g {
-                    if let e = m[id] { out[id] = e }
-                }
+                if let m = await indexes[g]?.value { out[g] = m }
             }
             return out
         }
 
         func markDead() { dead = true }
 
-        private func fetchIndex(base: URL, group g: String) async -> [String: Entry]? {
+        private func fetchIndex(base: URL, group g: String) async -> Index? {
             if dead { return nil }
             guard let url = URL(string: "\(g)/index.json", relativeTo: base) else { return nil }
+            if let hit = await cache.cached(url) { return hit }
             let r = await PrebuiltTiles.get(url, kind: "cdn-index", timeout: PrebuiltTiles.indexTimeout)
             if r.unreachable { dead = true }
-            guard let data = r.data, r.status == 200 else { return nil }
-            return PrebuiltTiles.parseIndex(data)
+            let idx = (r.status == 200 ? r.data : nil).flatMap(PrebuiltTiles.parseIndexFile)
+            // Only a definite answer is kept: the index, or 404 (group not
+            // built). No answer or a server error is asked again next time.
+            if r.status == 200 || r.status == 404 { await cache.store(url, idx) }
+            return idx
         }
     }
 
-    static func parseIndex(_ data: Data) -> [String: Entry]? {
+    static func parseIndex(_ data: Data) -> [String: Entry]? { parseIndexFile(data)?.cells }
+
+    static func parseIndexFile(_ data: Data) -> Index? {
         guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               (root["v"] as? Int) == 1,
               let cells = root["cells"] as? [String: Any] else { return nil }
@@ -100,7 +139,70 @@ enum PrebuiltTiles {
                   let ps = a[2] as? Int, let ph = a[3] as? String else { continue }
             out[id] = Entry(ebmSize: es, ebmHash: eh, poiSize: ps, poiHash: ph)
         }
+        return Index(cells: out, regions: (root["regions"] as? [String]) ?? [])
+    }
+
+    /// meta.json -> fragment name -> OSM snapshot time (fragments whose
+    /// timestamp is unknown are left out).
+    static func parseMeta(_ data: Data) -> [String: Date] {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let frags = root["fragments"] as? [String: Any] else { return [:] }
+        let iso = ISO8601DateFormatter()
+        var out: [String: Date] = [:]
+        for (name, v) in frags {
+            if let f = v as? [String: Any], let s = f["osm"] as? String, let d = iso.date(from: s) {
+                out[name] = d
+            }
+        }
         return out
+    }
+
+    /// The OSM snapshot behind `indexes`: the oldest timestamp (meta.json)
+    /// among the fragments their cells came from; nil when none is known.
+    static func dataDate(_ indexes: [Index], meta: [String: Date]) -> Date? {
+        indexes.flatMap(\.regions).compactMap { meta[$0] }.min()
+    }
+
+    // MARK: versions (docs/prebuilt-tiles.md#versions)
+    //
+    // What a device holds is recorded per hex as a version string:
+    //   "cdn:<hash>"    the CDN file with that index hash (ebmHash / poiHash)
+    //   "phone:<secs>"  built on the phone from Overpass at that Unix time
+    // and compared with the group index: the same hash is current, anything
+    // else is an update. Without an index entry (CDN unreachable, hex not
+    // pre-built, or built empty) the answer is `unknown` and the caller falls
+    // back to its age / bike-route heuristic.
+
+    enum VersionState: Equatable { case current, update, unknown }
+
+    static func cdnRecord(_ hash: String) -> String { "cdn:" + hash }
+    static func phoneRecord(_ at: Date = Date()) -> String { "phone:\(Int(at.timeIntervalSince1970))" }
+    /// When a "phone:" record was built (nil for CDN or unknown records).
+    static func phoneBuiltAt(_ record: String?) -> Date? {
+        guard let r = record, r.hasPrefix("phone:"), let t = Double(r.dropFirst(6)) else { return nil }
+        return Date(timeIntervalSince1970: t)
+    }
+    /// The hash a device's tile is compared with: nil when the hex is not
+    /// pre-built or was built empty (there is no file to send).
+    static func tileHash(_ e: Entry?) -> String? {
+        guard let e, e.ebmSize > 0 else { return nil }
+        return e.ebmHash
+    }
+    /// The .poi hash ("" for a cell with no POIs, whose empty file is
+    /// synthesised on the phone and recorded as "cdn:").
+    static func poiHash(_ e: Entry?) -> String? { e?.poiHash }
+
+    static func state(record: String?, cdnHash: String?) -> VersionState {
+        guard let h = cdnHash else { return .unknown }
+        return record == cdnRecord(h) ? .current : .update
+    }
+
+    /// Of `ids`, the ones to fetch and send: every hex whose device record is
+    /// not the CDN's current hash (changed, phone-built, unknown, or a hex the
+    /// CDN does not have and that is rebuilt as before).
+    static func needsSend(_ ids: [String], records: [String: String],
+                          hashes: [String: String]) -> [String] {
+        ids.filter { state(record: records[$0], cdnHash: hashes[$0]) != .current }
     }
 
     /// `unreachable`: no HTTP answer that says anything about the CDN (DNS,

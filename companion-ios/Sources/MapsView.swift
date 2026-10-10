@@ -34,6 +34,9 @@ struct MapsView: View {
     @StateObject private var locator = MapLocator()
     @StateObject private var projection = MapProjection()
     @ObservedObject private var store = EInkTileStore.shared
+    /// The CDN's group indexes for what is on screen: hashes for "update
+    /// available", fragments for the data date.
+    @ObservedObject private var cdn = CdnVersions.shared
     @State private var visibleRegion: MKCoordinateRegion?
     @State private var outlineHexes: [OutlineHex] = []
     /// The locator's fallback shot has been taken.
@@ -62,6 +65,8 @@ struct MapsView: View {
     @State private var downloadTotal = 0            // hexes targeted this run
     @State private var downloadTask: Task<Void, Never>?
     @State private var confirmRedownload = false
+    /// Redownload tapped with every selected hex already current.
+    @State private var confirmUpToDate = false
     @State private var showLayers = false
     /// Measured height of the floating card, so the map can inset for whatever
     /// the card currently is — the hint, a selection summary and a send progress
@@ -109,7 +114,23 @@ struct MapsView: View {
     }
     private var onDeviceTiles: [MapTile] { tiles.filter { ble.tileIsCurrent($0.id) } }
     private var updateCount: Int { onDeviceTiles.filter { ble.tileNeedsUpdate($0.id) }.count }
+    /// Updates known from the CDN index (a different hash than the device's).
+    private var newerDataCount: Int { onDeviceTiles.filter { ble.tileVersionState($0.id) == .update }.count }
     private var onDeviceCount: Int { onDeviceTiles.count }
+    /// On-device hexes a Redownload would send: all but those whose tile (and,
+    /// on firmware with POIs, .poi) is the CDN's current version. Hexes the
+    /// CDN does not have are rebuilt from Overpass as before.
+    private var redownloadCount: Int {
+        onDeviceTiles.filter { t in
+            ble.tileVersionState(t.id) != .current
+                || (ble.deviceSupportsPois && ble.poiVersionState(t.id) != .current)
+        }.count
+    }
+    /// "Map data from Oct 6": the OSM snapshot of the CDN's tiles for the
+    /// selection, once its indexes and meta.json are in.
+    private var dataDateText: String? {
+        cdn.dataDate(tiles.map(\.id)).map { "Map data from " + $0.formatted(.dateTime.month(.abbreviated).day()) }
+    }
     /// Hexes above this many ask before a Redownload: each one is an Overpass
     /// fetch, an elevation fetch and a BLE transfer.
     private static let redownloadConfirmOver = 20
@@ -170,6 +191,7 @@ struct MapsView: View {
                                               max(c1.latitude, c2.latitude), max(c1.longitude, c2.longitude))
                                     box = bx
                                     tiles = H3Tiles.coveringTiles(south: bx.0, west: bx.1, north: bx.2, east: bx.3)
+                                    cdn.refresh(tiles.map(\.id))
                                     excluded = []
                                     converted = []
                                     status = nil
@@ -235,11 +257,19 @@ struct MapsView: View {
                 DeviceMapLayersSheet().environmentObject(ble)
                     .presentationDetents([.large])
             }
-            .alert("Redownload \(onDeviceCount) hexes?", isPresented: $confirmRedownload) {
+            .alert("Redownload \(redownloadCount) hexes?", isPresented: $confirmRedownload) {
                 Button("Cancel", role: .cancel) {}
                 Button("Redownload") { download(redownload: true) }
             } message: {
-                Text("They are rebuilt from fresh OpenStreetMap data and sent to the device again, with bike routes and water stops. This takes a while and uses data.")
+                Text("Hexes with newer map data are fetched and sent to the device again, with bike routes and water stops. Hexes that are already current are skipped. This takes a while and uses data.")
+            }
+            // Nothing newer to fetch. Re-sending the same bytes only helps a
+            // damaged card, so it is offered but not the default.
+            .alert("All \(onDeviceCount) hexes are up to date", isPresented: $confirmUpToDate) {
+                Button("OK", role: .cancel) {}
+                Button("Re-send anyway") { download(redownload: true, force: true) }
+            } message: {
+                Text("The device already has the newest published map data for each. Re-send only to repair a damaged card.")
             }
             // Redraw when a tile finishes decoding, or when the device's own
             // tile list arrives and flips areas to "synced". Both are also the
@@ -251,6 +281,8 @@ struct MapsView: View {
             .onChange(of: ble.deviceTileIds) { scheduleRefresh() }
             .onChange(of: ble.devicePoiIds) { scheduleRefresh() }
             .onChange(of: ble.deviceSupportsPois) { scheduleRefresh() }
+            // CDN indexes arrived: the update/current colouring may change.
+            .onChange(of: cdn.revision) { scheduleRefresh() }
             // Center on the user's first fix, once, at our fixed tile-friendly
             // span. Only before any interaction so it never yanks the map away
             // from a box the user is drawing.
@@ -289,7 +321,11 @@ struct MapsView: View {
     /// Ask the store which coverage hexagons the region now on screen needs.
     private func refreshCoverage() {
         guard let r = visibleRegion else { return }
-        outlineHexes = store.visibleContent(in: r, synced: ble.deviceTileIds).map { o in
+        let visible = store.visibleContent(in: r, synced: ble.deviceTileIds)
+        // Look up the CDN versions of the device's hexes on screen (cached for
+        // an hour; a no-op once they are known).
+        cdn.refresh(visible.filter(\.synced).map(\.id) + tiles.map(\.id))
+        outlineHexes = visible.map { o in
             guard o.synced else { return o }
             var h = o
             h.update = ble.tileNeedsUpdate(o.id)
@@ -429,6 +465,9 @@ struct MapsView: View {
                     VStack(alignment: .leading, spacing: 1) {
                         Text("Selected area").trackedLabel()
                         Text(areaText(b)).font(BarlowFont.text(15, .semibold)).foregroundStyle(Palette.ink)
+                        if let d = dataDateText {
+                            Text(d).font(BarlowFont.text(11)).foregroundStyle(Palette.muted)
+                        }
                     }
                     Spacer()
                     Button { box = nil; tiles = []; excluded = []; converted = [] } label: {
@@ -450,7 +489,7 @@ struct MapsView: View {
                     .font(BarlowFont.text(11)).foregroundStyle(Palette.faint)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 if updates > 0 {
-                    Text("\(updates) hex\(updates == 1 ? " has" : "es have") an update (made before bike routes & water stops, or over 90 days old) — redownload to refresh.")
+                    Text(updateText(updates: updates, newer: newerDataCount))
                         .font(BarlowFont.text(12)).foregroundStyle(Palette.ink)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -464,17 +503,33 @@ struct MapsView: View {
                 // the rider's choice, never automatic: it costs a fetch and a
                 // transfer per hex. Offered on old firmware too (fresher roads),
                 // where it simply carries no POIs.
+                // Only hexes with newer data go out; when every one is current
+                // it says so and offers a forced re-send for repairs.
                 if onDevice > 0 {
-                    SecondaryButton(title: "Redownload \(onDevice) hex\(onDevice == 1 ? "" : "es")",
+                    let n = redownloadCount
+                    SecondaryButton(title: "Redownload \(n > 0 ? n : onDevice) hex\((n > 0 ? n : onDevice) == 1 ? "" : "es")",
                                     systemImage: "arrow.clockwise",
                                     enabled: ble.canUploadMap) {
-                        if onDevice > Self.redownloadConfirmOver { confirmRedownload = true }
+                        if n == 0 { confirmUpToDate = true }
+                        else if n > Self.redownloadConfirmOver { confirmRedownload = true }
                         else { download(redownload: true) }
                     }
                 }
                 if let s = status { Text(s).font(BarlowFont.text(12)).foregroundStyle(Palette.accent) }
             }
         }
+    }
+
+    /// "3 hexes have newer data · 2 made before bike routes & water stops, or
+    /// over 90 days old — redownload to refresh."
+    private func updateText(updates: Int, newer: Int) -> String {
+        let old = updates - newer
+        var parts: [String] = []
+        if newer > 0 { parts.append("\(newer) hex\(newer == 1 ? " has" : "es have") newer data") }
+        if old > 0 {
+            parts.append("\(old) hex\(old == 1 ? " was" : "es were") made before bike routes & water stops, or over 90 days ago")
+        }
+        return parts.joined(separator: " · ") + " — redownload to refresh."
     }
 
     private func countChip(_ n: Int, _ label: String, _ color: Color) -> some View {
@@ -564,58 +619,94 @@ struct MapsView: View {
 
     // MARK: download
 
-    /// `redownload`: rebuild the selected hexes the device already has from
-    /// fresh Overpass data (skipping the phone's caches) and re-send them with
-    /// their POIs. Otherwise: new hexes, plus POIs that are missing or stale.
-    private func download(redownload: Bool = false) {
+    /// `redownload`: the selected hexes the device already has, re-fetched and
+    /// re-sent with their POIs — only those whose CDN hash differs from what
+    /// the device has (or that the CDN does not have: rebuilt from Overpass as
+    /// before). `force` re-sends every one (repairing a card). Otherwise: new
+    /// hexes, plus POIs that are missing or changed.
+    private func download(redownload: Bool = false, force: Bool = false) {
         guard !building, !ble.tilesUploading else { return }   // one job at a time
-        let missing = redownload ? onDeviceTiles : newTiles
-        let poiWork = redownload ? (ble.deviceSupportsPois ? onDeviceTiles : []) : poiTiles
-        guard !missing.isEmpty || !poiWork.isEmpty else { return }
+        let missing0 = redownload ? onDeviceTiles : newTiles
+        let poiWork0 = redownload ? (ble.deviceSupportsPois ? onDeviceTiles : []) : poiTiles
+        guard !missing0.isEmpty || !poiWork0.isEmpty else { return }
         building = true
         converted = []
         failedHexes = []
-        downloadTotal = missing.count + poiWork.count
-        status = missing.isEmpty ? "Fetching cycling POIs…" : "Fetching map data…"
+        downloadTotal = missing0.count + poiWork0.count
+        status = redownload ? "Checking for newer map data…"
+               : missing0.isEmpty ? "Fetching cycling POIs…" : "Fetching map data…"
 
-        // Group tiles into bounded OSM fetches (~0.08° ≈ 9 km) so each Overpass
-        // query stays light — big queries 504 on the busy public servers. Each
-        // batch is one call (retried across mirrors in MapBuilder.fetchOSM).
-        let batches = Dictionary(grouping: missing) { t -> String in
-            let clat = (t.south + t.north) / 2, clon = (t.west + t.east) / 2
-            return "\(Int((clat / 0.08).rounded(.down)))_\(Int((clon / 0.08).rounded(.down)))"
-        }.map { $0.value }
-
-        ble.startTileStream(resend: redownload)   // begin sending as tiles are produced
         // Pre-built tiles first (PrebuiltTiles): one lookup per download, shared
         // by the map and POI passes so each index.json is fetched once.
         let prebuilt = PrebuiltTiles.Lookup()
+        let tileRecords = ble.tileRecords, poiRecords = ble.poiRecords
+        let devicePois = ble.devicePoiIds
         downloadTask = Task {
             var anyBuilt = false
             await DownloadStats.shared.reset()
+            // The CDN's current hashes. A hex whose device record already has
+            // them is skipped (unless forced): nothing is fetched or sent.
+            let entries = await prebuilt.entries(for: Array(Set((missing0 + poiWork0).map(\.id))))
+            if Task.isCancelled { return }                // canceled while checking
+            let tileHashes = entries.compactMapValues { PrebuiltTiles.tileHash($0) }
+            let poiHashes = entries.compactMapValues { PrebuiltTiles.poiHash($0) }
+            var missing = missing0, poiWork = poiWork0
+            if redownload && !force {
+                let need = Set(PrebuiltTiles.needsSend(missing0.map(\.id), records: tileRecords, hashes: tileHashes))
+                missing = missing0.filter { need.contains($0.id) }
+            }
+            if !force {
+                let need = Set(PrebuiltTiles.needsSend(poiWork0.map(\.id), records: poiRecords, hashes: poiHashes))
+                poiWork = poiWork0.filter { !devicePois.contains($0.id) || need.contains($0.id) }
+            }
+            if missing.isEmpty && poiWork.isEmpty {
+                building = false
+                status = redownload
+                    ? "All \(missing0.count) hex\(missing0.count == 1 ? " is" : "es are") up to date."
+                    : "Everything selected is up to date."
+                return
+            }
+            downloadTotal = missing.count + poiWork.count
+            if redownload { status = "Fetching map data…" }
+
+            // Group tiles into bounded OSM fetches (~0.08° ≈ 9 km) so each Overpass
+            // query stays light — big queries 504 on the busy public servers. Each
+            // batch is one call (retried across mirrors in MapBuilder.fetchOSM).
+            let batches = Dictionary(grouping: missing) { t -> String in
+                let clat = (t.south + t.north) / 2, clon = (t.west + t.east) / 2
+                return "\(Int((clat / 0.08).rounded(.down)))_\(Int((clon / 0.08).rounded(.down)))"
+            }.map { $0.value }
+
+            ble.startTileStream(resend: redownload)   // begin sending as tiles are produced
             do {
                 // Cycling POIs: their own small query and cache, started NOW so
                 // they arrive while the map batches are still building (queued
                 // behind any tiles already waiting to send). A failure here
                 // never fails the map download — the map is what matters.
                 var poiNote: String? = nil
+                let poiWork = poiWork
                 async let poisDone: Bool = {
                     guard !poiWork.isEmpty else { return true }
-                    do { try await sendPois(poiWork, fresh: redownload, prebuilt: prebuilt); return true }
-                    catch { return false }
+                    do {
+                        try await sendPois(poiWork, fresh: redownload, prebuilt: prebuilt, hashes: poiHashes)
+                        return true
+                    } catch { return false }
                 }()
               if !missing.isEmpty {
                 // Anything built before goes straight out — no Overpass, no
                 // elevation fetch, no re-encoding. This is what makes a retry
-                // after a dropped link cheap instead of a full rebuild.
-                // (Not on a Redownload: that is fresh data by definition.)
-                var cached: [(id: String, data: Data)] = []
-                if !redownload { cached = await TileCache.shared.partition(missing.map(\.id)).cached }
+                // after a dropped link cheap instead of a full rebuild. A hex
+                // the CDN has is reused only as a copy of its current hash (any
+                // age, also on a Redownload: it is the same bytes); one it does
+                // not have only within the cache's age, and not on a Redownload.
+                let part = await TileCache.shared.partition(missing.map(\.id), cdnHashes: tileHashes,
+                                                            allowAged: !redownload)
+                let cached = part.cached
                 if !cached.isEmpty {
                     status = "Reusing \(cached.count) cached tile\(cached.count == 1 ? "" : "s")…"
                     converted.formUnion(cached.map(\.id))
                     anyBuilt = true
-                    ble.enqueueTiles(cached)
+                    ble.enqueueTiles(cached, versions: part.versions)
                     store.noteDownloaded(cached.map(\.id))
                     await DownloadStats.shared.source("cache", cached.count)
                 }
@@ -631,11 +722,13 @@ struct MapsView: View {
                     let cdn = await PrebuiltTiles.fetchTiles(toFetch, lookup: prebuilt)
                     try Task.checkCancellation()
                     if !cdn.tiles.isEmpty {
+                        var versions: [String: String] = [:]
+                        for t in cdn.tiles { if let h = tileHashes[t.id] { versions[t.id] = PrebuiltTiles.cdnRecord(h) } }
                         converted.formUnion(cdn.tiles.map(\.id))
                         anyBuilt = true
-                        await TileCache.shared.store(cdn.tiles)
+                        await TileCache.shared.store(cdn.tiles, versions: versions)
                         store.noteDownloaded(cdn.tiles.map(\.id))
-                        ble.enqueueTiles(cdn.tiles)
+                        ble.enqueueTiles(cdn.tiles, versions: versions)
                     }
                     if !cdn.empty.isEmpty { failedHexes.formUnion(cdn.empty) }
                     leftIds = Set(cdn.missing.map(\.id))
@@ -748,23 +841,24 @@ struct MapsView: View {
     /// Build (or reuse) and queue the `.poi` files for `work`. One POI query per
     /// ~0.25° group of tiles: the query is light, so groups can be far bigger
     /// than the map batches. Each POI is stored in the one H3 cell containing it.
+    /// `hashes`: the CDN's current .poi hash per hex it has.
     private func sendPois(_ work: [MapTile], fresh: Bool = false,
-                          prebuilt: PrebuiltTiles.Lookup) async throws {
-        var cached: [(id: String, data: Data)] = []
-        var missingIds = work.map(\.id)
-        if !fresh {   // a Redownload rebuilds them from fresh data instead
-            (cached, missingIds) = await PoiCache.shared.partition(work.map(\.id))
-        }
-        ble.enqueuePois(cached)
-        var need = Set(missingIds)
+                          prebuilt: PrebuiltTiles.Lookup, hashes: [String: String]) async throws {
+        // Cached copies: of the CDN's current hash at any age; others only
+        // within maxAge and not on a Redownload (fresh data by definition).
+        let part = await PoiCache.shared.partition(work.map(\.id), cdnHashes: hashes, allowAged: !fresh)
+        ble.enqueuePois(part.cached, versions: part.versions)
+        var need = Set(part.missing)
         // Ready-made .poi files first (also on a Redownload: the CDN copy is
         // as fresh as the last server build); Overpass only for the rest.
         if !need.isEmpty, prebuilt.base != nil {
             let cdn = await PrebuiltTiles.fetchPois(work.filter { need.contains($0.id) }, lookup: prebuilt)
             try Task.checkCancellation()
             if !cdn.files.isEmpty {
-                await PoiCache.shared.store(cdn.files)
-                ble.enqueuePois(cdn.files)
+                var versions: [String: String] = [:]
+                for f in cdn.files { if let h = hashes[f.id] { versions[f.id] = PrebuiltTiles.cdnRecord(h) } }
+                await PoiCache.shared.store(cdn.files, versions: versions)
+                ble.enqueuePois(cdn.files, versions: versions)
             }
             need = Set(cdn.missing.map(\.id))
         }

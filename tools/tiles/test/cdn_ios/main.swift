@@ -4,6 +4,9 @@
 //
 //   cdn_ios check  <base> <tree> <tamperedBase>   correctness checks (exit 1 on failure)
 //   cdn_ios time   <base> <lat> <lon> <count>     CDN vs Overpass for the same hexes
+//   cdn_ios vtree  <dir>                          write the two small trees `versions` serves
+//   cdn_ios versions <baseA> <baseB> <workdir>    hash records: skip same, re-send changed,
+//                                                 phone-built = update, CDN down = heuristic
 import Foundation
 
 func fail(_ m: String) -> Never { print("FAIL: \(m)"); exit(1) }
@@ -32,6 +35,20 @@ func outsideHexes(_ known: [String: PrebuiltTiles.Entry]) -> (inGroup: [MapTile]
         if groups.contains(PrebuiltTiles.group(t.id)) { inGroup.append(t) } else { noGroup.append(t) }
     }
     return (inGroup, noGroup)
+}
+
+/// Four real hexes around Providence: three in one group (the `vtree`
+/// index) and one more of that group that the index leaves out.
+func versionHexes() -> [MapTile] {
+    let all = H3Tiles.coveringTiles(south: 41.80, west: -71.45, north: 41.86, east: -71.38).sorted { $0.id < $1.id }
+    let g = PrebuiltTiles.group(all[0].id)
+    let same = all.filter { PrebuiltTiles.group($0.id) == g }
+    guard same.count >= 4 else { fail("need 4 hexes in one group, got \(same.count)") }
+    return Array(same.prefix(4))
+}
+
+func blob(_ magic: String, _ n: Int, _ seed: Int) -> Data {
+    Data((0..<n).map { i in i < 4 ? Array(magic.utf8)[i] : UInt8((i * 31 + seed) & 0xff) })
 }
 
 func run(_ body: @escaping () async -> Void) {
@@ -175,6 +192,143 @@ case "time":
         let same = built.filter { cdn[$0.id] == $0.data }.count
         print("byte-identical CDN vs phone-built: \(same) of \(built.count)")
     }
+case "vtree":
+    // Two published states of one group: B changes the first hex's tile.
+    let dir = URL(fileURLWithPath: a[2])
+    let v = versionHexes()
+    let g = PrebuiltTiles.group(v[0].id)
+    for (name, firstHash, seed) in [("a", "aaaa1111aaaa1111", 1), ("b", "aaaa9999aaaa9999", 9)] {
+        let d = dir.appendingPathComponent("\(name)/v1/\(g)")
+        try! FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
+        let t0 = blob("EBM2", 1000, seed), t1 = blob("EBM2", 700, 3), t2 = blob("EBM2", 600, 4)
+        let p0 = blob("EPOI", 52, 2)
+        try! t0.write(to: d.appendingPathComponent("\(v[0].id).ebm"))
+        try! p0.write(to: d.appendingPathComponent("\(v[0].id).poi"))
+        try! t1.write(to: d.appendingPathComponent("\(v[1].id).ebm"))
+        try! t2.write(to: d.appendingPathComponent("\(v[2].id).ebm"))
+        let index = """
+            {"v":1,"cells":{"\(v[0].id)":[1000,"\(firstHash)",52,"pppp1111pppp1111"],\
+            "\(v[1].id)":[700,"bbbb2222bbbb2222",0,""],"\(v[2].id)":[600,"cccc3333cccc3333",0,""]},\
+            "regions":["rhode-island","rhode-island.border"]}
+            """
+        try! Data(index.utf8).write(to: d.appendingPathComponent("index.json"))
+        let meta = """
+            {"version":"v1","fragments":{"rhode-island":{"region":"rhode-island","phase":"interior",\
+            "osm":"2026-10-05T20:21:02Z"},"rhode-island.border":{"region":"rhode-island","phase":"border",\
+            "osm":"2026-10-06T20:21:02Z"}}}
+            """
+        try! Data(meta.utf8).write(to: dir.appendingPathComponent("\(name)/v1/meta.json"))
+    }
+    print("wrote \(dir.path)/a and /b for group \(g)")
+
+case "versions":
+    let baseA = PrebuiltTiles.baseURL(a[2])!, baseB = PrebuiltTiles.baseURL(a[3])!
+    let work = URL(fileURLWithPath: a[4])
+    let v = versionHexes()
+    let ids = v.map(\.id)
+    // h0 sent from the CDN as A's hash; h1 sent from an older CDN build; h2
+    // built on the phone; h3 is not in the index (rebuilt from Overpass).
+    let phone = PrebuiltTiles.phoneRecord(Date(timeIntervalSince1970: 1_790_000_000))
+    var records: [String: String] = [
+        ids[0]: PrebuiltTiles.cdnRecord("aaaa1111aaaa1111"),
+        ids[1]: PrebuiltTiles.cdnRecord("0ld0ld0ld0ld0ld0"),
+        ids[2]: phone,
+        ids[3]: phone,
+    ]
+    run {
+        let la = PrebuiltTiles.Lookup(base: baseA)
+        let ea = await la.entries(for: ids)
+        let ha = ea.compactMapValues { PrebuiltTiles.tileHash($0) }
+        let states = ids.map { PrebuiltTiles.state(record: records[$0], cdnHash: ha[$0]) }
+        check(states == [.current, .update, .update, .unknown],
+              "states vs index A: same hash current, changed hash update, phone-built update, not pre-built unknown -> \(states)")
+        let need = PrebuiltTiles.needsSend(ids, records: records, hashes: ha)
+        check(need == [ids[1], ids[2], ids[3]], "Redownload sends only the changed, phone-built and unknown hexes (skips \(ids[0]))")
+        check(PrebuiltTiles.phoneBuiltAt(phone) == Date(timeIntervalSince1970: 1_790_000_000), "phone record keeps its build time")
+        // Fetch just those: the CDN serves the two it has; the unknown one falls back.
+        let r = await PrebuiltTiles.fetchTiles(need.compactMap { H3Tiles.tile(id: $0) }, lookup: la)
+        check(Set(r.tiles.map(\.id)) == [ids[1], ids[2]] && r.missing.map(\.id) == [ids[3]],
+              "fetch: \(r.tiles.count) from the CDN, \(r.missing.count) to Overpass, \(ids[0]) never requested")
+        let served = (try? String(contentsOf: work.appendingPathComponent("http1.log"), encoding: .utf8)) ?? ""
+        check(served.contains("\(ids[1]).ebm") && !served.contains("\(ids[0]).ebm"),
+              "server log: the current hex's tile was never requested")
+        // The device saved them: record their hashes.
+        for t in r.tiles { records[t.id] = PrebuiltTiles.cdnRecord(ha[t.id]!) }
+        check(PrebuiltTiles.needsSend(ids, records: records, hashes: ha) == [ids[3]],
+              "after sending, only the not-pre-built hex is left for a Redownload")
+        // POIs by their own hash: "" for a cell without POIs (synthesised).
+        let pa = ea.compactMapValues { PrebuiltTiles.poiHash($0) }
+        let poiRecords = [ids[0]: PrebuiltTiles.cdnRecord("pppp1111pppp1111"), ids[1]: PrebuiltTiles.cdnRecord(""),
+                          ids[2]: phone]
+        check(PrebuiltTiles.needsSend(Array(ids.prefix(3)), records: poiRecords, hashes: pa) == [ids[2]],
+              "POIs: same .poi hash skipped (incl. the empty one), phone-built re-sent")
+
+        // Next week's index (B) changes h0: it is now the only update.
+        let eb = await PrebuiltTiles.Lookup(base: baseB, cache: PrebuiltTiles.IndexCache()).entries(for: ids)
+        let hb = eb.compactMapValues { PrebuiltTiles.tileHash($0) }
+        check(PrebuiltTiles.needsSend(Array(ids.prefix(3)), records: records, hashes: hb) == [ids[0]],
+              "index B: the changed hash is re-sent, the unchanged two are skipped")
+
+        // CDN unreachable: nothing is known, every hex is `unknown` (the age /
+        // bike-route heuristic decides) and a Redownload rebuilds as before.
+        let ld = PrebuiltTiles.Lookup(base: PrebuiltTiles.baseURL("http://127.0.0.1:9/v1/"))
+        let ed = await ld.entries(for: ids)
+        let hd = ed.compactMapValues { PrebuiltTiles.tileHash($0) }
+        check(ed.isEmpty && ids.allSatisfy { PrebuiltTiles.state(record: records[$0], cdnHash: hd[$0]) == .unknown }
+              && PrebuiltTiles.needsSend(ids, records: records, hashes: hd) == ids,
+              "CDN unreachable: all \(ids.count) unknown -> heuristic; Redownload keeps all")
+
+        // Index cache: a second lookup within the hour does not refetch.
+        let before = await DownloadStats.shared.summary(hexes: 0)
+        _ = await PrebuiltTiles.Lookup(base: baseA).entries(for: ids)
+        let after = await DownloadStats.shared.summary(hexes: 0)
+        check(before == after, "index.json cached across lookups (no new request)")
+
+        // Data date: the oldest fragment of the group, from meta.json.
+        let idx = await PrebuiltTiles.Lookup(base: baseA).groupIndexes(for: ids)
+        let metaData = try! Data(contentsOf: URL(string: "meta.json", relativeTo: baseA)!)
+        let date = PrebuiltTiles.dataDate(Array(idx.values), meta: PrebuiltTiles.parseMeta(metaData))
+        check(date == ISO8601DateFormatter().date(from: "2026-10-05T20:21:02Z"),
+              "data date from meta.json: \(date.map { "\($0)" } ?? "nil")")
+
+        // The phone's tile cache, keyed by hash.
+        let cacheDir = work.appendingPathComponent("tilecache")
+        try? FileManager.default.removeItem(at: cacheDir)
+        let cache = TileCache(dir: cacheDir)
+        let d0 = blob("EBM2", 1000, 1), d2 = blob("EBM2", 600, 4)
+        await cache.store([(ids[0], d0)], versions: [ids[0]: PrebuiltTiles.cdnRecord("aaaa1111aaaa1111")])
+        await cache.store([(ids[2], d2)])                                   // phone-built
+        let c1 = await cache.partition([ids[0], ids[2]], cdnHashes: ha)
+        check(c1.cached.map(\.id) == [ids[0]] && c1.missing == [ids[2]]
+              && c1.versions[ids[0]] == PrebuiltTiles.cdnRecord("aaaa1111aaaa1111"),
+              "cache: copy with the current hash reused, phone-built copy of a pre-built hex refetched")
+        let c2 = await cache.partition([ids[0]], cdnHashes: hb)
+        check(c2.cached.isEmpty, "cache: copy with last week's hash not reused")
+        let c3 = await cache.partition([ids[0], ids[2]])
+        check(c3.cached.count == 2 && c3.versions[ids[2]]?.hasPrefix("phone:") == true,
+              "cache: without an index entry (CDN down), any recent copy is reused")
+        let c4 = await cache.partition([ids[0], ids[2]], cdnHashes: [ids[0]: ha[ids[0]]!], allowAged: false)
+        check(c4.cached.map(\.id) == [ids[0]], "cache on a Redownload: only exact CDN copies")
+
+        // Per-device records survive a restart and stay apart.
+        let vf = work.appendingPathComponent("versions.json")
+        try? FileManager.default.removeItem(at: vf)
+        let dv = DeviceTileVersions(url: vf)
+        dv.setTile("dev-A", ids[0], records[ids[0]]!)
+        dv.setTile("dev-A", ids[2], phone)
+        dv.setPoi("dev-A", ids[0], poiRecords[ids[0]]!)
+        dv.setTile("dev-B", ids[0], phone)
+        dv.pruneTiles("dev-A", keeping: [ids[0]])
+        dv.save()
+        let dv2 = DeviceTileVersions(url: vf)
+        check(dv2.store == dv.store && dv2.tile("dev-A", ids[0]) == records[ids[0]]
+              && dv2.tile("dev-B", ids[0]) == phone && dv2.tile("dev-A", ids[2]) == nil
+              && dv2.poi("dev-A", ids[0]) == poiRecords[ids[0]] && dv2.tile(nil, ids[0]) == nil,
+              "device records: persisted per device, pruned to the device's list")
+    }
+    if failures > 0 { print("\(failures) check(s) failed"); exit(1) }
+    print("all version checks passed")
+
 default:
     fail("unknown mode \(a[1])")
 }
