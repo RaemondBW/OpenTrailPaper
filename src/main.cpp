@@ -635,6 +635,7 @@ void setup() {
     // Enable automatic light sleep now that every peripheral (GPS UART, BLE, EPD)
     // is up. No-op + logged warning on a stock framework without CONFIG_PM_ENABLE.
     power_mgmt::begin();
+    workout_service::begin();   // picker cache locks, before any task runs
     BOOT_STEP("power_mgmt done -> creating tasks");
 
     xTaskCreatePinnedToCore(gps_service::task, "gps", 4096, nullptr, 3, nullptr, 0);
@@ -670,7 +671,9 @@ void loop() {
     crash_report::tick();
     memfault_service::tick();
     workout_service::tick();   // pause-at-block-boundary mode
-    vTaskDelay(pdMS_TO_TICKS(1000));
+    // The 1 s cadence, but woken early to scan /workouts or load a workout
+    // the rider tapped on the picker (SD work kept off the UI task).
+    workout_service::serviceFor(1000);
 }
 
 void board_radio_power(bool on) {

@@ -147,6 +147,15 @@ struct WorkoutView;
 void ui_render_workout(const RideState& s, const WorkoutView& v, uint8_t* fb);
 void ui_render_workout_list(const RideState& s, const WorkoutView& v, int page,
                             uint8_t* fb);
+// With nothing loaded the page is the PICKER: the files in /workouts, one
+// per row (title, duration, block count, intensity sparkline), paged by
+// WORKOUT_PICK_ROWS on the same row grid and footer as the block list; the
+// footer's right-hand button (kWorkoutClose) is REFRESH here. Tap a row to
+// load it. In the loaded-but-not-started (READY) state, the kWorkoutRedo
+// strip becomes "< WORKOUTS", back to this list.
+struct WorkoutPickPage;
+void ui_render_workout_picker(const RideState& s, const WorkoutPickPage& p,
+                              uint8_t* fb);
 extern const EpdRect kWorkoutRedo;
 extern const EpdRect kWorkoutStartNext;
 extern const EpdRect kWorkoutPause;

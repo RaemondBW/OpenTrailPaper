@@ -2499,9 +2499,16 @@ void ui_render_workout(const RideState& s, const WorkoutView& v, uint8_t* fb) {
     epd_draw_rect({kWorkoutRedo.x + 1, kWorkoutRedo.y + 1,
                    kWorkoutRedo.width - 2, kWorkoutRedo.height - 2}, ui::INK,
                   fb);
-    hatchRect({kWorkoutRedo.x + 2, kWorkoutRedo.y + 2, kWorkoutRedo.width - 4,
-               kWorkoutRedo.height - 4}, fb);
-    {
+    if (workoutViewReady(v)) {
+        // Loaded, not started: there is nothing to redo yet, so the left
+        // strip is the way back to the picker (it unloads this workout).
+        ui::text(&Arial_L, 38, 780, "< BACK", fb, EPD_DRAW_ALIGN_LEFT);
+        ui::text(&Arial_B, 38, 812, "ALL WORKOUTS", fb, EPD_DRAW_ALIGN_LEFT);
+        ui::text(&Arial_L, 38, 846, "PICK ANOTHER", fb, EPD_DRAW_ALIGN_LEFT,
+                 ui::DARK);
+    } else {
+        hatchRect({kWorkoutRedo.x + 2, kWorkoutRedo.y + 2,
+                   kWorkoutRedo.width - 4, kWorkoutRedo.height - 4}, fb);
         // White chips under the hatched button's text keep it readable.
         auto chip = [&](const EpdFont* f, int x, int y, const char* t) {
             epd_fill_rect({x - 2, y - f->ascender - 2,
@@ -2636,4 +2643,143 @@ void ui_render_workout_list(const RideState& s, const WorkoutView& v, int page,
     ui::text(&Arial_B, 208 + 74, 914, buf, fb, EPD_DRAW_ALIGN_CENTER);
     ui::text(&Arial_B, kWorkoutClose.x + kWorkoutClose.width / 2, 914,
              "CLOSE", fb, EPD_DRAW_ALIGN_CENTER);
+}
+
+namespace {
+
+// Session length for the picker: m:ss under an hour, h:mm:ss over.
+void workoutFmtLong(char* out, size_t cap, uint32_t sec) {
+    if (sec >= 3600)
+        snprintf(out, cap, "%lu:%02lu:%02lu", (unsigned long)(sec / 3600),
+                 (unsigned long)(sec / 60 % 60), (unsigned long)(sec % 60));
+    else
+        workoutFmt(out, cap, sec);
+}
+
+// A footer box with three-pixel walls, like every workout-page button.
+void workoutButton(const EpdRect& r, uint8_t* fb) {
+    for (int e = 0; e < 3; ++e)
+        epd_draw_rect({r.x + e, r.y + e, r.width - 2 * e, r.height - 2 * e},
+                      ui::INK, fb);
+}
+
+}  // namespace
+
+void ui_render_workout_picker(const RideState& s, const WorkoutPickPage& p,
+                              uint8_t* fb) {
+    ui::statusBar(s, fb);
+    char buf[64];
+
+    // Nothing to list: one centred message, and REFRESH unless the card is
+    // being read right now.
+    const char* head = nullptr;
+    const char* l1 = nullptr;
+    const char* l2 = nullptr;
+    if (p.state == WLIST_SCANNING) {
+        head = "READING THE CARD";
+        l1 = "Looking for workouts in /workouts";
+    } else if (p.state == WLIST_NO_CARD) {
+        head = "NO SD CARD";
+        l1 = "Insert a card to pick a workout,";
+        l2 = "or unplug the computer using it.";
+    } else if (p.total == 0) {
+        head = "NO WORKOUTS ON THE CARD";
+        l1 = "Add them from the app.";
+        l2 = "(.erg / .mrc files in /workouts)";
+    }
+    if (head) {
+        ui::text(&Impact_T, 270, 400, head, fb, EPD_DRAW_ALIGN_CENTER);
+        if (l1)
+            ui::text(&Arial_B, 270, 456, l1, fb, EPD_DRAW_ALIGN_CENTER,
+                     ui::DARK);
+        if (l2)
+            ui::text(&Arial_B, 270, 492, l2, fb, EPD_DRAW_ALIGN_CENTER,
+                     ui::DARK);
+        if (p.state != WLIST_SCANNING) {
+            workoutButton(kWorkoutClose, fb);
+            ui::text(&Arial_B, kWorkoutClose.x + kWorkoutClose.width / 2, 914,
+                     "REFRESH", fb, EPD_DRAW_ALIGN_CENTER);
+        }
+        return;
+    }
+
+    // --- Header: what this is, how many, and a failed load if any. -------
+    if (p.error[0]) {
+        char fit[64];
+        snprintf(buf, sizeof(buf), "Couldn't load %s", p.error);
+        truncToWidth(&Arial_L, buf, 492, fit, sizeof(fit));
+        ui::text(&Arial_L, 24, 92, fit, fb, EPD_DRAW_ALIGN_LEFT);
+    } else {
+        ui::text(&Arial_L, 24, 92, "TAP A WORKOUT TO LOAD IT", fb,
+                 EPD_DRAW_ALIGN_LEFT);
+    }
+    snprintf(buf, sizeof(buf), "%d WORKOUT%s", p.total,
+             p.total == 1 ? "" : "S");
+    ui::text(&Impact_T, 24, 134, buf, fb, EPD_DRAW_ALIGN_LEFT);
+    epd_fill_rect({0, 140, 540, 3}, ui::INK, fb);
+
+    // --- Rows: title over an intensity sparkline; length and blocks right.
+    for (int r = 0; r < p.count && r < kWorkoutRowsPerPage; ++r) {
+        const WorkoutFileInfo& e = p.rows[r];
+        const int top = kWorkoutRowTop + r * kWorkoutRowH;
+        // The row a tap is loading reads reversed until the page flips.
+        const bool loading = p.loading[0] && !strcmp(p.loading, e.file);
+        const uint8_t fg = loading ? 0xFF : ui::INK;
+        if (loading)
+            epd_fill_rect({0, top, 540, kWorkoutRowH - 1}, ui::INK, fb);
+        epd_fill_rect({0, top + kWorkoutRowH - 1, 540, 1}, ui::INK, fb);
+
+        char fit[48];
+        truncToWidth(&Arial_B, e.title, 340, fit, sizeof(fit));
+        ui::text(&Arial_B, 24, top + 34, fit, fb, EPD_DRAW_ALIGN_LEFT, fg);
+
+        if (loading) {
+            ui::text(&Arial_L, 24, top + 70, "LOADING...", fb,
+                     EPD_DRAW_ALIGN_LEFT, fg);
+        } else if (!e.ok) {
+            ui::text(&Arial_L, 24, top + 70, "CAN'T READ THIS FILE", fb,
+                     EPD_DRAW_ALIGN_LEFT, ui::DARK);
+        } else {
+            // 48 bars of 6 px. Height is the target against the session's
+            // own peak, so a recovery spin and a VO2 set both fill the
+            // strip: the SHAPE is what tells them apart.
+            const int sx = 24, sbase = top + 76, sh = 28;
+            for (int i = 0; i < WORKOUT_SPARK_N; ++i) {
+                int h = 2 + (int)e.spark[i] * (sh - 2) / 255;
+                epd_fill_rect({sx + i * 6, sbase - h, 5, h}, ui::INK, fb);
+            }
+        }
+        if (e.ok) {
+            workoutFmtLong(buf, sizeof(buf), e.totalSec);
+            ui::text(&Impact_T, 516, top + 52, buf, fb, EPD_DRAW_ALIGN_RIGHT,
+                     fg);
+            snprintf(buf, sizeof(buf), "%u BLOCK%s", e.segCount,
+                     e.segCount == 1 ? "" : "S");
+            ui::text(&Arial_L, 516, top + 76, buf, fb, EPD_DRAW_ALIGN_RIGHT,
+                     loading ? fg : ui::DARK);
+        }
+    }
+
+    // --- Footer: page up / down, where we are, REFRESH. ------------------
+    epd_fill_rect({0, 857, 540, 3}, ui::INK, fb);
+    workoutButton(kWorkoutPageUp, fb);
+    workoutButton(kWorkoutPageDown, fb);
+    workoutButton({208, 868, 148, 80}, fb);
+    workoutButton(kWorkoutClose, fb);
+    {
+        // An arrow that can't go anywhere is drawn in the disabled tone.
+        const bool canUp = p.first > 0;
+        const bool canDown = p.first + p.count < p.total;
+        int cx = kWorkoutPageUp.x + kWorkoutPageUp.width / 2, cy = 908;
+        epd_fill_triangle(cx, cy - 16, cx - 16, cy + 10, cx + 16, cy + 10,
+                          canUp ? ui::INK : ui::LIGHT, fb);
+        cx = kWorkoutPageDown.x + kWorkoutPageDown.width / 2;
+        epd_fill_triangle(cx, cy + 16, cx - 16, cy - 10, cx + 16, cy - 10,
+                          canDown ? ui::INK : ui::LIGHT, fb);
+    }
+    snprintf(buf, sizeof(buf), "%d-%d / %d", p.first + 1, p.first + p.count,
+             p.total);
+    ui::text(&Arial_B, 208 + 74, 914, buf, fb, EPD_DRAW_ALIGN_CENTER);
+    ui::text(&Arial_B, kWorkoutClose.x + kWorkoutClose.width / 2, 914,
+             "REFRESH", fb, EPD_DRAW_ALIGN_CENTER);
 }

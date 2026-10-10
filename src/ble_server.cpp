@@ -1247,6 +1247,7 @@ void saveUploadedWorkout() {
     else
         workoutAck(false, reason);
     workoutStatusDirty = true;
+    workout_service::requestListRefresh();   // the picker lists it next time
 }
 
 class ServerCb : public NimBLEServerCallbacks {
@@ -2623,6 +2624,7 @@ void task(void*) {
                 bool ok = SD.remove(path);
                 sdUnlock();
                 workoutAck(ok, ok ? "deleted" : "delete failed");
+                if (ok) workout_service::requestListRefresh();   // the picker
             } else if (workoutReq == WREQ_LOAD) {
                 workoutReq = WREQ_NONE;
                 const char* reason = "";
@@ -2654,6 +2656,14 @@ void task(void*) {
         // session clock runs so the app's screen counts down live. RAM only.
         {
             static uint32_t lastWkStatus = 0;
+            // A device-side load or unload (the picker, its Back) changes
+            // what the app should show too.
+            static uint32_t seenWkVersion = 0;
+            const uint32_t wkVer = workout_service::version();
+            if (wkVer != seenWkVersion) {
+                seenWkVersion = wkVer;
+                workoutStatusDirty = true;
+            }
             bool tick = workout_service::running() &&
                         millis() - lastWkStatus > 1000;
             if (workoutChr && phoneConnected && (workoutStatusDirty || tick)) {
