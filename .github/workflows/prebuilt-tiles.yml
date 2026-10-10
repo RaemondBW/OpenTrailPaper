@@ -28,7 +28,7 @@ on:
         required: false
         default: "20"
       resume_run:
-        description: "Finish an earlier run (its run id): redo only its failed jobs, reusing its plan and strips (within 2 days)"
+        description: "Finish earlier runs (run ids, newest first, comma-separated): redo only failed jobs, reusing the plan and strips (within 2 days)"
         required: false
         default: ""
       dry_run:
@@ -76,9 +76,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           if [ -n "$RESUME" ]; then
-            gh run download "$RESUME" -R "$GITHUB_REPOSITORY" -n plan -D work/old
-            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RESUME/jobs" --paginate --jq '.jobs[]|[.name,.conclusion]|@tsv' > work/old-jobs.tsv
-            node tools/tiles/resume.mjs --plan work/old/plan.json --jobs work/old-jobs.tsv --out work/plan.json > work/todo.json
+            gh run download "${RESUME%%,*}" -R "$GITHUB_REPOSITORY" -n plan -D work/old
+            runs=""
+            for id in ${RESUME//,/ }; do
+              gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/jobs" --paginate --jq '.jobs[]|[.name,.conclusion]|@tsv' > "work/jobs-$id.tsv"
+              runs="${runs:+$runs,}$id=work/jobs-$id.tsv"
+            done
+            node tools/tiles/resume.mjs --plan work/old/plan.json --jobs "$runs" --out work/plan.json > work/todo.json
           else
             tools/tiles/pipeline.sh plan work ${ONLY:+--only "$ONLY"} --jobs "$JOBS"
             node -e 'const n=require("./work/plan.json").jobs.map(j=>j.name);console.log(JSON.stringify({interior:n,border:n}))' > work/todo.json
@@ -164,16 +168,19 @@ jobs:
         name: Which jobs' strips this one reads
         run: |
           echo "pattern=strips-{$(node -e 'const p=require("./work/plan.json");console.log(p.jobs.find(j=>j.name===process.argv[1]).needs.join(","))' ${{ matrix.job }}),none}" >> "$GITHUB_OUTPUT"
-      # Resuming: strips of the jobs not rebuilt come from the earlier run;
-      # this run's (the rebuilt jobs') are fetched after, so they win.
-      - uses: actions/download-artifact@v4
+      # Resuming: strips of the jobs not rebuilt come from the run that built
+      # them (plan.stripsFrom); this run's (the rebuilt jobs') are fetched
+      # after, so they win.
+      - name: Strips from earlier runs
         if: ${{ inputs.resume_run != '' }}
-        with:
-          pattern: ${{ steps.needs.outputs.pattern }}
-          path: work/strips
-          merge-multiple: true
-          run-id: ${{ inputs.resume_run }}
-          github-token: ${{ github.token }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node -e 'const p=require("./work/plan.json");const j=p.jobs.find(j=>j.name===process.argv[1]);for(const n of j.needs)if(p.stripsFrom&&p.stripsFrom[n])console.log(n+" "+p.stripsFrom[n])' ${{ matrix.job }} |
+          while read -r j run; do
+            echo "strips-$j from run $run"
+            gh run download "$run" -R "$GITHUB_REPOSITORY" -n "strips-$j" -D work/strips || echo "::warning::strips-$j not in run $run"
+          done
       - uses: actions/download-artifact@v4
         with:
           pattern: ${{ steps.needs.outputs.pattern }}

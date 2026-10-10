@@ -339,6 +339,15 @@ async function main() {
       for (const t of todo.cells) { if (!want || want.has(t.id)) { cells.push(t); fragOf.set(t.id, frag); } }
     }
     cells.sort((x, y) => (x.id < y.id ? -1 : 1));
+    // A cell across the antimeridian has a bbox of w ~ -180, e ~ +180: a
+    // band around the whole planet. Its seaBox would pull in every strip at
+    // that latitude (Chukotka's took Europe's, and the runner ran out of
+    // memory). Leave those few to the phone.
+    const wraps = cells.filter((t) => t.e - t.w > 180);
+    if (wraps.length) {
+      log(`border: skipping ${wraps.length} cells across the antimeridian (${wraps.map((t) => t.id).join(", ")})`);
+      cells = cells.filter((t) => t.e - t.w <= 180);
+    }
     const hits = (b, t) => { const S = seaBox(t); return !(b.n < S.s || b.s > S.n || b.e < S.w || b.w > S.e); };
     const allStrips = [];
     for (const f of files.filter((f) => f.endsWith(".strip.ndjson.gz"))) {
