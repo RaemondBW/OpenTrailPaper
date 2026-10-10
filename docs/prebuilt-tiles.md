@@ -324,6 +324,28 @@ download, and build from Overpass exactly as before.
      covers all content types, and gzip saves ~21 % on tiles.
    - Both apps' HTTP stacks decode gzip transparently. The size check uses
      the decoded body.
+5b. **Who may read** (zone → *Security* → *Security rules*).
+   - **Custom rule "Tiles: apps and website only"**, action *Block*:
+     ```
+     (http.host eq "tiles.opentrailpaper.com"
+      and not starts_with(http.user_agent, "OpenTrailPaper/")
+      and not any(http.request.headers["origin"][*] in {"https://opentrailpaper.com" "https://www.opentrailpaper.com" "https://raemondbw.github.io" "http://localhost:8000"})
+      and not starts_with(http.referer, "https://opentrailpaper.com/") and not starts_with(http.referer, "https://www.opentrailpaper.com/")
+      and not starts_with(http.referer, "https://raemondbw.github.io/") and not starts_with(http.referer, "http://localhost:8000/"))
+     ```
+     The apps send `OpenTrailPaper/<version> (iOS|Android)`; the website's
+     `fetch` sends its Origin. Anything else gets 403. It keeps crawlers,
+     hotlinkers and casual scripts off; a deliberately spoofed User-Agent
+     still gets through (the data is ODbL anyway — this is about cost).
+     The workflow uploads through R2's S3 API, not this hostname, so it is
+     unaffected.
+   - **Rate limiting rule "Tiles: per-IP rate limit"**: hostname equals
+     `tiles.opentrailpaper.com`, per IP, 600 requests / 10 s → block 10 s
+     (the free plan's only window). A large app download stays well below.
+   - **Errors are never cached**: the cache rule's Edge TTL has a status-code
+     TTL of *No store* for ≥ 400, so a hex published after someone asked for
+     it is not stuck behind a cached 404.
+
 6. **API token.**
    - *R2* → *Manage R2 API Tokens* (or *Account API tokens*) → *Create API
      token*.
@@ -367,6 +389,7 @@ download, and build from Overpass exactly as before.
 
 ```sh
 B=https://tiles.opentrailpaper.com/v1
+alias curl='curl -A "OpenTrailPaper/verify"'   # the firewall rule blocks other agents
 curl -s $B/meta.json | head -20                 # merged time, per-region OSM timestamps
 H=862a33157ffffff; G=${H:0:6}                   # downtown Providence, RI (any hex you know)
 curl -s $B/$G/index.json | python3 -m json.tool | grep -A1 $H
