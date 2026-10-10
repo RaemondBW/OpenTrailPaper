@@ -8,6 +8,7 @@ import { assembleCoastline } from "../../../docs/mapgen.js";
 import { assembleCoastlineFast } from "../coastline.mjs";
 import { Region, bboxGeometry } from "../poly.mjs";
 import { merge } from "../merge_index.mjs";
+import { resume } from "../resume.mjs";
 import { writeStrip, loadStrips, boxFilter } from "../strip.mjs";
 import { swiftRound, clipToBox } from "../apptile.mjs";
 
@@ -101,6 +102,22 @@ await test("merge: a partial (--only) run keeps every region it did not build", 
   // The same run as a full plan would drop Monaco (no longer in Geofabrik's tree).
   const full = merge({ newFrags, oldFrags, order: ["us/california"] });
   assert.ok(!full.now.has("monaco.border") && full.del.some((k) => k.includes(M)));
+});
+
+await test("resume: redo failed jobs and the borders that read them", () => {
+  const plan = { regions: [{ id: "a" }, { id: "antarctica" }, { id: "c" }, { id: "d" }], partial: false, jobs: [
+    { name: "j01", regions: ["a", "antarctica"], needs: ["j01", "j02"] },
+    { name: "j02", regions: ["c"], needs: ["j02"] },
+    { name: "j03", regions: ["d"], needs: ["j03"] },
+  ] };
+  const results = new Map([["interior (j01)", "failure"], ["interior (j02)", "success"], ["interior (j03)", "success"],
+    ["border (j01)", "failure"], ["border (j02)", "success"], ["border (j03)", "failure"]]);
+  const r = resume(plan, results);
+  assert.deepEqual(r.interior, ["j01"]);
+  assert.deepEqual(r.border, ["j01", "j03"]);
+  assert.equal(r.plan.partial, true);
+  assert.deepEqual(r.plan.jobs[0].regions, ["a"]);
+  assert.ok(!r.plan.regions.some((x) => x.id === "antarctica"));
 });
 
 await test("merge: a group with no cells left loses its index", () => {

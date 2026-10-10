@@ -66,7 +66,7 @@ function cellCount(geometry) {
   return n;
 }
 
-const NOT_IN_PLANET = new Set(["antarctica"]);
+export const NOT_IN_PLANET = new Set(["antarctica"]);
 
 export async function plan({ index, maxMb = 1500, maxCells = 600000, jobs = 20, only = null, sizes = {} }) {
   const byId = new Map(index.features.map((f) => [f.properties.id, f]));

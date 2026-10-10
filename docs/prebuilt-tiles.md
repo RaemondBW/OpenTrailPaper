@@ -235,6 +235,7 @@ It runs **only when started by hand** (*Actions* → *Pre-built map tiles* → *
 
 - `only`: a subset of Geofabrik ids;
 - `jobs`;
+- `resume_run`: an earlier run's id. Redoes only that run's failed jobs (plus border jobs that read a rebuilt interior job), with today's code, its plan and its strips — so it must start within 2 days, while the strips are kept. The merge is partial: everything else stays as published (`tools/tiles/resume.mjs`);
 - `dry_run`.
 
 Every step is `tools/tiles/pipeline.sh`, which also runs locally.
