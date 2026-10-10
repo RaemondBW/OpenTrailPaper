@@ -8,12 +8,20 @@
 //        [--dem-cache <dir>] [--no-elevation] [--workers N] [--limit N] [--cells id,id,…]
 //
 // For every H3 res-6 cell this region OWNS (see cellsFor), writes
-//   <out>/v1/tiles/<id[0:6]>/<id>.ebm   the tile, byte-identical to what the apps
-//                                       build when that hex is downloaded alone
-//   <out>/v1/tiles/<id[0:6]>/<id>.poi   only when the cell has POIs (an empty
-//                                       .poi is implied by the index: poiSize 0)
-//   <out>/v1/regions/<region>.json      the region fragment / manifest
-//   <out>/upload.txt                    paths that are new or changed vs --prev
+//   <out>/v1/<id[0:6]>/<id>.ebm   the tile, byte-identical to what the apps build
+//                                 when that hex is downloaded alone (absent when
+//                                 the app would drop it as empty)
+//   <out>/v1/<id[0:6]>/<id>.poi   only when the cell has POIs (an empty .poi is
+//                                 implied by the index: poiSize 0)
+//   <out>/v1/regions/<region>.json  the region fragment / manifest: every owned
+//                                 cell -> [ebmSize, ebmHash, poiSize, poiHash]
+//   <out>/upload.txt              object keys that are new or changed vs --prev
+//   (Deletions are global — a cell can move to another region — so
+//   merge_index.mjs works them out from all old and new fragments.)
+//
+// id[0:6] of a res-6 H3 id is exactly its res-3 ancestor (resolution, base cell
+// and digits 1-3), so a directory is one res-3 cell (<= 343 tiles) and
+// merge_index.mjs writes one v1/<id[0:6]>/index.json per directory.
 //
 // Each tile is built by answering the apps' Overpass queries from the extract
 // (overpass.mjs) and running the apps' own builder on that JSON: docs/mapgen.js
@@ -37,7 +45,7 @@ import { Region, bboxGeometry } from "./poly.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const LAYOUT_VERSION = "v1";
-export const tileKey = (id, ext) => `${LAYOUT_VERSION}/tiles/${id.slice(0, 6)}/${id}${ext}`;
+export const tileKey = (id, ext) => `${LAYOUT_VERSION}/${id.slice(0, 6)}/${id}${ext}`;
 const hash = (b) => crypto.createHash("sha256").update(b).digest("hex").slice(0, 16);
 
 // ---- H3 via the apps' C (h3tool.c) -----------------------------------------
@@ -118,7 +126,7 @@ if (!isMainThread) {
   parentPort.on("message", async ({ t, pois }) => {
     try {
       const r = await build(t, pois);
-      parentPort.postMessage({ id: t.id, ...r }, [r.ebm.buffer, r.poi.buffer]);
+      parentPort.postMessage({ id: t.id, ...r }, r.ebm ? [r.ebm.buffer, r.poi.buffer] : [r.poi.buffer]);
     } catch (e) {
       parentPort.postMessage({ id: t.id, error: e.stack || String(e) });
     }
@@ -220,18 +228,22 @@ async function main() {
     source: a["source-url"] || path.basename(a.pbf), cells: {},
   };
   const upload = [];
-  const stats = { cells: 0, ebmBytes: 0, poiBytes: 0, pois: 0, withPois: 0, changed: 0, ms: 0, slowest: null };
+  const stats = { cells: 0, empty: 0, ebmBytes: 0, poiBytes: 0, pois: 0, withPois: 0, changed: 0, ms: 0, slowest: null };
   const writeCell = (t, ebm, poi, ms) => {
     const poiCount = poi[6] | (poi[7] << 8);
-    const rec = [ebm.length, hash(ebm), poiCount ? poi.length : 0, poiCount ? hash(poi) : ""];
+    // ebm null: the app would drop this tile as empty (open sea with no
+    // coast in reach, an empty desert). Recorded as size 0 so the apps know
+    // the hex was built and need not ask Overpass for it.
+    const rec = [ebm ? ebm.length : 0, ebm ? hash(ebm) : "", poiCount ? poi.length : 0, poiCount ? hash(poi) : ""];
     frag.cells[t.id] = rec;
     const old = prevCells[t.id];
     const ek = tileKey(t.id, ".ebm"), pk = tileKey(t.id, ".poi");
     fs.mkdirSync(path.join(out, path.dirname(ek)), { recursive: true });
-    if (!old || old[1] !== rec[1]) { fs.writeFileSync(path.join(out, ek), ebm); upload.push(ek); }
+    if (ebm && (!old || old[1] !== rec[1])) { fs.writeFileSync(path.join(out, ek), ebm); upload.push(ek); }
     if (poiCount && (!old || old[3] !== rec[3])) { fs.writeFileSync(path.join(out, pk), poi); upload.push(pk); }
     if (!old || old[1] !== rec[1] || old[3] !== rec[3]) stats.changed++;
-    stats.cells++; stats.ebmBytes += ebm.length; stats.ms += ms;
+    stats.cells++; stats.ms += ms;
+    if (ebm) stats.ebmBytes += ebm.length; else stats.empty++;
     if (poiCount) { stats.withPois++; stats.poiBytes += poi.length; stats.pois += poiCount; }
     if (!stats.slowest || ms > stats.slowest[1]) stats.slowest = [t.id, Math.round(ms)];
   };
@@ -249,7 +261,7 @@ async function main() {
     wk.on("message", (m) => {
       if (m.error) { reject(new Error(`${m.id}: ${m.error}`)); return; }
       const t = byId.get(m.id);
-      writeCell(t, new Uint8Array(m.ebm.buffer ?? m.ebm), new Uint8Array(m.poi.buffer ?? m.poi), m.ms);
+      writeCell(t, m.ebm ? new Uint8Array(m.ebm.buffer ?? m.ebm) : null, new Uint8Array(m.poi.buffer ?? m.poi), m.ms);
       done++;
       if (Date.now() - lastLog > 30000) { lastLog = Date.now(); log(`${done}/${cells.length} cells`); }
       feed();
@@ -262,8 +274,9 @@ async function main() {
   const fk = `${LAYOUT_VERSION}/regions/${a.region.replace(/\//g, "_")}.json`;
   fs.mkdirSync(path.join(out, path.dirname(fk)), { recursive: true });
   fs.writeFileSync(path.join(out, fk), JSON.stringify(frag));
-  fs.writeFileSync(path.join(out, "upload.txt"), upload.join("\n") + (upload.length ? "\n" : ""));
-  log(`done: ${stats.cells} cells, ${stats.changed} changed, ${(stats.ebmBytes / 1048576).toFixed(1)} MB .ebm, ` +
+  const lines = (l) => l.join("\n") + (l.length ? "\n" : "");
+  fs.writeFileSync(path.join(out, "upload.txt"), lines(upload));
+  log(`done: ${stats.cells} cells (${stats.empty} empty), ${stats.changed} changed, ${(stats.ebmBytes / 1048576).toFixed(1)} MB .ebm, ` +
       `${stats.withPois} .poi (${stats.pois} POIs), ${(stats.ms / 1000).toFixed(1)} s cell time summed, slowest ${stats.slowest?.join(" ")} ms`);
   if (!a.tmp) fs.rmSync(tmp, { recursive: true, force: true });
 }
