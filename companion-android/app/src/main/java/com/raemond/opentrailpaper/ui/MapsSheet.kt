@@ -63,6 +63,7 @@ import com.raemond.opentrailpaper.map.OutlineHex
 import com.raemond.opentrailpaper.map.PoiCache
 import com.raemond.opentrailpaper.map.PrebuiltTiles
 import com.raemond.opentrailpaper.map.Cycling
+import com.raemond.opentrailpaper.map.CdnVersions
 import com.raemond.opentrailpaper.map.SelectionHex
 import com.raemond.opentrailpaper.map.TileCache
 import kotlinx.coroutines.CancellationException
@@ -179,7 +180,10 @@ fun MapsSheet(
     // Every selected hex, coloured by what a download would do with it — the
     // same states the coverage uses, drawn heavier: new (accent), update (ochre,
     // hatched), current (green). Tapping still skips/keeps new hexes.
-    val selectionHexes = remember(tiles, ble.deviceTileIds, ble.deviceSupportsPois, converted, excluded) {
+    val cdnRevision = CdnVersions.revision
+    // The CDN versions of the selection (cached for an hour; a no-op once known).
+    LaunchedEffect(tiles) { CdnVersions.load(tiles.map { it.id }) }
+    val selectionHexes = remember(tiles, ble.deviceTileIds, ble.deviceSupportsPois, converted, excluded, cdnRevision) {
         tiles.map { t ->
             SelectionHex(
                 t.id,
@@ -204,7 +208,7 @@ fun MapsSheet(
     // Tiles whose cycling POIs go to the device: new ones, plus tiles already
     // there with no POIs or POIs older than PoiCache.MAX_AGE_MS. Empty for
     // firmware without POI support.
-    val poiTiles = remember(tiles, ble.devicePoiIds, ble.deviceSupportsPois, excluded) {
+    val poiTiles = remember(tiles, ble.devicePoiIds, ble.deviceSupportsPois, excluded, cdnRevision) {
         tiles.filter { it.id !in excluded && ble.poiNeedsSend(it.id) }
     }
     val poiOnlyCount = poiTiles.count { t -> newTiles.none { it.id == t.id } }
@@ -212,22 +216,50 @@ fun MapsSheet(
     val onDeviceCount = onDeviceTiles.size
     // On the device but (as far as this phone knows) from before the
     // bike-route data — the hint under the Redownload button.
-    val updateCount = remember(onDeviceTiles, ble.deviceSupportsPois) {
+    val updateCount = remember(onDeviceTiles, ble.deviceSupportsPois, cdnRevision) {
         onDeviceTiles.count { ble.tileNeedsUpdate(it.id) }
     }
+    // Updates known from the CDN index (a different hash than the device's).
+    val newerDataCount = remember(onDeviceTiles, cdnRevision) {
+        onDeviceTiles.count { ble.tileVersionState(it.id) == PrebuiltTiles.VersionState.UPDATE }
+    }
+    // On-device hexes a Redownload would send: all but those whose tile (and, on
+    // firmware with POIs, .poi) is the CDN's current version. Hexes the CDN does
+    // not have are rebuilt from Overpass as before.
+    val redownloadCount = remember(onDeviceTiles, ble.deviceSupportsPois, ble.devicePoiIds, cdnRevision) {
+        onDeviceTiles.count {
+            ble.tileVersionState(it.id) != PrebuiltTiles.VersionState.CURRENT ||
+                (ble.deviceSupportsPois && ble.poiVersionState(it.id) != PrebuiltTiles.VersionState.CURRENT)
+        }
+    }
+    // "Map data from Oct 6": the OSM snapshot of the CDN's tiles for the selection.
+    val dataDateText = remember(tiles, cdnRevision) {
+        CdnVersions.dataDate(tiles.map { it.id })?.let {
+            "Map data from " + java.text.SimpleDateFormat(
+                android.text.format.DateFormat.getBestDateTimePattern(Locale.getDefault(), "MMMd"),
+                Locale.getDefault(),
+            ).format(java.util.Date(it))
+        }
+    }
     var confirmRedownload by remember { mutableStateOf(false) }
+    // Redownload tapped with every selected hex already current.
+    var confirmUpToDate by remember { mutableStateOf(false) }
     var showLayers by remember { mutableStateOf(false) }
 
     // Ask the store what to draw for the region now on screen. Coalesced along
     // with the device's tile list, which arrives tile-by-tile during an upload:
     // without this a large download rebuilds every overlay several times a second
     // and the page stutters badly once a few hundred hexes are on screen.
-    LaunchedEffect(region, EInkTileStore.version, ble.deviceTileIds, ble.devicePoiIds, ble.deviceSupportsPois) {
+    LaunchedEffect(region, EInkTileStore.version, ble.deviceTileIds, ble.devicePoiIds, ble.deviceSupportsPois, cdnRevision) {
         delay(250)
         val r = region ?: return@LaunchedEffect
-        outlines = EInkTileStore.visibleContent(r, ble.deviceTileIds).map {
+        val visible = EInkTileStore.visibleContent(r, ble.deviceTileIds)
+        outlines = visible.map {
             if (it.synced) it.withState(ble.tileNeedsUpdate(it.id), ble.poiMark(it.id)) else it
         }
+        // Look up the CDN versions of the device's hexes on screen; the revision
+        // bump redraws them (cached for an hour; a no-op once known).
+        scope.launch { CdnVersions.load(visible.filter { it.synced }.map { it.id }) }
 
         // Frame ALL the coverage — everything the phone holds plus everything the
         // device holds — the first time this screen has something to frame.
@@ -272,31 +304,66 @@ fun MapsSheet(
     }
 
     /**
-     * [redownload]: rebuild the selected hexes the device already has from fresh
-     * Overpass data (skipping the phone's caches) and re-send them with their
-     * POIs. Otherwise: new hexes, plus POIs that are missing or stale.
+     * [redownload]: the selected hexes the device already has, re-fetched and
+     * re-sent with their POIs — only those whose CDN hash differs from what the
+     * device has (or that the CDN does not have: rebuilt from Overpass as
+     * before). [force] re-sends every one (repairing a card). Otherwise: new
+     * hexes, plus POIs that are missing or changed.
      */
-    fun startDownload(redownload: Boolean = false) {
+    fun startDownload(redownload: Boolean = false, force: Boolean = false) {
         if (building || ble.tilesUploading) return   // one job at a time
-        val missing = if (redownload) onDeviceTiles else newTiles
-        val poiWork = when {
+        val missing0 = if (redownload) onDeviceTiles else newTiles
+        val poiWork0 = when {
             !redownload -> poiTiles
             ble.deviceSupportsPois -> onDeviceTiles
             else -> emptyList()
         }
-        if (missing.isEmpty() && poiWork.isEmpty()) return
+        if (missing0.isEmpty() && poiWork0.isEmpty()) return
         building = true
         converted = emptySet()
         failedHexes = emptySet()
-        downloadTotal = missing.size + poiWork.size
-        status = if (missing.isEmpty()) "Fetching cycling POIs…" else "Fetching map data…"
-        ble.startTileStream(resend = redownload)   // begin sending as tiles are produced
+        downloadTotal = missing0.size + poiWork0.size
+        status = when {
+            redownload -> "Checking for newer map data…"
+            missing0.isEmpty() -> "Fetching cycling POIs…"
+            else -> "Fetching map data…"
+        }
+        val tileRecords = ble.tileRecords
+        val poiRecords = ble.poiRecords
+        val devicePois = ble.devicePoiIds
 
         job = scope.launch {
             com.raemond.opentrailpaper.map.DownloadStats.reset()
             // Ready-made tiles first (one instance: the map and POI passes share
             // the group indexes); Overpass only for what it does not have.
             val cdn = PrebuiltTiles(BuildConfig.TILE_BASE_URL)
+            // The CDN's current hashes. A hex whose device record already has
+            // them is skipped (unless forced): nothing is fetched or sent.
+            val entries = cdn.entries((missing0 + poiWork0).map { it.id }.distinct())
+            val tileHashes = entries.mapNotNull { (id, e) -> PrebuiltTiles.tileHash(e)?.let { id to it } }.toMap()
+            val poiHashes = entries.mapNotNull { (id, e) -> PrebuiltTiles.poiHash(e)?.let { id to it } }.toMap()
+            var missing = missing0
+            var poiWork = poiWork0
+            if (redownload && !force) {
+                val need = PrebuiltTiles.needsSend(missing0.map { it.id }, tileRecords, tileHashes).toSet()
+                missing = missing0.filter { it.id in need }
+            }
+            if (!force) {
+                val need = PrebuiltTiles.needsSend(poiWork0.map { it.id }, poiRecords, poiHashes).toSet()
+                poiWork = poiWork0.filter { it.id !in devicePois || it.id in need }
+            }
+            if (missing.isEmpty() && poiWork.isEmpty()) {
+                building = false
+                status = if (redownload) {
+                    "All ${missing0.size} hex${if (missing0.size == 1) " is" else "es are"} up to date."
+                } else {
+                    "Everything selected is up to date."
+                }
+                return@launch
+            }
+            downloadTotal = missing.size + poiWork.size
+            if (redownload) status = "Fetching map data…"
+            ble.startTileStream(resend = redownload)   // begin sending as tiles are produced
             try {
                 // Cycling POIs: their own small query and cache, started NOW so
                 // they arrive while the map batches are still building. A failure
@@ -304,7 +371,10 @@ fun MapsSheet(
                 val poisJob = async {
                     if (poiWork.isEmpty()) return@async true
                     try {
-                        downloadPois(poiWork, cdn, useCache = !redownload, onStatus = {}, enqueue = { ble.enqueuePois(it) })
+                        downloadPois(
+                            poiWork, cdn, poiHashes, allowAged = !redownload, onStatus = {},
+                            enqueue = { files, versions -> ble.enqueuePois(files, versions) },
+                        )
                         true
                     } catch (e: CancellationException) {
                         throw e
@@ -316,14 +386,15 @@ fun MapsSheet(
                     downloadTiles(
                         missing = missing,
                         cdn = cdn,
-                        useCache = !redownload,
+                        hashes = tileHashes,
+                        allowAged = !redownload,
                         onStatus = { status = it },
                         onBuilt = { ids ->
                             converted = converted + ids
                             EInkTileStore.noteDownloaded(ids)
                         },
                         onFailed = { ids -> failedHexes = failedHexes + ids },
-                        enqueue = { ble.enqueueTiles(it) },
+                        enqueue = { tiles, versions -> ble.enqueueTiles(tiles, versions) },
                     )
                 }
                 val poiNote = if (poisJob.await()) null
@@ -516,9 +587,15 @@ fun MapsSheet(
                         poiOnlyCount = poiOnlyCount,
                         onDeviceCount = onDeviceCount,
                         updateCount = updateCount,
+                        newerDataCount = newerDataCount,
+                        redownloadCount = redownloadCount,
+                        dataDateText = dataDateText,
                         onRedownload = {
-                            if (onDeviceCount > REDOWNLOAD_CONFIRM_OVER) confirmRedownload = true
-                            else startDownload(redownload = true)
+                            when {
+                                redownloadCount == 0 -> confirmUpToDate = true
+                                redownloadCount > REDOWNLOAD_CONFIRM_OVER -> confirmRedownload = true
+                                else -> startDownload(redownload = true)
+                            }
                         },
                         skipped = excluded.count { id -> tiles.any { it.id == id } },
                         canSend = ble.canUploadMap,
@@ -545,11 +622,12 @@ fun MapsSheet(
     if (confirmRedownload) {
         AlertDialog(
             onDismissRequest = { confirmRedownload = false },
-            title = { Text("Redownload $onDeviceCount hexes?") },
+            title = { Text("Redownload $redownloadCount hexes?") },
             text = {
                 Text(
-                    "They are rebuilt from fresh OpenStreetMap data and sent to the device " +
-                        "again, with bike routes and water stops. This takes a while and uses data.",
+                    "Hexes with newer map data are fetched and sent to the device again, with " +
+                        "bike routes and water stops. Hexes that are already current are skipped. " +
+                        "This takes a while and uses data.",
                 )
             },
             confirmButton = {
@@ -559,6 +637,29 @@ fun MapsSheet(
                 }) { Text("Redownload") }
             },
             dismissButton = { TextButton(onClick = { confirmRedownload = false }) { Text("Cancel") } },
+            containerColor = Palette.surface,
+        )
+    }
+
+    // Nothing newer to fetch. Re-sending the same bytes only helps a damaged
+    // card, so it is offered but not the default.
+    if (confirmUpToDate) {
+        AlertDialog(
+            onDismissRequest = { confirmUpToDate = false },
+            title = { Text("All $onDeviceCount hexes are up to date") },
+            text = {
+                Text(
+                    "The device already has the newest published map data for each. " +
+                        "Re-send only to repair a damaged card.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmUpToDate = false
+                    startDownload(redownload = true, force = true)
+                }) { Text("Re-send anyway") }
+            },
+            dismissButton = { TextButton(onClick = { confirmUpToDate = false }) { Text("OK") } },
             containerColor = Palette.surface,
         )
     }
@@ -649,21 +750,25 @@ private fun HeaderPill(label: String, filled: Boolean, onClick: () -> Unit) {
 private suspend fun downloadTiles(
     missing: List<MapTile>,
     cdn: PrebuiltTiles,
-    useCache: Boolean,
+    hashes: Map<String, String>,
+    allowAged: Boolean,
     onStatus: (String?) -> Unit,
     onBuilt: (List<String>) -> Unit,
     onFailed: (List<String>) -> Unit,
-    enqueue: (List<Pair<String, ByteArray>>) -> Unit,
+    enqueue: (List<Pair<String, ByteArray>>, Map<String, String>) -> Unit,
 ) {
     // Anything built before goes straight out — no Overpass, no elevation fetch,
     // no re-encoding. This is what makes a retry after a dropped link cheap
-    // instead of a full rebuild.
-    // (Not on a Redownload: that is fresh data by definition.)
-    val cached = if (useCache) TileCache.partition(missing.map { it.id }).first else emptyList()
+    // instead of a full rebuild. A hex the CDN has ([hashes]) is reused only as
+    // a copy of its current hash (any age, also on a Redownload: the same
+    // bytes); one it does not have only within the cache's age, and not on a
+    // Redownload ([allowAged] false).
+    val part = TileCache.partition(missing.map { it.id }, hashes, allowAged)
+    val cached = part.tiles
     if (cached.isNotEmpty()) {
         onStatus("Reusing ${cached.size} cached tile${if (cached.size == 1) "" else "s"}…")
         onBuilt(cached.map { it.first })
-        enqueue(cached)
+        enqueue(cached, part.versions)
     }
     val cachedIds = cached.map { it.first }.toSet()
     com.raemond.opentrailpaper.map.DownloadStats.count("cached tiles", cached.size)
@@ -683,9 +788,10 @@ private suspend fun downloadTiles(
         com.raemond.opentrailpaper.map.DownloadStats.count("cdn tiles", r.tiles.size)
         com.raemond.opentrailpaper.map.DownloadStats.count("cdn empty", r.empty.size)
         if (r.tiles.isNotEmpty()) {
-            TileCache.store(r.tiles)
+            val versions = r.tiles.mapNotNull { (id, _) -> hashes[id]?.let { id to PrebuiltTiles.cdnRecord(it) } }.toMap()
+            TileCache.store(r.tiles, versions)
             onBuilt(r.tiles.map { it.first })
-            enqueue(r.tiles)
+            enqueue(r.tiles, versions)
         }
         if (r.empty.isNotEmpty()) onFailed(r.empty)
         servedIds = (r.tiles.map { it.first } + r.empty).toSet()
@@ -752,8 +858,8 @@ private suspend fun downloadTiles(
                     if (missed.isNotEmpty()) onFailed(missed)
                     // Cache BEFORE sending: if the link drops mid-transfer the
                     // expensive work survives and the retry is instant.
-                    TileCache.store(produced)
-                    enqueue(produced)
+                    TileCache.store(produced)                 // phone-built
+                    enqueue(produced, emptyMap())
                 }
             }
         }
@@ -827,13 +933,16 @@ private suspend fun buildBatch(
 private suspend fun downloadPois(
     work: List<MapTile>,
     cdn: PrebuiltTiles,
-    useCache: Boolean,
+    hashes: Map<String, String>,
+    allowAged: Boolean,
     onStatus: (String?) -> Unit,
-    enqueue: (List<Pair<String, ByteArray>>) -> Unit,
+    enqueue: (List<Pair<String, ByteArray>>, Map<String, String>) -> Unit,
 ) {
-    val (cached, missingIds) =
-        if (useCache) PoiCache.partition(work.map { it.id }) else emptyList<Pair<String, ByteArray>>() to work.map { it.id }
-    if (cached.isNotEmpty()) enqueue(cached)
+    // Cached copies: of the CDN's current hash at any age; others only within
+    // MAX_AGE_MS and not on a Redownload (fresh data by definition).
+    val part = PoiCache.partition(work.map { it.id }, hashes, allowAged)
+    val missingIds = part.missing
+    if (part.tiles.isNotEmpty()) enqueue(part.tiles, part.versions)
     var need = missingIds.toSet()
     // Pre-built .poi files first (also on a Redownload: the CDN is fresh data).
     if (need.isNotEmpty() && cdn.enabled) {
@@ -846,8 +955,9 @@ private suspend fun downloadPois(
         }
         com.raemond.opentrailpaper.map.DownloadStats.count("cdn pois", files.size)
         if (files.isNotEmpty()) {
-            PoiCache.store(files)
-            enqueue(files)
+            val versions = files.mapNotNull { (id, _) -> hashes[id]?.let { id to PrebuiltTiles.cdnRecord(it) } }.toMap()
+            PoiCache.store(files, versions)
+            enqueue(files, versions)
         }
         need = r.fallback.toSet()
     }
@@ -871,8 +981,8 @@ private suspend fun downloadPois(
                 ) { _, _ -> true }
             }
         }
-        PoiCache.store(files)
-        enqueue(files)
+        PoiCache.store(files)                         // phone-built
+        enqueue(files, emptyMap())
     }
 }
 
@@ -961,6 +1071,9 @@ private fun SelectionCard(
     poiOnlyCount: Int,
     onDeviceCount: Int,
     updateCount: Int,
+    newerDataCount: Int,
+    redownloadCount: Int,
+    dataDateText: String?,
     skipped: Int,
     canSend: Boolean,
     status: String?,
@@ -977,6 +1090,7 @@ private fun SelectionCard(
                     style = barlow(15.sp, FontWeight.SemiBold),
                     color = Palette.ink,
                 )
+                dataDateText?.let { Text(it, style = barlow(11.sp), color = Palette.muted) }
             }
             IconButton(onClick = onClear) {
                 Icon(Icons.Filled.Cancel, contentDescription = "Clear", tint = Palette.muted)
@@ -1000,9 +1114,16 @@ private fun SelectionCard(
             color = Palette.faint,
         )
         if (updateCount > 0) {
+            // "3 hexes have newer data · 2 hexes were made before bike routes …"
+            val old = updateCount - newerDataCount
+            val parts = listOfNotNull(
+                if (newerDataCount > 0) "$newerDataCount hex${if (newerDataCount == 1) " has" else "es have"} newer data" else null,
+                if (old > 0) {
+                    "$old hex${if (old == 1) " was" else "es were"} made before bike routes & water stops, or over 90 days ago"
+                } else null,
+            )
             Text(
-                "$updateCount hex${if (updateCount == 1) " has" else "es have"} an update (made before " +
-                    "bike routes & water stops, or over 90 days old) — redownload to refresh.",
+                parts.joinToString(" · ") + " — redownload to refresh.",
                 style = barlow(12.sp),
                 color = Palette.ink,
             )
@@ -1022,10 +1143,13 @@ private fun SelectionCard(
         // Rebuild hexes the device already has from fresh map data — the rider's
         // choice, never automatic: it costs a fetch and a transfer per hex.
         // Offered on old firmware too (fresher roads), where it carries no POIs.
+        // Only hexes with newer data go out; when every one is current it says so
+        // and offers a forced re-send for repairs.
         if (onDeviceCount > 0) {
             Spacer(Modifier.size(8.dp))
+            val n = if (redownloadCount > 0) redownloadCount else onDeviceCount
             SecondaryButton(
-                title = "Redownload $onDeviceCount hex${if (onDeviceCount == 1) "" else "es"}",
+                title = "Redownload $n hex${if (n == 1) "" else "es"}",
                 icon = Icons.Filled.Refresh,
                 enabled = canSend,
                 onClick = onRedownload,

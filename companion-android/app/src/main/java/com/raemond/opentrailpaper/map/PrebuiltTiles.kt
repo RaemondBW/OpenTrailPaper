@@ -26,9 +26,14 @@ import java.net.URL
  * poiSize 0 = no POIs. The bytes are the same ones the phone would build
  * (tools/tiles/test/equivalence.sh), so they are cached exactly like built ones.
  *
- * One instance per download, so the map and POI passes share the index fetches.
+ * One instance per download, so the map and POI passes share the index fetches;
+ * the indexes themselves are kept an hour across instances ([IndexCache]).
  * An empty [baseUrl] disables it; if the host cannot be reached at all (the
  * domain is not live yet, no network) the rest of the download skips it.
+ *
+ * Versions (docs/prebuilt-tiles.md#versions): what a device holds is recorded
+ * per hex as "cdn:<hash>" or "phone:<secs>" ([cdnRecord], [phoneRecord]) and
+ * compared with the index by [state].
  */
 class PrebuiltTiles(
     baseUrl: String,
@@ -45,6 +50,15 @@ class PrebuiltTiles(
     }
 
     data class Entry(val ebmSize: Int, val ebmHash: String, val poiSize: Int, val poiHash: String)
+
+    /** One group's index.json: its cells, and the fragments (meta.json
+     *  "fragments" keys) they were built in, for the data date. */
+    data class Index(val cells: Map<String, Entry>, val regions: List<String>)
+
+    /** How a device's file compares with the CDN index. [UNKNOWN]: no index
+     *  entry (CDN unreachable, hex not pre-built, built empty) — the caller
+     *  falls back to its age / bike-route heuristic. */
+    enum class VersionState { CURRENT, UPDATE, UNKNOWN }
 
     /** [tiles]: verified .ebm blobs; [empty]: built and empty (no Overpass);
      *  [fallback]: not served, build these on the phone. */
@@ -63,7 +77,7 @@ class PrebuiltTiles(
     )
 
     private val base = baseUrl.trim().let { if (it.isEmpty() || it.endsWith("/")) it else "$it/" }
-    private val indexes = HashMap<String, Map<String, Entry>?>()
+    private val indexes = HashMap<String, Index?>()
     private val lock = Any()
     /** The map and POI passes run at once; one of them fetches a group's index. */
     private val indexMutex = Mutex()
@@ -72,8 +86,16 @@ class PrebuiltTiles(
 
     val enabled: Boolean get() = !unreachable
 
-    /** The group indexes for [ids], fetched (once each) [concurrency] at a time. */
-    private suspend fun entries(ids: List<String>): Map<String, Entry> {
+    /** The index entries for [ids] (absent: not pre-built, or no usable index). */
+    suspend fun entries(ids: List<String>): Map<String, Entry> {
+        val idx = groupIndexes(ids)
+        val out = HashMap<String, Entry>()
+        for (id in ids) idx[id.take(6)]?.cells?.get(id)?.let { out[id] = it }
+        return out
+    }
+
+    /** The usable group indexes for [ids], fetched (once each) [concurrency] at a time. */
+    suspend fun groupIndexes(ids: List<String>): Map<String, Index> {
         if (unreachable) return emptyMap()
         val groups = ids.map { it.take(6) }.toSet()
         indexMutex.withLock {
@@ -83,18 +105,32 @@ class PrebuiltTiles(
                 need.map { g -> async { gate.withPermit { g to fetchIndex(g) } } }.awaitAll()
             }.let { got -> synchronized(lock) { for ((g, m) in got) indexes[g] = m } }
         }
-        val out = HashMap<String, Entry>()
+        val out = HashMap<String, Index>()
         synchronized(lock) {
-            for (id in ids) indexes[id.take(6)]?.get(id)?.let { out[id] = it }
+            for (g in groups) indexes[g]?.let { out[g] = it }
         }
         return out
     }
 
-    private suspend fun fetchIndex(g: String): Map<String, Entry>? {
+    private suspend fun fetchIndex(g: String): Index? {
         if (unreachable) return null
-        val r = get("cdn-index", "$base$g/index.json", indexTimeoutMs) ?: return null
-        if (r.status != 200) return null
-        return runCatching { parseIndex(r.body.toString(Charsets.UTF_8)) }.getOrNull()
+        val url = "$base$g/index.json"
+        IndexCache.get(url)?.let { return it.index }
+        val r = get("cdn-index", url, indexTimeoutMs) ?: return null
+        val idx = if (r.status == 200) runCatching { parseIndexFile(r.body.toString(Charsets.UTF_8)) }.getOrNull() else null
+        // Only a definite answer is kept: the index, or 404 (group not built).
+        if (r.status == 200 || r.status == 404) IndexCache.put(url, idx)
+        return idx
+    }
+
+    /** meta.json: fragment name -> OSM snapshot (epoch ms); null without an answer. */
+    suspend fun fetchMeta(): Map<String, Long>? {
+        val r = get("cdn-meta", "${base}meta.json", indexTimeoutMs) ?: return null
+        return when (r.status) {
+            200 -> parseMeta(r.body.toString(Charsets.UTF_8))
+            404 -> emptyMap()
+            else -> null
+        }
     }
 
     /** GET with stats; null (and the CDN switched off) when the host is unreachable. */
@@ -158,8 +194,55 @@ class PrebuiltTiles(
         return Triple(got, empty, fallback)
     }
 
+    /**
+     * Group indexes shared by every instance (downloads and the Maps screen's
+     * version check) for an hour, index.json's own max-age. Keyed by URL; a
+     * 404 is kept as "not built" (null index).
+     */
+    object IndexCache {
+        const val TTL_MS = 60L * 60 * 1000
+        class Hit(val index: Index?, val at: Long)
+        private val map = HashMap<String, Hit>()
+        @Synchronized fun get(url: String, now: Long = System.currentTimeMillis()): Hit? =
+            map[url]?.takeIf { now - it.at < TTL_MS }
+        @Synchronized fun put(url: String, index: Index?, now: Long = System.currentTimeMillis()) {
+            map[url] = Hit(index, now)
+        }
+        @Synchronized fun clear() = map.clear()
+    }
+
     companion object {
         val EBM_MAGIC = "EBM2".toByteArray(Charsets.US_ASCII)
+
+        fun cdnRecord(hash: String) = "cdn:$hash"
+        fun phoneRecord(atMs: Long = System.currentTimeMillis()) = "phone:${atMs / 1000}"
+        /** When a "phone:" record was built (epoch ms), null otherwise. */
+        fun phoneBuiltAt(record: String?): Long? =
+            record?.takeIf { it.startsWith("phone:") }?.substring(6)?.toLongOrNull()?.times(1000)
+        /** The hash a device's tile is compared with: null when the hex is not
+         *  pre-built or was built empty (there is no file to send). */
+        fun tileHash(e: Entry?): String? = e?.takeIf { it.ebmSize > 0 }?.ebmHash
+        /** The .poi hash ("" for a cell with no POIs; its synthesised empty
+         *  file is recorded as "cdn:"). */
+        fun poiHash(e: Entry?): String? = e?.poiHash
+
+        /** Same hash: current. A different hash, a phone-built or unrecorded
+         *  file: update. No CDN hash: unknown (use the heuristic). */
+        fun state(record: String?, cdnHash: String?): VersionState = when {
+            cdnHash == null -> VersionState.UNKNOWN
+            record == cdnRecord(cdnHash) -> VersionState.CURRENT
+            else -> VersionState.UPDATE
+        }
+
+        /** Of [ids], the ones to fetch and send: all but those whose device
+         *  record is the CDN's current hash. */
+        fun needsSend(ids: List<String>, records: Map<String, String>, hashes: Map<String, String>): List<String> =
+            ids.filter { state(records[it], hashes[it]) != VersionState.CURRENT }
+
+        /** The OSM snapshot behind [indexes] (epoch ms): the oldest timestamp
+         *  among the fragments their cells came from. */
+        fun dataDate(indexes: Collection<Index>, meta: Map<String, Long>): Long? =
+            indexes.flatMap { it.regions }.mapNotNull { meta[it] }.minOrNull()
         val POI_MAGIC = "EPOI".toByteArray(Charsets.US_ASCII)
 
         fun valid(r: Response, size: Int, magic: ByteArray): Boolean =
@@ -170,7 +253,9 @@ class PrebuiltTiles(
          * `{"v":1,"cells":{"<id>":[n,"h",n,"h"],…}}` — a fixed shape, parsed by
          * hand so it runs in JVM unit tests too (org.json is a stub there).
          */
-        fun parseIndex(s: String): Map<String, Entry> {
+        fun parseIndex(s: String): Map<String, Entry> = parseIndexFile(s).cells
+
+        fun parseIndexFile(s: String): Index {
             val cellsAt = s.indexOf("\"cells\"")
             require(cellsAt >= 0) { "no cells" }
             val re = Regex("\"([0-9a-fA-F]{15})\"\\s*:\\s*\\[\\s*(\\d+)\\s*,\\s*\"([0-9a-fA-F]*)\"\\s*,\\s*(\\d+)\\s*,\\s*\"([0-9a-fA-F]*)\"\\s*]")
@@ -178,6 +263,22 @@ class PrebuiltTiles(
             for (m in re.findAll(s, cellsAt)) {
                 val (id, es, eh, ps, ph) = m.destructured
                 out[id] = Entry(es.toInt(), eh, ps.toInt(), ph)
+            }
+            val regions = Regex("\"regions\"\\s*:\\s*\\[([^\\]]*)]").find(s)?.groupValues?.get(1)
+                ?.let { list -> Regex("\"([^\"]*)\"").findAll(list).map { it.groupValues[1] }.toList() }
+                ?: emptyList()
+            return Index(out, regions)
+        }
+
+        /** meta.json -> fragment name -> OSM snapshot (epoch ms). Fragment
+         *  objects are flat, so each is one `"name":{…}` match. */
+        fun parseMeta(s: String): Map<String, Long> {
+            val at = s.indexOf("\"fragments\"")
+            if (at < 0) return emptyMap()
+            val out = HashMap<String, Long>()
+            for (m in Regex("\"([^\"]+)\"\\s*:\\s*\\{([^{}]*)}").findAll(s, at)) {
+                val osm = Regex("\"osm\"\\s*:\\s*\"([^\"]+)\"").find(m.groupValues[2])?.groupValues?.get(1) ?: continue
+                runCatching { java.time.Instant.parse(osm).toEpochMilli() }.getOrNull()?.let { out[m.groupValues[1]] = it }
             }
             return out
         }
