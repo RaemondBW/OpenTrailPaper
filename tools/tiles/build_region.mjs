@@ -340,22 +340,34 @@ async function main() {
     }
     cells.sort((x, y) => (x.id < y.id ? -1 : 1));
     const hits = (b, t) => { const S = seaBox(t); return !(b.n < S.s || b.s > S.n || b.e < S.w || b.w > S.e); };
-    const strips = [];
+    const allStrips = [];
     for (const f of files.filter((f) => f.endsWith(".strip.ndjson.gz"))) {
       const h = await readStripHeader(path.join(stripDir, f));
-      if (h && h.ways + h.pois > 0 && cells.some((t) => hits(h.bbox, t))) strips.push({ f: path.join(stripDir, f), h });
+      if (h && h.ways + h.pois > 0) allStrips.push({ f: path.join(stripDir, f), h });
     }
     // Region order (regions.json) decides version ties, if given.
     const order = a.regions ? loadRegions(a.regions).map((r) => r.id) : [];
     const rank = (id) => { const i = order.indexOf(id); return i < 0 ? order.length : i; };
-    strips.sort((x, y) => rank(x.h.region) - rank(y.h.region) || (x.h.region < y.h.region ? -1 : 1));
-    log(`border: ${cells.length} cells of ${frags.length} regions, ${strips.length} strips (${strips.map((s) => s.h.region).join(", ")})`);
-    const { store, headers } = await loadStrips(strips.map((s) => s.f), log, boxFilter(cells.map(seaBox)));
+    allStrips.sort((x, y) => rank(x.h.region) - rank(y.h.region) || (x.h.region < y.h.region ? -1 : 1));
+    // Batches of cells in id order (H3 order keeps them close together), each
+    // loading only the strip data near it: one load for a whole big job (all
+    // of Russia's borders) overflowed a Map at 2^24 ways (run 38023535612).
+    const BATCH = Number(a["border-batch"] || 2000);
+    const used = new Map();
+    log(`border: ${cells.length} cells of ${frags.length} regions, ${Math.ceil(cells.length / BATCH)} batches`);
+    for (let i = 0; i < cells.length; i += BATCH) {
+      const part = cells.slice(i, i + BATCH);
+      const strips = allStrips.filter((s) => part.some((t) => hits(s.h.bbox, t)));
+      log(`border batch ${i / BATCH + 1}: ${part.length} cells, ${strips.length} strips (${strips.map((s) => s.h.region).join(", ")})`);
+      const { store, headers } = await loadStrips(strips.map((s) => s.f), log, boxFilter(part.map(seaBox)));
+      for (const h of headers) used.set(h.region, h);
+      await runCells(part, store, groupPois(store.pois), opts, (t, ebm, poi, m) => fragOf.get(t.id).write(t, ebm, poi, m.ms), log);
+    }
+    const headers = [...used.values()];
     for (const frag of frags) {
       frag.f.osm = headers.map((h) => h.osm).filter(Boolean).sort()[0] || null;
       frag.f.source = headers.map((h) => h.region).join(",");
     }
-    await runCells(cells, store, groupPois(store.pois), opts, (t, ebm, poi, m) => fragOf.get(t.id).write(t, ebm, poi, m.ms), log);
   }
 
   const upload = [];
