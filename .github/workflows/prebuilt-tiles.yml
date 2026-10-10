@@ -89,7 +89,7 @@ jobs:
       - name: Tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq osmium-tool rclone
+          sudo apt-get install -y -qq osmium-tool unzip && curl -fsSL https://rclone.org/install.sh | sudo bash > /dev/null && rclone version | head -1
           npm ci --prefix tools/tiles
           tools/tiles/build_h3tool.sh
       - uses: actions/download-artifact@v4
@@ -133,7 +133,7 @@ jobs:
       - name: Tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq osmium-tool rclone
+          sudo apt-get install -y -qq osmium-tool unzip && curl -fsSL https://rclone.org/install.sh | sudo bash > /dev/null && rclone version | head -1
           npm ci --prefix tools/tiles
           tools/tiles/build_h3tool.sh
       - uses: actions/download-artifact@v4
@@ -177,7 +177,7 @@ jobs:
       - name: Tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq rclone
+          sudo apt-get install -y -qq unzip && curl -fsSL https://rclone.org/install.sh | sudo bash > /dev/null && rclone version | head -1
           npm ci --prefix tools/tiles
       - uses: actions/download-artifact@v4
         with:

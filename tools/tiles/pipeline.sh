@@ -34,7 +34,10 @@ init_storage() {
         export RCLONE_CONFIG_R2_TYPE=s3 RCLONE_CONFIG_R2_PROVIDER=Cloudflare
         export RCLONE_CONFIG_R2_ACCESS_KEY_ID="${R2_ACCESS_KEY_ID:?}" RCLONE_CONFIG_R2_SECRET_ACCESS_KEY="${R2_SECRET_ACCESS_KEY:?}"
         export RCLONE_CONFIG_R2_ENDPOINT="https://${R2_ACCOUNT_ID:?}.r2.cloudflarestorage.com"
-        export RCLONE_CONFIG_R2_NO_CHECK_BUCKET=true RCLONE_CONFIG_R2_ACL=private
+        # No ACL: R2 answers any x-amz-acl header with NotImplemented (the
+        # first real run failed every PUT on it); buckets are private anyway
+        # and are published through the custom domain.
+        export RCLONE_CONFIG_R2_NO_CHECK_BUCKET=true
         REMOTE="r2:$R2_BUCKET"
     elif [ -n "${LOCAL_BUCKET:-}" ]; then
         mkdir -p "$LOCAL_BUCKET"
