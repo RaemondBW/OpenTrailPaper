@@ -77,7 +77,7 @@ float elevationAt(double lat, double lon);
 
 // Copy up to maxOut tile ids (H3 ids, no extension) into out for the app's
 // dedup check. Returns the count written.
-int listTileIds(char out[][24], int maxOut);
+int listTileIds(char out[][24], int maxOut, const char* ext = ".ebm");
 
 // Free bytes on the SD card (for the app to show remaining space).
 uint32_t sdFreeKB();

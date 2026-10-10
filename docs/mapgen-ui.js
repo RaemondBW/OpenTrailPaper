@@ -1,6 +1,6 @@
 // DOM wiring for the in-browser offline-map generator. The encoding lives in
 // mapgen.js (a pure, testable library); this file is just the map picker + form.
-import { buildEbm, fetchOverpass } from "./mapgen.js";
+import { buildEbm, buildPoi, fetchOverpass } from "./mapgen.js";
 import { latLngToCell, gridDisk, cellToBoundary }
   from "https://cdn.jsdelivr.net/npm/h3-js@4.1.0/+esm";
 
@@ -53,10 +53,71 @@ function ebmHasContent(bytes) {
 // Where a tile lives on the card: /maps/tiles/<first 6 of id>/<rest>.ebm.
 // Must match tileDirFor() in src/map_store.cpp — an H3 id's leading characters
 // are a geographic key, so one area lands in one directory.
-function tilePath(id) {
+// `ext` ".poi" gives the tile's cycling-POI companion, which sits next to it.
+function tilePath(id, ext = ".ebm") {
   return id.length > 6
-    ? `maps/tiles/${id.slice(0, 6)}/${id.slice(6)}.ebm`
-    : `maps/tiles/${id}.ebm`;
+    ? `maps/tiles/${id.slice(0, 6)}/${id.slice(6)}${ext}`
+    : `maps/tiles/${id}${ext}`;
+}
+
+// Pre-built tiles (docs/prebuilt-tiles.md): the same .ebm/.poi the phone
+// apps download, built server-side for the whole planet — with elevation and
+// sea fill, which this page cannot make. Tried first; any hex the CDN does not
+// have is built here from Overpass as before. `?tiles=<base url>` overrides
+// the base (e.g. http://localhost:8000/v1/ for a local build), `?tiles=off`
+// skips it.
+const TILE_CDN = (() => {
+  const q = new URLSearchParams(location.search).get("tiles");
+  if (q === "off") return "";
+  return q || "https://tiles.opentrailpaper.com/v1/";
+})();
+
+// { id -> {ebm, poi} } for the cells the CDN serves; the rest are left out.
+async function fetchPrebuilt(cells, log) {
+  const got = new Map();
+  if (!TILE_CDN) return got;
+  const get = async (url, ms) => {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), ms);
+    try {
+      const r = await fetch(url, { signal: ctl.signal });
+      return r.ok ? new Uint8Array(await r.arrayBuffer()) : null;
+    } finally { clearTimeout(timer); }
+  };
+  const magic = (b, m) => b && b.length >= 4 && String.fromCharCode(b[0], b[1], b[2], b[3]) === m;
+  // One index.json per res-3 group (the first 6 characters of the id).
+  const groups = [...new Set(cells.map((c) => c.id.slice(0, 6)))];
+  const index = new Map();
+  try {
+    await Promise.all(groups.map(async (g) => {
+      const b = await get(`${TILE_CDN}${g}/index.json`, 8000);
+      if (b) index.set(g, JSON.parse(new TextDecoder().decode(b)).cells || {});
+    }));
+  } catch (e) {
+    log(`Pre-built tiles unavailable (${e.message || e}) — building everything here.`);
+    return got;
+  }
+  const todo = cells.filter((c) => index.get(c.id.slice(0, 6))?.[c.id]);
+  let next = 0;
+  const worker = async () => {
+    while (next < todo.length) {
+      const c = todo[next++];
+      const [ebmSize, ebmHash, poiSize, poiHash] = index.get(c.id.slice(0, 6))[c.id];
+      try {
+        const base = `${TILE_CDN}${c.id.slice(0, 6)}/${c.id}`;
+        const ebm = ebmSize ? await get(`${base}.ebm?v=${ebmHash}`, 20000) : null;
+        if (ebmSize && !(ebm && ebm.length === ebmSize && magic(ebm, "EBM2"))) continue;
+        let poi = null;
+        if (poiSize) {
+          poi = await get(`${base}.poi?v=${poiHash}`, 20000);
+          if (!(poi && poi.length === poiSize && magic(poi, "EPOI"))) continue;
+        }
+        got.set(c.id, { ebm, poi });
+      } catch { /* this hex falls back to Overpass */ }
+    }
+  };
+  await Promise.all(Array.from({ length: 6 }, worker));
+  return got;
 }
 
 const $ = (id) => document.getElementById(id);
@@ -247,25 +308,61 @@ function init() {
     log(`Bounding box  S ${bb.s}  W ${bb.w}  N ${bb.n}  E ${bb.e}`);
 
     try {
-      const json = await fetchOverpass(bb, (s) => { setStatus("Downloading map data…"); log(s); });
-      log(`Got ${json.elements.length.toLocaleString()} OSM elements. Building…`);
-      setStatus("Building map…");
-      // Yield so the status paints before the (synchronous) encode.
-      await new Promise((r) => setTimeout(r, 0));
-
-      // Split the box into H3 res-6 tiles (the same ones the app builds) and
-      // encode each hex's own .ebm from the shared OSM data.
+      // Split the box into H3 res-6 tiles (the same ones the app builds).
       const cells = coveringCells(bb);
-      log(`${cells.length} H3 tiles cover the area. Building each…`);
+      log(`${cells.length} H3 tiles cover the area.`);
       const files = [];
-      for (let ci = 0; ci < cells.length; ci++) {
-        const c = cells[ci];
-        const ebm = buildEbm(json, { s: c.s, w: c.w, n: c.n, e: c.e });
-        if (ebmHasContent(ebm)) files.push({ name: tilePath(c.id), data: ebm });
-        setStatus(`Building tiles… ${ci + 1}/${cells.length}`);
-        if (ci % 6 === 5) await new Promise((r) => setTimeout(r, 0));  // keep UI live
+      let tileCount = 0, poiCount = 0;
+      const addPoi = (id, poi) => {
+        files.push({ name: tilePath(id, ".poi"), data: poi });
+        poiCount += (poi[6] | (poi[7] << 8));
+      };
+
+      // Ready-made tiles first.
+      setStatus("Fetching pre-built tiles…");
+      const t0 = performance.now();
+      const pre = await fetchPrebuilt(cells, log);
+      for (const c of cells) {
+        const p = pre.get(c.id);
+        if (!p || !p.ebm) continue;   // not pre-built, or built and empty
+        files.push({ name: tilePath(c.id), data: p.ebm });
+        tileCount++;
+        // No .poi on the CDN means the hex has no POIs: write the empty file.
+        addPoi(c.id, p.poi || buildPoi({ elements: [] }, { s: c.s, w: c.w, n: c.n, e: c.e, cell: c.id, contains: () => true }));
       }
-      if (files.length === 0) {
+      const rest = cells.filter((c) => !pre.has(c.id));
+      if (pre.size) log(`${pre.size} tiles from the pre-built set in ${((performance.now() - t0) / 1000).toFixed(1)} s (with elevation and sea fill).`);
+
+      if (rest.length) {
+        // The rest from Overpass, over just the cells still missing.
+        const rb = { s: 90, w: 180, n: -90, e: -180 };
+        for (const c of rest) { rb.s = Math.min(rb.s, c.s); rb.w = Math.min(rb.w, c.w); rb.n = Math.max(rb.n, c.n); rb.e = Math.max(rb.e, c.e); }
+        const q = { s: Math.max(bb.s, rb.s), w: Math.max(bb.w, rb.w), n: Math.min(bb.n, rb.n), e: Math.min(bb.e, rb.e) };
+        setStatus("Downloading map data…");
+        const json = await fetchOverpass(q, (s) => { setStatus("Downloading map data…"); log(s); });
+        log(`Got ${json.elements.length.toLocaleString()} OSM elements. Building ${rest.length} tiles…`);
+        setStatus("Building map…");
+        // Yield so the status paints before the (synchronous) encode.
+        await new Promise((r) => setTimeout(r, 0));
+        for (let ci = 0; ci < rest.length; ci++) {
+          const c = rest[ci];
+          const ebm = buildEbm(json, { s: c.s, w: c.w, n: c.n, e: c.e });
+          if (ebmHasContent(ebm)) {
+            files.push({ name: tilePath(c.id), data: ebm });
+            tileCount++;
+            // Cycling POIs (water, toilets, repair stands, bike shops) go in a
+            // separate <h3>.poi beside the map tile. Each POI is stored only in
+            // the hex that contains it, so neighbouring tiles never repeat one.
+            addPoi(c.id, buildPoi(json, {
+              s: c.s, w: c.w, n: c.n, e: c.e, cell: c.id,
+              contains: (lat, lon) => latLngToCell(lat, lon, H3_RES) === c.id,
+            }));
+          }
+          setStatus(`Building tiles… ${ci + 1}/${rest.length}`);
+          if (ci % 6 === 5) await new Promise((r) => setTimeout(r, 0));  // keep UI live
+        }
+      }
+      if (tileCount === 0) {
         throw new Error("Nothing found in that area — try a different or larger box.");
       }
 
@@ -278,9 +375,9 @@ function init() {
       downloadUrl = URL.createObjectURL(blob);
       genDownload.href = downloadUrl;
       genDownload.download = `bikegps-tiles-${name}.zip`;
-      genDownload.textContent = `⬇ Download ${files.length} tiles (${fmtBytes(zip.length)})`;
+      genDownload.textContent = `⬇ Download ${tileCount} tiles (${fmtBytes(zip.length)})`;
       genDownload.hidden = false;
-      log(`Done: ${files.length} tiles, ${fmtBytes(bytes)}. Unzip onto the SD card root → /maps/tiles/<area>/. These are the same H3 tiles the app builds.`);
+      log(`Done: ${tileCount} tiles + ${poiCount} cycling POIs (water, toilets, repair stands, bike shops in .poi files), ${fmtBytes(bytes)}. Unzip onto the SD card root → /maps/tiles/<area>/. These are the same H3 tiles the app builds.`);
       setStatus("Tiles ready — download the ZIP below.", "ok");
     } catch (err) {
       log("Error: " + (err && err.message ? err.message : String(err)));

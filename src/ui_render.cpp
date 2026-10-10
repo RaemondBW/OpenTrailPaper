@@ -1637,9 +1637,8 @@ void ui_render_list(const char* title, const ListRow* rows, int count,
 // SWITCH — 120 x 52, border 2, split into two halves; the ACTIVE half is filled
 // and carries its word in reverse. Not a single filled rectangle: the specimen
 // shows position, so "off" is still a legible state rather than an empty box.
-static void settingsToggle(int x, int y, int w, int h, bool on, uint8_t* fb,
-                           const char* onText = "ON",
-                           const char* offText = "OFF") {
+void ui_settings_toggle(int x, int y, int w, int h, bool on, uint8_t* fb,
+                        const char* onText, const char* offText) {
     for (int b = 0; b < ui::RULE; ++b)
         epd_draw_rect({x + b, y + b, w - 2 * b, h - 2 * b}, ui::INK, fb);
     const int half = w / 2;
@@ -1720,7 +1719,7 @@ void ui_render_settings(const SettingsInfo& si, uint8_t* fb) {
             // A switch reading ON/OFF beside "UNITS" says nothing — on what?
             // The two positions ARE the choice, so they carry the unit names.
             const bool isUnits = (i == kSettingsUnitsRow);
-            settingsToggle(settingsToggleX(i), midY - kSettingsToggleH / 2,
+            ui_settings_toggle(settingsToggleX(i), midY - kSettingsToggleH / 2,
                            settingsToggleW(i), kSettingsToggleH, rows[i].on, fb,
                            isUnits ? "MILES" : "ON", isUnits ? "KM" : "OFF");
         } else {

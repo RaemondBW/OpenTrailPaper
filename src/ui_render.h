@@ -290,6 +290,9 @@ struct SettingsInfo {
     bool meshOn;     // LoRa mesh radio powered up and listening
 };
 void ui_render_settings(const SettingsInfo& si, uint8_t* fb);
+// The settings page's two-position switch, for other switch pages (MAP LAYERS).
+void ui_settings_toggle(int x, int y, int w, int h, bool on, uint8_t* fb,
+                        const char* onText = "ON", const char* offText = "OFF");
 
 // "Unpair phone?" bottom sheet (Paired Devices > phone row), the power sheet's
 // component with different words. Paired: UNPAIR (kPowerShutdown) / CANCEL (kPowerCancel). Not paired:

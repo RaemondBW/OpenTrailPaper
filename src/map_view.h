@@ -23,10 +23,60 @@ enum MapFeatureClass : uint8_t {
     MAP_PARK = 7,            // parks/green (PRK2 section) — filled hatch dither
 };
 
+// Way flags (EBM sub-tile trailer; see docs/mapgen.js). Bits 0-1 are the
+// bike-route network level of the way.
+enum : uint8_t {
+    MAP_WF_ROUTE_MASK = 0x03,   // 0 none, 1 local, 2 regional, 3 national/intl
+    MAP_WF_CYCLEWAY = 0x04,     // dedicated cycleway (or path, bicycle=designated)
+    MAP_WF_BIKE_LANE = 0x08,    // painted lane / track along a road
+};
+
 struct MapPolyline {
     MapFeatureClass cls;
+    uint8_t flags;       // MAP_WF_* (0 for fills and for tiles without flags)
     const int16_t* pts;  // x0,y0,x1,y1,... screen px (portrait 540x960)
     int pointCount;
+};
+
+// Cycling POIs (the per-tile .poi file). Type ids and flag bits are the on-file
+// bytes — keep in step with docs/mapgen.js poiOf().
+enum MapPoiType : uint8_t {
+    MAP_POI_WATER = 1,       // drinking water
+    MAP_POI_TOILETS = 2,
+    MAP_POI_REPAIR = 3,      // bicycle repair station (self-service stand)
+    MAP_POI_BIKE_SHOP = 4,
+};
+enum : uint8_t {
+    MAP_PF_RESTRICTED = 0x80,   // any type: fee / customers only / seasonal
+    // MAP_POI_REPAIR (and PUMP also on MAP_POI_BIKE_SHOP)
+    MAP_PF_PUMP = 0x01, MAP_PF_TOOLS = 0x02, MAP_PF_CHAIN_TOOL = 0x04,
+    MAP_PF_STAND = 0x08,
+    // MAP_POI_BIKE_SHOP
+    MAP_PF_REPAIR = 0x02, MAP_PF_RENTAL = 0x04, MAP_PF_RETAIL = 0x08,
+    MAP_PF_SECOND_HAND = 0x10, MAP_PF_EBIKE = 0x20,
+    // MAP_POI_TOILETS
+    MAP_PF_HAS_WATER = 0x01,
+};
+
+// Cycling layers the rider can switch off (settings::mapLayers(), the device's
+// MAP LAYERS screen, BLE opcode 0x0A on the map characteristic). A render-time
+// filter only: tiles are parsed and cached the same either way. Bits 6-15 are
+// reserved and kept as sent, so a newer app's bits survive an older firmware.
+enum : uint16_t {
+    MAP_LAYER_BIKE_ROUTES = 1 << 0,   // grey route bands
+    MAP_LAYER_CYCLEWAYS = 1 << 1,     // dashed cycleways + lane-edge dots
+    MAP_LAYER_WATER = 1 << 2,
+    MAP_LAYER_TOILETS = 1 << 3,
+    MAP_LAYER_REPAIR = 1 << 4,
+    MAP_LAYER_BIKE_SHOPS = 1 << 5,
+    MAP_LAYERS_ALL = 0x003F,
+};
+constexpr int kMapLayerCount = 6;
+
+struct MapPoi {
+    int16_t x, y;    // screen px
+    uint8_t type;    // MapPoiType
+    uint8_t flags;   // MAP_PF_*
 };
 
 struct MapScreenData {
@@ -42,6 +92,14 @@ struct MapScreenData {
     // fill beneath the water + roads. Distinct dither so it reads apart from water.
     const MapPolyline* parks = nullptr;
     int parkCount = 0;
+
+    // Cycling POIs (water, toilets, repair stands, bike shops) in view, already
+    // filtered for the zoom. Drawn as small icons over the roads.
+    const MapPoi* pois = nullptr;
+    int poiCount = 0;
+
+    // Which cycling layers to draw (MAP_LAYER_* bits).
+    uint16_t layers = MAP_LAYERS_ALL;
 
     // Route polyline; the first riddenPointCount points render solid
     // (already ridden), the rest dashed (ahead) per the design.
@@ -106,6 +164,7 @@ int mapCompassCy(bool navBannerVisible);
 // Touch targets (zoom buttons on the right edge of the map area)
 struct MapTouchZones {
     int zoomX, zoomInY, zoomOutY, size;
+    int layersY;   // the MAP LAYERS button, stacked above zoom-in
 };
 extern const MapTouchZones kMapZoom;
 
@@ -132,3 +191,13 @@ void ui_render_map_features(const MapScreenData& map, const RideState& s,
 // Whole active route fitted into the area above the accept sheet, for the
 // "Start navigation?" preview.
 void ui_render_route_preview(uint8_t* fb);
+
+// MAP LAYERS screen (from the layers button on the map): one switch row per
+// cycling layer, each with a small sample of what it draws.
+constexpr int kMapLayersRowTop = 64;     // ui::STATUS_H
+constexpr int kMapLayersRowH = 108;      // ui::DENSE_ROW_H
+void ui_render_map_layers(uint16_t mask, uint8_t* fb);
+// Row index (0..kMapLayerCount-1) under a tap on the switch, or -1.
+int ui_map_layers_hit(int x, int y);
+// The MAP_LAYER_* bit a row toggles.
+uint16_t ui_map_layer_bit(int row);

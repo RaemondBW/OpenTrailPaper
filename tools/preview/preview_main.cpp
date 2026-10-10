@@ -177,7 +177,7 @@ struct Scene {
             flat.push_back((int16_t)lroundf(p.second));
         }
         lines.push_back(std::move(flat));
-        features.push_back({cls, lines.back().data(),
+        features.push_back({cls, 0, lines.back().data(),
                             (int)lines.back().size() / 2});
     }
 
@@ -188,7 +188,7 @@ struct Scene {
             flat.push_back((int16_t)lroundf(p.second));
         }
         waterLines.push_back(std::move(flat));
-        water.push_back({MAP_WATER, waterLines.back().data(),
+        water.push_back({MAP_WATER, 0, waterLines.back().data(),
                          (int)waterLines.back().size() / 2});
     }
 };
@@ -687,6 +687,17 @@ int main(int argc, char** argv) {
     ui_render_settings(si, fb.data());
     ui::statusBar(s, fb.data(), "SETTINGS");
     emit("settings.png");
+
+    // MAP LAYERS (from the layers button on the map): everything on, and a
+    // rider who keeps water + repair only.
+    clearWhite(fb.data());
+    ui_render_map_layers(MAP_LAYERS_ALL, fb.data());
+    ui::statusBar(s, fb.data(), "MAP LAYERS");
+    emit("map_layers.png");
+    clearWhite(fb.data());
+    ui_render_map_layers(MAP_LAYER_WATER | MAP_LAYER_REPAIR, fb.data());
+    ui::statusBar(s, fb.data(), "MAP LAYERS");
+    emit("map_layers_some_off.png");
 
     // Fixed pairing: the phone row on PAIRED DEVICES, paired and not, the
     // unpair sheet over it (and its migrated / not-paired variants), and the

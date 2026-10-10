@@ -1550,8 +1550,20 @@ class OtaCb : public NimBLECharacteristicCallbacks {
 //           [0x06][u32 size][h3id…]   begin one H3 tile (-> /maps/tiles)
 //           [0x02]<bytes>  data        [0x03] end     [0x04] abort
 //           [0x05]  list whole-map coverage    [0x07]  list H3 tile ids
+//           [0x08]  list H3 ids that have a cycling-POI file (<id>.poi)
+//           [0x09]  get map layers   [0x0A][u16 mask]  set map layers
+//   map-layers reply: [0xE0][u16 mask LE] — to 0x09, to 0x0A (the mask now in
+//   force), and unasked after an edit on the device. Bits: MAP_LAYER_* in
+//   map_view.h (0 bike routes, 1 cycleways & lanes, 2 water, 3 toilets,
+//   4 repair, 5 bike shops). Firmware without layers never answers, which is
+//   how the app knows to hide its switches. Kept OUT of the settings payload
+//   on purpose: this is self-describing and needs no payload version.
 //   device notifies: [0xB0] ready, [0xB1] saved, [0xB4][u32 received], [0xBF][err]
 //   tile-list reply: [0xD0] begin, [0xD1]<h3id chars> per tile, [0xD2] end
+//   poi-list reply:  [0xD3] begin, [0xD4]<h3id chars> per tile, [0xD5] end
+//   A .poi travels as a tile ([0x06], same id): saveTile tells it apart by its
+//   'EPOI' magic. Firmware without POI support never answers 0x08, which is how
+//   the app knows not to send it .poi files.
 NimBLECharacteristic* mapChr = nullptr;
 uint8_t* mapBuf = nullptr;
 volatile uint32_t mapBufLen = 0, mapBufCap = 0;
@@ -1560,6 +1572,8 @@ volatile bool mapCommitPending = false;
 volatile bool mapIsTile = false;         // staged buffer is an H3 tile, not a whole map
 volatile bool mapListReq = false;
 volatile bool tileListReq = false;
+volatile bool poiListReq = false;
+volatile bool mapLayersNotify = false;   // send [0xE0][mask] from the server task
 uint32_t mapStartMs = 0, mapLastProgress = 0;
 
 void mapNotify(const uint8_t* d, size_t n) {
@@ -1639,6 +1653,18 @@ class MapCb : public NimBLECharacteristicCallbacks {
             break;
         case 0x07:                                // list H3 tile ids on SD
             tileListReq = true;
+            break;
+        case 0x08:                                // list H3 ids with a .poi
+            poiListReq = true;
+            break;
+        case 0x09:                                // get map layers
+            mapLayersNotify = true;
+            break;
+        case 0x0A:                                // set map layers
+            if (n >= 3) {
+                settings::setMapLayers((uint16_t)(p[1] | (p[2] << 8)));
+                mapLayersNotify = true;           // echo what is now in force
+            }
             break;
         }
     }
@@ -2213,7 +2239,9 @@ void mapCommit() {
 // id, so there is no index to read) and runs in the server task to stay off
 // the BLE host thread. The phone asks on every Maps-screen open, so the timing
 // is logged: this is the request path most likely to grow past the watchdog.
-void sendTileList() {
+// poi=true: the same walk and framing for <id>.poi files, answered as
+// 0xD3/0xD4/0xD5 (0x08).
+void sendTileList(bool poi = false) {
     // PSRAM, and sized to the whole index. At 512 in .bss this was both 12 KB of
     // the internal RAM the display and BLE controller are short of, AND a silent
     // truncation: a rider past 512 tiles kept being offered tiles the device
@@ -2226,10 +2254,10 @@ void sendTileList() {
         if (!ids) { diag::log("tile list: no PSRAM for %d ids", TILE_LIST_MAX); return; }
     }
     uint32_t t0 = millis();
-    int n = map_store::listTileIds(ids, TILE_LIST_MAX);
+    int n = map_store::listTileIds(ids, TILE_LIST_MAX, poi ? ".poi" : ".ebm");
     uint32_t walkMs = millis() - t0;
 
-    uint8_t begin = 0xD0;
+    uint8_t begin = poi ? 0xD3 : 0xD0;
     sendChunk(mapChr, &begin, 1);
 
     // Pack comma-separated ids into MTU-sized 0xD1 packets so a big list is a
@@ -2239,7 +2267,7 @@ void sendTileList() {
     if (cap > 240) cap = 240;
     uint8_t pkt[244];
     int len = 1;
-    pkt[0] = 0xD1;
+    pkt[0] = poi ? 0xD4 : 0xD1;
     for (int i = 0; i < n; ++i) {
         int idl = (int)strlen(ids[i]);
         if (idl > 22) idl = 22;
@@ -2253,9 +2281,10 @@ void sendTileList() {
     }
     if (len > 1) sendChunk(mapChr, pkt, len);
 
-    uint8_t end = 0xD2;
+    uint8_t end = poi ? 0xD5 : 0xD2;
     sendChunk(mapChr, &end, 1);
-    diag::log("tile list: %d ids sent (walk %ums, total %ums)", n, walkMs, millis() - t0);
+    diag::log("%s list: %d ids sent (walk %ums, total %ums)", poi ? "poi" : "tile", n,
+              walkMs, millis() - t0);
 }
 
 // Write the PSRAM-staged firmware to the SD card as /firmware.bin, then reboot
@@ -2416,6 +2445,7 @@ void notePhoneName(const char* utf8) {
 }
 
 void pushSettingsToPhone() { settingsDirty = true; }
+void pushMapLayersToPhone() { mapLayersNotify = true; }
 void reportInterval() { intervalReportPending = true; }
 void requestFastInterval() { noteBulk(); intervalReportPending = true; }
 
@@ -2571,6 +2601,16 @@ void task(void*) {
         if (tileListReq && sdFree) {
             tileListReq = false;         // enumerate SD H3 tile ids for dedup
             sendTileList();
+        }
+        if (poiListReq && sdFree) {
+            poiListReq = false;          // which tiles already have their POIs
+            sendTileList(true);
+        }
+        if (mapLayersNotify && mapChr) {
+            mapLayersNotify = false;
+            const uint16_t m = settings::mapLayers();
+            uint8_t pkt[3] = {0xE0, (uint8_t)(m & 0xFF), (uint8_t)(m >> 8)};
+            sendChunk(mapChr, pkt, 3);
         }
         if (otaRebootPending) {          // OTA committed — reboot into new image
             vTaskDelay(pdMS_TO_TICKS(1500));   // let the success notify flush

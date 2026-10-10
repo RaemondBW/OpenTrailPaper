@@ -14,17 +14,48 @@ import Foundation
 //   then an optional 'ELV1' block, a 'WTR2' water section, then a 'PRK2' park
 //   section: 'WTR2'/'PRK2', u16 polygonCount, per polygon { u16 pointCount,
 //          i16 x,y per point (meters E/N of the grid SW origin lat0,lon0) }.
+//
+// Cycling layer (investigations/osm-pois-bike-routes.md; reference
+// implementation docs/mapgen.js, which this must match byte for byte — see
+// tools/map_test/run_crossport.sh):
+//   * a sub-tile blob may end with exactly polylineCount bytes of way flags
+//     (bits 0-1 bike-route network level, 0x04 cycleway, 0x08 bike lane);
+//   * POIs are NOT in the .ebm: buildPoi() writes a separate <h3>.poi
+//     ('EPOI' v1, 40-byte header, 6-byte records), from its own Overpass query.
 
 enum MapBuilder {
     // Public Overpass instances (verified reachable) — the main one 504s under
     // load, so we rotate through these on failure. Don't add a mirror without
     // checking it actually responds; a hung endpoint just wastes the timeout.
+    // private.coffee added 2026-10 (fast, current data); mail.ru stays as the
+    // last resort — it answers, but took 20+ s for a query the others serve
+    // in 2. kumi.systems was returning 500s and is left out.
     static let overpassEndpoints = [
         "https://overpass-api.de/api/interpreter",
+        "https://overpass.private.coffee/api/interpreter",
         "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
     ]
+
+    /// Map batches fetched at once. Overpass's usage policy allows a few
+    /// concurrent requests per client (overpass-api.de: 4 slots per IP); two
+    /// keeps us well inside that while elevation, encoding and the BLE link
+    /// overlap with the next fetch. Each batch starts on a different mirror.
+    static let concurrentBatches = 2
+    /// Hexes whose elevation grid is fetched at once (4 calls each). Open-Meteo
+    /// weights a 100-point call as 10 and rate-limits per minute (the timing
+    /// run hit 429 after ~20 calls in a burst), so calls also go through
+    /// `ElevationGate`; this only overlaps the waiting.
+    static let concurrentElevation = 2
     static let tileDeg = 0.02
     static let simplifyM = 3.0
+
+    /// Sent on every Overpass request. overpass-api.de answers 406 to generic
+    /// agents (curl, a bare library default), which silently pushed every
+    /// fetch onto the slower mirror.
+    static let userAgent: String = {
+        let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
+        return "OpenTrailPaper/\(v) (iOS)"
+    }()
 
     struct Progress {
         var stage: String
@@ -56,19 +87,56 @@ enum MapBuilder {
 
     // MARK: Overpass
 
+    // `{B}` is the bbox. Bike routes: route=bicycle relations are resolved to
+    // member way ids ON THE SERVER and come back as three derived `bikeroute`
+    // elements (one per network level, ways = "id;id;…") — relation bodies
+    // list every member of a route that may cross a continent (1.1 MB for
+    // central SF against ~30 KB). `way(r.bk)` pulls in route members the
+    // highway filter misses so a route has no holes. Same as mapgen.js QUERY
+    // minus its POI clauses, which the apps fetch separately (poiQuery).
     private static let query = """
     [out:json][timeout:90];
+    rel["route"="bicycle"]({B})->.bk;
     (
-      way["highway"~"^(motorway|trunk|primary|secondary|tertiary|residential|unclassified|living_street|pedestrian|cycleway|footway|path|track|steps)"](%@,%@,%@,%@);
-      way["natural"="water"](%@,%@,%@,%@);
-      way["natural"="coastline"](%@,%@,%@,%@);
-      way["leisure"="park"](%@,%@,%@,%@);
-      way["landuse"~"^(grass|forest|meadow|recreation_ground|cemetery|village_green)$"](%@,%@,%@,%@);
-      way["natural"~"^(wood|scrub|grassland|heath)$"](%@,%@,%@,%@);
+      way["highway"~"^(motorway|trunk|primary|secondary|tertiary|residential|unclassified|living_street|pedestrian|cycleway|footway|path|track|steps)"]({B});
+      way["natural"="water"]({B});
+      way["natural"="coastline"]({B});
+      way["leisure"="park"]({B});
+      way["landuse"~"^(grass|forest|meadow|recreation_ground|cemetery|village_green)$"]({B});
+      way["natural"~"^(wood|scrub|grassland|heath)$"]({B});
+      way(r.bk)({B});
     );
     out body;
     >;
     out skel qt;
+    rel.bk["network"~"^(icn|ncn)$"]->.r3;
+    way(r.r3)({B})->.w3;
+    make bikeroute level=3, ways=w3.set(id());
+    out;
+    rel.bk["network"="rcn"]->.r2;
+    way(r.r2)({B})->.w2;
+    make bikeroute level=2, ways=w2.set(id());
+    out;
+    (rel.bk; - rel.bk["network"~"^(icn|ncn|rcn)$"];)->.r1;
+    way(r.r1)({B})->.w1;
+    make bikeroute level=1, ways=w1.set(id());
+    out;
+    """
+
+    // Cycling POIs on their own, so they can be refreshed without rebuilding
+    // map tiles. `out tags center`: nodes come with lat/lon, outlines with the
+    // server's centre, and no geometry is downloaded (~180 KB for a 15 km box
+    // over San Francisco against ~30 MB for the map query).
+    private static let poiQuery = """
+    [out:json][timeout:60];
+    (
+      node["amenity"~"^(drinking_water|toilets|bicycle_repair_station)$"]({B});
+      node["man_made"="water_tap"]["drinking_water"="yes"]({B});
+      node["amenity"="fountain"]["drinking_water"="yes"]({B});
+      nwr["shop"="bicycle"]({B});
+      way["amenity"~"^(toilets|bicycle_repair_station)$"]({B});
+    );
+    out tags center;
     """
 
     private static func fetchOverpass(s: Double, w: Double, n: Double, e: Double) async throws -> OverpassJSON {
@@ -93,27 +161,30 @@ enum MapBuilder {
         let q = "[out:json][timeout:60];"
               + "way[\"natural\"=\"coastline\"](\(s),\(w),\(n),\(e));"
               + "(._;>;);out body;"
-        return try await overpassPost(q)
+        return try await overpassPost(q, startMirror: 1, kind: "coast")
     }
 
     static func fetchOSM(south s: Double, west w: Double, north n: Double, east e: Double,
+                         startMirror: Int = 0,
                          onProgress: (@Sendable (String) -> Void)? = nil) async throws -> Data {
-        let bbox = [s, w, n, e].map { String($0) }
-        // One bbox group per way[...] line in `query` (6 lines → 24 args).
-        let q = String(format: query, bbox[0], bbox[1], bbox[2], bbox[3],
-                       bbox[0], bbox[1], bbox[2], bbox[3],
-                       bbox[0], bbox[1], bbox[2], bbox[3],
-                       bbox[0], bbox[1], bbox[2], bbox[3],
-                       bbox[0], bbox[1], bbox[2], bbox[3],
-                       bbox[0], bbox[1], bbox[2], bbox[3])
-        return try await overpassPost(q, onProgress: onProgress)
+        let bbox = [s, w, n, e].map { String($0) }.joined(separator: ",")
+        let q = query.replacingOccurrences(of: "{B}", with: bbox)
+        return try await overpassPost(q, startMirror: startMirror, kind: "map", onProgress: onProgress)
+    }
+
+    /// Raw Overpass JSON of the cycling POIs in a box (see poiQuery).
+    static func fetchPOIs(south s: Double, west w: Double, north n: Double, east e: Double,
+                          onProgress: (@Sendable (String) -> Void)? = nil) async throws -> Data {
+        let bbox = [s, w, n, e].map { String($0) }.joined(separator: ",")
+        let q = poiQuery.replacingOccurrences(of: "{B}", with: bbox)
+        return try await overpassPost(q, startMirror: 1, kind: "poi", onProgress: onProgress)
     }
 
     /// POST an Overpass QL query, walking the mirror list twice so a transient
     /// failure on one server is retried elsewhere. Shared by every fetch —
     /// this retry logic used to live inside fetchOSM, so any new query either
     /// duplicated it or went without.
-    private static func overpassPost(_ q: String,
+    private static func overpassPost(_ q: String, startMirror: Int = 0, kind: String = "map",
                                      onProgress: (@Sendable (String) -> Void)? = nil
     ) async throws -> Data {
         let body = ("data=" + (q.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? q))
@@ -125,24 +196,29 @@ enum MapBuilder {
         // Two passes over the mirror list (so a transient failure gets retried).
         for attempt in 0..<total {
             try Task.checkCancellation()
-            let urlStr = overpassEndpoints[attempt % overpassEndpoints.count]
+            let urlStr = overpassEndpoints[(startMirror + attempt) % overpassEndpoints.count]
             guard let url = URL(string: urlStr) else { continue }
             let host = url.host ?? urlStr
             onProgress?("server \(host) (try \(attempt + 1)/\(total))")
             var req = URLRequest(url: url)
             req.httpMethod = "POST"
             req.httpBody = body
-            req.setValue("eink-bike-gps", forHTTPHeaderField: "User-Agent")
+            req.setValue(userAgent, forHTTPHeaderField: "User-Agent")
             req.timeoutInterval = 45          // fail a hung mirror fast, move on
+            let started = Date()
             do {
                 let (data, resp) = try await URLSession.shared.data(for: req)
                 guard let http = resp as? HTTPURLResponse else { continue }
+                await DownloadStats.shared.request(kind, host: host, status: http.statusCode,
+                    seconds: Date().timeIntervalSince(started), bytes: data.count)
                 if http.statusCode == 200 { return data }
                 lastStatus = http.statusCode
                 // 429 (rate limit) / 504 (timeout) / 5xx (overload) → back off, try next mirror.
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
+                await DownloadStats.shared.request(kind, host: host, status: -1,
+                    seconds: Date().timeIntervalSince(started), bytes: 0)
                 lastError = error
             }
             try? await Task.sleep(nanoseconds: 800_000_000)
@@ -180,10 +256,71 @@ enum MapBuilder {
         return out
     }
 
+    /// Fetch, encode and finish one batch of hexes: roads (+ way flags), DEM
+    /// elevation, water and sea fill, parks. Returns the non-empty tiles.
+    /// Runs off the main actor; the Maps screen keeps `concurrentBatches` of
+    /// these in flight. `seaRings` is awaited only after the fetch, so the
+    /// shared coastline download overlaps with the first batches.
+    static func buildBatch(_ batch: [MapTile], startMirror: Int,
+                           seaRings: Task<[[(Double, Double)]], Never>,
+                           onProgress: (@Sendable (String) -> Void)? = nil
+    ) async throws -> [(id: String, data: Data)] {
+        var s = 90.0, w = 180.0, n = -90.0, e = -180.0
+        for t in batch { s = min(s, t.south); w = min(w, t.west); n = max(n, t.north); e = max(e, t.east) }
+        let pad = 0.003
+        let json = try await fetchOSM(south: s - pad, west: w - pad, north: n + pad, east: e + pad,
+                                      startMirror: startMirror, onProgress: onProgress)
+        let t0 = Date()
+        let part = try encodeTiles(regionJSON: json, tiles: batch)
+        let waterWays = (try? extractWaterWays(regionJSON: json)) ?? []
+        let parkWays = (try? extractParkWays(regionJSON: json)) ?? []
+        await DownloadStats.shared.add("encode", Date().timeIntervalSince(t0))
+        let rings = await seaRings.value
+        // Elevation for a few hexes at a time; best-effort, as before.
+        var grids: [String: [Int16]] = [:]
+        try await withThrowingTaskGroup(of: (String, [Int16]?).self) { group in
+            var it = batch.makeIterator()
+            var running = 0
+            while running < concurrentElevation, let t = it.next() {
+                group.addTask { (t.id, try? await fetchElevationGrid(south: t.south, west: t.west,
+                                                                     north: t.north, east: t.east)) }
+                running += 1
+            }
+            for try await (id, grid) in group {
+                if let grid { grids[id] = grid }
+                if let t = it.next() {
+                    group.addTask { (t.id, try? await fetchElevationGrid(south: t.south, west: t.west,
+                                                                         north: t.north, east: t.east)) }
+                }
+            }
+        }
+        let t1 = Date()
+        var out: [(id: String, data: Data)] = []
+        for var p in part {
+            guard let t = batch.first(where: { $0.id == p.id }) else { continue }
+            if let grid = grids[t.id] {
+                appendElevation(to: &p.data, south: t.south, west: t.west, north: t.north,
+                                east: t.east, grid: grid, n: elevationGrid)
+            }
+            // WTR2 water section after any ELV1 block, then PRK2.
+            appendWater(to: &p.data, waterWays: waterWays, seaRings: rings,
+                        south: t.south, west: t.west, north: t.north, east: t.east)
+            appendParks(to: &p.data, parkWays: parkWays,
+                        south: t.south, west: t.west, north: t.north, east: t.east)
+            // Decide emptiness only now — a hex can be pure water and still
+            // be worth storing.
+            if isEmpty(p.data, tile: t) { continue }
+            out.append(p)
+        }
+        await DownloadStats.shared.add("encode", Date().timeIntervalSince(t1))
+        return out
+    }
+
     // Test hook: encode a raw Overpass JSON payload (bypasses the network).
-    static func encodeForTest(jsonData: Data, s: Double, w: Double, n: Double, e: Double) throws -> Data {
+    static func encodeForTest(jsonData: Data, s: Double, w: Double, n: Double, e: Double,
+                              cycling: Bool = true) throws -> Data {
         let json = try JSONDecoder().decode(OverpassJSON.self, from: jsonData)
-        return try encode(json: json, s: s, w: w, n: n, e: e)
+        return try encode(json: json, s: s, w: w, n: n, e: e, cycling: cycling)
     }
 
     // MARK: elevation (DEM baked into the tile so the device needs no GPS
@@ -207,27 +344,43 @@ enum MapBuilder {
                 lats.append(lat); lons.append(lon)
             }
         }
+        // The 100-point calls (4 per hex) go out together rather than one
+        // after another: each is ~0.3 s of mostly waiting.
+        let started = Date()
         var out = [Int16](repeating: 0, count: gridN * gridN)
-        var idx = 0
-        while idx < lats.count {
-            let end = min(idx + 100, lats.count)
-            let la = lats[idx..<end].map { String(format: "%.5f", $0) }.joined(separator: ",")
-            let lo = lons[idx..<end].map { String(format: "%.5f", $0) }.joined(separator: ",")
-            var comp = URLComponents(string: "https://api.open-meteo.com/v1/elevation")!
-            comp.queryItems = [URLQueryItem(name: "latitude", value: la),
-                               URLQueryItem(name: "longitude", value: lo)]
-            var req = URLRequest(url: comp.url!)
-            req.timeoutInterval = 30
-            let (data, resp) = try await URLSession.shared.data(for: req)
-            guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
-                throw BuildError.overpass("elevation server error")
+        let chunks = stride(from: 0, to: lats.count, by: 100).map { ($0, min($0 + 100, lats.count)) }
+        try await withThrowingTaskGroup(of: (Int, [Double?]).self) { group in
+            for (idx, end) in chunks {
+                let la = lats[idx..<end].map { String(format: "%.5f", $0) }.joined(separator: ",")
+                let lo = lons[idx..<end].map { String(format: "%.5f", $0) }.joined(separator: ",")
+                group.addTask {
+                    await ElevationGate.shared.wait()
+                    var comp = URLComponents(string: "https://api.open-meteo.com/v1/elevation")!
+                    comp.queryItems = [URLQueryItem(name: "latitude", value: la),
+                                       URLQueryItem(name: "longitude", value: lo)]
+                    var req = URLRequest(url: comp.url!)
+                    req.timeoutInterval = 30
+                    req.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+                    var (data, resp) = try await URLSession.shared.data(for: req)
+                    if (resp as? HTTPURLResponse)?.statusCode == 429 {
+                        // Rate-limited: one retry after the minute window moves.
+                        try await Task.sleep(nanoseconds: 20_000_000_000)
+                        await ElevationGate.shared.wait()
+                        (data, resp) = try await URLSession.shared.data(for: req)
+                    }
+                    guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
+                        throw BuildError.overpass("elevation server error")
+                    }
+                    return (idx, try JSONDecoder().decode(ElevResp.self, from: data).elevation)
+                }
             }
-            let decoded = try JSONDecoder().decode(ElevResp.self, from: data)
-            for (k, ev) in decoded.elevation.enumerated() where idx + k < out.count {
-                out[idx + k] = Int16(max(-2000, min(9000, (ev ?? 0).rounded())))
+            for try await (idx, elevation) in group {
+                for (k, ev) in elevation.enumerated() where idx + k < out.count {
+                    out[idx + k] = Int16(max(-2000, min(9000, (ev ?? 0).rounded())))
+                }
             }
-            idx = end
         }
+        await DownloadStats.shared.add("elevation", Date().timeIntervalSince(started))
         return out
     }
 
@@ -649,6 +802,7 @@ enum MapBuilder {
     }
 
     private struct OverpassJSON: Decodable { let elements: [Element] }
+    private struct Center: Decodable { let lat: Double; let lon: Double }
     private struct Element: Decodable {
         let type: String
         let id: Int
@@ -656,6 +810,174 @@ enum MapBuilder {
         let lon: Double?
         let nodes: [Int]?
         let tags: [String: String]?
+        let center: Center?     // `out center` (the POI query)
+    }
+
+    // MARK: cycling layer (mirrors docs/mapgen.js — keep in step)
+
+    static let wayRouteMask: UInt8 = 0x03   // 0 none, 1 local, 2 regional, 3 national/intl
+    static let wayCycleway: UInt8 = 0x04
+    static let wayBikeLane: UInt8 = 0x08
+    private static let laneValues: Set<String> = ["lane", "track", "opposite_lane", "opposite_track"]
+    private static let pathLike: Set<String> = ["path", "footway", "bridleway", "track", "pedestrian"]
+
+    /// Flags for a way from its own tags plus its best route-network level.
+    static func wayFlags(_ tags: [String: String], routeLevel: UInt8) -> UInt8 {
+        var f = routeLevel & wayRouteMask
+        let hw = tags["highway"] ?? ""
+        if hw == "cycleway" || (pathLike.contains(hw) && tags["bicycle"] == "designated") {
+            f |= wayCycleway
+        }
+        for k in ["cycleway", "cycleway:both", "cycleway:left", "cycleway:right"] {
+            if laneValues.contains(tags[k] ?? "") { f |= wayBikeLane; break }
+        }
+        return f
+    }
+
+    /// A route member the highway filter does not classify still has to draw.
+    private static func classifyRouteMember(_ tags: [String: String]) -> UInt8? {
+        let hw = tags["highway"] ?? ""
+        if hw.isEmpty || hw == "proposed" || hw == "construction" || hw == "platform" { return nil }
+        return hw == "bridleway" || hw == "corridor" ? 5 : 4
+    }
+
+    /// way id -> highest bike-route level, from the derived `bikeroute` elements.
+    private static func routeLevels(_ json: OverpassJSON) -> [Int: UInt8] {
+        var out: [Int: UInt8] = [:]
+        for el in json.elements where el.type == "bikeroute" {
+            guard let ways = el.tags?["ways"], !ways.isEmpty else { continue }
+            let lvl = UInt8((Int(el.tags?["level"] ?? "") ?? 0) & 3)
+            for part in ways.split(separator: ";", omittingEmptySubsequences: false) {
+                guard let k = Int(part), k != 0 else { continue }
+                if (out[k] ?? 0) < lvl { out[k] = lvl }
+            }
+        }
+        return out
+    }
+
+    // POI types / flags — the on-file bytes (src/map_view.h MapPoiType).
+    static let poiWater: UInt8 = 1, poiToilets: UInt8 = 2, poiRepair: UInt8 = 3, poiBikeShop: UInt8 = 4
+
+    /// OSM tags -> (type, flags), or nil if this is not a POI we keep.
+    static func poiOf(_ tags: [String: String]) -> (UInt8, UInt8)? {
+        let a = tags["amenity"] ?? ""
+        func yes(_ k: String) -> Bool { let v = tags[k]; return v == "yes" || v == "only" }
+        let acc = tags["access"] ?? ""
+        if acc == "private" || acc == "no" { return nil }
+        var restricted = acc == "customers" || acc == "permissive_customers" ||
+            tags["fee"] == "yes" || ((tags["seasonal"] ?? "").isEmpty == false && tags["seasonal"] != "no")
+        var type: UInt8 = 0, f: UInt8 = 0
+        if a == "drinking_water" ||
+            ((tags["man_made"] == "water_tap" || a == "fountain") && tags["drinking_water"] == "yes") {
+            if tags["drinking_water"] == "no" { return nil }
+            type = poiWater
+        } else if a == "toilets" {
+            type = poiToilets
+            if tags["drinking_water"] == "yes" { f |= 0x01 }
+        } else if a == "bicycle_repair_station" {
+            type = poiRepair
+            if yes("service:bicycle:pump") { f |= 0x01 }
+            if yes("service:bicycle:tools") { f |= 0x02 }
+            if yes("service:bicycle:chain_tool") { f |= 0x04 }
+            if yes("service:bicycle:stand") { f |= 0x08 }
+        } else if tags["shop"] == "bicycle" {
+            type = poiBikeShop
+            if yes("service:bicycle:pump") { f |= 0x01 }
+            if yes("service:bicycle:repair") || yes("service:bicycle:diy") { f |= 0x02 }
+            if yes("service:bicycle:rental") { f |= 0x04 }
+            if yes("service:bicycle:retail") || yes("service:bicycle:parts") { f |= 0x08 }
+            if yes("service:bicycle:second_hand") { f |= 0x10 }
+            if yes("service:bicycle:ebike") || yes("service:bicycle:charging") { f |= 0x20 }
+            restricted = false   // a shop is "customers only" by nature
+        } else {
+            return nil
+        }
+        if restricted { f |= 0x80 }
+        return (type, f)
+    }
+
+    struct Poi { let type: UInt8; let flags: UInt8; let lat: Double; let lon: Double }
+
+    /// Every POI in an Overpass response (the POI query, or a combined one), in
+    /// the order mapgen.js collectPois produces: keys n/w/r<id> in element
+    /// order, outlines without a `center` placed at their vertex centroid last.
+    static func collectPois(regionJSON: Data) throws -> [Poi] {
+        let json = try JSONDecoder().decode(OverpassJSON.self, from: regionJSON)
+        var nodes: [Int: (Double, Double)] = [:]
+        var order: [String] = []
+        var byKey: [String: Poi] = [:]
+        func put(_ key: String, _ p: Poi) {
+            if byKey[key] == nil { order.append(key) }
+            byKey[key] = p
+        }
+        var outlines: [(String, (UInt8, UInt8), [Int])] = []
+        for el in json.elements {
+            if el.type == "node", let la = el.lat, let lo = el.lon {
+                nodes[el.id] = (la, lo)
+                if let t = el.tags, let p = poiOf(t) { put("n\(el.id)", Poi(type: p.0, flags: p.1, lat: la, lon: lo)) }
+            } else if el.type == "way" || el.type == "relation", let t = el.tags, let p = poiOf(t) {
+                let key = (el.type == "way" ? "w" : "r") + "\(el.id)"
+                if let c = el.center {
+                    put(key, Poi(type: p.0, flags: p.1, lat: c.lat, lon: c.lon))
+                } else if el.type == "way", let nids = el.nodes {
+                    outlines.append((key, p, nids))
+                }
+            }
+        }
+        for (key, p, nids) in outlines {
+            var la = 0.0, lo = 0.0, k = 0
+            let ring = nids.count > 1 && nids.first == nids.last ? Array(nids.dropLast()) : nids
+            for id in ring { if let q = nodes[id] { la += q.0; lo += q.1; k += 1 } }
+            if k > 0 { put(key, Poi(type: p.0, flags: p.1, lat: la / Double(k), lon: lo / Double(k))) }
+        }
+        return order.compactMap { byKey[$0] }
+    }
+
+    /// Python/JS-style round-half-to-even (mapgen.js pyRound), used by the .poi
+    /// writer so its bytes match the website's exactly.
+    private static func pyRound(_ x: Double) -> Int { Int(x.rounded(.toNearestOrEven)) }
+
+    /// One tile's `.poi` file (format: src/map_tiles.cpp poiFileValid). Keeps
+    /// the POIs `contains(lat, lon)` accepts — pass the H3 cell test so each
+    /// POI lives in exactly one tile — or, without it, those in the bbox.
+    /// Always returns a file: an empty one means "built, nothing here".
+    static func buildPoi(_ pois: [Poi], south s: Double, west w: Double, north n: Double,
+                         east e: Double, cell: String?,
+                         contains: ((Double, Double) -> Bool)? = nil) -> Data {
+        let lat0 = (s + n) / 2, lon0 = (w + e) / 2
+        let kx = 111320.0 * cos((lat0 * Double.pi) / 180), ky = 110540.0
+        let fk = Double(Float(kx)), fky = Double(Float(ky))
+        var list: [(UInt8, UInt8, Int, Int)] = []
+        for p in pois {
+            let inside = contains.map { $0(p.lat, p.lon) }
+                ?? (p.lat >= s && p.lat <= n && p.lon >= w && p.lon <= e)
+            if !inside { continue }
+            let x = max(-32000, min(32000, pyRound((p.lon - lon0) * fk)))
+            let y = max(-32000, min(32000, pyRound((p.lat - lat0) * fky)))
+            list.append((p.type, p.flags, x, y))
+        }
+        // Stable order (y, x, type), as mapgen.js sorts.
+        list = list.enumerated().sorted { a, b in
+            if a.element.3 != b.element.3 { return a.element.3 < b.element.3 }
+            if a.element.2 != b.element.2 { return a.element.2 < b.element.2 }
+            if a.element.0 != b.element.0 { return a.element.0 < b.element.0 }
+            return a.offset < b.offset
+        }.map(\.element)
+        if list.count > 0xFFFF { list = Array(list.prefix(0xFFFF)) }
+        var out = Data()
+        out.append("EPOI".data(using: .ascii)!)
+        out.append(1)          // version
+        out.append(6)          // record size
+        out.appendU16(UInt16(list.count))
+        let c = cell.flatMap { UInt64($0, radix: 16) } ?? 0
+        out.appendU32(UInt32(c & 0xFFFF_FFFF)); out.appendU32(UInt32(c >> 32))
+        out.appendF64(lat0); out.appendF64(lon0)
+        out.appendU32(Float(kx).bitPattern); out.appendU32(Float(ky).bitPattern)
+        for (t, f, x, y) in list {
+            out.append(t); out.append(f)
+            out.appendI16(Int16(x)); out.appendI16(Int16(y))
+        }
+        return out
     }
 
     // MARK: classify (mirrors build_map.py)
@@ -697,16 +1019,25 @@ enum MapBuilder {
         return 36 + nx * ny * 8
     }
 
-    private static func encode(json: OverpassJSON, s: Double, w: Double, n: Double, e: Double) throws -> Data {
+    // `cycling: false` writes the pre-cycling bytes (no way-flag trailers).
+    private static func encode(json: OverpassJSON, s: Double, w: Double, n: Double, e: Double,
+                               cycling: Bool = true) throws -> Data {
         var nodes: [Int: (Double, Double)] = [:]
-        var ways: [(UInt8, [Int])] = []
+        var ways: [(UInt8, [Int], UInt8)] = []
         nodes.reserveCapacity(json.elements.count)
+        let levels = cycling ? routeLevels(json) : [:]
+        var seenWays = Set<Int>()   // a way can arrive twice (highway filter + route member)
         for el in json.elements {
             if el.type == "node", let la = el.lat, let lo = el.lon {
                 nodes[el.id] = (la, lo)
-            } else if el.type == "way", let nids = el.nodes,
-                      let cls = classify(el.tags ?? [:]) {
-                ways.append((cls, nids))
+            } else if el.type == "way", let nids = el.nodes {
+                if !seenWays.insert(el.id).inserted { continue }
+                let tags = el.tags ?? [:]
+                if cycling && poiOf(tags) != nil { continue }   // a POI outline, not a map feature
+                let lvl = levels[el.id] ?? 0
+                var cls = classify(tags)
+                if cls == nil && lvl != 0 { cls = classifyRouteMember(tags) }
+                if let cls { ways.append((cls, nids, cycling ? wayFlags(tags, routeLevel: lvl) : 0)) }
             }
         }
 
@@ -722,13 +1053,13 @@ enum MapBuilder {
 
         let tileWm = td * kx, tileHm = td * ky
 
-        // tile key (tx,ty) -> polylines [(cls, [(x,y) tile-local meters])]
-        var tiles: [Int: [(UInt8, [(Int16, Int16)])]] = [:]
+        // tile key (tx,ty) -> polylines [(cls, [(x,y) tile-local meters], flags)]
+        var tiles: [Int: [(UInt8, [(Int16, Int16)], UInt8)]] = [:]
 
         func tileOf(_ p: (Double, Double)) -> (Int, Int) {
             (Int((p.0 / tileWm).rounded(.down)), Int((p.1 / tileHm).rounded(.down)))
         }
-        func emit(_ tx: Int, _ ty: Int, _ cls: UInt8, _ run: [(Double, Double)]) {
+        func emit(_ tx: Int, _ ty: Int, _ cls: UInt8, _ run: [(Double, Double)], _ flags: UInt8) {
             guard run.count >= 2, tx >= 0, tx < nx, ty >= 0, ty < ny else { return }
             let ox = Double(tx) * tileWm, oy = Double(ty) * tileHm
             var pts: [(Int16, Int16)] = []
@@ -739,10 +1070,10 @@ enum MapBuilder {
                 if let last = pts.last, last == (lx, ly) { continue }
                 pts.append((lx, ly))
             }
-            if pts.count >= 2 { tiles[ty * nx + tx, default: []].append((cls, pts)) }
+            if pts.count >= 2 { tiles[ty * nx + tx, default: []].append((cls, pts, flags)) }
         }
 
-        for (cls, nids) in ways {
+        for (cls, nids, flags) in ways {
             let pts = nids.compactMap { nodes[$0] }
             if pts.count < 2 { continue }
             let m = rdp(pts.map { (lat, lon) in ((lon - lon0) * kx, (lat - lat0) * ky) }, simplifyM)
@@ -753,12 +1084,12 @@ enum MapBuilder {
                 let t = tileOf(p)
                 run.append(p)
                 if t != cur {
-                    emit(cur.0, cur.1, cls, run)
+                    emit(cur.0, cur.1, cls, run, flags)
                     run = [run[run.count - 2], p]
                     cur = t
                 }
             }
-            emit(cur.0, cur.1, cls, run)
+            emit(cur.0, cur.1, cls, run, flags)
         }
 
         // Serialize
@@ -772,10 +1103,14 @@ enum MapBuilder {
         for (key, polys) in tiles {
             var b = Data()
             b.appendU16(UInt16(min(polys.count, 0xFFFF)))
-            for (cls, pts) in polys {
+            for (cls, pts, _) in polys {
                 b.append(cls)
                 b.appendU16(UInt16(min(pts.count, 0xFFFF)))
                 for (x, y) in pts { b.appendI16(x); b.appendI16(y) }
+            }
+            // Way-flag trailer: exactly one byte per polyline, only when one is set.
+            if polys.contains(where: { $0.2 != 0 }) {
+                for p in polys.prefix(0xFFFF) { b.append(p.2) }
             }
             blobs[key] = b
         }
@@ -849,5 +1184,73 @@ private extension Data {
     mutating func appendF64(_ v: Double) {
         var bits = v.bitPattern
         for _ in 0..<8 { append(UInt8(bits & 0xFF)); bits >>= 8 }
+    }
+}
+
+/// Where a map download's time goes, logged at the end of each run (Console,
+/// subsystem com.raemond.opentrailpaper, category maps) so a slow download on
+/// a real phone can be broken down: Overpass per request, elevation, encode,
+/// and the BLE drain after the last tile is built.
+actor DownloadStats {
+    static let shared = DownloadStats()
+    private var started = Date()
+    private var requests: [(kind: String, host: String, status: Int, seconds: Double, bytes: Int)] = []
+    private var stages: [String: Double] = [:]
+    /// Hexes by where they came from: "cache", "cdn", "cdn empty", "overpass",
+    /// "cdn poi", "overpass poi".
+    private var sources: [String: Int] = [:]
+
+    func reset() { started = Date(); requests = []; stages = [:]; sources = [:] }
+    func source(_ s: String, _ n: Int) { if n > 0 { sources[s, default: 0] += n } }
+    func request(_ kind: String, host: String, status: Int, seconds: Double, bytes: Int) {
+        requests.append((kind, host, status, seconds, bytes))
+    }
+    func add(_ stage: String, _ seconds: Double) { stages[stage, default: 0] += seconds }
+
+    func summary(hexes: Int) -> String {
+        var lines = ["map download: \(hexes) hexes in \(String(format: "%.1f", Date().timeIntervalSince(started))) s"]
+        if !sources.isEmpty {
+            lines.append("  hexes by source: " + sources.sorted { $0.key < $1.key }
+                .map { "\($0.key) \($0.value)" }.joined(separator: ", "))
+        }
+        for kind in ["cdn-index", "cdn"] {
+            let rs = requests.filter { $0.kind == kind }
+            guard !rs.isEmpty else { continue }
+            let ok = rs.filter { $0.status == 200 }
+            lines.append(String(format: "  %@: %d requests (%d not 200), %.1f s summed, %.2f MB, hosts %@",
+                                kind, rs.count, rs.count - ok.count, rs.reduce(0) { $0 + $1.seconds },
+                                Double(ok.reduce(0) { $0 + $1.bytes }) / 1_048_576,
+                                Set(rs.map(\.host)).sorted().joined(separator: ",")))
+        }
+        for kind in ["map", "coast", "poi"] {
+            let rs = requests.filter { $0.kind == kind }
+            guard !rs.isEmpty else { continue }
+            let ok = rs.filter { $0.status == 200 }
+            lines.append(String(format: "  overpass %@: %d requests (%d failed), %.1f s summed, %.1f MB, hosts %@",
+                                kind, rs.count, rs.count - ok.count, rs.reduce(0) { $0 + $1.seconds },
+                                Double(ok.reduce(0) { $0 + $1.bytes }) / 1_048_576,
+                                Set(ok.map(\.host)).sorted().joined(separator: ",")))
+        }
+        for (k, v) in stages.sorted(by: { $0.key < $1.key }) {
+            lines.append(String(format: "  %@: %.1f s summed", k, v))
+        }
+        return lines.joined(separator: "\n")
+    }
+}
+
+/// Spaces Open-Meteo elevation calls at least `interval` apart across the
+/// whole app. Each 100-point call counts as 10 against its per-minute limit
+/// (600), so 1.1 s apart keeps a long download at ~550/min instead of
+/// bursting into 429s — which used to leave tiles silently without elevation.
+actor ElevationGate {
+    static let shared = ElevationGate()
+    private let interval: TimeInterval = 1.1
+    private var next = Date.distantPast
+    func wait() async {
+        let now = Date()
+        let at = max(now, next)
+        next = at.addingTimeInterval(interval)
+        let delay = at.timeIntervalSince(now)
+        if delay > 0 { try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
     }
 }

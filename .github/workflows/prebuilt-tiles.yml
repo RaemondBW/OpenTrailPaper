@@ -27,6 +27,10 @@ on:
         description: "Parallel jobs"
         required: false
         default: "20"
+      resume_run:
+        description: "Finish an earlier run (its run id): redo only its failed jobs, reusing its plan and strips (within 2 days)"
+        required: false
+        default: ""
       dry_run:
         description: "Build but upload nothing"
         type: boolean
@@ -34,6 +38,7 @@ on:
 
 permissions:
   contents: read
+  actions: read     # resume_run: the earlier run's jobs and artifacts
 
 concurrency:
   group: prebuilt-tiles
@@ -55,7 +60,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     outputs:
-      jobs: ${{ steps.plan.outputs.jobs }}
+      interior: ${{ steps.plan.outputs.interior }}
+      border: ${{ steps.plan.outputs.border }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -66,9 +72,19 @@ jobs:
         env:
           ONLY: ${{ inputs.only }}
           JOBS: ${{ inputs.jobs || '20' }}
+          RESUME: ${{ inputs.resume_run }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          tools/tiles/pipeline.sh plan work ${ONLY:+--only "$ONLY"} --jobs "$JOBS"
-          echo "jobs=$(node -e 'console.log(JSON.stringify(require("./work/plan.json").jobs.map(j => j.name)))')" >> "$GITHUB_OUTPUT"
+          if [ -n "$RESUME" ]; then
+            gh run download "$RESUME" -R "$GITHUB_REPOSITORY" -n plan -D work/old
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RESUME/jobs" --paginate --jq '.jobs[]|[.name,.conclusion]|@tsv' > work/old-jobs.tsv
+            node tools/tiles/resume.mjs --plan work/old/plan.json --jobs work/old-jobs.tsv --out work/plan.json > work/todo.json
+          else
+            tools/tiles/pipeline.sh plan work ${ONLY:+--only "$ONLY"} --jobs "$JOBS"
+            node -e 'const n=require("./work/plan.json").jobs.map(j=>j.name);console.log(JSON.stringify({interior:n,border:n}))' > work/todo.json
+          fi
+          echo "interior=$(node -e 'console.log(JSON.stringify(require("./work/todo.json").interior))')" >> "$GITHUB_OUTPUT"
+          echo "border=$(node -e 'console.log(JSON.stringify(require("./work/todo.json").border))')" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
         with:
           name: plan
@@ -77,13 +93,14 @@ jobs:
 
   interior:
     needs: plan
+    if: ${{ needs.plan.outputs.interior != '[]' }}
     runs-on: ubuntu-latest
     timeout-minutes: 330
     strategy:
       fail-fast: false
       max-parallel: 20
       matrix:
-        job: ${{ fromJSON(needs.plan.outputs.jobs) }}
+        job: ${{ fromJSON(needs.plan.outputs.interior) }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -120,14 +137,14 @@ jobs:
 
   border:
     needs: [plan, interior]
-    if: ${{ always() && needs.plan.result == 'success' }}
+    if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.border != '[]' }}
     runs-on: ubuntu-latest
     timeout-minutes: 330
     strategy:
       fail-fast: false
       max-parallel: 20
       matrix:
-        job: ${{ fromJSON(needs.plan.outputs.jobs) }}
+        job: ${{ fromJSON(needs.plan.outputs.border) }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -147,6 +164,16 @@ jobs:
         name: Which jobs' strips this one reads
         run: |
           echo "pattern=strips-{$(node -e 'const p=require("./work/plan.json");console.log(p.jobs.find(j=>j.name===process.argv[1]).needs.join(","))' ${{ matrix.job }}),none}" >> "$GITHUB_OUTPUT"
+      # Resuming: strips of the jobs not rebuilt come from the earlier run;
+      # this run's (the rebuilt jobs') are fetched after, so they win.
+      - uses: actions/download-artifact@v4
+        if: ${{ inputs.resume_run != '' }}
+        with:
+          pattern: ${{ steps.needs.outputs.pattern }}
+          path: work/strips
+          merge-multiple: true
+          run-id: ${{ inputs.resume_run }}
+          github-token: ${{ github.token }}
       - uses: actions/download-artifact@v4
         with:
           pattern: ${{ steps.needs.outputs.pattern }}

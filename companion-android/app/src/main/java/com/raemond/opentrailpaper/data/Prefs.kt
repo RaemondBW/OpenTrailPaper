@@ -16,6 +16,9 @@ object Prefs {
     private const val KEY_ONBOARDED = "didOnboard"
     private const val KEY_DEVICE_TILES = "deviceTileIds"
     private const val KEY_ASKED = "askedPermissions"
+    private const val KEY_FLAGGED_TILES = "flaggedTileIds"
+    private const val KEY_POI_SENT = "poiSentAt"
+    private const val KEY_TILE_SENT = "tileSentAt"
     private const val KEY_PAIRED_ADDR = "pairedDeviceAddress"
     private const val KEY_PAIRED_NAME = "pairedDeviceName"
 
@@ -49,6 +52,45 @@ object Prefs {
     var deviceTileIds: Set<String>
         get() = sp.getStringSet(KEY_DEVICE_TILES, emptySet()) ?: emptySet()
         set(v) = sp.edit().putStringSet(KEY_DEVICE_TILES, v).apply()
+
+    /** Map tiles this phone sent WITH the bike-route way flags (see BleManager.tileIsCurrent). */
+    var flaggedTileIds: Set<String>
+        get() = sp.getStringSet(KEY_FLAGGED_TILES, emptySet()) ?: emptySet()
+        set(v) = sp.edit().putStringSet(KEY_FLAGGED_TILES, v).apply()
+
+    /** When this phone last sent each map tile (epoch ms), as "id=ms" entries. */
+    var tileSentAt: Map<String, Long>
+        get() = stamps(KEY_TILE_SENT)
+        set(v) = sp.edit().putStringSet(KEY_TILE_SENT, v.map { "${it.key}=${it.value}" }.toSet()).apply()
+
+    // Device map layers, per device address (see BleManager.updateMapLayers).
+    var mapLayersByDevice: Map<String, Long>
+        get() = stamps("mapLayers")
+        set(v) = sp.edit().putStringSet("mapLayers", v.map { "${it.key}=${it.value}" }.toSet()).apply()
+    var mapLayersPending: Map<String, Long>
+        get() = stamps("mapLayersPending")
+        set(v) = sp.edit().putStringSet("mapLayersPending", v.map { "${it.key}=${it.value}" }.toSet()).apply()
+    var mapLayersSupported: Set<String>
+        get() = sp.getStringSet("mapLayersSupported", emptySet()) ?: emptySet()
+        set(v) = sp.edit().putStringSet("mapLayersSupported", v).apply()
+    var mapLayersLastDevice: String?
+        get() = sp.getString("mapLayersLastDevice", null)
+        set(v) = sp.edit().putString("mapLayersLastDevice", v).apply()
+
+    private fun stamps(key: String): Map<String, Long> =
+        (sp.getStringSet(key, emptySet()) ?: emptySet()).mapNotNull {
+            val i = it.indexOf('=')
+            val ms = if (i > 0) it.substring(i + 1).toLongOrNull() else null
+            if (ms == null) null else it.substring(0, i) to ms
+        }.toMap()
+
+    /** When this phone last sent each tile's .poi (epoch ms), as "id=ms" entries. */
+    var poiSentAt: Map<String, Long>
+        get() = (sp.getStringSet(KEY_POI_SENT, emptySet()) ?: emptySet()).mapNotNull {
+            val i = it.indexOf('=')
+            if (i <= 0) null else it.substring(0, i) to (it.substring(i + 1).toLongOrNull() ?: return@mapNotNull null)
+        }.toMap()
+        set(v) = sp.edit().putStringSet(KEY_POI_SENT, v.map { "${it.key}=${it.value}" }.toSet()).apply()
 
     /**
      * Permissions we have already put a system dialog in front of.

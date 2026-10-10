@@ -147,6 +147,11 @@ void setMeshPrivateKey(const uint8_t key[32]);
 // aux_math::HeadingOffset). Persisted because the board does not move between
 // rides, so re-learning it every time would leave the compass wrong for the
 // first minutes of every ride. NAN when nothing has been learned yet.
+// Cycling map layers the rider wants drawn (MAP_LAYER_* bits, map_view.h).
+// All on by default. Applied at render time only — tiles keep everything.
+uint16_t mapLayers();
+void setMapLayers(uint16_t mask);
+
 float compassOffsetDeg();
 void setCompassOffsetDeg(float deg);
 

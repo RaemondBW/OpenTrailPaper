@@ -82,11 +82,20 @@ inline void ditherMaskMark(int x, int y) {
     s_ditherMask[(size_t)ny * (epd_width() / 2) + (nx >> 1)] = 1;
 }
 
-// hatch=false: 25% dot dither (water). hatch=true: diagonal hatch (parks) — a
+// Fill patterns. FILL_DOTS (water) and FILL_HATCH (parks) keep the old bool
+// call sites' meaning (false/true).
+enum FillPattern : int {
+    FILL_DOTS = 0,      // 75% dots — water
+    FILL_HATCH = 1,     // 2-px diagonal stripes — parks
+    FILL_CHECKER = 2,   // 1-px 50% checker — bike-route band (reads as flat grey,
+                        // which is what sets it apart from the textured fills)
+};
+
+// FILL_DOTS: dot dither (water). FILL_HATCH: diagonal hatch (parks) — a
 // visually distinct texture so green areas don't read the same as water.
 // mask=true also records the polygon interior in s_ditherMask (EVERY covered
 // pixel, not just the dithered-on ones) for the ghost settle-clean.
-void fillDitheredPolygon(const int16_t* pts, int n, uint8_t* fb, bool hatch = false,
+void fillDitheredPolygon(const int16_t* pts, int n, uint8_t* fb, int pattern = FILL_DOTS,
                          bool mask = false) {
     if (n < 3) return;
     int minY = 100000, maxY = -100000;
@@ -129,9 +138,14 @@ void fillDitheredPolygon(const int16_t* pts, int n, uint8_t* fb, bool hatch = fa
             //           stay distinct from water at a glance.
             for (int x = xL; x <= xR; ++x) {
                 if (mask) ditherMaskMark(x, y);
-                bool on = hatch ? (((x - y) & 3) < 2)
-                                : !((x & 1) && (y & 1));
+                bool on = pattern == FILL_HATCH     ? (((x - y) & 3) < 2)
+                          : pattern == FILL_CHECKER ? (((x ^ y) & 1) == 0)
+                                                    : !((x & 1) && (y & 1));
+                // The bike band writes BOTH colours: over a park's hatch or a
+                // water fill it then still reads as its own clean grey ribbon
+                // instead of melting into the texture beneath.
                 if (on) epd_draw_pixel(x, y, 0x00, fb);
+                else if (pattern == FILL_CHECKER) epd_draw_pixel(x, y, 0xFF, fb);
             }
         }
     }
@@ -225,6 +239,219 @@ void drawPolyline(const int16_t* pts, int count, const Style& st, uint8_t* fb) {
     }
 }
 
+// --- cycling layer ------------------------------------------------------------
+
+// Bike-route band: a flat 50% grey ribbon centred under the way, drawn beneath
+// all the roads so the road keeps its own weight on top and the band shows as a
+// halo either side of it. Grey-on-white is the one road treatment nothing else
+// on the map uses (navigation route = solid/dashed black 14 px, water = dots,
+// parks = stripes), and the pattern is 1-bit so it survives the DU refresh.
+// Width carries the network level. Each segment is a filled quad and each
+// joint an octagon; the checker is in absolute screen space so overlaps merge.
+void drawBikeBand(const int16_t* pts, int count, int width, uint8_t* fb) {
+    const float half = width / 2.0f;
+    for (int i = 0; i + 1 < count; ++i) {
+        float x0 = pts[i * 2], y0 = pts[i * 2 + 1];
+        float x1 = pts[i * 2 + 2], y1 = pts[i * 2 + 3];
+        float dx = x1 - x0, dy = y1 - y0;
+        float len = sqrtf(dx * dx + dy * dy);
+        if (len < 0.5f) continue;
+        float px = -dy / len * half, py = dx / len * half;
+        int16_t q[8] = {(int16_t)lroundf(x0 + px), (int16_t)lroundf(y0 + py),
+                        (int16_t)lroundf(x1 + px), (int16_t)lroundf(y1 + py),
+                        (int16_t)lroundf(x1 - px), (int16_t)lroundf(y1 - py),
+                        (int16_t)lroundf(x0 - px), (int16_t)lroundf(y0 - py)};
+        fillDitheredPolygon(q, 4, fb, FILL_CHECKER, true);
+    }
+    // Round the joints so a bend has no notch on its outside. Only up close:
+    // zoomed out the band is <= 8 px, a notch is a pixel or two, and the joints
+    // were a third of the band's draw time at 16 m/px.
+    if (width <= 8) return;
+    for (int i = 1; i + 1 < count; ++i) {
+        int16_t o[16];
+        for (int k = 0; k < 8; ++k) {
+            float a = k * (float)M_PI / 4.0f;
+            o[k * 2] = (int16_t)lroundf(pts[i * 2] + cosf(a) * half);
+            o[k * 2 + 1] = (int16_t)lroundf(pts[i * 2 + 1] + sinf(a) * half);
+        }
+        fillDitheredPolygon(o, 8, fb, FILL_CHECKER, true);
+    }
+}
+
+int bikeBandWidth(int level, float mpp) {
+    // local / regional / national. Narrower zoomed out, where the roads under
+    // it thin to 2 px and a fat band would merge neighbouring streets.
+    static const int nearW[4] = {0, 12, 14, 16};
+    static const int farW[4] = {0, 6, 8, 10};
+    return mpp >= 8.0f ? farW[level & 3] : nearW[level & 3];
+}
+
+// Painted lane / track along a road: a dotted line just outside each edge of
+// the road, like the lane line on the street. Cheap (two dithered Bresenhams)
+// and it never fills between, so the road's own width still reads.
+void drawBikeLaneEdges(const int16_t* pts, int count, int roadWidth, uint8_t* fb) {
+    const float off = roadWidth / 2.0f + 2.5f;
+    for (int i = 0; i + 1 < count; ++i) {
+        float x0 = pts[i * 2], y0 = pts[i * 2 + 1];
+        float x1 = pts[i * 2 + 2], y1 = pts[i * 2 + 3];
+        float dx = x1 - x0, dy = y1 - y0;
+        float len = sqrtf(dx * dx + dy * dy);
+        if (len < 0.5f) continue;
+        float px = -dy / len * off, py = dx / len * off;
+        ditherLine(lroundf(x0 + px), lroundf(y0 + py), lroundf(x1 + px),
+                   lroundf(y1 + py), fb);
+        ditherLine(lroundf(x0 - px), lroundf(y0 - py), lroundf(x1 - px),
+                   lroundf(y1 - py), fb);
+    }
+}
+
+// POI icons: 24 px. Circles for the comfort stops (water, toilets), squares for
+// bike service (repair stand, shop), so the two families read apart before the
+// glyph does. Solid black with a white glyph = free to use; a hollow (white,
+// black ring) icon = fee / customers only / seasonal. A 2 px white halo keeps
+// the icon off whatever road it sits on.
+constexpr int POI_R = 12;
+
+// Toilets: the restroom pictogram (man | woman, like the 🚻 sign), 17x13.
+// Riders outside Europe don't read "WC"; the figures read everywhere.
+const char* const kToiletGlyph[13] = {
+    "..###...#...###..",
+    "..###...#...###..",
+    "........#........",
+    ".#####..#...###..",
+    ".#####..#..#####.",
+    ".#####..#..#####.",
+    ".#####..#.#######",
+    ".#####..#.#######",
+    ".#####..#.#######",
+    ".##.##..#..##.##.",
+    ".##.##..#..##.##.",
+    ".##.##..#..##.##.",
+    ".##.##..#..##.##.",
+};
+
+void drawGlyphRows(const char* const* rows, int nRows, int cx, int cy,
+                   uint8_t ink, uint8_t* fb) {
+    const int w = (int)strlen(rows[0]);
+    const int x0 = cx - w / 2, y0 = cy - nRows / 2;
+    for (int r = 0; r < nRows; ++r)
+        for (int c = 0; c < w; ++c)
+            if (rows[r][c] == '#') epd_draw_pixel(x0 + c, y0 + r, ink, fb);
+}
+
+void drawPoiIcon(const MapPoi& p, uint8_t* fb) {
+    const int cx = p.x, cy = p.y;
+    const bool hollow = (p.flags & MAP_PF_RESTRICTED) != 0;
+    const uint8_t bg = hollow ? 0xFF : 0x00, ink = hollow ? 0x00 : 0xFF;
+    const bool square = p.type == MAP_POI_REPAIR || p.type == MAP_POI_BIKE_SHOP;
+    const int r = POI_R;
+    if (square) {
+        epd_fill_rect({cx - r - 2, cy - r - 2, 2 * r + 5, 2 * r + 5}, 0xFF, fb);
+        epd_fill_rect({cx - r, cy - r, 2 * r + 1, 2 * r + 1}, bg, fb);
+        if (hollow) {
+            epd_draw_rect({cx - r, cy - r, 2 * r + 1, 2 * r + 1}, 0x00, fb);
+            epd_draw_rect({cx - r + 1, cy - r + 1, 2 * r - 1, 2 * r - 1}, 0x00, fb);
+        }
+    } else {
+        epd_fill_circle(cx, cy, r + 2, 0xFF, fb);
+        epd_fill_circle(cx, cy, r, bg, fb);
+        if (hollow) {
+            epd_draw_circle(cx, cy, r, 0x00, fb);
+            epd_draw_circle(cx, cy, r - 1, 0x00, fb);
+        }
+    }
+    switch (p.type) {
+        case MAP_POI_WATER:   // drop: a round belly under a pointed top
+            epd_fill_circle(cx, cy + 3, 5, ink, fb);
+            epd_fill_triangle(cx, cy - 8, cx - 5, cy + 2, cx + 5, cy + 2, ink, fb);
+            break;
+        case MAP_POI_TOILETS:
+            drawGlyphRows(kToiletGlyph, 13, cx, cy, ink, fb);
+            break;
+        case MAP_POI_REPAIR: {   // wrench, handle bottom-left to head top-right
+            thickSegment(cx - 6, cy + 6, cx + 2, cy - 2, 3, ink, fb);
+            epd_fill_circle(cx + 3, cy - 3, 5, ink, fb);
+            epd_fill_circle(cx + 6, cy - 6, 3, bg, fb);   // open jaw
+            // A pump on the stand: a small plus in the free corner.
+            if (p.flags & MAP_PF_PUMP) {
+                epd_fill_rect({cx - 8, cy - 7, 7, 2}, ink, fb);
+                epd_fill_rect({cx - 5, cy - 10, 2, 7}, ink, fb);
+            }
+            break;
+        }
+        case MAP_POI_BIKE_SHOP: {   // bicycle: two wheels and a frame
+            epd_draw_circle(cx - 5, cy + 3, 4, ink, fb);
+            epd_draw_circle(cx + 5, cy + 3, 4, ink, fb);
+            epd_draw_line(cx - 5, cy + 3, cx - 1, cy - 3, ink, fb);
+            epd_draw_line(cx - 1, cy - 3, cx + 4, cy - 3, ink, fb);
+            epd_draw_line(cx + 4, cy - 3, cx + 5, cy + 3, ink, fb);
+            epd_draw_line(cx - 1, cy - 3, cx + 1, cy + 3, ink, fb);
+            epd_draw_line(cx - 5, cy + 3, cx + 1, cy + 3, ink, fb);
+            epd_draw_line(cx + 4, cy - 3, cx + 3, cy - 6, ink, fb);   // bars
+            epd_draw_line(cx - 2, cy - 5, cx + 0, cy - 5, ink, fb);   // saddle
+            break;
+        }
+    }
+}
+
+// Icons in priority order with greedy collision culling: a repair stand beats a
+// water point beats a toilet beats a shop for the same patch of screen, and an
+// icon that would land under the rider marker is skipped (it is drawn over it).
+uint16_t poiLayerBit(uint8_t type) {
+    switch (type) {
+        case MAP_POI_WATER: return MAP_LAYER_WATER;
+        case MAP_POI_TOILETS: return MAP_LAYER_TOILETS;
+        case MAP_POI_REPAIR: return MAP_LAYER_REPAIR;
+        case MAP_POI_BIKE_SHOP: return MAP_LAYER_BIKE_SHOPS;
+    }
+    return 0;
+}
+
+void drawPois(const MapScreenData& map, uint8_t* fb) {
+    if (!map.pois || map.poiCount <= 0) return;
+    static const uint8_t order[] = {MAP_POI_REPAIR, MAP_POI_WATER,
+                                    MAP_POI_TOILETS, MAP_POI_BIKE_SHOP};
+    constexpr int kMaxDrawn = 96;
+    int16_t drawnX[kMaxDrawn], drawnY[kMaxDrawn];
+    int drawn = 0;
+    // Zoomed out the icons are thinned harder: at 8 m/px a dense city has an
+    // icon every block, and the map under them is the thing being read.
+    const int gap = map.metersPerPixel >= 8.0f ? 4 * POI_R : 2 * POI_R + 4;
+    // Keep clear of the chrome drawn over the map afterwards — compass, zoom
+    // buttons, scale bar, nav banner — which would cut an icon in half.
+    const int pad = POI_R + 3;
+    const int compY = mapCompassCy(map.navBannerVisible);
+    auto underChrome = [&](int x, int y) {
+        const int cdx = x - kMapCompass.cx, cdy = y - compY, cr = 28 + pad;
+        if (cdx * cdx + cdy * cdy < cr * cr) return true;
+        if (x > kMapZoom.zoomX - pad && y > kMapZoom.layersY - pad &&
+            y < kMapZoom.zoomOutY + kMapZoom.size + pad) return true;
+        if (x < 190 + pad && y > MAP_BOTTOM - 48 - pad) return true;   // scale bar
+        if (map.navBannerVisible && y < 64 + 138 + pad) return true;
+        return false;
+    };
+    for (uint8_t type : order) {
+        for (int i = 0; i < map.poiCount && drawn < kMaxDrawn; ++i) {
+            const MapPoi& p = map.pois[i];
+            if (p.type != type) continue;
+            if (!(map.layers & poiLayerBit(p.type))) continue;   // rider hid it
+            if (p.y < MAP_TOP + POI_R || p.y > MAP_BOTTOM - POI_R ||
+                p.x < POI_R || p.x > 540 - POI_R) continue;
+            const int rdx = p.x - map.riderX, rdy = p.y - map.riderY;
+            if (rdx * rdx + rdy * rdy < 36 * 36) continue;
+            if (underChrome(p.x, p.y)) continue;
+            bool hit = false;
+            for (int k = 0; k < drawn && !hit; ++k)
+                hit = abs(drawnX[k] - p.x) < gap && abs(drawnY[k] - p.y) < gap;
+            if (hit) continue;
+            drawPoiIcon(p, fb);
+            drawnX[drawn] = p.x;
+            drawnY[drawn] = p.y;
+            drawn++;
+        }
+    }
+}
+
 void drawRider(int x, int y, float headingDeg, uint8_t* fb) {
     float rad = (headingDeg - 90.0f) * (float)M_PI / 180.0f;
     float c = cosf(rad), s = sinf(rad);
@@ -294,7 +521,7 @@ void drawCompass(int cx, int cy, float northDeg, bool trackUp, uint8_t* fb) {
 
 }  // namespace
 
-const MapTouchZones kMapZoom = {540 - 78, 560, 640, 76};
+const MapTouchZones kMapZoom = {540 - 78, 560, 640, 76, 560 - 76 - 8};
 const MapCompassZone kMapCompass = {540 - 46, 64 + 48, 34};
 // Bottom edge of the turn-by-turn banner (ui_dashboard's kNavBanner is
 // {0, STATUS_H, 540, 138}); the compass drops below this while navigating.
@@ -318,6 +545,99 @@ void ui_map_draw_zoom_button(bool zoomIn, bool pressed, uint8_t* fb) {
     if (zoomIn) epd_fill_rect({cx - 2, cy - 14, 5, 28}, mark, fb);
 }
 
+// MAP LAYERS button: same box as the zoom buttons, stacked above them, with a
+// "stack of sheets" glyph — two offset outlined squares, the front one filled.
+static void drawLayersButton(uint8_t* fb) {
+    EpdRect r = {kMapZoom.zoomX, kMapZoom.layersY, kMapZoom.size, kMapZoom.size};
+    epd_fill_rect(r, 0xFF, fb);
+    epd_draw_rect(r, 0x00, fb);
+    epd_draw_rect({r.x + 1, r.y + 1, r.width - 2, r.height - 2}, 0x00, fb);
+    const int cx = r.x + r.width / 2, cy = r.y + r.height / 2;
+    // Back sheet (outline), then the front sheet offset down-left (solid).
+    for (int b = 0; b < 3; ++b)
+        epd_draw_rect({cx - 10 + b, cy - 20 + b, 30 - 2 * b, 26 - 2 * b}, 0x00, fb);
+    epd_fill_rect({cx - 20, cy - 6, 30, 26}, 0xFF, fb);
+    epd_fill_rect({cx - 18, cy - 4, 26, 22}, 0x00, fb);
+}
+
+// ---- MAP LAYERS screen -------------------------------------------------------
+
+namespace {
+struct LayerRow { uint16_t bit; const char* label; };
+const LayerRow kLayerRows[kMapLayerCount] = {
+    {MAP_LAYER_BIKE_ROUTES, "BIKE ROUTES"},
+    {MAP_LAYER_CYCLEWAYS, "CYCLEWAYS & LANES"},
+    {MAP_LAYER_WATER, "DRINKING WATER"},
+    {MAP_LAYER_TOILETS, "TOILETS"},
+    {MAP_LAYER_REPAIR, "REPAIR STATIONS"},
+    {MAP_LAYER_BIKE_SHOPS, "BIKE SHOPS"},
+};
+constexpr int kSampleCx = 24 + 16 + 30;   // CONTENT_X + CELL_PAD + half a sample
+constexpr int kLabelX = 24 + 16 + 76;     // text starts right of the sample
+
+// A sample of what the row's layer draws, in the map's own styles.
+void drawLayerSample(int row, int cx, int cy, uint8_t* fb) {
+    switch (row) {
+        case 0: {   // route band under a residential street
+            int16_t pts[4] = {(int16_t)(cx - 28), (int16_t)cy, (int16_t)(cx + 28), (int16_t)cy};
+            drawBikeBand(pts, 2, 14, fb);
+            thickSegment(cx - 28, cy, cx + 28, cy, 2, ROAD_INK, fb);
+            break;
+        }
+        case 1: {   // dashed cycleway above a road with lane dots
+            drawSegmentStyled(cx - 28, cy - 10, cx + 28, cy - 10, {2, ROAD_INK, 7, 4, false}, fb);
+            int16_t road[4] = {(int16_t)(cx - 28), (int16_t)(cy + 10), (int16_t)(cx + 28), (int16_t)(cy + 10)};
+            thickSegment(cx - 28, cy + 10, cx + 28, cy + 10, 2, ROAD_INK, fb);
+            drawBikeLaneEdges(road, 2, 2, fb);
+            break;
+        }
+        default: {
+            static const uint8_t types[] = {MAP_POI_WATER, MAP_POI_TOILETS,
+                                            MAP_POI_REPAIR, MAP_POI_BIKE_SHOP};
+            MapPoi p = {(int16_t)cx, (int16_t)cy, types[row - 2], 0};
+            drawPoiIcon(p, fb);
+            break;
+        }
+    }
+}
+}  // namespace
+
+void ui_render_map_layers(uint16_t mask, uint8_t* fb) {
+    const int W = epd_rotated_display_width();
+    for (int i = 0; i < kMapLayerCount; ++i) {
+        const int y = kMapLayersRowTop + i * kMapLayersRowH;
+        const int midY = y + kMapLayersRowH / 2;
+        drawLayerSample(i, kSampleCx, midY, fb);
+        ui::text(&Arial_B, kLabelX, midY + 8, kLayerRows[i].label, fb,
+                 EPD_DRAW_ALIGN_LEFT, 0x00);
+        ui_settings_toggle(kSettingsToggleX, midY - kSettingsToggleH / 2,
+                           kSettingsToggleW, kSettingsToggleH,
+                           (mask & kLayerRows[i].bit) != 0, fb);
+        epd_fill_rect({0, y + kMapLayersRowH - 3, W, 3}, 0x00, fb);
+    }
+    // What the switches do and do not do — so a rider who turns everything on
+    // and sees nothing knows the tiles are the missing piece, not the setting.
+    const int fy = kMapLayersRowTop + kMapLayerCount * kMapLayersRowH + 44;
+    ui::text(&Arial_L, W / 2, fy, "Shown on the map when the downloaded", fb,
+             EPD_DRAW_ALIGN_CENTER, 0x00);
+    ui::text(&Arial_L, W / 2, fy + 30, "tiles include them. Home to go back.", fb,
+             EPD_DRAW_ALIGN_CENTER, 0x00);
+}
+
+int ui_map_layers_hit(int x, int y) {
+    if (y < kMapLayersRowTop) return -1;
+    const int row = (y - kMapLayersRowTop) / kMapLayersRowH;
+    if (row < 0 || row >= kMapLayerCount) return -1;
+    // The whole row toggles: the switch is the visual, the row the target —
+    // a gloved thumb on the label should not do nothing.
+    (void)x;
+    return row;
+}
+
+uint16_t ui_map_layer_bit(int row) {
+    return (row >= 0 && row < kMapLayerCount) ? kLayerRows[row].bit : 0;
+}
+
 // Native-fb-aligned mask of the current frame's water/park fills (1 = covered).
 // Null until the first map render. Used by the ghost settle-clean.
 const uint8_t* ui_map_dither_mask() { return s_ditherMask; }
@@ -332,20 +652,55 @@ void ui_render_map_features(const MapScreenData& map, const RideState& s,
     // those (where DU ghosting settles), not the whole viewport.
     ditherMaskReset();
     for (int i = 0; i < map.parkCount; ++i) {
-        fillDitheredPolygon(map.parks[i].pts, map.parks[i].pointCount, fb, true, true);
+        fillDitheredPolygon(map.parks[i].pts, map.parks[i].pointCount, fb, FILL_HATCH, true);
     }
     for (int i = 0; i < map.waterCount; ++i) {
-        fillDitheredPolygon(map.water[i].pts, map.water[i].pointCount, fb, false, true);
+        fillDitheredPolygon(map.water[i].pts, map.water[i].pointCount, fb, FILL_DOTS, true);
+    }
+    // Bike-route bands under every road, lowest network first so a national
+    // route's wider band is not covered by a local one's.
+    //
+    // Infrastructure first: where the way's own lane / cycleway styling is on
+    // screen, it wins and the band is left off. In a city the numbered local
+    // network (SF: 27 lcn routes in the centre alone) runs along nearly every
+    // laned street, and the band — the heaviest bike style — buried the lane
+    // dots and cycleway dashes, so everything read as "bike route". The band
+    // now means "signed route with no dedicated space" (shared streets), plus
+    // laned routes zoomed out past where the lane dots draw, and every route
+    // when the Cycleways & lanes layer is off.
+    const bool infraOn = (map.layers & MAP_LAYER_CYCLEWAYS) != 0;
+    const bool laneDotsOn = infraOn && map.metersPerPixel <= 4.0f;
+    for (int lvl = 1; lvl <= 3 && (map.layers & MAP_LAYER_BIKE_ROUTES); ++lvl) {
+        const int bw = bikeBandWidth(lvl, map.metersPerPixel);
+        for (int i = 0; i < map.featureCount; ++i) {
+            const uint8_t fl = map.features[i].flags;
+            if ((fl & MAP_WF_ROUTE_MASK) != lvl) continue;
+            if ((infraOn && (fl & MAP_WF_CYCLEWAY)) ||
+                (laneDotsOn && (fl & MAP_WF_BIKE_LANE)))
+                continue;
+            drawBikeBand(map.features[i].pts, map.features[i].pointCount, bw, fb);
+        }
     }
     // Back-to-front: higher-grade roads paint on top at intersections.
     const MapFeatureClass order[] = {MAP_PATH, MAP_ROAD_MINOR, MAP_ROAD_TERTIARY,
                                      MAP_ROAD_SECONDARY, MAP_ROAD_PRIMARY,
                                      MAP_ROAD_MAJOR};
+    // A dedicated cycleway is a solid-dash black line, a step up from the faint
+    // dithered footpath it would otherwise share a class with.
+    const Style cyclewayStyle = {2, ROAD_INK, 7, 4, false};
     for (MapFeatureClass cls : order) {
+        const Style st = styleFor(cls, map.metersPerPixel);
         for (int i = 0; i < map.featureCount; ++i) {
-            if (map.features[i].cls != cls) continue;
-            drawPolyline(map.features[i].pts, map.features[i].pointCount,
-                         styleFor(cls, map.metersPerPixel), fb);
+            const MapPolyline& f = map.features[i];
+            if (f.cls != cls) continue;
+            // With the layer off, cycleways and laned roads draw in their own
+            // class's style, exactly as on a map without the flags.
+            const bool bikeInfra = (map.layers & MAP_LAYER_CYCLEWAYS) != 0;
+            const bool cycleway = bikeInfra && (f.flags & MAP_WF_CYCLEWAY) != 0 &&
+                                  (cls == MAP_PATH || cls == MAP_ROAD_MINOR);
+            drawPolyline(f.pts, f.pointCount, cycleway ? cyclewayStyle : st, fb);
+            if (bikeInfra && (f.flags & MAP_WF_BIKE_LANE) && map.metersPerPixel <= 4.0f)
+                drawBikeLaneEdges(f.pts, f.pointCount, st.width, fb);
         }
     }
 
@@ -361,6 +716,10 @@ void ui_render_map_features(const MapScreenData& map, const RideState& s,
                          {14, 0x00, 26, 16}, fb);
         }
     }
+
+    // POIs over the route: a water stop next to the line being ridden is
+    // exactly the one that must not disappear under it.
+    drawPois(map, fb);
 
     drawRider(map.riderX, map.riderY, map.headingDeg, fb);
 }
@@ -402,6 +761,7 @@ void ui_render_map(const MapScreenData& map, const RideState& s, uint8_t* fb) {
 
     // Zoom buttons (design 1f, right edge)
     ui_map_draw_zoom_button(true, false, fb);
+    drawLayersButton(fb);
     ui_map_draw_zoom_button(false, false, fb);
 
     // Status bar drawn after the map (epdiy has no clipping)
@@ -571,7 +931,7 @@ void ui_render_route_preview(uint8_t* fb) {
     // areas read — matches the map screen. Spill above/below the viewport is
     // masked by the status bar + accept sheet drawn afterwards.
     for (int i = 0; i < ctx.parkCount; ++i) {
-        fillDitheredPolygon(ctx.parks[i].pts, ctx.parks[i].pointCount, fb, true);
+        fillDitheredPolygon(ctx.parks[i].pts, ctx.parks[i].pointCount, fb, FILL_HATCH);
     }
     for (int i = 0; i < ctx.waterCount; ++i) {
         fillDitheredPolygon(ctx.water[i].pts, ctx.water[i].pointCount, fb);

@@ -60,7 +60,8 @@ size_t fbSize = 0;
 
 enum Screen { SCREEN_DASH, SCREEN_MAP, SCREEN_SUMMARY, SCREEN_MENU,
               SCREEN_SENSORS, SCREEN_ROUTES, SCREEN_HISTORY,
-              SCREEN_SETTINGS, SCREEN_GPSDEBUG, SCREEN_DIRECTIONS };
+              SCREEN_SETTINGS, SCREEN_GPSDEBUG, SCREEN_DIRECTIONS,
+              SCREEN_MAPLAYERS };
 Screen screen = SCREEN_DASH;
 // Which cycle slot the rider is on (indexes dash_config::pages, which now
 // includes the MAP as a movable page). Deliberately NOT reset by navigation:
@@ -553,7 +554,7 @@ bool screenIsFast(Screen s, bool overlay) {
 bool screenListFast(Screen s) {
     return s == SCREEN_MENU || s == SCREEN_SENSORS || s == SCREEN_ROUTES ||
            s == SCREEN_HISTORY || s == SCREEN_SETTINGS ||
-           s == SCREEN_DIRECTIONS;
+           s == SCREEN_DIRECTIONS || s == SCREEN_MAPLAYERS;
 }
 
 bool inRect(const EpdRect& r, int x, int y) {
@@ -576,6 +577,7 @@ void goBack() {
     }
     switch (screen) {
         case SCREEN_GPSDEBUG: screen = SCREEN_SETTINGS; break;
+        case SCREEN_MAPLAYERS: screen = SCREEN_MAP; break;
         case SCREEN_DIRECTIONS: screen = directionsFrom; break;
         case SCREEN_SETTINGS:
         case SCREEN_ROUTES:
@@ -825,6 +827,11 @@ void handleTap(int x, int y) {
             }
             if (screen == SCREEN_MAP && x >= kMapZoom.zoomX &&
                 x < kMapZoom.zoomX + kMapZoom.size) {
+                // MAP LAYERS: which cycling layers the map draws.
+                if (y >= kMapZoom.layersY && y < kMapZoom.layersY + kMapZoom.size) {
+                    screen = SCREEN_MAPLAYERS;
+                    break;
+                }
                 if (y >= kMapZoom.zoomInY && y < kMapZoom.zoomInY + kMapZoom.size) {
                     if (mapMpp > 1.0f) mapMpp /= 2.0f;
                     ackZoomTap(true);
@@ -1015,6 +1022,17 @@ void handleTap(int x, int y) {
             // is the only way out.
             break;
         }
+        case SCREEN_MAPLAYERS: {
+            // A row flips its layer; the map picks the mask up on its next
+            // frame. Anything else does nothing — Home goes back to the map,
+            // as on Settings, so a near-miss never navigates away mid-edit.
+            const int row = ui_map_layers_hit(x, y);
+            if (row >= 0) {
+                settings::setMapLayers(settings::mapLayers() ^ ui_map_layer_bit(row));
+                ble_server::pushMapLayersToPhone();   // keep the app's switches in step
+            }
+            break;
+        }
         case SCREEN_GPSDEBUG:
             // Experimental: a tap in the top band runs the smooth-drive
             // pipeline self-test; anywhere else navigates back to Settings.
@@ -1075,6 +1093,7 @@ void buildMapScreenData(const RideState& s, MapScreenData& map,
     // band, so it displaces the compass the same way.
     map.navBannerVisible = routes::navActive() || s.ridePaused;
     map.metersPerPixel = mapMpp;
+    map.layers = settings::mapLayers();
 
     // Position priority: the device's own current GPS fix; else the connected
     // phone's recent location (fallback when our receiver is cold); else the
@@ -2440,12 +2459,13 @@ static void runConsoleLine(char* line) {
         if (on) ble_sensors::noteActivity();
         Serial.printf("[cmd] sensor scan %s — 'sensors' lists what it hears\n", on ? "ON" : "off");
     } else if (!strcasecmp(cmd, "screen")) {
-        if (!arg) { Serial.println("[cmd] screen <map|dash|menu|settings|gps>"); return; }
+        if (!arg) { Serial.println("[cmd] screen <map|dash|menu|settings|gps|layers>"); return; }
         if      (!strcasecmp(arg, "map"))      screen = SCREEN_MAP;
         else if (!strcasecmp(arg, "dash"))     screen = SCREEN_DASH;
         else if (!strcasecmp(arg, "menu"))     screen = SCREEN_MENU;
         else if (!strcasecmp(arg, "settings")) screen = SCREEN_SETTINGS;
         else if (!strcasecmp(arg, "gps"))      screen = SCREEN_GPSDEBUG;
+        else if (!strcasecmp(arg, "layers"))   screen = SCREEN_MAPLAYERS;
         else { Serial.printf("[cmd] unknown screen '%s'\n", arg); return; }
         noteActivity();
     } else if (!strcasecmp(cmd, "zoom")) {
@@ -3022,6 +3042,10 @@ void task(void*) {
                     ui::statusBar(s, fb, "SETTINGS");
                     break;
                 }
+                case SCREEN_MAPLAYERS:
+                    ui_render_map_layers(settings::mapLayers(), fb);
+                    ui::statusBar(s, fb, "MAP LAYERS");
+                    break;
                 case SCREEN_GPSDEBUG: {
                     GpsDebug d;
                     gps_service::getDebug(d);

@@ -15,6 +15,10 @@ settings:
     # for Strava / RideWithGPS sign-in. A URL, not a secret. Empty = the
     # Accounts card explains uploads are unavailable.
     OTP_SYNC_SERVICE_URL: "https://sync.opentrailpaper.com"
+    # Pre-built map tiles (docs/prebuilt-tiles.md): downloads fetch ready-made
+    # .ebm/.poi from here first and build on the phone from Overpass only for
+    # hexes it does not have. Trailing slash; empty = always build on the phone.
+    OTP_TILE_BASE_URL: "https://tiles.opentrailpaper.com/v1/"
     # Firebase App Check identifiers for the iOS app (Firebase project
     # `opentrailpaper`). These are identifiers, not secrets: the API key is
     # restricted in Google Cloud to the App Check and Installations APIs and to

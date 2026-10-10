@@ -109,18 +109,20 @@ void tileDirFor(const char* id, char* out, size_t len) {
 // On-disk path for a cell: /maps/tiles/<first 6 of id>/<rest>.ebm. Mirrors
 // saveTile(), the website generator and the phone app — all four have to agree
 // on this or the device looks for files nobody wrote.
-void tilePathForId(const char* bareId, char* out, size_t len) {
+// `ext` is ".ebm" for the map tile or ".poi" for its cycling-POI companion
+// file, which lives next to it under the same name (docs/mapgen.js buildPoi).
+void tilePathForId(const char* bareId, char* out, size_t len, const char* ext = ".ebm") {
     char dir[80];
     tileDirFor(bareId, dir, sizeof(dir));
     const char* leaf = (strlen(dir) > strlen(TILE_DIR)) ? bareId + TILE_PREFIX_LEN
                                                         : bareId;
-    snprintf(out, len, "%s/%s.ebm", dir, leaf);
+    snprintf(out, len, "%s/%s%s", dir, leaf, ext);
 }
 
-void tilePathForCell(uint64_t cell, char* out, size_t len) {
+void tilePathForCell(uint64_t cell, char* out, size_t len, const char* ext = ".ebm") {
     char id[24];
     h3_cell_id(cell, id, sizeof(id));
-    tilePathForId(id, out, len);
+    tilePathForId(id, out, len, ext);
 }
 
 // Does a tile exist for this cell? Answered from a small direct-mapped cache,
@@ -203,13 +205,31 @@ size_t cacheBudget() {
               (unsigned)(budget / 1024), (unsigned)(freeNow / 1024));
     return budget;
 }
-struct CachedTile { uint64_t cell; uint8_t* buf; size_t len; uint32_t stamp; };
+// A cached tile is the map blob plus, when the card has one, its .poi file.
+// They share one slot so the POIs live and die with the map they belong to: a
+// frame that has the map in RAM has its POIs too, at no extra SD access.
+struct CachedTile {
+    uint64_t cell;
+    uint8_t* buf;
+    size_t len;
+    uint32_t stamp;
+    uint8_t* poi;     // null: no .poi file for this tile (= no POIs)
+    size_t poiLen;
+};
 CachedTile g_cache[CACHE_N] = {};
 size_t g_cacheBytes = 0;
 uint32_t g_clock = 0;
 
 template <typename T>
 T rd(const uint8_t* p) { T v; memcpy(&v, p, sizeof(T)); return v; }
+
+// Free one cache slot (map blob and POI file) and give its bytes back.
+void freeCached(CachedTile& t) {
+    if (t.buf) heap_caps_free(t.buf);
+    if (t.poi) heap_caps_free(t.poi);
+    g_cacheBytes -= t.len + t.poiLen;
+    t = {};
+}
 
 // Read the EBM2 header (36 bytes) and fill s/w/n/e. Returns false if not EBM2.
 bool headerBounds(const uint8_t* h, double& s, double& w, double& n, double& e) {
@@ -312,22 +332,26 @@ bool loadCovering(double lat, double lon) {
 // Drop a cached blob for one cell (its file on the card just changed).
 void invalidateCached(uint64_t cell) {
     for (int i = 0; i < CACHE_N; ++i) {
-        if (g_cache[i].buf && g_cache[i].cell == cell) {
-            heap_caps_free(g_cache[i].buf);
-            g_cacheBytes -= g_cache[i].len;
-            g_cache[i] = {};
-        }
+        if (g_cache[i].buf && g_cache[i].cell == cell) freeCached(g_cache[i]);
     }
 }
 
 // The blob for one H3 cell, read from the card into the LRU cache on demand.
 // Null when no tile covers that cell, when the read fails, or when the USB host
 // owns the card and the tile is not already cached.
-const uint8_t* ensureTileLoaded(uint64_t cell, size_t& outLen, bool mayRead = true) {
+// `poiOut`/`poiLenOut`, when given, receive the tile's .poi blob (null/0 when
+// the card has none).
+const uint8_t* ensureTileLoaded(uint64_t cell, size_t& outLen, bool mayRead = true,
+                                const uint8_t** poiOut = nullptr,
+                                size_t* poiLenOut = nullptr) {
+    if (poiOut) *poiOut = nullptr;
+    if (poiLenOut) *poiLenOut = 0;
     for (int i = 0; i < CACHE_N; ++i) {
         if (g_cache[i].buf && g_cache[i].cell == cell) {
             g_cache[i].stamp = ++g_clock;
             outLen = g_cache[i].len;
+            if (poiOut) *poiOut = g_cache[i].poi;
+            if (poiLenOut) *poiLenOut = g_cache[i].poiLen;
             return g_cache[i].buf;
         }
     }
@@ -362,9 +386,7 @@ const uint8_t* ensureTileLoaded(uint64_t cell, size_t& outLen, bool mayRead = tr
             if (g_cache[i].buf && (!lru || g_cache[i].stamp < lru->stamp))
                 lru = &g_cache[i];
         if (!lru) return false;
-        heap_caps_free(lru->buf);
-        g_cacheBytes -= lru->len;
-        *lru = {};
+        freeCached(*lru);
         return true;
     };
     while ((!freeSlot() || g_cacheBytes + len > cacheBudget()) && evictLru()) {}
@@ -387,6 +409,36 @@ const uint8_t* ensureTileLoaded(uint64_t cell, size_t& outLen, bool mayRead = tr
     victim->stamp = ++g_clock;
     g_cacheBytes += len;
     outLen = len;
+
+    // The companion .poi file, read in the same visit so it shares the slot.
+    // A missing file is the normal case for tiles built before POIs (or by a
+    // builder that has none) and simply means no POIs. It is small — a few KB
+    // in a dense city — so it is counted against the byte budget but not
+    // evicted for: the next load makes room for both.
+    char ppath[96];
+    tilePathForCell(cell, ppath, sizeof(ppath), ".poi");
+    sdLock();
+    if (SD.exists(ppath)) {
+        File pf = SD.open(ppath, FILE_READ);
+        size_t plen = pf ? pf.size() : 0;
+        uint8_t* pbuf = (pf && plen >= map_tiles::POI_HEADER_LEN)
+                            ? (uint8_t*)heap_caps_malloc(plen, MALLOC_CAP_SPIRAM)
+                            : nullptr;
+        if (pbuf && (pf.read(pbuf, plen) != plen ||
+                     !map_tiles::poiFileValid(pbuf, plen))) {
+            heap_caps_free(pbuf);
+            pbuf = nullptr;
+        }
+        if (pf) pf.close();
+        if (pbuf) {
+            victim->poi = pbuf;
+            victim->poiLen = plen;
+            g_cacheBytes += plen;
+        }
+    }
+    sdUnlock();
+    if (poiOut) *poiOut = victim->poi;
+    if (poiLenOut) *poiLenOut = victim->poiLen;
     return buf;
 }
 
@@ -448,8 +500,7 @@ void releaseCache() {
     MapGuard g;
     for (int i = 0; i < CACHE_N; ++i) {
         if (!g_cache[i].buf) continue;
-        heap_caps_free(g_cache[i].buf);
-        g_cache[i] = {};
+        freeCached(g_cache[i]);
     }
     g_cacheBytes = 0;
 }
@@ -461,8 +512,7 @@ void rescanCard() {
     forgetAllPresence();
     for (int i = 0; i < CACHE_N; ++i) {
         if (!g_cache[i].buf) continue;
-        heap_caps_free(g_cache[i].buf);
-        g_cache[i] = {};
+        freeCached(g_cache[i]);
     }
     g_cacheBytes = 0;
     scanMaps();
@@ -512,8 +562,9 @@ void renderInto(double lat, double lon, float metersPerPixel, int centerX,
     int drawn = 0;
     for (int a = 0; a < lim; ++a) {
         if (a && keepGoing && !keepGoing()) { out.partial = true; break; }
-        size_t len;
-        const uint8_t* b = ensureTileLoaded(sel[a], len, !cachedOnly);
+        size_t len, poiLen;
+        const uint8_t* poi;
+        const uint8_t* b = ensureTileLoaded(sel[a], len, !cachedOnly, &poi, &poiLen);
         if (!b) {
             // On a cached-only pass this means "not in RAM yet", not "no tile":
             // the frame is incomplete and the caller owes us a full one.
@@ -523,6 +574,9 @@ void renderInto(double lat, double lon, float metersPerPixel, int centerX,
         drawn++;
         map_tiles::projectBlobInto(b, len, lat, lon, metersPerPixel,
                                    centerX, centerY, rotateDeg);
+        if (poi)
+            map_tiles::projectPoisInto(poi, poiLen, lat, lon, metersPerPixel,
+                                       centerX, centerY, rotateDeg);
         // Let the rest of the system run. Costs a tick per tile against reads
         // measured in tens of milliseconds, and it keeps a slow frame from
         // starving the idle task into a watchdog reset. Nothing to yield for on
@@ -634,8 +688,11 @@ bool saveAndActivate(const char* name, const uint8_t* data, size_t len) {
 
 bool saveTile(const char* id, const uint8_t* data, size_t len) {
     MapGuard g;
-    if (len < 36 || memcmp(data, "EBM2", 4) != 0) {
-        diag::log("tile save rejected: not EBM2 (%u bytes)", (unsigned)len);
+    // The same transfer carries a tile's .poi companion: told apart by its
+    // magic, so the phone needs no new BLE opcode to send POIs on their own.
+    const bool isPoi = map_tiles::poiFileValid(data, len);
+    if (!isPoi && (len < 36 || memcmp(data, "EBM2", 4) != 0)) {
+        diag::log("tile save rejected: not EBM2/EPOI (%u bytes)", (unsigned)len);
         return false;
     }
     // Strip the ".ebm" the caller may have included, then split the id: the
@@ -644,13 +701,14 @@ bool saveTile(const char* id, const uint8_t* data, size_t len) {
     char bare[48];
     snprintf(bare, sizeof(bare), "%.40s", id);
     if (char* dot = strstr(bare, ".ebm")) *dot = 0;
+    if (char* dot = strstr(bare, ".poi")) *dot = 0;
 
     char dir[80];
     tileDirFor(bare, dir, sizeof(dir));
     const char* leaf = (strlen(dir) > strlen(TILE_DIR)) ? bare + TILE_PREFIX_LEN
                                                         : bare;
     char path[96];
-    snprintf(path, sizeof(path), "%s/%s.ebm", dir, leaf);
+    snprintf(path, sizeof(path), "%s/%s%s", dir, leaf, isPoi ? ".poi" : ".ebm");
 
     sdLock();
     if (!SD.exists(MAP_DIR)) SD.mkdir(MAP_DIR);
@@ -666,7 +724,7 @@ bool saveTile(const char* id, const uint8_t* data, size_t len) {
             snprintf(ensured, sizeof(ensured), "%s", dir);
         }
     }
-    bool ok = writeAll("tile", path, data, len);
+    bool ok = writeAll(isPoi ? "poi" : "tile", path, data, len);
     sdUnlock();
     if (!ok) return false;
     diag::log("tile saved: %s (%u KB)", path, (unsigned)(len / 1024));
@@ -711,7 +769,8 @@ float elevationAt(double lat, double lon) {
 // already holds. Cheap by comparison with the old boot scan: this reads
 // directory NAMES only and never opens a tile, since the name is the id.
 // On demand, from the BLE server task, never on the boot path.
-int listTileIds(char out[][24], int maxOut) {
+// `ext` ".poi" lists the tiles that have a cycling-POI file instead.
+int listTileIds(char out[][24], int maxOut, const char* ext) {
     MapGuard g;
     int n = 0;
     int seen = 0;
@@ -724,9 +783,9 @@ int listTileIds(char out[][24], int maxOut) {
     // list requests simply stopping rather than failing.
     auto breathe = [&]() { if ((++seen & 0x1F) == 0) vTaskDelay(1); };
     auto take = [&](const char* prefix, const char* base) {
-        if (n >= maxOut || !strstr(base, ".ebm")) return;
+        if (n >= maxOut || !strstr(base, ext)) return;
         snprintf(out[n], 24, "%s%s", prefix, base);
-        if (char* dot = strstr(out[n], ".ebm")) *dot = 0;
+        if (char* dot = strstr(out[n], ext)) *dot = 0;
         n++;
     };
     auto walk = [&](const char* path, const char* prefix) {
