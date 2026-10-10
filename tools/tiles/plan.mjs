@@ -66,6 +66,8 @@ function cellCount(geometry) {
   return n;
 }
 
+const NOT_IN_PLANET = new Set(["antarctica"]);
+
 export async function plan({ index, maxMb = 1500, maxCells = 600000, jobs = 20, only = null, sizes = {} }) {
   const byId = new Map(index.features.map((f) => [f.properties.id, f]));
   const children = new Map();
@@ -91,7 +93,10 @@ export async function plan({ index, maxMb = 1500, maxCells = 600000, jobs = 20, 
       for (const k of kids.sort()) await visit(k);
     } else if (mb != null) chosen.push(id);
   };
-  const roots = only ? only : index.features.filter((f) => !f.properties.parent).map((f) => f.properties.id).sort();
+  // Planet runs leave out regions nobody rides: Antarctica is ~960 k cells
+  // of ice (hours of DEM work, ~1 M uploads) — ask for it with --only.
+  const roots = only ? only : index.features.filter((f) => !f.properties.parent && !NOT_IN_PLANET.has(f.properties.id))
+    .map((f) => f.properties.id).sort();
   for (const r of roots) await visit(r);
   chosen.sort();
 

@@ -58,9 +58,27 @@ function searchRects(box) {
   return out;
 }
 
-function cellsInRect(r) {
+function cellsInRect(r, depth = 0) {
   const ring = [[r.s, r.w], [r.s, r.e], [r.n, r.e], [r.n, r.w], [r.s, r.w]];
-  return polygonToCells(ring, 6, false);
+  try {
+    return polygonToCells(ring, 6, false);
+  } catch (e) {
+    // H3 gives up (E_FAILED) on some big polar rectangles — Antarctica's
+    // 90°-wide slices down to -89.9° crashed the whole job and every region
+    // batched with it. Split into quarters and retry; past 6 levels (a
+    // ~1.4° x 0.3° rectangle) give the slice up rather than the job.
+    if (depth >= 6) {
+      console.error(`regions: H3 polygonToCells failed on ${JSON.stringify(r)}; skipped`);
+      return [];
+    }
+    const ml = (r.s + r.n) / 2, mo = (r.w + r.e) / 2;
+    const out = [];
+    for (const q of [{ s: r.s, w: r.w, n: ml, e: mo }, { s: r.s, w: mo, n: ml, e: r.e },
+                     { s: ml, w: r.w, n: r.n, e: mo }, { s: ml, w: mo, n: r.n, e: r.e }]) {
+      for (const c of cellsInRect(q, depth + 1)) out.push(c);
+    }
+    return out;
+  }
 }
 
 // Every cell whose coastline fetch box (seaBox) touches region k's polygon,
