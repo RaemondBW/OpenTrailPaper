@@ -159,3 +159,78 @@ void workoutBuildView(const Workout& w, uint32_t elapsedSec, bool running,
     v.segRemainSec = s.endSec > v.elapsedSec ? s.endSec - v.elapsedSec : 0;
     if (v.segIdx + 1 < w.count) v.nextW = w.segs[v.segIdx + 1].startW;
 }
+
+// --- Picker summaries --------------------------------------------------------
+
+static bool printable(char c) {
+    return (unsigned char)c >= 0x20 && (unsigned char)c < 0x7F;
+}
+
+void workoutTitleFrom(const char* text, const char* file, char* out,
+                      size_t cap) {
+    if (!out || cap == 0) return;
+    out[0] = 0;
+    // "DESCRIPTION = <name>", header only. A description too long to be a
+    // title (TrainerRoad writes paragraphs there) falls back to the filename.
+    for (const char* p = text; p && *p;) {
+        const char* lineEnd = p;
+        while (*lineEnd && *lineEnd != '\n') ++lineEnd;
+        if (lineHas(p, lineEnd, "[COURSE DATA]")) break;
+        const char* q = p;
+        while (q < lineEnd && (*q == ' ' || *q == '\t')) ++q;
+        if (lineEnd - q > 11 && !strncasecmp(q, "DESCRIPTION", 11)) {
+            const char* a = q + 11;
+            while (a < lineEnd && *a != '=') ++a;
+            const char* b = lineEnd;
+            if (a < b) ++a;
+            while (a < b && (*a == ' ' || *a == '\t')) ++a;
+            while (b > a && (b[-1] == ' ' || b[-1] == '\t' || b[-1] == '\r'))
+                --b;
+            size_t n = 0;
+            if (b > a && (size_t)(b - a) < cap)
+                for (const char* c = a; c < b; ++c)
+                    if (printable(*c)) out[n++] = *c;
+            out[n] = 0;
+            break;
+        }
+        p = *lineEnd ? lineEnd + 1 : lineEnd;
+    }
+    if (out[0] || !file) return;
+    size_t n = 0;
+    const char* dot = strrchr(file, '.');
+    for (const char* c = file; *c && c != dot && n + 1 < cap; ++c)
+        if (printable(*c)) out[n++] = *c == '_' ? ' ' : *c;
+    out[n] = 0;
+}
+
+void workoutSummarize(const Workout& w, int ftpWatts, WorkoutFileInfo& out) {
+    out.ok = w.count > 0 && w.totalSec > 0;
+    out.totalSec = w.totalSec;
+    out.segCount = (uint8_t)(w.count > 255 ? 255 : w.count);
+    memset(out.spark, 0, sizeof(out.spark));
+    if (!out.ok) return;
+    // Each slice takes the HARDEST target that touches it, so 30 s bursts
+    // in a 30/30 set show up instead of falling between samples.
+    uint16_t v[WORKOUT_SPARK_N] = {};
+    uint16_t peak = 1;
+    for (int i = 0; i < WORKOUT_SPARK_N; ++i) {
+        uint32_t t0 = (uint32_t)((uint64_t)w.totalSec * i / WORKOUT_SPARK_N);
+        uint32_t t1 = (uint32_t)((uint64_t)w.totalSec * (i + 1) /
+                                 WORKOUT_SPARK_N);
+        for (int k = 0; k < w.count; ++k) {
+            const WorkoutSeg& s = w.segs[k];
+            if (s.endSec <= t0 || s.startSec >= t1) continue;
+            uint16_t hi = s.startW > s.endW ? s.startW : s.endW;
+            if (hi > v[i]) v[i] = hi;
+        }
+        if (v[i] > peak) peak = v[i];
+    }
+    // Scaled to 150 % FTP, so the strips compare ACROSS workouts (a recovery
+    // spin stays low, a VO2 set reaches the top); with no FTP, to the
+    // session's own peak.
+    const uint32_t full = ftpWatts > 0 ? (uint32_t)ftpWatts * 3 / 2 : peak;
+    for (int i = 0; i < WORKOUT_SPARK_N; ++i) {
+        uint32_t h = (uint32_t)v[i] * 255 / full;
+        out.spark[i] = (uint8_t)(h > 255 ? 255 : h);
+    }
+}

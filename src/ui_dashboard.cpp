@@ -102,6 +102,14 @@ bool mapTrackUp = false;
 bool workoutAllOpen = false;
 int workoutListPage = 0;
 
+// The picker (WORKOUT page, nothing loaded): which page of rows, and the
+// page last drawn — taps resolve against what the rider SAW, not a list that
+// may have rescanned since. In PSRAM: ~1.3 KB this task's stack shouldn't
+// carry. The list itself is workout_service's; it never reads SD here.
+int workoutPickIdx = 0;
+WorkoutPickPage* workoutPick = nullptr;
+bool workoutPickShown = false;   // last frame was the picker
+
 // Serial test hooks: drive the UI over the CDC serial port to profile the map
 // without physical taps. Toggle timing logs with 't'; single-char commands
 // injected in the task loop mirror button presses. See pollSerialCommands().
@@ -734,6 +742,39 @@ void handleTap(int x, int y) {
                 y >= ui::STATUS_H) {
                 WorkoutView wv;
                 workout_service::view(wv);
+                if (!wv.loaded) {
+                    // The picker. A row tap queues the load on the loop
+                    // task (the same load as the app's [0x11]); the row
+                    // reads LOADING until the page flips to READY.
+                    if (workoutPickShown && workoutPick) {
+                        const WorkoutPickPage& p = *workoutPick;
+                        if (inRect(kWorkoutPageUp, x, y)) {
+                            if (workoutPickIdx > 0) --workoutPickIdx;
+                        } else if (inRect(kWorkoutPageDown, x, y)) {
+                            if (p.first + p.count < p.total) ++workoutPickIdx;
+                        } else if (inRect(kWorkoutClose, x, y)) {
+                            if (p.state != WLIST_SCANNING)
+                                workout_service::requestListRefresh();
+                        } else if (p.state == WLIST_READY &&
+                                   y >= kWorkoutRowTop &&
+                                   y < kWorkoutRowTop +
+                                           kWorkoutRowH * kWorkoutRowsPerPage) {
+                            int r = (y - kWorkoutRowTop) / kWorkoutRowH;
+                            if (r < p.count && p.rows[r].ok)
+                                workout_service::requestLoad(p.rows[r].file);
+                        }
+                    }
+                    forceDraw = true;
+                    break;
+                }
+                if (workoutViewReady(wv) && !workoutAllOpen &&
+                    inRect(kWorkoutRedo, x, y)) {
+                    // READY's left strip: back to the picker. Unloading is
+                    // what the app's Stop does too, so the app follows.
+                    workout_service::unload();
+                    forceDraw = true;
+                    break;
+                }
                 if (workoutAllOpen) {
                     if (inRect(kWorkoutPageUp, x, y)) {
                         if (workoutListPage > 0) --workoutListPage;
@@ -2749,6 +2790,18 @@ void task(void*) {
                     forceDraw = true;
             }
         }
+        // Same for the WORKOUT page: a rescan finishing, a tapped workout
+        // landing (or failing), the app loading or unloading one.
+        {
+            static uint32_t lastWorkoutVersion = 0;
+            uint32_t wv = workout_service::version();
+            if (wv != lastWorkoutVersion) {
+                lastWorkoutVersion = wv;
+                if (screen == SCREEN_DASH &&
+                    dash_config::page(dashPage).kind == DP_WORKOUT)
+                    forceDraw = true;
+            }
+        }
 
         bool navPrompt = routes::navPending();
         if (navPrompt && !lastNavPrompt) navPromptShownAt = millis();
@@ -2822,6 +2875,7 @@ void task(void*) {
             uint8_t* fb = epdc_framebuffer();
             memset(fb, 0xFF, epd_width() / 2 * epd_height());
             bandDrawnThisFrame = false;
+            bool pickerThisFrame = false;   // set by the WORKOUT page below
             // While the "Start navigation?" prompt is up, the base screen shows
             // the whole route fitted so it can be recognized before accepting.
             if (navPrompt && !powerOverlay) {
@@ -2859,7 +2913,28 @@ void task(void*) {
                         WorkoutView wv;
                         workout_service::view(wv);
                         if (!wv.loaded) workoutAllOpen = false;
-                        if (workoutAllOpen)
+                        if (!wv.loaded && !workoutPick)
+                            workoutPick = (WorkoutPickPage*)heap_caps_calloc(
+                                1, sizeof(WorkoutPickPage), MALLOC_CAP_SPIRAM);
+                        if (!wv.loaded && workoutPick) {
+                            // The picker appearing (page opened, Back, the
+                            // app unloading) rescans: the card may have
+                            // changed since the list was read.
+                            if (!workoutPickShown) {
+                                workout_service::requestListRefresh();
+                                workoutPickIdx = 0;
+                            }
+                            pickerThisFrame = true;
+                            WorkoutPickPage& p = *workoutPick;
+                            workout_service::listPage(workoutPickIdx, p);
+                            if (p.count == 0 && p.total > 0) {
+                                // The list shrank under the page we were on.
+                                workoutPickIdx =
+                                    (p.total - 1) / WORKOUT_PICK_ROWS;
+                                workout_service::listPage(workoutPickIdx, p);
+                            }
+                            ui_render_workout_picker(s, p, fb);
+                        } else if (workoutAllOpen)
                             ui_render_workout_list(s, wv, workoutListPage, fb);
                         else
                             ui_render_workout(s, wv, fb);
@@ -2989,6 +3064,9 @@ void task(void*) {
             if (unsigned int pc = ble_server::pairingCode())
                 ui_render_pairing(pc, fb);
             }  // end else (normal screens)
+            // Leaving the picker (another page, a menu, a workout loading)
+            // re-arms its rescan-on-appear.
+            workoutPickShown = pickerThisFrame;
             // These three classified the frame so refresh() could pick a waveform.
             // The driver picks its own now (see refresh()), so they are inert — kept
             // because they document which screens are pure black/white and which
