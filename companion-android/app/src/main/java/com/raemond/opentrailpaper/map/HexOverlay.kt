@@ -73,7 +73,7 @@ class HexOverlay(
 
         val fill: Int
             get() = when (this) {
-                SELECTION_PENDING -> Palette.accent.toArgb().withAlpha(0.16f)
+                SELECTION_PENDING -> Palette.accent.toArgb().withAlpha(0.22f)
                 SELECTION_DONE -> Palette.good.toArgb().withAlpha(0.22f)
                 SELECTION_EXCLUDED -> Palette.muted.toArgb().withAlpha(0.08f)
                 // At 0.14 over Palette.faint these were tuned to whisper beneath
@@ -83,21 +83,25 @@ class HexOverlay(
                 OUTLINE_PHONE -> Palette.muted.toArgb().withAlpha(0.22f)
                 OUTLINE_SYNCED -> Palette.good.toArgb().withAlpha(0.30f)
                 OUTLINE_UPDATE -> Palette.update.toArgb().withAlpha(0.22f)
-                SELECTION_CURRENT -> Palette.good.toArgb().withAlpha(0.34f)
-                SELECTION_UPDATE -> Palette.update.toArgb().withAlpha(0.30f)
+                SELECTION_CURRENT -> Palette.good.toArgb().withAlpha(0.38f)
+                SELECTION_UPDATE -> Palette.update.toArgb().withAlpha(0.38f)
                 BADGE_ONLY -> Color.TRANSPARENT
                 MISSING -> Palette.accent.toArgb().withAlpha(0.10f)
             }
 
+        // Selected hexes: the state's colour as the fill and an INK outline
+        // for every state. With the state colour as the outline too, a
+        // selected update/current hex was all but identical to the same hex
+        // unselected (ochre hatch 0.30 vs 0.22), so selecting an area already
+        // on the device looked like nothing happened. Same as iOS.
         val stroke: Int
             get() = when (this) {
-                SELECTION_PENDING -> Palette.accent.toArgb()
-                SELECTION_DONE -> Palette.good.toArgb()
+                SELECTION_PENDING, SELECTION_DONE, SELECTION_CURRENT, SELECTION_UPDATE ->
+                    Palette.ink.toArgb()
                 SELECTION_EXCLUDED -> Palette.muted.toArgb().withAlpha(0.55f)
                 OUTLINE_PHONE -> Palette.muted.toArgb()
                 OUTLINE_SYNCED -> Palette.good.toArgb()
-                OUTLINE_UPDATE, SELECTION_UPDATE -> Palette.update.toArgb()
-                SELECTION_CURRENT -> Palette.good.toArgb()
+                OUTLINE_UPDATE -> Palette.update.toArgb()
                 BADGE_ONLY -> Color.TRANSPARENT
                 MISSING -> Palette.accent.toArgb().withAlpha(0.7f)
             }
@@ -150,7 +154,8 @@ class HexOverlay(
                 canvas.clipPath(path)
                 val b = android.graphics.RectF()
                 path.computeBounds(b, true)
-                hatchPaint.color = hex.style.stroke.withAlpha(0.55f)
+                // Ochre whatever the outline: a selected update hex's is ink.
+                hatchPaint.color = Palette.update.toArgb().withAlpha(0.6f)
                 val step = 9f * density
                 var x = b.left - b.height()
                 while (x < b.right) {
