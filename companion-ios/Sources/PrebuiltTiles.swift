@@ -103,7 +103,11 @@ enum PrebuiltTiles {
         return out
     }
 
-    struct Response { var status: Int; var data: Data?; var unreachable: Bool }
+    /// `unreachable`: no HTTP answer that says anything about the CDN (DNS,
+    /// refused, offline, TLS, timeout). `hostDown`: the host itself is gone
+    /// (DNS, refused, offline) — unlike a timeout, which one slow tile on a
+    /// weak link can hit without the rest being any slower.
+    struct Response { var status: Int; var data: Data?; var unreachable: Bool; var hostDown = false }
 
     static func get(_ url: URL, kind: String, timeout: TimeInterval) async -> Response {
         var req = URLRequest(url: url)
@@ -133,7 +137,9 @@ enum PrebuiltTiles {
                 default: return false
                 }
             }()
-            return Response(status: -1, data: nil, unreachable: unreachable)
+            let hostDown = [URLError.cannotFindHost, .cannotConnectToHost, .dnsLookupFailed,
+                            .notConnectedToInternet].contains(code)
+            return Response(status: -1, data: nil, unreachable: unreachable, hostDown: hostDown)
         }
     }
 
@@ -210,7 +216,9 @@ enum PrebuiltTiles {
                     let path = "\(PrebuiltTiles.group(item.id))/\(item.id).\(ext)?v=\(item.hash)"
                     guard let url = URL(string: path, relativeTo: base) else { return (item.id, nil) }
                     let r = await get(url, kind: "cdn", timeout: fileTimeout)
-                    if r.unreachable { await lookup.markDead() }
+                    // Only a host that is gone switches the CDN off mid-download;
+                    // a single timed-out tile just falls back on its own.
+                    if r.hostDown { await lookup.markDead() }
                     guard r.status == 200, let d = r.data,
                           valid(d, size: item.size, magic: magic) else { return (item.id, nil) }
                     return (item.id, d)

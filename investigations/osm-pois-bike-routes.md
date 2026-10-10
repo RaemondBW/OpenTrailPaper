@@ -890,3 +890,22 @@ Overpass and no Open-Meteo. The BLE link becomes the only wait.
 The first step is small: build and upload the cells for one region, and add
 "try the CDN, then Overpass" to both apps. Everything downstream (cache,
 send, device) is unchanged.
+
+### Update: (d) is built — [docs/prebuilt-tiles.md](../docs/prebuilt-tiles.md)
+
+- **Builder** (`tools/tiles/`). It answers the apps' own Overpass queries
+  from Geofabrik extracts (osmium) and runs `mapgen.js` plus a port of the
+  apps' ELV1/WTR2/PRK2 appendix, with Copernicus GLO-90 elevation sampled as
+  Open-Meteo does.
+- **Equivalence.** On the same snapshot the output is byte-identical to the
+  iOS `MapBuilder.swift`: 398/398 cells in SF, Rhode Island and Bern–Zurich.
+  Along region borders it matches a build from the merged extracts
+  (516/516).
+- **Planet.** Revised estimate: 434 extracts (77.5 GB), 7.5 M cells,
+  ~20–40 GB of output. A weekly GitHub Actions run of 20 + 20 standard jobs
+  takes ~1–2 h. On R2 that is well under $1/month for storage, plus
+  ~$5–14/month of writes for the changed tiles.
+- **Apps and website.** They read `https://tiles.opentrailpaper.com/v1/<g>/<h3>.ebm`
+  first and fall back to Overpass per hex. Measured for 15 hexes in
+  Providence: 0.03 s from a local server against 333 s through Overpass.
+
