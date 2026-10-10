@@ -54,9 +54,31 @@ export async function readStripHeader(file) {
   return null;
 }
 
+// A predicate "does this bbox touch any of these boxes", via a 0.5° grid.
+export function boxFilter(boxes) {
+  const G = 0.5, grid = new Map();
+  for (const b of boxes) {
+    for (let y = Math.floor(b.s / G); y <= Math.floor(b.n / G); y++) for (let x = Math.floor(b.w / G); x <= Math.floor(b.e / G); x++) {
+      const k = y * 10000 + x; let l = grid.get(k); if (!l) grid.set(k, (l = [])); l.push(b);
+    }
+  }
+  return (s, w, n, e) => {
+    const seen = new Set();
+    for (let y = Math.floor(s / G); y <= Math.floor(n / G); y++) for (let x = Math.floor(w / G); x <= Math.floor(e / G); x++) {
+      for (const b of grid.get(y * 10000 + x) || []) {
+        if (seen.has(b)) continue; seen.add(b);
+        if (!(b.n < s || b.s > n || b.e < w || b.w > e)) return true;
+      }
+    }
+    return false;
+  };
+}
+
 // Merge strips (in the given order: earlier wins a version tie) into a
-// loadOsm()-shaped store.
-export async function loadStrips(files, log = () => {}) {
+// loadOsm()-shaped store. keep(s, w, n, e), if given, drops ways and POIs
+// outside the boxes the caller will query (a border job reads strips from
+// many extracts but needs only the part near its own cells).
+export async function loadStrips(files, log = () => {}, keep = null) {
   const ways = new Map();   // id -> [ver, level, tags, nids, lats, lons]
   const pois = new Map();   // kind:id -> poi
   const headers = [];
@@ -68,6 +90,15 @@ export async function loadStrips(files, log = () => {}) {
       if (first) { headers.push(o); first = false; continue; }
       if (o.w) {
         const [id, ver, level, tags, nids, lats, lons] = o.w;
+        if (keep) {
+          let s = Infinity, w = Infinity, n = -Infinity, e = -Infinity;
+          for (let k = 0; k < lats.length; k++) {
+            if (lats[k] === MISSING) continue;
+            const la = lats[k] / 1e7, lo = lons[k] / 1e7;
+            if (la < s) s = la; if (la > n) n = la; if (lo < w) w = lo; if (lo > e) e = lo;
+          }
+          if (s === Infinity || !keep(s, w, n, e)) continue;
+        }
         const cur = ways.get(id);
         if (!cur) ways.set(id, [ver, level, tags, nids, lats, lons]);
         else {
@@ -76,6 +107,7 @@ export async function loadStrips(files, log = () => {}) {
           else cur[1] = lvl;
         }
       } else if (o.p) {
+        if (keep && !keep(o.p.lat, o.p.lon, o.p.lat, o.p.lon)) continue;
         const k = o.p.kind + o.p.id;
         const cur = pois.get(k);
         if (!cur || o.p.ver > cur.ver) pois.set(k, o.p);

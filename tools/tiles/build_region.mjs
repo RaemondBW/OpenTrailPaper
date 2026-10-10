@@ -42,7 +42,7 @@ import { buildAppTile, seaBox, mapBox, seaRingsFor, elevationSamplePoints, eleva
 import { Dem } from "./dem.mjs";
 import { bboxGeometry } from "./poly.mjs";
 import { loadRegions, cellsNear } from "./regions.mjs";
-import { writeStrip, readStripHeader, loadStrips } from "./strip.mjs";
+import { writeStrip, readStripHeader, loadStrips, boxFilter } from "./strip.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const LAYOUT_VERSION = "v1";
@@ -340,7 +340,7 @@ async function main() {
     const rank = (id) => { const i = order.indexOf(id); return i < 0 ? order.length : i; };
     strips.sort((x, y) => rank(x.h.region) - rank(y.h.region) || (x.h.region < y.h.region ? -1 : 1));
     log(`border: ${cells.length} cells of ${frags.length} regions, ${strips.length} strips (${strips.map((s) => s.h.region).join(", ")})`);
-    const { store, headers } = await loadStrips(strips.map((s) => s.f), log);
+    const { store, headers } = await loadStrips(strips.map((s) => s.f), log, boxFilter(cells.map(seaBox)));
     for (const frag of frags) {
       frag.f.osm = headers.map((h) => h.osm).filter(Boolean).sort()[0] || null;
       frag.f.source = headers.map((h) => h.region).join(",");

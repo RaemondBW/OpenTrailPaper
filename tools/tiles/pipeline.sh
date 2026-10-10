@@ -28,17 +28,22 @@ WORKERS=${WORKERS:-$(node -e 'console.log(require("os").availableParallelism())'
 log() { echo "[$(date -u +%H:%M:%S)] $*" >&2; }
 
 # ---- storage ----------------------------------------------------------------
-if [ -n "${R2_BUCKET:-}" ]; then
-    export RCLONE_CONFIG_R2_TYPE=s3 RCLONE_CONFIG_R2_PROVIDER=Cloudflare
-    export RCLONE_CONFIG_R2_ACCESS_KEY_ID="${R2_ACCESS_KEY_ID:?}" RCLONE_CONFIG_R2_SECRET_ACCESS_KEY="${R2_SECRET_ACCESS_KEY:?}"
-    export RCLONE_CONFIG_R2_ENDPOINT="https://${R2_ACCOUNT_ID:?}.r2.cloudflarestorage.com"
-    export RCLONE_CONFIG_R2_NO_CHECK_BUCKET=true RCLONE_CONFIG_R2_ACL=private
-    REMOTE="r2:$R2_BUCKET"
-elif [ -n "${LOCAL_BUCKET:-}" ]; then
-    mkdir -p "$LOCAL_BUCKET"; REMOTE=""
-else
-    echo "set R2_BUCKET (+ R2_* credentials) or LOCAL_BUCKET" >&2; exit 2
-fi
+REMOTE=""
+init_storage() {
+    if [ -n "${R2_BUCKET:-}" ]; then
+        export RCLONE_CONFIG_R2_TYPE=s3 RCLONE_CONFIG_R2_PROVIDER=Cloudflare
+        export RCLONE_CONFIG_R2_ACCESS_KEY_ID="${R2_ACCESS_KEY_ID:?}" RCLONE_CONFIG_R2_SECRET_ACCESS_KEY="${R2_SECRET_ACCESS_KEY:?}"
+        export RCLONE_CONFIG_R2_ENDPOINT="https://${R2_ACCOUNT_ID:?}.r2.cloudflarestorage.com"
+        export RCLONE_CONFIG_R2_NO_CHECK_BUCKET=true RCLONE_CONFIG_R2_ACL=private
+        REMOTE="r2:$R2_BUCKET"
+    elif [ -n "${LOCAL_BUCKET:-}" ]; then
+        mkdir -p "$LOCAL_BUCKET"
+    elif [ -n "${DRY_RUN:-}" ]; then
+        LOCAL_BUCKET="$W/dry-run-bucket"; mkdir -p "$LOCAL_BUCKET"   # stays empty
+    else
+        echo "set R2_BUCKET (+ R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY) or LOCAL_BUCKET" >&2; exit 2
+    fi
+}
 
 # Cache-Control by kind. Tile URLs carry ?v=<hash> from the index, so a
 # changed tile is a new URL to the CDN; the week covers clients that ask
@@ -111,6 +116,7 @@ plan)
 
 interior)
     job=${1:?job}
+    init_storage
     mkdir -p "$W/frags/$job" "$W/strips" "$W/prev" "$W/dem"
     for r in $(jq_regions "$job"); do
         s=$(safe "$r")
@@ -129,10 +135,12 @@ interior)
         # The DEM cache is shared by neighbouring regions; keep it under ~5 GB.
         if [ "$(du -sm "$W/dem" | cut -f1)" -gt 5000 ]; then find "$W/dem" -name '*.tif' -delete; fi
     done
+    touch "$W/strips/$job.done"   # the border phase checks every needed job finished
     ;;
 
 border)
     job=${1:?job}
+    init_storage
     mkdir -p "$W/frags/$job" "$W/prev"
     todo=$(jq_regions "$job" | paste -sd, -)
     for r in $(jq_regions "$job"); do get "v1/regions/$(safe "$r").border.json" "$W/prev/$(safe "$r").border.json" || true; done
@@ -145,6 +153,7 @@ border)
     ;;
 
 merge)
+    init_storage
     rm -rf "$W/old" "$W/merged"
     get_dir v1/regions "$W/old"
     node "$here/merge_index.mjs" --new "$W/frags" --old "$W/old" --regions "$W/plan.json" --out "$W/merged"

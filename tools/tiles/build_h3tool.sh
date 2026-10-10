@@ -7,6 +7,6 @@ here=$(cd "$(dirname "$0")" && pwd)
 H3="$here/../../companion-ios/Sources/H3"
 out=${1:-$here/.bin/h3tool}
 mkdir -p "$(dirname "$out")"
-${CC:-cc} -O2 -std=c11 -I "$H3" -I "$H3/include" \
+${CC:-cc} -O2 -std=c11 -D_DEFAULT_SOURCE -I "$H3" -I "$H3/include" \
     "$here/h3tool.c" "$H3/h3shim.c" "$H3"/lib/*.c -lm -o "$out"
 echo "$out"
