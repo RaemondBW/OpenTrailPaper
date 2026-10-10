@@ -80,6 +80,33 @@ export class Region {
     }
     return true;
   }
+
+  // True when the rectangle and the region share any point: an edge touches
+  // the rectangle, or the rectangle lies wholly inside the region.
+  intersectsRect(s, w, n, e) {
+    const b = this.bbox;
+    if (n < b.s || s > b.n || e < b.w || w > b.e) return false;
+    for (let y = Math.floor(s / G); y <= Math.floor(n / G); y++) {
+      for (let x = Math.floor(w / G); x <= Math.floor(e / G); x++) {
+        const bucket = this.grid.get(y * 100000 + x);
+        if (!bucket) continue;
+        for (const k of bucket) {
+          const [la1, lo1, la2, lo2] = this.edges[k];
+          if (segTouchesRect(lo1, la1, lo2, la2, s, w, n, e)) return true;
+        }
+      }
+    }
+    return this.containsPoint(s, w);
+  }
+
+  // Bounding boxes of the outer rings, one per polygon part.
+  partBoxes() {
+    return this.polys.map((poly) => {
+      let s = 90, w = 180, n = -90, e = -180;
+      for (const [lo, la] of poly[0]) { s = Math.min(s, la); n = Math.max(n, la); w = Math.min(w, lo); e = Math.max(e, lo); }
+      return { s, w, n, e };
+    });
+  }
 }
 
 function segTouchesRect(ax, ay, bx, by, s, w, n, e) {

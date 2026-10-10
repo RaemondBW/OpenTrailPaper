@@ -34,14 +34,15 @@ import crypto from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { Worker, isMainThread, parentPort, workerData } from "node:worker_threads";
 import { fileURLToPath } from "node:url";
-import { polygonToCells } from "h3-js";
 import { buildPoi } from "../../docs/mapgen.js";
 import { loadOsm } from "./osmstore.mjs";
 import { OverpassEmu, poiResponse } from "./overpass.mjs";
 import { assembleCoastlineFast } from "./coastline.mjs";
 import { buildAppTile, seaBox, mapBox, seaRingsFor, elevationSamplePoints, elevationValue } from "./apptile.mjs";
 import { Dem } from "./dem.mjs";
-import { Region, bboxGeometry } from "./poly.mjs";
+import { bboxGeometry } from "./poly.mjs";
+import { loadRegions, cellsNear } from "./regions.mjs";
+import { writeStrip, readStripHeader, loadStrips } from "./strip.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const LAYOUT_VERSION = "v1";
@@ -73,32 +74,6 @@ export function cellsAt(points) {
   return h3batch("cell", points.map(([la, lo]) => `${la} ${lo}`));
 }
 
-// ---- ownership ----------------------------------------------------------------
-// A cell is built by the FIRST region (in the planner's order) whose polygon
-// contains the cell's whole Overpass fetch box (mapBox), so every way the app
-// would have fetched is in that extract. Cells no region contains are not
-// built; the apps fall back to Overpass for them.
-function cellsFor(own, earlier, log) {
-  const cand = new Set();
-  const polys = own.polys;
-  for (const poly of polys) {
-    // polygonToCells: cells whose centre is inside — a superset of the cells
-    // whose fetch box is inside.
-    for (const c of polygonToCells(poly, 6, true)) cand.add(c);
-  }
-  const boxes = cellBboxes([...cand].sort());
-  const owned = [];
-  let notInside = 0, earlierOwns = 0;
-  for (const t of boxes) {
-    const B = mapBox(t);
-    if (!own.containsRect(B.s, B.w, B.n, B.e)) { notInside++; continue; }
-    if (earlier.some((r) => r.containsRect(B.s, B.w, B.n, B.e))) { earlierOwns++; continue; }
-    owned.push(t);
-  }
-  log(`cells: ${cand.size} with centre inside, ${owned.length} owned, ${notInside} fetch box not inside, ${earlierOwns} owned by an earlier region`);
-  return owned;
-}
-
 // ---- per-cell build (runs in workers) -------------------------------------------
 function makeBuilder(store, emuData, demOpts, elevation) {
   const emu = new OverpassEmu(store, emuData);
@@ -116,7 +91,7 @@ function makeBuilder(store, emuData, demOpts, elevation) {
     }
     const ebm = buildAppTile(json, rings, grid, t);
     const poi = buildPoi(poiResponse(pois), { s: t.s, w: t.w, n: t.n, e: t.e, cell: t.id, contains: () => true });
-    return { ebm, poi, ms: performance.now() - t0, ways: json.elements.filter((e) => e.type === "way").length, dem: dem?.stats };
+    return { ebm, poi, ms: performance.now() - t0, ways: json.elements.filter((e) => e.type === "way").length, coast: coastWays.length };
   };
 }
 
@@ -131,8 +106,6 @@ if (!isMainThread) {
       parentPort.postMessage({ id: t.id, error: e.stack || String(e) });
     }
   });
-} else if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
-  await main();
 }
 
 function args() {
@@ -153,82 +126,84 @@ function share(ta) {
   return s;
 }
 
-async function main() {
-  const a = args();
-  const started = Date.now();
-  const log = (m) => console.error(`[${((Date.now() - started) / 1000).toFixed(1)}s] ${m}`);
-  if (!a.pbf || !a.region || !a.out) {
-    console.error("usage: build_region.mjs --pbf <file> --region <name> --out <dir> [--regions regions.json | --bbox s,w,n,e] [--prev fragment.json]");
-    process.exit(2);
-  }
-  const out = path.resolve(a.out);
-  const tmp = a.tmp ? path.resolve(a.tmp) : fs.mkdtempSync(path.join(os.tmpdir(), "otp-tiles-"));
-
-  // Ownership.
-  let own, earlier = [];
-  if (a.regions) {
-    const regions = JSON.parse(fs.readFileSync(a.regions, "utf8")).regions;
-    const k = regions.findIndex((r) => r.id === a.region);
-    if (k < 0) throw new Error(`region ${a.region} not in ${a.regions}`);
-    own = new Region(regions[k].geometry);
-    for (const r of regions.slice(0, k)) {
-      const g = new Region(r.geometry);
-      const b = g.bbox, o = own.bbox;
-      if (b.e < o.w || b.w > o.e || b.n < o.s || b.s > o.n) continue;
-      earlier.push(g);
-    }
-  } else if (a.bbox) {
-    const [s, w, n, e] = a.bbox.split(",").map(Number);
-    own = new Region(bboxGeometry(s, w, n, e));
-  } else throw new Error("need --regions or --bbox");
-  let cells = cellsFor(own, earlier, log);
-  if (a.cells) { const want = new Set(a.cells.split(",")); cells = cells.filter((t) => want.has(t.id)); }
-  if (a.limit) cells = cells.slice(0, Number(a.limit));
-
-  // OSM data.
-  const osmTs = spawnSync("osmium", ["fileinfo", "-g", "header.option.osmosis_replication_timestamp", a.pbf]).stdout.toString().trim() || null;
-  const store = await loadOsm(path.resolve(a.pbf), { tmpDir: tmp, log });
+// Build `cells` from `store` on a worker pool; onCell(t, ebm|null, poi, m).
+async function runCells(cells, store, poisByCell, { workers: nWorkers, demOpts, elevation }, onCell, log) {
+  if (!cells.length) return;
   const emu = new OverpassEmu(store);
-  log(`spatial index built`);
-
-  // POIs -> cells, once (MapsView.sendPois: byCell[H3 id of the POI]).
-  const poiCells = cellsAt(store.pois.map((p) => [p.lat, p.lon]));
-  const poisByCell = new Map();
-  store.pois.forEach((p, i) => {
-    const c = poiCells[i];
-    let l = poisByCell.get(c); if (!l) poisByCell.set(c, (l = [])); l.push(p);
-  });
-
-  const prev = a.prev && fs.existsSync(a.prev) ? JSON.parse(fs.readFileSync(a.prev, "utf8")) : null;
-  const prevCells = prev?.cells || {};
-  const elevation = !a["no-elevation"];
-  const demOpts = { cacheDir: a["dem-cache"] ? path.resolve(a["dem-cache"]) : path.join(tmp, "dem"), maxTiles: 24 };
-  if (elevation) fs.mkdirSync(demOpts.cacheDir, { recursive: true });
-
-  // Workers share the typed arrays; tags/POIs are cloned (small).
-  const nWorkers = Math.max(1, Number(a.workers || os.availableParallelism?.() || os.cpus().length));
   const shared = {
     ways: Object.fromEntries(Object.entries(store.ways).map(([k, v]) => [k, share(v)])),
     refs: Object.fromEntries(Object.entries(store.refs).map(([k, v]) => [k, share(v)])),
     tags: store.tags, pois: [], sorted: store.sorted,
   };
   const emuData = emu.exportShared(share);
-
-  // Pre-fetch the DEM tiles once in the main thread so workers read the cache.
+  // Fetch the DEM tiles once, here, so the workers only read the cache.
   if (elevation) {
     const dem = new Dem(demOpts);
     const need = new Set();
     for (const t of cells) for (let la = Math.floor(t.s); la <= Math.floor(t.n); la++) for (let lo = Math.floor(t.w); lo <= Math.floor(t.e); lo++) need.add(`${la},${lo}`);
-    await Promise.all([...need].map((k) => { const [la, lo] = k.split(",").map(Number); return dem.at(la + 0.5, lo + 0.5); }));
+    const keys = [...need];
+    for (let i = 0; i < keys.length; i += 8) {
+      await Promise.all(keys.slice(i, i + 8).map((k) => { const [la, lo] = k.split(",").map(Number); return dem.at(la + 0.5, lo + 0.5); }));
+    }
     log(`DEM: ${need.size} 1° tiles needed, ${dem.stats.downloads} downloaded (${(dem.stats.bytes / 1048576).toFixed(0)} MB), ${dem.stats.missing} sea/absent`);
   }
+  const workers = Array.from({ length: Math.min(nWorkers, cells.length) }, () =>
+    new Worker(fileURLToPath(import.meta.url), { workerData: { store: shared, emuData, demOpts, elevation } }));
+  const byId = new Map(cells.map((t) => [t.id, t]));
+  let next = 0, done = 0, lastLog = Date.now();
+  await Promise.all(workers.map((wk) => new Promise((resolve, reject) => {
+    const feed = () => {
+      if (next >= cells.length) { wk.terminate(); resolve(); return; }
+      const t = cells[next++];
+      wk.postMessage({ t, pois: poisByCell.get(t.id) || [] });
+    };
+    wk.on("message", (m) => {
+      if (m.error) { reject(new Error(`${m.id}: ${m.error}`)); return; }
+      onCell(byId.get(m.id), m.ebm ? new Uint8Array(m.ebm.buffer ?? m.ebm) : null, new Uint8Array(m.poi.buffer ?? m.poi), m);
+      done++;
+      if (Date.now() - lastLog > 60000) { lastLog = Date.now(); log(`${done}/${cells.length} cells`); }
+      feed();
+    });
+    wk.on("error", reject);
+    feed();
+  })));
+}
 
-  const frag = {
-    version: LAYOUT_VERSION, region: a.region, built: new Date().toISOString(), osm: osmTs,
-    source: a["source-url"] || path.basename(a.pbf), cells: {},
-  };
+function groupPois(pois) {
+  const cells = cellsAt(pois.map((p) => [p.lat, p.lon]));
+  const by = new Map();
+  pois.forEach((p, i) => { const c = cells[i]; let l = by.get(c); if (!l) by.set(c, (l = [])); l.push(p); });
+  return by;
+}
+
+const USAGE = `usage:
+  build_region.mjs --region <id> --pbf <extract.osm.pbf> --out <dir> (--regions regions.json | --bbox s,w,n,e)
+                   [--strip-dir <dir>] [--prev <fragment.json>] [--dem-cache <dir>] [--no-elevation]
+                   [--workers N] [--cells id,…] [--tmp <dir>] [--source-url <url>]
+  build_region.mjs --phase border --name <fragment> --strip-dir <dir> --out <dir> [--todo <region,…>] [...]`;
+
+async function main() {
+  const a = args();
+  const started = Date.now();
+  const log = (m) => console.error(`[${((Date.now() - started) / 1000).toFixed(1)}s] ${m}`);
+  const phase = a.phase || "interior";
+  if (!a.out || (phase === "interior" && (!a.pbf || !a.region || !(a.regions || a.bbox))) ||
+      (phase === "border" && (!a.name || !a["strip-dir"]))) { console.error(USAGE); process.exit(2); }
+  const out = path.resolve(a.out);
+  const tmp = a.tmp ? path.resolve(a.tmp) : fs.mkdtempSync(path.join(os.tmpdir(), "otp-tiles-"));
+  const elevation = !a["no-elevation"];
+  const demOpts = { cacheDir: a["dem-cache"] ? path.resolve(a["dem-cache"]) : path.join(tmp, "dem"), maxTiles: 24 };
+  if (elevation) fs.mkdirSync(demOpts.cacheDir, { recursive: true });
+  const workers = Math.max(1, Number(a.workers || os.availableParallelism?.() || os.cpus().length));
+  const stripDir = a["strip-dir"] ? path.resolve(a["strip-dir"]) : null;
+  if (stripDir) fs.mkdirSync(stripDir, { recursive: true });
+  const fragName = phase === "border" ? a.name : a.region;
+
+  const prev = a.prev && fs.existsSync(a.prev) ? JSON.parse(fs.readFileSync(a.prev, "utf8")) : null;
+  const prevCells = prev?.cells || {};
+  const frag = { version: LAYOUT_VERSION, region: fragName, phase, built: new Date().toISOString(), osm: null, source: null, cells: {} };
   const upload = [];
-  const stats = { cells: 0, empty: 0, ebmBytes: 0, poiBytes: 0, pois: 0, withPois: 0, changed: 0, ms: 0, slowest: null };
+  const stats = { cells: 0, empty: 0, deferred: 0, ebmBytes: 0, poiBytes: 0, pois: 0, withPois: 0, changed: 0, ms: 0, slowest: null };
   const writeCell = (t, ebm, poi, ms) => {
     const poiCount = poi[6] | (poi[7] << 8);
     // ebm null: the app would drop this tile as empty (open sea with no
@@ -247,36 +222,107 @@ async function main() {
     if (poiCount) { stats.withPois++; stats.poiBytes += poi.length; stats.pois += poiCount; }
     if (!stats.slowest || ms > stats.slowest[1]) stats.slowest = [t.id, Math.round(ms)];
   };
+  const opts = { workers, demOpts, elevation };
+  const want = a.cells ? new Set(a.cells.split(",")) : null;
 
-  const workers = Array.from({ length: Math.min(nWorkers, cells.length) }, () =>
-    new Worker(fileURLToPath(import.meta.url), { workerData: { store: shared, emuData, demOpts, elevation } }));
-  const byId = new Map(cells.map((t) => [t.id, t]));
-  let next = 0, done = 0, lastLog = Date.now();
-  await Promise.all(workers.map((wk) => new Promise((resolve, reject) => {
-    const feed = () => {
-      if (next >= cells.length) { wk.terminate(); resolve(); return; }
-      const t = cells[next++];
-      wk.postMessage({ t, pois: poisByCell.get(t.id) || [] });
-    };
-    wk.on("message", (m) => {
-      if (m.error) { reject(new Error(`${m.id}: ${m.error}`)); return; }
-      const t = byId.get(m.id);
-      writeCell(t, m.ebm ? new Uint8Array(m.ebm.buffer ?? m.ebm) : null, new Uint8Array(m.poi.buffer ?? m.poi), m.ms);
-      done++;
-      if (Date.now() - lastLog > 30000) { lastLog = Date.now(); log(`${done}/${cells.length} cells`); }
-      feed();
-    });
-    wk.on("error", reject);
-    feed();
-  })));
+  if (phase === "interior") {
+    const regions = a.regions ? loadRegions(a.regions)
+      : loadRegions({ regions: [{ id: a.region, geometry: bboxGeometry(...a.bbox.split(",").map(Number)) }] });
+    const k = regions.findIndex((r) => r.id === a.region);
+    if (k < 0) throw new Error(`region ${a.region} not in ${a.regions}`);
+    const R = regions[k];
+    const near = cellsNear(regions, k, cellBboxes);
+    let interior = near.filter((c) => c.owner === k && c.interior);
+    const border = near.filter((c) => c.owner === k && !c.interior);
+    if (want) interior = interior.filter((t) => want.has(t.id));
+    log(`cells: ${near.length} reach this extract; owns ${interior.length} interior + ${border.length} border; ` +
+        `${near.filter((c) => c.owner < 0).length} unowned`);
+
+    frag.osm = spawnSync("osmium", ["fileinfo", "-g", "header.option.osmosis_replication_timestamp", a.pbf]).stdout.toString().trim() || null;
+    frag.source = a["source-url"] || path.basename(a.pbf);
+    const store = await loadOsm(path.resolve(a.pbf), { tmpDir: tmp, log });
+    const poisByCell = groupPois(store.pois);
+
+    // Deferred cells (regions.mjs): the coastline box reaches another
+    // extract and this one sees coastline there — or nothing at all, which
+    // may be open water whose coast is the neighbour's. Built in the border
+    // phase with every extract's coastline.
+    const deferred = [];
+    await runCells(interior, store, poisByCell, opts, (t, ebm, poi, m) => {
+      if (t.seaOut && (m.coast > 0 || m.ways === 0)) { deferred.push(t); stats.deferred++; return; }
+      writeCell(t, ebm, poi, m.ms);
+    }, log);
+
+    if (stripDir) {
+      const emu = new OverpassEmu(store);
+      const wayIdx = new Set();
+      const stripCells = new Set();
+      for (const c of near) {
+        if (c.owner < 0) continue;
+        const B = mapBox(c), S = seaBox(c);
+        if (!c.interior) {
+          stripCells.add(c.id);
+          if (R.poly.intersectsRect(B.s, B.w, B.n, B.e)) for (const i of emu.mapWayIdx(B)) wayIdx.add(i);
+          for (const i of emu.coastWayIdx(S)) wayIdx.add(i);
+        } else if (c.owner !== k && c.seaOut) {
+          // The owner may defer it (see above) and then needs our coastline.
+          for (const i of emu.coastWayIdx(S)) wayIdx.add(i);
+        }
+      }
+      for (const t of deferred) {
+        stripCells.add(t.id);
+        for (const i of emu.mapWayIdx(mapBox(t))) wayIdx.add(i);
+        for (const i of emu.coastWayIdx(seaBox(t))) wayIdx.add(i);
+      }
+      const pois = [];
+      for (const id of stripCells) for (const p of poisByCell.get(id) || []) pois.push(p);
+      const file = path.join(stripDir, `${a.region.replace(/\//g, "_")}.strip.ndjson.gz`);
+      const r = await writeStrip(file, { store, wayIdx, pois, region: a.region, osm: frag.osm });
+      const todo = [...border, ...deferred].map(({ id, s, w, n, e }) => ({ id, s, w, n, e })).sort((x, y) => (x.id < y.id ? -1 : 1));
+      fs.writeFileSync(path.join(stripDir, `${a.region.replace(/\//g, "_")}.todo.json`),
+        JSON.stringify({ region: a.region, k, cells: todo }));
+      log(`strip: ${r.ways} ways, ${r.pois} POIs, ${(fs.statSync(file).size / 1048576).toFixed(1)} MB; ` +
+          `todo for the border phase: ${border.length} border + ${deferred.length} deferred cells`);
+    }
+  } else {
+    // Border phase: the todo cells of the given regions (default: every
+    // todo file in the strip dir), from every strip that reaches them.
+    const files = fs.readdirSync(stripDir);
+    const only = a.todo ? new Set(String(a.todo).split(",").map((r) => r.replace(/\//g, "_"))) : null;
+    let cells = [];
+    for (const f of files.filter((f) => f.endsWith(".todo.json")).sort()) {
+      if (only && !only.has(f.slice(0, -".todo.json".length))) continue;
+      cells.push(...JSON.parse(fs.readFileSync(path.join(stripDir, f), "utf8")).cells);
+    }
+    if (want) cells = cells.filter((t) => want.has(t.id));
+    cells.sort((x, y) => (x.id < y.id ? -1 : 1));
+    const hits = (b, t) => { const S = seaBox(t); return !(b.n < S.s || b.s > S.n || b.e < S.w || b.w > S.e); };
+    const strips = [];
+    for (const f of files.filter((f) => f.endsWith(".strip.ndjson.gz"))) {
+      const h = await readStripHeader(path.join(stripDir, f));
+      if (h && h.ways + h.pois > 0 && cells.some((t) => hits(h.bbox, t))) strips.push({ f: path.join(stripDir, f), h });
+    }
+    // Region order (regions.json) decides version ties, if given.
+    const order = a.regions ? loadRegions(a.regions).map((r) => r.id) : [];
+    const rank = (id) => { const i = order.indexOf(id); return i < 0 ? order.length : i; };
+    strips.sort((x, y) => rank(x.h.region) - rank(y.h.region) || (x.h.region < y.h.region ? -1 : 1));
+    log(`border: ${cells.length} cells, ${strips.length} strips (${strips.map((s) => s.h.region).join(", ")})`);
+    const { store, headers } = await loadStrips(strips.map((s) => s.f), log);
+    frag.osm = headers.map((h) => h.osm).filter(Boolean).sort()[0] || null;
+    frag.source = headers.map((h) => h.region).join(",");
+    await runCells(cells, store, groupPois(store.pois), opts, (t, ebm, poi, m) => writeCell(t, ebm, poi, m.ms), log);
+  }
 
   frag.stats = { ...stats, seconds: (Date.now() - started) / 1000 };
-  const fk = `${LAYOUT_VERSION}/regions/${a.region.replace(/\//g, "_")}.json`;
+  const fk = `${LAYOUT_VERSION}/regions/${fragName.replace(/\//g, "_")}.json`;
   fs.mkdirSync(path.join(out, path.dirname(fk)), { recursive: true });
   fs.writeFileSync(path.join(out, fk), JSON.stringify(frag));
   const lines = (l) => l.join("\n") + (l.length ? "\n" : "");
   fs.writeFileSync(path.join(out, "upload.txt"), lines(upload));
-  log(`done: ${stats.cells} cells (${stats.empty} empty), ${stats.changed} changed, ${(stats.ebmBytes / 1048576).toFixed(1)} MB .ebm, ` +
+  log(`done ${phase}: ${stats.cells} cells (${stats.empty} empty${phase === "interior" ? `, ${stats.deferred} deferred` : ""}), ` +
+      `${stats.changed} changed, ${(stats.ebmBytes / 1048576).toFixed(1)} MB .ebm, ` +
       `${stats.withPois} .poi (${stats.pois} POIs), ${(stats.ms / 1000).toFixed(1)} s cell time summed, slowest ${stats.slowest?.join(" ")} ms`);
   if (!a.tmp) fs.rmSync(tmp, { recursive: true, force: true });
 }
+
+if (isMainThread && process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) await main();

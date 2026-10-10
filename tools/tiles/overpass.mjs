@@ -143,6 +143,11 @@ export class OverpassEmu {
     return out;
   }
 
+  // Way indices the map query / the coastline fetch would return for a box
+  // (strip.mjs collects these for the border phase).
+  mapWayIdx(B) { return this.#ways(this.mapIdx, B); }
+  coastWayIdx(B) { return this.#ways(this.coastIdx, B); }
+
   // The map query's JSON response for box B.
   mapResponse(B) {
     const { ways, refs, tags } = this.s;

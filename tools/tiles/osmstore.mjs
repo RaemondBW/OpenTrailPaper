@@ -118,7 +118,7 @@ export async function loadOsm(pbf, { tmpDir, filters = new URL("./filters.txt", 
 
   // Ways.
   const wId = new Grow(Float64Array), wStart = new Grow(Uint32Array), wLen = new Grow(Uint32Array);
-  const wTag = new Grow(Uint32Array), wKind = new Grow(Uint8Array);
+  const wTag = new Grow(Uint32Array), wKind = new Grow(Uint8Array), wVer = new Grow(Uint32Array);
   const rId = new Grow(Float64Array), rLat = new Grow(Int32Array), rLon = new Grow(Int32Array);
   const wayIndex = new Map();  // way id -> index (for relation members)
   // POI nodes.
@@ -128,7 +128,7 @@ export async function loadOsm(pbf, { tmpDir, filters = new URL("./filters.txt", 
   const poiRels = [];
 
   const p = spawn("osmium", ["add-locations-to-ways", filtered, "--ignore-missing-nodes",
-    "-f", "opl,add_metadata=false", "-o", "-", "--no-progress"], { stdio: ["ignore", "pipe", "inherit"] });
+    "-f", "opl,add_metadata=version", "-o", "-", "--no-progress"], { stdio: ["ignore", "pipe", "inherit"] });
   const exited = new Promise((resolve, reject) => {
     p.on("error", reject);
     p.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`add-locations-to-ways exited ${code}`))));
@@ -141,26 +141,28 @@ export async function loadOsm(pbf, { tmpDir, filters = new URL("./filters.txt", 
     if (c === 110 /* n */) {
       // n<id> T<tags> x<lon> y<lat>
       const f = line.split(" ");
-      let tags = null, x = null, y = null;
+      let tags = null, x = null, y = null, ver = 0;
       for (let i = 1; i < f.length; i++) {
         const h = f[i][0];
-        if (h === "T") tags = f[i].slice(1);
+        if (h === "v") ver = Number(f[i].slice(1));
+        else if (h === "T") tags = f[i].slice(1);
         else if (h === "x") x = fixed7(f[i].slice(1));
         else if (h === "y") y = fixed7(f[i].slice(1));
       }
       if (!tags || x == null || y == null) continue;
       const t = parseTags(tags);
       if (!poiNodeMatch(t)) continue;
-      pois.push({ kind: "n", id: Number(f[0].slice(1)), tags: t, lat: y / 1e7, lon: x / 1e7 });
+      pois.push({ kind: "n", id: Number(f[0].slice(1)), ver, tags: t, lat: y / 1e7, lon: x / 1e7 });
     } else if (c === 119 /* w */) {
       const f = line.split(" ");
       const id = Number(f[0].slice(1));
       if (id <= lastId) sorted = false;
       lastId = id;
-      let tags = "", refs = "";
+      let tags = "", refs = "", ver = 0;
       for (let i = 1; i < f.length; i++) {
         const h = f[i][0];
-        if (h === "T") tags = f[i].slice(1);
+        if (h === "v") ver = Number(f[i].slice(1));
+        else if (h === "T") tags = f[i].slice(1);
         else if (h === "N") refs = f[i].slice(1);
       }
       const t = parseTags(tags);
@@ -170,7 +172,7 @@ export async function loadOsm(pbf, { tmpDir, filters = new URL("./filters.txt", 
       if (poiWayMatch(t)) kind |= K_POI;
       const idx = wId.n;
       wayIndex.set(id, idx);
-      wId.push(id); wStart.push(rId.n); wTag.push(intern(t)); wKind.push(kind);
+      wId.push(id); wStart.push(rId.n); wTag.push(intern(t)); wKind.push(kind); wVer.push(ver);
       let cnt = 0;
       if (refs) {
         for (const r of refs.split(",")) {
@@ -189,10 +191,11 @@ export async function loadOsm(pbf, { tmpDir, filters = new URL("./filters.txt", 
     } else if (c === 114 /* r */) {
       const f = line.split(" ");
       const id = Number(f[0].slice(1));
-      let tags = "", mem = "";
+      let tags = "", mem = "", ver = 0;
       for (let i = 1; i < f.length; i++) {
         const h = f[i][0];
-        if (h === "T") tags = f[i].slice(1);
+        if (h === "v") ver = Number(f[i].slice(1));
+        else if (h === "T") tags = f[i].slice(1);
         else if (h === "M") mem = f[i].slice(1);
       }
       const t = parseTags(tags);
@@ -205,12 +208,12 @@ export async function loadOsm(pbf, { tmpDir, filters = new URL("./filters.txt", 
           if ((routeLevel.get(mid) || 0) < lvl) routeLevel.set(mid, lvl);
         }
       }
-      if (t.shop === "bicycle") poiRels.push({ id, tags: t, members });
+      if (t.shop === "bicycle") poiRels.push({ id, ver, tags: t, members });
     }
   }
   await exited;
   const ways = {
-    id: wId.done(), start: wStart.done(), len: wLen.done(), tag: wTag.done(), kind: wKind.done(),
+    id: wId.done(), start: wStart.done(), len: wLen.done(), tag: wTag.done(), kind: wKind.done(), ver: wVer.done(),
     level: new Uint8Array(wId.n),
   };
   const refs = { id: rId.done(), lat: rLat.done(), lon: rLon.done() };
@@ -235,12 +238,12 @@ export async function loadOsm(pbf, { tmpDir, filters = new URL("./filters.txt", 
   for (let i = 0; i < ways.id.length; i++) {
     if (!(ways.kind[i] & K_POI)) continue;
     const c = bboxOf([i]);
-    if (c) pois.push({ kind: "w", id: ways.id[i], tags: tagList[ways.tag[i]], lat: c.lat, lon: c.lon });
+    if (c) pois.push({ kind: "w", id: ways.id[i], ver: ways.ver[i], tags: tagList[ways.tag[i]], lat: c.lat, lon: c.lon });
   }
   for (const r of poiRels) {
     const idxs = r.members.filter(([ty]) => ty === "w").map(([, mid]) => wayIndex.get(mid)).filter((i) => i !== undefined);
     const c = bboxOf(idxs);
-    if (c) pois.push({ kind: "r", id: r.id, tags: r.tags, lat: c.lat, lon: c.lon });
+    if (c) pois.push({ kind: "r", id: r.id, ver: r.ver, tags: r.tags, lat: c.lat, lon: c.lon });
   }
   log(`OPL: ${nLines} lines, ${ways.id.length} ways, ${refs.id.length} refs, ${tagList.length} tag sets, ` +
       `${routeLevel.size} route ways, ${pois.length} POIs, ${((Date.now() - t0) / 1000).toFixed(1)} s` +
