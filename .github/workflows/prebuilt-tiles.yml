@@ -14,12 +14,9 @@ name: Pre-built map tiles
 # Secrets: R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET.
 # Without them every job still builds (a dry run) and uploads nothing.
 
+# Manual runs only (Actions -> Pre-built map tiles -> Run workflow). No
+# schedule: the owner decides when a rebuild is worth its upload cost.
 on:
-  # Weekly schedule is off until the builder (tools/tiles, PR #120) is on
-  # main; until then run it by hand with "Use workflow from:
-  # feat/prebuilt-tiles". Restore when #120 merges:
-  # schedule:
-  #   - cron: "17 3 * * 1"
   workflow_dispatch:
     inputs:
       only:
@@ -51,6 +48,10 @@ env:
 
 jobs:
   plan:
+    # Only the repository owner may run it — not other collaborators, even
+    # with write access. Every later job needs plan to succeed, so a run
+    # started by anyone else stops here before downloading or uploading.
+    if: ${{ github.actor == 'RaemondBW' && github.triggering_actor == 'RaemondBW' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     outputs:
@@ -91,7 +92,7 @@ jobs:
       - name: Tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq osmium-tool rclone
+          sudo apt-get install -y -qq osmium-tool unzip && curl -fsSL https://rclone.org/install.sh | sudo bash > /dev/null && rclone version | head -1
           npm ci --prefix tools/tiles
           tools/tiles/build_h3tool.sh
       - uses: actions/download-artifact@v4
@@ -135,7 +136,7 @@ jobs:
       - name: Tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq osmium-tool rclone
+          sudo apt-get install -y -qq osmium-tool unzip && curl -fsSL https://rclone.org/install.sh | sudo bash > /dev/null && rclone version | head -1
           npm ci --prefix tools/tiles
           tools/tiles/build_h3tool.sh
       - uses: actions/download-artifact@v4
@@ -179,7 +180,7 @@ jobs:
       - name: Tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq rclone
+          sudo apt-get install -y -qq unzip && curl -fsSL https://rclone.org/install.sh | sudo bash > /dev/null && rclone version | head -1
           npm ci --prefix tools/tiles
       - uses: actions/download-artifact@v4
         with:
