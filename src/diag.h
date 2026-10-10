@@ -15,7 +15,12 @@ void begin();
 void drainDriverLogs(); // called outside logger/SD locks
 void finishBoot(); // freeze protected boot copy for later serial retrieval
 void dumpToSerial(); // works without a card; never consumes buffered data
-void dumpSDToSerial(size_t maxBytes = 131072); // bounded read-only daily-log tail
+// Bounded read-only /logs dump over serial, on its own task (returns at once).
+// name: a file in /logs (nullptr = today's); offset < 0 = the last maxBytes,
+// otherwise maxBytes from that offset. maxBytes 256..262144.
+void dumpSDToSerial(const char* name, long offset, size_t maxBytes);
+void listSDLogs();                    // "[sdlog] file <name> <size>" per /logs file
+bool validLogName(const char* name);  // a bare /logs file name, no path
 void checkpoint(const char* reason); // bounded NVS fallback, at most once/boot
 
 // printf-style; also echoed to Serial. Keep messages short.

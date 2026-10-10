@@ -1974,7 +1974,9 @@ static void printConsoleHelp() {
     Serial.println("  crashlog [panic]     report status; panic deliberately reboots (no active ride)");
     Serial.println("  memfault [export]    offline crash status or non-destructive SDK chunk export");
     Serial.println("  diag                dump retained boot/recent/flash diagnostics (no SD needed)");
-    Serial.println("  diag sd [bytes]     read daily SD log over serial (default last 128 KiB)");
+    Serial.println("  diag sd [file] [bytes] [offset]  read an SD log over serial (default:");
+    Serial.println("                      today's, last 128 KiB; offset reads from there)");
+    Serial.println("  diag sd ls          list /logs files and sizes");
     Serial.println("  pm [on|off]         report PM/driver locks, or request light-sleep A/B");
     Serial.println("  bleinterval [status|fast]  measured link or transient fast request");
     Serial.println("  autosleep [on|off]   idle auto-shutdown, this boot only (default on)");
@@ -2291,13 +2293,38 @@ static void runConsoleLine(char* line) {
     } else if (!strcasecmp(cmd, "diag")) {
         if (!arg) diag::dumpToSerial();
         else if (!strcasecmp(arg, "sd")) {
-            const char* amount = strtok(nullptr, " \t");
+            // diag sd [file] [bytes] [offset] | diag sd ls. A first token that
+            // isn't a number names a /logs file; no offset means the tail.
+            const char* tok = strtok(nullptr, " \t");
+            const char* file = nullptr;
+            bool bad = false;
+            if (tok && !strcasecmp(tok, "ls")) {
+                if (strtok(nullptr, " \t")) Serial.println("[cmd] diag sd ls");
+                else diag::listSDLogs();
+                return;
+            }
+            if (tok && !isdigit((unsigned char)tok[0])) {
+                file = tok;
+                bad = !diag::validLogName(file);
+                tok = strtok(nullptr, " \t");
+            }
+            unsigned long bytes = 131072;
+            long offset = -1;
             char* end = nullptr;
-            unsigned long bytes = amount ? strtoul(amount, &end, 10) : 131072;
-            if ((amount && (!*amount || *end || bytes < 256 || bytes > 262144)) || strtok(nullptr, " \t"))
-                Serial.println("[cmd] diag sd [256..262144 bytes]");
-            else diag::dumpSDToSerial((size_t)bytes);
-        } else Serial.println("[cmd] diag [sd [bytes]]");
+            if (tok) {
+                bytes = strtoul(tok, &end, 10);
+                bad |= !*tok || *end || bytes < 256 || bytes > 262144;
+                tok = strtok(nullptr, " \t");
+            }
+            if (tok) {
+                unsigned long o = strtoul(tok, &end, 10);
+                bad |= !*tok || *end || o > 0x7FFFFFFFul;
+                offset = (long)o;
+            }
+            if (bad || strtok(nullptr, " \t"))
+                Serial.println("[cmd] diag sd [file] [256..262144 bytes] [offset] | diag sd ls");
+            else diag::dumpSDToSerial(file, offset, (size_t)bytes);
+        } else Serial.println("[cmd] diag [sd [file] [bytes] [offset] | sd ls]");
     } else if (!strcasecmp(cmd, "pm")) {
         if (arg && !strcasecmp(arg, "on")) power_mgmt::requestSleep(true);
         else if (arg && !strcasecmp(arg, "off")) power_mgmt::requestSleep(false);
@@ -2650,7 +2677,7 @@ void task(void*) {
         // with BOOT.
         if (autoSleepEnabled && millis() - lastActivityMs > AUTO_SLEEP_MS &&
             !ride_recorder::isRecording() && !routes::navActive() &&
-            !ble_server::isPhoneConnected()) {
+            !ble_server::isPhoneConnected() && !ble_server::linkPending()) {
             uint8_t* fb = epdc_framebuffer();
             shutdownDevice(fb, "auto-sleep (idle timeout)");   // does not return
         }
@@ -3083,11 +3110,13 @@ void task(void*) {
                 else
                     ui_render_power_sheet(s.recording, fb);
             }
+            }  // end else (normal screens)
             // Pairing code sheet sits over everything — the phone's dialog is
-            // modal on its side too.
+            // modal on its side too. Outside the branch above, so it covers
+            // the "Start navigation?" prompt as well: a code the rider can't
+            // see is a pairing that can't finish.
             if (unsigned int pc = ble_server::pairingCode())
                 ui_render_pairing(pc, fb);
-            }  // end else (normal screens)
             // Leaving the picker (another page, a menu, a workout loading)
             // re-arms its rescan-on-appear.
             workoutPickShown = pickerThisFrame;

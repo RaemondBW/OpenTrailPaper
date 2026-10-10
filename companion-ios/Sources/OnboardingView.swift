@@ -364,7 +364,8 @@ struct OnboardingView: View {
     private var connectStatusText: String {
         switch ble.state {
         case .connected:  return "Connected to your device"
-        case .connecting: return "Connecting…"
+        case .connecting: return ble.linkSecuring
+            ? "Pairing — enter the code shown on the device" : "Connecting…"
         case .poweredOff: return "Turn on Bluetooth to connect"
         default:          return "Looking for your device…"
         }

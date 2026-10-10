@@ -1129,6 +1129,17 @@ int main(int argc, char** argv) {
     emit("nav_banner.png");
     map.navBannerVisible = false;
 
+    // The pairing sheet over the map page mid-ride: the code must show on
+    // every screen, recording or not.
+    {
+        RideState rs = s;
+        rs.recording = true;
+        clearWhite(fb.data());
+        ui_render_map(map, rs, fb.data());
+        ui_render_pairing(831427, fb.data());
+        emit("pairing_map_recording.png");
+    }
+
     // LAST on purpose. `map` holds POINTERS into map_tiles' projected buffers
     // and the route preview re-projects them for its own viewport, so any map
     // screen rendered after this one would silently inherit the preview's
@@ -1153,6 +1164,10 @@ int main(int argc, char** argv) {
     ui::statusBar(s, fb.data());
     ui_render_nav_prompt(::routes::activeName(), 8, fb.data());
     emit("nav_prompt.png");
+    // ...and over the nav prompt, which ui_dashboard draws outside the
+    // normal-screens branch (the sheet used to be skipped there).
+    ui_render_pairing(831427, fb.data());
+    emit("pairing_nav_prompt.png");
     ::routes::gRoute.clear();
 
     return 0;

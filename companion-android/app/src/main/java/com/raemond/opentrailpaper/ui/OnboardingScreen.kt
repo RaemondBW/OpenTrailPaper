@@ -580,6 +580,7 @@ private fun ConnectPage(ble: BleManager, active: Boolean) {
                     when (ble.state) {
                         BleManager.ConnState.CONNECTED -> "Connected to your device"
                         BleManager.ConnState.CONNECTING -> "Connecting…"
+                        BleManager.ConnState.PAIRING -> "Type the code shown on the device"
                         BleManager.ConnState.POWERED_OFF -> "Turn on Bluetooth to connect"
                         else -> "Looking for your device…"
                     },

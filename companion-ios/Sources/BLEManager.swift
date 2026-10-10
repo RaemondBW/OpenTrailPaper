@@ -580,6 +580,22 @@ final class BLEManager: NSObject, ObservableObject {
     // the device no longer holds, encryption fails, iOS drops the link — and
     // only the RIDER can fix it (Forget This Device), so at three we say so.
     private var barrenConnects = 0
+    /// The link proved itself this connection: a protected (authenticated-
+    /// only) characteristic answered. Until then the UI says connecting /
+    /// pairing, never connected — the firmware gives an unauthenticated link
+    /// nothing, so "connected" before this would be a lie.
+    private var authenticatedSinceConnect = false
+    /// Link up but not yet authenticated: the UI shows "Pairing…" (iOS may be
+    /// showing its code dialog right now; the code is on the device's panel).
+    @Published private(set) var linkSecuring = false
+    private var connectedAt: Date? = nil
+    /// A protected read/write/subscribe failed for lack of authentication or
+    /// encryption on this connection: the pairing was cancelled, failed, or
+    /// refused.
+    private var authFailedSinceConnect = false
+    /// Last paired flag each device advertised (nil = never seen advertising,
+    /// e.g. reached through retrievePeripherals).
+    private var advPaired: [UUID: Bool] = [:]
 
     // MARK: fixed pairing
     //
@@ -598,6 +614,9 @@ final class BLEManager: NSObject, ObservableObject {
         /// on the device (or re-paired to another phone) and iOS still holds
         /// the old keys, which only the rider can delete.
         case notRecognised
+        /// The device is open for pairing but the pairing didn't complete
+        /// (code dialog cancelled, wrong code, or timed out).
+        case pairingNotFinished
         var id: Self { self }
     }
     @Published var pairingIssue: PairingIssue? = nil
@@ -612,6 +631,18 @@ final class BLEManager: NSObject, ObservableObject {
     static let pairedDeviceNameKey = "pairedDeviceName"
     /// Devices that turned us away this session — never auto-retried.
     private var rejectedIds: Set<UUID> = []
+    /// Devices that REFUSED this phone (fixed pairing, see refuse()): no
+    /// automatic connect of any kind — restore, system link, saved id, scan —
+    /// until the rider taps Connect (connectTapped). Each automatic attempt
+    /// would cost the rider nothing visible with current firmware, but older
+    /// firmware answered with a pairing request, which is the dialog loop.
+    private var refusedIds: Set<UUID> = []
+    /// Refused while it advertised "paired": the one case where the device
+    /// flipping to "unpaired" (the rider unpaired it on the panel) is worth an
+    /// automatic try — it then pairs with a code on the panel. Refused while
+    /// already unpaired means iOS holds stale keys or the code was cancelled;
+    /// retrying that would just repeat it, so only a tap does.
+    private var refusedWhilePaired: Set<UUID> = []
     /// Paired-to-someone devices seen while looking for our first device. If
     /// nothing unpaired shows up we try ONE of them anyway: after a reinstall
     /// the app has forgotten the device but iOS still holds the bond, and the
@@ -900,6 +931,11 @@ final class BLEManager: NSObject, ObservableObject {
         // and hands this app its own session over the same link.
         if restoredPeripheral, let p = peripheral {
             restoredPeripheral = false
+            guard !refusedIds.contains(p.identifier) else {
+                peripheral = nil
+                watchRefused()
+                return
+            }
             p.delegate = self
             state = .connecting
             central.connect(p)      // completes at once if iOS kept the link up
@@ -910,8 +946,8 @@ final class BLEManager: NSObject, ObservableObject {
         // ours counts.
         if peripheral == nil,
            let p = central.retrieveConnectedPeripherals(withServices: [BikeUUID.service])
-               .first(where: { pairedDeviceId == nil
-                   ? !rejectedIds.contains($0.identifier) : $0.identifier == pairedDeviceId }) {
+               .first(where: { !refusedIds.contains($0.identifier) && (pairedDeviceId == nil
+                   ? !rejectedIds.contains($0.identifier) : $0.identifier == pairedDeviceId) }) {
             peripheral = p
             p.delegate = self
             state = .connecting
@@ -921,7 +957,7 @@ final class BLEManager: NSObject, ObservableObject {
         // Our device, known but not connected: a pending connect has no
         // timeout and fires the moment it is in range, whatever private
         // address the PHONE is on — no scan needed.
-        if peripheral == nil, let saved = pairedDeviceId,
+        if peripheral == nil, let saved = pairedDeviceId, !refusedIds.contains(saved),
            let p = central.retrievePeripherals(withIdentifiers: [saved]).first {
             peripheral = p
             p.delegate = self
@@ -929,14 +965,62 @@ final class BLEManager: NSObject, ObservableObject {
             central.connect(p)
             return
         }
+        // Our device refused us: don't hunt for it, just listen for it to
+        // advertise "unpaired" (see watchRefused).
+        if peripheral == nil, let saved = pairedDeviceId, refusedIds.contains(saved) {
+            watchRefused()
+            return
+        }
         state = .scanning
         // Duplicates while hunting for a first device: a device that was
         // paired-elsewhere when first seen must be noticed again the moment
         // its rider unpairs it (its advertisement flips).
         central.scanForPeripherals(withServices: [BikeUUID.service], options: [
-            CBCentralManagerScanOptionAllowDuplicatesKey: pairedDeviceId == nil,
+            CBCentralManagerScanOptionAllowDuplicatesKey: pairedDeviceId == nil || !refusedIds.isEmpty,
         ])
         if pairedDeviceId == nil { armPairedFallback() }
+    }
+
+    /// The rider's Connect / Scan button: the explicit retry that lifts a
+    /// refusal. Never called automatically.
+    func connectTapped() {
+        refusedIds = []
+        refusedWhilePaired = []
+        barrenConnects = 0
+        pairingIssue = nil
+        if peripheral == nil { central?.stopScan() }
+        startScan()
+    }
+
+    /// Refused by our device: listen (no connect) for its advertisement, so a
+    /// rider who unpairs it on the panel gets reconnected without a tap. The
+    /// state reads "not connected", not "searching" — nothing is being tried.
+    private func watchRefused() {
+        guard let central, central.state == .poweredOn else { return }
+        state = .idle
+        central.scanForPeripherals(withServices: [BikeUUID.service], options: [
+            CBCentralManagerScanOptionAllowDuplicatesKey: true,
+        ])
+    }
+
+    /// The device turned this phone away (fixed pairing, firmware
+    /// ble_server.cpp): it is paired with another phone, or with this one
+    /// before iOS forgot it, and stays that way until the rider unpairs it on
+    /// the device. Stop every automatic reconnect and say what to do.
+    private func refuse(_ p: CBPeripheral, iosKeysStale: Bool) {
+        let id = p.identifier
+        refusedIds.insert(id)
+        let wasPaired = advPaired[id]
+        if wasPaired == true { refusedWhilePaired.insert(id) }
+        if wasPaired == false && !iosKeysStale {
+            pairingIssue = .pairingNotFinished
+        } else if pairedDeviceId == id || iosKeysStale {
+            pairingIssue = .notRecognised
+        } else {
+            pairingIssue = .pairedElsewhere
+            rejectedIds.insert(id)
+        }
+        barrenConnects = 0
     }
 
     func disconnect() {
@@ -983,6 +1067,7 @@ final class BLEManager: NSObject, ObservableObject {
         onFallbackAttempt = false
         pairingIssue = nil
         rejectedIds.remove(p.identifier)
+        refusedIds.remove(p.identifier)
         guard pairedDeviceId != p.identifier else { return }
         pairedDeviceId = p.identifier
         pairedDeviceName = p.name
@@ -2612,7 +2697,18 @@ extension BLEManager: CBCentralManagerDelegate {
                                     rssi: NSNumber) {
         let pairedFlag = BLEManager.advertisesPaired(advertisementData)
         MainActor.assumeIsolated {
+            if let pairedFlag { advPaired[p.identifier] = pairedFlag }
             guard peripheral == nil else { return }
+            if refusedIds.contains(p.identifier) {
+                // Refused while paired, and now it says it's unpaired: the
+                // rider unpaired it on the device. One automatic try — it
+                // pairs with a code on the panel. Anything else waits for a tap.
+                guard pairedFlag == false,
+                      refusedWhilePaired.contains(p.identifier) else { return }
+                refusedIds.remove(p.identifier)
+                refusedWhilePaired.remove(p.identifier)
+                pairingIssue = nil
+            }
             if let saved = pairedDeviceId {
                 // Fixed pairing: ours or nothing.
                 guard p.identifier == saved else { return }
@@ -2637,7 +2733,41 @@ extension BLEManager: CBCentralManagerDelegate {
 
     nonisolated func centralManager(_ c: CBCentralManager,
                                     didConnect p: CBPeripheral) {
-        MainActor.assumeIsolated { p.discoverServices([BikeUUID.service]) }
+        MainActor.assumeIsolated {
+            connectedAt = Date()
+            authenticatedSinceConnect = false
+            authFailedSinceConnect = false
+            linkSecuring = true
+            p.discoverServices([BikeUUID.service])
+        }
+    }
+
+    /// A connect that never came up. iOS reports stale pairing keys here too
+    /// (the device was unpaired after iOS bonded): that is a refusal, and
+    /// retrying would only repeat it. Anything else gets the same bounded
+    /// treatment as a barren connect, a moment later.
+    nonisolated func centralManager(_ c: CBCentralManager,
+                                    didFailToConnect p: CBPeripheral,
+                                    error: Error?) {
+        MainActor.assumeIsolated {
+            guard peripheral === p else { return }
+            linkSecuring = false
+            connectedAt = nil
+            let code = (error as? CBError)?.code
+            let stale = code == .peerRemovedPairingInformation || code == .encryptionTimedOut
+            barrenConnects += 1
+            if stale || barrenConnects >= 3 {
+                refuse(p, iosKeysStale: stale)
+                peripheral = nil
+                startScan()
+                return
+            }
+            state = .connecting
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+                guard let self, self.peripheral === p, p.state == .disconnected else { return }
+                c.connect(p)
+            }
+        }
     }
 
     nonisolated func centralManager(_ c: CBCentralManager,
@@ -2684,19 +2814,39 @@ extension BLEManager: CBCentralManagerDelegate {
                 finishTileJob(message: "Interrupted — reconnect to resume")
             }
             status = DeviceStatus()
-            let admitted = sawStatusSinceConnect
-            // Ours, and turning us away: a remembered device that keeps
-            // dropping us before any data (the firmware pushes nothing until
-            // the link proves the bond) was unpaired on the device, or now
-            // belongs to another phone. Three in a row, so a reboot or a
-            // range drop doesn't cry wolf.
+            let admitted = authenticatedSinceConnect || sawStatusSinceConnect
+            // Was this the device turning us away? It drops a phone it won't
+            // have before any protected data: at once when it's paired and we
+            // aren't its phone, or when our pairing request arrives after iOS
+            // forgot it. Signals, strongest first: iOS saying the keys are
+            // gone; a protected request failing for lack of authentication;
+            // a quick drop from a device that advertises "paired"; and, for a
+            // device reached without seeing its advertisement, three barren
+            // connects in a row (so a reboot or a range drop doesn't cry wolf).
+            // OUR device advertises "paired" too — to us — so for it a single
+            // quick drop or a mid-handshake auth error is not enough: a radio
+            // drop mid-ride must keep reconnecting. It takes the stale-keys
+            // error or three barren connects.
+            var refused = false
+            var iosKeysStale = false
             if !admitted {
                 barrenConnects += 1
-                if barrenConnects == 3 && !onFallbackAttempt { pairingIssue = .notRecognised }
+                let code = (error as? CBError)?.code
+                iosKeysStale = code == .peerRemovedPairingInformation || code == .encryptionTimedOut
+                let quick = connectedAt.map { -$0.timeIntervalSinceNow < 8 } ?? false
+                let ours = pairedDeviceId == p.identifier
+                refused = iosKeysStale ||
+                    (!ours && authFailedSinceConnect) ||
+                    (!ours && quick && advPaired[p.identifier] == true) ||
+                    (barrenConnects >= 3 && !onFallbackAttempt)
             } else {
                 barrenConnects = 0
             }
             sawStatusSinceConnect = false
+            authenticatedSinceConnect = false
+            authFailedSinceConnect = false
+            linkSecuring = false
+            connectedAt = nil
             rides = []; loadingRides = false
             // Nothing queued can proceed without a link, and a half-received
             // file must not be mistaken for a complete one on reconnect.
@@ -2724,6 +2874,13 @@ extension BLEManager: CBCentralManagerDelegate {
                 forgetting = false
                 peripheral = nil
                 startScan()
+            } else if refused {
+                // No reconnect: that would only be refused again (and older
+                // firmware answered with a pairing dialog — the loop).
+                onFallbackAttempt = false
+                refuse(p, iosKeysStale: iosKeysStale)
+                peripheral = nil
+                startScan()   // listens for it to unpair; never connects to it
             } else if onFallbackAttempt && !admitted {
                 onFallbackAttempt = false
                 pairingIssue = .pairedElsewhere
@@ -2741,6 +2898,31 @@ extension BLEManager: CBCentralManagerDelegate {
 }
 
 extension BLEManager: CBPeripheralDelegate {
+    /// First protected value of this connection: the link is authenticated
+    /// and the device admitted us. Only now is it "connected".
+    private func markAuthenticated() {
+        authenticatedSinceConnect = true
+        linkSecuring = false
+        barrenConnects = 0
+        state = .connected
+        rememberPairedDevice()
+    }
+
+    /// A protected request refused for lack of authentication/encryption:
+    /// pairing was cancelled, failed, or the device won't pair with us. Acted
+    /// on when the link drops (didDisconnect), not here — iOS answers these
+    /// errors by pairing, and the first pairing on an open device must be
+    /// allowed to finish.
+    private func noteAuthError(_ error: Error?) {
+        guard let error = error as? CBATTError, !authenticatedSinceConnect else { return }
+        switch error.code {
+        case .insufficientAuthentication, .insufficientEncryption,
+             .insufficientEncryptionKeySize, .insufficientAuthorization:
+            authFailedSinceConnect = true
+        default: break
+        }
+    }
+
     nonisolated func peripheral(_ p: CBPeripheral, didDiscoverServices error: Error?) {
         // Discover ALL characteristics (nil) — an explicit list previously
         // omitted the sensors + map characteristics, so those features never
@@ -2790,7 +2972,8 @@ extension BLEManager: CBPeripheralDelegate {
                 default: break
                 }
             }
-            state = .connected
+            // Not .connected yet: that waits for the first protected read to
+            // come back (markAuthenticated). Until then iOS may be pairing.
         }
     }
 
@@ -2801,6 +2984,7 @@ extension BLEManager: CBPeripheralDelegate {
                                 didUpdateNotificationStateFor ch: CBCharacteristic,
                                 error: Error?) {
         MainActor.assumeIsolated {
+            noteAuthError(error)
             if ch.uuid == BikeUUID.ota { queryDeviceFirmware() }
             if ch.uuid == BikeUUID.sensors, let p = peripheral {
                 p.writeValue(Data([0x05]), for: ch, type: .withResponse)   // one snapshot
@@ -2851,6 +3035,7 @@ extension BLEManager: CBPeripheralDelegate {
                                 error: Error?) {
         if let error {
             artLog.error("write to \(ch.uuid.uuidString, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+            MainActor.assumeIsolated { noteAuthError(error) }
         }
         if ch.uuid == BikeUUID.settings {
             MainActor.assumeIsolated {
@@ -2865,8 +3050,15 @@ extension BLEManager: CBPeripheralDelegate {
     nonisolated func peripheral(_ p: CBPeripheral,
                                 didUpdateValueFor ch: CBCharacteristic,
                                 error: Error?) {
+        if let error {
+            MainActor.assumeIsolated { noteAuthError(error) }
+            return
+        }
         guard let data = ch.value else { return }
         MainActor.assumeIsolated {
+            // Every characteristic on the device needs an authenticated link,
+            // so any value arriving proves one.
+            if !authenticatedSinceConnect { markAuthenticated() }
             switch ch.uuid {
             case BikeUUID.status: parseStatus(data)
             case BikeUUID.settings: parseSettings(data)
