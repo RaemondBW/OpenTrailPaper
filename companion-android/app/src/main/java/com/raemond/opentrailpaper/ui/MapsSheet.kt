@@ -53,6 +53,7 @@ import androidx.compose.ui.unit.sp
 import com.raemond.opentrailpaper.ble.BleManager
 import com.raemond.opentrailpaper.data.BoundingBox
 import com.raemond.opentrailpaper.data.LatLon
+import com.raemond.opentrailpaper.BuildConfig
 import com.raemond.opentrailpaper.map.EInkTileStore
 import com.raemond.opentrailpaper.map.H3Tiles
 import com.raemond.opentrailpaper.map.MapBuilder
@@ -60,6 +61,7 @@ import com.raemond.opentrailpaper.map.MapTile
 import com.raemond.opentrailpaper.map.OsmData
 import com.raemond.opentrailpaper.map.OutlineHex
 import com.raemond.opentrailpaper.map.PoiCache
+import com.raemond.opentrailpaper.map.PrebuiltTiles
 import com.raemond.opentrailpaper.map.Cycling
 import com.raemond.opentrailpaper.map.SelectionHex
 import com.raemond.opentrailpaper.map.TileCache
@@ -292,6 +294,9 @@ fun MapsSheet(
 
         job = scope.launch {
             com.raemond.opentrailpaper.map.DownloadStats.reset()
+            // Ready-made tiles first (one instance: the map and POI passes share
+            // the group indexes); Overpass only for what it does not have.
+            val cdn = PrebuiltTiles(BuildConfig.TILE_BASE_URL)
             try {
                 // Cycling POIs: their own small query and cache, started NOW so
                 // they arrive while the map batches are still building. A failure
@@ -299,7 +304,7 @@ fun MapsSheet(
                 val poisJob = async {
                     if (poiWork.isEmpty()) return@async true
                     try {
-                        downloadPois(poiWork, useCache = !redownload, onStatus = {}, enqueue = { ble.enqueuePois(it) })
+                        downloadPois(poiWork, cdn, useCache = !redownload, onStatus = {}, enqueue = { ble.enqueuePois(it) })
                         true
                     } catch (e: CancellationException) {
                         throw e
@@ -310,6 +315,7 @@ fun MapsSheet(
                 if (missing.isNotEmpty()) {
                     downloadTiles(
                         missing = missing,
+                        cdn = cdn,
                         useCache = !redownload,
                         onStatus = { status = it },
                         onBuilt = { ids ->
@@ -642,6 +648,7 @@ private fun HeaderPill(label: String, filled: Boolean, onClick: () -> Unit) {
  */
 private suspend fun downloadTiles(
     missing: List<MapTile>,
+    cdn: PrebuiltTiles,
     useCache: Boolean,
     onStatus: (String?) -> Unit,
     onBuilt: (List<String>) -> Unit,
@@ -659,11 +666,36 @@ private suspend fun downloadTiles(
         enqueue(cached)
     }
     val cachedIds = cached.map { it.first }.toSet()
+    com.raemond.opentrailpaper.map.DownloadStats.count("cached tiles", cached.size)
+
+    // Pre-built tiles from the CDN (docs/prebuilt-tiles.md): the same bytes this
+    // phone would build, so they are cached, marked and sent exactly like built
+    // ones. Hexes it has not built (or a tile that fails its size/magic check)
+    // fall through to Overpass below; hexes it built EMPTY do not — Overpass
+    // would only drop them as empty again.
+    val toServe = missing.filter { it.id !in cachedIds }
+    var servedIds = emptySet<String>()
+    if (toServe.isNotEmpty() && cdn.enabled) {
+        onStatus("Downloading ready-made tiles…")
+        val t0 = System.nanoTime()
+        val r = cdn.fetchTiles(toServe.map { it.id })
+        com.raemond.opentrailpaper.map.DownloadStats.add("cdn", (System.nanoTime() - t0) / 1e9)
+        com.raemond.opentrailpaper.map.DownloadStats.count("cdn tiles", r.tiles.size)
+        com.raemond.opentrailpaper.map.DownloadStats.count("cdn empty", r.empty.size)
+        if (r.tiles.isNotEmpty()) {
+            TileCache.store(r.tiles)
+            onBuilt(r.tiles.map { it.first })
+            enqueue(r.tiles)
+        }
+        if (r.empty.isNotEmpty()) onFailed(r.empty)
+        servedIds = (r.tiles.map { it.first } + r.empty).toSet()
+    }
 
     // Group tiles into bounded OSM fetches (~0.08° ≈ 9 km) so each Overpass query
     // stays light — big queries 504 on the busy public servers.
-    val batches = missing
-        .filter { it.id !in cachedIds }
+    val overpass = missing.filter { it.id !in cachedIds && it.id !in servedIds }
+    com.raemond.opentrailpaper.map.DownloadStats.count("overpass tiles", overpass.size)
+    val batches = overpass
         .groupBy { t ->
             val clat = (t.south + t.north) / 2
             val clon = (t.west + t.east) / 2
@@ -679,7 +711,7 @@ private suspend fun downloadTiles(
     // reaches the shore from anywhere a rider would sensibly select, and is cheap
     // because it is coastline-only. It runs ALONGSIDE the first map batches; each
     // batch waits for it only after its own fetch, when it needs the sea rings.
-    val all = union(missing)
+    val all = union(overpass)
     val pad = 0.35
     coroutineScope {
         val seaRingsAsync = async {
@@ -794,6 +826,7 @@ private suspend fun buildBatch(
  */
 private suspend fun downloadPois(
     work: List<MapTile>,
+    cdn: PrebuiltTiles,
     useCache: Boolean,
     onStatus: (String?) -> Unit,
     enqueue: (List<Pair<String, ByteArray>>) -> Unit,
@@ -801,7 +834,24 @@ private suspend fun downloadPois(
     val (cached, missingIds) =
         if (useCache) PoiCache.partition(work.map { it.id }) else emptyList<Pair<String, ByteArray>>() to work.map { it.id }
     if (cached.isNotEmpty()) enqueue(cached)
-    val need = missingIds.toSet()
+    var need = missingIds.toSet()
+    // Pre-built .poi files first (also on a Redownload: the CDN is fresh data).
+    if (need.isNotEmpty() && cdn.enabled) {
+        val r = cdn.fetchPois(missingIds)
+        val byId = work.associateBy { it.id }
+        val files = r.files + r.none.mapNotNull { id ->
+            byId[id]?.let { t ->
+                id to Cycling.buildPoi(emptyList(), t.south, t.west, t.north, t.east, t.id) { _, _ -> true }
+            }
+        }
+        com.raemond.opentrailpaper.map.DownloadStats.count("cdn pois", files.size)
+        if (files.isNotEmpty()) {
+            PoiCache.store(files)
+            enqueue(files)
+        }
+        need = r.fallback.toSet()
+    }
+    com.raemond.opentrailpaper.map.DownloadStats.count("overpass pois", need.size)
     val groups = work.filter { it.id in need }.groupBy { t ->
         val clat = (t.south + t.north) / 2
         val clon = (t.west + t.east) / 2

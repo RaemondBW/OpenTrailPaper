@@ -1037,7 +1037,11 @@ object DownloadStats {
     private val stages = java.util.concurrent.ConcurrentHashMap<String, Double>()
     @Volatile private var started = System.nanoTime()
 
-    fun reset() { started = System.nanoTime(); requests.clear(); stages.clear() }
+    private val counts = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
+    fun reset() { started = System.nanoTime(); requests.clear(); stages.clear(); counts.clear() }
+    /** Hexes served by each source ("cdn tiles", "overpass tiles", …). */
+    fun count(what: String, n: Int) { if (n > 0) counts.merge(what, n, Int::plus) }
     fun request(kind: String, host: String, status: Int, seconds: Double, bytes: Long) {
         requests.add(Req(kind, host, status, seconds, bytes))
     }
@@ -1047,6 +1051,20 @@ object DownloadStats {
         val us = java.util.Locale.US
         val sb = StringBuilder("map download: $hexes hexes in %.1f s".format(us, (System.nanoTime() - started) / 1e9))
         val rs = synchronized(requests) { requests.toList() }
+        if (counts.isNotEmpty()) {
+            sb.append("\n  hexes: " + counts.toSortedMap().entries.joinToString(", ") { "${it.value} ${it.key}" })
+        }
+        for (kind in listOf("cdn-index", "cdn-tile", "cdn-poi")) {
+            val k = rs.filter { it.kind == kind }
+            if (k.isEmpty()) continue
+            val ok = k.filter { it.status == 200 }
+            sb.append(
+                "\n  %s: %d requests (%d not 200), %.1f s summed, %.1f MB".format(
+                    us, kind, k.size, k.size - ok.size, k.sumOf { it.seconds }, ok.sumOf { it.bytes } / 1048576.0,
+                ),
+            )
+        }
+        stages["cdn"]?.let { sb.append("\n  cdn wall: %.1f s".format(us, it)) }
         for (kind in listOf("map", "coast", "poi")) {
             val k = rs.filter { it.kind == kind }
             if (k.isEmpty()) continue
@@ -1058,7 +1076,7 @@ object DownloadStats {
                 ),
             )
         }
-        for ((k, v) in stages.toSortedMap()) sb.append("\n  %s: %.1f s summed".format(us, k, v))
+        for ((k, v) in stages.toSortedMap()) if (k != "cdn") sb.append("\n  %s: %.1f s summed".format(us, k, v))
         return sb.toString()
     }
 
