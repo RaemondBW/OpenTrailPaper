@@ -60,7 +60,7 @@ function h3batch(mode, lines) {
   for (let i = 0; i < lines.length; i += 200000) {
     const r = spawnSync(h3tool(), [mode], { input: lines.slice(i, i + 200000).join("\n") + "\n", maxBuffer: 1 << 30 });
     if (r.status !== 0) throw new Error(`h3tool ${mode} failed: ${r.stderr}`);
-    out.push(...r.stdout.toString().trim().split("\n"));
+    for (const l of r.stdout.toString().trim().split("\n")) out.push(l);
   }
   return out;
 }
@@ -89,9 +89,19 @@ function makeBuilder(store, emuData, demOpts, elevation) {
       grid = [];
       for (const [la, lo] of elevationSamplePoints(t.s, t.w, t.n, t.e)) grid.push(elevationValue(await dem.at(la, lo)));
     }
+    const ways = json.elements.filter((e) => e.type === "way").length;
+    // Open sea: no way, no coastline within reach, no POI, sea level all
+    // over (no DEM there). The app would store a tile holding nothing but a
+    // zero elevation grid; publish it as built-and-empty instead (index
+    // size 0: the apps skip it without asking Overpass). Geofabrik polygons
+    // reach far offshore — australia-oceania alone has ~3 M such cells.
+    if (ways === 0 && coastWays.length === 0 && pois.length === 0 && (!grid || grid.every((v) => v === 0))) {
+      const poi = buildPoi(poiResponse([]), { s: t.s, w: t.w, n: t.n, e: t.e, cell: t.id, contains: () => true });
+      return { ebm: null, poi, ms: performance.now() - t0, ways, coast: 0, sea: true };
+    }
     const ebm = buildAppTile(json, rings, grid, t);
     const poi = buildPoi(poiResponse(pois), { s: t.s, w: t.w, n: t.n, e: t.e, cell: t.id, contains: () => true });
-    return { ebm, poi, ms: performance.now() - t0, ways: json.elements.filter((e) => e.type === "way").length, coast: coastWays.length };
+    return { ebm, poi, ms: performance.now() - t0, ways, coast: coastWays.length };
   };
 }
 
@@ -142,8 +152,8 @@ async function runCells(cells, store, poisByCell, { workers: nWorkers, demOpts, 
     const need = new Set();
     for (const t of cells) for (let la = Math.floor(t.s); la <= Math.floor(t.n); la++) for (let lo = Math.floor(t.w); lo <= Math.floor(t.e); lo++) need.add(`${la},${lo}`);
     const keys = [...need];
-    for (let i = 0; i < keys.length; i += 8) {
-      await Promise.all(keys.slice(i, i + 8).map((k) => { const [la, lo] = k.split(",").map(Number); return dem.at(la + 0.5, lo + 0.5); }));
+    for (let i = 0; i < keys.length; i += 16) {
+      await Promise.all(keys.slice(i, i + 16).map((k) => { const [la, lo] = k.split(",").map(Number); return dem.at(la + 0.5, lo + 0.5); }));
     }
     log(`DEM: ${need.size} 1° tiles needed, ${dem.stats.downloads} downloaded (${(dem.stats.bytes / 1048576).toFixed(0)} MB), ${dem.stats.missing} sea/absent`);
   }
@@ -349,7 +359,7 @@ async function main() {
   }
 
   const upload = [];
-  for (const frag of frags) upload.push(...frag.save((Date.now() - started) / 1000, log));
+  for (const frag of frags) for (const k of frag.save((Date.now() - started) / 1000, log)) upload.push(k);
   fs.writeFileSync(path.join(out, "upload.txt"), upload.join("\n") + (upload.length ? "\n" : ""));
   if (!a.tmp) fs.rmSync(tmp, { recursive: true, force: true });
 }

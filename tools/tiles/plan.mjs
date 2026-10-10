@@ -3,22 +3,25 @@
 // order, and how to pack them into GitHub Actions jobs.
 //
 //   node tools/tiles/plan.mjs --index index-v1.json --out plan.json
-//        [--jobs 20] [--max-mb 1500] [--only id,id,…] [--sizes sizes.json]
+//        [--jobs 20] [--max-mb 1500] [--max-cells 600000] [--only id,id,…] [--sizes sizes.json]
 //
-// Start from the continents and replace any extract bigger than --max-mb by
-// its subregions (recursively), so one region fits a runner's 16 GB RAM and
-// 14 GB disk with room to spare. Geofabrik also publishes overlapping
+// Start from the continents and replace any extract bigger than --max-mb, or
+// whose polygon holds more than --max-cells H3 cells (Geofabrik polygons reach
+// far offshore: australia-oceania covers ~3 M cells of Pacific), by its
+// subregions (recursively), so one region fits a runner's 16 GB RAM, 14 GB
+// disk and a few hours. Geofabrik also publishes overlapping
 // aggregates (us-west, dach, alps, …); those are never used. Sizes come from
 // HEAD requests (Content-Length), cached in --sizes when given.
 //
 // plan.json:
-//   { regions: [{ id, url, mb, geometry }],   ownership order = sorted by id
-//     jobs:    [{ name, regions: [id…], mb, needs: [job name…] }] }
+//   { regions: [{ id, url, mb, cells, cost, geometry }],   ownership order = sorted by id
+//     jobs:    [{ name, regions: [id…], mb, cells, cost, needs: [job name…] }] }
 // `needs`: the jobs whose strips the border phase of this job reads — every
 // job holding a region within reach (0.5°) of one of this job's regions.
 // Jobs are runs of regions in Geofabrik URL order, so neighbours mostly
 // share a job.
 import fs from "node:fs";
+import { polygonToCells } from "h3-js";
 import { Region } from "./poly.mjs";
 
 // Aggregates that duplicate regions which are also published on their own.
@@ -51,7 +54,19 @@ async function headSize(url) {
   throw new Error(`HEAD ${url} failed`);
 }
 
-export async function plan({ index, maxMb = 1500, jobs = 20, only = null, sizes = {} }) {
+// Rough seconds on a 4-core runner (measured on Switzerland, Greenland,
+// Wyoming): extract size drives parsing and dense cells, cell count drives
+// the per-cell work (coastline, DEM). Only used to balance jobs.
+const cost = (mb, cells) => 2 * (mb * 0.06 + cells * 0.0025);
+
+function cellCount(geometry) {
+  const polys = geometry.type === "Polygon" ? [geometry.coordinates] : geometry.coordinates;
+  let n = 0;
+  for (const p of polys) { try { n += polygonToCells(p, 6, true).length; } catch {} }
+  return n;
+}
+
+export async function plan({ index, maxMb = 1500, maxCells = 600000, jobs = 20, only = null, sizes = {} }) {
   const byId = new Map(index.features.map((f) => [f.properties.id, f]));
   const children = new Map();
   for (const f of index.features) {
@@ -65,10 +80,12 @@ export async function plan({ index, maxMb = 1500, jobs = 20, only = null, sizes 
     return sizes[id];
   };
   const chosen = [];
+  const cellsOf = new Map();
+  const cells = (id) => { if (!cellsOf.has(id)) cellsOf.set(id, cellCount(byId.get(id).geometry)); return cellsOf.get(id); };
   const visit = async (id) => {
     const mb = await size(id);
     const kids = children.get(id) || [];
-    if (mb != null && mb > maxMb && kids.length) {
+    if (mb != null && kids.length && (mb > maxMb || cells(id) > maxCells)) {
       // Fetch the children's sizes in parallel, then recurse.
       await Promise.all(kids.map(size));
       for (const k of kids.sort()) await visit(k);
@@ -80,7 +97,7 @@ export async function plan({ index, maxMb = 1500, jobs = 20, only = null, sizes 
 
   const regions = chosen.map((id) => {
     const f = byId.get(id);
-    return { id, url: f.properties.urls.pbf, mb: Math.round(sizes[id] * 10) / 10, geometry: f.geometry };
+    return { id, url: f.properties.urls.pbf, mb: Math.round(sizes[id] * 10) / 10, cells: cells(id), geometry: f.geometry };
   });
 
   // Pack in Geofabrik URL order (continent/country/subregion), so a job
@@ -88,14 +105,15 @@ export async function plan({ index, maxMb = 1500, jobs = 20, only = null, sizes 
   // the sequence into runs of about equal size (time is ~linear in size).
   const n = Math.max(1, Math.min(jobs, regions.length));
   const seq = [...regions].sort((x, y) => (x.url < y.url ? -1 : 1));
-  const total = seq.reduce((t, r) => t + r.mb, 0);
+  for (const r of seq) r.cost = Math.round(cost(r.mb, r.cells));
+  const total = seq.reduce((t, r) => t + r.cost, 0);
   const bins = [];
   let acc = 0;
   for (const r of seq) {
-    const want = Math.min(n - 1, Math.floor((acc + r.mb / 2) / (total / n)));
-    while (bins.length <= want) bins.push({ name: `j${String(bins.length + 1).padStart(2, "0")}`, regions: [], mb: 0 });
+    const want = Math.min(n - 1, Math.floor((acc + r.cost / 2) / (total / n)));
+    while (bins.length <= want) bins.push({ name: `j${String(bins.length + 1).padStart(2, "0")}`, regions: [], mb: 0, cells: 0, cost: 0 });
     const b = bins[bins.length - 1];
-    b.regions.push(r.id); b.mb += r.mb; acc += r.mb;
+    b.regions.push(r.id); b.mb += r.mb; b.cells += r.cells; b.cost += r.cost; acc += r.cost;
   }
   for (const b of bins) { b.regions.sort(); b.mb = Math.round(b.mb); }
 
@@ -135,13 +153,15 @@ async function main() {
   if (!a.index || !a.out) { console.error("usage: plan.mjs --index index-v1.json --out plan.json [--jobs N] [--max-mb MB] [--only id,…] [--sizes sizes.json]"); process.exit(2); }
   const index = JSON.parse(fs.readFileSync(a.index, "utf8"));
   const sizes = a.sizes && fs.existsSync(a.sizes) ? JSON.parse(fs.readFileSync(a.sizes, "utf8")) : {};
-  const p = await plan({ index, maxMb: Number(a["max-mb"] || 1500), jobs: Number(a.jobs || 20),
+  const p = await plan({ index, maxMb: Number(a["max-mb"] || 1500), maxCells: Number(a["max-cells"] || 600000), jobs: Number(a.jobs || 20),
     only: a.only ? String(a.only).split(",") : null, sizes });
   if (a.sizes) fs.writeFileSync(a.sizes, JSON.stringify(sizes, null, 1));
   fs.writeFileSync(a.out, JSON.stringify(p));
   const total = p.regions.reduce((s, r) => s + r.mb, 0);
-  console.error(`plan: ${p.regions.length} regions, ${(total / 1024).toFixed(1)} GB of extracts, ${p.jobs.length} jobs ` +
-    `(${p.jobs.map((j) => `${j.name} ${(j.mb / 1024).toFixed(1)} GB/${j.regions.length} regions/needs ${j.needs.length}`).join("; ")})`);
+  const cells = p.regions.reduce((s, r) => s + r.cells, 0);
+  console.error(`plan: ${p.regions.length} regions, ${(total / 1024).toFixed(1)} GB of extracts, ${(cells / 1e6).toFixed(2)} M cells, ${p.jobs.length} jobs:\n` +
+    p.jobs.map((j) => `  ${j.name}: ${(j.mb / 1024).toFixed(1)} GB, ${(j.cells / 1e3).toFixed(0)} k cells, ~${Math.round(j.cost / 60)} min est., ` +
+      `${j.regions.length} regions (${j.regions[0]} … ${j.regions[j.regions.length - 1]}), strips from ${j.needs.length} jobs`).join("\n"));
 }
 
 if (process.argv[1] && import.meta.url === `file://${(await import("node:path")).resolve(process.argv[1])}`) await main();
