@@ -15,8 +15,9 @@ build only for hexes that are not published.
 | elevation | Open-Meteo, ~250 hexes/day per IP, then tiles ship without it | always (Copernicus GLO-90) |
 | data age | live | at most ~8 days |
 
-Contents: [How it works](#how-it-works) · [Setup](#setup-one-time) ·
-[Verifying](#verifying) · [Costs](#costs) · [Freshness](#freshness) ·
+Contents: [How it works](#how-it-works) · [Versions](#versions) ·
+[Setup](#setup-one-time) · [Verifying](#verifying) · [Costs](#costs) ·
+[Freshness](#freshness) ·
 [Running locally](#running-locally) · [Tests](#tests) · [Limits](#known-limits)
 
 ## How it works
@@ -42,7 +43,8 @@ needs only one or two `index.json` files. They are the cheap global "does
 this hex exist" lookup: ~30 KB each, ~12 KB gzipped.
 
 ```json
-{"v":1,"cells":{"862a33157ffffff":[91021,"4271255cafb108cc",612,"9be0c4d1a2f3e4b5"], ...}}
+{"v":1,"cells":{"862a33157ffffff":[91021,"4271255cafb108cc",612,"9be0c4d1a2f3e4b5"], ...},
+ "regions":["us_rhode-island","us_rhode-island.border"]}
 ```
 
 Each cell maps to `[ebmSize, ebmHash, poiSize, poiHash]`:
@@ -57,7 +59,94 @@ Each cell maps to `[ebmSize, ebmHash, poiSize, poiHash]`:
 - **The hash** is sent as `?v=<hash>`, so a changed tile gets a new URL at
   the CDN. The apps also check that the body length equals the index size and
   that it starts with `EBM2` / `EPOI`. Anything else falls back to Overpass
-  for that hex.
+  for that hex. The apps also record the hash of everything they send, so
+  they never re-download a tile that has not changed
+  ([Versions](#versions)).
+- **`regions`** lists the fragments (the `meta.json` `fragments` keys) whose
+  cells are in the group. With `meta.json` it gives the OSM date of the
+  group's data, without fetching the large region manifests. It changes only
+  when a group's owners change, so the weekly OSM date does not turn every
+  `index.json` into an upload.
+
+## Versions
+
+Each hex's content hash is in its group's `index.json`. The apps record which
+version each device holds and compare it with that hash. So they show an
+update only when the published data really changed, and they never send a
+hex the device already has in its current version.
+
+### What is recorded
+
+When the device acknowledges that it saved a file, the app records a
+**version record** for that hex, separately for the tile and the `.poi`:
+
+| record | meaning |
+|---|---|
+| `cdn:<hash>` | the CDN file with that index hash (`ebmHash` / `poiHash`). A cell without POIs has `poiHash` `""`; the app writes its empty `.poi` itself and records it as `cdn:` |
+| `phone:<unix secs>` | built on the phone from Overpass at that time (the fallback) |
+
+The records are kept **per device**, under the same key as the device's
+map-layer settings: the peripheral UUID on iOS, the Bluetooth address on
+Android.
+
+- **iOS:** `Application Support/device-tile-versions.json`
+  (`DeviceTileVersions` in `TileVersions.swift`).
+- **Android:** `filesDir/device-tile-versions.tsv`
+  (`DeviceTileVersions` in `map/TileVersions.kt`).
+
+When the device's tile or POI list arrives, records for hexes it no longer
+lists are dropped. A copy that later arrives from elsewhere is then not
+mistaken for this phone's. The older per-phone tracking from the bike-route
+work (`tileSentAt`, `flaggedTileIds`, `poiSentAt`) is kept for the fallback
+heuristic.
+
+The phone's own caches (`TileCache`, `PoiCache`) store the same record in a
+`<id>.ver` file next to each blob. When the index has the hex, only a cached
+copy with exactly the current hash is reused, at any age. A stale or
+phone-built copy is fetched again. Without an index entry, the old rule
+applies: any copy younger than 90 days for tiles, 30 days for POIs, and none
+on a Redownload.
+
+### Comparison rules
+
+`PrebuiltTiles.state(record, cdnHash)` is the same in both apps:
+
+| index entry for the hex | device record | state |
+|---|---|---|
+| has the hash `h` | `cdn:h` | **current** |
+| has the hash `h` | `cdn:<other>`, `phone:…`, or none (a tile from the website ZIP or another phone) | **update** |
+| none: CDN unreachable, hex not pre-built, or tile built empty (`ebmSize` 0) | anything | **unknown** → old heuristic |
+
+- **Tiles** compare `ebmHash`; **POIs** compare `poiHash`.
+- **The heuristic** applies only to *unknown* hexes. A tile counts as an
+  update if it was made before bike routes, or this phone sent it over 90
+  days ago. POIs count if this phone sent them over 30 days ago.
+- **Index cache.** The Maps screen looks up the indexes of the device's hexes
+  on screen and of the selection (`CdnVersions`, at most 64 groups per look).
+  They come from the same one-hour index cache the downloads use.
+- **CDN unreachable.** The screen knows nothing for 5 minutes and falls back
+  to the heuristic. The map colours and legend are unchanged; only what feeds
+  them is new.
+
+### What the buttons do
+
+| | current hexes | changed hexes (update) | hexes the CDN does not have |
+|---|---|---|---|
+| **Download** (new hexes) | – (already on the device) | – | Overpass, as before |
+| **Send POIs** | skipped | fetched and sent | Overpass, as before |
+| **Redownload** | skipped | fetched and sent | rebuilt from Overpass, as before |
+
+- **Redownload** is labelled with the number of hexes it would send. When
+  every selected hex is current, tapping it says *"All N hexes are up to
+  date"* and offers **Re-send anyway**, which sends all N for repairing a
+  card. A cached copy with the current hash is the same bytes, so it is used
+  instead of a download.
+- **The download re-checks.** It looks up the hashes again before fetching,
+  so a stale screen cannot make it re-send a current hex.
+- **The selected-area card** shows the data date, e.g. *"Map data from
+  Oct 5"*: the oldest OSM timestamp in `meta.json` of the fragments named by
+  the selection's indexes. Under the counts it shows *"N hexes have newer
+  data"*, plus the heuristic reason for any unknown updates.
 
 ### The builder (`tools/tiles/`)
 
@@ -324,9 +413,12 @@ than four weeks' worth of PUTs, ≈ $2–5/month.
 - Geofabrik refreshes its extracts daily. The workflow builds on Mondays, so
   published data is **1–8 days** behind OSM. `meta.json` records each
   region's OSM timestamp.
-- The apps keep a downloaded tile for 90 days (`TileCache`), as before.
-  *Redownload* skips the phone's caches and fetches the current published
-  tile; for hexes that are not published it rebuilds from Overpass.
+- The apps keep a downloaded tile for 90 days (`TileCache`), as before. A
+  pre-built hex is cached by hash: its copy is reused while the hash is
+  current, at any age.
+- *Redownload* fetches only hexes whose published hash differs from the one
+  the device has ([Versions](#versions)). For hexes that are not published it
+  rebuilds from Overpass, as before.
 - The CDN holds a tile for at most a week, but a changed tile has a new
   `?v=` URL, so the apps always get the version their `index.json` names. An
   `index.json` itself is cached for an hour.
@@ -388,6 +480,15 @@ tiles.
   - Both check byte-identity, fallback for missing hexes and groups,
     rejection of truncated or bad-magic tiles, and a fast fallback when the
     host does not resolve.
+- **Versions:**
+  - iOS: `tools/tiles/test/cdn_ios/run.sh --versions`. It needs no bucket:
+    it serves two generated states of one group.
+  - Android: `PrebuiltTilesTest`.
+  - Both check that a hex with the same hash is skipped and never requested,
+    a changed hash is re-sent, a phone-built hex is an update, and an
+    unreachable CDN leaves every hex to the heuristic.
+  - They also check the hash-keyed tile cache, the per-device record store,
+    the index cache across downloads, and the data date from `meta.json`.
 
 ## Known limits
 
