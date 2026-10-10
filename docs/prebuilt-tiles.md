@@ -177,6 +177,10 @@ plan ──► interior × 20 ──► border × 20 ──► merge
   | `index.json` | `public, max-age=3600` | `application/json` |
   | `meta.json`, `regions/*` | `public, max-age=300` | `application/json` |
 
+- **Geofabrik etiquette.** A planet run downloads every extract once,
+  ~78 GB from download.geofabrik.de, with a descriptive User-Agent. Weekly is
+  considerate; do not re-run the full planet back to back (use `only` for
+  tests).
 - **Sizing.** A job holds runs of regions in Geofabrik URL order, so
   neighbours share a job, balanced on estimated time. One region peaks at a
   1.5 GB extract: ~6–8 GB RAM and under 10 GB disk, with the DEM cache capped

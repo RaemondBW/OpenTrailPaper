@@ -99,7 +99,7 @@ del() {
     local list=$1
     [ -s "$list" ] || return 0
     if [ -n "${DRY_RUN:-}" ]; then log "dry run: would delete $(wc -l < "$list") objects"; return 0; fi
-    if [ -n "$REMOTE" ]; then rclone delete "$REMOTE" --files-from "$list" --no-traverse
+    if [ -n "$REMOTE" ]; then rclone delete "$REMOTE" --files-from "$list"
     else (cd "$LOCAL_BUCKET" && xargs rm -f < "$list"); fi
     log "deleted $(wc -l < "$list") objects"
 }
