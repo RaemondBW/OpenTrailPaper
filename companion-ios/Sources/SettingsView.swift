@@ -8,20 +8,27 @@ enum PairingCopy {
         "On this iPhone: Settings › Bluetooth › tap \u{24D8} next to \u{201C}OpenTrailPaper\u{201D} › Forget This Device."
     static let deviceUnpairSteps =
         "On the device: Menu › Paired Devices › Phone › Unpair."
+    /// The device refused this phone (fixed pairing: it stays paired until
+    /// unpaired on the device). Same words on every path that ends there.
+    static let refusedSummary =
+        "This OpenTrailPaper is paired with another phone (or forgot this one). On the device: Paired Devices › Phone › Unpair, then connect again."
 
     static func title(_ issue: BLEManager.PairingIssue) -> String {
         switch issue {
         case .pairedElsewhere: return "Paired with another phone"
         case .notRecognised: return "OpenTrailPaper isn't accepting this iPhone"
+        case .pairingNotFinished: return "Pairing didn't finish"
         }
     }
 
     static func message(_ issue: BLEManager.PairingIssue) -> String {
         switch issue {
         case .pairedElsewhere:
-            return "This OpenTrailPaper is paired with another phone, so it won't connect to this iPhone.\n\nTo use it here, unpair it first. \(deviceUnpairSteps) It then shows a pairing code when this iPhone connects."
+            return "\(refusedSummary)\n\nThe app stops trying to connect until you tap Connect."
         case .notRecognised:
-            return "The device no longer recognises this iPhone — it was unpaired on the device, or it's now paired with another phone.\n\n1. If another phone owns it: \(deviceUnpairSteps)\n2. \(iosForgetSteps)\n3. Come back here. The device shows a code to pair again."
+            return "\(refusedSummary) If you removed it in iPhone Settings › Bluetooth, that's expected.\n\nIf the device was unpaired but this iPhone still lists it: \(iosForgetSteps) Then tap Connect — the device shows a code to pair."
+        case .pairingNotFinished:
+            return "The pairing code wasn't entered (or didn't match). Tap Connect and type the 6-digit code shown on the OpenTrailPaper's screen."
         }
     }
 

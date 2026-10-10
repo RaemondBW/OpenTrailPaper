@@ -29,7 +29,7 @@ struct RideView: View {
                     if ble.state != .connected {
                         PrimaryButton(title: primaryTitle,
                                       systemImage: "antenna.radiowaves.left.and.right") {
-                            ble.startScan()
+                            ble.connectTapped()
                         }
                     }
                 }
@@ -242,13 +242,14 @@ struct RideView: View {
     private var connectLabel: String {
         switch ble.state {
         case .scanning: return "Searching…"
-        case .connecting: return "Connecting…"
+        case .connecting: return ble.linkSecuring ? "Pairing…" : "Connecting…"
         case .poweredOff: return "Bluetooth off"
         default: return "Not connected"
         }
     }
     private var primaryTitle: String {
-        ble.state == .scanning || ble.state == .connecting ? "Searching…" : "Connect to OpenTrailPaper"
+        ble.state == .connecting && ble.linkSecuring ? "Pairing…"
+            : ble.state == .scanning || ble.state == .connecting ? "Searching…" : "Connect to OpenTrailPaper"
     }
 }
 
@@ -269,7 +270,7 @@ struct ConnectionBanner: View {
                 }
                 Spacer()
                 if ble.state != .connected {
-                    Button("Scan") { ble.startScan() }
+                    Button("Scan") { ble.connectTapped() }
                         .font(.system(size: 14, weight: .semibold))
                 }
             }
@@ -287,7 +288,7 @@ struct ConnectionBanner: View {
         switch ble.state {
         case .connected: return "Connected to OpenTrailPaper"
         case .scanning: return "Searching…"
-        case .connecting: return "Connecting…"
+        case .connecting: return ble.linkSecuring ? "Pairing…" : "Connecting…"
         case .poweredOff: return "Bluetooth is off"
         case .idle: return "Not connected"
         }
