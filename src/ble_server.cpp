@@ -1235,6 +1235,7 @@ void saveUploadedWorkout() {
         f.close();
     }
     sdUnlock();
+    workout_service::invalidateCatalog();   // the device's picker lists it
     if (!ok) {
         workoutAck(false, "SD write failed");
         return;
@@ -2622,6 +2623,7 @@ void task(void*) {
                 sdLock();
                 bool ok = SD.remove(path);
                 sdUnlock();
+                workout_service::invalidateCatalog();
                 workoutAck(ok, ok ? "deleted" : "delete failed");
             } else if (workoutReq == WREQ_LOAD) {
                 workoutReq = WREQ_NONE;

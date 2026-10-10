@@ -949,6 +949,60 @@ int main(int argc, char** argv) {
         clearWhite(fb.data());
         ui_render_workout(ws, none, fb.data());
         emit("workout_none.png");
+
+        // Loaded from the picker but not started: the redo strip is the way
+        // back to it. And finished: the next strip is.
+        workoutBuildView(wk, 0, false, 250, v);
+        clearWhite(fb.data());
+        ui_render_workout(ws, v, fb.data());
+        emit("workout_ready.png");
+        workoutBuildView(wk, 45 * 60, true, 250, v);
+        clearWhite(fb.data());
+        ui_render_workout(ws, v, fb.data());
+        emit("workout_done.png");
+
+        // The picker: what the page shows while nothing is loaded.
+        static WorkoutCatalog cat;
+        struct { const char* file; uint32_t sec; uint16_t n, peak; bool ok; }
+        kFiles[] = {
+            {"4x5_threshold.erg", 45 * 60, 10, 260, true},
+            {"Endurance 90.erg", 90 * 60, 3, 190, true},
+            {"Microbursts 30-30 with a very long file name.mrc", 52 * 60, 64,
+             375, true},
+            {"Over-Unders.mrc", 60 * 60, 21, 275, true},
+            {"Recovery spin.erg", 30 * 60, 1, 140, true},
+            {"Sweetspot 2x20.erg", 60 * 60, 5, 230, true},
+            {"VO2 5x4.erg", 55 * 60, 12, 310, true},
+            {"broken.erg", 0, 0, 0, false},
+            {"Zone 2 long.erg", 180 * 60, 3, 180, true},
+        };
+        for (auto& f : kFiles) {
+            WorkoutFileInfo& e = cat.items[cat.count++];
+            snprintf(e.file, sizeof(e.file), "%s", f.file);
+            workoutTitleFromFile(f.file, e.title, sizeof(e.title));
+            e.totalSec = f.sec;
+            e.segCount = f.n;
+            e.peakW = f.peak;
+            e.ok = f.ok;
+        }
+        cat.seen = cat.count;
+        cat.sdOk = true;
+        clearWhite(fb.data());
+        ui_render_workout_picker(ws, cat, 0, fb.data());
+        emit("workout_picker.png");
+        clearWhite(fb.data());
+        ui_render_workout_picker(ws, cat, 1, fb.data());
+        emit("workout_picker_p2.png");
+        cat.count = 3;
+        cat.seen = 3;
+        clearWhite(fb.data());
+        ui_render_workout_picker(ws, cat, 0, fb.data());
+        emit("workout_picker_short.png");
+        WorkoutCatalog empty;
+        empty.sdOk = true;
+        clearWhite(fb.data());
+        ui_render_workout_picker(ws, empty, 0, fb.data());
+        emit("workout_picker_empty.png");
     }
 
     // BLE pairing sheet over the dashboard

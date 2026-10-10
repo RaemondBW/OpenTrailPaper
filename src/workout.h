@@ -38,6 +38,32 @@ struct Workout {
     uint32_t totalSec = 0;
 };
 
+// The workout page's picker: what is in /workouts on the card, summarised
+// once per scan so the page can list it while nothing is loaded. Filled by
+// workout_service::catalog() on the firmware side and by hand in the preview
+// tool — the struct is plain data so the renderer stays host-safe.
+constexpr int WORKOUT_CATALOG_MAX = 32;
+
+struct WorkoutFileInfo {
+    char file[48] = "";      // the name on the card, extension included
+    char title[40] = "";     // what the page shows (workoutTitleFromFile)
+    uint32_t totalSec = 0;
+    uint16_t segCount = 0;
+    uint16_t peakW = 0;      // hardest block's target, at the current FTP
+    bool ok = false;         // parsed; false = on the card but unreadable
+};
+
+struct WorkoutCatalog {
+    WorkoutFileInfo items[WORKOUT_CATALOG_MAX];
+    int count = 0;           // entries in items[], sorted by title
+    int seen = 0;            // files in the folder (may exceed count)
+    bool sdOk = false;       // the card was there to read
+};
+
+// A filename as the page titles it: extension dropped, upper-cased for the
+// Impact faces' subset ("sweetspot_2x20.erg" -> "SWEETSPOT_2X20").
+void workoutTitleFromFile(const char* file, char* out, size_t cap);
+
 // Parse ERG/MRC text. `ftpWatts` scales PERCENT files (detected from the
 // header's "MINUTES PERCENT" column line, falling back to WATTS). Returns
 // false when fewer than two course points parse — the current workout is the
@@ -61,6 +87,7 @@ struct WorkoutView {
     bool running = false;
     bool paused = false;         // a session exists but the clock is held
     bool done = false;           // elapsed ran past the final segment
+    bool ready = false;          // loaded, clock never started: still a pick
     char name[40] = "";
     uint32_t elapsedSec = 0;
     uint32_t totalSec = 0;

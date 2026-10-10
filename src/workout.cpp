@@ -154,8 +154,22 @@ void workoutBuildView(const Workout& w, uint32_t elapsedSec, bool running,
     v.elapsedSec = elapsedSec;
     v.done = elapsedSec >= w.totalSec;
     if (v.done) v.elapsedSec = w.totalSec;
+    // The service overrides this from its own session flag; for a bare
+    // build (the preview) "not running, nothing elapsed" is the same thing.
+    v.ready = !running && elapsedSec == 0;
     v.targetW = workoutTargetAt(w, v.elapsedSec, &v.segIdx);
     const WorkoutSeg& s = w.segs[v.segIdx];
     v.segRemainSec = s.endSec > v.elapsedSec ? s.endSec - v.elapsedSec : 0;
     if (v.segIdx + 1 < w.count) v.nextW = w.segs[v.segIdx + 1].startW;
+}
+
+// --- Titles ------------------------------------------------------------------
+
+void workoutTitleFromFile(const char* file, char* out, size_t cap) {
+    if (!out || !cap) return;
+    size_t n = 0;
+    const char* dot = strrchr(file, '.');
+    for (const char* c = file; *c && c != dot && n + 1 < cap; ++c)
+        out[n++] = (*c >= 'a' && *c <= 'z') ? (char)(*c - 32) : *c;
+    out[n] = 0;
 }

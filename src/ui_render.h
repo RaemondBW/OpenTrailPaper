@@ -147,6 +147,13 @@ struct WorkoutView;
 void ui_render_workout(const RideState& s, const WorkoutView& v, uint8_t* fb);
 void ui_render_workout_list(const RideState& s, const WorkoutView& v, int page,
                             uint8_t* fb);
+// The page while nothing is loaded: the workouts on the card, in the list's
+// 88 px rows paged by 8 — tap a row to load it (READY; START BLOCK rides it).
+// Footer: page up/down when there is more than a page, and RESCAN.
+struct WorkoutCatalog;
+void ui_render_workout_picker(const RideState& s, const WorkoutCatalog& c,
+                              int page, uint8_t* fb);
+extern const EpdRect kWorkoutRescan;
 extern const EpdRect kWorkoutRedo;
 extern const EpdRect kWorkoutStartNext;
 extern const EpdRect kWorkoutPause;

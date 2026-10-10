@@ -67,6 +67,106 @@ int list(char* out, size_t cap) {
     return count;
 }
 
+namespace {
+
+WorkoutCatalog g_cat;
+volatile bool g_catStale = true;   // set from the BLE server task too
+
+// Read one workout file into `buf` (MAX_FILE + 1 bytes). Caller holds no
+// lock; this takes the SD lock for the read only. Returns false when the
+// file is missing or too large.
+bool readFile(const char* name, char* buf, bool* tooBig) {
+    char path[96];
+    snprintf(path, sizeof(path), "%s/%s", DIR, name);
+    if (tooBig) *tooBig = false;
+    sdLock();
+    File f = SD.open(path, FILE_READ);
+    if (!f) { sdUnlock(); return false; }
+    size_t sz = f.size();
+    if (sz > MAX_FILE) {
+        f.close();
+        sdUnlock();
+        if (tooBig) *tooBig = true;
+        return false;
+    }
+    size_t got = f.read((uint8_t*)buf, sz);
+    f.close();
+    sdUnlock();
+    buf[got] = 0;
+    return true;
+}
+
+void scanCatalog() {
+    g_cat = WorkoutCatalog{};
+    // Names first, under one lock; the files are read one at a time after,
+    // so a long folder never holds the card against the map or the recorder.
+    sdLock();
+    File dir = SD.open(DIR);
+    if (dir) {
+        g_cat.sdOk = true;
+        for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
+            if (f.isDirectory()) continue;
+            const char* base = strrchr(f.name(), '/');
+            base = base ? base + 1 : f.name();
+            // macOS litters a card with "._name.erg" resource forks.
+            if (base[0] == '.') continue;
+            ++g_cat.seen;
+            if (g_cat.count >= WORKOUT_CATALOG_MAX) continue;
+            WorkoutFileInfo& e = g_cat.items[g_cat.count++];
+            snprintf(e.file, sizeof(e.file), "%s", base);
+            workoutTitleFromFile(base, e.title, sizeof(e.title));
+        }
+        dir.close();
+    } else {
+        // No folder is not "no card": an empty card simply has none yet.
+        g_cat.sdOk = SD.exists("/");
+    }
+    sdUnlock();
+
+    // Sort by title so the list reads the same however FAT ordered it.
+    for (int i = 1; i < g_cat.count; ++i)
+        for (int j = i; j > 0 && strcmp(g_cat.items[j - 1].title,
+                                        g_cat.items[j].title) > 0; --j) {
+            WorkoutFileInfo t = g_cat.items[j];
+            g_cat.items[j] = g_cat.items[j - 1];
+            g_cat.items[j - 1] = t;
+        }
+
+    if (g_cat.count == 0) return;
+    char* buf = (char*)heap_caps_malloc(MAX_FILE + 1, MALLOC_CAP_SPIRAM);
+    if (!buf) return;
+    static Workout tmp;   // ~800 B: not on the UI task's stack
+    const int ftp = settings::ftpWatts();
+    for (int i = 0; i < g_cat.count; ++i) {
+        WorkoutFileInfo& e = g_cat.items[i];
+        if (!readFile(e.file, buf, nullptr)) continue;
+        if (!workoutParse(buf, ftp, tmp)) continue;
+        e.ok = true;
+        e.totalSec = tmp.totalSec;
+        e.segCount = (uint16_t)tmp.count;
+        for (int s = 0; s < tmp.count; ++s) {
+            uint16_t w = (uint16_t)(((int)tmp.segs[s].startW +
+                                     (int)tmp.segs[s].endW) / 2);
+            if (w > e.peakW) e.peakW = w;
+        }
+    }
+    heap_caps_free(buf);
+    diag::log("workout: catalog %d file(s)%s", g_cat.seen,
+              g_cat.sdOk ? "" : " (no card)");
+}
+
+}  // namespace
+
+const WorkoutCatalog& catalog() {
+    if (g_catStale) {
+        g_catStale = false;
+        scanCatalog();
+    }
+    return g_cat;
+}
+
+void invalidateCatalog() { g_catStale = true; }
+
 bool load(const char* name, const char** reason) {
     static const char* kNoCard = "SD not available";
     static const char* kNoFile = "file not found";
@@ -78,32 +178,15 @@ bool load(const char* name, const char** reason) {
     stop();
     g_loaded = false;
 
-    char path[96];
-    snprintf(path, sizeof(path), "%s/%s", DIR, name);
-
     char* buf = (char*)heap_caps_malloc(MAX_FILE + 1, MALLOC_CAP_SPIRAM);
     if (!buf) { if (reason) *reason = kNoCard; return false; }
 
-    sdLock();
-    File f = SD.open(path, FILE_READ);
-    if (!f) {
-        sdUnlock();
+    bool tooBig = false;
+    if (!readFile(name, buf, &tooBig)) {
         heap_caps_free(buf);
-        if (reason) *reason = kNoFile;
+        if (reason) *reason = tooBig ? kTooBig : kNoFile;
         return false;
     }
-    size_t sz = f.size();
-    if (sz > MAX_FILE) {
-        f.close();
-        sdUnlock();
-        heap_caps_free(buf);
-        if (reason) *reason = kTooBig;
-        return false;
-    }
-    size_t got = f.read((uint8_t*)buf, sz);
-    f.close();
-    sdUnlock();
-    buf[got] = 0;
 
     bool ok = workoutParse(buf, settings::ftpWatts(), g_wk);
     heap_caps_free(buf);
@@ -112,13 +195,9 @@ bool load(const char* name, const char** reason) {
         diag::log("workout: %s failed to parse", name);
         return false;
     }
-    snprintf(g_wk.name, sizeof(g_wk.name), "%s", name);
     // The filename is the title; drop the extension so the page doesn't
     // read "SWEETSPOT.ERG". Uppercase for the Impact faces' subset.
-    char* dot = strrchr(g_wk.name, '.');
-    if (dot) *dot = 0;
-    for (char* c = g_wk.name; *c; ++c)
-        if (*c >= 'a' && *c <= 'z') *c -= 32;
+    workoutTitleFromFile(name, g_wk.name, sizeof(g_wk.name));
     g_loaded = true;
     diag::log("workout: loaded %s — %d segments, %lu s total", g_wk.name,
               g_wk.count, (unsigned long)g_wk.totalSec);
@@ -161,6 +240,7 @@ void unload() {
     // device page returns to its pick-a-workout state.
     stop();
     g_loaded = false;
+    g_catStale = true;   // the picker comes back; let it see the card fresh
     diag::log("workout: unloaded");
 }
 
@@ -291,6 +371,7 @@ void view(WorkoutView& v) {
     workoutBuildView(g_wk, elapsedSec(), g_running,
                      (uint16_t)settings::ftpWatts(), v);
     v.paused = g_started && !g_running;
+    v.ready = !g_started;
 }
 
 }  // namespace workout_service

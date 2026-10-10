@@ -2316,6 +2316,7 @@ const EpdRect kWorkoutAll = {276, 868, 240, 80};
 const EpdRect kWorkoutPageUp = {24, 868, 80, 80};
 const EpdRect kWorkoutPageDown = {116, 868, 80, 80};
 const EpdRect kWorkoutClose = {368, 868, 148, 80};
+const EpdRect kWorkoutRescan = kWorkoutClose;   // the picker's same slot
 // The list's row band: rows are 88 px starting here (see workoutListRow).
 const int kWorkoutRowTop = 143, kWorkoutRowH = 88, kWorkoutRowsPerPage = 8;
 
@@ -2509,7 +2510,12 @@ void ui_render_workout(const RideState& s, const WorkoutView& v, uint8_t* fb) {
                           fb);
             ui::text(f, x, y, t, fb, EPD_DRAW_ALIGN_LEFT);
         };
-        if (v.segIdx > 0) {
+        if (v.ready) {
+            // Nothing ridden yet, so there is nothing to redo: this strip is
+            // the way back to the picker — loaded is not committed.
+            chip(&Arial_L, 38, 780, "< BACK");
+            chip(&Arial_B, 38, 812, "ALL WORKOUTS");
+        } else if (v.segIdx > 0) {
             const WorkoutSeg& pb = v.wk->segs[v.segIdx - 1];
             workoutBlockTitle(pb, v.ftpW, zone, sizeof(zone), name,
                               sizeof(name));
@@ -2529,7 +2535,12 @@ void ui_render_workout(const RideState& s, const WorkoutView& v, uint8_t* fb) {
     epd_draw_rect({kWorkoutStartNext.x + 1, kWorkoutStartNext.y + 1,
                    kWorkoutStartNext.width - 2, kWorkoutStartNext.height - 2},
                   ui::INK, fb);
-    if (v.segIdx + 1 < v.segCount) {
+    if (v.done) {
+        // Finished: the next thing to start is another workout.
+        ui::text(&Arial_L, 290, 780, "FINISHED · NEXT >", fb,
+                 EPD_DRAW_ALIGN_LEFT);
+        ui::text(&Arial_B, 290, 812, "ALL WORKOUTS", fb, EPD_DRAW_ALIGN_LEFT);
+    } else if (v.segIdx + 1 < v.segCount) {
         const WorkoutSeg& nb = v.wk->segs[v.segIdx + 1];
         workoutBlockTitle(nb, v.ftpW, zone, sizeof(zone), name, sizeof(name));
         snprintf(buf, sizeof(buf), "START NEXT · %s >", zone);
@@ -2636,4 +2647,99 @@ void ui_render_workout_list(const RideState& s, const WorkoutView& v, int page,
     ui::text(&Arial_B, 208 + 74, 914, buf, fb, EPD_DRAW_ALIGN_CENTER);
     ui::text(&Arial_B, kWorkoutClose.x + kWorkoutClose.width / 2, 914,
              "CLOSE", fb, EPD_DRAW_ALIGN_CENTER);
+}
+
+void ui_render_workout_picker(const RideState& s, const WorkoutCatalog& c,
+                              int page, uint8_t* fb) {
+    ui::statusBar(s, fb);
+    char buf[64];
+
+    // Header: the same two-line shape as the ALL BLOCKS list.
+    ui::text(&Arial_L, 24, 92, "NO WORKOUT RUNNING · TAP ONE TO LOAD", fb,
+             EPD_DRAW_ALIGN_LEFT);
+    // (Impact_T has no middle dot — plain words only on this line.)
+    if (c.seen > c.count)
+        snprintf(buf, sizeof(buf), "FIRST %d OF %d WORKOUTS", c.count, c.seen);
+    else
+        snprintf(buf, sizeof(buf), "%d WORKOUT%s ON DEVICE", c.count,
+                 c.count == 1 ? "" : "S");
+    ui::text(&Impact_T, 24, 134, buf, fb, EPD_DRAW_ALIGN_LEFT);
+    epd_fill_rect({0, 140, 540, 3}, ui::INK, fb);
+
+    if (c.count == 0) {
+        ui::text(&Impact_T, 270, 400, c.sdOk ? "NO WORKOUTS YET" : "NO SD CARD",
+                 fb, EPD_DRAW_ALIGN_CENTER);
+        ui::text(&Arial_B, 270, 456,
+                 c.sdOk ? "Send one from Workouts in the app,"
+                        : "Insert the card, then tap RESCAN.",
+                 fb, EPD_DRAW_ALIGN_CENTER, ui::DARK);
+        if (c.sdOk)
+            ui::text(&Arial_B, 270, 492, "or copy .erg / .mrc files to /workouts",
+                     fb, EPD_DRAW_ALIGN_CENTER, ui::DARK);
+    }
+
+    const int first = page * kWorkoutRowsPerPage;
+    for (int r = 0; r < kWorkoutRowsPerPage; ++r) {
+        int i = first + r;
+        if (i >= c.count) break;
+        const WorkoutFileInfo& e = c.items[i];
+        const int top = kWorkoutRowTop + r * kWorkoutRowH;
+        epd_fill_rect({0, top + kWorkoutRowH - 1, 540, 1}, ui::INK, fb);
+
+        // Right edge: a chevron (rows are buttons) and the length beside it.
+        const int ax = 510, ay = top + 44;
+        epd_fill_triangle(ax - 10, ay - 14, ax - 10, ay + 14, ax + 4, ay,
+                          ui::INK, fb);
+        int textRight = 476;
+        if (e.ok) {
+            char dur[16];
+            workoutFmt(dur, sizeof(dur), e.totalSec);
+            ui::text(&Impact_T, 484, top + 58, dur, fb, EPD_DRAW_ALIGN_RIGHT);
+            textRight = 484 - ui::textWidth(&Impact_T, dur) - 16;
+        }
+
+        char fit[40];
+        truncToWidth(&Arial_B, e.title, textRight - 24, fit, sizeof(fit));
+        ui::text(&Arial_B, 24, top + 40, fit, fb, EPD_DRAW_ALIGN_LEFT);
+        if (e.ok)
+            snprintf(buf, sizeof(buf), "%u BLOCK%s · PEAK %u W", e.segCount,
+                     e.segCount == 1 ? "" : "S", e.peakW);
+        else
+            snprintf(buf, sizeof(buf), "CAN'T READ THIS FILE");
+        ui::text(&Arial_L, 24, top + 66, buf, fb, EPD_DRAW_ALIGN_LEFT,
+                 ui::DARK);
+    }
+
+    // Footer: paging and a rescan (a card swapped or files copied in).
+    epd_fill_rect({0, 857, 540, 3}, ui::INK, fb);
+    const bool paged = c.count > kWorkoutRowsPerPage;
+    for (int e = 0; e < 3; ++e) {
+        if (paged) {
+            epd_draw_rect({kWorkoutPageUp.x + e, kWorkoutPageUp.y + e,
+                           kWorkoutPageUp.width - 2 * e,
+                           kWorkoutPageUp.height - 2 * e}, ui::INK, fb);
+            epd_draw_rect({kWorkoutPageDown.x + e, kWorkoutPageDown.y + e,
+                           kWorkoutPageDown.width - 2 * e,
+                           kWorkoutPageDown.height - 2 * e}, ui::INK, fb);
+            epd_draw_rect({208 + e, 868 + e, 148 - 2 * e, 80 - 2 * e},
+                          ui::INK, fb);
+        }
+        epd_draw_rect({kWorkoutRescan.x + e, kWorkoutRescan.y + e,
+                       kWorkoutRescan.width - 2 * e,
+                       kWorkoutRescan.height - 2 * e}, ui::INK, fb);
+    }
+    if (paged) {
+        int cx = kWorkoutPageUp.x + kWorkoutPageUp.width / 2, cy = 908;
+        epd_fill_triangle(cx, cy - 16, cx - 16, cy + 10, cx + 16, cy + 10,
+                          ui::INK, fb);
+        cx = kWorkoutPageDown.x + kWorkoutPageDown.width / 2;
+        epd_fill_triangle(cx, cy + 16, cx - 16, cy - 10, cx + 16, cy - 10,
+                          ui::INK, fb);
+        int last = first + kWorkoutRowsPerPage;
+        if (last > c.count) last = c.count;
+        snprintf(buf, sizeof(buf), "%d-%d / %d", first + 1, last, c.count);
+        ui::text(&Arial_B, 208 + 74, 914, buf, fb, EPD_DRAW_ALIGN_CENTER);
+    }
+    ui::text(&Arial_B, kWorkoutRescan.x + kWorkoutRescan.width / 2, 914,
+             "RESCAN", fb, EPD_DRAW_ALIGN_CENTER);
 }

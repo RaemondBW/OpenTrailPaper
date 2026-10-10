@@ -101,6 +101,11 @@ bool mapTrackUp = false;
 // about the session.
 bool workoutAllOpen = false;
 int workoutListPage = 0;
+// The picker shown while nothing is loaded (the files in /workouts): its
+// page, and when the workout page was last drawn — a gap means the rider
+// just came back to it, which rescans the card (see the render branch).
+int workoutPickPage = 0;
+uint32_t workoutPageDrawnMs = 0;
 
 // Serial test hooks: drive the UI over the CDC serial port to profile the map
 // without physical taps. Toggle timing logs with 't'; single-char commands
@@ -734,6 +739,39 @@ void handleTap(int x, int y) {
                 y >= ui::STATUS_H) {
                 WorkoutView wv;
                 workout_service::view(wv);
+                if (!wv.loaded) {
+                    // The picker: a row loads that file (READY — START
+                    // BLOCK rides it, the back strip returns here).
+                    const WorkoutCatalog& cat = workout_service::catalog();
+                    const bool paged = cat.count > kWorkoutRowsPerPage;
+                    if (paged && inRect(kWorkoutPageUp, x, y)) {
+                        if (workoutPickPage > 0) --workoutPickPage;
+                    } else if (paged && inRect(kWorkoutPageDown, x, y)) {
+                        if ((workoutPickPage + 1) * kWorkoutRowsPerPage <
+                            cat.count)
+                            ++workoutPickPage;
+                    } else if (inRect(kWorkoutRescan, x, y)) {
+                        workout_service::invalidateCatalog();
+                        workoutPickPage = 0;
+                    } else if (y >= kWorkoutRowTop &&
+                               y < kWorkoutRowTop +
+                                       kWorkoutRowH * kWorkoutRowsPerPage) {
+                        int idx = workoutPickPage * kWorkoutRowsPerPage +
+                                  (y - kWorkoutRowTop) / kWorkoutRowH;
+                        if (idx < cat.count && cat.items[idx].ok) {
+                            const char* reason = "";
+                            if (!workout_service::load(cat.items[idx].file,
+                                                       &reason)) {
+                                // Gone or changed under us: look again.
+                                Serial.printf("[workout] load failed: %s\n",
+                                              reason);
+                                workout_service::invalidateCatalog();
+                            }
+                        }
+                    }
+                    forceDraw = true;
+                    break;
+                }
                 if (workoutAllOpen) {
                     if (inRect(kWorkoutPageUp, x, y)) {
                         if (workoutListPage > 0) --workoutListPage;
@@ -756,11 +794,15 @@ void handleTap(int x, int y) {
                     forceDraw = true;
                     break;
                 }
+                // Not started yet, or finished: the strips that would redo /
+                // advance a block lead back to the picker instead.
                 if (inRect(kWorkoutRedo, x, y)) {
-                    if (wv.loaded) workout_service::jumpToSeg(wv.segIdx - 1);
+                    if (wv.ready) workout_service::unload();
+                    else workout_service::jumpToSeg(wv.segIdx - 1);
                     forceDraw = true;
                 } else if (inRect(kWorkoutStartNext, x, y)) {
-                    if (wv.loaded) workout_service::jumpToSeg(wv.segIdx + 1);
+                    if (wv.done) workout_service::unload();
+                    else workout_service::jumpToSeg(wv.segIdx + 1);
                     forceDraw = true;
                 } else if (inRect(kWorkoutPause, x, y)) {
                     workout_service::toggle();
@@ -2859,7 +2901,21 @@ void task(void*) {
                         WorkoutView wv;
                         workout_service::view(wv);
                         if (!wv.loaded) workoutAllOpen = false;
-                        if (workoutAllOpen)
+                        // Drawn at 1 Hz while showing, so a gap means the
+                        // rider just came (back) to this page: rescan the
+                        // card then, not every frame.
+                        if (millis() - workoutPageDrawnMs > 5000)
+                            workout_service::invalidateCatalog();
+                        workoutPageDrawnMs = millis();
+                        if (!wv.loaded) {
+                            const WorkoutCatalog& cat =
+                                workout_service::catalog();
+                            if (workoutPickPage * kWorkoutRowsPerPage >=
+                                cat.count)
+                                workoutPickPage = 0;
+                            ui_render_workout_picker(s, cat, workoutPickPage,
+                                                     fb);
+                        } else if (workoutAllOpen)
                             ui_render_workout_list(s, wv, workoutListPage, fb);
                         else
                             ui_render_workout(s, wv, fb);

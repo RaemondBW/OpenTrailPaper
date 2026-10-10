@@ -21,6 +21,14 @@ namespace workout_service {
 // Returns the number of files seen.
 int list(char* out, size_t cap);
 
+// The picker the workout page shows while nothing is loaded: every file in
+// /workouts, parsed once for its length and hardest block. Cached — the scan
+// reads the card, so it reruns only after invalidateCatalog() (an upload,
+// a delete, an unload, the rider re-entering the page or tapping RESCAN).
+// Called from the UI task.
+const WorkoutCatalog& catalog();
+void invalidateCatalog();
+
 // Load /workouts/<name> (extension included) and make it the active workout.
 // Stops any running session. On failure the previous workout is dropped too —
 // half a workout is worse than none. `reason` gets a static string for logs.
