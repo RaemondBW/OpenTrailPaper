@@ -29,6 +29,8 @@
 			</array>
 		</dict>
 	</array>
+	<key>OTPTileBaseURL</key>
+	<string>$(OTP_TILE_BASE_URL)</string>
 	<key>SyncServiceURL</key>
 	<string>$(OTP_SYNC_SERVICE_URL)</string>
 	<key>FirebaseAppID</key>

@@ -1196,8 +1196,12 @@ actor DownloadStats {
     private var started = Date()
     private var requests: [(kind: String, host: String, status: Int, seconds: Double, bytes: Int)] = []
     private var stages: [String: Double] = [:]
+    /// Hexes by where they came from: "cache", "cdn", "cdn empty", "overpass",
+    /// "cdn poi", "overpass poi".
+    private var sources: [String: Int] = [:]
 
-    func reset() { started = Date(); requests = []; stages = [:] }
+    func reset() { started = Date(); requests = []; stages = [:]; sources = [:] }
+    func source(_ s: String, _ n: Int) { if n > 0 { sources[s, default: 0] += n } }
     func request(_ kind: String, host: String, status: Int, seconds: Double, bytes: Int) {
         requests.append((kind, host, status, seconds, bytes))
     }
@@ -1205,6 +1209,19 @@ actor DownloadStats {
 
     func summary(hexes: Int) -> String {
         var lines = ["map download: \(hexes) hexes in \(String(format: "%.1f", Date().timeIntervalSince(started))) s"]
+        if !sources.isEmpty {
+            lines.append("  hexes by source: " + sources.sorted { $0.key < $1.key }
+                .map { "\($0.key) \($0.value)" }.joined(separator: ", "))
+        }
+        for kind in ["cdn-index", "cdn"] {
+            let rs = requests.filter { $0.kind == kind }
+            guard !rs.isEmpty else { continue }
+            let ok = rs.filter { $0.status == 200 }
+            lines.append(String(format: "  %@: %d requests (%d not 200), %.1f s summed, %.2f MB, hosts %@",
+                                kind, rs.count, rs.count - ok.count, rs.reduce(0) { $0 + $1.seconds },
+                                Double(ok.reduce(0) { $0 + $1.bytes }) / 1_048_576,
+                                Set(rs.map(\.host)).sorted().joined(separator: ",")))
+        }
         for kind in ["map", "coast", "poi"] {
             let rs = requests.filter { $0.kind == kind }
             guard !rs.isEmpty else { continue }

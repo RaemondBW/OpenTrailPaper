@@ -43,6 +43,7 @@
 		71268E6995708D3AAE38E6BB /* TransferActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = C35B7FEEC24D9CFF746CDE0D /* TransferActivityAttributes.swift */; };
 		72A4059778F0676C0911C393 /* RideDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1B62C507D47EAD0BDDDD24F /* RideDetailView.swift */; };
 		79F918433F0C02EF0915A0EE /* RouteView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A26EB50B7E6CF1B4A63235CA /* RouteView.swift */; };
+		7ECE54D8F2955E11043A1D8C /* PrebuiltTiles.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D1BB43B64D584E90FCD1A2A /* PrebuiltTiles.swift */; };
 		83694D7794E82A7B30BED93A /* TransferWidget.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 921C1E384F6ED732B31C24E3 /* TransferWidget.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		8885B18C0FC6E6E98283CD24 /* DashboardEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F99E928FB741D98CDD96ABA0 /* DashboardEditorView.swift */; };
 		8E372C3D320723A4B05B8435 /* TransferCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFA97C48F8209FC8F994A6B2 /* TransferCenter.swift */; };
@@ -110,6 +111,7 @@
 		08F073C2FF3FF2C629AFE7E8 /* BarlowCondensed-Bold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "BarlowCondensed-Bold.ttf"; sourceTree = "<group>"; };
 		0CBC93C157DBF69D2E2C1823 /* polygon.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = polygon.c; sourceTree = "<group>"; };
 		0D0FC030F1FACFFD44C96837 /* SensorsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SensorsView.swift; sourceTree = "<group>"; };
+		0D1BB43B64D584E90FCD1A2A /* PrebuiltTiles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrebuiltTiles.swift; sourceTree = "<group>"; };
 		119DE3CCD0BED37A2EED959F /* polygonAlgos.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = polygonAlgos.h; sourceTree = "<group>"; };
 		13F29A55A7651044F3D95A3C /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		158AB26E91BB4024B25490AD /* h3shim.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = h3shim.c; sourceTree = "<group>"; };
@@ -296,6 +298,7 @@
 				756CD94A1C875E17A3321CC8 /* OnboardingView.swift */,
 				83D3B5218D4B7A1C4035B1B2 /* OpenTrailPaper.entitlements */,
 				4B4C752C73B32E5B3E92EAE4 /* PhoneMock.swift */,
+				0D1BB43B64D584E90FCD1A2A /* PrebuiltTiles.swift */,
 				E1B62C507D47EAD0BDDDD24F /* RideDetailView.swift */,
 				A1B38F0A13FA33BFE4E04416 /* RideSim.swift */,
 				F897B750389038E18EE9AC09 /* RidesView.swift */,
@@ -529,6 +532,7 @@
 				0C42D2727BDA16264307140C /* MeshView.swift in Sources */,
 				ABE6FDB260BAA3609F5C5516 /* OnboardingView.swift in Sources */,
 				43AAF30082DA51F92552EE19 /* PhoneMock.swift in Sources */,
+				7ECE54D8F2955E11043A1D8C /* PrebuiltTiles.swift in Sources */,
 				72A4059778F0676C0911C393 /* RideDetailView.swift in Sources */,
 				27D3072E86C963D6934C56BA /* RideSim.swift in Sources */,
 				2D50FCD8D5DDF2010C20E161 /* RideView.swift in Sources */,
@@ -664,6 +668,7 @@
 				OTP_FIREBASE_PROJECT_ID = opentrailpaper;
 				OTP_FIREBASE_SENDER_ID = 357305860460;
 				OTP_SYNC_SERVICE_URL = "https://sync.opentrailpaper.com";
+				OTP_TILE_BASE_URL = "https://tiles.opentrailpaper.com/v1/";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
@@ -730,6 +735,7 @@
 				OTP_FIREBASE_PROJECT_ID = opentrailpaper;
 				OTP_FIREBASE_SENDER_ID = 357305860460;
 				OTP_SYNC_SERVICE_URL = "https://sync.opentrailpaper.com";
+				OTP_TILE_BASE_URL = "https://tiles.opentrailpaper.com/v1/";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
 				SWIFT_COMPILATION_MODE = wholemodule;

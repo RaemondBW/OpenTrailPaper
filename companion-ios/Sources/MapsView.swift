@@ -587,6 +587,9 @@ struct MapsView: View {
         }.map { $0.value }
 
         ble.startTileStream(resend: redownload)   // begin sending as tiles are produced
+        // Pre-built tiles first (PrebuiltTiles): one lookup per download, shared
+        // by the map and POI passes so each index.json is fetched once.
+        let prebuilt = PrebuiltTiles.Lookup()
         downloadTask = Task {
             var anyBuilt = false
             await DownloadStats.shared.reset()
@@ -598,7 +601,7 @@ struct MapsView: View {
                 var poiNote: String? = nil
                 async let poisDone: Bool = {
                     guard !poiWork.isEmpty else { return true }
-                    do { try await sendPois(poiWork, fresh: redownload); return true }
+                    do { try await sendPois(poiWork, fresh: redownload, prebuilt: prebuilt); return true }
                     catch { return false }
                 }()
               if !missing.isEmpty {
@@ -614,7 +617,35 @@ struct MapsView: View {
                     anyBuilt = true
                     ble.enqueueTiles(cached)
                     store.noteDownloaded(cached.map(\.id))
+                    await DownloadStats.shared.source("cache", cached.count)
                 }
+                // Ready-made tiles from the CDN for everything not cached. What
+                // it serves is cached and sent exactly like a phone-built tile;
+                // a hex it reports as built-but-empty is "no map data", as an
+                // empty Overpass build would be. Only the rest go to Overpass.
+                let cachedIds = Set(cached.map(\.id))
+                let toFetch = missing.filter { !cachedIds.contains($0.id) }
+                var leftIds = Set(toFetch.map(\.id))
+                if !toFetch.isEmpty, prebuilt.base != nil {
+                    status = "Fetching ready-made tiles…"
+                    let cdn = await PrebuiltTiles.fetchTiles(toFetch, lookup: prebuilt)
+                    try Task.checkCancellation()
+                    if !cdn.tiles.isEmpty {
+                        converted.formUnion(cdn.tiles.map(\.id))
+                        anyBuilt = true
+                        await TileCache.shared.store(cdn.tiles)
+                        store.noteDownloaded(cdn.tiles.map(\.id))
+                        ble.enqueueTiles(cdn.tiles)
+                    }
+                    if !cdn.empty.isEmpty { failedHexes.formUnion(cdn.empty) }
+                    leftIds = Set(cdn.missing.map(\.id))
+                }
+                let leftTiles = toFetch.filter { leftIds.contains($0.id) }
+                await DownloadStats.shared.source("overpass", leftTiles.count)
+                let batches = batches
+                    .map { $0.filter { leftIds.contains($0.id) } }
+                    .filter { !$0.isEmpty }
+              if !batches.isEmpty {
                 // ONE coastline fetch for the whole selection, padded well past
                 // it. Sea fill needs the COAST, and an ocean-only selection does
                 // not contain any — the batch bbox for hexes out in open water
@@ -624,7 +655,7 @@ struct MapsView: View {
                 // Coastline-only, so widening it is cheap. It runs ALONGSIDE the
                 // first map batches; each batch waits for it only after its own
                 // fetch, when it needs the sea rings.
-                let all = union(missing)
+                let all = union(leftTiles)
                 let pad = 0.35
                 let seaRings = Task<[[(Double, Double)]], Never> {
                     let coastJSON = try? await MapBuilder.fetchCoastline(
@@ -640,11 +671,6 @@ struct MapsView: View {
                         south: all.s - pad, west: all.w - pad,
                         north: all.n + pad, east: all.e + pad)
                 }
-
-                let cachedIds = Set(cached.map(\.id))
-                let batches = batches
-                    .map { $0.filter { !cachedIds.contains($0.id) } }
-                    .filter { !$0.isEmpty }
 
                 // Batches run `MapBuilder.concurrentBatches` at a time, each on
                 // its own mirror, off the main actor; results are handled here
@@ -692,6 +718,7 @@ struct MapsView: View {
                     }
                 }
               }
+              }
                 if !(await poisDone) {
                     try Task.checkCancellation()
                     poiNote = "Cycling POIs could not be fetched — try again later."
@@ -721,14 +748,27 @@ struct MapsView: View {
     /// Build (or reuse) and queue the `.poi` files for `work`. One POI query per
     /// ~0.25° group of tiles: the query is light, so groups can be far bigger
     /// than the map batches. Each POI is stored in the one H3 cell containing it.
-    private func sendPois(_ work: [MapTile], fresh: Bool = false) async throws {
+    private func sendPois(_ work: [MapTile], fresh: Bool = false,
+                          prebuilt: PrebuiltTiles.Lookup) async throws {
         var cached: [(id: String, data: Data)] = []
         var missingIds = work.map(\.id)
         if !fresh {   // a Redownload rebuilds them from fresh data instead
             (cached, missingIds) = await PoiCache.shared.partition(work.map(\.id))
         }
         ble.enqueuePois(cached)
-        let need = Set(missingIds)
+        var need = Set(missingIds)
+        // Ready-made .poi files first (also on a Redownload: the CDN copy is
+        // as fresh as the last server build); Overpass only for the rest.
+        if !need.isEmpty, prebuilt.base != nil {
+            let cdn = await PrebuiltTiles.fetchPois(work.filter { need.contains($0.id) }, lookup: prebuilt)
+            try Task.checkCancellation()
+            if !cdn.files.isEmpty {
+                await PoiCache.shared.store(cdn.files)
+                ble.enqueuePois(cdn.files)
+            }
+            need = Set(cdn.missing.map(\.id))
+        }
+        await DownloadStats.shared.source("overpass poi", need.count)
         let groups = Dictionary(grouping: work.filter { need.contains($0.id) }) { t -> String in
             let clat = (t.south + t.north) / 2, clon = (t.west + t.east) / 2
             return "\(Int((clat / 0.25).rounded(.down)))_\(Int((clon / 0.25).rounded(.down)))"
