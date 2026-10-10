@@ -217,8 +217,19 @@ void tick() {
 #endif
     // The stable main crystal supports connection timing at fast intervals
     // too. Retain the existing experiment switch and timeout fallback.
-    bool phone = phoneUp && !(phoneSleepReady &&
-                              ble_server::relaxedSleepAllowed());
+    // A link still proving itself (encrypting, or pairing with the rider
+    // typing the code) counts as the phone too. phoneUp is only true once the
+    // link is ADMITTED, so this window used to run with the CPU free to sleep
+    // and the controller in modem sleep on the drifting RC clock — the
+    // conditions that killed fresh sensor links at supervision timeout
+    // (2026-08-22). Nothing else held the radio unless a sensor link did — no
+    // sensors, a long auto-pause, or the MAIN_XTAL build relaxing them — so a
+    // reconnect (mid-ride or parked) could die before it ever encrypted.
+    // Seconds at most: the server drops an unproven link at 20 s (90 s while
+    // pairing).
+    bool linkPending = ble_server::linkPending();
+    bool phone = linkPending || (phoneUp && !(phoneSleepReady &&
+                                              ble_server::relaxedSleepAllowed()));
     s_phoneRelaxed = phoneUp && !phone;
     // The SAME suppression the phone gets, for the same reason, extended to the
     // sensor hunt.

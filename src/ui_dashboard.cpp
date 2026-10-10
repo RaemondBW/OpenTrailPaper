@@ -2650,7 +2650,7 @@ void task(void*) {
         // with BOOT.
         if (autoSleepEnabled && millis() - lastActivityMs > AUTO_SLEEP_MS &&
             !ride_recorder::isRecording() && !routes::navActive() &&
-            !ble_server::isPhoneConnected()) {
+            !ble_server::isPhoneConnected() && !ble_server::linkPending()) {
             uint8_t* fb = epdc_framebuffer();
             shutdownDevice(fb, "auto-sleep (idle timeout)");   // does not return
         }
@@ -3083,11 +3083,13 @@ void task(void*) {
                 else
                     ui_render_power_sheet(s.recording, fb);
             }
+            }  // end else (normal screens)
             // Pairing code sheet sits over everything — the phone's dialog is
-            // modal on its side too.
+            // modal on its side too. Outside the branch above, so it covers
+            // the "Start navigation?" prompt as well: a code the rider can't
+            // see is a pairing that can't finish.
             if (unsigned int pc = ble_server::pairingCode())
                 ui_render_pairing(pc, fb);
-            }  // end else (normal screens)
             // Leaving the picker (another page, a menu, a workout loading)
             // re-arms its rescan-on-appear.
             workoutPickShown = pickerThisFrame;
