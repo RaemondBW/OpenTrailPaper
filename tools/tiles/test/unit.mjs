@@ -90,6 +90,19 @@ await test("merge: indexes, deletions, failed and dropped regions", () => {
   assert.deepEqual(idx, { v: 1, cells: { [A]: [10, "h1", 0, ""], [B]: [21, "h2b", 0, ""] }, regions: ["a"] });
 });
 
+await test("merge: a partial (--only) run keeps every region it did not build", () => {
+  const M = "861eb4d97ffffff", K = "862a33007ffffff";
+  const oldFrags = new Map([["monaco.border", frag("monaco", "border", { [M]: [1084, "hm", 0, ""] })]]);
+  const newFrags = new Map([["us_california", frag("us/california", "interior", { [K]: [9, "hk", 0, ""] })]]);
+  const r = merge({ newFrags, oldFrags, order: ["us/california"], partial: true });
+  assert.ok(r.now.has("monaco.border") && r.now.has("us_california"));
+  assert.equal(r.cells, 2);
+  assert.ok(!r.del.some((k) => k.includes(M) || k.includes("861eb4")));
+  // The same run as a full plan would drop Monaco (no longer in Geofabrik's tree).
+  const full = merge({ newFrags, oldFrags, order: ["us/california"] });
+  assert.ok(!full.now.has("monaco.border") && full.del.some((k) => k.includes(M)));
+});
+
 await test("merge: a group with no cells left loses its index", () => {
   const X = "862a33007ffffff";
   const oldFrags = new Map([["a", frag("a", "interior", { [X]: [1, "h", 0, ""] })]]);

@@ -147,7 +147,9 @@ export async function plan({ index, maxMb = 1500, maxCells = 600000, jobs = 20, 
     for (const id of b.regions) for (const r of regions) if (!needs.has(jobOf.get(r.id)) && near(id, r.id)) needs.add(jobOf.get(r.id));
     b.needs = [...needs].sort();
   }
-  return { regions, jobs: bins.filter((b) => b.regions.length) };
+  // partial: an --only run. The merge must then keep every region it did not
+  // build, instead of reading "not in the plan" as "removed from Geofabrik".
+  return { regions, jobs: bins.filter((b) => b.regions.length), partial: !!only };
 }
 
 async function main() {

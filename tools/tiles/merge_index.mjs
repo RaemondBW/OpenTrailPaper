@@ -107,11 +107,13 @@ const liveKeys = (cells) => {
   return s;
 };
 
-export function merge({ newFrags, oldFrags, order = [] }) {
+export function merge({ newFrags, oldFrags, order = [], partial = false }) {
   // A region with no new fragment keeps its old one (its job failed or was
   // skipped), so a bad week never unpublishes a country — unless the plan
   // no longer has that region at all (it was split into its subregions).
-  const inPlan = (f) => !order.length || order.includes(f.region);
+  // A partial (--only) run never drops anything it did not build: the first
+  // `only=us/california` run deleted Monaco, which simply wasn't in its plan.
+  const inPlan = (f) => partial || !order.length || order.includes(f.region);
   const now = new Map([...oldFrags].filter(([, f]) => inPlan(f)));
   for (const [r, f] of newFrags) now.set(r, f);
   const oldC = cellsOf(oldFrags, order), newC = cellsOf(now, order);
@@ -134,10 +136,12 @@ async function main() {
     console.error("usage: merge_index.mjs --new <dir> [--old <dir>] --out <dir> [--regions regions.json]");
     process.exit(2);
   }
-  const order = a.regions ? JSON.parse(fs.readFileSync(a.regions, "utf8")).regions.map((r) => r.id) : [];
+  const planJson = a.regions ? JSON.parse(fs.readFileSync(a.regions, "utf8")) : null;
+  const order = planJson ? planJson.regions.map((r) => r.id) : [];
+  const partial = !!(planJson && planJson.partial);
   // --regions: also drop old fragments of regions the plan no longer has.
   const newFrags = readFragments(a.new), oldFrags = readFragments(a.old);
-  const r = merge({ newFrags, oldFrags, order });
+  const r = merge({ newFrags, oldFrags, order, partial });
   const out = path.resolve(a.out);
   const upload = [];
   const put = (key, body) => {
