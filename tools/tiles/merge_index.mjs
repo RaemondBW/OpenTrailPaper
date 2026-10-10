@@ -11,8 +11,10 @@
 //     v1/<g>/index.json   one per res-3 group g = id[0:6] whose contents
 //                         changed (or every group on a first run)
 //     v1/meta.json        when the run happened, per-region OSM timestamps
-//     v1/regions/*.json   the fragments now in effect (a region whose job
-//                         failed this week keeps last week's)
+//     v1/regions/*.json   this run's fragments (<region>.json from the
+//                         interior phase, <region>.border.json from the
+//                         border phase); a region whose job failed keeps
+//                         last week's
 //     upload.txt          every key above that must be (re)uploaded
 //     delete.txt          tile and index keys no longer published
 //
@@ -27,7 +29,7 @@
 // cache tiles for long; only index.json needs a short max-age.
 import fs from "node:fs";
 import path from "node:path";
-import { LAYOUT_VERSION, tileKey } from "./build_region.mjs";
+import { LAYOUT_VERSION, tileKey, fragmentName } from "./build_region.mjs";
 
 function args() {
   const a = {};
@@ -51,7 +53,7 @@ function readFragments(dir) {
       else if (e.name.endsWith(".json")) {
         let f;
         try { f = JSON.parse(fs.readFileSync(p, "utf8")); } catch { continue; }
-        if (f && f.region && f.cells && f.version === LAYOUT_VERSION) out.set(f.region, f);
+        if (f && f.region && f.cells && f.version === LAYOUT_VERSION) out.set(fragmentName(f.region, f.phase), f);
       }
     }
   };
@@ -59,9 +61,14 @@ function readFragments(dir) {
   return out;
 }
 
-// cell -> record, earlier regions (in `order`) winning a tie.
+// cell -> record. A cell is in one fragment by construction (regions.mjs);
+// should two ever claim it, interior beats border, then region order.
 function cellsOf(frags, order) {
-  const rank = (r) => { const k = order.indexOf(r); return k < 0 ? order.length : k; };
+  const rank = (name) => {
+    const f = frags.get(name);
+    const k = order.indexOf(f.region);
+    return (f.phase === "border" ? order.length + 1 : 0) + (k < 0 ? order.length : k);
+  };
   const regs = [...frags.keys()].sort((x, y) => rank(x) - rank(y) || (x < y ? -1 : x > y ? 1 : 0));
   const cells = new Map();
   let dupes = 0;
@@ -92,8 +99,10 @@ const liveKeys = (cells) => {
 
 export function merge({ newFrags, oldFrags, order = [] }) {
   // A region with no new fragment keeps its old one (its job failed or was
-  // skipped), so a bad week never unpublishes a country.
-  const now = new Map(oldFrags);
+  // skipped), so a bad week never unpublishes a country — unless the plan
+  // no longer has that region at all (it was split into its subregions).
+  const inPlan = (f) => !order.length || order.includes(f.region);
+  const now = new Map([...oldFrags].filter(([, f]) => inPlan(f)));
   for (const [r, f] of newFrags) now.set(r, f);
   const oldC = cellsOf(oldFrags, order), newC = cellsOf(now, order);
   const oldG = groups(oldC.cells), newG = groups(newC.cells);
@@ -116,6 +125,7 @@ async function main() {
     process.exit(2);
   }
   const order = a.regions ? JSON.parse(fs.readFileSync(a.regions, "utf8")).regions.map((r) => r.id) : [];
+  // --regions: also drop old fragments of regions the plan no longer has.
   const newFrags = readFragments(a.new), oldFrags = readFragments(a.old);
   const r = merge({ newFrags, oldFrags, order });
   const out = path.resolve(a.out);
@@ -126,11 +136,12 @@ async function main() {
     upload.push(key);
   };
   for (const [g, j] of r.indexes) put(`${LAYOUT_VERSION}/${g}/index.json`, j);
-  for (const [reg, f] of r.now) if (newFrags.has(reg)) put(`${LAYOUT_VERSION}/regions/${reg.replace(/\//g, "_")}.json`, JSON.stringify(f));
+  for (const [name, f] of r.now) if (newFrags.has(name)) put(`${LAYOUT_VERSION}/regions/${name}.json`, JSON.stringify(f));
+  for (const name of oldFrags.keys()) if (!r.now.has(name)) r.del.push(`${LAYOUT_VERSION}/regions/${name}.json`);
   const meta = {
     version: LAYOUT_VERSION, merged: new Date().toISOString(), cells: r.cells, groups: r.groups,
-    regions: Object.fromEntries([...r.now].sort(([x], [y]) => (x < y ? -1 : 1)).map(([reg, f]) =>
-      [reg, { osm: f.osm, built: f.built, cells: Object.keys(f.cells).length, fresh: newFrags.has(reg) }])),
+    fragments: Object.fromEntries([...r.now].sort(([x], [y]) => (x < y ? -1 : 1)).map(([name, f]) =>
+      [name, { region: f.region, phase: f.phase, osm: f.osm, built: f.built, cells: Object.keys(f.cells).length, fresh: newFrags.has(name) }])),
   };
   put(`${LAYOUT_VERSION}/meta.json`, JSON.stringify(meta, null, 1));
   fs.writeFileSync(path.join(out, "upload.txt"), upload.join("\n") + "\n");

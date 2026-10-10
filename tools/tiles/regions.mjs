@@ -26,7 +26,7 @@
 // Geofabrik polygons are buffered a little past the real border, but a cell
 // is ~7 km across, so roughly 5-15% of a country's cells end up "border".
 import fs from "node:fs";
-import { polygonToCells, cellToLatLng, gridDisk } from "h3-js";
+import { polygonToCells, cellToLatLng } from "h3-js";
 import { Region } from "./poly.mjs";
 import { mapBox, seaBox } from "./apptile.mjs";
 
@@ -71,11 +71,9 @@ export function cellsNear(regions, k, bboxOf) {
   const ids = new Set();
   for (const box of R.poly.partBoxes()) {
     for (const rect of searchRects(box)) {
-      const found = cellsInRect(rect);
-      for (const c of found) ids.add(c);
-      // One ring more, so cells whose centroid sits just outside the rect
-      // (but whose box reaches in) are not missed.
-      for (const c of found) for (const d of gridDisk(c, 1)) ids.add(d);
+      // The margins in searchRects exceed a cell's reach (seaBox pad plus
+      // half a cell), so centroid-in-rect finds every cell that matters.
+      for (const c of cellsInRect(rect)) ids.add(c);
     }
   }
   const out = [];

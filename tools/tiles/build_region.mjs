@@ -176,11 +176,59 @@ function groupPois(pois) {
   return by;
 }
 
+export const fragmentName = (region, phase) => region.replace(/\//g, "_") + (phase === "border" ? ".border" : "");
+
+// One fragment (v1/regions/<name>.json) and the tile files it writes.
+class Fragment {
+  constructor({ region, phase, out, prevDir }) {
+    this.name = fragmentName(region, phase);
+    this.out = out;
+    const pf = prevDir && path.join(prevDir, this.name + ".json");
+    this.prev = pf && fs.existsSync(pf) ? JSON.parse(fs.readFileSync(pf, "utf8")).cells || {} : {};
+    this.f = { version: LAYOUT_VERSION, region, phase, built: new Date().toISOString(), osm: null, source: null, cells: {} };
+    this.upload = [];
+    this.stats = { cells: 0, empty: 0, deferred: 0, ebmBytes: 0, poiBytes: 0, pois: 0, withPois: 0, changed: 0, ms: 0, slowest: null };
+  }
+  write(t, ebm, poi, ms) {
+    const { stats, out } = this;
+    const poiCount = poi[6] | (poi[7] << 8);
+    // ebm null: the app would drop this tile as empty. Recorded as size 0 so
+    // the apps know the hex was built and need not ask Overpass for it.
+    const rec = [ebm ? ebm.length : 0, ebm ? hash(ebm) : "", poiCount ? poi.length : 0, poiCount ? hash(poi) : ""];
+    this.f.cells[t.id] = rec;
+    const old = this.prev[t.id];
+    const ek = tileKey(t.id, ".ebm"), pk = tileKey(t.id, ".poi");
+    fs.mkdirSync(path.join(out, path.dirname(ek)), { recursive: true });
+    if (ebm && (!old || old[1] !== rec[1])) { fs.writeFileSync(path.join(out, ek), ebm); this.upload.push(ek); }
+    if (poiCount && (!old || old[3] !== rec[3])) { fs.writeFileSync(path.join(out, pk), poi); this.upload.push(pk); }
+    if (!old || old[1] !== rec[1] || old[3] !== rec[3]) stats.changed++;
+    stats.cells++; stats.ms += ms;
+    if (ebm) stats.ebmBytes += ebm.length; else stats.empty++;
+    if (poiCount) { stats.withPois++; stats.poiBytes += poi.length; stats.pois += poiCount; }
+    if (!stats.slowest || ms > stats.slowest[1]) stats.slowest = [t.id, Math.round(ms)];
+  }
+  save(seconds, log) {
+    const { stats, out } = this;
+    this.f.stats = { ...stats, seconds };
+    const fk = `${LAYOUT_VERSION}/regions/${this.name}.json`;
+    fs.mkdirSync(path.join(out, path.dirname(fk)), { recursive: true });
+    fs.writeFileSync(path.join(out, fk), JSON.stringify(this.f));
+    log(`${this.name}: ${stats.cells} cells (${stats.empty} empty${this.f.phase === "interior" ? `, ${stats.deferred} deferred to the border phase` : ""}), ` +
+        `${stats.changed} changed, ${(stats.ebmBytes / 1048576).toFixed(1)} MB .ebm, ` +
+        `${stats.withPois} .poi (${stats.pois} POIs), ${(stats.ms / 1000).toFixed(1)} s cell time summed, slowest ${stats.slowest?.join(" ")} ms`);
+    return this.upload;
+  }
+}
+
 const USAGE = `usage:
-  build_region.mjs --region <id> --pbf <extract.osm.pbf> --out <dir> (--regions regions.json | --bbox s,w,n,e)
-                   [--strip-dir <dir>] [--prev <fragment.json>] [--dem-cache <dir>] [--no-elevation]
-                   [--workers N] [--cells id,…] [--tmp <dir>] [--source-url <url>]
-  build_region.mjs --phase border --name <fragment> --strip-dir <dir> --out <dir> [--todo <region,…>] [...]`;
+  interior phase — the cells this extract can build alone, and its strip:
+    build_region.mjs --region <id> --pbf <extract.osm.pbf> --out <dir>
+                     (--regions regions.json | --bbox s,w,n,e) [--strip-dir <dir>]
+  border phase — the border/deferred cells of the given regions, from strips:
+    build_region.mjs --phase border --strip-dir <dir> --out <dir> [--todo <region,…>]
+  common: [--prev-dir <old fragments>] [--dem-cache <dir>] [--no-elevation]
+          [--workers N] [--cells id,…] [--tmp <dir>] [--source-url <url>]
+  <out>/upload.txt lists the object keys that are new or changed vs --prev-dir.`;
 
 async function main() {
   const a = args();
@@ -188,7 +236,7 @@ async function main() {
   const log = (m) => console.error(`[${((Date.now() - started) / 1000).toFixed(1)}s] ${m}`);
   const phase = a.phase || "interior";
   if (!a.out || (phase === "interior" && (!a.pbf || !a.region || !(a.regions || a.bbox))) ||
-      (phase === "border" && (!a.name || !a["strip-dir"]))) { console.error(USAGE); process.exit(2); }
+      (phase === "border" && !a["strip-dir"])) { console.error(USAGE); process.exit(2); }
   const out = path.resolve(a.out);
   const tmp = a.tmp ? path.resolve(a.tmp) : fs.mkdtempSync(path.join(os.tmpdir(), "otp-tiles-"));
   const elevation = !a["no-elevation"];
@@ -197,31 +245,8 @@ async function main() {
   const workers = Math.max(1, Number(a.workers || os.availableParallelism?.() || os.cpus().length));
   const stripDir = a["strip-dir"] ? path.resolve(a["strip-dir"]) : null;
   if (stripDir) fs.mkdirSync(stripDir, { recursive: true });
-  const fragName = phase === "border" ? a.name : a.region;
-
-  const prev = a.prev && fs.existsSync(a.prev) ? JSON.parse(fs.readFileSync(a.prev, "utf8")) : null;
-  const prevCells = prev?.cells || {};
-  const frag = { version: LAYOUT_VERSION, region: fragName, phase, built: new Date().toISOString(), osm: null, source: null, cells: {} };
-  const upload = [];
-  const stats = { cells: 0, empty: 0, deferred: 0, ebmBytes: 0, poiBytes: 0, pois: 0, withPois: 0, changed: 0, ms: 0, slowest: null };
-  const writeCell = (t, ebm, poi, ms) => {
-    const poiCount = poi[6] | (poi[7] << 8);
-    // ebm null: the app would drop this tile as empty (open sea with no
-    // coast in reach, an empty desert). Recorded as size 0 so the apps know
-    // the hex was built and need not ask Overpass for it.
-    const rec = [ebm ? ebm.length : 0, ebm ? hash(ebm) : "", poiCount ? poi.length : 0, poiCount ? hash(poi) : ""];
-    frag.cells[t.id] = rec;
-    const old = prevCells[t.id];
-    const ek = tileKey(t.id, ".ebm"), pk = tileKey(t.id, ".poi");
-    fs.mkdirSync(path.join(out, path.dirname(ek)), { recursive: true });
-    if (ebm && (!old || old[1] !== rec[1])) { fs.writeFileSync(path.join(out, ek), ebm); upload.push(ek); }
-    if (poiCount && (!old || old[3] !== rec[3])) { fs.writeFileSync(path.join(out, pk), poi); upload.push(pk); }
-    if (!old || old[1] !== rec[1] || old[3] !== rec[3]) stats.changed++;
-    stats.cells++; stats.ms += ms;
-    if (ebm) stats.ebmBytes += ebm.length; else stats.empty++;
-    if (poiCount) { stats.withPois++; stats.poiBytes += poi.length; stats.pois += poiCount; }
-    if (!stats.slowest || ms > stats.slowest[1]) stats.slowest = [t.id, Math.round(ms)];
-  };
+  const prevDir = a["prev-dir"] ? path.resolve(a["prev-dir"]) : null;
+  const frags = [];
   const opts = { workers, demOpts, elevation };
   const want = a.cells ? new Set(a.cells.split(",")) : null;
 
@@ -237,9 +262,12 @@ async function main() {
     if (want) interior = interior.filter((t) => want.has(t.id));
     log(`cells: ${near.length} reach this extract; owns ${interior.length} interior + ${border.length} border; ` +
         `${near.filter((c) => c.owner < 0).length} unowned`);
+    const frag = new Fragment({ region: a.region, phase, out, prevDir });
+    frags.push(frag);
+    const stats = frag.stats;
 
-    frag.osm = spawnSync("osmium", ["fileinfo", "-g", "header.option.osmosis_replication_timestamp", a.pbf]).stdout.toString().trim() || null;
-    frag.source = a["source-url"] || path.basename(a.pbf);
+    frag.f.osm = spawnSync("osmium", ["fileinfo", "-g", "header.option.osmosis_replication_timestamp", a.pbf]).stdout.toString().trim() || null;
+    frag.f.source = a["source-url"] || path.basename(a.pbf);
     const store = await loadOsm(path.resolve(a.pbf), { tmpDir: tmp, log });
     const poisByCell = groupPois(store.pois);
 
@@ -250,7 +278,7 @@ async function main() {
     const deferred = [];
     await runCells(interior, store, poisByCell, opts, (t, ebm, poi, m) => {
       if (t.seaOut && (m.coast > 0 || m.ways === 0)) { deferred.push(t); stats.deferred++; return; }
-      writeCell(t, ebm, poi, m.ms);
+      frag.write(t, ebm, poi, m.ms);
     }, log);
 
     if (stripDir) {
@@ -277,7 +305,7 @@ async function main() {
       const pois = [];
       for (const id of stripCells) for (const p of poisByCell.get(id) || []) pois.push(p);
       const file = path.join(stripDir, `${a.region.replace(/\//g, "_")}.strip.ndjson.gz`);
-      const r = await writeStrip(file, { store, wayIdx, pois, region: a.region, osm: frag.osm });
+      const r = await writeStrip(file, { store, wayIdx, pois, region: a.region, osm: frag.f.osm });
       const todo = [...border, ...deferred].map(({ id, s, w, n, e }) => ({ id, s, w, n, e })).sort((x, y) => (x.id < y.id ? -1 : 1));
       fs.writeFileSync(path.join(stripDir, `${a.region.replace(/\//g, "_")}.todo.json`),
         JSON.stringify({ region: a.region, k, cells: todo }));
@@ -286,15 +314,20 @@ async function main() {
     }
   } else {
     // Border phase: the todo cells of the given regions (default: every
-    // todo file in the strip dir), from every strip that reaches them.
+    // todo file in the strip dir), from every strip that reaches them. One
+    // fragment per owner region (<region>.border), so it stays put however
+    // the regions are grouped into jobs.
     const files = fs.readdirSync(stripDir);
     const only = a.todo ? new Set(String(a.todo).split(",").map((r) => r.replace(/\//g, "_"))) : null;
     let cells = [];
+    const fragOf = new Map();
     for (const f of files.filter((f) => f.endsWith(".todo.json")).sort()) {
       if (only && !only.has(f.slice(0, -".todo.json".length))) continue;
-      cells.push(...JSON.parse(fs.readFileSync(path.join(stripDir, f), "utf8")).cells);
+      const todo = JSON.parse(fs.readFileSync(path.join(stripDir, f), "utf8"));
+      const frag = new Fragment({ region: todo.region, phase, out, prevDir });
+      frags.push(frag);
+      for (const t of todo.cells) { if (!want || want.has(t.id)) { cells.push(t); fragOf.set(t.id, frag); } }
     }
-    if (want) cells = cells.filter((t) => want.has(t.id));
     cells.sort((x, y) => (x.id < y.id ? -1 : 1));
     const hits = (b, t) => { const S = seaBox(t); return !(b.n < S.s || b.s > S.n || b.e < S.w || b.w > S.e); };
     const strips = [];
@@ -306,22 +339,18 @@ async function main() {
     const order = a.regions ? loadRegions(a.regions).map((r) => r.id) : [];
     const rank = (id) => { const i = order.indexOf(id); return i < 0 ? order.length : i; };
     strips.sort((x, y) => rank(x.h.region) - rank(y.h.region) || (x.h.region < y.h.region ? -1 : 1));
-    log(`border: ${cells.length} cells, ${strips.length} strips (${strips.map((s) => s.h.region).join(", ")})`);
+    log(`border: ${cells.length} cells of ${frags.length} regions, ${strips.length} strips (${strips.map((s) => s.h.region).join(", ")})`);
     const { store, headers } = await loadStrips(strips.map((s) => s.f), log);
-    frag.osm = headers.map((h) => h.osm).filter(Boolean).sort()[0] || null;
-    frag.source = headers.map((h) => h.region).join(",");
-    await runCells(cells, store, groupPois(store.pois), opts, (t, ebm, poi, m) => writeCell(t, ebm, poi, m.ms), log);
+    for (const frag of frags) {
+      frag.f.osm = headers.map((h) => h.osm).filter(Boolean).sort()[0] || null;
+      frag.f.source = headers.map((h) => h.region).join(",");
+    }
+    await runCells(cells, store, groupPois(store.pois), opts, (t, ebm, poi, m) => fragOf.get(t.id).write(t, ebm, poi, m.ms), log);
   }
 
-  frag.stats = { ...stats, seconds: (Date.now() - started) / 1000 };
-  const fk = `${LAYOUT_VERSION}/regions/${fragName.replace(/\//g, "_")}.json`;
-  fs.mkdirSync(path.join(out, path.dirname(fk)), { recursive: true });
-  fs.writeFileSync(path.join(out, fk), JSON.stringify(frag));
-  const lines = (l) => l.join("\n") + (l.length ? "\n" : "");
-  fs.writeFileSync(path.join(out, "upload.txt"), lines(upload));
-  log(`done ${phase}: ${stats.cells} cells (${stats.empty} empty${phase === "interior" ? `, ${stats.deferred} deferred` : ""}), ` +
-      `${stats.changed} changed, ${(stats.ebmBytes / 1048576).toFixed(1)} MB .ebm, ` +
-      `${stats.withPois} .poi (${stats.pois} POIs), ${(stats.ms / 1000).toFixed(1)} s cell time summed, slowest ${stats.slowest?.join(" ")} ms`);
+  const upload = [];
+  for (const frag of frags) upload.push(...frag.save((Date.now() - started) / 1000, log));
+  fs.writeFileSync(path.join(out, "upload.txt"), upload.join("\n") + (upload.length ? "\n" : ""));
   if (!a.tmp) fs.rmSync(tmp, { recursive: true, force: true });
 }
 

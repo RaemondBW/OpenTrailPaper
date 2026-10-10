@@ -3,14 +3,19 @@
 // poiSize 0 and the apps synthesise it), so for those the reference must be
 // exactly the empty file mapgen.buildPoi writes for the cell.
 //
+// Also runs docs/mapgen.js (the website's builder) on each dumped map
+// response and checks the road part of the builder's tile against it.
+//
 //   node compare.mjs <builder-out> <app-out> <tiles.txt>
 import fs from "node:fs";
 import path from "node:path";
-import { buildPoi } from "../../../docs/mapgen.js";
+import { buildPoi, buildEbm } from "../../../docs/mapgen.js";
+import { roadsEnd } from "../apptile.mjs";
 import { tileKey } from "../build_region.mjs";
 
 const [built, app, tilesTxt] = process.argv.slice(2);
-let same = 0, diff = 0, missing = 0, poiSame = 0, poiDiff = 0, bytes = 0;
+let same = 0, diff = 0, missing = 0, poiSame = 0, poiDiff = 0, bytes = 0, webSame = 0, webDiff = 0;
+const dumpDir = path.dirname(tilesTxt);
 const firstDiff = (a, b) => { const n = Math.min(a.length, b.length); for (let i = 0; i < n; i++) if (a[i] !== b[i]) return i; return n; };
 for (const line of fs.readFileSync(tilesTxt, "utf8").trim().split("\n")) {
   const [id, s, w, n, e] = line.split(" ");
@@ -19,6 +24,10 @@ for (const line of fs.readFileSync(tilesTxt, "utf8").trim().split("\n")) {
   if (!fs.existsSync(a) || !fs.existsSync(b)) { missing++; console.log(`MISSING ${id} builder=${fs.existsSync(a)} app=${fs.existsSync(b)}`); continue; }
   const x = fs.readFileSync(a), y = fs.readFileSync(b);
   bytes += x.length;
+  const web = buildEbm(JSON.parse(fs.readFileSync(path.join(dumpDir, `${id}.map.json`), "utf8")), t);
+  const webRoads = Buffer.from(web.subarray(0, roadsEnd(web)));
+  if (Buffer.compare(webRoads, x.subarray(0, roadsEnd(new Uint8Array(x)))) === 0) webSame++;
+  else { webDiff++; console.log(`DIFF ${id} roads: mapgen.js on the dumped JSON != builder`); }
   if (Buffer.compare(x, y) === 0) same++;
   else { diff++; console.log(`DIFF ${id}.ebm builder ${x.length} B, app ${y.length} B, first byte ${firstDiff(x, y)}`); }
   const pa = path.join(built, tileKey(id, ".poi"));
@@ -27,5 +36,6 @@ for (const line of fs.readFileSync(tilesTxt, "utf8").trim().split("\n")) {
   if (Buffer.compare(px, py) === 0) poiSame++;
   else { poiDiff++; console.log(`DIFF ${id}.poi builder ${px.length} B, app ${py.length} B, first byte ${firstDiff(px, py)}`); }
 }
-console.log(`.ebm: ${same} identical, ${diff} different, ${missing} missing (${(bytes / 1048576).toFixed(2)} MB compared); .poi: ${poiSame} identical, ${poiDiff} different`);
-process.exitCode = diff || missing || poiDiff ? 1 : 0;
+console.log(`.ebm vs iOS MapBuilder.swift: ${same} identical, ${diff} different, ${missing} missing (${(bytes / 1048576).toFixed(2)} MB compared); ` +
+  `.poi: ${poiSame} identical, ${poiDiff} different; road section vs docs/mapgen.js: ${webSame} identical, ${webDiff} different`);
+process.exitCode = diff || missing || poiDiff || webDiff ? 1 : 0;
