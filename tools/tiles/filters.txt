@@ -1,0 +1,32 @@
+# osmium tags-filter expressions: a SUPERSET of what the apps' Overpass queries
+# ask for (companion-ios MapBuilder.query / poiQuery / fetchCoastline, which
+# match docs/mapgen.js QUERY). osmium cannot express Overpass regexes, so this
+# only prefilters; overpass.mjs applies the exact Overpass predicates.
+#
+# The highway regex in the queries is ^(motorway|trunk|…|steps) with NO "$",
+# so it is a prefix match (motorway_link, steps, …) — hence the trailing "*".
+w/highway=motorway*
+w/highway=trunk*
+w/highway=primary*
+w/highway=secondary*
+w/highway=tertiary*
+w/highway=residential*
+w/highway=unclassified*
+w/highway=living_street*
+w/highway=pedestrian*
+w/highway=cycleway*
+w/highway=footway*
+w/highway=path*
+w/highway=track*
+w/highway=steps*
+w/natural=water,coastline,wood,scrub,grassland,heath
+w/leisure=park
+w/landuse=grass,forest,meadow,recreation_ground,cemetery,village_green
+# Bike routes: the relations themselves plus (osmium adds referenced objects)
+# every member way, so route members the highway filter misses are present.
+r/route=bicycle
+# Cycling POIs (poiQuery).
+n/amenity=drinking_water,toilets,bicycle_repair_station,fountain
+n/man_made=water_tap
+nwr/shop=bicycle
+w/amenity=toilets,bicycle_repair_station

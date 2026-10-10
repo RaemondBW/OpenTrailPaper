@@ -1,0 +1,16 @@
+{
+  "name": "opentrailpaper-prebuilt-tiles",
+  "private": true,
+  "description": "Server-side builder for the pre-built H3 res-6 map tiles (.ebm + .poi) served from R2. See docs/prebuilt-tiles.md.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node test/unit.mjs"
+  },
+  "dependencies": {
+    "geotiff": "3.0.5",
+    "h3-js": "4.1.0"
+  }
+}

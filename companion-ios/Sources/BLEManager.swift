@@ -455,10 +455,20 @@ final class BLEManager: NSObject, ObservableObject {
     /// A map tile this phone sent longer ago than this is offered as an update
     /// (the phone's own tile cache expires at the same age).
     static let tileRefreshAge: TimeInterval = 60 * 60 * 24 * 90   // 90 days
-    private struct TileJob { let id: String; let data: Data; let poi: Bool }
+    /// The version of every tile and .poi this phone sent, per device
+    /// (TileVersions.swift), compared with the CDN index for "update
+    /// available" and to skip unchanged hexes.
+    let tileVersions = DeviceTileVersions()
+    /// The device the version records belong to: the connected one, or the
+    /// last one (same key as the map-layer store).
+    var deviceKey: String? { layersDeviceKey }
+    /// `version`: its record (PrebuiltTiles.cdnRecord); nil = built on this
+    /// phone, recorded as phoneRecord() when the device saves it.
+    private struct TileJob { let id: String; let data: Data; let poi: Bool; let version: String? }
     private var tileQueue: [TileJob] = []
     private var currentTileId: String? = nil        // non-nil while sending a tile
     private var currentIsPoi = false                // ...and it is a .poi file
+    private var currentVersion: String? = nil       // ...and its version record
     private var resendAll = false                   // this job is a Redownload
     // BLE side of the download timing (see DownloadStats): bytes actually
     // written to the device and when the job started.
@@ -1234,10 +1244,41 @@ final class BLEManager: NSObject, ObservableObject {
         deviceSupportsPois && deviceTileIds.contains(id) && !flaggedTileIds.contains(id)
     }
 
-    /// On the device, and Redownload would bring something new: it predates the
+    /// The device's tile against the CDN index: the same hash is current; a
+    /// different hash, a phone-built tile or one this phone did not send is an
+    /// update; `.unknown` when the CDN index has no entry (unreachable, not
+    /// pre-built, built empty).
+    func tileVersionState(_ id: String) -> PrebuiltTiles.VersionState {
+        PrebuiltTiles.state(record: tileVersions.tile(deviceKey, id),
+                            cdnHash: PrebuiltTiles.tileHash(CdnVersions.shared.entry(id)))
+    }
+
+    /// The device's .poi against the CDN index (same rules as tiles).
+    func poiVersionState(_ id: String) -> PrebuiltTiles.VersionState {
+        PrebuiltTiles.state(record: tileVersions.poi(deviceKey, id),
+                            cdnHash: PrebuiltTiles.poiHash(CdnVersions.shared.entry(id)))
+    }
+
+    /// Version records for the current device, for the download's filters.
+    var tileRecords: [String: String] { tileVersions.tiles(deviceKey) }
+    var poiRecords: [String: String] { tileVersions.pois(deviceKey) }
+
+    /// On the device, and Redownload would bring something new. With a CDN
+    /// index entry, exactly when the hash differs from what this phone sent
+    /// (tileVersionState). Without one, the heuristic: it predates the
     /// bike-route data, or this phone sent it more than tileRefreshAge ago.
     /// Drawn ochre/hatched on the Maps screen and counted as "updates".
     func tileNeedsUpdate(_ id: String) -> Bool {
+        guard deviceTileIds.contains(id) else { return false }
+        switch tileVersionState(id) {
+        case .current: return false
+        case .update: return true
+        case .unknown: return tileNeedsUpdateByAge(id)
+        }
+    }
+
+    /// The pre-CDN heuristic behind tileNeedsUpdate.
+    func tileNeedsUpdateByAge(_ id: String) -> Bool {
         guard deviceTileIds.contains(id) else { return false }
         if tilePredatesCycling(id) { return true }
         guard let at = tileSentAt[id] else { return false }
@@ -1252,12 +1293,19 @@ final class BLEManager: NSObject, ObservableObject {
     }
 
     /// The tile's POIs should go to the device: it can draw them, and it has
-    /// none for this tile or this phone sent them more than PoiCache.maxAge ago.
+    /// none for this tile, or the CDN has a different .poi than the one sent
+    /// (poiVersionState). Without a CDN entry: this phone sent them more than
+    /// PoiCache.maxAge ago.
     func poiNeedsSend(_ id: String) -> Bool {
         guard deviceSupportsPois else { return false }
         guard devicePoiIds.contains(id) else { return true }
-        guard let at = poiSentAt[id] else { return false }   // someone else's: leave it
-        return Date().timeIntervalSince1970 - at > PoiCache.maxAge
+        switch poiVersionState(id) {
+        case .current: return false
+        case .update: return true
+        case .unknown:
+            guard let at = poiSentAt[id] else { return false }   // someone else's: leave it
+            return Date().timeIntervalSince1970 - at > PoiCache.maxAge
+        }
     }
 
     // Streaming upload: the app produces tiles batch-by-batch while download +
@@ -1296,26 +1344,30 @@ final class BLEManager: NSObject, ObservableObject {
     }
 
     // Add freshly-built tiles to the send queue; starts pumping if idle. Skips
-    // tiles already on the device or already queued.
-    func enqueueTiles(_ newOnes: [(id: String, data: Data)]) {
-        enqueue(newOnes.filter { resendAll || !tileIsCurrent($0.id) }, poi: false)
+    // tiles already on the device or already queued. `versions`: each tile's
+    // record (PrebuiltTiles.cdnRecord); a tile without one is phone-built.
+    func enqueueTiles(_ newOnes: [(id: String, data: Data)], versions: [String: String] = [:]) {
+        enqueue(newOnes.filter { resendAll || !tileIsCurrent($0.id) }, poi: false, versions: versions)
     }
 
     /// Queue tiles' `.poi` files (sent through the same tile transfer — the
     /// firmware tells them apart by their magic). Skipped for firmware without
-    /// POI support and for tiles whose POIs the device has and are fresh.
-    func enqueuePois(_ newOnes: [(id: String, data: Data)]) {
-        enqueue(newOnes.filter { deviceSupportsPois && (resendAll || poiNeedsSend($0.id)) }, poi: true)
+    /// POI support; which POIs need sending (missing, changed hash, old) is
+    /// the caller's choice (MapsView, from poiNeedsSend and the CDN index).
+    func enqueuePois(_ newOnes: [(id: String, data: Data)], versions: [String: String] = [:]) {
+        enqueue(newOnes.filter { _ in deviceSupportsPois }, poi: true, versions: versions)
     }
 
-    private func enqueue(_ newOnes: [(id: String, data: Data)], poi: Bool) {
+    private func enqueue(_ newOnes: [(id: String, data: Data)], poi: Bool, versions: [String: String]) {
         guard tilesUploading else { return }
         let queued = Set(tileQueue.filter { $0.poi == poi }.map(\.id))
         let fresh = newOnes.filter {
             !queued.contains($0.id) && !($0.id == currentTileId && currentIsPoi == poi)
         }
         guard !fresh.isEmpty else { return }
-        tileQueue.append(contentsOf: fresh.map { TileJob(id: $0.id, data: $0.data, poi: poi) })
+        tileQueue.append(contentsOf: fresh.map {
+            TileJob(id: $0.id, data: $0.data, poi: poi, version: versions[$0.id])
+        })
         tilesTotal += fresh.count
         if currentTileId == nil { sendNextTile() }   // pump if idle
         reportTiles()
@@ -1351,6 +1403,7 @@ final class BLEManager: NSObject, ObservableObject {
         mapUploading = false
         currentTileId = nil
         keepAwake(false)
+        tileVersions.save()
         if let message { tileMessage = message }
     }
 
@@ -1365,6 +1418,7 @@ final class BLEManager: NSObject, ObservableObject {
         tileQueue.removeFirst()
         currentTileId = tile.id
         currentIsPoi = tile.poi
+        currentVersion = tile.version
         mapData = tile.data
         mapOffset = 0
         mapEndSent = false
@@ -1410,11 +1464,14 @@ final class BLEManager: NSObject, ObservableObject {
         case 0xB1:                                                // saved + active
             if let id = currentTileId {                           // a tile finished
                 tileJobBytes += mapData.count
+                let version = currentVersion ?? PrebuiltTiles.phoneRecord()
                 if currentIsPoi {
                     devicePoiIds.insert(id)
+                    tileVersions.setPoi(deviceKey, id, version)
                     poiSentAt[id] = Date().timeIntervalSince1970
                     UserDefaults.standard.set(poiSentAt, forKey: "poiSentAt")
                 } else {
+                    tileVersions.setTile(deviceKey, id, version)
                     deviceTileIds.insert(id)
                     flaggedTileIds.insert(id)
                     UserDefaults.standard.set(Array(flaggedTileIds), forKey: "flaggedTileIds")
@@ -1451,6 +1508,7 @@ final class BLEManager: NSObject, ObservableObject {
             }
         case 0xD2:                                               // tile-list end
             deviceTileIds = Set(tileIdsBuilding)
+            tileVersions.pruneTiles(deviceKey, keeping: deviceTileIds)
             cacheDeviceTiles()
         case 0xD3: poiIdsBuilding = []                            // poi-list begin
         case 0xD4 where d.count > 1:                              // comma-separated ids
@@ -1461,6 +1519,7 @@ final class BLEManager: NSObject, ObservableObject {
             }
         case 0xD5:                                               // poi-list end
             devicePoiIds = Set(poiIdsBuilding)
+            tileVersions.prunePois(deviceKey, keeping: devicePoiIds)
             deviceSupportsPois = true
         case 0xE0 where d.count >= 3:                            // map-layer mask
             handleMapLayersNotify(UInt16(d[1]) | (UInt16(d[2]) << 8))

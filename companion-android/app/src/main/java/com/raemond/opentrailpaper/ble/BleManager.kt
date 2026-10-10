@@ -33,6 +33,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
 import com.raemond.opentrailpaper.map.PoiCache
+import com.raemond.opentrailpaper.map.PrebuiltTiles
 import com.raemond.opentrailpaper.data.DashConfig
 import com.raemond.opentrailpaper.data.DashLayout
 import com.raemond.opentrailpaper.data.DeviceText
@@ -209,6 +210,47 @@ class BleManager(private val app: Application) {
     private var flaggedTileIds: Set<String> = emptySet()
     private var tileSentAt: Map<String, Long> = emptyMap()
 
+    /** The version of every tile and .poi this phone sent, per device
+     *  (map/TileVersions.kt), compared with the CDN index for "update available"
+     *  and to skip unchanged hexes. */
+    private val tileVersions by lazy {
+        com.raemond.opentrailpaper.map.DeviceTileVersions(java.io.File(app.filesDir, "device-tile-versions.tsv"))
+    }
+    private var versionsSavePending = false
+    /** Coalesce the per-tile record writes of a download into one save a second. */
+    private fun saveVersionsSoon() {
+        if (versionsSavePending) return
+        versionsSavePending = true
+        main.postDelayed({ versionsSavePending = false; if (tileVersions.dirty) tileVersions.save() }, 1000)
+    }
+
+    /** The device the version records belong to: the connected one, or the last
+     *  one (same key as the map-layer store). */
+    val deviceKey: String? get() = layersDeviceKey()
+
+    /** Version records for the current device, for the download's filters. */
+    val tileRecords: Map<String, String> get() = tileVersions.tiles(deviceKey)
+    val poiRecords: Map<String, String> get() = tileVersions.pois(deviceKey)
+
+    /**
+     * The device's tile against the CDN index: the same hash is CURRENT; a
+     * different hash, a phone-built tile or one this phone did not send is an
+     * UPDATE; UNKNOWN when the index has no entry (unreachable, not pre-built,
+     * built empty).
+     */
+    fun tileVersionState(id: String): PrebuiltTiles.VersionState =
+        PrebuiltTiles.state(
+            tileVersions.tile(deviceKey, id),
+            PrebuiltTiles.tileHash(com.raemond.opentrailpaper.map.CdnVersions.entry(id)),
+        )
+
+    /** The device's .poi against the CDN index (same rules as tiles). */
+    fun poiVersionState(id: String): PrebuiltTiles.VersionState =
+        PrebuiltTiles.state(
+            tileVersions.poi(deviceKey, id),
+            PrebuiltTiles.poiHash(com.raemond.opentrailpaper.map.CdnVersions.entry(id)),
+        )
+
     /** On the device. A tile there is never re-sent on its own — even one built
      *  before the bike-route flags; the rider chooses that (Redownload). */
     fun tileIsCurrent(id: String): Boolean = id in deviceTileIds
@@ -223,11 +265,23 @@ class BleManager(private val app: Application) {
         deviceSupportsPois && id in deviceTileIds && id !in flaggedTileIds
 
     /**
-     * On the device, and Redownload would bring something new: it predates the
+     * On the device, and Redownload would bring something new. With a CDN index
+     * entry, exactly when the hash differs from what this phone sent
+     * ([tileVersionState]). Without one, the heuristic: it predates the
      * bike-route data, or this phone sent it more than [TILE_REFRESH_AGE_MS] ago.
      * Drawn ochre/hatched on the Maps screen and counted as "updates".
      */
     fun tileNeedsUpdate(id: String): Boolean {
+        if (id !in deviceTileIds) return false
+        return when (tileVersionState(id)) {
+            PrebuiltTiles.VersionState.CURRENT -> false
+            PrebuiltTiles.VersionState.UPDATE -> true
+            PrebuiltTiles.VersionState.UNKNOWN -> tileNeedsUpdateByAge(id)
+        }
+    }
+
+    /** The pre-CDN heuristic behind [tileNeedsUpdate]. */
+    fun tileNeedsUpdateByAge(id: String): Boolean {
         if (id !in deviceTileIds) return false
         if (tilePredatesCycling(id)) return true
         val at = tileSentAt[id] ?: return false
@@ -243,12 +297,20 @@ class BleManager(private val app: Application) {
     }
 
     /** The tile's POIs should go to the device: it can draw them, and it has
-     *  none for this tile or this phone sent them more than PoiCache.MAX_AGE_MS ago. */
+     *  none for this tile, or the CDN has a different .poi than the one sent
+     *  ([poiVersionState]). Without a CDN entry: this phone sent them more than
+     *  PoiCache.MAX_AGE_MS ago. */
     fun poiNeedsSend(id: String): Boolean {
         if (!deviceSupportsPois) return false
         if (id !in devicePoiIds) return true
-        val at = poiSentAt[id] ?: return false            // someone else's: leave it
-        return System.currentTimeMillis() - at > PoiCache.MAX_AGE_MS
+        return when (poiVersionState(id)) {
+            PrebuiltTiles.VersionState.CURRENT -> false
+            PrebuiltTiles.VersionState.UPDATE -> true
+            PrebuiltTiles.VersionState.UNKNOWN -> {
+                val at = poiSentAt[id] ?: return false            // someone else's: leave it
+                System.currentTimeMillis() - at > PoiCache.MAX_AGE_MS
+            }
+        }
     }
 
     /**
@@ -353,10 +415,13 @@ class BleManager(private val app: Application) {
     private var mapSentBytes = 0
     private var mapEndSent = false
 
-    private class TileJob(val id: String, val data: ByteArray, val poi: Boolean)
+    /** [version]: its record (PrebuiltTiles.cdnRecord); null = built on this
+     *  phone, recorded as phoneRecord() when the device saves it. */
+    private class TileJob(val id: String, val data: ByteArray, val poi: Boolean, val version: String?)
     private var tileQueue = ArrayDeque<TileJob>()
     private var currentTileId: String? = null
     private var currentIsPoi = false
+    private var currentVersion: String? = null
     private var resendAll = false                   // this job is a Redownload
     // BLE side of the download timing (see DownloadStats).
     private var tileJobStarted = 0L
@@ -2285,27 +2350,29 @@ class BleManager(private val app: Application) {
 
     /**
      * Add freshly-built tiles to the send queue; starts pumping if idle. Skips
-     * tiles already on the device or already queued.
+     * tiles already on the device or already queued. [versions]: each tile's
+     * record (PrebuiltTiles.cdnRecord); a tile without one is phone-built.
      */
-    fun enqueueTiles(newOnes: List<Pair<String, ByteArray>>) =
-        enqueue(newOnes.filter { resendAll || !tileIsCurrent(it.first) }, poi = false)
+    fun enqueueTiles(newOnes: List<Pair<String, ByteArray>>, versions: Map<String, String> = emptyMap()) =
+        enqueue(newOnes.filter { resendAll || !tileIsCurrent(it.first) }, poi = false, versions)
 
     /**
      * Queue tiles' `.poi` files (sent through the same tile transfer — the
      * firmware tells them apart by their magic). Skipped for firmware without
-     * POI support and for tiles whose POIs the device has and are fresh.
+     * POI support; which POIs need sending (missing, changed hash, old) is the
+     * caller's choice (MapsSheet, from poiNeedsSend and the CDN index).
      */
-    fun enqueuePois(newOnes: List<Pair<String, ByteArray>>) =
-        enqueue(newOnes.filter { deviceSupportsPois && (resendAll || poiNeedsSend(it.first)) }, poi = true)
+    fun enqueuePois(newOnes: List<Pair<String, ByteArray>>, versions: Map<String, String> = emptyMap()) =
+        enqueue(newOnes.filter { deviceSupportsPois }, poi = true, versions)
 
-    private fun enqueue(newOnes: List<Pair<String, ByteArray>>, poi: Boolean) {
+    private fun enqueue(newOnes: List<Pair<String, ByteArray>>, poi: Boolean, versions: Map<String, String>) {
         if (!tilesUploading) return
         val queued = tileQueue.filter { it.poi == poi }.map { it.id }.toSet()
         val fresh = newOnes.filter {
             it.first !in queued && !(it.first == currentTileId && currentIsPoi == poi)
         }
         if (fresh.isEmpty()) return
-        tileQueue.addAll(fresh.map { TileJob(it.first, it.second, poi) })
+        tileQueue.addAll(fresh.map { TileJob(it.first, it.second, poi, versions[it.first]) })
         tilesTotal += fresh.size
         if (currentTileId == null) sendNextTile()   // pump if idle
         reportTiles()
@@ -2360,6 +2427,7 @@ class BleManager(private val app: Application) {
         }
         currentTileId = tile.id
         currentIsPoi = tile.poi
+        currentVersion = tile.version
         mapData = tile.data
         mapSentBytes = 0
         mapEndSent = false
@@ -2407,17 +2475,21 @@ class BleManager(private val app: Application) {
                 val id = currentTileId
                 if (id != null) {                                 // a tile finished
                     tileJobBytes += mapData.size
+                    val version = currentVersion ?: PrebuiltTiles.phoneRecord()
                     if (currentIsPoi) {
+                        tileVersions.setPoi(deviceKey, id, version)
                         devicePoiIds = devicePoiIds + id
                         poiSentAt = poiSentAt + (id to System.currentTimeMillis())
                         Prefs.poiSentAt = poiSentAt
                     } else {
+                        tileVersions.setTile(deviceKey, id, version)
                         deviceTileIds = deviceTileIds + id
                         flaggedTileIds = flaggedTileIds + id
                         Prefs.flaggedTileIds = flaggedTileIds
                         tileSentAt = tileSentAt + (id to System.currentTimeMillis())
                         Prefs.tileSentAt = tileSentAt
                     }
+                    saveVersionsSoon()
                     tilesDone += 1
                     currentTileId = null
                     sendNextTile()
@@ -2459,6 +2531,8 @@ class BleManager(private val app: Application) {
             0xD2 -> {                                             // tile-list end
                 deviceTileIds = tileIdsBuilding.toSet()
                 Prefs.deviceTileIds = deviceTileIds
+                tileVersions.pruneTiles(deviceKey, deviceTileIds)
+                saveVersionsSoon()
             }
 
             0xD3 -> poiIdsBuilding = mutableListOf()               // poi-list begin
@@ -2473,6 +2547,8 @@ class BleManager(private val app: Application) {
 
             0xD5 -> {                                             // poi-list end
                 devicePoiIds = poiIdsBuilding.toSet()
+                tileVersions.prunePois(deviceKey, devicePoiIds)
+                saveVersionsSoon()
                 deviceSupportsPois = true
             }
 

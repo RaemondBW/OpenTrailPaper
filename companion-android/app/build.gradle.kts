@@ -52,6 +52,12 @@ val syncUrl: String = (localProps.getProperty("sync.url") ?: System.getenv("OTP_
 // signing certificates, and a token is only minted for an app that passes Play
 // Integrity. Override per build with firebase.* in local.properties.
 val firebaseAppId = localProps.getProperty("firebase.appId") ?: "1:357305860460:android:8ada00c3af7ac9ca073349"
+// Pre-built map tiles (docs/prebuilt-tiles.md): tried before the on-phone
+// Overpass build. Override with tiles.url in local.properties or
+// OTP_TILE_BASE_URL (e.g. http://10.0.2.2:8000/v1/ against a local
+// `python3 -m http.server`); an empty value turns the CDN off.
+val tileBaseUrl: String = (localProps.getProperty("tiles.url") ?: System.getenv("OTP_TILE_BASE_URL")
+    ?: "https://tiles.opentrailpaper.com/v1/").trim()
 val firebaseApiKey = localProps.getProperty("firebase.apiKey") ?: "AIzaSyCPFkwR9pn8raJ-wLr8GrCgF9eRCEdgYtI"
 val firebaseProjectId = localProps.getProperty("firebase.projectId") ?: "opentrailpaper"
 val firebaseSenderId = localProps.getProperty("firebase.senderId") ?: "357305860460"
@@ -72,6 +78,7 @@ android {
 
         buildConfigField("String", "CARTO_KEY", "\"${cartoKey.trim()}\"")
         buildConfigField("String", "SYNC_SERVICE_URL", "\"$syncUrl\"")
+        buildConfigField("String", "TILE_BASE_URL", "\"$tileBaseUrl\"")
         buildConfigField("String", "FIREBASE_APP_ID", "\"$firebaseAppId\"")
         buildConfigField("String", "FIREBASE_API_KEY", "\"$firebaseApiKey\"")
         buildConfigField("String", "FIREBASE_PROJECT_ID", "\"$firebaseProjectId\"")

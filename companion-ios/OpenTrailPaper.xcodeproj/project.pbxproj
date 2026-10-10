@@ -38,11 +38,13 @@
 		5BC98F4BF77D1A33EF8F546B /* BLEManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = CBBFA5634178A1D43462F629 /* BLEManager.swift */; };
 		5D1E2FE5B8652DC846C39AF7 /* SensorsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D0FC030F1FACFFD44C96837 /* SensorsView.swift */; };
 		5D72742ADF79FE45ED70CBEA /* MapBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = B784675A7E0FFAA781206855 /* MapBuilder.swift */; };
+		5D97927298F90DAE00B889D0 /* TileVersions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2CB24A5E663BA56D23ACB0AF /* TileVersions.swift */; };
 		600D81E288833B6FE703B454 /* MeshChannels.swift in Sources */ = {isa = PBXBuildFile; fileRef = C74406B4D6CC045B23CAA7BA /* MeshChannels.swift */; };
 		60DA897C9E52D250126A6751 /* TransferActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = C35B7FEEC24D9CFF746CDE0D /* TransferActivityAttributes.swift */; };
 		71268E6995708D3AAE38E6BB /* TransferActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = C35B7FEEC24D9CFF746CDE0D /* TransferActivityAttributes.swift */; };
 		72A4059778F0676C0911C393 /* RideDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1B62C507D47EAD0BDDDD24F /* RideDetailView.swift */; };
 		79F918433F0C02EF0915A0EE /* RouteView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A26EB50B7E6CF1B4A63235CA /* RouteView.swift */; };
+		7ECE54D8F2955E11043A1D8C /* PrebuiltTiles.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D1BB43B64D584E90FCD1A2A /* PrebuiltTiles.swift */; };
 		83694D7794E82A7B30BED93A /* TransferWidget.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 921C1E384F6ED732B31C24E3 /* TransferWidget.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		8885B18C0FC6E6E98283CD24 /* DashboardEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F99E928FB741D98CDD96ABA0 /* DashboardEditorView.swift */; };
 		8E372C3D320723A4B05B8435 /* TransferCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFA97C48F8209FC8F994A6B2 /* TransferCenter.swift */; };
@@ -110,6 +112,7 @@
 		08F073C2FF3FF2C629AFE7E8 /* BarlowCondensed-Bold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "BarlowCondensed-Bold.ttf"; sourceTree = "<group>"; };
 		0CBC93C157DBF69D2E2C1823 /* polygon.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = polygon.c; sourceTree = "<group>"; };
 		0D0FC030F1FACFFD44C96837 /* SensorsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SensorsView.swift; sourceTree = "<group>"; };
+		0D1BB43B64D584E90FCD1A2A /* PrebuiltTiles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrebuiltTiles.swift; sourceTree = "<group>"; };
 		119DE3CCD0BED37A2EED959F /* polygonAlgos.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = polygonAlgos.h; sourceTree = "<group>"; };
 		13F29A55A7651044F3D95A3C /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		158AB26E91BB4024B25490AD /* h3shim.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = h3shim.c; sourceTree = "<group>"; };
@@ -119,6 +122,7 @@
 		27A939183F2903B61CA144FB /* bbox.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = bbox.h; sourceTree = "<group>"; };
 		2A59688151174F730E1FDAD4 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		2ACAD995F312514690C2FF16 /* MeshScanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshScanner.swift; sourceTree = "<group>"; };
+		2CB24A5E663BA56D23ACB0AF /* TileVersions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TileVersions.swift; sourceTree = "<group>"; };
 		2E449077B1E39DF8A349A23D /* bbox.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = bbox.c; sourceTree = "<group>"; };
 		336612AF0918144CAB1C1FCD /* DiagnosticsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsView.swift; sourceTree = "<group>"; };
 		36C9973B7C9E0A6EF2F31B32 /* MeshChannelsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshChannelsSheet.swift; sourceTree = "<group>"; };
@@ -296,6 +300,7 @@
 				756CD94A1C875E17A3321CC8 /* OnboardingView.swift */,
 				83D3B5218D4B7A1C4035B1B2 /* OpenTrailPaper.entitlements */,
 				4B4C752C73B32E5B3E92EAE4 /* PhoneMock.swift */,
+				0D1BB43B64D584E90FCD1A2A /* PrebuiltTiles.swift */,
 				E1B62C507D47EAD0BDDDD24F /* RideDetailView.swift */,
 				A1B38F0A13FA33BFE4E04416 /* RideSim.swift */,
 				F897B750389038E18EE9AC09 /* RidesView.swift */,
@@ -307,6 +312,7 @@
 				F8892300C56FF2C207FA2543 /* SyncAccounts.swift */,
 				79F3F907C8247AC1B8A63959 /* Theme.swift */,
 				E15692F37161BEC610966D47 /* TileCache.swift */,
+				2CB24A5E663BA56D23ACB0AF /* TileVersions.swift */,
 				CFA97C48F8209FC8F994A6B2 /* TransferCenter.swift */,
 				CA682C44407CE9C7FF852A4F /* WorkoutsView.swift */,
 				80ACFA8CA9080B22457972EF /* Fonts */,
@@ -529,6 +535,7 @@
 				0C42D2727BDA16264307140C /* MeshView.swift in Sources */,
 				ABE6FDB260BAA3609F5C5516 /* OnboardingView.swift in Sources */,
 				43AAF30082DA51F92552EE19 /* PhoneMock.swift in Sources */,
+				7ECE54D8F2955E11043A1D8C /* PrebuiltTiles.swift in Sources */,
 				72A4059778F0676C0911C393 /* RideDetailView.swift in Sources */,
 				27D3072E86C963D6934C56BA /* RideSim.swift in Sources */,
 				2D50FCD8D5DDF2010C20E161 /* RideView.swift in Sources */,
@@ -540,6 +547,7 @@
 				937C33A6DB0DBC569E69366E /* SyncAccounts.swift in Sources */,
 				D017F03AE055F1971F5815BA /* Theme.swift in Sources */,
 				F6958E6E296967C90F9CDC75 /* TileCache.swift in Sources */,
+				5D97927298F90DAE00B889D0 /* TileVersions.swift in Sources */,
 				71268E6995708D3AAE38E6BB /* TransferActivityAttributes.swift in Sources */,
 				8E372C3D320723A4B05B8435 /* TransferCenter.swift in Sources */,
 				F48BC7C4FF775911CE8FE038 /* WorkoutsView.swift in Sources */,
@@ -664,6 +672,7 @@
 				OTP_FIREBASE_PROJECT_ID = opentrailpaper;
 				OTP_FIREBASE_SENDER_ID = 357305860460;
 				OTP_SYNC_SERVICE_URL = "https://sync.opentrailpaper.com";
+				OTP_TILE_BASE_URL = "https://tiles.opentrailpaper.com/v1/";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
@@ -730,6 +739,7 @@
 				OTP_FIREBASE_PROJECT_ID = opentrailpaper;
 				OTP_FIREBASE_SENDER_ID = 357305860460;
 				OTP_SYNC_SERVICE_URL = "https://sync.opentrailpaper.com";
+				OTP_TILE_BASE_URL = "https://tiles.opentrailpaper.com/v1/";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
 				SWIFT_COMPILATION_MODE = wholemodule;

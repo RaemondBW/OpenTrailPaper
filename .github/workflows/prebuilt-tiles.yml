@@ -1,0 +1,231 @@
+name: Pre-built map tiles
+
+# Builds the companion apps' map tiles (.ebm + .poi per H3 res-6 cell) for the
+# whole planet from Geofabrik extracts and publishes them to Cloudflare R2,
+# so a phone downloads ready tiles instead of building them from Overpass.
+# Setup, costs and freshness: docs/prebuilt-tiles.md. The steps are
+# tools/tiles/pipeline.sh, which also runs locally against a directory.
+#
+#   plan      Geofabrik index -> regions (extracts <= 1.5 GB) packed into jobs
+#   interior  per job: each region's cells it can build alone (+ its strip)
+#   border    per job: cells along region borders, from the strips
+#   merge     per-group index.json, meta.json, deletions
+#
+# Secrets: R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET.
+# Without them every job still builds (a dry run) and uploads nothing.
+
+# Manual runs only (Actions -> Pre-built map tiles -> Run workflow). No
+# schedule: the owner decides when a rebuild is worth its upload cost.
+on:
+  workflow_dispatch:
+    inputs:
+      only:
+        description: "Geofabrik region ids to build, comma-separated (empty = the whole planet), e.g. europe/monaco → 'monaco'"
+        required: false
+        default: ""
+      jobs:
+        description: "Parallel jobs"
+        required: false
+        default: "20"
+      resume_run:
+        description: "Finish an earlier run (its run id): redo only its failed jobs, reusing its plan and strips (within 2 days)"
+        required: false
+        default: ""
+      dry_run:
+        description: "Build but upload nothing"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: read     # resume_run: the earlier run's jobs and artifacts
+
+concurrency:
+  group: prebuilt-tiles
+  cancel-in-progress: false
+
+env:
+  R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+  R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+  R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+  R2_BUCKET: ${{ secrets.R2_BUCKET }}
+  DRY_RUN: ${{ (inputs.dry_run || secrets.R2_BUCKET == '') && '1' || '' }}
+
+jobs:
+  plan:
+    # Only the repository owner may run it — not other collaborators, even
+    # with write access. Every later job needs plan to succeed, so a run
+    # started by anyone else stops here before downloading or uploading.
+    if: ${{ github.actor == 'RaemondBW' && github.triggering_actor == 'RaemondBW' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      interior: ${{ steps.plan.outputs.interior }}
+      border: ${{ steps.plan.outputs.border }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --prefix tools/tiles
+      - id: plan
+        env:
+          ONLY: ${{ inputs.only }}
+          JOBS: ${{ inputs.jobs || '20' }}
+          RESUME: ${{ inputs.resume_run }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -n "$RESUME" ]; then
+            gh run download "$RESUME" -R "$GITHUB_REPOSITORY" -n plan -D work/old
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RESUME/jobs" --paginate --jq '.jobs[]|[.name,.conclusion]|@tsv' > work/old-jobs.tsv
+            node tools/tiles/resume.mjs --plan work/old/plan.json --jobs work/old-jobs.tsv --out work/plan.json > work/todo.json
+          else
+            tools/tiles/pipeline.sh plan work ${ONLY:+--only "$ONLY"} --jobs "$JOBS"
+            node -e 'const n=require("./work/plan.json").jobs.map(j=>j.name);console.log(JSON.stringify({interior:n,border:n}))' > work/todo.json
+          fi
+          echo "interior=$(node -e 'console.log(JSON.stringify(require("./work/todo.json").interior))')" >> "$GITHUB_OUTPUT"
+          echo "border=$(node -e 'console.log(JSON.stringify(require("./work/todo.json").border))')" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plan
+          path: work/plan.json
+          retention-days: 3
+
+  interior:
+    needs: plan
+    if: ${{ needs.plan.outputs.interior != '[]' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        job: ${{ fromJSON(needs.plan.outputs.interior) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq osmium-tool unzip && curl -fsSL https://rclone.org/install.sh | sudo bash > /dev/null && rclone version | head -1
+          npm ci --prefix tools/tiles
+          tools/tiles/build_h3tool.sh
+      - uses: actions/download-artifact@v4
+        with:
+          name: plan
+          path: work
+      - name: Build and upload
+        run: tools/tiles/pipeline.sh interior work ${{ matrix.job }}
+      # Fragments of the regions that finished, even if a later one failed.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: frags-interior-${{ matrix.job }}
+          path: work/frags
+          retention-days: 3
+          if-no-files-found: ignore
+      # Strips only from a complete job: a border job must never build from
+      # a partial set (it fails instead, and its regions keep last week's).
+      - uses: actions/upload-artifact@v4
+        with:
+          name: strips-${{ matrix.job }}
+          path: work/strips
+          retention-days: 2
+          compression-level: 0
+
+  border:
+    needs: [plan, interior]
+    if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.border != '[]' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        job: ${{ fromJSON(needs.plan.outputs.border) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq osmium-tool unzip && curl -fsSL https://rclone.org/install.sh | sudo bash > /dev/null && rclone version | head -1
+          npm ci --prefix tools/tiles
+          tools/tiles/build_h3tool.sh
+      - uses: actions/download-artifact@v4
+        with:
+          name: plan
+          path: work
+      - id: needs
+        name: Which jobs' strips this one reads
+        run: |
+          echo "pattern=strips-{$(node -e 'const p=require("./work/plan.json");console.log(p.jobs.find(j=>j.name===process.argv[1]).needs.join(","))' ${{ matrix.job }}),none}" >> "$GITHUB_OUTPUT"
+      # Resuming: strips of the jobs not rebuilt come from the earlier run;
+      # this run's (the rebuilt jobs') are fetched after, so they win.
+      - uses: actions/download-artifact@v4
+        if: ${{ inputs.resume_run != '' }}
+        with:
+          pattern: ${{ steps.needs.outputs.pattern }}
+          path: work/strips
+          merge-multiple: true
+          run-id: ${{ inputs.resume_run }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ${{ steps.needs.outputs.pattern }}
+          path: work/strips
+          merge-multiple: true
+      - name: Check every needed strip arrived
+        run: |
+          du -sh work/strips
+          for j in $(node -e 'const p=require("./work/plan.json");console.log(p.jobs.find(j=>j.name===process.argv[1]).needs.join(" "))' ${{ matrix.job }}); do
+            [ -f "work/strips/$j.done" ] || { echo "::error::strips of $j missing (its interior job failed); this job's regions keep their previous border tiles"; exit 1; }
+          done
+      - name: Build and upload
+        run: tools/tiles/pipeline.sh border work ${{ matrix.job }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frags-border-${{ matrix.job }}
+          path: work/frags
+          retention-days: 3
+          if-no-files-found: ignore
+
+  merge:
+    needs: [plan, border]
+    if: ${{ always() && needs.plan.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq unzip && curl -fsSL https://rclone.org/install.sh | sudo bash > /dev/null && rclone version | head -1
+          npm ci --prefix tools/tiles
+      - uses: actions/download-artifact@v4
+        with:
+          name: plan
+          path: work
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: frags-*
+          path: work/frags
+      - name: Index, meta, deletions
+        run: tools/tiles/pipeline.sh merge work
+      - name: Summary
+        run: |
+          node -e '
+            const m = require("./work/merged/v1/meta.json");
+            const f = Object.values(m.fragments);
+            console.log(`### Pre-built tiles\n\n${m.cells} cells in ${m.groups} groups; ${f.filter(x => x.fresh).length}/${f.length} fragments rebuilt this run.`);
+            const stale = Object.entries(m.fragments).filter(([, x]) => !x.fresh).map(([k]) => k);
+            if (stale.length) console.log(`\nKept from an earlier run: ${stale.join(", ")}`);
+          ' >> "$GITHUB_STEP_SUMMARY"
+          echo "Uploads: $(wc -l < work/merged/upload.txt), deletions: $(wc -l < work/merged/delete.txt)" >> "$GITHUB_STEP_SUMMARY"
