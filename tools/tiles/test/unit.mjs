@@ -112,12 +112,28 @@ await test("resume: redo failed jobs and the borders that read them", () => {
   ] };
   const results = new Map([["interior (j01)", "failure"], ["interior (j02)", "success"], ["interior (j03)", "success"],
     ["border (j01)", "failure"], ["border (j02)", "success"], ["border (j03)", "failure"]]);
-  const r = resume(plan, results);
+  const r = resume(plan, [{ id: 7, results }]);
   assert.deepEqual(r.interior, ["j01"]);
   assert.deepEqual(r.border, ["j01", "j03"]);
   assert.equal(r.plan.partial, true);
   assert.deepEqual(r.plan.jobs[0].regions, ["a"]);
   assert.ok(!r.plan.regions.some((x) => x.id === "antarctica"));
+});
+
+await test("resume: a resume of a resume reaches back for strips", () => {
+  const plan = { regions: [{ id: "a" }, { id: "c" }, { id: "d" }], partial: true, jobs: [
+    { name: "j01", regions: ["a"], needs: ["j01", "j02"] },
+    { name: "j02", regions: ["c"], needs: ["j02", "j03"] },
+    { name: "j03", regions: ["d"], needs: ["j03"] },
+  ] };
+  const first = new Map([["interior (j01)", "failure"], ["interior (j02)", "success"], ["interior (j03)", "success"],
+    ["border (j01)", "failure"], ["border (j02)", "success"], ["border (j03)", "failure"]]);
+  // The resume rebuilt j01 and its border; j03's border failed again.
+  const second = new Map([["interior (j01)", "success"], ["border (j01)", "success"], ["border (j03)", "failure"]]);
+  const r = resume(plan, [{ id: 2, results: second }, { id: 1, results: first }]);
+  assert.deepEqual(r.interior, []);
+  assert.deepEqual(r.border, ["j03"]);
+  assert.deepEqual(r.plan.stripsFrom, { j01: "2", j02: "1", j03: "1" });
 });
 
 await test("merge: a group with no cells left loses its index", () => {
