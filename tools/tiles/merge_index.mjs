@@ -19,7 +19,13 @@
 //     delete.txt          tile and index keys no longer published
 //
 // index.json, for the cells of one group that some region built:
-//   {"v":1,"cells":{"<h3 id>":[ebmSize,"ebmHash",poiSize,"poiHash"], ...}}
+//   {"v":1,"cells":{"<h3 id>":[ebmSize,"ebmHash",poiSize,"poiHash"], ...},
+//    "regions":["<fragment name>", ...]}
+// "regions" names the fragments (meta.json "fragments" keys) whose cells are
+// in the group, so an app can show the data date (that fragment's OSM
+// timestamp in meta.json) without fetching the big region manifests. It only
+// changes when a group's owners change, so the weekly OSM date does not make
+// every index.json a new upload.
 // ebmSize 0: the cell was built and is empty (nothing to draw) — the apps
 // must not ask Overpass for it. poiSize 0: no POIs (the apps synthesise the
 // empty .poi, as they do for an Overpass answer with none). A cell missing
@@ -70,27 +76,31 @@ function cellsOf(frags, order) {
     return (f.phase === "border" ? order.length + 1 : 0) + (k < 0 ? order.length : k);
   };
   const regs = [...frags.keys()].sort((x, y) => rank(x) - rank(y) || (x < y ? -1 : x > y ? 1 : 0));
-  const cells = new Map();
+  const cells = new Map(), from = new Map();
   let dupes = 0;
   for (const r of regs) {
     for (const [id, rec] of Object.entries(frags.get(r).cells)) {
       if (cells.has(id)) { dupes++; continue; }
       cells.set(id, rec);
+      from.set(id, r);
     }
   }
-  return { cells, dupes };
+  return { cells, from, dupes };
 }
 
-function groups(cells) {
+// group -> {cells, regions}: the group's records and the fragments they came from.
+function groups({ cells, from }) {
   const g = new Map();
   for (const id of [...cells.keys()].sort()) {
     const k = id.slice(0, 6);
-    let m = g.get(k); if (!m) g.set(k, (m = {})); m[id] = cells.get(id);
+    let m = g.get(k); if (!m) g.set(k, (m = { cells: {}, regions: new Set() }));
+    m.cells[id] = cells.get(id);
+    if (from.has(id)) m.regions.add(from.get(id));
   }
   return g;
 }
 
-const indexJson = (m) => JSON.stringify({ v: 1, cells: m });
+const indexJson = (m) => JSON.stringify({ v: 1, cells: m.cells, regions: [...m.regions].sort() });
 const liveKeys = (cells) => {
   const s = new Set();
   for (const [id, r] of cells) { if (r[0]) s.add(tileKey(id, ".ebm")); if (r[2]) s.add(tileKey(id, ".poi")); }
@@ -105,7 +115,7 @@ export function merge({ newFrags, oldFrags, order = [] }) {
   const now = new Map([...oldFrags].filter(([, f]) => inPlan(f)));
   for (const [r, f] of newFrags) now.set(r, f);
   const oldC = cellsOf(oldFrags, order), newC = cellsOf(now, order);
-  const oldG = groups(oldC.cells), newG = groups(newC.cells);
+  const oldG = groups(oldC), newG = groups(newC);
   const indexes = new Map(), del = [];
   for (const [g, m] of newG) {
     const j = indexJson(m);

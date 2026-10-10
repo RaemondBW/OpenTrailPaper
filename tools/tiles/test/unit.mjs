@@ -87,7 +87,7 @@ await test("merge: indexes, deletions, failed and dropped regions", () => {
   assert.ok(r.del.includes("v1/861f82/861f82277ffffff.ebm"));
   assert.ok(!r.del.some((k) => k.includes(A) || k.includes(C)));
   const idx = JSON.parse(r.indexes.get("862a33"));
-  assert.deepEqual(idx, { v: 1, cells: { [A]: [10, "h1", 0, ""], [B]: [21, "h2b", 0, ""] } });
+  assert.deepEqual(idx, { v: 1, cells: { [A]: [10, "h1", 0, ""], [B]: [21, "h2b", 0, ""] }, regions: ["a"] });
 });
 
 await test("merge: a group with no cells left loses its index", () => {
