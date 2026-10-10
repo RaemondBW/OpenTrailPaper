@@ -231,7 +231,7 @@ talking to the others (`regions.mjs`):
 
 ### The workflow (`.github/workflows/prebuilt-tiles.yml`)
 
-It runs **Mondays 03:17 UTC**, or on demand with *Run workflow*. Inputs:
+It runs **only when started by hand** (*Actions* → *Pre-built map tiles* → *Run workflow*), and only for the repository owner: the `plan` job checks `github.actor` / `github.triggering_actor`, so a run started by anyone else (even a collaborator with write access) stops before downloading or uploading anything. Forks cannot trigger it or read its secrets. Inputs:
 
 - `only`: a subset of Geofabrik ids;
 - `jobs`;
@@ -383,7 +383,7 @@ download, and build from Overpass exactly as before.
    - Then *Run workflow* with `only` empty, for the planet. The first planet
      run uploads everything (~6–8 M objects, see [Costs](#costs)) and takes
      ~1.5–2 h end to end.
-   - After that the Monday schedule keeps it fresh.
+   - After that, re-run it whenever you want fresher data. Only changed tiles are uploaded, so a re-run costs a fraction of the first one (see [Costs](#costs)).
 
 ## Verifying
 
@@ -427,14 +427,12 @@ R2 has no egress charge. Prices are the R2 list prices, as of 2026:
 | **Reads** | Mostly served from Cloudflare's cache. A miss costs one Class B. Even 1 M hex downloads a month stays inside the free 10 M | **≈ $0** |
 | **Actions** | 20 interior jobs, ~20–45 min each (download, build, DEM, upload); 20 border jobs, ~10–15 min; merge, ~5 min. **≈ 1 000–1 500 runner-minutes a week** | **$0**: standard runners are free for public repositories. A private repo would be ~5 000 min/month, ~$25 over the free 2 000 |
 
-To halve the write cost, run monthly instead of weekly: change the `cron` to
-`17 3 1 * *`. Dense areas re-change the same cells, so a month has far fewer
-than four weeks' worth of PUTs, ≈ $2–5/month.
+Re-running monthly rather than weekly costs about a third as much: busy areas change the same cells over and over, so a month has far fewer than four weeks' worth of PUTs, ≈ $2–5 per run.
 
 ## Freshness
 
-- Geofabrik refreshes its extracts daily. The workflow builds on Mondays, so
-  published data is **1–8 days** behind OSM. `meta.json` records each
+- Geofabrik refreshes its extracts daily. The workflow builds when you run it, so
+  published data is as old as your last run (plus up to a day for Geofabrik). `meta.json` records each
   region's OSM timestamp.
 - The apps keep a downloaded tile for 90 days (`TileCache`), as before. A
   pre-built hex is cached by hash: its copy is reused while the hash is
