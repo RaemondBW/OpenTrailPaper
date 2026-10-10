@@ -105,7 +105,9 @@ export async function plan({ index, maxMb = 1500, maxCells = 600000, jobs = 20, 
   // the sequence into runs of about equal size (time is ~linear in size).
   const n = Math.max(1, Math.min(jobs, regions.length));
   const seq = [...regions].sort((x, y) => (x.url < y.url ? -1 : 1));
-  for (const r of seq) r.cost = Math.round(cost(r.mb, r.cells));
+  // At least 1: a tiny region (Monaco) rounded to 0, and an all-zero total
+  // made every bin index NaN — no job at all.
+  for (const r of seq) r.cost = Math.max(1, Math.round(cost(r.mb, r.cells)));
   const total = seq.reduce((t, r) => t + r.cost, 0);
   const bins = [];
   let acc = 0;
