@@ -462,6 +462,20 @@ final class BLEManager: NSObject, ObservableObject {
     /// The device the version records belong to: the connected one, or the
     /// last one (same key as the map-layer store).
     var deviceKey: String? { layersDeviceKey }
+    // The device's own version records (DeviceTileList), from the last
+    // versioned list. They cover hexes whoever sent them, so they come before
+    // this phone's records; empty on firmware that keeps none. Kept across a
+    // disconnect, like deviceTileIds, but not across a restart (the next list
+    // brings them back).
+    /// The device answered the tile list with versions on this connection: it
+    /// keeps them, so tiles go to it with their record.
+    private var deviceKeepsVersions = false
+    @Published private var deviceTileRecords: [String: String] = [:]
+    @Published private var devicePoiRecords: [String: String] = [:]
+    private var tileRecordsBuilding: [String: String] = [:]
+    private var poiRecordsBuilding: [String: String] = [:]
+    private var tileListVersioned = false
+    private var poiListVersioned = false
     /// `version`: its record (PrebuiltTiles.cdnRecord); nil = built on this
     /// phone, recorded as phoneRecord() when the device saves it.
     private struct TileJob { let id: String; let data: Data; let poi: Bool; let version: String? }
@@ -1393,11 +1407,12 @@ final class BLEManager: NSObject, ObservableObject {
     // MARK: H3 tile streaming
 
     // Ask the device which H3 tile ids are already on its SD, so the caller can
-    // skip re-sending them (replied via 0xD0/0xD1/0xD2 notifies).
+    // skip re-sending them (replied via 0xD0/0xD1/0xD2 notifies). Asks for each
+    // file's version too; firmware that keeps none ignores that (DeviceTileList).
     func refreshDeviceTiles() {
         guard let c = mapChar, let p = peripheral else { return }
-        p.writeValue(Data([0x07]), for: c, type: .withResponse)
-        p.writeValue(Data([0x08]), for: c, type: .withResponse)   // .poi files (new firmware only)
+        p.writeValue(DeviceTileList.request(0x07), for: c, type: .withResponse)
+        p.writeValue(DeviceTileList.request(0x08), for: c, type: .withResponse)   // .poi files (new firmware only)
     }
 
     /// On the device. A tile there is never re-sent on its own — even one
@@ -1407,29 +1422,43 @@ final class BLEManager: NSObject, ObservableObject {
     /// On the device, on firmware that draws the cycling layer, but not sent by
     /// this phone with the bike-route flags — so it most likely predates them.
     /// Only informs the "redownload to add them" hint; a tile from the website
-    /// ZIP or another phone may already have them.
+    /// ZIP or another phone may already have them. A tile the device has a
+    /// version record for was sent by an app that sends them, so after them.
     func tilePredatesCycling(_ id: String) -> Bool {
         deviceSupportsPois && deviceTileIds.contains(id) && !flaggedTileIds.contains(id)
+            && deviceTileRecords[id] == nil
+    }
+
+    private func tileRecord(_ id: String) -> String? {
+        DeviceTileList.record(device: deviceTileRecords[id], phone: tileVersions.tile(deviceKey, id))
+    }
+    private func poiRecord(_ id: String) -> String? {
+        DeviceTileList.record(device: devicePoiRecords[id], phone: tileVersions.poi(deviceKey, id))
     }
 
     /// The device's tile against the CDN index: the same hash is current; a
-    /// different hash, a phone-built tile or one this phone did not send is an
-    /// update; `.unknown` when the CDN index has no entry (unreachable, not
-    /// pre-built, built empty).
+    /// different hash, a phone-built tile or one with no record (on the device
+    /// or this phone) is an update; `.unknown` when the CDN index has no entry
+    /// (unreachable, not pre-built, built empty).
     func tileVersionState(_ id: String) -> PrebuiltTiles.VersionState {
-        PrebuiltTiles.state(record: tileVersions.tile(deviceKey, id),
+        PrebuiltTiles.state(record: tileRecord(id),
                             cdnHash: PrebuiltTiles.tileHash(CdnVersions.shared.entry(id)))
     }
 
     /// The device's .poi against the CDN index (same rules as tiles).
     func poiVersionState(_ id: String) -> PrebuiltTiles.VersionState {
-        PrebuiltTiles.state(record: tileVersions.poi(deviceKey, id),
+        PrebuiltTiles.state(record: poiRecord(id),
                             cdnHash: PrebuiltTiles.poiHash(CdnVersions.shared.entry(id)))
     }
 
-    /// Version records for the current device, for the download's filters.
-    var tileRecords: [String: String] { tileVersions.tiles(deviceKey) }
-    var poiRecords: [String: String] { tileVersions.pois(deviceKey) }
+    /// Version records for the current device, for the download's filters:
+    /// the device's own where it has one, else what this phone sent.
+    var tileRecords: [String: String] {
+        tileVersions.tiles(deviceKey).merging(deviceTileRecords) { _, device in device }
+    }
+    var poiRecords: [String: String] {
+        tileVersions.pois(deviceKey).merging(devicePoiRecords) { _, device in device }
+    }
 
     /// On the device, and Redownload would bring something new. With a CDN
     /// index entry, exactly when the hash differs from what this phone sent
@@ -1449,7 +1478,10 @@ final class BLEManager: NSObject, ObservableObject {
     func tileNeedsUpdateByAge(_ id: String) -> Bool {
         guard deviceTileIds.contains(id) else { return false }
         if tilePredatesCycling(id) { return true }
-        guard let at = tileSentAt[id] else { return false }
+        // When this phone sent it, else when the device says it was built.
+        guard let at = tileSentAt[id]
+                ?? PrebuiltTiles.phoneBuiltAt(deviceTileRecords[id])?.timeIntervalSince1970
+        else { return false }
         return Date().timeIntervalSince1970 - at > Self.tileRefreshAge
     }
 
@@ -1586,7 +1618,8 @@ final class BLEManager: NSObject, ObservableObject {
         tileQueue.removeFirst()
         currentTileId = tile.id
         currentIsPoi = tile.poi
-        currentVersion = tile.version
+        // Fixed now, so the device and this phone record the same thing.
+        currentVersion = tile.version ?? PrebuiltTiles.phoneRecord()
         mapData = tile.data
         mapOffset = 0
         mapEndSent = false
@@ -1600,7 +1633,9 @@ final class BLEManager: NSObject, ObservableObject {
         withUnsafeBytes(of: &size) { cmd.append(contentsOf: $0) }
         // A .poi goes under "<id>.poi"; saveTile strips the extension and
         // stores it by its magic either way, the name just reads well in logs.
-        cmd.append(Data((tile.poi ? "\(tile.id).poi" : tile.id).utf8))
+        // Firmware that keeps versions gets the record after a NUL.
+        cmd.append(DeviceTileList.beginName(tile.poi ? "\(tile.id).poi" : tile.id,
+                                            record: deviceKeepsVersions ? currentVersion : nil))
         p.writeValue(cmd, for: c, type: .withResponse)
     }
 
@@ -1633,6 +1668,10 @@ final class BLEManager: NSObject, ObservableObject {
             if let id = currentTileId {                           // a tile finished
                 tileJobBytes += mapData.count
                 let version = currentVersion ?? PrebuiltTiles.phoneRecord()
+                // Kept by the device too: mirror it, as its next list would.
+                if deviceKeepsVersions {
+                    if currentIsPoi { devicePoiRecords[id] = version } else { deviceTileRecords[id] = version }
+                }
                 if currentIsPoi {
                     devicePoiIds.insert(id)
                     tileVersions.setPoi(deviceKey, id, version)
@@ -1667,25 +1706,30 @@ final class BLEManager: NSObject, ObservableObject {
                 TransferCenter.shared.finish(Self.mapTransferId, success: false,
                                              message: "Map upload failed (\(code))")
             }
-        case 0xD0: tileIdsBuilding = []                           // tile-list begin
+        case 0xD0:                                               // tile-list begin
+            tileIdsBuilding = []
+            tileRecordsBuilding = [:]
+            tileListVersioned = DeviceTileList.beginHasVersions(d)
         case 0xD1 where d.count > 1:                              // comma-separated ids
-            if let s = String(data: d.subdata(in: 1..<d.count), encoding: .utf8) {
-                for id in s.split(separator: ",") where !id.isEmpty {
-                    tileIdsBuilding.append(String(id))
-                }
+            if let s = String(data: d.subdata(in: 1..<d.count), encoding: .utf8) {   // ("<id>=<record>" if versioned)
+                DeviceTileList.parseEntries(s, ids: &tileIdsBuilding, records: &tileRecordsBuilding)
             }
         case 0xD2:                                               // tile-list end
+            deviceKeepsVersions = tileListVersioned
+            deviceTileRecords = tileRecordsBuilding
             deviceTileIds = Set(tileIdsBuilding)
             tileVersions.pruneTiles(deviceKey, keeping: deviceTileIds)
             cacheDeviceTiles()
-        case 0xD3: poiIdsBuilding = []                            // poi-list begin
+        case 0xD3:                                               // poi-list begin
+            poiIdsBuilding = []
+            poiRecordsBuilding = [:]
+            poiListVersioned = DeviceTileList.beginHasVersions(d)
         case 0xD4 where d.count > 1:                              // comma-separated ids
             if let s = String(data: d.subdata(in: 1..<d.count), encoding: .utf8) {
-                for id in s.split(separator: ",") where !id.isEmpty {
-                    poiIdsBuilding.append(String(id))
-                }
+                DeviceTileList.parseEntries(s, ids: &poiIdsBuilding, records: &poiRecordsBuilding)
             }
         case 0xD5:                                               // poi-list end
+            devicePoiRecords = poiListVersioned ? poiRecordsBuilding : [:]
             devicePoiIds = Set(poiIdsBuilding)
             tileVersions.prunePois(deviceKey, keeping: devicePoiIds)
             deviceSupportsPois = true
@@ -2679,6 +2723,7 @@ extension BLEManager: CBCentralManagerDelegate {
             TransferCenter.shared.finish(Self.routeTransferId, success: false,
                                          message: "Connection dropped")
             deviceSupportsPois = false      // re-learnt from the next 0x08 answer
+            deviceKeepsVersions = false     // and this from the next versioned list
             if tilesUploading {
                 tileQueue = []
                 finishTileJob(message: "Interrupted — reconnect to resume")

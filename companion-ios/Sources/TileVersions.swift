@@ -81,6 +81,55 @@ final class DeviceTileVersions {
     }
 }
 
+/// The device's own record of each file's version (firmware with tile
+/// versions, src/tile_versions.h). It knows the version of a hex whoever sent
+/// it — another phone, this app before a reinstall — where DeviceTileVersions
+/// only knows what this phone sent, so it is asked first and DeviceTileVersions
+/// is the fallback (older firmware, and files saved before the device kept
+/// versions).
+///
+/// On the map characteristic: [0x07][0x01] / [0x08][0x01] lists with versions.
+/// Firmware that keeps them answers a flagged begin, [0xD0][0x01] /
+/// [0xD3][0x01], and entries "<id>=<record>" (bare "<id>": no record) in the
+/// comma-separated 0xD1 / 0xD4 packets; older firmware ignores the flag and
+/// answers the plain 1-byte begin. A tile then goes as
+/// [0x06][u32 size][name][0x00][record], to firmware that answered a flagged
+/// begin only.
+enum DeviceTileList {
+    static let withVersions: UInt8 = 0x01
+
+    /// The list request for `op` (0x07 tiles, 0x08 POIs), asking for versions.
+    static func request(_ op: UInt8) -> Data { Data([op, withVersions]) }
+
+    /// A 0xD0 / 0xD3 begin from firmware that sends versions.
+    static func beginHasVersions(_ d: Data) -> Bool {
+        d.count >= 2 && (d[d.startIndex + 1] & withVersions) != 0
+    }
+
+    /// One 0xD1 / 0xD4 body: ids into `ids`, records (where given) into `records`.
+    static func parseEntries(_ body: String, ids: inout [String], records: inout [String: String]) {
+        for e in body.split(separator: ",", omittingEmptySubsequences: true) {
+            guard let eq = e.firstIndex(of: "=") else { ids.append(String(e)); continue }
+            let id = String(e[..<eq])
+            guard !id.isEmpty else { continue }
+            ids.append(id)
+            let rec = String(e[e.index(after: eq)...])
+            if !rec.isEmpty { records[id] = rec }
+        }
+    }
+
+    /// The begin-tile name field: the name, then the record after a NUL when
+    /// the device keeps versions.
+    static func beginName(_ name: String, record: String?) -> Data {
+        var d = Data(name.utf8)
+        if let record { d.append(0); d.append(Data(record.utf8)) }
+        return d
+    }
+
+    /// The record a hex is compared with: the device's, else this phone's.
+    static func record(device: String?, phone: String?) -> String? { device ?? phone }
+}
+
 /// The CDN's group indexes for the hexes on screen, for the Maps screen's
 /// "update available" state and the selection's data date. Backed by
 /// PrebuiltTiles.IndexCache (an hour, index.json's max-age) and meta.json

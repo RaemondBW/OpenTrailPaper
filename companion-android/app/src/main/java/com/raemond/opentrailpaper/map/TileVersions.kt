@@ -79,6 +79,52 @@ class DeviceTileVersions(private val file: File) {
 }
 
 /**
+ * The device's own record of each file's version (firmware with tile versions,
+ * src/tile_versions.h). It knows the version of a hex whoever sent it — another
+ * phone, this app before a reinstall — where [DeviceTileVersions] only knows
+ * what this phone sent, so it is asked first and [DeviceTileVersions] is the
+ * fallback (older firmware, and files saved before the device kept versions).
+ *
+ * On the map characteristic: [0x07][0x01] / [0x08][0x01] lists with versions.
+ * Firmware that keeps them answers a flagged begin, [0xD0][0x01] / [0xD3][0x01],
+ * and entries "<id>=<record>" (bare "<id>": no record) in the comma-separated
+ * 0xD1 / 0xD4 packets; older firmware ignores the flag and answers the plain
+ * 1-byte begin. A tile then goes as [0x06][u32 size][name][0x00][record], to
+ * firmware that answered a flagged begin only.
+ */
+object DeviceTileList {
+    const val WITH_VERSIONS = 0x01
+
+    /** The list request for [op] (0x07 tiles, 0x08 POIs), asking for versions. */
+    fun request(op: Int): ByteArray = byteArrayOf(op.toByte(), WITH_VERSIONS.toByte())
+
+    /** A 0xD0 / 0xD3 begin from firmware that sends versions. */
+    fun beginHasVersions(d: ByteArray): Boolean = d.size >= 2 && (d[1].toInt() and WITH_VERSIONS) != 0
+
+    /** One 0xD1 / 0xD4 body: ids into [ids], records (where given) into [records]. */
+    fun parseEntries(body: String, ids: MutableCollection<String>, records: MutableMap<String, String>) {
+        for (e in body.split(',')) {
+            if (e.isEmpty()) continue
+            val eq = e.indexOf('=')
+            if (eq < 0) { ids.add(e); continue }
+            val id = e.substring(0, eq)
+            if (id.isEmpty()) continue
+            ids.add(id)
+            e.substring(eq + 1).takeIf { it.isNotEmpty() }?.let { records[id] = it }
+        }
+    }
+
+    /** The begin-tile name field: the name, then the record after a NUL when
+     *  the device keeps versions. */
+    fun beginName(name: String, record: String?): ByteArray =
+        if (record == null) name.toByteArray(Charsets.US_ASCII)
+        else name.toByteArray(Charsets.US_ASCII) + 0 + record.toByteArray(Charsets.US_ASCII)
+
+    /** The record a hex is compared with: the device's, else this phone's. */
+    fun record(device: String?, phone: String?): String? = device ?: phone
+}
+
+/**
  * The CDN's group indexes for the hexes on screen, for the Maps screen's
  * "update available" state and the selection's data date. Backed by
  * [PrebuiltTiles.IndexCache] (an hour, index.json's max-age) and meta.json (OSM
