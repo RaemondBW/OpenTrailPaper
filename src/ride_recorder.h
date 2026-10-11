@@ -80,6 +80,17 @@ bool consumeLateMount();
 // SD card info for the menu screen.
 bool sdMounted();
 int rideCount();
+
+// The finished rides in RIDE_DIR for the Ride History list, newest first
+// (names are YYYYMMDD-HHMMSS, so that is a descending name sort). Skips the
+// ride being recorded, stubs under RIDE_MIN_USEFUL_BYTES, and dot-files. One
+// pass over the directory; call it when the list opens, not per redraw. At
+// most `max` rides are kept (the newest). Returns how many were written.
+struct RideFile {
+    char name[32];
+    uint32_t size;
+};
+int listRides(RideFile* out, int max);
 uint32_t sdFreeMB();
 
 // FreeRTOS task: ticks at RECORD_INTERVAL_MS while recording.
