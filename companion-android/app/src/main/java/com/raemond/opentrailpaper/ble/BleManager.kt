@@ -906,7 +906,7 @@ class BleManager(private val app: Application) {
             delay(25_000)
             if (!admittedSinceConnect && gatt === g) g.disconnect()
         }
-        queue.attach(g)
+        queue.reset(g)
         queue.enqueue(GattQueue.Op.Mtu(517))
         g.discoverServices()
     }

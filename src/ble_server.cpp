@@ -828,9 +828,9 @@ void foldName(const char* in, char* out, size_t cap) {
 // Android reports as the disconnect status, so the app can tell a refusal from
 // a drop. A stranger's phone may retry every half second for as long as its
 // app is open, so the log line is rate-limited.
-void kickLink(uint16_t handle, const char* why) {
+void kickLink(uint16_t handle, const char* why, bool phoneSlot = true) {
     static uint32_t lastLogMs = 0, suppressed = 0;
-    linkRefused = true;
+    if (phoneSlot) linkRefused = true;
     if (lastLogMs == 0 || millis() - lastLogMs > 30000) {
         diag::log("ble: refusing phone link (%s) — the device is paired with "
                   "another phone; unpair it in Paired Devices > Phone "
@@ -856,24 +856,51 @@ bool refuseRepeatPairing(uint16_t handle) {
 }
 
 // Server task: delete every phone bond and reopen pairing.
+//
+// Phones hand over an IRK when they pair, and ble_gap_unpair will not delete a
+// bond with an IRK while advertising or scanning is on (BLE_HS_EBUSY: the
+// controller's resolving list can't change then) — it returns without
+// touching anything. That made UNPAIR a no-op whenever a stranger's refusals
+// had advertising running or a sensor hunt was scanning: the phone's bond
+// survived and it reconnected straight away (2026-10-10). So both stop first,
+// every delete is checked, and an unpair that didn't take stays pending and
+// is retried — the panel already reads "not paired" while it is.
 void serviceUnpair() {
     if (!unpairPending) return;
+    static uint8_t tries = 0;
+    ble_sensors::holdScan(true);
+    NimBLEDevice::stopAdvertising();
     int total = NimBLEDevice::getNumBonds();
-    int deleted = 0;
+    int deleted = 0, failed = 0, lastRc = 0;
     for (int i = total - 1; i >= 0; --i) {   // from the end: deletion shifts
         NimBLEAddress a = NimBLEDevice::getBondedAddress(i);
         if (isSensorAddr(a)) continue;
         // ble_gap_unpair also terminates a live link to that peer.
-        if (NimBLEDevice::deleteBond(a)) ++deleted;
+        int rc = ble_gap_unpair(a.getBase());
+        if (rc == 0) ++deleted;
+        else { ++failed; lastRc = rc; }
     }
+    if (countPhoneBonds() > 0) {
+        if (++tries < 20) {
+            if (tries == 1)
+                diag::log("ble: unpair: %d phone bond(s) not deleted yet (rc=%d) "
+                          "— retrying", failed, lastRc);
+            return;   // still pending; advertising and scanning stay off
+        }
+        diag::log("ble: unpair FAILED — %d phone bond(s) left (rc=%d); "
+                  "try again from Paired Devices > Phone", countPhoneBonds(), lastRc);
+    }
+    tries = 0;
+    ble_sensors::holdScan(false);
     settings::clearPhone();
     phoneNameCache[0] = 0;
     if (linkUp) NimBLEDevice::getServer()->disconnect(linkHandle);
     recountPhoneBonds();
     advDirty = true;
     unpairPending = false;
-    diag::log("ble: unpaired from the panel — %d phone bond(s) deleted, "
-              "pairing open to the next phone", deleted);
+    if (phoneBonds.load() == 0)
+        diag::log("ble: unpaired from the panel — %d phone bond(s) deleted, "
+                  "pairing open to the next phone", deleted);
     // With a link up, onDisconnect re-advertises; with none, do it now.
     if (!linkUp) applyAdvertising();
 }
@@ -1322,6 +1349,29 @@ class ServerCb : public NimBLEServerCallbacks {
         return code;
     }
     void onConnect(NimBLEServer* srv, NimBLEConnInfo& info) override {
+        // The device has ONE phone slot (linkHandle and the state around it),
+        // but the host allows several links and advertising can be back on
+        // while a phone is connected. A second central must never overwrite
+        // the slot — a stranger connecting three times a second did exactly
+        // that, and each refusal's disconnect then reset the paired phone's
+        // state (2026-10-10). The paired phone itself connecting again means
+        // its old link is dead from its side: the new link takes the slot.
+        bool known = NimBLEDevice::isBonded(info.getIdAddress()) ||
+                     NimBLEDevice::isBonded(info.getAddress());
+        if (linkUp && info.getConnHandle() != linkHandle) {
+            if (!(known && phoneBonds.load() > 0)) {
+                diag::log("ble: extra link from %s while the phone slot is busy "
+                          "— refused", info.getIdAddress().toString().c_str());
+                kickLink(info.getConnHandle(), "phone slot busy", false);
+                return;
+            }
+            diag::log("ble: the paired phone reconnected over a stale link — "
+                      "dropping the old one");
+            uint16_t old = linkHandle;
+            linkHandle = info.getConnHandle();   // old link's disconnect is ignored
+            ams::onDisconnect(old);
+            srv->disconnect(old);
+        }
         negotiatedMTU = info.getMTU();
         linkUp = true;
         linkHandle = info.getConnHandle();
@@ -1330,13 +1380,19 @@ class ServerCb : public NimBLEServerCallbacks {
         // getIdAddress() is the bonded identity when NimBLE resolved the
         // phone's private address against a stored IRK — the same resolution
         // AMS reconnects have always relied on.
-        linkPeerKnown = NimBLEDevice::isBonded(info.getIdAddress()) ||
-                        NimBLEDevice::isBonded(info.getAddress());
+        linkPeerKnown = known;
         connAtMs = millis();
         connEncrypted = false;
-        diag::log("phone link up: MTU=%u interval=%.1fms paired=%d known_peer=%d",
-                  info.getMTU(), info.getConnInterval() * 1.25f,
-                  phoneBonds.load() > 0, (int)linkPeerKnown);
+        static uint32_t lastUpLogMs = 0;
+        if (linkPeerKnown || phoneBonds.load() == 0 || lastUpLogMs == 0 ||
+            millis() - lastUpLogMs > 30000) {
+            lastUpLogMs = millis();
+            diag::log("phone link up: %s (id %s) MTU=%u interval=%.1fms paired=%d known_peer=%d",
+                      info.getAddress().toString().c_str(),
+                      info.getIdAddress().toString().c_str(),
+                      info.getMTU(), info.getConnInterval() * 1.25f,
+                      phoneBonds.load() > 0, (int)linkPeerKnown);
+        }
         // Paired, and this isn't the paired phone: gone now, before the
         // security request below — that request is what makes a phone without
         // our keys start pairing and put a passkey dialog up. No interval
@@ -1452,7 +1508,19 @@ class ServerCb : public NimBLEServerCallbacks {
         negotiatedMTU = mtu;
     }
     void onDisconnect(NimBLEServer*, NimBLEConnInfo& info, int reason) override {
-        diag::log("phone disconnected (reason %d)", reason);
+        // Not the phone slot's link (a refused extra, or the stale link a
+        // reconnecting phone replaced): nothing of the phone's to reset, and
+        // no advertising while the phone is connected.
+        if (info.getConnHandle() != linkHandle) {
+            if (!linkUp && !unpairPending) {
+                if (advDirty) applyAdvertising();
+                else NimBLEDevice::startAdvertising();
+            }
+            return;
+        }
+        // A refused stranger reconnects every few hundred ms; its drops are
+        // already counted in kickLink's rate-limited line.
+        if (!linkRefused) diag::log("phone disconnected (reason %d)", reason);
         // A supervision timeout (520) while the CPU was allowed to sleep on the
         // relaxed link is the experiment's failure signature — count it, and
         // pull the plug after three. Other reasons (531 = the app closed the
@@ -1463,8 +1531,9 @@ class ServerCb : public NimBLEServerCallbacks {
 #endif
         uint32_t slept, rejected; uint64_t sleepUs;
         power_mgmt::sleepStats(slept, rejected, sleepUs);
-        diag::log("ble disconnect: interval_long=%d sleep_allowed=%d successful_sleep_calls=%lu",
-                  linkIntervalLong, relaxedSleepOk, (unsigned long)slept);
+        if (!linkRefused)
+            diag::log("ble disconnect: interval_long=%d sleep_allowed=%d successful_sleep_calls=%lu",
+                      linkIntervalLong, relaxedSleepOk, (unsigned long)slept);
         if (reason == 520 && sleepEligibleInterval && relaxedSleepOk) {
             if (++relaxedDropCount >= 3) {
                 relaxedSleepOk = false;
@@ -1472,6 +1541,7 @@ class ServerCb : public NimBLEServerCallbacks {
                           "(3 supervision timeouts while connected sleep allowed)");
             }
         }
+        const bool refused = linkRefused;
         linkIntervalLong = false;
         phoneConnected = false;
         linkUp = false;
@@ -1481,7 +1551,7 @@ class ServerCb : public NimBLEServerCallbacks {
         linkHandle = 0xFFFF;
         pairCode = 0;             // a refused or abandoned pairing's sheet goes too
         mediaTrackFeed = false;   // the next app must ask again
-        if (linkRefused) {
+        if (refused) {
             // Refused while paired: expected, and already logged.
         } else if (!connEncrypted && millis() - connAtMs < 15000) {
             if (++quickUnencDrops == 3)
@@ -1504,6 +1574,7 @@ class ServerCb : public NimBLEServerCallbacks {
         // Advertising stops once a central connects; restart it so the phone
         // can find and reconnect to the device after disconnecting — with a
         // fresh advertisement if the pairing state changed on this link.
+        if (unpairPending) return;   // serviceUnpair re-advertises when done
         if (advDirty) applyAdvertising();
         else NimBLEDevice::startAdvertising();
     }
@@ -2842,7 +2913,7 @@ void task(void*) {
 
         // Safety net: make sure we're discoverable whenever no phone is
         // connected, in case a disconnect ever slips past onDisconnect.
-        if (!linkUp) {
+        if (!linkUp && !unpairPending) {
             NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
             if (adv && !adv->isAdvertising()) NimBLEDevice::startAdvertising();
         }
