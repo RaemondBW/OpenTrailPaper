@@ -14,6 +14,11 @@ so write for the rider, newest version first, one `## vX.YY` heading each.
 - The Menu responds to taps again on a card with lots of rides. It was
   re-counting every ride on the SD card once a second, which with a few
   dozen rides kept it busy for most of that second.
+- The device now remembers which version of each map hex it holds. The
+  app's Maps screen no longer marks a hex as "update available" just
+  because it was sent from another phone or before an app reinstall.
+  Hexes sent before this update keep the old behaviour until they are
+  sent again.
 
 ## v1.21
 
