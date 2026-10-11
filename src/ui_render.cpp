@@ -507,6 +507,15 @@ void dashFieldValue(uint8_t field, const RideState& s, char* val, size_t valCap,
             *unit = units::speedLabel(s.useMiles);
             break;
         }
+        case DF_AVG_SPEED: {
+            double avgKmh = s.movingS > 0
+                ? (s.distanceM / 1000.0) / (s.movingS / 3600.0)
+                : 0.0;
+            double v = units::speed(avgKmh, s.useMiles);
+            snprintf(val, valCap, "%.1f", v);
+            *unit = units::speedLabel(s.useMiles);
+            break;
+        }
         case DF_POWER3S:
             if (s.power3sW != 0xFFFF) snprintf(val, valCap, "%u", s.power3sW);
             else snprintf(val, valCap, "--");
@@ -609,7 +618,7 @@ void heroCell(const EpdRect& r, const char* labelStr, const char* value,
     // impact_128 holds about three glyphs, so a hero speed keeps its decimal
     // only below 10 — "round numbers until the churn stops".
     if (isSpeed) {
-        double v = units::speed(s.speedKmh, s.useMiles);
+        double v = strtod(value, nullptr);
         snprintf(buf, sizeof(buf), v < 10.0 ? "%.1f" : "%.0f", v);
         unit = "";
     }
@@ -657,7 +666,8 @@ void heroCell(const EpdRect& r, const char* labelStr, const char* value,
 // the number stays put for the whole ride.
 const char* dashSizingHint(uint8_t field) {
     switch (field) {
-        case DF_SPEED:       return "88.8";
+        case DF_SPEED:
+        case DF_AVG_SPEED:   return "88.8";
         case DF_POWER3S:
         case DF_POWER:       return "888";
         case DF_HEART_RATE:
@@ -1062,7 +1072,9 @@ void ui_render_dashboard(const RideState& s, bool navActive,
         const Placed& p = placed[i];
         if (p.hero) {
             heroCell(p.r, dashFieldLabel(p.field), p.value, p.unit, s,
-                     isPowerField(p.field), p.field == DF_SPEED, p.stale, fb);
+                     isPowerField(p.field),
+                     p.field == DF_SPEED || p.field == DF_AVG_SPEED,
+                     p.stale, fb);
         } else {
             const int wb = (p.r.width > ui::CONTENT_W * 3 / 4) ? 1 : 0;
             ui::cell(p.r, dashFieldLabel(p.field), p.value, p.unit, fb, p.stale,

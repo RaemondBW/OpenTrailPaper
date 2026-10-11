@@ -22,6 +22,7 @@
 // wiring it in dashFieldValue() (ui_render.cpp), not inventing new plumbing.
 enum DashField : uint8_t {
     DF_SPEED = 0,
+    DF_AVG_SPEED,    // distance / moving time
     DF_POWER3S,      // 3 s rolling average — the one worth riding to
     DF_POWER,        // instantaneous
     DF_HEART_RATE,
