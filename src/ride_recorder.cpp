@@ -4,6 +4,7 @@
 #include <SD.h>
 #include <SPI.h>
 #include <driver/gpio.h>
+#include <dirent.h>
 
 #include "config.h"
 #include "fit_writer.h"
@@ -880,17 +881,20 @@ void recoverRides() {
 // SD is "unavailable" to the firmware while a host computer owns it over USB.
 bool sdMounted() { return sdOk && !usb_storage::hostActive(); }
 
+// One readdir() pass over the directory, NOT File::openNextFile(): that wraps
+// every entry in a File, which stat()s and fopen()s it by path — and each of
+// those is a FatFs search from the top of /rides. Quadratic in the ride count:
+// with ~70 rides at the card's 4 MHz it was over a thousand sector reads, well
+// over a second under sdLock, and the Menu asked for it on every 1 Hz redraw,
+// so the screen was nearly always mid-scan when the rider tapped it.
 int rideCount() {
     if (!sdOk) return 0;
     sdLock();
-    File dir = SD.open(RIDE_DIR);
     int n = 0;
-    if (dir) {
-        for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
-            if (!f.isDirectory()) n++;
-            f.close();
-        }
-        dir.close();
+    if (DIR* d = opendir("/sd" RIDE_DIR)) {   // SD.begin() mounts at /sd
+        while (struct dirent* e = readdir(d))
+            if (e->d_type == DT_REG) n++;
+        closedir(d);
     }
     sdUnlock();
     return n;
