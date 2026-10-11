@@ -576,6 +576,7 @@ class BleManager(private val app: Application) {
      * along and lifting it would walk straight back into createBond.
      */
     private var refusalLiftsOnUnpaired = true
+    private var lastRefusedScanLog = 0L
     /** Last advertised paired flag per address (null: firmware without it). */
     private val advertisedPaired = HashMap<String, Boolean?>()
 
@@ -602,6 +603,14 @@ class BleManager(private val app: Application) {
                 val dev = result.device
                 val saved = pairedDeviceAddress
                 if (refusedAddress != null && dev.address.equals(refusedAddress, ignoreCase = true)) {
+                    if (System.currentTimeMillis() - lastRefusedScanLog > 5000) {
+                        lastRefusedScanLog = System.currentTimeMillis()
+                        android.util.Log.i(
+                            "Pairing",
+                            "scan: refused device advertises paired=$pairedFlag " +
+                                "liftsOnUnpaired=$refusalLiftsOnUnpaired bond=${dev.bondState}",
+                        )
+                    }
                     // It turned us away. Only an UNPAIRED advertisement means
                     // it would have us now; then any bond Android still holds
                     // for it is stale (the device kept none) and would only
@@ -852,9 +861,13 @@ class BleManager(private val app: Application) {
         onFallbackAttempt = false
         rejectedAddresses.clear()
         if (addr != null) {
-            // Not re-adopted this session; and drop Android's keys — they would
-            // only fail against a device that has been (or will be) unpaired.
-            rejectedAddresses.add(addr)
+            // Drop Android's keys — they would only fail against a device that
+            // has been (or will be) unpaired. NOT blocked for the session:
+            // with fixed pairing, Forget is how the rider starts over, usually
+            // right after unpairing on the device, and blocking it left the
+            // app scanning past its own device until a restart (2026-10-11).
+            // The scan adopts it only once it advertises unpaired; still
+            // paired, it gets the paired-elsewhere path and its dialog.
             runCatching { adapter?.getRemoteDevice(addr) }.getOrNull()?.let(::removeBond)
         }
         if (gatt != null) {
@@ -1218,6 +1231,12 @@ class BleManager(private val app: Application) {
                 (advertisedPaired[dev.address] == true &&
                     dev.bondState != BluetoothDevice.BOND_BONDED)
             )
+        android.util.Log.i(
+            "Pairing",
+            "disconnect: status=$statusCode admitted=$admitted authFailed=$authFailed " +
+                "bondFailed=$bondFailed bond=${dev?.bondState} " +
+                "advertisedPaired=${dev?.let { advertisedPaired[it.address] }} refused=$refused",
+        )
         // Ours, and turning us away: a remembered device that keeps dropping
         // us before any status (the firmware pushes nothing until the link
         // proves the bond) was unpaired on the device, or now belongs to
