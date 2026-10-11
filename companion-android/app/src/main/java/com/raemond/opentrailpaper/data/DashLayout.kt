@@ -23,6 +23,7 @@ data class DashField(
         // the elevation grid baked into the map tiles.
         val all = listOf(
             DashField("speed", "Speed", "GPS"),
+            DashField("avgspeed", "Avg speed", "Distance / moving time"),
             DashField("power3s", "Power (3s)", "Power meter, 3s average"),
             DashField("power", "Power", "Power meter, instant"),
             DashField("hr", "Heart rate", "Heart-rate strap"),
