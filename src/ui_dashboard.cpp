@@ -2988,8 +2988,27 @@ void task(void*) {
                     m.recording = s.recording;
                     m.gpsReady = s.gpsFix && s.timeValid;
                     m.sdOk = ride_recorder::sdMounted();
-                    m.rideCount = ride_recorder::rideCount();
-                    m.sdFreeMB = ride_recorder::sdFreeMB();
+                    // Card numbers, read on arrival, when a ride starts or
+                    // stops, and every 30 s — not on every 1 Hz redraw. Each
+                    // read is SD work under sdLock, in the pass the rider's
+                    // tap is waiting behind; nothing else changes them while
+                    // the Menu is up.
+                    static int cachedRides = 0;
+                    static uint32_t cachedFreeMB = 0, cardReadAt = 0;
+                    static bool cardRead = false, cardRecording = false;
+                    if (m.sdOk && (!cardRead || prevScreen != SCREEN_MENU ||
+                                   cardRecording != s.recording ||
+                                   millis() - cardReadAt > 30000)) {
+                        cachedRides = ride_recorder::rideCount();
+                        cachedFreeMB = ride_recorder::sdFreeMB();
+                        cardReadAt = millis();
+                        cardRecording = s.recording;
+                        cardRead = true;
+                    } else if (!m.sdOk) {
+                        cardRead = false;   // re-read when the card comes back
+                    }
+                    m.rideCount = cachedRides;
+                    m.sdFreeMB = cachedFreeMB;
                     m.hr = s.hrConnected;
                     m.pwr = s.powerConnected;
                     m.cad = s.cadenceConnected;

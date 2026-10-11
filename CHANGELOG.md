@@ -11,6 +11,9 @@ so write for the rider, newest version first, one `## vX.YY` heading each.
   chip's I2C bus could trap the device in an endless loop until the
   watchdog reset it; the bus driver now clears that interrupt and carries on.
   Any bus traffic also keeps the device awake until it finishes.
+- The Menu responds to taps again on a card with lots of rides. It was
+  re-counting every ride on the SD card once a second, which with a few
+  dozen rides kept it busy for most of that second.
 
 ## v1.21
 
