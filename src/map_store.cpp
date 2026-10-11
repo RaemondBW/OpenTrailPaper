@@ -9,6 +9,7 @@
 #include "map_select.h"
 #include "map_tiles.h"
 #include "sd_bus.h"
+#include "tile_versions.h"
 #include "usb_storage.h"
 #include "diag.h"
 
@@ -20,6 +21,11 @@ namespace {
 
 constexpr char MAP_DIR[] = "/maps";
 constexpr char TILE_DIR[] = "/maps/tiles";
+// The tile version log (tile_versions.h), and the compacted copy that replaces
+// it. In /maps, not the tile tree: few entries to search, and the tile walk
+// never sees it.
+constexpr char VER_PATH[] = "/maps/tiles.ver";
+constexpr char VER_TMP[] = "/maps/tiles.ver.tmp";
 
 // The tile index and the tile cache are shared by TWO tasks, and used to be
 // shared with no lock at all:
@@ -686,7 +692,41 @@ bool saveAndActivate(const char* name, const uint8_t* data, size_t len) {
     return loadFile(path);
 }
 
-bool saveTile(const char* id, const uint8_t* data, size_t len) {
+// A compaction writes the copy, removes the log, renames the copy. Cut power
+// between the last two and only the copy is left: finish the rename. Both
+// present means the copy may be partial and the log is whole: drop the copy.
+// Once per boot, before the first append or read. Call under sdLock.
+static void verRecover() {
+    static bool done = false;
+    if (done) return;
+    done = true;
+    if (!SD.exists(VER_TMP)) return;
+    if (SD.exists(VER_PATH)) SD.remove(VER_TMP);
+    else SD.rename(VER_TMP, VER_PATH);
+}
+
+// Append the record for a file just saved. A sender with no version (an older
+// app) still appends one, CLEARED, so a record from an earlier save is not
+// taken for the new file — unless there is no log yet, so nothing to clear.
+// Call under sdLock.
+static void verAppend(uint64_t cell, bool poi, size_t len, const char* version) {
+    if (!cell) return;
+    tile_versions::Rec r{};
+    r.cell = cell;
+    r.kind = poi ? 'p' : 'e';
+    r.size = (uint32_t)len;
+    r.type = tile_versions::parse(version, r.value);
+    verRecover();
+    if (r.type == tile_versions::CLEARED && !SD.exists(VER_PATH)) return;
+    uint8_t b[tile_versions::REC_LEN];
+    tile_versions::encode(r, b);
+    File f = SD.open(VER_PATH, FILE_APPEND);
+    if (!f) { diag::log("tile version: open failed"); return; }
+    if (f.write(b, sizeof(b)) != sizeof(b)) diag::log("tile version: write failed");
+    f.close();
+}
+
+bool saveTile(const char* id, const uint8_t* data, size_t len, const char* version) {
     MapGuard g;
     // The same transfer carries a tile's .poi companion: told apart by its
     // magic, so the phone needs no new BLE opcode to send POIs on their own.
@@ -725,9 +765,13 @@ bool saveTile(const char* id, const uint8_t* data, size_t len) {
         }
     }
     bool ok = writeAll(isPoi ? "poi" : "tile", path, data, len);
+    // After the file, so a cut in between leaves the previous record, which
+    // the new file's size then disowns (unless the two sizes match exactly).
+    if (ok) verAppend(tile_versions::cellFromId(bare), isPoi, len, version);
     sdUnlock();
     if (!ok) return false;
-    diag::log("tile saved: %s (%u KB)", path, (unsigned)(len / 1024));
+    diag::log("tile saved: %s (%u KB) %s", path, (unsigned)(len / 1024),
+              version ? version : "");
     // Renders immediately: forget the cached "no tile here" and any stale blob
     // for this cell, and the next frame that wants it reads the new file.
     if (uint64_t cell = h3_from_id(bare)) {
@@ -770,7 +814,7 @@ float elevationAt(double lat, double lon) {
 // directory NAMES only and never opens a tile, since the name is the id.
 // On demand, from the BLE server task, never on the boot path.
 // `ext` ".poi" lists the tiles that have a cycling-POI file instead.
-int listTileIds(char out[][24], int maxOut, const char* ext) {
+int listTileIds(char out[][24], int maxOut, const char* ext, uint32_t* sizes) {
     MapGuard g;
     int n = 0;
     int seen = 0;
@@ -782,10 +826,11 @@ int listTileIds(char out[][24], int maxOut, const char* ext) {
     // device before the reply was ever sent — which is why the log shows tile
     // list requests simply stopping rather than failing.
     auto breathe = [&]() { if ((++seen & 0x1F) == 0) vTaskDelay(1); };
-    auto take = [&](const char* prefix, const char* base) {
+    auto take = [&](const char* prefix, const char* base, uint32_t size) {
         if (n >= maxOut || !strstr(base, ext)) return;
         snprintf(out[n], 24, "%s%s", prefix, base);
         if (char* dot = strstr(out[n], ext)) *dot = 0;
+        if (sizes) sizes[n] = size;   // from the directory entry: no extra I/O
         n++;
     };
     auto walk = [&](const char* path, const char* prefix) {
@@ -795,7 +840,7 @@ int listTileIds(char out[][24], int maxOut, const char* ext) {
             if (!f.isDirectory()) {
                 const char* nm = f.name();
                 const char* base = strrchr(nm, '/');
-                take(prefix, base ? base + 1 : nm);
+                take(prefix, base ? base + 1 : nm, (uint32_t)f.size());
             }
             f.close();
             breathe();
@@ -822,6 +867,80 @@ int listTileIds(char out[][24], int maxOut, const char* ext) {
     }
     sdUnlock();
     return n;
+}
+
+void tileVersions(const char (*ids)[24], const uint32_t* sizes, int n, bool poi,
+                  char (*vers)[24]) {
+    for (int i = 0; i < n; ++i) vers[i][0] = 0;
+    if (n <= 0) return;
+    // The whole log into PSRAM, one chunk per sdLock so the recorder's 1 Hz FIT
+    // append never queues behind it. Bounded: at the 4096-tile list cap a
+    // compacted log is 8192 x 24 B = 192 KB; this allows several times that.
+    constexpr size_t LOG_MAX = 1024 * 1024;
+    uint8_t* log = nullptr;
+    size_t len = 0;
+    sdLock();
+    verRecover();
+    File f = SD.open(VER_PATH);
+    if (f) {
+        size_t size = f.size();
+        if (size > LOG_MAX) size = LOG_MAX;   // the rest is ignored until compacted
+        size -= size % tile_versions::REC_LEN;
+        log = size ? (uint8_t*)heap_caps_malloc(size, MALLOC_CAP_SPIRAM) : nullptr;
+        while (log && len < size) {
+            size_t want = size - len < 8192 ? size - len : 8192;
+            int got = f.read(log + len, want);
+            if (got <= 0) break;
+            len += (size_t)got;
+            if (len < size) { sdUnlock(); vTaskDelay(1); sdLock(); }
+        }
+        f.close();
+    }
+    sdUnlock();
+    if (!log) return;
+
+    const int slots = (int)(len / tile_versions::REC_LEN);
+    auto* recs = (tile_versions::Rec*)heap_caps_malloc(
+        (size_t)(slots ? slots : 1) * sizeof(tile_versions::Rec), MALLOC_CAP_SPIRAM);
+    if (!recs) { heap_caps_free(log); return; }
+    const int live = tile_versions::latest(recs, tile_versions::decodeAll(log, len, recs));
+    heap_caps_free(log);
+
+    int found = 0;
+    const uint8_t kind = poi ? 'p' : 'e';
+    for (int i = 0; i < n; ++i) {
+        const tile_versions::Rec* r =
+            tile_versions::find(recs, live, tile_versions::cellFromId(ids[i]), kind);
+        if (!r || (sizes && r->size != sizes[i])) continue;
+        tile_versions::format(r->type, r->value, vers[i], 24);
+        ++found;
+    }
+
+    // Mostly superseded (or torn) records: rewrite just the live ones. Write
+    // the copy, then swap it in (verRecover finishes a swap cut short).
+    if (tile_versions::wantsCompaction(slots, live)) {
+        uint32_t t0 = millis();
+        sdLock();
+        SD.remove(VER_TMP);
+        File out = SD.open(VER_TMP, FILE_WRITE);
+        bool ok = (bool)out;
+        uint8_t b[tile_versions::REC_LEN];
+        for (int i = 0; ok && i < live; ++i) {
+            tile_versions::encode(recs[i], b);
+            ok = out.write(b, sizeof(b)) == sizeof(b);
+        }
+        if (out) out.close();
+        ok = ok && SD.remove(VER_PATH) && SD.rename(VER_TMP, VER_PATH);
+        if (!ok && !SD.exists(VER_PATH)) SD.rename(VER_TMP, VER_PATH);
+        else if (!ok) SD.remove(VER_TMP);
+        sdUnlock();
+        diag::log("tile version log %s: %d -> %d records in %ums",
+                  ok ? "compacted" : "compaction FAILED", slots, live,
+                  (unsigned)(millis() - t0));
+    }
+    heap_caps_free(recs);
+    diag::log("%s versions: %d of %d known (%d records)", poi ? "poi" : "tile",
+              found, n, slots);
 }
 
 uint32_t sdFreeKB() {
