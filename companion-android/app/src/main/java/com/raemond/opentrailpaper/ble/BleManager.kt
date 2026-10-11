@@ -657,28 +657,6 @@ class BleManager(private val app: Application) {
         }
     }
 
-    init {
-        useMiles = Prefs.useMiles
-        // Show last-known on-device tiles immediately; a refresh confirms them.
-        deviceTileIds = Prefs.deviceTileIds
-        flaggedTileIds = Prefs.flaggedTileIds
-        tileSentAt = Prefs.tileSentAt
-        loadMapLayersState()   // last device's map layers, for the Maps screen while disconnected
-        poiSentAt = Prefs.poiSentAt
-        refreshPermissions()
-        app.registerReceiver(
-            adapterReceiver,
-            IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED),
-        )
-        app.registerReceiver(
-            bondReceiver,
-            IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED),
-        )
-        // Returning users get Bluetooth up immediately so the device auto-
-        // connects. First-run users start it from the tutorial's Bluetooth step,
-        // so the system prompt lands on that screen.
-        if (Prefs.onboarded) startCentral()
-    }
 
     private fun onAdapterStateChanged() {
         val on = adapter?.isEnabled == true
@@ -1053,6 +1031,33 @@ class BleManager(private val app: Application) {
             val copy = value.copyOf()
             main.post { dispatch(ch.uuid, copy) }
         }
+    }
+
+    // After every callback object it can reach: init -> refreshPermissions ->
+    // startScan connects straight to a bonded device, and a gattCallback
+    // declared below this block would still be null (NPE in connectGatt on
+    // every launch once a phone is paired, 2026-10-11).
+    init {
+        useMiles = Prefs.useMiles
+        // Show last-known on-device tiles immediately; a refresh confirms them.
+        deviceTileIds = Prefs.deviceTileIds
+        flaggedTileIds = Prefs.flaggedTileIds
+        tileSentAt = Prefs.tileSentAt
+        loadMapLayersState()   // last device's map layers, for the Maps screen while disconnected
+        poiSentAt = Prefs.poiSentAt
+        refreshPermissions()
+        app.registerReceiver(
+            adapterReceiver,
+            IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED),
+        )
+        app.registerReceiver(
+            bondReceiver,
+            IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED),
+        )
+        // Returning users get Bluetooth up immediately so the device auto-
+        // connects. First-run users start it from the tutorial's Bluetooth step,
+        // so the system prompt lands on that screen.
+        if (Prefs.onboarded) startCentral()
     }
 
     private fun bindCharacteristics(g: BluetoothGatt) {
