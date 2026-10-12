@@ -6,6 +6,32 @@ written for the rider. The current version's section is the source for the
 App Store "What's New" text — paste it (minus build-only entries) when
 submitting.
 
+## 1.3 (build 17)
+
+Version numbers now follow the App Store: 0.6 (build 15) shipped there as
+1.2. The Android app carries the same version.
+
+- Bluetooth speed sensors: pair one in Sensors and the device uses it for
+  speed and distance. Set the wheel size in Settings by choosing the rim
+  and tyre width; the app works out the circumference.
+- Device settings can be changed while the device is away; they are sent
+  the next time it connects. If the same setting was changed on the device
+  in the meantime, the app says so.
+- Pairing: the app pairs with one device using the code on the panel, and
+  explains when the device is already paired with another phone instead
+  of retrying.
+- Maps: hexes sent from another phone or before a reinstall no longer
+  show "update available" on firmware v1.22.
+- The Ride tab fits on one screen: speed beside heart rate and power, with
+  dashboard and workouts as full-width rows.
+- Average speed is available as a dashboard field.
+- Long map and route transfers keep going in the background, with a Live
+  Activity showing progress.
+- Phone GPS sends speed and heading to the device.
+- Mesh: nodes by short name, hop counts on the node map.
+- Controls stay readable when the phone is in dark mode.
+- Strava uploads retry after an expired sign-in and show readable errors.
+
 ## 0.6 (build 15)
 
 - Album art on the MUSIC page: covers from the Music app (allow access in
