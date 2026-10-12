@@ -17,6 +17,7 @@
 #include "ride_state.h"
 #include "routes.h"
 #include "phone_motion.h"
+#include "speed_source.h"
 #include "settings.h"
 #include "rtc_clock.h"
 #include "board_power.h"
@@ -707,7 +708,9 @@ void task(void*) {
                 }
                 if (gps.altitude.isValid()) s.altitudeM = gps.altitude.meters();
                 // No fix, no speed: never carry the last moving value forward.
-                s.speedKmh = freshSpeedKmh();
+                // The receiver's OWN field; speed_source::publish() below
+                // decides whether it is the speed the rider sees.
+                s.gpsSpeedKmh = freshSpeedKmh();
 
                 // Heading: a single fix's course-over-ground is noisy, so
                 // smooth it with an exponential moving average over the
@@ -716,7 +719,7 @@ void task(void*) {
                 // more trustworthy sample, so the blend weight scales with
                 // speed. Only updated while moving; stopped, the map holds
                 // the last heading instead of spinning on GPS jitter.
-                if (gps.course.isValid() && s.speedKmh > 5.0f) {
+                if (gps.course.isValid() && s.gpsSpeedKmh > 5.0f) {
                     float rad = gps.course.deg() * (float)M_PI / 180.0f;
                     float nx = cosf(rad), ny = sinf(rad);
                     if (!headingPrimed) {
@@ -725,7 +728,7 @@ void task(void*) {
                         headingPrimed = true;
                     } else {
                         // 0.08 (heavy smoothing) up to 0.20 at speed.
-                        float a = 0.08f + 0.006f * (s.speedKmh - 5.0f);
+                        float a = 0.08f + 0.006f * (s.gpsSpeedKmh - 5.0f);
                         if (a > 0.20f) a = 0.20f;
                         headX += a * (nx - headX);
                         headY += a * (ny - headY);
@@ -740,9 +743,10 @@ void task(void*) {
                     s.utc = toUnix(gps.date.year(), gps.date.month(), gps.date.day(),
                                    gps.time.hour(), gps.time.minute(), gps.time.second());
                 }
-                // No fix of our own: speed and heading come from the phone (if
-                // it is streaming), not from whatever the receiver last held.
-                phone_motion::publish(s, millis());
+                // Arbitrate: a live wheel sensor beats this fix; with no fix
+                // of our own, speed and heading come from the phone (if it is
+                // streaming), not from whatever the receiver last held.
+                speed_source::publish(s, millis());
             });
         }
 
@@ -759,7 +763,8 @@ void task(void*) {
             if (publishedFresh && !fresh) {
                 g_state.with([](RideState& s) {
                     s.gpsFix = false;
-                    s.speedKmh = 0.0f;
+                    s.gpsSpeedKmh = 0.0f;
+                    speed_source::publish(s, millis());
                 });
             }
             publishedFresh = fresh;
@@ -908,11 +913,10 @@ void task(void*) {
             }
         }
 
-        // Phone-sourced speed/heading upkeep: while the receiver has no fix,
-        // re-assert the phone's values every loop (anything above that cleared
-        // speed is overridden at once) and drop the speed to 0 when the phone
-        // stream goes stale. No-op while the receiver has a fix.
-        g_state.with([](RideState& s) { phone_motion::publish(s, millis()); });
+        // Speed-source upkeep every loop: re-arbitrate so a phone or wheel
+        // stream that has gone stale drops out (to the next source, or 0)
+        // without waiting for a fix or a packet to trigger it.
+        g_state.with([](RideState& s) { speed_source::publish(s, millis()); });
 
         // High-rate serial telemetry for live iteration: 1 Hz while searching,
         // 5 Hz-slow (5 s) once locked so the console isn't a firehose.

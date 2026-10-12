@@ -24,7 +24,14 @@ object BikeUuid {
     val cccd: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 }
 
-/** A cycling sensor known to the head unit (HR / power / cadence). */
+/**
+ * A cycling sensor known to the head unit. kindsMask bits match the firmware's
+ * ble_sensors::Kind: 1 HR, 2 power, 4 cadence, 8 radar, 16 speed. Cadence and
+ * speed share one BLE service, so a device the head unit hasn't connected to
+ * yet carries both ("speed & cadence"); once it has read the sensor's feature
+ * list a speed sensor shows as Speed, a cadence sensor as Cadence, a combo as
+ * both.
+ */
 data class BikeSensor(
     val addr: String,
     val name: String,
@@ -38,7 +45,12 @@ data class BikeSensor(
             val parts = buildList {
                 if (kindsMask and 1 != 0) add("Heart rate")
                 if (kindsMask and 2 != 0) add("Power")
-                if (kindsMask and 4 != 0) add("Cadence")
+                if (kindsMask and 4 != 0 && kindsMask and 16 != 0) {
+                    add("Speed & cadence")
+                } else {
+                    if (kindsMask and 4 != 0) add("Cadence")
+                    if (kindsMask and 16 != 0) add("Speed")
+                }
                 if (kindsMask and 8 != 0) add("Radar")
             }
             return if (parts.isEmpty()) "Sensor" else parts.joinToString(" + ")
@@ -98,3 +110,53 @@ enum class PermissionState {
 
 /** One turn cue: where it happens + what to do. */
 data class Maneuver(val lat: Double, val lon: Double, val text: String)
+
+/**
+ * Speed-sensor wheel size from rim and tyre: circumference = π × (rim bead seat
+ * diameter + 2 × tyre width), the tyre's height taken as its width. Within
+ * about 0.5% of a measured roll-out for road and MTB tyres. The device only
+ * stores the mm; limits match the firmware's wheel_speed::kMinCircMm..kMaxCircMm.
+ */
+object WheelSize {
+    const val DEFAULT_MM = 2105
+    const val MIN_MM = 800
+    const val MAX_MM = 3500
+    const val MIN_TYRE_MM = 18
+    const val MAX_TYRE_MM = 120
+    const val DEFAULT_RIM = 622
+
+    /** A rim by its ISO bead seat diameter (mm). */
+    data class Rim(val bsd: Int, val name: String)
+
+    val rims = listOf(
+        Rim(622, "700c / 29\""),
+        Rim(584, "650b / 27.5\""),
+        Rim(571, "650c"),
+        Rim(559, "26\""),
+        Rim(507, "24\""),
+        Rim(406, "20\""),
+        Rim(349, "16\" (Brompton)"),
+    )
+
+    fun rim(bsd: Int): Rim = rims.firstOrNull { it.bsd == bsd } ?: rims[0]
+
+    fun clamp(mm: Int) = mm.coerceIn(MIN_MM, MAX_MM)
+
+    fun circumference(bsd: Int, tyreMm: Int): Int =
+        clamp(Math.round(Math.PI * (bsd + 2 * tyreMm)).toInt())
+
+    /** The rim and tyre width that give exactly [mm], trying [preferredRim]
+     *  first (650b × 47 and 700c × 28 are the same wheel). null when no
+     *  combination does: a size set over serial or by an older app. */
+    fun decode(mm: Int, preferredRim: Int): Pair<Int, Int>? {
+        for (r in listOf(rim(preferredRim)) + rims) {
+            val tyre = Math.round((mm / Math.PI - r.bsd) / 2).toInt()
+            if (tyre in MIN_TYRE_MM..MAX_TYRE_MM && circumference(r.bsd, tyre) == mm) return r.bsd to tyre
+        }
+        return null
+    }
+
+    /** "28 mm", or "56 mm · 2.2\"" for tyres sized in inches. */
+    fun tyreLabel(mm: Int): String =
+        if (mm >= 45) "$mm mm · ${"%.1f".format(java.util.Locale.US, mm / 25.4)}\"" else "$mm mm"
+}

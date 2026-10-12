@@ -20,7 +20,14 @@ struct RideState {
     double   latitude = 0.0;
     double   longitude = 0.0;
     float    altitudeM = 0.0f;
+    // THE speed: what the dashboard shows, the recorder times "moving" by and
+    // the phone gets. Arbitrated by speed_source::publish() from the sources
+    // below — wheel sensor, then the device's GPS, then the phone — and never
+    // written directly by a producer.
     float    speedKmh = 0.0f;
+    uint8_t  speedSource = 0;      // speed_source::Source behind speedKmh
+    // The receiver's own ground speed, 0 without a fresh fix (gps_service).
+    float    gpsSpeedKmh = 0.0f;
     float    courseDeg = 0.0f;     // heading over ground, valid when moving
     uint8_t  satellites = 0;
     bool     timeValid = false;
@@ -43,7 +50,8 @@ struct RideState {
     time_t   phoneUtc = 0;
     // Speed and direction of travel from the phone stream (phone_motion.h):
     // the phone's own values when it sent them, else derived from successive
-    // fixes. Copied into speedKmh/courseDeg while the receiver has no fix.
+    // fixes. speed_source::publish() uses them when neither a wheel sensor nor the
+    // receiver has a fix to offer.
     float    phoneSpeedKmh = 0.0f;
     bool     phoneCourseValid = false;   // stays set: a stopped rider keeps it
     float    phoneCourseDeg = 0.0f;
@@ -68,10 +76,18 @@ struct RideState {
     // or one that has rolled out of range), so "connected" is judged by DATA
     // arriving, not by the stack's opinion of the link — see ui_dashboard.
     uint32_t hrMs = 0, powerMs = 0, cadenceMs = 0;
-    // millis() of the last observed WHEEL rotation (CSC wheel-rev counter
-    // advancing). Movement evidence for auto-pause — no wheel circumference
-    // needed, since "is it turning" is the only question asked of it.
+    // Wheel speed sensor (CSC wheel data — wheel_speed.h, fed by ble_sensors).
+    // wheelMoveMs: millis() of the last NEW wheel revolution — movement
+    // evidence for auto-pause. wheelDataMs: millis() of the last packet with
+    // wheel data at all, moving or not — the sensor is alive and a source.
+    // wheelSpeedKmh is the speed at the last revolution; speed_source decays it
+    // to 0 by wheelMoveMs. wheelDistM only ever grows (plausible revolutions x
+    // circumference since boot); the recorder takes per-tick deltas of it.
+    bool     speedSensorConnected = false;
     uint32_t wheelMoveMs = 0;
+    uint32_t wheelDataMs = 0;
+    float    wheelSpeedKmh = 0.0f;
+    double   wheelDistM = 0.0;
 
     RadarState radar;
 

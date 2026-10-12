@@ -104,6 +104,10 @@ class BleManager(private val app: Application) {
     var backlight by mutableStateOf(2); private set     // 0 off .. 3 bright (mirrors device)
     var clock24h by mutableStateOf(true); private set   // device status-bar clock format
     var usbDrive by mutableStateOf(true); private set   // expose device SD as a USB drive
+    // Speed-sensor wheel circumference, mm. null until the device reports one —
+    // firmware without speed-sensor support doesn't, and then the app neither
+    // shows the setting nor sends it.
+    var wheelCircMm by mutableStateOf<Int?>(null); private set
     var useMiles by mutableStateOf(false); private set  // mirrored into Prefs
 
     var lastUploadProgress by mutableStateOf<Double?>(null); private set  // 0..1 while sending
@@ -1487,6 +1491,11 @@ class BleManager(private val app: Application) {
     fun updateBacklight(v: Int) { backlight = v; editSetting(SettingField.BACKLIGHT, v) }
     fun updateClock24h(v: Boolean) { clock24h = v; editSetting(SettingField.CLOCK_24H, if (v) 1 else 0) }
     fun updateUsbDrive(v: Boolean) { usbDrive = v; editSetting(SettingField.USB_DRIVE, if (v) 1 else 0) }
+    fun updateWheelCircMm(v: Int) {
+        val mm = WheelSize.clamp(v)
+        wheelCircMm = mm
+        editSetting(SettingField.WHEEL_CIRC, mm)
+    }
 
     fun updateUseMiles(v: Boolean) {
         useMiles = v
@@ -1536,6 +1545,8 @@ class BleManager(private val app: Application) {
         v(SettingField.BACKLIGHT)?.let { backlight = it }
         v(SettingField.CLOCK_24H)?.let { clock24h = it != 0 }
         v(SettingField.USB_DRIVE)?.let { usbDrive = it != 0 }
+        // Absent = firmware without speed-sensor support: hide the setting.
+        wheelCircMm = if (c.device?.supports(SettingField.WHEEL_CIRC) == true) v(SettingField.WHEEL_CIRC) else null
         // Units are also the app's own display preference.
         v(SettingField.USE_MILES)?.let {
             useMiles = it != 0
@@ -2633,7 +2644,7 @@ class BleManager(private val app: Application) {
     fun pairSensor(addr: String) = writeChar(sensorsChar, byteArrayOf(0x03) + addr.toByteArray())
     fun forgetSensor(addr: String) = writeChar(sensorsChar, byteArrayOf(0x04) + addr.toByteArray())
 
-    /** Connected sensors whose kind mask includes [bit] (1 HR, 2 power, 4 cadence). */
+    /** Connected sensors whose kind mask includes [bit] (1 HR, 2 power, 4 cadence, 8 radar, 16 speed). */
     fun connectedSensor(bit: Int): BikeSensor? =
         sensors.firstOrNull { it.connected && it.kindsMask and bit != 0 }
 

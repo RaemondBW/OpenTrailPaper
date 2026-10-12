@@ -27,7 +27,7 @@ package com.raemond.opentrailpaper.data
 
 /** One field of the settings characteristic (src/ble_server.cpp SettingsCb).
  *  Layout, little-endian: int16 ftpW, int16 tzMin, u8 useMiles, u8 backlight,
- *  u8 clock24h, u8 usbDrive. */
+ *  u8 clock24h, u8 usbDrive, int16 wheelCircMm. */
 enum class SettingField(val key: String, val minLength: Int, val label: String) {
     FTP("ftp", 4, "FTP"),
     TZ("tz", 4, "Timezone"),
@@ -35,10 +35,11 @@ enum class SettingField(val key: String, val minLength: Int, val label: String) 
     BACKLIGHT("backlight", 6, "Backlight"),
     CLOCK_24H("clock24h", 7, "Clock"),
     USB_DRIVE("usbDrive", 8, "USB drive"),
+    WHEEL_CIRC("wheelCircMm", 10, "Wheel size"),
     ;
 
     companion object {
-        const val MAX_LENGTH = 8
+        const val MAX_LENGTH = 10
         fun of(key: String): SettingField? = entries.firstOrNull { it.key == key }
     }
 }
@@ -46,7 +47,7 @@ enum class SettingField(val key: String, val minLength: Int, val label: String) 
 /** The settings the device reported, and how many bytes it reported them in. */
 data class DeviceSettingsValues(
     val values: Map<String, Int> = emptyMap(),
-    /** Payload length the device sent: 4 (FTP + tz only), 6, 7 or 8. */
+    /** Payload length the device sent: 4 (FTP + tz only), 6, 7, 8 or 10. */
     val length: Int = 0,
 ) {
     operator fun get(f: SettingField): Int? = values[f.key]
@@ -73,6 +74,7 @@ data class DeviceSettingsValues(
         }
         if (length >= 7) flag(this[SettingField.CLOCK_24H] ?: return null)
         if (length >= 8) flag(this[SettingField.USB_DRIVE] ?: return null)
+        if (length >= 10) i16(this[SettingField.WHEEL_CIRC] ?: return null)
         return out.toByteArray()
     }
 
@@ -91,7 +93,8 @@ data class DeviceSettingsValues(
             }
             if (d.size >= 7) m[SettingField.CLOCK_24H.key] = if (u(6) != 0) 1 else 0
             if (d.size >= 8) m[SettingField.USB_DRIVE.key] = if (u(7) != 0) 1 else 0
-            return DeviceSettingsValues(m, minOf(d.size, SettingField.MAX_LENGTH))
+            if (d.size >= 10) m[SettingField.WHEEL_CIRC.key] = u(8) or (u(9) shl 8)
+            return DeviceSettingsValues(m, if (d.size == 9) 8 else minOf(d.size, SettingField.MAX_LENGTH))
         }
     }
 }

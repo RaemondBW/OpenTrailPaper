@@ -22,6 +22,12 @@ void setFtpWatts(int w);
 int autoPauseSec();
 void setAutoPauseSec(int s);
 
+// Wheel circumference for a speed sensor, mm (default 2105, 700x25c). Speed
+// and sensor distance are revolutions x this. Out-of-range values
+// (wheel_speed::kMinCircMm..kMaxCircMm) are refused: returns false, unchanged.
+int wheelCircMm();
+bool setWheelCircMm(int mm);
+
 int tzMinutes();
 void setTzMinutes(int m);
 
@@ -42,7 +48,7 @@ void setUsbDrive(bool on);
 bool showOffline();
 void setShowOffline(bool on);
 
-// kind: 0 HR, 1 Power, 2 Cadence, 3 Radar (matches ble_sensors). Several sensors can be
+// kind: 0 HR, 1 Power, 2 Cadence, 3 Radar, 4 Speed (matches ble_sensors). Several sensors can be
 // paired per kind (a strap and a trainer's simulated strap, two bikes' power
 // meters): pairing ADDS, most recent first, up to SENSOR_MAX_PAIRED. The
 // scanner connects to whichever paired one is advertising. sensorAddr() is

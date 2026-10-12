@@ -37,6 +37,23 @@ class DeviceSettingsSyncTest {
         assertNull(DeviceSettingsValues.decode(bytes(1, 2, 3)))
     }
 
+    @Test fun wheelSizeField() {
+        // Speed-sensor firmware appends the wheel circumference, 2096 mm (0x0830).
+        val ten = device(full + bytes(0x30, 0x08))
+        assertEquals(10, ten.length)
+        assertEquals(2096, ten[SettingField.WHEEL_CIRC])
+        assertArrayEquals(full + bytes(0x30, 0x08), ten.encode())
+        // Pending wheel edit goes out in the 10-byte write.
+        val r = SettingsMerge.merge(ten, null, mapOf("wheelCircMm" to edit(2105)))
+        assertEquals(10, r.payload?.size)
+        assertEquals(mapOf("wheelCircMm" to 2105), r.pushed)
+        // Older firmware (8 bytes) never gets one: the edit is dropped.
+        val old = SettingsMerge.merge(device(full), null, mapOf("wheelCircMm" to edit(2105)))
+        assertEquals(listOf(SettingField.WHEEL_CIRC), old.dropped)
+        // A stray 9th byte is not half a field.
+        assertEquals(8, device(full + bytes(0x30)).length)
+    }
+
     @Test fun noPendingNoWrite() {
         val r = SettingsMerge.merge(device(full), device(full), emptyMap())
         assertNull(r.payload)

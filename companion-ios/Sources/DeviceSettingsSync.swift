@@ -32,9 +32,9 @@ import Foundation
 
 /// One field of the settings characteristic (src/ble_server.cpp SettingsCb).
 /// Layout, little-endian: int16 ftpW, int16 tzMin, u8 useMiles, u8 backlight,
-/// u8 clock24h, u8 usbDrive.
+/// u8 clock24h, u8 usbDrive, int16 wheelCircMm.
 enum SettingField: String, CaseIterable, Codable {
-    case ftp, tz, useMiles, backlight, clock24h, usbDrive
+    case ftp, tz, useMiles, backlight, clock24h, usbDrive, wheelCircMm
 
     /// Shortest payload that carries this field — the firmware applies a
     /// field only when the write is at least this long.
@@ -44,6 +44,7 @@ enum SettingField: String, CaseIterable, Codable {
         case .useMiles, .backlight: return 6
         case .clock24h: return 7
         case .usbDrive: return 8
+        case .wheelCircMm: return 10
         }
     }
 
@@ -56,16 +57,17 @@ enum SettingField: String, CaseIterable, Codable {
         case .backlight: return "Backlight"
         case .clock24h: return "Clock"
         case .usbDrive: return "USB drive"
+        case .wheelCircMm: return "Wheel size"
         }
     }
 
-    static let maxLength = 8
+    static let maxLength = 10
 }
 
 /// The settings the device reported, and how many bytes it reported them in.
 struct DeviceSettingsValues: Codable, Equatable {
     var values: [String: Int] = [:]   // SettingField.rawValue -> value
-    /// Payload length the device sent: 4 (FTP + tz only), 6, 7 or 8.
+    /// Payload length the device sent: 4 (FTP + tz only), 6, 7, 8 or 10.
     var length: Int = 0
 
     subscript(_ f: SettingField) -> Int? {
@@ -80,7 +82,7 @@ struct DeviceSettingsValues: Codable, Equatable {
         let b = [UInt8](d)
         guard b.count >= 4 else { return nil }
         var s = DeviceSettingsValues()
-        s.length = min(b.count, SettingField.maxLength)
+        s.length = b.count == 9 ? 8 : min(b.count, SettingField.maxLength)
         s[.ftp] = Int(Int16(bitPattern: UInt16(b[0]) | UInt16(b[1]) << 8))
         s[.tz] = Int(Int16(bitPattern: UInt16(b[2]) | UInt16(b[3]) << 8))
         if b.count >= 6 {
@@ -89,6 +91,7 @@ struct DeviceSettingsValues: Codable, Equatable {
         }
         if b.count >= 7 { s[.clock24h] = b[6] != 0 ? 1 : 0 }
         if b.count >= 8 { s[.usbDrive] = b[7] != 0 ? 1 : 0 }
+        if b.count >= 10 { s[.wheelCircMm] = Int(UInt16(b[8]) | UInt16(b[9]) << 8) }
         return s
     }
 
@@ -115,6 +118,10 @@ struct DeviceSettingsValues: Codable, Equatable {
         if length >= 8 {
             guard let u = self[.usbDrive] else { return nil }
             out.append(u != 0 ? 1 : 0)
+        }
+        if length >= 10 {
+            guard let w = self[.wheelCircMm] else { return nil }
+            i16(w)
         }
         return Data(out)
     }

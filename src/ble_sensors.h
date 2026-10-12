@@ -7,7 +7,15 @@
 //   Cycling Power        0x1818 / measurement 0x2A63 (also yields cadence
 //                        when the meter reports crank revolutions)
 //   Varia legacy radar   6a4e3200 / measurement 6a4e3203
-//   Speed & Cadence      0x1816 / measurement 0x2A5B
+//   Speed & Cadence      0x1816 / measurement 0x2A5B, feature 0x2A5C
+//
+// Speed & Cadence covers three kinds of device behind one service UUID:
+// cadence-only, speed-only, and combo. The advert cannot tell them apart, so a
+// fresh 0x1816 candidate is offered as "speed/cadence" (both bits) and pairs
+// into the Cadence slot; on connect the CSC Feature characteristic says what
+// it is, and a speed-only sensor moves itself to the Speed slot. That gives a
+// separate speed sensor and cadence sensor a link each, while a combo keeps
+// one link (Cadence slot) feeding both.
 //
 // Pairing: we connect ONLY to the address saved for a kind. With nothing
 // saved for a kind, that kind never connects — no device is ever adopted
@@ -18,7 +26,10 @@
 
 namespace ble_sensors {
 
-enum Kind { KIND_HR = 0, KIND_POWER = 1, KIND_CSC = 2, KIND_RADAR = 3, KIND_COUNT = 4 };
+// Values are wire- and NVS-visible (the phone's kindsMask bits, settings keys):
+// append only.
+enum Kind { KIND_HR = 0, KIND_POWER = 1, KIND_CSC = 2, KIND_RADAR = 3, KIND_SPEED = 4,
+            KIND_COUNT = 5 };
 
 struct Candidate {
     char name[32];      // advertised name, or "Manufacturer Model" once connected
@@ -33,7 +44,7 @@ struct Candidate {
 // shows a sensor by name once it knows one, so the saved MAC — the only thing
 // that actually decides what we connect to — is otherwise invisible.
 struct Link {
-    char kind[12];         // "HR" / "Power" / "Cadence"
+    char kind[12];         // "HR" / "Power" / "Cadence" / "Radar" / "Speed"
     char pairedAddr[18];   // saved in NVS; "" when nothing is paired
     char liveAddr[18];     // address of the live link; "" when not connected
     char name[32];         // best identity known: DIS make > NVS > advertised

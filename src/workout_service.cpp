@@ -8,6 +8,7 @@
 #include "settings.h"
 #include "ride_state.h"
 #include "ride_recorder.h"
+#include "speed_source.h"
 #include "usb_storage.h"
 
 namespace workout_service {
@@ -497,7 +498,10 @@ void motionTick() {
 
     RideState st = g_state.snapshot();
     const bool hasPower = st.power3sW != 0xFFFF && st.power3sW > 0;
-    const bool moving = (st.gpsFix && st.speedKmh > 1.0f) || st.deviceMoving;
+    // Speed counts from a fix or a wheel sensor (a trainer), not the phone.
+    const bool moving = ((st.gpsFix || st.speedSource == speed_source::SENSOR) &&
+                         st.speedKmh > 1.0f) ||
+                        st.deviceMoving;
 
     if (g_running) {
         if (!hasPower && !moving) {

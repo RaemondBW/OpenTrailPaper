@@ -52,6 +52,9 @@ struct SettingsView: View {
     @State private var showSensors = false
     @State private var showMaps = false
     @State private var confirmForget = false
+    // The rim last chosen for the wheel size: the device keeps only the
+    // circumference, which two rims can share.
+    @AppStorage("wheelRimBsd") private var wheelRimBsd = WheelSize.defaultRim
 
     var body: some View {
         NavigationStack {
@@ -145,6 +148,10 @@ struct SettingsView: View {
                                     .foregroundStyle(Palette.ink)
                             }
                         }
+                    }
+
+                    if ble.state == .connected, let mm = ble.wheelCircMm {
+                        wheelCard(mm)
                     }
 
                     Card {
@@ -539,6 +546,50 @@ struct SettingsView: View {
         bytes >= 1024 ? "\(bytes / 1024) KB" : "\(bytes) B"
     }
 
+    // Speed sensor wheel size, worked out from the rim and the tyre width
+    // (WheelSize.circumference); the device stores the result in mm. A size no
+    // rim and tyre gives (set over serial) shows as custom until one is chosen.
+    private func wheelCard(_ mm: Int) -> some View {
+        let decoded = WheelSize.decode(mm, preferredRim: wheelRimBsd)
+        let rim = WheelSize.rim(decoded?.rim ?? wheelRimBsd)
+        let tyre = decoded?.tyre ?? min(max(Int((Double(mm) / .pi - Double(rim.bsd)) / 2 + 0.5),
+                                            WheelSize.minTyreMm), WheelSize.maxTyreMm)
+        func set(_ bsd: Int, _ width: Int) {
+            wheelRimBsd = bsd
+            let w = min(max(width, WheelSize.minTyreMm), WheelSize.maxTyreMm)
+            ble.setWheelCircMm(WheelSize.circumference(rim: bsd, tyreMm: w))
+        }
+        return Card {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Wheel size").trackedLabel()
+                HStack {
+                    Text("Rim").font(.system(size: 15)).foregroundStyle(Palette.ink)
+                    Spacer()
+                    Menu {
+                        ForEach(WheelSize.rims, id: \.bsd) { r in
+                            Button("\(r.name) · \(r.bsd) mm bead seat") { set(r.bsd, tyre) }
+                        }
+                    } label: {
+                        Text(rim.name).font(.system(size: 15, weight: .semibold))
+                    }
+                }
+                Stepper(value: Binding(get: { tyre }, set: { set(rim.bsd, $0) }),
+                        in: WheelSize.minTyreMm...WheelSize.maxTyreMm, step: 1) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Tyre width").trackedLabel()
+                        Text(WheelSize.tyreLabel(tyre))
+                            .font(TypeScale.value(30))
+                            .foregroundStyle(Palette.ink)
+                    }
+                }
+                Text(decoded == nil
+                     ? "Custom size on the device: \(mm) mm. Choose a rim or width to replace it."
+                     : "Wheel circumference ≈ \(mm) mm. A Bluetooth speed sensor counts wheel turns × this.")
+                    .font(.system(size: 12)).foregroundStyle(Palette.muted)
+            }
+        }
+    }
+
     private var tzLabel: String {
         let h = ble.tzMinutes / 60, m = abs(ble.tzMinutes % 60)
         return m == 0 ? String(format: "UTC%+d", h)
@@ -738,6 +789,56 @@ struct SettingsView: View {
         default:
             return ""
         }
+    }
+}
+
+// Speed-sensor wheel size from rim and tyre: circumference = π × (rim bead
+// seat diameter + 2 × tyre width), the tyre's height taken as its width. Within
+// about 0.5% of a measured roll-out for road and MTB tyres. The device only
+// stores the mm; limits match the firmware's wheel_speed::kMinCircMm..kMaxCircMm.
+// Twin of WheelSize in the Android app's ble/Models.kt.
+enum WheelSize {
+    static let defaultMm = 2105
+    static let minMm = 800
+    static let maxMm = 3500
+    static let minTyreMm = 18
+    static let maxTyreMm = 120
+    static let defaultRim = 622
+
+    /// A rim by its ISO bead seat diameter (mm).
+    struct Rim { let bsd: Int; let name: String }
+    static let rims: [Rim] = [
+        .init(bsd: 622, name: "700c / 29\""),
+        .init(bsd: 584, name: "650b / 27.5\""),
+        .init(bsd: 571, name: "650c"),
+        .init(bsd: 559, name: "26\""),
+        .init(bsd: 507, name: "24\""),
+        .init(bsd: 406, name: "20\""),
+        .init(bsd: 349, name: "16\" (Brompton)"),
+    ]
+
+    static func rim(_ bsd: Int) -> Rim { rims.first { $0.bsd == bsd } ?? rims[0] }
+
+    static func circumference(rim bsd: Int, tyreMm: Int) -> Int {
+        min(max(Int((Double.pi * Double(bsd + 2 * tyreMm)).rounded()), minMm), maxMm)
+    }
+
+    /// The rim and tyre width that give exactly `mm`, trying `preferredRim`
+    /// first (650b × 47 and 700c × 28 are the same wheel). nil when no
+    /// combination does: a size set over serial or by an older app.
+    static func decode(_ mm: Int, preferredRim: Int) -> (rim: Int, tyre: Int)? {
+        for r in [rim(preferredRim)] + rims {
+            let tyre = Int(((Double(mm) / .pi - Double(r.bsd)) / 2).rounded())
+            if (minTyreMm...maxTyreMm).contains(tyre), circumference(rim: r.bsd, tyreMm: tyre) == mm {
+                return (r.bsd, tyre)
+            }
+        }
+        return nil
+    }
+
+    /// "28 mm", or "56 mm · 2.2\"" for tyres sized in inches.
+    static func tyreLabel(_ mm: Int) -> String {
+        mm >= 45 ? String(format: "%d mm · %.1f\"", mm, Double(mm) / 25.4) : "\(mm) mm"
     }
 }
 

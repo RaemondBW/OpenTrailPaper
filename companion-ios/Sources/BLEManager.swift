@@ -32,11 +32,21 @@ struct BikeSensor: Identifiable, Equatable {
     var rssi: Int
     var id: String { addr }
 
+    // Bits match the firmware's ble_sensors::Kind. Cadence (4) and Speed (16)
+    // share one BLE service: a device the head unit has not connected to yet
+    // carries both ("speed & cadence" — it can't tell which until it reads the
+    // sensor's feature list); once known, a speed sensor shows as Speed, a
+    // cadence sensor as Cadence, and a combo as both.
     var kindsText: String {
         var parts: [String] = []
         if kindsMask & 1 != 0 { parts.append("Heart rate") }
         if kindsMask & 2 != 0 { parts.append("Power") }
-        if kindsMask & 4 != 0 { parts.append("Cadence") }
+        if kindsMask & 4 != 0 && kindsMask & 16 != 0 {
+            parts.append("Speed & cadence")
+        } else {
+            if kindsMask & 4 != 0 { parts.append("Cadence") }
+            if kindsMask & 16 != 0 { parts.append("Speed") }
+        }
         if kindsMask & 8 != 0 { parts.append("Radar") }
         return parts.isEmpty ? "Sensor" : parts.joined(separator: " + ")
     }
@@ -335,6 +345,10 @@ final class BLEManager: NSObject, ObservableObject {
     /// Screenshot demo: disconnected, with cached values and a pending edit.
     private let isDemoOfflineSettings =
         ProcessInfo.processInfo.arguments.contains("-demo-offline-settings")
+    // Speed-sensor wheel circumference, mm. nil until the device reports one —
+    // firmware older than the speed-sensor support doesn't, and then the app
+    // neither shows the setting nor sends it.
+    @Published var wheelCircMm: Int? = nil
     @Published var lastUploadProgress: Double? = nil   // 0...1 while sending
     @Published var routeSent = false                   // last route's writes were queued
     @Published var routeReceived = false               // device confirmed it got the route
@@ -1208,6 +1222,11 @@ final class BLEManager: NSObject, ObservableObject {
     }
     func setClock24h(_ v: Bool) { clock24h = v; editSetting(.clock24h, v ? 1 : 0) }
     func setUsbDrive(_ v: Bool) { usbDrive = v; editSetting(.usbDrive, v ? 1 : 0) }
+    func setWheelCircMm(_ v: Int) {
+        let mm = min(max(v, WheelSize.minMm), WheelSize.maxMm)
+        wheelCircMm = mm
+        editSetting(.wheelCircMm, mm)
+    }
 
     /// Whether the device takes this field. Unknown (never connected) counts
     /// as yes, so a first-run rider still sees every control.
@@ -1254,6 +1273,9 @@ final class BLEManager: NSObject, ObservableObject {
         if let x = v(.backlight), x != backlight { backlight = x }
         if let x = v(.clock24h), (x != 0) != clock24h { clock24h = x != 0 }
         if let x = v(.usbDrive), (x != 0) != usbDrive { usbDrive = x != 0 }
+        // Absent = firmware without speed-sensor support: hide the setting.
+        let wheel = c.device?.supports(.wheelCircMm) == true ? v(.wheelCircMm) : nil
+        if wheel != wheelCircMm { wheelCircMm = wheel }
         // Units are also the app's own display preference.
         if let x = v(.useMiles),
            UserDefaults.standard.bool(forKey: UnitPref.key) != (x != 0) {
@@ -1584,7 +1606,8 @@ final class BLEManager: NSObject, ObservableObject {
         guard let c = sensorsChar, let p = peripheral else { return }
         p.writeValue(Data([0x05]), for: c, type: .withResponse)
     }
-    // Connected sensors whose kind mask includes `bit` (1 HR, 2 power, 4 cadence).
+    // Connected sensors whose kind mask includes `bit` (1 HR, 2 power, 4 cadence,
+    // 8 radar, 16 speed).
     func connectedSensor(kind bit: UInt8) -> BikeSensor? {
         sensors.first { $0.connected && $0.kindsMask & bit != 0 }
     }
