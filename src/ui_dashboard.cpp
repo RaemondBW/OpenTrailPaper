@@ -581,6 +581,7 @@ bool inRect(const EpdRect& r, int x, int y) {
 void enterSensors();
 void leaveList();
 void handlePowerTap(int x, int y);
+void ackPagerTap(const EpdRect& r);
 
 // Open Navigate or Ride History on its first page, with a fresh read of the
 // card.
@@ -596,12 +597,19 @@ void enterPagedList(Screen s) {
 bool listPagerTap(int x, int y) {
     if (y < kPagerTop) return false;
     if (inRect(kPagerUp, x, y)) {
-        if (listPage > 0) --listPage;
+        if (listPage > 0) { --listPage; ackPagerTap(kPagerUp); }
     } else if (inRect(kPagerDown, x, y)) {
-        if ((listPage + 1) * kMenuRowCount < listTotal) ++listPage;
+        if ((listPage + 1) * kMenuRowCount < listTotal) {
+            ++listPage;
+            ackPagerTap(kPagerDown);
+        }
     } else if (inRect(kPagerAction, x, y)) {
         listStale = true;   // REFRESH: re-read the card
+        ackPagerTap(kPagerAction);
     }
+    // The new page draws now, not at the next 1 Hz tick: the screen itself
+    // doesn't change, so nothing else would hurry it.
+    forceDraw = true;
     return true;
 }
 
@@ -698,6 +706,18 @@ void ackZoomTap(bool zoomIn) {
     zoomHeld = zoomIn ? 1 : 2;
 }
 
+// Answer a pager tap (arrow or the action button) NOW, the way ackZoomTap
+// answers a zoom: fill the button black on the glass before the page is
+// rebuilt. The next page only changes a few rows of text, which on e-paper is
+// easy to miss, so without this a tap that registered looked like one that
+// hadn't. The redraw that follows draws the button normally again. Through
+// refresh() so the shadow buffer matches the glass.
+void ackPagerTap(const EpdRect& r) {
+    uint8_t* fb = epdc_framebuffer();
+    epd_fill_rect(r, ui::INK, fb);
+    refresh(false, true, false);
+}
+
 void handleTap(int x, int y) {
     // The "Start navigation?" prompt owns every tap while it is up. START
     // begins navigation; any other tap dismisses it, so it can never trap
@@ -791,12 +811,20 @@ void handleTap(int x, int y) {
                     if (workoutPickShown && workoutPick) {
                         const WorkoutPickPage& p = *workoutPick;
                         if (inRect(kPagerUp, x, y)) {
-                            if (workoutPickIdx > 0) --workoutPickIdx;
+                            if (workoutPickIdx > 0) {
+                                --workoutPickIdx;
+                                ackPagerTap(kPagerUp);
+                            }
                         } else if (inRect(kPagerDown, x, y)) {
-                            if (p.first + p.count < p.total) ++workoutPickIdx;
+                            if (p.first + p.count < p.total) {
+                                ++workoutPickIdx;
+                                ackPagerTap(kPagerDown);
+                            }
                         } else if (inRect(kPagerAction, x, y)) {
-                            if (p.state != WLIST_SCANNING)
+                            if (p.state != WLIST_SCANNING) {
                                 workout_service::requestListRefresh();
+                                ackPagerTap(kPagerAction);
+                            }
                         } else if (p.state == WLIST_READY &&
                                    y >= kWorkoutRowTop &&
                                    y < kWorkoutRowTop +
