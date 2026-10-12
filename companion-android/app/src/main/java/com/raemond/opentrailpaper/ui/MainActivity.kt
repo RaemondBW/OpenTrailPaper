@@ -86,6 +86,10 @@ class MainActivity : ComponentActivity() {
         // editor can be exercised with no head unit in range.
         //   adb shell am start ... --ez demo-dash true
         if (intent?.getBooleanExtra("demo-dash", false) == true) ble.enableDashDemo()
+        // iOS -demo-offline-settings: cached device values plus pending edits.
+        if (intent?.getBooleanExtra("demo-offline-settings", false) == true) {
+            ble.enableOfflineSettingsDemo()
+        }
         // Same idea for the transfer notification: --ez demo-transfer true.
         if (savedInstanceState == null && intent?.getBooleanExtra("demo-transfer", false) == true) {
             TransferCenter.runDemo()

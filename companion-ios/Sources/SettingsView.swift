@@ -64,12 +64,23 @@ struct SettingsView: View {
                         Spacer()
                     }
                     .padding(.top, 8)
+                    // Device settings stay editable offline (cached per device,
+                    // synced on the next connect); say when something is waiting.
+                    if ble.hasPendingSync {
+                        PendingSyncHint(text: ble.state == .connected
+                                        ? "Syncing with your OpenTrailPaper…"
+                                        : "Will sync when connected")
+                    }
+                    if let note = ble.settingsSyncNote {
+                        Text(note).font(.system(size: 12)).foregroundStyle(Palette.muted)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                     // Keep the firmware card visible through the reboot/disconnect
                     // of an in-progress (or just-finished) update so its status
                     // doesn't vanish.
                     if ble.state == .connected || ble.otaInProgress
                         || ble.otaPhase == .failed || ble.otaPhase == .done { firmwareCard }
-                    if ble.state == .connected { sensorsCard }
+                    if ble.state == .connected { sensorsCard } else { connectOnlyCard }
                     pairedDeviceCard
                     // Not gated on the connection, unlike sensors: picking an
                     // area and fetching OSM works offline, and MapsView only
@@ -92,7 +103,8 @@ struct SettingsView: View {
                     }
                     .id("units")
 
-                    if ble.state == .connected {
+                    // Shown offline too; hidden only for firmware known to lack them.
+                    if ble.supportsSetting(.clock24h) {
                         Card {
                             VStack(alignment: .leading, spacing: 10) {
                                 Text("Clock").trackedLabel()
@@ -105,7 +117,9 @@ struct SettingsView: View {
                                 .pickerStyle(.segmented)
                             }
                         }
+                    }
 
+                    if ble.supportsSetting(.usbDrive) {
                         Card {
                             VStack(alignment: .leading, spacing: 6) {
                                 Toggle(isOn: Binding(get: { ble.usbDrive },
@@ -164,7 +178,6 @@ struct SettingsView: View {
                             .pickerStyle(.segmented)
                         }
                     }
-                    .disabled(ble.state != .connected)
 
                     AlbumArtLookupCard(art: ble.albumArt)
 
@@ -175,7 +188,10 @@ struct SettingsView: View {
 
                     Text(ble.state == .connected
                          ? "Settings sync automatically with your OpenTrailPaper, both ways."
-                         : "Connect to sync settings with your OpenTrailPaper.")
+                         : ble.settingsCache.device == nil
+                         ? "Changes you make here are sent to your OpenTrailPaper when it first connects."
+                         : "Showing your OpenTrailPaper's settings from the last connection. Changes sync when it reconnects.")
+                        .multilineTextAlignment(.center)
                         .font(.system(size: 13))
                         .foregroundStyle(Palette.muted)
                         .frame(maxWidth: .infinity, alignment: .center)
@@ -255,6 +271,27 @@ struct SettingsView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(PairingCopy.afterUnpairMessage)
+        }
+    }
+
+    /// What needs the device's live answer and so waits for a connection:
+    /// sensor scan/pairing, firmware updates and logs. (Mesh/LoRa lives on its
+    /// own tab and says the same there.)
+    @ViewBuilder private var connectOnlyCard: some View {
+        Card {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "antenna.radiowaves.left.and.right.slash")
+                    .font(.system(size: 18, weight: .semibold)).foregroundStyle(Palette.faint)
+                    .frame(width: 24)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Connect to your OpenTrailPaper").font(BarlowFont.text(15, .semibold))
+                        .foregroundStyle(Palette.ink)
+                    Text("for sensors, firmware updates and diagnostic logs. The settings below work offline and sync when it connects.")
+                        .font(.system(size: 12)).foregroundStyle(Palette.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
         }
     }
 

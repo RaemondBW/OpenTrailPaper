@@ -92,18 +92,24 @@ import kotlin.math.roundToInt
  */
 @Composable
 fun DashboardEditorSheet(ble: BleManager, onDismiss: () -> Unit) {
-    var config by remember { mutableStateOf(ble.dashConfig ?: DashConfig(emptyList())) }
+    var config by remember { mutableStateOf(ble.dashTarget ?: DashConfig(emptyList())) }
     var pageIx by remember { mutableIntStateOf(0) }
     var dirty by remember { mutableStateOf(false) }
     // The page editor, pushed over this sheet for the selected data page.
     var editing by remember { mutableStateOf(false) }
+    val connected = ble.state == BleManager.ConnState.CONNECTED
+    // Something to save: differs from what is saved/on the device, or —
+    // connected — a saved layout is still waiting (retry a failed send).
+    val canSave = config.pages.isNotEmpty() &&
+        (config != ble.dashTarget || (connected && ble.pendingDashConfig != null))
 
-    // The device is the source of truth: if it corrects or rejects what we sent,
-    // adopt what it actually holds rather than keeping a local fiction on screen.
-    // Skipped while the rider has unsent edits, so a stray notify can't wipe work
-    // in progress.
-    LaunchedEffect(ble.dashConfig) {
-        val fromDevice = ble.dashConfig
+    // The device is the source of truth once it has the layout: if it corrects
+    // or rejects what we sent, adopt what it actually holds rather than keeping
+    // a local fiction on screen. Skipped while the rider has unsaved edits, so a
+    // stray notify can't wipe work in progress. A saved offline layout is the
+    // target until it syncs.
+    LaunchedEffect(ble.dashTarget) {
+        val fromDevice = ble.dashTarget
         if (!dirty && fromDevice != null) {
             config = fromDevice
             if (pageIx >= config.pages.size) pageIx = 0
@@ -130,17 +136,21 @@ fun DashboardEditorSheet(ble: BleManager, onDismiss: () -> Unit) {
                 // — a comparison, not a flag someone has to remember to set, so
                 // a write that never landed leaves the button live for a retry
                 // and it goes quiet by itself once the device echoes a match.
-                enabled = config.pages.isNotEmpty() && config != ble.dashConfig,
+                // Disconnected, Save keeps the layout for the next connect.
+                enabled = canSave,
                 onClick = {
-                    ble.sendDashConfig(config)
+                    ble.saveDashConfig(config)
                     dirty = false
                 },
             ) {
-                Text("Send", style = TypeScale.bodyStrong)
+                Text(if (connected) "Send" else "Save", style = TypeScale.bodyStrong)
             }
         },
     ) {
-        if (ble.dashConfig == null) {
+        // Only a layout this device has never reported is off limits: the
+        // cached copy from the last connection is editable offline, but an
+        // invented default would overwrite the rider's real one.
+        if (ble.dashTarget == null) {
             Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
                 Column(
                     Modifier.padding(32.dp),
@@ -149,8 +159,9 @@ fun DashboardEditorSheet(ble: BleManager, onDismiss: () -> Unit) {
                 ) {
                     Text("Connect to edit", style = TypeScale.title, color = Palette.ink)
                     Text(
-                        "The layout is read from the device, so it can't be edited until " +
-                            "the head unit is connected.",
+                        "The layout is read from the device, so connect to your " +
+                            "OpenTrailPaper once. After that it can be edited any time and " +
+                            "syncs on the next connect.",
                         style = TypeScale.body,
                         color = Palette.muted,
                     )
@@ -164,6 +175,17 @@ fun DashboardEditorSheet(ble: BleManager, onDismiss: () -> Unit) {
                 .verticalScroll(rememberScrollState())
                 .padding(vertical = 16.dp),
         ) {
+            if (ble.pendingDashConfig != null || !connected) {
+                PendingSyncHint(
+                    when {
+                        ble.pendingDashConfig == null ->
+                            "Not connected · edits are saved and sync on the next connect"
+                        connected -> "Syncing layout…"
+                        else -> "Will sync when connected"
+                    },
+                    Modifier.padding(horizontal = 20.dp).padding(bottom = 8.dp),
+                )
+            }
             PageCarousel(
                 useMiles = ble.useMiles,
                 config = config,
@@ -277,10 +299,11 @@ fun DashboardEditorSheet(ble: BleManager, onDismiss: () -> Unit) {
             pageTitle = "Page $n",
             layout = page.layout,
             useMiles = ble.useMiles,
-            canSend = config.pages.isNotEmpty() && config != ble.dashConfig,
+            canSend = canSave,
+            offline = !connected,
             onChange = { l -> mutateAt(pageIx) { l } },
             onSend = {
-                ble.sendDashConfig(config)
+                ble.saveDashConfig(config)
                 dirty = false
             },
             onBack = { editing = false },

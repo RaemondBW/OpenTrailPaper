@@ -29,14 +29,25 @@ struct DashboardEditorView: View {
     @State private var draggedPage: UUID?
     @State private var dirty = false
 
+    private var connected: Bool { ble.state == .connected }
+    /// Something to save: the layout differs from what is saved/on the device,
+    /// or — connected — a saved layout is still waiting (retry a failed send).
+    private var canSave: Bool {
+        guard !config.pages.isEmpty else { return false }
+        return config != ble.dashTarget || (connected && ble.pendingDashConfig != nil)
+    }
+
     var body: some View {
         NavigationStack {
             Group {
-                if ble.dashConfig == nil {
+                // Only a layout this device has never reported is off limits:
+                // the cached copy from the last connection is editable offline,
+                // but an invented default would overwrite the rider's real one.
+                if ble.dashTarget == nil {
                     ContentUnavailableView(
                         "Connect to edit",
                         systemImage: "rectangle.3.group",
-                        description: Text("The layout is read from the device, so it can't be edited until the head unit is connected."))
+                        description: Text("The layout is read from the device, so connect to your OpenTrailPaper once. After that it can be edited any time and syncs on the next connect."))
                 } else {
                     editor
                 }
@@ -48,8 +59,9 @@ struct DashboardEditorView: View {
                     Button("Done") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Send") {
-                        ble.sendDashConfig(config)
+                    // Disconnected, Save keeps the layout for the next connect.
+                    Button(connected ? "Send" : "Save") {
+                        ble.saveDashConfig(config)
                         dirty = false
                     }
                     // Enabled whenever this layout is not what the device is
@@ -63,16 +75,17 @@ struct DashboardEditorView: View {
                     // until the device reports the layout back, and it goes
                     // quiet by itself once it matches — including when the
                     // rider edits their way back to what is already on there.
-                    .disabled(config.pages.isEmpty || config == ble.dashConfig)
+                    .disabled(!canSave)
                 }
             }
-            .onAppear { if let c = ble.dashConfig { config = c; pageIx = 0 } }
-            // The device is the source of truth: if it corrects or rejects what
-            // we sent, adopt what it actually holds rather than keeping a local
-            // fiction on screen. Skipped while the rider has unsent edits, so a
-            // stray notify can't wipe work in progress.
-            .onChange(of: ble.dashConfig) {
-                if !dirty, let c = ble.dashConfig {
+            .onAppear { if let c = ble.dashTarget { config = c; pageIx = 0 } }
+            // The device is the source of truth once it has the layout: if it
+            // corrects or rejects what we sent, adopt what it actually holds
+            // rather than keeping a local fiction on screen. Skipped while the
+            // rider has unsaved edits, so a stray notify can't wipe work in
+            // progress. A saved offline layout is the target until it syncs.
+            .onChange(of: ble.dashTarget) {
+                if !dirty, let c = ble.dashTarget {
                     config = c
                     if pageIx >= config.pages.count { pageIx = 0 }
                 }
@@ -86,9 +99,10 @@ struct DashboardEditorView: View {
                         layout: Binding(
                             get: { config.pages.indices.contains(pageIx) ? config.pages[pageIx].layout : DashLayout(items: []) },
                             set: { l in mutateAt(pageIx) { $0 = l } }),
-                        canSend: !config.pages.isEmpty && config != ble.dashConfig,
+                        canSend: canSave,
+                        offline: !connected,
                         onSend: {
-                            ble.sendDashConfig(config)
+                            ble.saveDashConfig(config)
                             dirty = false
                         })
                 }
@@ -103,6 +117,13 @@ struct DashboardEditorView: View {
         // drop delegates never saw the session. Out here the cards own their
         // own drags.
         VStack(spacing: 0) {
+            if ble.pendingDashConfig != nil || !connected {
+                PendingSyncHint(text: ble.pendingDashConfig != nil
+                                ? (connected ? "Syncing layout…" : "Will sync when connected")
+                                : "Not connected · edits are saved and sync on the next connect")
+                    .padding(.horizontal, 20)
+                    .padding(.top, 8)
+            }
             carousel
             if config.pages.count > 1 {
                 Text("Tap a page to edit it · hold one, then drag it into place")
