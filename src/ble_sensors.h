@@ -76,6 +76,9 @@ bool disconnect(int kind);
 
 // Sensors screen support
 void setScanAlways(bool on);            // keep scanning while the UI is open
+// Hold scanning off (and stop a running scan) while the phone server deletes
+// bonds: NimBLE refuses to drop an IRK from the resolving list mid-scan.
+void holdScan(bool on);
 void noteActivity();                    // user interacted — scan for a while
 int getCandidates(Candidate* out, int maxOut);
 void pairCandidate(const char* addr);   // saves for every kind it advertises

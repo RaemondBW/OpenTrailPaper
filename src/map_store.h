@@ -60,7 +60,11 @@ bool saveAndActivate(const char* name, const uint8_t* data, size_t len);
 
 // Save a single received H3 tile to /maps/tiles/<id>.ebm and refresh the
 // index so it renders immediately. Returns false on SD/parse error.
-bool saveTile(const char* id, const uint8_t* data, size_t len);
+// `version`: the record the phone sent with it ("cdn:<hash>" / "phone:<secs>",
+// tile_versions.h), kept in /maps/tiles.ver for tileVersions(). Null for an
+// app that sends none, which clears any earlier record for the file.
+bool saveTile(const char* id, const uint8_t* data, size_t len,
+              const char* version = nullptr);
 
 // Whether tile <id> (H3 id without extension) is already on the card.
 bool hasTile(const char* id);
@@ -76,8 +80,18 @@ bool coversPosition(double lat, double lon);
 float elevationAt(double lat, double lon);
 
 // Copy up to maxOut tile ids (H3 ids, no extension) into out for the app's
-// dedup check. Returns the count written.
-int listTileIds(char out[][24], int maxOut);
+// dedup check. Returns the count written. `sizes` (optional, maxOut entries)
+// gets each file's size, read from its directory entry.
+int listTileIds(char out[][24], int maxOut, const char* ext = ".ebm",
+                uint32_t* sizes = nullptr);
+
+// The version each of `ids` was saved with (.poi files when `poi`), into
+// vers[i]: "" where the device has no record, or the record is for a file of a
+// different size than sizes[i] (changed behind the device's back, e.g. over
+// USB). One sequential read of /maps/tiles.ver; compacts it when it is mostly
+// superseded records. BLE server task (SD access).
+void tileVersions(const char (*ids)[24], const uint32_t* sizes, int n, bool poi,
+                  char (*vers)[24]);
 
 // Free bytes on the SD card (for the app to show remaining space).
 uint32_t sdFreeKB();

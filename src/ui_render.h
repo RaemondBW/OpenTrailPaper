@@ -147,13 +147,19 @@ struct WorkoutView;
 void ui_render_workout(const RideState& s, const WorkoutView& v, uint8_t* fb);
 void ui_render_workout_list(const RideState& s, const WorkoutView& v, int page,
                             uint8_t* fb);
+// With nothing loaded the page is the PICKER: the files in /workouts, one
+// per row (title, duration, block count, intensity sparkline), paged by
+// WORKOUT_PICK_ROWS on the same row grid and footer as the block list; the
+// footer's right-hand button (kPagerAction) is REFRESH here. Tap a row to
+// load it. In the loaded-but-not-started (READY) state, the kWorkoutRedo
+// strip becomes "< WORKOUTS", back to this list.
+struct WorkoutPickPage;
+void ui_render_workout_picker(const RideState& s, const WorkoutPickPage& p,
+                              uint8_t* fb);
 extern const EpdRect kWorkoutRedo;
 extern const EpdRect kWorkoutStartNext;
 extern const EpdRect kWorkoutPause;
 extern const EpdRect kWorkoutAll;
-extern const EpdRect kWorkoutPageUp;
-extern const EpdRect kWorkoutPageDown;
-extern const EpdRect kWorkoutClose;
 extern const int kWorkoutRowTop, kWorkoutRowH, kWorkoutRowsPerPage;
 extern const EpdRect kMediaVolDown;
 extern const EpdRect kMediaPrev;
@@ -232,8 +238,24 @@ struct ListRow {
 };
 // `turnArrows` puts a maneuver arrow at the head of every row and drops the
 // right-edge marker — used by the directions list, where each row IS a turn.
+// `paged` leaves the bottom of the screen to ui_render_pager() and sets the
+// footer line just above it.
 void ui_render_list(const char* title, const ListRow* rows, int count,
-                    const char* footer, uint8_t* fb, bool turnArrows = false);
+                    const char* footer, uint8_t* fb, bool turnArrows = false,
+                    bool paged = false);
+
+// PAGER — the footer of every paged list (the workout picker and block list,
+// Navigate, Ride History): page up, page down, "first-last / total", and one
+// action button on the right (CLOSE / REFRESH). A 3 px rule at kPagerTop,
+// 80 px buttons below it. An arrow that can't go anywhere is drawn in the
+// disabled tone and does nothing when tapped. `first` is 0-based; with
+// total == 0 only the action button is drawn.
+constexpr int kPagerTop = 857;
+constexpr EpdRect kPagerUp = {24, 868, 80, 80};
+constexpr EpdRect kPagerDown = {116, 868, 80, 80};
+constexpr EpdRect kPagerAction = {368, 868, 148, 80};
+void ui_render_pager(int first, int count, int total, const char* action,
+                     uint8_t* fb);
 
 // Settings editor: +/- touch targets per row, geometry exported for the
 // touch handler.
@@ -281,6 +303,9 @@ struct SettingsInfo {
     bool meshOn;     // LoRa mesh radio powered up and listening
 };
 void ui_render_settings(const SettingsInfo& si, uint8_t* fb);
+// The settings page's two-position switch, for other switch pages (MAP LAYERS).
+void ui_settings_toggle(int x, int y, int w, int h, bool on, uint8_t* fb,
+                        const char* onText = "ON", const char* offText = "OFF");
 
 // "Unpair phone?" bottom sheet (Paired Devices > phone row), the power sheet's
 // component with different words. Paired: UNPAIR (kPowerShutdown) / CANCEL (kPowerCancel). Not paired:

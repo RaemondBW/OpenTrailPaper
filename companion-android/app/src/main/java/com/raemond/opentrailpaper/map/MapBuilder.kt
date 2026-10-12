@@ -1,8 +1,13 @@
 package com.raemond.opentrailpaper.map
 
+import com.raemond.opentrailpaper.BuildConfig
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -49,10 +54,44 @@ object MapBuilder {
      * load, so we rotate through these on failure. Don't add a mirror without
      * checking it actually responds; a hung endpoint just wastes the timeout.
      */
+    // private.coffee added 2026-10 (fast, current data); mail.ru stays as the
+    // last resort — it answers, but took 20+ s for a query the others serve in
+    // 2. kumi.systems was returning 500s and is left out.
     private val OVERPASS_ENDPOINTS = listOf(
         "https://overpass-api.de/api/interpreter",
+        "https://overpass.private.coffee/api/interpreter",
         "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
     )
+
+    /**
+     * Map batches fetched at once. Overpass's usage policy allows a few
+     * concurrent requests per client (overpass-api.de: 4 slots per IP); two
+     * keeps us well inside that while elevation, encoding and the BLE link
+     * overlap with the next fetch. Each batch starts on a different mirror.
+     */
+    const val CONCURRENT_BATCHES = 2
+
+    /**
+     * Hexes whose elevation grid is fetched at once (4 calls each). Open-Meteo
+     * weights a 100-point call as 10 and rate-limits per minute (the timing run
+     * hit 429 after ~20 calls in a burst), so calls also go through
+     * [elevationGate]; this only overlaps the waiting.
+     */
+    const val CONCURRENT_ELEVATION = 2
+
+    /** Next moment an elevation call may start; calls are spaced 1.1 s apart
+     *  app-wide (~550 weighted/min against Open-Meteo's 600). */
+    private var elevationNext = 0L
+    private val elevationLock = kotlinx.coroutines.sync.Mutex()
+    private suspend fun elevationGate() {
+        val wait = elevationLock.withLock {
+            val now = System.currentTimeMillis()
+            val at = maxOf(now, elevationNext)
+            elevationNext = at + 1100
+            at - now
+        }
+        if (wait > 0) delay(wait)
+    }
 
     const val TILE_DEG = 0.02
     const val SIMPLIFY_M = 3.0
@@ -64,19 +103,62 @@ object MapBuilder {
 
     // MARK: Overpass
 
+    /**
+     * Sent on every Overpass request. overpass-api.de answers 406 to generic
+     * agents, which silently pushed every fetch onto the slower mirror.
+     */
+    val USER_AGENT = "OpenTrailPaper/${BuildConfig.VERSION_NAME} (Android)"
+
+    // `{B}` is the bbox. Bike routes: route=bicycle relations are resolved to
+    // member way ids ON THE SERVER and come back as three derived `bikeroute`
+    // elements (one per network level, ways = "id;id;…") — relation bodies list
+    // every member of a route that may cross a continent (1.1 MB for central SF
+    // against ~30 KB). `way(r.bk)` pulls in route members the highway filter
+    // misses so a route has no holes. Same as mapgen.js QUERY minus its POI
+    // clauses, which the app fetches separately (POI_QUERY).
     private val QUERY_TEMPLATE = """
         [out:json][timeout:90];
+        rel["route"="bicycle"]({B})->.bk;
         (
-          way["highway"~"^(motorway|trunk|primary|secondary|tertiary|residential|unclassified|living_street|pedestrian|cycleway|footway|path|track|steps)"](%1${'$'}s);
-          way["natural"="water"](%1${'$'}s);
-          way["natural"="coastline"](%1${'$'}s);
-          way["leisure"="park"](%1${'$'}s);
-          way["landuse"~"^(grass|forest|meadow|recreation_ground|cemetery|village_green)${'$'}"](%1${'$'}s);
-          way["natural"~"^(wood|scrub|grassland|heath)${'$'}"](%1${'$'}s);
+          way["highway"~"^(motorway|trunk|primary|secondary|tertiary|residential|unclassified|living_street|pedestrian|cycleway|footway|path|track|steps)"]({B});
+          way["natural"="water"]({B});
+          way["natural"="coastline"]({B});
+          way["leisure"="park"]({B});
+          way["landuse"~"^(grass|forest|meadow|recreation_ground|cemetery|village_green)${'$'}"]({B});
+          way["natural"~"^(wood|scrub|grassland|heath)${'$'}"]({B});
+          way(r.bk)({B});
         );
         out body;
         >;
         out skel qt;
+        rel.bk["network"~"^(icn|ncn)${'$'}"]->.r3;
+        way(r.r3)({B})->.w3;
+        make bikeroute level=3, ways=w3.set(id());
+        out;
+        rel.bk["network"="rcn"]->.r2;
+        way(r.r2)({B})->.w2;
+        make bikeroute level=2, ways=w2.set(id());
+        out;
+        (rel.bk; - rel.bk["network"~"^(icn|ncn|rcn)${'$'}"];)->.r1;
+        way(r.r1)({B})->.w1;
+        make bikeroute level=1, ways=w1.set(id());
+        out;
+    """.trimIndent()
+
+    // Cycling POIs on their own, so they refresh without rebuilding map tiles.
+    // `out tags center`: nodes come with lat/lon, outlines with the server's
+    // centre, and no geometry is downloaded (~180 KB for a 15 km box over San
+    // Francisco against ~30 MB for the map query).
+    private val POI_QUERY = """
+        [out:json][timeout:60];
+        (
+          node["amenity"~"^(drinking_water|toilets|bicycle_repair_station)${'$'}"]({B});
+          node["man_made"="water_tap"]["drinking_water"="yes"]({B});
+          node["amenity"="fountain"]["drinking_water"="yes"]({B});
+          nwr["shop"="bicycle"]({B});
+          way["amenity"~"^(toilets|bicycle_repair_station)${'$'}"]({B});
+        );
+        out tags center;
     """.trimIndent()
 
     private fun bbox(s: Double, w: Double, n: Double, e: Double) =
@@ -91,10 +173,20 @@ object MapBuilder {
         north: Double,
         east: Double,
         onProgress: ((String) -> Unit)? = null,
+        startMirror: Int = 0,
     ): OsmData {
-        val q = String.format(QUERY_TEMPLATE, bbox(south, west, north, east))
-        return overpassPost(q, onProgress)
+        val q = QUERY_TEMPLATE.replace("{B}", bbox(south, west, north, east))
+        return overpassPost(q, onProgress, startMirror, "map")
     }
+
+    /** The cycling POIs in a box (see POI_QUERY); read them from [OsmData.pois]. */
+    suspend fun fetchPois(
+        south: Double,
+        west: Double,
+        north: Double,
+        east: Double,
+        onProgress: ((String) -> Unit)? = null,
+    ): OsmData = overpassPost(POI_QUERY.replace("{B}", bbox(south, west, north, east)), onProgress, 1, "poi")
 
     /**
      * Coastline ways alone, over a deliberately generous bbox.
@@ -114,7 +206,7 @@ object MapBuilder {
         val q = "[out:json][timeout:60];" +
             "way[\"natural\"=\"coastline\"](${bbox(south, west, north, east)});" +
             "(._;>;);out body;"
-        return overpassPost(q, null)
+        return overpassPost(q, null, 1, "coast")
     }
 
     /**
@@ -126,6 +218,8 @@ object MapBuilder {
     private suspend fun overpassPost(
         query: String,
         onProgress: ((String) -> Unit)?,
+        startMirror: Int = 0,
+        kind: String = "map",
     ): OsmData {
         val body = ("data=" + URLEncoder.encode(query, "UTF-8")).toByteArray(Charsets.UTF_8)
         var lastStatus = 0
@@ -134,7 +228,10 @@ object MapBuilder {
 
         for (attempt in 0 until total) {
             currentCoroutineContext().ensureActive()
-            val urlStr = OVERPASS_ENDPOINTS[attempt % OVERPASS_ENDPOINTS.size]
+            val urlStr = OVERPASS_ENDPOINTS[(startMirror + attempt) % OVERPASS_ENDPOINTS.size]
+            val started = System.nanoTime()
+            var bytes = 0L
+            var status = -1
             val host = runCatching { URL(urlStr).host }.getOrNull() ?: urlStr
             onProgress?.invoke("server $host (try ${attempt + 1}/$total)")
 
@@ -144,17 +241,23 @@ object MapBuilder {
                     conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
                         requestMethod = "POST"
                         doOutput = true
-                        setRequestProperty("User-Agent", "OpenTrailPaper-Android")
+                        setRequestProperty("User-Agent", USER_AGENT)
                         setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
                         connectTimeout = 45_000
                         readTimeout = 45_000
                     }
                     conn.outputStream.use { it.write(body) }
                     val code = conn.responseCode
+                    status = code
                     if (code != 200) return@withContext Result.failure(HttpStatus(code))
                     // Parsed straight off the socket: an Overpass region is far
                     // too big to hold as a String and then again as a tree.
-                    Result.success(OsmData.parse(conn.inputStream))
+                    val counting = object : java.io.FilterInputStream(conn.inputStream) {
+                        override fun read(): Int = super.read().also { if (it >= 0) bytes++ }
+                        override fun read(b: ByteArray, off: Int, len: Int): Int =
+                            super.read(b, off, len).also { if (it > 0) bytes += it }
+                    }
+                    Result.success(OsmData.parse(counting))
                 } catch (e: Exception) {
                     Result.failure(e)
                 } finally {
@@ -162,6 +265,7 @@ object MapBuilder {
                 }
             }
 
+            DownloadStats.request(kind, host, status, (System.nanoTime() - started) / 1e9, bytes)
             result.onSuccess { return it }
             result.onFailure { e ->
                 if (e is HttpStatus) lastStatus = e.code else lastError = e as? Exception
@@ -243,42 +347,59 @@ object MapBuilder {
                 lons.add(west + (east - west) * j / (gridN - 1))
             }
         }
-
+        // The 100-point calls (4 per hex) go out together rather than one after
+        // another: each is ~0.3 s of mostly waiting.
+        val started = System.nanoTime()
         val out = ShortArray(gridN * gridN)
-        var idx = 0
-        while (idx < lats.size) {
-            val end = min(idx + 100, lats.size)
-            val la = (idx until end).joinToString(",") { fmt5(lats[it]) }
-            val lo = (idx until end).joinToString(",") { fmt5(lons[it]) }
-            val body = withContext(Dispatchers.IO) {
-                val url = URL(
-                    "https://api.open-meteo.com/v1/elevation" +
-                        "?latitude=${URLEncoder.encode(la, "UTF-8")}" +
-                        "&longitude=${URLEncoder.encode(lo, "UTF-8")}",
-                )
-                val conn = (url.openConnection() as HttpURLConnection).apply {
-                    setRequestProperty("User-Agent", "OpenTrailPaper-Android")
-                    connectTimeout = 30_000
-                    readTimeout = 30_000
+        val chunks = (lats.indices step 100).map { it to min(it + 100, lats.size) }
+        val bodies = coroutineScope {
+            chunks.map { (idx, end) ->
+                async(Dispatchers.IO) {
+                    elevationGate()
+                    val body = elevationCall(lats, lons, idx, end) ?: run {
+                        // Rate-limited: one retry after the minute window moves.
+                        delay(20_000)
+                        elevationGate()
+                        elevationCall(lats, lons, idx, end) ?: throw IOException("elevation rate-limited")
+                    }
+                    idx to body
                 }
-                try {
-                    if (conn.responseCode != 200) throw IOException("elevation server error")
-                    conn.inputStream.readBytes().toString(Charsets.UTF_8)
-                } finally {
-                    conn.disconnect()
-                }
-            }
-            val arr = JSONObject(body).optJSONArray("elevation")
-            if (arr != null) {
-                for (k in 0 until arr.length()) {
-                    if (idx + k >= out.size) break
-                    val v = if (arr.isNull(k)) 0.0 else arr.optDouble(k, 0.0)
-                    out[idx + k] = rnd(v).coerceIn(-2000, 9000).toShort()
-                }
-            }
-            idx = end
+            }.awaitAll()
         }
+        for ((idx, body) in bodies) {
+            val arr = JSONObject(body).optJSONArray("elevation") ?: continue
+            for (k in 0 until arr.length()) {
+                if (idx + k >= out.size) break
+                val v = if (arr.isNull(k)) 0.0 else arr.optDouble(k, 0.0)
+                out[idx + k] = rnd(v).coerceIn(-2000, 9000).toShort()
+            }
+        }
+        DownloadStats.add("elevation", (System.nanoTime() - started) / 1e9)
         return out
+    }
+
+    /** One Open-Meteo call for points [idx, end) — blocking, run on Dispatchers.IO.
+     *  null when rate-limited (429). */
+    private fun elevationCall(lats: List<Double>, lons: List<Double>, idx: Int, end: Int): String? {
+        val la = (idx until end).joinToString(",") { fmt5(lats[it]) }
+        val lo = (idx until end).joinToString(",") { fmt5(lons[it]) }
+        val url = URL(
+            "https://api.open-meteo.com/v1/elevation" +
+                "?latitude=${URLEncoder.encode(la, "UTF-8")}" +
+                "&longitude=${URLEncoder.encode(lo, "UTF-8")}",
+        )
+        val conn = (url.openConnection() as HttpURLConnection).apply {
+            setRequestProperty("User-Agent", USER_AGENT)
+            connectTimeout = 30_000
+            readTimeout = 30_000
+        }
+        try {
+            if (conn.responseCode == 429) return null
+            if (conn.responseCode != 200) throw IOException("elevation server error")
+            return conn.inputStream.readBytes().toString(Charsets.UTF_8)
+        } finally {
+            conn.disconnect()
+        }
     }
 
     private fun fmt5(v: Double) = String.format(Locale.US, "%.5f", v)
@@ -723,10 +844,10 @@ object MapBuilder {
         val tileWm = TILE_DEG * kx
         val tileHm = TILE_DEG * ky
 
-        // sub-tile key (ty*nx+tx) -> polylines [(cls, [(x,y) tile-local metres])]
-        val subTiles = HashMap<Int, MutableList<Pair<Int, List<IntArray>>>>()
+        // sub-tile key (ty*nx+tx) -> polylines [(cls, [(x,y) tile-local metres], flags)]
+        val subTiles = HashMap<Int, MutableList<Triple<Int, List<IntArray>, Int>>>()
 
-        fun emit(tx: Int, ty: Int, cls: Int, run: List<DoubleArray>) {
+        fun emit(tx: Int, ty: Int, cls: Int, run: List<DoubleArray>, flags: Int) {
             if (run.size < 2 || tx < 0 || tx >= nx || ty < 0 || ty >= ny) return
             val ox = tx * tileWm
             val oy = ty * tileHm
@@ -739,12 +860,17 @@ object MapBuilder {
                 pts.add(intArrayOf(lx, ly))
             }
             if (pts.size >= 2) {
-                subTiles.getOrPut(ty * nx + tx) { mutableListOf() }.add(cls to pts)
+                subTiles.getOrPut(ty * nx + tx) { mutableListOf() }.add(Triple(cls, pts, flags))
             }
         }
 
         for (way in osm.ways) {
-            if (way.roadClass < 0) continue
+            // Bike-route level from the derived `bikeroute` elements; a member
+            // the highway filter would not draw becomes a minor road / path.
+            val level = osm.routeLevels[way.id] ?: 0
+            val cls = way.classWith(level)
+            if (cls < 0) continue
+            val flags = way.baseFlags or (level and Cycling.WAY_ROUTE_MASK)
             val geo = osm.coords(way)
             if (geo.size < 2) continue
             val projected = geo.map { doubleArrayOf((it[1] - lon0) * kx, (it[0] - lat0) * ky) }
@@ -760,7 +886,7 @@ object MapBuilder {
                 val ty = floor(p[1] / tileHm).toInt()
                 run.add(p)
                 if (tx != curTx || ty != curTy) {
-                    emit(curTx, curTy, way.roadClass, run)
+                    emit(curTx, curTy, cls, run, flags)
                     // Carry the crossing segment into the next tile, so a road
                     // does not gain a gap at every tile seam.
                     run = arrayListOf(run[run.size - 2], p)
@@ -768,7 +894,7 @@ object MapBuilder {
                     curTy = ty
                 }
             }
-            emit(curTx, curTy, way.roadClass, run)
+            emit(curTx, curTy, cls, run, flags)
         }
 
         // Serialize
@@ -782,10 +908,14 @@ object MapBuilder {
         for ((key, polys) in subTiles) {
             val b = ByteArrayOutputStream(1 shl 12)
             b.u16(min(polys.size, 0xFFFF))
-            for ((cls, pts) in polys) {
+            for ((cls, pts, _) in polys) {
                 b.write(cls and 0xFF)
                 b.u16(min(pts.size, 0xFFFF))
                 for (p in pts) { b.i16(p[0]); b.i16(p[1]) }
+            }
+            // Way-flag trailer: exactly one byte per polyline, only when one is set.
+            if (polys.any { it.third != 0 }) {
+                for (p in polys.take(0xFFFF)) b.write(p.third and 0xFF)
             }
             blobs[key] = b.toByteArray()
         }
@@ -894,4 +1024,61 @@ private fun ByteArrayOutputStream.f64(v: Double) {
         write((bits and 0xFF).toInt())
         bits = bits ushr 8
     }
+}
+
+/**
+ * Where a map download's time goes, logged at the end of each run (logcat tag
+ * "Maps") so a slow download on a real phone can be broken down: Overpass per
+ * request, elevation, encode, and the BLE drain after the last tile is built.
+ */
+object DownloadStats {
+    private class Req(val kind: String, val host: String, val status: Int, val seconds: Double, val bytes: Long)
+    private val requests = java.util.Collections.synchronizedList(ArrayList<Req>())
+    private val stages = java.util.concurrent.ConcurrentHashMap<String, Double>()
+    @Volatile private var started = System.nanoTime()
+
+    private val counts = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
+    fun reset() { started = System.nanoTime(); requests.clear(); stages.clear(); counts.clear() }
+    /** Hexes served by each source ("cdn tiles", "overpass tiles", …). */
+    fun count(what: String, n: Int) { if (n > 0) counts.merge(what, n, Int::plus) }
+    fun request(kind: String, host: String, status: Int, seconds: Double, bytes: Long) {
+        requests.add(Req(kind, host, status, seconds, bytes))
+    }
+    fun add(stage: String, seconds: Double) { stages.merge(stage, seconds, Double::plus) }
+
+    fun summary(hexes: Int): String {
+        val us = java.util.Locale.US
+        val sb = StringBuilder("map download: $hexes hexes in %.1f s".format(us, (System.nanoTime() - started) / 1e9))
+        val rs = synchronized(requests) { requests.toList() }
+        if (counts.isNotEmpty()) {
+            sb.append("\n  hexes: " + counts.toSortedMap().entries.joinToString(", ") { "${it.value} ${it.key}" })
+        }
+        for (kind in listOf("cdn-index", "cdn-tile", "cdn-poi")) {
+            val k = rs.filter { it.kind == kind }
+            if (k.isEmpty()) continue
+            val ok = k.filter { it.status == 200 }
+            sb.append(
+                "\n  %s: %d requests (%d not 200), %.1f s summed, %.1f MB".format(
+                    us, kind, k.size, k.size - ok.size, k.sumOf { it.seconds }, ok.sumOf { it.bytes } / 1048576.0,
+                ),
+            )
+        }
+        stages["cdn"]?.let { sb.append("\n  cdn wall: %.1f s".format(us, it)) }
+        for (kind in listOf("map", "coast", "poi")) {
+            val k = rs.filter { it.kind == kind }
+            if (k.isEmpty()) continue
+            val ok = k.filter { it.status == 200 }
+            sb.append(
+                "\n  overpass %s: %d requests (%d failed), %.1f s summed, %.1f MB, hosts %s".format(
+                    us, kind, k.size, k.size - ok.size, k.sumOf { it.seconds },
+                    ok.sumOf { it.bytes } / 1048576.0, ok.map { it.host }.toSortedSet().joinToString(","),
+                ),
+            )
+        }
+        for ((k, v) in stages.toSortedMap()) if (k != "cdn") sb.append("\n  %s: %.1f s summed".format(us, k, v))
+        return sb.toString()
+    }
+
+    fun log(hexes: Int) { android.util.Log.i("Maps", summary(hexes)) }
 }

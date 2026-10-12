@@ -23,15 +23,28 @@ struct OutlineHex: Identifiable {
     let hexagon: [CLLocationCoordinate2D]
     let center: CLLocationCoordinate2D
     let synced: Bool
+    /// On the device but due an update: made before the bike-route data, or
+    /// older than the refresh age. Drawn ochre and hatched.
+    var update = false
+    /// Cycling-POI state of an on-device hex (firmware with the cycling layer).
+    var poi: HexPoiMark = .none
     /// Inverted meaning: ground with NO downloaded coverage at all. The Route
     /// screen outlines the hexes a planned route crosses that nobody holds, so
     /// the grid appears only where the maps run out.
     var missing = false
 }
 
-/// A hex in the area the user is selecting for download.
+/// Whether the device has a hex's cycling POIs: a small water drop on the hex,
+/// filled when it has them and they are fresh, hollow when not. `.none` — the
+/// firmware has no POI layer, or the device does not hold the hex — draws none.
+enum HexPoiMark: Hashable { case none, present, missing }
+
+/// A hex in the area the user is selecting for download. `pending` is a new
+/// hex (not on the device); `update` / `current` are hexes the device already
+/// has, due an update or not — drawn in the same colours as the coverage, but
+/// heavier, so a selection reads at a glance as new vs update vs current.
 struct SelectionHex: Identifiable {
-    enum Kind: Equatable { case pending, done, excluded }
+    enum Kind: Equatable { case pending, done, excluded, update, current }
     let id: String
     let hexagon: [CLLocationCoordinate2D]
     let kind: Kind
@@ -208,7 +221,10 @@ struct EInkMapView: UIViewRepresentable {
         // hex ids each time was itself a measurable part of the Maps page's
         // stutter during a large download.
         var h = Hasher()
-        for o in outlines { h.combine(o.id); h.combine(o.synced); h.combine(o.missing) }
+        for o in outlines {
+            h.combine(o.id); h.combine(o.synced); h.combine(o.missing)
+            h.combine(o.update); h.combine(o.poi)
+        }
         for s in selection { h.combine(s.id); h.combine(String(describing: s.kind)) }
         if let r = route { h.combine(ObjectIdentifier(r)) }
         return h.finalize()
@@ -220,7 +236,7 @@ struct EInkMapView: UIViewRepresentable {
         // several times a second and re-adding the overlay would discard every
         // tile MapKit has already drawn.
         map.removeOverlays(map.overlays.filter { !($0 is HexLayerOverlay) })
-        map.removeAnnotations(map.annotations.compactMap { $0 as? SyncedCheckAnnotation })
+        map.removeAnnotations(map.annotations.compactMap { $0 as? HexBadgeAnnotation })
 
         // The green check is a per-area badge and only says anything while the
         // areas are big enough to hold one. Framing a region's worth of coverage
@@ -237,12 +253,18 @@ struct EInkMapView: UIViewRepresentable {
             flat.append(.init(id: "s:" + hex.id, hexagon: hex.hexagon,
                               style: .selection(hex.kind)))
         }
+        // A selected hex is drawn once, in its selection style (which carries
+        // the same state colour, heavier) — not again as coverage on top of it.
+        let selected = Set(selection.map(\.id))
         for hex in outlines {
-            flat.append(.init(id: "o:" + hex.id, hexagon: hex.hexagon,
-                              style: hex.missing ? .missingCoverage
-                                                 : .downloadedOutline(synced: hex.synced)))
+            if !selected.contains(hex.id) {
+                flat.append(.init(id: "o:" + hex.id, hexagon: hex.hexagon,
+                                  style: hex.missing ? .missingCoverage
+                                      : .downloadedOutline(synced: hex.synced, update: hex.update)))
+            }
             if hex.synced && showChecks {
-                map.addAnnotation(SyncedCheckAnnotation(coordinate: hex.center))
+                map.addAnnotation(HexBadgeAnnotation(coordinate: hex.center,
+                    badge: .init(update: hex.update, poi: hex.poi)))
             }
         }
         let hexLayer = c.hexes ?? {
@@ -352,12 +374,12 @@ struct EInkMapView: UIViewRepresentable {
 
         func mapView(_ map: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
             if annotation is MKUserLocation { return nil }
-            if annotation is SyncedCheckAnnotation {
-                let id = "synced"
+            if let badge = annotation as? HexBadgeAnnotation {
+                let id = "hexbadge"
                 let v = map.dequeueReusableAnnotationView(withIdentifier: id)
                     ?? MKAnnotationView(annotation: annotation, reuseIdentifier: id)
                 v.annotation = annotation
-                v.image = SyncedCheckAnnotation.image
+                v.image = HexBadgeAnnotation.image(badge.badge)
                 v.canShowCallout = false
                 // Never let the checks fight the map for taps — the Maps screen
                 // hit-tests hexes underneath them.
@@ -403,38 +425,86 @@ struct EInkMapView: UIViewRepresentable {
 
 // MARK: - Annotations
 
-private final class SyncedCheckAnnotation: NSObject, MKAnnotation {
+/// The badge in the middle of an on-device hex: a green check (current) or an
+/// ochre up-arrow (update available), with a small water drop beside it when
+/// the firmware has the POI layer — filled ink when the device has the hex's
+/// POIs, hollow when it has none or they are stale.
+final class HexBadgeAnnotation: NSObject, MKAnnotation {
+    struct Badge: Hashable { let update: Bool; let poi: HexPoiMark }
     let coordinate: CLLocationCoordinate2D
-    init(coordinate: CLLocationCoordinate2D) { self.coordinate = coordinate }
+    let badge: Badge
+    init(coordinate: CLLocationCoordinate2D, badge: Badge) {
+        self.coordinate = coordinate
+        self.badge = badge
+    }
+
+    private static var cache: [Badge: UIImage] = [:]
 
     /// Drawn rather than tinted from an SF Symbol: `withTintColor` on a symbol
     /// came out plain black here, and the mark has to hold its colour over both
     /// paper and a dark water screentone. The white ring is what keeps it
-    /// legible on the dark half.
-    /// 14 pt across. It is a status badge on a ~5.6 km hexagon, not a pin: at 22
-    /// it crowded the ink underneath and neighbouring checks nearly touched when
-    /// zoomed out. The geometry below is proportional, so `d` is the only knob.
-    static let image: UIImage = {
+    /// legible on the dark half. 14 pt: it is a status badge on a ~5.6 km
+    /// hexagon, not a pin.
+    static func image(_ b: Badge) -> UIImage {
+        if let i = cache[b] { return i }
         let d: CGFloat = 14
         let k = d / 22                     // the marks were drawn at 22
-        return UIGraphicsImageRenderer(size: CGSize(width: d, height: d)).image { _ in
+        let dropW: CGFloat = b.poi == .none ? 0 : 11
+        let size = CGSize(width: d + (dropW > 0 ? dropW + 2 : 0), height: d)
+        let img = UIGraphicsImageRenderer(size: size).image { _ in
             UIColor.white.setFill()
             UIBezierPath(ovalIn: CGRect(x: 0, y: 0, width: d, height: d)).fill()
-            UIColor(Palette.good).setFill()
+            UIColor(b.update ? Palette.update : Palette.good).setFill()
             let ring = 1.5 * k
             UIBezierPath(ovalIn: CGRect(x: ring, y: ring,
                                         width: d - ring * 2, height: d - ring * 2)).fill()
-            let check = UIBezierPath()
-            check.move(to: CGPoint(x: 6.2 * k, y: 11.4 * k))
-            check.addLine(to: CGPoint(x: 9.6 * k, y: 14.8 * k))
-            check.addLine(to: CGPoint(x: 15.8 * k, y: 7.4 * k))
-            check.lineWidth = 2.4 * k
-            check.lineCapStyle = .round
-            check.lineJoinStyle = .round
+            let mark = UIBezierPath()
+            if b.update {             // up arrow: "a newer version is available"
+                mark.move(to: CGPoint(x: 11 * k, y: 16.5 * k))
+                mark.addLine(to: CGPoint(x: 11 * k, y: 5.5 * k))
+                mark.move(to: CGPoint(x: 6.8 * k, y: 9.6 * k))
+                mark.addLine(to: CGPoint(x: 11 * k, y: 5.5 * k))
+                mark.addLine(to: CGPoint(x: 15.2 * k, y: 9.6 * k))
+            } else {
+                mark.move(to: CGPoint(x: 6.2 * k, y: 11.4 * k))
+                mark.addLine(to: CGPoint(x: 9.6 * k, y: 14.8 * k))
+                mark.addLine(to: CGPoint(x: 15.8 * k, y: 7.4 * k))
+            }
+            mark.lineWidth = 2.4 * k
+            mark.lineCapStyle = .round
+            mark.lineJoinStyle = .round
             UIColor.white.setStroke()
-            check.stroke()
+            mark.stroke()
+            if dropW > 0 {
+                // A water drop: round belly, pointed top.
+                let x0 = d + 2, w = dropW - 2
+                let drop = UIBezierPath()
+                drop.move(to: CGPoint(x: x0 + w / 2, y: 1))
+                drop.addCurve(to: CGPoint(x: x0 + w, y: d - w / 2 - 1),
+                              controlPoint1: CGPoint(x: x0 + w / 2, y: 3),
+                              controlPoint2: CGPoint(x: x0 + w, y: d / 2 - 1))
+                drop.addArc(withCenter: CGPoint(x: x0 + w / 2, y: d - w / 2 - 1), radius: w / 2,
+                            startAngle: 0, endAngle: .pi, clockwise: true)
+                drop.addCurve(to: CGPoint(x: x0 + w / 2, y: 1),
+                              controlPoint1: CGPoint(x: x0, y: d / 2 - 1),
+                              controlPoint2: CGPoint(x: x0 + w / 2, y: 3))
+                drop.close()
+                UIColor.white.setStroke()
+                drop.lineWidth = 3
+                drop.stroke()                       // halo
+                UIColor(Palette.ink).setStroke()
+                drop.lineWidth = 1.4
+                if b.poi == .present {
+                    UIColor(Palette.ink).setFill(); drop.fill()
+                } else {
+                    UIColor.white.setFill(); drop.fill()
+                }
+                drop.stroke()
+            }
         }
-    }()
+        cache[b] = img
+        return img
+    }
 }
 
 private final class MeshNodeAnnotation: NSObject, MKAnnotation {
@@ -542,10 +612,32 @@ private final class HexLayerRenderer: MKOverlayRenderer {
         for piece in pieces where piece.rect.intersects(mapRect) {
             guard let path = piece.path.copy(using: &t) else { continue }
             let (fill, stroke) = piece.style.colors
+            ctx.setLineWidth(piece.style.lineWidth / Double(zoomScale))
             ctx.addPath(path)
             ctx.setFillColor(fill.cgColor)
             ctx.setStrokeColor(stroke.cgColor)
             ctx.drawPath(using: .fillStroke)
+            // "Update available" is hatched as well as coloured, so it never
+            // depends on telling ochre from green.
+            if piece.style.hatched {
+                ctx.saveGState()
+                ctx.addPath(path)
+                ctx.clip()
+                let box = path.boundingBox
+                let step = 9.0 / Double(zoomScale)
+                // Ochre whatever the outline: only update hexes are hatched,
+                // and a selected one's outline is ink.
+                ctx.setStrokeColor(UIColor(Palette.update).withAlphaComponent(0.6).cgColor)
+                ctx.setLineWidth(1.4 / Double(zoomScale))
+                var x = box.minX - box.height
+                while x < box.maxX {
+                    ctx.move(to: CGPoint(x: x, y: box.maxY))
+                    ctx.addLine(to: CGPoint(x: x + box.height, y: box.minY))
+                    x += step
+                }
+                ctx.strokePath()
+                ctx.restoreGState()
+            }
         }
     }
 }
@@ -554,8 +646,21 @@ private final class HexLayerRenderer: MKOverlayRenderer {
 /// that used to carry one hex each.
 enum HexStyle: Equatable {
     case selection(SelectionHex.Kind)
-    case downloadedOutline(synced: Bool)
+    case downloadedOutline(synced: Bool, update: Bool)
     case missingCoverage
+
+    /// Selected hexes are outlined heavier than coverage, so the selection
+    /// stands out from the ground around it while keeping the state colours.
+    var lineWidth: Double {
+        if case .selection(let k) = self, k != .excluded { return 3.5 }
+        return 2.0
+    }
+    var hatched: Bool {
+        switch self {
+        case .downloadedOutline(true, true), .selection(.update): return true
+        default: return false
+        }
+    }
 
     var colors: (fill: UIColor, stroke: UIColor) {
         switch self {
@@ -564,7 +669,11 @@ enum HexStyle: Equatable {
         // Palette.faint they were tuned to whisper beneath the paper fill, and
         // with that gone they vanished into Apple's green terrain — visible
         // only where they happened to cross water.
-        case .downloadedOutline(let synced):
+        case .downloadedOutline(let synced, let update):
+            if synced && update {
+                let c = UIColor(Palette.update)
+                return (c.withAlphaComponent(0.22), c)
+            }
             let c = UIColor(synced ? Palette.good : Palette.muted)
             return (c.withAlphaComponent(synced ? 0.30 : 0.22), c)
         // A gap in the maps, so it has to read as "look here" — the accent,
@@ -573,13 +682,22 @@ enum HexStyle: Equatable {
         case .missingCoverage:
             let c = UIColor(Palette.accent)
             return (c.withAlphaComponent(0.10), c.withAlphaComponent(0.7))
+        // Selected hexes: the state's colour as the fill, and an INK outline
+        // for every state. With the state colour as the outline too, a
+        // selected update/current hex was all but identical to the same hex
+        // unselected (ochre hatch 0.30 vs 0.22) — selecting an area you
+        // already have looked like nothing happened. Ink = selected.
         case .selection(.done):
-            return (UIColor(Palette.good).withAlphaComponent(0.22), UIColor(Palette.good))
+            return (UIColor(Palette.good).withAlphaComponent(0.22), UIColor(Palette.ink))
         case .selection(.excluded):
             return (UIColor(Palette.muted).withAlphaComponent(0.08),
                     UIColor(Palette.muted).withAlphaComponent(0.55))
         case .selection(.pending):
-            return (UIColor(Palette.accent).withAlphaComponent(0.16), UIColor(Palette.accent))
+            return (UIColor(Palette.accent).withAlphaComponent(0.22), UIColor(Palette.ink))
+        case .selection(.update):
+            return (UIColor(Palette.update).withAlphaComponent(0.38), UIColor(Palette.ink))
+        case .selection(.current):
+            return (UIColor(Palette.good).withAlphaComponent(0.38), UIColor(Palette.ink))
         }
     }
 }

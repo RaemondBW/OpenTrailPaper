@@ -24,7 +24,9 @@
 #include "media.h"
 #include "ams_client.h"
 #include "ble_interval_policy.h"
+#include "ble_pair_guard.h"
 #include "sd_bus.h"
+#include "tile_versions.h"
 #include "usb_storage.h"
 #include "dash_config.h"
 #include "mesh_service.h"
@@ -132,7 +134,7 @@ class SettingsCb : public NimBLECharacteristicCallbacks {
         std::string v = c->getValue();
         // [0xFE 0x55]: the paired phone unpairs itself (the app's "Unpair"
         // button) — same as Paired Devices > Phone > UNPAIR on the panel.
-        // Settings is WRITE_ENC, so only a bonded phone gets here. Too short
+        // Settings is WRITE_AUTHEN, so only the paired phone gets here. Too short
         // to be a settings payload (>= 4 bytes), and older firmware drops it.
         if (v.size() == 2 && (uint8_t)v[0] == 0xFE && (uint8_t)v[1] == 0x55) {
             diag::log("ble: unpair requested by the paired phone");
@@ -705,16 +707,41 @@ std::atomic<uint32_t> phoneConnectionEpoch{0};
 // ---------------------------------------------------------------------------
 // Fixed pairing.
 //
-// The device belongs to one phone. Mechanism, and why it is this one:
+// The device belongs to one phone, and everything the app can touch goes over
+// a link that phone AUTHENTICATED. Mechanism, and why it is this one:
 //
-//  * Every app characteristic is READ_ENC/WRITE_ENC, so a central that is not
-//    encrypted can do nothing. Encryption needs keys, keys need a bond.
-//  * While a phone bond exists ("paired"), a NEW pairing is refused: the
-//    passkey callback disconnects the link instead of showing a code, and a
-//    bond that slipped through anyway (a no-IO peer doing Just Works never
-//    reaches the passkey step) is deleted and dropped in
-//    onAuthenticationComplete. The paired phone never pairs again — its link
-//    encrypts with the stored keys, silently, in ~100 ms.
+//  * Every app characteristic is READ_AUTHEN/WRITE_AUTHEN, and so is every
+//    CCCD (ble_pair_guard_harden: the host creates those, and left them open,
+//    so an unencrypted central could subscribe). The host runs in Secure
+//    Connections Only mode, which makes "authenticated" mean LE Secure
+//    Connections + MITM (the passkey shown on the panel) + a 16-byte key. An
+//    unauthenticated central reads, writes and subscribes to nothing; it gets
+//    Insufficient Authentication, which is also what makes a phone start
+//    pairing on an unpaired device.
+//  * A link is ADMITTED (phoneConnected, pushes, the fast interval, the status
+//    bar icon, AMS) only in onAuthenticationComplete, and only if it is
+//    encrypted AND authenticated AND bonded AND the bond is the paired
+//    phone's (or, unpaired, the new bond this pairing just made). Anything
+//    else is dropped, and a bond it made is deleted. "Just Works" from a
+//    no-IO peer never authenticates, so it can't own the device.
+//  * While a phone bond exists ("paired"), the device refuses until the rider
+//    unpairs — and refuses BEFORE anything that could put a pairing dialog on
+//    a phone:
+//      - an unrecognised central is disconnected in onConnect, before the
+//        security request (that request is what made iOS start pairing and
+//        show its passkey dialog while the panel showed nothing — then iOS
+//        reconnected and asked again, every half second, 2026-10-10).
+//      - a recognised identity that tries to PAIR again (the phone forgot us)
+//        has the request ignored by ble_pair_guard before the pairing
+//        response, and is dropped. NimBLE-Arduino would otherwise delete the
+//        paired phone's bond on the spot and pair whoever asked.
+//      - a recognised identity whose encryption fails (stale or mismatched
+//        keys) is dropped, and its bond KEPT: deleting it would unpair the
+//        device on behalf of whoever sent the bad keys.
+//    The apps see the drop (and the paired flag in the advertisement) and
+//    stop reconnecting, with a message: unpair on the device, then connect.
+//    The paired phone never pairs again — its link encrypts with the stored
+//    keys, silently, in ~100 ms.
 //  * Advertising stays open to everyone. A controller whitelist would keep
 //    strangers from even connecting, but phones connect from resolvable
 //    private addresses that rotate every ~15 min, so the whitelist only works
@@ -732,11 +759,11 @@ std::atomic<uint32_t> phoneConnectionEpoch{0};
 //    the phone is for the panel.
 //  * Migration: a device that already holds phone bonds from before this
 //    change boots paired — every existing phone bond stays admitted until the
-//    rider unpairs (which deletes them all). No forced re-pair, and no guess
-//    about which of several phones is "the" one.
+//    rider unpairs (which deletes them all). Phone bonds have been passkey
+//    (MITM) pairings since phone bonding was added, so they authenticate.
 //
-// Unpaired, behaviour is today's: the first phone to connect and complete
-// passkey pairing becomes the paired phone.
+// Unpaired, the first phone to connect and complete passkey pairing becomes
+// the paired phone; the code is on the panel over whatever screen is up.
 
 // Manufacturer data in the advertisement: [0xFFFF company id][0x4F 'O'][flags].
 // flags bit0 = paired. 0xFFFF is the SIG's "no company / testing" id.
@@ -749,6 +776,9 @@ volatile bool linkAdmitted = false;
 // The peer's identity already had a bond when it connected — i.e. it is a
 // paired phone (or the paired phone re-pairing after it forgot us).
 volatile bool linkPeerKnown = false;
+// This link was refused while paired (see above): its drop is the refusal, not
+// a flaky phone, and says nothing about stale keys.
+volatile bool linkRefused = false;
 volatile bool unpairPending = false;
 volatile bool advDirty = false;          // pairing state changed; re-advertise
 std::atomic<int> phoneBonds{0};          // cached; recomputed on every change
@@ -811,31 +841,83 @@ void foldName(const char* in, char* out, size_t cap) {
     out[n] = 0;
 }
 
-void kickLink(uint16_t handle, const char* why) {
-    diag::log("ble: refusing phone link (%s) — the device is paired with "
-              "another phone; unpair it in Paired Devices > Phone", why);
+// Refuse a link while paired. Reason 0x05 (Authentication Failure) is what
+// Android reports as the disconnect status, so the app can tell a refusal from
+// a drop. A stranger's phone may retry every half second for as long as its
+// app is open, so the log line is rate-limited.
+void kickLink(uint16_t handle, const char* why, bool phoneSlot = true) {
+    static uint32_t lastLogMs = 0, suppressed = 0;
+    if (phoneSlot) linkRefused = true;
+    if (lastLogMs == 0 || millis() - lastLogMs > 30000) {
+        diag::log("ble: refusing phone link (%s) — the device is paired with "
+                  "another phone; unpair it in Paired Devices > Phone "
+                  "(%lu more refusal(s) not logged)", why, (unsigned long)suppressed);
+        lastLogMs = millis();
+        suppressed = 0;
+    } else {
+        ++suppressed;
+    }
     NimBLEDevice::getServer()->disconnect(handle, BLE_ERR_AUTH_FAIL);
 }
 
+// ble_pair_guard asks this when a peer we hold a bond for sends a pairing
+// request (NimBLE host task). Paired: always refuse — it is the paired
+// phone's identity having forgotten us, or someone presenting that identity,
+// and either way the answer is "unpair on the device first". Unpaired the
+// only bonds are sensors', and a sensor is never the central on this server.
+bool refuseRepeatPairing(uint16_t handle) {
+    if (phoneBonds.load() == 0) return false;
+    kickLink(handle, "the paired phone tried to pair again — it forgot this "
+                     "device");
+    return true;
+}
+
 // Server task: delete every phone bond and reopen pairing.
+//
+// Phones hand over an IRK when they pair, and ble_gap_unpair will not delete a
+// bond with an IRK while advertising or scanning is on (BLE_HS_EBUSY: the
+// controller's resolving list can't change then) — it returns without
+// touching anything. That made UNPAIR a no-op whenever a stranger's refusals
+// had advertising running or a sensor hunt was scanning: the phone's bond
+// survived and it reconnected straight away (2026-10-10). So both stop first,
+// every delete is checked, and an unpair that didn't take stays pending and
+// is retried — the panel already reads "not paired" while it is.
 void serviceUnpair() {
     if (!unpairPending) return;
+    static uint8_t tries = 0;
+    ble_sensors::holdScan(true);
+    NimBLEDevice::stopAdvertising();
     int total = NimBLEDevice::getNumBonds();
-    int deleted = 0;
+    int deleted = 0, failed = 0, lastRc = 0;
     for (int i = total - 1; i >= 0; --i) {   // from the end: deletion shifts
         NimBLEAddress a = NimBLEDevice::getBondedAddress(i);
         if (isSensorAddr(a)) continue;
         // ble_gap_unpair also terminates a live link to that peer.
-        if (NimBLEDevice::deleteBond(a)) ++deleted;
+        int rc = ble_gap_unpair(a.getBase());
+        if (rc == 0) ++deleted;
+        else { ++failed; lastRc = rc; }
     }
+    if (countPhoneBonds() > 0) {
+        if (++tries < 20) {
+            if (tries == 1)
+                diag::log("ble: unpair: %d phone bond(s) not deleted yet (rc=%d) "
+                          "— retrying", failed, lastRc);
+            return;   // still pending; advertising and scanning stay off
+        }
+        diag::log("ble: unpair FAILED — %d phone bond(s) left (rc=%d); "
+                  "try again from Paired Devices > Phone", countPhoneBonds(), lastRc);
+    }
+    tries = 0;
+    ble_sensors::holdScan(false);
     settings::clearPhone();
     phoneNameCache[0] = 0;
     if (linkUp) NimBLEDevice::getServer()->disconnect(linkHandle);
     recountPhoneBonds();
     advDirty = true;
     unpairPending = false;
-    diag::log("ble: unpaired from the panel — %d phone bond(s) deleted, "
-              "pairing open to the next phone", deleted);
+    if (phoneBonds.load() == 0)
+        diag::log("ble: unpaired from the panel — %d phone bond(s) deleted, "
+                  "pairing open to the next phone", deleted);
     // With a link up, onDisconnect re-advertises; with none, do it now.
     if (!linkUp) applyAdvertising();
 }
@@ -1263,18 +1345,18 @@ void saveUploadedWorkout() {
     else
         workoutAck(false, reason);
     workoutStatusDirty = true;
+    workout_service::requestListRefresh();   // the picker lists it next time
 }
 
 class ServerCb : public NimBLEServerCallbacks {
     uint32_t onPassKeyDisplay() override {
         // Fresh code per pairing; the panel shows it, the phone asks for it.
         uint32_t code = esp_random() % 1000000;
-        // Fixed pairing: a phone is already paired and this peer isn't it, so
-        // this is a second phone trying to take the device. Never show it a
-        // code — drop the link. (The paired phone itself only gets here when
-        // it forgot us and re-pairs; NimBLE has resolved it to its bonded
-        // identity by then, so linkPeerKnown lets it through.)
-        if (phoneBonds.load() > 0 && !linkPeerKnown) {
+        // Fixed pairing: paired, nothing gets this far any more — a stranger
+        // is dropped in onConnect and a known identity's pairing request is
+        // refused by ble_pair_guard. Kept as the last line: never show a code
+        // while paired, drop the link instead.
+        if (phoneBonds.load() > 0) {
             kickLink(linkHandle, "pairing request from a second phone");
             return code;   // the link is going; nothing will show this
         }
@@ -1284,35 +1366,78 @@ class ServerCb : public NimBLEServerCallbacks {
         return code;
     }
     void onConnect(NimBLEServer* srv, NimBLEConnInfo& info) override {
+        // The device has ONE phone slot (linkHandle and the state around it),
+        // but the host allows several links and advertising can be back on
+        // while a phone is connected. A second central must never overwrite
+        // the slot — a stranger connecting three times a second did exactly
+        // that, and each refusal's disconnect then reset the paired phone's
+        // state (2026-10-10). The paired phone itself connecting again means
+        // its old link is dead from its side: the new link takes the slot.
+        bool known = NimBLEDevice::isBonded(info.getIdAddress()) ||
+                     NimBLEDevice::isBonded(info.getAddress());
+        if (linkUp && info.getConnHandle() != linkHandle) {
+            if (!(known && phoneBonds.load() > 0)) {
+                diag::log("ble: extra link from %s while the phone slot is busy "
+                          "— refused", info.getIdAddress().toString().c_str());
+                kickLink(info.getConnHandle(), "phone slot busy", false);
+                return;
+            }
+            diag::log("ble: the paired phone reconnected over a stale link — "
+                      "dropping the old one");
+            uint16_t old = linkHandle;
+            linkHandle = info.getConnHandle();   // old link's disconnect is ignored
+            ams::onDisconnect(old);
+            srv->disconnect(old);
+        }
         negotiatedMTU = info.getMTU();
         linkUp = true;
         linkHandle = info.getConnHandle();
         linkAdmitted = false;
+        linkRefused = false;
         // getIdAddress() is the bonded identity when NimBLE resolved the
         // phone's private address against a stored IRK — the same resolution
         // AMS reconnects have always relied on.
-        linkPeerKnown = NimBLEDevice::isBonded(info.getIdAddress());
+        linkPeerKnown = known;
         connAtMs = millis();
         connEncrypted = false;
-        diag::log("phone link up: MTU=%u interval=%.1fms paired=%d known_peer=%d",
-                  info.getMTU(), info.getConnInterval() * 1.25f,
-                  phoneBonds.load() > 0, (int)linkPeerKnown);
-        // Initial discovery/sync starts fast; idle policy no longer needs a
-        // GPS fix. The central chooses the actual connection parameters.
-        noteBulk();
-        requestPhoneInterval(info.getConnHandle(), false, "connect");
+        static uint32_t lastUpLogMs = 0;
+        if (linkPeerKnown || phoneBonds.load() == 0 || lastUpLogMs == 0 ||
+            millis() - lastUpLogMs > 30000) {
+            lastUpLogMs = millis();
+            diag::log("phone link up: %s (id %s) MTU=%u interval=%.1fms paired=%d known_peer=%d",
+                      info.getAddress().toString().c_str(),
+                      info.getIdAddress().toString().c_str(),
+                      info.getMTU(), info.getConnInterval() * 1.25f,
+                      phoneBonds.load() > 0, (int)linkPeerKnown);
+        }
+        // Paired, and this isn't the paired phone: gone now, before the
+        // security request below — that request is what makes a phone without
+        // our keys start pairing and put a passkey dialog up. No interval
+        // request, no bulk window either: nothing on this link is a phone yet.
+        if (phoneBonds.load() > 0 && !linkPeerKnown) {
+            kickLink(info.getConnHandle(), "not the paired phone");
+            return;
+        }
+        // A pairing request from the bonded identity is a phone that forgot
+        // us: refused in refuseRepeatPairing, before the host answers it.
+        int rc = ble_pair_guard_install(info.getConnHandle());
+        if (rc != 0) diag::log("ble: pairing guard not installed (rc=%d)", rc);
         // Start the AMS handshake (encrypt -> discover the phone's own media
         // service). Runs in the server task, not here. Its security request is
         // also what makes a bonded phone encrypt, and so be admitted, even
-        // when no app is open to read anything.
+        // when no app is open to read anything — and, unpaired, what starts
+        // the pairing that puts the code on the panel.
         ams::onConnect(info.getConnHandle());
     }
-    // The link proved it holds our bond: it is THE phone.
+    // The link proved it holds our bond: it is THE phone. Only now does it
+    // get treated as one — the fast interval for the app's initial sync,
+    // pushes, the status bar icon.
     void admit(NimBLEConnInfo& info, bool newPairing) {
         linkAdmitted = true;
         phoneConnected = true;
         ++phoneConnectionEpoch;
         noteBulk();
+        requestPhoneInterval(info.getConnHandle(), false, "admitted");
         settings::setPhoneId(info.getIdAddress().toString().c_str());
         if (newPairing) {   // a new owner: the old name is not theirs
             phoneNameCache[0] = 0;
@@ -1325,50 +1450,70 @@ class ServerCb : public NimBLEServerCallbacks {
                       info.getIdAddress().toString().c_str());
         diag::log("phone connected: admitted (%s)", newPairing ? "new pairing" : "bonded");
     }
-    void onAuthenticationComplete(NimBLEConnInfo& info) override {
-        diag::log("ble: link %s (bonded=%d)",
-                  info.isEncrypted() ? "encrypted" : "NOT encrypted",
-                  info.isBonded());
-        if (info.isEncrypted() && info.getConnHandle() == linkHandle) {
-            const bool wasPaired = phoneBonds.load() > 0;
-            if (!info.isBonded()) {
-                // Encrypted but nothing stored (the phone declined bonding):
-                // there is nothing to recognise it by next time, so it can't
-                // own the device.
-                pairCode = 0;
-                kickLink(info.getConnHandle(), "encrypted without bonding");
-                return;
-            }
-            if (wasPaired && !linkPeerKnown) {
-                // A new bond made while paired — the passkey gate never fired
-                // (Just Works from a peer with no keyboard). Undo it.
-                pairCode = 0;
-                NimBLEDevice::deleteBond(info.getIdAddress());
-                kickLink(info.getConnHandle(), "new bond while paired");
-                return;
-            }
-            admit(info, !linkPeerKnown);
-        }
-        // A failed authentication against a peer we hold keys for means the
-        // bond is stale (the phone forgot us, or keys diverged). Keeping it
-        // guarantees every future connect fails the same way — iOS reconnects,
-        // encryption dies, iOS drops the link, forever. Drop our half so the
-        // next connect pairs fresh instead.
-        // Under fixed pairing this only ever hits the paired phone's own
-        // identity (a stranger has no bond to fail against), so dropping it is
-        // the same phone re-pairing at the panel — never a way in for another.
-        if (!info.isEncrypted() && NimBLEDevice::isBonded(info.getAddress())) {
-            NimBLEDevice::deleteBond(info.getAddress());
+    // Drop a link that finished security without earning admission. A bond
+    // this link just created is undone; the paired phone's bond never is.
+    void reject(NimBLEConnInfo& info, const char* why) {
+        pairCode = 0;
+        if (!linkPeerKnown && info.isBonded()) {
+            NimBLEDevice::deleteBond(info.getIdAddress());
             recountPhoneBonds();
-            diag::log("ble: stale bond dropped — next connect re-pairs (paired=%d)",
-                      phoneBonds.load() > 0);
         }
-        if (info.isEncrypted()) {
-            connEncrypted = true;
-            quickUnencDrops = 0;   // a healthy pairing ends the streak
+        if (phoneBonds.load() > 0) {
+            kickLink(info.getConnHandle(), why);
+        } else {
+            diag::log("ble: dropping link (%s) — pair again with the code on "
+                      "the panel", why);
+            NimBLEDevice::getServer()->disconnect(info.getConnHandle(),
+                                                  BLE_ERR_AUTH_FAIL);
         }
-        pairCode = 0;   // done either way — drop the code sheet
-        ams::onSecured(info.getConnHandle(), info.isEncrypted());
+    }
+    void onAuthenticationComplete(NimBLEConnInfo& info) override {
+        diag::log("ble: link %s (bonded=%d authenticated=%d key=%u)",
+                  info.isEncrypted() ? "encrypted" : "NOT encrypted",
+                  info.isBonded(), info.isAuthenticated(), info.getSecKeySize());
+        if (info.getConnHandle() != linkHandle) return;
+        if (!info.isEncrypted()) {
+            // Paired: the bonded identity failed to encrypt — stale or
+            // mismatched keys, or not the phone at all. Its bond stays (see
+            // "Fixed pairing"); the link goes.
+            if (phoneBonds.load() > 0) {
+                pairCode = 0;
+                kickLink(info.getConnHandle(), "encryption failed — keys don't "
+                         "match the paired phone");
+                return;
+            }
+            // Unpaired: a cancelled or mistyped passkey. Keep the link — the
+            // rider may try again from the phone, and the 90 s unproven-link
+            // timeout in task() reclaims it otherwise.
+            pairCode = 0;
+            ams::onSecured(info.getConnHandle(), false);
+            return;
+        }
+        const bool wasPaired = phoneBonds.load() > 0;
+        if (!info.isBonded()) {
+            // Encrypted but nothing stored (the phone declined bonding):
+            // there is nothing to recognise it by next time, so it can't
+            // own the device.
+            reject(info, "encrypted without bonding");
+            return;
+        }
+        if (!info.isAuthenticated() || info.getSecKeySize() < 16) {
+            // Just Works (a peer with no keyboard), or a short key: nobody
+            // checked a code, so this could be any phone in radio range.
+            reject(info, "pairing was not authenticated with the passkey");
+            return;
+        }
+        if (wasPaired && !linkPeerKnown) {
+            // A new bond made while paired — nothing above should let one
+            // through, but if it happens, undo it.
+            reject(info, "new bond while paired");
+            return;
+        }
+        connEncrypted = true;
+        quickUnencDrops = 0;   // a healthy pairing ends the streak
+        pairCode = 0;          // done — drop the code sheet
+        admit(info, !linkPeerKnown);
+        ams::onSecured(info.getConnHandle(), true);
     }
     void onConnParamsUpdate(NimBLEConnInfo& info) override {
         diag::log("ble interval negotiated: handle=%u interval=%.1fms latency=%u timeout=%ums",
@@ -1380,7 +1525,19 @@ class ServerCb : public NimBLEServerCallbacks {
         negotiatedMTU = mtu;
     }
     void onDisconnect(NimBLEServer*, NimBLEConnInfo& info, int reason) override {
-        diag::log("phone disconnected (reason %d)", reason);
+        // Not the phone slot's link (a refused extra, or the stale link a
+        // reconnecting phone replaced): nothing of the phone's to reset, and
+        // no advertising while the phone is connected.
+        if (info.getConnHandle() != linkHandle) {
+            if (!linkUp && !unpairPending) {
+                if (advDirty) applyAdvertising();
+                else NimBLEDevice::startAdvertising();
+            }
+            return;
+        }
+        // A refused stranger reconnects every few hundred ms; its drops are
+        // already counted in kickLink's rate-limited line.
+        if (!linkRefused) diag::log("phone disconnected (reason %d)", reason);
         // A supervision timeout (520) while the CPU was allowed to sleep on the
         // relaxed link is the experiment's failure signature — count it, and
         // pull the plug after three. Other reasons (531 = the app closed the
@@ -1391,8 +1548,9 @@ class ServerCb : public NimBLEServerCallbacks {
 #endif
         uint32_t slept, rejected; uint64_t sleepUs;
         power_mgmt::sleepStats(slept, rejected, sleepUs);
-        diag::log("ble disconnect: interval_long=%d sleep_allowed=%d successful_sleep_calls=%lu",
-                  linkIntervalLong, relaxedSleepOk, (unsigned long)slept);
+        if (!linkRefused)
+            diag::log("ble disconnect: interval_long=%d sleep_allowed=%d successful_sleep_calls=%lu",
+                      linkIntervalLong, relaxedSleepOk, (unsigned long)slept);
         if (reason == 520 && sleepEligibleInterval && relaxedSleepOk) {
             if (++relaxedDropCount >= 3) {
                 relaxedSleepOk = false;
@@ -1400,15 +1558,19 @@ class ServerCb : public NimBLEServerCallbacks {
                           "(3 supervision timeouts while connected sleep allowed)");
             }
         }
+        const bool refused = linkRefused;
         linkIntervalLong = false;
         phoneConnected = false;
         linkUp = false;
         linkAdmitted = false;
         linkPeerKnown = false;
+        linkRefused = false;
         linkHandle = 0xFFFF;
         pairCode = 0;             // a refused or abandoned pairing's sheet goes too
         mediaTrackFeed = false;   // the next app must ask again
-        if (!connEncrypted && millis() - connAtMs < 15000) {
+        if (refused) {
+            // Refused while paired: expected, and already logged.
+        } else if (!connEncrypted && millis() - connAtMs < 15000) {
             if (++quickUnencDrops == 3)
                 diag::log("ble: 3 quick unencrypted drops — the phone likely "
                           "holds stale pairing keys. Fix: iPhone Settings > "
@@ -1429,6 +1591,7 @@ class ServerCb : public NimBLEServerCallbacks {
         // Advertising stops once a central connects; restart it so the phone
         // can find and reconnect to the device after disconnecting — with a
         // fresh advertisement if the pairing state changed on this link.
+        if (unpairPending) return;   // serviceUnpair re-advertises when done
         if (advDirty) applyAdvertising();
         else NimBLEDevice::startAdvertising();
     }
@@ -1565,16 +1728,44 @@ class OtaCb : public NimBLECharacteristicCallbacks {
 //           [0x06][u32 size][h3id…]   begin one H3 tile (-> /maps/tiles)
 //           [0x02]<bytes>  data        [0x03] end     [0x04] abort
 //           [0x05]  list whole-map coverage    [0x07]  list H3 tile ids
+//           [0x08]  list H3 ids that have a cycling-POI file (<id>.poi)
+//           [0x09]  get map layers   [0x0A][u16 mask]  set map layers
+//   map-layers reply: [0xE0][u16 mask LE] — to 0x09, to 0x0A (the mask now in
+//   force), and unasked after an edit on the device. Bits: MAP_LAYER_* in
+//   map_view.h (0 bike routes, 1 cycleways & lanes, 2 water, 3 toilets,
+//   4 repair, 5 bike shops). Firmware without layers never answers, which is
+//   how the app knows to hide its switches. Kept OUT of the settings payload
+//   on purpose: this is self-describing and needs no payload version.
 //   device notifies: [0xB0] ready, [0xB1] saved, [0xB4][u32 received], [0xBF][err]
 //   tile-list reply: [0xD0] begin, [0xD1]<h3id chars> per tile, [0xD2] end
+//   poi-list reply:  [0xD3] begin, [0xD4]<h3id chars> per tile, [0xD5] end
+//   A .poi travels as a tile ([0x06], same id): saveTile tells it apart by its
+//   'EPOI' magic. Firmware without POI support never answers 0x08, which is how
+//   the app knows not to send it .poi files.
+//   Tile versions (docs/prebuilt-tiles.md#versions, tile_versions.h): the
+//   device keeps the version record each tile and .poi was sent with, so every
+//   phone can tell a current hex from an update — not only the one that sent it.
+//     [0x07][0x01] / [0x08][0x01]  list, with versions. Answered with a flagged
+//       begin, [0xD0][0x01] / [0xD3][0x01], and entries "<h3id>" or
+//       "<h3id>=<record>" in the same comma-separated 0xD1 / 0xD4 packets.
+//       Older firmware ignores the flag byte and answers the plain 1-byte
+//       begin, which is how the app knows it keeps no versions.
+//     [0x06][u32 size][h3id][0x00][record]  begin a tile with its version.
+//       The app sends the record only to firmware that answered a flagged
+//       begin (older firmware would stop at the NUL anyway).
 NimBLECharacteristic* mapChr = nullptr;
 uint8_t* mapBuf = nullptr;
 volatile uint32_t mapBufLen = 0, mapBufCap = 0;
 char mapName[52] = "";
+char mapVersion[tile_versions::VER_MAX] = "";   // staged tile's record, "" = none
 volatile bool mapCommitPending = false;
 volatile bool mapIsTile = false;         // staged buffer is an H3 tile, not a whole map
 volatile bool mapListReq = false;
 volatile bool tileListReq = false;
+volatile bool poiListReq = false;
+volatile bool tileListVersions = false;  // the pending list asked for versions
+volatile bool poiListVersions = false;
+volatile bool mapLayersNotify = false;   // send [0xE0][mask] from the server task
 uint32_t mapStartMs = 0, mapLastProgress = 0;
 
 void mapNotify(const uint8_t* d, size_t n) {
@@ -1613,9 +1804,21 @@ class MapCb : public NimBLECharacteristicCallbacks {
             mapBufLen = 0;
             mapLastProgress = 0;
             mapIsTile = (p[0] == 0x06);
-            size_t nl = n - 5 < sizeof(mapName) - 1 ? n - 5 : sizeof(mapName) - 1;
+            // [name][0x00][version record] — the record only from apps that
+            // saw this firmware list versions.
+            const uint8_t* nul = (const uint8_t*)memchr(p + 5, 0, n - 5);
+            size_t nameLen = nul ? (size_t)(nul - (p + 5)) : n - 5;
+            size_t nl = nameLen < sizeof(mapName) - 1 ? nameLen : sizeof(mapName) - 1;
             memcpy(mapName, p + 5, nl);
             mapName[nl] = 0;
+            mapVersion[0] = 0;
+            if (nul && mapIsTile) {
+                size_t vl = n - 5 - nameLen - 1;
+                if (vl < sizeof(mapVersion)) {   // longer: not a record we know
+                    memcpy(mapVersion, nul + 1, vl);
+                    mapVersion[vl] = 0;
+                }
+            }
             if (!mapName[0])
                 snprintf(mapName, sizeof(mapName), mapIsTile ? "tile" : "map.ebm");
             receiving = true;
@@ -1653,7 +1856,21 @@ class MapCb : public NimBLECharacteristicCallbacks {
             mapListReq = true;
             break;
         case 0x07:                                // list H3 tile ids on SD
+            tileListVersions = n >= 2 && (p[1] & 0x01);
             tileListReq = true;
+            break;
+        case 0x08:                                // list H3 ids with a .poi
+            poiListVersions = n >= 2 && (p[1] & 0x01);
+            poiListReq = true;
+            break;
+        case 0x09:                                // get map layers
+            mapLayersNotify = true;
+            break;
+        case 0x0A:                                // set map layers
+            if (n >= 3) {
+                settings::setMapLayers((uint16_t)(p[1] | (p[2] << 8)));
+                mapLayersNotify = true;           // echo what is now in force
+            }
             break;
         }
     }
@@ -2212,7 +2429,8 @@ void sendMapList() {
 void mapCommit() {
     bool tile = mapIsTile;
     bool ok = mapBuf && mapBufLen > 0 &&
-              (tile ? map_store::saveTile(mapName, mapBuf, mapBufLen)
+              (tile ? map_store::saveTile(mapName, mapBuf, mapBufLen,
+                                          mapVersion[0] ? mapVersion : nullptr)
                     : map_store::saveAndActivate(mapName, mapBuf, mapBufLen));
     uint32_t dt = millis() - mapStartMs;
     diag::log("%s commit %s: %u bytes in %.1fs", tile ? "tile" : "map",
@@ -2228,7 +2446,12 @@ void mapCommit() {
 // id, so there is no index to read) and runs in the server task to stay off
 // the BLE host thread. The phone asks on every Maps-screen open, so the timing
 // is logged: this is the request path most likely to grow past the watchdog.
-void sendTileList() {
+// poi=true: the same walk and framing for <id>.poi files, answered as
+// 0xD3/0xD4/0xD5 (0x08). versions=true (asked as [0x07|0x08][0x01]): the begin
+// carries a 0x01 flag byte and each id the record it was saved with, as
+// "<id>=<record>" — or the bare id where the device has none (saved before
+// this firmware, by an app that sends none, or changed over USB since).
+void sendTileList(bool poi = false, bool versions = false) {
     // PSRAM, and sized to the whole index. At 512 in .bss this was both 12 KB of
     // the internal RAM the display and BLE controller are short of, AND a silent
     // truncation: a rider past 512 tiles kept being offered tiles the device
@@ -2240,12 +2463,32 @@ void sendTileList() {
                                             MALLOC_CAP_SPIRAM);
         if (!ids) { diag::log("tile list: no PSRAM for %d ids", TILE_LIST_MAX); return; }
     }
+    // Only for a versioned list, so firmware talking to an older app never
+    // allocates them.
+    static uint32_t* sizes = nullptr;
+    static char (*vers)[tile_versions::VER_MAX] = nullptr;
+    if (versions && !sizes) {
+        sizes = (uint32_t*)heap_caps_malloc((size_t)TILE_LIST_MAX * 4, MALLOC_CAP_SPIRAM);
+        vers = (char(*)[tile_versions::VER_MAX])heap_caps_malloc(
+            (size_t)TILE_LIST_MAX * tile_versions::VER_MAX, MALLOC_CAP_SPIRAM);
+        if (!sizes || !vers) {
+            diag::log("tile list: no PSRAM for versions");
+            heap_caps_free(sizes); heap_caps_free(vers);
+            sizes = nullptr; vers = nullptr;
+        }
+    }
+    // Out of PSRAM: ids without records rather than no list at all. Still the
+    // flagged begin, so the app goes on sending records for the device to keep.
+    const bool flagged = versions;
+    if (!sizes) versions = false;
     uint32_t t0 = millis();
-    int n = map_store::listTileIds(ids, TILE_LIST_MAX);
+    int n = map_store::listTileIds(ids, TILE_LIST_MAX, poi ? ".poi" : ".ebm",
+                                   versions ? sizes : nullptr);
     uint32_t walkMs = millis() - t0;
+    if (versions) map_store::tileVersions(ids, sizes, n, poi, vers);
 
-    uint8_t begin = 0xD0;
-    sendChunk(mapChr, &begin, 1);
+    uint8_t begin[2] = {(uint8_t)(poi ? 0xD3 : 0xD0), 0x01};
+    sendChunk(mapChr, begin, flagged ? 2 : 1);
 
     // Pack comma-separated ids into MTU-sized 0xD1 packets so a big list is a
     // handful of reliable notifications, not one per tile (that was slow).
@@ -2254,23 +2497,27 @@ void sendTileList() {
     if (cap > 240) cap = 240;
     uint8_t pkt[244];
     int len = 1;
-    pkt[0] = 0xD1;
+    pkt[0] = poi ? 0xD4 : 0xD1;
     for (int i = 0; i < n; ++i) {
-        int idl = (int)strlen(ids[i]);
-        if (idl > 22) idl = 22;
-        if (len > 1 && len + 1 + idl > cap) {   // flush the full packet
+        char entry[24 + tile_versions::VER_MAX];
+        int el = (versions && vers[i][0])
+                     ? snprintf(entry, sizeof(entry), "%.22s=%s", ids[i], vers[i])
+                     : snprintf(entry, sizeof(entry), "%.22s", ids[i]);
+        if (el >= (int)sizeof(entry)) el = (int)sizeof(entry) - 1;
+        if (len > 1 && len + 1 + el > cap) {    // flush the full packet
             sendChunk(mapChr, pkt, len);
             len = 1;
         }
         if (len > 1) pkt[len++] = ',';
-        memcpy(pkt + len, ids[i], idl);
-        len += idl;
+        memcpy(pkt + len, entry, el);
+        len += el;
     }
     if (len > 1) sendChunk(mapChr, pkt, len);
 
-    uint8_t end = 0xD2;
+    uint8_t end = poi ? 0xD5 : 0xD2;
     sendChunk(mapChr, &end, 1);
-    diag::log("tile list: %d ids sent (walk %ums, total %ums)", n, walkMs, millis() - t0);
+    diag::log("%s list: %d ids sent%s (walk %ums, total %ums)", poi ? "poi" : "tile",
+              n, versions ? " with versions" : "", walkMs, millis() - t0);
 }
 
 // Write the PSRAM-staged firmware to the SD card as /firmware.bin, then reboot
@@ -2324,14 +2571,21 @@ void begin() {
     routeBuf = (char*)heap_caps_malloc(ROUTE_MAX, MALLOC_CAP_SPIRAM);
     NimBLEDevice::setMTU(247);   // ask for a large MTU for fast transfers
 
-    // Fixed pairing: every app characteristic needs an encrypted (so bonded)
-    // link. A phone that isn't paired gets "insufficient encryption" on its
-    // first read or write, which is also what makes iOS/Android start pairing
-    // on an unpaired device. CCCDs stay open (NimBLE has no per-descriptor
-    // knob here), so pushes below are gated on phoneConnected (= admitted).
-    constexpr uint32_t kR = NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::READ_ENC;
-    constexpr uint32_t kW = NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_ENC;
-    constexpr uint32_t kWNR = NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::WRITE_ENC;
+    // Fixed pairing: every app characteristic needs an authenticated (passkey,
+    // Secure Connections, so bonded) link, and so does every CCCD — set before
+    // the server starts, because the host reads the CCCD permission when it
+    // registers the descriptors. A phone that isn't paired gets "insufficient
+    // authentication" on its first read, write or subscribe, which is also
+    // what makes iOS/Android start pairing on an unpaired device. Pushes below
+    // are gated on phoneConnected (= admitted) as well.
+    ble_pair_guard_harden();
+    ble_pair_guard_set_refuse(refuseRepeatPairing);
+    constexpr uint32_t kR = NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::READ_ENC |
+                            NIMBLE_PROPERTY::READ_AUTHEN;
+    constexpr uint32_t kW = NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_ENC |
+                            NIMBLE_PROPERTY::WRITE_AUTHEN;
+    constexpr uint32_t kWNR = NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::WRITE_ENC |
+                              NIMBLE_PROPERTY::WRITE_AUTHEN;
 
     NimBLEServer* server = NimBLEDevice::createServer();
     server->setCallbacks(new ServerCb());
@@ -2431,10 +2685,12 @@ void notePhoneName(const char* utf8) {
 }
 
 void pushSettingsToPhone() { settingsDirty = true; }
+void pushMapLayersToPhone() { mapLayersNotify = true; }
 void reportInterval() { intervalReportPending = true; }
 void requestFastInterval() { noteBulk(); intervalReportPending = true; }
 
 bool isPhoneConnected() { return phoneConnected; }
+bool linkPending() { return linkUp && !linkAdmitted && !linkRefused; }
 unsigned long phoneConnectionId() { return phoneConnectionEpoch.load(); }
 bool linkRelaxed() { return linkIntervalLong; }
 bool relaxedSleepAllowed() { return relaxedSleepOk; }
@@ -2585,7 +2841,17 @@ void task(void*) {
         }
         if (tileListReq && sdFree) {
             tileListReq = false;         // enumerate SD H3 tile ids for dedup
-            sendTileList();
+            sendTileList(false, tileListVersions);
+        }
+        if (poiListReq && sdFree) {
+            poiListReq = false;          // which tiles already have their POIs
+            sendTileList(true, poiListVersions);
+        }
+        if (mapLayersNotify && mapChr && phoneConnected) {
+            mapLayersNotify = false;
+            const uint16_t m = settings::mapLayers();
+            uint8_t pkt[3] = {0xE0, (uint8_t)(m & 0xFF), (uint8_t)(m >> 8)};
+            sendChunk(mapChr, pkt, 3);
         }
         if (otaRebootPending) {          // OTA committed — reboot into new image
             vTaskDelay(pdMS_TO_TICKS(1500));   // let the success notify flush
@@ -2639,6 +2905,7 @@ void task(void*) {
                 bool ok = SD.remove(path);
                 sdUnlock();
                 workoutAck(ok, ok ? "deleted" : "delete failed");
+                if (ok) workout_service::requestListRefresh();   // the picker
             } else if (workoutReq == WREQ_LOAD) {
                 workoutReq = WREQ_NONE;
                 const char* reason = "";
@@ -2670,6 +2937,14 @@ void task(void*) {
         // session clock runs so the app's screen counts down live. RAM only.
         {
             static uint32_t lastWkStatus = 0;
+            // A device-side load or unload (the picker, its Back) changes
+            // what the app should show too.
+            static uint32_t seenWkVersion = 0;
+            const uint32_t wkVer = workout_service::version();
+            if (wkVer != seenWkVersion) {
+                seenWkVersion = wkVer;
+                workoutStatusDirty = true;
+            }
             bool tick = workout_service::running() &&
                         millis() - lastWkStatus > 1000;
             if (workoutChr && phoneConnected && (workoutStatusDirty || tick)) {
@@ -2710,7 +2985,7 @@ void task(void*) {
 
         // Safety net: make sure we're discoverable whenever no phone is
         // connected, in case a disconnect ever slips past onDisconnect.
-        if (!linkUp) {
+        if (!linkUp && !unpairPending) {
             NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
             if (adv && !adv->isAdvertising()) NimBLEDevice::startAdvertising();
         }

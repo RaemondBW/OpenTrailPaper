@@ -21,6 +21,7 @@ struct DashField: Identifiable, Hashable {
     // elevation grid baked into the map tiles.
     static let all: [DashField] = [
         .init(id: "speed",      label: "Speed",        detail: "GPS"),
+        .init(id: "avgspeed",   label: "Avg speed",    detail: "Distance / moving time"),
         .init(id: "power3s",    label: "Power (3s)",   detail: "Power meter, 3s average"),
         .init(id: "power",      label: "Power",        detail: "Power meter, instant"),
         .init(id: "hr",         label: "Heart rate",   detail: "Heart-rate strap"),

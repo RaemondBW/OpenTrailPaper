@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <SD.h>
+#include <dirent.h>
 #include <esp_heap_caps.h>
 
 #include "config.h"
@@ -261,25 +262,26 @@ bool begin() {
     return true;
 }
 
+// One readdir() pass, not File::openNextFile(): that stat()s and fopen()s
+// every entry by path, and each of those is a FatFs search of /routes from the
+// top — quadratic in the number of files (see ride_recorder::rideCount()).
 int list(char names[][MAX_NAME], int maxNames) {
-    sdLock();
-    File dir = SD.open(ROUTE_DIR);
-    if (!dir) { sdUnlock(); return 0; }
     int n = 0;
-    for (File f = dir.openNextFile(); f && n < maxNames;
-         f = dir.openNextFile()) {
-        if (!f.isDirectory()) {
-            const char* base = strrchr(f.name(), '/');
-            base = base ? base + 1 : f.name();
+    sdLock();
+    if (DIR* d = opendir("/sd" ROUTE_DIR)) {   // SD.begin() mounts at /sd
+        while (n < maxNames) {
+            struct dirent* e = readdir(d);
+            if (!e) break;
+            const char* base = e->d_name;
             size_t len = strlen(base);
-            if (len > 4 && strcasecmp(base + len - 4, ".gpx") == 0) {
+            if (e->d_type == DT_REG && base[0] != '.' && len > 4 &&
+                strcasecmp(base + len - 4, ".gpx") == 0) {
                 snprintf(names[n], MAX_NAME, "%s", base);
                 n++;
             }
         }
-        f.close();
+        closedir(d);
     }
-    dir.close();
     sdUnlock();
     return n;
 }
