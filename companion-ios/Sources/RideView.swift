@@ -38,22 +38,24 @@ struct RideView: View {
 
     private var content: some View {
         let s = ble.status
-        return VStack(spacing: 14) {
+        return VStack(spacing: 12) {
             header(s)
             gpsCard(s)
-            speedCard(s)
-            HStack(spacing: 14) {
-                sensorCard("Heart Rate", s.heartRate.map { "\($0)" }, unit: "bpm",
-                           sensor: ble.connectedSensor(kind: 1))
-                sensorCard("Power", s.power.map { "\($0)" }, unit: "W",
-                           sensor: ble.connectedSensor(kind: 2))
-            }
-            if s.hasRoute { routeCard(s) }
-            HStack(alignment: .top, spacing: 14) {
-                dashboardCard
-                workoutCard
+            // Speed beside heart rate and power, which stack: the speed card
+            // takes the height of the pair.
+            HStack(spacing: 12) {
+                speedCard(s)
+                VStack(spacing: 12) {
+                    sensorCard("Heart Rate", s.heartRate.map { "\($0)" }, unit: "bpm",
+                               sensor: ble.connectedSensor(kind: 1))
+                    sensorCard("Power", s.power.map { "\($0)" }, unit: "W",
+                               sensor: ble.connectedSensor(kind: 2))
+                }
             }
             .fixedSize(horizontal: false, vertical: true)
+            if s.hasRoute { routeCard(s) }
+            dashboardCard
+            workoutCard
             Spacer(minLength: 0)
             if ble.state != .connected {
                 PrimaryButton(title: primaryTitle,
@@ -75,7 +77,9 @@ struct RideView: View {
     private var dashboardCard: some View {
         Button { showDashEditor = true } label: {
             tile(title: "Dashboard",
-                 subtitle: ble.dashLayout == nil ? "Connect to edit" : "Edit the device's fields") {
+                 subtitle: ble.dashLayout == nil
+                     ? "Connect to change which fields the device shows"
+                     : "Reorder and resize the fields on the device") {
                 if let l = ble.dashLayout, !l.items.isEmpty {
                     DashPreview(layout: l)
                         .frame(width: 34, height: 60)
@@ -109,22 +113,22 @@ struct RideView: View {
         let w = ble.workoutStatus
         if w.loaded {
             let state = w.running ? "running" : w.paused ? "paused" : w.done ? "done" : "ready"
-            return "Block \(w.blockIndex + 1)/\(w.blockCount) · \(state)"
+            return "\(w.name) — block \(w.blockIndex + 1)/\(w.blockCount), \(state)"
         }
-        return "Send or build one"
+        return "Send a structured workout to the device, or build one"
     }
 
-    // Half-width card for the two ways into the device's setup: a picture on
-    // the left, a title and a short status line, and the chevron.
+    // A compact full-width row for the two ways into the device's setup: a
+    // picture on the left, a title and a status line, and the chevron.
     private func tile<Icon: View>(title: String, subtitle: String,
                                   @ViewBuilder icon: () -> Icon) -> some View {
         Card(padding: 12) {
             HStack(spacing: 10) {
                 icon()
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(title).font(BarlowFont.text(16, .semibold))
+                    Text(title).font(BarlowFont.text(17, .semibold))
                         .foregroundStyle(Palette.ink).lineLimit(1)
-                    Text(subtitle).font(BarlowFont.text(12, .medium))
+                    Text(subtitle).font(BarlowFont.text(13, .medium))
                         .foregroundStyle(Palette.muted)
                         .lineLimit(2).fixedSize(horizontal: false, vertical: true)
                 }
@@ -132,7 +136,6 @@ struct RideView: View {
                 Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(Palette.faint)
             }
-            .frame(maxHeight: .infinity)
         }
     }
 
@@ -160,7 +163,7 @@ struct RideView: View {
     }
 
     private func gpsCard(_ s: DeviceStatus) -> some View {
-        Card {
+        Card(padding: 12) {
             HStack(spacing: 12) {
                 ZStack {
                     Circle().fill(s.gpsFix ? Palette.accentWash : Palette.paper)
@@ -187,17 +190,19 @@ struct RideView: View {
     }
 
     private func speedCard(_ s: DeviceStatus) -> some View {
+        // Half width now, so the unit sits under the number rather than
+        // beside it: the number keeps its size up to three digits.
         Card {
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 0) {
                 Text("Speed").trackedLabel()
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(String(format: "%.1f", Units.speed(s.speedKmh, miles: useMiles)))
-                        .font(TypeScale.hero(72)).foregroundStyle(Palette.ink)
-                        .lineLimit(1).minimumScaleFactor(0.6)
-                    Text(Units.speedLabel(useMiles))
-                        .font(BarlowFont.condensed(22, .semibold)).foregroundStyle(Palette.muted)
-                }
+                Spacer(minLength: 4)
+                Text(String(format: "%.1f", Units.speed(s.speedKmh, miles: useMiles)))
+                    .font(TypeScale.hero(72)).foregroundStyle(Palette.ink)
+                    .lineLimit(1).minimumScaleFactor(0.5)
+                Text(Units.speedLabel(useMiles))
+                    .font(BarlowFont.condensed(22, .semibold)).foregroundStyle(Palette.muted)
             }
+            .frame(maxHeight: .infinity, alignment: .topLeading)
         }
     }
 
@@ -214,8 +219,8 @@ struct RideView: View {
             subtitle = ble.state == .connected ? "Searching…" : "Not connected"
             subtitleColor = Palette.accent
         }
-        return Card {
-            VStack(alignment: .leading, spacing: 4) {
+        return Card(padding: 12) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text(label).trackedLabel()
                 HStack(alignment: .firstTextBaseline, spacing: 4) {
                     Text(value ?? "—").font(TypeScale.value(30)).foregroundStyle(Palette.ink)
@@ -228,7 +233,7 @@ struct RideView: View {
     }
 
     private func routeCard(_ s: DeviceStatus) -> some View {
-        Card {
+        Card(padding: 12) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Active route").trackedLabel()
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
