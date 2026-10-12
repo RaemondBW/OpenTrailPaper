@@ -112,32 +112,51 @@ enum class PermissionState {
 data class Maneuver(val lat: Double, val lon: Double, val text: String)
 
 /**
- * Speed-sensor wheel circumferences for common tyres (mm), the usual head-unit
- * table. Limits match the firmware's wheel_speed::kMinCircMm..kMaxCircMm.
+ * Speed-sensor wheel size from rim and tyre: circumference = π × (rim bead seat
+ * diameter + 2 × tyre width), the tyre's height taken as its width. Within
+ * about 0.5% of a measured roll-out for road and MTB tyres. The device only
+ * stores the mm; limits match the firmware's wheel_speed::kMinCircMm..kMaxCircMm.
  */
 object WheelSize {
     const val DEFAULT_MM = 2105
     const val MIN_MM = 800
     const val MAX_MM = 3500
+    const val MIN_TYRE_MM = 18
+    const val MAX_TYRE_MM = 120
+    const val DEFAULT_RIM = 622
 
-    data class Preset(val name: String, val mm: Int)
+    /** A rim by its ISO bead seat diameter (mm). */
+    data class Rim(val bsd: Int, val name: String)
 
-    val presets = listOf(
-        Preset("700x23c", 2096),
-        Preset("700x25c", 2105),
-        Preset("700x28c", 2136),
-        Preset("700x32c", 2155),
-        Preset("700x35c", 2168),
-        Preset("700x40c", 2200),
-        Preset("650b x 47", 2081),
-        Preset("26 x 2.1", 2068),
-        Preset("27.5 x 2.2", 2148),
-        Preset("29 x 2.2", 2298),
-        Preset("29 x 2.4", 2326),
-        Preset("20 x 1.75 (406)", 1515),
-        Preset("16 x 1.35 (349)", 1272),
+    val rims = listOf(
+        Rim(622, "700c / 29\""),
+        Rim(584, "650b / 27.5\""),
+        Rim(571, "650c"),
+        Rim(559, "26\""),
+        Rim(507, "24\""),
+        Rim(406, "20\""),
+        Rim(349, "16\" (Brompton)"),
     )
 
+    fun rim(bsd: Int): Rim = rims.firstOrNull { it.bsd == bsd } ?: rims[0]
+
     fun clamp(mm: Int) = mm.coerceIn(MIN_MM, MAX_MM)
-    fun presetName(mm: Int): String? = presets.firstOrNull { it.mm == mm }?.name
+
+    fun circumference(bsd: Int, tyreMm: Int): Int =
+        clamp(Math.round(Math.PI * (bsd + 2 * tyreMm)).toInt())
+
+    /** The rim and tyre width that give exactly [mm], trying [preferredRim]
+     *  first (650b × 47 and 700c × 28 are the same wheel). null when no
+     *  combination does: a size set over serial or by an older app. */
+    fun decode(mm: Int, preferredRim: Int): Pair<Int, Int>? {
+        for (r in listOf(rim(preferredRim)) + rims) {
+            val tyre = Math.round((mm / Math.PI - r.bsd) / 2).toInt()
+            if (tyre in MIN_TYRE_MM..MAX_TYRE_MM && circumference(r.bsd, tyre) == mm) return r.bsd to tyre
+        }
+        return null
+    }
+
+    /** "28 mm", or "56 mm · 2.2\"" for tyres sized in inches. */
+    fun tyreLabel(mm: Int): String =
+        if (mm >= 45) "$mm mm · ${"%.1f".format(java.util.Locale.US, mm / 25.4)}\"" else "$mm mm"
 }

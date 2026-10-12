@@ -60,6 +60,7 @@ import androidx.compose.ui.unit.sp
 import com.raemond.opentrailpaper.ble.BleManager
 import com.raemond.opentrailpaper.ble.PermissionState
 import com.raemond.opentrailpaper.ble.WheelSize
+import com.raemond.opentrailpaper.data.Prefs
 import com.raemond.opentrailpaper.data.FirmwareRelease
 import com.raemond.opentrailpaper.data.SettingField
 import com.raemond.opentrailpaper.data.SyncAccounts
@@ -540,38 +541,54 @@ private fun mapsSummary(ble: BleManager): String {
 }
 
 /**
- * Speed-sensor wheel size: a preset for the common tyres, and a 1 mm stepper
- * for a measured roll-out (the most accurate: mark the tyre, roll one turn,
- * measure).
+ * Speed-sensor wheel size, worked out from the rim and the tyre width
+ * ([WheelSize.circumference]); the device stores the result in mm. A size no
+ * rim and tyre gives (set over serial) shows as custom until one is chosen.
  */
 @Composable
 private fun WheelSizeCard(ble: BleManager, mm: Int) {
-    var menuOpen by remember { mutableStateOf(false) }
+    var rimOpen by remember { mutableStateOf(false) }
+    var rimBsd by remember { mutableStateOf(Prefs.wheelRimBsd) }
+    val decoded = WheelSize.decode(mm, rimBsd)
+    val rim = WheelSize.rim(decoded?.first ?: rimBsd)
+    val tyre = decoded?.second
+        ?: Math.round((mm / Math.PI - rim.bsd) / 2).toInt()
+            .coerceIn(WheelSize.MIN_TYRE_MM, WheelSize.MAX_TYRE_MM)
+    fun set(bsd: Int, width: Int) {
+        rimBsd = bsd
+        Prefs.wheelRimBsd = bsd
+        ble.updateWheelCircMm(WheelSize.circumference(bsd, width.coerceIn(WheelSize.MIN_TYRE_MM, WheelSize.MAX_TYRE_MM)))
+    }
     Card {
         TrackedLabel("Wheel size")
-        Stepper(
-            value = "$mm mm",
-            onDecrease = { ble.updateWheelCircMm(mm - 1) },
-            onIncrease = { ble.updateWheelCircMm(mm + 1) },
-        )
-        Box {
-            TextButton(onClick = { menuOpen = true }) {
-                Text(WheelSize.presetName(mm) ?: "Choose a tyre size", style = barlow(14.sp))
-            }
-            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                WheelSize.presets.forEach { p ->
-                    DropdownMenuItem(
-                        text = { Text("${p.name} · ${p.mm} mm") },
-                        onClick = {
-                            menuOpen = false
-                            ble.updateWheelCircMm(p.mm)
-                        },
-                    )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Rim", style = barlow(15.sp), color = Palette.ink, modifier = Modifier.weight(1f))
+            Box {
+                TextButton(onClick = { rimOpen = true }) {
+                    Text(rim.name, style = barlow(15.sp, FontWeight.SemiBold))
+                }
+                DropdownMenu(expanded = rimOpen, onDismissRequest = { rimOpen = false }) {
+                    WheelSize.rims.forEach { r ->
+                        DropdownMenuItem(
+                            text = { Text("${r.name} · ${r.bsd} mm bead seat") },
+                            onClick = {
+                                rimOpen = false
+                                set(r.bsd, tyre)
+                            },
+                        )
+                    }
                 }
             }
         }
+        TrackedLabel("Tyre width")
+        Stepper(
+            value = WheelSize.tyreLabel(tyre),
+            onDecrease = { set(rim.bsd, tyre - 1) },
+            onIncrease = { set(rim.bsd, tyre + 1) },
+        )
         Text(
-            "Circumference for a Bluetooth speed sensor: speed and distance are wheel turns × this.",
+            if (decoded == null) "Custom size on the device: $mm mm. Choose a rim or width to replace it."
+            else "Wheel circumference ≈ $mm mm. A Bluetooth speed sensor counts wheel turns × this.",
             style = barlow(12.sp),
             color = Palette.muted,
         )

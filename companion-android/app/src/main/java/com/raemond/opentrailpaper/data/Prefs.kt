@@ -2,6 +2,7 @@ package com.raemond.opentrailpaper.data
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.raemond.opentrailpaper.ble.WheelSize
 
 /// The handful of things that outlive a launch: the units preference (shared
 /// with the device), whether the tutorial has been seen, and the last-known list
@@ -35,6 +36,12 @@ object Prefs {
     var onboarded: Boolean
         get() = sp.getBoolean(KEY_ONBOARDED, false)
         set(v) = sp.edit().putBoolean(KEY_ONBOARDED, v).apply()
+
+    /** The rim last chosen for the wheel size (ISO bead seat diameter). The
+     *  device keeps only the circumference, which two rims can share. */
+    var wheelRimBsd: Int
+        get() = sp.getInt("wheelRimBsd", WheelSize.DEFAULT_RIM)
+        set(v) = sp.edit().putInt("wheelRimBsd", v).apply()
 
     /**
      * Fixed pairing: the MAC of the OpenTrailPaper this phone owns (null until

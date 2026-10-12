@@ -22,9 +22,11 @@ class SensorKindsTest {
     }
 
     @Test
-    fun wheelPresetsWithinFirmwareLimits() {
-        assertTrue(WheelSize.presets.all { it.mm in WheelSize.MIN_MM..WheelSize.MAX_MM })
-        assertEquals("700x25c", WheelSize.presetName(WheelSize.DEFAULT_MM))
+    fun wheelSizesWithinFirmwareLimits() {
+        for (r in WheelSize.rims) for (t in listOf(WheelSize.MIN_TYRE_MM, WheelSize.MAX_TYRE_MM)) {
+            val mm = Math.round(Math.PI * (r.bsd + 2 * t)).toInt()
+            assertTrue(mm in WheelSize.MIN_MM..WheelSize.MAX_MM)
+        }
         assertEquals(WheelSize.MIN_MM, WheelSize.clamp(10))
         assertEquals(WheelSize.MAX_MM, WheelSize.clamp(9000))
     }
