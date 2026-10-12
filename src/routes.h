@@ -14,7 +14,7 @@ constexpr int MAX_NAME = 32;
 
 bool begin();  // ensures /routes exists (needs SD mounted)
 
-// Lists .gpx files, newest-name-first. Returns count.
+// Lists the .gpx files in /routes, in directory order. Returns count.
 int list(char names[][MAX_NAME], int maxNames);
 
 bool load(const char* filename);  // parse /routes/<filename> from SD

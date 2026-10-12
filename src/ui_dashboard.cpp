@@ -439,8 +439,25 @@ int16_t* routeScreenPts = nullptr;
 // Rows behind the list screens, rebuilt on entry/render
 ble_sensors::Candidate sensorCands[8];
 int sensorCandCount = 0;
-char routeFiles[5][routes::MAX_NAME];
+
+// Navigate and Ride History page through a listing read from the card once —
+// when the screen opens, on REFRESH, or when the card or the ride being
+// recorded changes — never on the 1 Hz redraw: the card runs at 4 MHz under
+// sdLock, and touch is only read between loop passes. Paging just indexes the
+// copy. Both arrays live in PSRAM, allocated on first use.
+constexpr int kRouteListMax = 128;
+constexpr int kRideListMax = 256;
+char (*routeFiles)[routes::MAX_NAME] = nullptr;
 int routeFileCount = 0;
+ride_recorder::RideFile* rideFiles = nullptr;
+int rideFileCount = 0;
+bool listStale = true;    // re-read the card on the next render
+int listPage = 0;         // which page of kMenuRowCount rows is showing
+// What the last frame showed, so a tap maps to the row the rider saw: the
+// whole list's length, and how many pinned rows ("Clear route", "Recording in
+// progress") sit ahead of the files.
+int listTotal = 0;
+int listPinned = 0;
 
 // Long-press tracking
 uint32_t touchDownAt = 0;
@@ -564,6 +581,37 @@ bool inRect(const EpdRect& r, int x, int y) {
 void enterSensors();
 void leaveList();
 void handlePowerTap(int x, int y);
+void ackPagerTap(const EpdRect& r);
+
+// Open Navigate or Ride History on its first page, with a fresh read of the
+// card.
+void enterPagedList(Screen s) {
+    screen = s;
+    listPage = 0;
+    listStale = true;
+}
+
+// The pager footer of Navigate / Ride History (ui_render_pager). True when the
+// tap landed in the footer band, whether or not it hit a button, so a missed
+// arrow never falls through to "back to the menu".
+bool listPagerTap(int x, int y) {
+    if (y < kPagerTop) return false;
+    if (inRect(kPagerUp, x, y)) {
+        if (listPage > 0) { --listPage; ackPagerTap(kPagerUp); }
+    } else if (inRect(kPagerDown, x, y)) {
+        if ((listPage + 1) * kMenuRowCount < listTotal) {
+            ++listPage;
+            ackPagerTap(kPagerDown);
+        }
+    } else if (inRect(kPagerAction, x, y)) {
+        listStale = true;   // REFRESH: re-read the card
+        ackPagerTap(kPagerAction);
+    }
+    // The new page draws now, not at the next 1 Hz tick: the screen itself
+    // doesn't change, so nothing else would hurry it.
+    forceDraw = true;
+    return true;
+}
 
 // Navigate up one level in the screen hierarchy (front button, short press).
 void goBack() {
@@ -658,6 +706,18 @@ void ackZoomTap(bool zoomIn) {
     zoomHeld = zoomIn ? 1 : 2;
 }
 
+// Answer a pager tap (arrow or the action button) NOW, the way ackZoomTap
+// answers a zoom: fill the button black on the glass before the page is
+// rebuilt. The next page only changes a few rows of text, which on e-paper is
+// easy to miss, so without this a tap that registered looked like one that
+// hadn't. The redraw that follows draws the button normally again. Through
+// refresh() so the shadow buffer matches the glass.
+void ackPagerTap(const EpdRect& r) {
+    uint8_t* fb = epdc_framebuffer();
+    epd_fill_rect(r, ui::INK, fb);
+    refresh(false, true, false);
+}
+
 void handleTap(int x, int y) {
     // The "Start navigation?" prompt owns every tap while it is up. START
     // begins navigation; any other tap dismisses it, so it can never trap
@@ -750,13 +810,21 @@ void handleTap(int x, int y) {
                     // reads LOADING until the page flips to READY.
                     if (workoutPickShown && workoutPick) {
                         const WorkoutPickPage& p = *workoutPick;
-                        if (inRect(kWorkoutPageUp, x, y)) {
-                            if (workoutPickIdx > 0) --workoutPickIdx;
-                        } else if (inRect(kWorkoutPageDown, x, y)) {
-                            if (p.first + p.count < p.total) ++workoutPickIdx;
-                        } else if (inRect(kWorkoutClose, x, y)) {
-                            if (p.state != WLIST_SCANNING)
+                        if (inRect(kPagerUp, x, y)) {
+                            if (workoutPickIdx > 0) {
+                                --workoutPickIdx;
+                                ackPagerTap(kPagerUp);
+                            }
+                        } else if (inRect(kPagerDown, x, y)) {
+                            if (p.first + p.count < p.total) {
+                                ++workoutPickIdx;
+                                ackPagerTap(kPagerDown);
+                            }
+                        } else if (inRect(kPagerAction, x, y)) {
+                            if (p.state != WLIST_SCANNING) {
                                 workout_service::requestListRefresh();
+                                ackPagerTap(kPagerAction);
+                            }
                         } else if (p.state == WLIST_READY &&
                                    y >= kWorkoutRowTop &&
                                    y < kWorkoutRowTop +
@@ -778,13 +846,13 @@ void handleTap(int x, int y) {
                     break;
                 }
                 if (workoutAllOpen) {
-                    if (inRect(kWorkoutPageUp, x, y)) {
+                    if (inRect(kPagerUp, x, y)) {
                         if (workoutListPage > 0) --workoutListPage;
-                    } else if (inRect(kWorkoutPageDown, x, y)) {
+                    } else if (inRect(kPagerDown, x, y)) {
                         if ((workoutListPage + 1) * kWorkoutRowsPerPage <
                             wv.segCount)
                             ++workoutListPage;
-                    } else if (inRect(kWorkoutClose, x, y)) {
+                    } else if (inRect(kPagerAction, x, y)) {
                         workoutAllOpen = false;
                     } else if (y >= kWorkoutRowTop &&
                                y < kWorkoutRowTop +
@@ -904,9 +972,9 @@ void handleTap(int x, int y) {
                             screen = SCREEN_DASH;
                         }
                         break;
-                    case 1: screen = SCREEN_ROUTES; break;
+                    case 1: enterPagedList(SCREEN_ROUTES); break;
                     case 2: sensorsFrom = SCREEN_MENU; enterSensors(); break;
-                    case 3: screen = SCREEN_HISTORY; break;
+                    case 3: enterPagedList(SCREEN_HISTORY); break;
                     case 4: screen = SCREEN_SETTINGS; break;
                 }
             } else {
@@ -930,13 +998,14 @@ void handleTap(int x, int y) {
             break;
         }
         case SCREEN_ROUTES: {
+            if (listPagerTap(x, y)) break;
             int row = (y - kMenuRowTop) / kMenuRowH;
-            int base = routes::active() ? 1 : 0;
             if (y >= kMenuRowTop && row >= 0 && row < kMenuRowCount) {
-                if (routes::active() && row == 0) {
+                int idx = listPage * kMenuRowCount + row;
+                if (idx < listPinned) {
                     routes::clearRoute();
-                } else if (row - base < routeFileCount && row - base >= 0) {
-                    if (routes::load(routeFiles[row - base])) {
+                } else if (idx < listTotal && idx - listPinned < routeFileCount) {
+                    if (routes::load(routeFiles[idx - listPinned])) {
                         screen = SCREEN_MAP;
                     }
                 }
@@ -946,7 +1015,8 @@ void handleTap(int x, int y) {
             break;
         }
         case SCREEN_HISTORY:
-            screen = SCREEN_MENU;
+            // Rows aren't actions (yet): any tap outside the pager goes back.
+            if (!listPagerTap(x, y)) screen = SCREEN_MENU;
             break;
         case SCREEN_SETTINGS: {
             int row = (y - kMenuRowTop) / kSettingsRowH;
@@ -1282,11 +1352,20 @@ const char* shortKinds(uint8_t mask) {
     }
 }
 
+// Keep the page in range when the list shrinks under it (a route cleared,
+// a REFRESH that found fewer files).
+void clampListPage() {
+    const int last = listTotal > 0 ? (listTotal - 1) / kMenuRowCount : 0;
+    if (listPage > last) listPage = last;
+    if (listPage < 0) listPage = 0;
+}
+
 void renderListScreen(uint8_t* fb) {
     ListRow rows[kMenuRowCount] = {};
     int count = 0;
     const char* title = "";
     const char* footer = "";
+    bool paged = false;   // Navigate / Ride History: rows + ui_render_pager
 
     switch (screen) {
         case SCREEN_SENSORS: {
@@ -1338,26 +1417,43 @@ void renderListScreen(uint8_t* fb) {
         }
         case SCREEN_ROUTES: {
             title = "NAVIGATE";
-            footer = ride_recorder::sdMounted()
-                         ? "put .gpx files in /routes on the SD card"
-                         : "no SD card";
-            int base = 0;
-            if (routes::active()) {
-                snprintf(rows[0].title, sizeof(rows[0].title), "Clear route");
-                snprintf(rows[0].subtitle, sizeof(rows[0].subtitle),
-                         "%s · %.1f %s left", routes::activeName(),
-                         units::dist(routes::remainingKm(), settings::useMiles()),
-                         settings::useMiles() ? "mi" : "km");
-                rows[0].inverted = true;
-                base = 1;
+            paged = true;
+            const bool sd = ride_recorder::sdMounted();
+            footer = sd ? "put .gpx files in /routes on the SD card"
+                        : "no SD card";
+            if (!routeFiles)
+                routeFiles = (char(*)[routes::MAX_NAME])heap_caps_malloc(
+                    kRouteListMax * routes::MAX_NAME, MALLOC_CAP_SPIRAM);
+            static bool listedWithCard = false;
+            if (listStale || sd != listedWithCard) {
+                routeFileCount =
+                    sd && routeFiles ? routes::list(routeFiles, kRouteListMax)
+                                     : 0;
+                listedWithCard = sd;
+                listStale = false;
             }
-            routeFileCount = routes::list(routeFiles, 5 - base);
-            count = base + routeFileCount;
-            for (int i = 0; i < routeFileCount; ++i) {
-                snprintf(rows[base + i].title, sizeof(rows[0].title), "%s",
-                         routeFiles[i]);
-                snprintf(rows[base + i].subtitle, sizeof(rows[0].subtitle),
-                         "tap to ride this route");
+            // The active route is a pinned "Clear route" row ahead of the
+            // files, so it leads page 1.
+            listPinned = routes::active() ? 1 : 0;
+            listTotal = listPinned + routeFileCount;
+            clampListPage();
+            for (int i = listPage * kMenuRowCount;
+                 i < listTotal && count < kMenuRowCount; ++i, ++count) {
+                ListRow& r = rows[count];
+                if (i < listPinned) {
+                    snprintf(r.title, sizeof(r.title), "Clear route");
+                    snprintf(r.subtitle, sizeof(r.subtitle),
+                             "%s · %.1f %s left", routes::activeName(),
+                             units::dist(routes::remainingKm(),
+                                         settings::useMiles()),
+                             settings::useMiles() ? "mi" : "km");
+                    r.inverted = true;
+                } else {
+                    snprintf(r.title, sizeof(r.title), "%s",
+                             routeFiles[i - listPinned]);
+                    snprintf(r.subtitle, sizeof(r.subtitle),
+                             "tap to ride this route");
+                }
             }
             break;
         }
@@ -1391,59 +1487,65 @@ void renderListScreen(uint8_t* fb) {
         case SCREEN_HISTORY: {
             title = "RIDE HISTORY";
             footer = "rides upload from /rides on the SD card";
+            paged = true;
+            const bool sd = ride_recorder::sdMounted();
+            if (!rideFiles)
+                rideFiles = (ride_recorder::RideFile*)heap_caps_malloc(
+                    kRideListMax * sizeof(ride_recorder::RideFile),
+                    MALLOC_CAP_SPIRAM);
 
-            // A ride in progress gets a pinned row at the top; its still-open,
-            // unfinalized FIT file is then skipped in the scan below.
+            // A ride in progress gets a pinned row at the top; listRides()
+            // leaves its still-open, unfinalized FIT file out. Starting or
+            // finishing one changes the files, so it re-reads the card too.
             const char* activeFile = ride_recorder::currentRideFile();
-            if (activeFile[0]) {
-                RideState s = g_state.snapshot();
-                snprintf(rows[count].title, sizeof(rows[0].title),
-                         "Recording in progress");
-                uint32_t secs = s.elapsedS;
-                snprintf(rows[count].subtitle, sizeof(rows[0].subtitle),
-                         "%.1f %s · %lu:%02lu:%02lu",
-                         units::distM(s.distanceM, s.useMiles),
-                         units::distLabel(s.useMiles),
-                         (unsigned long)(secs / 3600),
-                         (unsigned long)(secs / 60 % 60),
-                         (unsigned long)(secs % 60));
-                rows[count].inverted = true;
-                count++;
+            static char listedActive[sizeof(ride_recorder::RideFile::name)];
+            static bool listedWithCard = false;
+            if (listStale || sd != listedWithCard ||
+                strcmp(activeFile, listedActive) != 0) {
+                rideFileCount =
+                    sd && rideFiles
+                        ? ride_recorder::listRides(rideFiles, kRideListMax)
+                        : 0;
+                snprintf(listedActive, sizeof(listedActive), "%s", activeFile);
+                listedWithCard = sd;
+                listStale = false;
             }
-
-            // The recorder writes FIT records on this same SPI bus 1 Hz while
-            // riding; scanning the directory without the lock corrupts that
-            // traffic and returns a garbled/empty list (why history looked
-            // inaccessible during a ride). Hold the lock for the whole scan.
-            sdLock();
-            File dir = SD.open(RIDE_DIR);
-            if (dir) {
-                for (File f = dir.openNextFile(); f && count < kMenuRowCount;
-                     f = dir.openNextFile()) {
-                    const char* base = strrchr(f.name(), '/');
-                    base = base ? base + 1 : f.name();
-                    // Skip subdirs, the in-progress file (shown above), and
-                    // stub rides too small to be worth opening.
-                    if (!f.isDirectory() && strcmp(base, activeFile) != 0 &&
-                        f.size() >= RIDE_MIN_USEFUL_BYTES) {
-                        snprintf(rows[count].title, sizeof(rows[0].title),
-                                 "%s", base);
-                        snprintf(rows[count].subtitle, sizeof(rows[0].subtitle),
-                                 "%lu KB", (unsigned long)(f.size() / 1024));
-                        count++;
-                    }
-                    f.close();
+            listPinned = activeFile[0] ? 1 : 0;
+            listTotal = listPinned + rideFileCount;
+            clampListPage();
+            for (int i = listPage * kMenuRowCount;
+                 i < listTotal && count < kMenuRowCount; ++i, ++count) {
+                ListRow& r = rows[count];
+                if (i < listPinned) {
+                    RideState s = g_state.snapshot();
+                    snprintf(r.title, sizeof(r.title), "Recording in progress");
+                    uint32_t secs = s.elapsedS;
+                    snprintf(r.subtitle, sizeof(r.subtitle),
+                             "%.1f %s · %lu:%02lu:%02lu",
+                             units::distM(s.distanceM, s.useMiles),
+                             units::distLabel(s.useMiles),
+                             (unsigned long)(secs / 3600),
+                             (unsigned long)(secs / 60 % 60),
+                             (unsigned long)(secs % 60));
+                    r.inverted = true;
+                } else {
+                    const ride_recorder::RideFile& f = rideFiles[i - listPinned];
+                    snprintf(r.title, sizeof(r.title), "%s", f.name);
+                    snprintf(r.subtitle, sizeof(r.subtitle), "%lu KB",
+                             (unsigned long)(f.size / 1024));
                 }
-                dir.close();
             }
-            sdUnlock();
             break;
         }
         default:
             break;
     }
     // Directions rows ARE turns, so each one leads with its maneuver arrow.
-    ui_render_list(title, rows, count, footer, fb, screen == SCREEN_DIRECTIONS);
+    ui_render_list(title, rows, count, footer, fb, screen == SCREEN_DIRECTIONS,
+                   paged);
+    if (paged)
+        ui_render_pager(listPage * kMenuRowCount, count, listTotal, "REFRESH",
+                        fb);
 }
 
 }  // namespace

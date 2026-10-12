@@ -1588,7 +1588,8 @@ static void drawTurnArrow(int cx, int cy, const char* instruction, uint8_t fg,
 }
 
 void ui_render_list(const char* title, const ListRow* rows, int count,
-                    const char* footer, uint8_t* fb, bool turnArrows) {
+                    const char* footer, uint8_t* fb, bool turnArrows,
+                    bool paged) {
     const int W = epd_rotated_display_width();
 
     // LIST template: title in the status band, rows on the 24 px margin, one
@@ -1635,9 +1636,56 @@ void ui_render_list(const char* title, const ListRow* rows, int count,
     }
 
     if (footer && footer[0]) {
-        ui::text(&Arial_L, W / 2, kContentBottom, footer, fb,
-                 EPD_DRAW_ALIGN_CENTER, ui::INK);
+        // Paged, the bottom 100 px is the pager; the line sits in the gap
+        // between the last row (kMenuRowTop + 5 rows = 804) and its rule.
+        ui::text(&Arial_L, W / 2, paged ? kPagerTop - 22 : kContentBottom,
+                 footer, fb, EPD_DRAW_ALIGN_CENTER, ui::INK);
     }
+}
+
+namespace {
+// A pager box with three-pixel walls, like every workout-page button.
+void pagerButton(const EpdRect& r, uint8_t* fb) {
+    for (int e = 0; e < 3; ++e)
+        epd_draw_rect({r.x + e, r.y + e, r.width - 2 * e, r.height - 2 * e},
+                      ui::INK, fb);
+}
+}  // namespace
+
+void ui_render_pager(int first, int count, int total, const char* action,
+                     uint8_t* fb) {
+    // The page indicator sits in its own box between the arrows and the
+    // action button, the same 80 px tall.
+    const EpdRect where = {kPagerDown.x + kPagerDown.width + 12, kPagerUp.y,
+                           kPagerAction.x - 12 -
+                               (kPagerDown.x + kPagerDown.width + 12),
+                           kPagerUp.height};
+    const int textY = kPagerUp.y + 46;
+    if (action && action[0]) {
+        pagerButton(kPagerAction, fb);
+        ui::text(&Arial_B, kPagerAction.x + kPagerAction.width / 2, textY,
+                 action, fb, EPD_DRAW_ALIGN_CENTER);
+    }
+    if (total <= 0) return;
+
+    epd_fill_rect({0, kPagerTop, 540, 3}, ui::INK, fb);
+    pagerButton(kPagerUp, fb);
+    pagerButton(kPagerDown, fb);
+    pagerButton(where, fb);
+    // An arrow that can't go anywhere is drawn in the disabled tone.
+    const bool canUp = first > 0;
+    const bool canDown = first + count < total;
+    const int cy = kPagerUp.y + kPagerUp.height / 2;
+    int cx = kPagerUp.x + kPagerUp.width / 2;
+    epd_fill_triangle(cx, cy - 16, cx - 16, cy + 10, cx + 16, cy + 10,
+                      canUp ? ui::INK : ui::LIGHT, fb);
+    cx = kPagerDown.x + kPagerDown.width / 2;
+    epd_fill_triangle(cx, cy + 16, cx - 16, cy - 10, cx + 16, cy - 10,
+                      canDown ? ui::INK : ui::LIGHT, fb);
+    char buf[24];
+    snprintf(buf, sizeof(buf), "%d-%d / %d", first + 1, first + count, total);
+    ui::text(&Arial_B, where.x + where.width / 2, textY, buf, fb,
+             EPD_DRAW_ALIGN_CENTER);
 }
 
 // iOS-style pill switch: black filled pill with a white knob on the right
@@ -2319,14 +2367,11 @@ void ui_render_pause_banner(uint8_t* fb) {
 // Design "Workout View" frames: the prev/next BLOCK strips are themselves the
 // navigation (tap the block you want and it starts), and the footer holds
 // only pause and the full-session list. The list screen pages eight 88 px
-// rows at a time with its own footer controls.
+// rows at a time with the shared pager footer (ui_render_pager).
 const EpdRect kWorkoutRedo = {24, 754, 240, 104};        // <- redo prev block
 const EpdRect kWorkoutStartNext = {276, 754, 240, 104};  // start next block ->
 const EpdRect kWorkoutPause = {24, 868, 240, 80};
 const EpdRect kWorkoutAll = {276, 868, 240, 80};
-const EpdRect kWorkoutPageUp = {24, 868, 80, 80};
-const EpdRect kWorkoutPageDown = {116, 868, 80, 80};
-const EpdRect kWorkoutClose = {368, 868, 148, 80};
 // The list's row band: rows are 88 px starting here (see workoutListRow).
 const int kWorkoutRowTop = 143, kWorkoutRowH = 88, kWorkoutRowsPerPage = 8;
 
@@ -2627,33 +2672,9 @@ void ui_render_workout_list(const RideState& s, const WorkoutView& v, int page,
         ui::text(&Impact_T, 516, top + 58, buf, fb, EPD_DRAW_ALIGN_RIGHT);
     }
 
-    epd_fill_rect({0, 857, 540, 3}, ui::INK, fb);
-    for (int e = 0; e < 3; ++e) {
-        epd_draw_rect({kWorkoutPageUp.x + e, kWorkoutPageUp.y + e,
-                       kWorkoutPageUp.width - 2 * e,
-                       kWorkoutPageUp.height - 2 * e}, ui::INK, fb);
-        epd_draw_rect({kWorkoutPageDown.x + e, kWorkoutPageDown.y + e,
-                       kWorkoutPageDown.width - 2 * e,
-                       kWorkoutPageDown.height - 2 * e}, ui::INK, fb);
-        epd_draw_rect({208 + e, 868 + e, 148 - 2 * e, 80 - 2 * e}, ui::INK, fb);
-        epd_draw_rect({kWorkoutClose.x + e, kWorkoutClose.y + e,
-                       kWorkoutClose.width - 2 * e,
-                       kWorkoutClose.height - 2 * e}, ui::INK, fb);
-    }
-    {
-        int cx = kWorkoutPageUp.x + kWorkoutPageUp.width / 2, cy = 908;
-        epd_fill_triangle(cx, cy - 16, cx - 16, cy + 10, cx + 16, cy + 10,
-                          ui::INK, fb);
-        cx = kWorkoutPageDown.x + kWorkoutPageDown.width / 2;
-        epd_fill_triangle(cx, cy + 16, cx - 16, cy - 10, cx + 16, cy - 10,
-                          ui::INK, fb);
-    }
     int last = first + kWorkoutRowsPerPage;
     if (last > v.segCount) last = v.segCount;
-    snprintf(buf, sizeof(buf), "%d-%d / %d", first + 1, last, v.segCount);
-    ui::text(&Arial_B, 208 + 74, 914, buf, fb, EPD_DRAW_ALIGN_CENTER);
-    ui::text(&Arial_B, kWorkoutClose.x + kWorkoutClose.width / 2, 914,
-             "CLOSE", fb, EPD_DRAW_ALIGN_CENTER);
+    ui_render_pager(first, last - first, v.segCount, "CLOSE", fb);
 }
 
 namespace {
@@ -2665,13 +2686,6 @@ void workoutFmtLong(char* out, size_t cap, uint32_t sec) {
                  (unsigned long)(sec / 60 % 60), (unsigned long)(sec % 60));
     else
         workoutFmt(out, cap, sec);
-}
-
-// A footer box with three-pixel walls, like every workout-page button.
-void workoutButton(const EpdRect& r, uint8_t* fb) {
-    for (int e = 0; e < 3; ++e)
-        epd_draw_rect({r.x + e, r.y + e, r.width - 2 * e, r.height - 2 * e},
-                      ui::INK, fb);
 }
 
 }  // namespace
@@ -2706,11 +2720,7 @@ void ui_render_workout_picker(const RideState& s, const WorkoutPickPage& p,
         if (l2)
             ui::text(&Arial_B, 270, 492, l2, fb, EPD_DRAW_ALIGN_CENTER,
                      ui::DARK);
-        if (p.state != WLIST_SCANNING) {
-            workoutButton(kWorkoutClose, fb);
-            ui::text(&Arial_B, kWorkoutClose.x + kWorkoutClose.width / 2, 914,
-                     "REFRESH", fb, EPD_DRAW_ALIGN_CENTER);
-        }
+        if (p.state != WLIST_SCANNING) ui_render_pager(0, 0, 0, "REFRESH", fb);
         return;
     }
 
@@ -2772,25 +2782,5 @@ void ui_render_workout_picker(const RideState& s, const WorkoutPickPage& p,
     }
 
     // --- Footer: page up / down, where we are, REFRESH. ------------------
-    epd_fill_rect({0, 857, 540, 3}, ui::INK, fb);
-    workoutButton(kWorkoutPageUp, fb);
-    workoutButton(kWorkoutPageDown, fb);
-    workoutButton({208, 868, 148, 80}, fb);
-    workoutButton(kWorkoutClose, fb);
-    {
-        // An arrow that can't go anywhere is drawn in the disabled tone.
-        const bool canUp = p.first > 0;
-        const bool canDown = p.first + p.count < p.total;
-        int cx = kWorkoutPageUp.x + kWorkoutPageUp.width / 2, cy = 908;
-        epd_fill_triangle(cx, cy - 16, cx - 16, cy + 10, cx + 16, cy + 10,
-                          canUp ? ui::INK : ui::LIGHT, fb);
-        cx = kWorkoutPageDown.x + kWorkoutPageDown.width / 2;
-        epd_fill_triangle(cx, cy + 16, cx - 16, cy - 10, cx + 16, cy - 10,
-                          canDown ? ui::INK : ui::LIGHT, fb);
-    }
-    snprintf(buf, sizeof(buf), "%d-%d / %d", p.first + 1, p.first + p.count,
-             p.total);
-    ui::text(&Arial_B, 208 + 74, 914, buf, fb, EPD_DRAW_ALIGN_CENTER);
-    ui::text(&Arial_B, kWorkoutClose.x + kWorkoutClose.width / 2, 914,
-             "REFRESH", fb, EPD_DRAW_ALIGN_CENTER);
+    ui_render_pager(p.first, p.count, p.total, "REFRESH", fb);
 }
