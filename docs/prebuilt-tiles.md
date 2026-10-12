@@ -100,6 +100,60 @@ mistaken for this phone's. The older per-phone tracking from the bike-route
 work (`tileSentAt`, `flaggedTileIds`, `poiSentAt`) is kept for the fallback
 heuristic.
 
+### Records kept by the device
+
+The per-phone records only know what *that* phone sent. A hex sent by another
+phone, by this app before a reinstall, or before the records existed had no
+record and showed as an update even when identical. So firmware from v1.22
+keeps the record itself, next to the file, and reports it with the tile list.
+The apps compare in this order:
+
+1. the device's record for the hex,
+2. else this phone's record (`DeviceTileVersions`),
+3. else no record: an update when the index has the hex, the heuristic when
+   it does not.
+
+**On the card.** One append-only log, `/maps/tiles.ver`, of fixed 24-byte
+records (`src/tile_versions.h`): kind (tile/POI), the H3 cell, the file's
+size, and the record in binary (`cdn:` + 16 hex as 8 bytes, `phone:` secs as
+a number). A save appends one record after the file is written; it never
+rewrites anything, so a power cut leaves at worst a torn last record, which
+its check byte rejects. The last record for a hex wins. A record counts only
+while the file still has the size it was saved with, so a file replaced over
+USB or from the website ZIP loses it. A file saved by an app that sends no
+record clears the old one. Listing reads the log once, sequentially; when
+superseded records outnumber live ones, it is rewritten through
+`tiles.ver.tmp` and a rename (finished on the next boot if cut short). A
+record the firmware cannot store (any other format) is treated as none.
+
+**On the wire** (map characteristic, `src/ble_server.cpp`):
+
+| | |
+|---|---|
+| `[0x07][0x01]`, `[0x08][0x01]` | list tiles / POIs **with versions** |
+| `[0xD0][0x01]`, `[0xD3][0x01]` | flagged begin: this firmware keeps versions |
+| `0xD1` / `0xD4` entries | `<id>=<record>`, or the bare `<id>` with no record |
+| `[0x06][u32 size][id][0x00][record]` | send a tile with its record |
+
+Compatibility:
+
+| | old firmware | new firmware |
+|---|---|---|
+| **old app** | as before | sends `[0x07]` without the flag and gets the plain list. Tiles it sends clear any device record for them |
+| **new app** | the flag byte is ignored and the plain 1-byte begin comes back, so the app sends no records and uses its own | device records first, then its own |
+
+The app sends the record only to firmware that answered a flagged begin on
+this connection. Older firmware would also stop the name at the NUL, but it
+is not relied on.
+
+Files saved before this have no device record and stay as before. A
+device-side hasher that fills them in in the background is possible: the CDN
+hash is the first 16 hex of the SHA-256 of the file bytes
+(`tools/tiles/build_region.mjs`), and a file sent from the CDN is stored
+byte for byte, so the device would compute the same hash. It is not built:
+hashing every file at 4 MHz SPI is slow, and a phone-built tile would get a
+hash that matches no index entry, which still reads as an update.
+
 The phone's own caches (`TileCache`, `PoiCache`) store the same record in a
 `<id>.ver` file next to each blob. When the index has the hex, only a cached
 copy with exactly the current hash is reused, at any age. A stale or
@@ -114,7 +168,7 @@ on a Redownload.
 | index entry for the hex | device record | state |
 |---|---|---|
 | has the hash `h` | `cdn:h` | **current** |
-| has the hash `h` | `cdn:<other>`, `phone:…`, or none (a tile from the website ZIP or another phone) | **update** |
+| has the hash `h` | `cdn:<other>`, `phone:…`, or none (a tile from the website ZIP, or one sent before the device kept records by a phone other than this one) | **update** |
 | none: CDN unreachable, hex not pre-built, or tile built empty (`ebmSize` 0) | anything | **unknown** → old heuristic |
 
 - **Tiles** compare `ebmHash`; **POIs** compare `poiHash`.
@@ -511,6 +565,10 @@ tiles.
     unreachable CDN leaves every hex to the heuristic.
   - They also check the hash-keyed tile cache, the per-device record store,
     the index cache across downloads, and the data date from `meta.json`.
+  - Device-kept records: `tools/map_test/run_tile_versions.sh` (the card log:
+    round trips, last record wins, size check, torn and garbled records,
+    compaction), and `DeviceTileListTest` / the `--versions` run above for
+    the wire format and the device-first lookup.
 
 ## Known limits
 

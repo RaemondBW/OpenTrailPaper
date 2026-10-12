@@ -11,6 +11,19 @@ so write for the rider, newest version first, one `## vX.YY` heading each.
   chip's I2C bus could trap the device in an endless loop until the
   watchdog reset it; the bus driver now clears that interrupt and carries on.
   Any bus traffic also keeps the device awake until it finishes.
+- The Menu responds to taps again on a card with lots of rides. It was
+  re-counting every ride on the SD card once a second, which with a few
+  dozen rides kept it busy for most of that second.
+- Navigate and Ride History now page through everything on the card, with
+  the same up/down arrows and "1-5 / 72" counter as the workout list.
+  Ride History used to stop after five rides; it now lists them all,
+  newest first. Both read the card once when you open them (REFRESH
+  re-reads it), so paging is instant.
+- The device now remembers which version of each map hex it holds. The
+  app's Maps screen no longer marks a hex as "update available" just
+  because it was sent from another phone or before an app reinstall.
+  Hexes sent before this update keep the old behaviour until they are
+  sent again.
 - Phone pairing is stricter and quieter. Everything the app reads or writes
   now needs a passkey pairing (the code on the panel). While the device is
   paired, any other phone is turned away before it can be asked for a code.

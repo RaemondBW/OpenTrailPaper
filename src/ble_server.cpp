@@ -25,6 +25,7 @@
 #include "ble_interval_policy.h"
 #include "ble_pair_guard.h"
 #include "sd_bus.h"
+#include "tile_versions.h"
 #include "usb_storage.h"
 #include "dash_config.h"
 #include "mesh_service.h"
@@ -1725,15 +1726,29 @@ class OtaCb : public NimBLECharacteristicCallbacks {
 //   A .poi travels as a tile ([0x06], same id): saveTile tells it apart by its
 //   'EPOI' magic. Firmware without POI support never answers 0x08, which is how
 //   the app knows not to send it .poi files.
+//   Tile versions (docs/prebuilt-tiles.md#versions, tile_versions.h): the
+//   device keeps the version record each tile and .poi was sent with, so every
+//   phone can tell a current hex from an update — not only the one that sent it.
+//     [0x07][0x01] / [0x08][0x01]  list, with versions. Answered with a flagged
+//       begin, [0xD0][0x01] / [0xD3][0x01], and entries "<h3id>" or
+//       "<h3id>=<record>" in the same comma-separated 0xD1 / 0xD4 packets.
+//       Older firmware ignores the flag byte and answers the plain 1-byte
+//       begin, which is how the app knows it keeps no versions.
+//     [0x06][u32 size][h3id][0x00][record]  begin a tile with its version.
+//       The app sends the record only to firmware that answered a flagged
+//       begin (older firmware would stop at the NUL anyway).
 NimBLECharacteristic* mapChr = nullptr;
 uint8_t* mapBuf = nullptr;
 volatile uint32_t mapBufLen = 0, mapBufCap = 0;
 char mapName[52] = "";
+char mapVersion[tile_versions::VER_MAX] = "";   // staged tile's record, "" = none
 volatile bool mapCommitPending = false;
 volatile bool mapIsTile = false;         // staged buffer is an H3 tile, not a whole map
 volatile bool mapListReq = false;
 volatile bool tileListReq = false;
 volatile bool poiListReq = false;
+volatile bool tileListVersions = false;  // the pending list asked for versions
+volatile bool poiListVersions = false;
 volatile bool mapLayersNotify = false;   // send [0xE0][mask] from the server task
 uint32_t mapStartMs = 0, mapLastProgress = 0;
 
@@ -1773,9 +1788,21 @@ class MapCb : public NimBLECharacteristicCallbacks {
             mapBufLen = 0;
             mapLastProgress = 0;
             mapIsTile = (p[0] == 0x06);
-            size_t nl = n - 5 < sizeof(mapName) - 1 ? n - 5 : sizeof(mapName) - 1;
+            // [name][0x00][version record] — the record only from apps that
+            // saw this firmware list versions.
+            const uint8_t* nul = (const uint8_t*)memchr(p + 5, 0, n - 5);
+            size_t nameLen = nul ? (size_t)(nul - (p + 5)) : n - 5;
+            size_t nl = nameLen < sizeof(mapName) - 1 ? nameLen : sizeof(mapName) - 1;
             memcpy(mapName, p + 5, nl);
             mapName[nl] = 0;
+            mapVersion[0] = 0;
+            if (nul && mapIsTile) {
+                size_t vl = n - 5 - nameLen - 1;
+                if (vl < sizeof(mapVersion)) {   // longer: not a record we know
+                    memcpy(mapVersion, nul + 1, vl);
+                    mapVersion[vl] = 0;
+                }
+            }
             if (!mapName[0])
                 snprintf(mapName, sizeof(mapName), mapIsTile ? "tile" : "map.ebm");
             receiving = true;
@@ -1813,9 +1840,11 @@ class MapCb : public NimBLECharacteristicCallbacks {
             mapListReq = true;
             break;
         case 0x07:                                // list H3 tile ids on SD
+            tileListVersions = n >= 2 && (p[1] & 0x01);
             tileListReq = true;
             break;
         case 0x08:                                // list H3 ids with a .poi
+            poiListVersions = n >= 2 && (p[1] & 0x01);
             poiListReq = true;
             break;
         case 0x09:                                // get map layers
@@ -2384,7 +2413,8 @@ void sendMapList() {
 void mapCommit() {
     bool tile = mapIsTile;
     bool ok = mapBuf && mapBufLen > 0 &&
-              (tile ? map_store::saveTile(mapName, mapBuf, mapBufLen)
+              (tile ? map_store::saveTile(mapName, mapBuf, mapBufLen,
+                                          mapVersion[0] ? mapVersion : nullptr)
                     : map_store::saveAndActivate(mapName, mapBuf, mapBufLen));
     uint32_t dt = millis() - mapStartMs;
     diag::log("%s commit %s: %u bytes in %.1fs", tile ? "tile" : "map",
@@ -2401,8 +2431,11 @@ void mapCommit() {
 // the BLE host thread. The phone asks on every Maps-screen open, so the timing
 // is logged: this is the request path most likely to grow past the watchdog.
 // poi=true: the same walk and framing for <id>.poi files, answered as
-// 0xD3/0xD4/0xD5 (0x08).
-void sendTileList(bool poi = false) {
+// 0xD3/0xD4/0xD5 (0x08). versions=true (asked as [0x07|0x08][0x01]): the begin
+// carries a 0x01 flag byte and each id the record it was saved with, as
+// "<id>=<record>" — or the bare id where the device has none (saved before
+// this firmware, by an app that sends none, or changed over USB since).
+void sendTileList(bool poi = false, bool versions = false) {
     // PSRAM, and sized to the whole index. At 512 in .bss this was both 12 KB of
     // the internal RAM the display and BLE controller are short of, AND a silent
     // truncation: a rider past 512 tiles kept being offered tiles the device
@@ -2414,12 +2447,32 @@ void sendTileList(bool poi = false) {
                                             MALLOC_CAP_SPIRAM);
         if (!ids) { diag::log("tile list: no PSRAM for %d ids", TILE_LIST_MAX); return; }
     }
+    // Only for a versioned list, so firmware talking to an older app never
+    // allocates them.
+    static uint32_t* sizes = nullptr;
+    static char (*vers)[tile_versions::VER_MAX] = nullptr;
+    if (versions && !sizes) {
+        sizes = (uint32_t*)heap_caps_malloc((size_t)TILE_LIST_MAX * 4, MALLOC_CAP_SPIRAM);
+        vers = (char(*)[tile_versions::VER_MAX])heap_caps_malloc(
+            (size_t)TILE_LIST_MAX * tile_versions::VER_MAX, MALLOC_CAP_SPIRAM);
+        if (!sizes || !vers) {
+            diag::log("tile list: no PSRAM for versions");
+            heap_caps_free(sizes); heap_caps_free(vers);
+            sizes = nullptr; vers = nullptr;
+        }
+    }
+    // Out of PSRAM: ids without records rather than no list at all. Still the
+    // flagged begin, so the app goes on sending records for the device to keep.
+    const bool flagged = versions;
+    if (!sizes) versions = false;
     uint32_t t0 = millis();
-    int n = map_store::listTileIds(ids, TILE_LIST_MAX, poi ? ".poi" : ".ebm");
+    int n = map_store::listTileIds(ids, TILE_LIST_MAX, poi ? ".poi" : ".ebm",
+                                   versions ? sizes : nullptr);
     uint32_t walkMs = millis() - t0;
+    if (versions) map_store::tileVersions(ids, sizes, n, poi, vers);
 
-    uint8_t begin = poi ? 0xD3 : 0xD0;
-    sendChunk(mapChr, &begin, 1);
+    uint8_t begin[2] = {(uint8_t)(poi ? 0xD3 : 0xD0), 0x01};
+    sendChunk(mapChr, begin, flagged ? 2 : 1);
 
     // Pack comma-separated ids into MTU-sized 0xD1 packets so a big list is a
     // handful of reliable notifications, not one per tile (that was slow).
@@ -2430,22 +2483,25 @@ void sendTileList(bool poi = false) {
     int len = 1;
     pkt[0] = poi ? 0xD4 : 0xD1;
     for (int i = 0; i < n; ++i) {
-        int idl = (int)strlen(ids[i]);
-        if (idl > 22) idl = 22;
-        if (len > 1 && len + 1 + idl > cap) {   // flush the full packet
+        char entry[24 + tile_versions::VER_MAX];
+        int el = (versions && vers[i][0])
+                     ? snprintf(entry, sizeof(entry), "%.22s=%s", ids[i], vers[i])
+                     : snprintf(entry, sizeof(entry), "%.22s", ids[i]);
+        if (el >= (int)sizeof(entry)) el = (int)sizeof(entry) - 1;
+        if (len > 1 && len + 1 + el > cap) {    // flush the full packet
             sendChunk(mapChr, pkt, len);
             len = 1;
         }
         if (len > 1) pkt[len++] = ',';
-        memcpy(pkt + len, ids[i], idl);
-        len += idl;
+        memcpy(pkt + len, entry, el);
+        len += el;
     }
     if (len > 1) sendChunk(mapChr, pkt, len);
 
     uint8_t end = poi ? 0xD5 : 0xD2;
     sendChunk(mapChr, &end, 1);
-    diag::log("%s list: %d ids sent (walk %ums, total %ums)", poi ? "poi" : "tile", n,
-              walkMs, millis() - t0);
+    diag::log("%s list: %d ids sent%s (walk %ums, total %ums)", poi ? "poi" : "tile",
+              n, versions ? " with versions" : "", walkMs, millis() - t0);
 }
 
 // Write the PSRAM-staged firmware to the SD card as /firmware.bin, then reboot
@@ -2769,11 +2825,11 @@ void task(void*) {
         }
         if (tileListReq && sdFree) {
             tileListReq = false;         // enumerate SD H3 tile ids for dedup
-            sendTileList();
+            sendTileList(false, tileListVersions);
         }
         if (poiListReq && sdFree) {
             poiListReq = false;          // which tiles already have their POIs
-            sendTileList(true);
+            sendTileList(true, poiListVersions);
         }
         if (mapLayersNotify && mapChr && phoneConnected) {
             mapLayersNotify = false;

@@ -258,13 +258,13 @@ class PrebuiltTiles(
         fun parseIndexFile(s: String): Index {
             val cellsAt = s.indexOf("\"cells\"")
             require(cellsAt >= 0) { "no cells" }
-            val re = Regex("\"([0-9a-fA-F]{15})\"\\s*:\\s*\\[\\s*(\\d+)\\s*,\\s*\"([0-9a-fA-F]*)\"\\s*,\\s*(\\d+)\\s*,\\s*\"([0-9a-fA-F]*)\"\\s*]")
+            val re = Regex("\"([0-9a-fA-F]{15})\"\\s*:\\s*\\[\\s*(\\d+)\\s*,\\s*\"([0-9a-fA-F]*)\"\\s*,\\s*(\\d+)\\s*,\\s*\"([0-9a-fA-F]*)\"\\s*\\]")
             val out = HashMap<String, Entry>()
             for (m in re.findAll(s, cellsAt)) {
                 val (id, es, eh, ps, ph) = m.destructured
                 out[id] = Entry(es.toInt(), eh, ps.toInt(), ph)
             }
-            val regions = Regex("\"regions\"\\s*:\\s*\\[([^\\]]*)]").find(s)?.groupValues?.get(1)
+            val regions = Regex("\"regions\"\\s*:\\s*\\[([^\\]]*)\\]").find(s)?.groupValues?.get(1)
                 ?.let { list -> Regex("\"([^\"]*)\"").findAll(list).map { it.groupValues[1] }.toList() }
                 ?: emptyList()
             return Index(out, regions)
@@ -276,7 +276,7 @@ class PrebuiltTiles(
             val at = s.indexOf("\"fragments\"")
             if (at < 0) return emptyMap()
             val out = HashMap<String, Long>()
-            for (m in Regex("\"([^\"]+)\"\\s*:\\s*\\{([^{}]*)}").findAll(s, at)) {
+            for (m in Regex("\"([^\"]+)\"\\s*:\\s*\\{([^{}]*)\\}").findAll(s, at)) {
                 val osm = Regex("\"osm\"\\s*:\\s*\"([^\"]+)\"").find(m.groupValues[2])?.groupValues?.get(1) ?: continue
                 runCatching { java.time.Instant.parse(osm).toEpochMilli() }.getOrNull()?.let { out[m.groupValues[1]] = it }
             }
