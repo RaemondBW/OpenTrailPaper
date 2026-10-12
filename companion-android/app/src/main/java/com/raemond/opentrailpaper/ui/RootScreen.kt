@@ -81,6 +81,37 @@ fun RootScreen(
     LaunchedEffect(RouteImport.fresh, RouteImport.error) {
         if (RouteImport.fresh || RouteImport.error != null) tab = 1
     }
+    // The dashboard was edited in the app while disconnected AND changed on the
+    // device meanwhile: never overwrite either silently. App-wide, since the
+    // reconnect can happen on any tab.
+    ble.dashConflict?.let { c ->
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = {},
+            title = { Text("Dashboard changed in both places") },
+            text = {
+                val at = java.text.DateFormat
+                    .getDateTimeInstance(java.text.DateFormat.MEDIUM, java.text.DateFormat.SHORT)
+                    .format(java.util.Date(c.editedAt))
+                Text(
+                    "You edited the dashboard layout in the app while your OpenTrailPaper " +
+                        "was away ($at), and the layout on the device has changed since. " +
+                        "Which one should both keep?",
+                )
+            },
+            confirmButton = {
+                androidx.compose.material3.TextButton(
+                    onClick = { ble.resolveDashConflict(keepPhone = true) },
+                ) { Text("Keep phone version") }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(
+                    onClick = { ble.resolveDashConflict(keepPhone = false) },
+                ) { Text("Keep device version") }
+            },
+            containerColor = Palette.surface,
+        )
+    }
+
     CompositionLocalProvider(LocalOverlayHost provides overlay) {
     Box(Modifier.fillMaxSize().background(Palette.paper)) {
         Scaffold(

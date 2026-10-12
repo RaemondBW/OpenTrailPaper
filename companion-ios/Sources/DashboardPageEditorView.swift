@@ -19,6 +19,8 @@ struct DashboardPageEditorView: View {
     let pageTitle: String
     @Binding var layout: DashLayout
     let canSend: Bool
+    /// Not connected: the button saves for later instead of sending now.
+    var offline = false
     let onSend: () -> Void
 
     @State private var sel: UUID?
@@ -82,9 +84,12 @@ struct DashboardPageEditorView: View {
                 // The bar draws its own capsule around toolbar buttons, so the
                 // vermilion comes from the tint rather than a second pill
                 // drawn inside it.
-                Button("Send") {
+                Button(offline ? "Save" : "Send") {
                     onSend()
-                    withAnimation { toast = "Sent — waiting for the head unit to echo" }
+                    withAnimation {
+                        toast = offline ? "Saved — syncs when the head unit connects"
+                                        : "Sent — waiting for the head unit to echo"
+                    }
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(Palette.accent)

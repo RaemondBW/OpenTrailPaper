@@ -106,6 +106,23 @@ struct PrimaryButton: View {
     }
 }
 
+/// Small "Will sync when connected" chip for settings changed in the app that
+/// the device hasn't taken yet.
+struct PendingSyncHint: View {
+    let text: String
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "arrow.triangle.2.circlepath")
+                .font(.system(size: 11, weight: .semibold))
+            Text(text).font(BarlowFont.text(12, .semibold))
+        }
+        .padding(.horizontal, 10).padding(.vertical, 5)
+        .foregroundStyle(Palette.accentDark)
+        .background(Palette.accentWash, in: Capsule())
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
 // Full-width secondary action — PrimaryButton's pill, outlined rather than
 // filled, so an optional action reads as the same family but the eye still
 // lands on the primary one first (mirrors the Android SecondaryButton).
