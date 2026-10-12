@@ -317,6 +317,7 @@ ble_sensors::Candidate candidates[MAX_CANDIDATES];
 int candidateCount = 0;
 SemaphoreHandle_t candMutex = nullptr;
 bool scanAlways = false;
+std::atomic<bool> scanHeld{false};
 uint32_t lastActivityMs = 0;
 // When any paired sensor was last actually connected, and whether one ever has
 // been this boot. Gates the interaction-triggered hunt: see the task loop.
@@ -623,7 +624,7 @@ void task(void*) {
         uint32_t hunted = huntStartMs ? millis() - huntStartMs : 0;
         // scanAlways means the user is sitting on a Sensors screen watching the
         // list fill in — never duty-cycle that.
-        bool lookNow = wantScan &&
+        bool lookNow = wantScan && !scanHeld &&
                        (scanAlways || hunted < 60000 || (hunted / 5000) % 6 == 0);
 
         bool pendingConnect = false;
@@ -707,6 +708,14 @@ void task(void*) {
 }
 
 void setScanAlways(bool on) { scanAlways = on; }
+
+void holdScan(bool on) {
+    scanHeld = on;
+    if (on) {
+        NimBLEScan* scan = NimBLEDevice::getScan();
+        if (scan->isScanning()) scan->stop();
+    }
+}
 void noteActivity() { lastActivityMs = millis(); }
 bool radioBusy() { return huntingRadio; }
 bool sleepAllowed() { return sensorSleepEnabled.load(); }

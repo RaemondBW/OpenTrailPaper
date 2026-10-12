@@ -24,6 +24,16 @@ so write for the rider, newest version first, one `## vX.YY` heading each.
   because it was sent from another phone or before an app reinstall.
   Hexes sent before this update keep the old behaviour until they are
   sent again.
+- Phone pairing is stricter and quieter. Everything the app reads or writes
+  now needs a passkey pairing (the code on the panel). While the device is
+  paired, any other phone is turned away before it can be asked for a code.
+  That includes your own phone if it forgot the device. Before, an iPhone
+  could get stuck asking for a code over and over while the panel showed
+  none. The app now says what happened and stops retrying. To pair again,
+  go to Paired Devices > Phone > Unpair on the device, then connect.
+- The pairing code now also shows over the "Start navigation?" prompt.
+- A phone reconnecting stays connected while it finishes pairing. Before,
+  the device could doze off during the handshake and drop it.
 
 ## v1.21
 

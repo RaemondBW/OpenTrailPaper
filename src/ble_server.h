@@ -25,6 +25,11 @@ void pushMapLayersToPhone();
 // True while a phone (the companion app) is connected — used to hold off
 // auto-sleep during transfers.
 bool isPhoneConnected();
+// A central is connected but not admitted yet: encrypting with the paired
+// phone's keys or, unpaired, pairing (the rider may be typing the code).
+// Power management keeps the radio awake for it — a link that dies of a
+// supervision timeout mid-handshake never becomes the phone.
+bool linkPending();
 // Monotonic within a boot; reconnects get a new ID even if a sample missed
 // the disconnected period. Used to verify sleep on an uninterrupted link.
 unsigned long phoneConnectionId();
@@ -52,11 +57,13 @@ bool takeDashChanged();
 unsigned int pairingCode();
 
 // Fixed pairing. The device belongs to ONE phone: the first to pair (passkey
-// shown on the panel) is bonded, and from then on only a bonded phone's link is
-// admitted — any other phone is disconnected the moment it tries to pair, and
-// every app characteristic requires an encrypted link, so an unpaired phone
-// can't read or write anything in the meantime. Unpairing from the panel
-// deletes the bond(s) and opens the device to the next phone.
+// shown on the panel, LE Secure Connections) is bonded, and from then on only
+// that bond's authenticated link is admitted. Any other central — including
+// the paired phone after it forgot the device — is disconnected before it can
+// be asked to pair, and every characteristic and CCCD requires an
+// authenticated link, so nothing else can read, write or subscribe meanwhile.
+// Unpairing from the panel deletes the bond(s) and opens the device to the
+// next phone. Details: "Fixed pairing" in ble_server.cpp.
 //
 // phonePaired(): true while a phone bond exists (false as soon as an unpair is
 // requested, so the panel never shows a stale "Paired"). pairedPhoneCount() is

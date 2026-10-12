@@ -50,9 +50,30 @@ class GattQueue(private val onIdle: () -> Unit = {}) {
     private var current: Op? = null
     private var gatt: BluetoothGatt? = null
 
+    @Synchronized
     fun attach(g: BluetoothGatt?) {
+        // An operation in flight on another (closed) BluetoothGatt never
+        // reports back. Left as `current`, it would block every later enqueue
+        // forever: the next session's MTU request and admission read never
+        // went out, and the app sat on "Connecting…" while the device showed
+        // it connected (2026-10-11).
+        if (g !== gatt) dropInFlight()
         gatt = g
         if (g == null) clear()
+    }
+
+    /** A new GATT session on [g]: start from an empty queue. */
+    @Synchronized
+    fun reset(g: BluetoothGatt) {
+        dropInFlight()
+        queue.clear()
+        gatt = g
+    }
+
+    private fun dropInFlight() {
+        val stale = current ?: return
+        current = null
+        if (stale is Op.Write) stale.onWritten?.invoke(false)
     }
 
     @Synchronized
