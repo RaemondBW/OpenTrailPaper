@@ -10,30 +10,13 @@ struct RideView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                let s = ble.status
-                VStack(spacing: 14) {
-                    header(s)
-                    gpsCard(s)
-                    speedCard(s)
-                    HStack(spacing: 14) {
-                        sensorCard("Heart Rate", s.heartRate.map { "\($0)" }, unit: "bpm",
-                                   sensor: ble.connectedSensor(kind: 1))
-                        sensorCard("Power", s.power.map { "\($0)" }, unit: "W",
-                                   sensor: ble.connectedSensor(kind: 2))
-                    }
-                    if s.hasRoute { routeCard(s) }
-                    dashboardCard
-                    workoutCard
-                    Spacer(minLength: 8)
-                    if ble.state != .connected {
-                        PrimaryButton(title: primaryTitle,
-                                      systemImage: "antenna.radiowaves.left.and.right") {
-                            ble.connectTapped()
-                        }
-                    }
-                }
-                .padding(16)
+            // One screen, not a scroll: everything is laid out to fit a phone
+            // with the connect button and a route card both showing. Only when
+            // it truly can't (a small phone at a large text size) does the page
+            // fall back to scrolling, rather than clip.
+            ViewThatFits(in: .vertical) {
+                content.frame(maxHeight: .infinity, alignment: .top)
+                ScrollView { content }
             }
             .background(Palette.paper.ignoresSafeArea())
             .navigationBarHidden(true)
@@ -53,6 +36,35 @@ struct RideView: View {
         }
     }
 
+    private var content: some View {
+        let s = ble.status
+        return VStack(spacing: 14) {
+            header(s)
+            gpsCard(s)
+            speedCard(s)
+            HStack(spacing: 14) {
+                sensorCard("Heart Rate", s.heartRate.map { "\($0)" }, unit: "bpm",
+                           sensor: ble.connectedSensor(kind: 1))
+                sensorCard("Power", s.power.map { "\($0)" }, unit: "W",
+                           sensor: ble.connectedSensor(kind: 2))
+            }
+            if s.hasRoute { routeCard(s) }
+            HStack(alignment: .top, spacing: 14) {
+                dashboardCard
+                workoutCard
+            }
+            .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+            if ble.state != .connected {
+                PrimaryButton(title: primaryTitle,
+                              systemImage: "antenna.radiowaves.left.and.right") {
+                    ble.connectTapped()
+                }
+            }
+        }
+        .padding(16)
+    }
+
     // The head unit's own dashboard, and the way in to rearranging it.
     //
     // Here rather than in Settings because it belongs beside the numbers it is
@@ -62,28 +74,18 @@ struct RideView: View {
     // opened.
     private var dashboardCard: some View {
         Button { showDashEditor = true } label: {
-            Card {
-                HStack(spacing: 14) {
-                    if let l = ble.dashLayout, !l.items.isEmpty {
-                        DashPreview(layout: l)
-                            .frame(width: 62, height: 110)
-                    } else {
-                        RoundedRectangle(cornerRadius: 4)
-                            .stroke(Palette.hairline, lineWidth: 1)
-                            .frame(width: 62, height: 110)
-                            .overlay(Image(systemName: "rectangle.3.group")
-                                .foregroundStyle(Palette.faint))
-                    }
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Dashboard").font(TypeScale.title).foregroundStyle(Palette.ink)
-                        Text(ble.dashLayout == nil
-                             ? "Connect to change which fields the device shows"
-                             : "Reorder and resize the fields on the device")
-                            .font(TypeScale.body).foregroundStyle(Palette.muted)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    Spacer(minLength: 0)
-                    Image(systemName: "chevron.right").foregroundStyle(Palette.faint)
+            tile(title: "Dashboard",
+                 subtitle: ble.dashLayout == nil ? "Connect to edit" : "Edit the device's fields") {
+                if let l = ble.dashLayout, !l.items.isEmpty {
+                    DashPreview(layout: l)
+                        .frame(width: 34, height: 60)
+                } else {
+                    RoundedRectangle(cornerRadius: 3)
+                        .stroke(Palette.hairline, lineWidth: 1)
+                        .frame(width: 34, height: 60)
+                        .overlay(Image(systemName: "rectangle.3.group")
+                            .font(.system(size: 13))
+                            .foregroundStyle(Palette.faint))
                 }
             }
         }
@@ -93,21 +95,11 @@ struct RideView: View {
     // Structured workouts: load/build one, and the live session at a glance.
     private var workoutCard: some View {
         Button { showWorkouts = true } label: {
-            Card {
-                HStack(spacing: 14) {
-                    Image(systemName: "figure.outdoor.cycle")
-                        .font(.system(size: 30))
-                        .foregroundStyle(Palette.muted)
-                        .frame(width: 62)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Workouts").font(TypeScale.title).foregroundStyle(Palette.ink)
-                        Text(workoutCardSubtitle)
-                            .font(TypeScale.body).foregroundStyle(Palette.muted)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    Spacer(minLength: 0)
-                    Image(systemName: "chevron.right").foregroundStyle(Palette.faint)
-                }
+            tile(title: "Workouts", subtitle: workoutCardSubtitle) {
+                Image(systemName: "figure.outdoor.cycle")
+                    .font(.system(size: 24))
+                    .foregroundStyle(Palette.muted)
+                    .frame(width: 34, height: 60)
             }
         }
         .buttonStyle(.plain)
@@ -117,9 +109,31 @@ struct RideView: View {
         let w = ble.workoutStatus
         if w.loaded {
             let state = w.running ? "running" : w.paused ? "paused" : w.done ? "done" : "ready"
-            return "\(w.name) — block \(w.blockIndex + 1)/\(w.blockCount), \(state)"
+            return "Block \(w.blockIndex + 1)/\(w.blockCount) · \(state)"
         }
-        return "Send a structured workout to the device, or build one"
+        return "Send or build one"
+    }
+
+    // Half-width card for the two ways into the device's setup: a picture on
+    // the left, a title and a short status line, and the chevron.
+    private func tile<Icon: View>(title: String, subtitle: String,
+                                  @ViewBuilder icon: () -> Icon) -> some View {
+        Card(padding: 12) {
+            HStack(spacing: 10) {
+                icon()
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).font(BarlowFont.text(16, .semibold))
+                        .foregroundStyle(Palette.ink).lineLimit(1)
+                    Text(subtitle).font(BarlowFont.text(12, .medium))
+                        .foregroundStyle(Palette.muted)
+                        .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Palette.faint)
+            }
+            .frame(maxHeight: .infinity)
+        }
     }
 
     // "Ride" title + a compact device-status pill (green dot + name + battery).
@@ -183,19 +197,7 @@ struct RideView: View {
                     Text(Units.speedLabel(useMiles))
                         .font(BarlowFont.condensed(22, .semibold)).foregroundStyle(Palette.muted)
                 }
-                Divider().overlay(Palette.hairline).padding(.vertical, 6)
-                HStack(spacing: 22) {
-                    miniStat("Avg", "—")
-                    miniStat("Max", "—")
-                }
             }
-        }
-    }
-
-    private func miniStat(_ label: String, _ value: String) -> some View {
-        HStack(spacing: 6) {
-            Text(label).trackedLabel()
-            Text(value).font(BarlowFont.condensed(17, .semibold)).foregroundStyle(Palette.ink)
         }
     }
 
