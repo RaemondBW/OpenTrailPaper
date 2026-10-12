@@ -19,6 +19,11 @@ so write for the rider, newest version first, one `## vX.YY` heading each.
   Ride History used to stop after five rides; it now lists them all,
   newest first. Both read the card once when you open them (REFRESH
   re-reads it), so paging is instant.
+- The device now remembers which version of each map hex it holds. The
+  app's Maps screen no longer marks a hex as "update available" just
+  because it was sent from another phone or before an app reinstall.
+  Hexes sent before this update keep the old behaviour until they are
+  sent again.
 
 ## v1.21
 

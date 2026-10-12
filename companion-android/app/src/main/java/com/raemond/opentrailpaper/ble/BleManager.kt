@@ -32,6 +32,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
+import com.raemond.opentrailpaper.map.DeviceTileList
 import com.raemond.opentrailpaper.map.PoiCache
 import com.raemond.opentrailpaper.map.PrebuiltTiles
 import com.raemond.opentrailpaper.data.DashConfig
@@ -228,26 +229,46 @@ class BleManager(private val app: Application) {
      *  one (same key as the map-layer store). */
     val deviceKey: String? get() = layersDeviceKey()
 
-    /** Version records for the current device, for the download's filters. */
-    val tileRecords: Map<String, String> get() = tileVersions.tiles(deviceKey)
-    val poiRecords: Map<String, String> get() = tileVersions.pois(deviceKey)
+    // The device's own version records (DeviceTileList), from the last versioned
+    // list. They cover hexes whoever sent them, so they come before this phone's
+    // records; empty on firmware that keeps none. Kept across a disconnect, like
+    // deviceTileIds, but not across a restart (the next list brings them back).
+    /** The device answered the tile list with versions on this connection: it
+     *  keeps them, so tiles go to it with their record. */
+    private var deviceKeepsVersions = false
+    private var deviceTileRecords by mutableStateOf<Map<String, String>>(emptyMap())
+    private var devicePoiRecords by mutableStateOf<Map<String, String>>(emptyMap())
+    private var tileRecordsBuilding = HashMap<String, String>()
+    private var poiRecordsBuilding = HashMap<String, String>()
+    private var tileListVersioned = false
+    private var poiListVersioned = false
+
+    /** Version records for the current device, for the download's filters:
+     *  the device's own where it has one, else what this phone sent. */
+    val tileRecords: Map<String, String> get() = tileVersions.tiles(deviceKey) + deviceTileRecords
+    val poiRecords: Map<String, String> get() = tileVersions.pois(deviceKey) + devicePoiRecords
+
+    private fun tileRecord(id: String): String? =
+        DeviceTileList.record(deviceTileRecords[id], tileVersions.tile(deviceKey, id))
+    private fun poiRecord(id: String): String? =
+        DeviceTileList.record(devicePoiRecords[id], tileVersions.poi(deviceKey, id))
 
     /**
      * The device's tile against the CDN index: the same hash is CURRENT; a
-     * different hash, a phone-built tile or one this phone did not send is an
-     * UPDATE; UNKNOWN when the index has no entry (unreachable, not pre-built,
-     * built empty).
+     * different hash, a phone-built tile or one with no record (on the device
+     * or this phone) is an UPDATE; UNKNOWN when the index has no entry
+     * (unreachable, not pre-built, built empty).
      */
     fun tileVersionState(id: String): PrebuiltTiles.VersionState =
         PrebuiltTiles.state(
-            tileVersions.tile(deviceKey, id),
+            tileRecord(id),
             PrebuiltTiles.tileHash(com.raemond.opentrailpaper.map.CdnVersions.entry(id)),
         )
 
     /** The device's .poi against the CDN index (same rules as tiles). */
     fun poiVersionState(id: String): PrebuiltTiles.VersionState =
         PrebuiltTiles.state(
-            tileVersions.poi(deviceKey, id),
+            poiRecord(id),
             PrebuiltTiles.poiHash(com.raemond.opentrailpaper.map.CdnVersions.entry(id)),
         )
 
@@ -259,10 +280,11 @@ class BleManager(private val app: Application) {
      * On the device, on firmware that draws the cycling layer, but not sent by
      * this phone with the bike-route flags — so it most likely predates them.
      * Only informs the "redownload to add them" hint; a tile from the website
-     * ZIP or another phone may already have them.
+     * ZIP or another phone may already have them. A tile the device has a
+     * version record for was sent by an app that sends them, so after them.
      */
     fun tilePredatesCycling(id: String): Boolean =
-        deviceSupportsPois && id in deviceTileIds && id !in flaggedTileIds
+        deviceSupportsPois && id in deviceTileIds && id !in flaggedTileIds && id !in deviceTileRecords
 
     /**
      * On the device, and Redownload would bring something new. With a CDN index
@@ -284,7 +306,8 @@ class BleManager(private val app: Application) {
     fun tileNeedsUpdateByAge(id: String): Boolean {
         if (id !in deviceTileIds) return false
         if (tilePredatesCycling(id)) return true
-        val at = tileSentAt[id] ?: return false
+        // When this phone sent it, else when the device says it was built.
+        val at = tileSentAt[id] ?: PrebuiltTiles.phoneBuiltAt(deviceTileRecords[id]) ?: return false
         return System.currentTimeMillis() - at > TILE_REFRESH_AGE_MS
     }
 
@@ -1065,6 +1088,7 @@ class BleManager(private val app: Application) {
             finishTileJob("Interrupted — reconnect to resume")
         }
         deviceSupportsPois = false      // re-learnt from the next 0x08 answer
+        deviceKeepsVersions = false     // and this from the next versioned list
 
         status = DeviceStatus()
         val admitted = sawStatusSinceConnect
@@ -2558,11 +2582,12 @@ class BleManager(private val app: Application) {
 
     /**
      * Ask the device which H3 tile ids are already on its SD, so the caller can
-     * skip re-sending them (replied via 0xD0/0xD1/0xD2 notifies).
+     * skip re-sending them (replied via 0xD0/0xD1/0xD2 notifies). Asks for each
+     * file's version too; firmware that keeps none ignores that (DeviceTileList).
      */
     fun refreshDeviceTiles() {
-        writeChar(mapChar, byteArrayOf(0x07))
-        writeChar(mapChar, byteArrayOf(0x08))   // .poi files (new firmware only)
+        writeChar(mapChar, DeviceTileList.request(0x07))
+        writeChar(mapChar, DeviceTileList.request(0x08))   // .poi files (new firmware only)
     }
 
     // Streaming upload: the app produces tiles batch-by-batch while download +
@@ -2682,7 +2707,8 @@ class BleManager(private val app: Application) {
         }
         currentTileId = tile.id
         currentIsPoi = tile.poi
-        currentVersion = tile.version
+        // Fixed now, so the device and this phone record the same thing.
+        currentVersion = tile.version ?: PrebuiltTiles.phoneRecord()
         mapData = tile.data
         mapSentBytes = 0
         mapEndSent = false
@@ -2692,11 +2718,13 @@ class BleManager(private val app: Application) {
 
         // A .poi goes under "<id>.poi"; saveTile strips the extension and stores
         // it by its magic either way, the name just reads well in logs.
+        // Firmware that keeps versions gets the record after a NUL.
         val name = if (tile.poi) "${tile.id}.poi" else tile.id
-        val cmd = Packet(5 + name.length)
+        val field = DeviceTileList.beginName(name, currentVersion.takeIf { deviceKeepsVersions })
+        val cmd = Packet(5 + field.size)
         cmd.u8(0x06)                   // begin-tile
         cmd.u32(tile.data.size)
-        cmd.raw(name.toByteArray())
+        cmd.raw(field)
         writeChar(mapChar, cmd.bytes())
     }
 
@@ -2731,6 +2759,11 @@ class BleManager(private val app: Application) {
                 if (id != null) {                                 // a tile finished
                     tileJobBytes += mapData.size
                     val version = currentVersion ?: PrebuiltTiles.phoneRecord()
+                    // Kept by the device too: mirror it, as its next list would.
+                    if (deviceKeepsVersions) {
+                        if (currentIsPoi) devicePoiRecords = devicePoiRecords + (id to version)
+                        else deviceTileRecords = deviceTileRecords + (id to version)
+                    }
                     if (currentIsPoi) {
                         tileVersions.setPoi(deviceKey, id, version)
                         devicePoiIds = devicePoiIds + id
@@ -2773,34 +2806,39 @@ class BleManager(private val app: Application) {
                 }
             }
 
-            0xD0 -> tileIdsBuilding = mutableListOf()              // tile-list begin
+            0xD0 -> {                                             // tile-list begin
+                tileIdsBuilding = mutableListOf()
+                tileRecordsBuilding = HashMap()
+                tileListVersioned = DeviceTileList.beginHasVersions(d)
+            }
 
             0xD1 -> {                                             // comma-separated ids
-                if (d.size <= 1) return
-                String(d, 1, d.size - 1, Charsets.UTF_8)
-                    .split(',')
-                    .filter { it.isNotEmpty() }
-                    .forEach { tileIdsBuilding.add(it) }
+                if (d.size <= 1) return                           // ("<id>=<record>" if versioned)
+                DeviceTileList.parseEntries(String(d, 1, d.size - 1, Charsets.UTF_8), tileIdsBuilding, tileRecordsBuilding)
             }
 
             0xD2 -> {                                             // tile-list end
+                deviceKeepsVersions = tileListVersioned
+                deviceTileRecords = tileRecordsBuilding
                 deviceTileIds = tileIdsBuilding.toSet()
                 Prefs.deviceTileIds = deviceTileIds
                 tileVersions.pruneTiles(deviceKey, deviceTileIds)
                 saveVersionsSoon()
             }
 
-            0xD3 -> poiIdsBuilding = mutableListOf()               // poi-list begin
+            0xD3 -> {                                             // poi-list begin
+                poiIdsBuilding = mutableListOf()
+                poiRecordsBuilding = HashMap()
+                poiListVersioned = DeviceTileList.beginHasVersions(d)
+            }
 
             0xD4 -> {                                             // comma-separated ids
                 if (d.size <= 1) return
-                String(d, 1, d.size - 1, Charsets.UTF_8)
-                    .split(',')
-                    .filter { it.isNotEmpty() }
-                    .forEach { poiIdsBuilding.add(it) }
+                DeviceTileList.parseEntries(String(d, 1, d.size - 1, Charsets.UTF_8), poiIdsBuilding, poiRecordsBuilding)
             }
 
             0xD5 -> {                                             // poi-list end
+                devicePoiRecords = if (poiListVersioned) poiRecordsBuilding else emptyMap()
                 devicePoiIds = poiIdsBuilding.toSet()
                 tileVersions.prunePois(deviceKey, devicePoiIds)
                 saveVersionsSoon()

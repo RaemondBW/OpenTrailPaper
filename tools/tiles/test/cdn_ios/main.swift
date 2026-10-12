@@ -325,6 +325,33 @@ case "versions":
               && dv2.tile("dev-B", ids[0]) == phone && dv2.tile("dev-A", ids[2]) == nil
               && dv2.poi("dev-A", ids[0]) == poiRecords[ids[0]] && dv2.tile(nil, ids[0]) == nil,
               "device records: persisted per device, pruned to the device's list")
+
+        // The device's own records (firmware with tile versions) on the wire.
+        check(DeviceTileList.request(0x07) == Data([0x07, 0x01]), "device list: request asks for versions")
+        check(DeviceTileList.beginHasVersions(Data([0xD0, 0x01]))
+              && !DeviceTileList.beginHasVersions(Data([0xD0]))
+              && DeviceTileList.beginHasVersions(Data([0xFF, 0xD3, 0x01]).dropFirst()),
+              "device list: only a flagged begin means versions (older firmware: 1 byte)")
+        var lids: [String] = [], lrecs: [String: String] = [:]
+        DeviceTileList.parseEntries("\(ids[0])=\(records[ids[0]]!),\(ids[1]),\(ids[2])=\(phone)",
+                                    ids: &lids, records: &lrecs)
+        DeviceTileList.parseEntries("\(ids[3])=cdn:,,=cdn:x", ids: &lids, records: &lrecs)
+        check(lids == [ids[0], ids[1], ids[2], ids[3]]
+              && lrecs == [ids[0]: records[ids[0]]!, ids[2]: phone, ids[3]: "cdn:"],
+              "device list: bare and versioned entries")
+        let bn = DeviceTileList.beginName("\(ids[0]).poi", record: records[ids[0]])
+        check(bn == Data("\(ids[0]).poi".utf8) + Data([0]) + Data(records[ids[0]]!.utf8) && bn.count <= 51
+              && DeviceTileList.beginName(ids[0], record: nil) == Data(ids[0].utf8),
+              "device list: the record follows the name after a NUL")
+        let h0 = ha[ids[0]]!
+        check(PrebuiltTiles.state(record: DeviceTileList.record(device: PrebuiltTiles.cdnRecord(h0), phone: nil),
+                                  cdnHash: h0) == .current
+              && PrebuiltTiles.state(record: DeviceTileList.record(device: PrebuiltTiles.cdnRecord(h0), phone: phone),
+                                     cdnHash: h0) == .current
+              && PrebuiltTiles.state(record: DeviceTileList.record(device: nil, phone: PrebuiltTiles.cdnRecord(h0)),
+                                     cdnHash: h0) == .current
+              && PrebuiltTiles.state(record: DeviceTileList.record(device: nil, phone: nil), cdnHash: h0) == .update,
+              "device list: the device's record first, then this phone's")
     }
     if failures > 0 { print("\(failures) check(s) failed"); exit(1) }
     print("all version checks passed")
