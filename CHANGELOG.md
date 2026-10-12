@@ -34,6 +34,23 @@ so write for the rider, newest version first, one `## vX.YY` heading each.
 - The pairing code now also shows over the "Start navigation?" prompt.
 - A phone reconnecting stays connected while it finishes pairing. Before,
   the device could doze off during the handshake and drop it.
+- Bluetooth speed sensors: pair one in the app's Sensors screen and it
+  becomes the speed source, ahead of GPS, so speed and distance keep
+  counting under trees and in tunnels. Set your wheel size in the app's
+  Settings by picking the rim and tyre width.
+- New dashboard field: average speed (distance over moving time).
+- The WORKOUT page lists the workouts on the card when none is loaded, so
+  you can start one from the device.
+- Speed drops to zero when the GPS fix is lost or goes stale, instead of
+  holding the last value. With a phone connected, speed and heading can
+  also come from the phone's location.
+- Mesh: nodes are labelled by their short name, the node map shows how
+  many hops away each one is, and direct messages are encrypted to the
+  other node's public key.
+- The frontlight works again after a power-off, and the status bar is
+  greyed under the power-off overlay too.
+- Crash reports are saved to the card as soon as it mounts, before it is
+  shared over USB.
 
 ## v1.21
 
