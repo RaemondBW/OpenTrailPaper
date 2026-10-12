@@ -171,22 +171,56 @@ bool memfault_service::pending(size_t* size) {
 const char* memfault_service::pendingId() { return identify() ? id : "none"; }
 void memfault_service::requestStatus(bool exportSerial) { requested = exportSerial ? 2 : 1; }
 
+namespace {
+// While a dump is pending, retry quickly (a boot-looping device may only live
+// ~15 s per boot), then back off so a card that stays absent costs little.
+constexpr uint32_t FAST_RETRY_MS = 3000, SLOW_RETRY_MS = 30000;
+constexpr unsigned FAST_RETRIES = 20;
+unsigned failedAttempts = 0;
+
+// Main task only. Returns true when nothing remains pending in flash.
+bool deliver(int action, const char* why) {
+    power_mgmt::busyAcquire();
+    size_t size = 0;
+    bool saved = memfault_service::pending(&size);
+    if (action) diag::log("memfault: pending=%d bytes=%u id=%s SD=%d; offline export, no uploads",
+                         saved, unsigned(size), memfault_service::pendingId(), ride_recorder::sdMounted());
+    if (action == 2) exportSerial();
+    bool clear = !saved;
+    // A failed SD mount never consumes the internal-flash coredump. The SDK
+    // preserves the first pending dump if another crash happens before export,
+    // so clearing it promptly after a verified export is what lets the NEXT
+    // crash record a fresh dump.
+    if (saved && identify() && ride_recorder::sdMounted() && !usb_storage::hostActive() && saveSD()) {
+        __real_memfault_platform_coredump_storage_clear();
+        if (memfault_service::pending()) diag::log("memfault: flash acknowledgement failed; verified SD export retained, will retry");
+        else {
+            clear = true;
+            diag::log("memfault: dump %s exported (%s) and cleared from flash; next crash can record a new dump",
+                      id, why ? why : "retry");
+        }
+    } else if (saved && why) {
+        diag::log("memfault: dump not exported at %s (SD=%d host=%d); retrying in %u s", why,
+                  ride_recorder::sdMounted(), usb_storage::hostActive(), unsigned(FAST_RETRY_MS / 1000));
+    }
+    power_mgmt::busyRelease();
+    return clear;
+}
+void schedule(bool clear) {
+    if (clear) failedAttempts = 0;
+    else if (failedAttempts < FAST_RETRIES) ++failedAttempts;
+    retryAt = millis() + (clear || failedAttempts >= FAST_RETRIES ? SLOW_RETRY_MS : FAST_RETRY_MS);
+}
+}
+
+void memfault_service::deliverNow(const char* why) {
+    failedAttempts = 0;
+    schedule(deliver(0, why));
+}
+
 void memfault_service::tick() {
     int action = requested.exchange(0);
     if (!action && int32_t(millis() - retryAt) < 0) return;
-    retryAt = millis() + 30000;
-    power_mgmt::busyAcquire();
-    size_t size = 0;
-    bool saved = pending(&size);
-    if (action) diag::log("memfault: pending=%d bytes=%u id=%s SD=%d; offline export, no uploads",
-                         saved, unsigned(size), pendingId(), ride_recorder::sdMounted());
-    if (action == 2) exportSerial();
-    // A failed SD mount never consumes the internal-flash coredump. The SDK
-    // preserves the first pending dump if another crash happens before export.
-    if (saved && identify() && ride_recorder::sdMounted() && !usb_storage::hostActive() && saveSD()) {
-        __real_memfault_platform_coredump_storage_clear();
-        if (pending()) diag::log("memfault: flash acknowledgement failed; verified SD export retained, will retry");
-    }
-    power_mgmt::busyRelease();
+    schedule(deliver(action, nullptr));
 }
 #endif

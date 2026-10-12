@@ -507,6 +507,15 @@ void dashFieldValue(uint8_t field, const RideState& s, char* val, size_t valCap,
             *unit = units::speedLabel(s.useMiles);
             break;
         }
+        case DF_AVG_SPEED: {
+            double avgKmh = s.movingS > 0
+                ? (s.distanceM / 1000.0) / (s.movingS / 3600.0)
+                : 0.0;
+            double v = units::speed(avgKmh, s.useMiles);
+            snprintf(val, valCap, "%.1f", v);
+            *unit = units::speedLabel(s.useMiles);
+            break;
+        }
         case DF_POWER3S:
             if (s.power3sW != 0xFFFF) snprintf(val, valCap, "%u", s.power3sW);
             else snprintf(val, valCap, "--");
@@ -609,7 +618,7 @@ void heroCell(const EpdRect& r, const char* labelStr, const char* value,
     // impact_128 holds about three glyphs, so a hero speed keeps its decimal
     // only below 10 — "round numbers until the churn stops".
     if (isSpeed) {
-        double v = units::speed(s.speedKmh, s.useMiles);
+        double v = strtod(value, nullptr);
         snprintf(buf, sizeof(buf), v < 10.0 ? "%.1f" : "%.0f", v);
         unit = "";
     }
@@ -657,7 +666,8 @@ void heroCell(const EpdRect& r, const char* labelStr, const char* value,
 // the number stays put for the whole ride.
 const char* dashSizingHint(uint8_t field) {
     switch (field) {
-        case DF_SPEED:       return "88.8";
+        case DF_SPEED:
+        case DF_AVG_SPEED:   return "88.8";
         case DF_POWER3S:
         case DF_POWER:       return "888";
         case DF_HEART_RATE:
@@ -1062,7 +1072,9 @@ void ui_render_dashboard(const RideState& s, bool navActive,
         const Placed& p = placed[i];
         if (p.hero) {
             heroCell(p.r, dashFieldLabel(p.field), p.value, p.unit, s,
-                     isPowerField(p.field), p.field == DF_SPEED, p.stale, fb);
+                     isPowerField(p.field),
+                     p.field == DF_SPEED || p.field == DF_AVG_SPEED,
+                     p.stale, fb);
         } else {
             const int wb = (p.r.width > ui::CONTENT_W * 3 / 4) ? 1 : 0;
             ui::cell(p.r, dashFieldLabel(p.field), p.value, p.unit, fb, p.stale,
@@ -1089,7 +1101,7 @@ void ui_render_pairing(uint32_t code, uint8_t* fb) {
              (unsigned long)(code / 1000), (unsigned long)(code % 1000));
     ui::text(&Impact_B, W / 2, card.y + 230, grouped, fb,
              EPD_DRAW_ALIGN_CENTER);
-    ui::text(&Arial_B, W / 2, card.y + 316, "Enter this code on your iPhone",
+    ui::text(&Arial_B, W / 2, card.y + 316, "Enter this code on your phone",
              fb, EPD_DRAW_ALIGN_CENTER, ui::DARK);
 }
 
@@ -1470,12 +1482,21 @@ void ui_render_menu(const MenuInfo& m, uint8_t* fb) {
                  m.gpsReady ? "GPS ready" : "waiting for GPS", n,
                  n == 1 ? "" : "s");
     }
-    if (m.radar)
-        snprintf(sensorSub, sizeof(sensorSub), "HR %s · PWR %s · CAD %s · RDR OK",
-                 m.hr ? "OK" : "--", m.pwr ? "OK" : "--", m.cad ? "OK" : "--");
-    else
-        snprintf(sensorSub, sizeof(sensorSub), "HR %s · Power %s · Cadence %s",
-                 m.hr ? "OK" : "--", m.pwr ? "OK" : "--", m.cad ? "OK" : "--");
+    // PAIRED DEVICES: the phone this device belongs to (fixed pairing) and
+    // how many sensors are live. The per-sensor HR/Power/Cadence breakdown no
+    // longer fits beside the phone, and the page itself lists each one.
+    {
+        const int ns = (m.hr ? 1 : 0) + (m.pwr ? 1 : 0) + (m.cad ? 1 : 0) +
+                       (m.radar ? 1 : 0);
+        char phone[48];
+        if (m.phonePaired)
+            snprintf(phone, sizeof(phone), "Phone: %s",
+                     m.phoneName[0] ? m.phoneName : "paired");
+        else
+            snprintf(phone, sizeof(phone), "No phone paired");
+        snprintf(sensorSub, sizeof(sensorSub), "%s · %d sensor%s", phone, ns,
+                 ns == 1 ? "" : "s");
+    }
     if (m.sdOk) snprintf(historySub, sizeof(historySub), "%d ride%s on card",
                          m.rideCount, m.rideCount == 1 ? "" : "s");
     else snprintf(historySub, sizeof(historySub), "no SD card");
@@ -1484,7 +1505,7 @@ void ui_render_menu(const MenuInfo& m, uint8_t* fb) {
     const Row rows[kMenuRowCount] = {
         {m.recording ? "Stop Ride" : "Start Ride", startSub, true},
         {"Navigate", m.routeLine, false},
-        {"Sensors", sensorSub, false},
+        {"Paired Devices", sensorSub, false},
         {"Ride History", historySub, false},
         {"Settings", settingsSub, false},
     };
@@ -1567,7 +1588,8 @@ static void drawTurnArrow(int cx, int cy, const char* instruction, uint8_t fg,
 }
 
 void ui_render_list(const char* title, const ListRow* rows, int count,
-                    const char* footer, uint8_t* fb, bool turnArrows) {
+                    const char* footer, uint8_t* fb, bool turnArrows,
+                    bool paged) {
     const int W = epd_rotated_display_width();
 
     // LIST template: title in the status band, rows on the 24 px margin, one
@@ -1614,9 +1636,56 @@ void ui_render_list(const char* title, const ListRow* rows, int count,
     }
 
     if (footer && footer[0]) {
-        ui::text(&Arial_L, W / 2, kContentBottom, footer, fb,
-                 EPD_DRAW_ALIGN_CENTER, ui::INK);
+        // Paged, the bottom 100 px is the pager; the line sits in the gap
+        // between the last row (kMenuRowTop + 5 rows = 804) and its rule.
+        ui::text(&Arial_L, W / 2, paged ? kPagerTop - 22 : kContentBottom,
+                 footer, fb, EPD_DRAW_ALIGN_CENTER, ui::INK);
     }
+}
+
+namespace {
+// A pager box with three-pixel walls, like every workout-page button.
+void pagerButton(const EpdRect& r, uint8_t* fb) {
+    for (int e = 0; e < 3; ++e)
+        epd_draw_rect({r.x + e, r.y + e, r.width - 2 * e, r.height - 2 * e},
+                      ui::INK, fb);
+}
+}  // namespace
+
+void ui_render_pager(int first, int count, int total, const char* action,
+                     uint8_t* fb) {
+    // The page indicator sits in its own box between the arrows and the
+    // action button, the same 80 px tall.
+    const EpdRect where = {kPagerDown.x + kPagerDown.width + 12, kPagerUp.y,
+                           kPagerAction.x - 12 -
+                               (kPagerDown.x + kPagerDown.width + 12),
+                           kPagerUp.height};
+    const int textY = kPagerUp.y + 46;
+    if (action && action[0]) {
+        pagerButton(kPagerAction, fb);
+        ui::text(&Arial_B, kPagerAction.x + kPagerAction.width / 2, textY,
+                 action, fb, EPD_DRAW_ALIGN_CENTER);
+    }
+    if (total <= 0) return;
+
+    epd_fill_rect({0, kPagerTop, 540, 3}, ui::INK, fb);
+    pagerButton(kPagerUp, fb);
+    pagerButton(kPagerDown, fb);
+    pagerButton(where, fb);
+    // An arrow that can't go anywhere is drawn in the disabled tone.
+    const bool canUp = first > 0;
+    const bool canDown = first + count < total;
+    const int cy = kPagerUp.y + kPagerUp.height / 2;
+    int cx = kPagerUp.x + kPagerUp.width / 2;
+    epd_fill_triangle(cx, cy - 16, cx - 16, cy + 10, cx + 16, cy + 10,
+                      canUp ? ui::INK : ui::LIGHT, fb);
+    cx = kPagerDown.x + kPagerDown.width / 2;
+    epd_fill_triangle(cx, cy + 16, cx - 16, cy - 10, cx + 16, cy - 10,
+                      canDown ? ui::INK : ui::LIGHT, fb);
+    char buf[24];
+    snprintf(buf, sizeof(buf), "%d-%d / %d", first + 1, first + count, total);
+    ui::text(&Arial_B, where.x + where.width / 2, textY, buf, fb,
+             EPD_DRAW_ALIGN_CENTER);
 }
 
 // iOS-style pill switch: black filled pill with a white knob on the right
@@ -1628,9 +1697,8 @@ void ui_render_list(const char* title, const ListRow* rows, int count,
 // SWITCH — 120 x 52, border 2, split into two halves; the ACTIVE half is filled
 // and carries its word in reverse. Not a single filled rectangle: the specimen
 // shows position, so "off" is still a legible state rather than an empty box.
-static void settingsToggle(int x, int y, int w, int h, bool on, uint8_t* fb,
-                           const char* onText = "ON",
-                           const char* offText = "OFF") {
+void ui_settings_toggle(int x, int y, int w, int h, bool on, uint8_t* fb,
+                        const char* onText, const char* offText) {
     for (int b = 0; b < ui::RULE; ++b)
         epd_draw_rect({x + b, y + b, w - 2 * b, h - 2 * b}, ui::INK, fb);
     const int half = w / 2;
@@ -1711,7 +1779,7 @@ void ui_render_settings(const SettingsInfo& si, uint8_t* fb) {
             // A switch reading ON/OFF beside "UNITS" says nothing — on what?
             // The two positions ARE the choice, so they carry the unit names.
             const bool isUnits = (i == kSettingsUnitsRow);
-            settingsToggle(settingsToggleX(i), midY - kSettingsToggleH / 2,
+            ui_settings_toggle(settingsToggleX(i), midY - kSettingsToggleH / 2,
                            settingsToggleW(i), kSettingsToggleH, rows[i].on, fb,
                            isUnits ? "MILES" : "ON", isUnits ? "KM" : "OFF");
         } else {
@@ -1858,8 +1926,11 @@ static void sheetShell(uint8_t* fb, bool scrim = true) {
 }
 
 // Title + hero line + one detail line, at the summary's sizes exactly.
-static void sheetHead(const char* label, const char* hero, const char* detail,
-                      uint8_t* fb) {
+// Returns the baseline of the detail line (or where it would be), so a caller
+// can add a line under it: the hero steps down a size for long text, which
+// moves everything below it.
+static int sheetHead(const char* label, const char* hero, const char* detail,
+                     uint8_t* fb) {
     const int W = epd_rotated_display_width();
     const int H = epd_rotated_display_height();
     const int x = ui::MARGIN;
@@ -1906,6 +1977,7 @@ static void sheetHead(const char* label, const char* hero, const char* detail,
         ui::text(&Arial_B, x, y + Arial_B.ascender, line, fb,
                  EPD_DRAW_ALIGN_LEFT, ui::INK);
     }
+    return y + Arial_B.ascender;
 }
 
 void ui_render_power_sheet(bool recording, uint8_t* fb) {
@@ -1915,6 +1987,40 @@ void ui_render_power_sheet(bool recording, uint8_t* fb) {
                         : "The device sleeps until you press the button.",
               fb);
     sheetButton(kPowerShutdown, "SHUT DOWN", true, fb);
+    sheetButton(kPowerCancel, "CANCEL", false, fb);
+}
+
+// Same sheet, same two button rows, for the fixed-pairing unpair. Destructive
+// action on the primary (filled) button, exactly where SHUT DOWN sits, so the
+// confirm step reads as the one the rider already knows.
+void ui_render_unpair_sheet(bool paired, const char* name, int count, uint8_t* fb) {
+    sheetShell(fb);
+    if (!paired) {
+        sheetHead("PHONE", "NOT PAIRED",
+                  "Open the OpenTrailPaper app to pair a phone.", fb);
+        sheetButton(kPowerCancel, "CLOSE", false, fb);
+        return;
+    }
+    char detail[72];
+    const char* who = name && name[0] ? name : "The paired phone";
+    if (count > 1)
+        snprintf(detail, sizeof(detail), "%s + %d more will be forgotten.",
+                 who, count - 1);
+    else
+        snprintf(detail, sizeof(detail), "%s will be forgotten.", who);
+    const int detailBase = sheetHead("PHONE", "UNPAIR PHONE?", detail, fb);
+    // A second line straight under sheetHead's detail line, same face: what
+    // happens next. Placed from the detail's real baseline — a fixed offset
+    // assumed the smaller hero face, and "UNPAIR PHONE?" fits the big one, so
+    // this line landed on top of the phone's name.
+    const int W = epd_rotated_display_width();
+    char next[72];
+    fitText(&Arial_B, "It disconnects now; the next phone can pair.",
+            W - 2 * ui::MARGIN, next, sizeof(next));
+    ui::text(&Arial_B, ui::MARGIN,
+             detailBase + (Arial_B.ascender - Arial_B.descender) + 6, next, fb,
+             EPD_DRAW_ALIGN_LEFT, ui::INK);
+    sheetButton(kPowerShutdown, "UNPAIR", true, fb);
     sheetButton(kPowerCancel, "CANCEL", false, fb);
 }
 
@@ -2261,14 +2367,11 @@ void ui_render_pause_banner(uint8_t* fb) {
 // Design "Workout View" frames: the prev/next BLOCK strips are themselves the
 // navigation (tap the block you want and it starts), and the footer holds
 // only pause and the full-session list. The list screen pages eight 88 px
-// rows at a time with its own footer controls.
+// rows at a time with the shared pager footer (ui_render_pager).
 const EpdRect kWorkoutRedo = {24, 754, 240, 104};        // <- redo prev block
 const EpdRect kWorkoutStartNext = {276, 754, 240, 104};  // start next block ->
 const EpdRect kWorkoutPause = {24, 868, 240, 80};
 const EpdRect kWorkoutAll = {276, 868, 240, 80};
-const EpdRect kWorkoutPageUp = {24, 868, 80, 80};
-const EpdRect kWorkoutPageDown = {116, 868, 80, 80};
-const EpdRect kWorkoutClose = {368, 868, 148, 80};
 // The list's row band: rows are 88 px starting here (see workoutListRow).
 const int kWorkoutRowTop = 143, kWorkoutRowH = 88, kWorkoutRowsPerPage = 8;
 
@@ -2452,9 +2555,16 @@ void ui_render_workout(const RideState& s, const WorkoutView& v, uint8_t* fb) {
     epd_draw_rect({kWorkoutRedo.x + 1, kWorkoutRedo.y + 1,
                    kWorkoutRedo.width - 2, kWorkoutRedo.height - 2}, ui::INK,
                   fb);
-    hatchRect({kWorkoutRedo.x + 2, kWorkoutRedo.y + 2, kWorkoutRedo.width - 4,
-               kWorkoutRedo.height - 4}, fb);
-    {
+    if (workoutViewReady(v)) {
+        // Loaded, not started: there is nothing to redo yet, so the left
+        // strip is the way back to the picker (it unloads this workout).
+        ui::text(&Arial_L, 38, 780, "< BACK", fb, EPD_DRAW_ALIGN_LEFT);
+        ui::text(&Arial_B, 38, 812, "ALL WORKOUTS", fb, EPD_DRAW_ALIGN_LEFT);
+        ui::text(&Arial_L, 38, 846, "PICK ANOTHER", fb, EPD_DRAW_ALIGN_LEFT,
+                 ui::DARK);
+    } else {
+        hatchRect({kWorkoutRedo.x + 2, kWorkoutRedo.y + 2,
+                   kWorkoutRedo.width - 4, kWorkoutRedo.height - 4}, fb);
         // White chips under the hatched button's text keep it readable.
         auto chip = [&](const EpdFont* f, int x, int y, const char* t) {
             epd_fill_rect({x - 2, y - f->ascender - 2,
@@ -2562,31 +2672,115 @@ void ui_render_workout_list(const RideState& s, const WorkoutView& v, int page,
         ui::text(&Impact_T, 516, top + 58, buf, fb, EPD_DRAW_ALIGN_RIGHT);
     }
 
-    epd_fill_rect({0, 857, 540, 3}, ui::INK, fb);
-    for (int e = 0; e < 3; ++e) {
-        epd_draw_rect({kWorkoutPageUp.x + e, kWorkoutPageUp.y + e,
-                       kWorkoutPageUp.width - 2 * e,
-                       kWorkoutPageUp.height - 2 * e}, ui::INK, fb);
-        epd_draw_rect({kWorkoutPageDown.x + e, kWorkoutPageDown.y + e,
-                       kWorkoutPageDown.width - 2 * e,
-                       kWorkoutPageDown.height - 2 * e}, ui::INK, fb);
-        epd_draw_rect({208 + e, 868 + e, 148 - 2 * e, 80 - 2 * e}, ui::INK, fb);
-        epd_draw_rect({kWorkoutClose.x + e, kWorkoutClose.y + e,
-                       kWorkoutClose.width - 2 * e,
-                       kWorkoutClose.height - 2 * e}, ui::INK, fb);
-    }
-    {
-        int cx = kWorkoutPageUp.x + kWorkoutPageUp.width / 2, cy = 908;
-        epd_fill_triangle(cx, cy - 16, cx - 16, cy + 10, cx + 16, cy + 10,
-                          ui::INK, fb);
-        cx = kWorkoutPageDown.x + kWorkoutPageDown.width / 2;
-        epd_fill_triangle(cx, cy + 16, cx - 16, cy - 10, cx + 16, cy - 10,
-                          ui::INK, fb);
-    }
     int last = first + kWorkoutRowsPerPage;
     if (last > v.segCount) last = v.segCount;
-    snprintf(buf, sizeof(buf), "%d-%d / %d", first + 1, last, v.segCount);
-    ui::text(&Arial_B, 208 + 74, 914, buf, fb, EPD_DRAW_ALIGN_CENTER);
-    ui::text(&Arial_B, kWorkoutClose.x + kWorkoutClose.width / 2, 914,
-             "CLOSE", fb, EPD_DRAW_ALIGN_CENTER);
+    ui_render_pager(first, last - first, v.segCount, "CLOSE", fb);
+}
+
+namespace {
+
+// Session length for the picker: m:ss under an hour, h:mm:ss over.
+void workoutFmtLong(char* out, size_t cap, uint32_t sec) {
+    if (sec >= 3600)
+        snprintf(out, cap, "%lu:%02lu:%02lu", (unsigned long)(sec / 3600),
+                 (unsigned long)(sec / 60 % 60), (unsigned long)(sec % 60));
+    else
+        workoutFmt(out, cap, sec);
+}
+
+}  // namespace
+
+void ui_render_workout_picker(const RideState& s, const WorkoutPickPage& p,
+                              uint8_t* fb) {
+    ui::statusBar(s, fb);
+    char buf[64];
+
+    // Nothing to list: one centred message, and REFRESH unless the card is
+    // being read right now.
+    const char* head = nullptr;
+    const char* l1 = nullptr;
+    const char* l2 = nullptr;
+    if (p.state == WLIST_SCANNING) {
+        head = "READING THE CARD";
+        l1 = "Looking for workouts in /workouts";
+    } else if (p.state == WLIST_NO_CARD) {
+        head = "NO SD CARD";
+        l1 = "Insert a card to pick a workout,";
+        l2 = "or unplug the computer using it.";
+    } else if (p.total == 0) {
+        head = "NO WORKOUTS ON THE CARD";
+        l1 = "Add them from the app.";
+        l2 = "(.erg / .mrc files in /workouts)";
+    }
+    if (head) {
+        ui::text(&Impact_T, 270, 400, head, fb, EPD_DRAW_ALIGN_CENTER);
+        if (l1)
+            ui::text(&Arial_B, 270, 456, l1, fb, EPD_DRAW_ALIGN_CENTER,
+                     ui::DARK);
+        if (l2)
+            ui::text(&Arial_B, 270, 492, l2, fb, EPD_DRAW_ALIGN_CENTER,
+                     ui::DARK);
+        if (p.state != WLIST_SCANNING) ui_render_pager(0, 0, 0, "REFRESH", fb);
+        return;
+    }
+
+    // --- Header: what this is, how many, and a failed load if any. -------
+    if (p.error[0]) {
+        char fit[64];
+        snprintf(buf, sizeof(buf), "Couldn't load %s", p.error);
+        truncToWidth(&Arial_L, buf, 492, fit, sizeof(fit));
+        ui::text(&Arial_L, 24, 92, fit, fb, EPD_DRAW_ALIGN_LEFT);
+    } else {
+        ui::text(&Arial_L, 24, 92, "TAP A WORKOUT TO LOAD IT", fb,
+                 EPD_DRAW_ALIGN_LEFT);
+    }
+    snprintf(buf, sizeof(buf), "%d WORKOUT%s", p.total,
+             p.total == 1 ? "" : "S");
+    ui::text(&Impact_T, 24, 134, buf, fb, EPD_DRAW_ALIGN_LEFT);
+    epd_fill_rect({0, 140, 540, 3}, ui::INK, fb);
+
+    // --- Rows: title over an intensity sparkline; length and blocks right.
+    for (int r = 0; r < p.count && r < kWorkoutRowsPerPage; ++r) {
+        const WorkoutFileInfo& e = p.rows[r];
+        const int top = kWorkoutRowTop + r * kWorkoutRowH;
+        // The row a tap is loading reads reversed until the page flips.
+        const bool loading = p.loading[0] && !strcmp(p.loading, e.file);
+        const uint8_t fg = loading ? 0xFF : ui::INK;
+        if (loading)
+            epd_fill_rect({0, top, 540, kWorkoutRowH - 1}, ui::INK, fb);
+        epd_fill_rect({0, top + kWorkoutRowH - 1, 540, 1}, ui::INK, fb);
+
+        char fit[48];
+        truncToWidth(&Arial_B, e.title, 340, fit, sizeof(fit));
+        ui::text(&Arial_B, 24, top + 34, fit, fb, EPD_DRAW_ALIGN_LEFT, fg);
+
+        if (loading) {
+            ui::text(&Arial_L, 24, top + 70, "LOADING...", fb,
+                     EPD_DRAW_ALIGN_LEFT, fg);
+        } else if (!e.ok) {
+            ui::text(&Arial_L, 24, top + 70, "CAN'T READ THIS FILE", fb,
+                     EPD_DRAW_ALIGN_LEFT, ui::DARK);
+        } else {
+            // 48 bars of 6 px. Height is the target against the session's
+            // own peak, so a recovery spin and a VO2 set both fill the
+            // strip: the SHAPE is what tells them apart.
+            const int sx = 24, sbase = top + 76, sh = 28;
+            for (int i = 0; i < WORKOUT_SPARK_N; ++i) {
+                int h = 2 + (int)e.spark[i] * (sh - 2) / 255;
+                epd_fill_rect({sx + i * 6, sbase - h, 5, h}, ui::INK, fb);
+            }
+        }
+        if (e.ok) {
+            workoutFmtLong(buf, sizeof(buf), e.totalSec);
+            ui::text(&Impact_T, 516, top + 52, buf, fb, EPD_DRAW_ALIGN_RIGHT,
+                     fg);
+            snprintf(buf, sizeof(buf), "%u BLOCK%s", e.segCount,
+                     e.segCount == 1 ? "" : "S");
+            ui::text(&Arial_L, 516, top + 76, buf, fb, EPD_DRAW_ALIGN_RIGHT,
+                     loading ? fg : ui::DARK);
+        }
+    }
+
+    // --- Footer: page up / down, where we are, REFRESH. ------------------
+    ui_render_pager(p.first, p.count, p.total, "REFRESH", fb);
 }

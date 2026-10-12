@@ -75,3 +75,55 @@ struct WorkoutView {
 
 void workoutBuildView(const Workout& w, uint32_t elapsedSec, bool running,
                       uint16_t ftpW, WorkoutView& v);
+
+// Loaded but no session yet (never started, or stopped): the page's READY
+// state, where the left strip goes back to the picker.
+inline bool workoutViewReady(const WorkoutView& v) {
+    return v.loaded && !v.running && !v.paused;
+}
+
+// --- The on-device workout picker --------------------------------------------
+// What the WORKOUT page lists when nothing is loaded: one row per file in
+// /workouts. Summaries are computed once, when the firmware scans the card
+// (workout_service, off the UI task), so drawing the list never touches SD.
+
+constexpr int WORKOUT_SPARK_N = 48;    // intensity samples across the duration
+constexpr int WORKOUT_PICK_ROWS = 8;   // rows per page (matches the block list)
+
+struct WorkoutFileInfo {
+    char file[48] = "";      // the filename, extension included: the load key
+    char title[40] = "";     // the header's DESCRIPTION, else the filename stem
+    uint32_t totalSec = 0;
+    uint8_t segCount = 0;
+    bool ok = false;         // false: didn't parse (listed, but not loadable)
+    // Relative intensity, 0..255 against the file's own peak, sampled evenly
+    // over the duration: the row's sparkline.
+    uint8_t spark[WORKOUT_SPARK_N] = {};
+};
+
+// Title for the list: a short DESCRIPTION from the header (the companion
+// apps' builders write the workout's name there) or, failing that, the
+// filename without its extension. ASCII only, for the panel's fonts.
+void workoutTitleFrom(const char* text, const char* file, char* out,
+                      size_t cap);
+
+// Fill totalSec / segCount / spark / ok from a parsed workout. `ftpWatts`
+// (the one it was parsed with) scales the sparkline; 0 = its own peak.
+void workoutSummarize(const Workout& w, int ftpWatts, WorkoutFileInfo& out);
+
+enum WorkoutListState : uint8_t {
+    WLIST_SCANNING = 0,   // not read yet / reading now
+    WLIST_READY,          // rows are current
+    WLIST_NO_CARD,        // no card, or a computer owns it over USB
+};
+
+// One page of the picker, copied out of the service's cache for one frame.
+struct WorkoutPickPage {
+    uint8_t state = WLIST_SCANNING;
+    int total = 0;           // files in the whole list
+    int first = 0;           // list index of rows[0]
+    int count = 0;           // rows filled on this page
+    WorkoutFileInfo rows[WORKOUT_PICK_ROWS];
+    char loading[48] = "";   // file a tap asked to load, until it lands
+    char error[64] = "";     // why the last device-side load failed ("" none)
+};

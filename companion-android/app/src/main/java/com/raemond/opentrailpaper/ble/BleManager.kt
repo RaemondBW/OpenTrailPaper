@@ -32,6 +32,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
+import com.raemond.opentrailpaper.map.DeviceTileList
+import com.raemond.opentrailpaper.map.PoiCache
+import com.raemond.opentrailpaper.map.PrebuiltTiles
 import com.raemond.opentrailpaper.data.DashConfig
 import com.raemond.opentrailpaper.data.DashLayout
 import com.raemond.opentrailpaper.data.DashSync
@@ -156,6 +159,195 @@ class BleManager(private val app: Application) {
     var tilesDone by mutableStateOf(0); private set
     var tileMessage by mutableStateOf<String?>(null); private set
     var deviceTileIds by mutableStateOf<Set<String>>(emptySet()); private set
+
+    // Cycling layer (investigations/osm-pois-bike-routes.md). Firmware that has
+    // it answers the 0x08 POI listing; older firmware never does, so this stays
+    // false for the connection and nothing cycling-specific is sent to it.
+    var deviceSupportsPois by mutableStateOf(false); private set
+
+    // Device map layers (map characteristic 0x09 get / 0x0A set; the device
+    // answers [0xE0][u16 mask]). Bits: 0 bike routes, 1 cycleways & lanes,
+    // 2 water, 3 toilets, 4 repair stations, 5 bike shops (src/map_view.h
+    // MAP_LAYER_*). Kept per device: the last mask seen, whether that device
+    // answers at all, and an edit made while disconnected (sent on the next
+    // connect; last write wins).
+    /** The device's map-layer mask as this app last knew it (live when connected). */
+    var mapLayers by mutableStateOf(0x3F); private set
+    /** The device (or, disconnected, the last one) has firmware with map layers. */
+    var mapLayersSupported by mutableStateOf(false); private set
+
+    @android.annotation.SuppressLint("MissingPermission")
+    private fun layersDeviceKey(): String? = gatt?.device?.address ?: Prefs.mapLayersLastDevice
+
+    private fun loadMapLayersState() {
+        val k = layersDeviceKey() ?: return
+        Prefs.mapLayersLastDevice = k
+        mapLayers = (Prefs.mapLayersPending[k] ?: Prefs.mapLayersByDevice[k] ?: 0x3FL).toInt()
+        mapLayersSupported = k in Prefs.mapLayersSupported
+    }
+
+    /** Ask the device for its mask (sent once the map characteristic notifies). */
+    fun requestMapLayers() = writeChar(mapChar, byteArrayOf(0x09))
+
+    /** Change the device's map layers: applied now when connected, otherwise
+     *  remembered and sent on the next connect. */
+    fun updateMapLayers(mask: Int) {
+        mapLayers = mask
+        val k = layersDeviceKey() ?: return
+        if (mapChar != null && mapLayersSupported) {
+            writeChar(mapChar, byteArrayOf(0x0A, (mask and 0xFF).toByte(), ((mask shr 8) and 0xFF).toByte()))
+            Prefs.mapLayersByDevice = Prefs.mapLayersByDevice + (k to mask.toLong())
+            Prefs.mapLayersPending = Prefs.mapLayersPending - k
+        } else {
+            Prefs.mapLayersPending = Prefs.mapLayersPending + (k to mask.toLong())
+        }
+    }
+
+    private fun handleMapLayersNotify(mask: Int) {
+        val k = layersDeviceKey() ?: return
+        mapLayersSupported = true
+        Prefs.mapLayersSupported = Prefs.mapLayersSupported + k
+        val pending = Prefs.mapLayersPending[k]?.toInt()
+        if (pending != null && pending != mask && mapChar != null) {
+            // An edit made while disconnected: it wins over the device's value.
+            writeChar(mapChar, byteArrayOf(0x0A, (pending and 0xFF).toByte(), ((pending shr 8) and 0xFF).toByte()))
+            mapLayers = pending
+        } else {
+            Prefs.mapLayersPending = Prefs.mapLayersPending - k
+            mapLayers = mask
+            Prefs.mapLayersByDevice = Prefs.mapLayersByDevice + (k to mask.toLong())
+        }
+    }
+    var devicePoiIds by mutableStateOf<Set<String>>(emptySet()); private set
+    private var poiIdsBuilding = mutableListOf<String>()
+    private var poiSentAt: Map<String, Long> = emptyMap()
+    private var flaggedTileIds: Set<String> = emptySet()
+    private var tileSentAt: Map<String, Long> = emptyMap()
+
+    /** The version of every tile and .poi this phone sent, per device
+     *  (map/TileVersions.kt), compared with the CDN index for "update available"
+     *  and to skip unchanged hexes. */
+    private val tileVersions by lazy {
+        com.raemond.opentrailpaper.map.DeviceTileVersions(java.io.File(app.filesDir, "device-tile-versions.tsv"))
+    }
+    private var versionsSavePending = false
+    /** Coalesce the per-tile record writes of a download into one save a second. */
+    private fun saveVersionsSoon() {
+        if (versionsSavePending) return
+        versionsSavePending = true
+        main.postDelayed({ versionsSavePending = false; if (tileVersions.dirty) tileVersions.save() }, 1000)
+    }
+
+    /** The device the version records belong to: the connected one, or the last
+     *  one (same key as the map-layer store). */
+    val deviceKey: String? get() = layersDeviceKey()
+
+    // The device's own version records (DeviceTileList), from the last versioned
+    // list. They cover hexes whoever sent them, so they come before this phone's
+    // records; empty on firmware that keeps none. Kept across a disconnect, like
+    // deviceTileIds, but not across a restart (the next list brings them back).
+    /** The device answered the tile list with versions on this connection: it
+     *  keeps them, so tiles go to it with their record. */
+    private var deviceKeepsVersions = false
+    private var deviceTileRecords by mutableStateOf<Map<String, String>>(emptyMap())
+    private var devicePoiRecords by mutableStateOf<Map<String, String>>(emptyMap())
+    private var tileRecordsBuilding = HashMap<String, String>()
+    private var poiRecordsBuilding = HashMap<String, String>()
+    private var tileListVersioned = false
+    private var poiListVersioned = false
+
+    /** Version records for the current device, for the download's filters:
+     *  the device's own where it has one, else what this phone sent. */
+    val tileRecords: Map<String, String> get() = tileVersions.tiles(deviceKey) + deviceTileRecords
+    val poiRecords: Map<String, String> get() = tileVersions.pois(deviceKey) + devicePoiRecords
+
+    private fun tileRecord(id: String): String? =
+        DeviceTileList.record(deviceTileRecords[id], tileVersions.tile(deviceKey, id))
+    private fun poiRecord(id: String): String? =
+        DeviceTileList.record(devicePoiRecords[id], tileVersions.poi(deviceKey, id))
+
+    /**
+     * The device's tile against the CDN index: the same hash is CURRENT; a
+     * different hash, a phone-built tile or one with no record (on the device
+     * or this phone) is an UPDATE; UNKNOWN when the index has no entry
+     * (unreachable, not pre-built, built empty).
+     */
+    fun tileVersionState(id: String): PrebuiltTiles.VersionState =
+        PrebuiltTiles.state(
+            tileRecord(id),
+            PrebuiltTiles.tileHash(com.raemond.opentrailpaper.map.CdnVersions.entry(id)),
+        )
+
+    /** The device's .poi against the CDN index (same rules as tiles). */
+    fun poiVersionState(id: String): PrebuiltTiles.VersionState =
+        PrebuiltTiles.state(
+            poiRecord(id),
+            PrebuiltTiles.poiHash(com.raemond.opentrailpaper.map.CdnVersions.entry(id)),
+        )
+
+    /** On the device. A tile there is never re-sent on its own — even one built
+     *  before the bike-route flags; the rider chooses that (Redownload). */
+    fun tileIsCurrent(id: String): Boolean = id in deviceTileIds
+
+    /**
+     * On the device, on firmware that draws the cycling layer, but not sent by
+     * this phone with the bike-route flags — so it most likely predates them.
+     * Only informs the "redownload to add them" hint; a tile from the website
+     * ZIP or another phone may already have them. A tile the device has a
+     * version record for was sent by an app that sends them, so after them.
+     */
+    fun tilePredatesCycling(id: String): Boolean =
+        deviceSupportsPois && id in deviceTileIds && id !in flaggedTileIds && id !in deviceTileRecords
+
+    /**
+     * On the device, and Redownload would bring something new. With a CDN index
+     * entry, exactly when the hash differs from what this phone sent
+     * ([tileVersionState]). Without one, the heuristic: it predates the
+     * bike-route data, or this phone sent it more than [TILE_REFRESH_AGE_MS] ago.
+     * Drawn ochre/hatched on the Maps screen and counted as "updates".
+     */
+    fun tileNeedsUpdate(id: String): Boolean {
+        if (id !in deviceTileIds) return false
+        return when (tileVersionState(id)) {
+            PrebuiltTiles.VersionState.CURRENT -> false
+            PrebuiltTiles.VersionState.UPDATE -> true
+            PrebuiltTiles.VersionState.UNKNOWN -> tileNeedsUpdateByAge(id)
+        }
+    }
+
+    /** The pre-CDN heuristic behind [tileNeedsUpdate]. */
+    fun tileNeedsUpdateByAge(id: String): Boolean {
+        if (id !in deviceTileIds) return false
+        if (tilePredatesCycling(id)) return true
+        // When this phone sent it, else when the device says it was built.
+        val at = tileSentAt[id] ?: PrebuiltTiles.phoneBuiltAt(deviceTileRecords[id]) ?: return false
+        return System.currentTimeMillis() - at > TILE_REFRESH_AGE_MS
+    }
+
+    /** The POI drop drawn on an on-device hex: none on firmware without the POI
+     *  layer, filled when the device has fresh POIs, hollow otherwise. */
+    fun poiMark(id: String): com.raemond.opentrailpaper.map.HexPoiMark = when {
+        !deviceSupportsPois || id !in deviceTileIds -> com.raemond.opentrailpaper.map.HexPoiMark.NONE
+        poiNeedsSend(id) -> com.raemond.opentrailpaper.map.HexPoiMark.MISSING
+        else -> com.raemond.opentrailpaper.map.HexPoiMark.PRESENT
+    }
+
+    /** The tile's POIs should go to the device: it can draw them, and it has
+     *  none for this tile, or the CDN has a different .poi than the one sent
+     *  ([poiVersionState]). Without a CDN entry: this phone sent them more than
+     *  PoiCache.MAX_AGE_MS ago. */
+    fun poiNeedsSend(id: String): Boolean {
+        if (!deviceSupportsPois) return false
+        if (id !in devicePoiIds) return true
+        return when (poiVersionState(id)) {
+            PrebuiltTiles.VersionState.CURRENT -> false
+            PrebuiltTiles.VersionState.UPDATE -> true
+            PrebuiltTiles.VersionState.UNKNOWN -> {
+                val at = poiSentAt[id] ?: return false            // someone else's: leave it
+                System.currentTimeMillis() - at > PoiCache.MAX_AGE_MS
+            }
+        }
+    }
 
     /**
      * The device's dashboard config — the page carousel — as the text of
@@ -312,8 +504,17 @@ class BleManager(private val app: Application) {
     private var mapSentBytes = 0
     private var mapEndSent = false
 
-    private var tileQueue = ArrayDeque<Pair<String, ByteArray>>()
+    /** [version]: its record (PrebuiltTiles.cdnRecord); null = built on this
+     *  phone, recorded as phoneRecord() when the device saves it. */
+    private class TileJob(val id: String, val data: ByteArray, val poi: Boolean, val version: String?)
+    private var tileQueue = ArrayDeque<TileJob>()
     private var currentTileId: String? = null
+    private var currentIsPoi = false
+    private var currentVersion: String? = null
+    private var resendAll = false                   // this job is a Redownload
+    // BLE side of the download timing (see DownloadStats).
+    private var tileJobStarted = 0L
+    private var tileJobBytes = 0L
     private var tileJobFailed = false
     private var tilesMoreComing = false
     private var tileIdsBuilding = mutableListOf<String>()
@@ -392,13 +593,80 @@ class BleManager(private val app: Application) {
      * initialised in declaration order, so it is null at exactly the same point.
      * Position is the fix.
      */
+    // MARK: fixed pairing
+    //
+    // An OpenTrailPaper belongs to one phone (firmware ble_server.cpp): the
+    // first to pair owns it until the rider unpairs on the device, and any
+    // other phone is disconnected the moment it tries to pair. The app's half:
+    // remember WHICH device is ours and only connect to that one, skip devices
+    // that advertise they belong to another phone, and when a device turns us
+    // away, say why and how to fix it.
+    //
+    // Declared above `init` for the same reason as scanCallback below: init
+    // reaches startScan(), which reads all of these.
+
+    enum class PairingIssue { PAIRED_ELSEWHERE, NOT_RECOGNISED }
+
+    /** Why the device won't have us — drives the one pairing dialog. */
+    var pairingIssue by mutableStateOf<PairingIssue?>(null)
+
+    /** MAC of OUR device, set once it has delivered data over a bonded link. */
+    var pairedDeviceAddress by mutableStateOf(Prefs.pairedDeviceAddress); private set
+    var pairedDeviceName by mutableStateOf(Prefs.pairedDeviceName); private set
+
+    /** Devices that turned us away (or were forgotten) this session. */
+    private val rejectedAddresses = mutableSetOf<String>()
+    /**
+     * Paired-to-someone devices seen while looking for a first device. If
+     * nothing unpaired shows up we try ONE of them: after a reinstall the app
+     * has forgotten the device but Android may still hold the bond, and then
+     * the device lets us straight in.
+     */
+    private val pairedElsewhereSeen = LinkedHashMap<String, BluetoothDevice>()
+    private var fallbackJob: Job? = null
+    private var onFallbackAttempt = false
+    private var forgetting = false
+    /** Connections in a row that ended before the device sent any status. */
+    private var barrenConnects = 0
+    /** Waiting for Android to finish bonding before the GATT session starts. */
+    private var awaitingBond: BluetoothGatt? = null
+
+    private val bondReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action != BluetoothDevice.ACTION_BOND_STATE_CHANGED) return
+            val dev: BluetoothDevice? = if (Build.VERSION.SDK_INT >= 33) {
+                intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+            } else {
+                @Suppress("DEPRECATION")
+                intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+            }
+            val bond = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.ERROR)
+            main.post { onBondStateChanged(dev?.address, bond) }
+        }
+    }
+
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
+            val pairedFlag = advertisesPaired(result.scanRecord?.getManufacturerSpecificData(0xFFFF))
             main.post {
-                if (gatt == null) {
-                    stopScan()
-                    connect(result.device)
+                if (gatt != null) return@post
+                val dev = result.device
+                val saved = pairedDeviceAddress
+                if (saved != null) {
+                    // Fixed pairing: ours or nothing.
+                    if (!dev.address.equals(saved, ignoreCase = true)) return@post
+                } else {
+                    if (dev.address in rejectedAddresses) return@post
+                    // Paired to someone — unless that someone is this phone
+                    // (Android still holds the bond, e.g. after a reinstall).
+                    if (pairedFlag == true && dev.bondState != BluetoothDevice.BOND_BONDED) {
+                        pairedElsewhereSeen[dev.address] = dev
+                        return@post
+                    }
                 }
+                fallbackJob?.cancel()
+                stopScan()
+                connect(dev)
             }
         }
 
@@ -415,10 +683,18 @@ class BleManager(private val app: Application) {
         loadSettingsCache()
         // Show last-known on-device tiles immediately; a refresh confirms them.
         deviceTileIds = Prefs.deviceTileIds
+        flaggedTileIds = Prefs.flaggedTileIds
+        tileSentAt = Prefs.tileSentAt
+        loadMapLayersState()   // last device's map layers, for the Maps screen while disconnected
+        poiSentAt = Prefs.poiSentAt
         refreshPermissions()
         app.registerReceiver(
             adapterReceiver,
             IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED),
+        )
+        app.registerReceiver(
+            bondReceiver,
+            IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED),
         )
         // Returning users get Bluetooth up immediately so the device auto-
         // connects. First-run users start it from the tutorial's Bluetooth step,
@@ -498,6 +774,18 @@ class BleManager(private val app: Application) {
         val scanner = adapter?.bluetoothLeScanner ?: return
         if (!bluetoothPermission.isGranted || adapter?.isEnabled != true) return
         if (scanning || gatt != null) return
+        // Our device, known: no scan. autoConnect has no timeout and fires the
+        // moment it is in range — the same path every reconnect takes.
+        pairedDeviceAddress?.let { saved ->
+            val dev = runCatching { adapter?.getRemoteDevice(saved) }.getOrNull()
+            if (dev != null) {
+                device = dev
+                state = ConnState.CONNECTING
+                gatt = dev.connectGatt(app, true, gattCallback, BluetoothDevice.TRANSPORT_LE)
+                queue.attach(gatt)
+                return
+            }
+        }
         scanning = true
         state = ConnState.SCANNING
         scanner.startScan(
@@ -507,6 +795,119 @@ class BleManager(private val app: Application) {
                 .build(),
             scanCallback,
         )
+        if (pairedDeviceAddress == null) armPairedFallback()
+    }
+
+    /**
+     * Looking for a first device and only paired-to-someone ones answer: after
+     * a few seconds, try one of them once (see [pairedElsewhereSeen]).
+     */
+    private fun armPairedFallback() {
+        fallbackJob?.cancel()
+        fallbackJob = scope.launch {
+            while (isActive) {
+                delay(6000)
+                if (!scanning || gatt != null || pairedDeviceAddress != null) return@launch
+                val hit = pairedElsewhereSeen.entries.firstOrNull { it.key !in rejectedAddresses }
+                    ?: continue
+                rejectedAddresses.add(hit.key)   // one try per session, success or not
+                onFallbackAttempt = true
+                stopScan()
+                connect(hit.value)
+                return@launch
+            }
+        }
+    }
+
+    /** Remember the connected device as OURS — it just admitted our bond. */
+    private fun rememberPairedDevice() {
+        val dev = device ?: return
+        onFallbackAttempt = false
+        pairingIssue = null
+        barrenConnects = 0
+        rejectedAddresses.remove(dev.address)
+        if (pairedDeviceAddress.equals(dev.address, ignoreCase = true)) return
+        pairedDeviceAddress = dev.address
+        pairedDeviceName = runCatching { dev.name }.getOrNull()
+        Prefs.pairedDeviceAddress = pairedDeviceAddress
+        Prefs.pairedDeviceName = pairedDeviceName
+    }
+
+    /**
+     * Settings › Unpair: while connected, tell the device to drop this phone
+     * ([0xFE 0x55] on settings — the same as Paired Devices › Phone › Unpair
+     * on the panel), then forget it here, which also removes Android's bond.
+     * Not connected: forget here only.
+     */
+    fun unpairDevice() {
+        val c = settingsChar
+        if (state != ConnState.CONNECTED || c == null) { forgetDevice(); return }
+        writeChar(c, byteArrayOf(0xFE.toByte(), 0x55))
+        // The device drops the link once it has acted; give the write a moment.
+        main.postDelayed({ forgetDevice() }, 1500)
+    }
+
+    /**
+     * Settings › Forget this device: stop connecting to it, remove Android's
+     * bond (so a later re-pair starts clean) and look for a device to pair
+     * with. The device keeps ITS half until the rider unpairs on the device.
+     */
+    fun forgetDevice() {
+        val addr = pairedDeviceAddress ?: device?.address
+        pairedDeviceAddress = null
+        pairedDeviceName = null
+        Prefs.pairedDeviceAddress = null
+        Prefs.pairedDeviceName = null
+        pairingIssue = null
+        barrenConnects = 0
+        pairedElsewhereSeen.clear()
+        onFallbackAttempt = false
+        rejectedAddresses.clear()
+        if (addr != null) {
+            // Not re-adopted this session; and drop Android's keys — they would
+            // only fail against a device that has been (or will be) unpaired.
+            rejectedAddresses.add(addr)
+            runCatching { adapter?.getRemoteDevice(addr) }.getOrNull()?.let(::removeBond)
+        }
+        if (gatt != null) {
+            forgetting = true
+            gatt?.disconnect()
+            // A pending autoConnect never reports a disconnect: tear it down here.
+            if (state != ConnState.CONNECTED) {
+                forgetting = false
+                device = null
+                teardownConnection(reconnect = false)
+                startScan()
+            }
+        } else {
+            stopScan()
+            startScan()
+        }
+    }
+
+    private fun onBondStateChanged(address: String?, bond: Int) {
+        val g = awaitingBond ?: return
+        if (address == null || !address.equals(g.device.address, ignoreCase = true)) return
+        when (bond) {
+            BluetoothDevice.BOND_BONDED -> {
+                awaitingBond = null
+                startGattSession(g)
+            }
+            BluetoothDevice.BOND_NONE -> {
+                // Pairing failed: cancelled, wrong code, or the device refused
+                // us (it's paired with another phone). The device drops a
+                // refused link itself; don't sit on one it didn't.
+                awaitingBond = null
+                g.disconnect()
+            }
+        }
+    }
+
+    /** MTU first, then discovery — every chunk size derives from the MTU. */
+    private fun startGattSession(g: BluetoothGatt) {
+        queue.attach(g)
+        queue.enqueue(GattQueue.Op.Mtu(517))
+        g.discoverServices()
     }
 
     private fun stopScan() {
@@ -533,12 +934,23 @@ class BleManager(private val app: Application) {
             main.post {
                 when (newState) {
                     BluetoothProfile.STATE_CONNECTED -> {
-                        // Bigger ATT payload first: every transfer's chunk size
-                        // is derived from it, and negotiating after the pumps
-                        // start would change the size mid-stream.
-                        queue.attach(g)
-                        queue.enqueue(GattQueue.Op.Mtu(517))
-                        g.discoverServices()
+                        // Fixed pairing: every characteristic needs an
+                        // encrypted link, so bond BEFORE touching any. Left to
+                        // the first read, Android's retry-after-pairing is
+                        // patchy across versions and the read just fails.
+                        // Bonded already: Android encrypts on connect.
+                        if (g.device.bondState == BluetoothDevice.BOND_BONDED) {
+                            // Bigger ATT payload first: every transfer's chunk
+                            // size is derived from it, and negotiating after
+                            // the pumps start would change it mid-stream.
+                            startGattSession(g)
+                        } else {
+                            queue.attach(g)
+                            awaitingBond = g
+                            if (g.device.bondState != BluetoothDevice.BOND_BONDING) {
+                                g.device.createBond()
+                            }
+                        }
                     }
 
                     BluetoothProfile.STATE_DISCONNECTED -> handleDisconnect()
@@ -630,6 +1042,7 @@ class BleManager(private val app: Application) {
         otaChar = service.getCharacteristic(BikeUuid.ota)
         sensorsChar = service.getCharacteristic(BikeUuid.sensors)
         mapChar = service.getCharacteristic(BikeUuid.map)
+        loadMapLayersState()
         dashChar = service.getCharacteristic(BikeUuid.dash)
         // Absent on firmware built before the mesh landed, so every mesh call
         // below no-ops rather than crashing on an older device. Same for media
@@ -667,6 +1080,9 @@ class BleManager(private val app: Application) {
             // asking before the CCCD write lands throws the answer away. The tab
             // badge needs the state whether or not the Mesh screen is on top.
             BikeUuid.mesh -> refreshMesh()
+            // Map layers: firmware without them never answers, which is what
+            // keeps the app's switches hidden for it.
+            BikeUuid.map -> requestMapLayers()
             // Every workout reply is a notification too: ask only once the
             // CCCD write has landed, so the Workouts screen opens populated.
             BikeUuid.workout -> refreshWorkouts()
@@ -749,9 +1165,26 @@ class BleManager(private val app: Application) {
             tileQueue.clear()
             finishTileJob("Interrupted — reconnect to resume")
         }
+        deviceSupportsPois = false      // re-learnt from the next 0x08 answer
+        deviceKeepsVersions = false     // and this from the next versioned list
 
         status = DeviceStatus()
+        val admitted = sawStatusSinceConnect
         sawStatusSinceConnect = false
+        awaitingBond = null
+        // Ours, and turning us away: a remembered device that keeps dropping
+        // us before any status (the firmware pushes nothing until the link
+        // proves the bond) was unpaired on the device, or now belongs to
+        // another phone. Three in a row, so a reboot or range drop doesn't
+        // cry wolf.
+        if (!admitted) {
+            barrenConnects += 1
+            if (barrenConnects == 3 && !onFallbackAttempt && pairedDeviceAddress != null) {
+                pairingIssue = PairingIssue.NOT_RECOGNISED
+            }
+        } else {
+            barrenConnects = 0
+        }
         rides = emptyList(); loadingRides = false
         // Nothing queued can proceed without a link, and a half-received file
         // must not be mistaken for a complete one on reconnect.
@@ -762,7 +1195,40 @@ class BleManager(private val app: Application) {
         lastUploadProgress = null; routeSent = false; routeReceived = false
         sensors = emptyList(); scanningSensors = false
 
-        teardownConnection(reconnect = true)
+        // Not ours to reconnect to: forgetDevice() dropped it, or it was the
+        // one-off try at a paired-elsewhere device and it turned us away.
+        when {
+            forgetting -> {
+                forgetting = false
+                device = null
+                teardownConnection(reconnect = false)
+                startScan()
+            }
+            onFallbackAttempt && !admitted -> {
+                onFallbackAttempt = false
+                pairingIssue = PairingIssue.PAIRED_ELSEWHERE
+                device = null
+                teardownConnection(reconnect = false)
+                startScan()
+            }
+            else -> {
+                onFallbackAttempt = false
+                teardownConnection(reconnect = true)
+            }
+        }
+    }
+
+    /** Manufacturer data after the 0xFFFF company id: [0x4F][flags], bit0 =
+     *  paired. null for firmware from before fixed pairing (no flag at all). */
+    private fun advertisesPaired(data: ByteArray?): Boolean? {
+        if (data == null || data.size < 2 || data[0] != 0x4F.toByte()) return null
+        return (data[1].toInt() and 0x01) != 0
+    }
+
+    /** BluetoothDevice.removeBond() is hidden API but has been stable since
+     *  API 19 and is what every BLE accessory app uses; best effort. */
+    private fun removeBond(dev: BluetoothDevice) {
+        runCatching { dev.javaClass.getMethod("removeBond").invoke(dev) }
     }
 
     private fun teardownConnection(reconnect: Boolean) {
@@ -2381,16 +2847,25 @@ class BleManager(private val app: Application) {
 
     /**
      * Ask the device which H3 tile ids are already on its SD, so the caller can
-     * skip re-sending them (replied via 0xD0/0xD1/0xD2 notifies).
+     * skip re-sending them (replied via 0xD0/0xD1/0xD2 notifies). Asks for each
+     * file's version too; firmware that keeps none ignores that (DeviceTileList).
      */
-    fun refreshDeviceTiles() = writeChar(mapChar, byteArrayOf(0x07))
+    fun refreshDeviceTiles() {
+        writeChar(mapChar, DeviceTileList.request(0x07))
+        writeChar(mapChar, DeviceTileList.request(0x08))   // .poi files (new firmware only)
+    }
 
     // Streaming upload: the app produces tiles batch-by-batch while download +
     // vectorization runs, and sends them in parallel. Call startTileStream()
     // once, enqueueTiles() per batch as they're built, finishTileStream() when
     // the last batch has been produced.
-    fun startTileStream() {
+    /** [resend]: a Redownload — tiles and POIs go out even though the device
+     *  already has them (POIs still only to firmware that draws them). */
+    fun startTileStream(resend: Boolean = false) {
         if (mapChar == null) { tileMessage = "Not connected"; return }
+        resendAll = resend
+        tileJobStarted = System.nanoTime()
+        tileJobBytes = 0
         tileQueue = ArrayDeque()
         tilesTotal = 0
         tilesDone = 0
@@ -2420,16 +2895,29 @@ class BleManager(private val app: Application) {
 
     /**
      * Add freshly-built tiles to the send queue; starts pumping if idle. Skips
-     * tiles already on the device or already queued.
+     * tiles already on the device or already queued. [versions]: each tile's
+     * record (PrebuiltTiles.cdnRecord); a tile without one is phone-built.
      */
-    fun enqueueTiles(newOnes: List<Pair<String, ByteArray>>) {
+    fun enqueueTiles(newOnes: List<Pair<String, ByteArray>>, versions: Map<String, String> = emptyMap()) =
+        enqueue(newOnes.filter { resendAll || !tileIsCurrent(it.first) }, poi = false, versions)
+
+    /**
+     * Queue tiles' `.poi` files (sent through the same tile transfer — the
+     * firmware tells them apart by their magic). Skipped for firmware without
+     * POI support; which POIs need sending (missing, changed hash, old) is the
+     * caller's choice (MapsSheet, from poiNeedsSend and the CDN index).
+     */
+    fun enqueuePois(newOnes: List<Pair<String, ByteArray>>, versions: Map<String, String> = emptyMap()) =
+        enqueue(newOnes.filter { deviceSupportsPois }, poi = true, versions)
+
+    private fun enqueue(newOnes: List<Pair<String, ByteArray>>, poi: Boolean, versions: Map<String, String>) {
         if (!tilesUploading) return
-        val queued = tileQueue.map { it.first }.toSet()
+        val queued = tileQueue.filter { it.poi == poi }.map { it.id }.toSet()
         val fresh = newOnes.filter {
-            it.first !in deviceTileIds && it.first !in queued && it.first != currentTileId
+            it.first !in queued && !(it.first == currentTileId && currentIsPoi == poi)
         }
         if (fresh.isEmpty()) return
-        tileQueue.addAll(fresh)
+        tileQueue.addAll(fresh.map { TileJob(it.first, it.second, poi, versions[it.first]) })
         tilesTotal += fresh.size
         if (currentTileId == null) sendNextTile()   // pump if idle
         reportTiles()
@@ -2451,6 +2939,14 @@ class BleManager(private val app: Application) {
 
     private fun finishTileJob(message: String?) {
         if (tilesUploading) {
+            val secs = (System.nanoTime() - tileJobStarted) / 1e9
+            android.util.Log.i(
+                "Maps",
+                "tile job: %d files, %d KB, %.1f s from first build to last ack (%.1f KB/s overall)".format(
+                    java.util.Locale.US, tilesDone, tileJobBytes / 1024, secs,
+                    tileJobBytes / 1024.0 / maxOf(secs, 0.1),
+                ),
+            )
             val ok = message == "Tiles installed"
             TransferCenter.finish(
                 TILES_TRANSFER, success = ok,
@@ -2474,18 +2970,26 @@ class BleManager(private val app: Application) {
             refreshDeviceTiles()
             return
         }
-        currentTileId = tile.first
-        mapData = tile.second
+        currentTileId = tile.id
+        currentIsPoi = tile.poi
+        // Fixed now, so the device and this phone record the same thing.
+        currentVersion = tile.version ?: PrebuiltTiles.phoneRecord()
+        mapData = tile.data
         mapSentBytes = 0
         mapEndSent = false
         mapUploading = true            // reuse the CHR_MAP chunk pump
         tileMessage = "Sending tile ${tilesDone + 1}/$tilesTotal…"
         reportTiles()
 
-        val cmd = Packet(5 + tile.first.length)
+        // A .poi goes under "<id>.poi"; saveTile strips the extension and stores
+        // it by its magic either way, the name just reads well in logs.
+        // Firmware that keeps versions gets the record after a NUL.
+        val name = if (tile.poi) "${tile.id}.poi" else tile.id
+        val field = DeviceTileList.beginName(name, currentVersion.takeIf { deviceKeepsVersions })
+        val cmd = Packet(5 + field.size)
         cmd.u8(0x06)                   // begin-tile
-        cmd.u32(tile.second.size)
-        cmd.raw(tile.first.toByteArray())
+        cmd.u32(tile.data.size)
+        cmd.raw(field)
         writeChar(mapChar, cmd.bytes())
     }
 
@@ -2518,7 +3022,27 @@ class BleManager(private val app: Application) {
             0xB1 -> {                                             // saved + active
                 val id = currentTileId
                 if (id != null) {                                 // a tile finished
-                    deviceTileIds = deviceTileIds + id
+                    tileJobBytes += mapData.size
+                    val version = currentVersion ?: PrebuiltTiles.phoneRecord()
+                    // Kept by the device too: mirror it, as its next list would.
+                    if (deviceKeepsVersions) {
+                        if (currentIsPoi) devicePoiRecords = devicePoiRecords + (id to version)
+                        else deviceTileRecords = deviceTileRecords + (id to version)
+                    }
+                    if (currentIsPoi) {
+                        tileVersions.setPoi(deviceKey, id, version)
+                        devicePoiIds = devicePoiIds + id
+                        poiSentAt = poiSentAt + (id to System.currentTimeMillis())
+                        Prefs.poiSentAt = poiSentAt
+                    } else {
+                        tileVersions.setTile(deviceKey, id, version)
+                        deviceTileIds = deviceTileIds + id
+                        flaggedTileIds = flaggedTileIds + id
+                        Prefs.flaggedTileIds = flaggedTileIds
+                        tileSentAt = tileSentAt + (id to System.currentTimeMillis())
+                        Prefs.tileSentAt = tileSentAt
+                    }
+                    saveVersionsSoon()
                     tilesDone += 1
                     currentTileId = null
                     sendNextTile()
@@ -2547,19 +3071,47 @@ class BleManager(private val app: Application) {
                 }
             }
 
-            0xD0 -> tileIdsBuilding = mutableListOf()              // tile-list begin
+            0xD0 -> {                                             // tile-list begin
+                tileIdsBuilding = mutableListOf()
+                tileRecordsBuilding = HashMap()
+                tileListVersioned = DeviceTileList.beginHasVersions(d)
+            }
 
             0xD1 -> {                                             // comma-separated ids
-                if (d.size <= 1) return
-                String(d, 1, d.size - 1, Charsets.UTF_8)
-                    .split(',')
-                    .filter { it.isNotEmpty() }
-                    .forEach { tileIdsBuilding.add(it) }
+                if (d.size <= 1) return                           // ("<id>=<record>" if versioned)
+                DeviceTileList.parseEntries(String(d, 1, d.size - 1, Charsets.UTF_8), tileIdsBuilding, tileRecordsBuilding)
             }
 
             0xD2 -> {                                             // tile-list end
+                deviceKeepsVersions = tileListVersioned
+                deviceTileRecords = tileRecordsBuilding
                 deviceTileIds = tileIdsBuilding.toSet()
                 Prefs.deviceTileIds = deviceTileIds
+                tileVersions.pruneTiles(deviceKey, deviceTileIds)
+                saveVersionsSoon()
+            }
+
+            0xD3 -> {                                             // poi-list begin
+                poiIdsBuilding = mutableListOf()
+                poiRecordsBuilding = HashMap()
+                poiListVersioned = DeviceTileList.beginHasVersions(d)
+            }
+
+            0xD4 -> {                                             // comma-separated ids
+                if (d.size <= 1) return
+                DeviceTileList.parseEntries(String(d, 1, d.size - 1, Charsets.UTF_8), poiIdsBuilding, poiRecordsBuilding)
+            }
+
+            0xD5 -> {                                             // poi-list end
+                devicePoiRecords = if (poiListVersioned) poiRecordsBuilding else emptyMap()
+                devicePoiIds = poiIdsBuilding.toSet()
+                tileVersions.prunePois(deviceKey, devicePoiIds)
+                saveVersionsSoon()
+                deviceSupportsPois = true
+            }
+
+            0xE0 -> {                                             // map-layer mask
+                if (d.size >= 3) handleMapLayersNotify((d[1].toInt() and 0xFF) or ((d[2].toInt() and 0xFF) shl 8))
             }
 
             0xC0 -> deviceMapsBuilding = mutableListOf()           // map-list begin
@@ -2716,6 +3268,7 @@ class BleManager(private val app: Application) {
         if (state != ConnState.CONNECTED || routeChar == null) return
         val firstStatus = !sawStatusSinceConnect
         sawStatusSinceConnect = true
+        if (firstStatus) rememberPairedDevice()   // the device admitted us: ours
         if (status.gpsFix) {
             // The device was ALREADY locked when we connected. We start the
             // stream the moment the route characteristic shows up, before the
@@ -2745,6 +3298,10 @@ class BleManager(private val app: Application) {
         // TransferCenter ids for the one-at-a-time transfers.
         private const val OTA_TRANSFER = "ble.ota"
         private const val MAP_TRANSFER = "ble.map"
+
+        /** A map tile this phone sent longer ago than this is offered as an
+         *  update (the phone's own tile cache expires at the same age). */
+        const val TILE_REFRESH_AGE_MS = 90L * 24 * 60 * 60 * 1000
         private const val TILES_TRANSFER = "ble.tiles"
         private const val ROUTE_TRANSFER = "ble.route"
 

@@ -12,8 +12,9 @@
 #include "crash_record.h"
 #include "crash_report.h"
 #include "memfault_service.h"
+int memfaultDeliveries=0;
 #if OT_MEMFAULT
-namespace memfault_service {bool pending(size_t* p){if(p)*p=4096;return true;}const char* pendingId(){return "test-id";}}
+namespace memfault_service {bool pending(size_t* p){if(p)*p=4096;return true;}const char* pendingId(){return "test-id";}void deliverNow(const char*){++memfaultDeliveries;}}
 #endif
 #define RTC_NOINIT_ATTR
 #define CONFIG_IDF_TARGET_ESP32S3 1
@@ -57,6 +58,8 @@ struct Preferences {
  size_t getBytesLength(const char* k){assert(!sdDepth);return nvs.count(k)?nvs[k].size():0;}
  size_t getBytes(const char* k,void* p,size_t n){assert(!sdDepth);n=std::min(n,nvs[k].size());memcpy(p,nvs[k].data(),n);return n;}
  size_t putBytes(const char* k,const void* p,size_t n){assert(!sdDepth);if(!writeOK)return 0;nvs[k]=std::string((const char*)p,n);return n;}
+ uint32_t getUInt(const char* k,uint32_t d){assert(!sdDepth);if(!nvs.count(k)||nvs[k].size()!=4)return d;uint32_t v;memcpy(&v,nvs[k].data(),4);return v;}
+ size_t putUInt(const char* k,uint32_t v){assert(!sdDepth);if(!writeOK)return 0;nvs[k]=std::string((const char*)&v,4);return 4;}
  bool remove(const char* k){assert(!sdDepth);if(!removeOK)return false;nvs.erase(k);return true;}
  void end(){assert(!sdDepth);}
 };
@@ -75,29 +78,49 @@ struct Disk {
  bool rename(const char* a,const char* b){assert(sdDepth);if(!renameOK)return false;files[b]=files[a];files.erase(a);return true;}
 } SD;
 // PRODUCTION
-void reboot(int reason=1){captureReady=false;sequence=0;current={};scratch={};currentPending=currentDurable=coreAwaitingDurability=false;nextRetry=0;nowMs=100;crash_report::begin(reason,reason==1?"power-on":"interrupt watchdog","test");}
+void reboot(int reason=1){captureReady=false;sequence=0;current={};scratch={};currentPending=currentDurable=coreAwaitingDurability=false;nextRetry=0;failedAttempts=0;nowMs=100;crash_report::begin(reason,reason==1?"power-on":"interrupt watchdog","test");}
 void tick(){nowMs+=30001;crash_report::tick();assert(!powerDepth&&!sdDepth);}
+int reports(){int n=0;for(auto& kv:nvs)if(kv.first.rfind("report",0)==0)++n;return n;}
+size_t reportBytes(){size_t n=0;for(auto& kv:nvs)if(kv.first.rfind("report",0)==0)n+=kv.second.size();return n;}
+bool delivered(uint32_t id){char p[64];snprintf(p,sizeof(p),"/logs/crash-%08lx.log",(unsigned long)id);return files.count(p);}
 void clean(){nvs.clear();files.clear();memset(tail,0,sizeof(tail));mounted=host=false;nvsOK=writeOK=removeOK=renameOK=true;sdLimit=SIZE_MAX;coreResult=1;erases=0;reboot();}
 int main(){
  clean();tick();assert(nvs.empty()&&files.empty());
  recording=true;crash_report::requestTestPanic();tick();assert(nvs.empty());recording=false;
  crash_report::recordLine("last GPS window clean\n",22);reboot(5);
- assert(nvs.size()==1&&current.valid());assert(std::string(current.text).find("last GPS window clean")!=std::string::npos);assert(std::string(current.text).find(OT_MEMFAULT ? "crash_backend=Memfault" : "No decodable core dump")!=std::string::npos);
- tick();assert(nvs.size()==1);reboot();mounted=true;tick();assert(nvs.empty()&&files.size()==1);
+ assert(reports()==1&&current.valid());assert(std::string(current.text).find("last GPS window clean")!=std::string::npos);assert(std::string(current.text).find(OT_MEMFAULT ? "crash_backend=Memfault" : "No decodable core dump")!=std::string::npos);
+ tick();assert(reports()==1);reboot();mounted=true;tick();assert(nvs.empty()&&files.size()==1);
  // A short SD write and a failed rename preserve NVS. Retry verifies content.
- clean();reboot(5);mounted=true;sdLimit=10;tick();assert(nvs.size()==1);sdLimit=SIZE_MAX;renameOK=false;tick();assert(nvs.size()==1);renameOK=true;tick();assert(nvs.empty()&&files.size()==1);
+ clean();reboot(5);mounted=true;sdLimit=10;tick();assert(reports()==1);sdLimit=SIZE_MAX;renameOK=false;tick();assert(reports()==1);renameOK=true;tick();assert(nvs.empty()&&files.size()==1);
  // Completed file + failed NVS remove is replayed without duplicate append.
- clean();reboot(5);mounted=true;removeOK=false;tick();assert(nvs.size()==1);auto saved=files;reboot();removeOK=true;tick();assert(nvs.empty()&&saved==files);
+ clean();reboot(5);mounted=true;removeOK=false;tick();assert(reports()==1);auto saved=files;reboot();removeOK=true;tick();assert(nvs.empty()&&saved==files);
  // Missing NVS still permits direct SD persistence; no premature core erase.
  clean();nvsOK=false;coreResult=0;reboot(5);assert(erases==0&&currentPending);mounted=true;tick();assert(erases==(OT_MEMFAULT ? 0 : 1)&&!currentPending&&files.size()==1);
  // A durable flash report protects summary before acknowledging core payload.
- clean();coreResult=0;reboot(4);assert(erases==(OT_MEMFAULT ? 0 : 1)&&nvs.size()==1);assert(std::string(current.text).find(OT_MEMFAULT ? "crash_backend=Memfault" : "42012345")!=std::string::npos);
- // Four crashes with no card retain four reports; a fifth stays in RAM.
- clean();for(int i=0;i<5;++i)reboot(5);assert(nvs.size()==4&&currentPending&&!currentDurable);mounted=true;tick();assert(nvs.empty()&&files.size()==5);
+ clean();coreResult=0;reboot(4);assert(erases==(OT_MEMFAULT ? 0 : 1)&&reports()==1);assert(std::string(current.text).find(OT_MEMFAULT ? "crash_backend=Memfault" : "42012345")!=std::string::npos);
+ // Four crashes with no card fill four slots; a fifth keeps the OLDEST and
+ // replaces the newest, so it survives a reset instead of staying RAM-only.
+ clean();uint32_t ids[5];for(int i=0;i<5;++i){reboot(5);ids[i]=current.id;}
+ assert(reports()==4&&currentPending&&currentDurable);reboot();mounted=true;tick();
+ assert(nvs.empty()&&files.size()==4&&delivered(ids[0])&&delivered(ids[1])&&delivered(ids[2])&&!delivered(ids[3])&&delivered(ids[4]));
+ // Byte cap: large reports never exceed NVS_BYTE_CAP; still oldest + latest kept.
+ clean();{uint32_t bigIds[6];std::string big(180,'x');big+='\n';
+  for(int i=0;i<6;++i){for(int j=0;j<10;++j)crash_report::recordLine(big.c_str(),big.size());reboot(5);bigIds[i]=current.id;
+   assert(reportBytes()<=NVS_BYTE_CAP&&currentDurable);}
+  assert(reports()==2);mounted=true;tick();assert(files.size()==2&&delivered(bigIds[0])&&delivered(bigIds[5]));}
+ // Mount hook delivers immediately (no 30 s wait) and also kicks Memfault.
+ clean();reboot(5);memfaultDeliveries=0;mounted=true;crash_report::onSdMounted("boot mount");assert(nvs.empty()&&files.size()==1&&memfaultDeliveries==OT_MEMFAULT&&!sdDepth&&!powerDepth);
+ // Mount hook never touches the card while a USB host owns it.
+ clean();reboot(5);mounted=host=true;crash_report::onSdMounted("late mount");assert(files.empty()&&reports()==1);host=false;
+ // Pending work retries every ~3 s, then backs off to 30 s.
+ clean();reboot(5);for(int i=0;i<25;++i){nowMs+=3001;crash_report::tick();}
+ assert(int32_t(nextRetry-nowMs)>3001);mounted=true;nowMs+=3001;crash_report::tick();assert(reports()==1);
+ nowMs+=30001;crash_report::tick();assert(nvs.empty()&&files.size()==1);
+ clean();reboot(5);nowMs+=3001;crash_report::tick();mounted=true;nowMs+=3001;crash_report::tick();assert(nvs.empty()&&files.size()==1);
  // USB host ownership prohibits SD access; report persists across normal reboot.
- clean();reboot(5);mounted=host=true;tick();assert(files.empty()&&nvs.size()==1);reboot();host=false;tick();assert(nvs.empty()&&files.size()==1);
+ clean();reboot(5);mounted=host=true;tick();assert(files.empty()&&reports()==1);reboot();host=false;tick();assert(nvs.empty()&&files.size()==1);
  // CRC rejects corrupted headers, body, RTC tail and an interrupted tail write.
  crash_record::Record r{};r.id=1;strcpy(r.text,"test");r.length=4;r.seal();assert(r.valid());r.id^=1;assert(!r.valid());r.id^=1;r.text[0]^=1;assert(!r.valid());
  crash_record::Line l{};l.write(1,5,"test",4);assert(l.valid());l.sequence=0;assert(!l.valid());l.write(1,5,"test",4);l.text[0]^=1;assert(!l.valid());
- puts("Crash report boot/NVS/SD/short-write/reboot/CRC/queue tests passed");
+ puts("Crash report boot/NVS/SD/short-write/reboot/CRC/queue/byte-cap/mount-hook/retry tests passed");
 }

@@ -69,9 +69,16 @@ struct Data {
     bool     wantResponse = false;
     uint32_t dest = 0;
     uint32_t source = 0;
-    uint32_t requestId = 0;    // set on an ack: the id being acknowledged
+    uint32_t requestId = 0;    // set on an ack or a reply: the id answered
     uint32_t replyId = 0;
 };
+// dest, source, request_id and reply_id are FIXED32 on the wire (wire type 5),
+// not varints. Getting that wrong is invisible in a round trip through this
+// codec and fatal against nanopb, which refuses a field whose wire type does not
+// match the schema — an earlier version wrote request_id as a varint, so every
+// ack this firmware sent was undecodable by the node it was acknowledging.
+// want_response also arrives folded into the optional `bitfield` (field 9, bit
+// 1) from newer firmware; decodeData ORs it in the way Router::perhapsDecode does.
 
 // Returns the encoded length, or 0 if it would not fit in `cap`.
 size_t encodeData(const Data& d, uint8_t* out, size_t cap);
@@ -83,6 +90,13 @@ struct User {
     char    longName[40] = {};
     char    shortName[8] = {};  // up to 4 glyphs in practice
     uint8_t hwModel = 0;        // HardwareModel; 0 = UNSET
+    // Curve25519 public key (field 8). Meshtastic 2.5+ only accepts and sends
+    // encrypted direct messages to a node whose key it holds, and current
+    // firmware refuses channel-encrypted ("legacy") DMs outright — so a node
+    // that advertises no key cannot be messaged directly at all. Anything but
+    // exactly 32 bytes is ignored on decode, as Meshtastic does.
+    uint8_t publicKey[32] = {};
+    bool    hasPublicKey = false;
 };
 
 size_t encodeUser(const User& u, uint8_t* out, size_t cap);
@@ -115,6 +129,59 @@ size_t encodePosition(const Position& p, uint8_t* out, size_t cap);
 // NONE (0) is an ACK; anything else is a NAK carrying the reason.
 size_t encodeRouting(uint32_t errorReason, uint8_t* out, size_t cap);
 bool decodeRoutingError(const uint8_t* in, size_t len, uint32_t& err);
+
+// The Routing.Error values this firmware sends or acts on.
+enum RoutingError : uint8_t {
+    ROUTING_NONE               = 0,
+    ROUTING_NO_CHANNEL         = 6,
+    ROUTING_NO_RESPONSE        = 8,
+    ROUTING_PKI_FAILED         = 34,
+    // "I could not decrypt your DM because I do not know your key." The sender
+    // answers it with its NodeInfo, which is how a node that rebooted (and
+    // forgot its neighbours' keys) relearns one.
+    ROUTING_PKI_UNKNOWN_PUBKEY = 35,
+};
+
+// ---------------------------------------------------------------------------
+// PKI direct messages
+// ---------------------------------------------------------------------------
+//
+// Meshtastic 2.5+ (CryptoEngine::encryptCurve25519): a DM to a node whose key is
+// known is sent with channel hash 0 and its Data encrypted with AES-256-CCM
+// (8-byte tag, 13-byte nonce, no associated data) under
+// SHA256(X25519(sender private, recipient public)). The radio payload is
+//
+//   ciphertext || tag (8) || extraNonce (4, LE)
+//
+// and the nonce is [packetId u32 LE][extraNonce u32 LE][fromNode u32 LE][0] —
+// initNonce writes packetId as a u64 and then overwrites its high half with the
+// random extraNonce, which is why that sits where it does.
+constexpr size_t PKI_OVERHEAD = 12;
+
+// SHA256(X25519(ourPrivate, theirPublic)). False for a degenerate (all-zero)
+// shared secret, i.e. a malicious or corrupt public key.
+bool pkiSharedKey(const uint8_t ourPrivate[32], const uint8_t theirPublic[32],
+                  uint8_t key[32]);
+
+// Encrypts `len` bytes of encoded Data into `out`, which must hold
+// len + PKI_OVERHEAD. Returns the payload length, or 0 if it does not fit.
+size_t pkiEncrypt(const uint8_t key[32], uint32_t fromNode, uint32_t packetId,
+                  uint32_t extraNonce, const uint8_t* in, size_t len, uint8_t* out,
+                  size_t cap);
+
+// Verifies and decrypts a PKI payload into `out` (len - PKI_OVERHEAD bytes).
+// False if the tag does not match — wrong key, or a packet meant for another node.
+bool pkiDecrypt(const uint8_t key[32], uint32_t fromNode, uint32_t packetId,
+                const uint8_t* in, size_t len, uint8_t* out, size_t& outLen);
+
+// AES-CCM (RFC 3610) with L = 2 — a 13-byte nonce — and an M-byte tag, which is
+// the construction behind the above. Exposed for the RFC test vectors.
+void ccmEncrypt(const uint8_t* key, size_t keyLen, const uint8_t nonce[13],
+                const uint8_t* aad, size_t aadLen, const uint8_t* in, size_t len,
+                uint8_t* out, uint8_t* tag, size_t tagLen);
+bool ccmDecrypt(const uint8_t* key, size_t keyLen, const uint8_t nonce[13],
+                const uint8_t* aad, size_t aadLen, const uint8_t* in, size_t len,
+                const uint8_t* tag, size_t tagLen, uint8_t* out);
 
 // ---------------------------------------------------------------------------
 // Modem presets
@@ -279,5 +346,10 @@ void ctrCrypt(const uint8_t* key, size_t keyLen, uint32_t fromNode,
 
 // "!aabbccdd" — how a node number is written everywhere in Meshtastic.
 void nodeIdString(uint32_t nodeNum, char* out, size_t cap);
+
+// Standard base64 with padding — how the Meshtastic apps display a public key,
+// so a log line can be compared with what the phone shows. Returns the length
+// written (excluding the NUL), or 0 if `cap` is too small.
+size_t base64(const uint8_t* in, size_t len, char* out, size_t cap);
 
 }  // namespace mesh

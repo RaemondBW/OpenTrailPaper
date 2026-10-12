@@ -60,7 +60,8 @@ size_t fbSize = 0;
 
 enum Screen { SCREEN_DASH, SCREEN_MAP, SCREEN_SUMMARY, SCREEN_MENU,
               SCREEN_SENSORS, SCREEN_ROUTES, SCREEN_HISTORY,
-              SCREEN_SETTINGS, SCREEN_GPSDEBUG, SCREEN_DIRECTIONS };
+              SCREEN_SETTINGS, SCREEN_GPSDEBUG, SCREEN_DIRECTIONS,
+              SCREEN_MAPLAYERS };
 Screen screen = SCREEN_DASH;
 // Which cycle slot the rider is on (indexes dash_config::pages, which now
 // includes the MAP as a movable page). Deliberately NOT reset by navigation:
@@ -101,6 +102,14 @@ bool mapTrackUp = false;
 // about the session.
 bool workoutAllOpen = false;
 int workoutListPage = 0;
+
+// The picker (WORKOUT page, nothing loaded): which page of rows, and the
+// page last drawn — taps resolve against what the rider SAW, not a list that
+// may have rescanned since. In PSRAM: ~1.3 KB this task's stack shouldn't
+// carry. The list itself is workout_service's; it never reads SD here.
+int workoutPickIdx = 0;
+WorkoutPickPage* workoutPick = nullptr;
+bool workoutPickShown = false;   // last frame was the picker
 
 // Serial test hooks: drive the UI over the CDC serial port to profile the map
 // without physical taps. Toggle timing logs with 't'; single-char commands
@@ -164,8 +173,14 @@ inline void IRAM_ATTR uiWakeFromIsr() {
 void IRAM_ATTR onTouchIrq() { touchIrq = true; uiWakeFromIsr(); }
 void IRAM_ATTR onBoardBtnIrq() { boardBtnIrq = true; uiWakeFromIsr(); }
 
-// Power/shutdown dialog overlay (opened by holding BOOT 1.5 s).
+// Bottom-sheet overlay. Named for its first user, the power/shutdown dialog
+// (opened by holding BOOT 1.5 s); the unpair-phone confirmation (Settings >
+// PHONE) is the same modal with different words, so it shares every bit of
+// the overlay plumbing — tap routing, Home-key dismissal, holding still, the
+// scrub on close — and only sheetKind says which words to draw.
 bool powerOverlay = false;
+enum SheetKind { SHEET_POWER, SHEET_UNPAIR };
+SheetKind sheetKind = SHEET_POWER;
 
 // Backlight: 4 levels cycled by the GPIO48 button.
 // Off / Low / Med / Bright. Low is deliberately very dim — it is for reading the
@@ -424,8 +439,25 @@ int16_t* routeScreenPts = nullptr;
 // Rows behind the list screens, rebuilt on entry/render
 ble_sensors::Candidate sensorCands[8];
 int sensorCandCount = 0;
-char routeFiles[5][routes::MAX_NAME];
+
+// Navigate and Ride History page through a listing read from the card once —
+// when the screen opens, on REFRESH, or when the card or the ride being
+// recorded changes — never on the 1 Hz redraw: the card runs at 4 MHz under
+// sdLock, and touch is only read between loop passes. Paging just indexes the
+// copy. Both arrays live in PSRAM, allocated on first use.
+constexpr int kRouteListMax = 128;
+constexpr int kRideListMax = 256;
+char (*routeFiles)[routes::MAX_NAME] = nullptr;
 int routeFileCount = 0;
+ride_recorder::RideFile* rideFiles = nullptr;
+int rideFileCount = 0;
+bool listStale = true;    // re-read the card on the next render
+int listPage = 0;         // which page of kMenuRowCount rows is showing
+// What the last frame showed, so a tap maps to the row the rider saw: the
+// whole list's length, and how many pinned rows ("Clear route", "Recording in
+// progress") sit ahead of the files.
+int listTotal = 0;
+int listPinned = 0;
 
 // Long-press tracking
 uint32_t touchDownAt = 0;
@@ -539,7 +571,7 @@ bool screenIsFast(Screen s, bool overlay) {
 bool screenListFast(Screen s) {
     return s == SCREEN_MENU || s == SCREEN_SENSORS || s == SCREEN_ROUTES ||
            s == SCREEN_HISTORY || s == SCREEN_SETTINGS ||
-           s == SCREEN_DIRECTIONS;
+           s == SCREEN_DIRECTIONS || s == SCREEN_MAPLAYERS;
 }
 
 bool inRect(const EpdRect& r, int x, int y) {
@@ -549,6 +581,37 @@ bool inRect(const EpdRect& r, int x, int y) {
 void enterSensors();
 void leaveList();
 void handlePowerTap(int x, int y);
+void ackPagerTap(const EpdRect& r);
+
+// Open Navigate or Ride History on its first page, with a fresh read of the
+// card.
+void enterPagedList(Screen s) {
+    screen = s;
+    listPage = 0;
+    listStale = true;
+}
+
+// The pager footer of Navigate / Ride History (ui_render_pager). True when the
+// tap landed in the footer band, whether or not it hit a button, so a missed
+// arrow never falls through to "back to the menu".
+bool listPagerTap(int x, int y) {
+    if (y < kPagerTop) return false;
+    if (inRect(kPagerUp, x, y)) {
+        if (listPage > 0) { --listPage; ackPagerTap(kPagerUp); }
+    } else if (inRect(kPagerDown, x, y)) {
+        if ((listPage + 1) * kMenuRowCount < listTotal) {
+            ++listPage;
+            ackPagerTap(kPagerDown);
+        }
+    } else if (inRect(kPagerAction, x, y)) {
+        listStale = true;   // REFRESH: re-read the card
+        ackPagerTap(kPagerAction);
+    }
+    // The new page draws now, not at the next 1 Hz tick: the screen itself
+    // doesn't change, so nothing else would hurry it.
+    forceDraw = true;
+    return true;
+}
 
 // Navigate up one level in the screen hierarchy (front button, short press).
 void goBack() {
@@ -562,6 +625,7 @@ void goBack() {
     }
     switch (screen) {
         case SCREEN_GPSDEBUG: screen = SCREEN_SETTINGS; break;
+        case SCREEN_MAPLAYERS: screen = SCREEN_MAP; break;
         case SCREEN_DIRECTIONS: screen = directionsFrom; break;
         case SCREEN_SETTINGS:
         case SCREEN_ROUTES:
@@ -640,6 +704,18 @@ void ackZoomTap(bool zoomIn) {
     // on a cold zoom the outer tiles can take a moment to arrive. Held down, the
     // button is doing the job a spinner would.
     zoomHeld = zoomIn ? 1 : 2;
+}
+
+// Answer a pager tap (arrow or the action button) NOW, the way ackZoomTap
+// answers a zoom: fill the button black on the glass before the page is
+// rebuilt. The next page only changes a few rows of text, which on e-paper is
+// easy to miss, so without this a tap that registered looked like one that
+// hadn't. The redraw that follows draws the button normally again. Through
+// refresh() so the shadow buffer matches the glass.
+void ackPagerTap(const EpdRect& r) {
+    uint8_t* fb = epdc_framebuffer();
+    epd_fill_rect(r, ui::INK, fb);
+    refresh(false, true, false);
 }
 
 void handleTap(int x, int y) {
@@ -728,14 +804,55 @@ void handleTap(int x, int y) {
                 y >= ui::STATUS_H) {
                 WorkoutView wv;
                 workout_service::view(wv);
+                if (!wv.loaded) {
+                    // The picker. A row tap queues the load on the loop
+                    // task (the same load as the app's [0x11]); the row
+                    // reads LOADING until the page flips to READY.
+                    if (workoutPickShown && workoutPick) {
+                        const WorkoutPickPage& p = *workoutPick;
+                        if (inRect(kPagerUp, x, y)) {
+                            if (workoutPickIdx > 0) {
+                                --workoutPickIdx;
+                                ackPagerTap(kPagerUp);
+                            }
+                        } else if (inRect(kPagerDown, x, y)) {
+                            if (p.first + p.count < p.total) {
+                                ++workoutPickIdx;
+                                ackPagerTap(kPagerDown);
+                            }
+                        } else if (inRect(kPagerAction, x, y)) {
+                            if (p.state != WLIST_SCANNING) {
+                                workout_service::requestListRefresh();
+                                ackPagerTap(kPagerAction);
+                            }
+                        } else if (p.state == WLIST_READY &&
+                                   y >= kWorkoutRowTop &&
+                                   y < kWorkoutRowTop +
+                                           kWorkoutRowH * kWorkoutRowsPerPage) {
+                            int r = (y - kWorkoutRowTop) / kWorkoutRowH;
+                            if (r < p.count && p.rows[r].ok)
+                                workout_service::requestLoad(p.rows[r].file);
+                        }
+                    }
+                    forceDraw = true;
+                    break;
+                }
+                if (workoutViewReady(wv) && !workoutAllOpen &&
+                    inRect(kWorkoutRedo, x, y)) {
+                    // READY's left strip: back to the picker. Unloading is
+                    // what the app's Stop does too, so the app follows.
+                    workout_service::unload();
+                    forceDraw = true;
+                    break;
+                }
                 if (workoutAllOpen) {
-                    if (inRect(kWorkoutPageUp, x, y)) {
+                    if (inRect(kPagerUp, x, y)) {
                         if (workoutListPage > 0) --workoutListPage;
-                    } else if (inRect(kWorkoutPageDown, x, y)) {
+                    } else if (inRect(kPagerDown, x, y)) {
                         if ((workoutListPage + 1) * kWorkoutRowsPerPage <
                             wv.segCount)
                             ++workoutListPage;
-                    } else if (inRect(kWorkoutClose, x, y)) {
+                    } else if (inRect(kPagerAction, x, y)) {
                         workoutAllOpen = false;
                     } else if (y >= kWorkoutRowTop &&
                                y < kWorkoutRowTop +
@@ -778,6 +895,11 @@ void handleTap(int x, int y) {
             }
             if (screen == SCREEN_MAP && x >= kMapZoom.zoomX &&
                 x < kMapZoom.zoomX + kMapZoom.size) {
+                // MAP LAYERS: which cycling layers the map draws.
+                if (y >= kMapZoom.layersY && y < kMapZoom.layersY + kMapZoom.size) {
+                    screen = SCREEN_MAPLAYERS;
+                    break;
+                }
                 if (y >= kMapZoom.zoomInY && y < kMapZoom.zoomInY + kMapZoom.size) {
                     if (mapMpp > 1.0f) mapMpp /= 2.0f;
                     ackZoomTap(true);
@@ -850,9 +972,9 @@ void handleTap(int x, int y) {
                             screen = SCREEN_DASH;
                         }
                         break;
-                    case 1: screen = SCREEN_ROUTES; break;
+                    case 1: enterPagedList(SCREEN_ROUTES); break;
                     case 2: sensorsFrom = SCREEN_MENU; enterSensors(); break;
-                    case 3: screen = SCREEN_HISTORY; break;
+                    case 3: enterPagedList(SCREEN_HISTORY); break;
                     case 4: screen = SCREEN_SETTINGS; break;
                 }
             } else {
@@ -861,23 +983,29 @@ void handleTap(int x, int y) {
             break;
         }
         case SCREEN_SENSORS: {
+            // PAIRED DEVICES: row 0 is the phone (fixed pairing), the sensor
+            // candidates follow it.
             int row = (y - kMenuRowTop) / kMenuRowH;
-            if (y >= kMenuRowTop && row >= 0 && row < sensorCandCount &&
-                row < kMenuRowCount) {
-                ble_sensors::pairCandidate(sensorCands[row].addr);
+            if (y >= kMenuRowTop && row == 0) {
+                sheetKind = SHEET_UNPAIR;   // UNPAIR PHONE? / NOT PAIRED
+                powerOverlay = true;
+            } else if (y >= kMenuRowTop && row >= 1 && row - 1 < sensorCandCount &&
+                       row < kMenuRowCount) {
+                ble_sensors::pairCandidate(sensorCands[row - 1].addr);
             } else {
                 leaveList();
             }
             break;
         }
         case SCREEN_ROUTES: {
+            if (listPagerTap(x, y)) break;
             int row = (y - kMenuRowTop) / kMenuRowH;
-            int base = routes::active() ? 1 : 0;
             if (y >= kMenuRowTop && row >= 0 && row < kMenuRowCount) {
-                if (routes::active() && row == 0) {
+                int idx = listPage * kMenuRowCount + row;
+                if (idx < listPinned) {
                     routes::clearRoute();
-                } else if (row - base < routeFileCount && row - base >= 0) {
-                    if (routes::load(routeFiles[row - base])) {
+                } else if (idx < listTotal && idx - listPinned < routeFileCount) {
+                    if (routes::load(routeFiles[idx - listPinned])) {
                         screen = SCREEN_MAP;
                     }
                 }
@@ -887,7 +1015,8 @@ void handleTap(int x, int y) {
             break;
         }
         case SCREEN_HISTORY:
-            screen = SCREEN_MENU;
+            // Rows aren't actions (yet): any tap outside the pager goes back.
+            if (!listPagerTap(x, y)) screen = SCREEN_MENU;
             break;
         case SCREEN_SETTINGS: {
             int row = (y - kMenuRowTop) / kSettingsRowH;
@@ -963,6 +1092,17 @@ void handleTap(int x, int y) {
             // is the only way out.
             break;
         }
+        case SCREEN_MAPLAYERS: {
+            // A row flips its layer; the map picks the mask up on its next
+            // frame. Anything else does nothing — Home goes back to the map,
+            // as on Settings, so a near-miss never navigates away mid-edit.
+            const int row = ui_map_layers_hit(x, y);
+            if (row >= 0) {
+                settings::setMapLayers(settings::mapLayers() ^ ui_map_layer_bit(row));
+                ble_server::pushMapLayersToPhone();   // keep the app's switches in step
+            }
+            break;
+        }
         case SCREEN_GPSDEBUG:
             // Experimental: a tap in the top band runs the smooth-drive
             // pipeline self-test; anywhere else navigates back to Settings.
@@ -982,6 +1122,16 @@ void handleTap(int x, int y) {
 }
 
 void handlePowerTap(int x, int y) {
+    if (sheetKind == SHEET_UNPAIR) {
+        // UNPAIR only exists while a phone is paired; on the "not paired"
+        // sheet that rect is empty paper and a tap there just closes it.
+        if (inRect(kPowerShutdown, x, y) && ble_server::phonePaired()) {
+            ble_server::requestUnpair();
+            diag::log("ui: unpair phone confirmed on the panel");
+        }
+        powerOverlay = false;   // UNPAIR, CANCEL/CLOSE or outside: done
+        return;
+    }
     if (inRect(kPowerShutdown, x, y)) {
         uint8_t* fb = epdc_framebuffer();
         shutdownDevice(fb, "user power-off (dialog)");  // does not return
@@ -1013,6 +1163,7 @@ void buildMapScreenData(const RideState& s, MapScreenData& map,
     // band, so it displaces the compass the same way.
     map.navBannerVisible = routes::navActive() || s.ridePaused;
     map.metersPerPixel = mapMpp;
+    map.layers = settings::mapLayers();
 
     // Position priority: the device's own current GPS fix; else the connected
     // phone's recent location (fallback when our receiver is cold); else the
@@ -1201,21 +1352,50 @@ const char* shortKinds(uint8_t mask) {
     }
 }
 
+// Keep the page in range when the list shrinks under it (a route cleared,
+// a REFRESH that found fewer files).
+void clampListPage() {
+    const int last = listTotal > 0 ? (listTotal - 1) / kMenuRowCount : 0;
+    if (listPage > last) listPage = last;
+    if (listPage < 0) listPage = 0;
+}
+
 void renderListScreen(uint8_t* fb) {
     ListRow rows[kMenuRowCount] = {};
     int count = 0;
     const char* title = "";
     const char* footer = "";
+    bool paged = false;   // Navigate / Ride History: rows + ui_render_pager
 
     switch (screen) {
         case SCREEN_SENSORS: {
-            title = "SENSORS";
+            title = "PAIRED DEVICES";
             footer = "tap a sensor to pair it · scanning...";
+            // Row 0: the phone this device belongs to (fixed pairing, see
+            // ble_server.cpp). Same row recipe as a sensor: name as the title,
+            // status first in the subtitle, inverted while connected. Tapping
+            // it opens the UNPAIR PHONE? / NOT PAIRED sheet.
+            {
+                const bool paired = ble_server::phonePaired();
+                const char* name = ble_server::pairedPhoneName();
+                snprintf(rows[0].title, sizeof(rows[0].title), "%s",
+                         paired && name[0] ? name : "Phone");
+                if (!paired)
+                    snprintf(rows[0].subtitle, sizeof(rows[0].subtitle),
+                             "Not paired · open the app to pair");
+                else if (ble_server::isPhoneConnected())
+                    snprintf(rows[0].subtitle, sizeof(rows[0].subtitle),
+                             "Connected · Phone · tap to unpair");
+                else
+                    snprintf(rows[0].subtitle, sizeof(rows[0].subtitle),
+                             "Paired · Phone · tap to unpair");
+                rows[0].inverted = paired && ble_server::isPhoneConnected();
+            }
             sensorCandCount = ble_sensors::getCandidates(sensorCands, 8);
-            count = sensorCandCount < kMenuRowCount ? sensorCandCount
-                                                    : kMenuRowCount;
-            for (int i = 0; i < count; ++i) {
-                auto& c = sensorCands[i];
+            count = 1 + (sensorCandCount < kMenuRowCount - 1 ? sensorCandCount
+                                                             : kMenuRowCount - 1);
+            for (int i = 1; i < count; ++i) {
+                auto& c = sensorCands[i - 1];
                 snprintf(rows[i].title, sizeof(rows[i].title), "%s",
                          c.name[0] ? c.name : c.addr);
                 // Status FIRST (short kind label second) so the important word
@@ -1237,26 +1417,43 @@ void renderListScreen(uint8_t* fb) {
         }
         case SCREEN_ROUTES: {
             title = "NAVIGATE";
-            footer = ride_recorder::sdMounted()
-                         ? "put .gpx files in /routes on the SD card"
-                         : "no SD card";
-            int base = 0;
-            if (routes::active()) {
-                snprintf(rows[0].title, sizeof(rows[0].title), "Clear route");
-                snprintf(rows[0].subtitle, sizeof(rows[0].subtitle),
-                         "%s · %.1f %s left", routes::activeName(),
-                         units::dist(routes::remainingKm(), settings::useMiles()),
-                         settings::useMiles() ? "mi" : "km");
-                rows[0].inverted = true;
-                base = 1;
+            paged = true;
+            const bool sd = ride_recorder::sdMounted();
+            footer = sd ? "put .gpx files in /routes on the SD card"
+                        : "no SD card";
+            if (!routeFiles)
+                routeFiles = (char(*)[routes::MAX_NAME])heap_caps_malloc(
+                    kRouteListMax * routes::MAX_NAME, MALLOC_CAP_SPIRAM);
+            static bool listedWithCard = false;
+            if (listStale || sd != listedWithCard) {
+                routeFileCount =
+                    sd && routeFiles ? routes::list(routeFiles, kRouteListMax)
+                                     : 0;
+                listedWithCard = sd;
+                listStale = false;
             }
-            routeFileCount = routes::list(routeFiles, 5 - base);
-            count = base + routeFileCount;
-            for (int i = 0; i < routeFileCount; ++i) {
-                snprintf(rows[base + i].title, sizeof(rows[0].title), "%s",
-                         routeFiles[i]);
-                snprintf(rows[base + i].subtitle, sizeof(rows[0].subtitle),
-                         "tap to ride this route");
+            // The active route is a pinned "Clear route" row ahead of the
+            // files, so it leads page 1.
+            listPinned = routes::active() ? 1 : 0;
+            listTotal = listPinned + routeFileCount;
+            clampListPage();
+            for (int i = listPage * kMenuRowCount;
+                 i < listTotal && count < kMenuRowCount; ++i, ++count) {
+                ListRow& r = rows[count];
+                if (i < listPinned) {
+                    snprintf(r.title, sizeof(r.title), "Clear route");
+                    snprintf(r.subtitle, sizeof(r.subtitle),
+                             "%s · %.1f %s left", routes::activeName(),
+                             units::dist(routes::remainingKm(),
+                                         settings::useMiles()),
+                             settings::useMiles() ? "mi" : "km");
+                    r.inverted = true;
+                } else {
+                    snprintf(r.title, sizeof(r.title), "%s",
+                             routeFiles[i - listPinned]);
+                    snprintf(r.subtitle, sizeof(r.subtitle),
+                             "tap to ride this route");
+                }
             }
             break;
         }
@@ -1290,59 +1487,65 @@ void renderListScreen(uint8_t* fb) {
         case SCREEN_HISTORY: {
             title = "RIDE HISTORY";
             footer = "rides upload from /rides on the SD card";
+            paged = true;
+            const bool sd = ride_recorder::sdMounted();
+            if (!rideFiles)
+                rideFiles = (ride_recorder::RideFile*)heap_caps_malloc(
+                    kRideListMax * sizeof(ride_recorder::RideFile),
+                    MALLOC_CAP_SPIRAM);
 
-            // A ride in progress gets a pinned row at the top; its still-open,
-            // unfinalized FIT file is then skipped in the scan below.
+            // A ride in progress gets a pinned row at the top; listRides()
+            // leaves its still-open, unfinalized FIT file out. Starting or
+            // finishing one changes the files, so it re-reads the card too.
             const char* activeFile = ride_recorder::currentRideFile();
-            if (activeFile[0]) {
-                RideState s = g_state.snapshot();
-                snprintf(rows[count].title, sizeof(rows[0].title),
-                         "Recording in progress");
-                uint32_t secs = s.elapsedS;
-                snprintf(rows[count].subtitle, sizeof(rows[0].subtitle),
-                         "%.1f %s · %lu:%02lu:%02lu",
-                         units::distM(s.distanceM, s.useMiles),
-                         units::distLabel(s.useMiles),
-                         (unsigned long)(secs / 3600),
-                         (unsigned long)(secs / 60 % 60),
-                         (unsigned long)(secs % 60));
-                rows[count].inverted = true;
-                count++;
+            static char listedActive[sizeof(ride_recorder::RideFile::name)];
+            static bool listedWithCard = false;
+            if (listStale || sd != listedWithCard ||
+                strcmp(activeFile, listedActive) != 0) {
+                rideFileCount =
+                    sd && rideFiles
+                        ? ride_recorder::listRides(rideFiles, kRideListMax)
+                        : 0;
+                snprintf(listedActive, sizeof(listedActive), "%s", activeFile);
+                listedWithCard = sd;
+                listStale = false;
             }
-
-            // The recorder writes FIT records on this same SPI bus 1 Hz while
-            // riding; scanning the directory without the lock corrupts that
-            // traffic and returns a garbled/empty list (why history looked
-            // inaccessible during a ride). Hold the lock for the whole scan.
-            sdLock();
-            File dir = SD.open(RIDE_DIR);
-            if (dir) {
-                for (File f = dir.openNextFile(); f && count < kMenuRowCount;
-                     f = dir.openNextFile()) {
-                    const char* base = strrchr(f.name(), '/');
-                    base = base ? base + 1 : f.name();
-                    // Skip subdirs, the in-progress file (shown above), and
-                    // stub rides too small to be worth opening.
-                    if (!f.isDirectory() && strcmp(base, activeFile) != 0 &&
-                        f.size() >= RIDE_MIN_USEFUL_BYTES) {
-                        snprintf(rows[count].title, sizeof(rows[0].title),
-                                 "%s", base);
-                        snprintf(rows[count].subtitle, sizeof(rows[0].subtitle),
-                                 "%lu KB", (unsigned long)(f.size() / 1024));
-                        count++;
-                    }
-                    f.close();
+            listPinned = activeFile[0] ? 1 : 0;
+            listTotal = listPinned + rideFileCount;
+            clampListPage();
+            for (int i = listPage * kMenuRowCount;
+                 i < listTotal && count < kMenuRowCount; ++i, ++count) {
+                ListRow& r = rows[count];
+                if (i < listPinned) {
+                    RideState s = g_state.snapshot();
+                    snprintf(r.title, sizeof(r.title), "Recording in progress");
+                    uint32_t secs = s.elapsedS;
+                    snprintf(r.subtitle, sizeof(r.subtitle),
+                             "%.1f %s · %lu:%02lu:%02lu",
+                             units::distM(s.distanceM, s.useMiles),
+                             units::distLabel(s.useMiles),
+                             (unsigned long)(secs / 3600),
+                             (unsigned long)(secs / 60 % 60),
+                             (unsigned long)(secs % 60));
+                    r.inverted = true;
+                } else {
+                    const ride_recorder::RideFile& f = rideFiles[i - listPinned];
+                    snprintf(r.title, sizeof(r.title), "%s", f.name);
+                    snprintf(r.subtitle, sizeof(r.subtitle), "%lu KB",
+                             (unsigned long)(f.size / 1024));
                 }
-                dir.close();
             }
-            sdUnlock();
             break;
         }
         default:
             break;
     }
     // Directions rows ARE turns, so each one leads with its maneuver arrow.
-    ui_render_list(title, rows, count, footer, fb, screen == SCREEN_DIRECTIONS);
+    ui_render_list(title, rows, count, footer, fb, screen == SCREEN_DIRECTIONS,
+                   paged);
+    if (paged)
+        ui_render_pager(listPage * kMenuRowCount, count, listTotal, "REFRESH",
+                        fb);
 }
 
 }  // namespace
@@ -1708,6 +1911,15 @@ static void printMeshReport() {
     mesh::nodeIdString(mesh_service::nodeNum(), id, sizeof(id));
     Serial.printf("[mesh] node %s '%s' (%s)\n", id, mesh_service::longName(),
                   mesh_service::shortName());
+    {
+        // Compare with the "Public Key" a Meshtastic app shows for this node.
+        uint8_t pub[32];
+        char b64[48];
+        if (mesh_service::publicKey(pub) && mesh::base64(pub, sizeof(pub), b64, sizeof(b64)))
+            Serial.printf("[mesh] public key %s\n", b64);
+        else
+            Serial.printf("[mesh] public key not loaded yet\n");
+    }
     uint8_t psk[16];
     mesh::defaultPsk(mesh_service::channelPskIndex(), psk);
     // Channel and modem on separate lines because they are separate settings, and
@@ -1753,6 +1965,9 @@ static void printMeshReport() {
                   (unsigned)s.rx, (unsigned)s.rxDropped,
                   (unsigned)s.rxOtherChannel, (unsigned)s.rxDuplicate,
                   (unsigned)s.tx, (unsigned)s.txFailed, (unsigned)s.acksRx);
+    Serial.printf("[mesh] pkiRx=%u pkiFailed=%u nodeInfoReplies=%u\n",
+                  (unsigned)s.pkiRx, (unsigned)s.pkiFailed,
+                  (unsigned)s.nodeInfoReplies);
 
     const int nn = mesh_service::nodeCount();
     Serial.printf("[mesh] %d neighbour%s:\n", nn, nn == 1 ? "" : "s");
@@ -1760,10 +1975,11 @@ static void printMeshReport() {
         mesh_service::Node n;
         if (!mesh_service::nodeAt(i, n)) continue;
         mesh::nodeIdString(n.num, id, sizeof(id));
-        Serial.printf("  %s %-20s %-5s %4d dBm snr %3d %d hop%s, %lus ago\n", id,
+        Serial.printf("  %s %-20s %-5s %4d dBm snr %3d %d hop%s, %lus ago%s\n", id,
                       n.longName[0] ? n.longName : "(no NodeInfo yet)",
                       n.shortName, n.rssi, n.snr, n.hops, n.hops == 1 ? "" : "s",
-                      (unsigned long)((millis() - n.lastHeardMs) / 1000));
+                      (unsigned long)((millis() - n.lastHeardMs) / 1000),
+                      n.hasPublicKey ? "  [key]" : "");
         if (n.hasPosition) {
             Serial.printf("             %.5f,%.5f  %dm  %u sats%s  (%lus ago)\n",
                           n.latitude, n.longitude, (int)n.altitudeM, n.satsInView,
@@ -2345,12 +2561,13 @@ static void runConsoleLine(char* line) {
         if (on) ble_sensors::noteActivity();
         Serial.printf("[cmd] sensor scan %s — 'sensors' lists what it hears\n", on ? "ON" : "off");
     } else if (!strcasecmp(cmd, "screen")) {
-        if (!arg) { Serial.println("[cmd] screen <map|dash|menu|settings|gps>"); return; }
+        if (!arg) { Serial.println("[cmd] screen <map|dash|menu|settings|gps|layers>"); return; }
         if      (!strcasecmp(arg, "map"))      screen = SCREEN_MAP;
         else if (!strcasecmp(arg, "dash"))     screen = SCREEN_DASH;
         else if (!strcasecmp(arg, "menu"))     screen = SCREEN_MENU;
         else if (!strcasecmp(arg, "settings")) screen = SCREEN_SETTINGS;
         else if (!strcasecmp(arg, "gps"))      screen = SCREEN_GPSDEBUG;
+        else if (!strcasecmp(arg, "layers"))   screen = SCREEN_MAPLAYERS;
         else { Serial.printf("[cmd] unknown screen '%s'\n", arg); return; }
         noteActivity();
     } else if (!strcasecmp(cmd, "zoom")) {
@@ -2570,6 +2787,7 @@ void task(void*) {
                     } else if (bootLow > 1 && !bootLong && !powerOverlay &&
                                millis() - bootDownAt > 1500) {
                         bootLong = true;
+                        sheetKind = SHEET_POWER;
                         powerOverlay = true;       // hold -> power dialog
                     }
                 } else {
@@ -2694,6 +2912,18 @@ void task(void*) {
                     forceDraw = true;
             }
         }
+        // Same for the WORKOUT page: a rescan finishing, a tapped workout
+        // landing (or failing), the app loading or unloading one.
+        {
+            static uint32_t lastWorkoutVersion = 0;
+            uint32_t wv = workout_service::version();
+            if (wv != lastWorkoutVersion) {
+                lastWorkoutVersion = wv;
+                if (screen == SCREEN_DASH &&
+                    dash_config::page(dashPage).kind == DP_WORKOUT)
+                    forceDraw = true;
+            }
+        }
 
         bool navPrompt = routes::navPending();
         if (navPrompt && !lastNavPrompt) navPromptShownAt = millis();
@@ -2767,6 +2997,7 @@ void task(void*) {
             uint8_t* fb = epdc_framebuffer();
             memset(fb, 0xFF, epd_width() / 2 * epd_height());
             bandDrawnThisFrame = false;
+            bool pickerThisFrame = false;   // set by the WORKOUT page below
             // While the "Start navigation?" prompt is up, the base screen shows
             // the whole route fitted so it can be recognized before accepting.
             if (navPrompt && !powerOverlay) {
@@ -2804,7 +3035,28 @@ void task(void*) {
                         WorkoutView wv;
                         workout_service::view(wv);
                         if (!wv.loaded) workoutAllOpen = false;
-                        if (workoutAllOpen)
+                        if (!wv.loaded && !workoutPick)
+                            workoutPick = (WorkoutPickPage*)heap_caps_calloc(
+                                1, sizeof(WorkoutPickPage), MALLOC_CAP_SPIRAM);
+                        if (!wv.loaded && workoutPick) {
+                            // The picker appearing (page opened, Back, the
+                            // app unloading) rescans: the card may have
+                            // changed since the list was read.
+                            if (!workoutPickShown) {
+                                workout_service::requestListRefresh();
+                                workoutPickIdx = 0;
+                            }
+                            pickerThisFrame = true;
+                            WorkoutPickPage& p = *workoutPick;
+                            workout_service::listPage(workoutPickIdx, p);
+                            if (p.count == 0 && p.total > 0) {
+                                // The list shrank under the page we were on.
+                                workoutPickIdx =
+                                    (p.total - 1) / WORKOUT_PICK_ROWS;
+                                workout_service::listPage(workoutPickIdx, p);
+                            }
+                            ui_render_workout_picker(s, p, fb);
+                        } else if (workoutAllOpen)
                             ui_render_workout_list(s, wv, workoutListPage, fb);
                         else
                             ui_render_workout(s, wv, fb);
@@ -2838,8 +3090,27 @@ void task(void*) {
                     m.recording = s.recording;
                     m.gpsReady = s.gpsFix && s.timeValid;
                     m.sdOk = ride_recorder::sdMounted();
-                    m.rideCount = ride_recorder::rideCount();
-                    m.sdFreeMB = ride_recorder::sdFreeMB();
+                    // Card numbers, read on arrival, when a ride starts or
+                    // stops, and every 30 s — not on every 1 Hz redraw. Each
+                    // read is SD work under sdLock, in the pass the rider's
+                    // tap is waiting behind; nothing else changes them while
+                    // the Menu is up.
+                    static int cachedRides = 0;
+                    static uint32_t cachedFreeMB = 0, cardReadAt = 0;
+                    static bool cardRead = false, cardRecording = false;
+                    if (m.sdOk && (!cardRead || prevScreen != SCREEN_MENU ||
+                                   cardRecording != s.recording ||
+                                   millis() - cardReadAt > 30000)) {
+                        cachedRides = ride_recorder::rideCount();
+                        cachedFreeMB = ride_recorder::sdFreeMB();
+                        cardReadAt = millis();
+                        cardRecording = s.recording;
+                        cardRead = true;
+                    } else if (!m.sdOk) {
+                        cardRead = false;   // re-read when the card comes back
+                    }
+                    m.rideCount = cachedRides;
+                    m.sdFreeMB = cachedFreeMB;
                     m.hr = s.hrConnected;
                     m.pwr = s.powerConnected;
                     m.cad = s.cadenceConnected;
@@ -2848,6 +3119,9 @@ void task(void*) {
                     m.rideDistanceM = s.distanceM;
                     m.rideElapsedS = s.elapsedS;
                     m.useMiles = s.useMiles;
+                    m.phonePaired = ble_server::phonePaired();
+                    snprintf(m.phoneName, sizeof(m.phoneName), "%s",
+                             ble_server::pairedPhoneName());
                     if (routes::active()) {
                         snprintf(m.routeLine, sizeof(m.routeLine),
                                  "%s · %.1f %s left", routes::activeName(),
@@ -2867,7 +3141,7 @@ void task(void*) {
                 case SCREEN_DIRECTIONS:
                     renderListScreen(fb);
                     ui::statusBar(s, fb,
-                                  screen == SCREEN_SENSORS    ? "SENSORS"
+                                  screen == SCREEN_SENSORS    ? "PAIRED DEVICES"
                                   : screen == SCREEN_ROUTES   ? "NAVIGATE"
                                   : screen == SCREEN_HISTORY  ? "RIDES"
                                                               : "DIRECTIONS");
@@ -2889,6 +3163,10 @@ void task(void*) {
                     ui::statusBar(s, fb, "SETTINGS");
                     break;
                 }
+                case SCREEN_MAPLAYERS:
+                    ui_render_map_layers(settings::mapLayers(), fb);
+                    ui::statusBar(s, fb, "MAP LAYERS");
+                    break;
                 case SCREEN_GPSDEBUG: {
                     GpsDebug d;
                     gps_service::getDebug(d);
@@ -2918,12 +3196,22 @@ void task(void*) {
                     break;
                 }
             }
-            if (powerOverlay) ui_render_power_sheet(s.recording, fb);
+            if (powerOverlay) {
+                if (sheetKind == SHEET_UNPAIR)
+                    ui_render_unpair_sheet(ble_server::phonePaired(),
+                                           ble_server::pairedPhoneName(),
+                                           ble_server::pairedPhoneCount(), fb);
+                else
+                    ui_render_power_sheet(s.recording, fb);
+            }
             // Pairing code sheet sits over everything — the phone's dialog is
             // modal on its side too.
             if (unsigned int pc = ble_server::pairingCode())
                 ui_render_pairing(pc, fb);
             }  // end else (normal screens)
+            // Leaving the picker (another page, a menu, a workout loading)
+            // re-arms its rescan-on-appear.
+            workoutPickShown = pickerThisFrame;
             // These three classified the frame so refresh() could pick a waveform.
             // The driver picks its own now (see refresh()), so they are inert — kept
             // because they document which screens are pure black/white and which

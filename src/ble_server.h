@@ -18,6 +18,9 @@ void task(void* arg);
 
 // Mirror a device-side settings edit (FTP/tz/units/backlight) to the phone.
 void pushSettingsToPhone();
+// Notify the phone of the device's map-layer mask ([0xE0][u16]) after an edit
+// on the device's MAP LAYERS screen.
+void pushMapLayersToPhone();
 
 // True while a phone (the companion app) is connected — used to hold off
 // auto-sleep during transfers.
@@ -47,6 +50,28 @@ bool takeDashChanged();
 // The 6-digit BLE pairing code to show on the panel; 0 when no pairing is in
 // progress. Set while the phone's pairing dialog is up, self-expiring.
 unsigned int pairingCode();
+
+// Fixed pairing. The device belongs to ONE phone: the first to pair (passkey
+// shown on the panel) is bonded, and from then on only a bonded phone's link is
+// admitted — any other phone is disconnected the moment it tries to pair, and
+// every app characteristic requires an encrypted link, so an unpaired phone
+// can't read or write anything in the meantime. Unpairing from the panel
+// deletes the bond(s) and opens the device to the next phone.
+//
+// phonePaired(): true while a phone bond exists (false as soon as an unpair is
+// requested, so the panel never shows a stale "Paired"). pairedPhoneCount() is
+// normally 0 or 1; it can be higher on a device migrated from before fixed
+// pairing, which keeps every bond it already had until the rider unpairs.
+bool phonePaired();
+int pairedPhoneCount();
+// The paired phone's name as it reports it over GAP, ASCII-folded for the
+// panel's fonts. "" when unknown (not read yet, or the phone won't say).
+const char* pairedPhoneName();
+// Unpair: delete the phone bond(s), drop the link, reopen pairing. Called from
+// the UI task; the work runs on the server task.
+void requestUnpair();
+// AMS client hook: the phone's GAP Device Name, read over the admitted link.
+void notePhoneName(const char* utf8);
 
 // Queue a media transport command (media_state.h MediaCmd) for the phone.
 // Called from the UI task; the server task sends the notify.

@@ -405,8 +405,127 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var tileMessage: String? = nil
     @Published var deviceTileIds: Set<String> = []   // H3 ids already on the SD
     private var tileIdsBuilding: [String] = []
-    private var tileQueue: [(id: String, data: Data)] = []
+    // Cycling layer (investigations/osm-pois-bike-routes.md). Firmware that has
+    // it answers the 0x08 POI listing; older firmware never does, so this stays
+    // false for the connection and nothing cycling-specific is sent to it.
+    @Published var deviceSupportsPois = false
+
+    // MARK: device map layers (map characteristic 0x09 get / 0x0A set,
+    // device answers [0xE0][u16 mask]). Bits: 0 bike routes, 1 cycleways &
+    // lanes, 2 water, 3 toilets, 4 repair stations, 5 bike shops (src/map_view.h
+    // MAP_LAYER_*). Kept per device: the last mask seen, whether that device
+    // answers at all, and an edit made while disconnected (sent on the next
+    // connect; last write wins).
+    /// The device's map-layer mask as this app last knew it (live when connected).
+    @Published var mapLayers: UInt16 = 0x3F
+    /// The device (or, disconnected, the last one) has firmware with map layers.
+    @Published var mapLayersSupported = false
+    private var mapLayersCache: [String: Int] =
+        (UserDefaults.standard.dictionary(forKey: "mapLayers") as? [String: Int]) ?? [:]
+    private var mapLayersPending: [String: Int] =
+        (UserDefaults.standard.dictionary(forKey: "mapLayersPending") as? [String: Int]) ?? [:]
+    private var mapLayersSeen: [String: Bool] =
+        (UserDefaults.standard.dictionary(forKey: "mapLayersSupported") as? [String: Bool]) ?? [:]
+    private var layersDeviceKey: String? {
+        peripheral?.identifier.uuidString ?? UserDefaults.standard.string(forKey: "mapLayersLastDevice")
+    }
+    /// Show the cached state for the current (or last) device.
+    private func loadMapLayersState() {
+        guard let k = layersDeviceKey else { return }
+        UserDefaults.standard.set(k, forKey: "mapLayersLastDevice")
+        mapLayers = UInt16(truncatingIfNeeded: mapLayersPending[k] ?? mapLayersCache[k] ?? 0x3F)
+        mapLayersSupported = mapLayersSeen[k] ?? false
+    }
+    private func saveMapLayersState() {
+        UserDefaults.standard.set(mapLayersCache, forKey: "mapLayers")
+        UserDefaults.standard.set(mapLayersPending, forKey: "mapLayersPending")
+        UserDefaults.standard.set(mapLayersSeen, forKey: "mapLayersSupported")
+    }
+    /// Ask the device for its mask (sent once the map characteristic notifies).
+    func requestMapLayers() {
+        guard let c = mapChar, let p = peripheral else { return }
+        p.writeValue(Data([0x09]), for: c, type: .withResponse)
+    }
+    /// Change the device's map layers: applied now when connected, otherwise
+    /// remembered and sent on the next connect.
+    func setMapLayers(_ mask: UInt16) {
+        mapLayers = mask
+        guard let k = layersDeviceKey else { return }
+        if let c = mapChar, let p = peripheral, mapLayersSupported {
+            p.writeValue(Data([0x0A, UInt8(mask & 0xFF), UInt8(mask >> 8)]), for: c, type: .withResponse)
+            mapLayersCache[k] = Int(mask)
+            mapLayersPending[k] = nil
+        } else {
+            mapLayersPending[k] = Int(mask)
+        }
+        saveMapLayersState()
+    }
+    private func handleMapLayersNotify(_ mask: UInt16) {
+        guard let k = layersDeviceKey else { return }
+        mapLayersSupported = true
+        mapLayersSeen[k] = true
+        if let pending = mapLayersPending[k], UInt16(truncatingIfNeeded: pending) != mask,
+           let c = mapChar, let p = peripheral {
+            // An edit made while disconnected: it wins over the device's value.
+            let m = UInt16(truncatingIfNeeded: pending)
+            p.writeValue(Data([0x0A, UInt8(m & 0xFF), UInt8(m >> 8)]), for: c, type: .withResponse)
+            mapLayers = m
+        } else {
+            mapLayersPending[k] = nil
+            mapLayers = mask
+            mapLayersCache[k] = Int(mask)
+        }
+        saveMapLayersState()
+    }
+    @Published var devicePoiIds: Set<String> = []    // H3 ids with a .poi on the SD
+    private var poiIdsBuilding: [String] = []
+    /// When this phone last sent each tile's .poi, for the refresh policy.
+    private var poiSentAt: [String: Double] =
+        (UserDefaults.standard.dictionary(forKey: "poiSentAt") as? [String: Double]) ?? [:]
+    /// Map tiles this phone sent WITH the bike-route way flags. A tile on the
+    /// device but not in here predates them and is re-sent the next time its
+    /// area is synced (only to firmware that draws them).
+    private var flaggedTileIds: Set<String> =
+        Set(UserDefaults.standard.stringArray(forKey: "flaggedTileIds") ?? [])
+    /// When this phone last sent each map tile, for "update available".
+    private var tileSentAt: [String: Double] =
+        (UserDefaults.standard.dictionary(forKey: "tileSentAt") as? [String: Double]) ?? [:]
+    /// A map tile this phone sent longer ago than this is offered as an update
+    /// (the phone's own tile cache expires at the same age).
+    static let tileRefreshAge: TimeInterval = 60 * 60 * 24 * 90   // 90 days
+    /// The version of every tile and .poi this phone sent, per device
+    /// (TileVersions.swift), compared with the CDN index for "update
+    /// available" and to skip unchanged hexes.
+    let tileVersions = DeviceTileVersions()
+    /// The device the version records belong to: the connected one, or the
+    /// last one (same key as the map-layer store).
+    var deviceKey: String? { layersDeviceKey }
+    // The device's own version records (DeviceTileList), from the last
+    // versioned list. They cover hexes whoever sent them, so they come before
+    // this phone's records; empty on firmware that keeps none. Kept across a
+    // disconnect, like deviceTileIds, but not across a restart (the next list
+    // brings them back).
+    /// The device answered the tile list with versions on this connection: it
+    /// keeps them, so tiles go to it with their record.
+    private var deviceKeepsVersions = false
+    @Published private var deviceTileRecords: [String: String] = [:]
+    @Published private var devicePoiRecords: [String: String] = [:]
+    private var tileRecordsBuilding: [String: String] = [:]
+    private var poiRecordsBuilding: [String: String] = [:]
+    private var tileListVersioned = false
+    private var poiListVersioned = false
+    /// `version`: its record (PrebuiltTiles.cdnRecord); nil = built on this
+    /// phone, recorded as phoneRecord() when the device saves it.
+    private struct TileJob { let id: String; let data: Data; let poi: Bool; let version: String? }
+    private var tileQueue: [TileJob] = []
     private var currentTileId: String? = nil        // non-nil while sending a tile
+    private var currentIsPoi = false                // ...and it is a .poi file
+    private var currentVersion: String? = nil       // ...and its version record
+    private var resendAll = false                   // this job is a Redownload
+    // BLE side of the download timing (see DownloadStats): bytes actually
+    // written to the device and when the job started.
+    private var tileJobStarted = Date()
+    private var tileJobBytes = 0
     private var tileJobFailed = false
     private var tilesMoreComing = false             // app still building tiles to enqueue
 
@@ -516,7 +635,48 @@ final class BLEManager: NSObject, ObservableObject {
     // the device no longer holds, encryption fails, iOS drops the link — and
     // only the RIDER can fix it (Forget This Device), so at three we say so.
     private var barrenConnects = 0
-    @Published var pairingLooksStale = false
+
+    // MARK: fixed pairing
+    //
+    // An OpenTrailPaper belongs to one phone (firmware ble_server.cpp): the
+    // first to pair owns it until the rider unpairs on the device, and every
+    // other phone is disconnected the moment it tries to pair. The app's half:
+    // remember WHICH device is ours and only ever connect to that one, skip
+    // devices that advertise they're paired to someone else, and when a device
+    // turns us away, say why and how to fix it.
+
+    /// Why the device won't have us — drives the one pairing alert.
+    enum PairingIssue: Identifiable, Equatable {
+        /// The only OpenTrailPaper around is paired with another phone.
+        case pairedElsewhere
+        /// Our own device keeps dropping us before any data: it was unpaired
+        /// on the device (or re-paired to another phone) and iOS still holds
+        /// the old keys, which only the rider can delete.
+        case notRecognised
+        var id: Self { self }
+    }
+    @Published var pairingIssue: PairingIssue? = nil
+    /// CBPeripheral.identifier of OUR device, set once it has delivered data
+    /// over an admitted (bonded) link. Stable across the phone's address
+    /// rotation — the device's address is fixed, and iOS keys this to it.
+    @Published private(set) var pairedDeviceId: UUID? =
+        UserDefaults.standard.string(forKey: BLEManager.pairedDeviceKey).flatMap(UUID.init)
+    @Published private(set) var pairedDeviceName: String? =
+        UserDefaults.standard.string(forKey: BLEManager.pairedDeviceNameKey)
+    static let pairedDeviceKey = "pairedDeviceId"
+    static let pairedDeviceNameKey = "pairedDeviceName"
+    /// Devices that turned us away this session — never auto-retried.
+    private var rejectedIds: Set<UUID> = []
+    /// Paired-to-someone devices seen while looking for our first device. If
+    /// nothing unpaired shows up we try ONE of them anyway: after a reinstall
+    /// the app has forgotten the device but iOS still holds the bond, and the
+    /// device would let us straight in.
+    private var pairedElsewhereSeen: [UUID: CBPeripheral] = [:]
+    private var fallbackTask: Task<Void, Never>?
+    /// The current connection is that one-off attempt.
+    private var onFallbackAttempt = false
+    /// forgetDevice() is tearing the link down: don't reconnect to it.
+    private var forgetting = false
     private var fixStableTask: Task<Void, Never>?   // debounce stopping the stream
     @Published var lastAidingSent: Date? = nil
 
@@ -573,6 +733,27 @@ final class BLEManager: NSObject, ObservableObject {
     // "connect first" empty state.
     private let isDemoDash = ProcessInfo.processInfo.arguments.contains("-demo-dash")
 
+    // Screenshot demo: a connected device holding part of a selected area,
+    // firmware with the cycling layer, tiles that predate it. See demoMaps().
+    let isDemoMaps = ProcessInfo.processInfo.arguments.contains { $0.hasPrefix("-demo-maps") }
+
+    /// `-demo-maps`: pose the device as holding `onDevice`, of which `current`
+    /// were sent by this phone with the bike-route data (the rest show as
+    /// updates), with fresh POIs for `withPois`. Memory only — never saved.
+    func demoMaps(onDevice: [String], current: [String], withPois: [String]) {
+        guard isDemoMaps else { return }
+        state = .connected
+        deviceSupportsPois = true
+        mapLayersSupported = true
+        mapLayers = 0x3F & ~0x22   // cycleways and shops off, to show both states
+        deviceTileIds = Set(onDevice)
+        flaggedTileIds = Set(current)
+        devicePoiIds = Set(withPois)
+        let now = Date().timeIntervalSince1970
+        for id in current { tileSentAt[id] = now }
+        for id in withPois { poiSentAt[id] = now }
+    }
+
     override init() {
         super.init()
         loadSettingsCache()
@@ -591,6 +772,7 @@ final class BLEManager: NSObject, ObservableObject {
         if let saved = UserDefaults.standard.stringArray(forKey: Self.tileCacheKey) {
             deviceTileIds = Set(saved)
         }
+        loadMapLayersState()   // last device's map layers, for the Maps screen while disconnected
         // Returning users get Bluetooth up immediately so the device auto-
         // connects. First-run users create the central when they tap "Enable
         // Bluetooth" in onboarding, so the system prompt lands on that screen.
@@ -780,9 +962,24 @@ final class BLEManager: NSObject, ObservableObject {
             central.connect(p)      // completes at once if iOS kept the link up
             return
         }
+        // A system-held link means iOS holds a bond with that device — with no
+        // device remembered (fresh install) that makes it ours; with one, only
+        // ours counts.
         if peripheral == nil,
-           let p = central.retrieveConnectedPeripherals(
-               withServices: [BikeUUID.service]).first {
+           let p = central.retrieveConnectedPeripherals(withServices: [BikeUUID.service])
+               .first(where: { pairedDeviceId == nil
+                   ? !rejectedIds.contains($0.identifier) : $0.identifier == pairedDeviceId }) {
+            peripheral = p
+            p.delegate = self
+            state = .connecting
+            central.connect(p)
+            return
+        }
+        // Our device, known but not connected: a pending connect has no
+        // timeout and fires the moment it is in range, whatever private
+        // address the PHONE is on — no scan needed.
+        if peripheral == nil, let saved = pairedDeviceId,
+           let p = central.retrievePeripherals(withIdentifiers: [saved]).first {
             peripheral = p
             p.delegate = self
             state = .connecting
@@ -790,11 +987,123 @@ final class BLEManager: NSObject, ObservableObject {
             return
         }
         state = .scanning
-        central.scanForPeripherals(withServices: [BikeUUID.service])
+        // Duplicates while hunting for a first device: a device that was
+        // paired-elsewhere when first seen must be noticed again the moment
+        // its rider unpairs it (its advertisement flips).
+        central.scanForPeripherals(withServices: [BikeUUID.service], options: [
+            CBCentralManagerScanOptionAllowDuplicatesKey: pairedDeviceId == nil,
+        ])
+        if pairedDeviceId == nil { armPairedFallback() }
     }
 
     func disconnect() {
         if let p = peripheral { central?.cancelPeripheralConnection(p) }
+    }
+
+    /// Manufacturer data [0xFFFF][0x4F][flags]: bit0 = paired to a phone.
+    /// nil for firmware from before fixed pairing (no flag at all).
+    nonisolated static func advertisesPaired(_ adv: [String: Any]) -> Bool? {
+        guard let d = adv[CBAdvertisementDataManufacturerDataKey] as? Data,
+              d.count >= 4, d[d.startIndex] == 0xFF, d[d.startIndex + 1] == 0xFF,
+              d[d.startIndex + 2] == 0x4F else { return nil }
+        return d[d.startIndex + 3] & 0x01 != 0
+    }
+
+    /// Looking for a first device and only paired-to-someone ones answer: after
+    /// a few seconds, try one of them once (see pairedElsewhereSeen).
+    private func armPairedFallback() {
+        fallbackTask?.cancel()
+        fallbackTask = Task { @MainActor [weak self] in
+            var found: (UUID, CBPeripheral)? = nil
+            while found == nil {
+                try? await Task.sleep(nanoseconds: 6_000_000_000)
+                guard let self, !Task.isCancelled, self.state == .scanning,
+                      self.peripheral == nil, self.pairedDeviceId == nil else { return }
+                if let hit = self.pairedElsewhereSeen.first(where: {
+                    !self.rejectedIds.contains($0.key) }) { found = (hit.key, hit.value) }
+            }
+            guard let self, let (id, p) = found else { return }
+            self.rejectedIds.insert(id)   // one try per session, success or not
+            self.onFallbackAttempt = true
+            self.peripheral = p
+            p.delegate = self
+            self.state = .connecting
+            self.central.stopScan()
+            self.central.connect(p)
+        }
+    }
+
+    /// Remember the device we're connected to as OURS. Called once it has
+    /// delivered data — proof the device admitted this phone's bond.
+    private func rememberPairedDevice() {
+        guard let p = peripheral else { return }
+        onFallbackAttempt = false
+        pairingIssue = nil
+        rejectedIds.remove(p.identifier)
+        guard pairedDeviceId != p.identifier else { return }
+        pairedDeviceId = p.identifier
+        pairedDeviceName = p.name
+        UserDefaults.standard.set(p.identifier.uuidString, forKey: Self.pairedDeviceKey)
+        UserDefaults.standard.set(p.name, forKey: Self.pairedDeviceNameKey)
+    }
+
+    /// Set after Unpair succeeds: the device dropped its bond, so iOS's copy
+    /// is now stale and only the rider can delete it (Settings › Bluetooth).
+    @Published var unpairNeedsIOSForget = false
+    private var unpairWritePending = false
+
+    /// Settings › Unpair: while connected, tell the device to drop this
+    /// iPhone ([0xFE 0x55] on settings — the same as Paired Devices › Phone ›
+    /// Unpair on the panel), then forget it here. Not connected: forget here
+    /// only; the device keeps the pairing until it is unpaired on the device.
+    func unpairDevice() {
+        guard state == .connected, let c = settingsChar, let p = peripheral else {
+            forgetDevice()
+            return
+        }
+        unpairWritePending = true
+        p.writeValue(Data([0xFE, 0x55]), for: c, type: .withResponse)
+        // The device drops the link right after it acts; don't wait forever
+        // for the acknowledgment if it went down first.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            guard let self, self.unpairWritePending else { return }
+            self.unpairDone(ok: true)
+        }
+    }
+
+    private func unpairDone(ok: Bool) {
+        unpairWritePending = false
+        forgetDevice()
+        if ok { unpairNeedsIOSForget = true }
+    }
+
+    /// Settings › Forget this device: stop connecting to it and look for a
+    /// device to pair with again. The app can't delete the iOS bond — the
+    /// rider does that in iOS Settings (the UI says so).
+    func forgetDevice() {
+        // Not re-adopted this session (the fallback / system-link paths would
+        // otherwise walk straight back into it while iOS still holds the bond).
+        let forgotten = pairedDeviceId ?? peripheral?.identifier
+        pairedDeviceId = nil
+        pairedDeviceName = nil
+        UserDefaults.standard.removeObject(forKey: Self.pairedDeviceKey)
+        UserDefaults.standard.removeObject(forKey: Self.pairedDeviceNameKey)
+        pairingIssue = nil
+        barrenConnects = 0
+        rejectedIds = forgotten.map { [$0] } ?? []
+        pairedElsewhereSeen = [:]
+        onFallbackAttempt = false
+        if let p = peripheral, p.state == .connected {
+            forgetting = true
+            central?.cancelPeripheralConnection(p)   // didDisconnect rescans
+        } else {
+            // Pending connect (device out of range): drop it here. A late
+            // didDisconnect for it finds peripheral == nil and won't revive it.
+            if let p = peripheral { central?.cancelPeripheralConnection(p) }
+            peripheral = nil
+            central?.stopScan()
+            startScan()
+        }
     }
 
     // MARK: settings
@@ -1212,7 +1521,7 @@ final class BLEManager: NSObject, ObservableObject {
 
     // MARK: vector-map upload (phone -> device SD, mirrors the OTA transfer)
 
-    var canUploadMap: Bool { mapChar != nil && peripheral != nil }
+    var canUploadMap: Bool { (mapChar != nil && peripheral != nil) || isDemoMaps }
 
     func uploadMap(_ ebm: Data, name: String) {
         guard let c = mapChar, let p = peripheral else {
@@ -1253,18 +1562,118 @@ final class BLEManager: NSObject, ObservableObject {
     // MARK: H3 tile streaming
 
     // Ask the device which H3 tile ids are already on its SD, so the caller can
-    // skip re-sending them (replied via 0xD0/0xD1/0xD2 notifies).
+    // skip re-sending them (replied via 0xD0/0xD1/0xD2 notifies). Asks for each
+    // file's version too; firmware that keeps none ignores that (DeviceTileList).
     func refreshDeviceTiles() {
         guard let c = mapChar, let p = peripheral else { return }
-        p.writeValue(Data([0x07]), for: c, type: .withResponse)
+        p.writeValue(DeviceTileList.request(0x07), for: c, type: .withResponse)
+        p.writeValue(DeviceTileList.request(0x08), for: c, type: .withResponse)   // .poi files (new firmware only)
+    }
+
+    /// On the device. A tile there is never re-sent on its own — even one
+    /// built before the bike-route flags; the rider chooses that (Redownload).
+    func tileIsCurrent(_ id: String) -> Bool { deviceTileIds.contains(id) }
+
+    /// On the device, on firmware that draws the cycling layer, but not sent by
+    /// this phone with the bike-route flags — so it most likely predates them.
+    /// Only informs the "redownload to add them" hint; a tile from the website
+    /// ZIP or another phone may already have them. A tile the device has a
+    /// version record for was sent by an app that sends them, so after them.
+    func tilePredatesCycling(_ id: String) -> Bool {
+        deviceSupportsPois && deviceTileIds.contains(id) && !flaggedTileIds.contains(id)
+            && deviceTileRecords[id] == nil
+    }
+
+    private func tileRecord(_ id: String) -> String? {
+        DeviceTileList.record(device: deviceTileRecords[id], phone: tileVersions.tile(deviceKey, id))
+    }
+    private func poiRecord(_ id: String) -> String? {
+        DeviceTileList.record(device: devicePoiRecords[id], phone: tileVersions.poi(deviceKey, id))
+    }
+
+    /// The device's tile against the CDN index: the same hash is current; a
+    /// different hash, a phone-built tile or one with no record (on the device
+    /// or this phone) is an update; `.unknown` when the CDN index has no entry
+    /// (unreachable, not pre-built, built empty).
+    func tileVersionState(_ id: String) -> PrebuiltTiles.VersionState {
+        PrebuiltTiles.state(record: tileRecord(id),
+                            cdnHash: PrebuiltTiles.tileHash(CdnVersions.shared.entry(id)))
+    }
+
+    /// The device's .poi against the CDN index (same rules as tiles).
+    func poiVersionState(_ id: String) -> PrebuiltTiles.VersionState {
+        PrebuiltTiles.state(record: poiRecord(id),
+                            cdnHash: PrebuiltTiles.poiHash(CdnVersions.shared.entry(id)))
+    }
+
+    /// Version records for the current device, for the download's filters:
+    /// the device's own where it has one, else what this phone sent.
+    var tileRecords: [String: String] {
+        tileVersions.tiles(deviceKey).merging(deviceTileRecords) { _, device in device }
+    }
+    var poiRecords: [String: String] {
+        tileVersions.pois(deviceKey).merging(devicePoiRecords) { _, device in device }
+    }
+
+    /// On the device, and Redownload would bring something new. With a CDN
+    /// index entry, exactly when the hash differs from what this phone sent
+    /// (tileVersionState). Without one, the heuristic: it predates the
+    /// bike-route data, or this phone sent it more than tileRefreshAge ago.
+    /// Drawn ochre/hatched on the Maps screen and counted as "updates".
+    func tileNeedsUpdate(_ id: String) -> Bool {
+        guard deviceTileIds.contains(id) else { return false }
+        switch tileVersionState(id) {
+        case .current: return false
+        case .update: return true
+        case .unknown: return tileNeedsUpdateByAge(id)
+        }
+    }
+
+    /// The pre-CDN heuristic behind tileNeedsUpdate.
+    func tileNeedsUpdateByAge(_ id: String) -> Bool {
+        guard deviceTileIds.contains(id) else { return false }
+        if tilePredatesCycling(id) { return true }
+        // When this phone sent it, else when the device says it was built.
+        guard let at = tileSentAt[id]
+                ?? PrebuiltTiles.phoneBuiltAt(deviceTileRecords[id])?.timeIntervalSince1970
+        else { return false }
+        return Date().timeIntervalSince1970 - at > Self.tileRefreshAge
+    }
+
+    /// The POI drop drawn on an on-device hex: none on firmware without the POI
+    /// layer, filled when the device has fresh POIs, hollow otherwise.
+    func poiMark(_ id: String) -> HexPoiMark {
+        guard deviceSupportsPois, deviceTileIds.contains(id) else { return .none }
+        return poiNeedsSend(id) ? .missing : .present
+    }
+
+    /// The tile's POIs should go to the device: it can draw them, and it has
+    /// none for this tile, or the CDN has a different .poi than the one sent
+    /// (poiVersionState). Without a CDN entry: this phone sent them more than
+    /// PoiCache.maxAge ago.
+    func poiNeedsSend(_ id: String) -> Bool {
+        guard deviceSupportsPois else { return false }
+        guard devicePoiIds.contains(id) else { return true }
+        switch poiVersionState(id) {
+        case .current: return false
+        case .update: return true
+        case .unknown:
+            guard let at = poiSentAt[id] else { return false }   // someone else's: leave it
+            return Date().timeIntervalSince1970 - at > PoiCache.maxAge
+        }
     }
 
     // Streaming upload: the app produces tiles batch-by-batch while download +
     // vectorization runs, and sends them in parallel. Call startTileStream()
     // once, enqueueTiles() per batch as they're built, finishTileStream() when
     // the last batch has been produced.
-    func startTileStream() {
+    /// `resend`: a Redownload — tiles and POIs go out even though the device
+    /// already has them (POIs still only to firmware that draws them).
+    func startTileStream(resend: Bool = false) {
         guard mapChar != nil, peripheral != nil else { tileMessage = "Not connected"; return }
+        resendAll = resend
+        tileJobStarted = Date()
+        tileJobBytes = 0
         tileQueue = []
         tilesTotal = 0
         tilesDone = 0
@@ -1290,15 +1699,30 @@ final class BLEManager: NSObject, ObservableObject {
     }
 
     // Add freshly-built tiles to the send queue; starts pumping if idle. Skips
-    // tiles already on the device or already queued.
-    func enqueueTiles(_ newOnes: [(id: String, data: Data)]) {
+    // tiles already on the device or already queued. `versions`: each tile's
+    // record (PrebuiltTiles.cdnRecord); a tile without one is phone-built.
+    func enqueueTiles(_ newOnes: [(id: String, data: Data)], versions: [String: String] = [:]) {
+        enqueue(newOnes.filter { resendAll || !tileIsCurrent($0.id) }, poi: false, versions: versions)
+    }
+
+    /// Queue tiles' `.poi` files (sent through the same tile transfer — the
+    /// firmware tells them apart by their magic). Skipped for firmware without
+    /// POI support; which POIs need sending (missing, changed hash, old) is
+    /// the caller's choice (MapsView, from poiNeedsSend and the CDN index).
+    func enqueuePois(_ newOnes: [(id: String, data: Data)], versions: [String: String] = [:]) {
+        enqueue(newOnes.filter { _ in deviceSupportsPois }, poi: true, versions: versions)
+    }
+
+    private func enqueue(_ newOnes: [(id: String, data: Data)], poi: Bool, versions: [String: String]) {
         guard tilesUploading else { return }
-        let queued = Set(tileQueue.map(\.id))
+        let queued = Set(tileQueue.filter { $0.poi == poi }.map(\.id))
         let fresh = newOnes.filter {
-            !deviceTileIds.contains($0.id) && !queued.contains($0.id) && $0.id != currentTileId
+            !queued.contains($0.id) && !($0.id == currentTileId && currentIsPoi == poi)
         }
         guard !fresh.isEmpty else { return }
-        tileQueue.append(contentsOf: fresh)
+        tileQueue.append(contentsOf: fresh.map {
+            TileJob(id: $0.id, data: $0.data, poi: poi, version: versions[$0.id])
+        })
         tilesTotal += fresh.count
         if currentTileId == nil { sendNextTile() }   // pump if idle
         reportTiles()
@@ -1321,6 +1745,9 @@ final class BLEManager: NSObject, ObservableObject {
 
     private func finishTileJob(message: String?) {
         if tilesUploading {
+            let secs = Date().timeIntervalSince(tileJobStarted)
+            print(String(format: "tile job: %d files, %d KB, %.1f s from first build to last ack (%.1f KB/s overall)",
+                         tilesDone, tileJobBytes / 1024, secs, Double(tileJobBytes) / 1024 / max(secs, 0.1)))
             let ok = message == "Tiles installed"
             TransferCenter.shared.finish(Self.tilesTransferId, success: ok,
                 message: ok ? "\(tilesDone) tile\(tilesDone == 1 ? "" : "s") on the device"
@@ -1331,6 +1758,7 @@ final class BLEManager: NSObject, ObservableObject {
         mapUploading = false
         currentTileId = nil
         keepAwake(false)
+        tileVersions.save()
         if let message { tileMessage = message }
     }
 
@@ -1344,6 +1772,9 @@ final class BLEManager: NSObject, ObservableObject {
         }
         tileQueue.removeFirst()
         currentTileId = tile.id
+        currentIsPoi = tile.poi
+        // Fixed now, so the device and this phone record the same thing.
+        currentVersion = tile.version ?? PrebuiltTiles.phoneRecord()
         mapData = tile.data
         mapOffset = 0
         mapEndSent = false
@@ -1355,7 +1786,11 @@ final class BLEManager: NSObject, ObservableObject {
         var cmd = Data([0x06])         // begin-tile
         var size = UInt32(tile.data.count).littleEndian
         withUnsafeBytes(of: &size) { cmd.append(contentsOf: $0) }
-        cmd.append(Data(tile.id.utf8))
+        // A .poi goes under "<id>.poi"; saveTile strips the extension and
+        // stores it by its magic either way, the name just reads well in logs.
+        // Firmware that keeps versions gets the record after a NUL.
+        cmd.append(DeviceTileList.beginName(tile.poi ? "\(tile.id).poi" : tile.id,
+                                            record: deviceKeepsVersions ? currentVersion : nil))
         p.writeValue(cmd, for: c, type: .withResponse)
     }
 
@@ -1386,7 +1821,25 @@ final class BLEManager: NSObject, ObservableObject {
         case 0xB0: pumpMapChunks()                                // device ready (map or tile)
         case 0xB1:                                                // saved + active
             if let id = currentTileId {                           // a tile finished
-                deviceTileIds.insert(id)
+                tileJobBytes += mapData.count
+                let version = currentVersion ?? PrebuiltTiles.phoneRecord()
+                // Kept by the device too: mirror it, as its next list would.
+                if deviceKeepsVersions {
+                    if currentIsPoi { devicePoiRecords[id] = version } else { deviceTileRecords[id] = version }
+                }
+                if currentIsPoi {
+                    devicePoiIds.insert(id)
+                    tileVersions.setPoi(deviceKey, id, version)
+                    poiSentAt[id] = Date().timeIntervalSince1970
+                    UserDefaults.standard.set(poiSentAt, forKey: "poiSentAt")
+                } else {
+                    tileVersions.setTile(deviceKey, id, version)
+                    deviceTileIds.insert(id)
+                    flaggedTileIds.insert(id)
+                    UserDefaults.standard.set(Array(flaggedTileIds), forKey: "flaggedTileIds")
+                    tileSentAt[id] = Date().timeIntervalSince1970
+                    UserDefaults.standard.set(tileSentAt, forKey: "tileSentAt")
+                }
                 tilesDone += 1
                 currentTileId = nil
                 sendNextTile()
@@ -1408,16 +1861,35 @@ final class BLEManager: NSObject, ObservableObject {
                 TransferCenter.shared.finish(Self.mapTransferId, success: false,
                                              message: "Map upload failed (\(code))")
             }
-        case 0xD0: tileIdsBuilding = []                           // tile-list begin
+        case 0xD0:                                               // tile-list begin
+            tileIdsBuilding = []
+            tileRecordsBuilding = [:]
+            tileListVersioned = DeviceTileList.beginHasVersions(d)
         case 0xD1 where d.count > 1:                              // comma-separated ids
-            if let s = String(data: d.subdata(in: 1..<d.count), encoding: .utf8) {
-                for id in s.split(separator: ",") where !id.isEmpty {
-                    tileIdsBuilding.append(String(id))
-                }
+            if let s = String(data: d.subdata(in: 1..<d.count), encoding: .utf8) {   // ("<id>=<record>" if versioned)
+                DeviceTileList.parseEntries(s, ids: &tileIdsBuilding, records: &tileRecordsBuilding)
             }
         case 0xD2:                                               // tile-list end
+            deviceKeepsVersions = tileListVersioned
+            deviceTileRecords = tileRecordsBuilding
             deviceTileIds = Set(tileIdsBuilding)
+            tileVersions.pruneTiles(deviceKey, keeping: deviceTileIds)
             cacheDeviceTiles()
+        case 0xD3:                                               // poi-list begin
+            poiIdsBuilding = []
+            poiRecordsBuilding = [:]
+            poiListVersioned = DeviceTileList.beginHasVersions(d)
+        case 0xD4 where d.count > 1:                              // comma-separated ids
+            if let s = String(data: d.subdata(in: 1..<d.count), encoding: .utf8) {
+                DeviceTileList.parseEntries(s, ids: &poiIdsBuilding, records: &poiRecordsBuilding)
+            }
+        case 0xD5:                                               // poi-list end
+            devicePoiRecords = poiListVersioned ? poiRecordsBuilding : [:]
+            devicePoiIds = Set(poiIdsBuilding)
+            tileVersions.prunePois(deviceKey, keeping: devicePoiIds)
+            deviceSupportsPois = true
+        case 0xE0 where d.count >= 3:                            // map-layer mask
+            handleMapLayersNotify(UInt16(d[1]) | (UInt16(d[2]) << 8))
         case 0xC0: deviceMapsBuilding = []                        // map-list begin
         case 0xC1 where d.count >= 34:                            // entry: 4×f64 + flag
             func f64(_ i: Int) -> Double {
@@ -2337,8 +2809,23 @@ extension BLEManager: CBCentralManagerDelegate {
                                     didDiscover p: CBPeripheral,
                                     advertisementData: [String: Any],
                                     rssi: NSNumber) {
+        let pairedFlag = BLEManager.advertisesPaired(advertisementData)
         MainActor.assumeIsolated {
             guard peripheral == nil else { return }
+            if let saved = pairedDeviceId {
+                // Fixed pairing: ours or nothing.
+                guard p.identifier == saved else { return }
+            } else {
+                // Looking for a first device: never one that turned us away
+                // this session, and not one that says it belongs to another
+                // phone — unless nothing else turns up (armPairedFallback).
+                if rejectedIds.contains(p.identifier) { return }
+                if pairedFlag == true {
+                    pairedElsewhereSeen[p.identifier] = p
+                    return
+                }
+            }
+            fallbackTask?.cancel()
             peripheral = p
             p.delegate = self
             state = .connecting
@@ -2397,14 +2884,22 @@ extension BLEManager: CBCentralManagerDelegate {
                                          message: "Connection dropped")
             TransferCenter.shared.finish(Self.routeTransferId, success: false,
                                          message: "Connection dropped")
+            deviceSupportsPois = false      // re-learnt from the next 0x08 answer
+            deviceKeepsVersions = false     // and this from the next versioned list
             if tilesUploading {
                 tileQueue = []
                 finishTileJob(message: "Interrupted — reconnect to resume")
             }
             status = DeviceStatus()
-            if !sawStatusSinceConnect {
+            let admitted = sawStatusSinceConnect
+            // Ours, and turning us away: a remembered device that keeps
+            // dropping us before any data (the firmware pushes nothing until
+            // the link proves the bond) was unpaired on the device, or now
+            // belongs to another phone. Three in a row, so a reboot or a
+            // range drop doesn't cry wolf.
+            if !admitted {
                 barrenConnects += 1
-                if barrenConnects == 3 { pairingLooksStale = true }
+                if barrenConnects == 3 && !onFallbackAttempt { pairingIssue = .notRecognised }
             } else {
                 barrenConnects = 0
             }
@@ -2427,13 +2922,26 @@ extension BLEManager: CBCentralManagerDelegate {
             // what made the link look like it was cycling in and out while the
             // app was foregrounded, and what made log downloads and map sends
             // fail: they abort on disconnect and the retry raced the rescan.
-            if let known = p as CBPeripheral? {
-                peripheral = known
-                known.delegate = self
-                state = .connecting
-                c.connect(known)
-            } else {
+            //
+            // Except when the device is not (or no longer) ours to reconnect to:
+            // forgetDevice() dropped it, it was dropped already (peripheral nil),
+            // or it was the one-off try at a paired-elsewhere device and it
+            // turned us away — then say so and go back to looking.
+            if forgetting || peripheral == nil {
+                forgetting = false
+                peripheral = nil
                 startScan()
+            } else if onFallbackAttempt && !admitted {
+                onFallbackAttempt = false
+                pairingIssue = .pairedElsewhere
+                peripheral = nil
+                startScan()
+            } else {
+                onFallbackAttempt = false
+                peripheral = p
+                p.delegate = self
+                state = .connecting
+                c.connect(p)
             }
         }
     }
@@ -2481,6 +2989,7 @@ extension BLEManager: CBPeripheralDelegate {
                     sensorsChar = ch; p.setNotifyValue(true, for: ch)
                 case BikeUUID.map:
                     mapChar = ch; p.setNotifyValue(true, for: ch)
+                    loadMapLayersState()
                 case BikeUUID.mesh:
                     meshChar = ch; p.setNotifyValue(true, for: ch)
                 case BikeUUID.workout:
@@ -2510,6 +3019,9 @@ extension BLEManager: CBPeripheralDelegate {
             // notification, so asking before notifications are on throws the
             // reply away and the Messages tab sits empty until it is opened.
             if ch.uuid == BikeUUID.mesh { refreshMesh() }
+            // Map layers: firmware without them never answers, which is what
+            // keeps the app's switches hidden for it.
+            if ch.uuid == BikeUUID.map { requestMapLayers() }
             if ch.uuid == BikeUUID.workout { refreshWorkouts() }
             // Which art format the device takes (and whether it forwards AMS
             // tracks); the answer is a notification.
@@ -2551,7 +3063,13 @@ extension BLEManager: CBPeripheralDelegate {
             artLog.error("write to \(ch.uuid.uuidString, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
         }
         if ch.uuid == BikeUUID.settings {
-            MainActor.assumeIsolated { settingsWriteAcked(ok: error == nil) }
+            // Settings edits and Unpair ([0xFE 0x55]) both write here; writes
+            // with response are acknowledged in order, so an edit already in
+            // flight gets the first acknowledgment.
+            MainActor.assumeIsolated {
+                if settingsWriteInFlight != nil { settingsWriteAcked(ok: error == nil) }
+                else if unpairWritePending { unpairDone(ok: error == nil) }
+            }
             return
         }
         if ch.uuid == BikeUUID.dash {
@@ -2830,6 +3348,7 @@ extension BLEManager: CBPeripheralDelegate {
         let firstStatus = !sawStatusSinceConnect
         sawStatusSinceConnect = true
         barrenConnects = 0   // a working link ends the stale-pairing streak
+        if firstStatus { rememberPairedDevice() }   // the device admitted us: ours
         if status.gpsFix {
             // The device was ALREADY locked when we connected. We start the
             // stream the moment the route characteristic shows up, before the

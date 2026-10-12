@@ -5,10 +5,11 @@
 //
 // Scope is text chat. The device joins a channel, sends and receives
 // TEXT_MESSAGE_APP packets, acknowledges direct messages, and learns names from
-// NODEINFO_APP so a sender shows up as "Alex" rather than "!a4c1380c". It does
+// NODEINFO_APP so a sender shows up as "Alex" rather than "!a4c1380c". It has a
+// Curve25519 key pair like any Meshtastic 2.5+ node, advertises the public half
+// in its NodeInfo, and sends and receives PKI-encrypted direct messages. It does
 // NOT rebroadcast other people's traffic (so it is a leaf on the mesh, not a
-// router), does not send position, and does not do PKI-encrypted direct
-// messages — see docs/meshtastic.md for what that means in practice.
+// router) — see docs/meshtastic.md for what that means in practice.
 //
 // One task owns the radio. Everything a second task may touch (the message ring,
 // the node table, the outbox) is behind a mutex and copied out, never handed out
@@ -72,6 +73,12 @@ struct Node {
     uint32_t positionMs = 0;    // millis() when it arrived, for staleness
     uint8_t  satsInView = 0;
     uint8_t  precisionBits = 32;   // < 32 = the sender blurred it deliberately
+
+    // The node's Curve25519 public key from its NodeInfo. Without it a direct
+    // message to this node can only be channel-encrypted, which current
+    // Meshtastic firmware rejects ("legacy DM").
+    bool     hasPublicKey = false;
+    uint8_t  publicKey[32] = {};
 };
 
 struct Stats {
@@ -82,6 +89,9 @@ struct Stats {
     uint32_t tx = 0;
     uint32_t txFailed = 0;
     uint32_t acksRx = 0;
+    uint32_t pkiRx = 0;           // direct messages that arrived PKI-encrypted
+    uint32_t pkiFailed = 0;       // PKI packets for us that would not decrypt
+    uint32_t nodeInfoReplies = 0; // NodeInfo requests answered
 };
 
 // Sets up the node identity and message storage, and brings the radio up if mesh
@@ -99,6 +109,10 @@ bool enabled();
 void setEnabled(bool on);
 
 uint32_t nodeNum();
+
+// Our Curve25519 public key, as advertised in NodeInfo. False until the mesh
+// task has loaded or generated the key pair (within a moment of boot).
+bool publicKey(uint8_t out[32]);
 float frequencyMHz();
 const char* channelName();
 const char* longName();

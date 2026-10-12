@@ -7,6 +7,8 @@
 #include "sd_bus.h"
 #include "settings.h"
 #include "ride_state.h"
+#include "ride_recorder.h"
+#include "usb_storage.h"
 
 namespace workout_service {
 namespace {
@@ -44,6 +46,32 @@ void seekSec(uint32_t sec) {
     g_boundaryArmed = false;
 }
 
+// --- Picker cache ---------------------------------------------------------
+// Two PSRAM arrays: the scan fills the back one while the UI keeps reading
+// the front, then they swap under g_listMx — a scan never holds the lock
+// across SD reads. Allocated on the first scan, so a rider who never opens
+// the picker pays nothing.
+constexpr int LIST_MAX = 96;
+SemaphoreHandle_t g_listMx = nullptr;   // list pointers, pending load, error
+SemaphoreHandle_t g_loadMx = nullptr;   // serializes load() (loop vs. srv task)
+SemaphoreHandle_t g_wake = nullptr;     // gives serviceFor() work to do
+WorkoutFileInfo* g_list = nullptr;      // front: what listPage() reads
+WorkoutFileInfo* g_back = nullptr;
+int g_listCount = 0;
+uint8_t g_listState = WLIST_SCANNING;
+volatile bool g_scanReq = false;
+char g_pendingLoad[48] = "";
+char g_loading[48] = "";                // shown on the picker until it lands
+char g_loadError[64] = "";
+volatile uint32_t g_version = 0;
+
+void bump() { g_version = g_version + 1; }
+
+struct ListLock {
+    ListLock() { if (g_listMx) xSemaphoreTake(g_listMx, portMAX_DELAY); }
+    ~ListLock() { if (g_listMx) xSemaphoreGive(g_listMx); }
+};
+
 }  // namespace
 
 int list(char* out, size_t cap) {
@@ -67,7 +95,7 @@ int list(char* out, size_t cap) {
     return count;
 }
 
-bool load(const char* name, const char** reason) {
+static bool loadImpl(const char* name, const char** reason) {
     static const char* kNoCard = "SD not available";
     static const char* kNoFile = "file not found";
     static const char* kTooBig = "file too large";
@@ -125,6 +153,214 @@ bool load(const char* name, const char** reason) {
     return true;
 }
 
+bool load(const char* name, const char** reason) {
+    // The app's [0x11] runs on the BLE server task and a picker tap on the
+    // loop task; both write g_wk, so one at a time.
+    if (g_loadMx) xSemaphoreTake(g_loadMx, portMAX_DELAY);
+    bool ok = loadImpl(name, reason);
+    if (g_loadMx) xSemaphoreGive(g_loadMx);
+    bump();
+    return ok;
+}
+
+// --- Picker ------------------------------------------------------------------
+
+void begin() {
+    if (g_listMx) return;
+    g_listMx = xSemaphoreCreateMutex();
+    g_loadMx = xSemaphoreCreateMutex();
+    g_wake = xSemaphoreCreateBinary();
+}
+
+void requestListRefresh() {
+    {
+        ListLock l;
+        g_loadError[0] = 0;   // a failure from an earlier visit is old news
+    }
+    g_scanReq = true;
+    if (g_wake) xSemaphoreGive(g_wake);
+}
+
+void requestLoad(const char* file) {
+    if (!file || !file[0]) return;
+    {
+        ListLock l;
+        snprintf(g_pendingLoad, sizeof(g_pendingLoad), "%s", file);
+        snprintf(g_loading, sizeof(g_loading), "%s", file);
+        g_loadError[0] = 0;
+    }
+    bump();
+    if (g_wake) xSemaphoreGive(g_wake);
+}
+
+void listPage(int page, WorkoutPickPage& out) {
+    ListLock l;
+    out.state = g_listState;
+    out.total = g_listCount;
+    if (page < 0) page = 0;
+    out.first = page * WORKOUT_PICK_ROWS;
+    out.count = 0;
+    for (int i = out.first; i < g_listCount && out.count < WORKOUT_PICK_ROWS;
+         ++i)
+        out.rows[out.count++] = g_list[i];
+    snprintf(out.loading, sizeof(out.loading), "%s", g_loading);
+    snprintf(out.error, sizeof(out.error), "%s", g_loadError);
+}
+
+uint32_t version() { return g_version; }
+
+namespace {
+
+bool cardAvailable() {
+    return ride_recorder::sdMounted() && !usb_storage::hostActive();
+}
+
+bool isWorkoutFile(const char* base) {
+    if (base[0] == '.') return false;   // macOS AppleDouble noise
+    const char* dot = strrchr(base, '.');
+    return dot && (!strcasecmp(dot, ".erg") || !strcasecmp(dot, ".mrc"));
+}
+
+int byTitle(const void* a, const void* b) {
+    return strcasecmp(((const WorkoutFileInfo*)a)->title,
+                      ((const WorkoutFileInfo*)b)->title);
+}
+
+// Runs on the loop task. Names first (one short SD hold for the directory),
+// then each file read under its own hold — a recorder flush waits at most one
+// small file, never the whole scan.
+void scan() {
+    if (!cardAvailable()) {
+        ListLock l;
+        g_listState = WLIST_NO_CARD;
+        bump();
+        return;
+    }
+    if (!g_list) {
+        size_t sz = sizeof(WorkoutFileInfo) * LIST_MAX;
+        g_list = (WorkoutFileInfo*)heap_caps_calloc(1, sz, MALLOC_CAP_SPIRAM);
+        g_back = (WorkoutFileInfo*)heap_caps_calloc(1, sz, MALLOC_CAP_SPIRAM);
+        if (!g_list || !g_back) {
+            heap_caps_free(g_list);
+            heap_caps_free(g_back);
+            g_list = g_back = nullptr;
+            diag::log("workout: no PSRAM for the picker list");
+            return;
+        }
+    }
+    // The parse target and file text: PSRAM, not this task's stack.
+    static Workout* scratch = nullptr;
+    if (!scratch)
+        scratch = (Workout*)heap_caps_malloc(sizeof(Workout), MALLOC_CAP_SPIRAM);
+    char* buf = (char*)heap_caps_malloc(MAX_FILE + 1, MALLOC_CAP_SPIRAM);
+    if (!scratch || !buf) {
+        heap_caps_free(buf);
+        return;
+    }
+
+    int n = 0;
+    sdLock();
+    File dir = SD.open(DIR);
+    if (dir) {
+        for (File f = dir.openNextFile(); f && n < LIST_MAX;
+             f = dir.openNextFile()) {
+            if (f.isDirectory()) continue;
+            const char* base = strrchr(f.name(), '/');
+            base = base ? base + 1 : f.name();
+            if (!isWorkoutFile(base) || strlen(base) >= sizeof(g_back[0].file))
+                continue;
+            g_back[n] = WorkoutFileInfo{};
+            snprintf(g_back[n].file, sizeof(g_back[n].file), "%s", base);
+            ++n;
+        }
+        dir.close();
+    }
+    sdUnlock();
+
+    // A percent (.mrc) file needs an FTP to become watts. Duration and shape
+    // don't depend on which, so an unset FTP still lists every file; the
+    // sparkline is then scaled to each file's own peak instead of to FTP.
+    const int ftp = settings::ftpWatts() > 0 ? settings::ftpWatts() : 200;
+    for (int i = 0; i < n; ++i) {
+        WorkoutFileInfo& e = g_back[i];
+        char path[96];
+        snprintf(path, sizeof(path), "%s/%s", DIR, e.file);
+        size_t got = 0;
+        sdLock();
+        File f = SD.open(path, FILE_READ);
+        if (f) {
+            if (f.size() <= MAX_FILE) got = f.read((uint8_t*)buf, f.size());
+            f.close();
+        }
+        sdUnlock();
+        buf[got] = 0;
+        workoutTitleFrom(buf, e.file, e.title, sizeof(e.title));
+        if (got && workoutParse(buf, ftp, *scratch))
+            workoutSummarize(*scratch, settings::ftpWatts() > 0 ? ftp : 0, e);
+        vTaskDelay(1);   // let the recorder in between files
+    }
+    heap_caps_free(buf);
+    qsort(g_back, n, sizeof(WorkoutFileInfo), byTitle);
+
+    {
+        ListLock l;
+        WorkoutFileInfo* t = g_list;
+        g_list = g_back;
+        g_back = t;
+        g_listCount = n;
+        g_listState = WLIST_READY;
+    }
+    bump();
+    diag::log("workout: picker list has %d file(s)", n);
+}
+
+}  // namespace
+
+void serviceFor(uint32_t ms) {
+    const uint32_t t0 = millis();
+    for (;;) {
+        // The card coming back (remount after a drop, a USB host letting
+        // go) rescans; going away shows "no card" until it returns. Only
+        // once a list exists — nobody opened the picker, nobody waits.
+        static bool wasAvail = false;
+        const bool avail = cardAvailable();
+        if (avail != wasAvail) {
+            wasAvail = avail;
+            if (g_list || g_listState != WLIST_SCANNING) g_scanReq = true;
+        }
+        if (g_scanReq) {
+            g_scanReq = false;
+            scan();
+        }
+        char name[48] = "";
+        {
+            ListLock l;
+            if (g_pendingLoad[0]) {
+                snprintf(name, sizeof(name), "%s", g_pendingLoad);
+                g_pendingLoad[0] = 0;
+            }
+        }
+        if (name[0]) {
+            const char* reason = "";
+            bool ok = load(name, &reason);
+            {
+                ListLock l;
+                // A newer tap may have queued meanwhile; leave its marker.
+                if (!strcmp(g_loading, name)) g_loading[0] = 0;
+                if (!ok)
+                    snprintf(g_loadError, sizeof(g_loadError), "%s: %s", name,
+                             reason);
+            }
+            diag::log("workout: picker load %s -> %s", name, ok ? "ok" : reason);
+            bump();
+        }
+        const uint32_t spent = millis() - t0;
+        if (spent >= ms) return;
+        if (g_wake) xSemaphoreTake(g_wake, pdMS_TO_TICKS(ms - spent));
+        else vTaskDelay(pdMS_TO_TICKS(ms - spent));
+    }
+}
+
 void start() {
     if (!g_loaded) return;
     g_started = true;
@@ -162,6 +398,7 @@ void unload() {
     stop();
     g_loaded = false;
     diag::log("workout: unloaded");
+    bump();
 }
 
 void toggle() {

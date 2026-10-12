@@ -5,6 +5,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <algorithm>
+#include <strings.h>
 #include <string>
 #include <utility>
 #include <vector>
@@ -175,7 +177,7 @@ struct Scene {
             flat.push_back((int16_t)lroundf(p.second));
         }
         lines.push_back(std::move(flat));
-        features.push_back({cls, lines.back().data(),
+        features.push_back({cls, 0, lines.back().data(),
                             (int)lines.back().size() / 2});
     }
 
@@ -186,7 +188,7 @@ struct Scene {
             flat.push_back((int16_t)lroundf(p.second));
         }
         waterLines.push_back(std::move(flat));
-        water.push_back({MAP_WATER, waterLines.back().data(),
+        water.push_back({MAP_WATER, 0, waterLines.back().data(),
                          (int)waterLines.back().size() / 2});
     }
 };
@@ -632,25 +634,30 @@ int main(int argc, char** argv) {
     ui::statusBar(s, fb.data(), "MENU");
     emit("menu_recording.png");
 
-    // Sensors list
-    ListRow sensors[3] = {};
-    snprintf(sensors[0].title, sizeof(sensors[0].title), "WHOOP 4.0");
+    // PAIRED DEVICES (was SENSORS): the phone first, then sensor candidates.
+    // Mirrors renderListScreen's row recipe in ui_dashboard.cpp.
+    ListRow sensors[4] = {};
+    snprintf(sensors[0].title, sizeof(sensors[0].title), "Raemond's iPhone");
     snprintf(sensors[0].subtitle, sizeof(sensors[0].subtitle),
-             "Connected · HR");
+             "Connected · Phone · tap to unpair");
     sensors[0].inverted = true;
-    snprintf(sensors[1].title, sizeof(sensors[1].title), "Assioma DUO");
+    snprintf(sensors[1].title, sizeof(sensors[1].title), "WHOOP 4.0");
     snprintf(sensors[1].subtitle, sizeof(sensors[1].subtitle),
-             "Saved · Power+Cad");
-    snprintf(sensors[2].title, sizeof(sensors[2].title), "f0:99:1c:22:8a:01");
+             "Connected · HR");
+    sensors[1].inverted = true;
+    snprintf(sensors[2].title, sizeof(sensors[2].title), "Assioma DUO");
     snprintf(sensors[2].subtitle, sizeof(sensors[2].subtitle),
+             "Saved · Power+Cad");
+    snprintf(sensors[3].title, sizeof(sensors[3].title), "f0:99:1c:22:8a:01");
+    snprintf(sensors[3].subtitle, sizeof(sensors[3].subtitle),
              "Cadence · -80 dBm");
     clearWhite(fb.data());
-    ui_render_list("SENSORS", sensors, 3, "tap a sensor to pair it · scanning...",
+    ui_render_list("PAIRED DEVICES", sensors, 4, "tap a sensor to pair it · scanning...",
                    fb.data());
     // ui_render_list does NOT draw the title it is handed — the header is the
     // status bar, which ui_dashboard draws over every list screen. Leaving it
     // out here is why these screens looked headerless on the site.
-    ui::statusBar(s, fb.data(), "SENSORS");
+    ui::statusBar(s, fb.data(), "PAIRED DEVICES");
     emit("sensors.png");
 
     // Routes list
@@ -667,9 +674,74 @@ int main(int argc, char** argv) {
              "tap to ride this route");
     clearWhite(fb.data());
     ui_render_list("NAVIGATE", routes, 3,
-                   "put .gpx files in /routes on the SD card", fb.data());
+                   "put .gpx files in /routes on the SD card", fb.data(), false,
+                   true);
+    ui_render_pager(0, 3, 3, "REFRESH", fb.data());
     ui::statusBar(s, fb.data(), "NAVIGATE");
     emit("routes.png");
+
+    // Navigate and Ride History page five rows at a time, the same pager
+    // footer as the workout picker. One "page" helper builds what
+    // renderListScreen() does: pinned rows first, then the files.
+    {
+        auto pagedList = [&](const char* title, const char* footer,
+                             const ListRow* all, int total, int pg,
+                             const char* file) {
+            ListRow rows[kMenuRowCount] = {};
+            int count = 0;
+            for (int i = pg * kMenuRowCount; i < total && count < kMenuRowCount;
+                 ++i)
+                rows[count++] = all[i];
+            clearWhite(fb.data());
+            ui_render_list(title, rows, count, footer, fb.data(), false, true);
+            ui_render_pager(pg * kMenuRowCount, count, total, "REFRESH",
+                            fb.data());
+            ui::statusBar(s, fb.data(), title);
+            emit(file);
+        };
+
+        // Navigate: an active route (pinned) and 12 GPX files, three pages.
+        static ListRow nav[13] = {};
+        nav[0] = routes[0];
+        const char* gpx[] = {"coastal.gpx", "mt_tam_loop.gpx",
+                             "paradise_loop.gpx", "old_la_honda.gpx",
+                             "kings_mountain.gpx", "tunitas_creek.gpx",
+                             "skyline_out_back.gpx", "half_moon_bay.gpx",
+                             "pescadero_loop.gpx", "mount_diablo.gpx",
+                             "sunol_regional.gpx", "calaveras_road.gpx"};
+        for (int i = 0; i < 12; ++i) {
+            snprintf(nav[i + 1].title, sizeof(nav[0].title), "%s", gpx[i]);
+            snprintf(nav[i + 1].subtitle, sizeof(nav[0].subtitle),
+                     "tap to ride this route");
+        }
+        const char* navFoot = "put .gpx files in /routes on the SD card";
+        pagedList("NAVIGATE", navFoot, nav, 13, 0, "routes_paged_p1.png");
+        pagedList("NAVIGATE", navFoot, nav, 13, 1, "routes_paged_p2.png");
+        pagedList("NAVIGATE", navFoot, nav, 13, 2, "routes_paged_p3.png");
+        pagedList("NAVIGATE", "no SD card", nav, 0, 0, "routes_empty.png");
+
+        // Ride History: a ride recording (pinned) and 71 finished rides,
+        // newest first — 72 rows, 15 pages.
+        static ListRow rides[72] = {};
+        snprintf(rides[0].title, sizeof(rides[0].title),
+                 "Recording in progress");
+        snprintf(rides[0].subtitle, sizeof(rides[0].subtitle),
+                 "24.6 km · 1:02:37");
+        rides[0].inverted = true;
+        for (int i = 1; i < 72; ++i) {
+            int day = 30 - (i - 1) % 30, month = 10 - (i - 1) / 30;
+            snprintf(rides[i].title, sizeof(rides[0].title),
+                     "2026%02d%02d-07%02d12.fit", month, day, (i * 7) % 60);
+            snprintf(rides[i].subtitle, sizeof(rides[0].subtitle), "%d KB",
+                     40 + (i * 37) % 260);
+        }
+        const char* rideFoot = "rides upload from /rides on the SD card";
+        pagedList("RIDES", rideFoot, rides, 72, 0, "history_p1.png");
+        pagedList("RIDES", rideFoot, rides, 72, 7, "history_p8.png");
+        pagedList("RIDES", rideFoot, rides, 72, 14, "history_p15.png");
+        // Not riding, three rides: one page, both arrows disabled.
+        pagedList("RIDES", rideFoot, rides + 1, 3, 0, "history_single.png");
+    }
 
     // Settings
     // useMiles ON deliberately: "MILES" is the longest word either switch has to
@@ -680,6 +752,73 @@ int main(int argc, char** argv) {
     ui_render_settings(si, fb.data());
     ui::statusBar(s, fb.data(), "SETTINGS");
     emit("settings.png");
+
+    // MAP LAYERS (from the layers button on the map): everything on, and a
+    // rider who keeps water + repair only.
+    clearWhite(fb.data());
+    ui_render_map_layers(MAP_LAYERS_ALL, fb.data());
+    ui::statusBar(s, fb.data(), "MAP LAYERS");
+    emit("map_layers.png");
+    clearWhite(fb.data());
+    ui_render_map_layers(MAP_LAYER_WATER | MAP_LAYER_REPAIR, fb.data());
+    ui::statusBar(s, fb.data(), "MAP LAYERS");
+    emit("map_layers_some_off.png");
+
+    // Fixed pairing: the phone row on PAIRED DEVICES, paired and not, the
+    // unpair sheet over it (and its migrated / not-paired variants), and the
+    // main menu's Paired Devices subtitle.
+    {
+        auto pairedPage = [&](bool paired) {
+            ListRow rows[3] = {};
+            if (paired) {
+                snprintf(rows[0].title, sizeof(rows[0].title), "Raemond's iPhone");
+                snprintf(rows[0].subtitle, sizeof(rows[0].subtitle),
+                         "Connected · Phone · tap to unpair");
+                rows[0].inverted = true;
+            } else {
+                snprintf(rows[0].title, sizeof(rows[0].title), "Phone");
+                snprintf(rows[0].subtitle, sizeof(rows[0].subtitle),
+                         "Not paired · open the app to pair");
+            }
+            snprintf(rows[1].title, sizeof(rows[1].title), "WHOOP 4.0");
+            snprintf(rows[1].subtitle, sizeof(rows[1].subtitle), "Connected · HR");
+            rows[1].inverted = true;
+            snprintf(rows[2].title, sizeof(rows[2].title), "Assioma DUO");
+            snprintf(rows[2].subtitle, sizeof(rows[2].subtitle), "Saved · Power+Cad");
+            clearWhite(fb.data());
+            ui_render_list("PAIRED DEVICES", rows, 3,
+                           "tap a sensor to pair it · scanning...", fb.data());
+            ui::statusBar(s, fb.data(), "PAIRED DEVICES");
+        };
+        pairedPage(true);
+        emit("paired_devices.png");
+        pairedPage(true);
+        ui_render_unpair_sheet(true, "Raemond's iPhone", 1, fb.data());
+        emit("unpair_sheet.png");
+        pairedPage(true);
+        ui_render_unpair_sheet(true, "", 2, fb.data());
+        emit("unpair_sheet_migrated.png");
+        pairedPage(false);
+        emit("paired_devices_unpaired.png");
+        pairedPage(false);
+        ui_render_unpair_sheet(false, "", 0, fb.data());
+        emit("unpair_sheet_not_paired.png");
+
+        MenuInfo mp = menu;
+        mp.recording = false;
+        mp.phonePaired = true;
+        snprintf(mp.phoneName, sizeof(mp.phoneName), "Raemond's iPhone");
+        clearWhite(fb.data());
+        ui_render_menu(mp, fb.data());
+        ui::statusBar(s, fb.data(), "MENU");
+        emit("menu_paired.png");
+
+        mp.phonePaired = false;
+        clearWhite(fb.data());
+        ui_render_menu(mp, fb.data());
+        ui::statusBar(s, fb.data(), "MENU");
+        emit("menu_unpaired.png");
+    }
 
     // GPS debug: the "sees satellites but no fix" case
     GpsDebugView g = {};
@@ -888,6 +1027,154 @@ int main(int argc, char** argv) {
         clearWhite(fb.data());
         ui_render_workout(ws, none, fb.data());
         emit("workout_none.png");
+
+        // READY (loaded, not started): the left strip is the way back to the
+        // picker instead of "redo".
+        ws.power3sW = 0xFFFF;
+        ws.powerConnected = false;
+        workoutBuildView(wk, 0, false, 250, v);
+        clearWhite(fb.data());
+        ui_render_workout(ws, v, fb.data());
+        emit("workout_ready_back.png");
+    }
+
+    // The device-side PICKER: the WORKOUT page with nothing loaded lists the
+    // files in /workouts. Built here exactly as workout_service builds its
+    // cache: parse, title from the header, summarize.
+    {
+        struct Blk { double min; int pct; };
+        struct Lib {
+            const char* file;
+            const char* desc;   // nullptr: no DESCRIPTION line
+            std::vector<Blk> blocks;
+        };
+        auto rep = [](std::vector<Blk> base, int n, std::vector<Blk> on,
+                      std::vector<Blk> tail) {
+            for (int i = 0; i < n; ++i)
+                base.insert(base.end(), on.begin(), on.end());
+            base.insert(base.end(), tail.begin(), tail.end());
+            return base;
+        };
+        const std::vector<Lib> lib = {
+            {"sweetspot_3x15.mrc", "Sweet Spot 3x15",
+             rep({{10, 55}}, 3, {{15, 90}, {5, 50}}, {{5, 45}})},
+            {"4x5_threshold.mrc", "4x5 Threshold",
+             rep({{10, 60}}, 4, {{5, 104}, {3, 55}}, {{6, 45}})},
+            {"vo2_5x3.mrc", "VO2 Max 5x3",
+             rep({{12, 55}}, 5, {{3, 120}, {3, 50}}, {{8, 45}})},
+            {"recovery.mrc", "Recovery Spin", {{40, 50}}},
+            {"over_unders.mrc", "Over-Unders 3x12",
+             rep({{10, 55}}, 3,
+                 {{2, 95}, {1, 108}, {2, 95}, {1, 108}, {2, 95}, {1, 108},
+                  {2, 95}, {1, 108}, {5, 50}},
+                 {{5, 45}})},
+            {"hill_repeats.erg", nullptr,   // title from the filename
+             rep({{10, 55}}, 6, {{2, 115}, {4, 50}}, {{6, 45}})},
+            {"endurance_90.mrc", "Endurance 90",
+             {{10, 55}, {70, 68}, {10, 50}}},
+            {"tempo_2x20.mrc", "Tempo 2x20",
+             {{10, 55}, {20, 82}, {5, 55}, {20, 82}, {5, 45}}},
+            {"microbursts.mrc", "Microbursts 30/30",
+             rep({{10, 55}}, 12, {{0.5, 150}, {0.5, 50}}, {{8, 45}})},
+            {"pyramid.mrc", "Pyramid",
+             {{8, 55}, {3, 80}, {3, 90}, {3, 100}, {3, 110}, {3, 120},
+              {3, 110}, {3, 100}, {3, 90}, {3, 80}, {8, 50}}},
+            {"ramp_test.mrc", "Ramp Test",
+             rep({{5, 50}}, 1,
+                 {{1, 60}, {1, 70}, {1, 80}, {1, 90}, {1, 100}, {1, 110},
+                  {1, 120}, {1, 130}, {1, 140}},
+                 {{4, 40}})},
+            {"sprint_openers.mrc", "Sprint Openers",
+             rep({{15, 60}}, 4, {{0.25, 200}, {3, 50}}, {{5, 45}})},
+            {"long_z2.mrc", "Zone 2 Long Ride",
+             {{10, 55}, {150, 66}, {10, 50}}},
+            {"broken.erg", "Half-written file", {}},
+        };
+        static WorkoutFileInfo all[16];
+        static Workout scratch;
+        int nAll = 0;
+        for (const Lib& l : lib) {
+            std::string t = "[COURSE HEADER]\nVERSION = 2\nUNITS = ENGLISH\n";
+            if (l.desc) t += std::string("DESCRIPTION = ") + l.desc + "\n";
+            t += std::string("FILE NAME = ") + l.file + "\n";
+            t += "MINUTES PERCENT\n[END COURSE HEADER]\n[COURSE DATA]\n";
+            double m = 0;
+            char line[48];
+            for (const Blk& b : l.blocks) {
+                snprintf(line, sizeof(line), "%.2f %d\n", m, b.pct);
+                t += line;
+                m += b.min;
+                snprintf(line, sizeof(line), "%.2f %d\n", m, b.pct);
+                t += line;
+            }
+            t += "[END COURSE DATA]\n";
+            WorkoutFileInfo& e = all[nAll++];
+            snprintf(e.file, sizeof(e.file), "%s", l.file);
+            workoutTitleFrom(t.c_str(), l.file, e.title, sizeof(e.title));
+            if (workoutParse(t.c_str(), 250, scratch))
+                workoutSummarize(scratch, 250, e);
+        }
+        std::sort(all, all + nAll,
+                  [](const WorkoutFileInfo& a, const WorkoutFileInfo& b) {
+                      return strcasecmp(a.title, b.title) < 0;
+                  });
+        // The same page cut workout_service::listPage makes.
+        auto page = [&](const WorkoutFileInfo* src, int n, int pg,
+                        WorkoutPickPage& p) {
+            p = WorkoutPickPage{};
+            p.state = WLIST_READY;
+            p.total = n;
+            p.first = pg * WORKOUT_PICK_ROWS;
+            for (int i = p.first; i < n && p.count < WORKOUT_PICK_ROWS; ++i)
+                p.rows[p.count++] = src[i];
+        };
+
+        RideState ps = s;
+        static WorkoutPickPage p;
+
+        // Empty card.
+        page(all, 0, 0, p);
+        clearWhite(fb.data());
+        ui_render_workout_picker(ps, p, fb.data());
+        emit("workout_picker_empty.png");
+
+        // A few workouts, one of them mid-load after a tap.
+        static WorkoutFileInfo few[4];
+        const char* pick[] = {"4x5_threshold.mrc", "recovery.mrc",
+                              "sweetspot_3x15.mrc", "vo2_5x3.mrc"};
+        for (int i = 0; i < 4; ++i)
+            for (int j = 0; j < nAll; ++j)
+                if (!strcmp(all[j].file, pick[i])) few[i] = all[j];
+        page(few, 4, 0, p);
+        clearWhite(fb.data());
+        ui_render_workout_picker(ps, p, fb.data());
+        emit("workout_picker_few.png");
+        snprintf(p.loading, sizeof(p.loading), "sweetspot_3x15.mrc");
+        clearWhite(fb.data());
+        ui_render_workout_picker(ps, p, fb.data());
+        emit("workout_picker_loading.png");
+
+        // Many: two pages, with a file that wouldn't parse, and the header
+        // reporting a load that failed.
+        page(all, nAll, 0, p);
+        clearWhite(fb.data());
+        ui_render_workout_picker(ps, p, fb.data());
+        emit("workout_picker_many_p1.png");
+        page(all, nAll, 1, p);
+        snprintf(p.error, sizeof(p.error), "broken.erg: no course data parsed");
+        clearWhite(fb.data());
+        ui_render_workout_picker(ps, p, fb.data());
+        emit("workout_picker_many_p2.png");
+
+        // Before the first scan lands, and with no card.
+        p = WorkoutPickPage{};
+        clearWhite(fb.data());
+        ui_render_workout_picker(ps, p, fb.data());
+        emit("workout_picker_scanning.png");
+        p.state = WLIST_NO_CARD;
+        clearWhite(fb.data());
+        ui_render_workout_picker(ps, p, fb.data());
+        emit("workout_picker_no_card.png");
     }
 
     // BLE pairing sheet over the dashboard

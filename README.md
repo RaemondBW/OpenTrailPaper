@@ -176,7 +176,8 @@ remaining), framed **route**, **map-tile**, **log** and **OTA** transfers, and a
   (L76K/CASIC and u-blox M10Q autodetected; warm-start seeded with the
   last-known position, and optionally the phone's location as a fallback).
 - **BLE sensors** — heart rate, cycling power (incl. cadence from crank data),
-  speed/cadence. Pair from the Sensors screen; pairings persist in flash.
+  speed/cadence. Pair from the device's Paired Devices screen or the app's
+  Sensors screen; pairings persist in flash.
 - **Varia radar** — pair a BLE radar from Sensors and add a vertical traffic tile
   in either companion's dashboard editor. See [compatibility and setup](docs/varia-radar.md).
 - **Ride recording** — 1 Hz FIT files on the SD card (`/rides/*.fit`),

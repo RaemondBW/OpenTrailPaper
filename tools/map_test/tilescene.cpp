@@ -19,6 +19,7 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#include <chrono>
 #include <zlib.h>
 
 #include <dirent.h>
@@ -51,9 +52,25 @@ struct Tile {
     std::string id;
     uint64_t cell = 0;
     std::vector<uint8_t> bytes;
+    std::vector<uint8_t> poi;   // the tile's <id>.poi, empty when there is none
     double s, w, n, e;
 };
 std::vector<Tile> g_tiles;
+// .poi files read during the directory walk, attached to their tiles after it
+// (the walk can meet a .poi before its .ebm).
+std::vector<std::pair<std::string, std::vector<uint8_t>>> g_pois;
+
+std::vector<uint8_t> readFile(const std::string& path) {
+    std::vector<uint8_t> v;
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return v;
+    fseek(f, 0, SEEK_END);
+    v.resize(ftell(f));
+    fseek(f, 0, SEEK_SET);
+    if (fread(v.data(), 1, v.size(), f) != v.size()) v.clear();
+    fclose(f);
+    return v;
+}
 
 // The harness resolves a cell the way the device does — by id, not by scanning
 // a list — so it exercises the same lookup rather than a stand-in for it.
@@ -104,6 +121,12 @@ void loadTileDir(const char* root) {
             DIR* d2 = opendir(sub.c_str());
             if (!d2) continue;
             for (dirent* f = readdir(d2); f; f = readdir(d2)) {
+                if (strstr(f->d_name, ".poi")) {
+                    std::string leaf(f->d_name);
+                    g_pois.push_back({std::string(e->d_name) + leaf.substr(0, leaf.find(".poi")),
+                                      readFile(sub + "/" + leaf)});
+                    continue;
+                }
                 if (!strstr(f->d_name, ".ebm")) continue;
                 std::string leaf(f->d_name);
                 loadTile(sub + "/" + leaf,
@@ -186,6 +209,7 @@ std::string dropSummary(const map_tiles::MapProjectStats& st, int want, int used
     add("blobs-cut:%d", st.blobsTruncated);
     add("offscr-w:%d", st.waterOffscreen);
     add("offscr-p:%d", st.parksOffscreen);
+    add("pois:%d", st.poisDropped);
     return s.empty() ? "-" : s;
 }
 
@@ -214,6 +238,11 @@ int main(int argc, char** argv) {
 
     epd_set_rotation(EPD_ROT_INVERTED_PORTRAIT);   // same as the device UI
     loadTileDir(argv[1]);
+    size_t poiFiles = 0;
+    for (auto& [id, bytes] : g_pois)
+        for (auto& t : g_tiles)
+            if (t.id == id) { t.poi = std::move(bytes); poiFiles++; }
+    printf("%zu .poi files attached\n", poiFiles);
     if (g_tiles.empty()) { fprintf(stderr, "no tiles loaded\n"); return 1; }
     size_t bytes = 0;
     for (auto& t : g_tiles) bytes += t.bytes.size();
@@ -239,7 +268,7 @@ int main(int argc, char** argv) {
             s = t.s < s ? t.s : s; n = t.n > n ? t.n : n;
             w = t.w < w ? t.w : w; e = t.e > e ? t.e : e;
         }
-        struct { int pts, polys, wpts, wpolys, ppts, ppolys, frames; } peak = {};
+        struct { int pts, polys, wpts, wpolys, ppts, ppolys, pois, frames; } peak = {};
         const float rots[] = {0.0f, -20.0f, -45.0f, -70.0f, -90.0f};
         for (int gy = 0; gy <= 12; ++gy) {
             for (int gx = 0; gx <= 12; ++gx) {
@@ -258,6 +287,9 @@ int main(int argc, char** argv) {
                             if (!t) continue;
                             map_tiles::projectBlobInto(t->bytes.data(), t->bytes.size(),
                                                        la, lo, mpp, 270, 430, rot);
+                            if (!t->poi.empty())
+                                map_tiles::projectPoisInto(t->poi.data(), t->poi.size(),
+                                                           la, lo, mpp, 270, 430, rot);
                         }
                         map_tiles::endProject(m);
                         map_tiles::MapProjectStats st = map_tiles::projectStats();
@@ -268,6 +300,7 @@ int main(int argc, char** argv) {
                         if (m.waterCount > peak.wpolys) peak.wpolys = m.waterCount;
                         if (st.usedParkPoints > peak.ppts) peak.ppts = st.usedParkPoints;
                         if (m.parkCount > peak.ppolys) peak.ppolys = m.parkCount;
+                        if (m.poiCount > peak.pois) peak.pois = m.poiCount;
                     }
                 }
             }
@@ -284,11 +317,13 @@ int main(int argc, char** argv) {
         row("water polys", peak.wpolys, cap.capWaterPolys);
         row("park points", peak.ppts, cap.capParkPoints);
         row("park polys", peak.ppolys, cap.capParkPolys);
+        row("pois", peak.pois, cap.capPois);
         return 0;
     }
 
-    printf("%-9s %-4s %5s %5s  %6s %6s  %5s %5s  %s\n",
-           "view", "mpp", "cells", "drawn", "polys", "pts", "wpoly", "wpts", "dropped");
+    printf("%-9s %-4s %5s %5s  %6s %6s  %5s %5s  %5s %5s  %6s %6s  %s\n",
+           "view", "mpp", "cells", "drawn", "polys", "pts", "wpoly", "wpts",
+           "bike", "pois", "projus", "drawus", "dropped");
     for (auto& v : views) {
         for (float mpp : zooms) {
             uint64_t sel[MAP_TILE_BUDGET];
@@ -304,7 +339,13 @@ int main(int argc, char** argv) {
             map.trackUp = v.rot != 0;
             map.headingDeg = v.rot != 0 ? 0.0f : 37.0f;
             map.hasMap = true;
+            // MAP_LAYERS=<mask>: render with some cycling layers switched off
+            // (MAP_LAYER_* bits), as the device's MAP LAYERS screen would.
+            if (const char* ml = getenv("MAP_LAYERS")) map.layers = (uint16_t)strtol(ml, nullptr, 0);
 
+            // Host timings: absolute numbers mean nothing for the ESP32, but the
+            // ratio between two tile sets / renderer versions does.
+            auto t0 = std::chrono::steady_clock::now();
             map_tiles::beginProject(map);
             int drawn = 0;
             for (int i = 0; i < used; ++i) {
@@ -313,18 +354,27 @@ int main(int argc, char** argv) {
                 drawn++;
                 map_tiles::projectBlobInto(t->bytes.data(), t->bytes.size(), lat, lon,
                                            mpp, map.riderX, map.riderY, v.rot);
+                if (!t->poi.empty())
+                    map_tiles::projectPoisInto(t->poi.data(), t->poi.size(), lat, lon,
+                                               mpp, map.riderX, map.riderY, v.rot);
             }
             used = drawn;
             map_tiles::endProject(map);
 
             map_tiles::MapProjectStats st = map_tiles::projectStats();
-            printf("%-9s %-4d %5d %5d  %6d %6d  %5d %5d  %s\n",
-                   v.tag, (int)mpp, want, used, map.featureCount, st.usedPoints,
-                   map.waterCount, st.usedWaterPoints,
-                   dropSummary(st, want, used).c_str());
-
+            int bike = 0;   // polylines carrying any cycling flag
+            for (int i = 0; i < map.featureCount; ++i) bike += map.features[i].flags != 0;
+            auto t1 = std::chrono::steady_clock::now();
             memset(fb.data(), 0xFF, fb.size());
             ui_render_map(map, s, fb.data());
+            auto t2 = std::chrono::steady_clock::now();
+            auto us = [](auto a, auto b) {
+                return (int)std::chrono::duration_cast<std::chrono::microseconds>(b - a).count();
+            };
+            printf("%-9s %-4d %5d %5d  %6d %6d  %5d %5d  %5d %5d  %6d %6d  %s\n",
+                   v.tag, (int)mpp, want, used, map.featureCount, st.usedPoints,
+                   map.waterCount, st.usedWaterPoints, bike, map.poiCount,
+                   us(t0, t1), us(t1, t2), dropSummary(st, want, used).c_str());
             framebufferToPortrait(fb.data(), gray.data());
             char path[256];
             snprintf(path, sizeof(path), "%s/map_%s_mpp%02d.png", outdir, v.tag,

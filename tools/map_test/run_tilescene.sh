@@ -21,7 +21,10 @@ EPDIY=$ROOT/vendor/T5S3-4.7-e-paper-PRO/lib/epdiy/src
 H3=$ROOT/companion-ios/Sources/H3
 CXXFLAGS="-std=c++17 -O2 -I ../preview/shim -I $EPDIY -I $ROOT/src -I $H3 -I $H3/include"
 
+# Same source list as tools/preview/render_preview.sh (ui_render.cpp pulls in
+# the vector font and the workout page).
 for f in tilescene.cpp "$ROOT/src/epd_compat.cpp" "$ROOT/src/ui_render.cpp" \
+         "$ROOT/src/vfont.cpp" "$ROOT/src/workout.cpp" \
          "$ROOT/src/map_view.cpp" "$ROOT/src/map_tiles.cpp" \
          "$ROOT/src/dash_layout.cpp"; do
     clang++ $CXXFLAGS -c "$f" -o "/tmp/$(basename "$f" .cpp)_tile.o"
@@ -33,6 +36,7 @@ for f in "$H3"/h3shim.c "$H3"/lib/*.c; do
 done
 clang++ /tmp/tilescene_tile.o /tmp/epd_compat_tile.o /tmp/ui_render_tile.o \
     /tmp/map_view_tile.o /tmp/map_tiles_tile.o /tmp/dash_layout_tile.o \
+    /tmp/vfont_tile.o /tmp/workout_tile.o \
     /tmp/*_h3.o -lz -o tilescene
 
 mkdir -p "$OUT"

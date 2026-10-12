@@ -9,9 +9,12 @@ import Foundation
 /// cleared the queue, and re-sending meant re-fetching and re-encoding the whole
 /// area from scratch.
 ///
-/// Blobs are immutable for a given cell (the encoders are byte-identical across
-/// mapgen.js / build_map.py / MapBuilder.swift by design), so caching them by id
-/// is safe and needs no invalidation beyond age.
+/// Each blob carries its version in a `<id>.ver` sidecar: "cdn:<hash>" for a
+/// tile from the pre-built set, "phone:<secs>" for one built here from
+/// Overpass (PrebuiltTiles.cdnRecord / phoneRecord). When the CDN index has the
+/// hex, only a copy with exactly its current hash is reused, at any age; a
+/// stale or phone-built copy is fetched again. Without an index entry the old
+/// rule applies: any copy younger than `maxAge`.
 ///
 /// Lives in Application Support, NOT Caches. It started in Caches on the theory
 /// that it is reconstructible from the network — true, but an eviction would
@@ -28,8 +31,14 @@ actor TileCache {
 
     private let dir: URL
 
-    init() {
+    /// `dir`: a test directory instead of the app's.
+    init(dir testDir: URL? = nil) {
         let fm = FileManager.default
+        if let testDir {
+            dir = testDir
+            try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            return
+        }
         let base = (try? fm.url(for: .applicationSupportDirectory, in: .userDomainMask,
                                 appropriateFor: nil, create: true))
             ?? fm.urls(for: .cachesDirectory, in: .userDomainMask)[0]
@@ -37,9 +46,25 @@ actor TileCache {
         // contain, so stale blobs cannot mask the fix. v2: tiles built before
         // the padded-coastline fetch have no sea fill — an ocean-only hex was
         // cached blank (elevation alone made it non-empty), and reusing it would
-        // look exactly like the bug still being there.
-        dir = base.appendingPathComponent("TileCache-v2", isDirectory: true)
+        // look exactly like the bug still being there. v3: tiles carry the
+        // bike-route / cycleway / bike-lane way flags.
+        dir = base.appendingPathComponent("TileCache-v3", isDirectory: true)
         try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        // v2 tiles move in already EXPIRED (mtime 1970): data(for:) never
+        // reuses one, so the next sync of that area rebuilds it with the flags,
+        // but cachedIds() still lists it, so the map keeps showing the areas
+        // this phone downloaded. trim() drops them first.
+        let old = base.appendingPathComponent("TileCache-v2", isDirectory: true)
+        if let files = try? fm.contentsOfDirectory(at: old, includingPropertiesForKeys: nil) {
+            for f in files where f.pathExtension == "ebm" {
+                let to = dir.appendingPathComponent(f.lastPathComponent)
+                if (try? fm.moveItem(at: f, to: to)) != nil {
+                    try? fm.setAttributes([.modificationDate: Date(timeIntervalSince1970: 0)],
+                                          ofItemAtPath: to.path)
+                }
+            }
+            try? fm.removeItem(at: old)
+        }
         var res = URLResourceValues()
         res.isExcludedFromBackup = true
         var d = dir
@@ -53,15 +78,26 @@ actor TileCache {
         return dir.appendingPathComponent("\(safe).ebm")
     }
 
-    /// Cached blob for `id`, or nil if absent or too old.
-    func data(for id: String) -> Data? {
+    /// Cached blob for `id` with its version, if a send may reuse it: with
+    /// `cdnHash` only the copy of exactly that hash (any age); without, any
+    /// copy younger than maxAge when `allowAged`.
+    func reusable(_ id: String, cdnHash: String?, allowAged: Bool) -> (data: Data, version: String)? {
         let u = url(id)
         guard let attrs = try? FileManager.default.attributesOfItem(atPath: u.path),
-              let modified = attrs[.modificationDate] as? Date,
-              Date().timeIntervalSince(modified) < maxAge,
-              let d = try? Data(contentsOf: u), !d.isEmpty
-        else { return nil }
-        return d
+              let modified = attrs[.modificationDate] as? Date else { return nil }
+        let version = (try? String(contentsOf: verURL(id), encoding: .utf8))
+            ?? PrebuiltTiles.phoneRecord(modified)
+        if let h = cdnHash {
+            guard version == PrebuiltTiles.cdnRecord(h) else { return nil }
+        } else {
+            guard allowAged, Date().timeIntervalSince(modified) < maxAge else { return nil }
+        }
+        guard let d = try? Data(contentsOf: u), !d.isEmpty else { return nil }
+        return (d, version)
+    }
+
+    private func verURL(_ id: String) -> URL {
+        dir.appendingPathComponent("\(id.filter { $0.isHexDigit }).ver")
     }
 
     /// Every H3 id this phone holds tile data for — the set of areas the map can
@@ -73,24 +109,34 @@ actor TileCache {
                         .map { $0.deletingPathExtension().lastPathComponent })
     }
 
-    func store(_ data: Data, for id: String) {
+    func store(_ data: Data, for id: String, version: String) {
         guard !data.isEmpty else { return }
         try? data.write(to: url(id), options: .atomic)
+        try? Data(version.utf8).write(to: verURL(id), options: .atomic)
     }
 
-    func store(_ tiles: [(id: String, data: Data)]) {
-        for t in tiles { store(t.data, for: t.id) }
+    /// `versions`: each tile's record; a tile without one was built on this
+    /// phone now.
+    func store(_ tiles: [(id: String, data: Data)], versions: [String: String] = [:]) {
+        let phone = PrebuiltTiles.phoneRecord()
+        for t in tiles { store(t.data, for: t.id, version: versions[t.id] ?? phone) }
     }
 
-    /// Which of `ids` are already built, and which still need fetching.
-    func partition(_ ids: [String]) -> (cached: [(id: String, data: Data)],
-                                        missing: [String]) {
+    /// Which of `ids` can be sent from the cache (with their versions), and
+    /// which still need fetching. `cdnHashes`: the CDN's current .ebm hash for
+    /// the hexes it has (see reusable()). `allowAged` false (a Redownload)
+    /// reuses only exact CDN copies.
+    func partition(_ ids: [String], cdnHashes: [String: String] = [:], allowAged: Bool = true)
+        -> (cached: [(id: String, data: Data)], versions: [String: String], missing: [String]) {
         var hit: [(id: String, data: Data)] = []
+        var versions: [String: String] = [:]
         var miss: [String] = []
         for id in ids {
-            if let d = data(for: id) { hit.append((id, d)) } else { miss.append(id) }
+            if let r = reusable(id, cdnHash: cdnHashes[id], allowAged: allowAged) {
+                hit.append((id, r.data)); versions[id] = r.version
+            } else { miss.append(id) }
         }
-        return (hit, miss)
+        return (hit, versions, miss)
     }
 
     /// Total bytes held, for the Settings readout.
@@ -129,5 +175,95 @@ actor TileCache {
             try? FileManager.default.removeItem(at: f)
             total -= sz
         }
+    }
+}
+
+/// On-disk cache of built cycling-POI files (`<h3>.poi`), kept apart from the
+/// map tiles so POIs can be fetched, refreshed and sent on their own: a POI
+/// query is ~1% of a map query, and water points change more often than roads.
+///
+/// Entries older than `maxAge` are rebuilt from Overpass the next time the
+/// area is synced, unless the CDN index has the cell: then only a copy with
+/// its current .poi hash is reused (same `.ver` sidecars as TileCache). Same
+/// location and backup rules as TileCache.
+actor PoiCache {
+    static let shared = PoiCache()
+
+    /// POIs older than this are re-fetched (and re-sent) when the area is next
+    /// synced — the refresh period for water points and repair stands.
+    static let maxAge: TimeInterval = 60 * 60 * 24 * 30   // 30 days
+
+    private let dir: URL
+
+    init(dir testDir: URL? = nil) {
+        let fm = FileManager.default
+        let base = (try? fm.url(for: .applicationSupportDirectory, in: .userDomainMask,
+                                appropriateFor: nil, create: true))
+            ?? fm.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        dir = testDir ?? base.appendingPathComponent("PoiCache-v1", isDirectory: true)
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        var res = URLResourceValues()
+        res.isExcludedFromBackup = true
+        var d = dir
+        try? d.setResourceValues(res)
+    }
+
+    private func url(_ id: String) -> URL {
+        dir.appendingPathComponent("\(id.filter { $0.isHexDigit }).poi")
+    }
+
+    private func verURL(_ id: String) -> URL {
+        dir.appendingPathComponent("\(id.filter { $0.isHexDigit }).ver")
+    }
+
+    /// Cached file for `id` with its version, if a send may reuse it (the
+    /// rules of TileCache.reusable, with maxAge).
+    func reusable(_ id: String, cdnHash: String?, allowAged: Bool) -> (data: Data, version: String)? {
+        let u = url(id)
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: u.path),
+              let modified = attrs[.modificationDate] as? Date else { return nil }
+        let version = (try? String(contentsOf: verURL(id), encoding: .utf8))
+            ?? PrebuiltTiles.phoneRecord(modified)
+        if let h = cdnHash {
+            guard version == PrebuiltTiles.cdnRecord(h) else { return nil }
+        } else {
+            guard allowAged, Date().timeIntervalSince(modified) < Self.maxAge else { return nil }
+        }
+        guard let d = try? Data(contentsOf: u), d.count >= 40 else { return nil }
+        return (d, version)
+    }
+
+    func store(_ files: [(id: String, data: Data)], versions: [String: String] = [:]) {
+        let phone = PrebuiltTiles.phoneRecord()
+        for f in files where !f.data.isEmpty {
+            try? f.data.write(to: url(f.id), options: .atomic)
+            try? Data((versions[f.id] ?? phone).utf8).write(to: verURL(f.id), options: .atomic)
+        }
+    }
+
+    func partition(_ ids: [String], cdnHashes: [String: String] = [:], allowAged: Bool = true)
+        -> (cached: [(id: String, data: Data)], versions: [String: String], missing: [String]) {
+        var hit: [(id: String, data: Data)] = []
+        var versions: [String: String] = [:]
+        var miss: [String] = []
+        for id in ids {
+            if let r = reusable(id, cdnHash: cdnHashes[id], allowAged: allowAged) {
+                hit.append((id, r.data)); versions[id] = r.version
+            } else { miss.append(id) }
+        }
+        return (hit, versions, miss)
+    }
+
+    func sizeBytes() -> Int {
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: [.fileSizeKey]) else { return 0 }
+        return files.reduce(0) {
+            $0 + ((try? $1.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+        }
+    }
+
+    func clear() {
+        try? FileManager.default.removeItem(at: dir)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     }
 }

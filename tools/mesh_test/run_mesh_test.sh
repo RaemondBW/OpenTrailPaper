@@ -18,6 +18,6 @@ fi
 
 "$CXX" -std=c++17 -O2 -Wall -Wextra \
     -I src \
-    tools/mesh_test/mesh_test.cpp src/mesh_proto.cpp \
+    tools/mesh_test/mesh_test.cpp src/mesh_proto.cpp src/mesh_crypto.cpp \
     -o tools/mesh_test/mesh_test
 ./tools/mesh_test/mesh_test

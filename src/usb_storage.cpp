@@ -10,6 +10,7 @@
 #include "diag.h"
 #include "ride_recorder.h"
 #include "sd_bus.h"
+#include "crash_report.h"
 
 namespace {
 
@@ -184,6 +185,10 @@ void poll() {
     g_hostActive = false;
     g_loggedActive = false;
     diag::log("usb storage: host released, SD %s", ok ? "reclaimed" : "REMOUNT FAILED");
+    // Anything that queued while the host owned the card goes out now rather
+    // than waiting for the (possibly backed-off) retry timer. poll() runs on the
+    // main task, like the rest of crash delivery.
+    if (ok) crash_report::onSdMounted("usb host released");
 }
 
 }  // namespace usb_storage

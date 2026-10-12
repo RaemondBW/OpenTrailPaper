@@ -438,6 +438,12 @@ void setup() {
     // say the device was busy — which is what read as a freeze.
     ui_dashboard::bootStep("SD card");
     bool sdOk = ride_recorder::begin();
+    // Crash evidence first: queued crash reports and the pending Memfault dump
+    // go to the card NOW, synchronously, before the UI task exists — and so
+    // before usb_storage::begin() can hand the card to a host. A device that
+    // crashes ~15 s after every boot would otherwise never deliver either.
+    // Bounded work: at most four short reports and one <=64 KiB dump.
+    if (sdOk) crash_report::onSdMounted("boot mount");
     if (sdOk)
         ui_dashboard::bootDetailFor("SD card", "%lu MB free · %d rides",
                                     (unsigned long)ride_recorder::sdFreeMB(),
@@ -629,6 +635,7 @@ void setup() {
     // Enable automatic light sleep now that every peripheral (GPS UART, BLE, EPD)
     // is up. No-op + logged warning on a stock framework without CONFIG_PM_ENABLE.
     power_mgmt::begin();
+    workout_service::begin();   // picker cache locks, before any task runs
     BOOT_STEP("power_mgmt done -> creating tasks");
 
     xTaskCreatePinnedToCore(gps_service::task, "gps", 4096, nullptr, 3, nullptr, 0);
@@ -644,8 +651,11 @@ void setup() {
     // messaging on at runtime, and there has to be a task ready to service it.
     // (meshOk is false only when there was no PSRAM for the message ring, which
     // means the feature cannot work at all.)
+    // 6 KB rather than 4: the X25519 behind Meshtastic PKI (mesh_crypto.cpp) runs
+    // on this task and wants ~1.8 KB of stack of its own at the bottom of a
+    // receive path that was already most of the way down the old 4 KB.
     if (meshOk)
-        xTaskCreatePinnedToCore(mesh_service::task, "mesh", 4096, nullptr, 2,
+        xTaskCreatePinnedToCore(mesh_service::task, "mesh", 6144, nullptr, 2,
                                 nullptr, 0);
     xTaskCreatePinnedToCore(ui_dashboard::task, "ui", 8192, nullptr, 2, nullptr, 1);
 
@@ -661,7 +671,9 @@ void loop() {
     crash_report::tick();
     memfault_service::tick();
     workout_service::tick();   // pause-at-block-boundary mode
-    vTaskDelay(pdMS_TO_TICKS(1000));
+    // The 1 s cadence, but woken early to scan /workouts or load a workout
+    // the rider tapped on the picker (SD work kept off the UI task).
+    workout_service::serviceFor(1000);
 }
 
 void board_radio_power(bool on) {

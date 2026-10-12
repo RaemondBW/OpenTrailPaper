@@ -10,6 +10,7 @@ namespace {
 struct FieldInfo { const char* id; const char* label; };
 const FieldInfo kFields[DF_COUNT] = {
     {"speed",      "SPEED"},
+    {"avgspeed",   "AVG SPEED"},
     {"power3s",    "POWER · 3S"},
     {"power",      "POWER"},
     {"hr",         "HEART RATE"},

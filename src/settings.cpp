@@ -25,6 +25,7 @@ bool usbDrv = true;  // true = expose SD as USB drive when plugged into a host
 // device should show the layout the rider configured, gaps and all, rather
 // than a silently re-packed one that hides which sensors are missing.
 bool showOff = true;
+uint16_t mapLayerMask = 0x003F;   // MAP_LAYERS_ALL: every cycling layer on
 // Seconds of no movement (power, cadence, wheel and GPS all quiet) before the
 // ride timer auto-pauses. 0 disables auto-pause entirely.
 int autoPause = 10;
@@ -57,6 +58,8 @@ uint8_t meshRegionIdx = 0;
 int8_t  meshTxDbm = 0;
 uint8_t meshSlot = 0;
 char meshLong[40] = "";
+char phName[32] = "";   // paired phone's GAP name, ASCII-folded
+char phId[20] = "";     // its identity address, "aa:bb:cc:dd:ee:ff"
 char meshShort[8] = "";
 const char* KEYS[ble_sensors::KIND_COUNT] = {"sens_hr", "sens_pwr", "sens_cad", "sens_rdr"};
 const char* NAME_KEYS[ble_sensors::KIND_COUNT] = {"snm_hr", "snm_pwr", "snm_cad", "snm_rdr"};
@@ -78,6 +81,7 @@ void begin() {
     // keeps the SD (logs/recording) when plugged in.
     usbDrv = prefs.getBool("usbdrv2", false);
     showOff = prefs.getBool("showoff", true);
+    mapLayerMask = prefs.getUShort("maplayers", 0x003F);
     autoPause = prefs.getInt("apause", 10);
     wkPauseStep = prefs.getBool("wkpstep", false);
     for (int k = 0; k < ble_sensors::KIND_COUNT; ++k) {
@@ -109,6 +113,8 @@ void begin() {
     meshSlot = prefs.getUChar("meshslot", 0);
     prefs.getString("meshlong", meshLong, sizeof(meshLong));
     prefs.getString("meshshort", meshShort, sizeof(meshShort));
+    prefs.getString("phname", phName, sizeof(phName));
+    prefs.getString("phid", phId, sizeof(phId));
     Serial.printf("[cfg] ftp=%dW tz=%dmin sensors=[%s|%s|%s|%s]\n", ftp, tz,
                   addrs[0], addrs[1], addrs[2], addrs[3]);
 }
@@ -162,6 +168,12 @@ void setUsbDrive(bool on) {
 }
 
 bool showOffline() { return showOff; }
+uint16_t mapLayers() { return mapLayerMask; }
+void setMapLayers(uint16_t mask) {
+    if (mask == mapLayerMask) return;
+    mapLayerMask = mask;
+    prefs.putUShort("maplayers", mapLayerMask);
+}
 void setShowOffline(bool on) {
     showOff = on;
     prefs.putBool("showoff", showOff);
@@ -260,6 +272,28 @@ void setSensorName(int kind, const char* name) {
     if (kind < 0 || kind >= ble_sensors::KIND_COUNT || !name || !name[0]) return;
     snprintf(names[kind], sizeof(names[kind]), "%s", name);
     prefs.putString(NAME_KEYS[kind], names[kind]);
+}
+
+const char* phoneName() { return phName; }
+const char* phoneId() { return phId; }
+
+void setPhoneId(const char* id) {
+    if (!id || strcmp(id, phId) == 0) return;   // no flash write per reconnect
+    snprintf(phId, sizeof(phId), "%s", id);
+    prefs.putString("phid", phId);
+}
+
+void setPhoneName(const char* name) {
+    if (!name || strcmp(name, phName) == 0) return;
+    snprintf(phName, sizeof(phName), "%s", name);
+    prefs.putString("phname", phName);
+}
+
+void clearPhone() {
+    phName[0] = 0;
+    phId[0] = 0;
+    prefs.remove("phname");
+    prefs.remove("phid");
 }
 
 bool lastPosition(double& lat, double& lon) {
@@ -369,6 +403,17 @@ void setMeshNames(const char* longName, const char* shortName) {
         snprintf(meshShort, sizeof(meshShort), "%s", shortName);
         prefs.putString("meshshort", meshShort);
     }
+}
+
+bool meshPrivateKey(uint8_t out[32]) {
+    // Read straight from NVS rather than cached: it is needed once per boot, and
+    // a copy of a private key sitting in a global for no reason is one too many.
+    return prefs.getBytesLength("meshpriv") == 32 &&
+           prefs.getBytes("meshpriv", out, 32) == 32;
+}
+
+void setMeshPrivateKey(const uint8_t key[32]) {
+    prefs.putBytes("meshpriv", key, 32);
 }
 
 bool rtcTrusted() { return rtcSynced; }
