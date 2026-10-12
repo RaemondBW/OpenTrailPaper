@@ -5,6 +5,11 @@
 #include <SPI.h>
 #include <driver/gpio.h>
 #include <dirent.h>
+#include <sys/stat.h>
+
+#include <algorithm>
+
+#include "ff.h"
 
 #include "config.h"
 #include "fit_writer.h"
@@ -897,6 +902,80 @@ int rideCount() {
         closedir(d);
     }
     sdUnlock();
+    return n;
+}
+
+namespace {
+
+// Add one directory entry to the history list if it is a ride worth showing.
+// Once the list is full a newer ride replaces the oldest kept one, so a card
+// with more rides than fit still lists the most recent.
+void keepRide(RideFile* out, int max, int& n, const char* name, uint32_t size,
+              const char* active) {
+    if (name[0] == '.' || size < RIDE_MIN_USEFUL_BYTES) return;  // ._x.fit, stubs
+    if (strlen(name) >= sizeof(out[0].name) || !strcmp(name, active)) return;
+    int slot = n;
+    if (n == max) {
+        slot = 0;
+        for (int i = 1; i < n; ++i)
+            if (strcmp(out[i].name, out[slot].name) < 0) slot = i;
+        if (strcmp(name, out[slot].name) <= 0) return;   // older than all kept
+    } else {
+        n++;
+    }
+    snprintf(out[slot].name, sizeof(out[slot].name), "%s", name);
+    out[slot].size = size;
+}
+
+}  // namespace
+
+// The sizes are the expensive part. readdir() gives names only, and a stat()
+// per name is a FatFs search of /rides from the top — the same quadratic walk
+// rideCount() above stopped doing. FatFs's own f_readdir() hands back each
+// entry's size with its name, so go to it directly: the SD library mounts the
+// card as a numbered FatFs drive ("<n>:"), and with nothing else registering
+// one, that is drive 0. Only if no drive has a /rides does this fall back to
+// readdir() + stat(), which is slow on a full card but still right.
+int listRides(RideFile* out, int max) {
+    if (!sdMounted() || !out || max <= 0) return 0;
+    char active[sizeof(out[0].name)];
+    snprintf(active, sizeof(active), "%s", currentRideFile());
+    int n = 0;
+    sdLock();
+    bool listed = false;
+    for (int drv = 0; drv < FF_VOLUMES && !listed; ++drv) {
+        // static: FILINFO carries a 256-byte long-name buffer, and this runs
+        // on the UI task's stack. Only the UI task calls it.
+        static FF_DIR dir;
+        static FILINFO fi;
+        char path[16];
+        snprintf(path, sizeof(path), "%d:" RIDE_DIR, drv);
+        if (f_opendir(&dir, path) != FR_OK) continue;
+        while (f_readdir(&dir, &fi) == FR_OK && fi.fname[0]) {
+            if (!(fi.fattrib & AM_DIR))
+                keepRide(out, max, n, fi.fname, (uint32_t)fi.fsize, active);
+        }
+        f_closedir(&dir);
+        listed = true;
+    }
+    if (!listed) {
+        if (DIR* d = opendir("/sd" RIDE_DIR)) {
+            while (struct dirent* e = readdir(d)) {
+                if (e->d_type != DT_REG) continue;
+                char path[64];
+                struct stat st;
+                snprintf(path, sizeof(path), "/sd" RIDE_DIR "/%s", e->d_name);
+                if (stat(path, &st) == 0)
+                    keepRide(out, max, n, e->d_name, (uint32_t)st.st_size,
+                             active);
+            }
+            closedir(d);
+        }
+    }
+    sdUnlock();
+    std::sort(out, out + n, [](const RideFile& a, const RideFile& b) {
+        return strcmp(a.name, b.name) > 0;
+    });
     return n;
 }
 

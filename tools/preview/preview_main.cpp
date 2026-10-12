@@ -674,9 +674,74 @@ int main(int argc, char** argv) {
              "tap to ride this route");
     clearWhite(fb.data());
     ui_render_list("NAVIGATE", routes, 3,
-                   "put .gpx files in /routes on the SD card", fb.data());
+                   "put .gpx files in /routes on the SD card", fb.data(), false,
+                   true);
+    ui_render_pager(0, 3, 3, "REFRESH", fb.data());
     ui::statusBar(s, fb.data(), "NAVIGATE");
     emit("routes.png");
+
+    // Navigate and Ride History page five rows at a time, the same pager
+    // footer as the workout picker. One "page" helper builds what
+    // renderListScreen() does: pinned rows first, then the files.
+    {
+        auto pagedList = [&](const char* title, const char* footer,
+                             const ListRow* all, int total, int pg,
+                             const char* file) {
+            ListRow rows[kMenuRowCount] = {};
+            int count = 0;
+            for (int i = pg * kMenuRowCount; i < total && count < kMenuRowCount;
+                 ++i)
+                rows[count++] = all[i];
+            clearWhite(fb.data());
+            ui_render_list(title, rows, count, footer, fb.data(), false, true);
+            ui_render_pager(pg * kMenuRowCount, count, total, "REFRESH",
+                            fb.data());
+            ui::statusBar(s, fb.data(), title);
+            emit(file);
+        };
+
+        // Navigate: an active route (pinned) and 12 GPX files, three pages.
+        static ListRow nav[13] = {};
+        nav[0] = routes[0];
+        const char* gpx[] = {"coastal.gpx", "mt_tam_loop.gpx",
+                             "paradise_loop.gpx", "old_la_honda.gpx",
+                             "kings_mountain.gpx", "tunitas_creek.gpx",
+                             "skyline_out_back.gpx", "half_moon_bay.gpx",
+                             "pescadero_loop.gpx", "mount_diablo.gpx",
+                             "sunol_regional.gpx", "calaveras_road.gpx"};
+        for (int i = 0; i < 12; ++i) {
+            snprintf(nav[i + 1].title, sizeof(nav[0].title), "%s", gpx[i]);
+            snprintf(nav[i + 1].subtitle, sizeof(nav[0].subtitle),
+                     "tap to ride this route");
+        }
+        const char* navFoot = "put .gpx files in /routes on the SD card";
+        pagedList("NAVIGATE", navFoot, nav, 13, 0, "routes_paged_p1.png");
+        pagedList("NAVIGATE", navFoot, nav, 13, 1, "routes_paged_p2.png");
+        pagedList("NAVIGATE", navFoot, nav, 13, 2, "routes_paged_p3.png");
+        pagedList("NAVIGATE", "no SD card", nav, 0, 0, "routes_empty.png");
+
+        // Ride History: a ride recording (pinned) and 71 finished rides,
+        // newest first — 72 rows, 15 pages.
+        static ListRow rides[72] = {};
+        snprintf(rides[0].title, sizeof(rides[0].title),
+                 "Recording in progress");
+        snprintf(rides[0].subtitle, sizeof(rides[0].subtitle),
+                 "24.6 km · 1:02:37");
+        rides[0].inverted = true;
+        for (int i = 1; i < 72; ++i) {
+            int day = 30 - (i - 1) % 30, month = 10 - (i - 1) / 30;
+            snprintf(rides[i].title, sizeof(rides[0].title),
+                     "2026%02d%02d-07%02d12.fit", month, day, (i * 7) % 60);
+            snprintf(rides[i].subtitle, sizeof(rides[0].subtitle), "%d KB",
+                     40 + (i * 37) % 260);
+        }
+        const char* rideFoot = "rides upload from /rides on the SD card";
+        pagedList("RIDES", rideFoot, rides, 72, 0, "history_p1.png");
+        pagedList("RIDES", rideFoot, rides, 72, 7, "history_p8.png");
+        pagedList("RIDES", rideFoot, rides, 72, 14, "history_p15.png");
+        // Not riding, three rides: one page, both arrows disabled.
+        pagedList("RIDES", rideFoot, rides + 1, 3, 0, "history_single.png");
+    }
 
     // Settings
     // useMiles ON deliberately: "MILES" is the longest word either switch has to
