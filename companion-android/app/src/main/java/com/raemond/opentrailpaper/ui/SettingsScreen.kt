@@ -386,6 +386,8 @@ object PairingCopy {
     fun title(issue: BleManager.PairingIssue): String = when (issue) {
         BleManager.PairingIssue.PAIRED_ELSEWHERE -> "Paired with another phone"
         BleManager.PairingIssue.NOT_RECOGNISED -> "OpenTrailPaper isn't accepting this phone"
+        BleManager.PairingIssue.REFUSED -> "OpenTrailPaper refused this phone"
+        BleManager.PairingIssue.PAIRING_FAILED -> "Pairing didn't finish"
     }
 
     fun message(issue: BleManager.PairingIssue): String = when (issue) {
@@ -398,6 +400,18 @@ object PairingCopy {
                 "or it's now paired with another phone.\n\nIf another phone owns it: " +
                 "$DEVICE_UNPAIR_STEPS Then tap Re-pair: the app removes this phone's old " +
                 "pairing and connects again, and the device shows a code to type in."
+        // The device turned the link away before any pairing (firmware: refuse
+        // until unpaired). The app has stopped reconnecting; the device
+        // advertising that it is unpaired brings it back on its own.
+        BleManager.PairingIssue.REFUSED ->
+            "This OpenTrailPaper is paired with another phone (or forgot this one). " +
+                "On the device: Paired Devices › Phone › Unpair, then connect again.\n\n" +
+                "If you removed it in Android's Bluetooth settings, that's expected — " +
+                "unpair it on the device too."
+        BleManager.PairingIssue.PAIRING_FAILED ->
+            "Pairing was cancelled or the code didn't match. The app has stopped " +
+                "trying so the pairing request doesn't keep coming back.\n\nTap Try again, " +
+                "then type the 6-digit code shown on the device's screen."
     }
 
     const val UNPAIR_MESSAGE =
@@ -419,7 +433,13 @@ fun PairingIssueDialog(ble: BleManager) {
         title = { Text(PairingCopy.title(issue)) },
         text = { Text(PairingCopy.message(issue)) },
         confirmButton = {
-            if (issue == BleManager.PairingIssue.NOT_RECOGNISED && ble.pairedDeviceAddress != null) {
+            if (issue == BleManager.PairingIssue.REFUSED ||
+                issue == BleManager.PairingIssue.PAIRING_FAILED
+            ) {
+                TextButton(onClick = { ble.retryConnection() }) {
+                    Text("Try again", color = Palette.accent)
+                }
+            } else if (issue == BleManager.PairingIssue.NOT_RECOGNISED && ble.pairedDeviceAddress != null) {
                 TextButton(onClick = { ble.forgetDevice() }) {
                     Text("Re-pair", color = Palette.accent)
                 }
@@ -427,8 +447,9 @@ fun PairingIssueDialog(ble: BleManager) {
                 TextButton(onClick = { ble.pairingIssue = null }) { Text("OK") }
             }
         },
-        dismissButton = if (issue == BleManager.PairingIssue.NOT_RECOGNISED &&
-            ble.pairedDeviceAddress != null
+        dismissButton = if (issue == BleManager.PairingIssue.REFUSED ||
+            issue == BleManager.PairingIssue.PAIRING_FAILED ||
+            (issue == BleManager.PairingIssue.NOT_RECOGNISED && ble.pairedDeviceAddress != null)
         ) {
             { TextButton(onClick = { ble.pairingIssue = null }) { Text("Not now") } }
         } else {

@@ -88,7 +88,9 @@ fun RideScreen(ble: BleManager) {
         Spacer(Modifier.height(8.dp))
         if (ble.state != BleManager.ConnState.CONNECTED) {
             PrimaryButton(
-                title = if (ble.state == BleManager.ConnState.SCANNING ||
+                title = if (ble.state == BleManager.ConnState.PAIRING) {
+                    "Pairing…"
+                } else if (ble.state == BleManager.ConnState.SCANNING ||
                     ble.state == BleManager.ConnState.CONNECTING
                 ) {
                     "Searching…"
@@ -96,7 +98,8 @@ fun RideScreen(ble: BleManager) {
                     "Connect to OpenTrailPaper"
                 },
                 icon = Icons.Filled.Wifi,
-            ) { ble.startScan() }
+            // An explicit tap also lifts a refusal / failed-pairing hold.
+            ) { ble.retryConnection() }
         }
     }
 
@@ -188,6 +191,7 @@ private fun Header(ble: BleManager, s: DeviceStatus) {
 private fun connectLabel(state: BleManager.ConnState) = when (state) {
     BleManager.ConnState.SCANNING -> "Searching…"
     BleManager.ConnState.CONNECTING -> "Connecting…"
+    BleManager.ConnState.PAIRING -> "Pairing — type the code on the device"
     BleManager.ConnState.POWERED_OFF -> "Bluetooth off"
     else -> "Not connected"
 }
