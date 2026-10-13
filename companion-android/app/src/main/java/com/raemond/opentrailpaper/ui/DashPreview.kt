@@ -690,6 +690,53 @@ fun MapPagePreview(fields: List<String>, modifier: Modifier = Modifier) {
     }
 }
 
+/** Miniature of the device's STOPWATCH page (ui_render_stopwatch): the time
+ * across the middle, START/STOP and RESET along the footer. Port of
+ * StopwatchPagePreview in DashboardEditorView.swift. */
+@Composable
+fun StopwatchPagePreview(modifier: Modifier = Modifier) {
+    PanelMock(modifier) { k ->
+        PanelText("14:25", 30f * k, FontWeight.Bold, x = 14f * k, y = 14f * k)
+        PanelText(
+            "STOPWATCH", 22f * k, FontWeight.Black,
+            x = 0f, y = 18f * k, width = 540f * k, align = TextAlign.Center,
+            tracking = 4f * k,
+        )
+        PanelText("76%", 30f * k, FontWeight.Bold, x = 440f * k, y = 14f * k)
+        PanelText(
+            "12:34", 170f * k, FontWeight.Black,
+            x = 0f, y = 280f * k, width = 540f * k, align = TextAlign.Center,
+        )
+        PanelText(
+            "RUNNING", 20f * k, FontWeight.Bold,
+            x = 0f, y = 510f * k, width = 540f * k, align = TextAlign.Center,
+            tracking = 3f * k,
+        )
+        Canvas(Modifier.fillMaxSize()) {
+            val s = k * density
+            drawRect(Color.Black, Offset(0f, 61f * s), Size(540f * s, 3f * s))
+            drawRect(Color.Black, Offset(0f, 756f * s), Size(540f * s, 3f * s))
+            drawRect(
+                Color.Black, Offset(24f * s, 780f * s), Size(312f * s, 156f * s),
+                style = Stroke((3f * s).coerceAtLeast(1f)),
+            )
+            drawRect(
+                Color.Black, Offset(348f * s, 780f * s), Size(168f * s, 156f * s),
+                style = Stroke((1f * s).coerceAtLeast(1f)),
+            )
+        }
+        PanelText(
+            "STOP", 30f * k, FontWeight.Black,
+            x = 24f * k, y = 836f * k, width = 312f * k, align = TextAlign.Center,
+        )
+        PanelText(
+            "RESET", 30f * k, FontWeight.Black,
+            x = 348f * k, y = 836f * k, width = 168f * k, align = TextAlign.Center,
+            faded = true,
+        )
+    }
+}
+
 /** Miniature of the device's workout page: countdown hero, reversed power
  * band, session profile, block strips. Static — it's a card, not a sim.
  * Port of WorkoutPagePreview in DashboardEditorView.swift. */

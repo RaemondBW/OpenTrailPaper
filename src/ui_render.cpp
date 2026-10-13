@@ -2794,3 +2794,96 @@ void ui_render_workout_picker(const RideState& s, const WorkoutPickPage& p,
     // --- Footer: page up / down, where we are, REFRESH. ------------------
     ui_render_pager(p.first, p.count, p.total, "REFRESH", fb);
 }
+
+// ---------------------------------------------------------------------------
+// STOPWATCH page — the rider's own clock (stopwatch.h), as big as the panel
+// allows, with two footer buttons.
+//
+// Refresh cost is the point of the layout: at 1 Hz only the digits change, and
+// they sit in the middle of an otherwise static page, so the driver's delta
+// engine repaints one band of numerals and nothing else. The buttons change
+// only when the state does (START / STOP / RESUME), which is a tap the rider
+// is waiting on anyway.
+// ---------------------------------------------------------------------------
+
+// START/STOP gets the wide target — it is the one hit mid-effort; RESET sits
+// to its right, narrower, and is inert while the clock runs. Both 156 px
+// tall, well past TOUCH_MIN for a gloved thumb, and inside kContentBottom.
+const EpdRect kStopwatchToggle = {24, 780, 312, 156};
+const EpdRect kStopwatchReset = {348, 780, 168, 156};
+
+namespace {
+
+// Largest first. Impact_128 (219 px digits) leads: on a page that is nothing
+// but the time, "00:00" can take the whole content column.
+const EpdFont* const kStopwatchLadder[] = {&Impact_128, &Impact_XL, &Impact_C,
+                                           &Impact_H,   &Impact_B,  &Impact_V};
+
+void stopwatchButton(const EpdRect& r, const char* text, bool primary,
+                     bool enabled, uint8_t* fb) {
+    if (primary) {
+        epd_fill_rect(r, ui::INK, fb);
+    } else {
+        // Secondary: the pager's 3 px outline. Disabled keeps a single rule
+        // so the target is still visibly there, just not asking for a tap.
+        for (int e = 0; e < (enabled ? 3 : 1); ++e)
+            epd_draw_rect({r.x + e, r.y + e, r.width - 2 * e, r.height - 2 * e},
+                          ui::INK, fb);
+    }
+    ui::text(&Impact_T, r.x + r.width / 2,
+             r.y + r.height / 2 + epdc_digit_height(&Impact_T) / 2, text, fb,
+             EPD_DRAW_ALIGN_CENTER,
+             primary ? ui::PAPER : enabled ? ui::INK : ui::LIGHT);
+}
+
+}  // namespace
+
+void ui_render_stopwatch(const RideState& s, uint32_t elapsedMs, bool running,
+                         uint8_t* fb) {
+    g_dashToned = false;
+    ui::statusBar(s, fb, "STOPWATCH");
+
+    const int W = epd_rotated_display_width();
+    const uint32_t sec = elapsedMs / 1000;
+    char t[16];
+    if (sec >= 3600)
+        snprintf(t, sizeof(t), "%lu:%02lu:%02lu", (unsigned long)(sec / 3600),
+                 (unsigned long)(sec / 60 % 60), (unsigned long)(sec % 60));
+    else
+        snprintf(t, sizeof(t), "%02lu:%02lu", (unsigned long)(sec / 60),
+                 (unsigned long)(sec % 60));
+
+    // Size against the WIDEST string of the current form, not the string
+    // itself, so the numerals never change size as they tick — only once, on
+    // the hour, when the hours column appears.
+    const char* hint = sec >= 36000 ? "00:00:00" : sec >= 3600 ? "0:00:00"
+                                                               : "00:00";
+    const int n = sizeof(kStopwatchLadder) / sizeof(kStopwatchLadder[0]);
+    const EpdFont* f = kStopwatchLadder[n - 1];
+    for (int i = 0; i < n; ++i) {
+        if (ui::textWidth(kStopwatchLadder[i], hint) <= ui::CONTENT_W) {
+            f = kStopwatchLadder[i];
+            break;
+        }
+    }
+    // Centred in the body above the footer rule, nudged up a little so the
+    // state line below it sits in the visual middle of what is left.
+    const int footerRule = kStopwatchToggle.y - 24;
+    const int mid = (ui::STATUS_H + footerRule) / 2 - 30;
+    const int dh = epdc_digit_height(f);
+    ui::text(f, W / 2, mid + dh / 2, t, fb, EPD_DRAW_ALIGN_CENTER);
+
+    // What the clock is doing, in words: a stopped time and a running one
+    // look identical between two refreshes.
+    const char* state = running ? "RUNNING"
+                        : elapsedMs == 0 ? "READY"
+                                         : "STOPPED";
+    ui::label(W / 2, mid + dh / 2 + 80, state, fb, ui::INK, &Arial_B);
+
+    epd_fill_rect({0, footerRule, W, ui::RULE_HEAVY}, ui::INK, fb);
+    stopwatchButton(kStopwatchToggle,
+                    running ? "STOP" : elapsedMs == 0 ? "START" : "RESUME",
+                    !running, true, fb);
+    stopwatchButton(kStopwatchReset, "RESET", false,
+                    !running && elapsedMs > 0, fb);
+}

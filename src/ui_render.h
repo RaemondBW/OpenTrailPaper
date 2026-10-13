@@ -167,6 +167,14 @@ extern const EpdRect kMediaPlay;
 extern const EpdRect kMediaNext;
 extern const EpdRect kMediaVolUp;
 
+// The STOPWATCH page (`page stopwatch`, stopwatch.h): the elapsed time as big
+// as the panel allows, START/STOP and RESET along the footer. Touch targets
+// exported for the dashboard's hit-testing, like the media row's.
+void ui_render_stopwatch(const RideState& s, uint32_t elapsedMs, bool running,
+                         uint8_t* fb);
+extern const EpdRect kStopwatchToggle;
+extern const EpdRect kStopwatchReset;
+
 // BLE pairing sheet: the 6-digit code the phone asks the rider to type,
 // drawn over whatever screen is up while the pairing dialog is live.
 void ui_render_pairing(uint32_t code, uint8_t* fb);

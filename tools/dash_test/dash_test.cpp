@@ -11,6 +11,7 @@
 #include <string>
 
 #include "dash_layout.h"
+#include "stopwatch.h"
 
 namespace {
 
@@ -168,6 +169,72 @@ void testSerializePagesRoundTrip() {
     check(back.mapFields[0] == DF_AVG_SPEED, "map strip survives round trip");
 }
 
+// --- Stopwatch page ---------------------------------------------------------
+
+void testStopwatchPage() {
+    begin("pages: stopwatch parses and round trips");
+    const char* cfg =
+        "speed hero\n"
+        "page stopwatch\n"
+        "page map\n";
+    DashPages pages;
+    bool ok = dashParsePages(cfg, pages);
+    check(ok, "parse succeeds");
+    check(pages.count == 3, "fields + stopwatch + map");
+    check(pages.pages[1].kind == DP_STOPWATCH, "second page is the stopwatch");
+    check(pages.pages[1].layout.count == 0, "stopwatch carries no items");
+
+    char buf[1024];
+    size_t n = dashSerializePages(pages, buf, sizeof(buf));
+    check(n > 0, "serialized");
+    check(strstr(buf, "page stopwatch\n") != nullptr,
+          "serializes as `page stopwatch`");
+    DashPages back;
+    check(dashParsePages(buf, back), "re-parse succeeds");
+    check(back.count == 3 && back.pages[1].kind == DP_STOPWATCH,
+          "stopwatch survives round trip in place");
+}
+
+// Older firmware sees `page stopwatch` as an unknown kind: an empty field page,
+// dropped. This parser applies the same rule to any FUTURE kind, so a newer
+// app's config never breaks the layout around it.
+void testUnknownPageKindDropped() {
+    begin("pages: unknown page kind is dropped, rest kept");
+    const char* cfg =
+        "speed hero\n"
+        "page someday\n"
+        "page\n"
+        "hr medium\n";
+    DashPages pages;
+    check(dashParsePages(cfg, pages), "parse succeeds");
+    check(pages.count == 3, "two field pages + appended map");
+    check(pages.pages[0].kind == DP_FIELDS && pages.pages[1].kind == DP_FIELDS,
+          "unknown page vanished, field pages kept");
+    check(pages.pages[2].kind == DP_MAP, "map appended");
+}
+
+void testStopwatchClock() {
+    begin("stopwatch: start / stop / resume / reset");
+    Stopwatch sw;
+    check(sw.zero() && sw.elapsedMs(5000) == 0, "starts at zero");
+    sw.toggle(1000);
+    check(sw.running, "running after start");
+    check(sw.elapsedMs(4500) == 3500, "counts while running");
+    check(!sw.reset(), "reset refused while running");
+    check(sw.elapsedMs(4500) == 3500, "refused reset kept the time");
+    sw.toggle(6000);
+    check(!sw.running && sw.elapsedMs(60000) == 5000, "stop banks and freezes");
+    sw.toggle(10000);
+    check(sw.elapsedMs(12000) == 7000, "resume continues from the banked time");
+    sw.toggle(12000);
+    check(sw.reset() && sw.zero(), "reset when stopped");
+
+    begin("stopwatch: millis() wrap");
+    Stopwatch w;
+    w.toggle(0xFFFFFC18u);   // 1 s before the wrap
+    check(w.elapsedMs(1000) == 2000, "elapsed is right across the wrap");
+}
+
 }  // namespace
 
 int main() {
@@ -182,6 +249,9 @@ int main() {
     testSerializeRoundTrip();
     testPagesWithAvgSpeed();
     testSerializePagesRoundTrip();
+    testStopwatchPage();
+    testUnknownPageKindDropped();
+    testStopwatchClock();
 
     if (g_fail == 0) { printf("all dash layout tests passed\n"); return 0; }
     printf("%d dash layout assertion(s) FAILED\n", g_fail);

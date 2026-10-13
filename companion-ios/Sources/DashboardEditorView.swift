@@ -175,6 +175,15 @@ struct DashboardEditorView: View {
                     }
                     .padding(.vertical, 4)
                 }
+            } else if config.pages.indices.contains(pageIx), config.pages[pageIx].isStopwatch {
+                Section {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label("Stopwatch", systemImage: "stopwatch")
+                        Text("Your own clock, separate from the ride timer: big digits with START/STOP and RESET on the panel. It keeps running while you're on other pages, and RESET only works once it's stopped. Needs device firmware v1.23 or newer.")
+                            .font(TypeScale.body).foregroundStyle(Palette.muted)
+                    }
+                    .padding(.vertical, 4)
+                }
             } else if config.pages.indices.contains(pageIx) {
                 Section {
                     VStack(alignment: .leading, spacing: 8) {
@@ -233,6 +242,7 @@ struct DashboardEditorView: View {
             case .music: MusicPreview()
             case .map: MapPagePreview(fields: config.mapFields)
             case .workout: WorkoutPagePreview()
+            case .stopwatch: StopwatchPagePreview()
             case .fields: DashPreview(layout: config.pages[i].layout)
             }
         }
@@ -318,6 +328,13 @@ struct DashboardEditorView: View {
                     addPage(.workout, proxy)
                 } label: {
                     Label("Workout", systemImage: "figure.outdoor.cycle")
+                }
+            }
+            if !config.hasStopwatchPage {
+                Button {
+                    addPage(.stopwatch, proxy)
+                } label: {
+                    Label("Stopwatch", systemImage: "stopwatch")
                 }
             }
         } label: {
@@ -862,6 +879,56 @@ struct WorkoutPagePreview: View {
                     .frame(width: 240 * k, height: 80 * k)
                     .offset(x: (24 + CGFloat(i) * 252) * k, y: 868 * k)
                 }
+            }
+            .foregroundStyle(.black)
+        }
+        .background(Color(hex: 0xF7F5EF))
+    }
+}
+
+/// Miniature of the device's STOPWATCH page (ui_render_stopwatch): the time
+/// across the middle, START/STOP and RESET along the footer.
+struct StopwatchPagePreview: View {
+    var body: some View {
+        GeometryReader { geo in
+            let k = geo.size.width / 540
+            ZStack(alignment: .topLeading) {
+                Text("14:25").font(.system(size: 30 * k, weight: .bold))
+                    .offset(x: 14 * k, y: 14 * k)
+                Text("STOPWATCH").font(.system(size: 22 * k, weight: .heavy))
+                    .kerning(4 * k)
+                    .frame(width: 540 * k)
+                    .offset(y: 18 * k)
+                Text("76%").font(.system(size: 30 * k, weight: .bold))
+                    .offset(x: 440 * k, y: 14 * k)
+                Rectangle().fill(.black)
+                    .frame(width: 540 * k, height: 3 * k)
+                    .offset(y: 61 * k)
+
+                Text("12:34").font(.system(size: 170 * k, weight: .black))
+                    .frame(width: 540 * k)
+                    .offset(y: 280 * k)
+                Text("RUNNING").font(.system(size: 20 * k, weight: .bold))
+                    .kerning(3 * k)
+                    .frame(width: 540 * k)
+                    .offset(y: 510 * k)
+
+                Rectangle().fill(.black)
+                    .frame(width: 540 * k, height: 3 * k)
+                    .offset(y: 756 * k)
+                ZStack {
+                    Rectangle().stroke(.black, lineWidth: max(1, 3 * k))
+                    Text("STOP").font(.system(size: 30 * k, weight: .heavy))
+                }
+                .frame(width: 312 * k, height: 156 * k)
+                .offset(x: 24 * k, y: 780 * k)
+                ZStack {
+                    Rectangle().stroke(.black, lineWidth: max(1, 1 * k))
+                    Text("RESET").font(.system(size: 30 * k, weight: .heavy))
+                        .foregroundStyle(.black.opacity(0.35))
+                }
+                .frame(width: 168 * k, height: 156 * k)
+                .offset(x: 348 * k, y: 780 * k)
             }
             .foregroundStyle(.black)
         }

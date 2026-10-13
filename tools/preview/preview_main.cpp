@@ -968,6 +968,23 @@ int main(int argc, char** argv) {
         emit("music_idle.png");
     }
 
+    // STOPWATCH page: fresh, running, stopped, and past the hour (where the
+    // hours column steps the numerals down once).
+    {
+        clearWhite(fb.data());
+        ui_render_stopwatch(s, 0, false, fb.data());
+        emit("stopwatch_ready.png");
+        clearWhite(fb.data());
+        ui_render_stopwatch(s, (12 * 60 + 34) * 1000 + 560, true, fb.data());
+        emit("stopwatch_running.png");
+        clearWhite(fb.data());
+        ui_render_stopwatch(s, (12 * 60 + 34) * 1000 + 560, false, fb.data());
+        emit("stopwatch_stopped.png");
+        clearWhite(fb.data());
+        ui_render_stopwatch(s, (1 * 3600 + 2 * 60 + 3) * 1000, true, fb.data());
+        emit("stopwatch_hour.png");
+    }
+
     // WORKOUT pages, per the Claude Design "Workout View" frames: executing
     // a block (in range and under target) and the ALL BLOCKS list.
     {
