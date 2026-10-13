@@ -5,6 +5,13 @@ released version into the GitHub release body (see .github/workflows/build.yml),
 and the app shows it under Settings → Firmware when an update is available —
 so write for the rider, newest version first, one `## vX.YY` heading each.
 
+## v1.23
+
+- The GPS debug page no longer shows more satellites in use than in view.
+  The in-view count is refreshed every five seconds and the in-use count
+  every second, so for a moment after the sky changed (or right after the
+  GPS woke) the older number could be the smaller one.
+
 ## v1.22
 
 - Fixes the mid-ride restart. A stray interrupt from the display power
