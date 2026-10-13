@@ -21,6 +21,7 @@
 #include "ui_render.h"
 #include "media_state.h"
 #include "workout.h"
+#include "stopwatch.h"
 #include "map_view.h"
 #include "map_tiles.h"
 
@@ -968,21 +969,56 @@ int main(int argc, char** argv) {
         emit("music_idle.png");
     }
 
-    // STOPWATCH page: fresh, running, stopped, and past the hour (where the
-    // hours column steps the numerals down once).
+    // STOPWATCH page: fresh, running, stopped, past the hour (where the
+    // hours column steps the numerals down once), and with laps — more than
+    // the list shows, running and stopped.
     {
+        const uint32_t t0 = 1000000;   // arbitrary millis() at START
+        Stopwatch sw;
         clearWhite(fb.data());
-        ui_render_stopwatch(s, 0, false, fb.data());
+        ui_render_stopwatch(s, sw, t0, fb.data());
         emit("stopwatch_ready.png");
+
+        sw.toggle(t0);
+        const uint32_t at1234 = t0 + (12 * 60 + 34) * 1000 + 560;
         clearWhite(fb.data());
-        ui_render_stopwatch(s, (12 * 60 + 34) * 1000 + 560, true, fb.data());
+        ui_render_stopwatch(s, sw, at1234, fb.data());
         emit("stopwatch_running.png");
+
+        Stopwatch stopped = sw;
+        stopped.toggle(at1234);
         clearWhite(fb.data());
-        ui_render_stopwatch(s, (12 * 60 + 34) * 1000 + 560, false, fb.data());
+        ui_render_stopwatch(s, stopped, at1234 + 5000, fb.data());
         emit("stopwatch_stopped.png");
+
         clearWhite(fb.data());
-        ui_render_stopwatch(s, (1 * 3600 + 2 * 60 + 3) * 1000, true, fb.data());
+        ui_render_stopwatch(s, sw, t0 + (1 * 3600 + 2 * 60 + 3) * 1000,
+                            fb.data());
         emit("stopwatch_hour.png");
+
+        // Nine hill repeats: the list shows the newest seven.
+        Stopwatch laps;
+        laps.toggle(t0);
+        const uint32_t splits[] = {312400, 298700, 305100, 291300, 322800,
+                                   301900, 296200, 288600, 307500};
+        uint32_t t = t0;
+        for (uint32_t sp : splits) { t += sp; laps.lap(t); }
+        clearWhite(fb.data());
+        ui_render_stopwatch(s, laps, t + 83400, fb.data());
+        emit("stopwatch_laps.png");
+
+        laps.toggle(t + 83400);
+        clearWhite(fb.data());
+        ui_render_stopwatch(s, laps, t + 90000, fb.data());
+        emit("stopwatch_laps_stopped.png");
+
+        Stopwatch two;
+        two.toggle(t0);
+        two.lap(t0 + 95300);
+        two.lap(t0 + 95300 + 101800);
+        clearWhite(fb.data());
+        ui_render_stopwatch(s, two, t0 + 95300 + 101800 + 41000, fb.data());
+        emit("stopwatch_laps_two.png");
     }
 
     // WORKOUT pages, per the Claude Design "Workout View" frames: executing

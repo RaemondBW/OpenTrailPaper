@@ -229,6 +229,41 @@ void testStopwatchClock() {
     sw.toggle(12000);
     check(sw.reset() && sw.zero(), "reset when stopped");
 
+    begin("stopwatch: laps");
+    Stopwatch l;
+    check(!l.lap(0), "no lap before start");
+    l.toggle(0);
+    check(l.lap(60000) && l.lap(125000) && l.lap(170500), "three laps");
+    check(l.lapCount == 3, "lap count");
+    check(l.lapSplitMs(0) == 60000 && l.lapSplitMs(1) == 65000 &&
+              l.lapSplitMs(2) == 45500,
+          "splits are the differences between marks");
+    check(l.lapEndMs[2] == 170500, "cumulative time kept per lap");
+    check(l.currentLapMs(180000) == 9500, "lap in progress since last mark");
+    check(l.fastestLap() == 2 && l.slowestLap() == 1, "fastest / slowest");
+    l.toggle(200000);
+    check(!l.lap(210000), "no lap while stopped");
+    check(l.currentLapMs(999999) == 29500, "stopped lap is frozen");
+    l.toggle(300000);
+    check(l.lap(310000) && l.lapEndMs[3] == 210000,
+          "lap after resume counts only running time");
+    check(!l.reset() && l.lapCount == 4, "running reset keeps laps");
+    l.toggle(320000);
+    check(l.reset() && l.lapCount == 0 && l.zero(), "reset clears laps");
+    Stopwatch one;
+    one.toggle(0);
+    one.lap(1000);
+    check(one.fastestLap() == -1 && one.slowestLap() == -1,
+          "one lap is neither fastest nor slowest");
+
+    begin("stopwatch: lap limit");
+    Stopwatch full;
+    full.toggle(0);
+    for (int i = 1; i <= STOPWATCH_MAX_LAPS; ++i) full.lap((uint32_t)i * 1000);
+    check(full.lapsFull() && full.lapCount == STOPWATCH_MAX_LAPS, "fills to max");
+    check(!full.lap(500000) && full.lapEndMs[0] == 1000,
+          "a lap past the max is refused, lap 1 kept");
+
     begin("stopwatch: millis() wrap");
     Stopwatch w;
     w.toggle(0xFFFFFC18u);   // 1 s before the wrap

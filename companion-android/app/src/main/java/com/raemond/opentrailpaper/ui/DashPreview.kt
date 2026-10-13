@@ -722,7 +722,7 @@ fun StopwatchPagePreview(modifier: Modifier = Modifier) {
             )
             drawRect(
                 Color.Black, Offset(348f * s, 780f * s), Size(168f * s, 156f * s),
-                style = Stroke((1f * s).coerceAtLeast(1f)),
+                style = Stroke((3f * s).coerceAtLeast(1f)),
             )
         }
         PanelText(
@@ -730,9 +730,8 @@ fun StopwatchPagePreview(modifier: Modifier = Modifier) {
             x = 24f * k, y = 836f * k, width = 312f * k, align = TextAlign.Center,
         )
         PanelText(
-            "RESET", 30f * k, FontWeight.Black,
+            "LAP", 30f * k, FontWeight.Black,
             x = 348f * k, y = 836f * k, width = 168f * k, align = TextAlign.Center,
-            faded = true,
         )
     }
 }

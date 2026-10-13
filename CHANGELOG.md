@@ -8,11 +8,13 @@ so write for the rider, newest version first, one `## vX.YY` heading each.
 ## v1.23
 
 - New optional STOPWATCH page, off until you add it from the app's
-  dashboard editor (Add a page > Stopwatch). It shows big digits with START/STOP
-  and RESET buttons along the bottom. It is separate from the ride timer
-  and keeps running while you're on other pages. RESET only works once the
-  clock is stopped, so a stray tap can't wipe it mid-effort. While it runs,
-  the device won't switch itself off for being idle.
+  dashboard editor (Add a page > Stopwatch). It shows big digits with
+  START/STOP on the left. The right button is LAP while the clock runs and
+  RESET once it is stopped, so a stray tap can't wipe it mid-effort. Laps
+  list newest first, with each lap's time and the running total, and the
+  fastest and slowest are marked. Up to 99 laps are kept. It is separate
+  from the ride timer and keeps running while you're on other pages. While
+  it runs, the device won't switch itself off for being idle.
 
 ## v1.22
 

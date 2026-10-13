@@ -105,9 +105,10 @@ bool mapTrackUp = false;
 bool workoutAllOpen = false;
 int workoutListPage = 0;
 
-// The STOPWATCH page's clock. Lives here, not with the page: it is time
-// stamps, so it keeps counting while the rider is on any other screen, and
-// only this task touches it (taps, the render, the auto-sleep check).
+// The STOPWATCH page's clock and laps. Lives here, not with the page: it is
+// time stamps, so it keeps counting while the rider is on any other screen,
+// and only this task touches it (taps, the render, the auto-sleep check).
+// Static storage, ~400 bytes for the 99 lap marks.
 Stopwatch stopwatch;
 
 // The picker (WORKOUT page, nothing loaded): which page of rows, and the
@@ -801,18 +802,21 @@ void handleTap(int x, int y) {
                 }
                 break;
             }
-            // The STOPWATCH page: START/STOP and RESET, answered on the glass
-            // at once (noteActivity already forced the redraw). A tap
-            // anywhere else on the page does nothing, so a brush against the
-            // digits can't stop the clock. RESET is inert while it runs.
+            // The STOPWATCH page: START/STOP, and LAP (running) or RESET
+            // (stopped) on the right — answered on the glass at once
+            // (noteActivity already forced the redraw). A tap anywhere else
+            // on the page does nothing, so a brush against the digits can't
+            // stop the clock, and RESET can't fire while it runs.
             if (screen == SCREEN_DASH &&
                 dash_config::page(dashPage).kind == DP_STOPWATCH &&
                 y >= ui::STATUS_H) {
                 if (inRect(kStopwatchToggle, x, y)) {
                     stopwatch.toggle(millis());
                     forceDraw = true;
-                } else if (inRect(kStopwatchReset, x, y)) {
-                    if (stopwatch.reset()) forceDraw = true;
+                } else if (inRect(kStopwatchLapReset, x, y)) {
+                    bool changed = stopwatch.running ? stopwatch.lap(millis())
+                                                     : stopwatch.reset();
+                    if (changed) forceDraw = true;
                 }
                 break;
             }
@@ -3147,8 +3151,7 @@ void task(void*) {
                         else
                             ui_render_workout(s, wv, fb);
                     } else if (pg.kind == DP_STOPWATCH) {
-                        ui_render_stopwatch(s, stopwatch.elapsedMs(millis()),
-                                            stopwatch.running, fb);
+                        ui_render_stopwatch(s, stopwatch, millis(), fb);
                     } else {
                         // Compact hero whenever a banner (turn OR pause) owns
                         // the band, so no field hides underneath it.

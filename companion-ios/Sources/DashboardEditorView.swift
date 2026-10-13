@@ -179,7 +179,7 @@ struct DashboardEditorView: View {
                 Section {
                     VStack(alignment: .leading, spacing: 8) {
                         Label("Stopwatch", systemImage: "stopwatch")
-                        Text("Your own clock, separate from the ride timer: big digits with START/STOP and RESET on the panel. It keeps running while you're on other pages, and RESET only works once it's stopped. Needs device firmware v1.23 or newer.")
+                        Text("Your own clock, separate from the ride timer: big digits with START/STOP on the panel, LAP while it runs and RESET once it's stopped. Laps list newest first with their splits, fastest and slowest marked. It keeps running while you're on other pages. Needs device firmware v1.23 or newer.")
                             .font(TypeScale.body).foregroundStyle(Palette.muted)
                     }
                     .padding(.vertical, 4)
@@ -923,9 +923,8 @@ struct StopwatchPagePreview: View {
                 .frame(width: 312 * k, height: 156 * k)
                 .offset(x: 24 * k, y: 780 * k)
                 ZStack {
-                    Rectangle().stroke(.black, lineWidth: max(1, 1 * k))
-                    Text("RESET").font(.system(size: 30 * k, weight: .heavy))
-                        .foregroundStyle(.black.opacity(0.35))
+                    Rectangle().stroke(.black, lineWidth: max(1, 3 * k))
+                    Text("LAP").font(.system(size: 30 * k, weight: .heavy))
                 }
                 .frame(width: 168 * k, height: 156 * k)
                 .offset(x: 348 * k, y: 780 * k)
