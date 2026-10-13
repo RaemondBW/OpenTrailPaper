@@ -82,6 +82,29 @@ inline void ditherMaskMark(int x, int y) {
     s_ditherMask[(size_t)ny * (epd_width() / 2) + (nx >> 1)] = 1;
 }
 
+// Coarse 16 px grid of where this frame's park hatch landed (1 bit/cell, 34x60
+// cells = 255 bytes). Roads only get their white casing in park cells: on white
+// ground a casing is invisible, so drawing it everywhere would just double the
+// road draw time for nothing. Rebuilt with the dither mask every map render.
+// A park under water (a recreation area spanning a bay) still marks its cells,
+// so a bridge over it is cased too — which reads better on the dots anyway.
+constexpr int PARK_CELL_SHIFT = 4;
+constexpr int PARK_COLS = (540 >> PARK_CELL_SHIFT) + 1;
+constexpr int PARK_ROWS = (960 >> PARK_CELL_SHIFT);
+uint8_t s_parkGrid[(PARK_COLS * PARK_ROWS + 7) / 8];
+
+void parkGridMarkSpan(int y, int xL, int xR) {
+    const int base = (y >> PARK_CELL_SHIFT) * PARK_COLS;
+    for (int c = xL >> PARK_CELL_SHIFT; c <= (xR >> PARK_CELL_SHIFT); ++c)
+        s_parkGrid[(base + c) >> 3] |= 1 << ((base + c) & 7);
+}
+
+inline bool parkGridAt(int x, int y) {
+    if (x < 0 || x >= 540 || y < 0 || y >= 960) return false;
+    const int i = (y >> PARK_CELL_SHIFT) * PARK_COLS + (x >> PARK_CELL_SHIFT);
+    return (s_parkGrid[i >> 3] >> (i & 7)) & 1;
+}
+
 // Fill patterns. FILL_DOTS (water) and FILL_HATCH (parks) keep the old bool
 // call sites' meaning (false/true).
 enum FillPattern : int {
@@ -123,6 +146,8 @@ void fillDitheredPolygon(const int16_t* pts, int n, uint8_t* fb, int pattern = F
         for (int a = 0; a + 1 < cnt; a += 2) {
             int xL = xs[a] < 0 ? 0 : xs[a];
             int xR = xs[a + 1] > 539 ? 539 : xs[a + 1];
+            if (xL > xR) continue;
+            if (mask && pattern == FILL_HATCH) parkGridMarkSpan(y, xL, xR);
             // Screentones, not flat tone. Both fills are 1-bit patterns, because
             // a true grey value is not displayable on the fast DU refresh — but
             // the PATTERN has to be coarse enough to read as texture. A 1-pixel
@@ -236,6 +261,27 @@ void drawPolyline(const int16_t* pts, int count, const Style& st, uint8_t* fb) {
     for (int i = 0; i + 1 < count; ++i) {
         drawSegmentStyled(pts[i * 2], pts[i * 2 + 1], pts[i * 2 + 2],
                           pts[i * 2 + 3], st, fb);
+    }
+}
+
+// White casing under the segments of a way that touch a park cell, so a road or
+// trail crossing the hatch reads as a clean line on white instead of black (or
+// grey dots) lost in black stripes. Solid and round-capped whatever the road's
+// own style, so the joints of a bend leave no stripe showing through. Tested at
+// both ends and every half cell between, so a long segment that crosses a park
+// with no vertex inside it is still caught.
+void drawParkCasing(const int16_t* pts, int count, int width, uint8_t* fb) {
+    if (width < 4) width = 4;   // thickSegment rounds the caps from 4 up
+    constexpr float STEP = (1 << PARK_CELL_SHIFT) / 2.0f;
+    for (int i = 0; i + 1 < count; ++i) {
+        const float x0 = pts[i * 2], y0 = pts[i * 2 + 1];
+        const float x1 = pts[i * 2 + 2], y1 = pts[i * 2 + 3];
+        const float dx = x1 - x0, dy = y1 - y0;
+        const int n = (int)(sqrtf(dx * dx + dy * dy) / STEP) + 1;
+        bool inPark = false;
+        for (int k = 0; k <= n && !inPark; ++k)
+            inPark = parkGridAt(lroundf(x0 + dx * k / n), lroundf(y0 + dy * k / n));
+        if (inPark) thickSegment(x0, y0, x1, y1, width, 0xFF, fb);
     }
 }
 
@@ -651,11 +697,28 @@ void ui_render_map_features(const MapScreenData& map, const RideState& s,
     // mask=true records the dithered fills so the settle-clean flashes exactly
     // those (where DU ghosting settles), not the whole viewport.
     ditherMaskReset();
+    memset(s_parkGrid, 0, sizeof(s_parkGrid));
     for (int i = 0; i < map.parkCount; ++i) {
         fillDitheredPolygon(map.parks[i].pts, map.parks[i].pointCount, fb, FILL_HATCH, true);
     }
     for (int i = 0; i < map.waterCount; ++i) {
         fillDitheredPolygon(map.water[i].pts, map.water[i].pointCount, fb, FILL_DOTS, true);
+    }
+    // Park casings: every way's white border goes down before any road or bike
+    // band, so a casing never cuts into another road at a junction and a route
+    // band still paints its own grey over it. Road width + 2 px each side.
+    // Footpaths are left bare: a big park is a mesh of them, and cased they
+    // turned the whole park into white worms that buried the roads through it.
+    // A dedicated cycleway (a solid dash, drawn below) is cased like a road.
+    if (map.parkCount > 0) {
+        const bool infra = (map.layers & MAP_LAYER_CYCLEWAYS) != 0;
+        for (int i = 0; i < map.featureCount; ++i) {
+            const MapPolyline& f = map.features[i];
+            int w = styleFor(f.cls, map.metersPerPixel).width;
+            if (f.cls == MAP_PATH)
+                w = (infra && (f.flags & MAP_WF_CYCLEWAY)) ? 2 : 0;
+            if (w > 0) drawParkCasing(f.pts, f.pointCount, w + 4, fb);
+        }
     }
     // Bike-route bands under every road, lowest network first so a national
     // route's wider band is not covered by a local one's.
