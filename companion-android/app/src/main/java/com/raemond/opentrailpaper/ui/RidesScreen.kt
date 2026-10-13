@@ -59,6 +59,7 @@ import com.raemond.opentrailpaper.ble.BleManager
 import com.raemond.opentrailpaper.ble.RideFile
 import com.raemond.opentrailpaper.data.FitDecoder
 import com.raemond.opentrailpaper.data.LatLon
+import com.raemond.opentrailpaper.data.RideNames
 import com.raemond.opentrailpaper.data.RidePreview
 import com.raemond.opentrailpaper.data.Units
 import com.raemond.opentrailpaper.map.MapSnapshotter
@@ -593,8 +594,12 @@ private fun shortTime(seconds: Double): String {
     return if (h > 0) "${h}h ${m % 60}m" else "${m}m"
 }
 
-/** Human name like "Saturday afternoon ride" from the file's timestamp. */
+/**
+ * The rider's name for it (renamed on upload), else a human name like
+ * "Saturday afternoon ride" from the file's timestamp.
+ */
 private fun rideName(fileName: String): String {
+    RideNames.names[fileName]?.let { return it }
     val d = rideDate(fileName) ?: return fileName
     val cal = Calendar.getInstance().apply { time = d }
     val weekday = SimpleDateFormat("EEEE", Locale.getDefault()).format(d)

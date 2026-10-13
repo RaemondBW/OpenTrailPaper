@@ -47,6 +47,7 @@ import com.raemond.opentrailpaper.data.SettingField
 import com.raemond.opentrailpaper.data.SettingsMerge
 import com.raemond.opentrailpaper.data.FirmwareRelease
 import com.raemond.opentrailpaper.data.Prefs
+import com.raemond.opentrailpaper.data.RideNames
 import com.raemond.opentrailpaper.transfer.TransferCenter
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -2042,6 +2043,7 @@ class BleManager(private val app: Application) {
         dlQueue.removeAll { it == Transfer.Ride(name) }
         publishQueue()
         cachedRideFile(name).delete()
+        RideNames.forget(name)
         // Offline: just drop the local cache. Connected: also delete on device.
         if (ridesChar == null) return
         writeChar(ridesChar, byteArrayOf(0x03) + name.toByteArray())
