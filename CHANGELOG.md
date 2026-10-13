@@ -5,6 +5,15 @@ released version into the GitHub release body (see .github/workflows/build.yml),
 and the app shows it under Settings → Firmware when an update is available —
 so write for the rider, newest version first, one `## vX.YY` heading each.
 
+## v1.23
+
+- Bike lanes are much easier to see on the map. A road with a painted lane
+  or track now has a bold dashed line along each side, as thick as the road
+  line itself. Before, it had a faint dotted line that was close to
+  invisible. The lane lines sit on a clean white strip, so they stay clear
+  in parks too. They show up close (the same zoom levels as before), under
+  Cycleways & lanes in Map layers.
+
 ## v1.22
 
 - Fixes the mid-ride restart. A stray interrupt from the display power

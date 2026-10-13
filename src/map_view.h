@@ -64,7 +64,7 @@ enum : uint8_t {
 // reserved and kept as sent, so a newer app's bits survive an older firmware.
 enum : uint16_t {
     MAP_LAYER_BIKE_ROUTES = 1 << 0,   // grey route bands
-    MAP_LAYER_CYCLEWAYS = 1 << 1,     // dashed cycleways + lane-edge dots
+    MAP_LAYER_CYCLEWAYS = 1 << 1,     // dashed cycleways + dashed bike-lane lines
     MAP_LAYER_WATER = 1 << 2,
     MAP_LAYER_TOILETS = 1 << 3,
     MAP_LAYER_REPAIR = 1 << 4,
