@@ -5,6 +5,12 @@ released version into the GitHub release body (see .github/workflows/build.yml),
 and the app shows it under Settings → Firmware when an update is available —
 so write for the rider, newest version first, one `## vX.YY` heading each.
 
+## v1.23
+
+- Roads through parks are easier to follow on the map. Where a road or
+  cycleway crosses a park's striped fill it now has a thin white border, so
+  it reads as a clean line instead of disappearing into the stripes.
+
 ## v1.22
 
 - Fixes the mid-ride restart. A stray interrupt from the display power
