@@ -6,6 +6,14 @@ written for the rider. The current version's section is the source for the
 App Store "What's New" text — paste it (minus build-only entries) when
 submitting.
 
+## Unreleased
+
+- Name a ride before uploading it: tapping Upload to Strava, Intervals.icu
+  or RideWithGPS asks for the activity name first, filled in with the
+  ride's current name. The new name is kept for that ride on this phone, so
+  the next upload starts from it and the ride list and ride page show it.
+  (iOS and Android.)
+
 ## 1.3 (build 17)
 
 Version numbers now follow the App Store: 0.6 (build 15) shipped there as
