@@ -349,6 +349,84 @@ void testStopwatchClock() {
               "reset clears lap averages");
     }
 
+    begin("stopwatch: cadence averages");
+    {
+        Stopwatch c;
+        c.toggle(0);
+        // 60 s at 90 rpm, 30 s coasting at 0, 30 s at 80, then a pause.
+        c.sample(0, 30.0f, true, 0, false, 90, true);
+        c.sample(60000, 30.0f, true, 0, false, 0, true);
+        c.sample(90000, 30.0f, true, 0, false, 80, true);
+        c.toggle(120000);
+        c.sample(150000, 30.0f, true, 0, false, 200, true);   // paused: ignored
+        c.toggle(180000);
+        c.sample(180000, 30.0f, true, 0, false, 80, true);
+        c.sample(240000, 30.0f, true, 0, false, 80, true);    // 60 s at 80
+        // Pedalling: 60 s @90 + 90 s @80 = (5400 + 7200) / 150 = 84 rpm.
+        check(c.currentAvgCadenceRpm() == 84,
+              "zeros and paused time excluded from cadence");
+        check(c.lap(240000) && c.lapAvgCadenceRpm(0) == 84, "lap stores it");
+        // Coasting the whole lap: a source, but no average.
+        c.sample(240000, 30.0f, true, 0, false, 0, true);
+        c.lap(300000);
+        check(c.lapAvgCadenceRpm(1) == -1 &&
+                  c.lapCadenceRpm[1] == STOPWATCH_NO_CADENCE,
+              "all-zero lap -> no cadence value");
+        // No source at all.
+        c.sample(300000, 30.0f, true, 0, false, 0, false);
+        c.lap(360000);
+        check(c.lapAvgCadenceRpm(2) == -1, "no cadence source -> no value");
+        c.toggle(360000);
+        check(c.reset() && c.currentAvgCadenceRpm() < 0, "reset clears cadence");
+    }
+
+    begin("stopwatch: which metric columns show");
+    {
+        // None: no meter, no cadence, ever.
+        Stopwatch n;
+        n.toggle(0);
+        n.sample(0, 25.0f, true, 0, false, 0, false);
+        n.sample(60000, 25.0f, true, 0, false, 0, false);
+        n.lap(60000);
+        check(!n.showPower() && !n.showCadence(), "none");
+
+        // Power only (a meter reporting, no cadence).
+        Stopwatch p;
+        p.sample(0, 0.0f, false, 0, true, 0, false);
+        check(p.showPower() && !p.showCadence(),
+              "power only — even before START, the meter is reporting");
+
+        // Cadence only.
+        Stopwatch c;
+        c.sample(0, 0.0f, false, 0, false, 85, true);
+        check(!c.showPower() && c.showCadence(), "cadence only");
+
+        // Both.
+        Stopwatch b;
+        b.sample(0, 0.0f, false, 200, true, 85, true);
+        check(b.showPower() && b.showCadence(), "both");
+
+        // A meter appearing mid-session: column appears; stays once a lap
+        // has its data, even after the meter goes quiet.
+        Stopwatch m;
+        m.toggle(0);
+        m.sample(0, 25.0f, true, 0, false);
+        m.sample(30000, 25.0f, true, 0, false);
+        check(!m.showPower(), "no meter yet: no WATTS");
+        m.sample(60000, 25.0f, true, 220, true);
+        check(m.showPower(), "meter appears: WATTS");
+        m.sample(90000, 25.0f, true, 0, false);       // meter goes quiet
+        check(m.showPower(), "quiet meter, current lap has data: kept");
+        m.lap(120000);
+        m.sample(120000, 25.0f, true, 0, false);
+        m.lap(180000);
+        check(m.showPower() && m.lapAvgPowerW(1) == -1,
+              "laps had power: kept, the quiet lap reads --");
+        m.toggle(180000);
+        m.reset();
+        check(!m.showPower(), "reset with no meter: WATTS goes");
+    }
+
     begin("stopwatch: speed units");
     check(std::fabs(units::speed(25.0, true) - 15.534) < 0.01,
           "25 km/h shows as 15.5 mph");

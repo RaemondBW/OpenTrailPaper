@@ -2834,12 +2834,42 @@ constexpr int kSwListTop = 344;      // rule under the lap in progress
 constexpr int kSwRowTop = 384;       // first lap row
 constexpr int kSwRowH = 52;
 constexpr int kSwRows = 7;           // 384 + 7 * 52 = 748, above the rule at 756
-// Column right edges, evenly spaced (148 px apart) after the lap number.
-// TOTAL (cumulative) is not a column: the total is at the top of the page,
-// and dropping it is what leaves room for speed and power at a readable size.
-constexpr int kSwColSplit = 220;
-constexpr int kSwColSpeed = 368;
-constexpr int kSwColPower = ui::CONTENT_X + ui::CONTENT_W;
+// Value columns (SPLIT, then the metrics) share the width after the lap
+// number evenly, right edges `step` apart ending on the content edge — so
+// fewer metrics means roomier columns, never a gap. TOTAL (cumulative) is not
+// a column: the total is at the top of the page.
+constexpr int kSwColsLeft = 72;
+constexpr int kSwRight = ui::CONTENT_X + ui::CONTENT_W;
+// The LAP AVERAGE row's values start after its caption.
+constexpr int kSwAvgLeft = 160;
+
+// The optional metrics, in column order. Speed is always shown (it has its
+// own "--"); cadence and power only when Stopwatch::showCadence/showPower.
+enum SwMetric : uint8_t { SW_SPEED, SW_CADENCE, SW_POWER };
+struct SwMetrics {
+    SwMetric m[3];
+    int n = 0;
+};
+SwMetrics swMetrics(const Stopwatch& sw) {
+    SwMetrics out;
+    out.m[out.n++] = SW_SPEED;
+    if (sw.showCadence()) out.m[out.n++] = SW_CADENCE;
+    if (sw.showPower()) out.m[out.n++] = SW_POWER;
+    return out;
+}
+
+// Lap row digits: the largest face whose widest split fits its column, down
+// from 38 px (the row is 52). Five columns shrink it only as far as needed.
+#ifdef VFONT
+const EpdFont* swRowFace(int i) {
+    static const int px[] = {38, 34, 30, 26, 22};
+    return i < 5 ? vf_face_digit(VF_VALUES, px[i]) : nullptr;
+}
+#else
+const EpdFont* swRowFace(int i) {
+    return i == 0 ? &Impact_T : i == 1 ? &Impact_S : nullptr;
+}
+#endif
 
 void stopwatchButton(const EpdRect& r, const char* text, bool primary,
                      bool enabled, uint8_t* fb) {
@@ -2886,9 +2916,34 @@ void swFmtSpeed(char* out, size_t cap, float kmh, bool miles) {
     if (kmh < 0) snprintf(out, cap, "--");
     else snprintf(out, cap, "%.1f", units::speed(kmh, miles));
 }
-void swFmtPower(char* out, size_t cap, int w) {
-    if (w < 0) snprintf(out, cap, "--");
-    else snprintf(out, cap, "%d", w);
+// Power (W) or cadence (rpm): an integer, "--" with no data.
+void swFmtInt(char* out, size_t cap, int v) {
+    if (v < 0) snprintf(out, cap, "--");
+    else snprintf(out, cap, "%d", v);
+}
+
+// One metric's value for the lap in progress (lap < 0) or completed lap i.
+void swMetricValue(const Stopwatch& sw, SwMetric m, int lap, bool miles,
+                   char* out, size_t cap) {
+    switch (m) {
+        case SW_SPEED:
+            swFmtSpeed(out, cap,
+                       lap < 0 ? sw.currentAvgSpeedKmh() : sw.lapAvgSpeedKmh(lap),
+                       miles);
+            break;
+        case SW_CADENCE:
+            swFmtInt(out, cap, lap < 0 ? sw.currentAvgCadenceRpm()
+                                       : sw.lapAvgCadenceRpm(lap));
+            break;
+        case SW_POWER:
+            swFmtInt(out, cap, lap < 0 ? sw.currentAvgPowerW()
+                                       : sw.lapAvgPowerW(lap));
+            break;
+    }
+}
+const char* swMetricUnit(SwMetric m, bool miles) {
+    return m == SW_SPEED ? units::speedLabel(miles) : m == SW_CADENCE ? "RPM"
+                                                                      : "W";
 }
 
 // Largest ladder face that fits `hint` in `availW` and stays within `maxH`.
@@ -2917,6 +2972,22 @@ void swValueUnit(const char* value, const char* unit, int right, int base,
     ui::text(&Arial_L, right, base, unit, fb, EPD_DRAW_ALIGN_RIGHT, ui::DARK);
 }
 
+// A row of metric averages (value + unit each) across [left, right]: evenly
+// spaced, each pair centred in its share.
+void swAverages(const Stopwatch& sw, const SwMetrics& ms, bool miles, int left,
+                int right, int base, uint8_t* fb) {
+    const int share = (right - left) / ms.n;
+    for (int i = 0; i < ms.n; ++i) {
+        char v[16];
+        swMetricValue(sw, ms.m[i], -1, miles, v, sizeof(v));
+        const char* unit = swMetricUnit(ms.m[i], miles);
+        const int w = ui::textWidth(&Impact_T, v) + 6 +
+                      ui::textWidth(&Arial_L, unit);
+        const int cx = left + share * i + share / 2;
+        swValueUnit(v, unit, cx + w / 2, base, fb);
+    }
+}
+
 }  // namespace
 
 void ui_render_stopwatch(const RideState& s, const Stopwatch& sw, uint32_t now,
@@ -2927,11 +2998,12 @@ void ui_render_stopwatch(const RideState& s, const Stopwatch& sw, uint32_t now,
     const int W = epd_rotated_display_width();
     const uint32_t elapsed = sw.elapsedMs(now);
     const int footerRule = kStopwatchToggle.y - 24;
-    const char* speedUnit = units::speedLabel(s.useMiles);
-    char t[16], spd[16], pwr[16];
+    // Which metrics this frame carries. It is derived from sensor presence
+    // and lap data, so it only changes when a sensor appears or drops out or
+    // on LAP/RESET — never tick to tick.
+    const SwMetrics ms = swMetrics(sw);
+    char t[16];
     swFmt(t, sizeof(t), elapsed);
-    swFmtSpeed(spd, sizeof(spd), sw.currentAvgSpeedKmh(), s.useMiles);
-    swFmtPower(pwr, sizeof(pwr), sw.currentAvgPowerW());
 
     if (sw.lapCount == 0) {
         // --- No laps: the time alone, centred in the body. ----------------
@@ -2949,12 +3021,11 @@ void ui_render_stopwatch(const RideState& s, const Stopwatch& sw, uint32_t now,
         if (elapsed > 0) {
             const int base = mid + dh / 2 + 150;
             ui::label(W / 2, base - 52, "AVERAGE", fb, ui::DARK, &Arial_L);
-            swValueUnit(spd, speedUnit, W / 2 - 24, base, fb);
-            ui::text(&Impact_T, W / 2 + 24, base, pwr, fb,
-                     EPD_DRAW_ALIGN_LEFT);
-            ui::text(&Arial_L,
-                     W / 2 + 24 + ui::textWidth(&Impact_T, pwr) + 6, base, "W",
-                     fb, EPD_DRAW_ALIGN_LEFT, ui::DARK);
+            // Narrower for one or two metrics so they sit together under
+            // the clock rather than at the panel's edges.
+            const int span = ms.n == 1 ? 200 : ms.n == 2 ? 340 : ui::CONTENT_W;
+            swAverages(sw, ms, s.useMiles, W / 2 - span / 2, W / 2 + span / 2,
+                       base, fb);
         }
     } else {
         // --- Total, smaller, at the top: the same shape as the lap row
@@ -2985,38 +3056,53 @@ void ui_render_stopwatch(const RideState& s, const Stopwatch& sw, uint32_t now,
                  EPD_DRAW_ALIGN_RIGHT);
         ui::text(&Arial_L, ui::CONTENT_X, avgBase, "LAP AVERAGE", fb,
                  EPD_DRAW_ALIGN_LEFT, ui::DARK);
-        swValueUnit(spd, speedUnit, kSwColSpeed, avgBase, fb);
-        swValueUnit(pwr, "W", kSwColPower, avgBase, fb);
+        swAverages(sw, ms, s.useMiles, kSwAvgLeft, kSwRight, avgBase, fb);
         epd_fill_rect({0, kSwListTop, W, ui::RULE}, ui::INK, fb);
 
         // --- Completed laps, newest first. ----------------------------------
+        // Column geometry from the metric count; the face from the widest
+        // split this list can show (an hour-long lap needs H:MM:SS).
+        const int cols = 1 + ms.n;
+        const int step = (kSwRight - kSwColsLeft) / cols;
+        auto colRight = [&](int c) {
+            return c == cols - 1 ? kSwRight : kSwColsLeft + step * (c + 1);
+        };
+        bool hourLap = false;
+        for (int r = 0; r < kSwRows && sw.lapCount - 1 - r >= 0; ++r)
+            if (sw.lapSplitMs(sw.lapCount - 1 - r) >= 3600000u) hourLap = true;
+        const char* splitHint = hourLap ? "0:00:00" : "00:00.0";
+        const EpdFont* rf = &Impact_T;
+        for (int k = 0; const EpdFont* f = swRowFace(k); ++k) {
+            rf = f;
+            if (ui::textWidth(f, splitHint) <= step - 10) break;
+        }
+        const int rowDh = epdc_digit_height(rf);
+
         const int capBase = kSwRowTop - 12;
         ui::text(&Arial_L, ui::CONTENT_X, capBase, "LAP", fb,
                  EPD_DRAW_ALIGN_LEFT, ui::DARK);
-        ui::text(&Arial_L, kSwColSplit, capBase, "SPLIT", fb,
+        ui::text(&Arial_L, colRight(0), capBase, "SPLIT", fb,
                  EPD_DRAW_ALIGN_RIGHT, ui::DARK);
-        ui::text(&Arial_L, kSwColSpeed, capBase, speedUnit, fb,
-                 EPD_DRAW_ALIGN_RIGHT, ui::DARK);
-        ui::text(&Arial_L, kSwColPower, capBase, "WATTS", fb,
-                 EPD_DRAW_ALIGN_RIGHT, ui::DARK);
+        for (int c = 0; c < ms.n; ++c)
+            ui::text(&Arial_L, colRight(c + 1), capBase,
+                     ms.m[c] == SW_POWER ? "WATTS"
+                                         : swMetricUnit(ms.m[c], s.useMiles),
+                     fb, EPD_DRAW_ALIGN_RIGHT, ui::DARK);
         for (int r = 0; r < kSwRows; ++r) {
             const int i = sw.lapCount - 1 - r;
             if (i < 0) break;
             const int top = kSwRowTop + r * kSwRowH;
-            const int base = top + 38;
+            const int base = top + (kSwRowH + rowDh) / 2;
             epd_fill_rect({0, top, W, 1}, ui::INK, fb);
             snprintf(buf, sizeof(buf), "%d", i + 1);
-            ui::text(&Impact_T, ui::CONTENT_X, base, buf, fb,
-                     EPD_DRAW_ALIGN_LEFT);
+            ui::text(rf, ui::CONTENT_X, base, buf, fb, EPD_DRAW_ALIGN_LEFT);
             swFmtLap(buf, sizeof(buf), sw.lapSplitMs(i));
-            ui::text(&Impact_T, kSwColSplit, base, buf, fb,
-                     EPD_DRAW_ALIGN_RIGHT);
-            swFmtSpeed(buf, sizeof(buf), sw.lapAvgSpeedKmh(i), s.useMiles);
-            ui::text(&Impact_T, kSwColSpeed, base, buf, fb,
-                     EPD_DRAW_ALIGN_RIGHT);
-            swFmtPower(buf, sizeof(buf), sw.lapAvgPowerW(i));
-            ui::text(&Impact_T, kSwColPower, base, buf, fb,
-                     EPD_DRAW_ALIGN_RIGHT);
+            ui::text(rf, colRight(0), base, buf, fb, EPD_DRAW_ALIGN_RIGHT);
+            for (int c = 0; c < ms.n; ++c) {
+                swMetricValue(sw, ms.m[c], i, s.useMiles, buf, sizeof(buf));
+                ui::text(rf, colRight(c + 1), base, buf, fb,
+                         EPD_DRAW_ALIGN_RIGHT);
+            }
         }
     }
 

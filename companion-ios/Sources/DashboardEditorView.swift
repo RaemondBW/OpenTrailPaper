@@ -179,7 +179,7 @@ struct DashboardEditorView: View {
                 Section {
                     VStack(alignment: .leading, spacing: 8) {
                         Label("Stopwatch", systemImage: "stopwatch")
-                        Text("Your own clock, separate from the ride timer: big digits with START/PAUSE, RESET and LAP buttons on the panel. LAP works while it runs, RESET once it's paused. Each lap, and the one in progress, shows its time, average speed and average power. It keeps running while you're on other pages. Needs device firmware v1.23 or newer.")
+                        Text("Your own clock, separate from the ride timer: big digits with START/PAUSE, RESET and LAP buttons on the panel. LAP works while it runs, RESET once it's paused. Each lap, and the one in progress, shows its time and average speed, plus average cadence and power when those sensors are connected. It keeps running while you're on other pages. Needs device firmware v1.23 or newer.")
                             .font(TypeScale.body).foregroundStyle(Palette.muted)
                     }
                     .padding(.vertical, 4)

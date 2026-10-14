@@ -2822,16 +2822,22 @@ void task(void*) {
             // The stopwatch's lap averages, fed every pass whatever page is
             // up (a few samples a second; it integrates only while running).
             // Speed is THE speed the dashboard shows, valid while any source
-            // is behind it. Power is the instantaneous reading while the
-            // meter is actually reporting — the same 15 s freshness the
-            // dashboard greys the field by.
+            // is behind it. Power and cadence are the instantaneous readings
+            // while their source is actually reporting — the same 15 s
+            // freshness the dashboard greys those fields by. Cadence is
+            // whatever the CADENCE field shows: a cadence sensor, or a power
+            // meter's crank data (ble_sensors writes both to cadenceRpm).
             const uint32_t ms = millis();
             const bool powerFresh = now.powerConnected &&
                                     now.powerW != 0xFFFF &&
                                     ms - now.powerMs <= 15000;
+            const bool cadenceFresh = now.cadenceConnected &&
+                                      now.cadenceRpm != 0xFF &&
+                                      ms - now.cadenceMs <= 15000;
             stopwatch.sample(ms, now.speedKmh,
                              now.speedSource != speed_source::NONE,
-                             powerFresh ? now.powerW : 0, powerFresh);
+                             powerFresh ? now.powerW : 0, powerFresh,
+                             cadenceFresh ? now.cadenceRpm : 0, cadenceFresh);
         }
 
         // Auto-sleep after a quiet period to save battery — a bike computer
