@@ -12,6 +12,9 @@
 
 #include "dash_layout.h"
 #include "stopwatch.h"
+#include "ride_state.h"   // units:: — the speed conversion the page uses
+
+#include <cmath>
 
 namespace {
 
@@ -263,6 +266,84 @@ void testStopwatchClock() {
     check(full.lapsFull() && full.lapCount == STOPWATCH_MAX_LAPS, "fills to max");
     check(!full.lap(500000) && full.lapEndMs[0] == 1000,
           "a lap past the max is refused, lap 1 kept");
+
+    begin("stopwatch: lap averages");
+    {
+        Stopwatch a;
+        a.sample(0, 30.0f, true, 200, true);   // before start: not counted
+        a.toggle(10000);
+        check(a.currentAvgSpeedKmh() < 0 && a.currentAvgPowerW() < 0,
+              "nothing integrated before the first running interval");
+        // 60 s at 30 km/h / 200 W, then 60 s at 20 km/h / 0 W (coasting).
+        a.sample(70000, 20.0f, true, 0, true);
+        a.sample(130000, 20.0f, true, 0, true);
+        check(std::fabs(a.currentAvgSpeedKmh() - 25.0f) < 0.01f,
+              "speed is distance over time (25 km/h)");
+        check(a.currentAvgPowerW() == 100, "zeros count in the power mean");
+        check(a.lap(130000), "lap");
+        check(a.lapSpeedDkmh[0] == 250 && a.lapAvgPowerW(0) == 100,
+              "lap stores its averages");
+        check(std::fabs(a.lapAvgSpeedKmh(0) - 25.0f) < 0.01f, "speed readback");
+        check(a.currentAvgSpeedKmh() < 0, "new lap starts empty");
+
+        // Stop mid-lap: the stopped minute adds nothing.
+        a.sample(160000, 40.0f, true, 300, true);   // 30 s at 20 / 0
+        a.toggle(190000);                            // 30 s at 40 / 300, stop
+        a.sample(220000, 99.0f, true, 999, true);    // stopped: ignored
+        a.sample(250000, 99.0f, true, 999, true);
+        a.toggle(250000);                            // resume, held 99/999
+        a.sample(250000, 40.0f, true, 300, true);    // replaced at once
+        a.sample(310000, 40.0f, true, 300, true);    // 60 s at 40 / 300
+        // Running time only: 30 s @20, 30 s @40, 60 s @40 ->
+        // (20*30 + 40*30 + 40*60) / 120 = 35 km/h; power (0*30+300*90)/120.
+        check(std::fabs(a.currentAvgSpeedKmh() - 35.0f) < 0.01f,
+              "stopped time excluded from speed");
+        check(a.currentAvgPowerW() == 225, "stopped time excluded from power");
+
+        // No meter: dash. Meter dropping out mid-lap: only its time counts.
+        Stopwatch b;
+        b.toggle(0);
+        b.sample(0, 25.0f, true, 0, false);
+        b.sample(60000, 25.0f, true, 0, false);
+        b.lap(60000);
+        check(b.lapAvgPowerW(0) == -1 && b.lapPowerW[0] == STOPWATCH_NO_VALUE,
+              "no power meter -> no value");
+        b.sample(60000, 25.0f, true, 250, true);
+        b.sample(90000, 25.0f, true, 0, false);   // meter silent from here
+        b.sample(150000, 25.0f, true, 0, false);
+        check(b.currentAvgPowerW() == 250, "silent meter time not counted");
+
+        // No speed source for the whole lap: dash, not 0.
+        Stopwatch c;
+        c.toggle(0);
+        c.sample(0, 0.0f, false, 180, true);
+        c.lap(45000);
+        check(c.lapAvgSpeedKmh(0) < 0 && c.lapAvgPowerW(0) == 180,
+              "no speed source -> no speed, power still there");
+
+        // Lap boundary between samples is credited exactly.
+        Stopwatch d;
+        d.toggle(0);
+        d.sample(0, 36.0f, true, 100, true);
+        d.lap(500);                                // mid-hold
+        d.sample(1000, 18.0f, true, 300, true);
+        check(d.lapSpeedDkmh[0] == 360 && d.lapAvgPowerW(0) == 100,
+              "first lap holds its own sample to the boundary");
+        check(std::fabs(d.currentAvgSpeedKmh() - 36.0f) < 0.01f,
+              "the rest of that hold lands in the next lap");
+
+        // Reset clears the averages with the laps.
+        a.toggle(310000);
+        check(a.reset() && a.currentAvgSpeedKmh() < 0 &&
+                  a.currentAvgPowerW() < 0,
+              "reset clears lap averages");
+    }
+
+    begin("stopwatch: speed units");
+    check(std::fabs(units::speed(25.0, true) - 15.534) < 0.01,
+          "25 km/h shows as 15.5 mph");
+    check(std::fabs(units::speed(25.0, false) - 25.0) < 1e-9,
+          "km/h unchanged");
 
     begin("stopwatch: millis() wrap");
     Stopwatch w;

@@ -2797,12 +2797,14 @@ void ui_render_workout_picker(const RideState& s, const WorkoutPickPage& p,
 }
 
 // ---------------------------------------------------------------------------
-// STOPWATCH page — the rider's own clock (stopwatch.h), with laps.
+// STOPWATCH page — the rider's own clock (stopwatch.h), with laps and their
+// average speed and power.
 //
-// Two layouts. Before the first LAP the page is nothing but the time, as big
-// as the panel allows. Once there are laps, the total moves up (smaller), the
-// lap in progress sits under it, and the completed laps list below, newest
-// first, with the fastest and slowest tagged.
+// Two layouts. Before the first LAP the page is the time, as big as the panel
+// allows, with the run's averages under it. Once there are laps, the total
+// moves up (smaller), the lap in progress and its live averages sit under it,
+// and the completed laps list below, newest first: split, avg speed, avg
+// power, with the fastest and slowest split marked.
 //
 // Refresh cost is the point of both: at 1 Hz only the running numbers change,
 // so the driver's delta engine repaints those bands and nothing else. The lap
@@ -2829,6 +2831,12 @@ constexpr int kSwListTop = 344;      // rule under the lap in progress
 constexpr int kSwRowTop = 384;       // first lap row
 constexpr int kSwRowH = 52;
 constexpr int kSwRows = 7;           // 384 + 7 * 52 = 748, above the rule at 756
+// Column right edges. TOTAL (cumulative) is not a column: the total is at the
+// top of the page, and dropping it is what leaves room for speed and power at
+// a readable size.
+constexpr int kSwColSplit = 252;
+constexpr int kSwColSpeed = 384;
+constexpr int kSwColPower = ui::CONTENT_X + ui::CONTENT_W;
 
 void stopwatchButton(const EpdRect& r, const char* text, bool primary,
                      bool enabled, uint8_t* fb) {
@@ -2870,6 +2878,16 @@ void swFmtLap(char* out, size_t cap, uint32_t ms) {
                  (unsigned long)(sec % 60), (unsigned long)(ms % 1000 / 100));
 }
 
+// Average speed in the rider's units, one decimal; "--" with no source.
+void swFmtSpeed(char* out, size_t cap, float kmh, bool miles) {
+    if (kmh < 0) snprintf(out, cap, "--");
+    else snprintf(out, cap, "%.1f", units::speed(kmh, miles));
+}
+void swFmtPower(char* out, size_t cap, int w) {
+    if (w < 0) snprintf(out, cap, "--");
+    else snprintf(out, cap, "%d", w);
+}
+
 // Largest ladder face that fits `hint` across the content column and stays
 // within `maxH`. Sized against the WIDEST string of the current form, not the
 // string itself, so the numerals never change size as they tick — only once,
@@ -2886,6 +2904,16 @@ const EpdFont* swFace(uint32_t ms, int maxH) {
     return kStopwatchLadder[n - 1];
 }
 
+// "31.4 KM/H" / "248 W": the value in Impact_T right-aligned at `right`
+// minus the unit's width, the unit in the label face after it, so a column
+// of them lines up on the digits.
+void swValueUnit(const char* value, const char* unit, int right, int base,
+                 uint8_t* fb) {
+    const int uw = ui::textWidth(&Arial_L, unit);
+    ui::text(&Impact_T, right - uw - 6, base, value, fb, EPD_DRAW_ALIGN_RIGHT);
+    ui::text(&Arial_L, right, base, unit, fb, EPD_DRAW_ALIGN_RIGHT, ui::DARK);
+}
+
 }  // namespace
 
 void ui_render_stopwatch(const RideState& s, const Stopwatch& sw, uint32_t now,
@@ -2896,13 +2924,16 @@ void ui_render_stopwatch(const RideState& s, const Stopwatch& sw, uint32_t now,
     const int W = epd_rotated_display_width();
     const uint32_t elapsed = sw.elapsedMs(now);
     const int footerRule = kStopwatchToggle.y - 24;
-    char t[16];
+    const char* speedUnit = units::speedLabel(s.useMiles);
+    char t[16], spd[16], pwr[16];
     swFmt(t, sizeof(t), elapsed);
+    swFmtSpeed(spd, sizeof(spd), sw.currentAvgSpeedKmh(), s.useMiles);
+    swFmtPower(pwr, sizeof(pwr), sw.currentAvgPowerW());
 
     if (sw.lapCount == 0) {
         // --- No laps: the time alone, centred in the body. ----------------
         const EpdFont* f = swFace(elapsed, 1000);
-        const int mid = (ui::STATUS_H + footerRule) / 2 - 30;
+        const int mid = (ui::STATUS_H + footerRule) / 2 - 50;
         const int dh = epdc_digit_height(f);
         ui::text(f, W / 2, mid + dh / 2, t, fb, EPD_DRAW_ALIGN_CENTER);
         // What the clock is doing, in words: a stopped time and a running
@@ -2910,16 +2941,27 @@ void ui_render_stopwatch(const RideState& s, const Stopwatch& sw, uint32_t now,
         const char* state = sw.running ? "RUNNING"
                             : elapsed == 0 ? "READY"
                                            : "STOPPED";
-        ui::label(W / 2, mid + dh / 2 + 80, state, fb, ui::INK, &Arial_B);
+        ui::label(W / 2, mid + dh / 2 + 70, state, fb, ui::INK, &Arial_B);
+        // The run's averages so far (the lap in progress IS the run).
+        if (elapsed > 0) {
+            const int base = mid + dh / 2 + 150;
+            ui::label(W / 2, base - 52, "AVERAGE", fb, ui::DARK, &Arial_L);
+            swValueUnit(spd, speedUnit, W / 2 - 24, base, fb);
+            ui::text(&Impact_T, W / 2 + 24, base, pwr, fb,
+                     EPD_DRAW_ALIGN_LEFT);
+            ui::text(&Arial_L,
+                     W / 2 + 24 + ui::textWidth(&Impact_T, pwr) + 6, base, "W",
+                     fb, EPD_DRAW_ALIGN_LEFT, ui::DARK);
+        }
     } else {
         // --- Total, smaller, at the top. ------------------------------------
-        const EpdFont* f = swFace(elapsed, 120);
-        const int totalBase = ui::STATUS_H + 28 + epdc_digit_height(f);
+        const EpdFont* f = swFace(elapsed, 95);
+        const int totalBase = ui::STATUS_H + 24 + epdc_digit_height(f);
         ui::text(f, W / 2, totalBase, t, fb, EPD_DRAW_ALIGN_CENTER);
 
-        // --- The lap in progress. -------------------------------------------
+        // --- The lap in progress: number, state, time, live averages. -------
         char buf[24];
-        const int lapBase = kSwListTop - 22;
+        const int lapBase = 284, avgBase = 328;
         snprintf(buf, sizeof(buf), "LAP %d", sw.lapCount + 1);
         ui::text(&Arial_B, ui::CONTENT_X, lapBase - 30, buf, fb,
                  EPD_DRAW_ALIGN_LEFT);
@@ -2929,15 +2971,21 @@ void ui_render_stopwatch(const RideState& s, const Stopwatch& sw, uint32_t now,
         swFmt(buf, sizeof(buf), sw.currentLapMs(now));
         ui::text(&Impact_B, ui::CONTENT_X + ui::CONTENT_W, lapBase, buf, fb,
                  EPD_DRAW_ALIGN_RIGHT);
+        ui::text(&Arial_L, ui::CONTENT_X, avgBase, "LAP AVERAGE", fb,
+                 EPD_DRAW_ALIGN_LEFT, ui::DARK);
+        swValueUnit(spd, speedUnit, kSwColSpeed, avgBase, fb);
+        swValueUnit(pwr, "W", kSwColPower, avgBase, fb);
         epd_fill_rect({0, kSwListTop, W, ui::RULE}, ui::INK, fb);
 
         // --- Completed laps, newest first. ----------------------------------
-        const int splitRight = 352, totalRight = ui::CONTENT_X + ui::CONTENT_W;
-        ui::text(&Arial_L, ui::CONTENT_X, kSwRowTop - 12, "LAP", fb,
+        const int capBase = kSwRowTop - 12;
+        ui::text(&Arial_L, ui::CONTENT_X, capBase, "LAP", fb,
                  EPD_DRAW_ALIGN_LEFT, ui::DARK);
-        ui::text(&Arial_L, splitRight, kSwRowTop - 12, "SPLIT", fb,
+        ui::text(&Arial_L, kSwColSplit, capBase, "SPLIT", fb,
                  EPD_DRAW_ALIGN_RIGHT, ui::DARK);
-        ui::text(&Arial_L, totalRight, kSwRowTop - 12, "TOTAL", fb,
+        ui::text(&Arial_L, kSwColSpeed, capBase, speedUnit, fb,
+                 EPD_DRAW_ALIGN_RIGHT, ui::DARK);
+        ui::text(&Arial_L, kSwColPower, capBase, "WATTS", fb,
                  EPD_DRAW_ALIGN_RIGHT, ui::DARK);
         const int fastest = sw.fastestLap(), slowest = sw.slowestLap();
         for (int r = 0; r < kSwRows; ++r) {
@@ -2949,12 +2997,12 @@ void ui_render_stopwatch(const RideState& s, const Stopwatch& sw, uint32_t now,
             snprintf(buf, sizeof(buf), "%d", i + 1);
             ui::text(&Impact_T, ui::CONTENT_X, base, buf, fb,
                      EPD_DRAW_ALIGN_LEFT);
-            // Fastest is the one worth seeing at a glance: a solid tag.
-            // Slowest gets an outlined one, quieter but still findable.
+            // A compact marker between the number and the split: FAST
+            // solid (the one worth seeing at a glance), SLOW outlined.
             if (i == fastest || i == slowest) {
-                const char* tag = i == fastest ? "FASTEST" : "SLOWEST";
-                const int tx = ui::CONTENT_X + 64;
-                const int tw = ui::labelWidth(&Arial_L, tag) + 16;
+                const char* tag = i == fastest ? "FAST" : "SLOW";
+                const int tx = ui::CONTENT_X + 50;
+                const int tw = ui::labelWidth(&Arial_L, tag) + 12;
                 const EpdRect chip = {tx, top + 13, tw, 28};
                 if (i == fastest) epd_fill_rect(chip, ui::INK, fb);
                 else epd_draw_rect(chip, ui::INK, fb);
@@ -2962,10 +3010,13 @@ void ui_render_stopwatch(const RideState& s, const Stopwatch& sw, uint32_t now,
                           i == fastest ? ui::PAPER : ui::INK, &Arial_L);
             }
             swFmtLap(buf, sizeof(buf), sw.lapSplitMs(i));
-            ui::text(&Impact_T, splitRight, base, buf, fb,
+            ui::text(&Impact_T, kSwColSplit, base, buf, fb,
                      EPD_DRAW_ALIGN_RIGHT);
-            swFmtLap(buf, sizeof(buf), sw.lapEndMs[i]);
-            ui::text(&Arial_B, totalRight, base, buf, fb,
+            swFmtSpeed(buf, sizeof(buf), sw.lapAvgSpeedKmh(i), s.useMiles);
+            ui::text(&Impact_T, kSwColSpeed, base, buf, fb,
+                     EPD_DRAW_ALIGN_RIGHT);
+            swFmtPower(buf, sizeof(buf), sw.lapAvgPowerW(i));
+            ui::text(&Impact_T, kSwColPower, base, buf, fb,
                      EPD_DRAW_ALIGN_RIGHT);
         }
     }

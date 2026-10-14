@@ -2816,6 +2816,20 @@ void task(void*) {
             // places the idle timeout could otherwise switch the device off
             // underneath a rider who is very much still riding.
             if (now.deviceMoving) lastActivityMs = millis();
+
+            // The stopwatch's lap averages, fed every pass whatever page is
+            // up (a few samples a second; it integrates only while running).
+            // Speed is THE speed the dashboard shows, valid while any source
+            // is behind it. Power is the instantaneous reading while the
+            // meter is actually reporting — the same 15 s freshness the
+            // dashboard greys the field by.
+            const uint32_t ms = millis();
+            const bool powerFresh = now.powerConnected &&
+                                    now.powerW != 0xFFFF &&
+                                    ms - now.powerMs <= 15000;
+            stopwatch.sample(ms, now.speedKmh,
+                             now.speedSource != speed_source::NONE,
+                             powerFresh ? now.powerW : 0, powerFresh);
         }
 
         // Auto-sleep after a quiet period to save battery — a bike computer

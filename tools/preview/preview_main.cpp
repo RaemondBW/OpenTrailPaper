@@ -969,18 +969,32 @@ int main(int argc, char** argv) {
         emit("music_idle.png");
     }
 
+
     // STOPWATCH page: fresh, running, stopped, past the hour (where the
     // hours column steps the numerals down once), and with laps — more than
-    // the list shows, running and stopped.
+    // the list shows, running and stopped — each with its average speed and
+    // power. Samples are fed the way the UI task feeds them: a reading held
+    // until the next one.
     {
         const uint32_t t0 = 1000000;   // arbitrary millis() at START
+        // Ride `ms` at a steady speed / power from `t`; returns the end time.
+        auto ride = [](Stopwatch& sw, uint32_t t, uint32_t ms, float kmh,
+                       int watts) {
+            sw.sample(t, kmh, true, watts < 0 ? 0 : (uint16_t)watts,
+                      watts >= 0);
+            sw.sample(t + ms, kmh, true, watts < 0 ? 0 : (uint16_t)watts,
+                      watts >= 0);
+            return t + ms;
+        };
+
         Stopwatch sw;
         clearWhite(fb.data());
         ui_render_stopwatch(s, sw, t0, fb.data());
         emit("stopwatch_ready.png");
 
         sw.toggle(t0);
-        const uint32_t at1234 = t0 + (12 * 60 + 34) * 1000 + 560;
+        const uint32_t at1234 = ride(sw, t0, (12 * 60 + 34) * 1000 + 560,
+                                     28.6f, 212);
         clearWhite(fb.data());
         ui_render_stopwatch(s, sw, at1234, fb.data());
         emit("stopwatch_running.png");
@@ -991,33 +1005,51 @@ int main(int argc, char** argv) {
         ui_render_stopwatch(s, stopped, at1234 + 5000, fb.data());
         emit("stopwatch_stopped.png");
 
+        const uint32_t atHour = ride(sw, at1234,
+                                     (1 * 3600 + 2 * 60 + 3) * 1000 -
+                                         (at1234 - t0),
+                                     26.0f, 195);
         clearWhite(fb.data());
-        ui_render_stopwatch(s, sw, t0 + (1 * 3600 + 2 * 60 + 3) * 1000,
-                            fb.data());
+        ui_render_stopwatch(s, sw, atHour, fb.data());
         emit("stopwatch_hour.png");
 
-        // Nine hill repeats: the list shows the newest seven.
+        // Nine hill repeats: the list shows the newest seven. Slower laps
+        // are the harder-pushed ones up the climb, as on the road.
         Stopwatch laps;
         laps.toggle(t0);
         const uint32_t splits[] = {312400, 298700, 305100, 291300, 322800,
                                    301900, 296200, 288600, 307500};
+        const float kmh[] = {14.2f, 14.9f, 14.6f, 15.3f, 13.8f,
+                             14.7f, 15.0f, 15.4f, 14.5f};
+        const int watts[] = {268, 281, 274, 290, 259, 276, 284, 293, 272};
         uint32_t t = t0;
-        for (uint32_t sp : splits) { t += sp; laps.lap(t); }
+        for (int i = 0; i < 9; ++i) {
+            t = ride(laps, t, splits[i], kmh[i], watts[i]);
+            laps.lap(t);
+        }
+        t = ride(laps, t, 83400, 15.1f, 286);
         clearWhite(fb.data());
-        ui_render_stopwatch(s, laps, t + 83400, fb.data());
+        ui_render_stopwatch(s, laps, t, fb.data());
         emit("stopwatch_laps.png");
 
-        laps.toggle(t + 83400);
+        laps.toggle(t);
         clearWhite(fb.data());
-        ui_render_stopwatch(s, laps, t + 90000, fb.data());
+        ui_render_stopwatch(s, laps, t + 6600, fb.data());
         emit("stopwatch_laps_stopped.png");
 
+        // In miles, and no power meter on the second lap: its power reads
+        // "--" rather than a misleading 0.
+        RideState mi = s;
+        mi.useMiles = true;
         Stopwatch two;
         two.toggle(t0);
-        two.lap(t0 + 95300);
-        two.lap(t0 + 95300 + 101800);
+        uint32_t u = ride(two, t0, 95300, 32.4f, 245);
+        two.lap(u);
+        u = ride(two, u, 101800, 30.9f, -1);
+        two.lap(u);
+        u = ride(two, u, 41000, 33.8f, -1);
         clearWhite(fb.data());
-        ui_render_stopwatch(s, two, t0 + 95300 + 101800 + 41000, fb.data());
+        ui_render_stopwatch(mi, two, u, fb.data());
         emit("stopwatch_laps_two.png");
     }
 
