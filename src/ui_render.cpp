@@ -2891,18 +2891,18 @@ void swFmtPower(char* out, size_t cap, int w) {
     else snprintf(out, cap, "%d", w);
 }
 
-// Largest ladder face that fits `hint` across the content column and stays
-// within `maxH`. Sized against the WIDEST string of the current form, not the
-// string itself, so the numerals never change size as they tick — only once,
-// on the hour, when the hours column appears.
-const EpdFont* swFace(uint32_t ms, int maxH) {
+// Largest ladder face that fits `hint` in `availW` and stays within `maxH`.
+// Sized against the WIDEST string of the current form, not the string
+// itself, so the numerals never change size as they tick — only once, on the
+// hour, when the hours column appears.
+const EpdFont* swFace(uint32_t ms, int maxH, int availW = ui::CONTENT_W) {
     const uint32_t sec = ms / 1000;
     const char* hint = sec >= 36000 ? "00:00:00" : sec >= 3600 ? "0:00:00"
                                                                : "00:00";
     const int n = sizeof(kStopwatchLadder) / sizeof(kStopwatchLadder[0]);
     for (int i = 0; i < n; ++i)
         if (epdc_digit_height(kStopwatchLadder[i]) <= maxH &&
-            ui::textWidth(kStopwatchLadder[i], hint) <= ui::CONTENT_W)
+            ui::textWidth(kStopwatchLadder[i], hint) <= availW)
             return kStopwatchLadder[i];
     return kStopwatchLadder[n - 1];
 }
@@ -2957,10 +2957,19 @@ void ui_render_stopwatch(const RideState& s, const Stopwatch& sw, uint32_t now,
                      fb, EPD_DRAW_ALIGN_LEFT, ui::DARK);
         }
     } else {
-        // --- Total, smaller, at the top. ------------------------------------
-        const EpdFont* f = swFace(elapsed, 95);
+        // --- Total, smaller, at the top: the same shape as the lap row
+        // below it (label pair on the left, digits flush right on the same
+        // edge), so the two read as a matched pair. The digits get the
+        // column minus the label's 140 px, which H:MM:SS still fits.
+        const int right = ui::CONTENT_X + ui::CONTENT_W;
+        const EpdFont* f = swFace(elapsed, 95, ui::CONTENT_W - 140);
         const int totalBase = ui::STATUS_H + 24 + epdc_digit_height(f);
-        ui::text(f, W / 2, totalBase, t, fb, EPD_DRAW_ALIGN_CENTER);
+        ui::text(&Arial_B, ui::CONTENT_X, totalBase - 30, "TOTAL", fb,
+                 EPD_DRAW_ALIGN_LEFT);
+        ui::text(&Arial_L, ui::CONTENT_X, totalBase,
+                 sw.running ? "RUNNING" : "PAUSED", fb, EPD_DRAW_ALIGN_LEFT,
+                 ui::DARK);
+        ui::text(f, right, totalBase, t, fb, EPD_DRAW_ALIGN_RIGHT);
 
         // --- The lap in progress: number, state, time, live averages. -------
         char buf[24];

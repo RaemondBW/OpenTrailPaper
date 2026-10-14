@@ -1050,6 +1050,16 @@ int main(int argc, char** argv) {
         clearWhite(fb.data());
         ui_render_stopwatch(mi, two, u, fb.data());
         emit("stopwatch_laps_two.png");
+
+        // Past the hour with laps: H:MM:SS has to fit beside the TOTAL label.
+        Stopwatch longer;
+        longer.toggle(t0);
+        uint32_t v = ride(longer, t0, 3700000, 27.3f, 201);
+        longer.lap(v);
+        v = ride(longer, v, 1834000, 25.8f, 188);
+        clearWhite(fb.data());
+        ui_render_stopwatch(s, longer, v, fb.data());
+        emit("stopwatch_laps_hour.png");
     }
 
     // WORKOUT pages, per the Claude Design "Workout View" frames: executing
