@@ -289,10 +289,10 @@ fun DashboardEditorSheet(ble: BleManager, onDismiss: () -> Unit) {
                         }
                         Text(
                             "Your own clock, separate from the ride timer: big digits with " +
-                                "START/STOP on the panel, LAP while it runs and RESET once " +
-                                "it's stopped. Each lap, and the one in progress, shows its " +
-                                "time, average speed and average power; the fastest and " +
-                                "slowest are marked. It keeps running while you're " +
+                                "START/PAUSE, RESET and LAP buttons on the panel. LAP works " +
+                                "while it runs, RESET once it's paused. Each lap, and the " +
+                                "one in progress, shows its time, average speed and average " +
+                                "power. It keeps running while you're " +
                                 "on other pages. Needs device firmware v1.23 or newer.",
                             style = TypeScale.body,
                             color = Palette.muted,

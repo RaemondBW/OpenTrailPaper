@@ -8,15 +8,14 @@ so write for the rider, newest version first, one `## vX.YY` heading each.
 ## v1.23
 
 - New optional STOPWATCH page, off until you add it from the app's
-  dashboard editor (Add a page > Stopwatch). It shows big digits with
-  START/STOP on the left. The right button is LAP while the clock runs and
-  RESET once it is stopped, so a stray tap can't wipe it mid-effort. Laps
-  list newest first, each with its time, average speed and average power,
-  and the fastest and slowest are marked. The lap in progress shows its
-  averages live. Speed is in your km/h or mph setting and is shown as "--"
-  with no GPS or speed sensor. Power counts zeros while coasting, leaves out
-  time when the stopwatch is stopped, and is shown as "--" with no power
-  meter. Up to 99 laps are kept. It is separate from the ride timer and
+  dashboard editor (Add a page > Stopwatch). It shows big digits with three
+  buttons along the bottom: START/PAUSE, RESET and LAP. LAP works while the
+  clock runs. RESET works only once it is paused, so a stray tap can't wipe
+  it mid-effort. Laps list newest first, each with its time, average speed
+  and average power. The lap in progress shows its averages live. Speed is
+  in your km/h or mph setting and is shown as "--" with no GPS or speed
+  sensor. Power counts zeros while coasting, leaves out time when the
+  stopwatch is paused, and is shown as "--" with no power meter. Up to 99 laps are kept. It is separate from the ride timer and
   keeps running while you're on other pages. While it runs, the device
   won't switch itself off for being idle.
 

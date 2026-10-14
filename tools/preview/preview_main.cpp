@@ -970,9 +970,9 @@ int main(int argc, char** argv) {
     }
 
 
-    // STOPWATCH page: fresh, running, stopped, past the hour (where the
+    // STOPWATCH page: fresh, running, paused, past the hour (where the
     // hours column steps the numerals down once), and with laps — more than
-    // the list shows, running and stopped — each with its average speed and
+    // the list shows, running and paused — each with its average speed and
     // power. Samples are fed the way the UI task feeds them: a reading held
     // until the next one.
     {
@@ -999,11 +999,11 @@ int main(int argc, char** argv) {
         ui_render_stopwatch(s, sw, at1234, fb.data());
         emit("stopwatch_running.png");
 
-        Stopwatch stopped = sw;
-        stopped.toggle(at1234);
+        Stopwatch paused = sw;
+        paused.toggle(at1234);
         clearWhite(fb.data());
-        ui_render_stopwatch(s, stopped, at1234 + 5000, fb.data());
-        emit("stopwatch_stopped.png");
+        ui_render_stopwatch(s, paused, at1234 + 5000, fb.data());
+        emit("stopwatch_paused.png");
 
         const uint32_t atHour = ride(sw, at1234,
                                      (1 * 3600 + 2 * 60 + 3) * 1000 -
@@ -1013,8 +1013,7 @@ int main(int argc, char** argv) {
         ui_render_stopwatch(s, sw, atHour, fb.data());
         emit("stopwatch_hour.png");
 
-        // Nine hill repeats: the list shows the newest seven. Slower laps
-        // are the harder-pushed ones up the climb, as on the road.
+        // Nine hill repeats: the list shows the newest seven.
         Stopwatch laps;
         laps.toggle(t0);
         const uint32_t splits[] = {312400, 298700, 305100, 291300, 322800,
@@ -1035,7 +1034,7 @@ int main(int argc, char** argv) {
         laps.toggle(t);
         clearWhite(fb.data());
         ui_render_stopwatch(s, laps, t + 6600, fb.data());
-        emit("stopwatch_laps_stopped.png");
+        emit("stopwatch_laps_paused.png");
 
         // In miles, and no power meter on the second lap: its power reads
         // "--" rather than a misleading 0.

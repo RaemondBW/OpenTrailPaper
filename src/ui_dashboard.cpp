@@ -802,21 +802,23 @@ void handleTap(int x, int y) {
                 }
                 break;
             }
-            // The STOPWATCH page: START/STOP, and LAP (running) or RESET
-            // (stopped) on the right — answered on the glass at once
-            // (noteActivity already forced the redraw). A tap anywhere else
-            // on the page does nothing, so a brush against the digits can't
-            // stop the clock, and RESET can't fire while it runs.
+            // The STOPWATCH page: START/PAUSE, RESET, LAP — answered on the
+            // glass at once (noteActivity already forced the redraw). A tap
+            // anywhere else on the page does nothing, so a brush against the
+            // digits can't pause the clock. A disabled button (RESET while
+            // running, LAP while paused) does nothing either.
             if (screen == SCREEN_DASH &&
                 dash_config::page(dashPage).kind == DP_STOPWATCH &&
                 y >= ui::STATUS_H) {
                 if (inRect(kStopwatchToggle, x, y)) {
                     stopwatch.toggle(millis());
                     forceDraw = true;
-                } else if (inRect(kStopwatchLapReset, x, y)) {
-                    bool changed = stopwatch.running ? stopwatch.lap(millis())
-                                                     : stopwatch.reset();
-                    if (changed) forceDraw = true;
+                } else if (inRect(kStopwatchReset, x, y)) {
+                    if (stopwatch.canReset() && stopwatch.reset())
+                        forceDraw = true;
+                } else if (inRect(kStopwatchLap, x, y)) {
+                    if (stopwatch.canLap() && stopwatch.lap(millis()))
+                        forceDraw = true;
                 }
                 break;
             }

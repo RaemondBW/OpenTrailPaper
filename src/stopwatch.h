@@ -36,7 +36,7 @@ constexpr uint16_t STOPWATCH_NO_VALUE = 0xFFFF;
 struct Stopwatch {
     bool running = false;
     uint32_t startMs = 0;   // millis() at the last start, while running
-    uint32_t accumMs = 0;   // time banked by earlier start/stop runs
+    uint32_t accumMs = 0;   // time banked by earlier start/pause runs
     uint32_t lapEndMs[STOPWATCH_MAX_LAPS] = {};   // elapsed at each LAP
     // Per completed lap: avg speed in 0.1 km/h, avg power in W;
     // STOPWATCH_NO_VALUE when there was no source. 4 bytes a lap.
@@ -76,7 +76,7 @@ struct Stopwatch {
         haveSample = true;
     }
 
-    // START <-> STOP. Stopping banks the run; starting again continues from it.
+    // START <-> PAUSE. Pausing banks the run; starting again continues from it.
     void toggle(uint32_t now) {
         advance(now);   // credit the held sample up to the stop
         if (running) {
@@ -104,6 +104,14 @@ struct Stopwatch {
     }
     bool lapsFull() const { return lapCount >= STOPWATCH_MAX_LAPS; }
 
+    // Button enablement, shared by the renderer (drawn disabled) and the tap
+    // handler (does nothing), so the two can't disagree.
+    //   START/PAUSE: always live.
+    //   RESET: only while paused with something to clear — never mid-effort.
+    //   LAP: only while running, and under the 99-lap cap.
+    bool canReset() const { return !running && !zero(); }
+    bool canLap() const { return running && !lapsFull(); }
+
     // Completed lap i's own time (0-based).
     uint32_t lapSplitMs(int i) const {
         return lapEndMs[i] - (i > 0 ? lapEndMs[i - 1] : 0);
@@ -129,12 +137,7 @@ struct Stopwatch {
         return lapPowerW[i] == STOPWATCH_NO_VALUE ? -1 : lapPowerW[i];
     }
 
-    // Fastest / slowest completed lap, or -1 with fewer than two laps (one
-    // lap is both, which says nothing).
-    int fastestLap() const { return extremeLap(true); }
-    int slowestLap() const { return extremeLap(false); }
-
-    // Only a STOPPED clock resets — a stray tap mid-effort must not throw the
+    // Only a PAUSED clock resets — a stray tap mid-effort must not throw the
     // time away. Clears the laps and their averages too. Returns whether it did.
     bool reset() {
         if (running) return false;
@@ -172,15 +175,5 @@ private:
         if (v < 0) return 0;
         if (v > 65534.0f) return 65534;
         return (uint16_t)(v + 0.5f);
-    }
-
-    int extremeLap(bool fastest) const {
-        if (lapCount < 2) return -1;
-        int best = 0;
-        for (int i = 1; i < lapCount; ++i) {
-            uint32_t a = lapSplitMs(i), b = lapSplitMs(best);
-            if (fastest ? a < b : a > b) best = i;
-        }
-        return best;
     }
 };

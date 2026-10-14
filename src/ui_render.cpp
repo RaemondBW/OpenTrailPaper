@@ -2804,7 +2804,7 @@ void ui_render_workout_picker(const RideState& s, const WorkoutPickPage& p,
 // allows, with the run's averages under it. Once there are laps, the total
 // moves up (smaller), the lap in progress and its live averages sit under it,
 // and the completed laps list below, newest first: split, avg speed, avg
-// power, with the fastest and slowest split marked.
+// power.
 //
 // Refresh cost is the point of both: at 1 Hz only the running numbers change,
 // so the driver's delta engine repaints those bands and nothing else. The lap
@@ -2812,12 +2812,15 @@ void ui_render_workout_picker(const RideState& s, const WorkoutPickPage& p,
 // they are frozen — and the buttons only when the state does.
 // ---------------------------------------------------------------------------
 
-// START/STOP gets the wide target — it is the one hit mid-effort. The right
-// button is LAP while running and RESET when stopped, the usual stopwatch
-// pairing. Both 156 px tall, well past TOUCH_MIN for a gloved thumb, and
-// inside kContentBottom.
-const EpdRect kStopwatchToggle = {24, 780, 312, 156};
-const EpdRect kStopwatchLapReset = {348, 780, 168, 156};
+// Three fixed buttons, left to right: START/PAUSE, RESET, LAP. Each keeps its
+// place whatever the state — a gloved thumb learns positions, not labels — and
+// one that can't act right now is drawn disabled rather than relabelled.
+// START/PAUSE gets the wide target (it is the one hit most); RESET and LAP
+// are 132 x 156, still well past TOUCH_MIN. 204 + 12 + 132 + 12 + 132 = 492,
+// the content column, inside kContentBottom.
+const EpdRect kStopwatchToggle = {24, 780, 204, 156};
+const EpdRect kStopwatchReset = {240, 780, 132, 156};
+const EpdRect kStopwatchLap = {384, 780, 132, 156};
 
 namespace {
 
@@ -2831,11 +2834,11 @@ constexpr int kSwListTop = 344;      // rule under the lap in progress
 constexpr int kSwRowTop = 384;       // first lap row
 constexpr int kSwRowH = 52;
 constexpr int kSwRows = 7;           // 384 + 7 * 52 = 748, above the rule at 756
-// Column right edges. TOTAL (cumulative) is not a column: the total is at the
-// top of the page, and dropping it is what leaves room for speed and power at
-// a readable size.
-constexpr int kSwColSplit = 252;
-constexpr int kSwColSpeed = 384;
+// Column right edges, evenly spaced (148 px apart) after the lap number.
+// TOTAL (cumulative) is not a column: the total is at the top of the page,
+// and dropping it is what leaves room for speed and power at a readable size.
+constexpr int kSwColSplit = 220;
+constexpr int kSwColSpeed = 368;
 constexpr int kSwColPower = ui::CONTENT_X + ui::CONTENT_W;
 
 void stopwatchButton(const EpdRect& r, const char* text, bool primary,
@@ -2936,11 +2939,11 @@ void ui_render_stopwatch(const RideState& s, const Stopwatch& sw, uint32_t now,
         const int mid = (ui::STATUS_H + footerRule) / 2 - 50;
         const int dh = epdc_digit_height(f);
         ui::text(f, W / 2, mid + dh / 2, t, fb, EPD_DRAW_ALIGN_CENTER);
-        // What the clock is doing, in words: a stopped time and a running
+        // What the clock is doing, in words: a paused time and a running
         // one look identical between two refreshes.
         const char* state = sw.running ? "RUNNING"
                             : elapsed == 0 ? "READY"
-                                           : "STOPPED";
+                                           : "PAUSED";
         ui::label(W / 2, mid + dh / 2 + 70, state, fb, ui::INK, &Arial_B);
         // The run's averages so far (the lap in progress IS the run).
         if (elapsed > 0) {
@@ -2966,7 +2969,7 @@ void ui_render_stopwatch(const RideState& s, const Stopwatch& sw, uint32_t now,
         ui::text(&Arial_B, ui::CONTENT_X, lapBase - 30, buf, fb,
                  EPD_DRAW_ALIGN_LEFT);
         ui::text(&Arial_L, ui::CONTENT_X, lapBase,
-                 sw.running ? "IN PROGRESS" : "STOPPED", fb,
+                 sw.running ? "IN PROGRESS" : "PAUSED", fb,
                  EPD_DRAW_ALIGN_LEFT, ui::DARK);
         swFmt(buf, sizeof(buf), sw.currentLapMs(now));
         ui::text(&Impact_B, ui::CONTENT_X + ui::CONTENT_W, lapBase, buf, fb,
@@ -2987,7 +2990,6 @@ void ui_render_stopwatch(const RideState& s, const Stopwatch& sw, uint32_t now,
                  EPD_DRAW_ALIGN_RIGHT, ui::DARK);
         ui::text(&Arial_L, kSwColPower, capBase, "WATTS", fb,
                  EPD_DRAW_ALIGN_RIGHT, ui::DARK);
-        const int fastest = sw.fastestLap(), slowest = sw.slowestLap();
         for (int r = 0; r < kSwRows; ++r) {
             const int i = sw.lapCount - 1 - r;
             if (i < 0) break;
@@ -2997,18 +2999,6 @@ void ui_render_stopwatch(const RideState& s, const Stopwatch& sw, uint32_t now,
             snprintf(buf, sizeof(buf), "%d", i + 1);
             ui::text(&Impact_T, ui::CONTENT_X, base, buf, fb,
                      EPD_DRAW_ALIGN_LEFT);
-            // A compact marker between the number and the split: FAST
-            // solid (the one worth seeing at a glance), SLOW outlined.
-            if (i == fastest || i == slowest) {
-                const char* tag = i == fastest ? "FAST" : "SLOW";
-                const int tx = ui::CONTENT_X + 50;
-                const int tw = ui::labelWidth(&Arial_L, tag) + 12;
-                const EpdRect chip = {tx, top + 13, tw, 28};
-                if (i == fastest) epd_fill_rect(chip, ui::INK, fb);
-                else epd_draw_rect(chip, ui::INK, fb);
-                ui::label(tx + tw / 2, top + 33, tag, fb,
-                          i == fastest ? ui::PAPER : ui::INK, &Arial_L);
-            }
             swFmtLap(buf, sizeof(buf), sw.lapSplitMs(i));
             ui::text(&Impact_T, kSwColSplit, base, buf, fb,
                      EPD_DRAW_ALIGN_RIGHT);
@@ -3022,11 +3012,11 @@ void ui_render_stopwatch(const RideState& s, const Stopwatch& sw, uint32_t now,
     }
 
     epd_fill_rect({0, footerRule, W, ui::RULE_HEAVY}, ui::INK, fb);
-    stopwatchButton(kStopwatchToggle,
-                    sw.running ? "STOP" : elapsed == 0 ? "START" : "RESUME",
+    // START is the filled primary when there is something to start; while
+    // running, PAUSE is outlined like the others so the solid block flipping
+    // is itself the cue that the clock changed state.
+    stopwatchButton(kStopwatchToggle, sw.running ? "PAUSE" : "START",
                     !sw.running, true, fb);
-    if (sw.running)
-        stopwatchButton(kStopwatchLapReset, "LAP", false, !sw.lapsFull(), fb);
-    else
-        stopwatchButton(kStopwatchLapReset, "RESET", false, elapsed > 0, fb);
+    stopwatchButton(kStopwatchReset, "RESET", false, sw.canReset(), fb);
+    stopwatchButton(kStopwatchLap, "LAP", false, sw.canLap(), fb);
 }

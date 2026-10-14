@@ -217,7 +217,7 @@ void testUnknownPageKindDropped() {
 }
 
 void testStopwatchClock() {
-    begin("stopwatch: start / stop / resume / reset");
+    begin("stopwatch: start / pause / resume / reset");
     Stopwatch sw;
     check(sw.zero() && sw.elapsedMs(5000) == 0, "starts at zero");
     sw.toggle(1000);
@@ -243,21 +243,15 @@ void testStopwatchClock() {
           "splits are the differences between marks");
     check(l.lapEndMs[2] == 170500, "cumulative time kept per lap");
     check(l.currentLapMs(180000) == 9500, "lap in progress since last mark");
-    check(l.fastestLap() == 2 && l.slowestLap() == 1, "fastest / slowest");
     l.toggle(200000);
-    check(!l.lap(210000), "no lap while stopped");
-    check(l.currentLapMs(999999) == 29500, "stopped lap is frozen");
+    check(!l.lap(210000), "no lap while paused");
+    check(l.currentLapMs(999999) == 29500, "paused lap is frozen");
     l.toggle(300000);
     check(l.lap(310000) && l.lapEndMs[3] == 210000,
           "lap after resume counts only running time");
     check(!l.reset() && l.lapCount == 4, "running reset keeps laps");
     l.toggle(320000);
     check(l.reset() && l.lapCount == 0 && l.zero(), "reset clears laps");
-    Stopwatch one;
-    one.toggle(0);
-    one.lap(1000);
-    check(one.fastestLap() == -1 && one.slowestLap() == -1,
-          "one lap is neither fastest nor slowest");
 
     begin("stopwatch: lap limit");
     Stopwatch full;
@@ -266,6 +260,22 @@ void testStopwatchClock() {
     check(full.lapsFull() && full.lapCount == STOPWATCH_MAX_LAPS, "fills to max");
     check(!full.lap(500000) && full.lapEndMs[0] == 1000,
           "a lap past the max is refused, lap 1 kept");
+    check(!full.canLap(), "LAP disabled at the cap");
+
+    // The three footer buttons: START/PAUSE always live; RESET only paused
+    // with something to clear; LAP only running and under the cap.
+    begin("stopwatch: button enablement");
+    Stopwatch b;
+    check(!b.canReset() && !b.canLap(), "ready: RESET and LAP disabled");
+    b.toggle(0);
+    check(!b.canReset() && b.canLap(), "running: LAP live, RESET disabled");
+    b.toggle(5000);
+    check(b.canReset() && !b.canLap(), "paused: RESET live, LAP disabled");
+    b.reset();
+    check(!b.canReset() && !b.canLap(), "after reset: back to ready");
+    b.toggle(0);
+    b.toggle(0);   // started and paused at once: nothing to clear
+    check(!b.canReset(), "paused at zero: RESET disabled");
 
     begin("stopwatch: lap averages");
     {
