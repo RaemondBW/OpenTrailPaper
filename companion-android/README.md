@@ -43,13 +43,16 @@ format.
 
 ## Install without building
 
-Each `android-v<version>` tag makes CI build a signed release APK and publish it
-as a prerelease on the [Releases page](https://github.com/RaemondBW/OpenTrailPaper/releases);
-the project site serves the newest one at a fixed URL:
-<https://raemondbw.github.io/OpenTrailPaper/app/OpenTrailPaper.apk>. Open it on
-the phone and allow the install when Android asks. It is signed with a
-dedicated sideload key (see [RELEASING.md](RELEASING.md)), so it updates over an
-earlier sideloaded copy but not over one installed from Play.
+The app is on [Google Play](https://play.google.com/store/apps/details?id=com.raemond.opentrailpaper); that is the
+build riders should install.
+
+For development, each `android-v<version>` tag also makes CI build a signed
+release APK and publish it as a prerelease on the
+[Releases page](https://github.com/RaemondBW/OpenTrailPaper/releases); the
+project site serves the newest one at
+<https://raemondbw.github.io/OpenTrailPaper/app/OpenTrailPaper.apk>. It is
+signed with a dedicated sideload key (see [RELEASING.md](RELEASING.md)), so it
+updates over an earlier sideloaded copy but not over one installed from Play.
 
 ## Build & run
 
