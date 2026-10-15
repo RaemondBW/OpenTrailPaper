@@ -540,9 +540,14 @@ keeps GPS running while allowing CPU light sleep between received bursts and
 while phone and established cycling-sensor links are connected. It uses the
 pinned PM-enabled IDF 4.4.6 framework, a retained main crystal, fixed 240 MHz CPU
 frequency, and a GPIO RX wake guard. Lean L76K output, UART task notifications,
-and a 10 ms receive guard reduce wake time. The UART event task has a 4096-byte
-stack; sensor timeouts or stale data trigger a conservative per-boot fallback.
-USB activity and other active work can still prevent sleep.
+and a 10 ms receive guard reduce wake time. The GPS link runs at 115200 baud
+(`-DGPS_BAUD`, default 9600 in code): the L76K is found at its 9600 power-on
+default on every boot and switched with `$PCAS01`, never saved to the module,
+so a rail cut returns it to 9600 and a warm reset is handled by probing the
+configured rate second; `gps link:` lines in the boot log say which rate took.
+The UART event task has a 4096-byte stack; sensor timeouts or stale data
+trigger a conservative per-boot fallback. USB activity and other active work
+can still prevent sleep.
 
 For a local build, install the framework and apply the pinned PM overlay first:
 

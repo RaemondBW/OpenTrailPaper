@@ -5,6 +5,14 @@ released version into the GitHub release body (see .github/workflows/build.yml),
 and the app shows it under Settings → Firmware when an update is available —
 so write for the rider, newest version first, one `## vX.YY` heading each.
 
+## v1.23
+
+- The GPS module now talks to the device at 115200 baud instead of 9600, so
+  each second's position update takes about 25 ms on the wire instead of
+  300 ms and the device can sleep for the difference. Nothing is written
+  to the module: it is switched on every boot and goes back to its default
+  rate whenever it loses power.
+
 ## v1.22
 
 - Fixes the mid-ride restart. A stray interrupt from the display power
