@@ -46,6 +46,7 @@
 #include "smooth_epd.h"
 #include "power_mgmt.h"
 #include "dash_config.h"
+#include "stopwatch.h"
 
 namespace {
 
@@ -103,6 +104,12 @@ bool mapTrackUp = false;
 // about the session.
 bool workoutAllOpen = false;
 int workoutListPage = 0;
+
+// The STOPWATCH page's clock and laps. Lives here, not with the page: it is
+// time stamps, so it keeps counting while the rider is on any other screen,
+// and only this task touches it (taps, the render, the auto-sleep check).
+// Static storage, ~400 bytes for the 99 lap marks.
+Stopwatch stopwatch;
 
 // The picker (WORKOUT page, nothing loaded): which page of rows, and the
 // page last drawn — taps resolve against what the rider SAW, not a list that
@@ -792,6 +799,26 @@ void handleTap(int x, int y) {
                     // phone — its state report will correct us if it disagrees.
                     if (cmd == MC_TOGGLE) media::toggleLocal();
                     forceDraw = true;
+                }
+                break;
+            }
+            // The STOPWATCH page: START/PAUSE, RESET, LAP — answered on the
+            // glass at once (noteActivity already forced the redraw). A tap
+            // anywhere else on the page does nothing, so a brush against the
+            // digits can't pause the clock. A disabled button (RESET while
+            // running, LAP while paused) does nothing either.
+            if (screen == SCREEN_DASH &&
+                dash_config::page(dashPage).kind == DP_STOPWATCH &&
+                y >= ui::STATUS_H) {
+                if (inRect(kStopwatchToggle, x, y)) {
+                    stopwatch.toggle(millis());
+                    forceDraw = true;
+                } else if (inRect(kStopwatchReset, x, y)) {
+                    if (stopwatch.canReset() && stopwatch.reset())
+                        forceDraw = true;
+                } else if (inRect(kStopwatchLap, x, y)) {
+                    if (stopwatch.canLap() && stopwatch.lap(millis()))
+                        forceDraw = true;
                 }
                 break;
             }
@@ -2791,14 +2818,36 @@ void task(void*) {
             // places the idle timeout could otherwise switch the device off
             // underneath a rider who is very much still riding.
             if (now.deviceMoving) lastActivityMs = millis();
+
+            // The stopwatch's lap averages, fed every pass whatever page is
+            // up (a few samples a second; it integrates only while running).
+            // Speed is THE speed the dashboard shows, valid while any source
+            // is behind it. Power and cadence are the instantaneous readings
+            // while their source is actually reporting — the same 15 s
+            // freshness the dashboard greys those fields by. Cadence is
+            // whatever the CADENCE field shows: a cadence sensor, or a power
+            // meter's crank data (ble_sensors writes both to cadenceRpm).
+            const uint32_t ms = millis();
+            const bool powerFresh = now.powerConnected &&
+                                    now.powerW != 0xFFFF &&
+                                    ms - now.powerMs <= 15000;
+            const bool cadenceFresh = now.cadenceConnected &&
+                                      now.cadenceRpm != 0xFF &&
+                                      ms - now.cadenceMs <= 15000;
+            stopwatch.sample(ms, now.speedKmh,
+                             now.speedSource != speed_source::NONE,
+                             powerFresh ? now.powerW : 0, powerFresh,
+                             cadenceFresh ? now.cadenceRpm : 0, cadenceFresh);
         }
 
         // Auto-sleep after a quiet period to save battery — a bike computer
         // left on a desk otherwise burns power on GPS + BLE + CPU. Held off
-        // while recording, navigating, moving, or a phone is connected. Wake
-        // with BOOT.
+        // while recording, navigating, moving, a phone is connected, or the
+        // stopwatch is running (powering off would throw its time away).
+        // Wake with BOOT.
         if (autoSleepEnabled && millis() - lastActivityMs > AUTO_SLEEP_MS &&
             !ride_recorder::isRecording() && !routes::navActive() &&
+            !stopwatch.running &&
             !ble_server::isPhoneConnected() && !ble_server::linkPending()) {
             uint8_t* fb = epdc_framebuffer();
             shutdownDevice(fb, "auto-sleep (idle timeout)");   // does not return
@@ -2972,6 +3021,22 @@ void task(void*) {
             }
         }
 
+        // A running STOPWATCH repaints when its displayed second turns over,
+        // not on the free-running 1 Hz tick: that tick drifts against the
+        // clock's own start, so now and then a second would be skipped on
+        // the glass. Still one repaint a second, just in step.
+        {
+            static uint32_t lastStopwatchSec = UINT32_MAX;
+            if (screen == SCREEN_DASH && stopwatch.running &&
+                dash_config::page(dashPage).kind == DP_STOPWATCH) {
+                uint32_t sec = stopwatch.elapsedMs(millis()) / 1000;
+                if (sec != lastStopwatchSec) {
+                    lastStopwatchSec = sec;
+                    forceDraw = true;
+                }
+            }
+        }
+
         bool navPrompt = routes::navPending();
         if (navPrompt && !lastNavPrompt) navPromptShownAt = millis();
         static int lastDashPage = 0;
@@ -3107,6 +3172,8 @@ void task(void*) {
                             ui_render_workout_list(s, wv, workoutListPage, fb);
                         else
                             ui_render_workout(s, wv, fb);
+                    } else if (pg.kind == DP_STOPWATCH) {
+                        ui_render_stopwatch(s, stopwatch, millis(), fb);
                     } else {
                         // Compact hero whenever a banner (turn OR pause) owns
                         // the band, so no field hides underneath it.
@@ -3114,13 +3181,14 @@ void task(void*) {
                                             routes::navActive() || s.ridePaused,
                                             pg.layout, fb);
                     }
-                    // Field pages carry the banners as fixtures; music
-                    // and workout are dense layouts the band would bury, so
-                    // the turn cue only POPS UP when a turn approaches
-                    // (500 m ~ a minute of warning) and the pause stays in
-                    // their status bar.
-                    const bool densePage =
-                        pg.kind == DP_MUSIC || pg.kind == DP_WORKOUT;
+                    // Field pages carry the banners as fixtures; music,
+                    // workout and stopwatch are dense layouts the band would
+                    // bury, so the turn cue only POPS UP when a turn
+                    // approaches (500 m ~ a minute of warning) and the pause
+                    // stays in their status bar.
+                    const bool densePage = pg.kind == DP_MUSIC ||
+                                           pg.kind == DP_WORKOUT ||
+                                           pg.kind == DP_STOPWATCH;
                     drawNavBanner(fb, densePage ? 500.0f : 0);
                     if (pg.kind == DP_FIELDS) drawPauseBanner(s, fb);
                     break;
