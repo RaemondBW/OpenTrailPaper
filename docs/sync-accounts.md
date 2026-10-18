@@ -25,7 +25,21 @@ only their own user's tokens.
  Upload to Strava:        phone ──bearer──► strava.com/api/v3/uploads
  Upload to Intervals.icu: phone ──bearer──► intervals.icu/api/v1/athlete/0/activities?device_name=OpenTrailPaper
  Upload to RideWithGPS:   phone ──bearer + App Check──► /v1/rwgps/trips ──+ API key──► ridewithgps.com
+
+ Route import (Route screen):
+   Strava:      phone ──bearer──► strava.com/api/v3/athletes/<id>/routes, /routes/<id>/export_gpx
+   RideWithGPS: phone ──bearer + App Check──► /v1/rwgps/routes?page=N, /v1/rwgps/routes/<id>/gpx
+                                                ──+ API key──► ridewithgps.com/api/v1/routes.json, routes/<id>.json
 ```
+
+Strava is asked for `read,read_all,activity:write`. `read_all` is what lets
+the route import list and export *private* routes; with `read` alone Strava
+returns public ones only. The rider can untick it on the consent page, so the
+callback passes the scope Strava reports on to the app, which notes "public
+routes only" when `read_all` is missing. Accounts connected before
+`read_all` was requested keep their old grant until the rider disconnects
+and connects again. RideWithGPS has no scopes. The service builds the GPX for
+a RideWithGPS route from its `track_points`.
 
 ## Only these apps
 

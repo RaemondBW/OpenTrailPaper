@@ -73,6 +73,22 @@ before(async () => {
             assert.equal(req.headers['x-rwgps-api-key'], 'rkey');
             return res.end(JSON.stringify({ user: { id: 42, name: 'Ada' } }));
         }
+        if (req.url.startsWith('/rwgps/api/v1/routes.json')) {
+            assert.equal(req.headers['x-rwgps-api-key'], 'rkey');
+            if (req.headers.authorization === 'Bearer dead') { res.statusCode = 401; return res.end('{}'); }
+            const page = Number(new URL(req.url, 'http://x').searchParams.get('page'));
+            return res.end(JSON.stringify({
+                routes: page === 1
+                    ? [{ id: 11, name: 'Loop', distance: 42000.5, elevation_gain: 610, track_type: 'loop' }, { name: 'no id' }]
+                    : [{ id: 12, name: 'Out & back' }],
+                meta: { pagination: { record_count: 3, page_count: 2, next_page_url: page === 1 ? '/api/v1/routes.json?page=2' : null } },
+            }));
+        }
+        if (req.url === '/rwgps/api/v1/routes/11.json') {
+            assert.equal(req.headers['x-rwgps-api-key'], 'rkey');
+            return res.end(JSON.stringify({ route: { id: 11, name: 'Loop <1>', track_points: [
+                { x: -122.4, y: 37.7, e: 10.25, d: 0 }, { x: -122.41, y: 37.71 }, { x: 'bad', y: 1 }] } }));
+        }
         if (req.url === '/rwgps/api/v1/trips.json') {
             assert.equal(req.headers['x-rwgps-api-key'], 'rkey');
             assert.equal(req.headers.authorization, 'Bearer ra1');
@@ -143,7 +159,7 @@ test('start redirects to the provider with a signed state and our callback', asy
     const loc = new URL(r.headers.get('location'));
     assert.equal(loc.origin + loc.pathname, 'https://www.strava.com/oauth/authorize');
     assert.equal(loc.searchParams.get('client_id'), 'sid');
-    assert.equal(loc.searchParams.get('scope'), 'read,activity:write');
+    assert.equal(loc.searchParams.get('scope'), 'read,read_all,activity:write');
     assert.equal(loc.searchParams.get('redirect_uri'), `${appUrl}/v1/auth/strava/callback`);
     assert.equal(srv.verifyState(loc.searchParams.get('state'), 'strava'), 'abcdefgh');
     // The secret never appears in anything the browser sees.
@@ -304,4 +320,40 @@ test('rwgps routes need app check and then a bearer token', async () => {
     const r = await fetch(`${appUrl}/v1/rwgps/me`, { headers: APPCHECK });
     assert.equal(r.status, 401);
     assert.equal((await r.json()).error, 'missing bearer token');
+});
+
+test('strava callback hands the granted scope to the app', async () => {
+    const state = srv.signState('appstate9', 'strava');
+    const r = await get(`/v1/auth/strava/callback?code=c0de&scope=read,activity:write&state=${encodeURIComponent(state)}`);
+    const back = new URL(r.headers.get('location'));
+    const tok = await (await post('/v1/auth/handoff', { handoff: back.searchParams.get('handoff') }, APPCHECK)).json();
+    assert.equal(tok.scope, 'read,activity:write');
+});
+
+test('rwgps route list is proxied with the API key, trimmed, and says whether there is more', async () => {
+    assert.equal((await get('/v1/rwgps/routes')).status, 401);   // no app check
+    const auth = { authorization: 'Bearer ra1', ...APPCHECK };
+    const one = await (await fetch(`${appUrl}/v1/rwgps/routes?page=1`, { headers: auth })).json();
+    assert.deepEqual(one, { routes: [{ id: 11, name: 'Loop', distance: 42000.5, elevation_gain: 610 }], next_page: 2 });
+    const two = await (await fetch(`${appUrl}/v1/rwgps/routes?page=2`, { headers: auth })).json();
+    assert.deepEqual(two, { routes: [{ id: 12, name: 'Out & back', distance: null, elevation_gain: null }], next_page: null });
+    const dead = await fetch(`${appUrl}/v1/rwgps/routes`, { headers: { authorization: 'Bearer dead', ...APPCHECK } });
+    assert.equal(dead.status, 401);
+    assert.match((await dead.json()).error, /connect RideWithGPS again/);
+});
+
+test('rwgps route comes back as GPX built from its track points', async () => {
+    const auth = { authorization: 'Bearer ra1', ...APPCHECK };
+    const r = await fetch(`${appUrl}/v1/rwgps/routes/11/gpx`, { headers: auth });
+    assert.equal(r.status, 200);
+    assert.match(r.headers.get('content-type'), /^application\/gpx\+xml/);
+    const gpx = await r.text();
+    assert.ok(gpx.includes('<name>Loop &lt;1&gt;</name>'));
+    assert.ok(gpx.includes('<trkpt lat="37.700000" lon="-122.400000"><ele>10.3</ele></trkpt>'));
+    assert.ok(gpx.includes('<trkpt lat="37.710000" lon="-122.410000"></trkpt>'));
+    assert.equal(gpx.match(/<trkpt/g).length, 2);   // the malformed point is dropped
+    const gone = await fetch(`${appUrl}/v1/rwgps/routes/99/gpx`, { headers: auth });
+    assert.equal(gone.status, 404);
+    assert.equal((await gone.json()).error, 'That route is no longer on RideWithGPS.');
+    assert.equal((await fetch(`${appUrl}/v1/rwgps/routes/abc/gpx`, { headers: auth })).status, 404);
 });

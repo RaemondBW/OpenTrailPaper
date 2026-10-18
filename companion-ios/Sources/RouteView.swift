@@ -2,13 +2,17 @@ import SwiftUI
 import MapKit
 import CoreLocation
 
-// Search a destination, build a cycling route with MapKit, preview it, and
-// send it to the head unit as GPX over BLE.
+// Search a destination, build a cycling route with MapKit (or pick one saved
+// on Strava / RideWithGPS), preview it, and send it to the head unit as GPX
+// over BLE.
 struct RouteView: View {
     @EnvironmentObject var ble: BLEManager
     @StateObject private var model = RouteModel()
     @ObservedObject private var store = EInkTileStore.shared
+    @ObservedObject private var sync = SyncAccounts.shared
     @State private var showSaved = false
+    /// The account whose saved routes are being picked from.
+    @State private var cloudSource: SyncProvider?
     @State private var visibleRegion: MKCoordinateRegion?
     /// Hexes the planned route crosses that NOTHING covers — see `coverageGaps`.
     @State private var gapHexes: [OutlineHex] = []
@@ -25,7 +29,7 @@ struct RouteView: View {
                     // page is for ("will I ride off my maps?"); ordinary
                     // coverage would just be noise over the route.
                     outlines: gapHexes,
-                    route: model.route?.polyline,
+                    route: model.route?.polyline ?? model.importedPolyline,
                     destination: model.destination.map {
                         MapDestination(name: model.destinationName, coordinate: $0)
                     },
@@ -40,9 +44,13 @@ struct RouteView: View {
                 VStack(spacing: 12) {
                     floatingControls
 
-                    SearchField(text: $model.query) { model.search() }
+                    // Hidden while an imported route is up: a search would
+                    // replace it, and the card's clear button is the way back.
+                    if model.imported == nil {
+                        SearchField(text: $model.query) { model.search() }
+                    }
 
-                    if !model.results.isEmpty && model.route == nil {
+                    if !model.results.isEmpty && model.route == nil && model.imported == nil {
                         ResultsList(results: model.results) { model.choose($0) }
                     }
 
@@ -78,12 +86,39 @@ struct RouteView: View {
                             model.clearRoute()
                         }
                     }
+
+                    // Someone else's route: no time estimate and no turn cues,
+                    // sent through the same GPX path as one built here.
+                    if let imported = model.imported {
+                        RouteSummaryCard(
+                            name: imported.name,
+                            mode: imported.mode,
+                            distanceKm: imported.distanceMeters / 1000,
+                            minutes: nil,
+                            progress: ble.lastUploadProgress,
+                            sent: ble.routeSent,
+                            received: ble.routeReceived,
+                            canSend: ble.state == .connected
+                        ) {
+                            let gpx = GPXExporter.make(name: model.fileName,
+                                                       coordinates: imported.coordinates)
+                            ble.uploadRoute(name: model.fileName, gpx: gpx)
+                        } clear: {
+                            model.clearRoute()
+                        }
+                    }
                 }
                 .padding(16)
             }
             .safeAreaInset(edge: .top, alignment: .leading, spacing: 0) { routeTitle }
             .navigationBarHidden(true)
             .sheet(isPresented: $showSaved) { SavedRoutesSheet() }
+            .sheet(item: $cloudSource) { p in
+                CloudRoutesSheet(provider: p) { r in
+                    ble.routeSent = false; ble.routeReceived = false
+                    model.importRoute(r)
+                }
+            }
             .onAppear {
                 if ProcessInfo.processInfo.arguments.contains("-demo-route") { model.demoRoute() }
                 else { model.requestLocation() }
@@ -98,6 +133,7 @@ struct RouteView: View {
             // straight off the downloaded area, and clearing one must take the
             // hexagons away again.
             .onChange(of: model.route) { recomputeCoverage() }
+            .onChange(of: model.imported) { recomputeCoverage() }
         }
     }
 
@@ -116,7 +152,8 @@ struct RouteView: View {
     /// head unit holds — riding into either is covered, since the device draws
     /// from its own card.
     private func recomputeCoverage() {
-        guard let coords = model.route?.polyline.coordinates, !coords.isEmpty else {
+        guard let coords = model.route?.polyline.coordinates ?? model.imported?.coordinates,
+              !coords.isEmpty else {
             gapHexes = []          // no route, nothing to warn about
             return
         }
@@ -151,6 +188,17 @@ struct RouteView: View {
     private var floatingControls: some View {
         HStack {
             Spacer()
+            // Saved routes from a connected account; hidden with none connected.
+            let accounts = SyncAccounts.routeProviders.filter { sync.isConnected($0) }
+            if !accounts.isEmpty {
+                Menu {
+                    ForEach(accounts) { p in
+                        Button("From \(p.title)") { cloudSource = p }
+                    }
+                } label: {
+                    roundLabel("square.and.arrow.down", enabled: true)
+                }
+            }
             roundButton("location.fill", enabled: true) { model.recenter() }
             // Map downloads moved to Settings — this page is for building and
             // sending a route, and the map tool is device-content management.
@@ -162,16 +210,18 @@ struct RouteView: View {
 
     private func roundButton(_ systemName: String, enabled: Bool,
                              _ action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: systemName)
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(enabled ? Palette.accent : Palette.faint)
-                .frame(width: 42, height: 42)
-                .background(Palette.surface).clipShape(Circle())
-                .overlay(Circle().strokeBorder(Palette.hairline, lineWidth: 1))
-                .shadow(color: .black.opacity(0.08), radius: 6, y: 2)
-        }
-        .disabled(!enabled)
+        Button(action: action) { roundLabel(systemName, enabled: enabled) }
+            .disabled(!enabled)
+    }
+
+    private func roundLabel(_ systemName: String, enabled: Bool) -> some View {
+        Image(systemName: systemName)
+            .font(.system(size: 16, weight: .semibold))
+            .foregroundStyle(enabled ? Palette.accent : Palette.faint)
+            .frame(width: 42, height: 42)
+            .background(Palette.surface).clipShape(Circle())
+            .overlay(Circle().strokeBorder(Palette.hairline, lineWidth: 1))
+            .shadow(color: .black.opacity(0.08), radius: 6, y: 2)
     }
 }
 
@@ -220,6 +270,9 @@ final class RouteModel: NSObject, ObservableObject {
     @Published var destinationName = ""
     @Published var route: MKRoute?
     @Published var routeMode = ""   // "Cycling" or "Walking"
+    /// A route picked from Strava / RideWithGPS, shown instead of `route`.
+    @Published private(set) var imported: ImportedRoute?
+    @Published private(set) var importedPolyline: MKPolyline?
     // Starts on a fixed region and switches to following the user as soon as a
     // fix exists (see requestLocation/recenter) — the map has no fallback mode
     // of its own, so the camera is always something we chose.
@@ -291,7 +344,21 @@ final class RouteModel: NSObject, ObservableObject {
         buildRoute()
     }
 
+    func importRoute(_ r: ImportedRoute) {
+        route = nil
+        results = []
+        destination = nil
+        destinationName = r.name
+        imported = r
+        var coords = r.coordinates
+        let line = MKPolyline(coordinates: &coords, count: coords.count)
+        importedPolyline = line
+        camera = MapCameraCommand(target: .rect(line.boundingMapRect.paddedForDisplay()))
+    }
+
     func clearRoute() {
+        imported = nil
+        importedPolyline = nil
         route = nil
         destination = nil
         destinationName = ""
@@ -335,6 +402,8 @@ final class RouteModel: NSObject, ObservableObject {
     }
 
     @MainActor private func apply(_ r: MKRoute, mode: String) {
+        imported = nil
+        importedPolyline = nil
         route = r
         routeMode = mode
         // Pad the bounding rect before framing. .rect() fits the polyline edge
@@ -397,7 +466,7 @@ private struct RouteSummaryCard: View {
     let name: String
     let mode: String
     let distanceKm: Double
-    let minutes: Int
+    let minutes: Int?     // nil for an imported route: no honest estimate
     let progress: Double?
     let sent: Bool
     let received: Bool
@@ -422,9 +491,10 @@ private struct RouteSummaryCard: View {
                                     .foregroundStyle(.white)
                                     .clipShape(Capsule())
                             }
-                            Text(String(format: "%.1f %@ · %d min",
+                            Text(String(format: "%.1f %@",
                                         Units.distance(distanceKm, miles: useMiles),
-                                        Units.distLabel(useMiles), minutes))
+                                        Units.distLabel(useMiles))
+                                 + (minutes.map { " · \($0) min" } ?? ""))
                                 .font(TypeScale.body).foregroundStyle(Palette.muted)
                         }
                     }

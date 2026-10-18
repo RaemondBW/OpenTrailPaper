@@ -29,6 +29,8 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Signpost
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -68,6 +70,7 @@ import com.raemond.opentrailpaper.data.GpxExporter
 import com.raemond.opentrailpaper.data.ImportedRoute
 import com.raemond.opentrailpaper.data.LatLon
 import com.raemond.opentrailpaper.data.RouteImport
+import com.raemond.opentrailpaper.data.SyncAccounts
 import com.raemond.opentrailpaper.data.Units
 import com.raemond.opentrailpaper.map.EInkTileStore
 import com.raemond.opentrailpaper.map.H3Tiles
@@ -102,6 +105,9 @@ fun RouteScreen(ble: BleManager) {
     var gapTiles by remember { mutableStateOf<List<MapTile>>(emptyList()) }
     var showSaved by remember { mutableStateOf(false) }
     var showMaps by remember { mutableStateOf(false) }
+    /** The import menu (a file, or a connected account's saved routes). */
+    var importMenu by remember { mutableStateOf(false) }
+    var cloudSource by remember { mutableStateOf<SyncAccounts.Provider?>(null) }
     /**
      * The gaps as they stood when the rider tapped download.
      *
@@ -285,7 +291,7 @@ fun RouteScreen(ble: BleManager) {
                 Box(Modifier.weight(1f), contentAlignment = Alignment.BottomStart) {
                     MapAttribution()
                 }
-                RoundMapButton(Icons.Filled.FileOpen, enabled = true) {
+                val openFile = {
                     pickGpx.launch(
                         arrayOf(
                             "application/gpx+xml",
@@ -294,6 +300,26 @@ fun RouteScreen(ble: BleManager) {
                             "text/xml",
                         ),
                     )
+                }
+                // With Strava or RideWithGPS connected the button offers their
+                // saved routes too; without, it is the file picker as before.
+                val accounts = SyncAccounts.routeProviders.filter { SyncAccounts.isConnected(it) }
+                Box {
+                    RoundMapButton(Icons.Filled.FileOpen, enabled = true) {
+                        if (accounts.isEmpty()) openFile() else importMenu = true
+                    }
+                    DropdownMenu(expanded = importMenu, onDismissRequest = { importMenu = false }) {
+                        DropdownMenuItem(
+                            text = { Text("From a file", style = TypeScale.body) },
+                            onClick = { importMenu = false; openFile() },
+                        )
+                        for (p in accounts) {
+                            DropdownMenuItem(
+                                text = { Text("From ${p.title}", style = TypeScale.body) },
+                                onClick = { importMenu = false; cloudSource = p },
+                            )
+                        }
+                    }
                 }
                 Spacer(Modifier.size(10.dp))
                 RoundMapButton(Icons.Filled.MyLocation, enabled = true) {
@@ -455,6 +481,10 @@ fun RouteScreen(ble: BleManager) {
 
     if (showSaved) {
         SavedRoutesSheet(ble) { showSaved = false }
+    }
+
+    cloudSource?.let { p ->
+        CloudRoutesSheet(p, useMiles = ble.useMiles) { cloudSource = null }
     }
 
     // The Maps tool, opened with this route's uncovered hexes already selected

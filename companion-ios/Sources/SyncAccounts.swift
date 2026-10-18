@@ -44,6 +44,8 @@ struct SyncTokens: Codable, Equatable {
     var expiresAt: TimeInterval?     // unix seconds; nil = does not expire
     var athleteName: String?
     var athleteId: Int?
+    /// What the rider granted, as Strava reports it ("read,read_all,..."); nil = not reported.
+    var scope: String?
 
     /// Within `margin` seconds of expiry (or past it). Unix seconds throughout.
     func expiresWithin(_ margin: TimeInterval, now: TimeInterval = Date().timeIntervalSince1970) -> Bool {
@@ -282,6 +284,7 @@ final class SyncAccounts: NSObject, ObservableObject {
                 t.athleteName = a["name"] as? String
                 t.athleteId = (a["id"] as? NSNumber)?.intValue
             }
+            t.scope = json["scope"] as? String
             store(t, for: p)
         } catch {
             lastError = error.localizedDescription
@@ -482,6 +485,84 @@ final class SyncAccounts: NSObject, ObservableObject {
         }
     }
 
+    // MARK: routes
+
+    /// The accounts that have saved routes to import (Intervals.icu has none).
+    static let routeProviders: [SyncProvider] = [.strava, .ridewithgps]
+
+    /// One page (from 1) of the rider's saved routes. Strava straight from the
+    /// phone with the bearer token; RideWithGPS through the service, which adds
+    /// the API key. Both through `authorized`, so an expired token is refreshed
+    /// and a dead sign-in comes back as SyncError.signedOut.
+    func routes(_ p: SyncProvider, page: Int) async throws -> CloudRoutePage {
+        guard isConnected(p) else { throw SyncError.upload("Connect \(p.title) in Settings first.") }
+        switch p {
+        case .strava:
+            let athlete = try await stravaAthleteId()
+            let url = URL(string: "https://www.strava.com/api/v3/athletes/\(athlete)/routes?page=\(page)&per_page=\(CloudRoutes.stravaPageSize)")!
+            let data = try await routeCall(p) { try await self.authorizedGet(p, url) }
+            return CloudRoutes.parseStrava(data, page: page)
+        case .ridewithgps:
+            guard let base = Self.serviceURL else { throw SyncError.notConfigured }
+            var comps = URLComponents(url: base.appendingPathComponent("v1/rwgps/routes"), resolvingAgainstBaseURL: false)!
+            comps.queryItems = [URLQueryItem(name: "page", value: String(page))]
+            let data = try await routeCall(p) { try await self.authorizedGet(p, comps.url!) }
+            return CloudRoutes.parseRwgps(data)
+        case .intervals:
+            throw SyncError.upload("Intervals.icu has no saved routes.")
+        }
+    }
+
+    /// The route as GPX, for GPXImporter.
+    func routeGPX(_ p: SyncProvider, route: CloudRoute) async throws -> Data {
+        guard isConnected(p) else { throw SyncError.upload("Connect \(p.title) in Settings first.") }
+        let id = route.id.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? route.id
+        let url: URL
+        switch p {
+        case .strava: url = URL(string: "https://www.strava.com/api/v3/routes/\(id)/export_gpx")!
+        case .ridewithgps:
+            guard let base = Self.serviceURL else { throw SyncError.notConfigured }
+            url = base.appendingPathComponent("v1/rwgps/routes/\(id)/gpx")
+        case .intervals: throw SyncError.upload("Intervals.icu has no saved routes.")
+        }
+        return try await routeCall(p) { try await self.authorizedGet(p, url, accept: "application/gpx+xml") }
+    }
+
+    /// Strava lists routes by athlete id, which the sign-in reports; looked up
+    /// once (GET /athlete) if it did not.
+    private func stravaAthleteId() async throws -> Int {
+        if let id = tokens[.strava]?.athleteId { return id }
+        let data = try await routeCall(.strava) {
+            try await self.authorizedGet(.strava, URL(string: "https://www.strava.com/api/v3/athlete")!)
+        }
+        let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        guard let id = (json?["id"] as? NSNumber)?.intValue, id > 0 else {
+            throw SyncError.upload("Strava did not say which athlete this is.")
+        }
+        if var t = tokens[.strava] { t.athleteId = id; store(t, for: .strava) }
+        return id
+    }
+
+    private func authorizedGet(_ p: SyncProvider, _ url: URL, accept: String = "application/json") async throws -> Data {
+        try await authorized(p) { token in
+            var req = URLRequest(url: url)
+            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            return try await sendData(req, accept: accept)
+        }
+    }
+
+    /// Route-specific wording for what a provider's refusal means here.
+    private func routeCall<R>(_ p: SyncProvider, _ call: () async throws -> R) async throws -> R {
+        do {
+            return try await call()
+        } catch SyncError.http(403, _, _) {
+            // Strava's answer to a token without the scope a private route needs.
+            throw SyncError.upload("\(p.title) did not allow reading routes with this sign-in. Disconnect and connect \(p.title) again in Settings.")
+        } catch SyncError.http(404, _, _) {
+            throw SyncError.upload("That route is no longer on \(p.title).")
+        }
+    }
+
     // MARK: http
 
     private func post(_ path: String, json body: [String: Any]) async throws -> [String: Any] {
@@ -496,8 +577,14 @@ final class SyncAccounts: NSObject, ObservableObject {
     /// `progress` names a TransferCenter entry to report the request body's
     /// upload progress to.
     private func send(_ req: URLRequest, progress: String? = nil) async throws -> [String: Any] {
+        let data = try await sendData(req, progress: progress)
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+    }
+
+    /// The body of a 2xx answer as is; anything else thrown as SyncError.http.
+    private func sendData(_ req: URLRequest, progress: String? = nil, accept: String = "application/json") async throws -> Data {
         var req = req
-        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        req.setValue(accept, forHTTPHeaderField: "Accept")
         req.timeoutInterval = 60
         // Prove this is the app: only calls to our own service get the token.
         if let host = req.url?.host, host == Self.serviceURL?.host {
@@ -516,15 +603,15 @@ final class SyncAccounts: NSObject, ObservableObject {
             (data, resp) = try await URLSession.shared.data(for: req)
         }
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
-        let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
         guard (200..<300).contains(code) else {
+            let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
             let body = String(decoding: data, as: UTF8.self)
             let host = req.url?.host
             print("[sync] \(req.httpMethod ?? "GET") \(host ?? "")\(req.url?.path ?? ""): HTTP \(code) \(body.prefix(300))")
             throw SyncError.http(code, SyncErrors.describe(code: code, body: body, who: Self.who(host)),
                                  reason: json["reason"] as? String)
         }
-        return json
+        return data
     }
 
     /// Who answered, for error wording: our service, or a provider by name.
