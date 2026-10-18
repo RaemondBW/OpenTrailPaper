@@ -10,12 +10,16 @@ import com.google.gson.JsonParser
  * (CloudRoutesTest); the requests are SyncAccounts.routes / routeGpx.
  */
 
-/** One route in a provider's list. [id] is a string: Strava's route ids pass 2^53. */
+/**
+ * One route in a provider's list. [id] is a string: Strava's route ids pass 2^53.
+ * [shape] is a coarse outline for the list's thumbnail, when the provider sends one.
+ */
 data class CloudRoute(
     val id: String,
     val name: String,
     val distanceMeters: Double?,
     val elevationGainMeters: Double?,
+    val shape: List<LatLon>? = null,
 )
 
 /** One page of a list; [nextPage] is null when that was the last. */
@@ -33,7 +37,11 @@ object CloudRoutes {
             val o = e.takeIf { it.isJsonObject }?.asJsonObject ?: return@mapNotNull null
             // id_str first: the numeric id is past what a double holds exactly.
             val id = o.str("id_str") ?: o.str("id") ?: return@mapNotNull null
-            CloudRoute(id, o.str("name") ?: "Strava route", o.num("distance"), o.num("elevation_gain"))
+            // map.summary_polyline: the list's own low-detail outline, so the
+            // thumbnails cost no request per route.
+            val shape = o.get("map")?.takeIf { it.isJsonObject }?.asJsonObject?.str("summary_polyline")
+                ?.let(::decodePolyline)?.takeIf { it.size >= 2 }
+            CloudRoute(id, o.str("name") ?: "Strava route", o.num("distance"), o.num("elevation_gain"), shape)
         }
         return CloudRoutePage(routes, if (arr.size() >= STRAVA_PAGE_SIZE) page + 1 else null)
     }
@@ -49,6 +57,36 @@ object CloudRoutes {
         }.orEmpty()
         val next = o.get("next_page")?.takeIf { it.isJsonPrimitive }?.asInt
         return CloudRoutePage(routes, next)
+    }
+
+    /**
+     * Google's encoded polyline (1e-5 degrees, zig-zag varints in 5-bit chunks
+     * offset by 63). Null for a string that is not one.
+     */
+    fun decodePolyline(encoded: String): List<LatLon>? {
+        val out = ArrayList<LatLon>()
+        var i = 0
+        var lat = 0
+        var lon = 0
+        fun next(): Int? {
+            var result = 0
+            var shift = 0
+            while (true) {
+                if (i >= encoded.length || shift > 30) return null
+                val b = encoded[i++].code - 63
+                if (b !in 0..0x3f) return null
+                result = result or ((b and 0x1f) shl shift)
+                shift += 5
+                if (b < 0x20) break
+            }
+            return if (result and 1 != 0) (result shr 1).inv() else result shr 1
+        }
+        while (i < encoded.length) {
+            lat += next() ?: return null
+            lon += next() ?: return null
+            out.add(LatLon(lat / 1e5, lon / 1e5))
+        }
+        return out
     }
 
     /** Strava reports what the rider granted; anything without read_all lists public routes only. */

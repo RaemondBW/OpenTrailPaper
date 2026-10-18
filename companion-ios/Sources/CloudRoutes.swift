@@ -11,6 +11,14 @@ struct CloudRoute: Identifiable, Hashable {
     let name: String
     let distanceMeters: Double?
     let elevationGainMeters: Double?
+    /// The route's outline for the list thumbnail; nil when the provider sends none.
+    var shape: [LatLon]? = nil
+}
+
+/// A plain coordinate, so this file stays Foundation-only.
+struct LatLon: Hashable {
+    let lat: Double
+    let lon: Double
 }
 
 /// One page of a list; `nextPage` is nil when that was the last.
@@ -32,8 +40,12 @@ enum CloudRoutes {
             guard let o = e as? [String: Any],
                   // id_str first: the numeric id is past what a double holds exactly.
                   let id = str(o["id_str"]) ?? str(o["id"]) else { return nil }
+            // The list's map.summary_polyline: a coarse outline, enough for a thumbnail.
+            let shape = ((o["map"] as? [String: Any])?["summary_polyline"] as? String)
+                .flatMap(decodePolyline).flatMap { $0.count >= 2 ? $0 : nil }
             return CloudRoute(id: id, name: str(o["name"]) ?? "Strava route",
-                              distanceMeters: num(o["distance"]), elevationGainMeters: num(o["elevation_gain"]))
+                              distanceMeters: num(o["distance"]), elevationGainMeters: num(o["elevation_gain"]),
+                              shape: shape)
         }
         return CloudRoutePage(routes: routes, nextPage: arr.count >= stravaPageSize ? page + 1 : nil)
     }
@@ -54,6 +66,34 @@ enum CloudRoutes {
     /// Strava reports what the rider granted; anything without read_all lists public routes only.
     static func stravaSeesPrivateRoutes(_ scope: String?) -> Bool {
         scope?.split(separator: ",").contains { $0.trimmingCharacters(in: .whitespaces) == "read_all" } == true
+    }
+
+    /// Google's encoded polyline format (1e-5 degrees, zigzag varints in
+    /// 5-bit chunks offset by 63). Nil on anything malformed.
+    static func decodePolyline(_ s: String) -> [LatLon]? {
+        let bytes = Array(s.utf8)
+        var i = 0
+        func next() -> Int? {
+            var result = 0, shift = 0
+            while i < bytes.count && shift <= 30 {
+                let b = Int(bytes[i]) - 63
+                i += 1
+                guard (0...63).contains(b) else { return nil }
+                result |= (b & 0x1F) << shift
+                shift += 5
+                if b < 0x20 { return result & 1 != 0 ? ~(result >> 1) : result >> 1 }
+            }
+            return nil
+        }
+        var out: [LatLon] = []
+        var lat = 0, lon = 0
+        while i < bytes.count {
+            guard let dLat = next(), let dLon = next() else { return nil }
+            lat += dLat
+            lon += dLon
+            out.append(LatLon(lat: Double(lat) / 1e5, lon: Double(lon) / 1e5))
+        }
+        return out
     }
 
     private static func str(_ v: Any?) -> String? {

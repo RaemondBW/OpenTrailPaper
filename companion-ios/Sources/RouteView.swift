@@ -11,8 +11,8 @@ struct RouteView: View {
     @ObservedObject private var store = EInkTileStore.shared
     @ObservedObject private var sync = SyncAccounts.shared
     @State private var showSaved = false
-    /// The account whose saved routes are being picked from.
-    @State private var cloudSource: SyncProvider?
+    /// "Import a route": the saved routes of a connected account.
+    @State private var showCloud = false
     @State private var visibleRegion: MKCoordinateRegion?
     /// Hexes the planned route crosses that NOTHING covers — see `coverageGaps`.
     @State private var gapHexes: [OutlineHex] = []
@@ -98,7 +98,8 @@ struct RouteView: View {
                             progress: ble.lastUploadProgress,
                             sent: ble.routeSent,
                             received: ble.routeReceived,
-                            canSend: ble.state == .connected
+                            canSend: ble.state == .connected,
+                            imported: imported
                         ) {
                             let gpx = GPXExporter.make(name: model.fileName,
                                                        coordinates: imported.coordinates)
@@ -113,8 +114,8 @@ struct RouteView: View {
             .safeAreaInset(edge: .top, alignment: .leading, spacing: 0) { routeTitle }
             .navigationBarHidden(true)
             .sheet(isPresented: $showSaved) { SavedRoutesSheet() }
-            .sheet(item: $cloudSource) { p in
-                CloudRoutesSheet(provider: p) { r in
+            .sheet(isPresented: $showCloud) {
+                CloudRoutesSheet { r in
                     ble.routeSent = false; ble.routeReceived = false
                     model.importRoute(r)
                 }
@@ -191,13 +192,7 @@ struct RouteView: View {
             // Saved routes from a connected account; hidden with none connected.
             let accounts = SyncAccounts.routeProviders.filter { sync.isConnected($0) }
             if !accounts.isEmpty {
-                Menu {
-                    ForEach(accounts) { p in
-                        Button("From \(p.title)") { cloudSource = p }
-                    }
-                } label: {
-                    roundLabel("square.and.arrow.down", enabled: true)
-                }
+                roundButton("square.and.arrow.down", enabled: true) { showCloud = true }
             }
             roundButton("location.fill", enabled: true) { model.recenter() }
             // Map downloads moved to Settings — this page is for building and
@@ -471,64 +466,135 @@ private struct RouteSummaryCard: View {
     let sent: Bool
     let received: Bool
     let canSend: Bool
+    /// Set for a route picked from Strava / RideWithGPS, which gets its own
+    /// header (source chip, distance and climb); planned routes keep theirs.
+    var imported: ImportedRoute? = nil
     let send: () -> Void
     let clear: () -> Void
     @AppStorage(UnitPref.key) private var useMiles = false
 
     var body: some View {
         Card {
-            VStack(alignment: .leading, spacing: 14) {
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(name).font(TypeScale.title).foregroundStyle(Palette.ink)
-                            .lineLimit(1)
-                        HStack(spacing: 6) {
-                            if !mode.isEmpty {
-                                Text(mode.uppercased())
-                                    .font(.system(size: 11, weight: .bold))
-                                    .padding(.horizontal, 7).padding(.vertical, 3)
-                                    .background(mode == "Cycling" ? Palette.good : Palette.muted)
-                                    .foregroundStyle(.white)
-                                    .clipShape(Capsule())
-                            }
-                            Text(String(format: "%.1f %@",
-                                        Units.distance(distanceKm, miles: useMiles),
-                                        Units.distLabel(useMiles))
-                                 + (minutes.map { " · \($0) min" } ?? ""))
-                                .font(TypeScale.body).foregroundStyle(Palette.muted)
-                        }
+            VStack(alignment: .leading, spacing: imported == nil ? 14 : 12) {
+                if let imported { importedHeader(imported) } else { plannedHeader }
+                sendControls
+            }
+        }
+    }
+
+    private var plannedHeader: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(name).font(TypeScale.title).foregroundStyle(Palette.ink)
+                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    if !mode.isEmpty {
+                        Text(mode.uppercased())
+                            .font(.system(size: 11, weight: .bold))
+                            .padding(.horizontal, 7).padding(.vertical, 3)
+                            .background(mode == "Cycling" ? Palette.good : Palette.muted)
+                            .foregroundStyle(.white)
+                            .clipShape(Capsule())
                     }
-                    Spacer()
-                    Button(action: clear) {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(Palette.muted)
-                    }
-                }
-                if let progress {
-                    ProgressView(value: progress) {
-                        Text("Sending to device…").font(.system(size: 12))
-                            .foregroundStyle(Palette.muted)
-                    }
-                } else if sent {
-                    HStack(spacing: 8) {
-                        Image(systemName: "checkmark.circle.fill").foregroundStyle(Palette.good)
-                        // "Received" once the device confirms (0x23); until then
-                        // (or on older firmware that never acks) show "Sent".
-                        Text(received ? "Received by device" : "Sent to device")
-                            .font(TypeScale.body).foregroundStyle(Palette.good)
-                        Spacer()
-                        Button("Send again", action: send)
-                            .font(.system(size: 13, weight: .semibold)).foregroundStyle(Palette.accent)
-                            .disabled(!canSend)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 12)
-                } else {
-                    PrimaryButton(title: canSend ? "Send to device" : "Connect to send",
-                                  systemImage: "paperplane.fill",
-                                  enabled: canSend, action: send)
+                    Text(String(format: "%.1f %@",
+                                Units.distance(distanceKm, miles: useMiles),
+                                Units.distLabel(useMiles))
+                         + (minutes.map { " · \($0) min" } ?? ""))
+                        .font(TypeScale.body).foregroundStyle(Palette.muted)
                 }
             }
+            Spacer()
+            Button(action: clear) {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(Palette.muted)
+            }
+        }
+    }
+
+    private func importedHeader(_ r: ImportedRoute) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 10) {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 6) {
+                        if let source = r.source {
+                            Text("From \(source)")
+                                .font(BarlowFont.condensed(12, .semibold)).tracking(1.2).textCase(.uppercase)
+                                .foregroundStyle(Palette.accentDark)
+                                .padding(.horizontal, 8).padding(.vertical, 3)
+                                .background(Palette.accentWash, in: Capsule())
+                        }
+                        // The GPX's own activity type, as Android shows it beside the chip.
+                        if !mode.isEmpty {
+                            Text(mode.uppercased())
+                                .font(.system(size: 11, weight: .bold))
+                                .padding(.horizontal, 7).padding(.vertical, 3)
+                                .background(Palette.good)
+                                .foregroundStyle(.white)
+                                .clipShape(Capsule())
+                        }
+                    }
+                    Text(name).font(BarlowFont.condensed(26, .bold)).foregroundStyle(Palette.ink)
+                        .lineLimit(2)
+                }
+                Spacer(minLength: 0)
+                Button(action: clear) {
+                    Image(systemName: "xmark").font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(Palette.muted)
+                        .frame(width: 44, height: 44)
+                        .background(Palette.paper, in: Circle())
+                        .overlay(Circle().strokeBorder(Palette.hairline, lineWidth: 1))
+                }
+                .accessibilityLabel("Clear route")
+            }
+            HStack(alignment: .top, spacing: 8) {
+                stat(String(format: "%.1f", Units.distance(distanceKm, miles: useMiles)),
+                     Units.distLabel(useMiles), "Distance")
+                if let climb = r.climbMeters {
+                    stat(Int(Units.elevation(climb, miles: useMiles).rounded()).formatted(),
+                         Units.elevLabel(useMiles), "Climb")
+                } else {
+                    Color.clear.frame(maxWidth: .infinity, maxHeight: 0)
+                }
+            }
+        }
+    }
+
+    /// One cell of the imported route's two-column stat grid.
+    private func stat(_ value: String, _ unit: String, _ label: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline, spacing: 3) {
+                Text(value).font(BarlowFont.condensed(26, .semibold)).foregroundStyle(Palette.ink)
+                Text(unit).font(BarlowFont.condensed(15, .semibold)).foregroundStyle(Palette.muted)
+            }
+            Text(label).font(BarlowFont.text(13)).foregroundStyle(Palette.muted)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder private var sendControls: some View {
+        if let progress {
+            ProgressView(value: progress) {
+                Text("Sending to device…").font(.system(size: 12))
+                    .foregroundStyle(Palette.muted)
+            }
+        } else if sent {
+            HStack(spacing: 8) {
+                Image(systemName: "checkmark.circle.fill").foregroundStyle(Palette.good)
+                // "Received" once the device confirms (0x23); until then
+                // (or on older firmware that never acks) show "Sent".
+                Text(received ? "Received by device" : "Sent to device")
+                    .font(TypeScale.body).foregroundStyle(Palette.good)
+                Spacer()
+                Button("Send again", action: send)
+                    .font(.system(size: 13, weight: .semibold)).foregroundStyle(Palette.accent)
+                    .disabled(!canSend)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
+        } else {
+            PrimaryButton(title: canSend ? "Send to device" : "Connect to send",
+                          systemImage: "paperplane.fill",
+                          enabled: canSend, action: send)
         }
     }
 }

@@ -54,6 +54,15 @@ import Foundation
         precondition(rw.routes == [CloudRoute(id: "11", name: "Loop", distanceMeters: 42000.5, elevationGainMeters: 610)] && rw.nextPage == 2)
         precondition(CloudRoutes.parseRwgps(Data(#"{"routes":[],"next_page":null}"#.utf8)).nextPage == nil)
 
+        // Google's documented polyline example, and the list's map.summary_polyline.
+        let poly = #"_p~iF~ps|U_ulLnnqC_mqNvxq`@"#
+        let pts = CloudRoutes.decodePolyline(poly)!
+        let want = [(38.5, -120.2), (40.7, -120.95), (43.252, -126.453)]
+        precondition(pts.count == 3 && zip(pts, want).allSatisfy { abs($0.lat - $1.0) < 1e-9 && abs($0.lon - $1.1) < 1e-9 })
+        precondition(CloudRoutes.decodePolyline("") == [] && CloudRoutes.decodePolyline("_p~iF") == nil)
+        let mapped = CloudRoutes.parseStrava(Data(#"[{"id": 5, "map": {"summary_polyline": "\#(poly)"}}, {"id": 6, "map": {"summary_polyline": ""}}]"#.utf8), page: 1)
+        precondition(mapped.routes[0].shape == pts && mapped.routes[1].shape == nil)
+
         precondition(CloudRoutes.stravaSeesPrivateRoutes("read,activity:write,read_all"))
         precondition(!CloudRoutes.stravaSeesPrivateRoutes("read,activity:write"))
         precondition(!CloudRoutes.stravaSeesPrivateRoutes(nil))

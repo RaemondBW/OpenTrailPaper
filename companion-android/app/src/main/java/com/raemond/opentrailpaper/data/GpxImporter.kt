@@ -17,6 +17,10 @@ data class ImportedRoute(
     val points: List<LatLon>,
     /** The raw `<type>`, e.g. "racebike" or "cycling"; null when the file omits it. */
     val activityType: String?,
+    /** The account it came from ("Strava"), for the summary's chip; null for a file. */
+    val source: String? = null,
+    /** Climb as the account reported it. A file's elevations are not trusted for this. */
+    val climbMeters: Double? = null,
 ) {
     val distanceMeters: Double
         get() = (1 until points.size).sumOf { points[it - 1].distanceTo(points[it]) }

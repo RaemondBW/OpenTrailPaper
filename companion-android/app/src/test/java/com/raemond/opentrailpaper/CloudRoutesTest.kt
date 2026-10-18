@@ -4,6 +4,7 @@ import com.raemond.opentrailpaper.data.CloudRoute
 import com.raemond.opentrailpaper.data.CloudRoutes
 import com.raemond.opentrailpaper.data.GpxImporter
 import com.raemond.opentrailpaper.data.ImportResult
+import com.raemond.opentrailpaper.data.LatLon
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -41,6 +42,35 @@ class CloudRoutesTest {
         assertNull(CloudRoutes.parseStrava("<html>", 1).nextPage)
         assertTrue(CloudRoutes.parseRwgps("{}").routes.isEmpty())
         assertNull(CloudRoutes.parseRwgps("nope").nextPage)
+    }
+
+    @Test fun `google's documented polyline decodes`() {
+        val pts = CloudRoutes.decodePolyline("_p~iF~ps|U_ulLnnqC_mqNvxq`@")!!
+        val want = listOf(LatLon(38.5, -120.2), LatLon(40.7, -120.95), LatLon(43.252, -126.453))
+        assertEquals(want.size, pts.size)
+        want.zip(pts).forEach { (w, p) ->
+            assertEquals(w.lat, p.lat, 1e-9)
+            assertEquals(w.lon, p.lon, 1e-9)
+        }
+        assertEquals(emptyList<LatLon>(), CloudRoutes.decodePolyline(""))
+        assertNull(CloudRoutes.decodePolyline("_p~iF~ps|U_ulL"))   // ends after a lat
+        assertNull(CloudRoutes.decodePolyline("_p~iF~ps|"))        // ends mid-number
+        assertNull(CloudRoutes.decodePolyline("_p~iF ps|U"))       // not polyline characters
+    }
+
+    @Test fun `strava summary polyline becomes the route's shape`() {
+        val routes = CloudRoutes.parseStrava(
+            """[{"id_str": "1", "name": "A", "map": {"summary_polyline": "_p~iF~ps|U_ulLnnqC_mqNvxq`@"}},
+                {"id_str": "2", "name": "B", "map": {"summary_polyline": ""}},
+                {"id_str": "3", "name": "C", "map": null},
+                {"id_str": "4", "name": "D", "map": {"summary_polyline": "_p~iF~ps|U"}}]""",
+            page = 1,
+        ).routes
+        assertEquals(3, routes[0].shape?.size)
+        assertEquals(38.5, routes[0].shape!!.first().lat, 1e-9)
+        assertNull(routes[1].shape)
+        assertNull(routes[2].shape)
+        assertNull(routes[3].shape)   // one point is no outline
     }
 
     @Test fun `rwgps list from the sync service`() {

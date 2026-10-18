@@ -8,6 +8,10 @@ struct ImportedRoute: Identifiable, Equatable {
     let coordinates: [CLLocationCoordinate2D]
     /// The raw `<type>`, e.g. "cycling"; nil when the file omits it.
     let activityType: String?
+    /// Where it was picked from ("Strava") and the climb that list reported;
+    /// GPXImporter leaves both nil (the exported GPX has neither).
+    var source: String? = nil
+    var climbMeters: Double? = nil
 
     var distanceMeters: Double {
         zip(coordinates, coordinates.dropFirst()).reduce(0) { sum, pair in

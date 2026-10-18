@@ -19,8 +19,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.FileOpen
 import androidx.compose.material.icons.filled.Folder
@@ -29,11 +29,8 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Signpost
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -57,7 +54,11 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
@@ -105,7 +106,7 @@ fun RouteScreen(ble: BleManager) {
     var gapTiles by remember { mutableStateOf<List<MapTile>>(emptyList()) }
     var showSaved by remember { mutableStateOf(false) }
     var showMaps by remember { mutableStateOf(false) }
-    /** The import menu (a file, or a connected account's saved routes). */
+    /** The import source sheet (a file, or a connected account's saved routes). */
     var importMenu by remember { mutableStateOf(false) }
     var cloudSource by remember { mutableStateOf<SyncAccounts.Provider?>(null) }
     /**
@@ -235,6 +236,20 @@ fun RouteScreen(ble: BleManager) {
     val focusManager = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
 
+    val openFile = {
+        pickGpx.launch(
+            arrayOf(
+                "application/gpx+xml",
+                "application/octet-stream",
+                "application/xml",
+                "text/xml",
+            ),
+        )
+    }
+    // With Strava or RideWithGPS connected the button offers their
+    // saved routes too; without, it is the file picker as before.
+    val accounts = SyncAccounts.routeProviders.filter { SyncAccounts.isConnected(it) }
+
     Box(Modifier.fillMaxSize().background(Palette.paper)) {
         // Same map component as the Maps screen, but showing only the GAP hexes —
         // the ground a planned route crosses that nothing covers. That is the
@@ -291,35 +306,8 @@ fun RouteScreen(ble: BleManager) {
                 Box(Modifier.weight(1f), contentAlignment = Alignment.BottomStart) {
                     MapAttribution()
                 }
-                val openFile = {
-                    pickGpx.launch(
-                        arrayOf(
-                            "application/gpx+xml",
-                            "application/octet-stream",
-                            "application/xml",
-                            "text/xml",
-                        ),
-                    )
-                }
-                // With Strava or RideWithGPS connected the button offers their
-                // saved routes too; without, it is the file picker as before.
-                val accounts = SyncAccounts.routeProviders.filter { SyncAccounts.isConnected(it) }
-                Box {
-                    RoundMapButton(Icons.Filled.FileOpen, enabled = true) {
-                        if (accounts.isEmpty()) openFile() else importMenu = true
-                    }
-                    DropdownMenu(expanded = importMenu, onDismissRequest = { importMenu = false }) {
-                        DropdownMenuItem(
-                            text = { Text("From a file", style = TypeScale.body) },
-                            onClick = { importMenu = false; openFile() },
-                        )
-                        for (p in accounts) {
-                            DropdownMenuItem(
-                                text = { Text("From ${p.title}", style = TypeScale.body) },
-                                onClick = { importMenu = false; cloudSource = p },
-                            )
-                        }
-                    }
+                RoundMapButton(Icons.Filled.FileOpen, enabled = true) {
+                    if (accounts.isEmpty()) openFile() else importMenu = true
                 }
                 Spacer(Modifier.size(10.dp))
                 RoundMapButton(Icons.Filled.MyLocation, enabled = true) {
@@ -412,6 +400,9 @@ fun RouteScreen(ble: BleManager) {
                     mode = p.mode,
                     distanceKm = p.distanceMeters / 1000,
                     minutes = p.minutes,
+                    imported = p.imported,
+                    source = p.source,
+                    climbMeters = p.climbMeters,
                     cueCount = if (p.imported) p.maneuvers.size else null,
                     cuesTruncated = p.cuesTruncated,
                     derivingCues = derivingCues,
@@ -483,8 +474,22 @@ fun RouteScreen(ble: BleManager) {
         SavedRoutesSheet(ble) { showSaved = false }
     }
 
+    if (importMenu) {
+        RouteSourceSheet(
+            accounts = accounts,
+            onFile = openFile,
+            onAccount = { cloudSource = it },
+            onDismiss = { importMenu = false },
+        )
+    }
+
     cloudSource?.let { p ->
-        CloudRoutesSheet(p, useMiles = ble.useMiles) { cloudSource = null }
+        CloudRoutesSheet(
+            p,
+            useMiles = ble.useMiles,
+            onBack = { cloudSource = null; importMenu = true },
+            onDismiss = { cloudSource = null },
+        )
     }
 
     // The Maps tool, opened with this route's uncovered hexes already selected
@@ -511,6 +516,9 @@ private data class Preview(
     val maneuvers: List<Maneuver>,
     val imported: Boolean,
     val cuesTruncated: Boolean = false,
+    /** The account an import came from, and the climb it reported; null for a file. */
+    val source: String? = null,
+    val climbMeters: Double? = null,
 )
 
 private fun Routing.Route.asPreview(name: String) = Preview(
@@ -532,6 +540,8 @@ private fun ImportedRoute.asPreview(cues: Routing.CueSet?) = Preview(
     maneuvers = cues?.maneuvers.orEmpty(),
     imported = true,
     cuesTruncated = cues?.truncated == true,
+    source = source,
+    climbMeters = climbMeters,
 )
 
 /**
@@ -647,6 +657,9 @@ private fun RouteSummaryCard(
     mode: String,
     distanceKm: Double,
     minutes: Int?,
+    imported: Boolean,
+    source: String?,
+    climbMeters: Double?,
     cueCount: Int?,
     cuesTruncated: Boolean,
     derivingCues: Boolean,
@@ -662,52 +675,98 @@ private fun RouteSummaryCard(
     onClear: () -> Unit,
 ) {
     Card {
-        Row(verticalAlignment = Alignment.Top) {
-            Column(Modifier.weight(1f)) {
-                Text(name, style = TypeScale.title, color = Palette.ink, maxLines = 1)
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    if (mode.isNotEmpty()) {
+        Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                // An import is somebody's planned route, so it leads with where it
+                // came from and reads its numbers as a grid; a route built here
+                // keeps the one-line summary under the destination it was built to.
+                if (imported && (source != null || mode.isNotEmpty())) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        source?.let {
+                            Text(
+                                "From $it".uppercase(),
+                                style = condensed(12.sp, FontWeight.SemiBold).copy(letterSpacing = 1.2.sp),
+                                color = Palette.accentDark,
+                                modifier = Modifier
+                                    .background(Palette.accentWash, RoundedCornerShape(50))
+                                    .padding(horizontal = 8.dp, vertical = 3.dp),
+                            )
+                        }
+                        if (mode.isNotEmpty()) ModeBadge(mode)
+                    }
+                }
+                Text(
+                    name,
+                    style = if (imported) condensed(26.sp, FontWeight.Bold) else TypeScale.title,
+                    color = Palette.ink,
+                    maxLines = if (imported) 2 else 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (!imported) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        if (mode.isNotEmpty()) ModeBadge(mode)
                         Text(
-                            mode.uppercase(),
-                            style = barlow(11.sp, FontWeight.Bold),
-                            color = Color.White,
-                            modifier = Modifier
-                                .background(
-                                    if (mode == "Cycling") Palette.good else Palette.muted,
-                                    RoundedCornerShape(50),
+                            buildString {
+                                append(
+                                    String.format(
+                                        Locale.US,
+                                        "%.1f %s",
+                                        Units.distance(distanceKm, useMiles),
+                                        Units.distLabel(useMiles),
+                                    ),
                                 )
-                                .padding(horizontal = 7.dp, vertical = 3.dp),
+                                // Only for a route we built: there is no honest
+                                // duration for a file somebody else planned.
+                                if (minutes != null) append(" · $minutes min")
+                            },
+                            style = TypeScale.body,
+                            color = Palette.muted,
                         )
                     }
-                    Text(
-                        buildString {
-                            append(
-                                String.format(
-                                    Locale.US,
-                                    "%.1f %s",
-                                    Units.distance(distanceKm, useMiles),
-                                    Units.distLabel(useMiles),
-                                ),
-                            )
-                            // Only for a route we built: there is no honest
-                            // duration for a file somebody else planned.
-                            if (minutes != null) append(" · $minutes min")
-                            if (cueCount != null && cueCount > 0) {
-                                append(" · $cueCount turns")
-                                if (cuesTruncated) append(" (capped)")
-                            }
-                        },
-                        style = TypeScale.body,
-                        color = Palette.muted,
-                    )
                 }
             }
-            IconButton(onClick = onClear) {
-                Icon(Icons.Filled.Cancel, contentDescription = "Clear route", tint = Palette.muted)
+            Box(
+                Modifier
+                    .size(44.dp)
+                    .background(Palette.paper, CircleShape)
+                    .border(1.dp, Palette.hairline, CircleShape)
+                    .clickable(onClick = onClear),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Filled.Close, contentDescription = "Clear route", tint = Palette.muted,
+                    modifier = Modifier.size(18.dp),
+                )
             }
+        }
+        if (imported) {
+            Spacer(Modifier.size(12.dp))
+            StatGrid(
+                buildList {
+                    add(
+                        SummaryStat(
+                            String.format(Locale.US, "%.1f", Units.distance(distanceKm, useMiles)),
+                            Units.distLabel(useMiles), "Distance",
+                        ),
+                    )
+                    // Only an account reports climb; a file's elevations aren't
+                    // trusted for it, so a file shows distance alone.
+                    climbMeters?.let {
+                        add(
+                            SummaryStat(
+                                String.format(Locale.US, "%,.0f", Units.elevation(it, useMiles)),
+                                Units.elevLabel(useMiles), "Climb",
+                            ),
+                        )
+                    }
+                    if (cueCount != null && cueCount > 0) {
+                        add(SummaryStat("$cueCount", null, if (cuesTruncated) "Turns (capped)" else "Turns"))
+                    }
+                },
+            )
         }
         // Imported routes arrive with no turn cues. Fetching them sends the
         // shape of this route to a third party, so it is a thing the rider
@@ -801,6 +860,50 @@ private fun RouteSummaryCard(
                 enabled = canSend,
                 onClick = onSend,
             )
+        }
+    }
+}
+
+@Composable
+private fun ModeBadge(mode: String) {
+    Text(
+        mode.uppercase(),
+        style = barlow(11.sp, FontWeight.Bold),
+        color = Color.White,
+        modifier = Modifier
+            .background(
+                if (mode == "Cycling") Palette.good else Palette.muted,
+                RoundedCornerShape(50),
+            )
+            .padding(horizontal = 7.dp, vertical = 3.dp),
+    )
+}
+
+private data class SummaryStat(val value: String, val unit: String?, val label: String)
+
+/** Two to a row: the number in the condensed face with its unit small beside it, the label under. */
+@Composable
+private fun StatGrid(stats: List<SummaryStat>) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        stats.chunked(2).forEach { row ->
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                row.forEach { s ->
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            buildAnnotatedString {
+                                append(s.value)
+                                s.unit?.let {
+                                    withStyle(SpanStyle(fontSize = 15.sp, color = Palette.muted)) { append(" $it") }
+                                }
+                            },
+                            style = condensed(26.sp, FontWeight.SemiBold),
+                            color = Palette.ink,
+                        )
+                        Text(s.label, style = barlow(13.sp), color = Palette.muted)
+                    }
+                }
+                if (row.size == 1) Spacer(Modifier.weight(1f))
+            }
         }
     }
 }
