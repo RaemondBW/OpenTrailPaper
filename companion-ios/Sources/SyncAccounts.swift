@@ -761,8 +761,9 @@ struct SyncAccountsCard: View {
     }
 }
 
-// MARK: - Upload buttons (ride page)
+// MARK: - Upload grid (ride page)
 
+/// One tile per connected account, side by side; tap a tile to upload.
 struct SyncUploadButtons: View {
     let fileURL: URL
     let name: String
@@ -773,29 +774,118 @@ struct SyncUploadButtons: View {
     var body: some View {
         let connected = SyncProvider.allCases.filter { sync.isConnected($0) }
         if !connected.isEmpty {
-            VStack(spacing: 10) {
-                ForEach(connected) { p in
-                    PrimaryButton(title: uploading == p ? "Uploading to \(p.title)…" : "Upload to \(p.title)",
-                                  systemImage: "arrow.up.circle",
-                                  enabled: uploading == nil && status[p] == nil) {
-                        upload(p)
-                    }
-                    if let s = status[p] {
-                        Text(s).font(.system(size: 12))
-                            .foregroundStyle(s.hasPrefix("Uploaded") ? Palette.good : Palette.accentDark)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Upload to").trackedLabel()
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10),
+                                         count: min(connected.count, 3)),
+                          spacing: 10) {
+                    ForEach(connected) { tile($0) }
+                }
+                // Full messages go under the grid; a tile only has room for a word.
+                ForEach(connected.filter { failed($0) }) { p in
+                    Text("\(p.title): \(status[p] ?? "")").font(BarlowFont.text(12))
+                        .foregroundStyle(Palette.accentDark)
                 }
             }
         }
     }
 
+    private func uploaded(_ p: SyncProvider) -> Bool { status[p]?.hasPrefix("Uploaded") == true }
+    private func failed(_ p: SyncProvider) -> Bool { status[p] != nil && !uploaded(p) }
+
+    private func tile(_ p: SyncProvider) -> some View {
+        Button { upload(p) } label: {
+            VStack(spacing: 8) {
+                ProviderLogo(provider: p, size: 44)
+                Text(p.title).font(BarlowFont.condensed(17, .semibold)).foregroundStyle(Palette.ink)
+                    .lineLimit(1).minimumScaleFactor(0.8)
+                HStack(spacing: 4) {
+                    if uploading == p {
+                        ProgressView().controlSize(.mini)
+                        Text("Uploading")
+                    } else if uploaded(p) {
+                        Image(systemName: "checkmark")
+                        Text("Uploaded")
+                    } else if failed(p) {
+                        Text("Try again")
+                    } else {
+                        Image(systemName: "arrow.up")
+                        Text("Upload")
+                    }
+                }
+                .font(BarlowFont.text(12, .semibold))
+                .foregroundStyle(uploaded(p) ? Palette.good : failed(p) ? Palette.accentDark : Palette.muted)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 14).padding(.horizontal, 8)
+            .background(Palette.surface)
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .strokeBorder(uploaded(p) ? Palette.good : Palette.hairline, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .disabled(uploading != nil || uploaded(p))
+        .opacity(uploading != nil && uploading != p ? 0.5 : 1)
+        .accessibilityLabel(uploaded(p) ? "Uploaded to \(p.title)" : "Upload to \(p.title)")
+    }
+
     private func upload(_ p: SyncProvider) {
         uploading = p
+        status[p] = nil
         Task {
             do { status[p] = try await sync.upload(fileURL, to: p, name: name) }
             catch { status[p] = error.localizedDescription }
             uploading = nil
         }
+    }
+}
+
+/// The service's mark on its brand colour, as a rounded app-icon tile.
+struct ProviderLogo: View {
+    let provider: SyncProvider
+    var size: CGFloat = 44
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: size * 0.27, style: .continuous)
+            .fill(background)
+            .frame(width: size, height: size)
+            .overlay(mark)
+            .accessibilityHidden(true)
+    }
+
+    private var background: Color {
+        switch provider {
+        case .strava: return Color(hex: 0xFC4C02)
+        case .intervals: return Color(hex: 0x1A1A1A)
+        case .ridewithgps: return Color(hex: 0x1A73E8)
+        }
+    }
+
+    @ViewBuilder private var mark: some View {
+        switch provider {
+        case .strava:
+            StravaMark().fill(.white).frame(width: size * 0.56, height: size * 0.56)
+        case .intervals:
+            Text("i.icu").font(BarlowFont.condensed(size * 0.36, .bold)).foregroundStyle(.white)
+        case .ridewithgps:
+            Image(systemName: "bicycle").font(.system(size: size * 0.42, weight: .semibold))
+                .foregroundStyle(.white)
+        }
+    }
+}
+
+/// Strava's two chevrons, on a 24-unit grid.
+private struct StravaMark: Shape {
+    func path(in r: CGRect) -> Path {
+        let k = min(r.width, r.height) / 24
+        func pt(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: r.minX + x * k, y: r.minY + y * k) }
+        var p = Path()
+        p.addLines([pt(15.387, 17.944), pt(13.298, 13.828), pt(10.233, 13.828),
+                    pt(15.387, 24), pt(20.537, 13.828), pt(17.471, 13.828)])
+        p.closeSubpath()
+        p.addLines([pt(10.463, 8.229), pt(13.299, 13.827), pt(17.471, 13.827),
+                    pt(10.463, 0), pt(3.463, 13.828), pt(7.632, 13.828)])
+        p.closeSubpath()
+        return p
     }
 }
