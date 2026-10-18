@@ -1229,7 +1229,14 @@ class BleManager(private val app: Application) {
             BikeUuid.mesh -> refreshMesh()
             // Map layers: firmware without them never answers, which is what
             // keeps the app's switches hidden for it.
-            BikeUuid.map -> requestMapLayers()
+            BikeUuid.map -> {
+                requestMapLayers()
+                // The cached tile list is one global pref, not per device or
+                // card, and was only re-asked when Maps opened: confirm it on
+                // every connect, so a fresh or swapped card isn't shown as
+                // already holding the old one's hexes.
+                refreshDeviceTiles()
+            }
             // Every workout reply is a notification too: ask only once the
             // CCCD write has landed, so the Workouts screen opens populated.
             BikeUuid.workout -> refreshWorkouts()
@@ -1633,7 +1640,14 @@ class BleManager(private val app: Application) {
         if (d.size < 10) return
         val flags = d[0].toInt() and 0xFF
         val power = le16(d, 4)
+        val sdBefore = status.sdCard
         status = DeviceStatus(
+            sdCard = when {
+                flags and 8 == 0 -> SdCardState.UNKNOWN
+                flags and 16 != 0 -> SdCardState.MISSING
+                flags and 32 != 0 -> SdCardState.UNREADABLE
+                else -> SdCardState.OK
+            },
             gpsFix = flags and 1 != 0,
             recording = flags and 2 != 0,
             hasRoute = flags and 4 != 0,
@@ -1644,6 +1658,13 @@ class BleManager(private val app: Application) {
             speedKmh = le16(d, 6) / 10.0,
             remainingKm = le16(d, 8) / 10.0,
         )
+        if (status.sdCard.isProblem) {
+            // Without a card the device has no tiles, whatever the cache says.
+            // Memory only: the card may well come back with them on it.
+            if (deviceTileIds.isNotEmpty()) deviceTileIds = emptySet()
+        } else if (status.sdCard == SdCardState.OK && sdBefore.isProblem) {
+            refreshDeviceTiles()   // a card went in: ask what is on THIS one
+        }
         syncLocationStreamToDeviceFix()
         updateBackgroundLocationMode()
     }
@@ -3015,6 +3036,10 @@ class BleManager(private val app: Application) {
     // MARK: vector-map upload (phone -> device SD, mirrors the OTA transfer)
 
     val canUploadMap: Boolean get() = mapChar != null
+
+    /** Tiles go to the SD card, so a device reporting none can't take them —
+     *  say so up front instead of letting the job end in "Some tiles failed". */
+    val sdCardBlocksMaps: Boolean get() = status.sdCard.isProblem
 
     fun uploadMap(ebm: ByteArray, name: String) {
         if (mapChar == null) { mapMessage = "Not connected"; return }

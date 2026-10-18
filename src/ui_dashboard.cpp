@@ -3102,6 +3102,7 @@ void task(void*) {
             s.showOffline = settings::showOffline();
             s.routeActive = routes::active();
             s.routeRemainingKm = routes::remainingKm();
+            s.sdCard = ride_recorder::sdCardState();
             // Swap to a downloaded map that covers where we are, if one exists.
             // Not while a host computer owns the SD card.
             if (s.everHadFix && !usb_storage::hostActive())

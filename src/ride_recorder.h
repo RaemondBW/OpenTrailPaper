@@ -80,6 +80,9 @@ bool consumeLateMount();
 // SD card info for the menu screen.
 bool sdMounted();
 int rideCount();
+// Why the card is not usable, for the status bar, boot line and the app:
+// SD_CARD_OK / SD_CARD_NONE / SD_CARD_UNREADABLE (ride_state.h). Lock-free.
+uint8_t sdCardState();
 
 // The finished rides in RIDE_DIR for the Ride History list, newest first
 // (names are YYYYMMDD-HHMMSS, so that is a descending name sort). Skips the
