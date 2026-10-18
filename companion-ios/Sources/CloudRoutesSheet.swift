@@ -53,11 +53,14 @@ struct CloudRoutesSheet: View {
         VStack(spacing: 10) {
             if loading {
                 ProgressView()
+            } else if nextPage != nil && loadedOnce && error == nil {
+                // The footer is only built once it scrolls into view, so this
+                // loads the next page when the rider reaches the bottom (and
+                // again straight away if a short page leaves it on screen).
+                ProgressView().task(id: nextPage) { await loadMore() }
             } else if nextPage != nil && loadedOnce {
-                Button(error != nil && routes.isEmpty ? "Try again" : "Load more") {
-                    Task { await loadMore() }
-                }
-                .font(.system(size: 14, weight: .semibold)).foregroundStyle(Palette.accent)
+                Button("Try again") { Task { await loadMore() } }
+                    .font(.system(size: 14, weight: .semibold)).foregroundStyle(Palette.accent)
             } else if loadedOnce && routes.isEmpty && error == nil {
                 Text("No saved routes on \(provider.title) yet.")
                     .font(TypeScale.body).foregroundStyle(Palette.muted)

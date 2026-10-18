@@ -119,9 +119,16 @@ fun CloudRoutesSheet(provider: SyncAccounts.Provider, useMiles: Boolean, onDismi
                 ) {
                     when {
                         loading -> CircularProgressIndicator(color = Palette.accent)
+                        // The LazyColumn only composes this footer once it scrolls
+                        // into view, so reaching the bottom loads the next page
+                        // (and again straight away if a short page leaves it on screen).
+                        nextPage != null && loadedOnce && error == null -> {
+                            CircularProgressIndicator(color = Palette.accent)
+                            LaunchedEffect(nextPage) { loadMore() }
+                        }
                         nextPage != null && loadedOnce -> TextButton(onClick = { loadMore() }) {
                             Text(
-                                if (error != null && routes.isEmpty()) "Try again" else "Load more",
+                                "Try again",
                                 style = barlow(14.sp, FontWeight.SemiBold),
                                 color = Palette.accent,
                             )
