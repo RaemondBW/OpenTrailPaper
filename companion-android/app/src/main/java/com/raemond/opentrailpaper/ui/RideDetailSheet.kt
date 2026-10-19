@@ -7,6 +7,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -25,6 +26,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -47,7 +49,10 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.foundation.layout.width
 import com.raemond.opentrailpaper.R
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -80,95 +85,128 @@ fun RideDetailSheet(
     }
 
     FullScreenSheet(title = title, onDismiss = onDismiss) {
-        Column(
-            Modifier
-                .verticalScroll(rememberScrollState())
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-            Box(
+        // Fits on one screen: the map takes whatever height the stats and
+        // upload grid leave, and the page only scrolls once even a short map
+        // doesn't fit (a long list of connected accounts).
+        BoxWithConstraints(Modifier.fillMaxSize()) {
+            val density = LocalDensity.current
+            var restHeight by remember { mutableStateOf(0.dp) }
+            val mapHeight = maxOf(180.dp, maxHeight - restHeight - 16.dp - 32.dp)
+            Column(
                 Modifier
-                    .fillMaxWidth()
-                    .height(300.dp)
-                    .clip(RoundedCornerShape(18.dp))
-                    .border(1.dp, Palette.hairline, RoundedCornerShape(18.dp))
-                    .background(Palette.paper),
+                    .verticalScroll(rememberScrollState())
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
-                val bounds = remember(preview) { BoundingBox.around(preview.coordinates) }
-                OsmMap(
-                    modifier = Modifier.fillMaxSize(),
-                    route = preview.coordinates,
-                    camera = remember(bounds) {
-                        bounds?.let { MapCamera.box(it, paddingPx = 64) }
-                    },
-                )
-            }
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(mapHeight)
+                        .clip(RoundedCornerShape(18.dp))
+                        .border(1.dp, Palette.hairline, RoundedCornerShape(18.dp))
+                        .background(Palette.paper),
+                ) {
+                    val bounds = remember(preview) { BoundingBox.around(preview.coordinates) }
+                    OsmMap(
+                        modifier = Modifier.fillMaxSize(),
+                        route = preview.coordinates,
+                        camera = remember(bounds) {
+                            bounds?.let { MapCamera.box(it, paddingPx = 64) }
+                        },
+                    )
+                }
 
-            // Mirrors the device's ride-complete screen: distance hero, then
-            // moving time / avg speed / avg + normalized power / avg HR / DEM
-            // ascent, read straight from the FIT session.
-            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                Stat(
+                Column(
+                    Modifier.onSizeChanged { restHeight = with(density) { it.height.toDp() } },
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
+                    StatsCard(preview, useMiles)
+
+                    // Straight to a connected account (Settings > Accounts); the share
+                    // button below stays for everything else.
+                    UploadButtons(file, title)
+                    PrimaryButton("Share .fit file", icon = Icons.Filled.Share) {
+                        Share.fit(context, file)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Mirrors the device's ride-complete screen in one card: distance, moving time
+ * and DEM ascent, then avg speed / avg + normalized power / avg HR, read
+ * straight from the FIT session.
+ */
+@Composable
+private fun StatsCard(preview: RidePreview, useMiles: Boolean) {
+    Card(padding = 14.dp) {
+        StatRow(
+            listOf(
+                StatCell(
                     "Distance",
-                    String.format(
-                        Locale.US, "%.1f",
-                        Units.distance(preview.distanceKm, useMiles),
-                    ),
-                    Units.distLabel(useMiles),
-                    big = true,
-                    modifier = Modifier.weight(1f),
-                )
-                Stat("Moving Time", hms(preview.movingTime), "", modifier = Modifier.weight(1f))
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                Stat(
-                    "Avg Speed",
-                    String.format(
-                        Locale.US, "%.1f",
-                        Units.speed(preview.avgSpeedKmh, useMiles),
-                    ),
-                    Units.speedLabel(useMiles),
-                    modifier = Modifier.weight(1f),
-                )
-                Stat(
-                    "Avg Power",
-                    preview.avgPower?.toString() ?: "—",
-                    "W",
-                    modifier = Modifier.weight(1f),
-                )
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                Stat(
-                    "Norm Power",
-                    preview.normPower?.toString() ?: "—",
-                    "W",
-                    modifier = Modifier.weight(1f),
-                )
-                Stat(
-                    "Avg HR",
-                    preview.avgHeartRate?.toString() ?: "—",
-                    "bpm",
-                    modifier = Modifier.weight(1f),
-                )
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                Stat(
+                    String.format(Locale.US, "%.1f", Units.distance(preview.distanceKm, useMiles)),
+                    Units.distLabel(useMiles), 40.sp,
+                ),
+                StatCell("Moving Time", hms(preview.movingTime), "", 26.sp),
+                StatCell(
                     "Ascent",
-                    String.format(
-                        Locale.US, "%.0f",
-                        Units.elevation(preview.ascentM, useMiles),
-                    ),
-                    Units.elevLabel(useMiles),
-                    modifier = Modifier.weight(1f),
-                )
-                Spacer(Modifier.weight(1f))
-            }
+                    String.format(Locale.US, "%.0f", Units.elevation(preview.ascentM, useMiles)),
+                    Units.elevLabel(useMiles), 26.sp,
+                ),
+            ),
+        )
+        HorizontalDivider(Modifier.padding(vertical = 12.dp), color = Palette.hairline)
+        StatRow(
+            listOf(
+                StatCell(
+                    "Avg Speed",
+                    String.format(Locale.US, "%.1f", Units.speed(preview.avgSpeedKmh, useMiles)),
+                    Units.speedLabel(useMiles),
+                ),
+                StatCell("Avg Power", preview.avgPower?.toString() ?: "—", "W"),
+                StatCell("Norm Power", preview.normPower?.toString() ?: "—", "W"),
+                StatCell("Avg HR", preview.avgHeartRate?.toString() ?: "—", "bpm"),
+            ),
+        )
+    }
+}
 
-            // Straight to a connected account (Settings > Accounts); the share
-            // button below stays for everything else.
-            UploadButtons(file, title)
-            PrimaryButton("Share .fit file", icon = Icons.Filled.Share) {
-                Share.fit(context, file)
+private data class StatCell(val label: String, val value: String, val unit: String, val size: TextUnit = 22.sp)
+
+/**
+ * Labels on one line and values on the next, so both line up across columns
+ * even when one value is set larger.
+ */
+@Composable
+private fun StatRow(cells: List<StatCell>) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            for (c in cells) {
+                Text(
+                    c.label.uppercase(), style = condensed(11.sp, FontWeight.Medium), color = Palette.muted,
+                    letterSpacing = 0.8.sp, maxLines = 1, softWrap = false, modifier = Modifier.weight(1f),
+                )
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            for (c in cells) {
+                Row(Modifier.weight(1f).alignByBaseline()) {
+                    Text(
+                        c.value,
+                        style = if (c.size > 30.sp) TypeScale.hero(c.size) else TypeScale.value(c.size),
+                        color = Palette.ink, maxLines = 1, softWrap = false,
+                        modifier = Modifier.alignByBaseline(),
+                    )
+                    if (c.unit.isNotEmpty()) {
+                        Spacer(Modifier.size(3.dp))
+                        Text(
+                            c.unit, style = barlow(11.sp), color = Palette.muted,
+                            modifier = Modifier.alignByBaseline(),
+                        )
+                    }
+                }
             }
         }
     }
@@ -317,36 +355,6 @@ fun ProviderLogo(p: SyncAccounts.Provider, size: Dp) {
                 painterResource(R.drawable.logo_rwgps), null, Modifier.width(size * 0.74f),
                 contentScale = ContentScale.FillWidth,
             )
-        }
-    }
-}
-
-@Composable
-fun Stat(
-    label: String,
-    value: String,
-    unit: String,
-    modifier: Modifier = Modifier,
-    big: Boolean = false,
-) {
-    Card(modifier) {
-        TrackedLabel(label)
-        Row(verticalAlignment = Alignment.Bottom) {
-            Text(
-                value,
-                style = if (big) TypeScale.hero(52.sp) else TypeScale.value(),
-                color = Palette.ink,
-                maxLines = 1,
-            )
-            if (unit.isNotEmpty()) {
-                Spacer(Modifier.size(4.dp))
-                Text(
-                    unit,
-                    style = TypeScale.label,
-                    color = Palette.muted,
-                    modifier = Modifier.padding(bottom = 4.dp),
-                )
-            }
         }
     }
 }

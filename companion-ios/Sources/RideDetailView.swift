@@ -9,6 +9,7 @@ struct RideDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @AppStorage(UnitPref.key) private var useMiles = false
     @State private var showShare = false
+    @State private var restHeight: CGFloat = 0
 
     private var polyline: MKPolyline {
         MKPolyline(coordinates: preview.coordinates, count: preview.coordinates.count)
@@ -16,64 +17,41 @@ struct RideDetailView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(spacing: 16) {
-                    Map {
-                        MapPolyline(polyline).stroke(Palette.accent, lineWidth: 4)
-                        if let first = preview.coordinates.first {
-                            Marker("Start", coordinate: first).tint(Palette.good)
+            // Fits on one screen: the map takes whatever height the stats and
+            // upload grid leave, and the page only scrolls once even a short
+            // map doesn't fit (a long list of connected accounts).
+            GeometryReader { geo in
+                ScrollView {
+                    VStack(spacing: 16) {
+                        Map {
+                            MapPolyline(polyline).stroke(Palette.accent, lineWidth: 4)
+                            if let first = preview.coordinates.first {
+                                Marker("Start", coordinate: first).tint(Palette.good)
+                            }
+                            if let last = preview.coordinates.last {
+                                Marker("End", coordinate: last).tint(Palette.accent)
+                            }
                         }
-                        if let last = preview.coordinates.last {
-                            Marker("End", coordinate: last).tint(Palette.accent)
+                        .frame(height: max(Self.minMapHeight, geo.size.height - restHeight - 16 - 32))
+                        .clipShape(RoundedRectangle(cornerRadius: 18))
+                        .overlay(RoundedRectangle(cornerRadius: 18)
+                            .strokeBorder(Palette.hairline, lineWidth: 1))
+
+                        VStack(spacing: 16) {
+                            statsCard
+                            // Straight to a connected account (Settings > Accounts);
+                            // the share sheet below stays for everything else.
+                            SyncUploadButtons(fileURL: fileURL, name: dateTitle)
+                            PrimaryButton(title: "Share .fit file",
+                                          systemImage: "square.and.arrow.up") {
+                                showShare = true
+                            }
                         }
+                        .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { restHeight = $0 }
                     }
-                    .frame(height: 300)
-                    .clipShape(RoundedRectangle(cornerRadius: 18))
-                    .overlay(RoundedRectangle(cornerRadius: 18)
-                        .strokeBorder(Palette.hairline, lineWidth: 1))
-
-                    // Mirrors the device's ride-complete screen: distance hero,
-                    // then moving time / avg speed / avg + normalized power /
-                    // avg HR / DEM ascent, read straight from the FIT session.
-                    HStack(spacing: 16) {
-                        Stat(label: "Distance",
-                             value: String(format: "%.1f",
-                                            Units.distance(preview.distanceKm, miles: useMiles)),
-                             unit: Units.distLabel(useMiles), big: true)
-                        Stat(label: "Moving Time", value: movingText, unit: "")
-                    }
-                    HStack(spacing: 16) {
-                        Stat(label: "Avg Speed",
-                             value: String(format: "%.1f",
-                                            Units.speed(preview.avgSpeedKmh, miles: useMiles)),
-                             unit: Units.speedLabel(useMiles))
-                        Stat(label: "Avg Power",
-                             value: preview.avgPower.map(String.init) ?? "—", unit: "W")
-                    }
-                    HStack(spacing: 16) {
-                        Stat(label: "Norm Power",
-                             value: preview.normPower.map(String.init) ?? "—", unit: "W")
-                        Stat(label: "Avg HR",
-                             value: preview.avgHeartRate.map(String.init) ?? "—",
-                             unit: "bpm")
-                    }
-                    HStack(spacing: 16) {
-                        Stat(label: "Ascent",
-                             value: String(format: "%.0f",
-                                            Units.elevation(preview.ascentM, miles: useMiles)),
-                             unit: Units.elevLabel(useMiles))
-                        Color.clear
-                    }
-
-                    // Straight to a connected account (Settings > Accounts);
-                    // the share sheet below stays for everything else.
-                    SyncUploadButtons(fileURL: fileURL, name: dateTitle)
-                    PrimaryButton(title: "Share .fit file",
-                                  systemImage: "square.and.arrow.up") {
-                        showShare = true
-                    }
+                    .padding(16)
                 }
-                .padding(16)
+                .scrollBounceBehavior(.basedOnSize)
             }
             .background(Palette.paper)
             .navigationTitle(dateTitle)
@@ -84,6 +62,59 @@ struct RideDetailView: View {
                 }
             }
             .sheet(isPresented: $showShare) { ShareSheet(items: [fileURL]) }
+        }
+    }
+
+    private static let minMapHeight: CGFloat = 180
+
+    /// Mirrors the device's ride-complete screen in one card: distance,
+    /// moving time and DEM ascent, then avg speed / avg + normalized power /
+    /// avg HR, read straight from the FIT session.
+    private var statsCard: some View {
+        Card(padding: 14) {
+            VStack(spacing: 12) {
+                statRow([
+                    ("Distance", String(format: "%.1f", Units.distance(preview.distanceKm, miles: useMiles)),
+                     Units.distLabel(useMiles), 40),
+                    ("Moving Time", movingText, "", 26),
+                    ("Ascent", String(format: "%.0f", Units.elevation(preview.ascentM, miles: useMiles)),
+                     Units.elevLabel(useMiles), 26),
+                ])
+                Rectangle().fill(Palette.hairline).frame(height: 1)
+                statRow([
+                    ("Avg Speed", String(format: "%.1f", Units.speed(preview.avgSpeedKmh, miles: useMiles)),
+                     Units.speedLabel(useMiles), 22),
+                    ("Avg Power", preview.avgPower.map(String.init) ?? "—", "W", 22),
+                    ("Norm Power", preview.normPower.map(String.init) ?? "—", "W", 22),
+                    ("Avg HR", preview.avgHeartRate.map(String.init) ?? "—", "bpm", 22),
+                ])
+            }
+        }
+    }
+
+    /// Labels on one line and values on the next, so both line up across
+    /// columns even when one value is set larger.
+    private func statRow(_ cells: [(label: String, value: String, unit: String, size: CGFloat)]) -> some View {
+        VStack(spacing: 2) {
+            HStack(spacing: 8) {
+                ForEach(cells, id: \.label) { c in
+                    Text(c.label).font(BarlowFont.condensed(11, .medium)).tracking(0.8).textCase(.uppercase)
+                        .foregroundStyle(Palette.muted).lineLimit(1).minimumScaleFactor(0.8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            HStack(alignment: .lastTextBaseline, spacing: 8) {
+                ForEach(cells, id: \.label) { c in
+                    HStack(alignment: .firstTextBaseline, spacing: 3) {
+                        Text(c.value).font(c.size > 30 ? TypeScale.hero(c.size) : TypeScale.value(c.size))
+                            .foregroundStyle(Palette.ink).lineLimit(1).minimumScaleFactor(0.6)
+                        if !c.unit.isEmpty {
+                            Text(c.unit).font(BarlowFont.text(11)).foregroundStyle(Palette.muted)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
         }
     }
 
