@@ -219,7 +219,9 @@ private struct CloudRoutesList: View {
             }
             .frame(maxWidth: .infinity)
             .padding(.top, 14).padding(.bottom, 40)
-            .task(id: nextPage) { await loadMore() }
+            // In a Task of its own: .task is cancelled when the footer scrolls
+            // back out of view, and a cancelled request read as a failed page.
+            .task(id: nextPage) { await Task { await loadMore() }.value }
         } else if routes.isEmpty {
             Card(padding: 20) {
                 VStack(spacing: 10) {
@@ -269,6 +271,9 @@ private struct CloudRoutesList: View {
             let have = Set(routes.map(\.id))
             routes += got.routes.filter { !have.contains($0.id) }
             nextPage = got.nextPage
+        } catch is CancellationError {
+            // Left as it was; the footer asks again when it next appears.
+        } catch let e as URLError where e.code == .cancelled {
         } catch {
             loadError = error.localizedDescription
         }
