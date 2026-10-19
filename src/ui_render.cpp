@@ -3120,12 +3120,28 @@ void ui_render_stopwatch(const RideState& s, const Stopwatch& sw, uint32_t now,
 // ---------------------------------------------------------------------------
 // SEGMENT page — live Strava segments (segment_match.h).
 //
-// Four states, one column. Idle: the nearest starred segment and how far its
-// start is. Armed: at the start. Active: the elapsed time as big as the panel
-// allows, the delta against PR pace in a box that goes solid while the rider
-// is AHEAD (the one thing worth reading at a glance), and a progress bar with
-// the distance to go. Done: the time, the delta against the PR, NEW PR on a
-// solid band. At 1 Hz only the time, the delta and the bar change.
+// One column, top to bottom: what the segment is (caption, name, length /
+// grade / PR), a map of its line, its elevation profile, then the state's own
+// band. Idle: how far the nearest start is. Armed: READY. Active: the elapsed
+// time as big as the band allows, the delta against PR pace in a box that
+// goes solid while the rider is AHEAD (the one thing worth reading at a
+// glance), and the distance to go. Done: the time and the delta against the
+// PR, NEW PR in the solid box.
+//
+// The map is the line alone on paper, north up, fitted to its box with a
+// scale bar — no basemap. The map screen's tiles are projected full-screen
+// with a per-frame tile budget and drawn without clipping; reusing them for a
+// 492 x 232 inset would mean a second projection pass on the UI task every
+// frame. The line, the start and finish and the rider are what a segment
+// needs. Ridden part: thick solid; still to ride: a thin dashed line.
+//
+// The profile is altitude against distance, the ridden part solid and the
+// rest hatched, the rider a rule across it, min and max at its right.
+//
+// Refresh: the page repaints once a second during an effort (the clock).
+// Between two repaints the map and profile change only around the rider's
+// marker, so the driver's delta engine repaints those few pixels, not the
+// panels.
 // ---------------------------------------------------------------------------
 
 namespace {
@@ -3142,6 +3158,13 @@ const EpdFont* segFace(const char* hint, int maxH, int availW) {
             return kSegTimeLadder[i];
     return kSegTimeLadder[n - 1];
 }
+
+// Page geometry.
+constexpr int kSegRuleTop = 198;                       // under the header
+const EpdRect kSegMap = {24, 208, 492, 232};
+const EpdRect kSegProfile = {24, 452, 492, 116};
+constexpr int kSegProfileLabelsW = 84;                 // min / max column
+constexpr int kSegRuleBand = 580;                      // over the state's band
 
 // M:SS under the hour, H:MM:SS over.
 void segFmtTime(char* out, size_t cap, uint32_t ms) {
@@ -3184,8 +3207,7 @@ void segFmtDist(char* out, size_t cap, float m, bool miles) {
 // The name as the Impact faces can draw it: upper case, inside their
 // charset (the app has already folded accents away), stepped down a size
 // before it is cut short.
-void segName(const char* name, int x, int baseTop, int maxW, uint8_t* fb,
-             int* bottom) {
+void segName(const char* name, int x, int top, int maxW, uint8_t* fb) {
     char clean[seg::NAME_BYTES + 1];
     size_t n = 0;
     for (const char* p = name; *p && n < sizeof(clean) - 1; ++p) {
@@ -3195,18 +3217,16 @@ void segName(const char* name, int x, int baseTop, int maxW, uint8_t* fb,
         clean[n++] = c;
     }
     clean[n] = 0;
-    static const EpdFont* const steps[] = {&Impact_M, &Impact_V, &Impact_T};
+    static const EpdFont* const steps[] = {&Impact_V, &Impact_T};
     const EpdFont* f = &Impact_T;
     for (const EpdFont* s : steps)
         if (ui::textWidth(s, clean) <= maxW) { f = s; break; }
     char fit[seg::NAME_BYTES + 3];
     fitText(f, clean, maxW, fit, sizeof(fit));
-    const int h = epdc_digit_height(f);
-    ui::text(f, x, baseTop + h, fit, fb, EPD_DRAW_ALIGN_LEFT);
-    if (bottom) *bottom = baseTop + h;
+    ui::text(f, x, top + epdc_digit_height(&Impact_V), fit, fb, EPD_DRAW_ALIGN_LEFT);
 }
 
-// "1.6 KM · 5.7% · PR 5:04" — the segment in one line.
+// "1.6 KM  |  5.7%  |  PR 5:04" — the segment in one line.
 void segFacts(char* out, size_t cap, float lenM, int16_t gradeD, uint32_t prSec,
               bool miles) {
     char d[16], pr[16];
@@ -3223,20 +3243,230 @@ const char* segCompass(float deg) {
     return k[i];
 }
 
-// Centred message block for the states with nothing to time.
-void segMessage(const char* head, const char* l1, const char* l2, uint8_t* fb) {
+// Centred message block for the states with nothing to draw.
+void segMessage(int mid, const char* head, const char* l1, const char* l2,
+                uint8_t* fb) {
     const int W = epd_rotated_display_width();
-    const int mid = 420;
     ui::text(&Impact_M, W / 2, mid, head, fb, EPD_DRAW_ALIGN_CENTER);
     char line[96];
     if (l1 && l1[0]) {
         fitText(&Arial_B, l1, ui::CONTENT_W, line, sizeof(line));
-        ui::text(&Arial_B, W / 2, mid + 60, line, fb, EPD_DRAW_ALIGN_CENTER, ui::DARK);
+        ui::text(&Arial_B, W / 2, mid + 56, line, fb, EPD_DRAW_ALIGN_CENTER, ui::DARK);
     }
     if (l2 && l2[0]) {
         fitText(&Arial_B, l2, ui::CONTENT_W, line, sizeof(line));
-        ui::text(&Arial_B, W / 2, mid + 92, line, fb, EPD_DRAW_ALIGN_CENTER, ui::DARK);
+        ui::text(&Arial_B, W / 2, mid + 88, line, fb, EPD_DRAW_ALIGN_CENTER, ui::DARK);
     }
+}
+
+void segOutline(const EpdRect& r, int weight, uint8_t* fb) {
+    for (int e = 0; e < weight; ++e)
+        epd_draw_rect({r.x + e, r.y + e, r.width - 2 * e, r.height - 2 * e}, ui::INK, fb);
+}
+
+// A round-capped stroke: discs stamped every pixel along it.
+void segThick(int x0, int y0, int x1, int y1, int r, uint8_t* fb) {
+    const int dx = x1 - x0, dy = y1 - y0;
+    const int n = (int)sqrtf((float)(dx * dx + dy * dy));
+    for (int i = 0; i <= n; ++i) {
+        const int x = n ? x0 + dx * i / n : x0, y = n ? y0 + dy * i / n : y0;
+        epd_fill_circle(x, y, r, ui::INK, fb);
+    }
+}
+
+// A dashed 2 px stroke; `phase` carries the dash pattern across legs so a
+// many-pointed line still reads as one even dash.
+void segDashed(int x0, int y0, int x1, int y1, float& phase, uint8_t* fb) {
+    constexpr float ON = 9, PERIOD = 15;
+    const float dx = (float)(x1 - x0), dy = (float)(y1 - y0);
+    const float len = sqrtf(dx * dx + dy * dy);
+    for (float d = 0; d <= len; d += 1.0f) {
+        if (fmodf(phase + d, PERIOD) < ON) {
+            const int x = x0 + (int)(len > 0 ? dx * d / len : 0);
+            const int y = y0 + (int)(len > 0 ? dy * d / len : 0);
+            epd_fill_rect({x, y, 2, 2}, ui::INK, fb);
+        }
+    }
+    phase = fmodf(phase + len, PERIOD);
+}
+
+// A tidy scale-bar length: the largest 1/2/5 x 10^n in the rider's units that
+// fits `maxM`. Returns metres; `label` gets "200 M" / "0.5 MI".
+float segScaleLen(float maxM, bool miles, char* label, size_t cap) {
+    static const float steps[] = {1, 2, 5};
+    const float unitM = miles ? 1609.344f : 1.0f;
+    float best = 0;
+    for (float p = miles ? 0.01f : 10.0f; p <= 100000; p *= 10)
+        for (float s : steps)
+            if (s * p * unitM <= maxM) best = s * p;
+    if (best <= 0) best = miles ? 0.01f : 10.0f;
+    if (miles) {
+        if (best < 0.1f) snprintf(label, cap, "%d FT", (int)lroundf(best * 5280));
+        else snprintf(label, cap, "%g MI", best);
+    } else if (best >= 1000) {
+        snprintf(label, cap, "%g KM", best / 1000);
+    } else {
+        snprintf(label, cap, "%d M", (int)best);
+    }
+    return best * unitM;
+}
+
+// The segment's line in its box: north up, fitted, a scale bar, N.
+// `doneM` < 0 = nothing ridden yet (idle, armed).
+void segMap(const seg::View& v, const seg::Segment& sg, float doneM, bool miles,
+            uint8_t* fb) {
+    const EpdRect& b = kSegMap;
+    segOutline(b, ui::RULE, fb);
+    const seg::SegmentDb& db = *v.db;
+    const float* X = db.x + sg.first;
+    const float* Y = db.y + sg.first;
+    const float* C = db.cum + sg.first;
+    // The line fits above a 30 px strip kept for the scale bar, and clear of
+    // the N in the top right corner, so neither ever sits on it.
+    const int pad = 22, strip = 30;
+    const int innerW = b.width - 2 * pad - 24, innerH = b.height - 2 * pad - strip + 12;
+    const float spanX = fmaxf(sg.maxX - sg.minX, 50.0f);
+    const float spanY = fmaxf(sg.maxY - sg.minY, 50.0f);
+    const float k = fminf(innerW / spanX, innerH / spanY);
+    const float midX = (sg.minX + sg.maxX) / 2, midY = (sg.minY + sg.maxY) / 2;
+    const int cx = b.x + pad + innerW / 2, cy = b.y + pad - 6 + innerH / 2;
+    auto sx = [&](float x) { return cx + (int)lroundf((x - midX) * k); };
+    auto sy = [&](float y) { return cy - (int)lroundf((y - midY) * k); };
+
+    // Still to ride, dashed and thin; then the ridden part over it, thick.
+    float phase = 0;
+    for (int i = 0; i + 1 < sg.nPts; ++i) {
+        if (doneM >= C[i + 1]) continue;
+        float ax = X[i], ay = Y[i];
+        if (doneM > C[i]) {
+            const float t = (doneM - C[i]) / fmaxf(C[i + 1] - C[i], 1e-3f);
+            ax = X[i] + t * (X[i + 1] - X[i]);
+            ay = Y[i] + t * (Y[i + 1] - Y[i]);
+        }
+        segDashed(sx(ax), sy(ay), sx(X[i + 1]), sy(Y[i + 1]), phase, fb);
+    }
+    for (int i = 0; i + 1 < sg.nPts && doneM > C[i]; ++i) {
+        float bx = X[i + 1], by = Y[i + 1];
+        if (doneM < C[i + 1]) {
+            const float t = (doneM - C[i]) / fmaxf(C[i + 1] - C[i], 1e-3f);
+            bx = X[i] + t * (X[i + 1] - X[i]);
+            by = Y[i] + t * (Y[i + 1] - Y[i]);
+        }
+        segThick(sx(X[i]), sy(Y[i]), sx(bx), sy(by), 3, fb);
+    }
+
+    // Start: a ring. Finish: a chequered square.
+    const int x0 = sx(X[0]), y0 = sy(Y[0]);
+    epd_fill_circle(x0, y0, 11, ui::INK, fb);
+    epd_fill_circle(x0, y0, 6, ui::PAPER, fb);
+    const int xe = sx(X[sg.nPts - 1]), ye = sy(Y[sg.nPts - 1]);
+    const EpdRect fl = {xe - 9, ye - 9, 18, 18};
+    epd_fill_rect(fl, ui::PAPER, fb);
+    for (int r = 0; r < 3; ++r)
+        for (int c = 0; c < 3; ++c)
+            if ((r + c) % 2 == 0) epd_fill_rect({fl.x + c * 6, fl.y + r * 6, 6, 6}, ui::INK, fb);
+    epd_draw_rect(fl, ui::INK, fb);
+
+    // The rider, when inside the box: a solid disc on a paper ring. Not on
+    // the result, where it would only hide the finish it is sitting on.
+    if (v.riderValid && v.phase != seg::DONE) {
+        const int rx = sx(v.riderX), ry = sy(v.riderY);
+        if (rx > b.x + 12 && rx < b.x + b.width - 12 && ry > b.y + 12 &&
+            ry < b.y + b.height - 12) {
+            epd_fill_circle(rx, ry, 14, ui::PAPER, fb);
+            epd_fill_circle(rx, ry, 10, ui::INK, fb);
+        }
+    }
+
+    // Scale bar, bottom left; N, top right.
+    char lab[16];
+    const float barM = segScaleLen(innerW / 3.0f / k, miles, lab, sizeof(lab));
+    const int barW = (int)lroundf(barM * k);
+    const int bx = b.x + 12, by = b.y + b.height - 14;
+    epd_fill_rect({bx, by, barW, 3}, ui::INK, fb);
+    epd_fill_rect({bx, by - 6, 2, 9}, ui::INK, fb);
+    epd_fill_rect({bx + barW - 2, by - 6, 2, 9}, ui::INK, fb);
+    ui::text(&Arial_L, bx + barW + 8, by + 4, lab, fb, EPD_DRAW_ALIGN_LEFT);
+    const int nx = b.x + b.width - 22, ny = b.y + 14;
+    epd_fill_triangle(nx, ny, nx - 7, ny + 14, nx + 7, ny + 14, ui::INK, fb);
+    ui::text(&Arial_L, nx, ny + 30, "N", fb, EPD_DRAW_ALIGN_CENTER);
+}
+
+// Altitude against distance: solid where ridden, hatched ahead, the rider a
+// rule across it, max / min in the column at its right. `doneM` < 0 = no
+// marker (idle, armed).
+void segProfile(const seg::View& v, const seg::Segment& sg, float doneM, bool miles,
+                uint8_t* fb) {
+    const EpdRect& b = kSegProfile;
+    const seg::SegmentDb& db = *v.db;
+    const int w = b.width - kSegProfileLabelsW;
+    const int base = b.y + b.height - 2;
+    if (!sg.hasElev || sg.lenM <= 0) {
+        epd_fill_rect({b.x, base, b.width, 2}, ui::INK, fb);
+        ui::text(&Arial_L, b.x + b.width / 2, b.y + b.height / 2, "NO ELEVATION - SYNC AGAIN IN THE APP",
+                 fb, EPD_DRAW_ALIGN_CENTER, ui::DARK);
+        return;
+    }
+    // A flat segment must not look like a wall: at least 20 m of range.
+    float lo = sg.minElevM, hi = sg.maxElevM;
+    if (hi - lo < 20) {
+        const float mid = (hi + lo) / 2;
+        lo = mid - 10;
+        hi = mid + 10;
+    }
+    const int top = b.y + 8, h = base - top;
+    const int doneX = doneM < 0 ? -1 : b.x + (int)lroundf(doneM / sg.lenM * w);
+    int prevY = -1;
+    for (int c = 0; c < w; ++c) {
+        const float along = (c + 0.5f) / w * sg.lenM;
+        const float e = seg::elevAt(db, sg, along);
+        const int y = base - (int)lroundf((e - lo) / (hi - lo) * h);
+        const int x = b.x + c;
+        if (x <= doneX) {
+            epd_fill_rect({x, y, 1, base - y}, ui::INK, fb);
+        } else {
+            for (int yy = y; yy < base; ++yy)
+                if ((x + yy) % 3 == 0) epd_draw_pixel(x, yy, ui::INK, fb);
+            // The silhouette's edge, 2 px, joined to the last column.
+            const int y0 = prevY < 0 ? y : prevY;
+            const int ya = y0 < y ? y0 : y, yb = y0 < y ? y : y0;
+            epd_fill_rect({x, ya, 1, yb - ya + 2}, ui::INK, fb);
+        }
+        prevY = y;
+    }
+    epd_fill_rect({b.x, base, w, 2}, ui::INK, fb);
+    if (doneX >= b.x && doneM > 0 && doneM < sg.lenM) {
+        epd_fill_rect({doneX - 1, b.y, 3, base - b.y}, ui::INK, fb);
+        epd_fill_triangle(doneX - 9, b.y, doneX + 9, b.y, doneX, b.y + 12, ui::INK, fb);
+    }
+    char t[16];
+    const int lx = b.x + b.width;
+    snprintf(t, sizeof(t), "%d %s", (int)lroundf(units::elev(sg.maxElevM, miles)),
+             units::elevLabel(miles));
+    ui::text(&Arial_B, lx, b.y + 18, t, fb, EPD_DRAW_ALIGN_RIGHT);
+    snprintf(t, sizeof(t), "%d %s", (int)lroundf(units::elev(sg.minElevM, miles)),
+             units::elevLabel(miles));
+    ui::text(&Arial_B, lx, base, t, fb, EPD_DRAW_ALIGN_RIGHT);
+}
+
+// Header (caption, name, facts), rule, map, profile, rule. Returns false
+// when there is no segment to draw them for.
+bool segPanels(const RideState& s, const seg::View& v, const char* caption,
+               const char* name, float lenM, int16_t gradeD, uint32_t prSec,
+               float doneM, uint8_t* fb) {
+    const int W = epd_rotated_display_width();
+    char buf[96];
+    ui::label(W / 2, ui::STATUS_H + 34, caption, fb, ui::INK, &Arial_B);
+    segName(name, ui::CONTENT_X, ui::STATUS_H + 44, ui::CONTENT_W, fb);
+    segFacts(buf, sizeof(buf), lenM, gradeD, prSec, s.useMiles);
+    ui::text(&Arial_B, ui::CONTENT_X, kSegRuleTop - 14, buf, fb, EPD_DRAW_ALIGN_LEFT, ui::DARK);
+    epd_fill_rect({0, kSegRuleTop, W, ui::RULE}, ui::INK, fb);
+    if (!v.db || v.segIndex < 0 || v.segIndex >= v.db->count) return false;
+    const seg::Segment& sg = v.db->segs[v.segIndex];
+    segMap(v, sg, doneM, s.useMiles, fb);
+    segProfile(v, sg, doneM, s.useMiles, fb);
+    epd_fill_rect({0, kSegRuleBand, W, ui::RULE}, ui::INK, fb);
+    return true;
 }
 
 }  // namespace
@@ -3250,54 +3480,44 @@ void ui_render_segment(const RideState& s, const seg::View& v, uint8_t* fb) {
     char buf[96], t[24];
 
     // Strava's terms: their data, their name on it.
-    ui::label(W / 2, 940, "POWERED BY STRAVA", fb, ui::DARK);
+    ui::label(W / 2, 948, "POWERED BY STRAVA", fb, ui::DARK);
 
     if (v.phase == seg::IDLE) {
         if (v.count <= 0) {
-            segMessage("NO SEGMENTS", "Star segments on Strava, then in the app:",
+            segMessage(420, "NO SEGMENTS", "Star segments on Strava, then in the app:",
                        "Settings > Accounts > Strava > Sync.", fb);
             return;
         }
         if (!v.haveNearest) {
             snprintf(buf, sizeof(buf), "%d starred segment%s on the device.",
                      v.count, v.count == 1 ? "" : "s");
-            segMessage(s.gpsFix || s.phoneFixValid ? "NONE NEARBY" : "NO GPS FIX",
+            segMessage(420, s.gpsFix || s.phoneFixValid ? "NONE NEARBY" : "NO GPS FIX",
                        s.gpsFix || s.phoneFixValid
                            ? "None of them starts within 5 km."
                            : "Waiting for a position.",
                        buf, fb);
             return;
         }
-        // --- The nearest start. ----------------------------------------
-        ui::label(W / 2, ui::STATUS_H + 52, "NEXT SEGMENT", fb, ui::INK, &Arial_B);
-        int y = ui::STATUS_H + 76;
-        segName(v.nearestName, x, y, ui::CONTENT_W, fb, &y);
-        segFacts(buf, sizeof(buf), v.nearestLenM, v.nearestGradeD,
-                 v.nearestPrSec, s.useMiles);
-        ui::text(&Arial_B, x, y + 40, buf, fb, EPD_DRAW_ALIGN_LEFT, ui::DARK);
-        epd_fill_rect({0, y + 70, W, ui::RULE}, ui::INK, fb);
-
-        // Distance to the start, as big as it goes, and which way.
+        // --- The nearest segment: its line and profile, how far its start is.
+        segPanels(s, v, "NEXT SEGMENT", v.nearestName, v.nearestLenM, v.nearestGradeD,
+                  v.nearestPrSec, -1, fb);
         segFmtDist(t, sizeof(t), v.nearestM, s.useMiles);
-        char num[16];
-        snprintf(num, sizeof(num), "%s", t);
-        char* sp = strchr(num, ' ');
+        char* sp = strchr(t, ' ');
         const char* unit = "";
         if (sp) { *sp = 0; unit = sp + 1; }
-        const int bandTop = y + 72, bandBottom = 860;
         const int uw = ui::textWidth(&Impact_V, unit);
-        const EpdFont* f = segFace(num, 230, ui::CONTENT_W - uw - 16);
-        const int base = (bandTop + bandBottom) / 2 + epdc_digit_height(f) / 2 - 30;
-        const int nw = ui::textWidth(f, num);
+        const EpdFont* f = segFace(t, 158, ui::CONTENT_W - uw - 16);
+        const int base = kSegRuleBand + 24 + epdc_digit_height(f);
+        const int nw = ui::textWidth(f, t);
         const int startX = x + (ui::CONTENT_W - nw - 16 - uw) / 2;
-        ui::text(f, startX, base, num, fb, EPD_DRAW_ALIGN_LEFT);
+        ui::text(f, startX, base, t, fb, EPD_DRAW_ALIGN_LEFT);
         ui::text(&Impact_V, startX + nw + 16, base, unit, fb, EPD_DRAW_ALIGN_LEFT);
         snprintf(buf, sizeof(buf), "TO THE START  |  %s OF YOU",
                  segCompass(v.nearestBearingDeg));
-        ui::label(W / 2, base + 64, buf, fb, ui::INK, &Arial_B);
+        ui::label(W / 2, base + 50, buf, fb, ui::INK, &Arial_B);
         snprintf(buf, sizeof(buf), "%d starred segment%s on the device", v.count,
                  v.count == 1 ? "" : "s");
-        ui::text(&Arial_B, W / 2, 890, buf, fb, EPD_DRAW_ALIGN_CENTER, ui::DARK);
+        ui::text(&Arial_B, W / 2, base + 92, buf, fb, EPD_DRAW_ALIGN_CENTER, ui::DARK);
         return;
     }
 
@@ -3306,63 +3526,58 @@ void ui_render_segment(const RideState& s, const seg::View& v, uint8_t* fb) {
                           : v.phase == seg::ACTIVE  ? "ON SEGMENT"
                           : v.phase == seg::DONE    ? "FINISHED"
                                                     : "OFF SEGMENT";
-    ui::label(W / 2, ui::STATUS_H + 52, caption, fb, ui::INK, &Arial_B);
-    int y = ui::STATUS_H + 76;
-    segName(v.name, x, y, ui::CONTENT_W, fb, &y);
-    segFacts(buf, sizeof(buf), v.lenM, v.gradeD, v.prSec, s.useMiles);
-    ui::text(&Arial_B, x, y + 40, buf, fb, EPD_DRAW_ALIGN_LEFT, ui::DARK);
-    const int ruleY = y + 70;
-    epd_fill_rect({0, ruleY, W, ui::RULE}, ui::INK, fb);
+    const float doneM = v.phase == seg::ARMED ? -1 : v.doneM;
+    segPanels(s, v, caption, v.name, v.lenM, v.gradeD, v.prSec, doneM, fb);
 
     if (v.phase == seg::ARMED) {
-        segMessage("READY", "The clock starts as you ride off", "along the segment.", fb);
+        segMessage(kSegRuleBand + 120, "READY", "The clock starts as you ride off",
+                   "along the segment.", fb);
         return;
     }
 
     // The time.
     segFmtTime(t, sizeof(t), v.elapsedMs);
-    const EpdFont* tf = segFace(segTimeHint(v.elapsedMs), 230, ui::CONTENT_W);
-    const int timeBase = ruleY + 36 + epdc_digit_height(tf);
+    const EpdFont* tf = segFace(segTimeHint(v.elapsedMs), 158, ui::CONTENT_W);
+    const int timeBase = kSegRuleBand + 18 + epdc_digit_height(tf);
     ui::text(tf, W / 2, timeBase, t, fb, EPD_DRAW_ALIGN_CENTER);
 
     // The delta box: solid while ahead (or on a new PR), outlined behind.
-    const EpdRect box = {x, timeBase + 36, (uint16_t)ui::CONTENT_W, 170};
+    // The word on the left, the number on the right.
+    const EpdRect box = {x, timeBase + 18, ui::CONTENT_W, 104};
     const bool ahead = v.phase == seg::DONE ? v.newPr : (v.haveDelta && v.deltaMs < 0);
     const uint8_t fg = ahead ? ui::PAPER : ui::INK;
     if (ahead) epd_fill_rect(box, ui::INK, fb);
-    else
-        for (int e = 0; e < 3; ++e)
-            epd_draw_rect({box.x + e, box.y + e, (uint16_t)(box.width - 2 * e),
-                           (uint16_t)(box.height - 2 * e)}, ui::INK, fb);
+    else segOutline(box, 3, fb);
     const char* word;
+    const char* word2 = "";
     if (v.phase == seg::ABANDONED) {
         word = "ABANDONED";
         snprintf(t, sizeof(t), "--");
     } else if (!v.haveDelta) {
-        word = v.phase == seg::DONE ? "FIRST TIME - NEW PR" : "NO PR TO RACE";
+        word = v.phase == seg::DONE ? "FIRST TIME" : "NO PR";
+        word2 = v.phase == seg::DONE ? "NEW PR" : "TO RACE";
         snprintf(t, sizeof(t), "--");
     } else {
         segFmtDelta(t, sizeof(t), v.deltaMs);
         const bool even = t[0] != '+' && t[0] != '-';
-        word = v.phase == seg::DONE
-                   ? (v.newPr ? "NEW PR" : even ? "TIED YOUR PR" : "SLOWER THAN PR")
-                   : even ? "ON PR PACE" : v.deltaMs < 0 ? "AHEAD OF PR" : "BEHIND PR";
+        if (v.phase == seg::DONE) {
+            word = v.newPr ? "NEW PR" : even ? "TIED" : "SLOWER";
+            word2 = v.newPr ? "" : even ? "YOUR PR" : "THAN PR";
+        } else {
+            word = even ? "ON PR" : v.deltaMs < 0 ? "AHEAD" : "BEHIND";
+            word2 = even ? "PACE" : "OF PR";
+        }
     }
-    ui::label(W / 2, box.y + 34, word, fb, fg, &Arial_B);
-    const EpdFont* df = &Impact_H;
-    if (ui::textWidth(df, t) > ui::CONTENT_W - 40) df = &Impact_B;
-    ui::text(df, W / 2, box.y + box.height - 20, t, fb, EPD_DRAW_ALIGN_CENTER, fg);
+    const int wordBase = word2[0] ? box.y + 46 : box.y + 62;
+    ui::text(&ArialBold_20, box.x + 20, wordBase, word, fb, EPD_DRAW_ALIGN_LEFT, fg);
+    if (word2[0])
+        ui::text(&ArialBold_20, box.x + 20, wordBase + 36, word2, fb, EPD_DRAW_ALIGN_LEFT, fg);
+    ui::text(&Impact_B, box.x + box.width - 20, box.y + box.height - 12, t, fb,
+             EPD_DRAW_ALIGN_RIGHT, fg);
 
-    // Progress: a bar, the distance to go and the percentage.
-    const int barY = box.y + box.height + 40;
-    const float frac = v.lenM > 0 ? (v.doneM / v.lenM < 0 ? 0 : v.doneM / v.lenM > 1 ? 1 : v.doneM / v.lenM) : 0;
-    const EpdRect bar = {x, barY, (uint16_t)ui::CONTENT_W, 44};
-    for (int e = 0; e < 3; ++e)
-        epd_draw_rect({bar.x + e, bar.y + e, (uint16_t)(bar.width - 2 * e),
-                       (uint16_t)(bar.height - 2 * e)}, ui::INK, fb);
-    const int fillW = (int)((bar.width - 12) * frac);
-    if (fillW > 0) epd_fill_rect({bar.x + 6, bar.y + 6, (uint16_t)fillW, (uint16_t)(bar.height - 12)}, ui::INK, fb);
-    const int rowBase = barY + 44 + 24 + epdc_digit_height(&Impact_T);
+    // Distance to go (or ridden) and the percentage, under the box.
+    const float frac = v.lenM > 0 ? fminf(fmaxf(v.doneM / v.lenM, 0), 1) : 0;
+    const int rowBase = box.y + box.height + 18 + epdc_digit_height(&Impact_T);
     if (v.phase == seg::ACTIVE) {
         segFmtDist(t, sizeof(t), v.lenM - v.doneM > 0 ? v.lenM - v.doneM : 0, s.useMiles);
         snprintf(buf, sizeof(buf), "%s TO GO", t);
@@ -3371,14 +3586,14 @@ void ui_render_segment(const RideState& s, const seg::View& v, uint8_t* fb) {
         snprintf(buf, sizeof(buf), "%s RIDDEN", t);
     }
     ui::text(&Impact_T, x, rowBase, buf, fb, EPD_DRAW_ALIGN_LEFT);
-    snprintf(buf, sizeof(buf), "%d%%", (int)(frac * 100 + 0.5f) > 100 ? 100 : (int)(frac * 100 + 0.5f));
+    snprintf(buf, sizeof(buf), "%d%%", (int)(frac * 100 + 0.5f));
     ui::text(&Impact_T, right, rowBase, buf, fb, EPD_DRAW_ALIGN_RIGHT);
 
-    // Off the line mid-effort: say so before it is abandoned.
+    // Off the line mid-effort: say so over the map, before it is abandoned.
     if (v.phase == seg::ACTIVE && v.offRoute) {
-        const EpdRect band = {0, rowBase + 24, (uint16_t)W, 56};
+        const EpdRect band = {kSegMap.x, kSegMap.y + kSegMap.height - 52, kSegMap.width, 52};
         epd_fill_rect(band, ui::INK, fb);
-        ui::label(W / 2, band.y + 38, "OFF THE SEGMENT - GET BACK ON", fb,
+        ui::label(W / 2, band.y + 35, "OFF THE SEGMENT - GET BACK ON", fb,
                   ui::PAPER, &Arial_B);
     }
 }

@@ -45,15 +45,20 @@ LL at(double eastM, double northM) {
     return {LAT0 + northM / 110540.0, LON0 + eastM / mLon()};
 }
 
-// The fixture the apps' encoders must reproduce byte for byte.
+// The fixtures the apps' encoders must reproduce byte for byte, v1 and v2.
 // Segment 1: id 1234567890123 (past 32 bits), "Café climb" (UTF-8), PR 754 s,
-// 1609.3 m, 5.7 %, three points. Segment 2: id 42, "Flat", no PR, 500.0 m,
-// -0.3 %, two points.
-const char* kFixtureHex =
+// 1609.3 m, 5.7 %, three points at 10.0 / 12.5 / -3.2 m. Segment 2: id 42,
+// "Flat", no PR, 500.0 m, -0.3 %, two points, no elevation.
+const char* kFixtureHexV1 =
     "4f54534701000200cb04fb711f010000f2020000dd3e0000390003000b436166"
     "c3a920636c696d6258b93900401c45ffbcb939000e1c45ff52ba3900361c45ff"
     "2a000000000000000000000088130000fdff020004466c6174a0ad3900803b45"
     "ff62af3900803b45ff";
+const char* kFixtureHexV2 =
+    "4f54534702000200cb04fb711f010000f2020000dd3e000039000300010b4361"
+    "66c3a920636c696d6258b93900401c45ff7427bcb939000e1c45ff8d2752ba39"
+    "00361c45fff0262a000000000000000000000088130000fdff02000004466c61"
+    "74a0ad3900803b45ff000062af3900803b45ff0000";
 
 std::vector<uint8_t> fromHex(const char* h) {
     std::vector<uint8_t> out;
@@ -74,17 +79,18 @@ std::string toHex(const uint8_t* b, size_t n) {
     return s;
 }
 
-std::vector<uint8_t> fixtureBlob() {
+std::vector<uint8_t> fixtureBlob(int version) {
     static const int32_t lat1[] = {3783000, 3783100, 3783250};
     static const int32_t lon1[] = {-12248000, -12248050, -12248010};
+    static const float elev1[] = {10.0f, 12.5f, -3.2f};
     static const int32_t lat2[] = {3780000, 3780450};
     static const int32_t lon2[] = {-12240000, -12240000};
     seg::SourceSegment src[2] = {
-        {1234567890123ull, "Caf\xc3\xa9 climb", 754, 16093, 57, 3, lat1, lon1},
+        {1234567890123ull, "Caf\xc3\xa9 climb", 754, 16093, 57, 3, lat1, lon1, elev1},
         {42, "Flat", 0, 5000, -3, 2, lat2, lon2},
     };
     std::vector<uint8_t> out(1024);
-    out.resize(seg::encodeBlob(src, 2, out.data(), out.size()));
+    out.resize(seg::encodeBlob(src, 2, out.data(), out.size(), version));
     return out;
 }
 
@@ -150,16 +156,18 @@ struct Rider {
 
 void testBlob() {
     g_case = "blob";
-    std::vector<uint8_t> b = fixtureBlob();
-    const std::string hex = toHex(b.data(), b.size());
-    check(hex == kFixtureHex, "fixture bytes: " + hex);
-    // Parse the shared bytes themselves: what the apps send.
-    b = fromHex(kFixtureHex);
-    seg::SegmentDb db;
-    const char* err = "";
-    check(seg::parseBlob(b.data(), b.size(), db, &err), std::string("parse: ") + err);
-    check(db.count == 2, "count");
-    if (db.count == 2) {
+    for (int ver = 1; ver <= 2; ++ver) {
+        const char* want = ver == 1 ? kFixtureHexV1 : kFixtureHexV2;
+        std::vector<uint8_t> enc = fixtureBlob(ver);
+        const std::string hex = toHex(enc.data(), enc.size());
+        check(hex == want, "v" + std::to_string(ver) + " fixture bytes: " + hex);
+        // Parse the shared bytes themselves: what the apps send.
+        std::vector<uint8_t> b = fromHex(want);
+        seg::SegmentDb db;
+        const char* err = "";
+        check(seg::parseBlob(b.data(), b.size(), db, &err), std::string("parse: ") + err);
+        check(db.count == 2, "count");
+        if (db.count != 2) continue;
         check(db.segs[0].id == 1234567890123ull, "id past 32 bits");
         check(strcmp(db.segs[0].name, "Caf\xc3\xa9 climb") == 0, "utf-8 name");
         check(db.segs[0].prSec == 754 && db.segs[0].distDm == 16093 &&
@@ -169,7 +177,23 @@ void testBlob() {
         checkNear(db.segs[1].lenM, 497.4, 1.0, "length from the points");
         checkNear(db.segs[1].startBearingDeg, 0, 0.5, "due north");
         check(db.segs[1].nPts == 2 && db.totalPts == 5, "points");
+        check(!db.segs[1].hasElev, "segment 2 has no elevation");
+        if (ver == 1) {
+            check(!db.segs[0].hasElev, "v1 carries no elevation");
+        } else {
+            check(db.segs[0].hasElev, "v2 elevation");
+            checkNear(db.elev[0], 10.0, 0.05, "elev 0");
+            checkNear(db.elev[1], 12.5, 0.05, "elev 1");
+            checkNear(db.elev[2], -3.2, 0.05, "elev 2 below sea level");
+            checkNear(db.segs[0].minElevM, -3.2, 0.05, "min elev");
+            checkNear(db.segs[0].maxElevM, 12.5, 0.05, "max elev");
+            const seg::Segment& s0 = db.segs[0];
+            checkNear(seg::elevAt(db, s0, db.cum[1] / 2), 11.25, 0.05, "elevation between points");
+            checkNear(seg::elevAt(db, s0, 1e6), -3.2, 0.05, "past the end");
+        }
     }
+    std::vector<uint8_t> b = fromHex(kFixtureHexV2);
+    seg::SegmentDb db;
     // The empty set is valid (the rider unstarred everything).
     const uint8_t empty[] = {'O', 'T', 'S', 'G', 1, 0, 0, 0};
     check(seg::parseBlob(empty, sizeof(empty), db) && db.count == 0, "empty set");
@@ -185,8 +209,14 @@ void testBlob() {
     bad[0] = 'X';
     rejects(bad, "bad magic");
     bad = b;
-    bad[4] = 2;
-    rejects(bad, "unknown version");
+    bad[4] = 3;
+    rejects(bad, "a version from the future");
+    bad = b;
+    bad[4] = 0;
+    rejects(bad, "version 0");
+    bad = b;
+    bad[4] = 1;   // v2 bytes labelled v1: the sizes no longer add up
+    rejects(bad, "v2 body as v1");
     rejects(std::vector<uint8_t>(b.begin(), b.end() - 1), "truncated");
     bad = b;
     bad.push_back(0);
@@ -245,6 +275,11 @@ void testEffort() {
     check(e.mid.phase == seg::ACTIVE, "active at 750 m north");
     check(strcmp(e.mid.name, "The L") == 0, "name");
     checkNear(e.mid.doneM, 750, 6, "progress");
+    // What the page's map draws: this segment, the rider in its frame.
+    check(e.mid.db == &db && e.mid.segIndex == 0 && e.mid.riderValid, "map segment + rider");
+    checkNear(e.mid.riderX, 0, 1, "rider east of the start");
+    checkNear(e.mid.riderY, 750, 2, "rider north of the start");
+    check(e.done.segIndex == 0, "result keeps its segment for the map");
     checkNear(e.mid.lenM, 1500, 2, "length");
     check(e.mid.haveDelta, "delta");
     checkNear(e.mid.deltaMs / 1000.0, 0, 2.0, "on PR pace");
@@ -372,6 +407,8 @@ void testNearest() {
     m.view(rd.t, v);
     check(v.count == 2, "count");
     check(v.haveNearest && strcmp(v.nearestName, "The L") == 0, "the L is nearest");
+    check(v.segIndex == 0 && v.riderValid, "idle map: the nearest segment");
+    checkNear(v.riderY, -2000, 3, "rider 2 km south of its start");
     checkNear(v.nearestM, 2000, 5, "2 km to its start");
     checkNear(v.nearestBearingDeg, 0, 1, "due north of the rider");
     check(v.nearestPrSec == 300, "its PR");

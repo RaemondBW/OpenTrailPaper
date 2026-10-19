@@ -365,9 +365,11 @@ class MediaCb : public NimBLECharacteristicCallbacks {
 //                      blob (segment_match.h's format), replacing the set
 //   [0x0A] segments data  : blob bytes, appended in order
 //   [0x0B] segments end   : validate + store -> the device notifies
-//                      [0x25][1 accepted | 2 rejected][u16 count]
+//                      [0x25][1 accepted | 2 rejected][u16 count][u8 ver]
 //   [0x0C] segments query : the device notifies [0x25][0][u16 count]
-//                      (0xFFFF = no set yet). Firmware before segments
+//                      (0xFFFF = no set yet). Every [0x25] carries a fifth
+//                      byte, the newest blob version the firmware reads
+//                      (2 = with elevation); absent means 1. Firmware before segments
 //                      ignores 0x09..0x0C and never answers, which is how the
 //                      app tells it needs an update.
 constexpr size_t ROUTE_MAX = 256 * 1024;  // 256 KB GPX cap (PSRAM)
@@ -2980,8 +2982,10 @@ void task(void*) {
             const int a = segAck; segAck = 0;
             const int n = segments::count();
             const uint16_t c = n < 0 ? 0xFFFF : (uint16_t)n;
-            uint8_t pkt[4] = {0x25, (uint8_t)(a - 1), (uint8_t)(c & 0xFF),
-                              (uint8_t)(c >> 8)};
+            // The fifth byte: the newest blob version this firmware reads,
+            // so the app sends elevation (v2) only to firmware that takes it.
+            uint8_t pkt[5] = {0x25, (uint8_t)(a - 1), (uint8_t)(c & 0xFF),
+                              (uint8_t)(c >> 8), seg::BLOB_VERSION};
             routeChr->setValue(pkt, sizeof(pkt));
             routeChr->notify();
         }

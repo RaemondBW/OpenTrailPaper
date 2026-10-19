@@ -12,27 +12,35 @@
 // the matcher that times them on the SEGMENT page (`page segment`).
 //
 // The app does all the Strava work (the API, the PR times, cutting each
-// segment's polyline down to MAX_POINTS) and sends the device one compact
-// blob over BLE. The device keeps it on the SD card as /segments/starred.bin
-// and parses it into a SegmentDb. Everything in this header is host-safe —
-// no Arduino, `now` is passed in (millis()) — so tools/segment_test covers the
+// segment's line down to MAX_POINTS) and sends the device one compact blob
+// over BLE. The device keeps it on the SD card as /segments/starred.bin and
+// parses it into a SegmentDb. Everything in this header is host-safe — no
+// Arduino, `now` is passed in (millis()) — so tools/segment_test covers the
 // format and the matcher on a synthetic ride.
 //
-// --- Blob format, version 1 (little-endian) ------------------------------
-//   header   "OTSG"  u8 version (1)  u8 flags (0)  u16 count
+// --- Blob format (little-endian) ------------------------------------------
+//   header   "OTSG"  u8 version (1 or 2)  u8 flags (0)  u16 count
 //   per segment, `count` times:
 //     u64 id              Strava segment id
 //     u32 prSec           the athlete's PR elapsed time, s (0 = none)
 //     u32 distDm          Strava's segment distance, decimetres
 //     i16 gradeD          average grade, 0.1 %
-//     u16 nPts            polyline points, 2..MAX_POINTS
+//     u16 nPts            points, 2..MAX_POINTS
+//     u8  segFlags        v2 only: bit 0 = the points carry real elevation
 //     u8  nameLen         UTF-8 bytes, <= NAME_BYTES
 //     name bytes
-//     nPts x (i32 latE5, i32 lonE5)   1e-5 degrees, the polyline's own grid
-// Anything malformed rejects the whole blob, so a half-received sync never
-// replaces a good set. The apps' encoders live in companion-ios/Sources/
-// StravaSegments.swift and companion-android/.../data/StravaSegments.kt; all
-// three are checked against the same bytes (tools/segment_test).
+//     nPts x (i32 latE5, i32 lonE5)            v1: 8 bytes a point
+//     nPts x (i32 latE5, i32 lonE5, u16 elev)  v2: 10 bytes a point;
+//                         elev = (metres + ELEV_OFFSET_M) x 10, i.e.
+//                         decimetres from -1000 m to +5553 m
+// Version 2 adds the elevation for the page's profile. Firmware reads both;
+// the apps send v2 only to a device that said it takes it (the count query's
+// reply carries the newest version, see ble_server.cpp). An unknown version
+// is rejected like any other malformed blob: the whole thing, so a
+// half-received or too-new sync never replaces a good set. The apps' encoders
+// live in companion-ios/Sources/StravaSegments.swift and
+// companion-android/.../data/StravaSegments.kt; all three are checked against
+// the same bytes (tools/segment_test).
 //
 // --- The matcher ----------------------------------------------------------
 // Fed each GPS fix (position + the millis() it arrived). Phases:
@@ -60,14 +68,21 @@
 
 namespace seg {
 
-constexpr uint8_t BLOB_VERSION = 1;
+constexpr uint8_t BLOB_VERSION_MIN = 1;
+constexpr uint8_t BLOB_VERSION = 2;   // the newest this firmware reads
 constexpr int MAX_SEGMENTS = 64;
 constexpr int MAX_POINTS = 200;
 constexpr int NAME_BYTES = 47;
+constexpr int ELEV_OFFSET_M = 1000;
 constexpr size_t HEADER_BYTES = 8;
-constexpr size_t SEG_FIXED_BYTES = 8 + 4 + 4 + 2 + 2 + 1;
+constexpr size_t SEG_FIXED_BYTES_V1 = 8 + 4 + 4 + 2 + 2 + 1;
+constexpr size_t SEG_FIXED_BYTES_V2 = SEG_FIXED_BYTES_V1 + 1;
 constexpr size_t BLOB_MAX =
-    HEADER_BYTES + (size_t)MAX_SEGMENTS * (SEG_FIXED_BYTES + NAME_BYTES + MAX_POINTS * 8);
+    HEADER_BYTES + (size_t)MAX_SEGMENTS * (SEG_FIXED_BYTES_V2 + NAME_BYTES + MAX_POINTS * 10);
+inline size_t segFixedBytes(int version) {
+    return version >= 2 ? SEG_FIXED_BYTES_V2 : SEG_FIXED_BYTES_V1;
+}
+inline size_t pointBytes(int version) { return version >= 2 ? 10 : 8; }
 
 // Matcher tuning.
 constexpr float ARM_RADIUS_M = 25.0f;     // at the start
@@ -102,6 +117,11 @@ struct Segment {
     float startBearingDeg = 0;
     // Bounding box, degrees, for a quick reject.
     double minLat = 0, maxLat = 0, minLon = 0, maxLon = 0;
+    // The same box in the local frame (metres), for drawing the line.
+    float minX = 0, maxX = 0, minY = 0, maxY = 0;
+    // Elevation along it (v2 blobs that carried it); else no profile.
+    bool hasElev = false;
+    float minElevM = 0, maxElevM = 0;
 };
 
 inline void* segAlloc(size_t n) {
@@ -114,13 +134,16 @@ inline void* segAlloc(size_t n) {
 }
 
 // The parsed set. Points are in each segment's local metric frame (metres
-// east/north of its point 0), with the along-polyline distance to each.
+// east/north of its point 0), with the along-polyline distance to each and
+// the elevation (0 where the segment has none). 16 bytes a point: the full
+// 64 x 200 set is 205 KB, in PSRAM on the device.
 struct SegmentDb {
     int count = 0;
     Segment* segs = nullptr;
     float* x = nullptr;
     float* y = nullptr;
     float* cum = nullptr;
+    float* elev = nullptr;
     int totalPts = 0;
 
     SegmentDb() = default;
@@ -133,8 +156,9 @@ struct SegmentDb {
         free(x);
         free(y);
         free(cum);
+        free(elev);
         segs = nullptr;
-        x = y = cum = nullptr;
+        x = y = cum = elev = nullptr;
         count = totalPts = 0;
     }
     void swap(SegmentDb& o) {
@@ -145,6 +169,7 @@ struct SegmentDb {
         f = x; x = o.x; o.x = f;
         f = y; y = o.y; o.y = f;
         f = cum; cum = o.cum; o.cum = f;
+        f = elev; elev = o.elev; o.elev = f;
     }
 };
 
@@ -173,18 +198,20 @@ inline int scanBlob(const uint8_t* b, size_t n, int* totalPts, const char** err)
     auto fail = [&](const char* m) { if (err) *err = m; return -1; };
     if (!b || n < HEADER_BYTES) return fail("too short");
     if (memcmp(b, "OTSG", 4) != 0) return fail("bad magic");
-    if (b[4] != BLOB_VERSION) return fail("unknown version");
+    const int ver = b[4];
+    if (ver < BLOB_VERSION_MIN || ver > BLOB_VERSION) return fail("unknown version");
+    const size_t fixed = segFixedBytes(ver), ptB = pointBytes(ver);
     const int count = rd16(b + 6);
     if (count > MAX_SEGMENTS) return fail("too many segments");
     size_t off = HEADER_BYTES;
     int pts = 0;
     for (int i = 0; i < count; ++i) {
-        if (n - off < SEG_FIXED_BYTES) return fail("truncated segment");
+        if (n - off < fixed) return fail("truncated segment");
         const int np = rd16(b + off + 18);
-        const int nl = b[off + 20];
+        const int nl = b[off + fixed - 1];
         if (np < 2 || np > MAX_POINTS) return fail("bad point count");
         if (nl > NAME_BYTES) return fail("name too long");
-        const size_t need = SEG_FIXED_BYTES + nl + (size_t)np * 8;
+        const size_t need = fixed + nl + (size_t)np * ptB;
         if (n - off < need) return fail("truncated points");
         off += need;
         pts += np;
@@ -201,6 +228,8 @@ inline bool parseBlob(const uint8_t* b, size_t n, SegmentDb& out,
     int total = 0;
     const int count = scanBlob(b, n, &total, err);
     if (count < 0) return false;
+    const int ver = b[4];
+    const size_t fixed = segFixedBytes(ver), ptB = pointBytes(ver);
     SegmentDb db;
     db.count = count;
     db.totalPts = total;
@@ -209,7 +238,8 @@ inline bool parseBlob(const uint8_t* b, size_t n, SegmentDb& out,
         db.x = (float*)segAlloc(sizeof(float) * total);
         db.y = (float*)segAlloc(sizeof(float) * total);
         db.cum = (float*)segAlloc(sizeof(float) * total);
-        if (!db.segs || !db.x || !db.y || !db.cum) {
+        db.elev = (float*)segAlloc(sizeof(float) * total);
+        if (!db.segs || !db.x || !db.y || !db.cum || !db.elev) {
             if (err) *err = "out of memory";
             return false;
         }
@@ -225,10 +255,11 @@ inline bool parseBlob(const uint8_t* b, size_t n, SegmentDb& out,
         s.distDm = rd32(p + 12);
         s.gradeD = (int16_t)rd16(p + 16);
         s.nPts = rd16(p + 18);
-        const int nl = p[20];
-        memcpy(s.name, p + 21, nl);
+        s.hasElev = ver >= 2 && (p[20] & 1);
+        const int nl = p[fixed - 1];
+        memcpy(s.name, p + fixed, nl);
         s.name[nl] = 0;
-        const uint8_t* q = p + 21 + nl;
+        const uint8_t* q = p + fixed + nl;
         s.first = at;
         s.lat0 = (int32_t)rd32(q) / 1e5;
         s.lon0 = (int32_t)rd32(q + 4) / 1e5;
@@ -238,8 +269,9 @@ inline bool parseBlob(const uint8_t* b, size_t n, SegmentDb& out,
         float len = 0;
         bool haveBearing = false;
         for (int k = 0; k < s.nPts; ++k) {
-            const double lat = (int32_t)rd32(q + k * 8) / 1e5;
-            const double lon = (int32_t)rd32(q + k * 8 + 4) / 1e5;
+            const uint8_t* r = q + k * ptB;
+            const double lat = (int32_t)rd32(r) / 1e5;
+            const double lon = (int32_t)rd32(r + 4) / 1e5;
             const float px = (float)((lon - s.lon0) * s.mPerDegLon);
             const float py = (float)((lat - s.lat0) * M_PER_DEG_LAT);
             if (k > 0) {
@@ -249,6 +281,10 @@ inline bool parseBlob(const uint8_t* b, size_t n, SegmentDb& out,
             db.x[at + k] = px;
             db.y[at + k] = py;
             db.cum[at + k] = len;
+            const float e = s.hasElev ? rd16(r + 8) / 10.0f - ELEV_OFFSET_M : 0.0f;
+            db.elev[at + k] = e;
+            if (k == 0 || e < s.minElevM) s.minElevM = e;
+            if (k == 0 || e > s.maxElevM) s.maxElevM = e;
             // The first leg's direction: from the start to the first point at
             // least 15 m out (a polyline can open with a 1 m jitter).
             if (!haveBearing && (sqrtf(px * px + py * py) >= 15.0f || k == s.nPts - 1) && k > 0) {
@@ -259,13 +295,32 @@ inline bool parseBlob(const uint8_t* b, size_t n, SegmentDb& out,
             if (lat > s.maxLat) s.maxLat = lat;
             if (lon < s.minLon) s.minLon = lon;
             if (lon > s.maxLon) s.maxLon = lon;
+            if (k == 0 || px < s.minX) s.minX = px;
+            if (k == 0 || px > s.maxX) s.maxX = px;
+            if (k == 0 || py < s.minY) s.minY = py;
+            if (k == 0 || py > s.maxY) s.maxY = py;
         }
         s.lenM = len;
         at += s.nPts;
-        off += SEG_FIXED_BYTES + nl + (size_t)s.nPts * 8;
+        off += fixed + nl + (size_t)s.nPts * ptB;
     }
     out.swap(db);
     return true;
+}
+
+// Elevation at `alongM` metres along segment `s` (linear between points).
+inline float elevAt(const SegmentDb& db, const Segment& s, float alongM) {
+    const float* C = db.cum + s.first;
+    const float* E = db.elev + s.first;
+    if (alongM <= 0) return E[0];
+    for (int i = 0; i + 1 < s.nPts; ++i) {
+        if (alongM <= C[i + 1]) {
+            const float span = C[i + 1] - C[i];
+            const float t = span > 0 ? (alongM - C[i]) / span : 0;
+            return E[i] + t * (E[i + 1] - E[i]);
+        }
+    }
+    return E[s.nPts - 1];
 }
 
 enum Phase : uint8_t { IDLE, ARMED, ACTIVE, DONE, ABANDONED };
@@ -294,6 +349,14 @@ struct View {
     int32_t deltaMs = 0;        // + behind PR pace, - ahead
     bool newPr = false;         // DONE: beat (or set) the PR
     bool offRoute = false;      // ACTIVE: currently off the line
+    // The segment the page draws (map + profile): the effort's, the result's,
+    // or the nearest one while idle. -1 = none. `db` stays valid for the
+    // frame (the UI task owns both).
+    const SegmentDb* db = nullptr;
+    int segIndex = -1;
+    // The rider in that segment's local frame (metres east/north of its start).
+    bool riderValid = false;
+    float riderX = 0, riderY = 0;
 };
 
 class Matcher {
@@ -313,6 +376,7 @@ public:
         haveCourse_ = false;
         haveAnchor_ = false;
         finishing_ = false;
+        haveRider_ = false;
     }
 
     // What the page shows: an effort in progress, else a result still up,
@@ -346,6 +410,9 @@ public:
     void update(uint32_t now, double lat, double lon) {
         now = tick(now);
         updateCourse(lat, lon);
+        haveRider_ = true;
+        riderLat_ = lat;
+        riderLon_ = lon;
         if (!db_ || db_->count == 0) {
             nearest_ = -1;
             return;
@@ -365,6 +432,8 @@ public:
         v = View();
         v.count = db_ ? db_->count : 0;
         if (!db_) return;
+        v.db = db_;
+        if (nearest_ >= 0 && nearest_ < db_->count) place(v, nearest_);
         if (nearest_ >= 0 && nearest_ < db_->count) {
             const Segment& n = db_->segs[nearest_];
             v.haveNearest = true;
@@ -377,6 +446,7 @@ public:
         }
         if (phase_ != ACTIVE && resultShowing(now) && resultSeg_ < db_->count) {
             const Segment& s = db_->segs[resultSeg_];
+            place(v, resultSeg_);
             v.phase = result_;
             strncpy(v.name, s.name, sizeof(v.name) - 1);
             v.lenM = s.lenM;
@@ -399,6 +469,7 @@ public:
         v.phase = phase_;
         if (cur_ < 0 || cur_ >= db_->count || phase_ == IDLE) return;
         const Segment& s = db_->segs[cur_];
+        place(v, cur_);
         strncpy(v.name, s.name, sizeof(v.name) - 1);
         v.prSec = s.prSec;
         v.lenM = s.lenM;
@@ -450,6 +521,16 @@ private:
     float resultDoneM_ = 0;
     uint32_t prBefore_ = 0;
     bool newPr_ = false;
+
+    // Last fix, for the rider marker on the page's map.
+    bool haveRider_ = false;
+    double riderLat_ = 0, riderLon_ = 0;
+
+    void place(View& v, int idx) const {
+        v.segIndex = idx;
+        v.riderValid = haveRider_;
+        if (haveRider_) local(db_->segs[idx], riderLat_, riderLon_, v.riderX, v.riderY);
+    }
 
     bool resultShowing(uint32_t now) const {
         if (resultSeg_ < 0) return false;
@@ -643,7 +724,7 @@ private:
 
 // Encoder, for the host tests and as the reference the apps' encoders are
 // checked against. Returns bytes written, 0 when it does not fit or a
-// segment breaks the format's limits.
+// segment breaks the format's limits. `version` 1 drops the elevation.
 struct SourceSegment {
     uint64_t id;
     const char* name;
@@ -653,11 +734,13 @@ struct SourceSegment {
     int nPts;
     const int32_t* latE5;
     const int32_t* lonE5;
+    const float* elevM = nullptr;   // nullptr = no elevation
 };
 
 inline size_t encodeBlob(const SourceSegment* src, int count, uint8_t* out,
-                         size_t cap) {
+                         size_t cap, int version = BLOB_VERSION) {
     if (count < 0 || count > MAX_SEGMENTS) return 0;
+    if (version < BLOB_VERSION_MIN || version > BLOB_VERSION) return 0;
     size_t n = 0;
     auto put = [&](const void* p, size_t k) {
         if (n + k > cap) return false;
@@ -670,18 +753,25 @@ inline size_t encodeBlob(const SourceSegment* src, int count, uint8_t* out,
         for (int i = 0; i < bytes; ++i) b[i] = (uint8_t)(v >> (8 * i));
         return put(b, bytes);
     };
-    if (!put("OTSG", 4) || !le(BLOB_VERSION, 1) || !le(0, 1) || !le(count, 2)) return 0;
+    if (!put("OTSG", 4) || !le(version, 1) || !le(0, 1) || !le(count, 2)) return 0;
     for (int i = 0; i < count; ++i) {
         const SourceSegment& s = src[i];
         size_t nl = strlen(s.name);
         if (nl > NAME_BYTES) nl = NAME_BYTES;
         if (s.nPts < 2 || s.nPts > MAX_POINTS) return 0;
         if (!le(s.id, 8) || !le(s.prSec, 4) || !le(s.distDm, 4) ||
-            !le((uint16_t)s.gradeD, 2) || !le(s.nPts, 2) || !le(nl, 1) ||
-            !put(s.name, nl))
+            !le((uint16_t)s.gradeD, 2) || !le(s.nPts, 2))
             return 0;
-        for (int k = 0; k < s.nPts; ++k)
+        if (version >= 2 && !le(s.elevM ? 1 : 0, 1)) return 0;
+        if (!le(nl, 1) || !put(s.name, nl)) return 0;
+        for (int k = 0; k < s.nPts; ++k) {
             if (!le((uint32_t)s.latE5[k], 4) || !le((uint32_t)s.lonE5[k], 4)) return 0;
+            if (version >= 2) {
+                long dm = s.elevM ? lroundf((s.elevM[k] + ELEV_OFFSET_M) * 10.0f) : 0;
+                dm = dm < 0 ? 0 : dm > 65535 ? 65535 : dm;
+                if (!le((uint64_t)dm, 2)) return 0;
+            }
+        }
     }
     return n;
 }
