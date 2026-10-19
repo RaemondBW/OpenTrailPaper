@@ -467,6 +467,20 @@ object SyncAccounts {
     }
 
     /**
+     * One segment's line with its altitude (GET /segments/{id}/streams); null
+     * when Strava sent no usable latlng. Raw errors, like [segmentDetail].
+     */
+    suspend fun segmentStreams(id: Long): Pair<List<LatLon>, List<Double>?>? = withContext(Dispatchers.IO) {
+        val keeper = keepers[Provider.STRAVA]?.takeIf { isConnected(Provider.STRAVA) }
+            ?: throw SyncException("Connect Strava in Settings first.")
+        StravaSegments.parseStreams(
+            keeper.authorized {
+                getText("https://www.strava.com/api/v3/segments/$id/streams?keys=latlng,altitude,distance&key_by_type=true", it)
+            },
+        )
+    }
+
+    /**
      * Strava lists routes by athlete id. Kept from the sign-in since route
      * import; an account connected before that looks it up once (GET /athlete).
      */

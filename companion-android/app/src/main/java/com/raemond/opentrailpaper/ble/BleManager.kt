@@ -1278,7 +1278,7 @@ class BleManager(private val app: Application) {
         sensorsChar = null; mapChar = null; otaChar = null; dashChar = null
         meshChar = null; mediaChar = null; workoutChar = null
         // The next device may be another one, or older firmware.
-        segmentsSupported = null; deviceSegmentCount = null
+        segmentsSupported = null; deviceSegmentCount = null; deviceSegmentVersion = 1
         segmentAck?.complete(false); segmentAck = null
         // Pending edits stay cached; the next connect reads and merges.
         settingsSeenThisLink = false; settingsWriteInFlight = null
@@ -2380,6 +2380,8 @@ class BleManager(private val app: Application) {
                 val count = (d[2].toInt() and 0xFF) or ((d[3].toInt() and 0xFF) shl 8)
                 segmentsSupported = true
                 deviceSegmentCount = if (count == 0xFFFF) null else count
+                // The newest blob version the firmware reads; absent = 1 (no elevation).
+                deviceSegmentVersion = if (d.size >= 5) d[4].toInt() and 0xFF else 1
                 val status = d[1].toInt() and 0xFF
                 if (status != 0) segmentAck?.let { segmentAck = null; it.complete(status == 1) }
             }
@@ -2395,6 +2397,8 @@ class BleManager(private val app: Application) {
      * before them never answers the query, which is how false is found.
      */
     var segmentsSupported by mutableStateOf<Boolean?>(null); private set
+    /** The newest segment blob version the device reads (2 = with elevation). */
+    var deviceSegmentVersion by mutableStateOf(1); private set
     private var segmentAck: CompletableDeferred<Boolean>? = null
 
     /** Ask the device how many segments it has ([0x0C] -> [0x25][0][u16]). */
