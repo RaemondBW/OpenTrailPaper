@@ -33,6 +33,7 @@
 		4608B467E047801D5219DD54 /* faceijk.c in Sources */ = {isa = PBXBuildFile; fileRef = 21F000263728C013838D0605 /* faceijk.c */; };
 		4C0F6C64C32AF7035999D782 /* ArtDither.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F0FA5A490092653FA6B10D1 /* ArtDither.swift */; };
 		50C29F659BE2ACD7B9B29D73 /* Barlow-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = F21BF62E40922CF797D8119D /* Barlow-Regular.ttf */; };
+		53056AA52FEFE3404542FCAC /* StravaSegments.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1ADA7245422C723F1EEBF718 /* StravaSegments.swift */; };
 		578D5A6227F3573A17A1CE9B /* MeshScanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2ACAD995F312514690C2FF16 /* MeshScanner.swift */; };
 		592497FD48D74D86C61AC752 /* FirebaseAppCheck in Frameworks */ = {isa = PBXBuildFile; productRef = 880B86FA551AFFB25164DF8A /* FirebaseAppCheck */; };
 		59AED5C1500B37FB3E7E3010 /* vec3d.c in Sources */ = {isa = PBXBuildFile; fileRef = 85064AEE7F2DEAD8495F5FDC /* vec3d.c */; };
@@ -61,6 +62,7 @@
 		B1BE7F5A245A3C270036C6E2 /* algos.c in Sources */ = {isa = PBXBuildFile; fileRef = ABBED3B34B25D9BCAFA3FDB5 /* algos.c */; };
 		B7B9A2B225320284C4D52661 /* DeviceSettingsSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78C78BE2E3D4CB0B74C0CB4D /* DeviceSettingsSync.swift */; };
 		BE0814223F037C69E39B93D7 /* RidesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F897B750389038E18EE9AC09 /* RidesView.swift */; };
+		BE45AB2D9DB1E0AB42312DE5 /* SegmentSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B31F90CE651E6EE9951FBB2 /* SegmentSync.swift */; };
 		BF7FEB57C05E17549C09CF25 /* DashLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9D6BB31E96DD85DBE9B68CA /* DashLayout.swift */; };
 		C462314C3BD9E277B9F451A9 /* MapsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7C77C595BBAE5BCBD82A004 /* MapsView.swift */; };
 		C7F7382D5542409C17015EFB /* SketchIcon.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73ECF60CAA9C73957BC40AC2 /* SketchIcon.swift */; };
@@ -121,6 +123,7 @@
 		13F29A55A7651044F3D95A3C /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		158AB26E91BB4024B25490AD /* h3shim.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = h3shim.c; sourceTree = "<group>"; };
 		1727B3F48F1EFA384DE4B5C8 /* h3api.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = h3api.h; sourceTree = "<group>"; };
+		1ADA7245422C723F1EEBF718 /* StravaSegments.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StravaSegments.swift; sourceTree = "<group>"; };
 		21F000263728C013838D0605 /* faceijk.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = faceijk.c; sourceTree = "<group>"; };
 		22AE81B336FF77D1655400EA /* constants.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = constants.h; sourceTree = "<group>"; };
 		27A939183F2903B61CA144FB /* bbox.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = bbox.h; sourceTree = "<group>"; };
@@ -133,6 +136,7 @@
 		37C3CA9775B956BC238BAA42 /* BikeGPSCompanionApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BikeGPSCompanionApp.swift; sourceTree = "<group>"; };
 		403E838590B5304D34C70F23 /* mathExtensions.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = mathExtensions.h; sourceTree = "<group>"; };
 		42632703DAE05E73F934FFE1 /* Barlow-SemiBold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Barlow-SemiBold.ttf"; sourceTree = "<group>"; };
+		4B31F90CE651E6EE9951FBB2 /* SegmentSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentSync.swift; sourceTree = "<group>"; };
 		4B4C752C73B32E5B3E92EAE4 /* PhoneMock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneMock.swift; sourceTree = "<group>"; };
 		4D6D4D7CC3D2F7CA7F2BB14A /* vec3d.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = vec3d.h; sourceTree = "<group>"; };
 		590A2666A030966B6741EDAF /* FITDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FITDecoder.swift; sourceTree = "<group>"; };
@@ -318,9 +322,11 @@
 				F897B750389038E18EE9AC09 /* RidesView.swift */,
 				C4E83FB3A70437DD5D0F8629 /* RideView.swift */,
 				A26EB50B7E6CF1B4A63235CA /* RouteView.swift */,
+				4B31F90CE651E6EE9951FBB2 /* SegmentSync.swift */,
 				0D0FC030F1FACFFD44C96837 /* SensorsView.swift */,
 				BE5C27C920995C9292457A9C /* SettingsView.swift */,
 				73ECF60CAA9C73957BC40AC2 /* SketchIcon.swift */,
+				1ADA7245422C723F1EEBF718 /* StravaSegments.swift */,
 				F8892300C56FF2C207FA2543 /* SyncAccounts.swift */,
 				79F3F907C8247AC1B8A63959 /* Theme.swift */,
 				E15692F37161BEC610966D47 /* TileCache.swift */,
@@ -557,9 +563,11 @@
 				2D50FCD8D5DDF2010C20E161 /* RideView.swift in Sources */,
 				BE0814223F037C69E39B93D7 /* RidesView.swift in Sources */,
 				79F918433F0C02EF0915A0EE /* RouteView.swift in Sources */,
+				BE45AB2D9DB1E0AB42312DE5 /* SegmentSync.swift in Sources */,
 				5D1E2FE5B8652DC846C39AF7 /* SensorsView.swift in Sources */,
 				F5E522C16FCFE097E2072926 /* SettingsView.swift in Sources */,
 				C7F7382D5542409C17015EFB /* SketchIcon.swift in Sources */,
+				53056AA52FEFE3404542FCAC /* StravaSegments.swift in Sources */,
 				937C33A6DB0DBC569E69366E /* SyncAccounts.swift in Sources */,
 				D017F03AE055F1971F5815BA /* Theme.swift in Sources */,
 				F6958E6E296967C90F9CDC75 /* TileCache.swift in Sources */,

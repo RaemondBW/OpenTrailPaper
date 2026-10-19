@@ -184,6 +184,24 @@ struct DashboardEditorView: View {
                     }
                     .padding(.vertical, 4)
                 }
+            } else if config.pages.indices.contains(pageIx), config.pages[pageIx].isSegment {
+                Section {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label("Segment", systemImage: "flag.checkered")
+                        Text("Live Strava segments. Sync your starred segments in Settings > Accounts > Strava. Away from them the page shows the nearest start within 5 km; ride through a start and it times the effort against your PR, then shows your result. Efforts are timed on any page. Needs device firmware v1.23 or newer.")
+                            .font(TypeScale.body).foregroundStyle(Palette.muted)
+                        Toggle(isOn: Binding(
+                            get: { config.pages.indices.contains(pageIx) ? config.pages[pageIx].autoShow : true },
+                            set: { v in
+                                guard config.pages.indices.contains(pageIx) else { return }
+                                config.pages[pageIx].autoShow = v
+                                dirty = true
+                            })) {
+                            Text("Switch to this page when a segment starts").font(TypeScale.body)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
             } else if config.pages.indices.contains(pageIx) {
                 Section {
                     VStack(alignment: .leading, spacing: 8) {
@@ -243,6 +261,7 @@ struct DashboardEditorView: View {
             case .map: MapPagePreview(fields: config.mapFields)
             case .workout: WorkoutPagePreview()
             case .stopwatch: StopwatchPagePreview()
+            case .segment: SegmentPagePreview()
             case .fields: DashPreview(layout: config.pages[i].layout)
             }
         }
@@ -335,6 +354,13 @@ struct DashboardEditorView: View {
                     addPage(.stopwatch, proxy)
                 } label: {
                     Label("Stopwatch", systemImage: "stopwatch")
+                }
+            }
+            if !config.hasSegmentPage {
+                Button {
+                    addPage(.segment, proxy)
+                } label: {
+                    Label("Segment", systemImage: "flag.checkered")
                 }
             }
         } label: {
@@ -929,6 +955,56 @@ struct StopwatchPagePreview: View {
                     .frame(width: ws[i] * k, height: 156 * k)
                     .offset(x: xs[i] * k, y: 780 * k)
                 }
+            }
+            .foregroundStyle(.black)
+        }
+        .background(Color(hex: 0xF7F5EF))
+    }
+}
+
+/// Miniature of the device's SEGMENT page (ui_render_segment) mid-effort:
+/// the name, the time, the delta box (solid while ahead), the progress bar.
+struct SegmentPagePreview: View {
+    var body: some View {
+        GeometryReader { geo in
+            let k = geo.size.width / 540
+            ZStack(alignment: .topLeading) {
+                Text("14:25").font(.system(size: 30 * k, weight: .bold))
+                    .offset(x: 14 * k, y: 14 * k)
+                Text("SEGMENT").font(.system(size: 22 * k, weight: .heavy))
+                    .kerning(4 * k)
+                    .frame(width: 540 * k)
+                    .offset(y: 18 * k)
+                Text("76%").font(.system(size: 30 * k, weight: .bold))
+                    .offset(x: 440 * k, y: 14 * k)
+                Rectangle().fill(.black)
+                    .frame(width: 540 * k, height: 3 * k)
+                    .offset(y: 61 * k)
+                Text("HAWK HILL CLIMB").font(.system(size: 50 * k, weight: .black))
+                    .offset(x: 24 * k, y: 130 * k)
+                Rectangle().fill(.black)
+                    .frame(width: 540 * k, height: 2 * k)
+                    .offset(y: 256 * k)
+                Text("5:09").font(.system(size: 170 * k, weight: .black))
+                    .frame(width: 540 * k)
+                    .offset(y: 270 * k)
+                ZStack {
+                    Rectangle().fill(.black)
+                    Text("-0:11").font(.system(size: 90 * k, weight: .black))
+                        .foregroundStyle(.white)
+                }
+                .frame(width: 492 * k, height: 170 * k)
+                .offset(x: 24 * k, y: 488 * k)
+                ZStack(alignment: .leading) {
+                    Rectangle().stroke(.black, lineWidth: max(1, 3 * k))
+                    Rectangle().fill(.black)
+                        .frame(width: 290 * k, height: 32 * k)
+                        .padding(.leading, 6 * k)
+                }
+                .frame(width: 492 * k, height: 44 * k)
+                .offset(x: 24 * k, y: 698 * k)
+                Text("935 M TO GO").font(.system(size: 34 * k, weight: .heavy))
+                    .offset(x: 24 * k, y: 762 * k)
             }
             .foregroundStyle(.black)
         }
