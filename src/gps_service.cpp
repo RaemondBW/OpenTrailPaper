@@ -705,6 +705,9 @@ void task(void*) {
                     s.latitude = gps.location.lat();
                     s.longitude = gps.location.lng();
                     s.everHadFix = true;
+                    // When the receiver's sentence carrying it landed (lat()
+                    // has already cleared isUpdated(), so not that).
+                    s.gpsFixMs = millis() - gps.location.age();
                 }
                 if (gps.altitude.isValid()) s.altitudeM = gps.altitude.meters();
                 // No fix, no speed: never carry the last moving value forward.

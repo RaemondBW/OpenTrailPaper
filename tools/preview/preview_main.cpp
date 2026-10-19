@@ -22,6 +22,7 @@
 #include "media_state.h"
 #include "workout.h"
 #include "stopwatch.h"
+#include "segment_match.h"
 #include "map_view.h"
 #include "map_tiles.h"
 
@@ -1098,6 +1099,98 @@ int main(int argc, char** argv) {
         clearWhite(fb.data());
         ui_render_stopwatch(s, longer, v, fb.data());
         emit("stopwatch_laps_hour.png");
+    }
+
+    // SEGMENT page (live Strava segments): idle with the nearest start, no
+    // segments, none nearby, at the start, mid-effort ahead / behind / off
+    // the line, and the finish (new PR, slower, first time) and an abandon.
+    // Views are built directly — the matcher behind them is covered by
+    // tools/segment_test.
+    {
+        auto page = [&](const seg::View& v, const char* name,
+                        const RideState& rs) {
+            clearWhite(fb.data());
+            ui_render_segment(rs, v, fb.data());
+            emit(name);
+        };
+        auto named = [](seg::View& v, const char* n, float lenM, int16_t g,
+                        uint32_t pr) {
+            snprintf(v.name, sizeof(v.name), "%s", n);
+            v.lenM = lenM;
+            v.gradeD = g;
+            v.prSec = pr;
+        };
+        seg::View idle;
+        idle.count = 23;
+        idle.haveNearest = true;
+        snprintf(idle.nearestName, sizeof(idle.nearestName), "Hawk Hill Climb");
+        idle.nearestM = 1240;
+        idle.nearestLenM = 2410;
+        idle.nearestGradeD = 57;
+        idle.nearestPrSec = 524;
+        idle.nearestBearingDeg = 40;
+        page(idle, "segment_idle.png", s);
+        RideState mi = s;
+        mi.useMiles = true;
+        seg::View close = idle;
+        close.nearestM = 180;
+        page(close, "segment_idle_close_miles.png", mi);
+
+        seg::View none;
+        page(none, "segment_none.png", s);
+        seg::View far;
+        far.count = 23;
+        page(far, "segment_far.png", s);
+
+        seg::View armed;
+        armed.count = 23;
+        armed.phase = seg::ARMED;
+        named(armed, "Hawk Hill Climb", 2410, 57, 524);
+        page(armed, "segment_armed.png", s);
+
+        seg::View act = armed;
+        act.phase = seg::ACTIVE;
+        act.doneM = 1475;
+        act.elapsedMs = 309400;
+        act.haveDelta = true;
+        act.deltaMs = -11300;
+        page(act, "segment_active_ahead.png", s);
+        act.deltaMs = 14800;
+        page(act, "segment_active_behind.png", s);
+        act.offRoute = true;
+        page(act, "segment_active_off.png", s);
+
+        seg::View longName = armed;
+        longName.phase = seg::ACTIVE;
+        named(longName, "Old La Honda (Bridge to Mailboxes) official", 5420, 73, 1984);
+        longName.doneM = 610;
+        longName.elapsedMs = 241000;
+        longName.haveDelta = true;
+        longName.deltaMs = 18000;
+        page(longName, "segment_active_long_name.png", s);
+
+        seg::View done = armed;
+        done.phase = seg::DONE;
+        done.doneM = 2410;
+        done.elapsedMs = 509000;
+        done.haveDelta = true;
+        done.deltaMs = -15000;
+        done.newPr = true;
+        page(done, "segment_done_pr.png", s);
+        done.deltaMs = 22000;
+        done.newPr = false;
+        page(done, "segment_done_slower.png", s);
+        seg::View first = done;
+        first.haveDelta = false;
+        first.newPr = true;
+        first.prSec = 0;
+        page(first, "segment_done_first.png", s);
+
+        seg::View gone = armed;
+        gone.phase = seg::ABANDONED;
+        gone.doneM = 880;
+        gone.elapsedMs = 201000;
+        page(gone, "segment_abandoned.png", s);
     }
 
     // WORKOUT pages, per the Claude Design "Workout View" frames: executing

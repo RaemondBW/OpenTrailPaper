@@ -17,6 +17,7 @@
 #include "rtc_clock.h"
 #include "settings.h"
 #include "routes.h"
+#include "segments.h"
 #include "ble_sensors.h"
 #include "ble_server.h"
 #include "ride_recorder.h"
@@ -456,6 +457,7 @@ void setup() {
     ui_dashboard::bootStatus("SD card", sdOk);
     if (sdOk) {
         routes::begin();
+        segments::begin();   // starred Strava segments, for the SEGMENT page
     }
     // Restore the wall clock from the coin-cell RTC (which, unlike the ESP32's
     // internal clock, survives a full power-off). Must happen before the GPS

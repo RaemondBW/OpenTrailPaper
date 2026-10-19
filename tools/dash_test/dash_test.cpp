@@ -198,6 +198,36 @@ void testStopwatchPage() {
           "stopwatch survives round trip in place");
 }
 
+// --- Segment page -----------------------------------------------------------
+
+void testSegmentPage() {
+    begin("pages: segment parses and round trips, with its manual option");
+    const char* cfg =
+        "speed hero\n"
+        "page segment\n"
+        "page map\n";
+    DashPages pages;
+    check(dashParsePages(cfg, pages), "parse succeeds");
+    check(pages.count == 3 && pages.pages[1].kind == DP_SEGMENT,
+          "second page is the segment page");
+    check(pages.pages[1].autoShow, "switches to itself by default");
+    char buf[1024];
+    check(dashSerializePages(pages, buf, sizeof(buf)) > 0, "serialized");
+    check(strstr(buf, "page segment\n") != nullptr, "serializes as `page segment`");
+
+    DashPages manual;
+    check(dashParsePages("speed hero\npage segment manual\n", manual),
+          "manual parses");
+    check(manual.pages[1].kind == DP_SEGMENT && !manual.pages[1].autoShow,
+          "manual = no auto-switch");
+    check(dashSerializePages(manual, buf, sizeof(buf)) > 0, "serialized");
+    check(strstr(buf, "page segment manual\n") != nullptr, "manual round trips");
+    DashPages back;
+    check(dashParsePages(buf, back) && back.pages[1].kind == DP_SEGMENT &&
+              !back.pages[1].autoShow,
+          "manual survives a round trip");
+}
+
 // Older firmware sees `page stopwatch` as an unknown kind: an empty field page,
 // dropped. This parser applies the same rule to any FUTURE kind, so a newer
 // app's config never breaks the layout around it.
@@ -454,6 +484,7 @@ int main() {
     testPagesWithAvgSpeed();
     testSerializePagesRoundTrip();
     testStopwatchPage();
+    testSegmentPage();
     testUnknownPageKindDropped();
     testStopwatchClock();
 
