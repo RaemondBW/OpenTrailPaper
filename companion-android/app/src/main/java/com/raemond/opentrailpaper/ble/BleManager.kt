@@ -531,6 +531,9 @@ class BleManager(private val app: Application) {
     private var deviceMapsBuilding = mutableListOf<DeviceMap>()
     private var sensorsBuilding = mutableListOf<BikeSensor>()
     private var logsBuilding = mutableListOf<LogFile>()
+    // Device ride-list entries collect here and replace `rides` only when the
+    // list completes, so a refresh doesn't blank the Rides tab mid-fetch.
+    private var ridesBuilding = mutableListOf<RideFile>()
 
     // Download reassembly
     private var dlBuffer = java.io.ByteArrayOutputStream()
@@ -1361,7 +1364,7 @@ class BleManager(private val app: Application) {
         } else {
             barrenConnects = 0
         }
-        rides = emptyList(); loadingRides = false
+        rides = emptyList(); ridesBuilding = mutableListOf(); loadingRides = false
         // Nothing queued can proceed without a link, and a half-received file
         // must not be mistaken for a complete one on reconnect.
         if (dlActive != null || dlQueue.isNotEmpty()) {
@@ -2030,13 +2033,14 @@ class BleManager(private val app: Application) {
         // list spinning forever or the download waiting on its watchdog. Wait
         // for the line instead.
         if (dlActive != null || dlQueue.isNotEmpty()) { listRefreshPending = true; return }
-        rides = emptyList()
+        ridesBuilding = mutableListOf()
         loadingRides = true
         writeChar(ridesChar, byteArrayOf(0x01))
     }
 
     fun deleteRide(name: String) {
         rides = rides.filterNot { it.name == name }
+        ridesBuilding.removeAll { it.name == name }
         // Drop it from the download queue too, so a deleted ride doesn't get
         // fetched (and re-cached) moments later.
         dlQueue.removeAll { it == Transfer.Ride(name) }
@@ -2197,15 +2201,17 @@ class BleManager(private val app: Application) {
         when (d.firstOrNull()?.toInt()?.and(0xFF) ?: return) {
             0x01 -> {   // list entry: [u32 size][name]
                 if (d.size <= 5) return
-                rides = rides + RideFile(
-                    name = String(d, 5, d.size - 5, Charsets.UTF_8),
-                    size = le32(d, 1),
+                ridesBuilding.add(
+                    RideFile(
+                        name = String(d, 5, d.size - 5, Charsets.UTF_8),
+                        size = le32(d, 1),
+                    ),
                 )
             }
 
             0x03 -> {   // list done
                 loadingRides = false
-                rides = rides.sortedByDescending { it.name }   // newest first
+                rides = ridesBuilding.sortedByDescending { it.name }   // newest first
             }
 
             0x30 -> {   // log-list entry: [u32 size][name]

@@ -87,6 +87,19 @@ struct RidesView: View {
         }
     }
 
+    // Inline status above the list while the device's ride list is being
+    // fetched — the cached rides stay visible underneath it.
+    private var checkingRow: some View {
+        HStack(spacing: 8) {
+            ProgressView().controlSize(.small).tint(Palette.muted)
+            Text("Checking for new rides…")
+                .font(BarlowFont.text(13, .medium)).foregroundStyle(Palette.muted)
+            Spacer()
+        }
+        .padding(.horizontal, 4)
+        .transition(.opacity)
+    }
+
     // Week roll-up from whatever previews are decoded (fills in as rows load).
     private func summary(_ rides: [RideFile]) -> some View {
         let recent = rides.filter { daysAgo($0.name) <= 7 }
@@ -140,14 +153,16 @@ struct RidesView: View {
         NavigationStack {
             ScrollView {
                 let rides = displayedRides
+                let checking = ble.state == .connected && ble.loadingRides
                 VStack(spacing: 14) {
                     header
                     if ble.status.recording { inProgressBanner }
+                    if checking { checkingRow }
                     if !rides.isEmpty { summary(rides) }
 
-                    if ble.state == .connected && ble.loadingRides {
-                        ProgressView("Loading rides…").padding(.top, 30)
-                    } else if rides.isEmpty {
+                    // With nothing cached yet, the checking row above stands in
+                    // for the empty state until the device answers.
+                    if rides.isEmpty && !checking {
                         Card {
                             VStack(alignment: .leading, spacing: 6) {
                                 Text(ble.status.recording ? "No synced rides yet"
@@ -162,7 +177,7 @@ struct RidesView: View {
                                     .font(BarlowFont.text(14)).foregroundStyle(Palette.muted)
                             }
                         }
-                    } else {
+                    } else if !rides.isEmpty {
                         ForEach(rides) { ride in
                             RideRow(ride: ride,
                                     cached: BLEManager.isCached(ride.name),
@@ -182,6 +197,7 @@ struct RidesView: View {
                     }
                 }
                 .padding(16)
+                .animation(.easeInOut(duration: 0.2), value: checking)
             }
             .background(Palette.paper.ignoresSafeArea())
             .navigationBarHidden(true)

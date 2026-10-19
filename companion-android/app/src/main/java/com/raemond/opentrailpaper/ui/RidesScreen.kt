@@ -1,6 +1,9 @@
 package com.raemond.opentrailpaper.ui
 
 import android.graphics.Bitmap
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -89,14 +92,10 @@ fun RidesScreen(ble: BleManager) {
     // busy recording), so the device list is empty then — the cached rides keep
     // showing instead of the view going blank. Newest first.
     val rides: List<RideFile> = remember(ble.rides, cachedNames, ble.state) {
-        if (ble.state != BleManager.ConnState.CONNECTED) {
-            cachedNames
-        } else {
-            val seen = HashSet<String>()
-            (ble.rides + cachedNames).filter { seen.add(it.name) }
-                .sortedByDescending { it.name }
-        }
+        if (ble.state != BleManager.ConnState.CONNECTED) cachedNames
+        else mergeRides(ble.rides, cachedNames)
     }
+    val checking = ble.state == BleManager.ConnState.CONNECTED && ble.loadingRides
 
     LaunchedEffect(ble.state) {
         if (ble.state == BleManager.ConnState.CONNECTED) ble.refreshRides()
@@ -131,15 +130,13 @@ fun RidesScreen(ble: BleManager) {
     ) {
         RidesHeader(ble)
         if (ble.status.recording) InProgressBanner()
+        AnimatedVisibility(checking, enter = fadeIn(), exit = fadeOut()) { CheckingRow() }
         if (rides.isNotEmpty()) WeekSummary(rides, previews, ble.useMiles)
 
         when {
-            ble.state == BleManager.ConnState.CONNECTED && ble.loadingRides ->
-                Box(Modifier.fillMaxWidth().padding(top = 30.dp), Alignment.Center) {
-                    CircularProgressIndicator(color = Palette.accent)
-                }
-
-            rides.isEmpty() -> Card {
+            // With nothing cached yet, the checking row above stands in for the
+            // empty state until the device answers.
+            rides.isEmpty() -> if (!checking) Card {
                 Text(
                     when {
                         ble.status.recording -> "No synced rides yet"
@@ -234,6 +231,29 @@ fun RidesScreen(ble: BleManager) {
                 ble.downloadRide(file.name)
             },
         ) { failedFile = null }
+    }
+}
+
+/**
+ * The device's ride list merged with the rides already cached on this phone,
+ * one entry per name, newest first. The device's entry wins on a duplicate.
+ */
+internal fun mergeRides(device: List<RideFile>, cached: List<RideFile>): List<RideFile> {
+    val seen = HashSet<String>()
+    return (device + cached).filter { seen.add(it.name) }.sortedByDescending { it.name }
+}
+
+// Inline status above the list while the device's ride list is being fetched —
+// the cached rides stay visible underneath it.
+@Composable
+private fun CheckingRow() {
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        CircularProgressIndicator(Modifier.size(14.dp), color = Palette.muted, strokeWidth = 2.dp)
+        Text("Checking for new rides…", style = barlow(13.sp, FontWeight.Medium), color = Palette.muted)
     }
 }
 

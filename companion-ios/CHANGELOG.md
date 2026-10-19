@@ -12,6 +12,10 @@ submitting.
   page in the Home-key cycle. It needs firmware v1.23. Older firmware
   leaves the page out, and the editor shows the layout the device kept.
   The Android app has the same option.
+- Rides: rides already on the phone show straight away when the device is
+  connected, with "Checking for new rides…" above them while the app asks
+  the device for its list. New rides join the list when it arrives. The
+  Android app does the same.
 
 ## 1.3 (build 17)
 

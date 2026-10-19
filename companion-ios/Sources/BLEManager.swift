@@ -387,6 +387,9 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var deviceLogs: [LogFile] = []        // per-day log files on the device
     @Published var loadingLogs = false
     private var logsBuilding: [LogFile] = []
+    // Device ride-list entries collect here and replace `rides` only when the
+    // list completes, so a refresh doesn't blank the Rides tab mid-fetch.
+    private var ridesBuilding: [RideFile] = []
     // Firmware now comes from GitHub Releases at runtime (FirmwareRelease), not
     // from a copy baked into the app. See that file for why the bundle went.
 
@@ -1363,13 +1366,14 @@ final class BLEManager: NSObject, ObservableObject {
         // list spinning forever or the download waiting on its watchdog. Wait
         // for the line instead.
         guard dlActive == nil, dlQueue.isEmpty else { listRefreshPending = true; return }
-        rides = []
+        ridesBuilding = []
         loadingRides = true
         p.writeValue(Data([0x01]), for: c, type: .withResponse)
     }
 
     func deleteRide(_ name: String) {
         rides.removeAll { $0.name == name }
+        ridesBuilding.removeAll { $0.name == name }
         // Drop it from the download queue too, so a deleted ride doesn't get
         // fetched (and re-cached) moments later.
         dlQueue.removeAll { $0 == .ride(name) }
@@ -2552,10 +2556,10 @@ final class BLEManager: NSObject, ObservableObject {
             guard d.count > 5 else { return }
             let size = Int(d[1]) | (Int(d[2]) << 8) | (Int(d[3]) << 16) | (Int(d[4]) << 24)
             let name = String(decoding: d[5...], as: UTF8.self)
-            rides.append(RideFile(name: name, size: size))
+            ridesBuilding.append(RideFile(name: name, size: size))
         case 0x03:  // list done
             loadingRides = false
-            rides.sort { $0.name > $1.name }   // newest first
+            rides = ridesBuilding.sorted { $0.name > $1.name }   // newest first
         case 0x30:  // log-list entry: [u32 size][name]
             guard d.count > 5 else { return }
             let size = Int(d[1]) | (Int(d[2]) << 8) | (Int(d[3]) << 16) | (Int(d[4]) << 24)
@@ -3075,7 +3079,7 @@ extension BLEManager: CBCentralManagerDelegate {
             authFailedSinceConnect = false
             linkSecuring = false
             connectedAt = nil
-            rides = []; loadingRides = false
+            rides = []; ridesBuilding = []; loadingRides = false
             // Nothing queued can proceed without a link, and a half-received
             // file must not be mistaken for a complete one on reconnect.
             if dlActive != nil || !dlQueue.isEmpty {
