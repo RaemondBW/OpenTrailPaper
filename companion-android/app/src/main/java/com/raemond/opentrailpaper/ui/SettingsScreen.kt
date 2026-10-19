@@ -64,6 +64,8 @@ import com.raemond.opentrailpaper.data.Prefs
 import com.raemond.opentrailpaper.data.FirmwareRelease
 import com.raemond.opentrailpaper.data.SettingField
 import com.raemond.opentrailpaper.data.SyncAccounts
+import com.raemond.opentrailpaper.data.CloudRoutes
+import com.raemond.opentrailpaper.data.SegmentSync
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Locale
@@ -122,7 +124,7 @@ fun SettingsScreen(ble: BleManager, host: HostActions, onShowTutorial: () -> Uni
         // the upload itself.
         NavCard("Maps", mapsSummary(ble), icon = Icons.Filled.Map) { showMaps = true }
 
-        AccountsCard()
+        AccountsCard(ble)
 
         Card {
             TrackedLabel("Units")
@@ -304,7 +306,7 @@ private fun ConnectOnlyCard() {
  * the card shows is the account name the provider reported.
  */
 @Composable
-private fun AccountsCard() {
+private fun AccountsCard(ble: BleManager) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     Card {
@@ -350,6 +352,9 @@ private fun AccountsCard() {
                     }
                 }
             }
+            if (p == SyncAccounts.Provider.STRAVA && SyncAccounts.isConnected(p)) {
+                StravaSegmentsRow(ble)
+            }
         }
         if (!SyncAccounts.attested) {
             Spacer(Modifier.size(8.dp))
@@ -362,6 +367,72 @@ private fun AccountsCard() {
             Spacer(Modifier.size(8.dp))
             Text(it, style = barlow(12.sp), color = Palette.accentDark)
         }
+    }
+}
+
+/**
+ * The Strava row's segments line: how many starred segments the device holds
+ * and the sync that sends them (SegmentSync). Shown only while Strava is
+ * connected.
+ */
+@Composable
+private fun StravaSegmentsRow(ble: BleManager) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val connected = ble.state == BleManager.ConnState.CONNECTED
+    LaunchedEffect(connected) {
+        SegmentSync.load(context)
+        if (connected) ble.querySegments()
+    }
+    val canSync = connected && ble.segmentsSupported != false
+    Column(Modifier.padding(start = 12.dp, top = 8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Starred segments", style = TypeScale.bodyStrong, color = Palette.ink)
+                val summary = when {
+                    !connected -> "Connect the device to sync them to its SEGMENT page."
+                    ble.segmentsSupported == false -> "Needs device firmware v1.23 or newer."
+                    ble.deviceSegmentCount == null -> "None on the device yet."
+                    else -> buildString {
+                        append("${ble.deviceSegmentCount} on the device")
+                        if (SegmentSync.lastSyncMs > 0) {
+                            append(" · synced ")
+                            append(
+                                android.text.format.DateUtils.getRelativeTimeSpanString(
+                                    SegmentSync.lastSyncMs, System.currentTimeMillis(),
+                                    android.text.format.DateUtils.MINUTE_IN_MILLIS,
+                                ),
+                            )
+                        }
+                    }
+                }
+                Text(summary, style = barlow(12.sp), color = Palette.muted)
+            }
+            if (SegmentSync.busy) {
+                CircularProgressIndicator(Modifier.size(20.dp), color = Palette.accent, strokeWidth = 2.dp)
+            } else {
+                TextButton(
+                    onClick = { scope.launch { SegmentSync.sync(context, ble) } },
+                    enabled = canSync,
+                ) {
+                    Text("Sync", style = barlow(14.sp), color = if (canSync) Palette.accent else Palette.muted)
+                }
+            }
+        }
+        SegmentSync.status?.takeIf { SegmentSync.busy || SegmentSync.failed || connected }?.let {
+            Text(it, style = barlow(12.sp), color = if (SegmentSync.failed) Palette.accentDark else Palette.muted)
+        }
+        if (!CloudRoutes.stravaSeesPrivateRoutes(SyncAccounts.tokens[SyncAccounts.Provider.STRAVA]?.scope)) {
+            Text(
+                "Private segments need a fresh sign-in: disconnect and connect Strava again.",
+                style = barlow(12.sp), color = Palette.muted,
+            )
+        }
+        Text(
+            "Powered by Strava",
+            style = barlow(11.sp).copy(fontWeight = FontWeight.SemiBold),
+            color = Color(0xFFFC4C02),
+        )
     }
 }
 

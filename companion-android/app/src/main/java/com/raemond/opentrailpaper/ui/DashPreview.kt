@@ -739,6 +739,44 @@ fun StopwatchPagePreview(modifier: Modifier = Modifier) {
     }
 }
 
+/** Miniature of the device's SEGMENT page (ui_render_segment) mid-effort:
+ * the name, the time, the delta box (solid while ahead), the progress bar.
+ * Port of SegmentPagePreview in DashboardEditorView.swift. */
+@Composable
+fun SegmentPagePreview(modifier: Modifier = Modifier) {
+    PanelMock(modifier) { k ->
+        PanelText("14:25", 30f * k, FontWeight.Bold, x = 14f * k, y = 14f * k)
+        PanelText(
+            "SEGMENT", 22f * k, FontWeight.Black,
+            x = 0f, y = 18f * k, width = 540f * k, align = TextAlign.Center,
+            tracking = 4f * k,
+        )
+        PanelText("76%", 30f * k, FontWeight.Bold, x = 440f * k, y = 14f * k)
+        PanelText("HAWK HILL CLIMB", 50f * k, FontWeight.Black, x = 24f * k, y = 130f * k)
+        PanelText(
+            "5:09", 170f * k, FontWeight.Black,
+            x = 0f, y = 270f * k, width = 540f * k, align = TextAlign.Center,
+        )
+        Canvas(Modifier.fillMaxSize()) {
+            val s = k * density
+            drawRect(Color.Black, Offset(0f, 61f * s), Size(540f * s, 3f * s))
+            drawRect(Color.Black, Offset(0f, 256f * s), Size(540f * s, 2f * s))
+            // The delta box, solid while ahead; the progress bar.
+            drawRect(Color.Black, Offset(24f * s, 488f * s), Size(492f * s, 170f * s))
+            drawRect(
+                Color.Black, Offset(24f * s, 698f * s), Size(492f * s, 44f * s),
+                style = Stroke((3f * s).coerceAtLeast(1f)),
+            )
+            drawRect(Color.Black, Offset(30f * s, 704f * s), Size(290f * s, 32f * s))
+        }
+        PanelText(
+            "-0:11", 90f * k, FontWeight.Black,
+            x = 24f * k, y = 520f * k, width = 492f * k, align = TextAlign.Center, white = true,
+        )
+        PanelText("935 M TO GO", 34f * k, FontWeight.Black, x = 24f * k, y = 762f * k)
+    }
+}
+
 /** Miniature of the device's workout page: countdown hero, reversed power
  * band, session profile, block strips. Static — it's a card, not a sim.
  * Port of WorkoutPagePreview in DashboardEditorView.swift. */
