@@ -783,7 +783,8 @@ struct SyncUploadButtons: View {
                 }
                 // Full messages go under the grid; a tile only has room for a word.
                 ForEach(connected.filter { failed($0) }) { p in
-                    Text("\(p.title): \(status[p] ?? "")").font(BarlowFont.text(12))
+                    let s = status[p] ?? ""
+                    Text(s.contains(p.title) ? s : "\(p.title): \(s)").font(BarlowFont.text(12))
                         .foregroundStyle(Palette.accentDark)
                 }
             }
@@ -824,7 +825,8 @@ struct SyncUploadButtons: View {
                 .strokeBorder(uploaded(p) ? Palette.good : Palette.hairline, lineWidth: 1))
         }
         .buttonStyle(.plain)
-        .disabled(uploading != nil || uploaded(p))
+        // Not .disabled: that greys the logo, and a finished upload should read as done.
+        .allowsHitTesting(uploading == nil && !uploaded(p))
         .opacity(uploading != nil && uploading != p ? 0.5 : 1)
         .accessibilityLabel(uploaded(p) ? "Uploaded to \(p.title)" : "Upload to \(p.title)")
     }
@@ -840,25 +842,20 @@ struct SyncUploadButtons: View {
     }
 }
 
-/// The service's mark on its brand colour, as a rounded app-icon tile.
+/// The service's logo as a rounded app-icon tile. Ride with GPS and
+/// intervals.icu use their published marks as-is (Ride with GPS asks for its
+/// colours to be left alone) on a light tile; Strava's chevrons sit on its orange.
 struct ProviderLogo: View {
     let provider: SyncProvider
     var size: CGFloat = 44
 
     var body: some View {
-        RoundedRectangle(cornerRadius: size * 0.27, style: .continuous)
-            .fill(background)
+        let shape = RoundedRectangle(cornerRadius: size * 0.27, style: .continuous)
+        shape.fill(provider == .strava ? Color(hex: 0xFC4C02) : .white)
+            .overlay(shape.strokeBorder(provider == .strava ? .clear : Palette.hairline, lineWidth: 1))
             .frame(width: size, height: size)
             .overlay(mark)
             .accessibilityHidden(true)
-    }
-
-    private var background: Color {
-        switch provider {
-        case .strava: return Color(hex: 0xFC4C02)
-        case .intervals: return Color(hex: 0x1A1A1A)
-        case .ridewithgps: return Color(hex: 0x1A73E8)
-        }
     }
 
     @ViewBuilder private var mark: some View {
@@ -866,10 +863,9 @@ struct ProviderLogo: View {
         case .strava:
             StravaMark().fill(.white).frame(width: size * 0.56, height: size * 0.56)
         case .intervals:
-            Text("i.icu").font(BarlowFont.condensed(size * 0.36, .bold)).foregroundStyle(.white)
+            Image("logo-intervals").resizable().scaledToFit().frame(width: size * 0.72)
         case .ridewithgps:
-            Image(systemName: "bicycle").font(.system(size: size * 0.42, weight: .semibold))
-                .foregroundStyle(.white)
+            Image("logo-rwgps").resizable().scaledToFit().frame(width: size * 0.74)
         }
     }
 }

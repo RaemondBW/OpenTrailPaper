@@ -1,6 +1,7 @@
 package com.raemond.opentrailpaper.ui
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.border
@@ -19,7 +20,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.automirrored.filled.DirectionsBike
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Share
@@ -43,6 +43,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
+import androidx.compose.foundation.layout.width
+import com.raemond.opentrailpaper.R
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -219,7 +223,8 @@ private fun UploadButtons(file: File, name: String) {
         }
         // Full messages go under the grid; a tile only has room for a word.
         for (p in connected.filter { failed(it) }) {
-            Text("${p.title}: ${status[p]}", style = barlow(12.sp), color = Palette.accentDark)
+            val s = status[p].orEmpty()
+            Text(if (p.title in s) s else "${p.title}: $s", style = barlow(12.sp), color = Palette.accentDark)
         }
     }
 }
@@ -270,16 +275,19 @@ private fun UploadTile(
     }
 }
 
-/** The service's mark on its brand colour, as a rounded app-icon tile. */
+/**
+ * The service's logo as a rounded app-icon tile. Ride with GPS and
+ * intervals.icu use their published marks as-is (Ride with GPS asks for its
+ * colours to be left alone) on a light tile; Strava's chevrons sit on its orange.
+ */
 @Composable
 fun ProviderLogo(p: SyncAccounts.Provider, size: Dp) {
-    val bg = when (p) {
-        SyncAccounts.Provider.STRAVA -> Color(0xFFFC4C02)
-        SyncAccounts.Provider.INTERVALS -> Color(0xFF1A1A1A)
-        SyncAccounts.Provider.RIDEWITHGPS -> Color(0xFF1A73E8)
-    }
+    val shape = RoundedCornerShape(size * 0.27f)
+    val strava = p == SyncAccounts.Provider.STRAVA
     Box(
-        Modifier.size(size).background(bg, RoundedCornerShape(size * 0.27f)),
+        Modifier.size(size)
+            .background(if (strava) Color(0xFFFC4C02) else Color.White, shape)
+            .then(if (strava) Modifier else Modifier.border(1.dp, Palette.hairline, shape)),
         contentAlignment = Alignment.Center,
     ) {
         when (p) {
@@ -301,11 +309,13 @@ fun ProviderLogo(p: SyncAccounts.Provider, size: Dp) {
                     Color.White,
                 )
             }
-            SyncAccounts.Provider.INTERVALS -> Text(
-                "i.icu", style = condensed((size.value * 0.36f).sp, FontWeight.Bold), color = Color.White,
+            SyncAccounts.Provider.INTERVALS -> Image(
+                painterResource(R.drawable.logo_intervals), null, Modifier.width(size * 0.72f),
+                contentScale = ContentScale.FillWidth,
             )
-            SyncAccounts.Provider.RIDEWITHGPS -> Icon(
-                Icons.AutoMirrored.Filled.DirectionsBike, null, Modifier.size(size * 0.5f), tint = Color.White,
+            SyncAccounts.Provider.RIDEWITHGPS -> Image(
+                painterResource(R.drawable.logo_rwgps), null, Modifier.width(size * 0.74f),
+                contentScale = ContentScale.FillWidth,
             )
         }
     }
