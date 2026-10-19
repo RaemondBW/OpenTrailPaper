@@ -10,8 +10,8 @@ submitting.
 
 - Live Strava segments: with Strava connected, Settings > Accounts has a
   "Starred segments" line under it. Sync sends your starred ride segments
-  (up to 50) to the device, with your PR on each, and shows how many it
-  holds. Add the SEGMENT page in the dashboard editor (Add a page >
+  (up to 50) to the device, with your PR and the line and elevation of
+  each, and shows how many it holds. Add the SEGMENT page in the dashboard editor (Add a page >
   Segment) to see the nearest one and race your PR on it; the page can
   switch itself on when a segment starts. Needs firmware v1.23. Private
   segments need the same fresh Strava sign-in as private routes. The

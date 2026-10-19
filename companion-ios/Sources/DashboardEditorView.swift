@@ -963,7 +963,8 @@ struct StopwatchPagePreview: View {
 }
 
 /// Miniature of the device's SEGMENT page (ui_render_segment) mid-effort:
-/// the name, the time, the delta box (solid while ahead), the progress bar.
+/// the name, the map of the line (ridden part thick), the elevation profile
+/// (ridden part solid), the time and the delta box (solid while ahead).
 struct SegmentPagePreview: View {
     var body: some View {
         GeometryReader { geo in
@@ -980,31 +981,65 @@ struct SegmentPagePreview: View {
                 Rectangle().fill(.black)
                     .frame(width: 540 * k, height: 3 * k)
                     .offset(y: 61 * k)
-                Text("HAWK HILL CLIMB").font(.system(size: 50 * k, weight: .black))
-                    .offset(x: 24 * k, y: 130 * k)
+                Text("HAWK HILL CLIMB").font(.system(size: 46 * k, weight: .black))
+                    .offset(x: 24 * k, y: 100 * k)
                 Rectangle().fill(.black)
                     .frame(width: 540 * k, height: 2 * k)
-                    .offset(y: 256 * k)
-                Text("5:09").font(.system(size: 170 * k, weight: .black))
+                    .offset(y: 198 * k)
+                // The map: the line, ridden part thick, the rest thin.
+                Rectangle().stroke(.black, lineWidth: max(1, 2 * k))
+                    .frame(width: 492 * k, height: 232 * k)
+                    .offset(x: 24 * k, y: 208 * k)
+                Path { p in
+                    p.move(to: CGPoint(x: 210 * k, y: 395 * k))
+                    p.addCurve(to: CGPoint(x: 230 * k, y: 320 * k), control1: CGPoint(x: 300 * k, y: 380 * k),
+                               control2: CGPoint(x: 290 * k, y: 330 * k))
+                    p.addCurve(to: CGPoint(x: 265 * k, y: 295 * k), control1: CGPoint(x: 200 * k, y: 300 * k),
+                               control2: CGPoint(x: 240 * k, y: 295 * k))
+                }
+                .stroke(.black, lineWidth: 7 * k)
+                Path { p in
+                    p.move(to: CGPoint(x: 265 * k, y: 295 * k))
+                    p.addCurve(to: CGPoint(x: 270 * k, y: 230 * k), control1: CGPoint(x: 330 * k, y: 290 * k),
+                               control2: CGPoint(x: 330 * k, y: 240 * k))
+                }
+                .stroke(.black, style: StrokeStyle(lineWidth: 2 * k, dash: [9 * k, 6 * k]))
+                Circle().fill(.black).frame(width: 20 * k, height: 20 * k)
+                    .offset(x: 255 * k, y: 285 * k)
+                // The profile: ridden part solid, the rest outlined.
+                Path { p in
+                    p.move(to: CGPoint(x: 24 * k, y: 566 * k))
+                    p.addLine(to: CGPoint(x: 160 * k, y: 525 * k))
+                    p.addLine(to: CGPoint(x: 272 * k, y: 518 * k))
+                    p.addLine(to: CGPoint(x: 272 * k, y: 566 * k))
+                    p.closeSubpath()
+                }
+                .fill(.black)
+                Path { p in
+                    p.move(to: CGPoint(x: 272 * k, y: 518 * k))
+                    p.addLine(to: CGPoint(x: 330 * k, y: 512 * k))
+                    p.addLine(to: CGPoint(x: 432 * k, y: 462 * k))
+                    p.addLine(to: CGPoint(x: 432 * k, y: 566 * k))
+                    p.addLine(to: CGPoint(x: 272 * k, y: 566 * k))
+                }
+                .fill(.black.opacity(0.3))
+                Rectangle().fill(.black)
+                    .frame(width: 540 * k, height: 2 * k)
+                    .offset(y: 580 * k)
+                Text("5:09").font(.system(size: 150 * k, weight: .black))
                     .frame(width: 540 * k)
-                    .offset(y: 270 * k)
+                    .offset(y: 585 * k)
                 ZStack {
                     Rectangle().fill(.black)
-                    Text("-0:11").font(.system(size: 90 * k, weight: .black))
+                    Text("-0:11").font(.system(size: 70 * k, weight: .black))
                         .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .padding(.trailing, 20 * k)
                 }
-                .frame(width: 492 * k, height: 170 * k)
-                .offset(x: 24 * k, y: 488 * k)
-                ZStack(alignment: .leading) {
-                    Rectangle().stroke(.black, lineWidth: max(1, 3 * k))
-                    Rectangle().fill(.black)
-                        .frame(width: 290 * k, height: 32 * k)
-                        .padding(.leading, 6 * k)
-                }
-                .frame(width: 492 * k, height: 44 * k)
-                .offset(x: 24 * k, y: 698 * k)
-                Text("935 M TO GO").font(.system(size: 34 * k, weight: .heavy))
-                    .offset(x: 24 * k, y: 762 * k)
+                .frame(width: 492 * k, height: 104 * k)
+                .offset(x: 24 * k, y: 736 * k)
+                Text("819 M TO GO").font(.system(size: 30 * k, weight: .heavy))
+                    .offset(x: 24 * k, y: 860 * k)
             }
             .foregroundStyle(.black)
         }

@@ -24,8 +24,10 @@ so write for the rider, newest version first, one `## vX.YY` heading each.
 - New optional SEGMENT page for live Strava segments, off until you add it
   from the app's dashboard editor (Add a page > Segment). Star segments on
   Strava, then sync them from the app (Settings > Accounts > Strava). Up to
-  50 are kept on the device. Away from them, the page shows the nearest
-  starred segment within 5 km and how far its start is. Ride through a
+  50 are kept on the device. The page draws the segment's line (what
+  you've ridden thick, the rest dashed, you as a dot) and its elevation
+  profile (ridden part solid, the rest hatched). Away from them, it shows
+  the nearest starred segment within 5 km and how far its start is. Ride through a
   start in the segment's direction and the device times the effort: the
   time, how far ahead of or behind your PR pace you are, and a progress bar
   with the distance to go. At the end it shows your time against your PR,

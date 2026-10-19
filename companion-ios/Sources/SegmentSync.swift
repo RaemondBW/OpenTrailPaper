@@ -6,10 +6,12 @@ import SwiftUI
 // Strava thing that only makes sense with that account connected, and like a
 // map download it is done once in a while, not per ride.
 //
-// The polylines are cached here by segment id (a segment's line never
+// Each segment's line and altitude come from its streams (one request), cut
+// to the device's 200 points and cached here by segment id (a segment never
 // changes), so after the first sync only the starred list is fetched again —
-// one or two requests, which keeps re-syncs well inside Strava's rate limits.
-// Mirrors SegmentSync in the Android app (data/StravaSegments.kt).
+// one or two requests, well inside Strava's rate limits. A segment whose
+// streams have no line falls back to its detail's polyline, without a profile.
+// Mirrors SegmentSync in the Android app (data/SegmentSync.kt).
 @MainActor
 final class SegmentSync: ObservableObject {
     static let shared = SegmentSync()
@@ -19,16 +21,16 @@ final class SegmentSync: ObservableObject {
     @Published private(set) var failed = false
     @Published private(set) var lastSync: Date? = UserDefaults.standard.object(forKey: "segments.lastSync") as? Date
 
-    private var cache: [UInt64: String] = [:]
+    private var cache: [UInt64: SegmentGeometry] = [:]
     private static var cacheURL: URL {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("segment-polylines.json")
+        return dir.appendingPathComponent("segment-geometry.json")
     }
 
     init() {
         if let d = try? Data(contentsOf: Self.cacheURL),
-           let m = try? JSONDecoder().decode([String: String].self, from: d) {
+           let m = try? JSONDecoder().decode([String: SegmentGeometry].self, from: d) {
             for (k, v) in m { if let id = UInt64(k) { cache[id] = v } }
         }
     }
@@ -55,9 +57,16 @@ final class SegmentSync: ObservableObject {
                 for (i, s) in missing.enumerated() {
                     status = "Fetching segment \(i + 1) of \(missing.count)…"
                     do {
-                        let d = try await SyncAccounts.shared.segmentDetail(s.id)
-                        if let poly = d.polyline { cache[s.id] = poly }
-                        if let pr = d.prSeconds { prs[s.id] = pr }
+                        if let st = try await SyncAccounts.shared.segmentStreams(s.id) {
+                            cache[s.id] = StravaSegments.geometry(points: st.points, altitudes: st.altitudes)
+                        } else {
+                            // No line in the streams: the detail's polyline, no profile.
+                            let d = try await SyncAccounts.shared.segmentDetail(s.id)
+                            if let poly = d.polyline, let pts = CloudRoutes.decodePolyline(poly), pts.count >= 2 {
+                                cache[s.id] = StravaSegments.geometry(points: pts, altitudes: nil)
+                            }
+                            if let pr = d.prSeconds { prs[s.id] = pr }
+                        }
                     } catch SyncError.http(404, _, _) {
                         continue   // gone from Strava: leave it out
                     } catch SyncError.http(429, _, _) {
@@ -66,13 +75,15 @@ final class SegmentSync: ObservableObject {
                     }
                 }
                 saveCache()
-                let segs = StravaSegments.deviceSegments(Array(wanted), polylines: cache, prs: prs)
+                let segs = StravaSegments.deviceSegments(Array(wanted), geometry: cache, prs: prs)
                 guard ble.state == .connected else {
                     fail("Connect your OpenTrailPaper, then sync again.")
                     return
                 }
                 status = "Sending \(segs.count) segment\(segs.count == 1 ? "" : "s") to the device…"
-                guard await ble.uploadSegments(StravaSegments.encode(segs)) else {
+                // Elevation (v2) only to firmware that said it reads it.
+                let version = min(StravaSegments.blobVersion, max(1, ble.deviceSegmentVersion))
+                guard await ble.uploadSegments(StravaSegments.encode(segs, version: version)) else {
                     fail(ble.segmentsSupported == false
                          ? "The device needs firmware v1.23 or newer for segments."
                          : "The device did not confirm the segments. Try again.")
@@ -89,6 +100,9 @@ final class SegmentSync: ObservableObject {
                 }
                 if limited {
                     note += " Strava is limiting requests, so some are missing; sync again in 15 minutes."
+                }
+                if version < 2 {
+                    note += " Update the device firmware to see their elevation profiles."
                 }
                 status = note
             } catch {

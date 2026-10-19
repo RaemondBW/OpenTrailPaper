@@ -554,6 +554,13 @@ final class SyncAccounts: NSObject, ObservableObject {
         return StravaSegments.parseDetail(try await authorizedGet(.strava, url))
     }
 
+    /// One segment's line with its altitude (GET /segments/{id}/streams), nil
+    /// when Strava sent no usable latlng. Raw errors, like segmentDetail.
+    func segmentStreams(_ id: UInt64) async throws -> (points: [LatLon], altitudes: [Double]?)? {
+        let url = URL(string: "https://www.strava.com/api/v3/segments/\(id)/streams?keys=latlng,altitude,distance&key_by_type=true")!
+        return StravaSegments.parseStreams(try await authorizedGet(.strava, url))
+    }
+
     /// Segment-specific wording for a refusal, like routeCall's.
     private func segmentCall<R>(_ call: () async throws -> R) async throws -> R {
         do {

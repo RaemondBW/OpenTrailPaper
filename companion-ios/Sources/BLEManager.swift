@@ -2641,6 +2641,8 @@ final class BLEManager: NSObject, ObservableObject {
             let count = Int(d[d.startIndex + 2]) | Int(d[d.startIndex + 3]) << 8
             segmentsSupported = true
             deviceSegmentCount = count == 0xFFFF ? nil : count
+            // The newest blob version the firmware reads; absent = 1 (no elevation).
+            deviceSegmentVersion = d.count >= 5 ? Int(d[d.startIndex + 4]) : 1
             if d[d.startIndex + 1] != 0, let k = segmentAck {
                 segmentAck = nil
                 k.resume(returning: d[d.startIndex + 1] == 1)
@@ -2835,6 +2837,8 @@ final class BLEManager: NSObject, ObservableObject {
     /// Does the connected firmware take segments? nil = not asked yet. Firmware
     /// before them never answers the query, which is how false is found.
     @Published private(set) var segmentsSupported: Bool?
+    /// The newest segment blob version the device reads (2 = with elevation).
+    @Published private(set) var deviceSegmentVersion = 1
     private var segmentAck: CheckedContinuation<Bool, Never>?
 
     /// Ask the device how many segments it has ([0x0C] -> [0x25][0][u16]).
@@ -3058,7 +3062,7 @@ extension BLEManager: CBCentralManagerDelegate {
             sensorsChar = nil; mapChar = nil; otaChar = nil; meshChar = nil
             dashChar = nil
             // The next device may be another one, or older firmware.
-            segmentsSupported = nil; deviceSegmentCount = nil
+            segmentsSupported = nil; deviceSegmentCount = nil; deviceSegmentVersion = 1
             if let k = segmentAck { segmentAck = nil; k.resume(returning: false) }
             // Pending edits stay cached; the next connect reads and merges.
             resetSyncLinkState()
