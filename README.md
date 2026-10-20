@@ -11,9 +11,7 @@ and an in-browser Web Serial firmware flasher (Chrome/Edge, no toolchain needed)
 Source in [`docs/`](docs/).
 
 The iOS app is on the [App Store](https://apps.apple.com/us/app/opentrailpaper/id6793646642).
-The Android app is a sideloadable APK that CI builds and signs for each `android-v*` tag:
-grab it from the [project site](https://raemondbw.github.io/OpenTrailPaper/app/OpenTrailPaper.apk)
-or from the `android-v*` entries on the [Releases page](https://github.com/RaemondBW/OpenTrailPaper/releases).
+The Android app is on [Google Play](https://play.google.com/store/apps/details?id=com.raemond.opentrailpaper).
 
 The board has everything onboard: ESP32-S3 (16 MB flash / 8 MB PSRAM, BLE 5),
 960×540 e-paper (driven in 540×960 portrait) with GT911 touch, GPS (u-blox
