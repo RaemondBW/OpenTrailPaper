@@ -286,24 +286,59 @@ int bikeBandWidth(int level, float mpp) {
     return mpp >= 8.0f ? farW[level & 3] : nearW[level & 3];
 }
 
-// Painted lane / track along a road: a dotted line just outside each edge of
-// the road, like the lane line on the street. Cheap (two dithered Bresenhams)
-// and it never fills between, so the road's own width still reads.
-void drawBikeLaneEdges(const int16_t* pts, int count, int roadWidth, uint8_t* fb) {
-    const float off = roadWidth / 2.0f + 2.5f;
+// Painted lane / track along a road: a bold dashed lane line either side of
+// the road, each as wide as the road line itself (2-3 px), with a 2 px white gap
+// between it and the road. The whole ribbon is cleared to white first. This
+// replaces a 1 px dithered dotted line, which was sparse single pixels and
+// all but invisible on the panel. Nothing else on the map looks like a road
+// flanked by dashes. The route is solid/dashed black 14 px, the bike-route band
+// flat checker grey, a cycleway a single 2 px dashed line, parks diagonal
+// stripes and water dots. It is pure 1-bit black/white, so it survives the DU
+// refresh. Drawn in its own pass BEFORE the roads: the white clears any
+// park/water texture under the lanes, and every road (the laned road's own
+// line included) then paints on top, so crossings stay clean. Cheap: one white
+// quad per segment plus a short thin stroke per dash.
+constexpr int kLaneGap = 2;                    // white between road and lane line
+constexpr float kLaneDash = 5.0f, kLaneSpace = 3.0f;
+int bikeLaneLineWidth(int roadWidth) {
+    return roadWidth < 2 ? 2 : roadWidth > 3 ? 3 : roadWidth;
+}
+
+void drawBikeLanes(const int16_t* pts, int count, int roadWidth, uint8_t* fb) {
+    const int lw = bikeLaneLineWidth(roadWidth);
+    const int ribbon = roadWidth + 2 * (kLaneGap + lw);
+    // Clear the whole ribbon first (round caps fill the joints), then ink the
+    // lane lines, so one segment's white never eats the previous one's dashes.
+    for (int i = 0; i + 1 < count; ++i)
+        thickSegment(pts[i * 2], pts[i * 2 + 1], pts[i * 2 + 2], pts[i * 2 + 3],
+                     ribbon, 0xFF, fb);
+    const float off = roadWidth / 2.0f + kLaneGap + lw / 2.0f;
+    const float period = kLaneDash + kLaneSpace;
+    float along = 0;   // distance along the way, so dashes run on across joints
     for (int i = 0; i + 1 < count; ++i) {
         float x0 = pts[i * 2], y0 = pts[i * 2 + 1];
         float x1 = pts[i * 2 + 2], y1 = pts[i * 2 + 3];
         float dx = x1 - x0, dy = y1 - y0;
         float len = sqrtf(dx * dx + dy * dy);
         if (len < 0.5f) continue;
-        float px = -dy / len * off, py = dx / len * off;
-        ditherLine(lroundf(x0 + px), lroundf(y0 + py), lroundf(x1 + px),
-                   lroundf(y1 + py), fb);
-        ditherLine(lroundf(x0 - px), lroundf(y0 - py), lroundf(x1 - px),
-                   lroundf(y1 - py), fb);
+        float ux = dx / len, uy = dy / len;
+        float px = -uy * off, py = ux * off;
+        float t = 0;
+        while (t < len) {
+            float inPeriod = fmodf(along + t, period);
+            if (inPeriod >= kLaneDash) { t += period - inPeriod; continue; }
+            float end = t + (kLaneDash - inPeriod);
+            if (end > len) end = len;
+            float ax = x0 + ux * t, ay = y0 + uy * t;
+            float bx = x0 + ux * end, by = y0 + uy * end;
+            thickSegment(ax + px, ay + py, bx + px, by + py, lw, ROAD_INK, fb);
+            thickSegment(ax - px, ay - py, bx - px, by - py, lw, ROAD_INK, fb);
+            t = end;
+        }
+        along += len;
     }
 }
+
 
 // POI icons: 24 px. Circles for the comfort stops (water, toilets), squares for
 // bike service (repair stand, shop), so the two families read apart before the
@@ -584,11 +619,11 @@ void drawLayerSample(int row, int cx, int cy, uint8_t* fb) {
             thickSegment(cx - 28, cy, cx + 28, cy, 2, ROAD_INK, fb);
             break;
         }
-        case 1: {   // dashed cycleway above a road with lane dots
-            drawSegmentStyled(cx - 28, cy - 10, cx + 28, cy - 10, {2, ROAD_INK, 7, 4, false}, fb);
-            int16_t road[4] = {(int16_t)(cx - 28), (int16_t)(cy + 10), (int16_t)(cx + 28), (int16_t)(cy + 10)};
-            thickSegment(cx - 28, cy + 10, cx + 28, cy + 10, 2, ROAD_INK, fb);
-            drawBikeLaneEdges(road, 2, 2, fb);
+        case 1: {   // dashed cycleway above a road with bike lanes
+            drawSegmentStyled(cx - 28, cy - 12, cx + 28, cy - 12, {2, ROAD_INK, 7, 4, false}, fb);
+            int16_t road[4] = {(int16_t)(cx - 28), (int16_t)(cy + 9), (int16_t)(cx + 28), (int16_t)(cy + 9)};
+            drawBikeLanes(road, 2, 2, fb);
+            thickSegment(cx - 28, cy + 9, cx + 28, cy + 9, 2, ROAD_INK, fb);
             break;
         }
         default: {
@@ -666,19 +701,29 @@ void ui_render_map_features(const MapScreenData& map, const RideState& s,
     // laned street, and the band — the heaviest bike style — buried the lane
     // dots and cycleway dashes, so everything read as "bike route". The band
     // now means "signed route with no dedicated space" (shared streets), plus
-    // laned routes zoomed out past where the lane dots draw, and every route
+    // laned routes zoomed out past where the lane lines draw, and every route
     // when the Cycleways & lanes layer is off.
     const bool infraOn = (map.layers & MAP_LAYER_CYCLEWAYS) != 0;
-    const bool laneDotsOn = infraOn && map.metersPerPixel <= 4.0f;
+    const bool lanesOn = infraOn && map.metersPerPixel <= 4.0f;
     for (int lvl = 1; lvl <= 3 && (map.layers & MAP_LAYER_BIKE_ROUTES); ++lvl) {
         const int bw = bikeBandWidth(lvl, map.metersPerPixel);
         for (int i = 0; i < map.featureCount; ++i) {
             const uint8_t fl = map.features[i].flags;
             if ((fl & MAP_WF_ROUTE_MASK) != lvl) continue;
             if ((infraOn && (fl & MAP_WF_CYCLEWAY)) ||
-                (laneDotsOn && (fl & MAP_WF_BIKE_LANE)))
+                (lanesOn && (fl & MAP_WF_BIKE_LANE)))
                 continue;
             drawBikeBand(map.features[i].pts, map.features[i].pointCount, bw, fb);
+        }
+    }
+    // Bike lanes under all the roads (see drawBikeLanes), sized off
+    // the laned road's own width so they scale with the road grade.
+    if (lanesOn) {
+        for (int i = 0; i < map.featureCount; ++i) {
+            const MapPolyline& f = map.features[i];
+            if (!(f.flags & MAP_WF_BIKE_LANE) || f.cls == MAP_PATH) continue;
+            drawBikeLanes(f.pts, f.pointCount,
+                               styleFor(f.cls, map.metersPerPixel).width, fb);
         }
     }
     // Back-to-front: higher-grade roads paint on top at intersections.
@@ -699,8 +744,6 @@ void ui_render_map_features(const MapScreenData& map, const RideState& s,
             const bool cycleway = bikeInfra && (f.flags & MAP_WF_CYCLEWAY) != 0 &&
                                   (cls == MAP_PATH || cls == MAP_ROAD_MINOR);
             drawPolyline(f.pts, f.pointCount, cycleway ? cyclewayStyle : st, fb);
-            if (bikeInfra && (f.flags & MAP_WF_BIKE_LANE) && map.metersPerPixel <= 4.0f)
-                drawBikeLaneEdges(f.pts, f.pointCount, st.width, fb);
         }
     }
 
