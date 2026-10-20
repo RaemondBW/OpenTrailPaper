@@ -3131,8 +3131,8 @@ void ui_render_stopwatch(const RideState& s, const Stopwatch& sw, uint32_t now,
 //     rest hatched under its outline, a rule at the rider) / SEGMENT TIME
 //     and the PR delta (the tile inverts while AHEAD) / POWER and HEART RATE,
 //     each only while that sensor reports (one alone spans the row; with
-//     neither the row is dropped and the map takes its height) / TO GO with
-//     the dashboard's 7-block bar.
+//     neither the row is dropped and the map takes its height). The map and
+//     elevation tiles fill the column down to the footer.
 //   Approaching (IDLE with a segment within 5 km, and ARMED): the same map
 //     and elevation, the whole line solid and the profile all hatched, then
 //     TO START (an arrow, north up like the map, and the distance) and YOUR
@@ -3149,9 +3149,9 @@ void ui_render_stopwatch(const RideState& s, const Stopwatch& sw, uint32_t now,
 //
 // Refresh: the frame is static chrome (tiles, labels, the line) plus a few
 // values. During an effort the page repaints once a second for the clock;
-// between two frames only the numbers, the rider's marker, the profile's rule
-// and now and then a bar block change, so the driver's delta engine repaints
-// those, not the panels.
+// between two frames only the numbers, the rider's marker and the profile's
+// rule change, so the driver's delta engine repaints those, not the panels.
+// The status bar carries no title on this page: clock, phone, battery.
 // ---------------------------------------------------------------------------
 
 namespace {
@@ -3518,17 +3518,6 @@ void segValueTile(const EpdRect& r, const char* label, const char* value,
     if (uw) ui::text(&Arial_L, x + vw + 8, base - 6, unit, fb, EPD_DRAW_ALIGN_LEFT, fg);
 }
 
-// The dashboard's seven-block bar (drawPowerZoneBar's geometry), `filled`
-// of seven solid.
-void segBlocks(int x, int y, int w, int filled, uint8_t* fb) {
-    const int gap = 6, bw = (w - 6 * gap) / 7;
-    for (int i = 0; i < 7; ++i) {
-        const EpdRect b = {x + i * (bw + gap), y, bw, 18};
-        if (i < filled) epd_fill_rect(b, ui::INK, fb);
-        else segTile(b, false, fb);
-    }
-}
-
 // Centred message block for the states with nothing to draw.
 void segMessage(int mid, const char* head, const char* l1, const char* l2,
                 uint8_t* fb) {
@@ -3554,8 +3543,10 @@ void segOnSegment(const RideState& s, const seg::View& v, const seg::Segment* sg
     int y = kSegTop;
     char t[24], u[24];
 
-    // Map (taller when there is no sensor row) and elevation.
-    const EpdRect map = {kSegX, y, kSegW, sensors ? 262 : 388};
+    // Map and elevation take what the time / delta and sensor rows leave,
+    // down to the footer; the map gets the sensor row's height when there
+    // is none.
+    const EpdRect map = {kSegX, y, kSegW, sensors ? 344 : 470};
     if (sg) segMapTile(v, *sg, map, MAP_ACTIVE, v.doneM, true, true, s.useMiles, fb);
     else segTile(map, false, fb);
     if (v.phase == seg::ACTIVE && v.offRoute) {
@@ -3565,7 +3556,7 @@ void segOnSegment(const RideState& s, const seg::View& v, const seg::Segment* sg
                   fb, ui::PAPER, &Arial_L);
     }
     y += map.height + kSegGap;
-    const EpdRect elev = {kSegX, y, kSegW, 122};
+    const EpdRect elev = {kSegX, y, kSegW, 142};
     if (sg) {
         segElevRange(*sg, s.useMiles, t, sizeof(t));
         segProfileTile(v, *sg, elev, v.doneM, true, t, fb);
@@ -3610,23 +3601,7 @@ void segOnSegment(const RideState& s, const seg::View& v, const seg::Segment* sg
             else snprintf(t, sizeof(t), "%u", (unsigned)s.heartRateBpm);
             segValueTile({x, y, w, 112}, "HEART RATE", t, "BPM", false, fb);
         }
-        y += 112 + kSegGap;
     }
-
-    // TO GO: the distance on the label's line, the seven blocks under it.
-    const EpdRect go = {kSegX, y, kSegW, 88};
-    segTile(go, false, fb);
-    const int lb = segLabel(go, v.phase == seg::ACTIVE ? "TO GO" : "RIDDEN", ui::INK, fb);
-    const float left = v.phase == seg::ACTIVE ? fmaxf(v.lenM - v.doneM, 0) : v.doneM;
-    const char* unit;
-    segDistParts(left, s.useMiles, t, sizeof(t), &unit);
-    const int uw = ui::textWidth(&Arial_L, unit);
-    const int right = go.x + go.width - kSegPad;
-    ui::text(&Arial_L, right, lb + 4, unit, fb, EPD_DRAW_ALIGN_RIGHT);
-    ui::text(&Impact_T, right - uw - 6, lb + 6, t, fb, EPD_DRAW_ALIGN_RIGHT);
-    const float frac = v.lenM > 0 ? fminf(fmaxf(v.doneM / v.lenM, 0), 1) : 0;
-    segBlocks(go.x + kSegPad, go.y + go.height - 18 - 14, go.width - 2 * kSegPad,
-              (int)lroundf(frac * 7), fb);
 }
 
 void segApproach(const RideState& s, const seg::View& v, const seg::Segment& sg,
@@ -3772,7 +3747,9 @@ void segDone(const RideState& s, const seg::View& v, const seg::Segment* sg,
 
 void ui_render_segment(const RideState& s, const seg::View& v, uint8_t* fb) {
     g_dashToned = false;
-    ui::statusBar(s, fb, "SEGMENT");
+    // No title: the clock, the phone and the battery only. An empty title
+    // (not none) also keeps the ride-status chips out of the band.
+    ui::statusBar(s, fb, "");
     const int W = epd_rotated_display_width();
     char buf[96];
 
