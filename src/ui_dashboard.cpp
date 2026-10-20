@@ -2864,6 +2864,12 @@ void task(void*) {
                 segMatcher.attach(&segDb);
                 forceDraw = true;
             }
+            // Power and heart rate for the effort's averages (the result
+            // screen), with the same 15 s freshness as everywhere else.
+            const bool hrFresh = now.hrConnected && now.heartRateBpm != 0xFF &&
+                                 ms - now.hrMs <= 15000;
+            segMatcher.sample(ms, powerFresh ? now.powerW : 0, powerFresh,
+                              hrFresh ? now.heartRateBpm : 0, hrFresh);
             // Each fix once, stamped with when it arrived: the device's own
             // GPS, else a fresh phone fix while the receiver has none.
             static uint32_t lastSegFix = 0;

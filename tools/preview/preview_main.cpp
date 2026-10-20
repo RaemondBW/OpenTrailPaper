@@ -1243,8 +1243,20 @@ int main(int argc, char** argv) {
         act.haveDelta = true;
         act.deltaMs = -11300;
         page(act, "segment_active_ahead.png", s);
+        // No sensors: the POWER / HEART RATE row goes, the map takes it.
+        RideState bare = s;
+        bare.powerConnected = bare.hrConnected = false;
+        page(act, "segment_active_nosensors.png", bare);
+        // A power meter alone: its tile spans the row.
+        RideState pwrOnly = s;
+        pwrOnly.hrConnected = false;
         act.deltaMs = 14800;
+        page(act, "segment_active_power_only.png", pwrOnly);
         page(act, "segment_active_behind.png", s);
+        seg::View noPr = act;
+        noPr.haveDelta = false;
+        noPr.prSec = 0;
+        page(noPr, "segment_active_no_pr.png", s);
         act.offRoute = true;
         act.riderX += 70;
         page(act, "segment_active_off.png", s);
@@ -1271,7 +1283,13 @@ int main(int argc, char** argv) {
         done.haveDelta = true;
         done.deltaMs = -15000;
         done.newPr = true;
+        done.avgPowerW = 268;
+        done.avgHrBpm = 156;
         page(done, "segment_done_pr.png", s);
+        seg::View doneBare = done;
+        doneBare.avgPowerW = 0xFFFF;
+        doneBare.avgHrBpm = 0;
+        page(doneBare, "segment_done_pr_nosensors.png", bare);
         done.deltaMs = 22000;
         done.newPr = false;
         page(done, "segment_done_slower.png", s);

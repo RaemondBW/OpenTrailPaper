@@ -122,6 +122,7 @@ struct Segment {
     // Elevation along it (v2 blobs that carried it); else no profile.
     bool hasElev = false;
     float minElevM = 0, maxElevM = 0;
+    float gainM = 0;          // total climbing along it
 };
 
 inline void* segAlloc(size_t n) {
@@ -283,6 +284,7 @@ inline bool parseBlob(const uint8_t* b, size_t n, SegmentDb& out,
             db.cum[at + k] = len;
             const float e = s.hasElev ? rd16(r + 8) / 10.0f - ELEV_OFFSET_M : 0.0f;
             db.elev[at + k] = e;
+            if (k > 0 && e > db.elev[at + k - 1]) s.gainM += e - db.elev[at + k - 1];
             if (k == 0 || e < s.minElevM) s.minElevM = e;
             if (k == 0 || e > s.maxElevM) s.maxElevM = e;
             // The first leg's direction: from the start to the first point at
@@ -349,6 +351,10 @@ struct View {
     int32_t deltaMs = 0;        // + behind PR pace, - ahead
     bool newPr = false;         // DONE: beat (or set) the PR
     bool offRoute = false;      // ACTIVE: currently off the line
+    // DONE: the effort's averages over its timed span (sample()); 0xFFFF / 0
+    // = that sensor never reported during it.
+    uint16_t avgPowerW = 0xFFFF;
+    uint8_t avgHrBpm = 0;
     // The segment the page draws (map + profile): the effort's, the result's,
     // or the nearest one while idle. -1 = none. `db` stays valid for the
     // frame (the UI task owns both).
@@ -387,6 +393,19 @@ public:
         if (resultShowing(lastNow_)) return result_;
         return phase_;
     }
+    // The live power and heart rate, every UI pass (a reading is held until
+    // the next): averaged over an effort for its result. Invalid = no sensor
+    // reporting; that time doesn't count.
+    void sample(uint32_t now, uint16_t powerW, bool powerValid, uint8_t hrBpm,
+                bool hrValid) {
+        accumulate(now);
+        heldPowerW_ = powerW;
+        heldPowerValid_ = powerValid;
+        heldHr_ = hrBpm;
+        heldHrValid_ = hrValid;
+        haveSample_ = true;
+    }
+
     // An effort began / ended since the last call (for the page auto-switch).
     bool takeStarted() { bool v = started_; started_ = false; return v; }
     bool takeEnded() { bool v = ended_; ended_ = false; return v; }
@@ -453,6 +472,8 @@ public:
             v.gradeD = s.gradeD;
             v.elapsedMs = resultMs_;
             if (result_ == DONE) {
+                v.avgPowerW = resPowerW_;
+                v.avgHrBpm = resHr_;
                 v.doneM = s.lenM;
                 v.prSec = prBefore_;
                 v.newPr = newPr_;
@@ -521,6 +542,28 @@ private:
     float resultDoneM_ = 0;
     uint32_t prBefore_ = 0;
     bool newPr_ = false;
+    uint16_t resPowerW_ = 0xFFFF;
+    uint8_t resHr_ = 0;
+    // Sensor averages over the effort (sample()): the held reading x time.
+    uint32_t sampleMs_ = 0;
+    bool haveSample_ = false;
+    uint16_t heldPowerW_ = 0;
+    bool heldPowerValid_ = false;
+    uint8_t heldHr_ = 0;
+    bool heldHrValid_ = false;
+    double energyWms_ = 0, hrBeatMs_ = 0;
+    uint32_t powerMs_ = 0, hrMs_ = 0;
+
+    void accumulate(uint32_t now) {
+        if (haveSample_ && phase_ == ACTIVE) {
+            const uint32_t dt = now - sampleMs_;
+            if (dt < 60000) {   // a gap that long is not a held reading
+                if (heldPowerValid_) { energyWms_ += (double)heldPowerW_ * dt; powerMs_ += dt; }
+                if (heldHrValid_) { hrBeatMs_ += (double)heldHr_ * dt; hrMs_ += dt; }
+            }
+        }
+        sampleMs_ = now;
+    }
 
     // Last fix, for the rider marker on the page's map.
     bool haveRider_ = false;
@@ -644,6 +687,8 @@ private:
         if (underWay && (d > ARM_RADIUS_M || along >= 2 * GO_ALONG_M)) {
             phase_ = ACTIVE;
             startMs_ = bestStartMs_;
+            energyWms_ = hrBeatMs_ = 0;
+            powerMs_ = hrMs_ = 0;
             progressM_ = along;
             offSinceMs_ = 0;
             finishing_ = false;
@@ -699,6 +744,8 @@ private:
 
     void finish(uint32_t now) {
         Segment& s = db_->segs[cur_];
+        resPowerW_ = powerMs_ > 0 ? (uint16_t)(energyWms_ / powerMs_ + 0.5) : 0xFFFF;
+        resHr_ = hrMs_ > 0 ? (uint8_t)(hrBeatMs_ / hrMs_ + 0.5) : 0;
         const uint32_t ms = bestEndMs_ - startMs_;
         prBefore_ = s.prSec;
         const uint32_t sec = (ms + 500) / 1000;

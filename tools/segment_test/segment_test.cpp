@@ -128,8 +128,12 @@ struct Rider {
     seg::Matcher& m;
     uint32_t t;
     double e, n;
+    int watts = -1, bpm = -1;   // >= 0: a sensor reporting that, every fix
     void fix() {
         LL p = at(e, n);
+        if (watts >= 0 || bpm >= 0)
+            m.sample(t, (uint16_t)(watts < 0 ? 0 : watts), watts >= 0,
+                     (uint8_t)(bpm < 0 ? 0 : bpm), bpm >= 0);
         m.update(t, p.lat, p.lon);
     }
     // Ride in a straight line to (e2,n2) at `mps`, one fix a second.
@@ -319,6 +323,44 @@ void testEffort() {
     checkNear(slow.done.elapsedMs / 1000.0, 375, 2.0, "finish time");
 }
 
+void testAverages() {
+    g_case = "effort averages";
+    std::vector<uint8_t> b = lBlob(300);
+    seg::SegmentDb db;
+    seg::parseBlob(b.data(), b.size(), db);
+    seg::Matcher m;
+    m.attach(&db);
+    Rider rd{m, 1000000, 0, -100};
+    rd.fix();
+    rd.watts = 400;            // before the start: not counted
+    rd.bpm = 100;
+    rd.rideTo(0, -5, 5);
+    rd.watts = 250;
+    rd.bpm = 150;
+    rd.rideTo(0, 500, 5);
+    rd.watts = 300;            // the second half harder
+    rd.bpm = -1;               // and the strap drops out
+    rd.rideTo(0, 1000, 5);
+    rd.rideTo(600, 1000, 5);
+    seg::View v;
+    m.view(rd.t, v);
+    check(v.phase == seg::DONE, "finished");
+    checkNear(v.avgPowerW, 283, 3, "power averaged over the effort (500 m at 250 W, 1000 m at 300 W)");
+    checkNear(v.avgHrBpm, 150, 1, "heart rate only while it reported");
+
+    g_case = "effort averages, no sensors";
+    seg::SegmentDb db2;
+    seg::parseBlob(b.data(), b.size(), db2);
+    seg::Matcher n;
+    n.attach(&db2);
+    Rider r2{n, 1000000, 0, -100};
+    r2.fix();
+    r2.rideTo(0, 1000, 5);
+    r2.rideTo(600, 1000, 5);
+    n.view(r2.t, v);
+    check(v.phase == seg::DONE && v.avgPowerW == 0xFFFF && v.avgHrBpm == 0, "none");
+}
+
 void testStartTiming() {
     g_case = "waiting at the start";
     std::vector<uint8_t> b = lBlob(300);
@@ -472,6 +514,7 @@ int main() {
     testBlob();
     testEffort();
     testStartTiming();
+    testAverages();
     testAbandon();
     testWrongWay();
     testNearest();
