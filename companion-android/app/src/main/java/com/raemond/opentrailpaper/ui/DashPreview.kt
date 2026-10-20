@@ -739,6 +739,69 @@ fun StopwatchPagePreview(modifier: Modifier = Modifier) {
     }
 }
 
+/** Miniature of the device's SEGMENT page (ui_render_segment) mid-effort:
+ * the name, the map of the line (ridden part thick), the elevation profile
+ * (ridden part solid), the time and the delta box (solid while ahead).
+ * Port of SegmentPagePreview in DashboardEditorView.swift. */
+@Composable
+fun SegmentPagePreview(modifier: Modifier = Modifier) {
+    PanelMock(modifier) { k ->
+        PanelText("14:25", 30f * k, FontWeight.Bold, x = 14f * k, y = 14f * k)
+        PanelText(
+            "SEGMENT", 22f * k, FontWeight.Black,
+            x = 0f, y = 18f * k, width = 540f * k, align = TextAlign.Center,
+            tracking = 4f * k,
+        )
+        PanelText("76%", 30f * k, FontWeight.Bold, x = 440f * k, y = 14f * k)
+        PanelText("HAWK HILL CLIMB", 46f * k, FontWeight.Black, x = 24f * k, y = 100f * k)
+        PanelText(
+            "5:09", 150f * k, FontWeight.Black,
+            x = 0f, y = 585f * k, width = 540f * k, align = TextAlign.Center,
+        )
+        Canvas(Modifier.fillMaxSize()) {
+            val s = k * density
+            drawRect(Color.Black, Offset(0f, 61f * s), Size(540f * s, 3f * s))
+            drawRect(Color.Black, Offset(0f, 198f * s), Size(540f * s, 2f * s))
+            // The map: the line, ridden part thick, the rest thin.
+            drawRect(
+                Color.Black, Offset(24f * s, 208f * s), Size(492f * s, 232f * s),
+                style = Stroke((2f * s).coerceAtLeast(1f)),
+            )
+            val done = Path().apply {
+                moveTo(210f * s, 395f * s)
+                cubicTo(300f * s, 380f * s, 290f * s, 330f * s, 230f * s, 320f * s)
+                cubicTo(200f * s, 300f * s, 240f * s, 295f * s, 265f * s, 295f * s)
+            }
+            drawPath(done, Color.Black, style = Stroke(7f * s))
+            val ahead = Path().apply {
+                moveTo(265f * s, 295f * s)
+                cubicTo(330f * s, 290f * s, 330f * s, 240f * s, 270f * s, 230f * s)
+            }
+            drawPath(ahead, Color.Black, style = Stroke((2f * s).coerceAtLeast(1f)))
+            drawCircle(Color.Black, 10f * s, Offset(265f * s, 295f * s))
+            // The profile: ridden part solid, the rest grey.
+            val ridden = Path().apply {
+                moveTo(24f * s, 566f * s); lineTo(160f * s, 525f * s); lineTo(272f * s, 518f * s)
+                lineTo(272f * s, 566f * s); close()
+            }
+            drawPath(ridden, Color.Black)
+            val rest = Path().apply {
+                moveTo(272f * s, 518f * s); lineTo(330f * s, 512f * s); lineTo(432f * s, 462f * s)
+                lineTo(432f * s, 566f * s); lineTo(272f * s, 566f * s); close()
+            }
+            drawPath(rest, Color.Black.copy(alpha = 0.3f))
+            drawRect(Color.Black, Offset(0f, 580f * s), Size(540f * s, 2f * s))
+            // The delta box, solid while ahead.
+            drawRect(Color.Black, Offset(24f * s, 736f * s), Size(492f * s, 104f * s))
+        }
+        PanelText(
+            "-0:11", 70f * k, FontWeight.Black,
+            x = 24f * k, y = 748f * k, width = 472f * k, align = TextAlign.End, white = true,
+        )
+        PanelText("819 M TO GO", 30f * k, FontWeight.Black, x = 24f * k, y = 860f * k)
+    }
+}
+
 /** Miniature of the device's workout page: countdown hero, reversed power
  * band, session profile, block strips. Static — it's a card, not a sim.
  * Port of WorkoutPagePreview in DashboardEditorView.swift. */

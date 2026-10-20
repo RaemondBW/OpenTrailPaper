@@ -426,6 +426,60 @@ object SyncAccounts {
         }
     }
 
+    // --- segments --------------------------------------------------------------
+
+    /** Every starred segment (up to [StravaSegments.MAX_PAGES] pages), in Strava's order. */
+    suspend fun starredSegments(): List<StarredSegment> = withContext(Dispatchers.IO) {
+        val keeper = keepers[Provider.STRAVA]?.takeIf { isConnected(Provider.STRAVA) }
+            ?: throw SyncException("Connect Strava in Settings first.")
+        val out = ArrayList<StarredSegment>()
+        var page: Int? = 1
+        while (page != null && page <= StravaSegments.MAX_PAGES) {
+            val p = page
+            val text = try {
+                keeper.authorized {
+                    getText("https://www.strava.com/api/v3/segments/starred?page=$p&per_page=${StravaSegments.PAGE_SIZE}", it)
+                }
+            } catch (e: SyncHttpException) {
+                if (e.code == 403) {
+                    throw SyncSignedOutException(
+                        "Strava did not allow reading segments with this sign-in. Disconnect and connect Strava again in Settings.",
+                    )
+                }
+                throw e
+            }
+            val parsed = StravaSegments.parseStarred(text, p)
+            out += parsed.segments
+            page = parsed.nextPage
+        }
+        out
+    }
+
+    /**
+     * One segment's full polyline (and the PR, from the detail's stats). Raw
+     * errors: the sync decides what a 404 (skip it) or a 429 (stop and send
+     * what it has) means for the set.
+     */
+    suspend fun segmentDetail(id: Long): Pair<String?, Int?> = withContext(Dispatchers.IO) {
+        val keeper = keepers[Provider.STRAVA]?.takeIf { isConnected(Provider.STRAVA) }
+            ?: throw SyncException("Connect Strava in Settings first.")
+        StravaSegments.parseDetail(keeper.authorized { getText("https://www.strava.com/api/v3/segments/$id", it) })
+    }
+
+    /**
+     * One segment's line with its altitude (GET /segments/{id}/streams); null
+     * when Strava sent no usable latlng. Raw errors, like [segmentDetail].
+     */
+    suspend fun segmentStreams(id: Long): Pair<List<LatLon>, List<Double>?>? = withContext(Dispatchers.IO) {
+        val keeper = keepers[Provider.STRAVA]?.takeIf { isConnected(Provider.STRAVA) }
+            ?: throw SyncException("Connect Strava in Settings first.")
+        StravaSegments.parseStreams(
+            keeper.authorized {
+                getText("https://www.strava.com/api/v3/segments/$id/streams?keys=latlng,altitude,distance&key_by_type=true", it)
+            },
+        )
+    }
+
     /**
      * Strava lists routes by athlete id. Kept from the sign-in since route
      * import; an account connected before that looks it up once (GET /athlete).

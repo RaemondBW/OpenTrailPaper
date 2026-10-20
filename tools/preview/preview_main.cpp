@@ -22,6 +22,7 @@
 #include "media_state.h"
 #include "workout.h"
 #include "stopwatch.h"
+#include "segment_match.h"
 #include "map_view.h"
 #include "map_tiles.h"
 
@@ -1098,6 +1099,245 @@ int main(int argc, char** argv) {
         clearWhite(fb.data());
         ui_render_stopwatch(s, longer, v, fb.data());
         emit("stopwatch_laps_hour.png");
+    }
+
+    // SEGMENT page (live Strava segments): idle with the nearest start, no
+    // segments, none nearby, at the start, mid-effort ahead / behind / off
+    // the line, and the finish (new PR, slower, first time) and an abandon.
+    // The map and profile come from a real parsed set: a 2.4 km switchback
+    // climb (5.7 %) and a 5.4 km road climb, encoded as the app would send
+    // them (v2, with elevation), plus a v1 copy with none. The views are built
+    // directly — the matcher behind them is covered by tools/segment_test.
+    {
+        // Hawk Hill: east, then three switchbacks up the hill, 5.7 % average.
+        const double lat0 = 37.8270, lon0 = -122.4990;
+        const double mLon = 111320.0 * cos(lat0 * M_PI / 180.0);
+        std::vector<int32_t> la, lo;
+        std::vector<float> el;
+        std::vector<float> cumM;
+        auto add = [&](double e, double n) {
+            if (!la.empty()) {
+                const double pe = (lo.back() / 1e5 - lon0) * mLon;
+                const double pn = (la.back() / 1e5 - lat0) * 110540.0;
+                cumM.push_back(cumM.back() + (float)sqrt((e - pe) * (e - pe) + (n - pn) * (n - pn)));
+            } else {
+                cumM.push_back(0);
+            }
+            la.push_back((int32_t)lround((lat0 + n / 110540.0) * 1e5));
+            lo.push_back((int32_t)lround((lon0 + e / mLon) * 1e5));
+        };
+        const double pts[][2] = {{0, 0},     {120, 30},  {260, 40},  {380, 110},
+                                 {420, 230}, {340, 330}, {200, 360}, {90, 420},
+                                 {60, 530},  {150, 610}, {300, 640}, {450, 660},
+                                 {560, 730}, {580, 850}, {500, 950}, {380, 1010},
+                                 {300, 1100}};
+        for (auto& p : pts) {
+            // Densify every ~25 m, as the app's cut keeps a road's bends.
+            if (!la.empty()) {
+                const double pe = (lo.back() / 1e5 - lon0) * mLon;
+                const double pn = (la.back() / 1e5 - lat0) * 110540.0;
+                const int n = (int)(sqrt((p[0] - pe) * (p[0] - pe) + (p[1] - pn) * (p[1] - pn)) / 25);
+                for (int i = 1; i < n; ++i)
+                    add(pe + (p[0] - pe) * i / n, pn + (p[1] - pn) * i / n);
+            }
+            add(p[0], p[1]);
+        }
+        const float total = cumM.back();
+        for (float c : cumM) {
+            const float f = c / total;
+            // Steeper in the middle, a flat bit two thirds up, a kick at the end.
+            el.push_back(68 + 120 * f + 18 * sinf(f * 6.3f) - (f > 0.62f && f < 0.72f ? 8 * (f - 0.62f) / 0.1f : 0) +
+                         (f > 0.9f ? 12 * (f - 0.9f) / 0.1f : 0));
+        }
+        // A second, longer road climb for the long-name frame.
+        std::vector<int32_t> la2, lo2;
+        std::vector<float> el2;
+        for (int i = 0; i <= 120; ++i) {
+            const double f = i / 120.0;
+            la2.push_back((int32_t)lround((37.3800 + 0.030 * f + 0.004 * sin(f * 18)) * 1e5));
+            lo2.push_back((int32_t)lround((-122.2500 - 0.020 * f + 0.003 * cos(f * 13)) * 1e5));
+            el2.push_back((float)(110 + 395 * f + 15 * sin(f * 9)));
+        }
+        seg::SourceSegment src[2] = {
+            {229781, "Hawk Hill Climb", 524, 24100, 57, (int)la.size(), la.data(), lo.data(), el.data()},
+            {8109834, "Old La Honda (Bridge to Mailboxes) official", 1984, 54200, 73,
+             (int)la2.size(), la2.data(), lo2.data(), el2.data()},
+        };
+        static uint8_t blob[seg::BLOB_MAX];
+        static seg::SegmentDb db, dbV1;
+        seg::parseBlob(blob, seg::encodeBlob(src, 2, blob, sizeof(blob)), db);
+        seg::parseBlob(blob, seg::encodeBlob(src, 2, blob, sizeof(blob), 1), dbV1);
+        const seg::Segment& hawk = db.segs[0];
+        // Where a rider `along` metres in is, in the segment's frame.
+        auto riderAt = [&](seg::View& v, const seg::SegmentDb& d, int idx, float along) {
+            const seg::Segment& sg = d.segs[idx];
+            const float* C = d.cum + sg.first;
+            int i = 0;
+            while (i + 2 < sg.nPts && C[i + 1] < along) ++i;
+            const float t = fminf(fmaxf((along - C[i]) / fmaxf(C[i + 1] - C[i], 1e-3f), 0), 1);
+            v.riderValid = true;
+            v.riderX = d.x[sg.first + i] + t * (d.x[sg.first + i + 1] - d.x[sg.first + i]);
+            v.riderY = d.y[sg.first + i] + t * (d.y[sg.first + i + 1] - d.y[sg.first + i]);
+        };
+
+        auto page = [&](const seg::View& v, const char* name,
+                        const RideState& rs) {
+            clearWhite(fb.data());
+            ui_render_segment(rs, v, fb.data());
+            emit(name);
+        };
+        auto named = [&](seg::View& v, int idx, uint32_t pr) {
+            const seg::Segment& sg = db.segs[idx];
+            snprintf(v.name, sizeof(v.name), "%s", sg.name);
+            v.lenM = sg.lenM;
+            v.gradeD = sg.gradeD;
+            v.prSec = pr;
+            v.db = &db;
+            v.segIndex = idx;
+        };
+        seg::View idle;
+        idle.count = 23;
+        idle.haveNearest = true;
+        snprintf(idle.nearestName, sizeof(idle.nearestName), "%s", hawk.name);
+        idle.nearestM = 1240;
+        idle.nearestLenM = hawk.lenM;
+        idle.nearestGradeD = 57;
+        idle.nearestPrSec = 524;
+        idle.nearestBearingDeg = 40;
+        idle.db = &db;
+        idle.segIndex = 0;
+        page(idle, "segment_idle.png", s);
+        RideState mi = s;
+        mi.useMiles = true;
+        seg::View close = idle;
+        close.nearestM = 180;
+        close.riderValid = true;   // 180 m short of the start, on the map
+        close.riderX = -150;
+        close.riderY = -60;
+        page(close, "segment_idle_close_miles.png", mi);
+        // A set synced by a v1 app: the line, no profile.
+        seg::View old = idle;
+        old.db = &dbV1;
+        page(old, "segment_idle_no_elevation.png", s);
+
+        seg::View none;
+        page(none, "segment_none.png", s);
+        seg::View far;
+        far.count = 23;
+        page(far, "segment_far.png", s);
+
+        seg::View armed;
+        armed.count = 23;
+        armed.phase = seg::ARMED;
+        named(armed, 0, 524);
+        armed.riderValid = true;
+        armed.riderX = -8;
+        armed.riderY = -4;
+        page(armed, "segment_armed.png", s);
+
+        seg::View act = armed;
+        act.phase = seg::ACTIVE;
+        act.doneM = hawk.lenM * 0.61f;
+        riderAt(act, db, 0, act.doneM);
+        act.elapsedMs = 309400;
+        act.haveDelta = true;
+        act.deltaMs = -11300;
+        page(act, "segment_active_ahead.png", s);
+        // No sensors: the POWER / HEART RATE row goes, the map takes it.
+        RideState bare = s;
+        bare.powerConnected = bare.hrConnected = false;
+        page(act, "segment_active_nosensors.png", bare);
+        // A power meter alone: its tile spans the row.
+        RideState pwrOnly = s;
+        pwrOnly.hrConnected = false;
+        act.deltaMs = 14800;
+        page(act, "segment_active_power_only.png", pwrOnly);
+        page(act, "segment_active_behind.png", s);
+        seg::View noPr = act;
+        noPr.haveDelta = false;
+        noPr.prSec = 0;
+        page(noPr, "segment_active_no_pr.png", s);
+        act.offRoute = true;
+        act.riderX += 70;
+        page(act, "segment_active_off.png", s);
+        seg::View actMi = act;
+        actMi.offRoute = false;
+        riderAt(actMi, db, 0, actMi.doneM);
+        page(actMi, "segment_active_miles.png", mi);
+
+        seg::View longName = armed;
+        longName.phase = seg::ACTIVE;
+        named(longName, 1, 1984);
+        longName.doneM = 610;
+        riderAt(longName, db, 1, 610);
+        longName.elapsedMs = 241000;
+        longName.haveDelta = true;
+        longName.deltaMs = 18000;
+        page(longName, "segment_active_long_name.png", s);
+
+        // Several relevant segments: the < n/N > pager in the status bar.
+        // Two overlapping efforts, the first and then the second shown...
+        seg::View ov1 = act;
+        ov1.offRoute = false;
+        riderAt(ov1, db, 0, ov1.doneM);
+        ov1.deltaMs = -11300;
+        ov1.listPos = 1;
+        ov1.listCount = 2;
+        page(ov1, "segment_multi_overlap_1of2.png", s);
+        seg::View ov2 = longName;
+        ov2.listPos = 2;
+        ov2.listCount = 2;
+        page(ov2, "segment_multi_overlap_2of2.png", s);
+        // ...and one effort with a start coming up: the effort first, the
+        // approaching segment as page 2.
+        seg::View ap1 = ov1;
+        page(ap1, "segment_multi_active_approaching_1of2.png", s);
+        seg::View ap2;
+        ap2.count = 23;
+        ap2.haveNearest = true;
+        snprintf(ap2.nearestName, sizeof(ap2.nearestName), "%s", db.segs[1].name);
+        ap2.nearestM = 640;
+        ap2.nearestLenM = db.segs[1].lenM;
+        ap2.nearestGradeD = db.segs[1].gradeD;
+        ap2.nearestPrSec = 1984;
+        ap2.nearestBearingDeg = 300;
+        ap2.db = &db;
+        ap2.segIndex = 1;
+        ap2.listPos = 2;
+        ap2.listCount = 2;
+        page(ap2, "segment_multi_active_approaching_2of2.png", s);
+
+        seg::View done = armed;
+        done.phase = seg::DONE;
+        done.doneM = hawk.lenM;
+        riderAt(done, db, 0, hawk.lenM);
+        done.elapsedMs = 509000;
+        done.haveDelta = true;
+        done.deltaMs = -15000;
+        done.newPr = true;
+        done.avgPowerW = 268;
+        done.avgHrBpm = 156;
+        page(done, "segment_done_pr.png", s);
+        seg::View doneBare = done;
+        doneBare.avgPowerW = 0xFFFF;
+        doneBare.avgHrBpm = 0;
+        page(doneBare, "segment_done_pr_nosensors.png", bare);
+        done.deltaMs = 22000;
+        done.newPr = false;
+        page(done, "segment_done_slower.png", s);
+        seg::View first = done;
+        first.haveDelta = false;
+        first.newPr = true;
+        first.prSec = 0;
+        page(first, "segment_done_first.png", s);
+
+        seg::View gone = armed;
+        gone.phase = seg::ABANDONED;
+        gone.doneM = 880;
+        riderAt(gone, db, 0, 880);
+        gone.riderX += 160;
+        gone.elapsedMs = 201000;
+        page(gone, "segment_abandoned.png", s);
     }
 
     // WORKOUT pages, per the Claude Design "Workout View" frames: executing

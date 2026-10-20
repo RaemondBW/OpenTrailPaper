@@ -255,7 +255,7 @@ data class DashConfig(
     /** The map screen's 3-cell data strip (`map <f> <f> <f>` in the config). */
     val mapFields: List<String> = listOf("speed", "distance", "ridetime"),
 ) {
-    enum class PageKind { FIELDS, MUSIC, MAP, WORKOUT, STOPWATCH }
+    enum class PageKind { FIELDS, MUSIC, MAP, WORKOUT, STOPWATCH, SEGMENT }
 
     data class Page(
         val kind: PageKind,
@@ -267,11 +267,17 @@ data class DashConfig(
          * identical failure mode.
          */
         val key: Long = nextKey++,
+        /**
+         * SEGMENT only: switch the panel to it when an effort starts
+         * (`page segment`); false = `page segment manual`.
+         */
+        val autoShow: Boolean = true,
     ) {
         val isMusic: Boolean get() = kind == PageKind.MUSIC
         val isMap: Boolean get() = kind == PageKind.MAP
         val isWorkout: Boolean get() = kind == PageKind.WORKOUT
         val isStopwatch: Boolean get() = kind == PageKind.STOPWATCH
+        val isSegment: Boolean get() = kind == PageKind.SEGMENT
 
         companion object {
             private var nextKey = 1L
@@ -281,6 +287,7 @@ data class DashConfig(
             fun map() = Page(PageKind.MAP, DashLayout(emptyList()))
             fun workout() = Page(PageKind.WORKOUT, DashLayout(emptyList()))
             fun stopwatch() = Page(PageKind.STOPWATCH, DashLayout(emptyList()))
+            fun segment() = Page(PageKind.SEGMENT, DashLayout(emptyList()))
         }
     }
 
@@ -294,6 +301,7 @@ data class DashConfig(
     val hasMusicPage: Boolean get() = pages.any { it.isMusic }
     val hasWorkoutPage: Boolean get() = pages.any { it.isWorkout }
     val hasStopwatchPage: Boolean get() = pages.any { it.isStopwatch }
+    val hasSegmentPage: Boolean get() = pages.any { it.isSegment }
 
     /**
      * Serialize, byte-compatible with dashSerializePages(): the first field
@@ -316,6 +324,8 @@ data class DashConfig(
                     // kind parses as an empty page), so the device echoes the
                     // layout back without it and the editor follows.
                     page.isStopwatch -> append("page stopwatch\n")
+                    // Same story on firmware before segments.
+                    page.isSegment -> append(if (page.autoShow) "page segment\n" else "page segment manual\n")
                     i > 0 -> append("page\n")
                 }
                 if (page.kind == PageKind.FIELDS) {
@@ -349,6 +359,7 @@ data class DashConfig(
             val out = mutableListOf<Page>()
             var chunk = StringBuilder()
             var kind = PageKind.FIELDS
+            var autoShow = true
             var sawMap = false
             val strip = mutableListOf("speed", "distance", "ridetime")
 
@@ -359,9 +370,10 @@ data class DashConfig(
                 if (kind == PageKind.MAP) {
                     if (sawMap) keep = false else sawMap = true
                 }
-                if (keep) out.add(Page(kind, layout))
+                if (keep) out.add(Page(kind, layout, autoShow = autoShow))
                 chunk = StringBuilder()
                 kind = PageKind.FIELDS
+                autoShow = true
             }
 
             for (rawLine in text.split("\n")) {
@@ -375,6 +387,10 @@ data class DashConfig(
                             "map" -> kind = PageKind.MAP
                             "workout" -> kind = PageKind.WORKOUT
                             "stopwatch" -> kind = PageKind.STOPWATCH
+                            "segment" -> {
+                                kind = PageKind.SEGMENT
+                                autoShow = tok.getOrNull(2) != "manual"
+                            }
                         }
                     }
                     tok.firstOrNull() == "map" -> {

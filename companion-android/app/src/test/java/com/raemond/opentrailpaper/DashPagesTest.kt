@@ -30,6 +30,20 @@ class DashPagesTest {
     }
 
     @Test
+    fun `segment page round trips with its manual option`() {
+        val cfg = DashConfig.parse("speed hero\npage segment\npage map\n")
+        assertEquals(DashConfig.PageKind.SEGMENT, cfg.pages[1].kind)
+        assertTrue(cfg.hasSegmentPage && cfg.pages[1].autoShow)
+        assertTrue(cfg.configText.contains("page segment\n"))
+        val manual = DashConfig.parse("speed hero\npage segment manual\n")
+        assertTrue(manual.pages[1].isSegment)
+        assertFalse(manual.pages[1].autoShow)
+        assertTrue(manual.configText.contains("page segment manual\n"))
+        assertFalse(DashConfig.parse(manual.configText).pages[1].autoShow)
+        assertTrue(cfg != manual)
+    }
+
+    @Test
     fun `unknown page kind is dropped and the rest kept`() {
         val cfg = DashConfig.parse("speed hero\npage someday\npage\nhr medium\n")
         assertEquals(

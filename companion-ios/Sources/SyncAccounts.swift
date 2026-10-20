@@ -528,6 +528,50 @@ final class SyncAccounts: NSObject, ObservableObject {
         return try await routeCall(p) { try await self.authorizedGet(p, url, accept: "application/gpx+xml") }
     }
 
+    // MARK: segments
+
+    /// Every starred segment (up to StravaSegments.maxPages pages), in
+    /// Strava's order. Private ones need the read_all scope.
+    func starredSegments() async throws -> [StarredSegment] {
+        guard isConnected(.strava) else { throw SyncError.upload("Connect Strava in Settings first.") }
+        var out: [StarredSegment] = []
+        var page: Int? = 1
+        while let p = page, p <= StravaSegments.maxPages {
+            let url = URL(string: "https://www.strava.com/api/v3/segments/starred?page=\(p)&per_page=\(StravaSegments.pageSize)")!
+            let data = try await segmentCall { try await self.authorizedGet(.strava, url) }
+            let parsed = StravaSegments.parseStarred(data, page: p)
+            out += parsed.segments
+            page = parsed.nextPage
+        }
+        return out
+    }
+
+    /// One segment's full polyline (and the PR, from the detail's stats).
+    func segmentDetail(_ id: UInt64) async throws -> (polyline: String?, prSeconds: Int?) {
+        // Raw errors: the sync decides what a 404 (skip it) or a 429 (stop
+        // and send what it has) means for the set.
+        let url = URL(string: "https://www.strava.com/api/v3/segments/\(id)")!
+        return StravaSegments.parseDetail(try await authorizedGet(.strava, url))
+    }
+
+    /// One segment's line with its altitude (GET /segments/{id}/streams), nil
+    /// when Strava sent no usable latlng. Raw errors, like segmentDetail.
+    func segmentStreams(_ id: UInt64) async throws -> (points: [LatLon], altitudes: [Double]?)? {
+        let url = URL(string: "https://www.strava.com/api/v3/segments/\(id)/streams?keys=latlng,altitude,distance&key_by_type=true")!
+        return StravaSegments.parseStreams(try await authorizedGet(.strava, url))
+    }
+
+    /// Segment-specific wording for a refusal, like routeCall's.
+    private func segmentCall<R>(_ call: () async throws -> R) async throws -> R {
+        do {
+            return try await call()
+        } catch SyncError.http(403, _, _) {
+            throw SyncError.upload("Strava did not allow reading segments with this sign-in. Disconnect and connect Strava again in Settings.")
+        } catch SyncError.http(404, _, _) {
+            throw SyncError.upload("That segment is no longer on Strava.")
+        }
+    }
+
     /// Strava lists routes by athlete id, which the sign-in reports; looked up
     /// once (GET /athlete) if it did not.
     private func stravaAthleteId() async throws -> Int {
@@ -720,6 +764,9 @@ struct SyncAccountsCard: View {
                         .font(.system(size: 12)).foregroundStyle(Palette.muted)
                     ForEach(SyncProvider.allCases) { p in
                         row(p)
+                        if p == .strava && sync.isConnected(.strava) {
+                            StravaSegmentsRow()
+                        }
                     }
                     if let e = sync.lastError {
                         Text(e).font(.system(size: 12)).foregroundStyle(Palette.accentDark)
