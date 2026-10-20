@@ -187,12 +187,10 @@ extern const EpdRect kStopwatchLap;
 // After the finish, the time and the delta against the PR (or NEW PR). No
 // touch targets: everything on it happens by riding.
 // With two or more relevant segments (overlapping efforts, nearby starts)
-// the status bar's centre carries < 2/3 > arrows: kSegmentPrev/kSegmentNext
-// are their touch targets, exported for the dashboard's hit-testing.
+// the bottom carries the list pager (ui_render_pager, "n / N"): kPagerUp /
+// kPagerDown step to the previous / next segment.
 namespace seg { struct View; }
 void ui_render_segment(const RideState& s, const seg::View& v, uint8_t* fb);
-extern const EpdRect kSegmentPrev;
-extern const EpdRect kSegmentNext;
 
 // BLE pairing sheet: the 6-digit code the phone asks the rider to type,
 // drawn over whatever screen is up while the pairing dialog is live.
@@ -276,13 +274,14 @@ void ui_render_list(const char* title, const ListRow* rows, int count,
 // action button on the right (CLOSE / REFRESH). A 3 px rule at kPagerTop,
 // 80 px buttons below it. An arrow that can't go anywhere is drawn in the
 // disabled tone and does nothing when tapped. `first` is 0-based; with
-// total == 0 only the action button is drawn.
+// total == 0 only the action button is drawn. `single` (one item per page,
+// the SEGMENT page) reads "n / N" instead of "first-last / N".
 constexpr int kPagerTop = 857;
 constexpr EpdRect kPagerUp = {24, 868, 80, 80};
 constexpr EpdRect kPagerDown = {116, 868, 80, 80};
 constexpr EpdRect kPagerAction = {368, 868, 148, 80};
 void ui_render_pager(int first, int count, int total, const char* action,
-                     uint8_t* fb);
+                     uint8_t* fb, bool single = false);
 
 // Settings editor: +/- touch targets per row, geometry exported for the
 // touch handler.

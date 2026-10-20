@@ -1665,7 +1665,7 @@ void pagerButton(const EpdRect& r, uint8_t* fb) {
 }  // namespace
 
 void ui_render_pager(int first, int count, int total, const char* action,
-                     uint8_t* fb) {
+                     uint8_t* fb, bool single) {
     // The page indicator sits in its own box between the arrows and the
     // action button, the same 80 px tall.
     const EpdRect where = {kPagerDown.x + kPagerDown.width + 12, kPagerUp.y,
@@ -1695,7 +1695,8 @@ void ui_render_pager(int first, int count, int total, const char* action,
     epd_fill_triangle(cx, cy + 16, cx - 16, cy - 10, cx + 16, cy - 10,
                       canDown ? ui::INK : ui::LIGHT, fb);
     char buf[24];
-    snprintf(buf, sizeof(buf), "%d-%d / %d", first + 1, first + count, total);
+    if (single) snprintf(buf, sizeof(buf), "%d / %d", first + 1, total);
+    else snprintf(buf, sizeof(buf), "%d-%d / %d", first + 1, first + count, total);
     ui::text(&Arial_B, where.x + where.width / 2, textY, buf, fb,
              EPD_DRAW_ALIGN_CENTER);
 }
@@ -3151,15 +3152,10 @@ void ui_render_stopwatch(const RideState& s, const Stopwatch& sw, uint32_t now,
 // values. During an effort the page repaints once a second for the clock;
 // between two frames only the numbers, the rider's marker and the profile's
 // rule change, so the driver's delta engine repaints those, not the panels.
-// The status bar carries no title on this page: clock, phone, battery. No
-// footer either: the tiles run to the bottom margin. Strava's attribution is
+// The status bar carries no title on this page; with two or more segments
+// the list pager sits across the bottom. No footer either: the tiles run to the bottom margin. Strava's attribution is
 // on the apps' Starred segments row, where the data is synced.
 // ---------------------------------------------------------------------------
-
-// The pager's touch targets: 88 px wide, from the top of the glass to just
-// into the tiles' top margin.
-const EpdRect kSegmentPrev = {170, 0, 88, 76};
-const EpdRect kSegmentNext = {282, 0, 88, 76};
 
 namespace {
 
@@ -3170,6 +3166,11 @@ constexpr int kSegGap = 14;
 constexpr int kSegTop = ui::STATUS_H + kSegGap; // 78
 constexpr int kSegHalfW = (kSegW - kSegGap) / 2;  // 239
 constexpr int kSegPad = 16;                     // inside a tile
+// With two or more relevant segments the page wears the list pager
+// (ui_render_pager) across the bottom, like Navigate and Ride History: the
+// map gives up the height from the tiles' bottom margin (936) to just above
+// the pager's rule (kPagerTop - kSegGap).
+constexpr int kSegPagedShrink = 936 - (kPagerTop - kSegGap);   // 93
 
 // M:SS under the hour, H:MM:SS over.
 void segFmtTime(char* out, size_t cap, uint32_t ms) {
@@ -3541,25 +3542,10 @@ void segMessage(int mid, const char* head, const char* l1, const char* l2,
     }
 }
 
-// The < 2/3 > pager in the status bar's centre (the bar has no title on
-// this page). Touch targets reach below the bar into the top margin, to
-// TOUCH_MIN wide; the drawn arrows sit in the bar.
-void segPager(const seg::View& v, uint8_t* fb) {
-    if (v.listCount < 2) return;
-    const int cy = 31;
-    const int lx = kSegmentPrev.x + kSegmentPrev.width / 2;
-    const int rx = kSegmentNext.x + kSegmentNext.width / 2;
-    epd_fill_triangle(lx - 10, cy, lx + 10, cy - 14, lx + 10, cy + 14, ui::INK, fb);
-    epd_fill_triangle(rx + 10, cy, rx - 10, cy - 14, rx - 10, cy + 14, ui::INK, fb);
-    char t[12];
-    snprintf(t, sizeof(t), "%d/%d", v.listPos, v.listCount);
-    ui::text(&Impact_S, (lx + rx) / 2, 41, t, fb, EPD_DRAW_ALIGN_CENTER);
-}
-
 // --- The three layouts --------------------------------------------------
 
 void segOnSegment(const RideState& s, const seg::View& v, const seg::Segment* sg,
-                  uint8_t* fb) {
+                  int shrink, uint8_t* fb) {
     const bool power = s.powerConnected, hr = s.hrConnected;
     const bool sensors = power || hr;
     int y = kSegTop;
@@ -3568,7 +3554,7 @@ void segOnSegment(const RideState& s, const seg::View& v, const seg::Segment* sg
     // Map and elevation take what the time / delta and sensor rows leave,
     // down to the footer; the map gets the sensor row's height when there
     // is none.
-    const EpdRect map = {kSegX, y, kSegW, sensors ? 396 : 522};
+    const EpdRect map = {kSegX, y, kSegW, (sensors ? 396 : 522) - shrink};
     if (sg) segMapTile(v, *sg, map, MAP_ACTIVE, v.doneM, true, true, s.useMiles, fb);
     else segTile(map, false, fb);
     if (v.phase == seg::ACTIVE && v.offRoute) {
@@ -3627,11 +3613,12 @@ void segOnSegment(const RideState& s, const seg::View& v, const seg::Segment* sg
 }
 
 void segApproach(const RideState& s, const seg::View& v, const seg::Segment& sg,
-                 uint8_t* fb) {
+                 int shrink, uint8_t* fb) {
     char t[24];
     int y = kSegTop;
-    segMapTile(v, sg, {kSegX, y, kSegW, 360}, MAP_APPROACH, -1, true, true, s.useMiles, fb);
-    y += 360 + kSegGap;
+    segMapTile(v, sg, {kSegX, y, kSegW, 360 - shrink}, MAP_APPROACH, -1, true, true,
+               s.useMiles, fb);
+    y += 360 - shrink + kSegGap;
     segElevRange(sg, s.useMiles, t, sizeof(t));
     segProfileTile(v, sg, {kSegX, y, kSegW, 180}, -1, false, t, fb);
     y += 180 + kSegGap;
@@ -3769,10 +3756,16 @@ void segDone(const RideState& s, const seg::View& v, const seg::Segment* sg,
 
 void ui_render_segment(const RideState& s, const seg::View& v, uint8_t* fb) {
     g_dashToned = false;
-    // No title: the clock, the phone and the battery only. An empty title
-    // (not none) also keeps the ride-status chips out of the band.
-    ui::statusBar(s, fb, "");
-    segPager(v, fb);
+    // No title: the bar as the ride pages wear it, clock and phone, the
+    // GPS / sensor / pause chips, battery.
+    ui::statusBar(s, fb);
+    // Two or more relevant segments: the list pager across the bottom
+    // (ui_render_pager, as Navigate and Ride History), "n / N" between its
+    // arrows; the tiles above give up its height. The finished layout ends
+    // above it anyway.
+    const bool paged = v.listCount >= 2;
+    const int shrink = paged ? kSegPagedShrink : 0;
+    if (paged) ui_render_pager(v.listPos - 1, 1, v.listCount, nullptr, fb, true);
     char buf[96];
 
     const seg::Segment* sg =
@@ -3781,16 +3774,16 @@ void ui_render_segment(const RideState& s, const seg::View& v, uint8_t* fb) {
     switch (v.phase) {
         case seg::ACTIVE:
         case seg::ABANDONED:
-            segOnSegment(s, v, sg, fb);
+            segOnSegment(s, v, sg, shrink, fb);
             return;
         case seg::DONE:
             segDone(s, v, sg, fb);
             return;
         case seg::ARMED:
-            if (sg) { segApproach(s, v, *sg, fb); return; }
+            if (sg) { segApproach(s, v, *sg, shrink, fb); return; }
             break;
         case seg::IDLE:
-            if (v.haveNearest && sg) { segApproach(s, v, *sg, fb); return; }
+            if (v.haveNearest && sg) { segApproach(s, v, *sg, shrink, fb); return; }
             break;
     }
     if (v.count <= 0) {

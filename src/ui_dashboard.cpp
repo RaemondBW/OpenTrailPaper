@@ -817,20 +817,22 @@ void handleTap(int x, int y) {
     switch (screen) {
         case SCREEN_DASH:
         case SCREEN_MAP:
-            // The SEGMENT page's arrows (status bar centre, only with two or
-            // more relevant segments): previous / next, wrapping. Checked
-            // before anything else so they win over the status bar's menu
-            // tap; the rest of the bar still opens the menu.
+            // The SEGMENT page's pager (two or more relevant segments): the
+            // list pager's up / down, previous / next segment. Like the other
+            // paged lists it stops at the ends (the arrow is drawn disabled).
             if (screen == SCREEN_DASH &&
                 dash_config::page(dashPage).kind == DP_SEGMENT &&
-                (inRect(kSegmentPrev, x, y) || inRect(kSegmentNext, x, y))) {
+                (inRect(kPagerUp, x, y) || inRect(kPagerDown, x, y))) {
                 seg::View v;
                 int list[seg::MAX_LIST], n = 0;
                 segSelectedView(millis(), v, list, n);
                 if (n >= 2) {
-                    const int step = inRect(kSegmentPrev, x, y) ? -1 : 1;
-                    segSel = list[(v.listPos - 1 + step + n) % n];
-                    forceDraw = true;
+                    const int to = v.listPos - 1 + (inRect(kPagerUp, x, y) ? -1 : 1);
+                    if (to >= 0 && to < n) {
+                        segSel = list[to];
+                        ackPagerTap(inRect(kPagerUp, x, y) ? kPagerUp : kPagerDown);
+                        forceDraw = true;
+                    }
                     break;
                 }
             }
