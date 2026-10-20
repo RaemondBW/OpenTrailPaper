@@ -819,7 +819,7 @@ void handleTap(int x, int y) {
         case SCREEN_MAP:
             // The SEGMENT page's pager (two or more relevant segments): the
             // list pager's up / down, previous / next segment. Like the other
-            // paged lists it stops at the ends (the arrow is drawn disabled).
+            // paged lists it stops at the ends (that arrow is not drawn).
             if (screen == SCREEN_DASH &&
                 dash_config::page(dashPage).kind == DP_SEGMENT &&
                 (inRect(kPagerUp, x, y) || inRect(kPagerDown, x, y))) {

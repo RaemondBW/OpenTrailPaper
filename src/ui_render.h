@@ -272,8 +272,8 @@ void ui_render_list(const char* title, const ListRow* rows, int count,
 // PAGER — the footer of every paged list (the workout picker and block list,
 // Navigate, Ride History): page up, page down, "first-last / total", and one
 // action button on the right (CLOSE / REFRESH). A 3 px rule at kPagerTop,
-// 80 px buttons below it. An arrow that can't go anywhere is drawn in the
-// disabled tone and does nothing when tapped. `first` is 0-based; with
+// 80 px buttons below it. An arrow that can't go anywhere is not drawn (its
+// slot stays blank, nothing else moves) and does nothing when tapped. `first` is 0-based; with
 // total == 0 only the action button is drawn. `single` (one item per page,
 // the SEGMENT page) reads "n / N" instead of "first-last / N".
 constexpr int kPagerTop = 857;

@@ -1681,19 +1681,24 @@ void ui_render_pager(int first, int count, int total, const char* action,
     if (total <= 0) return;
 
     epd_fill_rect({0, kPagerTop, 540, 3}, ui::INK, fb);
-    pagerButton(kPagerUp, fb);
-    pagerButton(kPagerDown, fb);
     pagerButton(where, fb);
-    // An arrow that can't go anywhere is drawn in the disabled tone.
+    // An arrow that can't go anywhere is not drawn at all — no box, no
+    // triangle — and its slot stays blank, so the indicator and the action
+    // button never move. On a list that fits one page neither arrow shows.
+    // (The caller's tap handling already ignores a tap there.)
     const bool canUp = first > 0;
     const bool canDown = first + count < total;
     const int cy = kPagerUp.y + kPagerUp.height / 2;
-    int cx = kPagerUp.x + kPagerUp.width / 2;
-    epd_fill_triangle(cx, cy - 16, cx - 16, cy + 10, cx + 16, cy + 10,
-                      canUp ? ui::INK : ui::LIGHT, fb);
-    cx = kPagerDown.x + kPagerDown.width / 2;
-    epd_fill_triangle(cx, cy + 16, cx - 16, cy - 10, cx + 16, cy - 10,
-                      canDown ? ui::INK : ui::LIGHT, fb);
+    if (canUp) {
+        pagerButton(kPagerUp, fb);
+        const int cx = kPagerUp.x + kPagerUp.width / 2;
+        epd_fill_triangle(cx, cy - 16, cx - 16, cy + 10, cx + 16, cy + 10, ui::INK, fb);
+    }
+    if (canDown) {
+        pagerButton(kPagerDown, fb);
+        const int cx = kPagerDown.x + kPagerDown.width / 2;
+        epd_fill_triangle(cx, cy + 16, cx - 16, cy - 10, cx + 16, cy - 10, ui::INK, fb);
+    }
     char buf[24];
     if (single) snprintf(buf, sizeof(buf), "%d / %d", first + 1, total);
     else snprintf(buf, sizeof(buf), "%d-%d / %d", first + 1, first + count, total);
