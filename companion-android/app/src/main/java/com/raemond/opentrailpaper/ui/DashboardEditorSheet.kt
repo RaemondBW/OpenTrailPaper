@@ -36,6 +36,7 @@ import androidx.compose.material.icons.filled.DirectionsBike
 import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
@@ -221,6 +222,7 @@ fun DashboardEditorSheet(ble: BleManager, onDismiss: () -> Unit) {
                         pages = config.pages + when (kind) {
                             DashConfig.PageKind.MUSIC -> DashConfig.Page.music()
                             DashConfig.PageKind.WORKOUT -> DashConfig.Page.workout()
+                            DashConfig.PageKind.STOPWATCH -> DashConfig.Page.stopwatch()
                             else -> DashConfig.Page.fields()
                         },
                     )
@@ -270,6 +272,29 @@ fun DashboardEditorSheet(ble: BleManager, onDismiss: () -> Unit) {
                                 "against the target, and the whole session as a profile. " +
                                 "Load workouts from the Workouts screen or drop .erg/.mrc " +
                                 "files in /workouts on the SD card.",
+                            style = TypeScale.body,
+                            color = Palette.muted,
+                        )
+                    }
+
+                    page.isStopwatch -> Card {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Filled.Timer,
+                                contentDescription = null,
+                                tint = Palette.ink,
+                            )
+                            Spacer(Modifier.size(8.dp))
+                            Text("Stopwatch", style = TypeScale.bodyStrong, color = Palette.ink)
+                        }
+                        Text(
+                            "Your own clock, separate from the ride timer: big digits with " +
+                                "START/PAUSE, RESET and LAP buttons on the panel. LAP works " +
+                                "while it runs, RESET once it's paused. Each lap, and the " +
+                                "one in progress, shows its time and average speed, plus " +
+                                "average cadence and power when those sensors are " +
+                                "connected. It keeps running while you're " +
+                                "on other pages. Needs device firmware v1.23 or newer.",
                             style = TypeScale.body,
                             color = Palette.muted,
                         )
@@ -403,6 +428,7 @@ private fun PageCarousel(
             AddPageCard(
                 hasMusic = config.hasMusicPage,
                 hasWorkout = config.hasWorkoutPage,
+                hasStopwatch = config.hasStopwatchPage,
                 onAdd = onAdd,
             )
         }
@@ -442,6 +468,9 @@ private fun PageCard(
                     Modifier.fillMaxWidth().aspectRatio(540f / 960f),
                 )
                 DashConfig.PageKind.WORKOUT -> WorkoutPagePreview(
+                    Modifier.fillMaxWidth().aspectRatio(540f / 960f),
+                )
+                DashConfig.PageKind.STOPWATCH -> StopwatchPagePreview(
                     Modifier.fillMaxWidth().aspectRatio(540f / 960f),
                 )
                 DashConfig.PageKind.FIELDS -> DashPreview(
@@ -484,6 +513,7 @@ private fun PageCard(
 private fun AddPageCard(
     hasMusic: Boolean,
     hasWorkout: Boolean,
+    hasStopwatch: Boolean,
     onAdd: (DashConfig.PageKind) -> Unit,
 ) {
     var menu by remember { mutableStateOf(false) }
@@ -525,6 +555,13 @@ private fun AddPageCard(
                         Icon(Icons.Filled.DirectionsBike, contentDescription = null)
                     },
                     onClick = { menu = false; onAdd(DashConfig.PageKind.WORKOUT) },
+                )
+            }
+            if (!hasStopwatch) {
+                DropdownMenuItem(
+                    text = { Text("Stopwatch", style = TypeScale.body) },
+                    leadingIcon = { Icon(Icons.Filled.Timer, contentDescription = null) },
+                    onClick = { menu = false; onAdd(DashConfig.PageKind.STOPWATCH) },
                 )
             }
         }

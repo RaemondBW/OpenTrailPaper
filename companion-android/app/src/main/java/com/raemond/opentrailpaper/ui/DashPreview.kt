@@ -690,6 +690,55 @@ fun MapPagePreview(fields: List<String>, modifier: Modifier = Modifier) {
     }
 }
 
+/** Miniature of the device's STOPWATCH page (ui_render_stopwatch): the time
+ * across the middle, START/STOP and RESET along the footer. Port of
+ * StopwatchPagePreview in DashboardEditorView.swift. */
+// The device's three footer buttons (ui_render.cpp kStopwatchToggle/Reset/Lap).
+private val swBtnX = floatArrayOf(24f, 240f, 384f)
+private val swBtnW = floatArrayOf(204f, 132f, 132f)
+
+@Composable
+fun StopwatchPagePreview(modifier: Modifier = Modifier) {
+    PanelMock(modifier) { k ->
+        PanelText("14:25", 30f * k, FontWeight.Bold, x = 14f * k, y = 14f * k)
+        PanelText(
+            "STOPWATCH", 22f * k, FontWeight.Black,
+            x = 0f, y = 18f * k, width = 540f * k, align = TextAlign.Center,
+            tracking = 4f * k,
+        )
+        PanelText("76%", 30f * k, FontWeight.Bold, x = 440f * k, y = 14f * k)
+        PanelText(
+            "12:34", 170f * k, FontWeight.Black,
+            x = 0f, y = 280f * k, width = 540f * k, align = TextAlign.Center,
+        )
+        PanelText(
+            "RUNNING", 20f * k, FontWeight.Bold,
+            x = 0f, y = 510f * k, width = 540f * k, align = TextAlign.Center,
+            tracking = 3f * k,
+        )
+        Canvas(Modifier.fillMaxSize()) {
+            val s = k * density
+            drawRect(Color.Black, Offset(0f, 61f * s), Size(540f * s, 3f * s))
+            drawRect(Color.Black, Offset(0f, 756f * s), Size(540f * s, 3f * s))
+            // START/PAUSE, RESET (disabled while running: one thin rule), LAP.
+            for (i in 0 until 3) {
+                drawRect(
+                    Color.Black, Offset(swBtnX[i] * s, 780f * s),
+                    Size(swBtnW[i] * s, 156f * s),
+                    style = Stroke(((if (i == 1) 1f else 3f) * s).coerceAtLeast(1f)),
+                )
+            }
+        }
+        listOf("PAUSE", "RESET", "LAP").forEachIndexed { i, label ->
+            PanelText(
+                label, 26f * k, FontWeight.Black,
+                x = swBtnX[i] * k, y = 840f * k, width = swBtnW[i] * k,
+                align = TextAlign.Center, faded = i == 1,
+            )
+        }
+    }
+}
+
 /** Miniature of the device's workout page: countdown hero, reversed power
  * band, session profile, block strips. Static — it's a card, not a sim.
  * Port of WorkoutPagePreview in DashboardEditorView.swift. */
