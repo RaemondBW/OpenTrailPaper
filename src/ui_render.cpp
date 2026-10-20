@@ -11,6 +11,7 @@
 #include "ride_state.h"
 #include "speed_source.h"
 #include "workout.h"
+#include "stopwatch.h"
 // Faces at the design system's ACTUAL sizes. The drop's specimens are drawn 1:1
 // with the panel, so its CSS px are device px — and the previously compiled
 // faces were 2.1-2.4x those sizes (Impact_40 rendered a 68 px cap where the
@@ -2793,4 +2794,324 @@ void ui_render_workout_picker(const RideState& s, const WorkoutPickPage& p,
 
     // --- Footer: page up / down, where we are, REFRESH. ------------------
     ui_render_pager(p.first, p.count, p.total, "REFRESH", fb);
+}
+
+// ---------------------------------------------------------------------------
+// STOPWATCH page — the rider's own clock (stopwatch.h), with laps and their
+// average speed and power.
+//
+// Two layouts. Before the first LAP the page is the time, as big as the panel
+// allows, with the run's averages under it. Once there are laps, the total
+// moves up (smaller), the lap in progress and its live averages sit under it,
+// and the completed laps list below, newest first: split, avg speed, avg
+// power.
+//
+// Refresh cost is the point of both: at 1 Hz only the running numbers change,
+// so the driver's delta engine repaints those bands and nothing else. The lap
+// list changes only when a lap is added — its splits carry tenths because
+// they are frozen — and the buttons only when the state does.
+// ---------------------------------------------------------------------------
+
+// Three fixed buttons, left to right: START/PAUSE, RESET, LAP. Each keeps its
+// place whatever the state — a gloved thumb learns positions, not labels — and
+// one that can't act right now is drawn disabled rather than relabelled.
+// START/PAUSE gets the wide target (it is the one hit most); RESET and LAP
+// are 132 x 156, still well past TOUCH_MIN. 204 + 12 + 132 + 12 + 132 = 492,
+// the content column, inside kContentBottom.
+const EpdRect kStopwatchToggle = {24, 780, 204, 156};
+const EpdRect kStopwatchReset = {240, 780, 132, 156};
+const EpdRect kStopwatchLap = {384, 780, 132, 156};
+
+namespace {
+
+// Largest first. Impact_128 (219 px digits) leads: on a page that is nothing
+// but the time, "00:00" can take the whole content column.
+const EpdFont* const kStopwatchLadder[] = {&Impact_128, &Impact_XL, &Impact_C,
+                                           &Impact_H,   &Impact_B,  &Impact_V};
+
+// Lap list geometry: a caption row, then fixed rows down to the footer rule.
+constexpr int kSwListTop = 344;      // rule under the lap in progress
+constexpr int kSwRowTop = 384;       // first lap row
+constexpr int kSwRowH = 52;
+constexpr int kSwRows = 7;           // 384 + 7 * 52 = 748, above the rule at 756
+// Value columns (SPLIT, then the metrics) share the width after the lap
+// number evenly, right edges `step` apart ending on the content edge — so
+// fewer metrics means roomier columns, never a gap. TOTAL (cumulative) is not
+// a column: the total is at the top of the page.
+constexpr int kSwColsLeft = 72;
+constexpr int kSwRight = ui::CONTENT_X + ui::CONTENT_W;
+// The LAP AVERAGE row's values start after its caption.
+constexpr int kSwAvgLeft = 160;
+
+// The optional metrics, in column order. Speed is always shown (it has its
+// own "--"); cadence and power only when Stopwatch::showCadence/showPower.
+enum SwMetric : uint8_t { SW_SPEED, SW_CADENCE, SW_POWER };
+struct SwMetrics {
+    SwMetric m[3];
+    int n = 0;
+};
+SwMetrics swMetrics(const Stopwatch& sw) {
+    SwMetrics out;
+    out.m[out.n++] = SW_SPEED;
+    if (sw.showCadence()) out.m[out.n++] = SW_CADENCE;
+    if (sw.showPower()) out.m[out.n++] = SW_POWER;
+    return out;
+}
+
+// Lap row digits: the largest face whose widest split fits its column, down
+// from 38 px (the row is 52). Five columns shrink it only as far as needed.
+#ifdef VFONT
+const EpdFont* swRowFace(int i) {
+    static const int px[] = {38, 34, 30, 26, 22};
+    return i < 5 ? vf_face_digit(VF_VALUES, px[i]) : nullptr;
+}
+#else
+const EpdFont* swRowFace(int i) {
+    return i == 0 ? &Impact_T : i == 1 ? &Impact_S : nullptr;
+}
+#endif
+
+void stopwatchButton(const EpdRect& r, const char* text, bool primary,
+                     bool enabled, uint8_t* fb) {
+    if (primary) {
+        epd_fill_rect(r, ui::INK, fb);
+    } else {
+        // Secondary: the pager's 3 px outline. Disabled keeps a single rule
+        // so the target is still visibly there, just not asking for a tap.
+        for (int e = 0; e < (enabled ? 3 : 1); ++e)
+            epd_draw_rect({r.x + e, r.y + e, r.width - 2 * e, r.height - 2 * e},
+                          ui::INK, fb);
+    }
+    ui::text(&Impact_T, r.x + r.width / 2,
+             r.y + r.height / 2 + epdc_digit_height(&Impact_T) / 2, text, fb,
+             EPD_DRAW_ALIGN_CENTER,
+             primary ? ui::PAPER : enabled ? ui::INK : ui::LIGHT);
+}
+
+// Running time: MM:SS under the hour (fixed width), H:MM:SS over.
+void swFmt(char* out, size_t cap, uint32_t ms) {
+    const uint32_t sec = ms / 1000;
+    if (sec >= 3600)
+        snprintf(out, cap, "%lu:%02lu:%02lu", (unsigned long)(sec / 3600),
+                 (unsigned long)(sec / 60 % 60), (unsigned long)(sec % 60));
+    else
+        snprintf(out, cap, "%02lu:%02lu", (unsigned long)(sec / 60),
+                 (unsigned long)(sec % 60));
+}
+
+// A frozen lap time: tenths under the hour (it never ticks, so they cost
+// nothing), H:MM:SS over.
+void swFmtLap(char* out, size_t cap, uint32_t ms) {
+    const uint32_t sec = ms / 1000;
+    if (sec >= 3600)
+        snprintf(out, cap, "%lu:%02lu:%02lu", (unsigned long)(sec / 3600),
+                 (unsigned long)(sec / 60 % 60), (unsigned long)(sec % 60));
+    else
+        snprintf(out, cap, "%lu:%02lu.%lu", (unsigned long)(sec / 60),
+                 (unsigned long)(sec % 60), (unsigned long)(ms % 1000 / 100));
+}
+
+// Average speed in the rider's units, one decimal; "--" with no source.
+void swFmtSpeed(char* out, size_t cap, float kmh, bool miles) {
+    if (kmh < 0) snprintf(out, cap, "--");
+    else snprintf(out, cap, "%.1f", units::speed(kmh, miles));
+}
+// Power (W) or cadence (rpm): an integer, "--" with no data.
+void swFmtInt(char* out, size_t cap, int v) {
+    if (v < 0) snprintf(out, cap, "--");
+    else snprintf(out, cap, "%d", v);
+}
+
+// One metric's value for the lap in progress (lap < 0) or completed lap i.
+void swMetricValue(const Stopwatch& sw, SwMetric m, int lap, bool miles,
+                   char* out, size_t cap) {
+    switch (m) {
+        case SW_SPEED:
+            swFmtSpeed(out, cap,
+                       lap < 0 ? sw.currentAvgSpeedKmh() : sw.lapAvgSpeedKmh(lap),
+                       miles);
+            break;
+        case SW_CADENCE:
+            swFmtInt(out, cap, lap < 0 ? sw.currentAvgCadenceRpm()
+                                       : sw.lapAvgCadenceRpm(lap));
+            break;
+        case SW_POWER:
+            swFmtInt(out, cap, lap < 0 ? sw.currentAvgPowerW()
+                                       : sw.lapAvgPowerW(lap));
+            break;
+    }
+}
+const char* swMetricUnit(SwMetric m, bool miles) {
+    return m == SW_SPEED ? units::speedLabel(miles) : m == SW_CADENCE ? "RPM"
+                                                                      : "W";
+}
+
+// Largest ladder face that fits `hint` in `availW` and stays within `maxH`.
+// Sized against the WIDEST string of the current form, not the string
+// itself, so the numerals never change size as they tick — only once, on the
+// hour, when the hours column appears.
+const EpdFont* swFace(uint32_t ms, int maxH, int availW = ui::CONTENT_W) {
+    const uint32_t sec = ms / 1000;
+    const char* hint = sec >= 36000 ? "00:00:00" : sec >= 3600 ? "0:00:00"
+                                                               : "00:00";
+    const int n = sizeof(kStopwatchLadder) / sizeof(kStopwatchLadder[0]);
+    for (int i = 0; i < n; ++i)
+        if (epdc_digit_height(kStopwatchLadder[i]) <= maxH &&
+            ui::textWidth(kStopwatchLadder[i], hint) <= availW)
+            return kStopwatchLadder[i];
+    return kStopwatchLadder[n - 1];
+}
+
+// "31.4 KM/H" / "248 W": the value in Impact_T right-aligned at `right`
+// minus the unit's width, the unit in the label face after it, so a column
+// of them lines up on the digits.
+void swValueUnit(const char* value, const char* unit, int right, int base,
+                 uint8_t* fb) {
+    const int uw = ui::textWidth(&Arial_L, unit);
+    ui::text(&Impact_T, right - uw - 6, base, value, fb, EPD_DRAW_ALIGN_RIGHT);
+    ui::text(&Arial_L, right, base, unit, fb, EPD_DRAW_ALIGN_RIGHT, ui::DARK);
+}
+
+// A row of metric averages (value + unit each) across [left, right]: evenly
+// spaced, each pair centred in its share.
+void swAverages(const Stopwatch& sw, const SwMetrics& ms, bool miles, int left,
+                int right, int base, uint8_t* fb) {
+    const int share = (right - left) / ms.n;
+    for (int i = 0; i < ms.n; ++i) {
+        char v[16];
+        swMetricValue(sw, ms.m[i], -1, miles, v, sizeof(v));
+        const char* unit = swMetricUnit(ms.m[i], miles);
+        const int w = ui::textWidth(&Impact_T, v) + 6 +
+                      ui::textWidth(&Arial_L, unit);
+        const int cx = left + share * i + share / 2;
+        swValueUnit(v, unit, cx + w / 2, base, fb);
+    }
+}
+
+}  // namespace
+
+void ui_render_stopwatch(const RideState& s, const Stopwatch& sw, uint32_t now,
+                         uint8_t* fb) {
+    g_dashToned = false;
+    ui::statusBar(s, fb, "STOPWATCH");
+
+    const int W = epd_rotated_display_width();
+    const uint32_t elapsed = sw.elapsedMs(now);
+    const int footerRule = kStopwatchToggle.y - 24;
+    // Which metrics this frame carries. It is derived from sensor presence
+    // and lap data, so it only changes when a sensor appears or drops out or
+    // on LAP/RESET — never tick to tick.
+    const SwMetrics ms = swMetrics(sw);
+    char t[16];
+    swFmt(t, sizeof(t), elapsed);
+
+    if (sw.lapCount == 0) {
+        // --- No laps: the time alone, centred in the body. ----------------
+        const EpdFont* f = swFace(elapsed, 1000);
+        const int mid = (ui::STATUS_H + footerRule) / 2 - 50;
+        const int dh = epdc_digit_height(f);
+        ui::text(f, W / 2, mid + dh / 2, t, fb, EPD_DRAW_ALIGN_CENTER);
+        // What the clock is doing, in words: a paused time and a running
+        // one look identical between two refreshes.
+        const char* state = sw.running ? "RUNNING"
+                            : elapsed == 0 ? "READY"
+                                           : "PAUSED";
+        ui::label(W / 2, mid + dh / 2 + 70, state, fb, ui::INK, &Arial_B);
+        // The run's averages so far (the lap in progress IS the run).
+        if (elapsed > 0) {
+            const int base = mid + dh / 2 + 150;
+            ui::label(W / 2, base - 52, "AVERAGE", fb, ui::DARK, &Arial_L);
+            // Narrower for one or two metrics so they sit together under
+            // the clock rather than at the panel's edges.
+            const int span = ms.n == 1 ? 200 : ms.n == 2 ? 340 : ui::CONTENT_W;
+            swAverages(sw, ms, s.useMiles, W / 2 - span / 2, W / 2 + span / 2,
+                       base, fb);
+        }
+    } else {
+        // --- Total, smaller, at the top: the same shape as the lap row
+        // below it (label pair on the left, digits flush right on the same
+        // edge), so the two read as a matched pair. The digits get the
+        // column minus the label's 140 px, which H:MM:SS still fits.
+        const int right = ui::CONTENT_X + ui::CONTENT_W;
+        const EpdFont* f = swFace(elapsed, 95, ui::CONTENT_W - 140);
+        const int totalBase = ui::STATUS_H + 24 + epdc_digit_height(f);
+        ui::text(&Arial_B, ui::CONTENT_X, totalBase - 30, "TOTAL", fb,
+                 EPD_DRAW_ALIGN_LEFT);
+        ui::text(&Arial_L, ui::CONTENT_X, totalBase,
+                 sw.running ? "RUNNING" : "PAUSED", fb, EPD_DRAW_ALIGN_LEFT,
+                 ui::DARK);
+        ui::text(f, right, totalBase, t, fb, EPD_DRAW_ALIGN_RIGHT);
+
+        // --- The lap in progress: number, state, time, live averages. -------
+        char buf[24];
+        const int lapBase = 284, avgBase = 328;
+        snprintf(buf, sizeof(buf), "LAP %d", sw.lapCount + 1);
+        ui::text(&Arial_B, ui::CONTENT_X, lapBase - 30, buf, fb,
+                 EPD_DRAW_ALIGN_LEFT);
+        ui::text(&Arial_L, ui::CONTENT_X, lapBase,
+                 sw.running ? "IN PROGRESS" : "PAUSED", fb,
+                 EPD_DRAW_ALIGN_LEFT, ui::DARK);
+        swFmt(buf, sizeof(buf), sw.currentLapMs(now));
+        ui::text(&Impact_B, ui::CONTENT_X + ui::CONTENT_W, lapBase, buf, fb,
+                 EPD_DRAW_ALIGN_RIGHT);
+        ui::text(&Arial_L, ui::CONTENT_X, avgBase, "LAP AVERAGE", fb,
+                 EPD_DRAW_ALIGN_LEFT, ui::DARK);
+        swAverages(sw, ms, s.useMiles, kSwAvgLeft, kSwRight, avgBase, fb);
+        epd_fill_rect({0, kSwListTop, W, ui::RULE}, ui::INK, fb);
+
+        // --- Completed laps, newest first. ----------------------------------
+        // Column geometry from the metric count; the face from the widest
+        // split this list can show (an hour-long lap needs H:MM:SS).
+        const int cols = 1 + ms.n;
+        const int step = (kSwRight - kSwColsLeft) / cols;
+        auto colRight = [&](int c) {
+            return c == cols - 1 ? kSwRight : kSwColsLeft + step * (c + 1);
+        };
+        bool hourLap = false;
+        for (int r = 0; r < kSwRows && sw.lapCount - 1 - r >= 0; ++r)
+            if (sw.lapSplitMs(sw.lapCount - 1 - r) >= 3600000u) hourLap = true;
+        const char* splitHint = hourLap ? "0:00:00" : "00:00.0";
+        const EpdFont* rf = &Impact_T;
+        for (int k = 0; const EpdFont* f = swRowFace(k); ++k) {
+            rf = f;
+            if (ui::textWidth(f, splitHint) <= step - 10) break;
+        }
+        const int rowDh = epdc_digit_height(rf);
+
+        const int capBase = kSwRowTop - 12;
+        ui::text(&Arial_L, ui::CONTENT_X, capBase, "LAP", fb,
+                 EPD_DRAW_ALIGN_LEFT, ui::DARK);
+        ui::text(&Arial_L, colRight(0), capBase, "SPLIT", fb,
+                 EPD_DRAW_ALIGN_RIGHT, ui::DARK);
+        for (int c = 0; c < ms.n; ++c)
+            ui::text(&Arial_L, colRight(c + 1), capBase,
+                     ms.m[c] == SW_POWER ? "WATTS"
+                                         : swMetricUnit(ms.m[c], s.useMiles),
+                     fb, EPD_DRAW_ALIGN_RIGHT, ui::DARK);
+        for (int r = 0; r < kSwRows; ++r) {
+            const int i = sw.lapCount - 1 - r;
+            if (i < 0) break;
+            const int top = kSwRowTop + r * kSwRowH;
+            const int base = top + (kSwRowH + rowDh) / 2;
+            epd_fill_rect({0, top, W, 1}, ui::INK, fb);
+            snprintf(buf, sizeof(buf), "%d", i + 1);
+            ui::text(rf, ui::CONTENT_X, base, buf, fb, EPD_DRAW_ALIGN_LEFT);
+            swFmtLap(buf, sizeof(buf), sw.lapSplitMs(i));
+            ui::text(rf, colRight(0), base, buf, fb, EPD_DRAW_ALIGN_RIGHT);
+            for (int c = 0; c < ms.n; ++c) {
+                swMetricValue(sw, ms.m[c], i, s.useMiles, buf, sizeof(buf));
+                ui::text(rf, colRight(c + 1), base, buf, fb,
+                         EPD_DRAW_ALIGN_RIGHT);
+            }
+        }
+    }
+
+    epd_fill_rect({0, footerRule, W, ui::RULE_HEAVY}, ui::INK, fb);
+    // START is the filled primary when there is something to start; while
+    // running, PAUSE is outlined like the others so the solid block flipping
+    // is itself the cue that the clock changed state.
+    stopwatchButton(kStopwatchToggle, sw.running ? "PAUSE" : "START",
+                    !sw.running, true, fb);
+    stopwatchButton(kStopwatchReset, "RESET", false, sw.canReset(), fb);
+    stopwatchButton(kStopwatchLap, "LAP", false, sw.canLap(), fb);
 }

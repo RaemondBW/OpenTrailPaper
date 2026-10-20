@@ -255,7 +255,7 @@ data class DashConfig(
     /** The map screen's 3-cell data strip (`map <f> <f> <f>` in the config). */
     val mapFields: List<String> = listOf("speed", "distance", "ridetime"),
 ) {
-    enum class PageKind { FIELDS, MUSIC, MAP, WORKOUT }
+    enum class PageKind { FIELDS, MUSIC, MAP, WORKOUT, STOPWATCH }
 
     data class Page(
         val kind: PageKind,
@@ -271,6 +271,7 @@ data class DashConfig(
         val isMusic: Boolean get() = kind == PageKind.MUSIC
         val isMap: Boolean get() = kind == PageKind.MAP
         val isWorkout: Boolean get() = kind == PageKind.WORKOUT
+        val isStopwatch: Boolean get() = kind == PageKind.STOPWATCH
 
         companion object {
             private var nextKey = 1L
@@ -279,6 +280,7 @@ data class DashConfig(
             fun music() = Page(PageKind.MUSIC, DashLayout(emptyList()))
             fun map() = Page(PageKind.MAP, DashLayout(emptyList()))
             fun workout() = Page(PageKind.WORKOUT, DashLayout(emptyList()))
+            fun stopwatch() = Page(PageKind.STOPWATCH, DashLayout(emptyList()))
         }
     }
 
@@ -291,6 +293,7 @@ data class DashConfig(
 
     val hasMusicPage: Boolean get() = pages.any { it.isMusic }
     val hasWorkoutPage: Boolean get() = pages.any { it.isWorkout }
+    val hasStopwatchPage: Boolean get() = pages.any { it.isStopwatch }
 
     /**
      * Serialize, byte-compatible with dashSerializePages(): the first field
@@ -309,6 +312,10 @@ data class DashConfig(
                     page.isMusic -> append("page music\n")
                     page.isMap -> append("page map\n")
                     page.isWorkout -> append("page workout\n")
+                    // Firmware before v1.23 drops this line (an unknown page
+                    // kind parses as an empty page), so the device echoes the
+                    // layout back without it and the editor follows.
+                    page.isStopwatch -> append("page stopwatch\n")
                     i > 0 -> append("page\n")
                 }
                 if (page.kind == PageKind.FIELDS) {
@@ -367,6 +374,7 @@ data class DashConfig(
                             "music" -> kind = PageKind.MUSIC
                             "map" -> kind = PageKind.MAP
                             "workout" -> kind = PageKind.WORKOUT
+                            "stopwatch" -> kind = PageKind.STOPWATCH
                         }
                     }
                     tok.firstOrNull() == "map" -> {

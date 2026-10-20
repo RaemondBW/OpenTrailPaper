@@ -21,6 +21,7 @@
 #include "ui_render.h"
 #include "media_state.h"
 #include "workout.h"
+#include "stopwatch.h"
 #include "map_view.h"
 #include "map_tiles.h"
 
@@ -977,6 +978,137 @@ int main(int argc, char** argv) {
         clearWhite(fb.data());
         ui_render_media(s, none, fb.data());
         emit("music_idle.png");
+    }
+
+
+    // STOPWATCH page: fresh, running, paused, past the hour (where the
+    // hours column steps the numerals down once), and with laps — more than
+    // the list shows, running and paused — each with its average speed and,
+    // when a source is there, cadence and power. Samples are fed the way the
+    // UI task feeds them: a reading held until the next one. The metric
+    // columns follow the sensors, so variants cover speed only, speed +
+    // cadence, and all three.
+    {
+        const uint32_t t0 = 1000000;   // arbitrary millis() at START
+        // Ride `ms` at a steady speed / power / cadence from `t` (-1 = no
+        // source for that metric); returns the end time.
+        auto ride = [](Stopwatch& sw, uint32_t t, uint32_t ms, float kmh,
+                       int watts, int rpm) {
+            for (uint32_t at : {t, t + ms})
+                sw.sample(at, kmh, true, watts < 0 ? 0 : (uint16_t)watts,
+                          watts >= 0, rpm < 0 ? 0 : (uint8_t)rpm, rpm >= 0);
+            return t + ms;
+        };
+
+        Stopwatch sw;
+        clearWhite(fb.data());
+        ui_render_stopwatch(s, sw, t0, fb.data());
+        emit("stopwatch_ready.png");
+
+        sw.toggle(t0);
+        const uint32_t at1234 = ride(sw, t0, (12 * 60 + 34) * 1000 + 560,
+                                     28.6f, 212, 88);
+        clearWhite(fb.data());
+        ui_render_stopwatch(s, sw, at1234, fb.data());
+        emit("stopwatch_running.png");
+
+        Stopwatch paused = sw;
+        paused.toggle(at1234);
+        clearWhite(fb.data());
+        ui_render_stopwatch(s, paused, at1234 + 5000, fb.data());
+        emit("stopwatch_paused.png");
+
+        const uint32_t atHour = ride(sw, at1234,
+                                     (1 * 3600 + 2 * 60 + 3) * 1000 -
+                                         (at1234 - t0),
+                                     26.0f, 195, 86);
+        clearWhite(fb.data());
+        ui_render_stopwatch(s, sw, atHour, fb.data());
+        emit("stopwatch_hour.png");
+
+        // No power meter, cadence sensor only: speed + cadence.
+        Stopwatch np;
+        np.toggle(t0);
+        const uint32_t npEnd = ride(np, t0, (8 * 60 + 12) * 1000, 24.3f, -1, 84);
+        clearWhite(fb.data());
+        ui_render_stopwatch(s, np, npEnd, fb.data());
+        emit("stopwatch_running_nopower.png");
+
+        // Speed only (no meter, no cadence sensor).
+        Stopwatch so;
+        so.toggle(t0);
+        const uint32_t soEnd = ride(so, t0, (8 * 60 + 12) * 1000, 24.3f, -1, -1);
+        clearWhite(fb.data());
+        ui_render_stopwatch(s, so, soEnd, fb.data());
+        emit("stopwatch_running_speed.png");
+
+        // Nine hill repeats: the list shows the newest seven. Rendered three
+        // times with the sensors a rider might have: all, cadence only, none.
+        const uint32_t splits[] = {312400, 298700, 305100, 291300, 322800,
+                                   301900, 296200, 288600, 307500};
+        const float kmh[] = {14.2f, 14.9f, 14.6f, 15.3f, 13.8f,
+                             14.7f, 15.0f, 15.4f, 14.5f};
+        const int watts[] = {268, 281, 274, 290, 259, 276, 284, 293, 272};
+        const int rpm[] = {78, 81, 79, 83, 74, 80, 82, 84, 79};
+        auto repeats = [&](Stopwatch& l, bool power, bool cadence) {
+            l.toggle(t0);
+            uint32_t t = t0;
+            for (int i = 0; i < 9; ++i) {
+                t = ride(l, t, splits[i], kmh[i], power ? watts[i] : -1,
+                         cadence ? rpm[i] : -1);
+                l.lap(t);
+            }
+            return ride(l, t, 83400, 15.1f, power ? 286 : -1,
+                        cadence ? 83 : -1);
+        };
+        Stopwatch laps;
+        uint32_t t = repeats(laps, true, true);
+        clearWhite(fb.data());
+        ui_render_stopwatch(s, laps, t, fb.data());
+        emit("stopwatch_laps.png");
+
+        laps.toggle(t);
+        clearWhite(fb.data());
+        ui_render_stopwatch(s, laps, t + 6600, fb.data());
+        emit("stopwatch_laps_paused.png");
+
+        Stopwatch lapsCad;
+        t = repeats(lapsCad, false, true);
+        clearWhite(fb.data());
+        ui_render_stopwatch(s, lapsCad, t, fb.data());
+        emit("stopwatch_laps_cadence.png");
+
+        Stopwatch lapsSpeed;
+        t = repeats(lapsSpeed, false, false);
+        clearWhite(fb.data());
+        ui_render_stopwatch(s, lapsSpeed, t, fb.data());
+        emit("stopwatch_laps_speed.png");
+
+        // In miles, and the power meter gone after the first lap: its column
+        // stays (lap 1 has power) and the later laps read "--", not 0.
+        RideState mi = s;
+        mi.useMiles = true;
+        Stopwatch two;
+        two.toggle(t0);
+        uint32_t u = ride(two, t0, 95300, 32.4f, 245, 92);
+        two.lap(u);
+        u = ride(two, u, 101800, 30.9f, -1, 90);
+        two.lap(u);
+        u = ride(two, u, 41000, 33.8f, -1, 94);
+        clearWhite(fb.data());
+        ui_render_stopwatch(mi, two, u, fb.data());
+        emit("stopwatch_laps_two.png");
+
+        // Past the hour with laps: H:MM:SS has to fit beside the TOTAL label
+        // and in the SPLIT column with all five columns up.
+        Stopwatch longer;
+        longer.toggle(t0);
+        uint32_t v = ride(longer, t0, 3700000, 27.3f, 201, 87);
+        longer.lap(v);
+        v = ride(longer, v, 1834000, 25.8f, 188, 85);
+        clearWhite(fb.data());
+        ui_render_stopwatch(s, longer, v, fb.data());
+        emit("stopwatch_laps_hour.png");
     }
 
     // WORKOUT pages, per the Claude Design "Workout View" frames: executing

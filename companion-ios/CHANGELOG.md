@@ -6,6 +6,13 @@ written for the rider. The current version's section is the source for the
 App Store "What's New" text — paste it (minus build-only entries) when
 submitting.
 
+## Unreleased
+
+- Dashboard editor: Add a page > Stopwatch puts the device's new STOPWATCH
+  page in the Home-key cycle. It needs firmware v1.23. Older firmware
+  leaves the page out, and the editor shows the layout the device kept.
+  The Android app has the same option.
+
 ## 1.3 (build 17)
 
 Version numbers now follow the App Store: 0.6 (build 15) shipped there as
