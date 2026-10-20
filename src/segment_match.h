@@ -63,8 +63,10 @@
 // already scanning (or armed at the next start) again.
 // The live delta compares against PR pace: the PR's time scaled by the
 // fraction of the segment done (constant-pace; Strava keeps no splits).
-// Only one effort is timed at a time — overlapping starred segments are
-// matched one by one, whichever start the rider reaches first.
+// Efforts are tracked independently, up to MAX_EFFORTS at once, so starred
+// segments that overlap are all timed. list() orders what the page pages
+// through: efforts under way (and results on show) by start time, then the
+// starts the rider is at or near, by distance.
 
 namespace seg {
 
@@ -327,12 +329,11 @@ inline float elevAt(const SegmentDb& db, const Segment& s, float alongM) {
 
 enum Phase : uint8_t { IDLE, ARMED, ACTIVE, DONE, ABANDONED };
 
-// What the SEGMENT page draws. Filled by Matcher::view() for a given `now`.
+// What the SEGMENT page draws for one segment. Filled by Matcher::view().
 struct View {
     int count = 0;              // segments on the device
     Phase phase = IDLE;
-    // IDLE (also shown under DONE/ABANDONED once those lapse): the nearest
-    // start within NEARBY_M, if any.
+    // IDLE / ARMED: the segment's start, from the rider.
     bool haveNearest = false;
     char nearestName[NAME_BYTES + 1] = "";
     float nearestM = 0;
@@ -355,15 +356,23 @@ struct View {
     // = that sensor never reported during it.
     uint16_t avgPowerW = 0xFFFF;
     uint8_t avgHrBpm = 0;
-    // The segment the page draws (map + profile): the effort's, the result's,
-    // or the nearest one while idle. -1 = none. `db` stays valid for the
-    // frame (the UI task owns both).
+    // The segment the page draws (map + profile). -1 = none. `db` stays
+    // valid for the frame (the UI task owns both).
     const SegmentDb* db = nullptr;
     int segIndex = -1;
     // The rider in that segment's local frame (metres east/north of its start).
     bool riderValid = false;
     float riderX = 0, riderY = 0;
+    // Which of the relevant segments this is (Matcher::list), for the page's
+    // arrows: 1-based position and how many there are. Set by the caller.
+    int listPos = 0, listCount = 0;
 };
+
+// How many of each the matcher keeps at once.
+constexpr int MAX_EFFORTS = 4;    // armed + under way, overlapping segments
+constexpr int MAX_RESULTS = 4;    // finished / abandoned, still on show
+constexpr int MAX_UPCOMING = 3;   // nearest starts within NEARBY_M
+constexpr int MAX_LIST = MAX_EFFORTS + MAX_RESULTS + MAX_UPCOMING;
 
 class Matcher {
 public:
@@ -374,55 +383,120 @@ public:
         reset();
     }
     void reset() {
-        phase_ = IDLE;
-        cur_ = -1;
-        nearest_ = -1;
-        result_ = IDLE;
-        resultSeg_ = -1;
+        for (Effort& e : eff_) e = Effort();
+        for (Result& r : res_) r = Result();
+        upCount_ = 0;
         haveCourse_ = false;
         haveAnchor_ = false;
-        finishing_ = false;
         haveRider_ = false;
+        started_ = ended_ = false;
+        startedSeg_ = -1;
     }
 
-    // What the page shows: an effort in progress, else a result still up,
-    // else ARMED / IDLE. (A loop segment's finish is also its start, so the
-    // matcher may already be armed again under the result.)
-    Phase phase() const {
-        if (phase_ == ACTIVE) return ACTIVE;
-        if (resultShowing(lastNow_)) return result_;
-        return phase_;
+    // The segments that matter now, in the order the page pages through them:
+    // efforts under way and results still on show, by when they started; then
+    // starts the rider is at (armed) or near, by distance. One entry per
+    // segment (an effort under way outranks its own result, a result its own
+    // re-armed start). Returns how many; `out` gets segment indices.
+    int list(uint32_t now, int* out, int cap) const {
+        struct Item { int seg; int group; float key; };
+        Item items[MAX_LIST];
+        int n = 0;
+        auto has = [&](int seg) {
+            for (int i = 0; i < n; ++i) if (items[i].seg == seg) return true;
+            return false;
+        };
+        for (const Effort& e : eff_)
+            if (e.used && e.phase == ACTIVE && n < MAX_LIST)
+                items[n++] = {e.seg, 0, (float)(int32_t)(e.startMs - epoch_)};
+        for (const Result& r : res_)
+            if (showing(r, now) && !has(r.seg) && n < MAX_LIST)
+                items[n++] = {r.seg, 0, (float)(int32_t)(r.startMs - epoch_)};
+        for (const Effort& e : eff_)
+            if (e.used && e.phase == ARMED && !has(e.seg) && n < MAX_LIST)
+                items[n++] = {e.seg, 1, e.startDistM};
+        for (int i = 0; i < upCount_; ++i)
+            if (!has(upSeg_[i]) && n < MAX_LIST) items[n++] = {upSeg_[i], 1, upM_[i]};
+        // Insertion sort: a handful of items.
+        for (int i = 1; i < n; ++i)
+            for (int j = i; j > 0; --j) {
+                const Item& a = items[j - 1];
+                const Item& b = items[j];
+                if (a.group < b.group || (a.group == b.group && a.key <= b.key)) break;
+                const Item t = items[j - 1];
+                items[j - 1] = items[j];
+                items[j] = t;
+            }
+        int k = 0;
+        for (int i = 0; i < n && k < cap; ++i) out[k++] = items[i].seg;
+        return k;
     }
+
+    // The first of list(): what a single-segment page shows.
+    int primary(uint32_t now) const {
+        int segs[MAX_LIST];
+        return list(now, segs, MAX_LIST) > 0 ? segs[0] : -1;
+    }
+
+    // The primary segment's phase (IDLE when there is none).
+    Phase phase() const { return phaseOf(primary(lastNow_), lastNow_); }
+
+    // An effort began / ended since the last call (for the page auto-switch);
+    // `seg` gets the segment that started last.
+    bool takeStarted(int* seg = nullptr) {
+        const bool v = started_;
+        started_ = false;
+        if (seg) *seg = startedSeg_;
+        return v;
+    }
+    bool takeEnded() { bool v = ended_; ended_ = false; return v; }
+    // An effort is being timed: the device must not auto-sleep.
+    bool busy() const {
+        for (const Effort& e : eff_) if (e.used && e.phase == ACTIVE) return true;
+        return false;
+    }
+
+    // Time passes with no new fix: settles a finish where the rider stopped
+    // on the line, lapses results. Returns `now`, never earlier than a time
+    // already seen (a fix stamped a moment before the last tick must not run
+    // the clock backwards).
+    uint32_t tick(uint32_t now) {
+        if (haveNow_ && (int32_t)(now - lastNow_) < 0) now = lastNow_;
+        if (!haveNow_) epoch_ = now;
+        lastNow_ = now;
+        haveNow_ = true;
+        for (Effort& e : eff_)
+            if (e.used && e.phase == ACTIVE && e.finishing &&
+                now - e.bestEndMs >= FINISH_SETTLE_MS)
+                finish(e, now);
+        for (Result& r : res_)
+            if (r.used && !showing(r, now)) r.used = false;
+        return now;
+    }
+
     // The live power and heart rate, every UI pass (a reading is held until
-    // the next): averaged over an effort for its result. Invalid = no sensor
-    // reporting; that time doesn't count.
+    // the next): averaged over each effort for its result. Invalid = no
+    // sensor reporting; that time doesn't count.
     void sample(uint32_t now, uint16_t powerW, bool powerValid, uint8_t hrBpm,
                 bool hrValid) {
-        accumulate(now);
+        if (haveSample_) {
+            for (Effort& e : eff_) {
+                if (!e.used || e.phase != ACTIVE) continue;
+                // Credit the held reading from the later of the last sample
+                // and the effort's start; a gap of a minute is not a reading.
+                const uint32_t from = (int32_t)(e.startMs - sampleMs_) > 0 ? e.startMs : sampleMs_;
+                const uint32_t dt = now - from;
+                if ((int32_t)dt <= 0 || dt >= 60000) continue;
+                if (heldPowerValid_) { e.energyWms += (double)heldPowerW_ * dt; e.powerMs += dt; }
+                if (heldHrValid_) { e.hrBeatMs += (double)heldHr_ * dt; e.hrMs += dt; }
+            }
+        }
+        sampleMs_ = now;
         heldPowerW_ = powerW;
         heldPowerValid_ = powerValid;
         heldHr_ = hrBpm;
         heldHrValid_ = hrValid;
         haveSample_ = true;
-    }
-
-    // An effort began / ended since the last call (for the page auto-switch).
-    bool takeStarted() { bool v = started_; started_ = false; return v; }
-    bool takeEnded() { bool v = ended_; ended_ = false; return v; }
-    // An effort is being timed: the device must not auto-sleep.
-    bool busy() const { return phase_ == ACTIVE; }
-
-    // Time passes with no new fix: lapses a result, settles a finish where
-    // the rider stopped on the line.
-    // Returns `now`, never earlier than a time already seen: a fix stamped a
-    // moment before the caller's last tick must not run the clock backwards.
-    uint32_t tick(uint32_t now) {
-        if (haveNow_ && (int32_t)(now - lastNow_) < 0) now = lastNow_;
-        lastNow_ = now;
-        haveNow_ = true;
-        if (phase_ == ACTIVE && finishing_ && now - bestEndMs_ >= FINISH_SETTLE_MS)
-            finish(now);
-        return now;
     }
 
     // One GPS fix, stamped with the millis() it arrived.
@@ -433,152 +507,167 @@ public:
         riderLat_ = lat;
         riderLon_ = lon;
         if (!db_ || db_->count == 0) {
-            nearest_ = -1;
+            upCount_ = 0;
             return;
         }
-        if (phase_ == ACTIVE) {
-            trackActive(now, lat, lon);
-            if (phase_ == ACTIVE) return;
-        }
-        if (phase_ == ARMED) {
-            trackArmed(now, lat, lon);
-            if (phase_ != IDLE) return;
+        for (Effort& e : eff_) {
+            if (!e.used) continue;
+            if (e.phase == ACTIVE) trackActive(e, now, lat, lon);
+            else trackArmed(e, now, lat, lon);
         }
         scan(now, lat, lon);
     }
 
-    void view(uint32_t now, View& v) const {
+    // The primary segment's view (or, with none, just the count).
+    void view(uint32_t now, View& v) const { view(now, primary(now), v); }
+
+    // The view of segment `seg` (one from list()); -1 = none.
+    void view(uint32_t now, int seg, View& v) const {
         v = View();
         v.count = db_ ? db_->count : 0;
-        if (!db_) return;
+        if (!db_ || seg < 0 || seg >= db_->count) return;
         v.db = db_;
-        if (nearest_ >= 0 && nearest_ < db_->count) place(v, nearest_);
-        if (nearest_ >= 0 && nearest_ < db_->count) {
-            const Segment& n = db_->segs[nearest_];
-            v.haveNearest = true;
-            strncpy(v.nearestName, n.name, sizeof(v.nearestName) - 1);
-            v.nearestM = nearestM_;
-            v.nearestPrSec = n.prSec;
-            v.nearestLenM = n.lenM;
-            v.nearestGradeD = n.gradeD;
-            v.nearestBearingDeg = nearestBrg_;
-        }
-        if (phase_ != ACTIVE && resultShowing(now) && resultSeg_ < db_->count) {
-            const Segment& s = db_->segs[resultSeg_];
-            place(v, resultSeg_);
-            v.phase = result_;
-            strncpy(v.name, s.name, sizeof(v.name) - 1);
-            v.lenM = s.lenM;
-            v.gradeD = s.gradeD;
-            v.elapsedMs = resultMs_;
-            if (result_ == DONE) {
-                v.avgPowerW = resPowerW_;
-                v.avgHrBpm = resHr_;
-                v.doneM = s.lenM;
-                v.prSec = prBefore_;
-                v.newPr = newPr_;
-                if (prBefore_ > 0) {
-                    v.haveDelta = true;
-                    v.deltaMs = (int32_t)resultMs_ - (int32_t)(prBefore_ * 1000);
-                }
-            } else {
-                v.doneM = resultDoneM_;
-                v.prSec = s.prSec;
-            }
-            return;
-        }
-        v.phase = phase_;
-        if (cur_ < 0 || cur_ >= db_->count || phase_ == IDLE) return;
-        const Segment& s = db_->segs[cur_];
-        place(v, cur_);
+        place(v, seg);
+        const Segment& s = db_->segs[seg];
         strncpy(v.name, s.name, sizeof(v.name) - 1);
         v.prSec = s.prSec;
         v.lenM = s.lenM;
         v.gradeD = s.gradeD;
-        if (phase_ == ACTIVE) {
-            v.doneM = progressM_;
-            v.elapsedMs = now - startMs_;
-            v.offRoute = offSinceMs_ != 0;
+        if (const Effort* e = effortFor(seg, ACTIVE)) {
+            v.phase = ACTIVE;
+            v.doneM = e->progressM;
+            v.elapsedMs = now - e->startMs;
+            v.offRoute = e->offSinceMs != 0;
             if (s.prSec > 0 && s.lenM > 0) {
-                const float f = progressM_ / s.lenM;
+                const float f = e->progressM / s.lenM;
                 v.haveDelta = true;
                 v.deltaMs = (int32_t)v.elapsedMs - (int32_t)(s.prSec * 1000.0f * f);
             }
+            return;
+        }
+        if (const Result* r = resultFor(seg, now)) {
+            v.phase = r->outcome;
+            v.elapsedMs = r->ms;
+            if (r->outcome == DONE) {
+                v.doneM = s.lenM;
+                v.prSec = r->prBefore;
+                v.newPr = r->newPr;
+                v.avgPowerW = r->powerW;
+                v.avgHrBpm = r->hr;
+                if (r->prBefore > 0) {
+                    v.haveDelta = true;
+                    v.deltaMs = (int32_t)r->ms - (int32_t)(r->prBefore * 1000);
+                }
+            } else {
+                v.doneM = r->doneM;
+            }
+            return;
+        }
+        // Armed or upcoming: where its start is.
+        const Effort* armed = effortFor(seg, ARMED);
+        v.phase = armed ? ARMED : IDLE;
+        for (int i = 0; i < upCount_; ++i)
+            if (upSeg_[i] == seg) {
+                v.haveNearest = true;
+                v.nearestM = upM_[i];
+                v.nearestBearingDeg = upBrg_[i];
+            }
+        if (armed && !v.haveNearest) {
+            v.haveNearest = true;
+            v.nearestM = armed->startDistM;
+            v.nearestBearingDeg = v.riderValid ? bearingDeg(-v.riderX, -v.riderY) : 0;
+        }
+        if (v.haveNearest) {
+            strncpy(v.nearestName, s.name, sizeof(v.nearestName) - 1);
+            v.nearestPrSec = s.prSec;
+            v.nearestLenM = s.lenM;
+            v.nearestGradeD = s.gradeD;
         }
     }
 
 private:
+    struct Effort {
+        bool used = false;
+        int seg = -1;
+        Phase phase = IDLE;          // ARMED or ACTIVE
+        float startDistM = 0;        // ARMED: from the start now
+        float bestStartM = 0;
+        uint32_t bestStartMs = 0;
+        uint32_t startMs = 0;
+        float progressM = 0;
+        uint32_t offSinceMs = 0;
+        bool finishing = false;
+        float bestEndM = 0;
+        uint32_t bestEndMs = 0;
+        double energyWms = 0, hrBeatMs = 0;
+        uint32_t powerMs = 0, hrMs = 0;
+    };
+    // A finished or abandoned effort, on show for RESULT_MS / NOTE_MS.
+    struct Result {
+        bool used = false;
+        int seg = -1;
+        Phase outcome = DONE;
+        uint32_t atMs = 0, startMs = 0, ms = 0;
+        float doneM = 0;
+        uint32_t prBefore = 0;
+        bool newPr = false;
+        uint16_t powerW = 0xFFFF;
+        uint8_t hr = 0;
+    };
+
     SegmentDb* db_ = nullptr;
-    Phase phase_ = IDLE;   // IDLE, ARMED or ACTIVE
-    int cur_ = -1;
-    uint32_t lastNow_ = 0;
+    Effort eff_[MAX_EFFORTS];
+    Result res_[MAX_RESULTS];
+    int upSeg_[MAX_UPCOMING];
+    float upM_[MAX_UPCOMING], upBrg_[MAX_UPCOMING];
+    int upCount_ = 0;
+    uint32_t lastNow_ = 0, epoch_ = 0;
     bool haveNow_ = false;
     bool started_ = false, ended_ = false;
+    int startedSeg_ = -1;
 
     // Rider course from displacement between fixes.
     bool haveAnchor_ = false;
     double anchorLat_ = 0, anchorLon_ = 0;
     bool haveCourse_ = false;
     float courseDeg_ = 0;
-
-    int nearest_ = -1;
-    float nearestM_ = 0, nearestBrg_ = 0;
-
-    // ARMED
-    float bestStartM_ = 0;
-    uint32_t bestStartMs_ = 0;
-    // ACTIVE
-    uint32_t startMs_ = 0;
-    float progressM_ = 0;
-    uint32_t offSinceMs_ = 0;
-    bool finishing_ = false;
-    float bestEndM_ = 0;
-    uint32_t bestEndMs_ = 0;
-    // The last effort's outcome, shown for RESULT_MS / NOTE_MS.
-    Phase result_ = IDLE;  // DONE or ABANDONED once there is one
-    int resultSeg_ = -1;
-    uint32_t resultAtMs_ = 0;
-    uint32_t resultMs_ = 0;
-    float resultDoneM_ = 0;
-    uint32_t prBefore_ = 0;
-    bool newPr_ = false;
-    uint16_t resPowerW_ = 0xFFFF;
-    uint8_t resHr_ = 0;
-    // Sensor averages over the effort (sample()): the held reading x time.
+    // Last fix, for the rider marker on the page's map.
+    bool haveRider_ = false;
+    double riderLat_ = 0, riderLon_ = 0;
+    // The held sensor reading (sample()).
     uint32_t sampleMs_ = 0;
     bool haveSample_ = false;
     uint16_t heldPowerW_ = 0;
     bool heldPowerValid_ = false;
     uint8_t heldHr_ = 0;
     bool heldHrValid_ = false;
-    double energyWms_ = 0, hrBeatMs_ = 0;
-    uint32_t powerMs_ = 0, hrMs_ = 0;
 
-    void accumulate(uint32_t now) {
-        if (haveSample_ && phase_ == ACTIVE) {
-            const uint32_t dt = now - sampleMs_;
-            if (dt < 60000) {   // a gap that long is not a held reading
-                if (heldPowerValid_) { energyWms_ += (double)heldPowerW_ * dt; powerMs_ += dt; }
-                if (heldHrValid_) { hrBeatMs_ += (double)heldHr_ * dt; hrMs_ += dt; }
-            }
-        }
-        sampleMs_ = now;
+    static bool showing(const Result& r, uint32_t now) {
+        if (!r.used) return false;
+        return now - r.atMs < (r.outcome == DONE ? RESULT_MS : NOTE_MS);
     }
-
-    // Last fix, for the rider marker on the page's map.
-    bool haveRider_ = false;
-    double riderLat_ = 0, riderLon_ = 0;
+    const Effort* effortFor(int seg, Phase ph) const {
+        for (const Effort& e : eff_) if (e.used && e.seg == seg && e.phase == ph) return &e;
+        return nullptr;
+    }
+    const Result* resultFor(int seg, uint32_t now) const {
+        const Result* best = nullptr;
+        for (const Result& r : res_)
+            if (showing(r, now) && r.seg == seg && (!best || r.atMs > best->atMs)) best = &r;
+        return best;
+    }
+    Phase phaseOf(int seg, uint32_t now) const {
+        if (seg < 0) return IDLE;
+        if (effortFor(seg, ACTIVE)) return ACTIVE;
+        if (const Result* r = resultFor(seg, now)) return r->outcome;
+        if (effortFor(seg, ARMED)) return ARMED;
+        return IDLE;
+    }
 
     void place(View& v, int idx) const {
         v.segIndex = idx;
         v.riderValid = haveRider_;
         if (haveRider_) local(db_->segs[idx], riderLat_, riderLon_, v.riderX, v.riderY);
-    }
-
-    bool resultShowing(uint32_t now) const {
-        if (resultSeg_ < 0) return false;
-        const uint32_t hold = result_ == DONE ? RESULT_MS : NOTE_MS;
-        return now - resultAtMs_ < hold;
     }
 
     void local(const Segment& s, double lat, double lon, float& x, float& y) const {
@@ -631,14 +720,19 @@ private:
         return sqrtf(best);
     }
 
-    // IDLE: the nearest start (for the page) and whether we are at one.
-    // Cheap: a box test per segment, then one distance.
+    bool inEffort(int seg) const {
+        for (const Effort& e : eff_) if (e.used && e.seg == seg) return true;
+        return false;
+    }
+
+    // Every segment: the nearest starts (for the page) and whether the rider
+    // is at one. Cheap: a box test per segment, then one distance. Starts of
+    // segments with an effort already going are skipped.
     void scan(uint32_t now, double lat, double lon) {
-        nearest_ = -1;
-        int arm = -1;
-        float armM = 1e30f;
+        upCount_ = 0;
         const double padLat = NEARBY_M / M_PER_DEG_LAT;
         for (int i = 0; i < db_->count; ++i) {
+            if (inEffort(i)) continue;
             const Segment& s = db_->segs[i];
             const double padLon = NEARBY_M / (s.mPerDegLon > 1 ? s.mPerDegLon : 1);
             if (lat < s.minLat - padLat || lat > s.maxLat + padLat ||
@@ -647,24 +741,37 @@ private:
             float x, y;
             local(s, lat, lon, x, y);
             const float d = sqrtf(x * x + y * y);
-            if (d <= NEARBY_M && (nearest_ < 0 || d < nearestM_)) {
-                nearest_ = i;
-                nearestM_ = d;
-                nearestBrg_ = bearingDeg(-x, -y);
-            }
             // Armed on proximity alone: the rider may still be turning onto
             // the first leg. Setting off along it (heading checked then)
             // is what starts the clock.
-            if (d <= ARM_RADIUS_M && d < armM) {
-                arm = i;
-                armM = d;
+            if (d <= ARM_RADIUS_M) {
+                for (Effort& e : eff_)
+                    if (!e.used) {
+                        e = Effort();
+                        e.used = true;
+                        e.seg = i;
+                        e.phase = ARMED;
+                        e.startDistM = e.bestStartM = d;
+                        e.bestStartMs = now;
+                        break;
+                    }
+                if (inEffort(i)) continue;
             }
-        }
-        if (arm >= 0) {
-            phase_ = ARMED;
-            cur_ = arm;
-            bestStartM_ = armM;
-            bestStartMs_ = now;
+            if (d > NEARBY_M) continue;
+            // Keep the MAX_UPCOMING nearest, sorted.
+            int at = upCount_;
+            while (at > 0 && upM_[at - 1] > d) --at;
+            if (at >= MAX_UPCOMING) continue;
+            const int last = upCount_ < MAX_UPCOMING ? upCount_ : MAX_UPCOMING - 1;
+            for (int k = last; k > at; --k) {
+                upSeg_[k] = upSeg_[k - 1];
+                upM_[k] = upM_[k - 1];
+                upBrg_[k] = upBrg_[k - 1];
+            }
+            upSeg_[at] = i;
+            upM_[at] = d;
+            upBrg_[at] = bearingDeg(-x, -y);
+            if (upCount_ < MAX_UPCOMING) ++upCount_;
         }
     }
 
@@ -672,50 +779,49 @@ private:
         return haveCourse_ && angleDiff(courseDeg_, s.startBearingDeg) <= ARM_HEADING_DEG;
     }
 
-    void trackArmed(uint32_t now, double lat, double lon) {
-        const Segment& s = db_->segs[cur_];
+    void trackArmed(Effort& e, uint32_t now, double lat, double lon) {
+        const Segment& s = db_->segs[e.seg];
         float x, y;
         local(s, lat, lon, x, y);
         const float d = sqrtf(x * x + y * y);
-        if (d <= bestStartM_ + 2.0f) {   // ties go to the latest fix
-            if (d < bestStartM_) bestStartM_ = d;
-            bestStartMs_ = now;
+        e.startDistM = d;
+        if (d <= e.bestStartM + 2.0f) {   // ties go to the latest fix
+            if (d < e.bestStartM) e.bestStartM = d;
+            e.bestStartMs = now;
         }
         float along;
         const float off = project(s, x, y, 0, 3 * ARM_RADIUS_M, along);
         const bool underWay = off <= OFF_ROUTE_M && along >= GO_ALONG_M && headingOk(s);
         if (underWay && (d > ARM_RADIUS_M || along >= 2 * GO_ALONG_M)) {
-            phase_ = ACTIVE;
-            startMs_ = bestStartMs_;
-            energyWms_ = hrBeatMs_ = 0;
-            powerMs_ = hrMs_ = 0;
-            progressM_ = along;
-            offSinceMs_ = 0;
-            finishing_ = false;
+            e.phase = ACTIVE;
+            e.startMs = e.bestStartMs;
+            e.progressM = along;
+            e.offSinceMs = 0;
+            e.finishing = false;
+            e.energyWms = e.hrBeatMs = 0;
+            e.powerMs = e.hrMs = 0;
             started_ = true;
+            startedSeg_ = e.seg;
             return;
         }
         // Left the start circle without setting off along it: not this one.
-        if (d > ARM_RADIUS_M) {
-            phase_ = IDLE;
-            cur_ = -1;
-        }
+        if (d > ARM_RADIUS_M) e = Effort();
     }
 
-    void trackActive(uint32_t now, double lat, double lon) {
-        Segment& s = db_->segs[cur_];
+    void trackActive(Effort& e, uint32_t now, double lat, double lon) {
+        const Segment& s = db_->segs[e.seg];
         float x, y;
         local(s, lat, lon, x, y);
         float along;
-        const float off = project(s, x, y, progressM_ - WINDOW_BACK_M,
-                                  progressM_ + WINDOW_AHEAD_M, along);
+        const float off = project(s, x, y, e.progressM - WINDOW_BACK_M,
+                                  e.progressM + WINDOW_AHEAD_M, along);
         if (off <= OFF_ROUTE_M) {
-            offSinceMs_ = 0;
-            if (along > progressM_) progressM_ = along;
+            e.offSinceMs = 0;
+            if (along > e.progressM) e.progressM = along;
         } else {
-            if (offSinceMs_ == 0) offSinceMs_ = now;
-            if (now - offSinceMs_ >= OFF_ROUTE_MS) {
-                endWith(ABANDONED, now, now - startMs_);
+            if (e.offSinceMs == 0) e.offSinceMs = now;
+            if (now - e.offSinceMs >= OFF_ROUTE_MS) {
+                endWith(e, ABANDONED, now, now - e.startMs);
                 return;
             }
         }
@@ -725,47 +831,57 @@ private:
         const int last = s.first + s.nPts - 1;
         const float ex = x - db_->x[last], ey = y - db_->y[last];
         const float dEnd = sqrtf(ex * ex + ey * ey);
-        if (!finishing_) {
-            if (dEnd <= FINISH_RADIUS_M && progressM_ >= FINISH_MIN_FRACTION * s.lenM) {
-                finishing_ = true;
-                bestEndM_ = dEnd;
-                bestEndMs_ = now;
+        if (!e.finishing) {
+            if (dEnd <= FINISH_RADIUS_M && e.progressM >= FINISH_MIN_FRACTION * s.lenM) {
+                e.finishing = true;
+                e.bestEndM = dEnd;
+                e.bestEndMs = now;
             }
             return;
         }
-        if (dEnd < bestEndM_) {
-            bestEndM_ = dEnd;
-            bestEndMs_ = now;
+        if (dEnd < e.bestEndM) {
+            e.bestEndM = dEnd;
+            e.bestEndMs = now;
             return;
         }
         // Moving away again: the closest fix was the line.
-        if (dEnd > bestEndM_ + 3.0f || dEnd > FINISH_RADIUS_M) finish(now);
+        if (dEnd > e.bestEndM + 3.0f || dEnd > FINISH_RADIUS_M) finish(e, now);
     }
 
-    void finish(uint32_t now) {
-        Segment& s = db_->segs[cur_];
-        resPowerW_ = powerMs_ > 0 ? (uint16_t)(energyWms_ / powerMs_ + 0.5) : 0xFFFF;
-        resHr_ = hrMs_ > 0 ? (uint8_t)(hrBeatMs_ / hrMs_ + 0.5) : 0;
-        const uint32_t ms = bestEndMs_ - startMs_;
-        prBefore_ = s.prSec;
+    void finish(Effort& e, uint32_t now) {
+        Segment& s = db_->segs[e.seg];
+        const uint32_t ms = e.bestEndMs - e.startMs;
+        const uint32_t prBefore = s.prSec;
         const uint32_t sec = (ms + 500) / 1000;
-        newPr_ = s.prSec == 0 || sec < s.prSec;
+        const bool newPr = s.prSec == 0 || sec < s.prSec;
         // The device's own idea of the PR until the next sync brings
         // Strava's (which only counts once the ride is uploaded).
-        if (newPr_ && sec > 0) s.prSec = sec;
-        endWith(DONE, now, ms);
+        if (newPr && sec > 0) s.prSec = sec;
+        Result& r = endWith(e, DONE, now, ms);
+        r.prBefore = prBefore;
+        r.newPr = newPr;
     }
 
-    void endWith(Phase outcome, uint32_t now, uint32_t ms) {
-        result_ = outcome;
-        resultSeg_ = cur_;
-        resultAtMs_ = now;
-        resultMs_ = ms;
-        resultDoneM_ = progressM_;
-        phase_ = IDLE;
-        cur_ = -1;
-        finishing_ = false;
+    Result& endWith(Effort& e, Phase outcome, uint32_t now, uint32_t ms) {
+        // A free slot, else the one that has been on show longest.
+        Result* r = &res_[0];
+        for (Result& c : res_) {
+            if (!c.used) { r = &c; break; }
+            if (c.atMs - r->atMs > 0x80000000u) r = &c;   // older (wrap-safe)
+        }
+        *r = Result();
+        r->used = true;
+        r->seg = e.seg;
+        r->outcome = outcome;
+        r->atMs = now;
+        r->startMs = e.startMs;
+        r->ms = ms;
+        r->doneM = e.progressM;
+        r->powerW = e.powerMs > 0 ? (uint16_t)(e.energyWms / e.powerMs + 0.5) : 0xFFFF;
+        r->hr = e.hrMs > 0 ? (uint8_t)(e.hrBeatMs / e.hrMs + 0.5) : 0;
+        e = Effort();
         ended_ = true;
+        return *r;
     }
 };
 

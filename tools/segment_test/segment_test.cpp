@@ -361,6 +361,99 @@ void testAverages() {
     check(v.phase == seg::DONE && v.avgPowerW == 0xFFFF && v.avgHrBpm == 0, "none");
 }
 
+// The L, a second segment overlapping its first leg (north from 400 m to
+// 900 m), and the east one 3 km away.
+std::vector<uint8_t> overlapBlob() {
+    std::vector<int32_t> la, lo, la2, lo2, la3, lo3;
+    auto add = [](std::vector<int32_t>& a, std::vector<int32_t>& o, double e, double n) {
+        LL p = at(e, n);
+        a.push_back((int32_t)lround(p.lat * 1e5));
+        o.push_back((int32_t)lround(p.lon * 1e5));
+    };
+    for (int n = 0; n <= 1000; n += 50) add(la, lo, 0, n);
+    for (int e = 50; e <= 500; e += 50) add(la, lo, e, 1000);
+    for (int n = 400; n <= 900; n += 50) add(la2, lo2, 0, n);
+    for (int n = 0; n <= 400; n += 100) add(la3, lo3, 3000, n);
+    seg::SourceSegment src[3] = {
+        {7, "The L", 300, 15000, 20, (int)la.size(), la.data(), lo.data()},
+        {9, "Inside", 100, 5000, 0, (int)la2.size(), la2.data(), lo2.data()},
+        {8, "East one", 60, 4000, 0, (int)la3.size(), la3.data(), lo3.data()},
+    };
+    std::vector<uint8_t> out(8192);
+    out.resize(seg::encodeBlob(src, 3, out.data(), out.size()));
+    return out;
+}
+
+void testList() {
+    g_case = "relevant segments";
+    std::vector<uint8_t> b = overlapBlob();
+    seg::SegmentDb db;
+    check(seg::parseBlob(b.data(), b.size(), db), "parse");
+    seg::Matcher m;
+    m.attach(&db);
+    int l[seg::MAX_LIST];
+    auto names = [&](uint32_t now) {
+        std::string out;
+        const int n = m.list(now, l, seg::MAX_LIST);
+        for (int i = 0; i < n; ++i) out += std::string(i ? "," : "") + db.segs[l[i]].name;
+        return out;
+    };
+    Rider rd{m, 1000000, 0, -300};
+    rd.fix();
+    // Approaching: upcoming starts by distance.
+    check(names(rd.t) == "The L,Inside,East one", "upcoming by distance: " + names(rd.t));
+    rd.rideTo(0, 200, 5);
+    int seg = -1;
+    check(m.takeStarted(&seg) && seg == 0, "the L started");
+    check(names(rd.t) == "The L,Inside,East one", "the effort, then upcoming: " + names(rd.t));
+    seg::View v;
+    m.view(rd.t, l[1], v);
+    check(v.phase == seg::IDLE && v.haveNearest, "inside: upcoming");
+    checkNear(v.nearestM, 200, 3, "inside: 200 m to its start");
+    // Into the overlap: two efforts at once, in the order they started.
+    rd.rideTo(0, 600, 5);
+    check(m.takeStarted(&seg) && seg == 1, "the inside one started too");
+    check(names(rd.t) == "The L,Inside,East one", "two efforts by start time: " + names(rd.t));
+    m.view(rd.t, 0, v);
+    check(v.phase == seg::ACTIVE, "L active");
+    checkNear(v.doneM, 600, 6, "L progress");
+    m.view(rd.t, 1, v);
+    check(v.phase == seg::ACTIVE, "inside active");
+    checkNear(v.doneM, 200, 6, "inside progress");
+    check(m.busy(), "busy");
+    // The inside one finishes; its result keeps its place while on show...
+    rd.rideTo(0, 960, 5);
+    m.view(rd.t, 1, v);
+    check(v.phase == seg::DONE, "inside done");
+    checkNear(v.elapsedMs / 1000.0, 100, 2, "inside time");
+    check(names(rd.t) == "The L,Inside,East one", "result kept in place: " + names(rd.t));
+    m.view(rd.t, 0, v);
+    check(v.phase == seg::ACTIVE, "L still active");
+    // ...then lapses, and the list falls back to the rest.
+    rd.rideTo(0, 1000, 5);
+    rd.rideTo(140, 1000, 5);
+    rd.wait(4);
+    // (The inside start is still within 5 km: back to an upcoming one.)
+    check(names(rd.t) == "The L,Inside,East one", "after the result: " + names(rd.t));
+    m.view(rd.t, 1, v);
+    check(v.phase == seg::IDLE && v.haveNearest, "inside upcoming again after its result");
+    check(m.primary(rd.t) == 0 && m.phase() == seg::ACTIVE, "primary is the effort");
+
+    g_case = "one relevant segment";
+    std::vector<uint8_t> one = lBlob(300);
+    seg::SegmentDb db1;
+    seg::parseBlob(one.data(), one.size(), db1);
+    seg::Matcher s1;
+    s1.attach(&db1);
+    Rider r1{s1, 1000000, -2500, -6000};   // the east one stays out of range
+    r1.fix();
+    r1.rideTo(-2500, -300, 50);
+    check(s1.list(r1.t, l, seg::MAX_LIST) == 1, "one entry, no arrows");
+    Rider r2{s1, 5000000, 0, -20000};
+    r2.fix();
+    check(s1.list(r2.t, l, seg::MAX_LIST) == 0 && s1.primary(r2.t) == -1, "nothing near");
+}
+
 void testStartTiming() {
     g_case = "waiting at the start";
     std::vector<uint8_t> b = lBlob(300);
@@ -515,6 +608,7 @@ int main() {
     testEffort();
     testStartTiming();
     testAverages();
+    testList();
     testAbandon();
     testWrongWay();
     testNearest();

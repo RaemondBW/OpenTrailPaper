@@ -186,8 +186,13 @@ extern const EpdRect kStopwatchLap;
 // the live delta against PR pace, and a progress bar with the distance left.
 // After the finish, the time and the delta against the PR (or NEW PR). No
 // touch targets: everything on it happens by riding.
+// With two or more relevant segments (overlapping efforts, nearby starts)
+// the status bar's centre carries < 2/3 > arrows: kSegmentPrev/kSegmentNext
+// are their touch targets, exported for the dashboard's hit-testing.
 namespace seg { struct View; }
 void ui_render_segment(const RideState& s, const seg::View& v, uint8_t* fb);
+extern const EpdRect kSegmentPrev;
+extern const EpdRect kSegmentNext;
 
 // BLE pairing sheet: the 6-digit code the phone asks the rider to type,
 // drawn over whatever screen is up while the pairing dialog is live.

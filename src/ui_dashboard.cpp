@@ -122,6 +122,25 @@ seg::Matcher segMatcher;
 // the result lapsing puts the rider back. -1 = we didn't switch.
 int segReturnPage = -1;
 bool segReturnMap = false;
+// Which of the relevant segments (Matcher::list) the page shows, by segment
+// index; -1 = the first. A new effort selects itself; one that drops out of
+// the list (its result lapsed) falls back to the first.
+int segSel = -1;
+
+// The view the SEGMENT page shows: the selected segment, with its place in
+// the list for the page's arrows. `list`/`n` get the list itself.
+void segSelectedView(uint32_t now, seg::View& v, int* list, int& n) {
+    n = segMatcher.list(now, list, seg::MAX_LIST);
+    int pos = -1;
+    for (int i = 0; i < n; ++i) if (list[i] == segSel) pos = i;
+    if (pos < 0) {
+        pos = n > 0 ? 0 : -1;
+        segSel = n > 0 ? list[0] : -1;
+    }
+    segMatcher.view(now, segSel, v);
+    v.listPos = pos + 1;
+    v.listCount = n;
+}
 
 int segmentSlot() {
     for (int i = 0; i < dash_config::pageCount(); ++i)
@@ -798,6 +817,23 @@ void handleTap(int x, int y) {
     switch (screen) {
         case SCREEN_DASH:
         case SCREEN_MAP:
+            // The SEGMENT page's arrows (status bar centre, only with two or
+            // more relevant segments): previous / next, wrapping. Checked
+            // before anything else so they win over the status bar's menu
+            // tap; the rest of the bar still opens the menu.
+            if (screen == SCREEN_DASH &&
+                dash_config::page(dashPage).kind == DP_SEGMENT &&
+                (inRect(kSegmentPrev, x, y) || inRect(kSegmentNext, x, y))) {
+                seg::View v;
+                int list[seg::MAX_LIST], n = 0;
+                segSelectedView(millis(), v, list, n);
+                if (n >= 2) {
+                    const int step = inRect(kSegmentPrev, x, y) ? -1 : 1;
+                    segSel = list[(v.listPos - 1 + step + n) % n];
+                    forceDraw = true;
+                    break;
+                }
+            }
             // Transport controls on the MUSIC page. Handled before the shared
             // dash/map targets so the buttons win over the "strip" fallthrough;
             // the status bar above them still opens the menu as everywhere.
@@ -2888,7 +2924,9 @@ void task(void*) {
             // the rider set it to manual), and the panel goes back to where it
             // was once the result has had its time. Only from the ride
             // screens: never over a menu, a sheet or the nav prompt.
-            const bool started = segMatcher.takeStarted();
+            int startedSeg = -1;
+            const bool started = segMatcher.takeStarted(&startedSeg);
+            if (started) segSel = startedSeg;   // a new effort shows itself
             const int slot = segmentSlot();
             if (started && slot >= 0 && dash_config::page(slot).autoShow &&
                 (screen == SCREEN_DASH || screen == SCREEN_MAP) &&
@@ -3128,16 +3166,19 @@ void task(void*) {
             static int lastSegPhase = -1;
             if (screen == SCREEN_DASH &&
                 dash_config::page(dashPage).kind == DP_SEGMENT) {
-                const seg::Phase ph = segMatcher.phase();
-                uint32_t sec = 0;
-                if (ph == seg::ACTIVE) {
-                    seg::View v;
-                    segMatcher.view(millis(), v);
-                    sec = v.elapsedMs / 1000;
-                }
-                if (sec != lastSegSec || (int)ph != lastSegPhase) {
+                // The shown segment, its phase and place in the list: any
+                // change of those repaints, as does its clock's second.
+                static int lastSegKey = -1;
+                seg::View v;
+                int list[seg::MAX_LIST], n = 0;
+                segSelectedView(millis(), v, list, n);
+                const seg::Phase ph = v.phase;
+                const uint32_t sec = ph == seg::ACTIVE ? v.elapsedMs / 1000 : 0;
+                const int key = (v.segIndex + 1) * 1000 + v.listPos * 32 + v.listCount;
+                if (sec != lastSegSec || (int)ph != lastSegPhase || key != lastSegKey) {
                     lastSegSec = sec;
                     lastSegPhase = (int)ph;
+                    lastSegKey = key;
                     forceDraw = true;
                 }
             }
@@ -3282,7 +3323,8 @@ void task(void*) {
                         ui_render_stopwatch(s, stopwatch, millis(), fb);
                     } else if (pg.kind == DP_SEGMENT) {
                         seg::View v;
-                        segMatcher.view(millis(), v);
+                        int list[seg::MAX_LIST], n = 0;
+                        segSelectedView(millis(), v, list, n);
                         ui_render_segment(s, v, fb);
                     } else {
                         // Compact hero whenever a banner (turn OR pause) owns

@@ -3151,8 +3151,15 @@ void ui_render_stopwatch(const RideState& s, const Stopwatch& sw, uint32_t now,
 // values. During an effort the page repaints once a second for the clock;
 // between two frames only the numbers, the rider's marker and the profile's
 // rule change, so the driver's delta engine repaints those, not the panels.
-// The status bar carries no title on this page: clock, phone, battery.
+// The status bar carries no title on this page: clock, phone, battery. No
+// footer either: the tiles run to the bottom margin. Strava's attribution is
+// on the apps' Starred segments row, where the data is synced.
 // ---------------------------------------------------------------------------
+
+// The pager's touch targets: 88 px wide, from the top of the glass to just
+// into the tiles' top margin.
+const EpdRect kSegmentPrev = {170, 0, 88, 76};
+const EpdRect kSegmentNext = {282, 0, 88, 76};
 
 namespace {
 
@@ -3534,6 +3541,21 @@ void segMessage(int mid, const char* head, const char* l1, const char* l2,
     }
 }
 
+// The < 2/3 > pager in the status bar's centre (the bar has no title on
+// this page). Touch targets reach below the bar into the top margin, to
+// TOUCH_MIN wide; the drawn arrows sit in the bar.
+void segPager(const seg::View& v, uint8_t* fb) {
+    if (v.listCount < 2) return;
+    const int cy = 31;
+    const int lx = kSegmentPrev.x + kSegmentPrev.width / 2;
+    const int rx = kSegmentNext.x + kSegmentNext.width / 2;
+    epd_fill_triangle(lx - 10, cy, lx + 10, cy - 14, lx + 10, cy + 14, ui::INK, fb);
+    epd_fill_triangle(rx + 10, cy, rx - 10, cy - 14, rx - 10, cy + 14, ui::INK, fb);
+    char t[12];
+    snprintf(t, sizeof(t), "%d/%d", v.listPos, v.listCount);
+    ui::text(&Impact_S, (lx + rx) / 2, 41, t, fb, EPD_DRAW_ALIGN_CENTER);
+}
+
 // --- The three layouts --------------------------------------------------
 
 void segOnSegment(const RideState& s, const seg::View& v, const seg::Segment* sg,
@@ -3546,7 +3568,7 @@ void segOnSegment(const RideState& s, const seg::View& v, const seg::Segment* sg
     // Map and elevation take what the time / delta and sensor rows leave,
     // down to the footer; the map gets the sensor row's height when there
     // is none.
-    const EpdRect map = {kSegX, y, kSegW, sensors ? 344 : 470};
+    const EpdRect map = {kSegX, y, kSegW, sensors ? 396 : 522};
     if (sg) segMapTile(v, *sg, map, MAP_ACTIVE, v.doneM, true, true, s.useMiles, fb);
     else segTile(map, false, fb);
     if (v.phase == seg::ACTIVE && v.offRoute) {
@@ -3608,11 +3630,11 @@ void segApproach(const RideState& s, const seg::View& v, const seg::Segment& sg,
                  uint8_t* fb) {
     char t[24];
     int y = kSegTop;
-    segMapTile(v, sg, {kSegX, y, kSegW, 300}, MAP_APPROACH, -1, true, true, s.useMiles, fb);
-    y += 300 + kSegGap;
+    segMapTile(v, sg, {kSegX, y, kSegW, 360}, MAP_APPROACH, -1, true, true, s.useMiles, fb);
+    y += 360 + kSegGap;
     segElevRange(sg, s.useMiles, t, sizeof(t));
-    segProfileTile(v, sg, {kSegX, y, kSegW, 150}, -1, false, t, fb);
-    y += 150 + kSegGap;
+    segProfileTile(v, sg, {kSegX, y, kSegW, 180}, -1, false, t, fb);
+    y += 180 + kSegGap;
 
     // TO START: an arrow (north up, like the map) and the distance.
     float distM = v.nearestM, brg = v.nearestBearingDeg;
@@ -3620,7 +3642,7 @@ void segApproach(const RideState& s, const seg::View& v, const seg::Segment& sg,
         distM = sqrtf(v.riderX * v.riderX + v.riderY * v.riderY);
         brg = seg::bearingDeg(-v.riderX, -v.riderY);
     }
-    const EpdRect ts = {kSegX, y, kSegHalfW, 196};
+    const EpdRect ts = {kSegX, y, kSegHalfW, 224};
     segTile(ts, false, fb);
     segLabel(ts, "TO START", ui::INK, fb);
     const char* unit;
@@ -3638,9 +3660,9 @@ void segApproach(const RideState& s, const seg::View& v, const seg::Segment& sg,
 
     if (sg.prSec > 0) segFmtTime(t, sizeof(t), sg.prSec * 1000u);
     else snprintf(t, sizeof(t), "--");
-    segValueTile({kSegX + kSegHalfW + kSegGap, y, kSegHalfW, 196}, "YOUR PR", t, nullptr,
+    segValueTile({kSegX + kSegHalfW + kSegGap, y, kSegHalfW, 224}, "YOUR PR", t, nullptr,
                  false, fb);
-    y += 196 + kSegGap;
+    y += 224 + kSegGap;
 
     const EpdRect strip = {kSegX, y, kSegW, 52};
     segTile(strip, false, fb);
@@ -3654,8 +3676,8 @@ void segDone(const RideState& s, const seg::View& v, const seg::Segment* sg,
              uint8_t* fb) {
     char t[24], buf[64];
     int y = kSegTop;
-    const EpdRect map = {kSegX, y, kSegHalfW, 210};
-    const EpdRect elev = {kSegX + kSegHalfW + kSegGap, y, kSegHalfW, 210};
+    const EpdRect map = {kSegX, y, kSegHalfW, 300};
+    const EpdRect elev = {kSegX + kSegHalfW + kSegGap, y, kSegHalfW, 300};
     if (sg) {
         segMapTile(v, *sg, map, MAP_DONE, sg->lenM, false, false, s.useMiles, fb);
         if (sg->hasElev)
@@ -3668,7 +3690,7 @@ void segDone(const RideState& s, const seg::View& v, const seg::Segment* sg,
         segTile(map, false, fb);
         segTile(elev, false, fb);
     }
-    y += 210 + kSegGap;
+    y += 300 + kSegGap;
 
     // NAME · DONE, the time, the details.
     char name[seg::NAME_BYTES + 1], fit[seg::NAME_BYTES + 3];
@@ -3750,11 +3772,8 @@ void ui_render_segment(const RideState& s, const seg::View& v, uint8_t* fb) {
     // No title: the clock, the phone and the battery only. An empty title
     // (not none) also keeps the ride-status chips out of the band.
     ui::statusBar(s, fb, "");
-    const int W = epd_rotated_display_width();
+    segPager(v, fb);
     char buf[96];
-
-    // Strava's terms: their data, their name on it.
-    ui::label(W / 2, 944, "POWERED BY STRAVA", fb, ui::INK, &Arial_L);
 
     const seg::Segment* sg =
         v.db && v.segIndex >= 0 && v.segIndex < v.db->count ? &v.db->segs[v.segIndex] : nullptr;

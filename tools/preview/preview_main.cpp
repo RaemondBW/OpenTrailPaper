@@ -1275,6 +1275,38 @@ int main(int argc, char** argv) {
         longName.deltaMs = 18000;
         page(longName, "segment_active_long_name.png", s);
 
+        // Several relevant segments: the < n/N > pager in the status bar.
+        // Two overlapping efforts, the first and then the second shown...
+        seg::View ov1 = act;
+        ov1.offRoute = false;
+        riderAt(ov1, db, 0, ov1.doneM);
+        ov1.deltaMs = -11300;
+        ov1.listPos = 1;
+        ov1.listCount = 2;
+        page(ov1, "segment_multi_overlap_1of2.png", s);
+        seg::View ov2 = longName;
+        ov2.listPos = 2;
+        ov2.listCount = 2;
+        page(ov2, "segment_multi_overlap_2of2.png", s);
+        // ...and one effort with a start coming up: the effort first, the
+        // approaching segment as page 2.
+        seg::View ap1 = ov1;
+        page(ap1, "segment_multi_active_approaching_1of2.png", s);
+        seg::View ap2;
+        ap2.count = 23;
+        ap2.haveNearest = true;
+        snprintf(ap2.nearestName, sizeof(ap2.nearestName), "%s", db.segs[1].name);
+        ap2.nearestM = 640;
+        ap2.nearestLenM = db.segs[1].lenM;
+        ap2.nearestGradeD = db.segs[1].gradeD;
+        ap2.nearestPrSec = 1984;
+        ap2.nearestBearingDeg = 300;
+        ap2.db = &db;
+        ap2.segIndex = 1;
+        ap2.listPos = 2;
+        ap2.listCount = 2;
+        page(ap2, "segment_multi_active_approaching_2of2.png", s);
+
         seg::View done = armed;
         done.phase = seg::DONE;
         done.doneM = hawk.lenM;
