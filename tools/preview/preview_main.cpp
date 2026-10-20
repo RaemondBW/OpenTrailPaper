@@ -529,6 +529,17 @@ int main(int argc, char** argv) {
         clearWhite(fb.data());
         ui_render_map(map, s, fb.data());
         emit("map_trackup.png");
+
+        // Roads through parks: east end of Golden Gate Park + the Panhandle,
+        // where streets and drives cross the park hatch (white casing).
+        map_tiles::project(37.7705, -122.4560, 2.0f, 270, 430, 0, map);
+        map.metersPerPixel = 2.0f;
+        map.headingDeg = -18.0f;
+        map.northDeg = 0;
+        map.trackUp = false;
+        clearWhite(fb.data());
+        ui_render_map(map, s, fb.data());
+        emit("map_park.png");
     }
 
     // Ride summary (1g)

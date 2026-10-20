@@ -7,6 +7,9 @@ so write for the rider, newest version first, one `## vX.YY` heading each.
 
 ## v1.23
 
+- Roads through parks are easier to follow on the map. Where a road or
+  cycleway crosses a park's striped fill it now has a thin white border, so
+  it reads as a clean line instead of disappearing into the stripes.
 - New optional STOPWATCH page, off until you add it from the app's
   dashboard editor (Add a page > Stopwatch). It shows big digits with three
   buttons along the bottom: START/PAUSE, RESET and LAP. LAP works while the
