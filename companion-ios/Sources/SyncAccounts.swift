@@ -676,12 +676,21 @@ struct SyncAccountsCard: View {
 
 // MARK: - Upload buttons (ride page)
 
+/// One button per connected account. Tapping one first asks for the activity
+/// name, prefilled with the ride's current name (the rider's last rename, else
+/// `defaultName`), then uploads under it; all three services take the name
+/// with the file. The name is remembered for the ride (RideNames).
 struct SyncUploadButtons: View {
     let fileURL: URL
-    let name: String
+    let defaultName: String
     @ObservedObject private var sync = SyncAccounts.shared
+    @ObservedObject private var names = RideNames.shared
     @State private var uploading: SyncProvider?
     @State private var status: [SyncProvider: String] = [:]
+    @State private var naming: SyncProvider?
+    @State private var draft = ""
+
+    private var file: String { fileURL.lastPathComponent }
 
     var body: some View {
         let connected = SyncProvider.allCases.filter { sync.isConnected($0) }
@@ -691,7 +700,8 @@ struct SyncUploadButtons: View {
                     PrimaryButton(title: uploading == p ? "Uploading to \(p.title)…" : "Upload to \(p.title)",
                                   systemImage: "arrow.up.circle",
                                   enabled: uploading == nil && status[p] == nil) {
-                        upload(p)
+                        draft = names.name(for: file, default: defaultName)
+                        naming = p
                     }
                     if let s = status[p] {
                         Text(s).font(.system(size: 12))
@@ -700,10 +710,22 @@ struct SyncUploadButtons: View {
                     }
                 }
             }
+            .alert(naming.map { "Upload to \($0.title)" } ?? "Upload",
+                   isPresented: Binding(get: { naming != nil }, set: { if !$0 { naming = nil } }),
+                   presenting: naming) { p in
+                TextField(defaultName, text: $draft)
+                    .textInputAutocapitalization(.sentences)
+                    .submitLabel(.send)
+                Button("Cancel", role: .cancel) {}
+                Button("Upload") { upload(p) }
+            } message: { p in
+                Text("The ride's name on \(p.title). It is kept for this ride on this phone.")
+            }
         }
     }
 
     private func upload(_ p: SyncProvider) {
+        let name = names.rename(file, to: draft, default: defaultName)
         uploading = p
         Task {
             do { status[p] = try await sync.upload(fileURL, to: p, name: name) }

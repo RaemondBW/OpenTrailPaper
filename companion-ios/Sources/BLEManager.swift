@@ -1375,6 +1375,7 @@ final class BLEManager: NSObject, ObservableObject {
         dlQueue.removeAll { $0 == .ride(name) }
         publishQueue()
         try? FileManager.default.removeItem(at: BLEManager.cachedURL(for: name))
+        RideNames.shared.forget(name)
         // Offline: just drop the local cache. Connected: also delete on device.
         guard let c = ridesChar, let p = peripheral else { return }
         var cmd = Data([0x03]); cmd.append(Data(name.utf8))
