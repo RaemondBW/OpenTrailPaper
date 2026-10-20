@@ -11,6 +11,10 @@
 #include <string>
 
 #include "dash_layout.h"
+#include "stopwatch.h"
+#include "ride_state.h"   // units:: — the speed conversion the page uses
+
+#include <cmath>
 
 namespace {
 
@@ -168,6 +172,273 @@ void testSerializePagesRoundTrip() {
     check(back.mapFields[0] == DF_AVG_SPEED, "map strip survives round trip");
 }
 
+// --- Stopwatch page ---------------------------------------------------------
+
+void testStopwatchPage() {
+    begin("pages: stopwatch parses and round trips");
+    const char* cfg =
+        "speed hero\n"
+        "page stopwatch\n"
+        "page map\n";
+    DashPages pages;
+    bool ok = dashParsePages(cfg, pages);
+    check(ok, "parse succeeds");
+    check(pages.count == 3, "fields + stopwatch + map");
+    check(pages.pages[1].kind == DP_STOPWATCH, "second page is the stopwatch");
+    check(pages.pages[1].layout.count == 0, "stopwatch carries no items");
+
+    char buf[1024];
+    size_t n = dashSerializePages(pages, buf, sizeof(buf));
+    check(n > 0, "serialized");
+    check(strstr(buf, "page stopwatch\n") != nullptr,
+          "serializes as `page stopwatch`");
+    DashPages back;
+    check(dashParsePages(buf, back), "re-parse succeeds");
+    check(back.count == 3 && back.pages[1].kind == DP_STOPWATCH,
+          "stopwatch survives round trip in place");
+}
+
+// Older firmware sees `page stopwatch` as an unknown kind: an empty field page,
+// dropped. This parser applies the same rule to any FUTURE kind, so a newer
+// app's config never breaks the layout around it.
+void testUnknownPageKindDropped() {
+    begin("pages: unknown page kind is dropped, rest kept");
+    const char* cfg =
+        "speed hero\n"
+        "page someday\n"
+        "page\n"
+        "hr medium\n";
+    DashPages pages;
+    check(dashParsePages(cfg, pages), "parse succeeds");
+    check(pages.count == 3, "two field pages + appended map");
+    check(pages.pages[0].kind == DP_FIELDS && pages.pages[1].kind == DP_FIELDS,
+          "unknown page vanished, field pages kept");
+    check(pages.pages[2].kind == DP_MAP, "map appended");
+}
+
+void testStopwatchClock() {
+    begin("stopwatch: start / pause / resume / reset");
+    Stopwatch sw;
+    check(sw.zero() && sw.elapsedMs(5000) == 0, "starts at zero");
+    sw.toggle(1000);
+    check(sw.running, "running after start");
+    check(sw.elapsedMs(4500) == 3500, "counts while running");
+    check(!sw.reset(), "reset refused while running");
+    check(sw.elapsedMs(4500) == 3500, "refused reset kept the time");
+    sw.toggle(6000);
+    check(!sw.running && sw.elapsedMs(60000) == 5000, "stop banks and freezes");
+    sw.toggle(10000);
+    check(sw.elapsedMs(12000) == 7000, "resume continues from the banked time");
+    sw.toggle(12000);
+    check(sw.reset() && sw.zero(), "reset when stopped");
+
+    begin("stopwatch: laps");
+    Stopwatch l;
+    check(!l.lap(0), "no lap before start");
+    l.toggle(0);
+    check(l.lap(60000) && l.lap(125000) && l.lap(170500), "three laps");
+    check(l.lapCount == 3, "lap count");
+    check(l.lapSplitMs(0) == 60000 && l.lapSplitMs(1) == 65000 &&
+              l.lapSplitMs(2) == 45500,
+          "splits are the differences between marks");
+    check(l.lapEndMs[2] == 170500, "cumulative time kept per lap");
+    check(l.currentLapMs(180000) == 9500, "lap in progress since last mark");
+    l.toggle(200000);
+    check(!l.lap(210000), "no lap while paused");
+    check(l.currentLapMs(999999) == 29500, "paused lap is frozen");
+    l.toggle(300000);
+    check(l.lap(310000) && l.lapEndMs[3] == 210000,
+          "lap after resume counts only running time");
+    check(!l.reset() && l.lapCount == 4, "running reset keeps laps");
+    l.toggle(320000);
+    check(l.reset() && l.lapCount == 0 && l.zero(), "reset clears laps");
+
+    begin("stopwatch: lap limit");
+    Stopwatch full;
+    full.toggle(0);
+    for (int i = 1; i <= STOPWATCH_MAX_LAPS; ++i) full.lap((uint32_t)i * 1000);
+    check(full.lapsFull() && full.lapCount == STOPWATCH_MAX_LAPS, "fills to max");
+    check(!full.lap(500000) && full.lapEndMs[0] == 1000,
+          "a lap past the max is refused, lap 1 kept");
+    check(!full.canLap(), "LAP disabled at the cap");
+
+    // The three footer buttons: START/PAUSE always live; RESET only paused
+    // with something to clear; LAP only running and under the cap.
+    begin("stopwatch: button enablement");
+    Stopwatch b;
+    check(!b.canReset() && !b.canLap(), "ready: RESET and LAP disabled");
+    b.toggle(0);
+    check(!b.canReset() && b.canLap(), "running: LAP live, RESET disabled");
+    b.toggle(5000);
+    check(b.canReset() && !b.canLap(), "paused: RESET live, LAP disabled");
+    b.reset();
+    check(!b.canReset() && !b.canLap(), "after reset: back to ready");
+    b.toggle(0);
+    b.toggle(0);   // started and paused at once: nothing to clear
+    check(!b.canReset(), "paused at zero: RESET disabled");
+
+    begin("stopwatch: lap averages");
+    {
+        Stopwatch a;
+        a.sample(0, 30.0f, true, 200, true);   // before start: not counted
+        a.toggle(10000);
+        check(a.currentAvgSpeedKmh() < 0 && a.currentAvgPowerW() < 0,
+              "nothing integrated before the first running interval");
+        // 60 s at 30 km/h / 200 W, then 60 s at 20 km/h / 0 W (coasting).
+        a.sample(70000, 20.0f, true, 0, true);
+        a.sample(130000, 20.0f, true, 0, true);
+        check(std::fabs(a.currentAvgSpeedKmh() - 25.0f) < 0.01f,
+              "speed is distance over time (25 km/h)");
+        check(a.currentAvgPowerW() == 100, "zeros count in the power mean");
+        check(a.lap(130000), "lap");
+        check(a.lapSpeedDkmh[0] == 250 && a.lapAvgPowerW(0) == 100,
+              "lap stores its averages");
+        check(std::fabs(a.lapAvgSpeedKmh(0) - 25.0f) < 0.01f, "speed readback");
+        check(a.currentAvgSpeedKmh() < 0, "new lap starts empty");
+
+        // Stop mid-lap: the stopped minute adds nothing.
+        a.sample(160000, 40.0f, true, 300, true);   // 30 s at 20 / 0
+        a.toggle(190000);                            // 30 s at 40 / 300, stop
+        a.sample(220000, 99.0f, true, 999, true);    // stopped: ignored
+        a.sample(250000, 99.0f, true, 999, true);
+        a.toggle(250000);                            // resume, held 99/999
+        a.sample(250000, 40.0f, true, 300, true);    // replaced at once
+        a.sample(310000, 40.0f, true, 300, true);    // 60 s at 40 / 300
+        // Running time only: 30 s @20, 30 s @40, 60 s @40 ->
+        // (20*30 + 40*30 + 40*60) / 120 = 35 km/h; power (0*30+300*90)/120.
+        check(std::fabs(a.currentAvgSpeedKmh() - 35.0f) < 0.01f,
+              "stopped time excluded from speed");
+        check(a.currentAvgPowerW() == 225, "stopped time excluded from power");
+
+        // No meter: dash. Meter dropping out mid-lap: only its time counts.
+        Stopwatch b;
+        b.toggle(0);
+        b.sample(0, 25.0f, true, 0, false);
+        b.sample(60000, 25.0f, true, 0, false);
+        b.lap(60000);
+        check(b.lapAvgPowerW(0) == -1 && b.lapPowerW[0] == STOPWATCH_NO_VALUE,
+              "no power meter -> no value");
+        b.sample(60000, 25.0f, true, 250, true);
+        b.sample(90000, 25.0f, true, 0, false);   // meter silent from here
+        b.sample(150000, 25.0f, true, 0, false);
+        check(b.currentAvgPowerW() == 250, "silent meter time not counted");
+
+        // No speed source for the whole lap: dash, not 0.
+        Stopwatch c;
+        c.toggle(0);
+        c.sample(0, 0.0f, false, 180, true);
+        c.lap(45000);
+        check(c.lapAvgSpeedKmh(0) < 0 && c.lapAvgPowerW(0) == 180,
+              "no speed source -> no speed, power still there");
+
+        // Lap boundary between samples is credited exactly.
+        Stopwatch d;
+        d.toggle(0);
+        d.sample(0, 36.0f, true, 100, true);
+        d.lap(500);                                // mid-hold
+        d.sample(1000, 18.0f, true, 300, true);
+        check(d.lapSpeedDkmh[0] == 360 && d.lapAvgPowerW(0) == 100,
+              "first lap holds its own sample to the boundary");
+        check(std::fabs(d.currentAvgSpeedKmh() - 36.0f) < 0.01f,
+              "the rest of that hold lands in the next lap");
+
+        // Reset clears the averages with the laps.
+        a.toggle(310000);
+        check(a.reset() && a.currentAvgSpeedKmh() < 0 &&
+                  a.currentAvgPowerW() < 0,
+              "reset clears lap averages");
+    }
+
+    begin("stopwatch: cadence averages");
+    {
+        Stopwatch c;
+        c.toggle(0);
+        // 60 s at 90 rpm, 30 s coasting at 0, 30 s at 80, then a pause.
+        c.sample(0, 30.0f, true, 0, false, 90, true);
+        c.sample(60000, 30.0f, true, 0, false, 0, true);
+        c.sample(90000, 30.0f, true, 0, false, 80, true);
+        c.toggle(120000);
+        c.sample(150000, 30.0f, true, 0, false, 200, true);   // paused: ignored
+        c.toggle(180000);
+        c.sample(180000, 30.0f, true, 0, false, 80, true);
+        c.sample(240000, 30.0f, true, 0, false, 80, true);    // 60 s at 80
+        // Pedalling: 60 s @90 + 90 s @80 = (5400 + 7200) / 150 = 84 rpm.
+        check(c.currentAvgCadenceRpm() == 84,
+              "zeros and paused time excluded from cadence");
+        check(c.lap(240000) && c.lapAvgCadenceRpm(0) == 84, "lap stores it");
+        // Coasting the whole lap: a source, but no average.
+        c.sample(240000, 30.0f, true, 0, false, 0, true);
+        c.lap(300000);
+        check(c.lapAvgCadenceRpm(1) == -1 &&
+                  c.lapCadenceRpm[1] == STOPWATCH_NO_CADENCE,
+              "all-zero lap -> no cadence value");
+        // No source at all.
+        c.sample(300000, 30.0f, true, 0, false, 0, false);
+        c.lap(360000);
+        check(c.lapAvgCadenceRpm(2) == -1, "no cadence source -> no value");
+        c.toggle(360000);
+        check(c.reset() && c.currentAvgCadenceRpm() < 0, "reset clears cadence");
+    }
+
+    begin("stopwatch: which metric columns show");
+    {
+        // None: no meter, no cadence, ever.
+        Stopwatch n;
+        n.toggle(0);
+        n.sample(0, 25.0f, true, 0, false, 0, false);
+        n.sample(60000, 25.0f, true, 0, false, 0, false);
+        n.lap(60000);
+        check(!n.showPower() && !n.showCadence(), "none");
+
+        // Power only (a meter reporting, no cadence).
+        Stopwatch p;
+        p.sample(0, 0.0f, false, 0, true, 0, false);
+        check(p.showPower() && !p.showCadence(),
+              "power only — even before START, the meter is reporting");
+
+        // Cadence only.
+        Stopwatch c;
+        c.sample(0, 0.0f, false, 0, false, 85, true);
+        check(!c.showPower() && c.showCadence(), "cadence only");
+
+        // Both.
+        Stopwatch b;
+        b.sample(0, 0.0f, false, 200, true, 85, true);
+        check(b.showPower() && b.showCadence(), "both");
+
+        // A meter appearing mid-session: column appears; stays once a lap
+        // has its data, even after the meter goes quiet.
+        Stopwatch m;
+        m.toggle(0);
+        m.sample(0, 25.0f, true, 0, false);
+        m.sample(30000, 25.0f, true, 0, false);
+        check(!m.showPower(), "no meter yet: no WATTS");
+        m.sample(60000, 25.0f, true, 220, true);
+        check(m.showPower(), "meter appears: WATTS");
+        m.sample(90000, 25.0f, true, 0, false);       // meter goes quiet
+        check(m.showPower(), "quiet meter, current lap has data: kept");
+        m.lap(120000);
+        m.sample(120000, 25.0f, true, 0, false);
+        m.lap(180000);
+        check(m.showPower() && m.lapAvgPowerW(1) == -1,
+              "laps had power: kept, the quiet lap reads --");
+        m.toggle(180000);
+        m.reset();
+        check(!m.showPower(), "reset with no meter: WATTS goes");
+    }
+
+    begin("stopwatch: speed units");
+    check(std::fabs(units::speed(25.0, true) - 15.534) < 0.01,
+          "25 km/h shows as 15.5 mph");
+    check(std::fabs(units::speed(25.0, false) - 25.0) < 1e-9,
+          "km/h unchanged");
+
+    begin("stopwatch: millis() wrap");
+    Stopwatch w;
+    w.toggle(0xFFFFFC18u);   // 1 s before the wrap
+    check(w.elapsedMs(1000) == 2000, "elapsed is right across the wrap");
+}
+
 }  // namespace
 
 int main() {
@@ -182,6 +453,9 @@ int main() {
     testSerializeRoundTrip();
     testPagesWithAvgSpeed();
     testSerializePagesRoundTrip();
+    testStopwatchPage();
+    testUnknownPageKindDropped();
+    testStopwatchClock();
 
     if (g_fail == 0) { printf("all dash layout tests passed\n"); return 0; }
     printf("%d dash layout assertion(s) FAILED\n", g_fail);
