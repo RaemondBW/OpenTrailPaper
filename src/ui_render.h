@@ -270,18 +270,29 @@ void ui_render_list(const char* title, const ListRow* rows, int count,
                     bool paged = false);
 
 // PAGER — the footer of every paged list (the workout picker and block list,
-// Navigate, Ride History): page up, page down, "first-last / total", and one
-// action button on the right (CLOSE / REFRESH). A 3 px rule at kPagerTop,
-// 80 px buttons below it. An arrow that can't go anywhere is not drawn (its
-// slot stays blank, nothing else moves) and does nothing when tapped. `first` is 0-based; with
-// total == 0 only the action button is drawn. `single` (one item per page,
-// the SEGMENT page) reads "n / N" instead of "first-last / N".
-constexpr int kPagerTop = 857;
-constexpr EpdRect kPagerUp = {24, 868, 80, 80};
-constexpr EpdRect kPagerDown = {116, 868, 80, 80};
-constexpr EpdRect kPagerAction = {368, 868, 148, 80};
+// Navigate, Ride History) and of the SEGMENT page with several segments.
+// Four equal columns on the content column's grid (x 24..516, 14 px
+// gutters), so its middle gutter falls on the 2-column tiles' gutter:
+//   col 1 page up, col 2 page down, col 3 "first-last / total", col 4 the
+//   action button (CLOSE / REFRESH); with no action the indicator spans 3-4.
+// 2 px boxes like the tiles, 80 px tall (the touch target), 14 px above the
+// panel's bottom edge. Content above ends at kPagerTop (14 px over the
+// boxes); list pages also get a 3 px rule there, separating the last row.
+// An arrow that can't go anywhere is not drawn (its column stays blank,
+// nothing else moves) and does nothing when tapped. `first` is 0-based;
+// with total == 0 only the action button is drawn. `single` (one item per
+// page, the SEGMENT page) reads "n / N"; `rule` = false leaves the rule off
+// (tile pages, where bordered tiles already end the content).
+constexpr int kPagerTop = 852;
+constexpr int kPagerY = kPagerTop + 14;   // 866; boxes end at 946
+constexpr int kPagerH = 80;
+constexpr EpdRect kPagerUp = {24, kPagerY, 112, kPagerH};       // col 1: 24..136
+constexpr EpdRect kPagerDown = {150, kPagerY, 113, kPagerH};    // col 2: 150..263
+constexpr EpdRect kPagerAction = {403, kPagerY, 113, kPagerH};  // col 4: 403..516
+constexpr EpdRect kPagerWhere = {277, kPagerY, 112, kPagerH};   // col 3: 277..389
+constexpr EpdRect kPagerWhereWide = {277, kPagerY, 239, kPagerH};  // cols 3-4
 void ui_render_pager(int first, int count, int total, const char* action,
-                     uint8_t* fb, bool single = false);
+                     uint8_t* fb, bool single = false, bool rule = true);
 
 // Settings editor: +/- touch targets per row, geometry exported for the
 // touch handler.

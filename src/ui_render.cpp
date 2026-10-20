@@ -1656,39 +1656,35 @@ void ui_render_list(const char* title, const ListRow* rows, int count,
 }
 
 namespace {
-// A pager box with three-pixel walls, like every workout-page button.
+// A pager box: the tiles' 2 px border.
 void pagerButton(const EpdRect& r, uint8_t* fb) {
-    for (int e = 0; e < 3; ++e)
+    for (int e = 0; e < ui::RULE; ++e)
         epd_draw_rect({r.x + e, r.y + e, r.width - 2 * e, r.height - 2 * e},
                       ui::INK, fb);
 }
 }  // namespace
 
 void ui_render_pager(int first, int count, int total, const char* action,
-                     uint8_t* fb, bool single) {
-    // The page indicator sits in its own box between the arrows and the
-    // action button, the same 80 px tall.
-    const EpdRect where = {kPagerDown.x + kPagerDown.width + 12, kPagerUp.y,
-                           kPagerAction.x - 12 -
-                               (kPagerDown.x + kPagerDown.width + 12),
-                           kPagerUp.height};
-    const int textY = kPagerUp.y + 46;
-    if (action && action[0]) {
+                     uint8_t* fb, bool single, bool rule) {
+    const bool haveAction = action && action[0];
+    const EpdRect& where = haveAction ? kPagerWhere : kPagerWhereWide;
+    const int textY = kPagerY + kPagerH / 2 + epdc_digit_height(&Arial_B) / 2;
+    if (haveAction) {
         pagerButton(kPagerAction, fb);
         ui::text(&Arial_B, kPagerAction.x + kPagerAction.width / 2, textY,
                  action, fb, EPD_DRAW_ALIGN_CENTER);
     }
     if (total <= 0) return;
 
-    epd_fill_rect({0, kPagerTop, 540, 3}, ui::INK, fb);
+    if (rule) epd_fill_rect({0, kPagerTop, 540, 3}, ui::INK, fb);
     pagerButton(where, fb);
     // An arrow that can't go anywhere is not drawn at all — no box, no
-    // triangle — and its slot stays blank, so the indicator and the action
+    // triangle — and its column stays blank, so the indicator and the action
     // button never move. On a list that fits one page neither arrow shows.
     // (The caller's tap handling already ignores a tap there.)
     const bool canUp = first > 0;
     const bool canDown = first + count < total;
-    const int cy = kPagerUp.y + kPagerUp.height / 2;
+    const int cy = kPagerY + kPagerH / 2;
     if (canUp) {
         pagerButton(kPagerUp, fb);
         const int cx = kPagerUp.x + kPagerUp.width / 2;
@@ -2692,7 +2688,8 @@ void ui_render_workout_list(const RideState& s, const WorkoutView& v, int page,
 
     int last = first + kWorkoutRowsPerPage;
     if (last > v.segCount) last = v.segCount;
-    ui_render_pager(first, last - first, v.segCount, "CLOSE", fb);
+    // The rows end on their own rule; a second one under it would double up.
+    ui_render_pager(first, last - first, v.segCount, "CLOSE", fb, false, false);
 }
 
 namespace {
@@ -2800,7 +2797,8 @@ void ui_render_workout_picker(const RideState& s, const WorkoutPickPage& p,
     }
 
     // --- Footer: page up / down, where we are, REFRESH. ------------------
-    ui_render_pager(p.first, p.count, p.total, "REFRESH", fb);
+    // The rows end on their own rule; a second one under it would double up.
+    ui_render_pager(p.first, p.count, p.total, "REFRESH", fb, false, false);
 }
 
 // ---------------------------------------------------------------------------
@@ -3173,9 +3171,9 @@ constexpr int kSegHalfW = (kSegW - kSegGap) / 2;  // 239
 constexpr int kSegPad = 16;                     // inside a tile
 // With two or more relevant segments the page wears the list pager
 // (ui_render_pager) across the bottom, like Navigate and Ride History: the
-// map gives up the height from the tiles' bottom margin (936) to just above
-// the pager's rule (kPagerTop - kSegGap).
-constexpr int kSegPagedShrink = 936 - (kPagerTop - kSegGap);   // 93
+// map gives up the height from the tiles' bottom margin (936) to the
+// pager's top (kPagerTop, 14 px over its boxes).
+constexpr int kSegPagedShrink = 936 - kPagerTop;   // 84
 
 // M:SS under the hour, H:MM:SS over.
 void segFmtTime(char* out, size_t cap, uint32_t ms) {
@@ -3770,7 +3768,8 @@ void ui_render_segment(const RideState& s, const seg::View& v, uint8_t* fb) {
     // above it anyway.
     const bool paged = v.listCount >= 2;
     const int shrink = paged ? kSegPagedShrink : 0;
-    if (paged) ui_render_pager(v.listPos - 1, 1, v.listCount, nullptr, fb, true);
+    // No rule: the tiles' own borders end the content, as between tiles.
+    if (paged) ui_render_pager(v.listPos - 1, 1, v.listCount, nullptr, fb, true, false);
     char buf[96];
 
     const seg::Segment* sg =
