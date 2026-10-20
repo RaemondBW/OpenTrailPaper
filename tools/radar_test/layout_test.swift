@@ -55,6 +55,14 @@ import Foundation
         precondition(DashConfig(text: bottomPages.configText) == bottomPages)
         precondition(DashLayout(text: "radar medium position=top").verticalItem?.bottomAligned == false)
         precondition(DashLayout(text: "power hero position=bottom").items[0].bottomAligned == false)
+        // Page kinds: the stopwatch round-trips in place; an unknown kind is
+        // dropped like the firmware drops it.
+        let sw = DashConfig(text: "speed hero\npage stopwatch\npage map\n")
+        precondition(sw.pages.map(\.kind) == [.fields, .stopwatch, .map] && sw.hasStopwatchPage)
+        precondition(sw.configText.contains("page stopwatch\n"))
+        precondition(DashConfig(text: sw.configText) == sw)
+        let future = DashConfig(text: "speed hero\npage someday\npage\nhr medium\n")
+        precondition(future.pages.map(\.kind) == [.fields, .fields, .map] && !future.hasStopwatchPage)
         print("Swift radar layout tests passed")
     }
 }

@@ -287,6 +287,8 @@ bool dashParsePages(const char* text, DashPages& out) {
                 cur.kind = DP_MAP;
             else if (ntok >= 2 && tokenEq(tok[1], tokLen[1], "workout"))
                 cur.kind = DP_WORKOUT;
+            else if (ntok >= 2 && tokenEq(tok[1], tokLen[1], "stopwatch"))
+                cur.kind = DP_STOPWATCH;
         } else if (ntok >= 1 && tokenEq(tok[0], tokLen[0], "map")) {
             // `map <field> <field> <field>` — the map screen's data strip.
             // Position-independent; a missing/typo'd token keeps that slot's
@@ -361,7 +363,8 @@ size_t dashSerializePages(const DashPages& pages, char* out, size_t cap) {
                          pg.kind == DP_MUSIC     ? "page music\n"
                          : pg.kind == DP_MAP     ? "page map\n"
                          : pg.kind == DP_WORKOUT ? "page workout\n"
-                                                 : "page\n");
+                         : pg.kind == DP_STOPWATCH ? "page stopwatch\n"
+                                                   : "page\n");
             if (w < 0 || (size_t)w >= cap - n) return 0;
             n += (size_t)w;
         }

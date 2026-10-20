@@ -5,6 +5,23 @@ released version into the GitHub release body (see .github/workflows/build.yml),
 and the app shows it under Settings → Firmware when an update is available —
 so write for the rider, newest version first, one `## vX.YY` heading each.
 
+## v1.23
+
+- New optional STOPWATCH page, off until you add it from the app's
+  dashboard editor (Add a page > Stopwatch). It shows big digits with three
+  buttons along the bottom: START/PAUSE, RESET and LAP. LAP works while the
+  clock runs. RESET works only once it is paused, so a stray tap can't wipe
+  it mid-effort. Laps list newest first, each with its time, average speed,
+  and average cadence and power when you have those sensors. The lap in
+  progress shows its averages live. Speed is in your km/h or mph setting
+  and is shown as "--" with no GPS or speed sensor. Power counts zeros
+  while coasting. Cadence leaves out coasting at 0 rpm. Paused time never
+  counts. The RPM and WATTS columns only appear when a cadence source or
+  power meter is reporting, or a lap has its data. With fewer columns the
+  rest get more room. A lap with no data for a column shows "--". Up to 99 laps are kept. It is separate from the ride timer and
+  keeps running while you're on other pages. While it runs, the device
+  won't switch itself off for being idle.
+
 ## v1.22
 
 - Fixes the mid-ride restart. A stray interrupt from the display power

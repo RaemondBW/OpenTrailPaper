@@ -99,6 +99,9 @@ enum DashPageKind : uint8_t {
     DP_MAP,
     DP_WORKOUT,   // structured-workout page (`page workout`) — target power,
                   // up/down guidance and the interval profile; workout.h
+    DP_STOPWATCH, // `page stopwatch` — the rider's own start/stop/reset clock
+                  // (stopwatch.h). Optional, off unless added. Firmware
+                  // before it drops the line like any unknown page kind.
 };
 
 struct DashPage {
@@ -128,8 +131,11 @@ const DashLayout& dashDefaultLayout();
 //     distance medium  half
 //
 // A line reading `page` starts a new page; `page music` adds the media-controls
-// page. Text with no `page` lines parses to exactly one page, so every config
-// written before pages existed still means what it meant.
+// page (likewise `page map`, `page workout`, `page stopwatch`). An unknown
+// kind (`page <newer>`) parses as an empty field page and is dropped, which is
+// what lets a newer app's config load on older firmware. Text with no `page`
+// lines parses to exactly one page, so every config written before pages
+// existed still means what it meant.
 //
 // Deliberately forgiving — this is a file riders edit by hand on the SD card.
 // Unknown field names and sizes are SKIPPED rather than failing the whole file,
