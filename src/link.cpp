@@ -1314,8 +1314,10 @@ void onDownload(uint32_t req, const otp_link_DownloadRequest& d) {
     uint32_t size = 0;
     if (rc == otp_link_ResultCode_RESULT_OK) {
         size = (uint32_t)f.size();
-        if (d.offset > size) rc = otp_link_ResultCode_RESULT_BAD_REQUEST;
     }
+    // A resume point past the end means the file changed under the phone:
+    // start over (DownloadBegin.offset 0 tells it to drop what it has).
+    const uint32_t start = d.offset > size ? 0 : d.offset;
     if (rc != otp_link_ResultCode_RESULT_OK) {
         if (f) { sdLock(); f.close(); sdUnlock(); }
         diag::log("link: download %u (source %d '%s') refused: %s", (unsigned)d.xfer,
@@ -1327,8 +1329,8 @@ void onDownload(uint32_t req, const otp_link_DownloadRequest& d) {
     // phone already has first.
     uint32_t crc = 0;
     bool readOk = true;
-    for (uint32_t off = 0; off < d.offset && readOk;) {
-        const uint32_t n = d.offset - off < 4096 ? d.offset - off : 4096;
+    for (uint32_t off = 0; off < start && readOk;) {
+        const uint32_t n = start - off < 4096 ? start - off : 4096;
         sdLock();
         readOk = f.read(ioBuf, n) == (int)n;
         sdUnlock();
@@ -1345,7 +1347,7 @@ void onDownload(uint32_t req, const otp_link_DownloadRequest& d) {
     dl.active = true;
     dl.xfer = d.xfer;
     dl.size = size;
-    dl.next = dl.acked = dl.startOffset = d.offset;
+    dl.next = dl.acked = dl.startOffset = start;
     dl.window = d.window ? (d.window < 1024 ? 1024 : d.window > 65536 ? 65536 : d.window)
                          : DOWNLOAD_WINDOW;
     dl.crc = crc;
@@ -1354,7 +1356,7 @@ void onDownload(uint32_t req, const otp_link_DownloadRequest& d) {
     dl.f = f;
     ble_shared::noteBulk();
     diag::log("link: download %u begin: %s, %u bytes from %u, window %u", (unsigned)dl.xfer,
-              dl.label, (unsigned)size, (unsigned)d.offset, (unsigned)dl.window);
+              dl.label, (unsigned)size, (unsigned)start, (unsigned)dl.window);
     otp_link_DownloadBegin& b = msg(req, otp_link_DeviceMsg_download_begin_tag).body.download_begin;
     b.xfer = dl.xfer;
     b.size = dl.size;

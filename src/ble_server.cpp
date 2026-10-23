@@ -1392,6 +1392,9 @@ class ServerCb : public NimBLEServerCallbacks {
     // get treated as one — the fast interval for the app's initial sync,
     // pushes, the status bar icon.
     void admit(NimBLEConnInfo& info, bool newPairing) {
+        // A key refresh on an admitted link raises another authentication-
+        // complete event; the link (and its phone-link session) carries on.
+        if (linkAdmitted && phoneConnected) return;
         linkAdmitted = true;
         phoneConnected = true;
         ++phoneConnectionEpoch;
