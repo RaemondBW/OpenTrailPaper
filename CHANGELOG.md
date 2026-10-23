@@ -7,6 +7,11 @@ so write for the rider, newest version first, one `## vX.YY` heading each.
 
 ## v1.23
 
+- The GPS module now talks to the device at 115200 baud instead of 9600, so
+  each second's position update takes about 25 ms on the wire instead of
+  300 ms and the device can sleep for the difference. Nothing is written
+  to the module: it is switched on every boot and goes back to its default
+  rate whenever it loses power.
 - New optional STOPWATCH page, off until you add it from the app's
   dashboard editor (Add a page > Stopwatch). It shows big digits with three
   buttons along the bottom: START/PAUSE, RESET and LAP. LAP works while the
