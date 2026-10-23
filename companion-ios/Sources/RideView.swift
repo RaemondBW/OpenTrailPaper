@@ -4,10 +4,15 @@ import MediaPlayer
 
 // The Ride tab is the head unit's live dashboard on the phone: the same pages,
 // laid out the way the device packs them (DashLayout), filled with what the
-// device streams over BLE. Fields the link doesn't carry, and everything while
-// disconnected, read "--" — the last known layout stays on screen.
+// device streams over BLE: the live state stream (DeviceLive) while this tab
+// is up and the firmware has it, else the 1 Hz status characteristic. Fields
+// neither carries, and everything while disconnected, read "--" — the last
+// known layout stays on screen.
 struct RideView: View {
     @EnvironmentObject var ble: BLEManager
+    /// The live stream's frames. Observed here alone: no other screen redraws
+    /// for them (see DeviceLive).
+    @EnvironmentObject var live: DeviceLive
     @AppStorage(UnitPref.key) private var useMiles = false
     @State private var showDashEditor = false
     @State private var showWorkouts = false
@@ -46,6 +51,7 @@ struct RideView: View {
             .sheet(isPresented: $showDashEditor) { DashboardEditorView() }
             .sheet(isPresented: $showWorkouts) { WorkoutsView() }
             .onAppear {
+                ble.liveViewer(true)   // stream while this tab is up
                 ble.refreshSensors()
                 // The session may have changed on the device while this tab
                 // was away; ask rather than trust the last notify.
@@ -60,6 +66,7 @@ struct RideView: View {
                     showDashEditor = true
                 }
             }
+            .onDisappear { ble.liveViewer(false) }
             .onChange(of: ble.state) { _, st in if st == .connected { ble.refreshSensors() } }
             .onChange(of: config.pages.count) { _, n in if pageIx >= n { pageIx = 0 } }
         }
@@ -198,11 +205,7 @@ struct RideView: View {
             DevicePanel(status: status) { k in
                 DashPreview(layout: p?.layout ?? .deviceDefault,
                             liveText: { liveText($0, now: now) },
-                            liveWatts: { f in
-                                guard connected, f == "power3s" || f == "power",
-                                      let w = ble.status.power else { return nil }
-                                return Double(w)
-                            },
+                            liveWatts: liveWatts,
                             ftp: Double(ble.ftpWatts))
                     .frame(width: 540 * k)
                     .offset(y: 64 * k)
@@ -218,26 +221,88 @@ struct RideView: View {
             WorkoutPagePreview(status: status, model: workoutModel,
                                actions: connected ? workoutActions : nil)
         case .stopwatch:
-            // The stopwatch lives on the device alone: nothing of it crosses
-            // the link either way, so the page shows its layout with no time
-            // and its buttons greyed.
+            stopwatchPage(status)
+        }
+    }
+
+    /// The live stream's latest frame while connected; nil on firmware
+    /// without it, before the first frame, or once it goes quiet.
+    private var frame: LiveFrame? { connected ? live.frame : nil }
+
+    /// The status bar as the device prints it, from what the link reports:
+    /// the device's own labels and liveness from the live stream, else a
+    /// guess from the status characteristic's readings.
+    private func panelStatus(_ now: Date) -> PanelStatus {
+        let s = ble.status
+        var labels: [String] = []
+        if let f = frame {
+            if f.hrLive { labels.append("HR") }
+            if f.powerLive { labels.append("PWR") }
+            if f.wheelSpeed { labels.append("SPD") }
+            if f.radarConnected && !f.paused { labels.append(f.radar?.live == true ? "RDR" : "RDR?") }
+            if f.paused { labels.append("PAUSED") }
+        } else if connected {
+            if s.heartRate != nil { labels.append("HR") }
+            if s.power != nil { labels.append("PWR") }
+        }
+        return PanelStatus(clock: clockText(now),
+                           satellites: frame?.sats ?? (connected ? s.sats : 0),
+                           battery: frame?.battery ?? (connected ? s.battery : 0),
+                           linked: connected,
+                           sensors: labels.map { "· \($0)" }.joined(separator: " "))
+    }
+
+    /// Watts the power fields' zone bar fills by; nil = no reading.
+    private func liveWatts(_ field: String) -> Double? {
+        guard connected, field == "power3s" || field == "power" else { return nil }
+        if let f = frame { return (field == "power3s" ? f.power3s : f.power).map(Double.init) }
+        return ble.status.power.map(Double.init)
+    }
+
+    /// The STOPWATCH page from the live stream: the device's clock, counted
+    /// on between frames while it runs, its state and the laps. The buttons
+    /// stay the device's own (greyed here). Without the stream (older
+    /// firmware) the page shows its layout with no time.
+    @ViewBuilder private func stopwatchPage(_ status: PanelStatus) -> some View {
+        if let sw = frame?.stopwatch {
+            TimelineView(.periodic(from: .now, by: sw.running ? 0.25 : 3600)) { ctx in
+                let ms = live.stopwatchElapsedMs(at: ctx.date) ?? sw.elapsedMs
+                let lapMs = sw.lapMs &+ (ms &- sw.elapsedMs)
+                StopwatchPagePreview(
+                    status: status, time: Self.stopwatchText(ms),
+                    state: sw.running ? "RUNNING" : ms == 0 ? "READY" : "PAUSED",
+                    running: sw.running,
+                    note: sw.laps == 0 ? nil
+                        : "LAP \(sw.laps + 1) · \(Self.stopwatchText(lapMs))"
+                          + (sw.lastSplitMs.map { " · LAST \(Self.lapText($0))" } ?? ""),
+                    controlsEnabled: false)
+            }
+        } else {
             StopwatchPagePreview(status: status, time: "--:--", state: "--", running: false,
-                                 note: "The stopwatch isn't sent over Bluetooth",
+                                 note: connected && !ble.liveSupported
+                                    ? "Update the device's firmware to see its stopwatch here"
+                                    : nil,
                                  controlsEnabled: false)
         }
     }
 
-    /// The status bar as the device prints it, from what the link reports.
-    private func panelStatus(_ now: Date) -> PanelStatus {
-        let s = ble.status
-        var sensors = ""
-        if connected && s.heartRate != nil { sensors += "· HR " }
-        if connected && s.power != nil { sensors += "· PWR" }
-        return PanelStatus(clock: clockText(now),
-                           satellites: connected ? s.sats : 0,
-                           battery: connected ? s.battery : 0,
-                           linked: connected,
-                           sensors: sensors)
+    /// The device's stopwatch digits (ui_render swFmt): MM:SS, H:MM:SS past the hour.
+    static func stopwatchText(_ ms: UInt32) -> String {
+        let sec = Int(ms / 1000)
+        return sec >= 3600 ? String(format: "%d:%02d:%02d", sec / 3600, sec / 60 % 60, sec % 60)
+                           : String(format: "%02d:%02d", sec / 60, sec % 60)
+    }
+
+    /// A finished lap (swFmtLap): M:SS.t under the hour, H:MM:SS over.
+    static func lapText(_ ms: UInt32) -> String {
+        let sec = Int(ms / 1000)
+        return sec >= 3600 ? String(format: "%d:%02d:%02d", sec / 3600, sec / 60 % 60, sec % 60)
+                           : String(format: "%d:%02d.%d", sec / 60, sec % 60, Int(ms % 1000 / 100))
+    }
+
+    /// Ride and moving time as the device prints them (formatHms).
+    static func hmsText(_ secs: Int) -> String {
+        String(format: "%d:%02d:%02d", secs / 3600, secs / 60 % 60, secs % 60)
     }
 
     private func clockText(_ now: Date) -> String {
@@ -302,30 +367,47 @@ struct RideView: View {
 
     /// What a field shows right now: the value and its unit, "--" when the
     /// link doesn't carry it (or there is no link), and the power zone.
+    /// Every field comes from the live stream while it runs; without it
+    /// (older firmware, or before its first frame) the status characteristic
+    /// covers speed, power, HR, battery, sats and route left.
     private func values(_ field: String) -> DashValue {
         let s = ble.status
         let live = connected
+        let f = frame
         func num(_ v: Int?) -> String { live ? v.map(String.init) ?? "--" : "--" }
+        func one(_ v: Double?) -> String { v.map { String(format: "%.1f", $0) } ?? "--" }
+        func whole(_ v: Double?) -> String { v.map { String(format: "%.0f", $0) } ?? "--" }
+        let speedUnit = Units.speedLabel(useMiles).uppercased()
+        let distUnit = Units.distLabel(useMiles).uppercased()
+        let elevUnit = Units.elevLabel(useMiles).uppercased()
         switch field {
-        case "speed", "avgspeed":
-            let v = field == "speed" && live
-                ? String(format: "%.1f", Units.speed(s.speedKmh, miles: useMiles)) : "--"
-            return DashValue(text: v, unit: Units.speedLabel(useMiles).uppercased())
+        case "speed":
+            let v = live ? Units.speed(f?.speedKmh ?? s.speedKmh, miles: useMiles) : nil
+            return DashValue(text: one(v), unit: speedUnit)
+        case "avgspeed":
+            return DashValue(text: one(f.map { Units.speed($0.avgSpeedKmh, miles: useMiles) }), unit: speedUnit)
         case "power3s", "power":
-            let w = live ? s.power : nil
+            let w = live ? (f.map { field == "power3s" ? $0.power3s : $0.power } ?? s.power) : nil
             return DashValue(text: num(w), unit: "W", zone: .some(w.map { Self.powerZone($0, ftp: ble.ftpWatts) } ?? 0))
-        case "hr": return DashValue(text: num(s.heartRate), unit: "BPM")
-        case "cadence": return DashValue(text: "--", unit: "RPM")
-        case "distance": return DashValue(text: "--", unit: Units.distLabel(useMiles).uppercased())
-        case "ridetime", "movingtime": return DashValue(text: "--", unit: "")
-        case "climb", "altitude": return DashValue(text: "--", unit: Units.elevLabel(useMiles).uppercased())
-        case "grade": return DashValue(text: "--", unit: "%")
-        case "battery": return DashValue(text: live ? "\(s.battery)" : "--", unit: "%")
-        case "sats": return DashValue(text: live ? "\(s.sats)" : "--", unit: "")
+        case "hr": return DashValue(text: num(f.map(\.heartRate) ?? s.heartRate), unit: "BPM")
+        case "cadence": return DashValue(text: num(f?.cadence), unit: "RPM")
+        case "distance":
+            return DashValue(text: one(f.map { Units.distance($0.distanceM / 1000, miles: useMiles) }), unit: distUnit)
+        case "ridetime": return DashValue(text: f.map { Self.hmsText($0.rideTimeS) } ?? "--", unit: "")
+        case "movingtime": return DashValue(text: f.map { Self.hmsText($0.movingTimeS) } ?? "--", unit: "")
+        case "climb":
+            return DashValue(text: whole(f.map { Units.elevation($0.climbM, miles: useMiles) }), unit: elevUnit)
+        case "altitude":
+            return DashValue(text: whole(f?.altitudeM.map { Units.elevation($0, miles: useMiles) }), unit: elevUnit)
+        case "grade": return DashValue(text: one(f?.gradePct), unit: "%")
+        case "battery": return DashValue(text: live ? "\(f?.battery ?? s.battery)" : "--", unit: "%")
+        case "sats": return DashValue(text: live ? "\(f?.sats ?? s.sats)" : "--", unit: "")
         case "clock": return DashValue(text: "", unit: "", isClock: true)
         case "routeleft":
-            let v = live && s.hasRoute ? String(format: "%.1f", Units.distance(s.remainingKm, miles: useMiles)) : "--"
-            return DashValue(text: v, unit: Units.distLabel(useMiles).uppercased())
+            let on = f?.routeActive ?? s.hasRoute
+            let km = f?.routeLeftKm ?? s.remainingKm
+            let v = live && on ? String(format: "%.1f", Units.distance(km, miles: useMiles)) : "--"
+            return DashValue(text: v, unit: distUnit)
         default: return DashValue(text: "--", unit: "")
         }
     }
