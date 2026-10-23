@@ -336,6 +336,7 @@ typedef struct _otp_link_Position {
     bool has_course_ddeg;
     uint32_t course_ddeg; /* 0.1 deg; only with a current fix above ~3 km/h */
     bool current; /* false = last known */
+    bool from_phone; /* the device map is following the phone's location (no GPS fix) */
 } otp_link_Position;
 
 typedef struct _otp_link_Radar {
@@ -353,7 +354,9 @@ typedef struct _otp_link_MusicState {
     int32_t rate_pct; /* 100 = normal, 0 paused, negative rewinding */
 } otp_link_MusicState;
 
-/* Sent 1 Hz and promptly on a change to any subscribed part. Only subscribed
+/* Position is always the point the device map is centred on (its GPS fix, else
+ the phone's recent location, else the last known position).
+ Sent 1 Hz and promptly on a change to any subscribed part. Only subscribed
  parts are filled; a part may also be absent when the device has nothing
  (e.g. no position ever, no radar connected). */
 typedef struct _otp_link_LiveFrame {
@@ -1070,7 +1073,7 @@ extern "C" {
 #define otp_link_StopwatchState_init_default     {0, 0, 0, 0, 0, 0, false, 0, false, 0, false, 0, false, 0, 0, {otp_link_Lap_init_default, otp_link_Lap_init_default, otp_link_Lap_init_default, otp_link_Lap_init_default, otp_link_Lap_init_default, otp_link_Lap_init_default, otp_link_Lap_init_default, otp_link_Lap_init_default, otp_link_Lap_init_default, otp_link_Lap_init_default}}
 #define otp_link_Lap_init_default                {0, 0, false, 0, false, 0, false, 0}
 #define otp_link_ViewState_init_default          {false, 0, 0, _otp_link_Screen_MIN}
-#define otp_link_Position_init_default           {0, 0, false, 0, 0}
+#define otp_link_Position_init_default           {0, 0, false, 0, 0, 0}
 #define otp_link_Radar_init_default              {0, 0, {0, 0, 0, 0, 0, 0, 0, 0}}
 #define otp_link_MusicState_init_default         {0, 0, 0, 0, 0, 0}
 #define otp_link_StopwatchCommand_init_default   {_otp_link_StopwatchOp_MIN}
@@ -1147,7 +1150,7 @@ extern "C" {
 #define otp_link_StopwatchState_init_zero        {0, 0, 0, 0, 0, 0, false, 0, false, 0, false, 0, false, 0, 0, {otp_link_Lap_init_zero, otp_link_Lap_init_zero, otp_link_Lap_init_zero, otp_link_Lap_init_zero, otp_link_Lap_init_zero, otp_link_Lap_init_zero, otp_link_Lap_init_zero, otp_link_Lap_init_zero, otp_link_Lap_init_zero, otp_link_Lap_init_zero}}
 #define otp_link_Lap_init_zero                   {0, 0, false, 0, false, 0, false, 0}
 #define otp_link_ViewState_init_zero             {false, 0, 0, _otp_link_Screen_MIN}
-#define otp_link_Position_init_zero              {0, 0, false, 0, 0}
+#define otp_link_Position_init_zero              {0, 0, false, 0, 0, 0}
 #define otp_link_Radar_init_zero                 {0, 0, {0, 0, 0, 0, 0, 0, 0, 0}}
 #define otp_link_MusicState_init_zero            {0, 0, 0, 0, 0, 0}
 #define otp_link_StopwatchCommand_init_zero      {_otp_link_StopwatchOp_MIN}
@@ -1284,6 +1287,7 @@ extern "C" {
 #define otp_link_Position_lon_e7_tag             2
 #define otp_link_Position_course_ddeg_tag        3
 #define otp_link_Position_current_tag            4
+#define otp_link_Position_from_phone_tag         5
 #define otp_link_Radar_live_tag                  1
 #define otp_link_Radar_distances_m_tag           2
 #define otp_link_MusicState_has_player_tag       1
@@ -1822,7 +1826,8 @@ X(a, STATIC,   SINGULAR, UENUM,    screen,            3)
 X(a, STATIC,   SINGULAR, SINT32,   lat_e7,            1) \
 X(a, STATIC,   SINGULAR, SINT32,   lon_e7,            2) \
 X(a, STATIC,   OPTIONAL, UINT32,   course_ddeg,       3) \
-X(a, STATIC,   SINGULAR, BOOL,     current,           4)
+X(a, STATIC,   SINGULAR, BOOL,     current,           4) \
+X(a, STATIC,   SINGULAR, BOOL,     from_phone,        5)
 #define otp_link_Position_CALLBACK NULL
 #define otp_link_Position_DEFAULT NULL
 
@@ -2486,7 +2491,7 @@ extern const pb_msgdesc_t otp_link_AgnssInfo_msg;
 #define otp_link_Hello_size                      116
 #define otp_link_Lap_size                        30
 #define otp_link_ListRequest_size                2
-#define otp_link_LiveFrame_size                  608
+#define otp_link_LiveFrame_size                  610
 #define otp_link_LiveSubscribe_size              32
 #define otp_link_Maneuver_size                   61
 #define otp_link_MapCoverageList_size            640
@@ -2521,7 +2526,7 @@ extern const pb_msgdesc_t otp_link_AgnssInfo_msg;
 #define otp_link_MusicState_size                 24
 #define otp_link_PhoneLocation_size              42
 #define otp_link_PhoneMsg_size                   2060
-#define otp_link_Position_size                   20
+#define otp_link_Position_size                   22
 #define otp_link_Radar_size                      50
 #define otp_link_Result_size                     83
 #define otp_link_RideState_size                  113

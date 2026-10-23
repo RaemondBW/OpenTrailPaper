@@ -1885,6 +1885,8 @@ nonisolated struct LinkLiveSubscribe: Sendable {
   init() {}
 }
 
+/// Position is always the point the device map is centred on (its GPS fix, else
+/// the phone's recent location, else the last known position).
 /// Sent 1 Hz and promptly on a change to any subscribed part. Only subscribed
 /// parts are filled; a part may also be absent when the device has nothing
 /// (e.g. no position ever, no radar connected).
@@ -2286,6 +2288,9 @@ nonisolated struct LinkPosition: Sendable {
 
   /// false = last known
   var current: Bool = false
+
+  /// the device map is following the phone's location (no GPS fix)
+  var fromPhone: Bool = false
 
   var unknownFields = SwiftProtobuf.UnknownStorage()
 
@@ -5542,7 +5547,7 @@ nonisolated extension LinkViewState: SwiftProtobuf.Message, SwiftProtobuf._Messa
 
 nonisolated extension LinkPosition: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   static let protoMessageName: String = _protobuf_package + ".Position"
-  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}lat_e7\0\u{3}lon_e7\0\u{3}course_ddeg\0\u{1}current\0")
+  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}lat_e7\0\u{3}lon_e7\0\u{3}course_ddeg\0\u{1}current\0\u{3}from_phone\0")
 
   mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -5554,6 +5559,7 @@ nonisolated extension LinkPosition: SwiftProtobuf.Message, SwiftProtobuf._Messag
       case 2: try { try decoder.decodeSingularSInt32Field(value: &self.lonE7) }()
       case 3: try { try decoder.decodeSingularUInt32Field(value: &self._courseDdeg) }()
       case 4: try { try decoder.decodeSingularBoolField(value: &self.current) }()
+      case 5: try { try decoder.decodeSingularBoolField(value: &self.fromPhone) }()
       default: break
       }
     }
@@ -5576,6 +5582,9 @@ nonisolated extension LinkPosition: SwiftProtobuf.Message, SwiftProtobuf._Messag
     if self.current != false {
       try visitor.visitSingularBoolField(value: self.current, fieldNumber: 4)
     }
+    if self.fromPhone != false {
+      try visitor.visitSingularBoolField(value: self.fromPhone, fieldNumber: 5)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -5584,6 +5593,7 @@ nonisolated extension LinkPosition: SwiftProtobuf.Message, SwiftProtobuf._Messag
     if lhs.lonE7 != rhs.lonE7 {return false}
     if lhs._courseDdeg != rhs._courseDdeg {return false}
     if lhs.current != rhs.current {return false}
+    if lhs.fromPhone != rhs.fromPhone {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

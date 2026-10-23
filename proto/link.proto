@@ -256,6 +256,8 @@ message LiveSubscribe {
   repeated LiveTopic topics = 1;
 }
 
+// Position is always the point the device map is centred on (its GPS fix, else
+// the phone's recent location, else the last known position).
 // Sent 1 Hz and promptly on a change to any subscribed part. Only subscribed
 // parts are filled; a part may also be absent when the device has nothing
 // (e.g. no position ever, no radar connected).
@@ -335,6 +337,7 @@ message Position {
   sint32 lon_e7 = 2;
   optional uint32 course_ddeg = 3;    // 0.1 deg; only with a current fix above ~3 km/h
   bool current = 4;                   // false = last known
+  bool from_phone = 5;                // the device map is following the phone's location (no GPS fix)
 }
 
 message Radar {

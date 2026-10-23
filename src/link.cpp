@@ -491,15 +491,35 @@ void sendLiveFrame() {
                       : v.screen == 1 ? otp_link_Screen_SCREEN_MAP
                                       : otp_link_Screen_SCREEN_OTHER;
     }
-    if ((t & (1u << otp_link_LiveTopic_LIVE_TOPIC_POSITION)) && s.everHadFix) {
+    if (t & (1u << otp_link_LiveTopic_LIVE_TOPIC_POSITION)) {
+        // The point the device map is drawn around, in its order
+        // (ui_dashboard's map render): own fix, the phone's recent location,
+        // last known fix, the saved position.
+        double lat, lon;
+        const bool phoneRecent = s.phoneFixValid && millis() - s.phoneFixMs < 15000;
         f.has_position = true;
-        f.position.lat_e7 = (int32_t)(s.latitude * 1e7);
-        f.position.lon_e7 = (int32_t)(s.longitude * 1e7);
-        if (s.gpsFix && s.speedKmh > 3.0f) {
-            f.position.has_course_ddeg = true;
-            f.position.course_ddeg = clampU(s.courseDeg * 10.0, 3599);
+        if (s.gpsFix || (!phoneRecent && s.everHadFix)) {
+            lat = s.latitude;
+            lon = s.longitude;
+            if (s.gpsFix && s.speedKmh > 3.0f) {
+                f.position.has_course_ddeg = true;
+                f.position.course_ddeg = clampU(s.courseDeg * 10.0, 3599);
+            }
+            f.position.current = s.gpsFix;
+        } else if (phoneRecent) {
+            lat = s.phoneLat;
+            lon = s.phoneLon;
+            if (s.phoneCourseValid) {
+                f.position.has_course_ddeg = true;
+                f.position.course_ddeg = clampU(s.phoneCourseDeg * 10.0, 3599);
+            }
+            f.position.current = true;
+            f.position.from_phone = true;
+        } else {
+            settings::lastPosition(lat, lon);
         }
-        f.position.current = s.gpsFix;
+        f.position.lat_e7 = (int32_t)(lat * 1e7);
+        f.position.lon_e7 = (int32_t)(lon * 1e7);
     }
     if ((t & (1u << otp_link_LiveTopic_LIVE_TOPIC_RADAR)) && s.radar.connected) {
         if (!(t & (1u << otp_link_LiveTopic_LIVE_TOPIC_RIDE))) radarExpire(s.radar, now);
