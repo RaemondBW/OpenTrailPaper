@@ -466,6 +466,12 @@ class BleManager(private val app: Application) {
     /** The rider's offline layout, while it waits for the device. */
     var pendingDashConfig by mutableStateOf<DashConfig?>(null); private set
 
+    /**
+     * A layout write has gone unanswered for a few seconds: the device holds
+     * it until the SD card is free (a ride is recording). Not a failure.
+     */
+    var dashWaitingForDevice by mutableStateOf(false); private set
+
     /** What the editor edits: the unsynced layout, else the device's. */
     val dashTarget: DashConfig? get() = pendingDashConfig ?: dashConfig
 
@@ -682,6 +688,8 @@ class BleManager(private val app: Application) {
     private var tileJobStarted = 0L
     private var tileJobBytes = 0L
     private var tileJobFailed = false
+    /** RESULT_BUSY answers in a row for this job's tiles (LinkClient retries each first). */
+    private var tileBusyStreak = 0
     private var tilesMoreComing = false
     private var tileIdsBuilding = mutableListOf<String>()
 
@@ -1498,6 +1506,7 @@ class BleManager(private val app: Application) {
         settingsSeenThisLink = false; settingsWriteInFlight = null
         settingsWriteFailedThisLink = false
         dashSeenThisLink = false; dashWriteInFlight = null; dashWriteFailedThisLink = false
+        dashWaitingForDevice = false
         mediaToneArt = false   // the next device may be older firmware
         lastMediaMeta = null
         updateMediaRemote()    // no link, no media observers
@@ -1918,8 +1927,14 @@ class BleManager(private val app: Application) {
                 return
             }
             dashWriteInFlight = text
+            // The device writes it once the SD card is free, so a recording
+            // ride holds the answer back: wait, and say so after a moment.
+            main.postDelayed({
+                if (dashWriteInFlight == text && linkReady) dashWaitingForDevice = true
+            }, DASH_WAITING_NOTICE_MS)
             link.request(
                 PhoneMsg.newBuilder().setSetDash(PDashConfig.newBuilder().setText(text)),
+                timeoutMs = LinkClient.SD_DEFERRED_TIMEOUT_MS,
                 onFail = { _, _ -> dashWriteAcked(text, false) },
             ) { m ->
                 if (m.hasDash()) {
@@ -2011,6 +2026,7 @@ class BleManager(private val app: Application) {
     private fun dashWriteAcked(text: String, ok: Boolean) {
         if (dashWriteInFlight != text) return   // a link that has since dropped
         dashWriteInFlight = null
+        dashWaitingForDevice = false
         if (!ok) {
             dashWriteFailedThisLink = true   // stays pending; the next connect retries
             return
@@ -2177,8 +2193,8 @@ class BleManager(private val app: Application) {
         if (!has(Feature.FEATURE_MEDIA_ART)) return
         val tones = has(Feature.FEATURE_MEDIA_ART_TONE)
         val payload = if (tones) ArtDither.pack(ArtDither.dither(gray, width, height)) else gray
-        // One upload at a time on the device: the old track's art gives way.
-        artUpload?.cancel()
+        // LinkClient queues it behind any other upload, and it replaces the
+        // old track's art there, queued or running.
         val g = gatt
         g?.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
         var handle: LinkClient.Handle? = null
@@ -3993,6 +4009,7 @@ class BleManager(private val app: Application) {
         tilesTotal = 0
         tilesDone = 0
         tileJobFailed = false
+        tileBusyStreak = 0
         tilesMoreComing = true
         tilesUploading = true
         tileMessage = "Sending tiles…"
@@ -4137,7 +4154,26 @@ class BleManager(private val app: Application) {
             override fun onDone(code: ResultCode, detail: String) {
                 if (tileUpload !== handle) return
                 tileUpload = null
-                if (code == ResultCode.RESULT_OK) tileSaved() else tileFailed()
+                when {
+                    code == ResultCode.RESULT_OK -> { tileBusyStreak = 0; tileSaved() }
+                    // Still busy after LinkClient's own retries (another upload
+                    // the device is saving): the same tile goes again later,
+                    // rather than every queued tile failing in turn behind it.
+                    code == ResultCode.RESULT_BUSY && tileBusyStreak < TILE_BUSY_RETRIES -> {
+                        tileBusyStreak += 1
+                        val id = tile.id
+                        main.postDelayed({
+                            if (tilesUploading && linkReady && currentTileId == id && tileUpload == null) sendTileLink(tile)
+                        }, TILE_BUSY_RETRY_MS)
+                    }
+                    code == ResultCode.RESULT_BUSY -> {
+                        tileJobFailed = true
+                        tileQueue.clear()
+                        tilesMoreComing = false
+                        finishTileJob("The device is busy · try again")
+                    }
+                    else -> { tileBusyStreak = 0; tileFailed() }
+                }
             }
         })
         tileUpload = handle
@@ -4583,6 +4619,8 @@ class BleManager(private val app: Application) {
         val acc = LinkedHashMap<String, String>()
         link.request(
             PhoneMsg.newBuilder().setList(ListRequest.newBuilder().setKind(kind)),
+            // Deferred by the device until the SD card is free (recording).
+            timeoutMs = LinkClient.SD_DEFERRED_TIMEOUT_MS,
             onFail = { _, _ -> done(null) },
         ) { m ->
             when {
@@ -4647,6 +4685,12 @@ class BleManager(private val app: Application) {
 
     companion object {
         private const val LINK_TAG = "link"
+
+        /** A tile still BUSY after LinkClient's retries goes again after this, up to this many times in a row. */
+        private const val TILE_BUSY_RETRY_MS = 5_000L
+        private const val TILE_BUSY_RETRIES = 6
+        /** A layout write unanswered this long is shown as waiting for the device. */
+        private const val DASH_WAITING_NOTICE_MS = 4_000L
 
         // TransferCenter ids for the one-at-a-time transfers.
         private const val OTA_TRANSFER = "ble.ota"

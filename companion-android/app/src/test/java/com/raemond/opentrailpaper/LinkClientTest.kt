@@ -19,6 +19,7 @@ import com.raemond.opentrailpaper.link.proto.ListKind
 import com.raemond.opentrailpaper.link.proto.ListRequest
 import com.raemond.opentrailpaper.link.proto.PhoneMsg
 import com.raemond.opentrailpaper.link.proto.Result
+import com.raemond.opentrailpaper.link.proto.ArtFormat
 import com.raemond.opentrailpaper.link.proto.ResultCode
 import com.raemond.opentrailpaper.link.proto.Settings
 import com.raemond.opentrailpaper.link.proto.Source
@@ -325,10 +326,161 @@ class LinkClientTest {
         val rec = UpRec()
         client.upload(UploadBegin.newBuilder().setTarget(Target.TARGET_FIRMWARE), ByteArray(100), rec)
         val begin = dev.take().single()
-        dev.send(DeviceMsg.newBuilder().setReq(begin.req).setResult(Result.newBuilder().setCode(ResultCode.RESULT_BUSY)).build())
+        dev.send(DeviceMsg.newBuilder().setReq(begin.req).setResult(Result.newBuilder().setCode(ResultCode.RESULT_TOO_LARGE)).build())
+        assertEquals(ResultCode.RESULT_TOO_LARGE, rec.done)
+        clock.advance(60_000)
+        assertTrue(dev.take().isEmpty())
+    }
+
+    private fun busy(req: Int) =
+        DeviceMsg.newBuilder().setReq(req).setResult(Result.newBuilder().setCode(ResultCode.RESULT_BUSY)).build()
+
+    private fun ready(xfer: Int) =
+        DeviceMsg.newBuilder().setUploadReady(UploadReady.newBuilder().setXfer(xfer).setWindow(16_384)).build()
+
+    private fun done(xfer: Int, code: ResultCode = ResultCode.RESULT_OK) =
+        DeviceMsg.newBuilder().setTransferDone(TransferDone.newBuilder().setXfer(xfer).setCode(code)).build()
+
+    @Test fun busyIsRetriedThenSucceeds() {
+        connect()
+        val rec = UpRec()
+        client.upload(UploadBegin.newBuilder().setTarget(Target.TARGET_ROUTE).setName("r.gpx"), ByteArray(100), rec)
+        val first = dev.take().single()
+        dev.send(busy(first.req))
+        assertNull("BUSY is not a failure yet", rec.done)
+        clock.advance(LinkClient.BUSY_RETRY_MS - 1)
+        assertTrue(dev.take().isEmpty())
+        clock.advance(1)
+        val again = dev.take().single()
+        assertTrue(again.hasUploadBegin())
+        assertEquals(first.uploadBegin.xfer, again.uploadBegin.xfer)
+        assertTrue("a fresh req", again.req != first.req)
+        dev.send(ready(again.uploadBegin.xfer))
+        assertTrue(dev.take().any { it.hasUploadEnd() })
+        dev.send(done(again.uploadBegin.xfer))
+        assertEquals(ResultCode.RESULT_OK, rec.done)
+    }
+
+    @Test fun busyGivesUpAfterTheRetries() {
+        connect()
+        val rec = UpRec()
+        client.upload(UploadBegin.newBuilder().setTarget(Target.TARGET_ROUTE), ByteArray(100), rec)
+        repeat(LinkClient.BUSY_RETRIES) {
+            dev.send(busy(dev.take().single().req))
+            assertNull(rec.done)
+            clock.advance(LinkClient.BUSY_RETRY_MS)
+        }
+        dev.send(busy(dev.take().single().req))
         assertEquals(ResultCode.RESULT_BUSY, rec.done)
         clock.advance(60_000)
         assertTrue(dev.take().isEmpty())
+    }
+
+    @Test fun secondUploadWaitsForTheFirst() {
+        connect()
+        val a = UpRec()
+        val b = UpRec()
+        client.upload(UploadBegin.newBuilder().setTarget(Target.TARGET_MAP_TILE).setName("a"), ByteArray(300), a)
+        client.upload(UploadBegin.newBuilder().setTarget(Target.TARGET_MAP_TILE).setName("b"), ByteArray(300), b)
+        val beginA = dev.take().single()
+        assertEquals("a", beginA.uploadBegin.name)
+        val xa = beginA.uploadBegin.xfer
+        dev.send(ready(xa))
+        val sent = dev.take()
+        assertTrue(sent.none { it.hasUploadBegin() })
+        assertTrue(sent.last().hasUploadEnd())
+        // A's save takes a while: B still waits, and no request timer runs for it.
+        clock.advance(LinkClient.REQUEST_TIMEOUT_MS * 3)
+        assertTrue(dev.take().isEmpty())
+        assertNull(b.done)
+        dev.send(done(xa))
+        assertEquals(ResultCode.RESULT_OK, a.done)
+        val beginB = dev.take().single()
+        assertEquals("b", beginB.uploadBegin.name)
+        assertTrue(beginB.uploadBegin.xfer != xa)
+    }
+
+    @Test fun failedUploadStartsTheNext() {
+        connect()
+        val a = UpRec()
+        val b = UpRec()
+        client.upload(UploadBegin.newBuilder().setTarget(Target.TARGET_MAP_TILE).setName("a"), ByteArray(300), a)
+        client.upload(UploadBegin.newBuilder().setTarget(Target.TARGET_MAP_TILE).setName("b"), ByteArray(300), b)
+        val beginA = dev.take().single()
+        dev.send(DeviceMsg.newBuilder().setReq(beginA.req).setResult(Result.newBuilder().setCode(ResultCode.RESULT_IO_ERROR)).build())
+        assertEquals(ResultCode.RESULT_IO_ERROR, a.done)
+        assertEquals("b", dev.take().single().uploadBegin.name)
+    }
+
+    @Test fun cancellingAQueuedUploadSendsNothing() {
+        connect()
+        val a = UpRec()
+        val b = UpRec()
+        client.upload(UploadBegin.newBuilder().setTarget(Target.TARGET_ROUTE), ByteArray(300), a)
+        val hb = client.upload(UploadBegin.newBuilder().setTarget(Target.TARGET_FIRMWARE), ByteArray(300), b)!!
+        dev.take()
+        hb.cancel()
+        assertEquals(ResultCode.RESULT_CANCELLED, b.done)
+        assertTrue(dev.take().isEmpty())
+    }
+
+    private fun art(n: Int) = UploadBegin.newBuilder().setTarget(Target.TARGET_ALBUM_ART)
+        .setArtFormat(ArtFormat.ART_TONE5).setArtWidth(n).setArtHeight(n)
+
+    @Test fun newerArtReplacesQueuedArt() {
+        connect()
+        val tile = UpRec()
+        val art1 = UpRec()
+        val art2 = UpRec()
+        client.upload(UploadBegin.newBuilder().setTarget(Target.TARGET_MAP_TILE).setName("t"), ByteArray(300), tile)
+        val xt = dev.take().single().uploadBegin.xfer
+        client.upload(art(10), ByteArray(34), art1)
+        client.upload(art(20), ByteArray(134), art2)
+        assertEquals(ResultCode.RESULT_CANCELLED, art1.done)
+        assertTrue("nothing sent for queued art", dev.take().isEmpty())
+        dev.send(ready(xt)); dev.take()
+        dev.send(done(xt))
+        val next = dev.take().single()
+        assertEquals(20, next.uploadBegin.artWidth)
+        assertNull(art2.done)
+    }
+
+    @Test fun newerArtCancelsRunningArt() {
+        connect()
+        val art1 = UpRec()
+        val art2 = UpRec()
+        client.upload(art(100), ByteArray(3_334), art1)
+        val b1 = dev.take().single()
+        val x1 = b1.uploadBegin.xfer
+        dev.autoComplete = false
+        dev.send(ready(x1))           // one chunk on the radio
+        client.upload(art(50), ByteArray(834), art2)
+        assertEquals(ResultCode.RESULT_CANCELLED, art1.done)
+        dev.autoComplete = true
+        dev.completeAll()
+        val out = dev.take()
+        val cancel = out.indexOfFirst { it.hasTransferCancel() }
+        val begin = out.indexOfFirst { it.hasUploadBegin() }
+        assertTrue("old art cancelled on the device", cancel >= 0)
+        assertEquals(x1, out[cancel].transferCancel.xfer)
+        assertTrue("then the new art begins", begin > cancel)
+        assertEquals(50, out[begin].uploadBegin.artWidth)
+        assertTrue("no more chunks for the old art", out.drop(cancel).none { it.hasChunk() && it.chunk.xfer == x1 })
+    }
+
+    @Test fun uploadBeginTimeoutCancelsOnTheDevice() {
+        connect()
+        val a = UpRec()
+        val b = UpRec()
+        client.upload(UploadBegin.newBuilder().setTarget(Target.TARGET_ROUTE), ByteArray(100), a)
+        client.upload(UploadBegin.newBuilder().setTarget(Target.TARGET_ROUTE), ByteArray(100), b)
+        val x = dev.take().single().uploadBegin.xfer
+        clock.advance(LinkClient.REQUEST_TIMEOUT_MS)
+        assertEquals(ResultCode.RESULT_TIMEOUT, a.done)
+        val out = dev.take()
+        assertTrue(out[0].hasTransferCancel())
+        assertEquals(x, out[0].transferCancel.xfer)
+        assertTrue("the next upload goes after the cancel", out[1].hasUploadBegin())
     }
 
     @Test fun uploadCancelledByDisconnect() {
@@ -449,6 +601,80 @@ class LinkClientTest {
             .setSize(300).setCrc32(CRC32().apply { update(file, 0, 300) }.value.toInt())).build())
         assertNull(rec.fail)
         assertArrayEquals(file.copyOf(300), rec.data)
+    }
+
+    @Test fun downloadRequestTimeoutCancelsOnTheDevice() {
+        connect()
+        val rec = DownRec()
+        client.download(Source.SOURCE_RIDE, "a.fit", rec, prefix = file.copyOf(4_000))
+        val r = dev.take().single()
+        // The device may hash a big resume prefix first: 10 s is not a timeout.
+        clock.advance(LinkClient.REQUEST_TIMEOUT_MS)
+        assertNull(rec.fail)
+        clock.advance(LinkClient.DOWNLOAD_BEGIN_TIMEOUT_MS - LinkClient.REQUEST_TIMEOUT_MS)
+        assertEquals(ResultCode.RESULT_TIMEOUT, rec.fail)
+        assertArrayEquals("prefix kept for a later resume", file.copyOf(4_000), rec.partial)
+        val c = dev.take().single()
+        assertTrue(c.hasTransferCancel())
+        assertEquals(r.download.xfer, c.transferCancel.xfer)
+    }
+
+    @Test fun secondDownloadWaitsForTheFirst() {
+        connect()
+        val a = DownRec()
+        val b = DownRec()
+        client.download(Source.SOURCE_RIDE, "a.fit", a)
+        client.download(Source.SOURCE_RIDE, "b.fit", b)
+        val ra = dev.take().single()
+        assertEquals("a.fit", ra.download.name)
+        serve(ra, file)
+        assertArrayEquals(file, a.data)
+        val rb = dev.take().single()
+        assertEquals("b.fit", rb.download.name)
+        serve(rb, file)
+        assertArrayEquals(file, b.data)
+    }
+
+    @Test fun downloadBusyIsRetried() {
+        connect()
+        val rec = DownRec()
+        client.download(Source.SOURCE_RIDE, "a.fit", rec)
+        dev.send(busy(dev.take().single().req))
+        assertNull(rec.fail)
+        clock.advance(LinkClient.BUSY_RETRY_MS)
+        serve(dev.take().single(), file)
+        assertArrayEquals(file, rec.data)
+    }
+
+    @Test fun resetFailsQueuedTransfers() {
+        connect()
+        val a = UpRec()
+        val b = UpRec()
+        val d = DownRec()
+        client.upload(UploadBegin.newBuilder().setTarget(Target.TARGET_ROUTE), ByteArray(100), a)
+        client.upload(UploadBegin.newBuilder().setTarget(Target.TARGET_ROUTE), ByteArray(100), b)
+        client.download(Source.SOURCE_RIDE, "a.fit", d)
+        dev.take()
+        client.reset("disconnected")
+        assertEquals(ResultCode.RESULT_CANCELLED, a.done)
+        assertEquals(ResultCode.RESULT_CANCELLED, b.done)
+        assertEquals(ResultCode.RESULT_CANCELLED, d.fail)
+        clock.advance(60_000)
+        assertTrue(dev.take().isEmpty())
+    }
+
+    @Test fun deferredRequestWaitsPastTheDefaultTimeout() {
+        connect()
+        var failed: ResultCode? = null
+        client.request(
+            PhoneMsg.newBuilder().setGetSettings(GetSettings.getDefaultInstance()),
+            timeoutMs = LinkClient.SD_DEFERRED_TIMEOUT_MS,
+            onFail = { c, _ -> failed = c },
+        ) { true }
+        clock.advance(5 * 60_000)
+        assertNull(failed)
+        clock.advance(5 * 60_000)
+        assertEquals(ResultCode.RESULT_TIMEOUT, failed)
     }
 
     @Test fun downloadIdleTimeout() {
