@@ -435,6 +435,21 @@ class LinkClientTest {
         assertArrayEquals(file.copyOf(500), cut.partial)
     }
 
+    @Test fun downloadBeginWithoutReqEchoStillAnswersTheRequest() {
+        connect()
+        val rec = DownRec()
+        client.download(Source.SOURCE_RIDE, "a.fit", rec)
+        val r = dev.take().single()
+        val x = r.download.xfer
+        dev.send(DeviceMsg.newBuilder().setDownloadBegin(DownloadBegin.newBuilder().setXfer(x).setSize(300)).build())
+        clock.advance(LinkClient.REQUEST_TIMEOUT_MS + 1)   // the request must not time out under it
+        dev.send(DeviceMsg.newBuilder().setChunk(Chunk.newBuilder().setXfer(x).setOffset(0).setData(ByteString.copyFrom(file, 0, 300))).build())
+        dev.send(DeviceMsg.newBuilder().setTransferDone(TransferDone.newBuilder().setXfer(x).setCode(ResultCode.RESULT_OK)
+            .setSize(300).setCrc32(CRC32().apply { update(file, 0, 300) }.value.toInt())).build())
+        assertNull(rec.fail)
+        assertArrayEquals(file.copyOf(300), rec.data)
+    }
+
     @Test fun downloadIdleTimeout() {
         connect()
         val rec = DownRec()

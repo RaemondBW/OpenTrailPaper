@@ -217,11 +217,15 @@ class LinkClient(
         // Transfer traffic is addressed by xfer, whatever its req.
         val xfer = xferOf(msg)
         if (xfer != null) {
-            pending.remove(msg.req)?.timer?.cancel()   // UploadReady / DownloadBegin answer the begin
             val t = transfers[xfer]
             if (t == null) {
                 if (!msg.hasChunk()) log("rx: ${msg.bodyCase} for unknown xfer $xfer")
                 return
+            }
+            // Any traffic for the transfer answers its begin request, req echoed or not.
+            if (t.beginReq != 0) {
+                pending.remove(t.beginReq)?.timer?.cancel()
+                t.beginReq = 0
             }
             t.onMessage(msg)
             return
@@ -424,6 +428,9 @@ class LinkClient(
     private val transfers = LinkedHashMap<Int, Transfer>()
 
     private abstract inner class Transfer(override val xfer: Int) : Handle {
+        /** The UploadBegin / DownloadRequest still waiting for its first answer. */
+        var beginReq = 0
+
         abstract fun onMessage(m: DeviceMsg)
 
         /** Ended locally (reset, timeout): report it, send nothing. */
@@ -502,6 +509,7 @@ class LinkClient(
             true
         }
         if (req == 0) u.failed(ResultCode.RESULT_TOO_LARGE, "Message too large", sendCancel = false)
+        u.beginReq = req
         return u
     }
 
@@ -639,6 +647,7 @@ class LinkClient(
             true
         }
         if (req == 0) d.failed(ResultCode.RESULT_TOO_LARGE, "Message too large", sendCancel = false)
+        d.beginReq = req
         return d
     }
 
