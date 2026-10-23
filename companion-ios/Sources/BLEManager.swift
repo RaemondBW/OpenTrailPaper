@@ -955,6 +955,7 @@ final class BLEManager: NSObject, ObservableObject {
         sw.lapAvgSpeedKmh = 26.1; sw.lapAvgPowerW = 252; sw.lapAvgCadence = 90
         lf.stopwatch = sw
         lf.view = LiveFrame.View(page: 0, pageCount: 5, screen: 0)
+        lf.position = LiveFrame.Position(lat: 37.7694, lon: -122.4862, courseDeg: 62, current: true)
         live.showDemo(lf)
         // Tick like a connected head unit: a status notify every second, so
         // screens are exercised under the same republish load as on a ride.

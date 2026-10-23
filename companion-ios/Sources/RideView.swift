@@ -179,7 +179,24 @@ struct RideView: View {
 
     // MARK: Pages
 
+    /// The page strip. Names keep their full size and spacing: they share the
+    /// width when they fit, and the strip scrolls (keeping the selected one
+    /// in view) when they don't — squeezing "STOPWATCH" to fit crushed it.
     private var pageSelector: some View {
+        ScrollViewReader { proxy in
+            ViewThatFits(in: .horizontal) {
+                selectorCells(fill: true)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    selectorCells(fill: false)
+                }
+                .scrollBounceBehavior(.basedOnSize)
+            }
+            .einkBorder()
+            .onChange(of: pageIx) { _, i in withAnimation { proxy.scrollTo(i, anchor: .center) } }
+        }
+    }
+
+    private func selectorCells(fill: Bool) -> some View {
         let pages = config.pages
         let sel = min(pageIx, pages.count)
         return HStack(spacing: 0) {
@@ -187,9 +204,12 @@ struct RideView: View {
                 selectorCell(on: i == sel, divider: i > 0) {
                     Text(pageName(i, in: pages))
                         .font(BarlowFont.text(12, .bold)).tracking(2)
-                        .lineLimit(1).minimumScaleFactor(0.6)
+                        .lineLimit(1)
+                        .fixedSize()
+                        .padding(.horizontal, 12)
                 } tap: { withAnimation { pageIx = i } }
-                .frame(maxWidth: .infinity)
+                .frame(maxWidth: fill ? .infinity : nil)
+                .id(i)
                 .accessibilityLabel("Dashboard page \(pageName(i, in: pages).capitalized)")
             }
             // The "add new" page that ends the swipe, as a narrow + cell.
@@ -197,9 +217,9 @@ struct RideView: View {
                 Image(systemName: "plus").font(.system(size: 14, weight: .bold))
             } tap: { withAnimation { pageIx = pages.count } }
             .frame(width: 44)
+            .id(pages.count)
             .accessibilityLabel("Add a page")
         }
-        .einkBorder()
     }
 
     private func selectorCell<L: View>(on: Bool, divider: Bool, @ViewBuilder label: () -> L,
@@ -334,18 +354,32 @@ struct RideView: View {
     /// The selected page, editable where it stands. No swipe while editing:
     /// the cells take the finger for dragging, so the strip above changes
     /// page instead.
+    /// The settings box under the page while editing. One height for every
+    /// page — tall enough for a selected cell's inspector — so the panel
+    /// above is the same size on all of them.
+    private static let editSlotHeight: CGFloat = 200
+
     @ViewBuilder private var editArea: some View {
         let pages = draft.pages
         let i = min(pageIx, pages.count)
-        if i == pages.count {
-            panelFrame { addNewPage }
-        } else {
-            VStack(spacing: 10) {
+        VStack(spacing: 10) {
+            if i == pages.count {
+                // The add page has nothing to move or remove; the row is held
+                // so the panel lines up with the others.
+                pageActions(max(0, pages.count - 1)).hidden()
+                panelFrame { addNewPage }
+                FixedCard(height: Self.editSlotHeight) {
+                    Text("Choose a page type on the panel to add it to the device's cycle. It goes to the device with the rest of your changes when you tap \(connected ? "Send" : "Save").")
+                        .font(BarlowFont.text(13)).foregroundStyle(Palette.muted)
+                }
+                .padding(.top, 0)
+            } else {
                 pageActions(i)
                 switch pages[i].kind {
                 case .fields:
                     TimelineView(.everyMinute) { ctx in
-                        PageLayoutEditor(layout: $draft.pages[i].layout, status: panelStatus(ctx.date))
+                        PageLayoutEditor(layout: $draft.pages[i].layout, status: panelStatus(ctx.date),
+                                         inspectorHeight: Self.editSlotHeight)
                     }
                     // A fresh editor (and selection) per page.
                     .id(pages[i].id)
@@ -353,8 +387,7 @@ struct RideView: View {
                     TimelineView(.everyMinute) { ctx in
                         panelFrame { devicePage(pages[i], now: ctx.date) }
                     }
-                    pageSettings(pages[i])
-                        .fixedSize(horizontal: false, vertical: true)
+                    FixedCard(height: Self.editSlotHeight) { pageSettings(pages[i]) }
                 }
             }
         }
@@ -402,7 +435,7 @@ struct RideView: View {
     @ViewBuilder private func pageSettings(_ p: DashConfig.Page) -> some View {
         switch p.kind {
         case .map:
-            Card(padding: 14) {
+            Group {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Data strip").trackedLabel()
                     HStack(spacing: 8) {
@@ -426,15 +459,15 @@ struct RideView: View {
                 }
             }
         case .music:
-            Card(padding: 14) { AlbumArtControls(art: ble.albumArt) }
+            Group { AlbumArtControls(art: ble.albumArt) }
         case .workout:
-            Card(padding: 14) {
+            Group {
                 Text("Load a workout with Workouts above, or drop .erg/.mrc files in /workouts on the SD card.")
                     .font(BarlowFont.text(13)).foregroundStyle(Palette.muted)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         case .stopwatch:
-            Card(padding: 14) {
+            Group {
                 Text("A clock of its own, separate from the ride timer, with START/PAUSE, RESET and LAP on the panel. Needs device firmware v1.23 or newer.")
                     .font(BarlowFont.text(13)).foregroundStyle(Palette.muted)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -460,7 +493,8 @@ struct RideView: View {
             LiveMapPage(fields: config.mapFields, status: status,
                         value: { liveText($0, now: now) },
                         route: connected && ble.status.hasRoute ? ble.sentRouteCoords : [],
-                        showsUser: ble.locationPermission.isGranted)
+                        showsUser: ble.locationPermission.isGranted,
+                        rider: frame?.position)
         case .music:
             LiveMusicPage(art: ble.albumArt, status: status)
         case .workout:
@@ -743,19 +777,61 @@ private struct LiveMapPage: View {
     let value: (String) -> String
     let route: [CLLocationCoordinate2D]
     let showsUser: Bool
+    /// Where the DEVICE is, from the live stream: the map centres on it and
+    /// draws the device's own rider marker and compass. Without it (older
+    /// firmware, no fix yet) the phone's own location stands in.
+    var rider: LiveFrame.Position? = nil
     @State private var line: MKPolyline?
     @State private var camera: MapCameraCommand?
     @State private var region: MKCoordinateRegion?
 
     var body: some View {
         MapPagePreview(fields: fields, status: status, value: value,
-                       map: AnyView(EInkMapView(route: line, camera: camera,
-                                                showsUserLocation: showsUser,
-                                                onRegionChange: { region = $0 })
-                                        .allowsHitTesting(false)),
+                       map: AnyView(mapArea),
                        onZoom: zoom)
             .onAppear { update() }
             .onChange(of: route.count) { update() }
+            .onChange(of: riderKey) { follow() }
+    }
+
+    /// The map body (panel y 64...810) with the device's chrome over it:
+    /// the circled rider arrow at the middle, pointing along the course, and
+    /// the compass at its corner. The phone's map is north-up, so the
+    /// compass needle points straight up.
+    private var mapArea: some View {
+        GeometryReader { geo in
+            let k = geo.size.width / 540
+            ZStack(alignment: .topLeading) {
+                EInkMapView(route: line, camera: camera,
+                            showsUserLocation: showsUser && rider == nil,
+                            onRegionChange: { region = $0 })
+                    .allowsHitTesting(false)
+                if rider != nil {
+                    RiderMark(headingDeg: rider?.courseDeg, k: k)
+                        .position(x: geo.size.width / 2, y: geo.size.height / 2)
+                }
+                CompassMark(k: k)
+                    .position(x: (540 - 46) * k, y: 48 * k)
+            }
+        }
+    }
+
+    /// Changes when the device's reported position does, rounded so float
+    /// noise doesn't move the camera.
+    private var riderKey: String {
+        guard let r = rider else { return "" }
+        return String(format: "%.5f,%.5f", r.lat, r.lon)
+    }
+
+    private func follow() {
+        guard let r = rider else { update(); return }
+        let c = CLLocationCoordinate2D(latitude: r.lat, longitude: r.lon)
+        if region == nil {
+            camera = MapCameraCommand(target: .region(MKCoordinateRegion(
+                center: c, latitudinalMeters: 1200, longitudinalMeters: 1200)))
+        } else {
+            camera = MapCameraCommand(target: .center(c))
+        }
     }
 
     private func zoom(_ dir: Int) {
@@ -767,6 +843,16 @@ private struct LiveMapPage: View {
     }
 
     private func update() {
+        if rider != nil {
+            if route.count > 1 {
+                var c = route
+                line = MKPolyline(coordinates: &c, count: c.count)
+            } else {
+                line = nil
+            }
+            follow()
+            return
+        }
         if route.count > 1 {
             var c = route
             let l = MKPolyline(coordinates: &c, count: c.count)
@@ -863,5 +949,61 @@ private struct AlbumArtControls: View {
                 .font(BarlowFont.text(12)).foregroundStyle(Palette.muted)
         }
         .foregroundStyle(Palette.ink)
+    }
+}
+
+/// The device's rider marker (map_view.cpp drawRider): a white disc with a
+/// 3px ring and a split arrowhead along the course. No course yet: the
+/// arrow points up, as the device's does at heading 0.
+private struct RiderMark: View {
+    let headingDeg: Double?
+    let k: CGFloat
+
+    var body: some View {
+        Canvas { ctx, size in
+            let c = CGPoint(x: size.width / 2, y: size.height / 2)
+            ctx.fill(Path(ellipseIn: CGRect(x: c.x - 30 * k, y: c.y - 30 * k, width: 60 * k, height: 60 * k)),
+                     with: .color(.white))
+            ctx.stroke(Path(ellipseIn: CGRect(x: c.x - 29 * k, y: c.y - 29 * k, width: 58 * k, height: 58 * k)),
+                       with: .color(.black), lineWidth: max(1, 3 * k))
+            let rad = ((headingDeg ?? 0) - 90) * .pi / 180
+            let cs = cos(rad), sn = sin(rad)
+            func rot(_ lx: CGFloat, _ ly: CGFloat) -> CGPoint {
+                CGPoint(x: c.x + (lx * cs - ly * sn) * k, y: c.y + (lx * sn + ly * cs) * k)
+            }
+            var arrow = Path()
+            arrow.move(to: rot(24, 0))
+            arrow.addLine(to: rot(-15, -13))
+            arrow.addLine(to: rot(-8, 0))
+            arrow.addLine(to: rot(-15, 13))
+            arrow.closeSubpath()
+            ctx.fill(arrow, with: .color(.black))
+        }
+        .frame(width: 64 * k, height: 64 * k)
+        .accessibilityLabel("Device position")
+    }
+}
+
+/// The device's compass (map_view.cpp drawCompass): ringed disc, needle to
+/// north — up, on the phone's north-up map.
+private struct CompassMark: View {
+    let k: CGFloat
+
+    var body: some View {
+        Canvas { ctx, size in
+            let c = CGPoint(x: size.width / 2, y: size.height / 2)
+            ctx.fill(Path(ellipseIn: CGRect(x: c.x - 28 * k, y: c.y - 28 * k, width: 56 * k, height: 56 * k)),
+                     with: .color(.white))
+            ctx.stroke(Path(ellipseIn: CGRect(x: c.x - 27 * k, y: c.y - 27 * k, width: 54 * k, height: 54 * k)),
+                       with: .color(.black), lineWidth: max(1, 3 * k))
+            var needle = Path()
+            needle.move(to: CGPoint(x: c.x, y: c.y - 19 * k))
+            needle.addLine(to: CGPoint(x: c.x + 7 * k, y: c.y))
+            needle.addLine(to: CGPoint(x: c.x - 7 * k, y: c.y))
+            needle.closeSubpath()
+            ctx.fill(needle, with: .color(.black))
+        }
+        .frame(width: 60 * k, height: 60 * k)
+        .accessibilityLabel("North is up")
     }
 }
