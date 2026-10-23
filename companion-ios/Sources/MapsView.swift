@@ -154,6 +154,7 @@ struct MapsView: View {
                     showsTrackingButton: true,
                     bottomInset: cardInset,
                     projection: projection,
+                    colorHexes: true,
                     // Tap a hex (once an area is drawn) to skip/keep it.
                     onTap: { c in
                         guard box != nil, !drawMode else { return }
@@ -203,8 +204,8 @@ struct MapsView: View {
                 }
 
                 if let a = dragStart, let b = dragEnd {
-                    Rectangle().fill(Palette.accent.opacity(0.18))
-                        .overlay(Rectangle().stroke(Palette.accent, lineWidth: 2))
+                    Rectangle().fill(MapPalette.accent.opacity(0.18))
+                        .overlay(Rectangle().stroke(MapPalette.accent, lineWidth: 2))
                         .frame(width: abs(b.x - a.x), height: abs(b.y - a.y))
                         .position(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
                         .allowsHitTesting(false)
@@ -444,10 +445,10 @@ struct MapsView: View {
                     Button("Cancel") { cancelDownload() }
                         .font(BarlowFont.text(14, .semibold)).foregroundStyle(Palette.accent)
                 }
-                ProgressView(value: Double(sent), total: Double(total)).tint(Palette.good)
+                ProgressView(value: Double(sent), total: Double(total)).tint(MapPalette.good)
                 Text("\(sent) of \(total) sent"
                      + (building && converted.count > sent ? " · \(converted.count) built" : ""))
-                    .font(BarlowFont.text(12, .semibold)).foregroundStyle(Palette.good)
+                    .font(BarlowFont.text(12, .semibold)).foregroundStyle(MapPalette.good)
             }
         }
     }
@@ -476,9 +477,9 @@ struct MapsView: View {
                 }
                 // The same three states the map draws, in the same colours.
                 HStack(spacing: 10) {
-                    countChip(new, "new", Palette.accent)
-                    countChip(updates, updates == 1 ? "update" : "updates", Palette.update)
-                    countChip(current, "current", Palette.good)
+                    countChip(new, "new", MapPalette.accent)
+                    countChip(updates, updates == 1 ? "update" : "updates", MapPalette.update)
+                    countChip(current, "current", MapPalette.good)
                     Spacer(minLength: 0)
                 }
                 Text((poiOnly > 0 ? "\(poiOnly) need POIs" : "POIs up to date")
@@ -544,9 +545,9 @@ struct MapsView: View {
     // Compact key to the hex colours and badges, top-left under the header.
     private var legend: some View {
         VStack(alignment: .leading, spacing: 4) {
-            legendRow(Palette.good, hatched: false, "On device")
-            legendRow(Palette.update, hatched: true, "Update available")
-            if box != nil { legendRow(Palette.accent, hatched: false, "New") }
+            legendRow(MapPalette.good, hatched: false, "On device")
+            legendRow(MapPalette.update, hatched: true, "Update available")
+            if box != nil { legendRow(MapPalette.accent, hatched: false, "New") }
             legendRow(Palette.muted, hatched: false, "On this phone")
             if ble.deviceSupportsPois {
                 HStack(spacing: 6) {
@@ -994,7 +995,7 @@ private struct TileInspectorSheet: View {
                     Label(info.onDevice ? "On the device" : "Not on the device",
                           systemImage: info.onDevice ? "checkmark.circle.fill"
                                                      : "circle.dashed")
-                        .foregroundStyle(info.onDevice ? Palette.good : Palette.muted)
+                        .foregroundStyle(info.onDevice ? MapPalette.good : Palette.muted)
                 }
             }
             .navigationTitle("Tile")

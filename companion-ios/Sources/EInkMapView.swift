@@ -128,17 +128,19 @@ struct EInkMapView: UIViewRepresentable {
     /// and tracking button move up out from under the card.
     var bottomInset: CGFloat = 0
     var projection: MapProjection? = nil
+    /// Ink-on-paper: the base map muted and every colour taken out.
+    var monochrome = true
+    /// Keep the hexes in colour over the grey map — the SD-card maps screen,
+    /// whose coverage states are told apart by colour. They are drawn on a
+    /// layer above the desaturation instead of as a MapKit overlay under it.
+    var colorHexes = false
     var onTap: ((CLLocationCoordinate2D) -> Void)? = nil
     var onLongPress: ((CLLocationCoordinate2D) -> Void)? = nil
     /// Fires as the user pans/zooms, so the screen can ask the store for the
     /// areas that just came into view.
     var onRegionChange: ((MKCoordinateRegion) -> Void)? = nil
 
-    func makeUIView(context: Context) -> MKMapView {
-        let map = MKMapView()
-        map.delegate = context.coordinator
-        map.showsUserLocation = showsUserLocation
-        map.showsCompass = false
+    private func desaturate(_ map: MKMapView) {
         // Muted Apple Maps: greys instead of colour, so the black route and
         // hexes read on it like ink on the app's white paper.
         map.preferredConfiguration = MKStandardMapConfiguration(emphasisStyle: .muted)
@@ -158,6 +160,29 @@ struct EInkMapView: UIViewRepresentable {
             desaturate.topAnchor.constraint(equalTo: map.topAnchor),
             desaturate.bottomAnchor.constraint(equalTo: map.bottomAnchor),
         ])
+    }
+
+    func makeUIView(context: Context) -> MKMapView {
+        let map = MKMapView()
+        map.delegate = context.coordinator
+        map.showsUserLocation = showsUserLocation
+        map.showsCompass = false
+        if monochrome { desaturate(map) }
+        if colorHexes {
+            let canvas = HexCanvasView(map: map)
+            canvas.translatesAutoresizingMaskIntoConstraints = false
+            map.addSubview(canvas)
+            NSLayoutConstraint.activate([
+                canvas.leadingAnchor.constraint(equalTo: map.leadingAnchor),
+                canvas.trailingAnchor.constraint(equalTo: map.trailingAnchor),
+                canvas.topAnchor.constraint(equalTo: map.topAnchor),
+                canvas.bottomAnchor.constraint(equalTo: map.bottomAnchor),
+            ])
+            context.coordinator.hexCanvas = canvas
+            // The canvas follows the camera with a flat transform, which a
+            // pitched camera would break.
+            map.isPitchEnabled = false
+        }
 
         let tap = UITapGestureRecognizer(target: context.coordinator,
                                          action: #selector(Coordinator.handleTap(_:)))
@@ -286,6 +311,12 @@ struct EInkMapView: UIViewRepresentable {
                     badge: .init(update: hex.update, poi: hex.poi)))
             }
         }
+        if let canvas = c.hexCanvas {
+            canvas.setHexes(flat)
+            if let route { map.addOverlay(route, level: .aboveLabels) }
+            c.route = route
+            return
+        }
         let hexLayer = c.hexes ?? {
             let o = HexLayerOverlay()
             c.hexes = o
@@ -349,6 +380,7 @@ struct EInkMapView: UIViewRepresentable {
         var contentKey = 0                // 0 is never a real signature here
         fileprivate var hexes: HexLayerOverlay?
         fileprivate weak var hexRenderer: HexLayerRenderer?
+        fileprivate weak var hexCanvas: HexCanvasView?
         var route: MKPolyline?
         var destination: MapDestination?
         var meshNodes: [MeshNodePin] = []
@@ -371,7 +403,12 @@ struct EInkMapView: UIViewRepresentable {
             true
         }
 
+        func mapViewDidChangeVisibleRegion(_ map: MKMapView) {
+            hexCanvas?.follow()
+        }
+
         func mapView(_ map: MKMapView, regionDidChangeAnimated animated: Bool) {
+            hexCanvas?.follow(settled: true)
             onRegionChange?(map.region)
         }
 
@@ -473,7 +510,7 @@ final class HexBadgeAnnotation: NSObject, MKAnnotation {
         let img = UIGraphicsImageRenderer(size: size).image { _ in
             UIColor.white.setFill()
             UIBezierPath(ovalIn: CGRect(x: 0, y: 0, width: d, height: d)).fill()
-            UIColor(b.update ? Palette.update : Palette.good).setFill()
+            UIColor(b.update ? MapPalette.update : MapPalette.good).setFill()
             let ring = 1.5 * k
             UIBezierPath(ovalIn: CGRect(x: ring, y: ring,
                                         width: d - ring * 2, height: d - ring * 2)).fill()
@@ -646,7 +683,7 @@ private final class HexLayerRenderer: MKOverlayRenderer {
                 let step = 9.0 / Double(zoomScale)
                 // Ochre whatever the outline: only update hexes are hatched,
                 // and a selected one's outline is ink.
-                ctx.setStrokeColor(UIColor(Palette.update).withAlphaComponent(0.6).cgColor)
+                ctx.setStrokeColor(UIColor(MapPalette.update).withAlphaComponent(0.6).cgColor)
                 ctx.setLineWidth(1.4 / Double(zoomScale))
                 var x = box.minX - box.height
                 while x < box.maxX {
@@ -658,6 +695,140 @@ private final class HexLayerRenderer: MKOverlayRenderer {
                 ctx.restoreGState()
             }
         }
+    }
+}
+
+/// The hexes drawn ABOVE the map's desaturating layer, so they keep their
+/// colour on a grey map. Built once per content change as one shape layer per
+/// style, in map points about a local origin; each camera move only resets
+/// the root layer's transform (and the line widths), so panning costs no
+/// redraw. The hatching, spaced in screen points, is regenerated for the
+/// visible area when the scale has moved or the camera settles.
+private final class HexCanvasView: UIView {
+    private weak var map: MKMapView?
+    private let root = CALayer()
+    private let hatch = CAShapeLayer()
+    private let hatchMask = CAShapeLayer()
+    private var origin = MKMapPoint(x: 0, y: 0)
+    private var strokes: [(layer: CAShapeLayer, width: CGFloat)] = []
+    private var hatchedPath: CGPath?
+    private var hatchScale: CGFloat = 0
+    private var scale: CGFloat = 0
+
+    init(map: MKMapView) {
+        self.map = map
+        super.init(frame: .zero)
+        isUserInteractionEnabled = false
+        backgroundColor = .clear
+        accessibilityElementsHidden = true
+        clipsToBounds = true
+        root.anchorPoint = .zero
+        layer.addSublayer(root)
+        hatch.fillColor = nil
+        hatch.strokeColor = UIColor(MapPalette.update).withAlphaComponent(0.6).cgColor
+        hatchMask.fillColor = UIColor.black.cgColor
+        hatch.mask = hatchMask
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        follow(settled: true)
+    }
+
+    func setHexes(_ hexes: [HexLayerOverlay.Hex]) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        root.sublayers?.forEach { $0.removeFromSuperlayer() }
+        strokes = []
+        hatchedPath = nil
+        hatchScale = 0
+        if let first = hexes.first(where: { !$0.hexagon.isEmpty })?.hexagon.first {
+            origin = MKMapPoint(first)
+        }
+        // One path per style, in the order styles first appear — selection
+        // first, under the coverage, as the overlay draws them.
+        var order: [String] = []
+        var byStyle: [String: (style: HexStyle, path: CGMutablePath)] = [:]
+        let hatched = CGMutablePath()
+        for hex in hexes where hex.hexagon.count >= 3 {
+            let key = String(describing: hex.style)
+            if byStyle[key] == nil {
+                order.append(key)
+                byStyle[key] = (hex.style, CGMutablePath())
+            }
+            let path = CGMutablePath()
+            for (i, c) in hex.hexagon.enumerated() {
+                let p = MKMapPoint(c)
+                let pt = CGPoint(x: p.x - origin.x, y: p.y - origin.y)
+                if i == 0 { path.move(to: pt) } else { path.addLine(to: pt) }
+            }
+            path.closeSubpath()
+            byStyle[key]!.path.addPath(path)
+            if hex.style.hatched { hatched.addPath(path) }
+        }
+        for key in order {
+            let (style, path) = byStyle[key]!
+            let (fill, stroke) = style.colors
+            let l = CAShapeLayer()
+            l.path = path
+            l.fillColor = fill.cgColor
+            l.strokeColor = stroke.cgColor
+            l.lineJoin = .round
+            root.addSublayer(l)
+            strokes.append((l, style.lineWidth))
+        }
+        if !hatched.isEmpty {
+            hatchedPath = hatched
+            hatchMask.path = hatched
+            root.addSublayer(hatch)
+        }
+        CATransaction.commit()
+        follow(settled: true)
+    }
+
+    /// Lay the layer over the camera: local map points to view points.
+    func follow(settled: Bool = false) {
+        guard let map, bounds.width > 0 else { return }
+        let d = 10_000.0
+        let a = map.convert(origin.coordinate, toPointTo: self)
+        let b = map.convert(MKMapPoint(x: origin.x + d, y: origin.y).coordinate, toPointTo: self)
+        let c = map.convert(MKMapPoint(x: origin.x, y: origin.y + d).coordinate, toPointTo: self)
+        let t = CGAffineTransform(a: (b.x - a.x) / d, b: (b.y - a.y) / d,
+                                  c: (c.x - a.x) / d, d: (c.y - a.y) / d, tx: a.x, ty: a.y)
+        let s = hypot(t.a, t.b)
+        guard s.isFinite, s > 0 else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        root.setAffineTransform(t)
+        if s != scale {
+            scale = s
+            for st in strokes { st.layer.lineWidth = st.width / s }
+            hatch.lineWidth = 1.4 / s
+        }
+        if hatchedPath != nil, settled || hatchScale == 0 || abs(log(s / hatchScale)) > 0.25 {
+            rebuildHatch(t)
+        }
+        CATransaction.commit()
+    }
+
+    /// Diagonal lines 9pt apart across the visible part of the hatched hexes.
+    private func rebuildHatch(_ t: CGAffineTransform) {
+        guard let hatchedPath else { return }
+        hatchScale = scale
+        let visible = bounds.applying(t.inverted())
+        let box = hatchedPath.boundingBox.intersection(visible)
+        guard !box.isNull, !box.isEmpty else { hatch.path = nil; return }
+        let step = 9 / scale
+        let lines = CGMutablePath()
+        var x = (floor((box.minX - box.height) / step)) * step
+        while x < box.maxX {
+            lines.move(to: CGPoint(x: x, y: box.maxY))
+            lines.addLine(to: CGPoint(x: x + box.height, y: box.minY))
+            x += step
+        }
+        hatch.path = lines
     }
 }
 
@@ -690,16 +861,16 @@ enum HexStyle: Equatable {
         // only where they happened to cross water.
         case .downloadedOutline(let synced, let update):
             if synced && update {
-                let c = UIColor(Palette.update)
+                let c = UIColor(MapPalette.update)
                 return (c.withAlphaComponent(0.22), c)
             }
-            let c = UIColor(synced ? Palette.good : Palette.muted)
+            let c = UIColor(synced ? MapPalette.good : Palette.muted)
             return (c.withAlphaComponent(synced ? 0.30 : 0.22), c)
         // A gap in the maps, so it has to read as "look here" — the accent,
         // barely tinted: these sit under the route line, which must stay
         // the most legible thing on the screen.
         case .missingCoverage:
-            let c = UIColor(Palette.accent)
+            let c = UIColor(MapPalette.accent)
             return (c.withAlphaComponent(0.10), c.withAlphaComponent(0.7))
         // Selected hexes: the state's colour as the fill, and an INK outline
         // for every state. With the state colour as the outline too, a
@@ -707,16 +878,25 @@ enum HexStyle: Equatable {
         // unselected (ochre hatch 0.30 vs 0.22) — selecting an area you
         // already have looked like nothing happened. Ink = selected.
         case .selection(.done):
-            return (UIColor(Palette.good).withAlphaComponent(0.22), UIColor(Palette.ink))
+            return (UIColor(MapPalette.good).withAlphaComponent(0.22), UIColor(Palette.ink))
         case .selection(.excluded):
             return (UIColor(Palette.muted).withAlphaComponent(0.08),
                     UIColor(Palette.muted).withAlphaComponent(0.55))
         case .selection(.pending):
-            return (UIColor(Palette.accent).withAlphaComponent(0.22), UIColor(Palette.ink))
+            return (UIColor(MapPalette.accent).withAlphaComponent(0.22), UIColor(Palette.ink))
         case .selection(.update):
-            return (UIColor(Palette.update).withAlphaComponent(0.38), UIColor(Palette.ink))
+            return (UIColor(MapPalette.update).withAlphaComponent(0.38), UIColor(Palette.ink))
         case .selection(.current):
-            return (UIColor(Palette.good).withAlphaComponent(0.38), UIColor(Palette.ink))
+            return (UIColor(MapPalette.good).withAlphaComponent(0.38), UIColor(Palette.ink))
         }
     }
+}
+
+/// The SD-card maps screen keeps colour: its hexes tell four states apart
+/// (on the device, update due, new, phone only) and grey alone can't carry
+/// that. Everywhere else the map is desaturated, so these come out grey.
+enum MapPalette {
+    static let good = Color(hex: 0x2E7D5B)    // on the device
+    static let update = Color(hex: 0xC2851A)  // ochre — update available
+    static let accent = Color(hex: 0xF4501E)  // vermilion — new / missing
 }

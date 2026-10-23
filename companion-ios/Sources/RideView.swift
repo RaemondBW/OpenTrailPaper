@@ -14,14 +14,18 @@ struct RideView: View {
     /// for them (see DeviceLive).
     @EnvironmentObject var live: DeviceLive
     @AppStorage(UnitPref.key) private var useMiles = false
-    @State private var showDashEditor = false
+    /// Editing the layout in place, on the preview itself; `draft` is the
+    /// working copy, sent (or saved for the next connect) on Done.
+    @State private var editing = false
+    @State private var draft = DashConfig(pages: [])
+    @State private var confirmDiscard = false
     @State private var showWorkouts = false
     @State private var pageIx = 0
 
     private var connected: Bool { ble.state == .connected }
     /// The rider's layout (unsynced edit, else the device's, cached across
     /// disconnects); the device default only before it has ever been read.
-    private var config: DashConfig { ble.dashTarget ?? .deviceDefault }
+    private var config: DashConfig { editing ? draft : ble.dashTarget ?? .deviceDefault }
 
     var body: some View {
         let _ = PerfMonitor.body("Ride")
@@ -32,11 +36,16 @@ struct RideView: View {
                 // panel's own 9:16 and is sized to fit whatever height the
                 // header, warnings and page strip leave, centred across.
                 VStack(spacing: 10) {
-                    warnings
+                    if !editing { warnings }
                     pageSelector
-                    page
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    if !connected {
+                    if editing {
+                        editArea
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        page
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                    if !connected && !editing {
                         PrimaryButton(title: primaryTitle,
                                       systemImage: "antenna.radiowaves.left.and.right") {
                             ble.connectTapped()
@@ -48,7 +57,11 @@ struct RideView: View {
             }
             .background(Palette.paper.ignoresSafeArea())
             .navigationBarHidden(true)
-            .sheet(isPresented: $showDashEditor) { DashboardEditorView() }
+            .confirmationDialog("Discard your layout changes?", isPresented: $confirmDiscard,
+                                titleVisibility: .visible) {
+                Button("Discard changes", role: .destructive) { endEditing(save: false) }
+                Button("Keep editing", role: .cancel) {}
+            }
             .sheet(isPresented: $showWorkouts) { WorkoutsView() }
             .onAppear {
                 ble.liveViewer(true)   // stream while this tab is up
@@ -63,12 +76,12 @@ struct RideView: View {
                 // the dashboard preview can be captured and compared against
                 // the panel render from tools/preview.
                 if ProcessInfo.processInfo.arguments.contains("-demo-dash") {
-                    showDashEditor = true
+                    beginEditing()
                 }
             }
             .onDisappear { ble.liveViewer(false) }
             .onChange(of: ble.state) { _, st in if st == .connected { ble.refreshSensors() } }
-            .onChange(of: config.pages.count) { _, n in if pageIx >= n { pageIx = 0 } }
+            .onChange(of: config.pages.count) { _, n in if pageIx > n { pageIx = 0 } }
         }
     }
 
@@ -89,16 +102,36 @@ struct RideView: View {
             .accessibilityElement(children: .combine)
         } trailing: {
             HStack(spacing: 8) {
-                Button { showWorkouts = true } label: {
-                    BlockButtonLabel(title: "Workouts", filled: false)
+                if editing {
+                    Button {
+                        if draft == ble.dashTarget { endEditing(save: false) } else { confirmDiscard = true }
+                    } label: {
+                        BlockButtonLabel(title: "Cancel", filled: false)
+                    }
+                    .buttonStyle(.plain)
+                    Button { endEditing(save: true) } label: {
+                        BlockButtonLabel(title: draft == ble.dashTarget ? "Done" : connected ? "Send" : "Save",
+                                         systemImage: "checkmark")
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityHint(connected ? "Sends the layout to the device"
+                                       : "Keeps the layout and sends it on the next connect")
+                } else {
+                    Button { showWorkouts = true } label: {
+                        BlockButtonLabel(title: "Workouts", filled: false)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityHint("Load or build a structured workout")
+                    Button { beginEditing() } label: {
+                        BlockButtonLabel(title: "Edit", systemImage: "pencil")
+                    }
+                    .buttonStyle(.plain)
+                    // The layout is read from the device: until it has been,
+                    // an invented default would overwrite the rider's real one.
+                    .disabled(ble.dashTarget == nil)
+                    .opacity(ble.dashTarget == nil ? 0.4 : 1)
+                    .accessibilityLabel("Edit dashboard")
                 }
-                .buttonStyle(.plain)
-                .accessibilityHint("Load or build a structured workout")
-                Button { showDashEditor = true } label: {
-                    BlockButtonLabel(title: "Edit", systemImage: "pencil")
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Edit dashboard")
             }
             .fixedSize()
         }
@@ -106,6 +139,9 @@ struct RideView: View {
 
     /// "CONNECTED · 76% · GPS 9 SATS", or the connection state.
     private var statusLine: String {
+        if editing {
+            return draft == ble.dashTarget ? "EDITING LAYOUT" : "EDITING · UNSAVED CHANGES"
+        }
         guard connected else { return connectLabel.uppercased() }
         let s = ble.status
         var parts = ["CONNECTED", "\(s.battery)%"]
@@ -145,27 +181,41 @@ struct RideView: View {
 
     private var pageSelector: some View {
         let pages = config.pages
+        let sel = min(pageIx, pages.count)
         return HStack(spacing: 0) {
             ForEach(Array(pages.enumerated()), id: \.element.id) { i, p in
-                let on = i == min(pageIx, pages.count - 1)
-                Button { pageIx = i } label: {
+                selectorCell(on: i == sel, divider: i > 0) {
                     Text(pageName(i, in: pages))
                         .font(BarlowFont.text(12, .bold)).tracking(2)
                         .lineLimit(1).minimumScaleFactor(0.6)
-                        .frame(maxWidth: .infinity, minHeight: 34)
-                        .foregroundStyle(on ? Palette.paper : Palette.ink)
-                        .background(on ? Palette.ink : Palette.paper)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .overlay(alignment: .leading) {
-                    if i > 0 { Rectangle().fill(Palette.ink).frame(width: Rule.border) }
-                }
+                } tap: { withAnimation { pageIx = i } }
+                .frame(maxWidth: .infinity)
                 .accessibilityLabel("Dashboard page \(pageName(i, in: pages).capitalized)")
-                .accessibilityAddTraits(on ? [.isSelected, .isButton] : .isButton)
             }
+            // The "add new" page that ends the swipe, as a narrow + cell.
+            selectorCell(on: sel == pages.count, divider: !pages.isEmpty) {
+                Image(systemName: "plus").font(.system(size: 14, weight: .bold))
+            } tap: { withAnimation { pageIx = pages.count } }
+            .frame(width: 44)
+            .accessibilityLabel("Add a page")
         }
         .einkBorder()
+    }
+
+    private func selectorCell<L: View>(on: Bool, divider: Bool, @ViewBuilder label: () -> L,
+                                       tap: @escaping () -> Void) -> some View {
+        Button(action: tap) {
+            label()
+                .frame(maxWidth: .infinity, minHeight: 34)
+                .foregroundStyle(on ? Palette.paper : Palette.ink)
+                .background(on ? Palette.ink : Palette.paper)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .overlay(alignment: .leading) {
+            if divider { Rectangle().fill(Palette.ink).frame(width: Rule.border) }
+        }
+        .accessibilityAddTraits(on ? [.isSelected, .isButton] : .isButton)
     }
 
     /// "PAGE 1" counts field pages only, as the device's page dots and the
@@ -182,20 +232,216 @@ struct RideView: View {
         }
     }
 
-    /// The selected page as the device draws it, live: a scaled copy of the
-    /// panel (540 x 960) fitted into the space the header leaves.
+    /// The pages as the device draws them, live: scaled copies of the panel
+    /// (540 x 960) fitted into the space the header leaves, swiped between
+    /// like the device's own page cycle, then one last "add new" page.
     private var page: some View {
         let pages = config.pages
-        let p = pages.isEmpty ? nil : pages[min(pageIx, pages.count - 1)]
-        return TimelineView(.everyMinute) { ctx in
-            devicePage(p, now: ctx.date)
-                .frame(maxWidth: .infinity)
-                .aspectRatio(540 / 960, contentMode: .fit)
-                .overlay(Rectangle().strokeBorder(Palette.ink, lineWidth: Rule.border))
+        return TabView(selection: Binding(get: { min(pageIx, pages.count) },
+                                          set: { pageIx = $0 })) {
+            ForEach(Array(pages.enumerated()), id: \.element.id) { i, p in
+                TimelineView(.everyMinute) { ctx in
+                    panelFrame { devicePage(p, now: ctx.date) }
+                }
+                .tag(i)
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("Device page \(pageName(i, in: pages).capitalized)")
+            }
+            panelFrame { addNewPage }.tag(pages.count)
         }
+        .tabViewStyle(.page(indexDisplayMode: .never))
+    }
+
+    private func panelFrame<C: View>(@ViewBuilder _ content: () -> C) -> some View {
+        content()
+            .frame(maxWidth: .infinity)
+            .aspectRatio(540 / 960, contentMode: .fit)
+            .overlay(Rectangle().strokeBorder(Palette.ink, lineWidth: Rule.border))
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// The last page: add a page to the device's cycle, which then syncs
+    /// (now, or on the next connect) like an edit made in the editor.
+    @ViewBuilder private var addNewPage: some View {
+        let c = config
+        let full = c.contentPages >= DashConfig.maxPages
+        VStack(spacing: 14) {
+            Image(systemName: "plus")
+                .font(.system(size: 44, weight: .bold))
+            Text("ADD NEW")
+                .font(BarlowFont.text(22, .bold)).tracking(3)
+            Group {
+                if ble.dashTarget == nil {
+                    Text("Connect once to load your device's pages, then add more here.")
+                } else if full {
+                    Text("The device holds \(DashConfig.maxPages) pages besides the map. Remove one in Edit to add another.")
+                } else {
+                    Menu {
+                        Button { addPage(.newData) } label: { Label("Data page", systemImage: "rectangle.3.group") }
+                        if !c.hasMusicPage {
+                            Button { addPage(.music) } label: { Label("Music controls", systemImage: "music.note") }
+                        }
+                        if !c.hasWorkoutPage {
+                            Button { addPage(.workout) } label: { Label("Workout", systemImage: "figure.outdoor.cycle") }
+                        }
+                        if !c.hasStopwatchPage {
+                            Button { addPage(.stopwatch) } label: { Label("Stopwatch", systemImage: "stopwatch") }
+                        }
+                    } label: {
+                        BlockButtonLabel(title: "Choose a page", systemImage: "plus")
+                    }
+                }
+            }
+            .font(BarlowFont.text(13))
+            .multilineTextAlignment(.center)
+            .padding(.horizontal, 24)
+        }
+        .foregroundStyle(Palette.ink)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Palette.paper)
+        .overlay(Rectangle().inset(by: 14)
+            .strokeBorder(Palette.ink, style: StrokeStyle(lineWidth: 2, dash: [8, 6])))
         .accessibilityElement(children: .contain)
-        .accessibilityLabel(pages.isEmpty ? "Device page"
-                            : "Device page \(pageName(min(pageIx, pages.count - 1), in: pages).capitalized)")
+        .accessibilityLabel("Add a new page")
+    }
+
+    private func addPage(_ p: DashConfig.Page) {
+        if editing {
+            draft.pages.append(p)
+            withAnimation { pageIx = draft.pages.count - 1 }
+            return
+        }
+        guard var c = ble.dashTarget else { return }
+        c.pages.append(p)
+        ble.saveDashConfig(c)
+        withAnimation { pageIx = c.pages.count - 1 }
+    }
+
+    // MARK: Editing in place
+
+    private func beginEditing() {
+        guard let c = ble.dashTarget else { return }
+        draft = c
+        withAnimation(.easeOut(duration: 0.15)) { editing = true }
+    }
+
+    private func endEditing(save: Bool) {
+        if save, draft != ble.dashTarget, !draft.pages.isEmpty { ble.saveDashConfig(draft) }
+        withAnimation(.easeOut(duration: 0.15)) { editing = false }
+        if pageIx > config.pages.count { pageIx = 0 }
+    }
+
+    /// The selected page, editable where it stands. No swipe while editing:
+    /// the cells take the finger for dragging, so the strip above changes
+    /// page instead.
+    @ViewBuilder private var editArea: some View {
+        let pages = draft.pages
+        let i = min(pageIx, pages.count)
+        if i == pages.count {
+            panelFrame { addNewPage }
+        } else {
+            VStack(spacing: 10) {
+                pageActions(i)
+                switch pages[i].kind {
+                case .fields:
+                    TimelineView(.everyMinute) { ctx in
+                        PageLayoutEditor(layout: $draft.pages[i].layout, status: panelStatus(ctx.date))
+                    }
+                    // A fresh editor (and selection) per page.
+                    .id(pages[i].id)
+                default:
+                    TimelineView(.everyMinute) { ctx in
+                        panelFrame { devicePage(pages[i], now: ctx.date) }
+                    }
+                    pageSettings(pages[i])
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    /// Move the page through the Home-key cycle, or take it out.
+    private func pageActions(_ i: Int) -> some View {
+        let pages = draft.pages
+        let removable = !pages[i].isMap && draft.contentPages > 1
+        return HStack(spacing: 8) {
+            Button { movePage(i, by: -1) } label: {
+                BlockButtonLabel(title: "Move", systemImage: "chevron.left", filled: false, expand: true)
+            }
+            .disabled(i == 0).opacity(i == 0 ? 0.4 : 1)
+            .accessibilityLabel("Move page earlier")
+            Button { movePage(i, by: 1) } label: {
+                BlockButtonLabel(title: "Move", systemImage: "chevron.right", filled: false, expand: true)
+            }
+            .disabled(i == pages.count - 1).opacity(i == pages.count - 1 ? 0.4 : 1)
+            .accessibilityLabel("Move page later")
+            Button {
+                withAnimation {
+                    draft.pages.remove(at: i)
+                    pageIx = min(i, draft.pages.count - 1)
+                }
+            } label: {
+                BlockButtonLabel(title: "Remove", systemImage: "trash", filled: false, expand: true)
+            }
+            .disabled(!removable).opacity(removable ? 1 : 0.4)
+            .accessibilityHint(pages[i].isMap ? "The map page can't be removed" : "")
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func movePage(_ i: Int, by d: Int) {
+        let j = i + d
+        guard draft.pages.indices.contains(j) else { return }
+        withAnimation {
+            draft.pages.swapAt(i, j)
+            pageIx = j
+        }
+    }
+
+    /// What there is to set on a page that isn't laid out by hand.
+    @ViewBuilder private func pageSettings(_ p: DashConfig.Page) -> some View {
+        switch p.kind {
+        case .map:
+            Card(padding: 14) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Data strip").trackedLabel()
+                    HStack(spacing: 8) {
+                        ForEach(0..<3, id: \.self) { slot in
+                            Menu {
+                                Picker(["Left cell", "Middle cell", "Right cell"][slot],
+                                       selection: $draft.mapFields[slot]) {
+                                    ForEach(DashField.all.filter { $0.id != "radar" }) { f in
+                                        Text(f.label).tag(f.id)
+                                    }
+                                }
+                            } label: {
+                                BlockButtonLabel(title: DashField.named(draft.mapFields[slot])?.label ?? "--",
+                                                 filled: false, expand: true)
+                            }
+                            .accessibilityLabel(["Left cell", "Middle cell", "Right cell"][slot])
+                        }
+                    }
+                    Text("The three cells under the map. While navigating, Route left takes the right cell unless one already shows it.")
+                        .font(BarlowFont.text(12.5)).foregroundStyle(Palette.muted)
+                }
+            }
+        case .music:
+            Card(padding: 14) { AlbumArtControls(art: ble.albumArt) }
+        case .workout:
+            Card(padding: 14) {
+                Text("Load a workout with Workouts above, or drop .erg/.mrc files in /workouts on the SD card.")
+                    .font(BarlowFont.text(13)).foregroundStyle(Palette.muted)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        case .stopwatch:
+            Card(padding: 14) {
+                Text("A clock of its own, separate from the ride timer, with START/PAUSE, RESET and LAP on the panel. Needs device firmware v1.23 or newer.")
+                    .font(BarlowFont.text(13)).foregroundStyle(Palette.muted)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        case .fields:
+            EmptyView()
+        }
     }
 
     @ViewBuilder private func devicePage(_ p: DashConfig.Page?, now: Date) -> some View {
@@ -581,5 +827,41 @@ private struct LiveMusicPage: View {
                     ArtDither.panelImage(gray: c.gray, side: side)
                 }.value
             }
+    }
+}
+
+private extension DashConfig.Page {
+    /// A new data page starts from the device's default fields, not empty,
+    /// so it is a usable page the moment it lands; Edit reworks it.
+    static var newData: DashConfig.Page { DashConfig.Page(kind: .fields, layout: .deviceDefault) }
+}
+
+/// Where the MUSIC page's cover comes from (the editor's album-art settings).
+private struct AlbumArtControls: View {
+    @ObservedObject var art: AlbumArtFeeder
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Album art").trackedLabel()
+            switch art.libraryAccess {
+            case .granted:
+                Text("Covers from the Music app are on")
+                    .font(BarlowFont.text(13)).foregroundStyle(Palette.muted)
+            case .notDetermined:
+                Button("Allow covers from the Music app") { art.requestLibraryAccess() }
+                    .font(BarlowFont.text(14, .semibold))
+            case .denied:
+                Button("Music app covers: allow in Settings") { openAppSettings() }
+                    .font(BarlowFont.text(14, .semibold))
+            case .unavailable:
+                Text("Music app covers are blocked on this phone.")
+                    .font(BarlowFont.text(13)).foregroundStyle(Palette.muted)
+            }
+            Toggle("Look up album art online", isOn: $art.onlineLookup)
+                .font(BarlowFont.text(14, .semibold))
+            Text("For Spotify and other players, finds the cover in Apple's iTunes catalogue — this sends the playing song's title, artist and album to Apple.")
+                .font(BarlowFont.text(12)).foregroundStyle(Palette.muted)
+        }
+        .foregroundStyle(Palette.ink)
     }
 }
