@@ -252,11 +252,15 @@ class DashCb : public NimBLECharacteristicCallbacks {
 //   [0x11] art data  : raw bytes, appended in order
 //   [0x12] art end   : device dithers/unpacks + repaints (server task)
 //   [0x02] clear     : no player / playback ended
+//   [0x04] remote    : [u8 MediaCmd] — the app's MUSIC page buttons, sent on
+//                      to iOS over AMS exactly like the device's own taps (an
+//                      app can only drive the Music app; AMS drives any player).
 //   [0x03] caps?     : device notifies [0xA1][u8 caps]. Older firmware never
 //                      answers, which tells the app to stay on 8-bit art.
 // Device -> phone (notify): [0xA0][MediaCmd] — play/pause, next, prev.
 //                           [0xA1][caps]    — bit0: accepts 0x13 tone art;
-//                                             bit1: forwards AMS tracks (0xA2).
+//                                             bit1: forwards AMS tracks (0xA2);
+//                                             bit2: takes [0x04] remote commands.
 //                           [0xA2][title\0artist\0album\0] — the track AMS
 //                              reports, each field cut to 56 bytes. Sent only
 //                              to an app that asked [0x03] on this link (so an
@@ -271,6 +275,7 @@ volatile bool mediaCapsPending = false;  // caps asked -> notify from the task
 volatile bool mediaTrackFeed = false;    // this link's app asked caps -> 0xA2
 constexpr uint8_t MEDIA_CAP_TONE_ART = 0x01;
 constexpr uint8_t MEDIA_CAP_AMS_TRACK = 0x02;
+constexpr uint8_t MEDIA_CAP_REMOTE = 0x04;
 constexpr size_t MEDIA_TRACK_FIELD_MAX = 56;   // 3 fields fit a 185 MTU notify
 
 // Copy at most `cap` bytes of `src` without splitting a UTF-8 sequence, plus
@@ -338,6 +343,11 @@ class MediaCb : public NimBLECharacteristicCallbacks {
             break;
         case 0x03:
             mediaCapsPending = true;
+            break;
+        case 0x04:
+            // Queued for the server task, the same hand-off the UI task's
+            // taps use: AMS writes don't belong in a GATT callback.
+            if (n >= 2 && p[1] >= MC_TOGGLE && p[1] <= MC_VOL_DOWN) mediaCmdPending = p[1];
             break;
         }
     }
@@ -2765,7 +2775,8 @@ void task(void*) {
         if (mediaCapsPending) {
             mediaCapsPending = false;
             if (mediaChr && phoneConnected) {
-                uint8_t pkt[2] = {0xA1, MEDIA_CAP_TONE_ART | MEDIA_CAP_AMS_TRACK};
+                uint8_t pkt[2] = {0xA1, MEDIA_CAP_TONE_ART | MEDIA_CAP_AMS_TRACK |
+                                        MEDIA_CAP_REMOTE};
                 mediaChr->setValue(pkt, 2);
                 mediaChr->notify();
                 mediaTrackFeed = true;

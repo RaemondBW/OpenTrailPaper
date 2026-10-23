@@ -463,6 +463,7 @@ private struct LiveMapPage: View {
 /// The MUSIC page, live: the track the device reported over AMS and the cover
 /// the app sent it, dithered to the panel's tones.
 private struct LiveMusicPage: View {
+    @EnvironmentObject var ble: BLEManager
     @ObservedObject var art: AlbumArtFeeder
     let status: PanelStatus
     @State private var image: UIImage?
@@ -476,21 +477,28 @@ private struct LiveMusicPage: View {
         // an app can only drive the Music app's own player, so the buttons
         // are live while the Music app is the one playing.
         let musicApp = player.nowPlayingItem != nil
+        // Firmware that relays remote commands over AMS drives any player;
+        // older firmware leaves the app only the Music app's own player.
+        let remote = ble.mediaRemote
         MusicPreview(status: status, track: track,
                      art: track != nil && art.cover?.key == track?.key ? image : nil,
                      playing: musicApp ? player.playbackState == .playing : track != nil,
                      progress: nil,
                      onTransport: { b in
-                         switch b {
-                         case 0: player.skipToPreviousItem()
-                         case 1: player.playbackState == .playing ? player.pause() : player.play()
-                         default: player.skipToNextItem()
+                         if remote {
+                             ble.mediaCommand(b == 0 ? 3 : b == 1 ? 1 : 2)
+                         } else {
+                             switch b {
+                             case 0: player.skipToPreviousItem()
+                             case 1: player.playbackState == .playing ? player.pause() : player.play()
+                             default: player.skipToNextItem()
+                             }
                          }
                          tick += 1
                      },
-                     transportEnabled: musicApp,
-                     transportHint: musicApp ? nil
-                        : "Controls the Music app only; other players are controlled on the device")
+                     transportEnabled: remote || musicApp,
+                     transportHint: remote || musicApp ? nil
+                        : "Update the device's firmware to control other players from here")
             .id(tick)
             .task(id: art.cover?.key) {
                 guard let c = art.cover else { image = nil; return }

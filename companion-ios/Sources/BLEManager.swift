@@ -610,6 +610,9 @@ final class BLEManager: NSObject, ObservableObject {
     /// firmware that predates it never answers, so this stays false and art
     /// goes as 8-bit grayscale.
     private var mediaToneArt = false
+    /// The device takes [0x04] remote commands and sends them on over AMS,
+    /// so the app's MUSIC buttons reach whatever app is playing.
+    @Published private(set) var mediaRemote = false
     /// A media notification arrived on this link: notifications are on even
     /// if the state callback never said so. iOS keeps the link up for AMS
     /// when the app is relaunched, and the callback has been seen missing.
@@ -3229,7 +3232,7 @@ extension BLEManager: CBCentralManagerDelegate {
             workoutPageAwaitingList = ""; workoutPageGaveUp = ""
             // Pending edits stay cached; the next connect reads and merges.
             resetSyncLinkState()
-            mediaChar = nil; mediaToneArt = false   // the next device may be older firmware
+            mediaChar = nil; mediaToneArt = false; mediaRemote = false   // the next device may be older firmware
             mediaNotifySeen = false; mediaCapsAsked = false; mediaSubscribeRetries = 0
             mediaAcks = []; artPumping = false; artPayload = Data()
             albumArt.linkDown()
@@ -3590,10 +3593,18 @@ extension BLEManager: CBPeripheralDelegate {
         switch d[d.startIndex] {
         case 0xA1:
             mediaToneArt = d[d.startIndex + 1] & 0x01 != 0
+            mediaRemote = d[d.startIndex + 1] & 0x04 != 0
             artLog.info("device caps 0x\(String(d[d.startIndex + 1], radix: 16), privacy: .public)")
         case 0xA2: if let t = MediaTrack(packet: d) { albumArt.deviceTrackChanged(t) }
         default: break   // 0xA0 transport commands: the device uses AMS on iPhone
         }
+    }
+
+    /// Play/pause, next or previous for whatever is playing: the device sends
+    /// it to iOS over AMS (media_state.h MediaCmd: 1 toggle, 2 next, 3 prev).
+    func mediaCommand(_ cmd: UInt8) {
+        guard mediaRemote else { return }
+        writeMedia(Data([0x04, cmd]), ack: .other)
     }
 
     private func writeMedia(_ pkt: Data, ack: MediaAck) {
