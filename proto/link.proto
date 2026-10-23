@@ -1,0 +1,878 @@
+// OpenTrailPaper phone <-> device link: one protobuf message channel over BLE.
+//
+// Design, framing and flows: docs/ble-link.md. Generated code:
+//   firmware  src/proto/link.pb.{c,h}           (nanopb, tools/gen_proto.sh)
+//   iOS       companion-ios/Sources/Link.pb.swift (swift-protobuf, tools/gen_proto.sh)
+//   Android   generated at build time (protobuf-lite gradle plugin)
+//
+// Evolution rules (the whole point of this file):
+//   - Never renumber or reuse a field number or enum value; mark removed ones `reserved`.
+//   - New features: add a Feature value, new messages/fields, and gate on the peer's
+//     Hello.features. Unknown fields and unknown oneof members are skipped by every side.
+//   - Keep nanopb limits (link.options) in step when adding strings/bytes/repeated fields.
+//   - Bump PROTO_VERSION only for a change older peers cannot ignore (should be never).
+
+syntax = "proto3";
+
+package otp.link;
+
+option java_package = "com.raemond.opentrailpaper.link.proto";
+option java_multiple_files = true;
+option swift_prefix = "Link";
+
+enum ProtoVersion {
+  PROTO_VERSION_UNSPECIFIED = 0;
+  PROTO_VERSION_CURRENT = 1;
+}
+
+// What a side can do. The device lists its features in DeviceHello; the phone
+// lists the ones it handles in Hello. A request for a feature the peer did not
+// list gets Result{RESULT_UNSUPPORTED} (or is never sent).
+enum Feature {
+  FEATURE_NONE = 0;
+  FEATURE_SETTINGS = 1;
+  FEATURE_WHEEL_SIZE = 2;          // Settings.wheel_mm
+  FEATURE_LIVE = 3;                // LiveSubscribe / LiveFrame
+  FEATURE_STOPWATCH = 4;           // StopwatchCommand
+  FEATURE_STOPWATCH_LAPS = 5;      // StopwatchState.recent
+  FEATURE_ROUTES = 6;              // ROUTE upload, LIST_ROUTES, delete
+  FEATURE_NAVIGATION = 7;          // RouteManeuvers / RouteFinish
+  FEATURE_PHONE_LOCATION = 8;      // PhoneLocation
+  FEATURE_RIDES = 9;               // LIST_RIDES, SOURCE_RIDE downloads, delete
+  FEATURE_LOGS = 10;               // LIST_LOGS, SOURCE_LOG / SOURCE_LOG_TODAY
+  FEATURE_FIRMWARE_UPDATE = 11;    // TARGET_FIRMWARE
+  FEATURE_SENSORS = 12;            // SensorCommand / SensorList
+  FEATURE_MAPS = 13;               // TARGET_MAP, LIST_MAPS
+  FEATURE_MAP_TILES = 14;          // TARGET_MAP_TILE, LIST_MAP_TILES
+  FEATURE_MAP_TILE_VERSIONS = 15;  // UploadBegin.tile_version, TileEntry.version
+  FEATURE_MAP_POI = 16;            // TARGET_MAP_POI, LIST_MAP_POIS
+  FEATURE_MAP_LAYERS = 17;         // MapLayers
+  FEATURE_DASH = 18;               // DashConfig
+  FEATURE_MESH = 19;               // MeshCommand and Mesh* replies
+  FEATURE_MESH_RADIO_CONFIG = 20;  // region / tx power / slot
+  FEATURE_MEDIA_META = 21;         // MediaMeta / MediaClear from the phone
+  FEATURE_MEDIA_ART = 22;          // TARGET_ALBUM_ART, ART_GRAY8
+  FEATURE_MEDIA_ART_TONE = 23;     // ART_TONE5
+  FEATURE_MEDIA_TRACK = 24;        // MediaTrack (device forwards the AMS track)
+  FEATURE_MEDIA_REMOTE = 25;       // MediaCommand phone -> device (relayed over AMS)
+  FEATURE_WORKOUTS = 26;           // TARGET_WORKOUT, LIST_WORKOUTS, WorkoutCommand
+  FEATURE_AGNSS = 27;              // TARGET_AGNSS, AgnssInfoRequest
+  FEATURE_UNPAIR = 28;             // Unpair
+  // Phone-side features (listed in Hello):
+  FEATURE_MEDIA_COMMAND_HANDLER = 64;  // phone acts on device MediaCommand pushes (no AMS)
+}
+
+enum Platform {
+  PLATFORM_UNKNOWN = 0;
+  PLATFORM_IOS = 1;
+  PLATFORM_ANDROID = 2;
+}
+
+enum ResultCode {
+  RESULT_OK = 0;
+  RESULT_UNSUPPORTED = 1;   // unknown or unlisted request
+  RESULT_BAD_REQUEST = 2;   // malformed / out of range
+  RESULT_BUSY = 3;          // another transfer or request of this kind is running
+  RESULT_RECORDING = 4;     // refused while a ride is recording
+  RESULT_NO_SD = 5;         // card missing, or the computer has it as a USB drive
+  RESULT_NOT_FOUND = 6;
+  RESULT_NO_MEMORY = 7;
+  RESULT_IO_ERROR = 8;      // SD read/write failed
+  RESULT_PARSE_ERROR = 9;   // content rejected (bad GPX, bad map file, bad layout...)
+  RESULT_CRC_MISMATCH = 10;
+  RESULT_TOO_LARGE = 11;
+  RESULT_REFUSED = 12;      // e.g. mesh radio off / outbox full
+  RESULT_TIMEOUT = 13;
+  RESULT_CANCELLED = 14;
+}
+
+// ---------------------------------------------------------------------------
+// Envelopes. Every BLE message carries exactly one of these (see framing in
+// docs/ble-link.md). `req`: the phone numbers its requests (non-zero); the
+// device echoes that number on every message that answers it, and uses 0 for
+// unsolicited pushes. A request that has no specific answer message gets a
+// Result.
+
+message PhoneMsg {
+  uint32 req = 1;
+  oneof body {
+    Hello hello = 2;
+    Unpair unpair = 3;
+
+    GetSettings get_settings = 10;
+    Settings set_settings = 11;          // only the fields present are changed
+
+    LiveSubscribe live_subscribe = 15;
+    StopwatchCommand stopwatch = 16;
+
+    UploadBegin upload_begin = 20;
+    Chunk chunk = 21;
+    UploadEnd upload_end = 22;
+    DownloadRequest download = 23;
+    TransferAck transfer_ack = 24;
+    TransferCancel transfer_cancel = 25;
+
+    ListRequest list = 30;
+    DeleteRequest delete = 31;
+
+    PhoneLocation location = 40;
+    RouteManeuvers maneuvers = 41;
+    RouteFinish route_finish = 42;
+
+    SensorCommand sensors = 50;
+
+    GetMapLayers get_map_layers = 60;
+    MapLayers set_map_layers = 61;
+
+    GetDash get_dash = 70;
+    DashConfig set_dash = 71;
+
+    MediaMeta media_meta = 80;
+    MediaClear media_clear = 81;
+    MediaCommand media_command = 82;
+
+    WorkoutCommand workout = 90;
+
+    MeshCommand mesh = 100;
+
+    AgnssInfoRequest agnss_info = 120;
+  }
+}
+
+message DeviceMsg {
+  uint32 req = 1;
+  oneof body {
+    DeviceHello hello = 2;
+    Result result = 3;
+
+    Settings settings = 10;              // reply to GetSettings / SetSettings, and pushed on a device-side edit
+
+    LiveFrame live = 15;
+
+    UploadReady upload_ready = 20;
+    Chunk chunk = 21;
+    DownloadBegin download_begin = 23;
+    TransferAck transfer_ack = 24;
+    TransferCancel transfer_cancel = 25;
+    TransferDone transfer_done = 26;
+
+    FileList file_list = 30;
+    MapCoverageList map_coverage = 31;
+    TileList tile_list = 32;
+
+    SensorList sensor_list = 50;
+
+    MapLayers map_layers = 60;           // reply to Get/Set, and pushed on a device-side edit
+
+    DashConfig dash = 70;                // reply to Get/Set (the applied layout), and pushed on a device-side edit
+
+    MediaTrack media_track = 80;         // AMS track, after Hello and on every change
+    MediaCommand media_command = 82;     // device button pressed and no AMS: phone should act
+
+    WorkoutStatus workout_status = 90;   // reply to STATUS, pushed on change and 1 Hz while running
+
+    MeshState mesh_state = 100;
+    MeshHistory mesh_history = 101;
+    MeshNodes mesh_nodes = 102;
+    MeshStats mesh_stats = 103;
+    MeshPresets mesh_presets = 104;
+    MeshChannels mesh_channels = 105;
+    MeshRegions mesh_regions = 106;
+    MeshChanged mesh_changed = 107;      // something changed: ask again
+    MeshQueued mesh_queued = 108;        // reply to a send
+
+    AgnssInfo agnss_info = 120;
+  }
+}
+
+message Result {
+  ResultCode code = 1;
+  string detail = 2;   // human-readable, optional
+}
+
+// ---------------------------------------------------------------------------
+// Session
+
+// First message on every connection, sent by the phone once the TX
+// characteristic notifies. The device answers with DeviceHello (same req).
+// Until then the device sends nothing on the link.
+message Hello {
+  uint32 proto = 1;               // PROTO_VERSION_CURRENT
+  Platform platform = 2;
+  string app_version = 3;         // e.g. "2.4 (61)"
+  repeated Feature features = 4;  // phone-side features
+}
+
+message DeviceHello {
+  uint32 proto = 1;
+  string firmware = 2;            // FIRMWARE_VERSION, e.g. "v1.23"
+  repeated Feature features = 3;
+  uint32 max_message = 4;         // largest message the device accepts (bytes, after reassembly)
+  uint32 mtu = 5;                 // negotiated ATT MTU as the device sees it
+  uint32 dash_max_pages = 6;      // content pages, not counting the map page
+  uint32 dash_max_text = 7;       // DashConfig.text limit in bytes
+  uint32 route_max_bytes = 8;     // GPX upload limit
+  uint32 workout_max_bytes = 9;
+  uint32 max_maneuvers = 10;
+}
+
+// Phone-initiated unpair (the app's Unpair button). No reply: the device
+// deletes its phone bond and disconnects.
+message Unpair {}
+
+// ---------------------------------------------------------------------------
+// Settings
+
+message GetSettings {}
+
+message Settings {
+  optional int32 ftp_w = 1;       // 50..500
+  optional sint32 tz_min = 2;     // minutes from UTC, -720..840
+  optional bool use_miles = 3;
+  optional uint32 backlight = 4;  // 0..3
+  optional bool clock_24h = 5;
+  optional bool usb_drive = 6;
+  optional uint32 wheel_mm = 7;   // 800..3500 (FEATURE_WHEEL_SIZE)
+}
+
+// ---------------------------------------------------------------------------
+// Live state (replaces STATUS and the LIVE service)
+
+enum LiveTopic {
+  LIVE_TOPIC_NONE = 0;
+  LIVE_TOPIC_RIDE = 1;        // on by default after Hello (the old 1 Hz STATUS)
+  LIVE_TOPIC_STOPWATCH = 2;
+  LIVE_TOPIC_VIEW = 3;
+  LIVE_TOPIC_POSITION = 4;
+  LIVE_TOPIC_RADAR = 5;
+  LIVE_TOPIC_MUSIC = 6;
+}
+
+// Replaces the set of topics the device streams. Lasts until the next
+// LiveSubscribe or the end of the connection (no keepalive). An empty list
+// stops LiveFrames entirely.
+message LiveSubscribe {
+  repeated LiveTopic topics = 1;
+}
+
+// Sent 1 Hz and promptly on a change to any subscribed part. Only subscribed
+// parts are filled; a part may also be absent when the device has nothing
+// (e.g. no position ever, no radar connected).
+message LiveFrame {
+  uint32 seq = 1;
+  RideState ride = 2;
+  StopwatchState stopwatch = 3;
+  ViewState view = 4;
+  Position position = 5;
+  Radar radar = 6;
+  MusicState music = 7;
+}
+
+message RideState {
+  bool fix = 1;
+  bool recording = 2;
+  bool auto_paused = 3;
+  bool route_active = 4;
+  bool charging = 5;
+  uint32 battery_pct = 6;
+  uint32 sats = 7;
+  optional uint32 speed_dkmh = 8;     // 0.1 km/h
+  bool speed_from_wheel = 9;
+  optional uint32 power_w = 10;       // absent = no live power reading
+  optional uint32 power3s_w = 11;
+  optional uint32 hr_bpm = 12;
+  optional uint32 cadence_rpm = 13;
+  uint32 distance_m = 14;
+  uint32 elapsed_s = 15;
+  uint32 moving_s = 16;
+  uint32 climb_m = 17;
+  optional sint32 grade_dpct = 18;    // 0.1 %
+  optional sint32 altitude_m = 19;
+  bool altitude_baro = 20;
+  optional uint32 route_left_m = 21;
+  bool radar_connected = 22;
+  bool radar_live = 23;
+  bool time_valid = 24;
+}
+
+message StopwatchState {
+  bool running = 1;
+  bool shows_power = 2;
+  bool shows_cadence = 3;
+  uint32 elapsed_ms = 4;
+  uint32 laps = 5;
+  uint32 lap_ms = 6;                  // current lap
+  optional uint32 last_split_ms = 7;
+  optional uint32 lap_speed_dkmh = 8; // current lap averages
+  optional uint32 lap_power_w = 9;
+  optional uint32 lap_cadence_rpm = 10;
+  repeated Lap recent = 11;           // finished laps, newest first (FEATURE_STOPWATCH_LAPS)
+}
+
+message Lap {
+  uint32 number = 1;                  // 1-based
+  uint32 split_ms = 2;
+  optional uint32 speed_dkmh = 3;
+  optional uint32 cadence_rpm = 4;
+  optional uint32 power_w = 5;
+}
+
+enum Screen {
+  SCREEN_DASH = 0;
+  SCREEN_MAP = 1;
+  SCREEN_OTHER = 2;
+}
+
+message ViewState {
+  optional uint32 page = 1;
+  uint32 page_count = 2;
+  Screen screen = 3;
+}
+
+message Position {
+  sint32 lat_e7 = 1;
+  sint32 lon_e7 = 2;
+  optional uint32 course_ddeg = 3;    // 0.1 deg; only with a current fix above ~3 km/h
+  bool current = 4;                   // false = last known
+}
+
+message Radar {
+  bool live = 1;
+  repeated uint32 distances_m = 2;    // nearest first
+}
+
+message MusicState {
+  bool has_player = 1;
+  bool playing = 2;
+  bool from_ams = 3;
+  uint32 elapsed_ms = 4;
+  uint32 duration_ms = 5;             // 0 = unknown
+  sint32 rate_pct = 6;                // 100 = normal, 0 paused, negative rewinding
+}
+
+enum StopwatchOp {
+  STOPWATCH_OP_NONE = 0;
+  STOPWATCH_OP_TOGGLE = 1;            // start / pause
+  STOPWATCH_OP_RESET = 2;             // only when paused with time
+  STOPWATCH_OP_LAP = 3;               // only while running
+}
+
+// No reply: the next LiveFrame's StopwatchState is the answer.
+message StopwatchCommand {
+  StopwatchOp op = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Transfers (every bulk byte stream, both directions)
+
+enum Target {
+  TARGET_NONE = 0;
+  TARGET_FIRMWARE = 1;   // reboots ~1.5 s after a successful TransferDone
+  TARGET_MAP = 2;        // whole .ebm, name = file name
+  TARGET_MAP_TILE = 3;   // name = H3 cell id (hex)
+  TARGET_MAP_POI = 4;    // name = H3 cell id (hex)
+  TARGET_ROUTE = 5;      // GPX, name = route name; clears pending maneuvers
+  TARGET_WORKOUT = 6;    // .erg/.mrc text, name = file name; loaded after saving
+  TARGET_ALBUM_ART = 7;  // art_format / art_width / art_height
+  TARGET_AGNSS = 8;      // receiver-specific assistance blob
+}
+
+enum ArtFormat {
+  ART_GRAY8 = 0;         // w*h bytes, 8-bit grey
+  ART_TONE5 = 1;         // base-5 packed tone indices, 3 px/byte, first pixel lowest digit
+}
+
+// Phone -> device upload: UploadBegin -> UploadReady (or Result error) ->
+// Chunk... (keep offset - acked <= window) -> UploadEnd -> TransferDone.
+message UploadBegin {
+  uint32 xfer = 1;           // phone-chosen id, unique per connection
+  Target target = 2;
+  string name = 3;
+  uint32 size = 4;
+  uint32 crc32 = 5;          // IEEE CRC-32 of all `size` bytes; checked before anything is saved
+  string tile_version = 6;   // TARGET_MAP_TILE/POI version record (FEATURE_MAP_TILE_VERSIONS)
+  ArtFormat art_format = 7;
+  uint32 art_width = 8;
+  uint32 art_height = 9;
+}
+
+message UploadReady {
+  uint32 xfer = 1;
+  uint32 window = 2;         // bytes the phone may have un-acked in flight
+}
+
+message Chunk {
+  uint32 xfer = 1;
+  uint32 offset = 2;         // must equal the bytes already sent; a gap cancels the transfer
+  bytes data = 3;
+}
+
+message UploadEnd {
+  uint32 xfer = 1;
+}
+
+// Receiver -> sender, at least every window/2 bytes, and the progress signal.
+message TransferAck {
+  uint32 xfer = 1;
+  uint32 received = 2;
+}
+
+// Either side. The receiver of a cancel stops and forgets the transfer.
+message TransferCancel {
+  uint32 xfer = 1;
+  ResultCode reason = 2;
+}
+
+// Device -> phone: the end of every transfer. For uploads it answers
+// UploadEnd once the content is checked, parsed and saved (it may wait while
+// a ride records); for downloads it follows the last Chunk, and `size` and
+// `crc32` describe the whole file so the phone can check it.
+message TransferDone {
+  uint32 xfer = 1;
+  ResultCode code = 2;
+  string detail = 3;
+  uint32 size = 4;
+  uint32 crc32 = 5;
+}
+
+enum Source {
+  SOURCE_NONE = 0;
+  SOURCE_RIDE = 1;       // name = ride file in /rides
+  SOURCE_LOG = 2;        // name = file in /logs
+  SOURCE_LOG_TODAY = 3;  // today's diagnostic log, name ignored
+  SOURCE_WORKOUT = 4;    // name = workout file
+}
+
+// Phone -> device download: DownloadRequest -> DownloadBegin (or Result error)
+// -> Chunk... (device keeps sent - acked <= window; phone acks with
+// TransferAck) -> TransferDone. Either side may TransferCancel.
+message DownloadRequest {
+  uint32 xfer = 1;
+  Source source = 2;
+  string name = 3;
+  uint32 offset = 4;     // resume point
+  uint32 window = 5;     // 0 = device default
+}
+
+message DownloadBegin {
+  uint32 xfer = 1;
+  uint32 size = 2;       // whole file
+  uint32 offset = 3;     // first byte that will be sent
+}
+
+// ---------------------------------------------------------------------------
+// Lists and deletes
+
+enum ListKind {
+  LIST_NONE = 0;
+  LIST_RIDES = 1;
+  LIST_LOGS = 2;
+  LIST_ROUTES = 3;
+  LIST_WORKOUTS = 4;
+  LIST_MAPS = 5;         // answered with MapCoverageList
+  LIST_MAP_TILES = 6;    // answered with TileList
+  LIST_MAP_POIS = 7;     // answered with TileList
+}
+
+message ListRequest {
+  ListKind kind = 1;
+}
+
+message FileEntry {
+  string name = 1;
+  uint32 size = 2;       // 0 when not known (routes, workouts)
+}
+
+// One or more pages; the last has last = true (an empty list is one page).
+message FileList {
+  ListKind kind = 1;
+  repeated FileEntry files = 2;
+  bool last = 3;
+}
+
+message MapCoverage {
+  double south = 1;
+  double west = 2;
+  double north = 3;
+  double east = 4;
+  bool builtin = 5;
+}
+
+message MapCoverageList {
+  repeated MapCoverage maps = 1;
+}
+
+message TileEntry {
+  string h3 = 1;         // cell id, hex
+  string version = 2;    // version record, "" when unknown
+}
+
+message TileList {
+  ListKind kind = 1;
+  repeated TileEntry tiles = 2;
+  bool last = 3;
+}
+
+// LIST_RIDES, LIST_ROUTES, LIST_WORKOUTS. Answered with Result.
+message DeleteRequest {
+  ListKind kind = 1;
+  string name = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Routes and navigation
+
+message PhoneLocation {
+  sint32 lat_e7 = 1;
+  sint32 lon_e7 = 2;
+  optional uint32 utc = 3;            // unix seconds
+  optional sint32 alt_m = 4;
+  optional uint32 accuracy_m = 5;
+  optional uint32 speed_cms = 6;
+  optional uint32 course_cdeg = 7;    // 0.01 deg
+}
+
+message Maneuver {
+  sint32 lat_e7 = 1;
+  sint32 lon_e7 = 2;
+  string text = 3;
+}
+
+// After a TARGET_ROUTE upload: maneuvers in pages, then RouteFinish.
+message RouteManeuvers {
+  repeated Maneuver items = 1;
+}
+
+// Raises "Start navigation?" on the device. Result OK = track loaded,
+// PARSE_ERROR = the GPX was not usable.
+message RouteFinish {}
+
+// ---------------------------------------------------------------------------
+// Sensors
+
+enum SensorOp {
+  SENSOR_OP_NONE = 0;
+  SENSOR_OP_SCAN_START = 1;   // scan, and push SensorList every ~2 s until SCAN_STOP or disconnect
+  SENSOR_OP_SCAN_STOP = 2;
+  SENSOR_OP_PAIR = 3;         // address
+  SENSOR_OP_FORGET = 4;       // address
+  SENSOR_OP_LIST = 5;         // one snapshot
+}
+
+message SensorCommand {
+  SensorOp op = 1;
+  string address = 2;         // "aa:bb:cc:dd:ee:ff"
+}
+
+message Sensor {
+  uint32 kinds = 1;           // b0 HR, b1 power, b2 cadence, b3 radar, b4 speed
+  bool connected = 2;
+  bool paired = 3;
+  sint32 rssi = 4;
+  string name = 5;
+  string address = 6;
+}
+
+message SensorList {
+  repeated Sensor sensors = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Map layers, dashboard
+
+message GetMapLayers {}
+
+message MapLayers {
+  uint32 mask = 1;   // b0 bike routes, b1 cycleways & lanes, b2 water, b3 toilets, b4 repair, b5 bike shops
+}
+
+message GetDash {}
+
+// The text of /config/dashboard.cfg. As SetDash the device parses and applies
+// it, then answers with the layout it now uses (or Result PARSE_ERROR).
+message DashConfig {
+  string text = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Media
+
+enum MediaCmd {
+  MEDIA_CMD_NONE = 0;
+  MEDIA_CMD_TOGGLE = 1;
+  MEDIA_CMD_NEXT = 2;
+  MEDIA_CMD_PREV = 3;
+  MEDIA_CMD_VOLUME_UP = 4;
+  MEDIA_CMD_VOLUME_DOWN = 5;
+}
+
+// Phone now-playing (ignored while the device has AMS).
+message MediaMeta {
+  bool playing = 1;
+  uint32 position_s = 2;
+  uint32 duration_s = 3;
+  string title = 4;
+  string artist = 5;
+  string album = 6;
+}
+
+message MediaClear {}
+
+message MediaCommand {
+  MediaCmd cmd = 1;
+}
+
+message MediaTrack {
+  string title = 1;
+  string artist = 2;
+  string album = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Workouts
+
+enum WorkoutOp {
+  WORKOUT_OP_NONE = 0;
+  WORKOUT_OP_START = 1;
+  WORKOUT_OP_PAUSE = 2;
+  WORKOUT_OP_RESUME = 3;
+  WORKOUT_OP_STOP = 4;
+  WORKOUT_OP_SKIP = 5;
+  WORKOUT_OP_JUMP = 6;         // segment
+  WORKOUT_OP_PAUSE_EACH = 7;   // pause_each
+  WORKOUT_OP_UNLOAD = 8;       // stop + unload
+  WORKOUT_OP_STATUS = 9;
+  WORKOUT_OP_LOAD = 10;        // name; Result
+}
+
+// Control ops answer with WorkoutStatus; LOAD with Result.
+message WorkoutCommand {
+  WorkoutOp op = 1;
+  uint32 segment = 2;
+  bool pause_each = 3;
+  string name = 4;
+}
+
+message WorkoutStatus {
+  bool loaded = 1;
+  bool running = 2;
+  bool paused = 3;
+  bool done = 4;
+  uint32 segment = 5;
+  uint32 segment_count = 6;
+  uint32 elapsed_s = 7;
+  uint32 total_s = 8;
+  uint32 target_w = 9;
+  uint32 ftp_w = 10;
+  bool pause_each = 11;
+  string name = 12;
+}
+
+// ---------------------------------------------------------------------------
+// Meshtastic bridge
+
+enum MeshTopic {
+  MESH_TOPIC_NONE = 0;
+  MESH_TOPIC_STATE = 1;
+  MESH_TOPIC_HISTORY = 2;
+  MESH_TOPIC_NODES = 3;
+  MESH_TOPIC_STATS = 4;
+  MESH_TOPIC_PRESETS = 5;
+  MESH_TOPIC_CHANNELS = 6;
+  MESH_TOPIC_REGIONS = 7;
+}
+
+message MeshGet {
+  repeated MeshTopic topics = 1;
+}
+
+message MeshSend {
+  fixed32 dest = 1;          // 0xFFFFFFFF = broadcast
+  uint32 channel = 2;
+  string text = 3;           // <= 200 bytes
+}
+
+message MeshRename {
+  string long_name = 1;
+  string short_name = 2;
+}
+
+message MeshPrimary {
+  uint32 key_index = 1;
+  string name = 2;           // "" = follow the modem preset
+}
+
+message MeshChannelEdit {
+  uint32 index = 1;
+  string name = 2;
+  bytes psk = 3;             // 0, 1, 16 or 32 bytes
+}
+
+message MeshShare {
+  uint32 index = 1;
+  bool on = 2;
+}
+
+message Empty {}
+
+// Config edits answer with Result and are followed by the refreshed topics
+// the old protocol sent (e.g. a region change pushes state, history, nodes).
+message MeshCommand {
+  oneof op {
+    MeshGet get = 1;
+    MeshSend send = 2;          // answered with MeshQueued or Result REFUSED
+    MeshRename rename = 3;
+    bool radio_on = 4;
+    MeshPrimary primary = 5;
+    Empty mark_read = 6;
+    MeshChannelEdit set_channel = 7;
+    uint32 delete_channel = 8;
+    MeshShare share = 9;
+    uint32 preset = 10;
+    uint32 region = 11;
+    sint32 tx_power_dbm = 12;   // 0 = max allowed
+    uint32 slot = 13;           // 1-based; 0 = derive from the channel name
+  }
+}
+
+message MeshState {
+  bool enabled = 1;
+  bool radio_ok = 2;
+  bool channel_follows_preset = 3;
+  uint32 node_num = 4;
+  uint32 freq_hz = 5;
+  uint32 psk_index = 6;
+  uint32 node_count = 7;
+  uint32 unread = 8;
+  string channel_name = 9;
+  string short_name = 10;
+  string long_name = 11;
+  uint32 preset = 12;
+  uint32 region = 13;
+  sint32 tx_power_dbm = 14;
+  uint32 slot_override = 15;
+  uint32 slot_count = 16;
+  uint32 active_slot = 17;
+}
+
+enum MeshDelivery {
+  MESH_DELIVERY_PENDING = 0;
+  MESH_DELIVERY_SENT = 1;
+  MESH_DELIVERY_ACKED = 2;
+  MESH_DELIVERY_FAILED = 3;
+}
+
+message MeshMessage {
+  uint32 id = 1;
+  uint32 from = 2;
+  uint32 to = 3;
+  uint32 utc = 4;              // 0 = unknown
+  uint32 age_ms = 5;
+  sint32 rssi = 6;
+  sint32 snr = 7;
+  optional uint32 hops = 8;
+  bool outgoing = 9;
+  MeshDelivery delivery = 10;
+  string text = 11;
+  uint32 channel = 12;
+}
+
+// Oldest first, in pages; last page has last = true.
+message MeshHistory {
+  repeated MeshMessage messages = 1;
+  bool last = 2;
+}
+
+message MeshPosition {
+  sint32 lat_e7 = 1;
+  sint32 lon_e7 = 2;
+  sint32 alt_m = 3;
+  uint32 sats = 4;
+  uint32 precision_bits = 5;
+  uint32 age_ms = 6;
+}
+
+message MeshNode {
+  uint32 num = 1;
+  uint32 age_ms = 2;
+  sint32 snr = 3;
+  sint32 rssi = 4;
+  optional uint32 hops = 5;
+  string short_name = 6;
+  string long_name = 7;
+  MeshPosition position = 8;
+}
+
+message MeshNodes {
+  repeated MeshNode nodes = 1;
+  bool last = 2;
+}
+
+message MeshStats {
+  uint32 rx = 1;
+  uint32 rx_dropped = 2;
+  uint32 rx_other_channel = 3;
+  uint32 rx_duplicate = 4;
+  uint32 tx = 5;
+  uint32 tx_failed = 6;
+  uint32 acks_rx = 7;
+}
+
+message MeshPreset {
+  uint32 index = 1;
+  uint32 sf = 2;
+  uint32 bw_khz_x10 = 3;
+  uint32 cr = 4;
+  string name = 5;
+}
+
+message MeshPresets {
+  repeated MeshPreset presets = 1;
+}
+
+message MeshChannel {
+  uint32 index = 1;
+  uint32 hash = 2;
+  string name = 3;
+  bytes psk = 4;
+  bool share_location = 5;
+}
+
+message MeshChannels {
+  repeated MeshChannel channels = 1;
+}
+
+message MeshRegion {
+  uint32 index = 1;
+  uint32 start_hz = 2;
+  uint32 end_hz = 3;
+  uint32 spacing_hz = 4;
+  sint32 power_limit_dbm = 5;
+  string name = 6;
+}
+
+message MeshRegions {
+  repeated MeshRegion regions = 1;
+}
+
+message MeshChanged {}
+
+message MeshQueued {
+  uint32 packet_id = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Assisted GNSS
+
+enum GnssModule {
+  GNSS_MODULE_NONE = 0;
+  GNSS_MODULE_CASIC = 1;
+  GNSS_MODULE_UBLOX = 2;
+}
+
+message AgnssInfoRequest {}
+
+message AgnssInfo {
+  GnssModule module = 1;
+  bool fix = 2;
+}
