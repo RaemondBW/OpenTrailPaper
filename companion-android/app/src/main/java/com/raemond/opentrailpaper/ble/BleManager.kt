@@ -43,6 +43,7 @@ import com.raemond.opentrailpaper.data.DeviceSettingsStore
 import com.raemond.opentrailpaper.data.DeviceSettingsValues
 import com.raemond.opentrailpaper.data.DeviceText
 import com.raemond.opentrailpaper.data.PendingEdit
+import com.raemond.opentrailpaper.data.RideListingStore
 import com.raemond.opentrailpaper.data.SettingField
 import com.raemond.opentrailpaper.data.SettingsMerge
 import com.raemond.opentrailpaper.data.FirmwareRelease
@@ -124,8 +125,17 @@ class BleManager(private val app: Application) {
     var bluetoothPoweredOn by mutableStateOf(false); private set
 
     // Ride download
+    /**
+     * The device's ride list as last seen — kept across disconnects and
+     * relaunches (saved per device in [RideListingStore]) so the Rides tab
+     * never blanks while the device is re-checked. Replaced only when a new
+     * list completes.
+     */
     var rides by mutableStateOf<List<RideFile>>(emptyList()); private set
     var loadingRides by mutableStateOf(false); private set
+    /** The ride list has completed (or been refused) on this link, so opening
+     *  the Rides tab again doesn't re-ask the device. */
+    var ridesCheckedThisLink = false; private set
     var downloadingName by mutableStateOf<String?>(null); private set
     var downloadProgress by mutableStateOf(0.0); private set
     var downloadedFile by mutableStateOf<File?>(null)
@@ -928,6 +938,7 @@ class BleManager(private val app: Application) {
         pairedDeviceName = null
         Prefs.pairedDeviceAddress = null
         Prefs.pairedDeviceName = null
+        rides = emptyList()   // not ours any more; its saved list returns if it's re-paired
         pairingIssue = null
         barrenConnects = 0
         refusedAddress = null
@@ -1364,7 +1375,9 @@ class BleManager(private val app: Application) {
         } else {
             barrenConnects = 0
         }
-        rides = emptyList(); ridesBuilding = mutableListOf(); loadingRides = false
+        // Keep `rides` (the last-known list): the Rides tab keeps showing it
+        // while disconnected and through the re-check on reconnect.
+        ridesBuilding = mutableListOf(); loadingRides = false; ridesCheckedThisLink = false
         // Nothing queued can proceed without a link, and a half-received file
         // must not be mistaken for a complete one on reconnect.
         if (dlActive != null || dlQueue.isNotEmpty()) {
@@ -1520,6 +1533,7 @@ class BleManager(private val app: Application) {
     fun setCurrentDevice(id: String) {
         if (id == settingsDeviceId || demoOfflineSettings) return
         settingsDeviceId = id
+        rides = RideListingStore.load(id)   // that device's last-known ride list
         settingsCache = DeviceSettingsStore.setCurrent(id)
         dashConfig = settingsCache.dashText?.let { DashConfig.parse(it) }
         dashConflict = null
@@ -1529,6 +1543,7 @@ class BleManager(private val app: Application) {
 
     private fun loadSettingsCache() {
         settingsDeviceId = DeviceSettingsStore.currentDevice
+        rides = RideListingStore.load(settingsDeviceId)   // last-known ride list
         settingsCache = DeviceSettingsStore.load(settingsDeviceId)
         settingsCache.dashText?.let { dashConfig = DashConfig.parse(it) }
         applyEffectiveSettings()
@@ -2041,6 +2056,7 @@ class BleManager(private val app: Application) {
     fun deleteRide(name: String) {
         rides = rides.filterNot { it.name == name }
         ridesBuilding.removeAll { it.name == name }
+        RideListingStore.save(rides, settingsDeviceId)
         // Drop it from the download queue too, so a deleted ride doesn't get
         // fetched (and re-cached) moments later.
         dlQueue.removeAll { it == Transfer.Ride(name) }
@@ -2052,7 +2068,10 @@ class BleManager(private val app: Application) {
     }
 
     fun downloadRide(name: String) {
-        if (ridesChar == null) return
+        if (ridesChar == null) {
+            lastMessage = "Connect to your OpenTrailPaper to download this ride"
+            return
+        }
         enqueueTransfer(Transfer.Ride(name))
     }
 
@@ -2211,7 +2230,12 @@ class BleManager(private val app: Application) {
 
             0x03 -> {   // list done
                 loadingRides = false
-                rides = ridesBuilding.sortedByDescending { it.name }   // newest first
+                ridesCheckedThisLink = true
+                val listed = ridesBuilding.sortedByDescending { it.name }   // newest first
+                ridesBuilding = mutableListOf()
+                // Unchanged list: leave `rides` alone so nothing recomposes.
+                if (listed != rides) rides = listed
+                RideListingStore.save(listed, settingsDeviceId)
             }
 
             0x30 -> {   // log-list entry: [u32 size][name]
@@ -2280,6 +2304,7 @@ class BleManager(private val app: Application) {
                 // routine list-refresh fails silently mid-ride (the Rides tab
                 // shows an "in progress" banner + the already-synced rides).
                 loadingRides = false
+                ridesCheckedThisLink = true
                 if (dlActive == null) return
                 // A recording device refuses every file, so drop the whole queue
                 // rather than failing each one in turn with its own toast.
