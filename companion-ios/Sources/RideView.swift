@@ -49,7 +49,6 @@ struct RideView: View {
                 // The session may have changed on the device while this tab
                 // was away; ask rather than trust the last notify.
                 if connected { ble.requestWorkoutStatus() }
-                if ble.workoutStatus.loaded { showWorkoutPage() }
                 // Screenshot hook: `-ridePage N` opens page N.
                 if let v = UserDefaults.standard.string(forKey: "ridePage"), let n = Int(v) { pageIx = n }
                 // Screenshot hook, alongside -tab-*/-demo-* in
@@ -62,10 +61,6 @@ struct RideView: View {
             }
             .onChange(of: ble.state) { _, st in if st == .connected { ble.refreshSensors() } }
             .onChange(of: config.pages.count) { _, n in if pageIx >= n { pageIx = 0 } }
-            // A workout loaded (here or on the device): go to its page.
-            .onChange(of: ble.workoutStatus.loaded) { _, loaded in
-                if loaded { showWorkoutPage() }
-            }
         }
     }
 
@@ -163,10 +158,6 @@ struct RideView: View {
             }
         }
         .einkBorder()
-    }
-
-    private func showWorkoutPage() {
-        if let i = config.pages.firstIndex(where: { $0.isWorkout }) { pageIx = i }
     }
 
     /// "PAGE 1" counts field pages only, as the device's page dots and the
