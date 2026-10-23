@@ -1,6 +1,7 @@
 import SwiftUI
 import MapKit
 import CoreLocation
+import UniformTypeIdentifiers
 
 // Search a destination, build a cycling route with MapKit (or pick one saved
 // on Strava / RideWithGPS), preview it, and send it to the head unit as GPX
@@ -10,108 +11,100 @@ struct RouteView: View {
     @StateObject private var model = RouteModel()
     @ObservedObject private var store = EInkTileStore.shared
     @ObservedObject private var sync = SyncAccounts.shared
+    @AppStorage(UnitPref.key) private var useMiles = false
     @State private var showSaved = false
     /// "Import a route": the saved routes of a connected account.
     @State private var showCloud = false
+    /// "Import a route": a .gpx file from Files.
+    @State private var showGPX = false
+    @State private var gpxError: String?
     @State private var visibleRegion: MKCoordinateRegion?
     /// Hexes the planned route crosses that NOTHING covers — see `coverageGaps`.
     @State private var gapHexes: [OutlineHex] = []
 
+    private var hasRoute: Bool { model.route != nil || model.imported != nil }
+
     var body: some View {
         NavigationStack {
-            ZStack(alignment: .bottom) {
-                // Same map component as the Maps screen, but showing only the
-                // gaps: this page is for finding a destination and building a
-                // route, and plain Apple Maps reads better for that.
-                EInkMapView(
-                    // Only the GAP hexes here — the ground a planned route
-                    // crosses that nothing covers. That is the question this
-                    // page is for ("will I ride off my maps?"); ordinary
-                    // coverage would just be noise over the route.
-                    outlines: gapHexes,
-                    route: model.route?.polyline ?? model.importedPolyline,
-                    destination: model.destination.map {
-                        MapDestination(name: model.destinationName, coordinate: $0)
-                    },
-                    camera: model.camera,
-                    showsUserLocation: ble.locationPermission.isGranted,
-                    onRegionChange: { r in
-                        visibleRegion = r
-                        refreshCoverage()
-                    })
-                .ignoresSafeArea(edges: .top)
-
-                VStack(spacing: 12) {
-                    floatingControls
-
-                    // Hidden while an imported route is up: a search would
-                    // replace it, and the card's clear button is the way back.
-                    if model.imported == nil {
-                        SearchField(text: $model.query) { model.search() }
+            VStack(spacing: 0) {
+                ScreenHeader(title: "Route") {
+                    HStack(spacing: 8) {
+                        SquareIconButton(systemName: "folder", label: "Routes on the device",
+                                         enabled: ble.state == .connected) {
+                            ble.refreshRoutes(); showSaved = true
+                        }
+                        importMenu {
+                            Image(systemName: "plus")
+                                .font(.system(size: 18, weight: .bold))
+                                .foregroundStyle(Palette.ink)
+                                .frame(width: 44, height: 44)
+                                .einkBorder()
+                                .contentShape(Rectangle())
+                        }
+                        .accessibilityLabel("Import a route")
                     }
+                }
 
-                    if !model.results.isEmpty && model.route == nil && model.imported == nil {
-                        ResultsList(results: model.results) { model.choose($0) }
-                    }
+                ZStack(alignment: .top) {
+                    // Same map component as the Maps screen, but showing only the
+                    // gaps: this page is for finding a destination and building a
+                    // route, and plain Apple Maps reads better for that.
+                    EInkMapView(
+                        // Only the GAP hexes here — the ground a planned route
+                        // crosses that nothing covers. That is the question this
+                        // page is for ("will I ride off my maps?"); ordinary
+                        // coverage would just be noise over the route.
+                        outlines: gapHexes,
+                        route: model.route?.polyline ?? model.importedPolyline,
+                        destination: model.destination.map {
+                            MapDestination(name: model.destinationName, coordinate: $0)
+                        },
+                        camera: model.camera,
+                        showsUserLocation: ble.locationPermission.isGranted,
+                        onRegionChange: { r in
+                            visibleRegion = r
+                            refreshCoverage()
+                        })
+                    .accessibilityLabel("Map")
 
-                    if let route = model.route {
-                        RouteSummaryCard(
-                            name: model.destinationName,
-                            mode: model.routeMode,
-                            distanceKm: route.distance / 1000,
-                            minutes: Int(route.expectedTravelTime / 60),
-                            progress: ble.lastUploadProgress,
-                            sent: ble.routeSent,
-                            received: ble.routeReceived,
-                            canSend: ble.state == .connected
-                        ) {
-                            let coords = route.polyline.coordinates
-                            let gpx = GPXExporter.make(
-                                name: model.fileName, coordinates: coords)
-                            // Turn cues from the route steps: the maneuver
-                            // point is each step's first coordinate; skip the
-                            // "proceed to…" opener with no real instruction.
-                            let turns = route.steps.compactMap { step -> BLEManager.Maneuver? in
-                                let text = step.instructions.trimmingCharacters(
-                                    in: .whitespaces)
-                                guard !text.isEmpty,
-                                      let c = step.polyline.coordinates.first
-                                else { return nil }
-                                return BLEManager.Maneuver(
-                                    lat: c.latitude, lon: c.longitude, text: text)
-                            }
-                            ble.uploadRoute(name: model.fileName, gpx: gpx,
-                                            maneuvers: turns)
-                        } clear: {
-                            model.clearRoute()
+                    HStack(alignment: .top, spacing: 8) {
+                        if hasRoute { nameOverlay } else { Spacer() }
+                        if hasRoute { Spacer(minLength: 0) }
+                        SquareIconButton(systemName: "location.fill", label: "Show my location") {
+                            model.recenter()
                         }
                     }
+                    .padding(12)
 
-                    // Someone else's route: no time estimate and no turn cues,
-                    // sent through the same GPX path as one built here.
-                    if let imported = model.imported {
-                        RouteSummaryCard(
-                            name: imported.name,
-                            mode: imported.mode,
-                            distanceKm: imported.distanceMeters / 1000,
-                            minutes: nil,
-                            progress: ble.lastUploadProgress,
-                            sent: ble.routeSent,
-                            received: ble.routeReceived,
-                            canSend: ble.state == .connected,
-                            imported: imported
-                        ) {
-                            let gpx = GPXExporter.make(name: model.fileName,
-                                                       coordinates: imported.coordinates)
-                            ble.uploadRoute(name: model.fileName, gpx: gpx)
-                        } clear: {
-                            model.clearRoute()
+                    if !hasRoute && !model.results.isEmpty {
+                        VStack {
+                            Spacer()
+                            ResultsList(results: model.results) { model.choose($0) }
+                                .padding(12)
                         }
                     }
                 }
-                .padding(16)
+                .frame(maxHeight: .infinity)
+                .clipped()
+
+                Rectangle().fill(Palette.ink).frame(height: Rule.title)
+
+                VStack(spacing: 10) {
+                    if hasRoute {
+                        statsBox
+                        sendControls
+                    } else {
+                        // Hidden while a route is up: a search would replace
+                        // it, and the name box's clear button is the way back.
+                        SearchField(text: $model.query) { model.search() }
+                    }
+                    importMenu {
+                        BlockButtonLabel(title: importTitle, filled: false, expand: true)
+                    }
+                }
+                .padding(.horizontal, 16).padding(.vertical, 12)
             }
-            .safeAreaInset(edge: .top, alignment: .leading, spacing: 0) { routeTitle }
+            .background(Palette.paper.ignoresSafeArea())
             .navigationBarHidden(true)
             .sheet(isPresented: $showSaved) { SavedRoutesSheet() }
             .sheet(isPresented: $showCloud) {
@@ -120,6 +113,14 @@ struct RouteView: View {
                     model.importRoute(r)
                 }
             }
+            .fileImporter(isPresented: $showGPX,
+                          allowedContentTypes: [UTType(filenameExtension: "gpx") ?? .xml, .xml]) { result in
+                importGPX(result)
+            }
+            .alert("Couldn't import that file", isPresented: Binding(
+                get: { gpxError != nil }, set: { if !$0 { gpxError = nil } })) {
+                Button("OK", role: .cancel) {}
+            } message: { Text(gpxError ?? "") }
             .onAppear {
                 if ProcessInfo.processInfo.arguments.contains("-demo-route") { model.demoRoute() }
                 else { model.requestLocation() }
@@ -135,6 +136,184 @@ struct RouteView: View {
             // hexagons away again.
             .onChange(of: model.route) { recomputeCoverage() }
             .onChange(of: model.imported) { recomputeCoverage() }
+        }
+    }
+
+    private var importTitle: String {
+        "Import from Strava · RWGPS · GPX"
+    }
+
+    /// Both import buttons open the same choice: a saved route from a
+    /// connected account, or a .gpx file.
+    private func importMenu<L: View>(@ViewBuilder label: () -> L) -> some View {
+        Menu {
+            Button { showCloud = true } label: {
+                Label("Strava or Ride with GPS route", systemImage: "point.topleft.down.to.point.bottomright.curvepath")
+            }
+            Button { showGPX = true } label: {
+                Label("GPX file", systemImage: "doc")
+            }
+        } label: { label() }
+        .buttonStyle(.plain)
+    }
+
+    private func importGPX(_ result: Result<URL, Error>) {
+        guard case .success(let url) = result else { return }
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        guard let data = try? Data(contentsOf: url) else {
+            gpxError = "The file couldn't be read."; return
+        }
+        switch GPXImporter.parse(data, fallbackName: url.deletingPathExtension().lastPathComponent) {
+        case .success(var route):
+            route.source = "GPX file"
+            ble.routeSent = false; ble.routeReceived = false
+            model.importRoute(route)
+        case .failure(.noPoints): gpxError = "That file has no route points in it."
+        case .failure(.notGPX): gpxError = "That file isn't GPX."
+        }
+    }
+
+    // MARK: Route on the map
+
+    /// The bordered name box over the map's top-left corner.
+    private var nameOverlay: some View {
+        HStack(alignment: .top, spacing: 8) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(routeName.uppercased())
+                    .font(BarlowFont.text(14, .bold)).tracking(2)
+                    .lineLimit(2)
+                Text(routeSubtitle).font(BarlowFont.text(12, .semibold)).lineLimit(1)
+            }
+            Button { model.clearRoute() } label: {
+                Image(systemName: "xmark").font(.system(size: 12, weight: .bold))
+                    .frame(width: 32, height: 32)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Clear route")
+        }
+        .foregroundStyle(Palette.ink)
+        .padding(.leading, 10).padding(.vertical, 6).padding(.trailing, 2)
+        .background(Palette.paper)
+        .einkBorder()
+    }
+
+    private var routeName: String {
+        model.imported?.name ?? model.destinationName
+    }
+
+    private var distanceKm: Double {
+        if let r = model.route { return r.distance / 1000 }
+        return (model.imported?.distanceMeters ?? 0) / 1000
+    }
+
+    private var routeSubtitle: String {
+        var parts: [String] = []
+        if let src = model.imported?.source { parts.append("from \(src)") }
+        else if !model.routeMode.isEmpty { parts.append(model.routeMode.lowercased()) }
+        let mode = model.imported?.mode ?? ""
+        if model.imported != nil && !mode.isEmpty { parts.append(mode.lowercased()) }
+        parts.append(String(format: "%.1f %@", Units.distance(distanceKm, miles: useMiles), Units.distLabel(useMiles)))
+        if let climb = model.imported?.climbMeters {
+            parts.append("\(Int(Units.elevation(climb, miles: useMiles).rounded())) \(Units.elevLabel(useMiles))")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    // MARK: Panel under the map
+
+    /// Distance · climb (or riding time for a planned route) · map coverage.
+    private var statsBox: some View {
+        HStack(spacing: 0) {
+            stat("Distance", String(format: "%.1f", Units.distance(distanceKm, miles: useMiles)),
+                 Units.distLabel(useMiles))
+            Rectangle().fill(Palette.ink).frame(width: Rule.divider)
+            if let r = model.route {
+                stat("Time", "\(Int(r.expectedTravelTime / 60))", "min")
+            } else {
+                stat("Climb", model.imported?.climbMeters
+                        .map { "\(Int(Units.elevation($0, miles: useMiles).rounded()))" } ?? "--",
+                     Units.elevLabel(useMiles))
+            }
+            Rectangle().fill(Palette.ink).frame(width: Rule.divider)
+            stat("Map tiles", tilesState, "")
+        }
+        .fixedSize(horizontal: false, vertical: true)
+        .einkBorder()
+    }
+
+    /// READY when every hex the route crosses is downloaded; otherwise how
+    /// many are missing (drawn on the map), or NONE with nothing downloaded.
+    private var tilesState: String {
+        if store.ids.union(ble.deviceTileIds).isEmpty { return "NONE" }
+        return gapHexes.isEmpty ? "READY" : "\(gapHexes.count) GAPS"
+    }
+
+    private func stat(_ label: String, _ value: String, _ unit: String) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(label).trackedLabel().lineLimit(1).minimumScaleFactor(0.7)
+            HStack(alignment: .firstTextBaseline, spacing: 3) {
+                Text(value).font(DisplayFont.anton(26)).foregroundStyle(Palette.ink)
+                    .lineLimit(1).minimumScaleFactor(0.5)
+                if !unit.isEmpty {
+                    Text(unit.uppercased()).font(BarlowFont.text(11, .bold)).foregroundStyle(Palette.ink)
+                }
+            }
+        }
+        .padding(.horizontal, 10).padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder private var sendControls: some View {
+        let canSend = ble.state == .connected
+        if let progress = ble.lastUploadProgress {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("SENDING TO DEVICE…").font(BarlowFont.text(12, .bold)).tracking(2)
+                BlockProgressBar(value: progress, segments: 12)
+            }
+            .frame(minHeight: 52)
+        } else if ble.routeSent {
+            HStack(spacing: 10) {
+                // "Received" once the device confirms (0x23); until then
+                // (or on older firmware that never acks) show "Sent".
+                Text(ble.routeReceived ? "✓ RECEIVED BY DEVICE" : "✓ SENT TO DEVICE")
+                    .font(DisplayFont.anton(18)).tracking(1.5)
+                    .foregroundStyle(Palette.paper)
+                    .frame(maxWidth: .infinity, minHeight: 52)
+                    .background(Palette.ink)
+                Button { sendRoute() } label: {
+                    BlockButtonLabel(title: "Again", filled: false).frame(minHeight: 52)
+                }
+                .buttonStyle(.plain)
+                .disabled(!canSend)
+                .accessibilityLabel("Send again")
+            }
+        } else {
+            PrimaryButton(title: canSend ? "Send to device" : "Connect to send",
+                          enabled: canSend) { sendRoute() }
+        }
+    }
+
+    private func sendRoute() {
+        if let route = model.route {
+            let coords = route.polyline.coordinates
+            let gpx = GPXExporter.make(name: model.fileName, coordinates: coords)
+            // Turn cues from the route steps: the maneuver point is each
+            // step's first coordinate; skip the "proceed to…" opener with no
+            // real instruction.
+            let turns = route.steps.compactMap { step -> BLEManager.Maneuver? in
+                let text = step.instructions.trimmingCharacters(in: .whitespaces)
+                guard !text.isEmpty, let c = step.polyline.coordinates.first else { return nil }
+                return BLEManager.Maneuver(lat: c.latitude, lon: c.longitude, text: text)
+            }
+            ble.uploadRoute(name: model.fileName, gpx: gpx, maneuvers: turns)
+        } else if let imported = model.imported {
+            // Someone else's route: no time estimate and no turn cues, sent
+            // through the same GPX path as one built here.
+            let gpx = GPXExporter.make(name: model.fileName, coordinates: imported.coordinates)
+            ble.uploadRoute(name: model.fileName, gpx: gpx)
         }
     }
 
@@ -173,50 +352,6 @@ struct RouteView: View {
             return OutlineHex(id: id, hexagon: t.hexagon, center: t.center,
                               synced: false, missing: true)
         }
-    }
-
-    // "Route" title pill, floated top-left below the status bar.
-    private var routeTitle: some View {
-        Text("Route").font(BarlowFont.condensed(22, .bold)).foregroundStyle(Palette.ink)
-            .padding(.horizontal, 16).padding(.vertical, 9)
-            .background(Palette.surface).clipShape(Capsule())
-            .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))
-            .shadow(color: .black.opacity(0.08), radius: 6, y: 2)
-            .padding(.horizontal, 16).padding(.top, 8)
-    }
-
-    // Round action buttons, bottom-right above the search field.
-    private var floatingControls: some View {
-        HStack {
-            Spacer()
-            // Saved routes from a connected account; hidden with none connected.
-            let accounts = SyncAccounts.routeProviders.filter { sync.isConnected($0) }
-            if !accounts.isEmpty {
-                roundButton("square.and.arrow.down", enabled: true) { showCloud = true }
-            }
-            roundButton("location.fill", enabled: true) { model.recenter() }
-            // Map downloads moved to Settings — this page is for building and
-            // sending a route, and the map tool is device-content management.
-            roundButton("folder", enabled: ble.state == .connected) {
-                ble.refreshRoutes(); showSaved = true
-            }
-        }
-    }
-
-    private func roundButton(_ systemName: String, enabled: Bool,
-                             _ action: @escaping () -> Void) -> some View {
-        Button(action: action) { roundLabel(systemName, enabled: enabled) }
-            .disabled(!enabled)
-    }
-
-    private func roundLabel(_ systemName: String, enabled: Bool) -> some View {
-        Image(systemName: systemName)
-            .font(.system(size: 16, weight: .semibold))
-            .foregroundStyle(enabled ? Palette.accent : Palette.faint)
-            .frame(width: 42, height: 42)
-            .background(Palette.surface).clipShape(Circle())
-            .overlay(Circle().strokeBorder(Palette.hairline, lineWidth: 1))
-            .shadow(color: .black.opacity(0.08), radius: 6, y: 2)
     }
 }
 
@@ -421,11 +556,10 @@ private struct SearchField: View {
                 .submitLabel(.search)
                 .onSubmit(onSubmit)
         }
-        .padding(14)
+        .font(BarlowFont.text(16, .medium))
+        .padding(.horizontal, 12).frame(minHeight: 44)
         .background(Palette.surface)
-        .clipShape(RoundedRectangle(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14)
-            .strokeBorder(Palette.hairline, lineWidth: 1))
+        .einkBorder()
     }
 }
 
@@ -447,155 +581,13 @@ private struct ResultsList: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.vertical, 12).padding(.horizontal, 14)
                 }
-                if item != results.prefix(4).last { Divider() }
+                if item != results.prefix(4).last { GroupedDivider() }
             }
         }
         .background(Palette.surface)
-        .clipShape(RoundedRectangle(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14)
-            .strokeBorder(Palette.hairline, lineWidth: 1))
-    }
-}
-
-private struct RouteSummaryCard: View {
-    let name: String
-    let mode: String
-    let distanceKm: Double
-    let minutes: Int?     // nil for an imported route: no honest estimate
-    let progress: Double?
-    let sent: Bool
-    let received: Bool
-    let canSend: Bool
-    /// Set for a route picked from Strava / RideWithGPS, which gets its own
-    /// header (source chip, distance and climb); planned routes keep theirs.
-    var imported: ImportedRoute? = nil
-    let send: () -> Void
-    let clear: () -> Void
-    @AppStorage(UnitPref.key) private var useMiles = false
-
-    var body: some View {
-        Card {
-            VStack(alignment: .leading, spacing: imported == nil ? 14 : 12) {
-                if let imported { importedHeader(imported) } else { plannedHeader }
-                sendControls
-            }
-        }
-    }
-
-    private var plannedHeader: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(name).font(TypeScale.title).foregroundStyle(Palette.ink)
-                    .lineLimit(1)
-                HStack(spacing: 6) {
-                    if !mode.isEmpty {
-                        Text(mode.uppercased())
-                            .font(.system(size: 11, weight: .bold))
-                            .padding(.horizontal, 7).padding(.vertical, 3)
-                            .background(mode == "Cycling" ? Palette.good : Palette.muted)
-                            .foregroundStyle(.white)
-                            .clipShape(Capsule())
-                    }
-                    Text(String(format: "%.1f %@",
-                                Units.distance(distanceKm, miles: useMiles),
-                                Units.distLabel(useMiles))
-                         + (minutes.map { " · \($0) min" } ?? ""))
-                        .font(TypeScale.body).foregroundStyle(Palette.muted)
-                }
-            }
-            Spacer()
-            Button(action: clear) {
-                Image(systemName: "xmark.circle.fill")
-                    .foregroundStyle(Palette.muted)
-            }
-        }
-    }
-
-    private func importedHeader(_ r: ImportedRoute) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top, spacing: 10) {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 6) {
-                        if let source = r.source {
-                            Text("From \(source)")
-                                .font(BarlowFont.condensed(12, .semibold)).tracking(1.2).textCase(.uppercase)
-                                .foregroundStyle(Palette.accentDark)
-                                .padding(.horizontal, 8).padding(.vertical, 3)
-                                .background(Palette.accentWash, in: Capsule())
-                        }
-                        // The GPX's own activity type, as Android shows it beside the chip.
-                        if !mode.isEmpty {
-                            Text(mode.uppercased())
-                                .font(.system(size: 11, weight: .bold))
-                                .padding(.horizontal, 7).padding(.vertical, 3)
-                                .background(Palette.good)
-                                .foregroundStyle(.white)
-                                .clipShape(Capsule())
-                        }
-                    }
-                    Text(name).font(BarlowFont.condensed(26, .bold)).foregroundStyle(Palette.ink)
-                        .lineLimit(2)
-                }
-                Spacer(minLength: 0)
-                Button(action: clear) {
-                    Image(systemName: "xmark").font(.system(size: 13, weight: .bold))
-                        .foregroundStyle(Palette.muted)
-                        .frame(width: 44, height: 44)
-                        .background(Palette.paper, in: Circle())
-                        .overlay(Circle().strokeBorder(Palette.hairline, lineWidth: 1))
-                }
-                .accessibilityLabel("Clear route")
-            }
-            HStack(alignment: .top, spacing: 8) {
-                stat(String(format: "%.1f", Units.distance(distanceKm, miles: useMiles)),
-                     Units.distLabel(useMiles), "Distance")
-                if let climb = r.climbMeters {
-                    stat(Int(Units.elevation(climb, miles: useMiles).rounded()).formatted(),
-                         Units.elevLabel(useMiles), "Climb")
-                } else {
-                    Color.clear.frame(maxWidth: .infinity, maxHeight: 0)
-                }
-            }
-        }
-    }
-
-    /// One cell of the imported route's two-column stat grid.
-    private func stat(_ value: String, _ unit: String, _ label: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(alignment: .firstTextBaseline, spacing: 3) {
-                Text(value).font(BarlowFont.condensed(26, .semibold)).foregroundStyle(Palette.ink)
-                Text(unit).font(BarlowFont.condensed(15, .semibold)).foregroundStyle(Palette.muted)
-            }
-            Text(label).font(BarlowFont.text(13)).foregroundStyle(Palette.muted)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    @ViewBuilder private var sendControls: some View {
-        if let progress {
-            ProgressView(value: progress) {
-                Text("Sending to device…").font(.system(size: 12))
-                    .foregroundStyle(Palette.muted)
-            }
-        } else if sent {
-            HStack(spacing: 8) {
-                Image(systemName: "checkmark.circle.fill").foregroundStyle(Palette.good)
-                // "Received" once the device confirms (0x23); until then
-                // (or on older firmware that never acks) show "Sent".
-                Text(received ? "Received by device" : "Sent to device")
-                    .font(TypeScale.body).foregroundStyle(Palette.good)
-                Spacer()
-                Button("Send again", action: send)
-                    .font(.system(size: 13, weight: .semibold)).foregroundStyle(Palette.accent)
-                    .disabled(!canSend)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 12)
-        } else {
-            PrimaryButton(title: canSend ? "Send to device" : "Connect to send",
-                          systemImage: "paperplane.fill",
-                          enabled: canSend, action: send)
-        }
+        .clipShape(Rectangle())
+        .overlay(Rectangle()
+            .strokeBorder(Palette.ink, lineWidth: 2))
     }
 }
 
