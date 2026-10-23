@@ -10,17 +10,13 @@ struct RidesView: View {
     @State private var detail: RideDetailData?
     @State private var failedURL: URL?          // parsed badly → offer to share it
 
-    // Always show the pre-synced (locally cached) rides; when connected, merge in
-    // the device's live list too. Mid-ride the device refuses to list the SD (it's
-    // busy recording), so `ble.rides` is empty then — the cached rides keep showing
-    // instead of the view going blank. Newest first.
+    // The device's last-known ride list (kept across disconnects and launches)
+    // merged with the rides cached on this phone, newest first. Shown the same
+    // way connected or not, and while the device is re-checked, so reconnecting
+    // never blanks or rebuilds the list — a completed check only adds new rides
+    // and drops ones the device no longer has (unless they're cached here).
     private var displayedRides: [RideFile] {
-        let cached = BLEManager.cachedRides()
-        guard ble.state == .connected else { return cached }
-        var seen = Set<String>()
-        var out: [RideFile] = []
-        for r in ble.rides + cached where seen.insert(r.name).inserted { out.append(r) }
-        return out.sorted { $0.name > $1.name }
+        BLEManager.mergeRides(device: ble.rides, cached: BLEManager.cachedRides())
     }
 
     // Show a cached ride immediately; otherwise pull it over BLE. Downloads are
@@ -51,10 +47,12 @@ struct RidesView: View {
         HStack(alignment: .firstTextBaseline) {
             Text("Rides").font(TypeScale.screenTitle).foregroundStyle(Palette.ink)
             Spacer()
-            Text(ble.state == .connected
-                 ? (ble.loadingRides ? "Syncing…" : "Synced")
-                 : "Offline")
-                .font(BarlowFont.text(13, .medium)).foregroundStyle(Palette.muted)
+            // While the list is being checked the "Checking for new rides…"
+            // row says so; no second status here.
+            if !(ble.state == .connected && ble.loadingRides) {
+                Text(ble.state == .connected ? "Synced" : "Offline")
+                    .font(BarlowFont.text(13, .medium)).foregroundStyle(Palette.muted)
+            }
             Button {
                 if ble.state == .connected { ble.refreshRides() } else { ble.startScan() }
             } label: {
@@ -85,6 +83,19 @@ struct RidesView: View {
                 Spacer()
             }
         }
+    }
+
+    // Inline status above the list while the device's ride list is being
+    // fetched — the cached rides stay visible underneath it.
+    private var checkingRow: some View {
+        HStack(spacing: 8) {
+            ProgressView().controlSize(.small).tint(Palette.muted)
+            Text("Checking for new rides…")
+                .font(BarlowFont.text(13, .medium)).foregroundStyle(Palette.muted)
+            Spacer()
+        }
+        .padding(.horizontal, 4)
+        .transition(.opacity)
     }
 
     // Week roll-up from whatever previews are decoded (fills in as rows load).
@@ -140,14 +151,16 @@ struct RidesView: View {
         NavigationStack {
             ScrollView {
                 let rides = displayedRides
+                let checking = ble.state == .connected && ble.loadingRides
                 VStack(spacing: 14) {
                     header
                     if ble.status.recording { inProgressBanner }
+                    if checking { checkingRow }
                     if !rides.isEmpty { summary(rides) }
 
-                    if ble.state == .connected && ble.loadingRides {
-                        ProgressView("Loading rides…").padding(.top, 30)
-                    } else if rides.isEmpty {
+                    // With nothing cached yet, the checking row above stands in
+                    // for the empty state until the device answers.
+                    if rides.isEmpty && !checking {
                         Card {
                             VStack(alignment: .leading, spacing: 6) {
                                 Text(ble.status.recording ? "No synced rides yet"
@@ -162,7 +175,7 @@ struct RidesView: View {
                                     .font(BarlowFont.text(14)).foregroundStyle(Palette.muted)
                             }
                         }
-                    } else {
+                    } else if !rides.isEmpty {
                         ForEach(rides) { ride in
                             RideRow(ride: ride,
                                     cached: BLEManager.isCached(ride.name),
@@ -182,6 +195,7 @@ struct RidesView: View {
                     }
                 }
                 .padding(16)
+                .animation(.easeInOut(duration: 0.2), value: checking)
             }
             .background(Palette.paper.ignoresSafeArea())
             .navigationBarHidden(true)
@@ -206,7 +220,8 @@ struct RidesView: View {
                    let data = try? Data(contentsOf: url),
                    let preview = FITDecoder.decode(data) {
                     detail = RideDetailData(url: url, preview: preview)
-                } else if ble.rides.isEmpty {
+                } else if ble.state == .connected, !ble.loadingRides,
+                          !ble.ridesCheckedThisLink {
                     ble.refreshRides()
                 }
             }
@@ -479,11 +494,16 @@ struct RouteMapThumbnail: View {
     @State private var image: UIImage?
 
     private static let cache = NSCache<NSString, UIImage>()
+    private static func key(_ name: String, _ size: CGSize) -> NSString {
+        "\(name)@\(Int(size.width))x\(Int(size.height))" as NSString
+    }
 
     var body: some View {
         GeometryReader { geo in
             ZStack {
-                if let image {
+                // Read the cache synchronously too, so a row that SwiftUI
+                // rebuilds shows its map at once instead of the glyph first.
+                if let image = image ?? Self.cache.object(forKey: Self.key(name, geo.size)) {
                     Image(uiImage: image).resizable().scaledToFill()
                 } else {
                     RouteThumbnail(coords: coords).padding(10)
@@ -496,7 +516,7 @@ struct RouteMapThumbnail: View {
 
     private func load(size: CGSize) async {
         guard size.width > 1, size.height > 1, coords.count > 1 else { return }
-        let key = "\(name)@\(Int(size.width))x\(Int(size.height))" as NSString
+        let key = Self.key(name, size)
         if let cached = Self.cache.object(forKey: key) { image = cached; return }
         if let img = await Self.render(coords: coords, size: size) {
             Self.cache.setObject(img, forKey: key)
