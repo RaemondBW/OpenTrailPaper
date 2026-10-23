@@ -88,6 +88,11 @@ like `sendChunk` does today.
    arrived on this connection, otherwise the legacy characteristic. Legacy
    writes are still accepted in link mode.
 
+`Hello` is written with response, so iOS/Android hold it until pairing
+completes instead of dropping it. A `DeviceHello` that arrives after the app
+already fell back still switches the connection to the link, because the device
+then pushes only there.
+
 `Hello` again on the same connection is fine (an app restart under iOS state
 restoration): the device answers and re-pushes the initial state. Link state
 (subscription, live topics, transfers) is per connection and dies with it.
@@ -106,7 +111,9 @@ version string. `dash_max_pages` replaces the "holds 8 pages" capability bit.
   connection (a counter). Messages that need no reply (`PhoneLocation`,
   `Chunk`, `TransferAck`, `StopwatchCommand`) may use 0.
 - The device echoes `req` on every message that answers it, including each
-  page of a multi-page list. Unsolicited pushes have `req = 0`.
+  page of a multi-page list. Unsolicited pushes have `req = 0`. That includes
+  pushes a request caused: LiveFrames after `LiveSubscribe`, SensorLists while
+  scanning, and mesh topics refreshed after a config edit.
 - A request without a specific answer message gets `Result` (`RESULT_OK` or an
   error code with an optional `detail`). Any request the device cannot decode,
   or whose body it doesn't know, gets `Result{RESULT_UNSUPPORTED}`.
@@ -157,6 +164,10 @@ One mechanism for every byte stream. Firmware, maps, tiles, POI files, GPX
 routes, workouts, album art and AGNSS go up. Rides, logs and workout files
 come down.
 
+Offsets are absolute file positions everywhere. `Chunk.offset` is the
+position in the whole file. `TransferAck.received` is the absolute position up
+to which bytes arrived, which is offset + bytes received on a resumed download.
+
 **Upload** (phone → device):
 
 ```
@@ -195,7 +206,9 @@ TransferAck{xfer, received}  at least every window/2 →
 ```
 
 - Window default 8 KB. The phone acks every 2 KB. No ack for 10 s cancels with
-  TIMEOUT. `offset` lets the phone resume an interrupted ride download. The
+  TIMEOUT. `offset` lets the phone resume an interrupted ride download.
+  `DownloadBegin.offset` is the first byte the device will send. 0 in answer
+  to a resume means "starting over", and the phone drops what it had. The
   CRC in `TransferDone` covers the whole file, so the phone hashes what it
   already had plus what arrived.
 - Rides and logs refuse with RECORDING while a ride records, as before.
