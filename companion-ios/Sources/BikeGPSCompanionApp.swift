@@ -13,6 +13,9 @@ struct BikeGPSCompanionApp: App {
         // behind, and watches for the app leaving the foreground.
         TransferCenter.shared.runDemoIfRequested()
         PerfMonitor.shared.start()
+        #if DEBUG
+        LinkSelfTest.runIfAsked()   // -link-selftest: the phone link against a simulated device
+        #endif
     }
 
     var body: some Scene {
