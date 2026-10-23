@@ -644,6 +644,15 @@ final class BLEManager: NSObject, ObservableObject {
     private var workoutListBuild: [String] = []
     struct FetchedWorkout: Equatable { let name: String; let text: String }
     @Published var fetchedWorkout: FetchedWorkout?
+    /// The loaded workout's file, for the Ride tab's WORKOUT page (its block
+    /// profile and the block strips). From the phone's library when it is
+    /// there, else pulled off the device; kept apart from `fetchedWorkout`,
+    /// which opens the builder.
+    @Published private(set) var loadedWorkoutFile: FetchedWorkout?
+    private var workoutFetchForPage = false
+    /// The route last sent from this phone, drawn on the Ride tab's MAP page
+    /// while the device reports one active (it can't send its own back).
+    @Published var sentRouteCoords: [CLLocationCoordinate2D] = []
     private var workoutFetchBuf = Data()
     private var workoutFetchName = ""
     /// Rebuilt from the device's stream, then published in one go at the end
@@ -832,33 +841,87 @@ final class BLEManager: NSObject, ObservableObject {
         for id in withPois { poiSentAt[id] = now }
     }
 
+    /// -demo-live: a connected device mid-ride, with every kind of page — a
+    /// field page, a loaded workout (or, with -demo-live-picker, the picker),
+    /// music with a cover, the stopwatch and the map with a route.
+    private func seedLiveDemo() {
+        state = .connected
+        dashConfig = DashConfig(text: """
+            power3s hero
+            speed medium half
+            hr medium half
+            distance medium half
+            ridetime medium half
+            cadence medium half
+            climb medium half
+            page workout
+            page music
+            page stopwatch
+            page map
+            """)
+        status = DeviceStatus(gpsFix: true, recording: true, hasRoute: true, battery: 76,
+                              sats: 11, heartRate: 156, power: 238, speedKmh: 24.6,
+                              remainingKm: 12.4)
+        deviceWorkouts = ["over_unders_4x8.erg", "recovery_spin.mrc", "sweet_spot_3x10.erg",
+                          "vo2_5x4.erg"]
+        if !ProcessInfo.processInfo.arguments.contains("-demo-live-picker") {
+            let name = "sweet_spot_3x10.erg"
+            loadedWorkoutFile = FetchedWorkout(name: name, text: """
+                [COURSE HEADER]
+                MINUTES WATTS
+                [END COURSE HEADER]
+                [COURSE DATA]
+                0 120
+                10 160
+                10 230
+                20 230
+                20 150
+                25 150
+                25 230
+                35 230
+                35 150
+                40 150
+                40 230
+                50 230
+                50 130
+                60 130
+                [END COURSE DATA]
+                """)
+            var w = WorkoutStatus()
+            w.loaded = true; w.running = true; w.name = name
+            w.blockIndex = 3; w.blockCount = 7
+            w.elapsedSec = 28 * 60 + 12; w.totalSec = 60 * 60
+            w.targetW = 230; w.ftpW = 250
+            workoutStatus = w
+        }
+        sentRouteCoords = [
+            .init(latitude: 37.7694, longitude: -122.4862), .init(latitude: 37.7712, longitude: -122.4700),
+            .init(latitude: 37.7735, longitude: -122.4540), .init(latitude: 37.7760, longitude: -122.4380),
+            .init(latitude: 37.7810, longitude: -122.4250), .init(latitude: 37.7905, longitude: -122.4200),
+            .init(latitude: 37.8010, longitude: -122.4190), .init(latitude: 37.8080, longitude: -122.4177),
+        ]
+        // A cover: soft rings, so the dither has tones to work with.
+        let side = AlbumArtFeeder.side
+        var gray = [UInt8](repeating: 0, count: side * side)
+        for y in 0..<side {
+            for x in 0..<side {
+                let dx = Double(x - side / 2), dy = Double(y - side / 2)
+                let r = (dx * dx + dy * dy).squareRoot()
+                gray[y * side + x] = UInt8(127 + 127 * cos(r / 14) * (1 - min(1, r / 230)))
+            }
+        }
+        albumArt.showDemo(MediaTrack(title: "Turn Your Lights Down Low",
+                                     artist: "Bob Marley & The Wailers", album: "Exodus"),
+                          gray: gray)
+    }
+
     override init() {
         super.init()
         loadSettingsCache()
         if isDemoOfflineSettings { seedOfflineSettingsDemo() }
         if isDemoUpdate { state = .connected; deviceFirmware = "v0.83" }
         if isDemoDash { state = .connected; dashConfig = .deviceDefault }
-        if isDemoLive {
-            state = .connected
-            dashConfig = DashConfig(text: """
-                power3s hero
-                speed medium half
-                hr medium half
-                distance medium half
-                ridetime medium half
-                cadence medium half
-                climb medium half
-                page
-                climb large
-                grade medium half
-                altitude medium half
-                hr medium half
-                power3s medium half
-                page map
-                """)
-            status = DeviceStatus(gpsFix: true, recording: true, hasRoute: false, battery: 76,
-                                  sats: 9, heartRate: 156, power: 247, speedKmh: 24.6)
-        }
+        if isDemoLive { seedLiveDemo() }
         locationManager.delegate = self
         locationManager.desiredAccuracy = kCLLocationAccuracyHundredMeters
         let a = locationManager.authorizationStatus
@@ -2802,7 +2865,28 @@ final class BLEManager: NSObject, ObservableObject {
     /// One snapshot of files + session state; also runs when notifications
     /// first come up so the Workouts screen opens populated.
     func refreshWorkouts() {
+        workoutLog.info("refresh: char=\(self.workoutChar != nil) notifying=\(self.workoutChar?.isNotifying ?? false)")
         workoutWrite(Data([0x06]))
+        workoutWrite(Data([0x30]))
+    }
+
+    /// The loaded workout's blocks for the WORKOUT page: the phone's copy if it
+    /// has one, else the device's file (0x12, answered 0xD1…/0xD2).
+    private func fetchLoadedWorkoutFile(_ name: String) {
+        if let text = LocalWorkouts.read(name) {
+            loadedWorkoutFile = FetchedWorkout(name: name, text: text)
+            return
+        }
+        guard workoutChar?.isNotifying == true, !workoutFetchForPage else { return }
+        workoutFetchForPage = true
+        workoutFetchBuf = Data()
+        workoutFetchName = name
+        workoutWrite(Data([0x12]) + Data(name.utf8))
+    }
+
+    /// Just the session status (0x30 → 0xC0), for screens that show it.
+    func requestWorkoutStatus() {
+        guard workoutChar?.isNotifying == true else { return }
         workoutWrite(Data([0x30]))
     }
 
@@ -2860,6 +2944,7 @@ final class BLEManager: NSObject, ObservableObject {
     private func handleWorkoutNotify(_ d: Data) {
         guard let op = d.first else { return }
         let body = d.dropFirst()
+        workoutLog.info("notify op=0x\(String(op, radix: 16), privacy: .public) len=\(d.count) loaded=\(op == 0xC0 && d.count > 1 ? Int(d[d.startIndex + 1]) : -1)")
         switch op {
         case 0xA0:   // ack: [ok/fail][msg]
             let ok = body.first == 1
@@ -2875,8 +2960,10 @@ final class BLEManager: NSObject, ObservableObject {
         case 0xD1: workoutFetchBuf.append(contentsOf: body)
         case 0xD2:
             if let text = String(data: workoutFetchBuf, encoding: .utf8) {
-                fetchedWorkout = FetchedWorkout(name: workoutFetchName, text: text)
+                let f = FetchedWorkout(name: workoutFetchName, text: text)
+                if workoutFetchForPage { loadedWorkoutFile = f } else { fetchedWorkout = f }
             }
+            workoutFetchForPage = false
             workoutFetchBuf = Data()
         case 0xC0:
             guard body.count >= 18 else { return }
@@ -2894,6 +2981,10 @@ final class BLEManager: NSObject, ObservableObject {
             s.ftpW = b.subdata(in: 16..<18).withUnsafeBytes { $0.loadUnaligned(as: UInt16.self) }
             if b.count > 18 { s.pauseEachBlock = b[18] != 0 }
             if b.count > 19 { s.name = String(data: b.subdata(in: 19..<b.count), encoding: .utf8) ?? "" }
+            if s.loaded, !s.name.isEmpty, loadedWorkoutFile?.name != s.name {
+                fetchLoadedWorkoutFile(s.name)
+            }
+            workoutLog.info("status loaded=\(s.loaded) running=\(s.running) block=\(s.blockIndex + 1)/\(s.blockCount) name=\(s.name, privacy: .public)")
             workoutStatus = s
         default: break
         }
@@ -3080,6 +3171,12 @@ extension BLEManager: CBCentralManagerDelegate {
             settingsChar = nil; statusChar = nil; routeChar = nil; ridesChar = nil
             sensorsChar = nil; mapChar = nil; otaChar = nil; meshChar = nil
             dashChar = nil
+            // The workout characteristic belongs to this link too; a stale one
+            // swallowed writes after a reconnect. The session state is the
+            // device's, so it is asked for again rather than shown stale.
+            workoutChar = nil
+            workoutStatus = WorkoutStatus()
+            workoutFetchForPage = false
             // Pending edits stay cached; the next connect reads and merges.
             resetSyncLinkState()
             mediaChar = nil; mediaToneArt = false   // the next device may be older firmware
@@ -3215,6 +3312,12 @@ extension BLEManager: CBPeripheralDelegate {
         barrenConnects = 0
         state = .connected
         rememberPairedDevice()
+        // The workout list/status asked for when notifications came up can be
+        // refused (the characteristic is WRITE_ENC) if that raced the link's
+        // encryption, and nothing asked again: a workout loaded on the device
+        // stayed invisible until the Workouts sheet was opened. Ask once the
+        // link is known to be secure.
+        if workoutChar?.isNotifying == true { refreshWorkouts() }
     }
 
     /// A protected request refused for lack of authentication/encryption:
@@ -3308,7 +3411,10 @@ extension BLEManager: CBPeripheralDelegate {
             // Map layers: firmware without them never answers, which is what
             // keeps the app's switches hidden for it.
             if ch.uuid == BikeUUID.map { requestMapLayers() }
-            if ch.uuid == BikeUUID.workout { refreshWorkouts() }
+            if ch.uuid == BikeUUID.workout {
+                workoutLog.info("notify state: \(ch.isNotifying) error=\(error?.localizedDescription ?? "none", privacy: .public)")
+                refreshWorkouts()
+            }
             // Which art format the device takes (and whether it forwards AMS
             // tracks); the answer is a notification.
             if ch.uuid == BikeUUID.media {
@@ -3345,6 +3451,9 @@ extension BLEManager: CBPeripheralDelegate {
     nonisolated func peripheral(_ p: CBPeripheral,
                                 didWriteValueFor ch: CBCharacteristic,
                                 error: Error?) {
+        if let error, ch.uuid == BikeUUID.workout {
+            workoutLog.error("workout write failed: \(error.localizedDescription, privacy: .public)")
+        }
         if let error {
             artLog.error("write to \(ch.uuid.uuidString, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
             MainActor.assumeIsolated { noteAuthError(error) }
