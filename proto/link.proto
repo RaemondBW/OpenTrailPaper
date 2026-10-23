@@ -113,7 +113,7 @@ message PhoneMsg {
     TransferCancel transfer_cancel = 25;
 
     ListRequest list = 30;
-    DeleteRequest delete = 31;
+    DeleteRequest delete_file = 31;
 
     PhoneLocation location = 40;
     RouteManeuvers maneuvers = 41;

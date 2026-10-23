@@ -25,11 +25,7 @@
 #include <pb.h>
 #include <pb_decode.h>
 #include <pb_encode.h>
-// The schema calls PhoneMsg's DeleteRequest member `delete`, a C++ keyword;
-// the struct layout is the C one (link.pb.c), only the spelling here differs.
-#define delete delete_
 #include "proto/link.pb.h"
-#undef delete
 
 #include "ams_client.h"
 #include "ble_sensors.h"
@@ -1740,7 +1736,7 @@ void dispatch(const otp_link_PhoneMsg& m) {
     case otp_link_PhoneMsg_transfer_ack_tag: onTransferAck(m.body.transfer_ack); break;
     case otp_link_PhoneMsg_transfer_cancel_tag: onTransferCancel(m.body.transfer_cancel); break;
     case otp_link_PhoneMsg_list_tag: onList(req, m.body.list.kind); break;
-    case otp_link_PhoneMsg_delete_tag: onDelete(req, m.body.delete_); break;
+    case otp_link_PhoneMsg_delete_file_tag: onDelete(req, m.body.delete_file); break;
     case otp_link_PhoneMsg_location_tag: onLocation(m.body.location); break;
     case otp_link_PhoneMsg_maneuvers_tag:
         for (pb_size_t i = 0; i < m.body.maneuvers.items_count; ++i) {

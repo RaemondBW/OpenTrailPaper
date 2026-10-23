@@ -59,7 +59,7 @@ Each side keeps two queues: **control** (everything else) and **bulk**
 (`Chunk`). The writer takes the next control message if there is one, and a
 `Chunk` otherwise. Senders size `Chunk.data` so that the whole encoded
 `PhoneMsg`/`DeviceMsg` fits one fragment:
-`MTU - 3 (ATT) - 1 (header) - 16 (envelope + chunk fields)`. That is 227 bytes
+`MTU - 3 (ATT) - 1 (header) - envelope and chunk fields`. Those fields take 16 bytes while `xfer` < 128 and offsets are < 256 MB, and 18 at worst. Compute them exactly or keep `xfer` small. That leaves 227 bytes
 at MTU 247. So a live frame or a button press never waits behind more than
 one chunk.
 

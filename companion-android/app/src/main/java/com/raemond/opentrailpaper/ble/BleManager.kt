@@ -4599,7 +4599,7 @@ class BleManager(private val app: Application) {
 
     private fun deleteFile(kind: ListKind, name: String, done: (Boolean, String) -> Unit = { _, _ -> }) {
         link.request(
-            PhoneMsg.newBuilder().setDelete(DeleteRequest.newBuilder().setKind(kind).setName(LinkText.cut(name, 63))),
+            PhoneMsg.newBuilder().setDeleteFile(DeleteRequest.newBuilder().setKind(kind).setName(LinkText.cut(name, 63))),
             onFail = { _, d -> done(false, d) },
         ) { m ->
             done(m.hasResult() && m.result.code == ResultCode.RESULT_OK, if (m.hasResult()) m.result.detail else "")

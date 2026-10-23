@@ -821,7 +821,7 @@ typedef struct _otp_link_PhoneMsg {
         otp_link_TransferAck transfer_ack;
         otp_link_TransferCancel transfer_cancel;
         otp_link_ListRequest list;
-        otp_link_DeleteRequest delete;
+        otp_link_DeleteRequest delete_file;
         otp_link_PhoneLocation location;
         otp_link_RouteManeuvers maneuvers;
         otp_link_RouteFinish route_finish;
@@ -1511,7 +1511,7 @@ extern "C" {
 #define otp_link_PhoneMsg_transfer_ack_tag       24
 #define otp_link_PhoneMsg_transfer_cancel_tag    25
 #define otp_link_PhoneMsg_list_tag               30
-#define otp_link_PhoneMsg_delete_tag             31
+#define otp_link_PhoneMsg_delete_file_tag        31
 #define otp_link_PhoneMsg_location_tag           40
 #define otp_link_PhoneMsg_maneuvers_tag          41
 #define otp_link_PhoneMsg_route_finish_tag       42
@@ -1575,7 +1575,7 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (body,download,body.download),  23) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (body,transfer_ack,body.transfer_ack),  24) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (body,transfer_cancel,body.transfer_cancel),  25) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (body,list,body.list),  30) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (body,delete,body.delete),  31) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (body,delete_file,body.delete_file),  31) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (body,location,body.location),  40) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (body,maneuvers,body.maneuvers),  41) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (body,route_finish,body.route_finish),  42) \
@@ -1605,7 +1605,7 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (body,agnss_info,body.agnss_info), 120)
 #define otp_link_PhoneMsg_body_transfer_ack_MSGTYPE otp_link_TransferAck
 #define otp_link_PhoneMsg_body_transfer_cancel_MSGTYPE otp_link_TransferCancel
 #define otp_link_PhoneMsg_body_list_MSGTYPE otp_link_ListRequest
-#define otp_link_PhoneMsg_body_delete_MSGTYPE otp_link_DeleteRequest
+#define otp_link_PhoneMsg_body_delete_file_MSGTYPE otp_link_DeleteRequest
 #define otp_link_PhoneMsg_body_location_MSGTYPE otp_link_PhoneLocation
 #define otp_link_PhoneMsg_body_maneuvers_MSGTYPE otp_link_RouteManeuvers
 #define otp_link_PhoneMsg_body_route_finish_MSGTYPE otp_link_RouteFinish

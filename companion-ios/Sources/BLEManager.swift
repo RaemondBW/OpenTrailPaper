@@ -1959,7 +1959,7 @@ final class BLEManager: NSObject, ObservableObject {
         var d = LinkDeleteRequest()
         d.kind = kind
         d.name = name
-        link.request(.delete(d)) { reply in
+        link.request(.deleteFile(d)) { reply in
             let r = reply.result ?? .failure(.badData("unexpected answer"))
             if case .failure(let e) = r { NSLog("[link] delete %@: %@", name, e.description) }
             done?(r)

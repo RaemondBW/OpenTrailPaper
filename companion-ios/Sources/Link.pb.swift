@@ -1232,12 +1232,12 @@ nonisolated struct LinkPhoneMsg: Sendable {
     set {body = .list(newValue)}
   }
 
-  var delete: LinkDeleteRequest {
+  var deleteFile: LinkDeleteRequest {
     get {
-      if case .delete(let v)? = body {return v}
+      if case .deleteFile(let v)? = body {return v}
       return LinkDeleteRequest()
     }
-    set {body = .delete(newValue)}
+    set {body = .deleteFile(newValue)}
   }
 
   var location: LinkPhoneLocation {
@@ -1369,7 +1369,7 @@ nonisolated struct LinkPhoneMsg: Sendable {
     case transferAck(LinkTransferAck)
     case transferCancel(LinkTransferCancel)
     case list(LinkListRequest)
-    case delete(LinkDeleteRequest)
+    case deleteFile(LinkDeleteRequest)
     case location(LinkPhoneLocation)
     case maneuvers(LinkRouteManeuvers)
     case routeFinish(LinkRouteFinish)
@@ -3677,7 +3677,7 @@ nonisolated extension LinkGnssModule: SwiftProtobuf._ProtoNameProviding {
 
 nonisolated extension LinkPhoneMsg: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   static let protoMessageName: String = _protobuf_package + ".PhoneMsg"
-  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}req\0\u{1}hello\0\u{1}unpair\0\u{4}\u{7}get_settings\0\u{3}set_settings\0\u{4}\u{4}live_subscribe\0\u{1}stopwatch\0\u{4}\u{4}upload_begin\0\u{1}chunk\0\u{3}upload_end\0\u{1}download\0\u{3}transfer_ack\0\u{3}transfer_cancel\0\u{2}\u{5}list\0\u{1}delete\0\u{2}\u{9}location\0\u{1}maneuvers\0\u{3}route_finish\0\u{2}\u{8}sensors\0\u{4}\u{a}get_map_layers\0\u{3}set_map_layers\0\u{4}\u{9}get_dash\0\u{3}set_dash\0\u{4}\u{9}media_meta\0\u{3}media_clear\0\u{3}media_command\0\u{2}\u{8}workout\0\u{2}\u{a}mesh\0\u{4}\u{14}agnss_info\0")
+  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}req\0\u{1}hello\0\u{1}unpair\0\u{4}\u{7}get_settings\0\u{3}set_settings\0\u{4}\u{4}live_subscribe\0\u{1}stopwatch\0\u{4}\u{4}upload_begin\0\u{1}chunk\0\u{3}upload_end\0\u{1}download\0\u{3}transfer_ack\0\u{3}transfer_cancel\0\u{2}\u{5}list\0\u{3}delete_file\0\u{2}\u{9}location\0\u{1}maneuvers\0\u{3}route_finish\0\u{2}\u{8}sensors\0\u{4}\u{a}get_map_layers\0\u{3}set_map_layers\0\u{4}\u{9}get_dash\0\u{3}set_dash\0\u{4}\u{9}media_meta\0\u{3}media_clear\0\u{3}media_command\0\u{2}\u{8}workout\0\u{2}\u{a}mesh\0\u{4}\u{14}agnss_info\0")
 
   mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -3860,12 +3860,12 @@ nonisolated extension LinkPhoneMsg: SwiftProtobuf.Message, SwiftProtobuf._Messag
         var hadOneofValue = false
         if let current = self.body {
           hadOneofValue = true
-          if case .delete(let m) = current {v = m}
+          if case .deleteFile(let m) = current {v = m}
         }
         try decoder.decodeSingularMessageField(value: &v)
         if let v = v {
           if hadOneofValue {try decoder.handleConflictingOneOf()}
-          self.body = .delete(v)
+          self.body = .deleteFile(v)
         }
       }()
       case 40: try {
@@ -4116,8 +4116,8 @@ nonisolated extension LinkPhoneMsg: SwiftProtobuf.Message, SwiftProtobuf._Messag
       guard case .list(let v)? = self.body else { preconditionFailure() }
       try visitor.visitSingularMessageField(value: v, fieldNumber: 30)
     }()
-    case .delete?: try {
-      guard case .delete(let v)? = self.body else { preconditionFailure() }
+    case .deleteFile?: try {
+      guard case .deleteFile(let v)? = self.body else { preconditionFailure() }
       try visitor.visitSingularMessageField(value: v, fieldNumber: 31)
     }()
     case .location?: try {
