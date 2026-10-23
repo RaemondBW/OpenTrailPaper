@@ -940,7 +940,8 @@ final class BLEManager: NSObject, ObservableObject {
                                      artist: "Bob Marley & The Wailers", album: "Exodus"),
                           gray: gray)
         // The live stream's frame: the tiles the status characteristic
-        // doesn't carry, and a running stopwatch on its third lap.
+        // doesn't carry, and a running stopwatch on its tenth lap: nine hill
+        // repeats, the same ones tools/preview renders (stopwatch_laps.png).
         var lf = LiveFrame()
         lf.gpsFix = true; lf.recording = true; lf.routeActive = true
         lf.hrLive = true; lf.powerLive = true; lf.cadenceLive = true; lf.timeValid = true
@@ -950,15 +951,27 @@ final class BLEManager: NSObject, ObservableObject {
         lf.climbM = 612; lf.gradePct = 4.8; lf.altitudeM = 287; lf.routeLeftKm = 12.4
         var sw = LiveFrame.Stopwatch()
         sw.running = true; sw.showPower = true; sw.showCadence = true
-        sw.elapsedMs = 14 * 60_000 + 32_000; sw.laps = 2
-        sw.lapMs = 3 * 60_000 + 11_000; sw.lastSplitMs = 5 * 60_000 + 47_300
-        sw.lapAvgSpeedKmh = 26.1; sw.lapAvgPowerW = 252; sw.lapAvgCadence = 90
+        let splits: [UInt32] = [312_400, 298_700, 305_100, 291_300, 322_800,
+                                301_900, 296_200, 288_600, 307_500]
+        let kmh = [14.2, 14.9, 14.6, 15.3, 13.8, 14.7, 15.0, 15.4, 14.5]
+        let watts = [268, 281, 274, 290, 259, 276, 284, 293, 272]
+        let rpm = [78, 81, 79, 83, 74, 80, 82, 84, 79]
+        sw.laps = splits.count
+        sw.lapMs = 83_400; sw.lastSplitMs = splits.last
+        sw.elapsedMs = splits.reduce(0, +) + sw.lapMs
+        sw.lapAvgSpeedKmh = 15.1; sw.lapAvgPowerW = 286; sw.lapAvgCadence = 83
         lf.stopwatch = sw
+        lf.stopwatchLaps = LiveFrame.StopwatchLaps(
+            showCadence: true, showPower: true,
+            laps: splits.indices.reversed().prefix(7).map {
+                .init(number: $0 + 1, splitMs: splits[$0], avgSpeedKmh: kmh[$0],
+                      avgCadence: rpm[$0], avgPowerW: watts[$0])
+            })
         lf.view = LiveFrame.View(page: 0, pageCount: 5, screen: 0)
         lf.position = LiveFrame.Position(lat: 37.7694, lon: -122.4862, courseDeg: 62, current: true)
-        // The current firmware's caps (stopwatch commands, MUSIC), and the
+        // The current firmware's caps (stopwatch commands, MUSIC, laps), and the
         // cover's track playing, 2:34 into 5:31, over AMS.
-        lf.caps = 0x03
+        lf.caps = 0x07
         lf.music = LiveFrame.Music(present: true, playing: true, ams: true,
                                    elapsedMs: 154_000, durationMs: 331_000, rate: 1)
         mediaRemote = true
@@ -1008,8 +1021,16 @@ final class BLEManager: NSObject, ObservableObject {
             sw.running.toggle()
         case 2 where !sw.running && sw.elapsedMs > 0:
             sw = LiveFrame.Stopwatch(showPower: sw.showPower, showCadence: sw.showCadence)
+            demoFrame.stopwatchLaps?.laps = []
         case 3 where sw.running && sw.laps < 99:
-            sw.laps += 1; sw.lastSplitMs = sw.lapMs; sw.lapMs = 0
+            sw.laps += 1; sw.lastSplitMs = sw.lapMs
+            let done = LiveFrame.StopwatchLaps.Lap(
+                number: sw.laps, splitMs: sw.lapMs, avgSpeedKmh: sw.lapAvgSpeedKmh,
+                avgCadence: sw.lapAvgCadence, avgPowerW: sw.lapAvgPowerW)
+            if let rows = demoFrame.stopwatchLaps?.laps {
+                demoFrame.stopwatchLaps?.laps = Array(([done] + rows).prefix(7))
+            }
+            sw.lapMs = 0
         default:
             return
         }

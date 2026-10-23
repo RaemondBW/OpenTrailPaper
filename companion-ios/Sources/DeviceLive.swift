@@ -66,6 +66,25 @@ struct LiveFrame: Equatable {
     }
     var stopwatch: Stopwatch?
 
+    /// The stopwatch page's lap table (STOPWATCH_LAPS 0x07): its columns and
+    /// the newest completed laps, newest first. nil on firmware without the
+    /// record (HELLO caps b2). Kept across frames rather than cleared by
+    /// `startFrame`: it is sent with every frame (n = 0 with no laps), and a
+    /// frame spread over several notifies must not blank the table between them.
+    struct StopwatchLaps: Equatable {
+        struct Lap: Equatable {
+            var number = 0
+            var splitMs: UInt32 = 0
+            var avgSpeedKmh: Double?
+            var avgCadence: Int?
+            var avgPowerW: Int?
+        }
+        var showCadence = false
+        var showPower = false
+        var laps: [Lap] = []
+    }
+    var stopwatchLaps: StopwatchLaps?
+
     struct View: Equatable {
         /// Index into the dashboard config; nil while the device is off its
         /// pages (menu, settings, ride summary).
@@ -109,10 +128,11 @@ struct LiveFrame: Equatable {
 
     /// From HELLO: the device's keepalive timeout.
     var keepaliveTimeoutS: Int?
-    /// From HELLO: b0 takes stopwatch commands, b1 sends MUSIC. 0 on the
-    /// first firmware with the stream (a 2-byte HELLO).
+    /// From HELLO: b0 takes stopwatch commands, b1 sends MUSIC, b2 sends
+    /// STOPWATCH_LAPS. 0 on the first firmware with the stream (a 2-byte HELLO).
     var caps: UInt8 = 0
     var takesStopwatchCommands: Bool { caps & 0x01 != 0 }
+    var sendsStopwatchLaps: Bool { caps & 0x04 != 0 }
 
     /// Apply one notify's records. Sections that are sent only while they
     /// have something to say (position, radar) are cleared by `startFrame`.
@@ -197,6 +217,21 @@ struct LiveFrame: Equatable {
                 music = Music(present: f & 1 != 0, playing: f & 2 != 0, ams: f & 4 != 0,
                               elapsedMs: b.u32(1) ?? 0, durationMs: dur == 0 ? nil : dur,
                               rate: Double(Int16(bitPattern: b.u16(9) ?? 0)) / 100)
+            case 0x07:
+                guard len >= 2 else { break }
+                let cols = b.u8(0) ?? 1
+                let n = min(Int(b.u8(1) ?? 0), (len - 2) / 10)
+                var t = StopwatchLaps(showCadence: cols & 2 != 0, showPower: cols & 4 != 0)
+                t.laps = (0..<n).map { r in
+                    let o = 2 + 10 * r
+                    return StopwatchLaps.Lap(
+                        number: Int(b.u8(o) ?? 0),
+                        splitMs: b.u32(o + 1) ?? 0,
+                        avgSpeedKmh: b.u16(o + 5).flatMap { $0 == 0xFFFF ? nil : Double($0) / 10 },
+                        avgCadence: b.u8(o + 7).flatMap { $0 == 0xFF ? nil : Int($0) },
+                        avgPowerW: b.u16(o + 8).flatMap { $0 == 0xFFFF ? nil : Int($0) })
+                }
+                stopwatchLaps = t
             default:
                 break   // a newer record: skipped by its length
             }

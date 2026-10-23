@@ -2888,6 +2888,15 @@ void task(void*) {
             lv.swLapCadenceRpm = swC < 0 ? 0xFF : (unsigned char)(swC > 254 ? 254 : swC);
             lv.swShowPower = stopwatch.showPower();
             lv.swShowCadence = stopwatch.showCadence();
+            for (int r = 0; r < ble_server::LiveView::LIVE_SW_ROWS &&
+                            stopwatch.lapCount - 1 - r >= 0; ++r) {
+                const int i = stopwatch.lapCount - 1 - r;
+                lv.swRowSplitMs[r] = stopwatch.lapSplitMs(i);
+                lv.swRowSpeedDkmh[r] = stopwatch.lapSpeedDkmh[i];
+                lv.swRowPowerW[r] = stopwatch.lapPowerW[i];
+                lv.swRowCadenceRpm[r] = stopwatch.lapCadenceRpm[i];
+                lv.swRows = (unsigned char)(r + 1);
+            }
             ble_server::publishLiveView(lv);
         }
 

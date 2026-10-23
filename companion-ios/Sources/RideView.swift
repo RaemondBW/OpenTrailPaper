@@ -540,7 +540,9 @@ struct RideView: View {
     }
 
     /// The STOPWATCH page from the live stream: the device's clock, counted
-    /// on between frames while it runs, its state and the laps. START/PAUSE,
+    /// on between frames while it runs, its state and, once a lap is done,
+    /// the device's lap layout (total, lap in progress, the completed laps
+    /// from STOPWATCH_LAPS; the lap times count on with the total). START/PAUSE,
     /// RESET and LAP drive the device's own clock ([0x10] on the live
     /// service), enabled by its rules; the next frame redraws the page. On
     /// firmware that streams but takes no commands they stay greyed, and
@@ -553,12 +555,16 @@ struct RideView: View {
                 let ms = live.stopwatchElapsedMs(at: ctx.date) ?? sw.elapsedMs
                 let lapMs = sw.lapMs &+ (ms &- sw.elapsedMs)
                 StopwatchPagePreview(
-                    status: status, time: Self.stopwatchText(ms),
+                    status: status, time: StopwatchPagePreview.timeText(ms),
                     state: sw.running ? "RUNNING" : ms == 0 ? "READY" : "PAUSED",
                     running: sw.running,
-                    note: sw.laps == 0 ? nil
-                        : "LAP \(sw.laps + 1) · \(Self.stopwatchText(lapMs))"
-                          + (sw.lastSplitMs.map { " · LAST \(Self.lapText($0))" } ?? ""),
+                    lapPage: sw.laps == 0 ? nil : StopwatchLapPage(
+                        totalMs: ms, running: sw.running, lapNumber: sw.laps + 1, lapMs: lapMs,
+                        lapSpeedKmh: sw.lapAvgSpeedKmh, lapCadence: sw.lapAvgCadence,
+                        lapPowerW: sw.lapAvgPowerW,
+                        showCadence: f.stopwatchLaps?.showCadence ?? sw.showCadence,
+                        showPower: f.stopwatchLaps?.showPower ?? sw.showPower,
+                        useMiles: useMiles, rows: f.stopwatchLaps?.laps),
                     controlsEnabled: controls,
                     canReset: !sw.running && sw.elapsedMs > 0,
                     canLap: sw.running && sw.laps < 99,
@@ -574,20 +580,6 @@ struct RideView: View {
                                  controlsHint: connected ? "Waiting for the device"
                                                          : "Connect the device first")
         }
-    }
-
-    /// The device's stopwatch digits (ui_render swFmt): MM:SS, H:MM:SS past the hour.
-    static func stopwatchText(_ ms: UInt32) -> String {
-        let sec = Int(ms / 1000)
-        return sec >= 3600 ? String(format: "%d:%02d:%02d", sec / 3600, sec / 60 % 60, sec % 60)
-                           : String(format: "%02d:%02d", sec / 60, sec % 60)
-    }
-
-    /// A finished lap (swFmtLap): M:SS.t under the hour, H:MM:SS over.
-    static func lapText(_ ms: UInt32) -> String {
-        let sec = Int(ms / 1000)
-        return sec >= 3600 ? String(format: "%d:%02d:%02d", sec / 3600, sec / 60 % 60, sec % 60)
-                           : String(format: "%d:%02d.%d", sec / 60, sec % 60, Int(ms % 1000 / 100))
     }
 
     /// Ride and moving time as the device prints them (formatHms).
