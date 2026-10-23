@@ -99,7 +99,8 @@ volatile bool relaxedSleepOk = true;
 volatile bool relaxedSleepOk = false;
 #endif
 volatile bool otaRebootPending = false;
-SemaphoreHandle_t sharedLocMutex = nullptr;    // ble_shared::applyPhoneLocation
+SemaphoreHandle_t sharedLocMutex = nullptr;
+volatile bool phoneClockSet = false;   // applyPhoneLocation set the system clock    // ble_shared::applyPhoneLocation
 SemaphoreHandle_t sharedTileMutex = nullptr;   // ble_shared::lockTileList
 SemaphoreHandle_t sharedDashMutex = nullptr;   // ble_shared::applyDash
 
@@ -2978,6 +2979,14 @@ void task(void*) {
         if (!statusChr || millis() - lastStatus < 1000) continue;
         lastStatus = millis();
 
+        // A clock the phone set keeps running off the system clock until GPS
+        // has a fix and its own time (see applyPhoneLocation).
+        if (phoneClockSet) {
+            g_state.with([](RideState& st) {
+                if (!st.gpsFix) { st.utc = time(nullptr); st.timeValid = true; }
+            });
+        }
+
         // While the app's sensor screen is open, push the list ~every 2 s so
         // discovered/connected changes show up live.
         static uint32_t lastSensorPush = 0;
@@ -3072,6 +3081,7 @@ void applyPhoneLocation(const PhoneFix& f) {
     // estimator is shared by the legacy write (host task) and the link task.
     if (sharedLocMutex) xSemaphoreTake(sharedLocMutex, portMAX_DELAY);
     const uint32_t nowMs = millis();
+    bool noGpsFix = false;
     static phone_motion::Estimator motion;
     motion.update(lat, lon, f.accM > 0 ? (float)f.accM : 0.0f, nowMs, f.speedMs,
                   f.courseDeg);
@@ -3084,12 +3094,27 @@ void applyPhoneLocation(const PhoneFix& f) {
         if (f.haveAlt) st.phoneAltM = (float)f.altM;
         st.phoneAccM = f.accM > 0 ? (float)f.accM : 0.0f;
         st.phoneUtc = haveTime ? (time_t)f.utc : 0;
+        // The clock (status bar, CLOCK field) otherwise waits for GPS time,
+        // which a unit indoors after a reboot may not get for a long while.
+        // The phone's network time is as good; GPS takes over once it has a fix.
+        noGpsFix = !st.gpsFix;
+        if (haveTime && noGpsFix) {
+            st.utc = (time_t)f.utc;
+            st.timeValid = true;
+        }
         st.phoneFixValid = true;
         st.phoneFixMs = nowMs;
         // Speed/heading on the display while the phone is the source.
         speed_source::publish(st, nowMs);
     });
     if (sharedLocMutex) xSemaphoreGive(sharedLocMutex);
+    // Keep the clock ticking between phone fixes (and after the app stops
+    // sending): the server task's 1 Hz pass reads it back while GPS has no fix.
+    if (haveTime && noGpsFix) {
+        struct timeval tv = {(time_t)f.utc, 0};
+        settimeofday(&tv, nullptr);
+        phoneClockSet = true;
+    }
 }
 
 bool legacyUpdateBusy() { return ble_server::otaPhase != 0; }
