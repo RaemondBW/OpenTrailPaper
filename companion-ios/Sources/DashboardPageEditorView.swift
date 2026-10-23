@@ -23,58 +23,21 @@ struct DashboardPageEditorView: View {
     var offline = false
     let onSend: () -> Void
 
-    @State private var sel: UUID?
-    @State private var tray: TrayMode?
     @State private var toast: String?
 
-    private enum TrayMode: Identifiable {
-        case add, change
-        var id: Self { self }
-    }
-
-    private var preview: DashPreview { DashPreview(layout: layout) }
-
     var body: some View {
-        let placement = preview.placement
-        let selected = placement.cells.first { $0.item.id == sel }
-        VStack(spacing: 0) {
-            // THE PANEL. The device's own shape, as large as the screen allows
-            // once the inspector has the height it needs.
-            ZStack(alignment: .top) {
-                PanelCanvas(
-                    preview: preview,
-                    placement: placement,
-                    selected: $sel,
-                    onDrop: { id, target in layout.items = applyDrop(layout.items, placement, id, target) },
-                    onCycleSize: { id in
-                        setItem(id) { it in
-                            let all = DashSize.allCases
-                            it.size = all[(all.firstIndex(of: it.size)! + 1) % all.count]
-                        }
-                        sel = id
-                    },
-                    onRadarHeight: { id, pct in setItem(id) { $0.heightPercent = pct } })
-                if let toast {
-                    Text(toast)
-                        .font(BarlowFont.text(14, .semibold))
-                        .foregroundStyle(Palette.surface)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 16).padding(.vertical, 12)
-                        .background(Palette.ink, in: RoundedRectangle(cornerRadius: 12))
-                        .padding(.top, 12)
-                        .transition(.opacity)
-                }
+        ZStack(alignment: .top) {
+            PageLayoutEditor(layout: $layout)
+            if let toast {
+                Text(toast)
+                    .font(BarlowFont.text(14, .semibold))
+                    .foregroundStyle(Palette.surface)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 16).padding(.vertical, 12)
+                    .background(Palette.ink, in: Rectangle())
+                    .padding(.top, 18)
+                    .transition(.opacity)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .padding(.horizontal, 24)
-            .padding(.vertical, 6)
-
-            // Hugs its content; the panel above takes everything else.
-            inspector(placement: placement, selected: selected)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.horizontal, 16)
-                .padding(.top, 6)
-                .padding(.bottom, 16)
         }
         .background(Palette.paper)
         .navigationTitle(pageTitle)
@@ -96,17 +59,57 @@ struct DashboardPageEditorView: View {
                 .disabled(!canSend)
             }
         }
-        // A selection that no longer exists (removed, or replaced by a reset)
-        // is dropped rather than left pointing at nothing.
-        .onChange(of: layout) {
-            if let sel, !layout.items.contains(where: { $0.id == sel }) { self.sel = nil }
-        }
         .onChange(of: toast) {
             guard toast != nil else { return }
             Task { @MainActor in
                 try? await Task.sleep(for: .seconds(1.8))
                 withAnimation { toast = nil }
             }
+        }
+    }
+}
+
+/// The page editor's working parts — the panel to touch and the inspector
+/// under it — hosted pushed (DashboardPageEditorView) or inline on the Ride
+/// tab, where `status` draws the canvas inside the device's own status bar
+/// and frame so editing happens on the same picture the tab shows live.
+struct PageLayoutEditor: View {
+    @Binding var layout: DashLayout
+    /// Set: draw the canvas as the whole device page, under this status bar.
+    var status: PanelStatus? = nil
+
+    @State private var sel: UUID?
+    @State private var tray: TrayMode?
+
+    private enum TrayMode: Identifiable {
+        case add, change
+        var id: Self { self }
+    }
+
+    private var preview: DashPreview { DashPreview(layout: layout) }
+
+    var body: some View {
+        let placement = preview.placement
+        let selected = placement.cells.first { $0.item.id == sel }
+        VStack(spacing: 0) {
+            // THE PANEL. The device's own shape, as large as the screen allows
+            // once the inspector has the height it needs.
+            canvas(placement)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(.horizontal, status == nil ? 24 : 0)
+                .padding(.vertical, status == nil ? 6 : 0)
+
+            // Hugs its content; the panel above takes everything else.
+            inspector(placement: placement, selected: selected)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, status == nil ? 16 : 0)
+                .padding(.top, status == nil ? 6 : 10)
+                .padding(.bottom, status == nil ? 16 : 0)
+        }
+        // A selection that no longer exists (removed, or replaced by a reset)
+        // is dropped rather than left pointing at nothing.
+        .onChange(of: layout) {
+            if let sel, !layout.items.contains(where: { $0.id == sel }) { self.sel = nil }
         }
         .sheet(item: $tray) { mode in
             FieldTray(
@@ -121,6 +124,30 @@ struct DashboardPageEditorView: View {
                     sel = it.id
                 }
             }
+        }
+    }
+
+    @ViewBuilder private func canvas(_ placement: DashPreview.Placement) -> some View {
+        let c = PanelCanvas(
+            preview: preview,
+            placement: placement,
+            selected: $sel,
+            onDrop: { id, target in layout.items = applyDrop(layout.items, placement, id, target) },
+            onCycleSize: { id in
+                setItem(id) { it in
+                    let all = DashSize.allCases
+                    it.size = all[(all.firstIndex(of: it.size)! + 1) % all.count]
+                }
+                sel = id
+            },
+            onRadarHeight: { id, pct in setItem(id) { $0.heightPercent = pct } })
+        if let status {
+            DevicePanel(status: status) { k in
+                c.frame(width: 540 * k).offset(y: preview.statusH * k)
+            }
+            .overlay(Rectangle().strokeBorder(Palette.ink, lineWidth: Rule.border))
+        } else {
+            c
         }
     }
 
@@ -165,7 +192,7 @@ struct DashboardPageEditorView: View {
                         .font(BarlowFont.condensed(19, .semibold))
                         .foregroundStyle(Palette.accentInk)
                         .frame(maxWidth: .infinity).frame(height: 44)
-                        .background(canAdd ? Palette.accent : Palette.faint, in: Capsule())
+                        .background(canAdd ? Palette.accent : Palette.faint, in: Rectangle())
                 }
                 .disabled(!canAdd)
                 Button {
@@ -178,7 +205,7 @@ struct DashboardPageEditorView: View {
                         .font(BarlowFont.condensed(19, .semibold))
                         .foregroundStyle(hasRadar ? Palette.faint : Palette.ink)
                         .frame(maxWidth: .infinity).frame(height: 44)
-                        .overlay(Capsule().strokeBorder(hasRadar ? Palette.hairline : Palette.ink,
+                        .overlay(Rectangle().strokeBorder(hasRadar ? Palette.hairline : Palette.ink,
                                                         lineWidth: hasRadar ? 1 : 1.5))
                 }
                 .disabled(hasRadar || !canAdd)
@@ -385,8 +412,8 @@ private struct PanelCanvas: View {
                 if let t = drag?.target { indicator(t, k: k) }
             }
             .frame(width: geo.size.width, height: preview.bodyH * k, alignment: .topLeading)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Palette.ink, lineWidth: 1))
+            .clipShape(Rectangle())
+            .overlay(Rectangle().strokeBorder(Palette.ink, lineWidth: 1))
         }
         .aspectRatio(preview.panelW / preview.bodyH, contentMode: .fit)
         .foregroundStyle(.black)
@@ -423,8 +450,8 @@ private struct PanelCanvas: View {
                         .font(BarlowFont.condensed(12, .semibold))
                         .foregroundStyle(isSel ? Palette.accentInk : Palette.muted)
                         .frame(width: 20, height: 20)
-                        .background(isSel ? Palette.accent : Palette.surface, in: Circle())
-                        .overlay(Circle().strokeBorder(isSel ? Palette.accent : Palette.hairline, lineWidth: 1))
+                        .background(isSel ? Palette.accent : Palette.surface, in: Rectangle())
+                        .overlay(Rectangle().strokeBorder(isSel ? Palette.accent : Palette.hairline, lineWidth: 1))
                 }
                 .buttonStyle(.plain)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
@@ -491,7 +518,7 @@ private struct PanelCanvas: View {
             switch t {
             case .before, .after:
                 let y: CGFloat = { if case .before = t { return row.y - preview.gutter / 2 } else { return row.y + row.h + preview.gutter / 2 } }()
-                RoundedRectangle(cornerRadius: 2)
+                Rectangle()
                     .fill(Palette.accent)
                     .frame(width: row.mainW * k, height: 4)
                     .offset(x: preview.margin * k, y: (y - preview.statusH) * k - 2)
@@ -555,8 +582,8 @@ private struct FieldTray: View {
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.horizontal, 12).padding(.vertical, 9)
-                            .background(Palette.surface, in: RoundedRectangle(cornerRadius: 12))
-                            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Palette.hairline, lineWidth: 1))
+                            .background(Palette.surface, in: Rectangle())
+                            .overlay(Rectangle().strokeBorder(Palette.ink, lineWidth: 2))
                         }
                         .buttonStyle(.plain)
                     }

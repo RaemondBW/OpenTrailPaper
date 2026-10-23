@@ -177,9 +177,9 @@ struct DiagnosticsView: View {
                         }
                         .padding(.horizontal, 8).padding(.vertical, 5)
                         .background(Palette.surface)
-                        .clipShape(RoundedRectangle(cornerRadius: 7))
-                        .overlay(RoundedRectangle(cornerRadius: 7)
-                            .strokeBorder(Palette.hairline, lineWidth: 1))
+                        .clipShape(Rectangle())
+                        .overlay(Rectangle()
+                            .strokeBorder(Palette.ink, lineWidth: 2))
                         .shadow(color: .black.opacity(0.10), radius: 4, y: 2)
                     }
             }

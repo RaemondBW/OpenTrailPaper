@@ -1,26 +1,28 @@
 import SwiftUI
 import CoreLocation
 import MapKit
+import CoreImage
 
 // Lists recorded rides on the device and downloads a selected .fit file
 // over BLE, then offers the system share sheet (Strava, Files, AirDrop…).
-struct RidesView: View {
-    @EnvironmentObject var ble: BLEManager
+struct RidesView: View, Equatable {
+    // Not @EnvironmentObject: see BLEScope — this screen redraws only when
+    // what it shows changes, not on every BLE publish.
+    @StateObject private var scope: BLEScope<RidesSnapshot>
+    private var ble: BLEManager { scope.ble }
+    init(ble: BLEManager) { _scope = StateObject(wrappedValue: BLEScope(ble, RidesSnapshot.init)) }
+    nonisolated static func == (a: RidesView, b: RidesView) -> Bool { true }
     @StateObject private var previews = RidePreviewStore()
     @State private var detail: RideDetailData?
     @State private var failedURL: URL?          // parsed badly → offer to share it
 
-    // Always show the pre-synced (locally cached) rides; when connected, merge in
-    // the device's live list too. Mid-ride the device refuses to list the SD (it's
-    // busy recording), so `ble.rides` is empty then — the cached rides keep showing
-    // instead of the view going blank. Newest first.
+    // The device's last-known ride list (kept across disconnects and launches)
+    // merged with the rides cached on this phone, newest first. Shown the same
+    // way connected or not, and while the device is re-checked, so reconnecting
+    // never blanks or rebuilds the list — a completed check only adds new rides
+    // and drops ones the device no longer has (unless they're cached here).
     private var displayedRides: [RideFile] {
-        let cached = BLEManager.cachedRides()
-        guard ble.state == .connected else { return cached }
-        var seen = Set<String>()
-        var out: [RideFile] = []
-        for r in ble.rides + cached where seen.insert(r.name).inserted { out.append(r) }
-        return out.sorted { $0.name > $1.name }
+        BLEManager.mergeRides(device: ble.rides, cached: BLEManager.cachedRides())
     }
 
     // Show a cached ride immediately; otherwise pull it over BLE. Downloads are
@@ -46,45 +48,59 @@ struct RidesView: View {
         ble.downloadRide(name)
     }
 
-    // Big title + sync status + refresh (mockup 2c).
+    // RIDES title, how many the device holds, and refresh / connect.
     private var header: some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text("Rides").font(TypeScale.screenTitle).foregroundStyle(Palette.ink)
-            Spacer()
-            Text(ble.state == .connected
-                 ? (ble.loadingRides ? "Syncing…" : "Synced")
-                 : "Offline")
-                .font(BarlowFont.text(13, .medium)).foregroundStyle(Palette.muted)
-            Button {
-                if ble.state == .connected { ble.refreshRides() } else { ble.startScan() }
-            } label: {
-                Image(systemName: ble.state == .connected ? "arrow.clockwise"
-                                                           : "antenna.radiowaves.left.and.right")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(Palette.accent)
-                    .padding(8).background(Palette.surface).clipShape(Circle())
-                    .overlay(Circle().strokeBorder(Palette.hairline, lineWidth: 1))
+        ScreenHeader(title: "Rides") {
+            HStack(spacing: 10) {
+                Text(headerStatus)
+                    .font(BarlowFont.text(12, .bold)).tracking(2)
+                    .foregroundStyle(Palette.ink)
+                    .lineLimit(1).minimumScaleFactor(0.7)
+                SquareIconButton(
+                    systemName: ble.state == .connected ? "arrow.clockwise"
+                                                        : "antenna.radiowaves.left.and.right",
+                    label: ble.state == .connected ? "Check for new rides" : "Connect to device") {
+                    if ble.state == .connected { ble.refreshRides() } else { ble.startScan() }
+                }
             }
         }
-        .padding(.top, 8)
+    }
+
+    private var headerStatus: String {
+        guard ble.state == .connected else { return "OFFLINE" }
+        return ble.rides.isEmpty ? "SYNCED" : "\(ble.rides.count) ON DEVICE"
     }
 
     // Shown while the device is actively recording, so the tab makes clear a ride
     // is underway (and why new rides haven't synced yet).
     private var inProgressBanner: some View {
-        Card {
-            HStack(spacing: 12) {
-                Image(systemName: "record.circle.fill")
-                    .font(.system(size: 22)).foregroundStyle(.red)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Ride in progress")
-                        .font(BarlowFont.text(15, .semibold)).foregroundStyle(Palette.ink)
-                    Text("Recording to the SD card — it'll sync here when you stop.")
-                        .font(BarlowFont.text(12)).foregroundStyle(Palette.muted)
-                }
-                Spacer()
+        HStack(spacing: 12) {
+            Tag(text: "● REC", inverted: true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("RIDE IN PROGRESS").font(BarlowFont.text(12, .bold)).tracking(2)
+                Text("Recording to the SD card — it'll sync here when you stop.")
+                    .font(BarlowFont.text(13))
             }
+            Spacer(minLength: 0)
         }
+        .foregroundStyle(Palette.ink)
+        .padding(.horizontal, 12).padding(.vertical, 10)
+        .einkBorder()
+        .accessibilityElement(children: .combine)
+    }
+
+    // Inline status above the list while the device's ride list is being
+    // fetched — the cached rides stay visible underneath it.
+    private var checkingRow: some View {
+        HStack(spacing: 10) {
+            BlockSpinner()
+            Text("CHECKING FOR NEW RIDES")
+                .font(BarlowFont.text(12, .bold)).tracking(2).foregroundStyle(Palette.ink)
+            Spacer()
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Checking for new rides")
+        .transition(.opacity)
     }
 
     // Week roll-up from whatever previews are decoded (fills in as rows load).
@@ -93,26 +109,38 @@ struct RidesView: View {
         let loaded = recent.compactMap { previews.preview(for: $0.name) }
         let dist = loaded.reduce(0.0) { $0 + $1.distanceKm }
         let time = loaded.reduce(0.0) { $0 + $1.duration }
-        return Card {
-            HStack {
-                summaryCell("\(recent.count)", "rides this week")
-                Spacer()
-                summaryCell(String(format: "%.1f", Units.distance(dist, miles: useMiles)),
-                            "\(Units.distLabel(useMiles)) distance")
-                Spacer()
-                summaryCell(timeStrShort(time), "riding time")
-            }
+        return HStack(spacing: 0) {
+            summaryCell("This week", "\(recent.count)", recent.count == 1 ? "ride" : "rides")
+            Rectangle().fill(Palette.ink).frame(width: Rule.divider)
+            summaryCell("Distance", String(format: "%.0f", Units.distance(dist, miles: useMiles)),
+                        Units.distLabel(useMiles))
+            Rectangle().fill(Palette.ink).frame(width: Rule.divider)
+            summaryCell("Time", hoursMinutes(time), "hours")
         }
+        .fixedSize(horizontal: false, vertical: true)
+        .einkBorder()
     }
 
-    private func summaryCell(_ value: String, _ label: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(value).font(TypeScale.value(26)).foregroundStyle(Palette.ink)
-            Text(label).font(BarlowFont.text(12)).foregroundStyle(Palette.muted)
+    private func summaryCell(_ label: String, _ value: String, _ unit: String) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(label).trackedLabel().lineLimit(1).minimumScaleFactor(0.7)
+            Text(value).font(DisplayFont.anton(34)).foregroundStyle(Palette.ink)
+                .lineLimit(1).minimumScaleFactor(0.6)
+            Text(unit).font(BarlowFont.text(12)).foregroundStyle(Palette.ink)
         }
+        .padding(.horizontal, 12).padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+    }
+
+    private func hoursMinutes(_ s: TimeInterval) -> String {
+        let m = Int(s) / 60
+        return String(format: "%d:%02d", m / 60, m % 60)
     }
 
     @AppStorage(UnitPref.key) private var useMiles = false
+    /// Watched so a ride's tag turns "✓ STRAVA" as soon as its upload lands.
+    @AppStorage(UploadLog.key) private var uploadsRaw = ""
 
     private func daysAgo(_ name: String) -> Int {
         guard let d = Self.rideDate(name) else { return 9999 }
@@ -137,23 +165,28 @@ struct RidesView: View {
     }
 
     var body: some View {
+        let _ = PerfMonitor.body("Rides")
         NavigationStack {
+            VStack(spacing: 0) {
+            header
             ScrollView {
                 let rides = displayedRides
-                VStack(spacing: 14) {
-                    header
+                let checking = ble.state == .connected && ble.loadingRides
+                VStack(spacing: 12) {
                     if ble.status.recording { inProgressBanner }
+                    if checking { checkingRow }
                     if !rides.isEmpty { summary(rides) }
 
-                    if ble.state == .connected && ble.loadingRides {
-                        ProgressView("Loading rides…").padding(.top, 30)
-                    } else if rides.isEmpty {
+                    // With nothing cached yet, the checking row above stands in
+                    // for the empty state until the device answers.
+                    if rides.isEmpty && !checking {
                         Card {
                             VStack(alignment: .leading, spacing: 6) {
                                 Text(ble.status.recording ? "No synced rides yet"
                                      : ble.state == .connected ? "No rides found"
                                                                : "No cached rides")
-                                    .font(TypeScale.title).foregroundStyle(Palette.ink)
+                                    .font(TypeScale.title).textCase(.uppercase)
+                                    .foregroundStyle(Palette.ink)
                                 Text(ble.status.recording
                                      ? "The current ride is being recorded to the SD card — it'll appear here once you finish and stop it."
                                      : ble.state == .connected
@@ -162,14 +195,16 @@ struct RidesView: View {
                                     .font(BarlowFont.text(14)).foregroundStyle(Palette.muted)
                             }
                         }
-                    } else {
-                        ForEach(rides) { ride in
+                    } else if !rides.isEmpty {
+                        ForEach(Array(rides.enumerated()), id: \.element.id) { i, ride in
                             RideRow(ride: ride,
+                                    featured: i == 0,
                                     cached: BLEManager.isCached(ride.name),
                                     preview: previews.preview(for: ride.name),
                                     downloading: ble.downloadingName == ride.name,
                                     queued: ble.queuedDownloads.contains(ride.name),
                                     progress: ble.downloadProgress,
+                                    uploads: UploadLog.providers(for: ride.name, raw: uploadsRaw),
                                     onTap: { open(ride) },
                                     onDelete: {
                                         ble.deleteRide(ride.name)
@@ -182,6 +217,8 @@ struct RidesView: View {
                     }
                 }
                 .padding(16)
+                .animation(.easeInOut(duration: 0.2), value: checking)
+            }
             }
             .background(Palette.paper.ignoresSafeArea())
             .navigationBarHidden(true)
@@ -206,7 +243,8 @@ struct RidesView: View {
                    let data = try? Data(contentsOf: url),
                    let preview = FITDecoder.decode(data) {
                     detail = RideDetailData(url: url, preview: preview)
-                } else if ble.rides.isEmpty {
+                } else if ble.state == .connected, !ble.loadingRides,
+                          !ble.ridesCheckedThisLink {
                     ble.refreshRides()
                 }
             }
@@ -246,44 +284,30 @@ struct RideDetailData: Identifiable {
 
 private struct RideRow: View {
     let ride: RideFile
+    /// The newest ride: a big card with its map. The rest are compact rows.
+    let featured: Bool
     let cached: Bool
     let preview: RidePreview?
     let downloading: Bool
     let queued: Bool
     let progress: Double
+    let uploads: [SyncProvider]
     let onTap: () -> Void
     let onDelete: () -> Void
     @AppStorage(UnitPref.key) private var useMiles = false
 
     var body: some View {
         Button(action: onTap) {
-            Card {
-                VStack(spacing: 12) {
-                    banner
-                    HStack(alignment: .top, spacing: 12) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            HStack(spacing: 6) {
-                                Text(rideName).font(BarlowFont.condensed(20, .semibold))
-                                    .foregroundStyle(Palette.ink)
-                                Text(dateSubtitle).font(BarlowFont.text(13))
-                                    .foregroundStyle(Palette.muted)
-                            }
-                            if let p = preview {
-                                stats(p).padding(.top, 6)
-                            } else {
-                                Text(String(format: "%.0f KB · not downloaded",
-                                            Double(ride.size) / 1024))
-                                    .font(BarlowFont.text(12)).foregroundStyle(Palette.muted)
-                                    .padding(.top, 4)
-                            }
-                        }
-                        Spacer()
-                        trailing
-                    }
-                }
+            Group {
+                if featured { bigCard } else { compactRow }
             }
+            .background(Palette.paper)
+            .einkBorder()
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
+        .accessibilityHint(cached ? "Opens the ride" : "Downloads the ride from the device")
         .contextMenu {
             Button(role: .destructive, action: onDelete) {
                 Label("Delete ride", systemImage: "trash")
@@ -291,85 +315,145 @@ private struct RideRow: View {
         }
     }
 
-    // Large map banner: a real map snapshot with the route drawn on it once the
-    // ride is decoded, otherwise a prompt to download.
+    // The latest ride: map on top, then name, date and four numbers.
+    private var bigCard: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            banner
+                .frame(height: 150)
+                .clipped()
+                .overlay(alignment: .bottom) { Rectangle().fill(Palette.ink).frame(height: Rule.border) }
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(rideName).font(BarlowFont.text(16, .bold)).foregroundStyle(Palette.ink)
+                        .lineLimit(1)
+                    Spacer(minLength: 6)
+                    Text(dateSubtitle.uppercased()).font(BarlowFont.text(12, .semibold))
+                        .foregroundStyle(Palette.ink)
+                }
+                if let p = preview {
+                    HStack(alignment: .top, spacing: 6) {
+                        bigStat(String(format: "%.1f", Units.distance(p.distanceKm, miles: useMiles)),
+                                Units.distLabel(useMiles))
+                        bigStat(clock(p.duration), "Time")
+                        bigStat(String(format: "%.1f", Units.speed(p.avgSpeedKmh, miles: useMiles)),
+                                Units.speedLabel(useMiles))
+                        bigStat(p.avgPower.map(String.init) ?? "--", "W avg")
+                    }
+                } else {
+                    HStack { statusLine; Spacer(); tag }
+                }
+            }
+            .padding(.horizontal, 12).padding(.vertical, 10)
+        }
+    }
+
+    private func bigStat(_ value: String, _ label: String) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(value).font(DisplayFont.anton(22)).foregroundStyle(Palette.ink)
+                .lineLimit(1).minimumScaleFactor(0.6)
+            Text(label.uppercased()).font(BarlowFont.text(11, .bold)).tracking(1)
+                .foregroundStyle(Palette.ink).lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // An older ride: track glyph, name and stats on one line, state tag.
+    private var compactRow: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                Palette.paper
+                if let p = preview, p.coordinates.count > 1 {
+                    RouteThumbnail(coords: p.coordinates).padding(6)
+                } else {
+                    Image(systemName: cached ? "map" : "arrow.down")
+                        .font(.system(size: 16, weight: .bold)).foregroundStyle(Palette.ink)
+                }
+            }
+            .frame(width: 64, height: 48)
+            .einkBorder()
+            .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(rideName).font(BarlowFont.text(15, .bold)).foregroundStyle(Palette.ink)
+                    .lineLimit(1).minimumScaleFactor(0.8)
+                statusLine
+            }
+            Spacer(minLength: 4)
+            tag
+        }
+        .padding(.horizontal, 12).padding(.vertical, 10)
+    }
+
+    @ViewBuilder private var statusLine: some View {
+        if let p = preview {
+            Text(String(format: "%.1f %@ · %@ · %.1f %@",
+                        Units.distance(p.distanceKm, miles: useMiles), Units.distLabel(useMiles),
+                        clock(p.duration),
+                        Units.speed(p.avgSpeedKmh, miles: useMiles), Units.speedLabel(useMiles)))
+                .font(BarlowFont.text(13)).foregroundStyle(Palette.ink).lineLimit(1)
+                .minimumScaleFactor(0.8)
+        } else if downloading {
+            BlockProgressBar(value: progress, segments: 8, height: 8).frame(maxWidth: 120)
+        } else {
+            Text(dateSubtitle + String(format: " · %.0f KB", Double(ride.size) / 1024))
+                .font(BarlowFont.text(13)).foregroundStyle(Palette.ink).lineLimit(1)
+        }
+    }
+
+    // ✓ STRAVA once uploaded; else where the ride is, or the transfer state.
+    @ViewBuilder private var tag: some View {
+        if downloading {
+            Tag(text: "\(Int(progress * 100))%")
+        } else if queued {
+            Tag(text: "Queued")
+        } else if let first = uploads.first {
+            Tag(text: "✓ " + first.shortTitle + (uploads.count > 1 ? " +\(uploads.count - 1)" : ""),
+                inverted: true)
+        } else if cached {
+            Tag(text: "On phone")
+        } else {
+            Tag(text: "On device")
+        }
+    }
+
+    // Map banner for the big card: a real map snapshot with the route drawn on
+    // it once the ride is decoded, otherwise a prompt to download.
     @ViewBuilder private var banner: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 12).fill(Palette.paper)
+            Palette.paper
             if let p = preview, p.coordinates.count > 1 {
                 RouteMapThumbnail(name: ride.name, coords: p.coordinates)
             } else if downloading {
                 VStack(spacing: 8) {
-                    ProgressView(value: progress)
-                        .frame(maxWidth: 160)
-                    Text("Downloading…").font(.system(size: 12))
-                        .foregroundStyle(Palette.muted)
+                    BlockProgressBar(value: progress).frame(maxWidth: 180)
+                    Text("DOWNLOADING…").font(BarlowFont.text(12, .bold)).tracking(2)
                 }
             } else if queued {
                 VStack(spacing: 8) {
-                    Image(systemName: "clock.arrow.circlepath")
-                        .font(.system(size: 30)).foregroundStyle(Palette.muted)
-                    Text("Queued — starts after the current download")
-                        .font(.system(size: 12)).foregroundStyle(Palette.muted)
+                    BlockSpinner()
+                    Text("QUEUED — STARTS AFTER THE CURRENT DOWNLOAD")
+                        .font(BarlowFont.text(11, .bold)).tracking(1.5)
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 16)
                 }
             } else {
                 VStack(spacing: 8) {
-                    Image(systemName: cached ? "map" : "arrow.down.circle")
-                        .font(.system(size: 30)).foregroundStyle(Palette.muted)
-                    Text(cached ? "Loading map…" : "Tap to download")
-                        .font(.system(size: 12)).foregroundStyle(Palette.muted)
+                    Image(systemName: cached ? "map" : "arrow.down.square")
+                        .font(.system(size: 28, weight: .bold))
+                    Text(cached ? "LOADING MAP…" : "TAP TO DOWNLOAD")
+                        .font(BarlowFont.text(12, .bold)).tracking(2)
                 }
+                .padding(14)
+                .background(Palette.paper)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(HatchedBackground())
             }
         }
-        .frame(height: 170)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12)
-            .strokeBorder(Palette.hairline, lineWidth: 1))
+        .foregroundStyle(Palette.ink)
     }
 
-    @ViewBuilder private func stats(_ p: RidePreview) -> some View {
-        HStack(spacing: 14) {
-            statItem(String(format: "%.1f %@",
-                            Units.distance(p.distanceKm, miles: useMiles),
-                            Units.distLabel(useMiles)), "Distance")
-            statItem(timeStr(p.duration), "Time")
-            statItem(String(format: "%.1f", Units.speed(p.avgSpeedKmh, miles: useMiles)),
-                     "\(Units.speedLabel(useMiles)) avg")
-            if let w = p.avgPower { statItem("\(w) W", "Power") }
-        }
-    }
-
-    private func statItem(_ value: String, _ label: String) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text(value).font(BarlowFont.condensed(16, .semibold))
-                .foregroundStyle(Palette.ink)
-            Text(label).font(BarlowFont.text(10)).foregroundStyle(Palette.muted)
-        }
-    }
-
-    @ViewBuilder private var trailing: some View {
-        if downloading {
-            ProgressView(value: progress).frame(width: 54)
-        } else if queued {
-            Image(systemName: "clock")
-                .font(.system(size: 18, weight: .semibold))
-                .foregroundStyle(Palette.muted)
-        } else if cached {
-            Image(systemName: "chevron.right")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(Palette.muted)
-        } else {
-            Image(systemName: "square.and.arrow.down")
-                .font(.system(size: 20, weight: .semibold))
-                .foregroundStyle(Palette.accent)
-        }
-    }
-
-    private func timeStr(_ s: TimeInterval) -> String {
-        let m = Int(s) / 60, h = m / 60
-        return h > 0 ? "\(h)h \(m % 60)m" : "\(m)m"
+    private func clock(_ s: TimeInterval) -> String {
+        let m = Int(s) / 60
+        return String(format: "%d:%02d", m / 60, m % 60)
     }
 
     // Human name like "Saturday afternoon ride" from the file's timestamp.
@@ -399,39 +483,29 @@ private struct RideParseErrorView: View {
     var body: some View {
         VStack(spacing: 20) {
             Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 44))
-                .foregroundStyle(Palette.accent)
+                .font(.system(size: 40, weight: .bold))
+                .foregroundStyle(Palette.ink)
+                .frame(width: 72, height: 72)
+                .background(HatchedBackground())
+                .einkBorder()
             Text("Couldn't read this ride")
-                .font(TypeScale.title).foregroundStyle(Palette.ink)
+                .font(TypeScale.title).textCase(.uppercase).foregroundStyle(Palette.ink)
             Text(canRetry
                  ? "The app couldn't parse this file. Download it again from the device, or share the raw .fit so it can be analyzed."
                  : "The full file downloaded but the app couldn't parse it. Share the raw .fit file so it can be analyzed.")
                 .font(TypeScale.body).foregroundStyle(Palette.muted)
                 .multilineTextAlignment(.center)
             if canRetry {
-                Button {
+                PrimaryButton(title: "Download again", systemImage: "arrow.clockwise") {
                     dismiss()
                     onRetry()
-                } label: {
-                    Label("Download again", systemImage: "arrow.clockwise")
-                        .font(.system(size: 17, weight: .semibold))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 14)
-                        .background(Palette.accent)
-                        .foregroundStyle(.white)
-                        .clipShape(RoundedRectangle(cornerRadius: 14))
                 }
             }
             ShareLink(item: url) {
-                Label("Share .fit file", systemImage: "square.and.arrow.up")
-                    .font(.system(size: 17, weight: .semibold))
+                BlockButtonLabel(title: "Share .fit file", systemImage: "square.and.arrow.up",
+                                 filled: !canRetry)
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, 14)
-                    .background(canRetry ? Palette.surface : Palette.accent)
-                    .foregroundStyle(canRetry ? Palette.ink : .white)
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
-                    .overlay(RoundedRectangle(cornerRadius: 14)
-                        .strokeBorder(canRetry ? Palette.hairline : .clear, lineWidth: 1))
+                    .background(canRetry ? Palette.paper : Palette.ink)
             }
             Button("Close") { dismiss() }
                 .foregroundStyle(Palette.muted)
@@ -479,11 +553,16 @@ struct RouteMapThumbnail: View {
     @State private var image: UIImage?
 
     private static let cache = NSCache<NSString, UIImage>()
+    private static func key(_ name: String, _ size: CGSize) -> NSString {
+        "\(name)@\(Int(size.width))x\(Int(size.height))" as NSString
+    }
 
     var body: some View {
         GeometryReader { geo in
             ZStack {
-                if let image {
+                // Read the cache synchronously too, so a row that SwiftUI
+                // rebuilds shows its map at once instead of the glyph first.
+                if let image = image ?? Self.cache.object(forKey: Self.key(name, geo.size)) {
                     Image(uiImage: image).resizable().scaledToFill()
                 } else {
                     RouteThumbnail(coords: coords).padding(10)
@@ -496,7 +575,7 @@ struct RouteMapThumbnail: View {
 
     private func load(size: CGSize) async {
         guard size.width > 1, size.height > 1, coords.count > 1 else { return }
-        let key = "\(name)@\(Int(size.width))x\(Int(size.height))" as NSString
+        let key = Self.key(name, size)
         if let cached = Self.cache.object(forKey: key) { image = cached; return }
         if let img = await Self.render(coords: coords, size: size) {
             Self.cache.setObject(img, forKey: key)
@@ -521,6 +600,9 @@ struct RouteMapThumbnail: View {
         opts.size = size
         opts.showsBuildings = false
         opts.pointOfInterestFilter = .excludingAll
+        // Muted, then fully desaturated below: the map sits in the app's
+        // black-and-white look with the ride drawn on it in ink.
+        opts.preferredConfiguration = MKStandardMapConfiguration(emphasisStyle: .muted)
 
         let snapshotter = MKMapSnapshotter(options: opts)
         let snapshot: MKMapSnapshotter.Snapshot? = await withCheckedContinuation { cont in
@@ -530,25 +612,42 @@ struct RouteMapThumbnail: View {
         }
         guard let snapshot else { return nil }
 
-        let accent = UIColor(Palette.accent)
-        let good = UIColor(Palette.good)
+        let base = grayscale(snapshot.image) ?? snapshot.image
         let renderer = UIGraphicsImageRenderer(size: snapshot.image.size)
         return renderer.image { rctx in
-            snapshot.image.draw(at: .zero)
+            base.draw(in: CGRect(origin: .zero, size: snapshot.image.size))
             let cg = rctx.cgContext
-            cg.setLineWidth(3.5)
             cg.setLineJoin(.round); cg.setLineCap(.round)
-            cg.setStrokeColor(accent.cgColor)
+            let path = CGMutablePath()
             for (i, c) in coords.enumerated() {
                 let pt = snapshot.point(for: c)
-                if i == 0 { cg.move(to: pt) } else { cg.addLine(to: pt) }
+                if i == 0 { path.move(to: pt) } else { path.addLine(to: pt) }
             }
-            cg.strokePath()
-            // Start marker.
+            // White casing under the black line, as the device draws routes.
+            cg.addPath(path); cg.setLineWidth(7); cg.setStrokeColor(UIColor.white.cgColor); cg.strokePath()
+            cg.addPath(path); cg.setLineWidth(3.5); cg.setStrokeColor(UIColor.black.cgColor); cg.strokePath()
+            // Start: a white ring. End: a black square.
             let s = snapshot.point(for: coords[0])
-            cg.setFillColor(good.cgColor)
-            cg.fillEllipse(in: CGRect(x: s.x - 4, y: s.y - 4, width: 8, height: 8))
+            let ring = CGRect(x: s.x - 5, y: s.y - 5, width: 10, height: 10)
+            cg.setFillColor(UIColor.white.cgColor); cg.fillEllipse(in: ring)
+            cg.setStrokeColor(UIColor.black.cgColor); cg.setLineWidth(2.5); cg.strokeEllipse(in: ring)
+            let e = snapshot.point(for: coords[coords.count - 1])
+            cg.setFillColor(UIColor.black.cgColor)
+            cg.fill(CGRect(x: e.x - 5, y: e.y - 5, width: 10, height: 10))
         }
+    }
+
+    /// The snapshot without colour, contrast nudged up so roads stay legible.
+    private static func grayscale(_ image: UIImage) -> UIImage? {
+        guard let input = CIImage(image: image),
+              let filter = CIFilter(name: "CIColorControls") else { return nil }
+        filter.setValue(input, forKey: kCIInputImageKey)
+        filter.setValue(0.0, forKey: kCIInputSaturationKey)
+        filter.setValue(1.15, forKey: kCIInputContrastKey)
+        filter.setValue(0.04, forKey: kCIInputBrightnessKey)
+        guard let out = filter.outputImage,
+              let cg = CIContext().createCGImage(out, from: input.extent) else { return nil }
+        return UIImage(cgImage: cg, scale: image.scale, orientation: image.imageOrientation)
     }
 }
 
@@ -581,12 +680,12 @@ struct RouteThumbnail: View {
             var path = Path()
             path.move(to: pt(coords[0]))
             for c in coords.dropFirst() { path.addLine(to: pt(c)) }
-            ctx.stroke(path, with: .color(Palette.accent),
-                       style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+            ctx.stroke(path, with: .color(Palette.ink),
+                       style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
             ctx.fill(Path(ellipseIn: CGRect(x: pt(coords[0]).x - 2.5,
                                             y: pt(coords[0]).y - 2.5,
                                             width: 5, height: 5)),
-                     with: .color(Palette.good))
+                     with: .color(Palette.ink))
         }
     }
 }

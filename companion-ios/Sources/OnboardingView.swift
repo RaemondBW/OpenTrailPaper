@@ -85,7 +85,7 @@ struct OnboardingView: View {
     private var dots: some View {
         HStack(spacing: 7) {
             ForEach(0...lastStep, id: \.self) { i in
-                Capsule()
+                Rectangle()
                     .fill(i == step ? Palette.accent : Palette.hairline)
                     .frame(width: i == step ? 20 : 7, height: 7)
                     .animation(.easeInOut, value: step)
@@ -300,9 +300,9 @@ struct OnboardingView: View {
         }
         .padding(.horizontal, 16).padding(.vertical, 12)
         .background(Palette.surface)
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
-            .strokeBorder(Palette.hairline, lineWidth: 1))
+        .clipShape(Rectangle())
+        .overlay(Rectangle()
+            .strokeBorder(Palette.ink, lineWidth: 2))
     }
 
     private func tint(_ state: PermissionState) -> Color {
@@ -357,8 +357,8 @@ struct OnboardingView: View {
         .padding(.horizontal, 18)
         .padding(.vertical, 12)
         .background(Palette.surface)
-        .clipShape(Capsule())
-        .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))
+        .clipShape(Rectangle())
+        .overlay(Rectangle().strokeBorder(Palette.ink, lineWidth: 2))
     }
 
     private var connectStatusText: String {
@@ -435,8 +435,8 @@ struct OnboardingView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
             .background(selected ? Palette.accentWash : .clear)
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
+            .clipShape(Rectangle())
+            .overlay(Rectangle()
                 .strokeBorder(selected ? Palette.accent.opacity(0.35) : .clear, lineWidth: 1))
         }
         .buttonStyle(.plain)

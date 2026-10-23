@@ -20,6 +20,18 @@ intervals.icu icon
   Icons by selfh.st/icons (CC BY 4.0)
   https://selfh.st/icons/  https://creativecommons.org/licenses/by/4.0/
 
+Anton (typeface)
+  companion-ios/Sources/Fonts/Anton-Regular.ttf
+  Copyright 2020 The Anton Project Authors (https://github.com/googlefonts/AntonFont.git)
+  Licensed under the SIL Open Font License, Version 1.1
+  (companion-ios/Sources/Fonts/Anton-OFL.txt, https://openfontlicense.org)
+
+Barlow and Barlow Condensed (typefaces)
+  companion-ios/Sources/Fonts/Barlow-*.ttf, BarlowCondensed-*.ttf
+  Copyright 2017 The Barlow Project Authors (https://github.com/jpt/barlow)
+  Licensed under the SIL Open Font License, Version 1.1
+  (companion-ios/Sources/Fonts/Barlow-OFL.txt, https://openfontlicense.org)
+
 Service logos (Strava, Ride with GPS, intervals.icu) are trademarks of their
 owners, shown only to label uploads to those services.
 

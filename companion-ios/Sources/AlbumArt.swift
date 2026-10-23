@@ -48,6 +48,9 @@ struct MediaTrack: Equatable {
 /// background. Older firmware never sends one; then only the Music app's own
 /// change notifications (foreground only) can trigger a send.
 let artLog = Logger(subsystem: "com.raemond.opentrailpaper", category: "art")
+/// Workout characteristic traffic (opcode, loaded flag), for diagnosing on a
+/// phone with `log stream --predicate 'category == "workout"'`.
+let workoutLog = Logger(subsystem: "com.raemond.opentrailpaper", category: "workout")
 
 @MainActor
 final class AlbumArtFeeder: ObservableObject {
@@ -65,6 +68,13 @@ final class AlbumArtFeeder: ObservableObject {
             if onlineLookup { evaluate() }
         }
     }
+
+    /// What the device's MUSIC page shows, for the Ride tab's copy of it: the
+    /// AMS track the device reported, and the cover sent for it (8-bit gray,
+    /// `side`×`side`; the page dithers it the way the device does).
+    @Published private(set) var nowPlaying: MediaTrack?
+    struct Cover: Equatable { let key: String; let gray: [UInt8] }
+    @Published private(set) var cover: Cover?
 
     private var active = false
     private var observing = false
@@ -96,6 +106,7 @@ final class AlbumArtFeeder: ObservableObject {
     /// The link went down: the next device starts with no art from us.
     func linkDown() {
         deviceTrack = nil
+        nowPlaying = nil
         sentKey = nil
         cancelWork()
     }
@@ -105,7 +116,14 @@ final class AlbumArtFeeder: ObservableObject {
         guard t != deviceTrack else { return }
         artLog.info("device track: \(t.title, privacy: .public) / \(t.artist, privacy: .public) / \(t.album, privacy: .public)")
         deviceTrack = t
+        nowPlaying = t.title.isEmpty ? nil : t
         evaluate()
+    }
+
+    /// Screenshot hook (-demo-live): a track and a cover on the MUSIC page.
+    func showDemo(_ t: MediaTrack, gray: [UInt8]) {
+        nowPlaying = t
+        cover = Cover(key: t.key, gray: gray)
     }
 
     func requestLibraryAccess() {
@@ -171,6 +189,7 @@ final class AlbumArtFeeder: ObservableObject {
             if ok {
                 self.sentKey = key
                 self.remember(key, gray)
+                self.cover = Cover(key: key, gray: gray)
             }
         }
     }

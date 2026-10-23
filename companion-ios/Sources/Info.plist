@@ -63,6 +63,8 @@
 		<string>Barlow-Regular.ttf</string>
 		<string>Barlow-Medium.ttf</string>
 		<string>Barlow-SemiBold.ttf</string>
+		<string>Barlow-Bold.ttf</string>
+		<string>Anton-Regular.ttf</string>
 	</array>
 	<key>UIBackgroundModes</key>
 	<array>

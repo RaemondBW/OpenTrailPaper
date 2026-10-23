@@ -74,6 +74,20 @@ targets:
   # Widget extension whose only job is the transfer Live Activity. It shares
   # nothing with the app but the ActivityAttributes type in Shared/ (ActivityKit
   # carries the state across), so no App Group is needed.
+  # UI tests: scroll smoothness of the tab screens (ScrollSmoothnessTests).
+  OpenTrailPaperUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - UITests
+    dependencies:
+      - target: OpenTrailPaper
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.raemond.opentrailpaper.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: OpenTrailPaper
+        TARGETED_DEVICE_FAMILY: "1"
   TransferWidget:
     type: app-extension
     platform: iOS
@@ -86,3 +100,16 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.raemond.opentrailpaper.TransferWidget
         TARGETED_DEVICE_FAMILY: "1"
         SKIP_INSTALL: YES
+schemes:
+  OpenTrailPaper:
+    build:
+      targets:
+        OpenTrailPaper: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - OpenTrailPaperUITests
+    archive:
+      config: Release

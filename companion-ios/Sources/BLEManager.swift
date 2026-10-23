@@ -64,10 +64,29 @@ struct DeviceMap: Identifiable, Equatable {
 }
 
 // A recorded ride file on the device.
-struct RideFile: Identifiable, Hashable {
+struct RideFile: Identifiable, Hashable, Codable {
     let name: String
     let size: Int
     var id: String { name }
+}
+
+/// The device's ride list as last seen, saved per device (keyed like the
+/// settings cache) so the Rides tab can show it at launch and while
+/// disconnected, before the device is asked again.
+struct RideListingStore {
+    private static func key(_ id: String) -> String { "rideListing.\(id)" }
+
+    let defaults: UserDefaults
+
+    func load(_ id: String) -> [RideFile] {
+        guard let d = defaults.data(forKey: Self.key(id)),
+              let list = try? JSONDecoder().decode([RideFile].self, from: d) else { return [] }
+        return list
+    }
+
+    func save(_ list: [RideFile], for id: String) {
+        if let d = try? JSONEncoder().encode(list) { defaults.set(d, forKey: Self.key(id)) }
+    }
 }
 
 // A per-day diagnostics log file on the device (/logs/YYYYMMDD.log).
@@ -368,8 +387,16 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var bluetoothPoweredOn = false
 
     // Ride download
+    /// The device's ride list as last seen — kept across disconnects and
+    /// relaunches (saved per device, see RideListingStore) so the Rides tab
+    /// never blanks while the device is re-checked. Replaced only when a new
+    /// list completes.
     @Published var rides: [RideFile] = []
     @Published var loadingRides = false
+    /// The ride list has completed (or been refused) on this link, so opening
+    /// the Rides tab again doesn't re-ask the device.
+    private(set) var ridesCheckedThisLink = false
+    private let rideListingStore = RideListingStore(defaults: .standard)
     @Published var downloadingName: String? = nil
     @Published var downloadProgress: Double = 0
     @Published var downloadedFileURL: URL? = nil       // set when a ride is ready
@@ -387,6 +414,9 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var deviceLogs: [LogFile] = []        // per-day log files on the device
     @Published var loadingLogs = false
     private var logsBuilding: [LogFile] = []
+    // Device ride-list entries collect here and replace `rides` only when the
+    // list completes, so a refresh doesn't blank the Rides tab mid-fetch.
+    private var ridesBuilding: [RideFile] = []
     // Firmware now comes from GitHub Releases at runtime (FirmwareRelease), not
     // from a copy baked into the app. See that file for why the bundle went.
 
@@ -580,6 +610,9 @@ final class BLEManager: NSObject, ObservableObject {
     /// firmware that predates it never answers, so this stays false and art
     /// goes as 8-bit grayscale.
     private var mediaToneArt = false
+    /// The device takes [0x04] remote commands and sends them on over AMS,
+    /// so the app's MUSIC buttons reach whatever app is playing.
+    @Published private(set) var mediaRemote = false
     /// A media notification arrived on this link: notifications are on even
     /// if the state callback never said so. iOS keeps the link up for AMS
     /// when the app is relaunched, and the callback has been seen missing.
@@ -614,6 +647,25 @@ final class BLEManager: NSObject, ObservableObject {
     private var workoutListBuild: [String] = []
     struct FetchedWorkout: Equatable { let name: String; let text: String }
     @Published var fetchedWorkout: FetchedWorkout?
+    /// The loaded workout's file, for the Ride tab's WORKOUT page (its block
+    /// profile and the block strips). From the phone's library when it is
+    /// there, else pulled off the device; kept apart from `fetchedWorkout`,
+    /// which opens the builder.
+    @Published private(set) var loadedWorkoutFile: FetchedWorkout?
+    private var workoutFetchForPage = false
+    /// The loaded workout's title while its file waits on the /workouts list.
+    private var workoutPageAwaitingList = ""
+    /// A title whose file isn't on the device (or failed to read): not asked
+    /// for again until a different workout loads.
+    private var workoutPageGaveUp = "" {
+        didSet { loadedWorkoutFileUnavailable = !workoutPageGaveUp.isEmpty }
+    }
+    /// The WORKOUT page couldn't get the loaded workout's file, so it shows
+    /// the session without its block profile rather than "Reading…".
+    @Published private(set) var loadedWorkoutFileUnavailable = false
+    /// The route last sent from this phone, drawn on the Ride tab's MAP page
+    /// while the device reports one active (it can't send its own back).
+    @Published var sentRouteCoords: [CLLocationCoordinate2D] = []
     private var workoutFetchBuf = Data()
     private var workoutFetchName = ""
     /// Rebuilt from the device's stream, then published in one go at the end
@@ -777,6 +829,9 @@ final class BLEManager: NSObject, ObservableObject {
     // reads the layout FROM the device, so without this it can only show its
     // "connect first" empty state.
     private let isDemoDash = ProcessInfo.processInfo.arguments.contains("-demo-dash")
+    // Screenshot demo: a connected device mid-ride, for the Ride tab's live
+    // dashboard — two field pages and the map, with numbers in the tiles.
+    private let isDemoLive = ProcessInfo.processInfo.arguments.contains("-demo-live")
 
     // Screenshot demo: a connected device holding part of a selected area,
     // firmware with the cycling layer, tiles that predate it. See demoMaps().
@@ -799,12 +854,102 @@ final class BLEManager: NSObject, ObservableObject {
         for id in withPois { poiSentAt[id] = now }
     }
 
+    /// -demo-live: a connected device mid-ride, with every kind of page — a
+    /// field page, a loaded workout (or, with -demo-live-picker, the picker),
+    /// music with a cover, the stopwatch and the map with a route.
+    private func seedLiveDemo() {
+        state = .connected
+        dashConfig = DashConfig(text: """
+            power3s hero
+            speed medium half
+            hr medium half
+            distance medium half
+            ridetime medium half
+            cadence medium half
+            climb medium half
+            page workout
+            page music
+            page stopwatch
+            page map
+            """)
+        status = DeviceStatus(gpsFix: true, recording: true, hasRoute: true, battery: 76,
+                              sats: 11, heartRate: 156, power: 238, speedKmh: 24.6,
+                              remainingKm: 12.4)
+        deviceWorkouts = ["over_unders_4x8.erg", "recovery_spin.mrc", "sweet_spot_3x10.erg",
+                          "vo2_5x4.erg"]
+        if !ProcessInfo.processInfo.arguments.contains("-demo-live-picker") {
+            let name = "sweet_spot_3x10.erg"
+            loadedWorkoutFile = FetchedWorkout(name: name, text: """
+                [COURSE HEADER]
+                MINUTES WATTS
+                [END COURSE HEADER]
+                [COURSE DATA]
+                0 120
+                10 160
+                10 230
+                20 230
+                20 150
+                25 150
+                25 230
+                35 230
+                35 150
+                40 150
+                40 230
+                50 230
+                50 130
+                60 130
+                [END COURSE DATA]
+                """)
+            var w = WorkoutStatus()
+            w.loaded = true; w.running = true; w.name = name
+            w.blockIndex = 3; w.blockCount = 7
+            w.elapsedSec = 28 * 60 + 12; w.totalSec = 60 * 60
+            w.targetW = 230; w.ftpW = 250
+            workoutStatus = w
+        }
+        sentRouteCoords = [
+            .init(latitude: 37.7694, longitude: -122.4862), .init(latitude: 37.7712, longitude: -122.4700),
+            .init(latitude: 37.7735, longitude: -122.4540), .init(latitude: 37.7760, longitude: -122.4380),
+            .init(latitude: 37.7810, longitude: -122.4250), .init(latitude: 37.7905, longitude: -122.4200),
+            .init(latitude: 37.8010, longitude: -122.4190), .init(latitude: 37.8080, longitude: -122.4177),
+        ]
+        // A cover: soft rings, so the dither has tones to work with.
+        let side = AlbumArtFeeder.side
+        var gray = [UInt8](repeating: 0, count: side * side)
+        for y in 0..<side {
+            for x in 0..<side {
+                let dx = Double(x - side / 2), dy = Double(y - side / 2)
+                let r = (dx * dx + dy * dy).squareRoot()
+                gray[y * side + x] = UInt8(127 + 127 * cos(r / 14) * (1 - min(1, r / 230)))
+            }
+        }
+        albumArt.showDemo(MediaTrack(title: "Turn Your Lights Down Low",
+                                     artist: "Bob Marley & The Wailers", album: "Exodus"),
+                          gray: gray)
+        // Tick like a connected head unit: a status notify every second, so
+        // screens are exercised under the same republish load as on a ride.
+        var t = 0.0
+        demoTicker = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                t += 1
+                var s = self.status
+                s.power = 238 + Int(30 * sin(t / 4))
+                s.heartRate = 156 + Int(4 * sin(t / 9))
+                s.speedKmh = 24.6 + 2 * sin(t / 6)
+                self.status = s
+            }
+        }
+    }
+    private var demoTicker: Timer?
+
     override init() {
         super.init()
         loadSettingsCache()
         if isDemoOfflineSettings { seedOfflineSettingsDemo() }
         if isDemoUpdate { state = .connected; deviceFirmware = "v0.83" }
         if isDemoDash { state = .connected; dashConfig = .deviceDefault }
+        if isDemoLive { seedLiveDemo() }
         locationManager.delegate = self
         locationManager.desiredAccuracy = kCLLocationAccuracyHundredMeters
         let a = locationManager.authorizationStatus
@@ -1187,6 +1332,7 @@ final class BLEManager: NSObject, ObservableObject {
         pairedDeviceName = nil
         UserDefaults.standard.removeObject(forKey: Self.pairedDeviceKey)
         UserDefaults.standard.removeObject(forKey: Self.pairedDeviceNameKey)
+        rides = []   // not ours any more; its saved list returns if it's re-paired
         pairingIssue = nil
         barrenConnects = 0
         rejectedIds = forgotten.map { [$0] } ?? []
@@ -1242,6 +1388,7 @@ final class BLEManager: NSObject, ObservableObject {
     func setCurrentDevice(_ id: String) {
         guard id != settingsDeviceID, !isDemoOfflineSettings else { return }
         settingsDeviceID = id
+        rides = rideListingStore.load(id)   // that device's last-known ride list
         settingsCache = settingsStore.setCurrent(id)
         dashConfig = settingsCache.dashText.map { DashConfig(text: $0) }
         dashConflict = nil
@@ -1251,6 +1398,7 @@ final class BLEManager: NSObject, ObservableObject {
 
     private func loadSettingsCache() {
         settingsDeviceID = settingsStore.currentDevice
+        rides = rideListingStore.load(settingsDeviceID)   // last-known ride list
         settingsCache = settingsStore.load(settingsDeviceID)
         if let t = settingsCache.dashText { dashConfig = DashConfig(text: t) }
         applyEffectiveSettings()
@@ -1363,13 +1511,15 @@ final class BLEManager: NSObject, ObservableObject {
         // list spinning forever or the download waiting on its watchdog. Wait
         // for the line instead.
         guard dlActive == nil, dlQueue.isEmpty else { listRefreshPending = true; return }
-        rides = []
+        ridesBuilding = []
         loadingRides = true
         p.writeValue(Data([0x01]), for: c, type: .withResponse)
     }
 
     func deleteRide(_ name: String) {
         rides.removeAll { $0.name == name }
+        ridesBuilding.removeAll { $0.name == name }
+        rideListingStore.save(rides, for: settingsDeviceID)
         // Drop it from the download queue too, so a deleted ride doesn't get
         // fetched (and re-cached) moments later.
         dlQueue.removeAll { $0 == .ride(name) }
@@ -2428,7 +2578,10 @@ final class BLEManager: NSObject, ObservableObject {
     }
 
     func downloadRide(_ name: String) {
-        guard ridesChar != nil, peripheral != nil else { return }
+        guard ridesChar != nil, peripheral != nil else {
+            lastMessage = "Connect to your OpenTrailPaper to download this ride"
+            return
+        }
         enqueueTransfer(.ride(name))
     }
 
@@ -2552,10 +2705,15 @@ final class BLEManager: NSObject, ObservableObject {
             guard d.count > 5 else { return }
             let size = Int(d[1]) | (Int(d[2]) << 8) | (Int(d[3]) << 16) | (Int(d[4]) << 24)
             let name = String(decoding: d[5...], as: UTF8.self)
-            rides.append(RideFile(name: name, size: size))
+            ridesBuilding.append(RideFile(name: name, size: size))
         case 0x03:  // list done
             loadingRides = false
-            rides.sort { $0.name > $1.name }   // newest first
+            ridesCheckedThisLink = true
+            let listed = ridesBuilding.sorted { $0.name > $1.name }   // newest first
+            ridesBuilding = []
+            // Unchanged list: leave `rides` alone so nothing re-renders.
+            if listed != rides { rides = listed }
+            rideListingStore.save(listed, for: settingsDeviceID)
         case 0x30:  // log-list entry: [u32 size][name]
             guard d.count > 5 else { return }
             let size = Int(d[1]) | (Int(d[2]) << 8) | (Int(d[3]) << 16) | (Int(d[4]) << 24)
@@ -2614,6 +2772,7 @@ final class BLEManager: NSObject, ObservableObject {
             // routine list-refresh fails silently mid-ride (the Rides tab shows
             // an "in progress" banner + the already-synced rides instead).
             loadingRides = false
+            ridesCheckedThisLink = true
             guard dlActive != nil else { return }
             // A recording device refuses every file, so drop the whole queue
             // rather than failing each one in turn with its own toast.
@@ -2654,6 +2813,17 @@ final class BLEManager: NSObject, ObservableObject {
     static func isCached(_ name: String) -> Bool {
         FileManager.default.fileExists(atPath: cachedURL(for: name).path)
     }
+    /// What the Rides tab lists: the device's last-known ride list merged with
+    /// the rides cached on this phone, one entry per name (the device's entry
+    /// wins), newest first. A ride the device no longer lists stays while it's
+    /// cached here. Pure, so the order is stable across refreshes.
+    static func mergeRides(device: [RideFile], cached: [RideFile]) -> [RideFile] {
+        var seen = Set<String>()
+        var out: [RideFile] = []
+        for r in device + cached where seen.insert(r.name).inserted { out.append(r) }
+        return out.sorted { $0.name > $1.name }
+    }
+
     // Rides already downloaded to this phone — available offline.
     static func cachedRides() -> [RideFile] {
         let urls = (try? FileManager.default.contentsOfDirectory(
@@ -2723,7 +2893,56 @@ final class BLEManager: NSObject, ObservableObject {
     /// One snapshot of files + session state; also runs when notifications
     /// first come up so the Workouts screen opens populated.
     func refreshWorkouts() {
+        workoutLog.info("refresh: char=\(self.workoutChar != nil) notifying=\(self.workoutChar?.isNotifying ?? false)")
         workoutWrite(Data([0x06]))
+        workoutWrite(Data([0x30]))
+    }
+
+    /// The loaded workout's blocks for the WORKOUT page: the phone's copy if it
+    /// has one, else the device's file (0x12, answered 0xD1…/0xD2).
+    ///
+    /// The status carries the device's title, not the file name: the device
+    /// drops the extension and uppercases it ("sweet_spot.erg" reads
+    /// "SWEET_SPOT"), so the file is found by matching that title against the
+    /// phone's files and the device's /workouts list. If the list hasn't come
+    /// yet it is asked for and the fetch resumes when it lands (0xB2).
+    private func fetchLoadedWorkoutFile(_ title: String) {
+        if let file = LocalWorkouts.list().first(where: { Self.workoutFile($0, isTitled: title) }),
+           let text = LocalWorkouts.read(file) {
+            loadedWorkoutFile = FetchedWorkout(name: title, text: text)
+            return
+        }
+        guard workoutChar?.isNotifying == true, !workoutFetchForPage,
+              workoutPageGaveUp != title else { return }
+        guard let file = deviceWorkouts.first(where: { Self.workoutFile($0, isTitled: title) }) else {
+            // Ask for the list once; if the title still matches nothing after
+            // it, stop asking (the page shows its fallback, not a spinner).
+            if workoutPageAwaitingList == title {
+                workoutPageGaveUp = title
+                workoutPageAwaitingList = ""
+            } else {
+                workoutPageAwaitingList = title
+                workoutWrite(Data([0x06]))
+            }
+            return
+        }
+        workoutFetchForPage = true
+        workoutFetchBuf = Data()
+        workoutFetchName = title
+        workoutWrite(Data([0x12]) + Data(file.utf8))
+    }
+
+    /// Whether `file` is the one the device titles `title` (its name without
+    /// the extension, uppercased — workout_service's load()).
+    static func workoutFile(_ file: String, isTitled title: String) -> Bool {
+        let base = (file as NSString).deletingPathExtension
+        return file.caseInsensitiveCompare(title) == .orderedSame
+            || base.caseInsensitiveCompare(title) == .orderedSame
+    }
+
+    /// Just the session status (0x30 → 0xC0), for screens that show it.
+    func requestWorkoutStatus() {
+        guard workoutChar?.isNotifying == true else { return }
         workoutWrite(Data([0x30]))
     }
 
@@ -2781,10 +3000,20 @@ final class BLEManager: NSObject, ObservableObject {
     private func handleWorkoutNotify(_ d: Data) {
         guard let op = d.first else { return }
         let body = d.dropFirst()
+        workoutLog.info("notify op=0x\(String(op, radix: 16), privacy: .public) len=\(d.count) loaded=\(op == 0xC0 && d.count > 1 ? Int(d[d.startIndex + 1]) : -1)")
         switch op {
         case 0xA0:   // ack: [ok/fail][msg]
             let ok = body.first == 1
             let msg = String(data: body.dropFirst(), encoding: .utf8) ?? ""
+            // A failed page fetch ("file not found") answers here, not with
+            // 0xD2 — without this the page waits on it forever. It's the
+            // page's own background read, so no "Failed" message for it.
+            if !ok, workoutFetchForPage {
+                workoutFetchForPage = false
+                workoutFetchBuf = Data()
+                workoutPageGaveUp = workoutFetchName
+                return
+            }
             workoutMessage = ok ? "Loaded \(msg)" : "Failed: \(msg)"
             if ok { workoutWrite(Data([0x06])) }   // list now includes it
         case 0xB0: workoutListBuild = []
@@ -2792,12 +3021,16 @@ final class BLEManager: NSObject, ObservableObject {
             if let name = String(data: body, encoding: .utf8), !name.isEmpty {
                 workoutListBuild.append(name)
             }
-        case 0xB2: deviceWorkouts = workoutListBuild.sorted()
+        case 0xB2:
+            deviceWorkouts = workoutListBuild.sorted()
+            if !workoutPageAwaitingList.isEmpty { fetchLoadedWorkoutFile(workoutPageAwaitingList) }
         case 0xD1: workoutFetchBuf.append(contentsOf: body)
         case 0xD2:
             if let text = String(data: workoutFetchBuf, encoding: .utf8) {
-                fetchedWorkout = FetchedWorkout(name: workoutFetchName, text: text)
+                let f = FetchedWorkout(name: workoutFetchName, text: text)
+                if workoutFetchForPage { loadedWorkoutFile = f } else { fetchedWorkout = f }
             }
+            workoutFetchForPage = false
             workoutFetchBuf = Data()
         case 0xC0:
             guard body.count >= 18 else { return }
@@ -2815,6 +3048,10 @@ final class BLEManager: NSObject, ObservableObject {
             s.ftpW = b.subdata(in: 16..<18).withUnsafeBytes { $0.loadUnaligned(as: UInt16.self) }
             if b.count > 18 { s.pauseEachBlock = b[18] != 0 }
             if b.count > 19 { s.name = String(data: b.subdata(in: 19..<b.count), encoding: .utf8) ?? "" }
+            if s.loaded, !s.name.isEmpty, loadedWorkoutFile?.name != s.name {
+                fetchLoadedWorkoutFile(s.name)
+            }
+            workoutLog.info("status loaded=\(s.loaded) running=\(s.running) block=\(s.blockIndex + 1)/\(s.blockCount) name=\(s.name, privacy: .public)")
             workoutStatus = s
         default: break
         }
@@ -2897,7 +3134,7 @@ extension BLEManager: CBCentralManagerDelegate {
     }
 
     nonisolated func centralManagerDidUpdateState(_ c: CBCentralManager) {
-        if isDemoUpdate || isDemoDash { return }   // demo holds a fake connected state
+        if isDemoUpdate || isDemoDash || isDemoLive { return }   // demo holds a fake connected state
         MainActor.assumeIsolated {
             bluetoothReady = (c.state == .poweredOn)
             bluetoothPoweredOn = (c.state == .poweredOn)
@@ -3001,9 +3238,16 @@ extension BLEManager: CBCentralManagerDelegate {
             settingsChar = nil; statusChar = nil; routeChar = nil; ridesChar = nil
             sensorsChar = nil; mapChar = nil; otaChar = nil; meshChar = nil
             dashChar = nil
+            // The workout characteristic belongs to this link too; a stale one
+            // swallowed writes after a reconnect. The session state is the
+            // device's, so it is asked for again rather than shown stale.
+            workoutChar = nil
+            workoutStatus = WorkoutStatus()
+            workoutFetchForPage = false
+            workoutPageAwaitingList = ""; workoutPageGaveUp = ""
             // Pending edits stay cached; the next connect reads and merges.
             resetSyncLinkState()
-            mediaChar = nil; mediaToneArt = false   // the next device may be older firmware
+            mediaChar = nil; mediaToneArt = false; mediaRemote = false   // the next device may be older firmware
             mediaNotifySeen = false; mediaCapsAsked = false; mediaSubscribeRetries = 0
             mediaAcks = []; artPumping = false; artPayload = Data()
             albumArt.linkDown()
@@ -3075,7 +3319,9 @@ extension BLEManager: CBCentralManagerDelegate {
             authFailedSinceConnect = false
             linkSecuring = false
             connectedAt = nil
-            rides = []; loadingRides = false
+            // Keep `rides` (the last-known list): the Rides tab keeps showing
+            // it while disconnected and through the re-check on reconnect.
+            ridesBuilding = []; loadingRides = false; ridesCheckedThisLink = false
             // Nothing queued can proceed without a link, and a half-received
             // file must not be mistaken for a complete one on reconnect.
             if dlActive != nil || !dlQueue.isEmpty {
@@ -3134,6 +3380,12 @@ extension BLEManager: CBPeripheralDelegate {
         barrenConnects = 0
         state = .connected
         rememberPairedDevice()
+        // The workout list/status asked for when notifications came up can be
+        // refused (the characteristic is WRITE_ENC) if that raced the link's
+        // encryption, and nothing asked again: a workout loaded on the device
+        // stayed invisible until the Workouts sheet was opened. Ask once the
+        // link is known to be secure.
+        if workoutChar?.isNotifying == true { refreshWorkouts() }
     }
 
     /// A protected request refused for lack of authentication/encryption:
@@ -3227,7 +3479,10 @@ extension BLEManager: CBPeripheralDelegate {
             // Map layers: firmware without them never answers, which is what
             // keeps the app's switches hidden for it.
             if ch.uuid == BikeUUID.map { requestMapLayers() }
-            if ch.uuid == BikeUUID.workout { refreshWorkouts() }
+            if ch.uuid == BikeUUID.workout {
+                workoutLog.info("notify state: \(ch.isNotifying) error=\(error?.localizedDescription ?? "none", privacy: .public)")
+                refreshWorkouts()
+            }
             // Which art format the device takes (and whether it forwards AMS
             // tracks); the answer is a notification.
             if ch.uuid == BikeUUID.media {
@@ -3264,6 +3519,9 @@ extension BLEManager: CBPeripheralDelegate {
     nonisolated func peripheral(_ p: CBPeripheral,
                                 didWriteValueFor ch: CBCharacteristic,
                                 error: Error?) {
+        if let error, ch.uuid == BikeUUID.workout {
+            workoutLog.error("workout write failed: \(error.localizedDescription, privacy: .public)")
+        }
         if let error {
             artLog.error("write to \(ch.uuid.uuidString, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
             MainActor.assumeIsolated { noteAuthError(error) }
@@ -3350,10 +3608,18 @@ extension BLEManager: CBPeripheralDelegate {
         switch d[d.startIndex] {
         case 0xA1:
             mediaToneArt = d[d.startIndex + 1] & 0x01 != 0
+            mediaRemote = d[d.startIndex + 1] & 0x04 != 0
             artLog.info("device caps 0x\(String(d[d.startIndex + 1], radix: 16), privacy: .public)")
         case 0xA2: if let t = MediaTrack(packet: d) { albumArt.deviceTrackChanged(t) }
         default: break   // 0xA0 transport commands: the device uses AMS on iPhone
         }
+    }
+
+    /// Play/pause, next or previous for whatever is playing: the device sends
+    /// it to iOS over AMS (media_state.h MediaCmd: 1 toggle, 2 next, 3 prev).
+    func mediaCommand(_ cmd: UInt8) {
+        guard mediaRemote else { return }
+        writeMedia(Data([0x04, cmd]), ack: .other)
     }
 
     private func writeMedia(_ pkt: Data, ack: MediaAck) {
