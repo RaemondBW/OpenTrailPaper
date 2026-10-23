@@ -22,36 +22,23 @@ struct RideView: View {
         NavigationStack {
             VStack(spacing: 0) {
                 header
-                // The device page at the full content width, the panel's
-                // own 9:16 — on a phone that is taller than the space under
-                // the header, so the tab scrolls rather than shrink the
-                // device until its buttons are too small to hit.
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        VStack(spacing: 10) {
-                            warnings
-                            pageSelector
-                            page
-                            if !connected {
-                                PrimaryButton(title: primaryTitle,
-                                              systemImage: "antenna.radiowaves.left.and.right") {
-                                    ble.connectTapped()
-                                }
-                            }
-                            Color.clear.frame(height: 0).id("rideBottom")
-                        }
-                        .padding(.horizontal, 16).padding(.vertical, 12)
-                    }
-                    .scrollBounceBehavior(.basedOnSize)
-                    .onAppear {
-                        // Screenshot hook: the bottom of the device page.
-                        if ProcessInfo.processInfo.arguments.contains("-ride-scroll-bottom") {
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                                proxy.scrollTo("rideBottom", anchor: .bottom)
-                            }
+                // One screen, never a scroll: the device page keeps the
+                // panel's own 9:16 and is sized to fit whatever height the
+                // header, warnings and page strip leave, centred across.
+                VStack(spacing: 10) {
+                    warnings
+                    pageSelector
+                    page
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    if !connected {
+                        PrimaryButton(title: primaryTitle,
+                                      systemImage: "antenna.radiowaves.left.and.right") {
+                            ble.connectTapped()
                         }
                     }
                 }
+                .padding(.horizontal, 16).padding(.vertical, 12)
+                .frame(maxHeight: .infinity, alignment: .top)
             }
             .background(Palette.paper.ignoresSafeArea())
             .navigationBarHidden(true)

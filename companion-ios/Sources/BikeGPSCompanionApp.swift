@@ -175,16 +175,23 @@ struct EinkTabBar: View {
     ]
 
     var body: some View {
-        VStack(spacing: 0) {
-            Rectangle().fill(Palette.ink).frame(height: Rule.title)
-            HStack(spacing: 0) {
-                ForEach(Array(Self.items.enumerated()), id: \.offset) { i, item in
-                    cell(i, item.title, item.icon)
+        // The bar runs down under the home indicator to the glass, and its
+        // icons and labels sit centred in all of it — not in the top 56pt
+        // with an empty band below.
+        GeometryReader { geo in
+            VStack(spacing: 0) {
+                Rectangle().fill(Palette.ink).frame(height: Rule.title)
+                HStack(spacing: 0) {
+                    ForEach(Array(Self.items.enumerated()), id: \.offset) { i, item in
+                        cell(i, item.title, item.icon)
+                    }
                 }
+                .frame(height: 56 + geo.safeAreaInsets.bottom)
             }
-            .frame(height: 56)
+            .background(Palette.paper)
+            .ignoresSafeArea(edges: .bottom)
         }
-        .background(Palette.paper.ignoresSafeArea(edges: .bottom))
+        .frame(height: Self.height)
     }
 
     private func cell(_ i: Int, _ title: String, _ icon: String) -> some View {
@@ -212,10 +219,7 @@ struct EinkTabBar: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .foregroundStyle(on ? Palette.paper : Palette.ink)
-            // Down to the screen's bottom edge: the cell runs under the home
-            // indicator (its icon and label stay above it), so the bar ends at
-            // the glass rather than in a white band.
-            .background(on ? Palette.ink : Palette.paper, ignoresSafeAreaEdges: .bottom)
+            .background(on ? Palette.ink : Palette.paper)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
