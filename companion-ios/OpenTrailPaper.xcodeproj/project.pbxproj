@@ -33,6 +33,7 @@
 		4608B467E047801D5219DD54 /* faceijk.c in Sources */ = {isa = PBXBuildFile; fileRef = 21F000263728C013838D0605 /* faceijk.c */; };
 		4C0F6C64C32AF7035999D782 /* ArtDither.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F0FA5A490092653FA6B10D1 /* ArtDither.swift */; };
 		50C29F659BE2ACD7B9B29D73 /* Barlow-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = F21BF62E40922CF797D8119D /* Barlow-Regular.ttf */; };
+		5707B12C50214644BFA07242 /* Barlow-Bold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 2A29CA8B02FE737A4E1B8291 /* Barlow-Bold.ttf */; };
 		578D5A6227F3573A17A1CE9B /* MeshScanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2ACAD995F312514690C2FF16 /* MeshScanner.swift */; };
 		592497FD48D74D86C61AC752 /* FirebaseAppCheck in Frameworks */ = {isa = PBXBuildFile; productRef = 880B86FA551AFFB25164DF8A /* FirebaseAppCheck */; };
 		59AED5C1500B37FB3E7E3010 /* vec3d.c in Sources */ = {isa = PBXBuildFile; fileRef = 85064AEE7F2DEAD8495F5FDC /* vec3d.c */; };
@@ -57,12 +58,14 @@
 		A18EC8ED01301E3919DCC9DD /* TransferLiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82E5375DC5035B5F4E4A7D8F /* TransferLiveActivity.swift */; };
 		A44F34DFEC944328672D82B2 /* FITDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 590A2666A030966B6741EDAF /* FITDecoder.swift */; };
 		ABE6FDB260BAA3609F5C5516 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 756CD94A1C875E17A3321CC8 /* OnboardingView.swift */; };
+		ABEFB9015E664E3613CA5DE5 /* Barlow-OFL.txt in Resources */ = {isa = PBXBuildFile; fileRef = BF078E0B8E06C6EE70924923 /* Barlow-OFL.txt */; };
 		B0FDE7FE636803E478340742 /* DashboardPageEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D5700252C3393AC06C9BEB9 /* DashboardPageEditorView.swift */; };
 		B1BE7F5A245A3C270036C6E2 /* algos.c in Sources */ = {isa = PBXBuildFile; fileRef = ABBED3B34B25D9BCAFA3FDB5 /* algos.c */; };
 		B7B9A2B225320284C4D52661 /* DeviceSettingsSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78C78BE2E3D4CB0B74C0CB4D /* DeviceSettingsSync.swift */; };
 		BE0814223F037C69E39B93D7 /* RidesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F897B750389038E18EE9AC09 /* RidesView.swift */; };
 		BF7FEB57C05E17549C09CF25 /* DashLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9D6BB31E96DD85DBE9B68CA /* DashLayout.swift */; };
 		C462314C3BD9E277B9F451A9 /* MapsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7C77C595BBAE5BCBD82A004 /* MapsView.swift */; };
+		C527901A5554A7F6BD1B62FD /* Anton-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 1D1F0D3AE5B8C7616380C71A /* Anton-Regular.ttf */; };
 		C7F7382D5542409C17015EFB /* SketchIcon.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73ECF60CAA9C73957BC40AC2 /* SketchIcon.swift */; };
 		CD0EDC65F5A9395EE7649CDE /* directedEdge.c in Sources */ = {isa = PBXBuildFile; fileRef = CC8F9A2A7C26F2C54766428B /* directedEdge.c */; };
 		D017F03AE055F1971F5815BA /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79F3F907C8247AC1B8A63959 /* Theme.swift */; };
@@ -74,6 +77,7 @@
 		E30ADD326442FABF6002866E /* demo.fit in Resources */ = {isa = PBXBuildFile; fileRef = D66117B8CB78BBC0949D8DF3 /* demo.fit */; };
 		E3824F33E70991FAC6B09EBF /* h3Assert.c in Sources */ = {isa = PBXBuildFile; fileRef = 89FCEFD5F2F255C490F8E615 /* h3Assert.c */; };
 		E53264DC25E80F7DA0499687 /* localij.c in Sources */ = {isa = PBXBuildFile; fileRef = B8D421E4B1C588F4073BC375 /* localij.c */; };
+		E5B773C065D941819101F4AA /* Anton-OFL.txt in Resources */ = {isa = PBXBuildFile; fileRef = C794F380792BEB524AD61FB3 /* Anton-OFL.txt */; };
 		E70CE92DF5318BCD440679A9 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 13F29A55A7651044F3D95A3C /* Assets.xcassets */; };
 		E8B02637D663F1BB063A4D60 /* iterators.c in Sources */ = {isa = PBXBuildFile; fileRef = F2E1BEE825D22D8612B19893 /* iterators.c */; };
 		F48BC7C4FF775911CE8FE038 /* WorkoutsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA682C44407CE9C7FF852A4F /* WorkoutsView.swift */; };
@@ -121,9 +125,11 @@
 		13F29A55A7651044F3D95A3C /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		158AB26E91BB4024B25490AD /* h3shim.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = h3shim.c; sourceTree = "<group>"; };
 		1727B3F48F1EFA384DE4B5C8 /* h3api.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = h3api.h; sourceTree = "<group>"; };
+		1D1F0D3AE5B8C7616380C71A /* Anton-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Anton-Regular.ttf"; sourceTree = "<group>"; };
 		21F000263728C013838D0605 /* faceijk.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = faceijk.c; sourceTree = "<group>"; };
 		22AE81B336FF77D1655400EA /* constants.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = constants.h; sourceTree = "<group>"; };
 		27A939183F2903B61CA144FB /* bbox.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = bbox.h; sourceTree = "<group>"; };
+		2A29CA8B02FE737A4E1B8291 /* Barlow-Bold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Barlow-Bold.ttf"; sourceTree = "<group>"; };
 		2A59688151174F730E1FDAD4 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		2ACAD995F312514690C2FF16 /* MeshScanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshScanner.swift; sourceTree = "<group>"; };
 		2CB24A5E663BA56D23ACB0AF /* TileVersions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TileVersions.swift; sourceTree = "<group>"; };
@@ -182,11 +188,13 @@
 		BD2E2E20BB8A15D1939F6CA5 /* GPXImporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GPXImporter.swift; sourceTree = "<group>"; };
 		BE5C27C920995C9292457A9C /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		BE9D3D566A0847CF4753797F /* vec2d.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = vec2d.c; sourceTree = "<group>"; };
+		BF078E0B8E06C6EE70924923 /* Barlow-OFL.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "Barlow-OFL.txt"; sourceTree = "<group>"; };
 		BFEB166F13A60DC2EDA5E981 /* FirmwareRelease.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FirmwareRelease.swift; sourceTree = "<group>"; };
 		C1BEEC4DAFA43A7B290097DE /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		C35B7FEEC24D9CFF746CDE0D /* TransferActivityAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransferActivityAttributes.swift; sourceTree = "<group>"; };
 		C4E83FB3A70437DD5D0F8629 /* RideView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RideView.swift; sourceTree = "<group>"; };
 		C74406B4D6CC045B23CAA7BA /* MeshChannels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshChannels.swift; sourceTree = "<group>"; };
+		C794F380792BEB524AD61FB3 /* Anton-OFL.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "Anton-OFL.txt"; sourceTree = "<group>"; };
 		C79A61A359DA1F3938DE464C /* mathExtensions.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = mathExtensions.c; sourceTree = "<group>"; };
 		CA682C44407CE9C7FF852A4F /* WorkoutsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkoutsView.swift; sourceTree = "<group>"; };
 		CAF529559DAAECFF7FFB724B /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
@@ -256,7 +264,11 @@
 		80ACFA8CA9080B22457972EF /* Fonts */ = {
 			isa = PBXGroup;
 			children = (
+				C794F380792BEB524AD61FB3 /* Anton-OFL.txt */,
+				1D1F0D3AE5B8C7616380C71A /* Anton-Regular.ttf */,
+				2A29CA8B02FE737A4E1B8291 /* Barlow-Bold.ttf */,
 				9D58367A52D10F5F1C035423 /* Barlow-Medium.ttf */,
+				BF078E0B8E06C6EE70924923 /* Barlow-OFL.txt */,
 				F21BF62E40922CF797D8119D /* Barlow-Regular.ttf */,
 				42632703DAE05E73F934FFE1 /* Barlow-SemiBold.ttf */,
 				08F073C2FF3FF2C629AFE7E8 /* BarlowCondensed-Bold.ttf */,
@@ -488,8 +500,12 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				E5B773C065D941819101F4AA /* Anton-OFL.txt in Resources */,
+				C527901A5554A7F6BD1B62FD /* Anton-Regular.ttf in Resources */,
 				39C207696331341232C496B3 /* Assets.xcassets in Resources */,
+				5707B12C50214644BFA07242 /* Barlow-Bold.ttf in Resources */,
 				8F39135FF7E1E777F4833280 /* Barlow-Medium.ttf in Resources */,
+				ABEFB9015E664E3613CA5DE5 /* Barlow-OFL.txt in Resources */,
 				50C29F659BE2ACD7B9B29D73 /* Barlow-Regular.ttf in Resources */,
 				9A51A79216A6D77B6B223CE3 /* Barlow-SemiBold.ttf in Resources */,
 				1E84B7CD7869CDE2FAD486B0 /* BarlowCondensed-Bold.ttf in Resources */,
