@@ -135,9 +135,12 @@ struct ScreenHeader<Subtitle: View, Trailing: View>: View {
                         .font(TypeScale.screenTitle).tracking(1)
                         .foregroundStyle(Palette.ink)
                         .lineLimit(1).minimumScaleFactor(0.6)
+                        .layoutPriority(1)
                         .accessibilityAddTraits(.isHeader)
                     Spacer(minLength: 8)
-                    trailing
+                    // Header buttons stop growing at the largest standard
+                    // size, so at accessibility sizes the title keeps its room.
+                    trailing.dynamicTypeSize(...DynamicTypeSize.xxLarge)
                 }
                 // Full width under the title row, so a long status line is
                 // not squeezed by the buttons beside the title.

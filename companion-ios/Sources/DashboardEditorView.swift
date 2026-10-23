@@ -117,13 +117,15 @@ struct DashboardEditorView: View {
         // drop delegates never saw the session. Out here the cards own their
         // own drags.
         VStack(spacing: 0) {
-            if ble.pendingDashConfig != nil || !connected {
-                PendingSyncHint(text: ble.pendingDashConfig != nil
-                                ? (connected ? "Syncing layout…" : "Will sync when connected")
-                                : "Not connected · edits are saved and sync on the next connect")
-                    .padding(.horizontal, 20)
-                    .padding(.top, 8)
-            }
+            // Always one line, its text changing in place: a hint that came
+            // and went with each Send pushed the whole editor down and back.
+            PendingSyncHint(text: ble.pendingDashConfig != nil
+                            ? (connected ? "Syncing layout…" : "Will sync when connected")
+                            : connected ? "Layout matches the device"
+                            : "Not connected · edits are saved and sync on the next connect")
+                .lineLimit(1).minimumScaleFactor(0.7)
+                .padding(.horizontal, 20)
+                .padding(.top, 8)
             carousel
             if config.pages.count > 1 {
                 Text("Tap a page to edit it · hold one, then drag it into place")

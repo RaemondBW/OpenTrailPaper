@@ -59,17 +59,24 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-            ScreenHeader(title: "Settings")
+            // The sync state lives in the header, one line whose text changes
+            // in place. As a hint at the top of the list it appeared on every
+            // edit ("Syncing…") and vanished on the device's echo, shoving the
+            // whole page down and back up each time a setting changed.
+            ScreenHeader(title: "Settings") {
+                HStack(spacing: 6) {
+                    Image(systemName: ble.hasPendingSync ? "arrow.triangle.2.circlepath" : "checkmark")
+                        .font(.system(size: 10, weight: .bold))
+                    Text(syncLine)
+                        .font(BarlowFont.text(11, .bold)).tracking(1.5)
+                        .lineLimit(1).minimumScaleFactor(0.7)
+                }
+                .foregroundStyle(Palette.ink)
+                .accessibilityElement(children: .combine)
+            } trailing: { EmptyView() }
             ScrollViewReader { proxy in
             ScrollView {
                 VStack(spacing: 14) {
-                    // Device settings stay editable offline (cached per device,
-                    // synced on the next connect); say when something is waiting.
-                    if ble.hasPendingSync {
-                        PendingSyncHint(text: ble.state == .connected
-                                        ? "Syncing with your OpenTrailPaper…"
-                                        : "Will sync when connected")
-                    }
                     if let note = ble.settingsSyncNote {
                         Text(note).font(BarlowFont.text(12)).foregroundStyle(Palette.muted)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -114,6 +121,14 @@ struct SettingsView: View {
                 if ProcessInfo.processInfo.arguments.contains("-settings-controls") {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                         proxy.scrollTo("units", anchor: .top)
+                    }
+                }
+                // Layout-stability check: flip the clock format a few seconds
+                // in, so frames before and after can be compared.
+                if ProcessInfo.processInfo.arguments.contains("-settings-flip") {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
+                        ble.setClock24h(!ble.clock24h)
+                        ble.setBacklight((ble.backlight + 1) % 4)
                     }
                 }
             }
@@ -192,6 +207,14 @@ struct SettingsView: View {
         } message: {
             Text(PairingCopy.afterUnpairMessage)
         }
+    }
+
+    /// Device settings stay editable offline (cached per device, synced on
+    /// the next connect); this says which state they are in.
+    private var syncLine: String {
+        let connected = ble.state == .connected
+        if ble.hasPendingSync { return connected ? "SYNCING WITH DEVICE…" : "WILL SYNC WHEN CONNECTED" }
+        return connected ? "IN SYNC WITH DEVICE" : "OFFLINE · CHANGES SYNC ON CONNECT"
     }
 
     private var deviceDetail: String {

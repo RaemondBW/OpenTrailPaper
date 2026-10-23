@@ -212,8 +212,10 @@ struct EinkTabBar: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .foregroundStyle(on ? Palette.paper : Palette.ink)
-            // Not into the home-indicator area: the black cell stops at the bar.
-            .background(on ? Palette.ink : Palette.paper, ignoresSafeAreaEdges: [])
+            // Down to the screen's bottom edge: the cell runs under the home
+            // indicator (its icon and label stay above it), so the bar ends at
+            // the glass rather than in a white band.
+            .background(on ? Palette.ink : Palette.paper, ignoresSafeAreaEdges: .bottom)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
