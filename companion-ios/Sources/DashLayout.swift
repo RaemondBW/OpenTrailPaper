@@ -249,17 +249,28 @@ struct DashConfig: Equatable {
     /// The most configurable (non-map) pages any firmware holds; the map
     /// rides along on top (DASH_MAX_PAGES = 8). Parsing keeps this many.
     static let maxPages = 7
-    /// What THIS device holds: 4 until its live stream says it takes more
-    /// (HELLO caps b3) — older firmware keeps the first 5 pages it is sent
-    /// and could lose the map. Remembered across launches.
-    static var devicePages: Int { deviceHoldsMorePages ? maxPages : 4 }
-    static var deviceHoldsMorePages: Bool {
-        get { UserDefaults.standard.bool(forKey: "dashDeviceHolds8Pages") }
-        set { if newValue != deviceHoldsMorePages { UserDefaults.standard.set(newValue, forKey: "dashDeviceHolds8Pages") } }
+    /// What THIS device holds besides the map: DeviceHello.dash_max_pages on
+    /// firmware with the phone link, else 4 — older firmware keeps the first
+    /// 5 pages it is sent and could lose the map. Remembered across launches.
+    static var devicePages: Int {
+        let n = UserDefaults.standard.integer(forKey: linkPagesKey)
+        return n > 0 ? min(n, maxPages) : 4
     }
-    /// The layout text the device can hand back whole: one GATT read tops
-    /// out at 512 bytes.
-    static let maxTextBytes = 500
+    /// The layout text the device takes: DeviceHello.dash_max_text over the
+    /// link; on the legacy characteristic one GATT read tops out at 512 bytes.
+    static var maxTextBytes: Int {
+        let n = UserDefaults.standard.integer(forKey: linkTextKey)
+        return n > 0 ? n : 500
+    }
+    /// The connected device's limits from DeviceHello; nil, nil for firmware
+    /// without the link.
+    static func setDeviceLimits(pages: Int?, textBytes: Int?) {
+        let d = UserDefaults.standard
+        if let pages, pages > 0 { d.set(pages, forKey: linkPagesKey) } else { d.removeObject(forKey: linkPagesKey) }
+        if let textBytes, textBytes > 0 { d.set(textBytes, forKey: linkTextKey) } else { d.removeObject(forKey: linkTextKey) }
+    }
+    private static let linkPagesKey = "dashDeviceMaxPages"
+    private static let linkTextKey = "dashDeviceMaxText"
 
     var contentPages: Int { pages.filter { !$0.isMap }.count }
 
