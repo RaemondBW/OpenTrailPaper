@@ -107,7 +107,9 @@ struct RootView: View, Equatable {
         // hidden and drawn here instead (EinkTabBar). TabView still owns the
         // tabs, so each keeps its navigation and scroll state when switched.
         TabView(selection: $tab) {
-            RideView().einkTabBarInset().tag(0).toolbar(.hidden, for: .tabBar)
+            // The live stream goes to the Ride tab only (see DeviceLive).
+            RideView().environmentObject(ble.live)
+                .einkTabBarInset().tag(0).toolbar(.hidden, for: .tabBar)
             RouteTab().einkTabBarInset().tag(1).toolbar(.hidden, for: .tabBar)
             RidesTab().einkTabBarInset().tag(2).toolbar(.hidden, for: .tabBar)
             MeshTab().einkTabBarInset().tag(3).toolbar(.hidden, for: .tabBar)

@@ -601,6 +601,19 @@ final class BLEManager: NSObject, ObservableObject {
     private var meshChar: CBCharacteristic?
     private var workoutChar: CBCharacteristic?
 
+    // MARK: live state stream (SVC_LIVE; DeviceLive.swift)
+    /// The Ride tab's live frame. Its own ObservableObject so a frame a second
+    /// redraws the Ride tab and nothing else (see DeviceLive).
+    let live = DeviceLive()
+    private var liveRxChar: CBCharacteristic?
+    private var liveTxChar: CBCharacteristic?
+    /// Screens on show that want the stream (the Ride tab), counted.
+    private var liveViewers = 0
+    /// The app is in the foreground; a backgrounded app never streams.
+    private var appActive = true
+    private var liveKeepalive: Timer?
+    private var liveObservers: [NSObjectProtocol] = []
+
     // MARK: album art (CHR_MEDIA)
     /// Finds covers for the device's MUSIC page; see AlbumArt.swift.
     let albumArt = AlbumArtFeeder()
@@ -926,6 +939,24 @@ final class BLEManager: NSObject, ObservableObject {
         albumArt.showDemo(MediaTrack(title: "Turn Your Lights Down Low",
                                      artist: "Bob Marley & The Wailers", album: "Exodus"),
                           gray: gray)
+        // The live stream's frame: the tiles the status characteristic
+        // doesn't carry, and a running stopwatch on its third lap.
+        var lf = LiveFrame()
+        lf.gpsFix = true; lf.recording = true; lf.routeActive = true
+        lf.hrLive = true; lf.powerLive = true; lf.cadenceLive = true; lf.timeValid = true
+        lf.battery = 76; lf.sats = 11; lf.speedKmh = 24.6
+        lf.power = 238; lf.power3s = 241; lf.heartRate = 156; lf.cadence = 88
+        lf.distanceM = 31_420; lf.rideTimeS = 1 * 3600 + 24 * 60 + 37; lf.movingTimeS = 1 * 3600 + 18 * 60 + 5
+        lf.climbM = 612; lf.gradePct = 4.8; lf.altitudeM = 287; lf.routeLeftKm = 12.4
+        var sw = LiveFrame.Stopwatch()
+        sw.running = true; sw.showPower = true; sw.showCadence = true
+        sw.elapsedMs = 14 * 60_000 + 32_000; sw.laps = 2
+        sw.lapMs = 3 * 60_000 + 11_000; sw.lastSplitMs = 5 * 60_000 + 47_300
+        sw.lapAvgSpeedKmh = 26.1; sw.lapAvgPowerW = 252; sw.lapAvgCadence = 90
+        lf.stopwatch = sw
+        lf.view = LiveFrame.View(page: 0, pageCount: 5, screen: 0)
+        lf.position = LiveFrame.Position(lat: 37.7694, lon: -122.4862, courseDeg: 62, current: true)
+        live.showDemo(lf)
         // Tick like a connected head unit: a status notify every second, so
         // screens are exercised under the same republish load as on a ride.
         var t = 0.0
@@ -938,6 +969,13 @@ final class BLEManager: NSObject, ObservableObject {
                 s.heartRate = 156 + Int(4 * sin(t / 9))
                 s.speedKmh = 24.6 + 2 * sin(t / 6)
                 self.status = s
+                lf.power = s.power; lf.power3s = s.power.map { $0 + 3 }
+                lf.heartRate = s.heartRate; lf.speedKmh = s.speedKmh
+                lf.cadence = 88 + Int(3 * sin(t / 5))
+                lf.distanceM += s.speedKmh / 3.6
+                lf.rideTimeS += 1; lf.movingTimeS += 1
+                lf.stopwatch?.elapsedMs += 1000; lf.stopwatch?.lapMs += 1000
+                self.live.showDemo(lf)
             }
         }
     }
@@ -972,9 +1010,81 @@ final class BLEManager: NSObject, ObservableObject {
         albumArt.send = { [weak self] gray, w, h in
             self?.sendMediaArt(gray, width: w, height: h) ?? false
         }
+        // The live stream is for a rider looking at the app: it stops when
+        // the app goes to the background and resumes when it comes back.
+        let nc = NotificationCenter.default
+        liveObservers = [
+            nc.addObserver(forName: UIApplication.didEnterBackgroundNotification,
+                           object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.appActive = false
+                    self?.updateLiveStream()
+                }
+            },
+            nc.addObserver(forName: UIApplication.didBecomeActiveNotification,
+                           object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.appActive = true
+                    self?.updateLiveStream()
+                }
+            },
+        ]
     }
 
     static let onboardedKey = "didOnboard"
+
+    // MARK: - Live state stream (SVC_LIVE)
+    //
+    // Runs while a screen that draws it is up (liveViewers, i.e. the Ride
+    // tab), the app is in the foreground and the link is admitted: subscribe
+    // to TX, write START, repeat START every 5 s (the device stops on its
+    // own after 15 s without one). Anything else: STOP and unsubscribe.
+    // Firmware without the service never gets here; the Ride tab then reads
+    // the status characteristic as before.
+
+    /// The Ride tab on screen (true) or gone (false).
+    func liveViewer(_ on: Bool) {
+        liveViewers = max(0, liveViewers + (on ? 1 : -1))
+        updateLiveStream()
+    }
+
+    /// This device has the live service (known once discovery has run).
+    var liveSupported: Bool { liveTxChar != nil && liveRxChar != nil }
+
+    private var liveWanted: Bool {
+        liveViewers > 0 && appActive && state == .connected && liveSupported
+    }
+
+    private func updateLiveStream() {
+        guard let p = peripheral, let tx = liveTxChar else {
+            liveKeepalive?.invalidate(); liveKeepalive = nil
+            return
+        }
+        if liveWanted {
+            if !tx.isNotifying { p.setNotifyValue(true, for: tx) }
+            else { sendLiveStart() }
+            if liveKeepalive == nil {
+                liveKeepalive = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.sendLiveStart() }
+                }
+            }
+        } else {
+            liveKeepalive?.invalidate(); liveKeepalive = nil
+            if tx.isNotifying {
+                if let rx = liveRxChar { p.writeValue(Data([0x02]), for: rx, type: .withResponse) }
+                p.setNotifyValue(false, for: tx)
+            }
+            live.clear()
+        }
+    }
+
+    /// START / keepalive. Only once TX is notifying: a frame sent before that
+    /// is lost, and the device answers START with one at once.
+    private func sendLiveStart() {
+        guard liveWanted, let p = peripheral, let rx = liveRxChar,
+              liveTxChar?.isNotifying == true else { return }
+        p.writeValue(Data([0x01, LiveUUID.protocolVersion]), for: rx, type: .withResponse)
+    }
 
     /// Create the Bluetooth central. iOS shows the Bluetooth permission prompt
     /// the first time this runs. Idempotent; skipped in the update demo.
@@ -3199,7 +3309,7 @@ extension BLEManager: CBCentralManagerDelegate {
             linkSecuring = true
             // Settings cache and offline edits are keyed by this identity.
             setCurrentDevice(p.identifier.uuidString)
-            p.discoverServices([BikeUUID.service])
+            p.discoverServices([BikeUUID.service, LiveUUID.service])
         }
     }
 
@@ -3238,6 +3348,9 @@ extension BLEManager: CBCentralManagerDelegate {
             settingsChar = nil; statusChar = nil; routeChar = nil; ridesChar = nil
             sensorsChar = nil; mapChar = nil; otaChar = nil; meshChar = nil
             dashChar = nil
+            liveRxChar = nil; liveTxChar = nil
+            live.clear()
+            updateLiveStream()   // stops the keepalive
             // The workout characteristic belongs to this link too; a stale one
             // swallowed writes after a reconnect. The session state is the
             // device's, so it is asked for again rather than shown stale.
@@ -3380,6 +3493,7 @@ extension BLEManager: CBPeripheralDelegate {
         barrenConnects = 0
         state = .connected
         rememberPairedDevice()
+        updateLiveStream()   // the Ride tab may be waiting for the link
         // The workout list/status asked for when notifications came up can be
         // refused (the characteristic is WRITE_ENC) if that raced the link's
         // encryption, and nothing asked again: a workout loaded on the device
@@ -3409,6 +3523,10 @@ extension BLEManager: CBPeripheralDelegate {
         // worked. nil is also future-proof as new characteristics are added.
         for s in p.services ?? [] where s.uuid == BikeUUID.service {
             p.discoverCharacteristics(nil, for: s)
+        }
+        // The live state stream's own service; absent on older firmware.
+        for s in p.services ?? [] where s.uuid == LiveUUID.service {
+            p.discoverCharacteristics([LiveUUID.rx, LiveUUID.tx], for: s)
         }
     }
 
@@ -3452,9 +3570,16 @@ extension BLEManager: CBPeripheralDelegate {
                 case BikeUUID.media:
                     artLog.info("media char found: props=0x\(String(ch.properties.rawValue, radix: 16), privacy: .public) descriptors=\(ch.descriptors?.count ?? -1)")
                     mediaChar = ch; p.setNotifyValue(true, for: ch)
+                // Not subscribed here: the stream runs only while the Ride
+                // tab is up (updateLiveStream).
+                case LiveUUID.rx:
+                    liveRxChar = ch
+                case LiveUUID.tx:
+                    liveTxChar = ch
                 default: break
                 }
             }
+            if s.uuid == LiveUUID.service { updateLiveStream() }
             // Not .connected yet: that waits for the first protected read to
             // come back (markAuthenticated). Until then iOS may be pairing.
         }
@@ -3469,6 +3594,9 @@ extension BLEManager: CBPeripheralDelegate {
         MainActor.assumeIsolated {
             noteAuthError(error)
             if ch.uuid == BikeUUID.ota { queryDeviceFirmware() }
+            if ch.uuid == LiveUUID.tx {
+                if ch.isNotifying { sendLiveStart() } else { live.clear() }
+            }
             if ch.uuid == BikeUUID.sensors, let p = peripheral {
                 p.writeValue(Data([0x05]), for: ch, type: .withResponse)   // one snapshot
             }
@@ -3568,6 +3696,7 @@ extension BLEManager: CBPeripheralDelegate {
             case BikeUUID.mesh: handleMeshNotify(data)
             case BikeUUID.workout: handleWorkoutNotify(data)
             case BikeUUID.media: handleMediaNotify(data)
+            case LiveUUID.tx: live.ingest(data)
             default: break
             }
         }

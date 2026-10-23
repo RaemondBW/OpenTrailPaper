@@ -77,6 +77,9 @@ struct PageLayoutEditor: View {
     @Binding var layout: DashLayout
     /// Set: draw the canvas as the whole device page, under this status bar.
     var status: PanelStatus? = nil
+    /// Set: the inspector's card is always this tall (scrolling if it must),
+    /// so the panel above keeps one size whatever is selected.
+    var inspectorHeight: CGFloat? = nil
 
     @State private var sel: UUID?
     @State private var tray: TrayMode?
@@ -101,7 +104,7 @@ struct PageLayoutEditor: View {
 
             // Hugs its content; the panel above takes everything else.
             inspector(placement: placement, selected: selected)
-                .fixedSize(horizontal: false, vertical: true)
+                .fixedSize(horizontal: false, vertical: inspectorHeight == nil)
                 .padding(.horizontal, status == nil ? 16 : 0)
                 .padding(.top, status == nil ? 6 : 10)
                 .padding(.bottom, status == nil ? 16 : 0)
@@ -160,7 +163,7 @@ struct PageLayoutEditor: View {
 
     @ViewBuilder
     private func inspector(placement: DashPreview.Placement, selected: DashPreview.Placed?) -> some View {
-        Card(padding: 14) {
+        let body = Group {
             if let selected {
                 if selected.isRadar {
                     radarInspector(placement: placement, item: selected.item)
@@ -170,6 +173,11 @@ struct PageLayoutEditor: View {
             } else {
                 emptyInspector(placement: placement)
             }
+        }
+        if let h = inspectorHeight {
+            FixedCard(height: h) { body }
+        } else {
+            Card(padding: 14) { body }
         }
     }
 
@@ -595,5 +603,22 @@ private struct FieldTray: View {
         .background(Palette.paper)
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
+    }
+}
+
+/// A card of one fixed height: its content sits at the top and scrolls only
+/// if it can't fit. Keeps whatever sits above it one size.
+struct FixedCard<Content: View>: View {
+    let height: CGFloat
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        Card(padding: 14) {
+            ScrollView {
+                content.frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .scrollBounceBehavior(.basedOnSize)
+            .frame(height: height - 28)
+        }
     }
 }

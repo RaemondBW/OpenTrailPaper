@@ -11,6 +11,7 @@
 		05EFA1438A835BB33D929DF4 /* BarlowCondensed-Medium.ttf in Resources */ = {isa = PBXBuildFile; fileRef = A97893E68863ECCF2D0D4400 /* BarlowCondensed-Medium.ttf */; };
 		0C42D2727BDA16264307140C /* MeshView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0641658A779893A7975FA99F /* MeshView.swift */; };
 		0F07C59EAB533AC46B37D7ED /* DeviceMock.swift in Sources */ = {isa = PBXBuildFile; fileRef = E467F3BA417A6A968F920F77 /* DeviceMock.swift */; };
+		14702FC2EBD4069D72DB5FCB /* DeviceLive.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD826F27ED4CBD308072A2BF /* DeviceLive.swift */; };
 		16EC6863A291CCDEDD9671F7 /* TransferWidgetBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97E8FC1262D85FFAB30C82B2 /* TransferWidgetBundle.swift */; };
 		1DF666D61184241ADCE839E6 /* GPXImporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD2E2E20BB8A15D1939F6CA5 /* GPXImporter.swift */; };
 		1E84B7CD7869CDE2FAD486B0 /* BarlowCondensed-Bold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 08F073C2FF3FF2C629AFE7E8 /* BarlowCondensed-Bold.ttf */; };
@@ -236,6 +237,7 @@
 		F993B08CE32DB569E2279B90 /* BikeGPS-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "BikeGPS-Bridging-Header.h"; sourceTree = "<group>"; };
 		F99E928FB741D98CDD96ABA0 /* DashboardEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardEditorView.swift; sourceTree = "<group>"; };
 		FB4FCCF15F9E57B3747DD159 /* linkedGeo.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = linkedGeo.h; sourceTree = "<group>"; };
+		FD826F27ED4CBD308072A2BF /* DeviceLive.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceLive.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -331,6 +333,7 @@
 				5D5700252C3393AC06C9BEB9 /* DashboardPageEditorView.swift */,
 				A9D6BB31E96DD85DBE9B68CA /* DashLayout.swift */,
 				D66117B8CB78BBC0949D8DF3 /* demo.fit */,
+				FD826F27ED4CBD308072A2BF /* DeviceLive.swift */,
 				E467F3BA417A6A968F920F77 /* DeviceMock.swift */,
 				D35859366D0F2C3EA5BAC557 /* DevicePages.swift */,
 				78C78BE2E3D4CB0B74C0CB4D /* DeviceSettingsSync.swift */,
@@ -603,6 +606,7 @@
 				BF7FEB57C05E17549C09CF25 /* DashLayout.swift in Sources */,
 				8885B18C0FC6E6E98283CD24 /* DashboardEditorView.swift in Sources */,
 				B0FDE7FE636803E478340742 /* DashboardPageEditorView.swift in Sources */,
+				14702FC2EBD4069D72DB5FCB /* DeviceLive.swift in Sources */,
 				0F07C59EAB533AC46B37D7ED /* DeviceMock.swift in Sources */,
 				4DF251C87736B5314A937BCE /* DevicePages.swift in Sources */,
 				B7B9A2B225320284C4D52661 /* DeviceSettingsSync.swift in Sources */,

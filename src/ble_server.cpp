@@ -1358,6 +1358,317 @@ void saveUploadedWorkout() {
     workout_service::requestListRefresh();   // the picker lists it next time
 }
 
+// ---------------------------------------------------------------------------
+// Live state stream ("UART" service). Protocol version 1.
+//
+// The status characteristic above is the always-on 1 Hz summary every app
+// version reads. This is the rest of what the device's pages draw, for the
+// app's Ride tab, which redraws those pages live: a Nordic-UART-shaped service
+// of its own, one characteristic each way.
+//
+//   SVC_LIVE    b1c51000-9e0f-4b7a-9c6d-1f2e3a4b5c6d
+//   CHR_LIVE_RX b1c51001-...  phone -> device, write / write-without-response
+//   CHR_LIVE_TX b1c51002-...  device -> phone, notify
+//
+// Same security as everything else: RX is WRITE_AUTHEN, the TX CCCD needs an
+// authenticated link (ble_pair_guard_harden covers every CCCD), and nothing is
+// sent unless the link is the admitted phone (phoneConnected).
+//
+// It costs nothing unless the app is LOOKING at it. The device streams only
+// while ALL of these hold, and goes back to idle (no snapshot, no notify) the
+// moment one doesn't:
+//   - the admitted phone is connected (a disconnect resets everything below),
+//   - it has notifications on for TX (unsubscribing stops the stream),
+//   - it wrote START within the last LIVE_TIMEOUT_MS (15 s). The app repeats
+//     START every 5 s as its keepalive while the Ride tab is on screen in the
+//     foreground, and writes STOP (and unsubscribes) when it leaves; an app
+//     suspended in the background can't send either, so the timeout ends it.
+// Streaming does NOT count as bulk traffic (no noteBulk): small 1 Hz notifies
+// ride the relaxed connection interval, so the link and its power policy are
+// the same with the Ride tab open as without.
+//
+// Phone -> device (RX):
+//   [0x01][ver]   START / keepalive. ver = the highest protocol version the
+//                 app parses (1). Starts the stream (a full frame goes out at
+//                 once) or extends it.
+//   [0x02]        STOP.
+//   Anything else is ignored, so a newer app's extra opcodes are harmless.
+//
+// Device -> phone (TX notify): a frame, all integers little-endian.
+//   [ver=1][seq u8] then records, each [type u8][len u8][body: len bytes].
+// Versioning: a parser skips record types it doesn't know (by len), reads the
+// fields it knows from the front of a body, and ignores bytes past them — new
+// fields are only ever appended, so v1 apps keep working. ver changes only for
+// a change that breaks that rule. A frame never splits a record; when the
+// records don't fit one notify (MTU - 3) they go in several frames with the
+// same seq. Below MTU 43 (the RIDE record alone needs 2 + 2 + 34 bytes) the
+// device doesn't stream and the app keeps to the status characteristic.
+//
+// Sent once a second, and at once (next BLE pass, ~100 ms) when the stopwatch
+// is started, paused, lapped or reset, or the device changes page.
+//
+//   0x00 HELLO (first frame of a stream)                         2 bytes
+//        u8 keepalive timeout s, u8 frame period in 0.1 s
+//   0x01 RIDE (always)                                          32 bytes
+//        u16 flags: b0 GPS fix, b1 recording, b2 auto-paused, b3 route active,
+//                   b4 charging, b5 HR live, b6 power live, b7 cadence live,
+//                   b8 speed from the wheel sensor, b9 grade valid,
+//                   b10 altitude valid, b11 altitude is barometric,
+//                   b12 radar connected, b13 radar live, b14 time valid
+//        u8 battery %, u8 satellites
+//        u16 speed 0.1 km/h
+//        u16 power W, u16 power 3 s W          (0xFFFF = no reading)
+//        u8 heart rate bpm, u8 cadence rpm     (0xFF = no reading)
+//        u32 ride distance m
+//        u32 ride time s (elapsed), u32 moving time s
+//        u16 climb m, i16 grade 0.1 %, i16 altitude m
+//        u16 route left 0.1 km
+//      "live" (b5..b7) is the dashboard's own test: linked AND a reading in
+//      the last 15 s. Avg speed is distance / moving time, as the device
+//      computes it, so it isn't sent.
+//   0x02 STOPWATCH (always)                                     19 bytes
+//        u8 flags: b0 running, b1 shows power, b2 shows cadence
+//        u32 elapsed ms (when the frame was built; the app counts on from it
+//            while running)
+//        u8 laps completed
+//        u32 lap in progress ms, u32 last completed lap's split ms (0 = none)
+//        u16 lap in progress avg speed 0.1 km/h (0xFFFF none)
+//        u16 lap in progress avg power W (0xFFFF none)
+//        u8 lap in progress avg cadence rpm (0xFF none)
+//   0x03 VIEW (always)                                           3 bytes
+//        u8 page index into the dashboard config (0xFF = not on a page:
+//           menu, settings, ride summary, ...), u8 page count,
+//        u8 screen: 0 a dashboard page, 1 the map, 2 something else
+//   0x04 POSITION (once the device has had a fix)               11 bytes
+//        i32 lat 1e-7 deg, i32 lon 1e-7 deg, u16 course 0.1 deg
+//        (0xFFFF = unknown), u8 flags: b0 fix is current
+//   0x05 RADAR (while a radar is connected)                 2 + n bytes
+//        u8 flags: b0 live, u8 n, n x u8 target distance m
+const char* SVC_LIVE    = "b1c51000-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
+const char* CHR_LIVE_RX = "b1c51001-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
+const char* CHR_LIVE_TX = "b1c51002-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
+constexpr uint8_t  LIVE_PROTO = 1;
+constexpr uint32_t LIVE_TIMEOUT_MS = 15000;
+constexpr uint32_t LIVE_PERIOD_MS = 1000;
+constexpr uint16_t LIVE_MIN_MTU = 43;
+
+NimBLECharacteristic* liveTxChr = nullptr;
+volatile bool liveSubscribed = false;    // TX notifications on (CCCD)
+volatile bool liveStarted = false;       // START seen, keepalive not yet missed
+volatile uint32_t liveKeepaliveMs = 0;   // millis() of the last START
+volatile bool liveKick = false;          // send a frame on the next pass
+volatile bool liveHelloDue = false;
+uint8_t liveSeq = 0;
+uint32_t liveLastMs = 0;
+bool liveStreaming = false;              // BLE task's view, for the log lines
+
+// What only the UI task knows (the stopwatch, the page on screen), handed
+// over by publishLiveView() under a spinlock: the UI task never waits on BLE.
+portMUX_TYPE liveViewMux = portMUX_INITIALIZER_UNLOCKED;
+LiveView liveView;
+volatile bool liveViewChanged = false;
+
+void liveReset() {
+    liveSubscribed = false;
+    liveStarted = false;
+    liveKick = false;
+    liveHelloDue = false;
+}
+
+class LiveRxCb : public NimBLECharacteristicCallbacks {
+    // Flags only: notifying from inside onWrite is what this file avoids.
+    void onWrite(NimBLECharacteristic* c, NimBLEConnInfo&) override {
+        std::string v = c->getValue();
+        if (v.empty() || !phoneConnected) return;
+        switch ((uint8_t)v[0]) {
+            case 0x01:
+                liveKeepaliveMs = millis();
+                liveStarted = true;
+                liveKick = true;
+                break;
+            case 0x02:
+                liveStarted = false;
+                break;
+            default: break;
+        }
+    }
+};
+
+class LiveTxCb : public NimBLECharacteristicCallbacks {
+    void onSubscribe(NimBLECharacteristic*, NimBLEConnInfo&, uint16_t subValue) override {
+        liveSubscribed = (subValue & 0x0001) != 0;
+        if (liveSubscribed) liveKick = true;
+    }
+};
+
+inline void put16(uint8_t* p, uint16_t v) { p[0] = v & 0xFF; p[1] = v >> 8; }
+inline void put32(uint8_t* p, uint32_t v) {
+    p[0] = v & 0xFF; p[1] = (v >> 8) & 0xFF; p[2] = (v >> 16) & 0xFF; p[3] = v >> 24;
+}
+inline uint16_t liveU16(double v) {
+    return v <= 0 ? 0 : v >= 65535 ? 65535 : (uint16_t)(v + 0.5);
+}
+inline uint16_t liveI16(double v) {
+    int16_t r = v <= -32768 ? -32768 : v >= 32767 ? 32767
+                                     : (int16_t)(v < 0 ? v - 0.5 : v + 0.5);
+    return (uint16_t)r;
+}
+
+// Every record, each [type][len][body], into `out`; returns the length.
+size_t buildLiveRecords(uint8_t* out, size_t cap, bool hello) {
+    RideState s = g_state.snapshot();
+    LiveView v;
+    portENTER_CRITICAL(&liveViewMux);
+    v = liveView;
+    portEXIT_CRITICAL(&liveViewMux);
+    const uint32_t now = millis();
+    radarExpire(s.radar, now);
+    // The dashboard's freshness rule (ui_dashboard: kSensorStaleMs).
+    constexpr uint32_t kStale = 15000;
+    const bool hrLive = s.hrConnected && now - s.hrMs <= kStale;
+    const bool pwLive = s.powerConnected && now - s.powerMs <= kStale;
+    const bool cadLive = s.cadenceConnected && now - s.cadenceMs <= kStale;
+    const bool routeOn = routes::active();
+    size_t n = 0;
+    auto rec = [&](uint8_t type, uint8_t len) -> uint8_t* {
+        if (n + 2 + len > cap) return nullptr;
+        out[n] = type;
+        out[n + 1] = len;
+        uint8_t* b = out + n + 2;
+        memset(b, 0, len);
+        n += 2 + len;
+        return b;
+    };
+    if (hello) {
+        if (uint8_t* b = rec(0x00, 2)) {
+            b[0] = LIVE_TIMEOUT_MS / 1000;
+            b[1] = LIVE_PERIOD_MS / 100;
+        }
+    }
+    if (uint8_t* b = rec(0x01, 32)) {
+        const bool altValid = s.baroValid || s.mapElevationValid;
+        uint16_t f = (s.gpsFix ? 1u << 0 : 0) | (s.recording ? 1u << 1 : 0) |
+                     (s.ridePaused ? 1u << 2 : 0) | (routeOn ? 1u << 3 : 0) |
+                     (s.charging ? 1u << 4 : 0) | (hrLive ? 1u << 5 : 0) |
+                     (pwLive ? 1u << 6 : 0) | (cadLive ? 1u << 7 : 0) |
+                     (s.speedSource == speed_source::SENSOR ? 1u << 8 : 0) |
+                     (s.gradeValid ? 1u << 9 : 0) | (altValid ? 1u << 10 : 0) |
+                     (s.baroValid ? 1u << 11 : 0) |
+                     (s.radar.connected ? 1u << 12 : 0) |
+                     (s.radar.live ? 1u << 13 : 0) | (s.timeValid ? 1u << 14 : 0);
+        put16(b + 0, f);
+        b[2] = s.batteryPercent;
+        b[3] = s.satellites;
+        put16(b + 4, liveU16(s.speedKmh * 10.0));
+        put16(b + 6, pwLive ? s.powerW : 0xFFFF);
+        put16(b + 8, pwLive ? s.power3sW : 0xFFFF);
+        b[10] = hrLive ? s.heartRateBpm : 0xFF;
+        b[11] = cadLive ? s.cadenceRpm : 0xFF;
+        put32(b + 12, s.distanceM <= 0 ? 0 : (uint32_t)(s.distanceM + 0.5));
+        put32(b + 16, s.elapsedS);
+        put32(b + 20, s.movingS);
+        put16(b + 24, liveU16(s.climbedM));
+        put16(b + 26, liveI16(s.gradeValid ? s.gradePercent * 10.0 : 0));
+        put16(b + 28, liveI16(s.baroValid ? s.baroAltM
+                              : s.mapElevationValid ? s.mapElevationM : 0));
+        put16(b + 30, routeOn ? liveU16(routes::remainingKm() * 10.0) : 0);
+    }
+    if (uint8_t* b = rec(0x02, 19)) {
+        const uint32_t el = v.swAccumMs + (v.swRunning ? now - v.swStartMs : 0);
+        b[0] = (v.swRunning ? 1 : 0) | (v.swShowPower ? 2 : 0) |
+               (v.swShowCadence ? 4 : 0);
+        put32(b + 1, el);
+        b[5] = v.swLaps;
+        put32(b + 6, el - v.swLastLapEndMs);
+        put32(b + 10, v.swLastSplitMs);
+        put16(b + 14, v.swLapSpeedDkmh);
+        put16(b + 16, v.swLapPowerW);
+        b[18] = v.swLapCadenceRpm;
+    }
+    if (uint8_t* b = rec(0x03, 3)) {
+        b[0] = v.page;
+        b[1] = v.pageCount;
+        b[2] = v.screen;
+    }
+    if (s.everHadFix) {
+        if (uint8_t* b = rec(0x04, 11)) {
+            put32(b + 0, (uint32_t)(int32_t)(s.latitude * 1e7));
+            put32(b + 4, (uint32_t)(int32_t)(s.longitude * 1e7));
+            put16(b + 8, s.gpsFix && s.speedKmh > 3.0f
+                             ? liveU16(s.courseDeg * 10.0) : 0xFFFF);
+            b[10] = s.gpsFix ? 1 : 0;
+        }
+    }
+    if (s.radar.connected) {
+        const uint8_t cnt = s.radar.count > RADAR_MAX_TARGETS
+                                ? RADAR_MAX_TARGETS : s.radar.count;
+        if (uint8_t* b = rec(0x05, 2 + cnt)) {
+            b[0] = s.radar.live ? 1 : 0;
+            b[1] = cnt;
+            for (int i = 0; i < cnt; ++i) b[2 + i] = s.radar.targets[i].distanceM;
+        }
+    }
+    return n;
+}
+
+// The records in as few notifies as the MTU allows, never splitting one.
+void sendLiveFrame(bool hello) {
+    uint8_t recs[160];
+    const size_t total = buildLiveRecords(recs, sizeof(recs), hello);
+    uint8_t pkt[sizeof(recs) + 2];
+    const size_t payload = negotiatedMTU > 3 ? negotiatedMTU - 3 : 20;
+    const size_t cap = payload < sizeof(pkt) ? payload : sizeof(pkt);
+    const uint8_t seq = liveSeq++;
+    size_t i = 0;
+    while (i < total) {
+        size_t len = 2;
+        pkt[0] = LIVE_PROTO;
+        pkt[1] = seq;
+        while (i < total) {
+            const size_t r = 2 + recs[i + 1];
+            if (len + r > cap) break;
+            memcpy(pkt + len, recs + i, r);
+            len += r;
+            i += r;
+        }
+        if (len == 2) return;   // a record alone outgrows the MTU
+        liveTxChr->setValue(pkt, len);
+        liveTxChr->notify();
+    }
+}
+
+// BLE task, every pass (~100 ms). Does nothing unless the app is watching.
+void serviceLive() {
+    if (!liveTxChr) return;
+    const uint32_t now = millis();
+    if (liveStarted && now - liveKeepaliveMs > LIVE_TIMEOUT_MS) {
+        liveStarted = false;
+        diag::log("ble live: keepalive missed — stream stopped");
+    }
+    const bool want = phoneConnected && liveSubscribed && liveStarted &&
+                      negotiatedMTU >= LIVE_MIN_MTU;
+    if (want != liveStreaming) {
+        liveStreaming = want;
+        diag::log("ble live: stream %s (MTU %u)", want ? "on" : "off",
+                  (unsigned)negotiatedMTU);
+        if (want) {
+            liveKick = true;
+            liveHelloDue = true;
+        }
+    }
+    if (!want) {
+        liveViewChanged = false;
+        return;
+    }
+    if (!liveKick && !liveViewChanged && now - liveLastMs < LIVE_PERIOD_MS) return;
+    liveKick = false;
+    liveViewChanged = false;
+    liveLastMs = now;
+    const bool hello = liveHelloDue;
+    liveHelloDue = false;
+    sendLiveFrame(hello);
+}
+
 class ServerCb : public NimBLEServerCallbacks {
     uint32_t onPassKeyDisplay() override {
         // Fresh code per pairing; the panel shows it, the phone asks for it.
@@ -1578,6 +1889,7 @@ class ServerCb : public NimBLEServerCallbacks {
         linkHandle = 0xFFFF;
         pairCode = 0;             // a refused or abandoned pairing's sheet goes too
         mediaTrackFeed = false;   // the next app must ask again
+        liveReset();              // and start its own live stream
         if (refused) {
             // Refused while paired: expected, and already logged.
         } else if (!connEncrypted && millis() - connAtMs < 15000) {
@@ -2661,6 +2973,16 @@ void begin() {
 
     svc->start();
 
+    // The live state stream, a service of its own (protocol above). Apps that
+    // predate it never look for it; firmware that predates it doesn't have
+    // it, and the app keeps to CHR_STATUS.
+    NimBLEService* liveSvc = server->createService(SVC_LIVE);
+    NimBLECharacteristic* liveRx = liveSvc->createCharacteristic(CHR_LIVE_RX, kW | kWNR);
+    liveRx->setCallbacks(new LiveRxCb());
+    liveTxChr = liveSvc->createCharacteristic(CHR_LIVE_TX, NIMBLE_PROPERTY::NOTIFY);
+    liveTxChr->setCallbacks(new LiveTxCb());
+    liveSvc->start();
+
     // Pairing state comes straight from the bond store, so a device updated
     // from before fixed pairing boots paired to whatever phone(s) it already
     // had (see "Fixed pairing" above).
@@ -2711,6 +3033,21 @@ void setRelaxedSleepExperiment(bool on) {
 }
 
 void mediaCommand(unsigned char cmd) { mediaCmdPending = cmd; }
+
+void publishLiveView(const LiveView& v) {
+    portENTER_CRITICAL(&liveViewMux);
+    // A change the app should see at once (not the running clock or the lap
+    // averages, which the next 1 Hz frame carries anyway).
+    const bool changed = v.page != liveView.page || v.pageCount != liveView.pageCount ||
+                         v.screen != liveView.screen ||
+                         v.swRunning != liveView.swRunning ||
+                         v.swAccumMs != liveView.swAccumMs ||
+                         v.swStartMs != liveView.swStartMs ||
+                         v.swLaps != liveView.swLaps;
+    liveView = v;
+    portEXIT_CRITICAL(&liveViewMux);
+    if (changed) liveViewChanged = true;
+}
 
 unsigned int pairingCode() {
     // Self-expires: an abandoned iOS dialog never completes authentication,
@@ -2978,6 +3315,9 @@ void task(void*) {
             }
             serviceMeshRequests();
         }
+
+        // The Ride tab's live stream: a no-op unless the app is watching.
+        serviceLive();
 
         vTaskDelay(pdMS_TO_TICKS(100));
         if (!statusChr || millis() - lastStatus < 1000) continue;

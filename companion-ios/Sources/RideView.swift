@@ -4,10 +4,15 @@ import MediaPlayer
 
 // The Ride tab is the head unit's live dashboard on the phone: the same pages,
 // laid out the way the device packs them (DashLayout), filled with what the
-// device streams over BLE. Fields the link doesn't carry, and everything while
-// disconnected, read "--" — the last known layout stays on screen.
+// device streams over BLE: the live state stream (DeviceLive) while this tab
+// is up and the firmware has it, else the 1 Hz status characteristic. Fields
+// neither carries, and everything while disconnected, read "--" — the last
+// known layout stays on screen.
 struct RideView: View {
     @EnvironmentObject var ble: BLEManager
+    /// The live stream's frames. Observed here alone: no other screen redraws
+    /// for them (see DeviceLive).
+    @EnvironmentObject var live: DeviceLive
     @AppStorage(UnitPref.key) private var useMiles = false
     /// Editing the layout in place, on the preview itself; `draft` is the
     /// working copy, sent (or saved for the next connect) on Done.
@@ -59,6 +64,7 @@ struct RideView: View {
             }
             .sheet(isPresented: $showWorkouts) { WorkoutsView() }
             .onAppear {
+                ble.liveViewer(true)   // stream while this tab is up
                 ble.refreshSensors()
                 // The session may have changed on the device while this tab
                 // was away; ask rather than trust the last notify.
@@ -73,6 +79,7 @@ struct RideView: View {
                     beginEditing()
                 }
             }
+            .onDisappear { ble.liveViewer(false) }
             .onChange(of: ble.state) { _, st in if st == .connected { ble.refreshSensors() } }
             .onChange(of: config.pages.count) { _, n in if pageIx > n { pageIx = 0 } }
         }
@@ -172,7 +179,24 @@ struct RideView: View {
 
     // MARK: Pages
 
+    /// The page strip. Names keep their full size and spacing: they share the
+    /// width when they fit, and the strip scrolls (keeping the selected one
+    /// in view) when they don't — squeezing "STOPWATCH" to fit crushed it.
     private var pageSelector: some View {
+        ScrollViewReader { proxy in
+            ViewThatFits(in: .horizontal) {
+                selectorCells(fill: true)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    selectorCells(fill: false)
+                }
+                .scrollBounceBehavior(.basedOnSize)
+            }
+            .einkBorder()
+            .onChange(of: pageIx) { _, i in withAnimation { proxy.scrollTo(i, anchor: .center) } }
+        }
+    }
+
+    private func selectorCells(fill: Bool) -> some View {
         let pages = config.pages
         let sel = min(pageIx, pages.count)
         return HStack(spacing: 0) {
@@ -180,9 +204,12 @@ struct RideView: View {
                 selectorCell(on: i == sel, divider: i > 0) {
                     Text(pageName(i, in: pages))
                         .font(BarlowFont.text(12, .bold)).tracking(2)
-                        .lineLimit(1).minimumScaleFactor(0.6)
+                        .lineLimit(1)
+                        .fixedSize()
+                        .padding(.horizontal, 12)
                 } tap: { withAnimation { pageIx = i } }
-                .frame(maxWidth: .infinity)
+                .frame(maxWidth: fill ? .infinity : nil)
+                .id(i)
                 .accessibilityLabel("Dashboard page \(pageName(i, in: pages).capitalized)")
             }
             // The "add new" page that ends the swipe, as a narrow + cell.
@@ -190,9 +217,9 @@ struct RideView: View {
                 Image(systemName: "plus").font(.system(size: 14, weight: .bold))
             } tap: { withAnimation { pageIx = pages.count } }
             .frame(width: 44)
+            .id(pages.count)
             .accessibilityLabel("Add a page")
         }
-        .einkBorder()
     }
 
     private func selectorCell<L: View>(on: Bool, divider: Bool, @ViewBuilder label: () -> L,
@@ -327,18 +354,32 @@ struct RideView: View {
     /// The selected page, editable where it stands. No swipe while editing:
     /// the cells take the finger for dragging, so the strip above changes
     /// page instead.
+    /// The settings box under the page while editing. One height for every
+    /// page — tall enough for a selected cell's inspector — so the panel
+    /// above is the same size on all of them.
+    private static let editSlotHeight: CGFloat = 200
+
     @ViewBuilder private var editArea: some View {
         let pages = draft.pages
         let i = min(pageIx, pages.count)
-        if i == pages.count {
-            panelFrame { addNewPage }
-        } else {
-            VStack(spacing: 10) {
+        VStack(spacing: 10) {
+            if i == pages.count {
+                // The add page has nothing to move or remove; the row is held
+                // so the panel lines up with the others.
+                pageActions(max(0, pages.count - 1)).hidden()
+                panelFrame { addNewPage }
+                FixedCard(height: Self.editSlotHeight) {
+                    Text("Choose a page type on the panel to add it to the device's cycle. It goes to the device with the rest of your changes when you tap \(connected ? "Send" : "Save").")
+                        .font(BarlowFont.text(13)).foregroundStyle(Palette.muted)
+                }
+                .padding(.top, 0)
+            } else {
                 pageActions(i)
                 switch pages[i].kind {
                 case .fields:
                     TimelineView(.everyMinute) { ctx in
-                        PageLayoutEditor(layout: $draft.pages[i].layout, status: panelStatus(ctx.date))
+                        PageLayoutEditor(layout: $draft.pages[i].layout, status: panelStatus(ctx.date),
+                                         inspectorHeight: Self.editSlotHeight)
                     }
                     // A fresh editor (and selection) per page.
                     .id(pages[i].id)
@@ -346,8 +387,7 @@ struct RideView: View {
                     TimelineView(.everyMinute) { ctx in
                         panelFrame { devicePage(pages[i], now: ctx.date) }
                     }
-                    pageSettings(pages[i])
-                        .fixedSize(horizontal: false, vertical: true)
+                    FixedCard(height: Self.editSlotHeight) { pageSettings(pages[i]) }
                 }
             }
         }
@@ -395,7 +435,7 @@ struct RideView: View {
     @ViewBuilder private func pageSettings(_ p: DashConfig.Page) -> some View {
         switch p.kind {
         case .map:
-            Card(padding: 14) {
+            Group {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Data strip").trackedLabel()
                     HStack(spacing: 8) {
@@ -419,15 +459,15 @@ struct RideView: View {
                 }
             }
         case .music:
-            Card(padding: 14) { AlbumArtControls(art: ble.albumArt) }
+            Group { AlbumArtControls(art: ble.albumArt) }
         case .workout:
-            Card(padding: 14) {
+            Group {
                 Text("Load a workout with Workouts above, or drop .erg/.mrc files in /workouts on the SD card.")
                     .font(BarlowFont.text(13)).foregroundStyle(Palette.muted)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         case .stopwatch:
-            Card(padding: 14) {
+            Group {
                 Text("A clock of its own, separate from the ride timer, with START/PAUSE, RESET and LAP on the panel. Needs device firmware v1.23 or newer.")
                     .font(BarlowFont.text(13)).foregroundStyle(Palette.muted)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -444,11 +484,7 @@ struct RideView: View {
             DevicePanel(status: status) { k in
                 DashPreview(layout: p?.layout ?? .deviceDefault,
                             liveText: { liveText($0, now: now) },
-                            liveWatts: { f in
-                                guard connected, f == "power3s" || f == "power",
-                                      let w = ble.status.power else { return nil }
-                                return Double(w)
-                            },
+                            liveWatts: liveWatts,
                             ftp: Double(ble.ftpWatts))
                     .frame(width: 540 * k)
                     .offset(y: 64 * k)
@@ -457,33 +493,96 @@ struct RideView: View {
             LiveMapPage(fields: config.mapFields, status: status,
                         value: { liveText($0, now: now) },
                         route: connected && ble.status.hasRoute ? ble.sentRouteCoords : [],
-                        showsUser: ble.locationPermission.isGranted)
+                        showsUser: ble.locationPermission.isGranted,
+                        rider: frame?.position)
         case .music:
             LiveMusicPage(art: ble.albumArt, status: status)
         case .workout:
             WorkoutPagePreview(status: status, model: workoutModel,
                                actions: connected ? workoutActions : nil)
         case .stopwatch:
-            // The stopwatch lives on the device alone: nothing of it crosses
-            // the link either way, so the page shows its layout with no time
-            // and its buttons greyed.
+            stopwatchPage(status)
+        }
+    }
+
+    /// The live stream's latest frame while connected; nil on firmware
+    /// without it, before the first frame, or once it goes quiet.
+    private var frame: LiveFrame? { connected ? live.frame : nil }
+
+    /// The status bar as the device prints it, from what the link reports:
+    /// the device's own labels and liveness from the live stream, else a
+    /// guess from the status characteristic's readings.
+    private func panelStatus(_ now: Date) -> PanelStatus {
+        let s = ble.status
+        var labels: [String] = []
+        if let f = frame {
+            if f.hrLive { labels.append("HR") }
+            if f.powerLive { labels.append("PWR") }
+            if f.wheelSpeed { labels.append("SPD") }
+            if f.radarConnected && !f.paused { labels.append(f.radar?.live == true ? "RDR" : "RDR?") }
+            if f.paused { labels.append("PAUSED") }
+        } else if connected {
+            if s.heartRate != nil { labels.append("HR") }
+            if s.power != nil { labels.append("PWR") }
+        }
+        return PanelStatus(clock: clockText(now),
+                           satellites: frame?.sats ?? (connected ? s.sats : 0),
+                           battery: frame?.battery ?? (connected ? s.battery : 0),
+                           linked: connected,
+                           sensors: labels.map { "· \($0)" }.joined(separator: " "))
+    }
+
+    /// Watts the power fields' zone bar fills by; nil = no reading.
+    private func liveWatts(_ field: String) -> Double? {
+        guard connected, field == "power3s" || field == "power" else { return nil }
+        if let f = frame { return (field == "power3s" ? f.power3s : f.power).map(Double.init) }
+        return ble.status.power.map(Double.init)
+    }
+
+    /// The STOPWATCH page from the live stream: the device's clock, counted
+    /// on between frames while it runs, its state and the laps. The buttons
+    /// stay the device's own (greyed here). Without the stream (older
+    /// firmware) the page shows its layout with no time.
+    @ViewBuilder private func stopwatchPage(_ status: PanelStatus) -> some View {
+        if let sw = frame?.stopwatch {
+            TimelineView(.periodic(from: .now, by: sw.running ? 0.25 : 3600)) { ctx in
+                let ms = live.stopwatchElapsedMs(at: ctx.date) ?? sw.elapsedMs
+                let lapMs = sw.lapMs &+ (ms &- sw.elapsedMs)
+                StopwatchPagePreview(
+                    status: status, time: Self.stopwatchText(ms),
+                    state: sw.running ? "RUNNING" : ms == 0 ? "READY" : "PAUSED",
+                    running: sw.running,
+                    note: sw.laps == 0 ? nil
+                        : "LAP \(sw.laps + 1) · \(Self.stopwatchText(lapMs))"
+                          + (sw.lastSplitMs.map { " · LAST \(Self.lapText($0))" } ?? ""),
+                    controlsEnabled: false)
+            }
+        } else {
             StopwatchPagePreview(status: status, time: "--:--", state: "--", running: false,
-                                 note: "The stopwatch isn't sent over Bluetooth",
+                                 note: connected && !ble.liveSupported
+                                    ? "Update the device's firmware to see its stopwatch here"
+                                    : nil,
                                  controlsEnabled: false)
         }
     }
 
-    /// The status bar as the device prints it, from what the link reports.
-    private func panelStatus(_ now: Date) -> PanelStatus {
-        let s = ble.status
-        var sensors = ""
-        if connected && s.heartRate != nil { sensors += "· HR " }
-        if connected && s.power != nil { sensors += "· PWR" }
-        return PanelStatus(clock: clockText(now),
-                           satellites: connected ? s.sats : 0,
-                           battery: connected ? s.battery : 0,
-                           linked: connected,
-                           sensors: sensors)
+    /// The device's stopwatch digits (ui_render swFmt): MM:SS, H:MM:SS past the hour.
+    static func stopwatchText(_ ms: UInt32) -> String {
+        let sec = Int(ms / 1000)
+        return sec >= 3600 ? String(format: "%d:%02d:%02d", sec / 3600, sec / 60 % 60, sec % 60)
+                           : String(format: "%02d:%02d", sec / 60, sec % 60)
+    }
+
+    /// A finished lap (swFmtLap): M:SS.t under the hour, H:MM:SS over.
+    static func lapText(_ ms: UInt32) -> String {
+        let sec = Int(ms / 1000)
+        return sec >= 3600 ? String(format: "%d:%02d:%02d", sec / 3600, sec / 60 % 60, sec % 60)
+                           : String(format: "%d:%02d.%d", sec / 60, sec % 60, Int(ms % 1000 / 100))
+    }
+
+    /// Ride and moving time as the device prints them (formatHms).
+    static func hmsText(_ secs: Int) -> String {
+        String(format: "%d:%02d:%02d", secs / 3600, secs / 60 % 60, secs % 60)
     }
 
     private func clockText(_ now: Date) -> String {
@@ -548,30 +647,47 @@ struct RideView: View {
 
     /// What a field shows right now: the value and its unit, "--" when the
     /// link doesn't carry it (or there is no link), and the power zone.
+    /// Every field comes from the live stream while it runs; without it
+    /// (older firmware, or before its first frame) the status characteristic
+    /// covers speed, power, HR, battery, sats and route left.
     private func values(_ field: String) -> DashValue {
         let s = ble.status
         let live = connected
+        let f = frame
         func num(_ v: Int?) -> String { live ? v.map(String.init) ?? "--" : "--" }
+        func one(_ v: Double?) -> String { v.map { String(format: "%.1f", $0) } ?? "--" }
+        func whole(_ v: Double?) -> String { v.map { String(format: "%.0f", $0) } ?? "--" }
+        let speedUnit = Units.speedLabel(useMiles).uppercased()
+        let distUnit = Units.distLabel(useMiles).uppercased()
+        let elevUnit = Units.elevLabel(useMiles).uppercased()
         switch field {
-        case "speed", "avgspeed":
-            let v = field == "speed" && live
-                ? String(format: "%.1f", Units.speed(s.speedKmh, miles: useMiles)) : "--"
-            return DashValue(text: v, unit: Units.speedLabel(useMiles).uppercased())
+        case "speed":
+            let v = live ? Units.speed(f?.speedKmh ?? s.speedKmh, miles: useMiles) : nil
+            return DashValue(text: one(v), unit: speedUnit)
+        case "avgspeed":
+            return DashValue(text: one(f.map { Units.speed($0.avgSpeedKmh, miles: useMiles) }), unit: speedUnit)
         case "power3s", "power":
-            let w = live ? s.power : nil
+            let w = live ? (f.map { field == "power3s" ? $0.power3s : $0.power } ?? s.power) : nil
             return DashValue(text: num(w), unit: "W", zone: .some(w.map { Self.powerZone($0, ftp: ble.ftpWatts) } ?? 0))
-        case "hr": return DashValue(text: num(s.heartRate), unit: "BPM")
-        case "cadence": return DashValue(text: "--", unit: "RPM")
-        case "distance": return DashValue(text: "--", unit: Units.distLabel(useMiles).uppercased())
-        case "ridetime", "movingtime": return DashValue(text: "--", unit: "")
-        case "climb", "altitude": return DashValue(text: "--", unit: Units.elevLabel(useMiles).uppercased())
-        case "grade": return DashValue(text: "--", unit: "%")
-        case "battery": return DashValue(text: live ? "\(s.battery)" : "--", unit: "%")
-        case "sats": return DashValue(text: live ? "\(s.sats)" : "--", unit: "")
+        case "hr": return DashValue(text: num(f.map(\.heartRate) ?? s.heartRate), unit: "BPM")
+        case "cadence": return DashValue(text: num(f?.cadence), unit: "RPM")
+        case "distance":
+            return DashValue(text: one(f.map { Units.distance($0.distanceM / 1000, miles: useMiles) }), unit: distUnit)
+        case "ridetime": return DashValue(text: f.map { Self.hmsText($0.rideTimeS) } ?? "--", unit: "")
+        case "movingtime": return DashValue(text: f.map { Self.hmsText($0.movingTimeS) } ?? "--", unit: "")
+        case "climb":
+            return DashValue(text: whole(f.map { Units.elevation($0.climbM, miles: useMiles) }), unit: elevUnit)
+        case "altitude":
+            return DashValue(text: whole(f?.altitudeM.map { Units.elevation($0, miles: useMiles) }), unit: elevUnit)
+        case "grade": return DashValue(text: one(f?.gradePct), unit: "%")
+        case "battery": return DashValue(text: live ? "\(f?.battery ?? s.battery)" : "--", unit: "%")
+        case "sats": return DashValue(text: live ? "\(f?.sats ?? s.sats)" : "--", unit: "")
         case "clock": return DashValue(text: "", unit: "", isClock: true)
         case "routeleft":
-            let v = live && s.hasRoute ? String(format: "%.1f", Units.distance(s.remainingKm, miles: useMiles)) : "--"
-            return DashValue(text: v, unit: Units.distLabel(useMiles).uppercased())
+            let on = f?.routeActive ?? s.hasRoute
+            let km = f?.routeLeftKm ?? s.remainingKm
+            let v = live && on ? String(format: "%.1f", Units.distance(km, miles: useMiles)) : "--"
+            return DashValue(text: v, unit: distUnit)
         default: return DashValue(text: "--", unit: "")
         }
     }
@@ -661,19 +777,61 @@ private struct LiveMapPage: View {
     let value: (String) -> String
     let route: [CLLocationCoordinate2D]
     let showsUser: Bool
+    /// Where the DEVICE is, from the live stream: the map centres on it and
+    /// draws the device's own rider marker and compass. Without it (older
+    /// firmware, no fix yet) the phone's own location stands in.
+    var rider: LiveFrame.Position? = nil
     @State private var line: MKPolyline?
     @State private var camera: MapCameraCommand?
     @State private var region: MKCoordinateRegion?
 
     var body: some View {
         MapPagePreview(fields: fields, status: status, value: value,
-                       map: AnyView(EInkMapView(route: line, camera: camera,
-                                                showsUserLocation: showsUser,
-                                                onRegionChange: { region = $0 })
-                                        .allowsHitTesting(false)),
+                       map: AnyView(mapArea),
                        onZoom: zoom)
             .onAppear { update() }
             .onChange(of: route.count) { update() }
+            .onChange(of: riderKey) { follow() }
+    }
+
+    /// The map body (panel y 64...810) with the device's chrome over it:
+    /// the circled rider arrow at the middle, pointing along the course, and
+    /// the compass at its corner. The phone's map is north-up, so the
+    /// compass needle points straight up.
+    private var mapArea: some View {
+        GeometryReader { geo in
+            let k = geo.size.width / 540
+            ZStack(alignment: .topLeading) {
+                EInkMapView(route: line, camera: camera,
+                            showsUserLocation: showsUser && rider == nil,
+                            onRegionChange: { region = $0 })
+                    .allowsHitTesting(false)
+                if rider != nil {
+                    RiderMark(headingDeg: rider?.courseDeg, k: k)
+                        .position(x: geo.size.width / 2, y: geo.size.height / 2)
+                }
+                CompassMark(k: k)
+                    .position(x: (540 - 46) * k, y: 48 * k)
+            }
+        }
+    }
+
+    /// Changes when the device's reported position does, rounded so float
+    /// noise doesn't move the camera.
+    private var riderKey: String {
+        guard let r = rider else { return "" }
+        return String(format: "%.5f,%.5f", r.lat, r.lon)
+    }
+
+    private func follow() {
+        guard let r = rider else { update(); return }
+        let c = CLLocationCoordinate2D(latitude: r.lat, longitude: r.lon)
+        if region == nil {
+            camera = MapCameraCommand(target: .region(MKCoordinateRegion(
+                center: c, latitudinalMeters: 1200, longitudinalMeters: 1200)))
+        } else {
+            camera = MapCameraCommand(target: .center(c))
+        }
     }
 
     private func zoom(_ dir: Int) {
@@ -685,6 +843,16 @@ private struct LiveMapPage: View {
     }
 
     private func update() {
+        if rider != nil {
+            if route.count > 1 {
+                var c = route
+                line = MKPolyline(coordinates: &c, count: c.count)
+            } else {
+                line = nil
+            }
+            follow()
+            return
+        }
         if route.count > 1 {
             var c = route
             let l = MKPolyline(coordinates: &c, count: c.count)
@@ -781,5 +949,61 @@ private struct AlbumArtControls: View {
                 .font(BarlowFont.text(12)).foregroundStyle(Palette.muted)
         }
         .foregroundStyle(Palette.ink)
+    }
+}
+
+/// The device's rider marker (map_view.cpp drawRider): a white disc with a
+/// 3px ring and a split arrowhead along the course. No course yet: the
+/// arrow points up, as the device's does at heading 0.
+private struct RiderMark: View {
+    let headingDeg: Double?
+    let k: CGFloat
+
+    var body: some View {
+        Canvas { ctx, size in
+            let c = CGPoint(x: size.width / 2, y: size.height / 2)
+            ctx.fill(Path(ellipseIn: CGRect(x: c.x - 30 * k, y: c.y - 30 * k, width: 60 * k, height: 60 * k)),
+                     with: .color(.white))
+            ctx.stroke(Path(ellipseIn: CGRect(x: c.x - 29 * k, y: c.y - 29 * k, width: 58 * k, height: 58 * k)),
+                       with: .color(.black), lineWidth: max(1, 3 * k))
+            let rad = ((headingDeg ?? 0) - 90) * .pi / 180
+            let cs = cos(rad), sn = sin(rad)
+            func rot(_ lx: CGFloat, _ ly: CGFloat) -> CGPoint {
+                CGPoint(x: c.x + (lx * cs - ly * sn) * k, y: c.y + (lx * sn + ly * cs) * k)
+            }
+            var arrow = Path()
+            arrow.move(to: rot(24, 0))
+            arrow.addLine(to: rot(-15, -13))
+            arrow.addLine(to: rot(-8, 0))
+            arrow.addLine(to: rot(-15, 13))
+            arrow.closeSubpath()
+            ctx.fill(arrow, with: .color(.black))
+        }
+        .frame(width: 64 * k, height: 64 * k)
+        .accessibilityLabel("Device position")
+    }
+}
+
+/// The device's compass (map_view.cpp drawCompass): ringed disc, needle to
+/// north — up, on the phone's north-up map.
+private struct CompassMark: View {
+    let k: CGFloat
+
+    var body: some View {
+        Canvas { ctx, size in
+            let c = CGPoint(x: size.width / 2, y: size.height / 2)
+            ctx.fill(Path(ellipseIn: CGRect(x: c.x - 28 * k, y: c.y - 28 * k, width: 56 * k, height: 56 * k)),
+                     with: .color(.white))
+            ctx.stroke(Path(ellipseIn: CGRect(x: c.x - 27 * k, y: c.y - 27 * k, width: 54 * k, height: 54 * k)),
+                       with: .color(.black), lineWidth: max(1, 3 * k))
+            var needle = Path()
+            needle.move(to: CGPoint(x: c.x, y: c.y - 19 * k))
+            needle.addLine(to: CGPoint(x: c.x + 7 * k, y: c.y))
+            needle.addLine(to: CGPoint(x: c.x - 7 * k, y: c.y))
+            needle.closeSubpath()
+            ctx.fill(needle, with: .color(.black))
+        }
+        .frame(width: 60 * k, height: 60 * k)
+        .accessibilityLabel("North is up")
     }
 }
