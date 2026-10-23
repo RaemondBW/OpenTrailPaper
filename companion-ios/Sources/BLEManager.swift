@@ -1149,7 +1149,11 @@ final class BLEManager: NSObject, ObservableObject {
     /// is lost, and the device answers START with one at once.
     private func sendLiveStart() {
         guard liveWanted, let p = peripheral, let rx = liveRxChar,
-              liveTxChar?.isNotifying == true else { return }
+              liveTxChar?.isNotifying == true else {
+            NSLog("[live] START skipped: wanted=%d rx=%d notifying=%d", liveWanted ? 1 : 0,
+                  liveRxChar != nil ? 1 : 0, liveTxChar?.isNotifying == true ? 1 : 0)
+            return
+        }
         NSLog("[live] START sent")
         p.writeValue(Data([0x01, LiveUUID.protocolVersion]), for: rx, type: .withResponse)
     }
@@ -3681,6 +3685,8 @@ extension BLEManager: CBPeripheralDelegate {
             noteAuthError(error)
             if ch.uuid == BikeUUID.ota { queryDeviceFirmware() }
             if ch.uuid == LiveUUID.tx {
+                NSLog("[live] TX notify state: %d error: %@", ch.isNotifying ? 1 : 0,
+                      error.map { "\($0)" } ?? "none")
                 if ch.isNotifying { sendLiveStart() } else { live.clear() }
             }
             if ch.uuid == BikeUUID.sensors, let p = peripheral {
@@ -3733,6 +3739,9 @@ extension BLEManager: CBPeripheralDelegate {
     nonisolated func peripheral(_ p: CBPeripheral,
                                 didWriteValueFor ch: CBCharacteristic,
                                 error: Error?) {
+        if ch.uuid == LiveUUID.rx {
+            NSLog("[live] RX write: %@", error.map { "\($0)" } ?? "ok")
+        }
         if let error, ch.uuid == BikeUUID.workout {
             workoutLog.error("workout write failed: \(error.localizedDescription, privacy: .public)")
         }
