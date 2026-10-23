@@ -4,6 +4,7 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
+    alias(libs.plugins.protobuf)
 }
 
 // Release signing, kept OUT of the repository.
@@ -153,6 +154,31 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
+    // The phone link's schema is the repository's one copy, proto/link.proto,
+    // shared with the firmware (nanopb) and iOS (swift-protobuf); Android
+    // generates its classes at build time (docs/ble-link.md). link.options is
+    // nanopb's, not protoc's.
+    sourceSets {
+        getByName("main") {
+            (this as ExtensionAware).extensions.configure<SourceDirectorySet>("proto") {
+                srcDir("../../proto")
+                include("**/*.proto")
+            }
+        }
+    }
+}
+
+protobuf {
+    protoc {
+        artifact = libs.protobuf.protoc.get().toString()
+    }
+    generateProtoTasks {
+        all().forEach { task ->
+            task.builtins {
+                create("java") { option("lite") }
+            }
+        }
+    }
 }
 
 dependencies {
@@ -201,6 +227,9 @@ dependencies {
     // since the App Check / Custom Tabs artifacts raised it) refuses
     // registerForActivityResult next to a fragment older than 1.3.0.
     implementation(libs.androidx.fragment)
+    // The phone link (link/LinkClient.kt): lite runtime for the classes
+    // generated from proto/link.proto.
+    implementation(libs.protobuf.javalite)
     debugImplementation(libs.androidx.ui.tooling)
     // The byte formats shared with the firmware are pure Kotlin, so they are
     // testable on the JVM with no device and no network.
