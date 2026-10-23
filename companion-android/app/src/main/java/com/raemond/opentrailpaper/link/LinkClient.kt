@@ -139,10 +139,13 @@ class LinkClient(
     }
 
     private fun onDeviceHello(h: DeviceHello) {
-        if (state == State.FALLBACK || state == State.IDLE) {
-            log("hello: late DeviceHello ignored (state $state)")
+        if (state == State.IDLE) {
+            log("hello: DeviceHello with no session, ignored")
             return
         }
+        // After a legacy fallback the device that finally answers pushes only
+        // on the link from now on: switch to it.
+        if (state == State.FALLBACK) log("hello: late DeviceHello after fallback, switching to the link")
         helloTimer?.cancel(); helloTimer = null
         deviceHello = h
         features = h.featuresList.toSet()
@@ -193,7 +196,7 @@ class LinkClient(
 
     /** One TX notification. */
     fun onFragment(fragment: ByteArray) {
-        if (state == State.IDLE || state == State.FALLBACK) return
+        if (state == State.IDLE) return
         val bytes = reassembler.feed(fragment) ?: return
         val msg = try {
             DeviceMsg.parseFrom(bytes)

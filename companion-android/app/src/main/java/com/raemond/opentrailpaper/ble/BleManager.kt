@@ -4477,6 +4477,9 @@ class BleManager(private val app: Application) {
         .build()
 
     private fun onLinkReady(h: DeviceHello) {
+        // Also after a legacy fallback (a late DeviceHello): the legacy
+        // characteristics stay bound but every feature checks linkReady first,
+        // and dispatch ignores them outside LEGACY mode.
         linkMode = LinkMode.LINK
         linkFeatures = h.featuresList.toSet()
         deviceHello = h

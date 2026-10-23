@@ -163,9 +163,10 @@ class LinkClientTest {
         clock.advance(3_000)
         assertEquals(listOf("fallback"), events)
         assertEquals(LinkClient.State.FALLBACK, client.state)
-        // A late DeviceHello doesn't resurrect the link on this connection.
+        // A late DeviceHello still switches to the link: the device now pushes only there.
         dev.send(deviceHello(1))
-        assertFalse(client.ready)
+        assertTrue(client.ready)
+        assertEquals(listOf("fallback", "ready v9.99"), events)
     }
 
     @Test fun answerToARetriedHelloIsAccepted() {
