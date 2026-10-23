@@ -1423,7 +1423,8 @@ void saveUploadedWorkout() {
 //   0x00 HELLO (first frame of a stream, and the answer to each START) 3 bytes
 //        u8 keepalive timeout s, u8 frame period in 0.1 s,
 //        u8 caps: b0 takes [0x10] stopwatch commands, b1 sends MUSIC,
-//                 b2 sends STOPWATCH_LAPS
+//                 b2 sends STOPWATCH_LAPS, b3 holds 8 dashboard pages
+//                 (7 + the map; without it the app keeps to 5)
 //        (a 2-byte HELLO, from the first firmware with this service, = 0)
 //   0x01 RIDE (always)                                          32 bytes
 //        u16 flags: b0 GPS fix, b1 recording, b2 auto-paused, b3 route active,
@@ -1493,6 +1494,7 @@ constexpr uint16_t LIVE_MIN_MTU = 43;
 constexpr uint8_t  LIVE_CAP_STOPWATCH_CMD = 0x01;   // HELLO caps (see above)
 constexpr uint8_t  LIVE_CAP_MUSIC = 0x02;
 constexpr uint8_t  LIVE_CAP_STOPWATCH_LAPS = 0x04;
+constexpr uint8_t  LIVE_CAP_PAGES_8 = 0x08;          // holds 7 pages + the map
 
 NimBLECharacteristic* liveTxChr = nullptr;
 volatile bool liveSubscribed = false;    // TX notifications on (CCCD)
@@ -1622,7 +1624,8 @@ size_t buildLiveRecords(uint8_t* out, size_t cap, bool hello, size_t notifyCap) 
         if (uint8_t* b = rec(0x00, 3)) {
             b[0] = LIVE_TIMEOUT_MS / 1000;
             b[1] = LIVE_PERIOD_MS / 100;
-            b[2] = LIVE_CAP_STOPWATCH_CMD | LIVE_CAP_MUSIC | LIVE_CAP_STOPWATCH_LAPS;
+            b[2] = LIVE_CAP_STOPWATCH_CMD | LIVE_CAP_MUSIC | LIVE_CAP_STOPWATCH_LAPS |
+                   LIVE_CAP_PAGES_8;
         }
     }
     if (uint8_t* b = rec(0x01, 32)) {

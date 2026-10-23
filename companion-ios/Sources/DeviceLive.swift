@@ -133,6 +133,8 @@ struct LiveFrame: Equatable {
     var caps: UInt8 = 0
     var takesStopwatchCommands: Bool { caps & 0x01 != 0 }
     var sendsStopwatchLaps: Bool { caps & 0x04 != 0 }
+    /// Firmware that holds 7 configurable pages plus the map (5 before).
+    var holdsEightPages: Bool { caps & 0x08 != 0 }
 
     /// Apply one notify's records. Sections that are sent only while they
     /// have something to say (position, radar) are cleared by `startFrame`.
@@ -299,6 +301,7 @@ final class DeviceLive: ObservableObject {
         receivedAt = Date()
         if building.music != music { musicAt = receivedAt }
         if frame != building { frame = building }
+        if building.holdsEightPages { DashConfig.deviceHoldsMorePages = true }
         armStale()
     }
 

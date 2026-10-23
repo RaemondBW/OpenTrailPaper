@@ -19,6 +19,8 @@ struct RideView: View {
     @State private var editing = false
     @State private var draft = DashConfig(pages: [])
     @State private var confirmDiscard = false
+    /// Why the ADD NEW page couldn't add the one picked.
+    @State private var addError: String?
     @State private var showWorkouts = false
     @State private var pageIx = 0
 
@@ -284,7 +286,7 @@ struct RideView: View {
     /// (now, or on the next connect) like an edit made in the editor.
     @ViewBuilder private var addNewPage: some View {
         let c = config
-        let full = c.contentPages >= DashConfig.maxPages
+        let full = c.contentPages >= DashConfig.devicePages
         VStack(spacing: 14) {
             Image(systemName: "plus")
                 .font(.system(size: 44, weight: .bold))
@@ -294,7 +296,10 @@ struct RideView: View {
                 if ble.dashTarget == nil {
                     Text("Connect once to load your device's pages, then add more here.")
                 } else if full {
-                    Text("The device holds \(DashConfig.maxPages) pages besides the map. Remove one in Edit to add another.")
+                    Text(DashConfig.devicePages < DashConfig.maxPages
+                         ? "This firmware holds \(DashConfig.devicePages) pages besides the map. Update the device's firmware for up to \(DashConfig.maxPages), or remove one in Edit."
+                         : "The device holds \(DashConfig.maxPages) pages besides the map. Remove one in Edit to add another.")
+
                 } else {
                     Menu {
                         Button { addPage(.newData) } label: { Label("Data page", systemImage: "rectangle.3.group") }
@@ -309,6 +314,9 @@ struct RideView: View {
                         }
                     } label: {
                         BlockButtonLabel(title: "Choose a page", systemImage: "plus")
+                    }
+                    if let addError {
+                        Text(addError).padding(.top, 4)
                     }
                 }
             }
@@ -326,6 +334,15 @@ struct RideView: View {
     }
 
     private func addPage(_ p: DashConfig.Page) {
+        var next = editing ? draft : (ble.dashTarget ?? draft)
+        next.pages.append(p)
+        // The device hands the layout back in one GATT read (512 bytes at
+        // most); a bigger one would come back cut short.
+        guard next.configText.utf8.count <= DashConfig.maxTextBytes else {
+            addError = "Your pages are full of fields — the layout is at the size the device can send back. Remove a few fields or a page first."
+            return
+        }
+        addError = nil
         if editing {
             draft.pages.append(p)
             withAnimation { pageIx = draft.pages.count - 1 }

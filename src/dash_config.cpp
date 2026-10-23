@@ -104,7 +104,10 @@ bool applyText(const char* text, const char** reason) {
     static const char* kWriteFailed = "SD write failed";
     if (reason) *reason = nullptr;
 
-    DashPages parsed;
+    // Static: this runs on the BLE server task (4 KB stack), and eight
+    // pages of layout no longer belong on it.
+    static DashPages parsed;
+    parsed = DashPages();
     if (!dashParsePages(text, parsed)) {
         if (reason) *reason = kNoFields;
         return false;

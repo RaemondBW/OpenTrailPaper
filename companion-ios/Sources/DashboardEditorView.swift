@@ -217,7 +217,7 @@ struct DashboardEditorView: View {
                     ForEach(Array(config.pages.enumerated()), id: \.element.id) { i, page in
                         carouselCard(i).id(page.id.uuidString)
                     }
-                    if config.contentPages < DashConfig.maxPages {
+                    if config.contentPages < DashConfig.devicePages {
                         addCard(proxy).id("add")
                     }
                 }
