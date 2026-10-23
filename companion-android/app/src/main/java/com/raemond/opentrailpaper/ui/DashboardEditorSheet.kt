@@ -181,6 +181,8 @@ fun DashboardEditorSheet(ble: BleManager, onDismiss: () -> Unit) {
                     when {
                         ble.pendingDashConfig == null ->
                             "Not connected · edits are saved and sync on the next connect"
+                        connected && ble.dashWaitingForDevice ->
+                            "Waiting for the device · it saves the layout once the ride stops recording"
                         connected -> "Syncing layout…"
                         else -> "Will sync when connected"
                     },

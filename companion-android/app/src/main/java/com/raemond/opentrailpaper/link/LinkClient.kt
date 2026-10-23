@@ -9,6 +9,7 @@ import com.raemond.opentrailpaper.link.proto.Hello
 import com.raemond.opentrailpaper.link.proto.PhoneMsg
 import com.raemond.opentrailpaper.link.proto.ResultCode
 import com.raemond.opentrailpaper.link.proto.Source
+import com.raemond.opentrailpaper.link.proto.Target
 import com.raemond.opentrailpaper.link.proto.TransferAck
 import com.raemond.opentrailpaper.link.proto.TransferCancel
 import com.raemond.opentrailpaper.link.proto.UploadBegin
@@ -51,6 +52,13 @@ fun interface LinkClock {
  * request ids with reply callbacks and timeouts, the two-queue writer (control
  * before bulk), the Hello handshake with its legacy fallback, and the generic
  * upload / download transfers.
+ *
+ * The device runs one upload and one download at a time and answers a second
+ * with RESULT_BUSY (docs/ble-link.md, "Transfers"), so transfers queue here:
+ * each kind is FIFO, and the next starts once the current one is done, failed
+ * or cancelled. A newer album art replaces an older one, queued or running. A
+ * BUSY that still comes back (the device finishing a cancelled upload's save)
+ * is retried a few times before it counts as a failure.
  *
  * Confined to ONE thread — BleManager's main thread, where every GATT callback
  * is posted — so nothing here locks. Everything is per connection: [reset]
@@ -174,6 +182,10 @@ class LinkClient(
         current = null
         writing = false
         epoch += 1
+        // The slots first, so nothing failed below starts the next one.
+        val queued: List<Transfer> = uploadQueue.toList() + downloadQueue.toList()
+        uploadQueue.clear(); downloadQueue.clear()
+        activeUpload = null; activeDownload = null
         val reqs = pending.values.toList()
         pending.clear()
         for (p in reqs) {
@@ -183,6 +195,7 @@ class LinkClient(
         val xs = transfers.values.toList()
         transfers.clear()
         for (t in xs) t.abandon(ResultCode.RESULT_CANCELLED, reason)
+        for (t in queued) t.abandon(ResultCode.RESULT_CANCELLED, reason)
     }
 
     // MARK: - receive
@@ -280,12 +293,16 @@ class LinkClient(
     }
 
     private fun nextXfer(): Int {
-        lastXfer = if (lastXfer >= 0x7F) 1 else lastXfer + 1   // one-byte varint in every Chunk
-        while (transfers.containsKey(lastXfer)) lastXfer = if (lastXfer >= 0x7F) 1 else lastXfer + 1
+        fun step() { lastXfer = if (lastXfer >= 0x7F) 1 else lastXfer + 1 }   // one-byte varint in every Chunk
+        fun inUse(x: Int) = transfers.containsKey(x) ||
+            uploadQueue.any { it.xfer == x } || downloadQueue.any { it.xfer == x }
+        step()
+        var tries = 0
+        while (inUse(lastXfer) && tries++ < 0x7F) step()
         return lastXfer
     }
 
-    private fun armTimeout(p: Pending): Cancellable = clock.schedule(p.timeoutMs) {
+    private fun armTimeout(p: Pending): Cancellable? = if (p.timeoutMs <= 0) null else clock.schedule(p.timeoutMs) {
         if (pending.remove(p.req) != null) {
             log("req ${p.req} timed out after ${p.timeoutMs} ms")
             p.onFail(ResultCode.RESULT_TIMEOUT, "No answer from the device")
@@ -295,8 +312,9 @@ class LinkClient(
     /**
      * Send a request and route the device's answers to [onReply] — every
      * message carrying its req, until [onReply] returns true (lists answer in
-     * pages). Each answer re-arms the timeout. [onFail]: no answer in time, or
-     * the link went away. Returns the req, or 0 if the link isn't up.
+     * pages). Each answer re-arms the timeout; [timeoutMs] <= 0 waits for as
+     * long as the link lasts. [onFail]: no answer in time, or the link went
+     * away. Returns the req, or 0 if the link isn't up.
      */
     fun request(
         msg: PhoneMsg.Builder,
@@ -428,23 +446,110 @@ class LinkClient(
 
     // MARK: - transfers
 
+    /** Started transfers (begin sent), by xfer. Queued ones are not here yet. */
     private val transfers = LinkedHashMap<Int, Transfer>()
+
+    private val uploadQueue = ArrayDeque<Upload>()
+    private val downloadQueue = ArrayDeque<Download>()
+    private var activeUpload: Upload? = null
+    private var activeDownload: Download? = null
+
+    /** Queue [t]; it starts at once when its kind's slot is free. */
+    private fun admit(t: Transfer) {
+        when (t) {
+            is Upload -> uploadQueue.addLast(t)
+            is Download -> downloadQueue.addLast(t)
+        }
+        if (t is Upload && activeUpload != null) log("upload ${t.xfer}: queued behind ${activeUpload!!.xfer}")
+        if (t is Download && activeDownload != null) log("download ${t.xfer}: queued behind ${activeDownload!!.xfer}")
+        startNext(t.isUpload)
+    }
+
+    private fun unqueue(t: Transfer): Boolean = when (t) {
+        is Upload -> uploadQueue.remove(t)
+        is Download -> downloadQueue.remove(t)
+        else -> false
+    }
+
+    /** [t] ended: if it held a slot, the next of its kind goes. */
+    private fun release(t: Transfer) {
+        when {
+            activeUpload === t -> { activeUpload = null; startNext(upload = true) }
+            activeDownload === t -> { activeDownload = null; startNext(upload = false) }
+        }
+    }
+
+    private fun startNext(upload: Boolean) {
+        if (!ready) return
+        if (upload) {
+            if (activeUpload != null) return
+            val u = uploadQueue.pollFirst() ?: return
+            activeUpload = u
+            transfers[u.xfer] = u
+            u.start()
+        } else {
+            if (activeDownload != null) return
+            val d = downloadQueue.pollFirst() ?: return
+            activeDownload = d
+            transfers[d.xfer] = d
+            d.start()
+        }
+    }
 
     private abstract inner class Transfer(override val xfer: Int) : Handle {
         /** The UploadBegin / DownloadRequest still waiting for its first answer. */
         var beginReq = 0
 
+        /** RESULT_BUSY answers retried so far, and the timer for the next try. */
+        private var busyTries = 0
+        private var busyTimer: Cancellable? = null
+
+        /** Holds the device's one upload (or one download) slot. */
+        abstract val isUpload: Boolean
+
         abstract fun onMessage(m: DeviceMsg)
+
+        /** Send the UploadBegin / DownloadRequest; the transfer holds its slot. */
+        abstract fun start()
 
         /** Ended locally (reset, timeout): report it, send nothing. */
         abstract fun abandon(code: ResultCode, detail: String)
 
         /** The phone gives up: tell the device and report it locally. */
-        override fun cancel() {
+        override fun cancel() = cancel("Cancelled")
+
+        fun cancel(detail: String) {
+            if (unqueue(this)) {
+                log("transfer $xfer: dropped from the queue ($detail)")
+                abandon(ResultCode.RESULT_CANCELLED, detail)
+                return
+            }
             if (transfers.remove(xfer) == null) return
-            log("transfer $xfer: cancelled by the app")
+            log("transfer $xfer: cancelled by the app ($detail)")
             sendCancel(ResultCode.RESULT_CANCELLED)
-            abandon(ResultCode.RESULT_CANCELLED, "Cancelled")
+            abandon(ResultCode.RESULT_CANCELLED, detail)
+        }
+
+        /**
+         * The answer to the begin request was a refusal. BUSY is retried after
+         * [BUSY_RETRY_MS], up to [BUSY_RETRIES] times; true when it was.
+         */
+        fun retryBusy(code: ResultCode): Boolean {
+            if (code != ResultCode.RESULT_BUSY || busyTries >= BUSY_RETRIES) return false
+            busyTries += 1
+            log("transfer $xfer: device busy, retry $busyTries/$BUSY_RETRIES in ${BUSY_RETRY_MS} ms")
+            busyTimer?.cancel()
+            busyTimer = clock.schedule(BUSY_RETRY_MS) {
+                busyTimer = null
+                if (transfers[xfer] === this && ready) start()
+            }
+            return true
+        }
+
+        /** Terminal, whichever way: stop the retry timer and hand the slot on. */
+        fun finished() {
+            busyTimer?.cancel(); busyTimer = null
+            release(this)
         }
 
         fun sendCancel(reason: ResultCode) {
@@ -490,37 +595,55 @@ class LinkClient(
 
     /**
      * Upload [data]. [begin] carries the target and its fields (name, version,
-     * art format...); xfer, size and crc32 are filled in here. Returns null
-     * (after [UploadListener.onDone]) when the link is not up.
+     * art format...); xfer, size and crc32 are filled in here. Uploads go one
+     * at a time, in order; this one may wait behind another. Album art replaces
+     * any older art, queued or running. Returns null (after
+     * [UploadListener.onDone]) when the link is not up.
      */
     fun upload(begin: UploadBegin.Builder, data: ByteArray, listener: UploadListener): Handle? {
         if (!ready) {
             listener.onDone(ResultCode.RESULT_CANCELLED, "Link not ready")
             return null
         }
-        val u = Upload(nextXfer(), data, listener)
-        transfers[u.xfer] = u
+        if (begin.target == Target.TARGET_ALBUM_ART) {
+            val old = uploadQueue.filter { it.target == Target.TARGET_ALBUM_ART } +
+                listOfNotNull(activeUpload?.takeIf { it.target == Target.TARGET_ALBUM_ART })
+            for (o in old) o.cancel("Replaced by newer art")
+        }
+        val u = Upload(nextXfer(), begin, data, listener)
         val crc = CRC32().apply { update(data) }.value.toInt()
         begin.setXfer(u.xfer).setSize(data.size).setCrc32(crc)
-        log("upload ${u.xfer}: begin ${begin.target} \"${begin.name}\" ${data.size} B")
-        val req = request(
-            PhoneMsg.newBuilder().setUploadBegin(begin),
-            onFail = { code, detail -> u.failed(code, detail, sendCancel = false) },
-        ) { m ->
-            // UploadReady is routed by xfer; what lands here is the refusal.
-            if (m.hasResult()) u.failed(m.result.code, m.result.detail.ifEmpty { "Refused" }, sendCancel = false)
-            true
-        }
-        if (req == 0) u.failed(ResultCode.RESULT_TOO_LARGE, "Message too large", sendCancel = false)
-        u.beginReq = req
+        admit(u)
         return u
     }
 
     private inner class Upload(
         xfer: Int,
+        private val begin: UploadBegin.Builder,
         private val data: ByteArray,
         private val listener: UploadListener,
     ) : Transfer(xfer) {
+        override val isUpload get() = true
+        val target: Target get() = begin.target
+
+        override fun start() {
+            log("upload $xfer: begin ${begin.target} \"${begin.name}\" ${data.size} B")
+            val req = request(
+                PhoneMsg.newBuilder().setUploadBegin(begin.clone()),
+                // A begin the device never answered may still have started
+                // there: cancel it, or it holds the device's upload slot.
+                onFail = { code, detail -> failed(code, detail, sendCancel = code == ResultCode.RESULT_TIMEOUT) },
+            ) { m ->
+                // UploadReady is routed by xfer; what lands here is the refusal.
+                if (m.hasResult() && transfers[xfer] === this && !retryBusy(m.result.code)) {
+                    failed(m.result.code, m.result.detail.ifEmpty { "Refused" }, sendCancel = false)
+                }
+                true
+            }
+            beginReq = req
+            if (req == 0) failed(ResultCode.RESULT_TOO_LARGE, "Message too large", sendCancel = false)
+        }
+
         private var window = 0
         private var sent = 0
         private var acked = 0
@@ -557,6 +680,7 @@ class LinkClient(
                         listener.onProgress(data.size.toLong(), data.size.toLong(), data.size.toLong())
                     }
                     listener.onDone(d.code, d.detail)
+                    finished()
                 }
             }
         }
@@ -617,6 +741,7 @@ class LinkClient(
             stopTimers()
             log("upload $xfer: failed $code $detail")
             listener.onDone(code, detail)
+            finished()
         }
     }
 
@@ -636,30 +761,43 @@ class LinkClient(
             listener.onFail(ResultCode.RESULT_CANCELLED, "Link not ready", prefix)
             return null
         }
-        val d = Download(nextXfer(), prefix ?: ByteArray(0), listener)
-        transfers[d.xfer] = d
-        log("download ${d.xfer}: $source \"$name\" from ${d.offset}")
-        val req = request(
-            PhoneMsg.newBuilder().setDownload(
-                DownloadRequest.newBuilder().setXfer(d.xfer).setSource(source)
-                    .setName(LinkText.cut(name, MAX_NAME_BYTES)).setOffset(d.offset).setWindow(window),
-            ),
-            onFail = { code, detail -> d.failed(code, detail, sendCancel = false) },
-        ) { m ->
-            if (m.hasResult()) d.failed(m.result.code, m.result.detail.ifEmpty { "Refused" }, sendCancel = false)
-            true
-        }
-        if (req == 0) d.failed(ResultCode.RESULT_TOO_LARGE, "Message too large", sendCancel = false)
-        d.beginReq = req
+        val d = Download(nextXfer(), source, name, window, prefix ?: ByteArray(0), listener)
+        admit(d)
         return d
     }
 
     private inner class Download(
         xfer: Int,
+        private val source: Source,
+        private val name: String,
+        private val window: Int,
         prefix: ByteArray,
         private val listener: DownloadListener,
     ) : Transfer(xfer) {
+        override val isUpload get() = false
         val offset = prefix.size
+
+        override fun start() {
+            log("download $xfer: $source \"$name\" from $offset")
+            val req = request(
+                PhoneMsg.newBuilder().setDownload(
+                    DownloadRequest.newBuilder().setXfer(xfer).setSource(source)
+                        .setName(LinkText.cut(name, MAX_NAME_BYTES)).setOffset(offset).setWindow(window),
+                ),
+                // The device hashes a resumed prefix before it answers.
+                timeoutMs = DOWNLOAD_BEGIN_TIMEOUT_MS,
+                // Unanswered, it may still start streaming: stop it.
+                onFail = { code, detail -> failed(code, detail, sendCancel = code == ResultCode.RESULT_TIMEOUT) },
+            ) { m ->
+                if (m.hasResult() && transfers[xfer] === this && !retryBusy(m.result.code)) {
+                    failed(m.result.code, m.result.detail.ifEmpty { "Refused" }, sendCancel = false)
+                }
+                true
+            }
+            beginReq = req
+            if (req == 0) failed(ResultCode.RESULT_TOO_LARGE, "Message too large", sendCancel = false)
+        }
+
         private var buf = ByteArrayOutputStream(maxOf(1024, prefix.size)).apply { write(prefix) }
         private var crc = CRC32().apply { update(prefix) }
         private var size = -1L
@@ -730,6 +868,7 @@ class LinkClient(
                             listener.onDone(bytes)
                         }
                     }
+                    finished()
                 }
             }
         }
@@ -750,6 +889,7 @@ class LinkClient(
         override fun abandon(code: ResultCode, detail: String) {
             idle?.cancel(); idle = null
             report(code, detail, buf.toByteArray())
+            finished()
         }
 
         private fun report(code: ResultCode, detail: String, partial: ByteArray?) {
@@ -763,6 +903,17 @@ class LinkClient(
         const val HELLO_TIMEOUT_MS = 3_000L
         const val HELLO_ATTEMPTS = 3
         const val REQUEST_TIMEOUT_MS = 10_000L
+        /**
+         * Requests the device defers until the SD card is free (SetDash, the
+         * map lists): a recording ride holds it, so wait as long as a ride
+         * reasonably goes on between saves rather than calling it failed.
+         */
+        const val SD_DEFERRED_TIMEOUT_MS = 10 * 60_000L
+        /** DownloadRequest: the device hashes a resumed prefix off the SD first. */
+        const val DOWNLOAD_BEGIN_TIMEOUT_MS = 30_000L
+        /** RESULT_BUSY on a begin: try again this much later, this many times. */
+        const val BUSY_RETRY_MS = 2_000L
+        const val BUSY_RETRIES = 5
 
         /** Envelope + Chunk fields around Chunk.data (docs/ble-link.md). */
         const val CHUNK_OVERHEAD = 16

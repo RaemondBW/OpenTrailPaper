@@ -66,15 +66,15 @@ fun RideScreen(ble: BleManager) {
         if (ble.state == BleManager.ConnState.CONNECTED) ble.refreshSensors()
     }
 
-    // Link firmware streams more than the 1 Hz ride summary while this tab is
-    // in view (BleManager.liveFrame); in the background, or on another tab,
-    // only RIDE. No-op on legacy firmware.
+    // Link firmware can stream more than the 1 Hz ride summary while this tab
+    // is in view (BleManager.liveFrame): STOPWATCH, MUSIC, POSITION, VIEW. This
+    // screen draws only the RIDE part (always on), so it asks for nothing more
+    // — each extra topic costs larger frames and extra pushes on the device.
+    // Add a topic here when a view here starts reading it. No-op on legacy
+    // firmware.
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     DisposableEffect(lifecycle) {
-        val ridePage = setOf(
-            LiveTopic.LIVE_TOPIC_STOPWATCH, LiveTopic.LIVE_TOPIC_MUSIC,
-            LiveTopic.LIVE_TOPIC_POSITION, LiveTopic.LIVE_TOPIC_VIEW,
-        )
+        val ridePage = emptySet<LiveTopic>()
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_START -> ble.setLiveTopics(ridePage)
