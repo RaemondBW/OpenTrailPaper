@@ -90,8 +90,9 @@ void dashNormalizeLayout(DashLayout& layout);
 //
 // The MAP is itself a page in the cycle (`page map`), movable like the rest —
 // there is always exactly one, the parser appends it when a config predates
-// its existence, and it can't be removed. 5 = 4 configurable pages + the map.
-constexpr int DASH_MAX_PAGES = 5;
+// its existence, and it can't be removed. 8 = 7 configurable pages + the map
+// (5 before; the live stream's HELLO caps b3 tells the app it may send 8).
+constexpr int DASH_MAX_PAGES = 8;
 
 enum DashPageKind : uint8_t {
     DP_FIELDS = 0,

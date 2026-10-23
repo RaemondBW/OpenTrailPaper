@@ -100,8 +100,28 @@ struct LiveView {
     unsigned char swLapCadenceRpm = 0xFF;
     bool swShowPower = false;
     bool swShowCadence = false;
+    // The newest completed laps, newest first (row 0 = lap swLaps), as many
+    // as the page's table shows (LIVE_SW_ROWS = ui_render's kSwRows). Same
+    // encodings and sentinels as Stopwatch's own per-lap arrays.
+    static constexpr int LIVE_SW_ROWS = 7;
+    unsigned char swRows = 0;
+    unsigned long swRowSplitMs[LIVE_SW_ROWS] = {};
+    unsigned short swRowSpeedDkmh[LIVE_SW_ROWS] = {};   // 0xFFFF none
+    unsigned short swRowPowerW[LIVE_SW_ROWS] = {};      // 0xFFFF none
+    unsigned char swRowCadenceRpm[LIVE_SW_ROWS] = {};   // 0xFF none
 };
 void publishLiveView(const LiveView& v);
+
+// Stopwatch buttons pressed in the app (live stream RX [0x10][op]). The BLE
+// callback only queues them; the UI task takes them one at a time, oldest
+// first, and runs each exactly as the page's own tap (same canReset/canLap
+// rules). 0 = nothing queued.
+enum LiveStopwatchOp : unsigned char {
+    LIVE_SW_TOGGLE = 1,   // START <-> PAUSE
+    LIVE_SW_RESET = 2,    // only while paused with time on the clock
+    LIVE_SW_LAP = 3,      // only while running
+};
+unsigned char takeStopwatchCommand();
 
 // Queue a media transport command (media_state.h MediaCmd) for the phone.
 // Called from the UI task; the server task sends the notify.

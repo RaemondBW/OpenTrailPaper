@@ -246,9 +246,20 @@ struct DashConfig: Equatable {
     /// The map screen's 3-cell data strip (`map <f> <f> <f>` in the config).
     var mapFields: [String] = ["speed", "distance", "ridetime"]
 
-    /// Configurable (non-map) pages the device accepts; the map page rides
-    /// along on top of these (DASH_MAX_PAGES = 5 on the device).
-    static let maxPages = 4
+    /// The most configurable (non-map) pages any firmware holds; the map
+    /// rides along on top (DASH_MAX_PAGES = 8). Parsing keeps this many.
+    static let maxPages = 7
+    /// What THIS device holds: 4 until its live stream says it takes more
+    /// (HELLO caps b3) — older firmware keeps the first 5 pages it is sent
+    /// and could lose the map. Remembered across launches.
+    static var devicePages: Int { deviceHoldsMorePages ? maxPages : 4 }
+    static var deviceHoldsMorePages: Bool {
+        get { UserDefaults.standard.bool(forKey: "dashDeviceHolds8Pages") }
+        set { if newValue != deviceHoldsMorePages { UserDefaults.standard.set(newValue, forKey: "dashDeviceHolds8Pages") } }
+    }
+    /// The layout text the device can hand back whole: one GATT read tops
+    /// out at 512 bytes.
+    static let maxTextBytes = 500
 
     var contentPages: Int { pages.filter { !$0.isMap }.count }
 

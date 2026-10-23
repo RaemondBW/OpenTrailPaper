@@ -940,7 +940,8 @@ final class BLEManager: NSObject, ObservableObject {
                                      artist: "Bob Marley & The Wailers", album: "Exodus"),
                           gray: gray)
         // The live stream's frame: the tiles the status characteristic
-        // doesn't carry, and a running stopwatch on its third lap.
+        // doesn't carry, and a running stopwatch on its tenth lap: nine hill
+        // repeats, the same ones tools/preview renders (stopwatch_laps.png).
         var lf = LiveFrame()
         lf.gpsFix = true; lf.recording = true; lf.routeActive = true
         lf.hrLive = true; lf.powerLive = true; lf.cadenceLive = true; lf.timeValid = true
@@ -950,12 +951,31 @@ final class BLEManager: NSObject, ObservableObject {
         lf.climbM = 612; lf.gradePct = 4.8; lf.altitudeM = 287; lf.routeLeftKm = 12.4
         var sw = LiveFrame.Stopwatch()
         sw.running = true; sw.showPower = true; sw.showCadence = true
-        sw.elapsedMs = 14 * 60_000 + 32_000; sw.laps = 2
-        sw.lapMs = 3 * 60_000 + 11_000; sw.lastSplitMs = 5 * 60_000 + 47_300
-        sw.lapAvgSpeedKmh = 26.1; sw.lapAvgPowerW = 252; sw.lapAvgCadence = 90
+        let splits: [UInt32] = [312_400, 298_700, 305_100, 291_300, 322_800,
+                                301_900, 296_200, 288_600, 307_500]
+        let kmh = [14.2, 14.9, 14.6, 15.3, 13.8, 14.7, 15.0, 15.4, 14.5]
+        let watts = [268, 281, 274, 290, 259, 276, 284, 293, 272]
+        let rpm = [78, 81, 79, 83, 74, 80, 82, 84, 79]
+        sw.laps = splits.count
+        sw.lapMs = 83_400; sw.lastSplitMs = splits.last
+        sw.elapsedMs = splits.reduce(0, +) + sw.lapMs
+        sw.lapAvgSpeedKmh = 15.1; sw.lapAvgPowerW = 286; sw.lapAvgCadence = 83
         lf.stopwatch = sw
+        lf.stopwatchLaps = LiveFrame.StopwatchLaps(
+            showCadence: true, showPower: true,
+            laps: splits.indices.reversed().prefix(7).map {
+                .init(number: $0 + 1, splitMs: splits[$0], avgSpeedKmh: kmh[$0],
+                      avgCadence: rpm[$0], avgPowerW: watts[$0])
+            })
         lf.view = LiveFrame.View(page: 0, pageCount: 5, screen: 0)
         lf.position = LiveFrame.Position(lat: 37.7694, lon: -122.4862, courseDeg: 62, current: true)
+        // The current firmware's caps (stopwatch commands, MUSIC, laps), and the
+        // cover's track playing, 2:34 into 5:31, over AMS.
+        lf.caps = 0x07
+        lf.music = LiveFrame.Music(present: true, playing: true, ams: true,
+                                   elapsedMs: 154_000, durationMs: 331_000, rate: 1)
+        mediaRemote = true
+        demoFrame = lf
         live.showDemo(lf)
         // Tick like a connected head unit: a status notify every second, so
         // screens are exercised under the same republish load as on a ride.
@@ -969,17 +989,69 @@ final class BLEManager: NSObject, ObservableObject {
                 s.heartRate = 156 + Int(4 * sin(t / 9))
                 s.speedKmh = 24.6 + 2 * sin(t / 6)
                 self.status = s
+                var lf = self.demoFrame
                 lf.power = s.power; lf.power3s = s.power.map { $0 + 3 }
                 lf.heartRate = s.heartRate; lf.speedKmh = s.speedKmh
                 lf.cadence = 88 + Int(3 * sin(t / 5))
                 lf.distanceM += s.speedKmh / 3.6
                 lf.rideTimeS += 1; lf.movingTimeS += 1
-                lf.stopwatch?.elapsedMs += 1000; lf.stopwatch?.lapMs += 1000
+                if lf.stopwatch?.running == true {
+                    lf.stopwatch?.elapsedMs += 1000; lf.stopwatch?.lapMs += 1000
+                }
+                if var m = lf.music, m.playing {
+                    m.elapsedMs += 1000
+                    if let d = m.durationMs, m.elapsedMs >= d { m.elapsedMs = 0 }   // next track
+                    lf.music = m
+                }
+                self.demoFrame = lf
                 self.live.showDemo(lf)
             }
         }
     }
     private var demoTicker: Timer?
+    /// -demo-live: the frame the ticker streams, which the demo's stopwatch
+    /// and music buttons change the way the device would.
+    private var demoFrame = LiveFrame()
+
+    /// -demo-live: a stopwatch button, by the device's rules (Stopwatch).
+    private func demoStopwatch(_ op: UInt8) {
+        guard var sw = demoFrame.stopwatch else { return }
+        switch op {
+        case 1:
+            sw.running.toggle()
+        case 2 where !sw.running && sw.elapsedMs > 0:
+            sw = LiveFrame.Stopwatch(showPower: sw.showPower, showCadence: sw.showCadence)
+            demoFrame.stopwatchLaps?.laps = []
+        case 3 where sw.running && sw.laps < 99:
+            sw.laps += 1; sw.lastSplitMs = sw.lapMs
+            let done = LiveFrame.StopwatchLaps.Lap(
+                number: sw.laps, splitMs: sw.lapMs, avgSpeedKmh: sw.lapAvgSpeedKmh,
+                avgCadence: sw.lapAvgCadence, avgPowerW: sw.lapAvgPowerW)
+            if let rows = demoFrame.stopwatchLaps?.laps {
+                demoFrame.stopwatchLaps?.laps = Array(([done] + rows).prefix(7))
+            }
+            sw.lapMs = 0
+        default:
+            return
+        }
+        demoFrame.stopwatch = sw
+        live.showDemo(demoFrame)
+    }
+
+    /// -demo-live: play/pause and track skips move the demo track's position.
+    private func demoMedia(_ cmd: UInt8) {
+        guard var m = demoFrame.music else { return }
+        switch cmd {
+        case 1:
+            m.elapsedMs = live.musicPositionMs(at: Date()) ?? m.elapsedMs
+            m.playing.toggle(); m.rate = m.playing ? 1 : 0
+        case 2: m.elapsedMs = 0
+        case 3: m.elapsedMs = m.elapsedMs > 3000 ? 0 : m.elapsedMs
+        default: return   // volume: nothing to show
+        }
+        demoFrame.music = m
+        live.showDemo(demoFrame)
+    }
 
     override init() {
         super.init()
@@ -1045,6 +1117,7 @@ final class BLEManager: NSObject, ObservableObject {
     /// The Ride tab on screen (true) or gone (false).
     func liveViewer(_ on: Bool) {
         liveViewers = max(0, liveViewers + (on ? 1 : -1))
+        NSLog("[live] viewer %@ -> %d", on ? "on" : "off", liveViewers)
         updateLiveStream()
     }
 
@@ -1056,6 +1129,9 @@ final class BLEManager: NSObject, ObservableObject {
     }
 
     private func updateLiveStream() {
+        NSLog("[live] update: viewers=%d active=%d connected=%d tx=%d rx=%d notifying=%d",
+              liveViewers, appActive ? 1 : 0, state == .connected ? 1 : 0,
+              liveTxChar != nil ? 1 : 0, liveRxChar != nil ? 1 : 0, liveTxChar?.isNotifying == true ? 1 : 0)
         guard let p = peripheral, let tx = liveTxChar else {
             liveKeepalive?.invalidate(); liveKeepalive = nil
             return
@@ -1078,11 +1154,28 @@ final class BLEManager: NSObject, ObservableObject {
         }
     }
 
+    /// The STOPWATCH page's buttons, pressed in the app: [0x10][op], op 1
+    /// START/PAUSE, 2 RESET, 3 LAP. The device runs it as its own tap (same
+    /// rules) and answers with a fresh STOPWATCH record within ~300 ms; the
+    /// page redraws from that, so there is nothing to guess here. Only for a
+    /// device whose HELLO says it takes them.
+    func stopwatchCommand(_ op: UInt8) {
+        if isDemoLive { demoStopwatch(op); return }
+        guard live.frame?.takesStopwatchCommands == true, state == .connected,
+              let p = peripheral, let rx = liveRxChar else { return }
+        p.writeValue(Data([0x10, op]), for: rx, type: .withResponse)
+    }
+
     /// START / keepalive. Only once TX is notifying: a frame sent before that
     /// is lost, and the device answers START with one at once.
     private func sendLiveStart() {
         guard liveWanted, let p = peripheral, let rx = liveRxChar,
-              liveTxChar?.isNotifying == true else { return }
+              liveTxChar?.isNotifying == true else {
+            NSLog("[live] START skipped: wanted=%d rx=%d notifying=%d", liveWanted ? 1 : 0,
+                  liveRxChar != nil ? 1 : 0, liveTxChar?.isNotifying == true ? 1 : 0)
+            return
+        }
+        NSLog("[live] START sent")
         p.writeValue(Data([0x01, LiveUUID.protocolVersion]), for: rx, type: .withResponse)
     }
 
@@ -3517,7 +3610,25 @@ extension BLEManager: CBPeripheralDelegate {
         }
     }
 
+    /// The device said its GATT table changed (Service Changed — it says so
+    /// once per boot, so a firmware update's new services show up on a phone
+    /// whose iOS cached the old table). Characteristics of the invalidated
+    /// services are dead; drop the live ones and rediscover, and discovery
+    /// sets everything up again as on connect.
+    nonisolated func peripheral(_ p: CBPeripheral, didModifyServices invalidated: [CBService]) {
+        MainActor.assumeIsolated {
+            NSLog("[live] services modified: %@", invalidated.map(\.uuid.uuidString).joined(separator: ","))
+            if invalidated.contains(where: { $0.uuid == LiveUUID.service }) {
+                liveKeepalive?.invalidate(); liveKeepalive = nil
+                liveTxChar = nil; liveRxChar = nil
+                live.clear()
+            }
+            p.discoverServices([BikeUUID.service, LiveUUID.service])
+        }
+    }
+
     nonisolated func peripheral(_ p: CBPeripheral, didDiscoverServices error: Error?) {
+        NSLog("[live] services: %@", (p.services ?? []).map(\.uuid.uuidString).joined(separator: ","))
         // Discover ALL characteristics (nil) — an explicit list previously
         // omitted the sensors + map characteristics, so those features never
         // worked. nil is also future-proof as new characteristics are added.
@@ -3595,6 +3706,8 @@ extension BLEManager: CBPeripheralDelegate {
             noteAuthError(error)
             if ch.uuid == BikeUUID.ota { queryDeviceFirmware() }
             if ch.uuid == LiveUUID.tx {
+                NSLog("[live] TX notify state: %d error: %@", ch.isNotifying ? 1 : 0,
+                      error.map { "\($0)" } ?? "none")
                 if ch.isNotifying { sendLiveStart() } else { live.clear() }
             }
             if ch.uuid == BikeUUID.sensors, let p = peripheral {
@@ -3647,6 +3760,9 @@ extension BLEManager: CBPeripheralDelegate {
     nonisolated func peripheral(_ p: CBPeripheral,
                                 didWriteValueFor ch: CBCharacteristic,
                                 error: Error?) {
+        if ch.uuid == LiveUUID.rx {
+            NSLog("[live] RX write: %@", error.map { "\($0)" } ?? "ok")
+        }
         if let error, ch.uuid == BikeUUID.workout {
             workoutLog.error("workout write failed: \(error.localizedDescription, privacy: .public)")
         }
@@ -3744,9 +3860,13 @@ extension BLEManager: CBPeripheralDelegate {
         }
     }
 
-    /// Play/pause, next or previous for whatever is playing: the device sends
-    /// it to iOS over AMS (media_state.h MediaCmd: 1 toggle, 2 next, 3 prev).
+    /// Play/pause, next, previous or volume for whatever is playing: the
+    /// device sends it to iOS over AMS (media_state.h MediaCmd: 1 toggle,
+    /// 2 next, 3 prev, 4 volume up, 5 volume down).
+    /// 4 / 5 are system volume up / down, which AMS applies to whatever is
+    /// playing (no public iOS API lets the app set it itself).
     func mediaCommand(_ cmd: UInt8) {
+        if isDemoLive { demoMedia(cmd); return }
         guard mediaRemote else { return }
         writeMedia(Data([0x04, cmd]), ack: .other)
     }

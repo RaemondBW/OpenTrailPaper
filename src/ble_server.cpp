@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <NimBLEDevice.h>
+#include "nimble/nimble/host/services/gatt/include/services/gatt/ble_svc_gatt.h"
 #include <SD.h>
 #include <Update.h>
 #include <esp_heap_caps.h>
@@ -1390,9 +1391,20 @@ void saveUploadedWorkout() {
 // Phone -> device (RX):
 //   [0x01][ver]   START / keepalive. ver = the highest protocol version the
 //                 app parses (1). Starts the stream (a full frame goes out at
-//                 once) or extends it.
+//                 once) or extends it. Every START is answered with a frame
+//                 carrying HELLO, so an app that lost its state relearns the
+//                 caps within one keepalive.
 //   [0x02]        STOP.
+//   [0x10][op]    Stopwatch button (HELLO caps b0): 1 START/PAUSE, 2 RESET,
+//                 3 LAP. Run on the UI task exactly as the page's own tap,
+//                 with its rules: RESET only while paused with time on the
+//                 clock, LAP only while running (and under 99 laps); a press
+//                 those rules refuse does nothing. Works whatever page the
+//                 device shows. The STOPWATCH record that follows (~100-300 ms)
+//                 is the answer; there is no ack.
 //   Anything else is ignored, so a newer app's extra opcodes are harmless.
+//   Music transport and volume are NOT here: they stay on the media
+//   characteristic ([0x04][MediaCmd]), which older firmware already takes.
 //
 // Device -> phone (TX notify): a frame, all integers little-endian.
 //   [ver=1][seq u8] then records, each [type u8][len u8][body: len bytes].
@@ -1405,10 +1417,15 @@ void saveUploadedWorkout() {
 // device doesn't stream and the app keeps to the status characteristic.
 //
 // Sent once a second, and at once (next BLE pass, ~100 ms) when the stopwatch
-// is started, paused, lapped or reset, or the device changes page.
+// is started, paused, lapped or reset, the device changes page, or the music
+// player changes (play/pause, seek, track, duration).
 //
-//   0x00 HELLO (first frame of a stream)                         2 bytes
-//        u8 keepalive timeout s, u8 frame period in 0.1 s
+//   0x00 HELLO (first frame of a stream, and the answer to each START) 3 bytes
+//        u8 keepalive timeout s, u8 frame period in 0.1 s,
+//        u8 caps: b0 takes [0x10] stopwatch commands, b1 sends MUSIC,
+//                 b2 sends STOPWATCH_LAPS, b3 holds 8 dashboard pages
+//                 (7 + the map; without it the app keeps to 5)
+//        (a 2-byte HELLO, from the first firmware with this service, = 0)
 //   0x01 RIDE (always)                                          32 bytes
 //        u16 flags: b0 GPS fix, b1 recording, b2 auto-paused, b3 route active,
 //                   b4 charging, b5 HR live, b6 power live, b7 cadence live,
@@ -1444,6 +1461,29 @@ void saveUploadedWorkout() {
 //        (0xFFFF = unknown), u8 flags: b0 fix is current
 //   0x05 RADAR (while a radar is connected)                 2 + n bytes
 //        u8 flags: b0 live, u8 n, n x u8 target distance m
+//   0x06 MUSIC (always, from firmware with HELLO caps b1)       11 bytes
+//        u8 flags: b0 a player exists, b1 playing (moving: AMS playing,
+//                  rewinding or fast-forwarding), b2 AMS is the source
+//        u32 elapsed ms when the frame was built (the device's own estimate:
+//            the player's last report advanced at its rate — what the
+//            device's progress bar shows), u32 duration ms (0 = unknown,
+//            e.g. a live stream), i16 playback rate x100 (100 = normal,
+//            0 = paused, negative = rewinding)
+//      The app counts the elapsed time on at the rate between frames while
+//      playing and holds it while paused, clamped to the duration. Title,
+//      artist and album stay on the media characteristic ([0xA2]).
+//   0x07 STOPWATCH_LAPS (always, from firmware with HELLO caps b2)
+//                                                          2 + 10 x n bytes
+//        u8 columns the page's lap table shows (ui_render swMetrics), in
+//           order: b0 speed (always set), b1 cadence, b2 power
+//        u8 n: completed laps that follow, newest first — the table's rows
+//           (at most 7, kSwRows; fewer when the MTU can't carry 7: the record
+//           is cut to fit one notify, never split)
+//        n x { u8 lap number (1-based), u32 split ms (that lap's own time),
+//              u16 avg speed 0.1 km/h (0xFFFF = "--"),
+//              u8 avg cadence rpm (0xFF = "--"), u16 avg power W (0xFFFF = "--") }
+//      n = 0 with no laps. Sent with every frame, so a LAP or RESET (which
+//      sends a frame at once) redraws the app's table with the device's.
 const char* SVC_LIVE    = "b1c51000-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
 const char* CHR_LIVE_RX = "b1c51001-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
 const char* CHR_LIVE_TX = "b1c51002-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
@@ -1451,6 +1491,10 @@ constexpr uint8_t  LIVE_PROTO = 1;
 constexpr uint32_t LIVE_TIMEOUT_MS = 15000;
 constexpr uint32_t LIVE_PERIOD_MS = 1000;
 constexpr uint16_t LIVE_MIN_MTU = 43;
+constexpr uint8_t  LIVE_CAP_STOPWATCH_CMD = 0x01;   // HELLO caps (see above)
+constexpr uint8_t  LIVE_CAP_MUSIC = 0x02;
+constexpr uint8_t  LIVE_CAP_STOPWATCH_LAPS = 0x04;
+constexpr uint8_t  LIVE_CAP_PAGES_8 = 0x08;          // holds 7 pages + the map
 
 NimBLECharacteristic* liveTxChr = nullptr;
 volatile bool liveSubscribed = false;    // TX notifications on (CCCD)
@@ -1460,7 +1504,10 @@ volatile bool liveKick = false;          // send a frame on the next pass
 volatile bool liveHelloDue = false;
 uint8_t liveSeq = 0;
 uint32_t liveLastMs = 0;
-bool liveStreaming = false;              // BLE task's view, for the log lines
+bool liveStreaming = false;
+// Service Changed, queued once per boot by the first admitted link.
+volatile bool gattChangedDue = false;
+uint32_t gattChangedDueMs = 0;              // BLE task's view, for the log lines
 
 // What only the UI task knows (the stopwatch, the page on screen), handed
 // over by publishLiveView() under a spinlock: the UI task never waits on BLE.
@@ -1468,11 +1515,32 @@ portMUX_TYPE liveViewMux = portMUX_INITIALIZER_UNLOCKED;
 LiveView liveView;
 volatile bool liveViewChanged = false;
 
+// Stopwatch commands from the app ([0x10][op]), a few deep so two quick taps
+// (START then LAP) both land. Written by the NimBLE host task, drained by the
+// UI task (takeStopwatchCommand) — the spinlock is the whole hand-off; neither
+// side touches the other's state.
+portMUX_TYPE liveSwMux = portMUX_INITIALIZER_UNLOCKED;
+constexpr uint8_t LIVE_SW_QUEUE = 4;
+uint8_t liveSwQueue[LIVE_SW_QUEUE];
+uint8_t liveSwHead = 0, liveSwCount = 0;
+
 void liveReset() {
     liveSubscribed = false;
     liveStarted = false;
     liveKick = false;
     liveHelloDue = false;
+    portENTER_CRITICAL(&liveSwMux);
+    liveSwCount = 0;   // a gone phone's taps don't run later
+    portEXIT_CRITICAL(&liveSwMux);
+}
+
+void liveSwPush(uint8_t op) {
+    portENTER_CRITICAL(&liveSwMux);
+    if (liveSwCount < LIVE_SW_QUEUE) {   // full: a burst past 4 is dropped
+        liveSwQueue[(liveSwHead + liveSwCount) % LIVE_SW_QUEUE] = op;
+        ++liveSwCount;
+    }
+    portEXIT_CRITICAL(&liveSwMux);
 }
 
 class LiveRxCb : public NimBLECharacteristicCallbacks {
@@ -1482,12 +1550,22 @@ class LiveRxCb : public NimBLECharacteristicCallbacks {
         if (v.empty() || !phoneConnected) return;
         switch ((uint8_t)v[0]) {
             case 0x01:
+                if (!liveStarted) diag::log("ble live: START from the app");
                 liveKeepaliveMs = millis();
                 liveStarted = true;
                 liveKick = true;
+                // Every START is answered with HELLO, so an app that dropped
+                // its frame (out of range, stale) relearns the caps within one
+                // keepalive without the stream having to stop.
+                liveHelloDue = true;
                 break;
             case 0x02:
                 liveStarted = false;
+                break;
+            case 0x10:
+                if (v.size() >= 2 && (uint8_t)v[1] >= LIVE_SW_TOGGLE &&
+                    (uint8_t)v[1] <= LIVE_SW_LAP)
+                    liveSwPush((uint8_t)v[1]);
                 break;
             default: break;
         }
@@ -1497,6 +1575,7 @@ class LiveRxCb : public NimBLECharacteristicCallbacks {
 class LiveTxCb : public NimBLECharacteristicCallbacks {
     void onSubscribe(NimBLECharacteristic*, NimBLEConnInfo&, uint16_t subValue) override {
         liveSubscribed = (subValue & 0x0001) != 0;
+        diag::log("ble live: app %s", liveSubscribed ? "subscribed" : "unsubscribed");
         if (liveSubscribed) liveKick = true;
     }
 };
@@ -1515,7 +1594,9 @@ inline uint16_t liveI16(double v) {
 }
 
 // Every record, each [type][len][body], into `out`; returns the length.
-size_t buildLiveRecords(uint8_t* out, size_t cap, bool hello) {
+// `notifyCap` is one notify's payload (MTU - 3): a record must fit one, with
+// the frame's 2-byte header, so the variable-length ones are cut to it.
+size_t buildLiveRecords(uint8_t* out, size_t cap, bool hello, size_t notifyCap) {
     RideState s = g_state.snapshot();
     LiveView v;
     portENTER_CRITICAL(&liveViewMux);
@@ -1540,9 +1621,11 @@ size_t buildLiveRecords(uint8_t* out, size_t cap, bool hello) {
         return b;
     };
     if (hello) {
-        if (uint8_t* b = rec(0x00, 2)) {
+        if (uint8_t* b = rec(0x00, 3)) {
             b[0] = LIVE_TIMEOUT_MS / 1000;
             b[1] = LIVE_PERIOD_MS / 100;
+            b[2] = LIVE_CAP_STOPWATCH_CMD | LIVE_CAP_MUSIC | LIVE_CAP_STOPWATCH_LAPS |
+                   LIVE_CAP_PAGES_8;
         }
     }
     if (uint8_t* b = rec(0x01, 32)) {
@@ -1608,16 +1691,52 @@ size_t buildLiveRecords(uint8_t* out, size_t cap, bool hello) {
             for (int i = 0; i < cnt; ++i) b[2 + i] = s.radar.targets[i].distanceM;
         }
     }
+    {
+        // A reference, not a copy (the struct carries ~200 bytes of strings
+        // this record doesn't send). AMS writes it on the NimBLE host task; a
+        // frame built across an update is off by one report, and the next
+        // frame (sent at once, see serviceLive) corrects it.
+        const MediaState& m = media::get();
+        if (uint8_t* b = rec(0x06, 11)) {
+            b[0] = (m.present ? 1 : 0) | (m.present && m.playing ? 2 : 0) |
+                   (ams::active() ? 4 : 0);
+            put32(b + 1, m.present ? m.positionMs(now) : 0);
+            put32(b + 5, m.present ? (uint32_t)m.durSec * 1000 : 0);
+            const float r = m.present && m.playing ? m.rate * 100.0f : 0.0f;
+            put16(b + 9, liveI16(r));
+        }
+    }
+    {
+        // The lap table's rows. Last, so a frame that needs another notify
+        // for it still has every fixed record in the first.
+        constexpr size_t kRow = 10;
+        size_t rows = v.swRows;
+        while (rows > 0 && 2 + 2 + 2 + kRow * rows > notifyCap) --rows;
+        if (uint8_t* b = rec(0x07, 2 + kRow * rows)) {
+            b[0] = 1 | (v.swShowCadence ? 2 : 0) | (v.swShowPower ? 4 : 0);
+            b[1] = (uint8_t)rows;
+            for (size_t r = 0; r < rows; ++r) {
+                uint8_t* e = b + 2 + kRow * r;
+                e[0] = (uint8_t)(v.swLaps - r);
+                put32(e + 1, v.swRowSplitMs[r]);
+                put16(e + 5, v.swRowSpeedDkmh[r]);
+                e[7] = v.swRowCadenceRpm[r];
+                put16(e + 8, v.swRowPowerW[r]);
+            }
+        }
+    }
     return n;
 }
 
 // The records in as few notifies as the MTU allows, never splitting one.
 void sendLiveFrame(bool hello) {
-    uint8_t recs[160];
-    const size_t total = buildLiveRecords(recs, sizeof(recs), hello);
-    uint8_t pkt[sizeof(recs) + 2];
+    // Static, not on the stack: the server task's stack is 4 KB and this
+    // runs only there (serviceLive).
+    static uint8_t recs[256];
+    static uint8_t pkt[sizeof(recs) + 2];
     const size_t payload = negotiatedMTU > 3 ? negotiatedMTU - 3 : 20;
     const size_t cap = payload < sizeof(pkt) ? payload : sizeof(pkt);
+    const size_t total = buildLiveRecords(recs, sizeof(recs), hello, cap);
     const uint8_t seq = liveSeq++;
     size_t i = 0;
     while (i < total) {
@@ -1641,6 +1760,11 @@ void sendLiveFrame(bool hello) {
 void serviceLive() {
     if (!liveTxChr) return;
     const uint32_t now = millis();
+    if (gattChangedDue && phoneConnected && (int32_t)(now - gattChangedDueMs) >= 0) {
+        gattChangedDue = false;
+        ble_svc_gatt_changed(0x0001, 0xFFFF);
+        diag::log("ble: service changed indicated (phone rediscovers)");
+    }
     if (liveStarted && now - liveKeepaliveMs > LIVE_TIMEOUT_MS) {
         liveStarted = false;
         diag::log("ble live: keepalive missed — stream stopped");
@@ -1660,7 +1784,15 @@ void serviceLive() {
         liveViewChanged = false;
         return;
     }
-    if (!liveKick && !liveViewChanged && now - liveLastMs < LIVE_PERIOD_MS) return;
+    // A play/pause, seek or track change goes out at once too, so the app's
+    // MUSIC bar stops (or jumps) with the player, not up to a second later.
+    static uint32_t liveMediaVer = 0;
+    const uint32_t mv = media::version();
+    const bool mediaChanged = mv != liveMediaVer;
+    liveMediaVer = mv;
+    if (!liveKick && !liveViewChanged && !mediaChanged &&
+        now - liveLastMs < LIVE_PERIOD_MS)
+        return;
     liveKick = false;
     liveViewChanged = false;
     liveLastMs = now;
@@ -1835,6 +1967,20 @@ class ServerCb : public NimBLEServerCallbacks {
         pairCode = 0;          // done — drop the code sheet
         admit(info, !linkPeerKnown);
         ams::onSecured(info.getConnHandle(), true);
+        // iOS caches a bonded device's GATT table and reuses it until told
+        // otherwise, so services a firmware update added (the live stream)
+        // stayed invisible to a phone paired before it. Once per boot — every
+        // update ends in one — tell the phone the whole table may have
+        // changed; it rediscovers (cheap) and finds what's there now.
+        // Sent from the BLE task a moment later, not here: this callback runs
+        // before NimBLE restores the bonded phone's subscriptions for the
+        // link, so an indication from here found nobody subscribed.
+        static bool gattChangedQueued = false;
+        if (!gattChangedQueued) {
+            gattChangedQueued = true;
+            gattChangedDueMs = millis() + 2000;
+            gattChangedDue = true;
+        }
     }
     void onConnParamsUpdate(NimBLEConnInfo& info) override {
         diag::log("ble interval negotiated: handle=%u interval=%.1fms latency=%u timeout=%ums",
@@ -3033,6 +3179,18 @@ void setRelaxedSleepExperiment(bool on) {
 }
 
 void mediaCommand(unsigned char cmd) { mediaCmdPending = cmd; }
+
+unsigned char takeStopwatchCommand() {
+    uint8_t op = 0;
+    portENTER_CRITICAL(&liveSwMux);
+    if (liveSwCount) {
+        op = liveSwQueue[liveSwHead];
+        liveSwHead = (liveSwHead + 1) % LIVE_SW_QUEUE;
+        --liveSwCount;
+    }
+    portEXIT_CRITICAL(&liveSwMux);
+    return op;
+}
 
 void publishLiveView(const LiveView& v) {
     portENTER_CRITICAL(&liveViewMux);

@@ -120,6 +120,8 @@ void setMeta(bool playing, uint16_t posSec, uint16_t durSec,
     g_state.present = true;
     g_state.playing = playing;
     g_state.posSec = posSec;
+    g_state.posMs = (uint32_t)posSec * 1000;
+    g_state.rate = 1.0f;
     g_state.durSec = durSec;
     g_state.posAtMs = millis();
     copyStr(g_state.title, sizeof(g_state.title), title);
@@ -216,6 +218,7 @@ void amsTitle(const char* title) {
         // A fresh track: elapsed restarts unless AMS says otherwise in the
         // PlaybackInfo that follows a track change.
         g_state.posSec = 0;
+        g_state.posMs = 0;
         g_state.posAtMs = millis();
     }
     g_state.present = true;
@@ -241,11 +244,18 @@ void amsAlbum(const char* album) {
     bump();
 }
 
-void amsPlayback(bool playing, uint16_t posSec) {
+void amsPlayback(bool playing, float rate, float elapsedSec) {
     g_amsMs = millis();
     g_state.present = true;
     g_state.playing = playing;
-    g_state.posSec = posSec;
+    if (elapsedSec < 0) elapsedSec = 0;
+    if (elapsedSec > 4000000.0f) elapsedSec = 4000000.0f;   // ~46 days: a stream
+    g_state.posMs = (uint32_t)(elapsedSec * 1000.0f + 0.5f);
+    g_state.posSec = g_state.posMs / 1000 > 0xFFFF ? 0xFFFF
+                                                   : (uint16_t)(g_state.posMs / 1000);
+    // A playing player always moves; one reporting rate 0 while "playing"
+    // (seen mid-buffer) is held, which is what it is doing.
+    g_state.rate = playing ? rate : 0.0f;
     g_state.posAtMs = millis();
     bump();
 }
@@ -266,13 +276,12 @@ void toggleLocal() {
     // Freeze the shown position at the moment of the press: pausing must stop
     // the bar, and resuming must not credit the paused time as playback.
     uint32_t now = millis();
-    if (g_state.playing && g_state.durSec > 0) {
-        uint32_t adv = (now - g_state.posAtMs) / 1000;
-        uint32_t p = g_state.posSec + adv;
-        g_state.posSec = p > g_state.durSec ? g_state.durSec : (uint16_t)p;
-    }
+    g_state.posMs = g_state.positionMs(now);
+    g_state.posSec = g_state.posMs / 1000 > 0xFFFF ? 0xFFFF
+                                                   : (uint16_t)(g_state.posMs / 1000);
     g_state.posAtMs = now;
     g_state.playing = !g_state.playing;
+    if (g_state.playing && g_state.rate <= 0.0f) g_state.rate = 1.0f;
     bump();
 }
 

@@ -2839,6 +2839,26 @@ void task(void*) {
                              powerFresh ? now.powerW : 0, powerFresh,
                              cadenceFresh ? now.cadenceRpm : 0, cadenceFresh);
 
+            // Stopwatch buttons pressed in the app (live stream RX [0x10]):
+            // queued by the BLE callback, run here on the UI task exactly as
+            // the page's own taps, with the same enablement rules. Each one
+            // counts as the rider touching the device (keeps it awake,
+            // repaints the page now); the state change below makes the BLE
+            // task push a fresh STOPWATCH frame on its next pass.
+            while (unsigned char op = ble_server::takeStopwatchCommand()) {
+                const uint32_t t = millis();
+                bool did = false;
+                if (op == ble_server::LIVE_SW_TOGGLE) {
+                    stopwatch.toggle(t);
+                    did = true;
+                } else if (op == ble_server::LIVE_SW_RESET) {
+                    did = stopwatch.canReset() && stopwatch.reset();
+                } else if (op == ble_server::LIVE_SW_LAP) {
+                    did = stopwatch.canLap() && stopwatch.lap(t);
+                }
+                if (did) noteActivity();
+            }
+
             // The page on screen and the stopwatch, for the app's live view
             // (ble_server's live stream). A copy under a spinlock; the BLE
             // task only reads it while the app's Ride tab is streaming.
@@ -2868,6 +2888,15 @@ void task(void*) {
             lv.swLapCadenceRpm = swC < 0 ? 0xFF : (unsigned char)(swC > 254 ? 254 : swC);
             lv.swShowPower = stopwatch.showPower();
             lv.swShowCadence = stopwatch.showCadence();
+            for (int r = 0; r < ble_server::LiveView::LIVE_SW_ROWS &&
+                            stopwatch.lapCount - 1 - r >= 0; ++r) {
+                const int i = stopwatch.lapCount - 1 - r;
+                lv.swRowSplitMs[r] = stopwatch.lapSplitMs(i);
+                lv.swRowSpeedDkmh[r] = stopwatch.lapSpeedDkmh[i];
+                lv.swRowPowerW[r] = stopwatch.lapPowerW[i];
+                lv.swRowCadenceRpm[r] = stopwatch.lapCadenceRpm[i];
+                lv.swRows = (unsigned char)(r + 1);
+            }
             ble_server::publishLiveView(lv);
         }
 
@@ -3166,12 +3195,12 @@ void task(void*) {
                         // Advance the position locally while playing — the
                         // phone only reports on state changes, and a frozen
                         // bar under a playing track reads as a hang.
+                        // Same position the app's live MUSIC record carries
+                        // (MediaState::positionMs), so the two bars agree.
                         MediaState m = media::get();
-                        if (m.present && m.playing && m.durSec > 0) {
-                            uint32_t adv = (millis() - m.posAtMs) / 1000;
-                            m.posSec = (m.posSec + adv > m.durSec)
-                                           ? m.durSec
-                                           : (uint16_t)(m.posSec + adv);
+                        if (m.present) {
+                            const uint32_t p = m.positionMs(millis()) / 1000;
+                            m.posSec = p > 0xFFFF ? 0xFFFF : (uint16_t)p;
                         }
                         ui_render_media(s, m, fb);
                     } else if (pg.kind == DP_WORKOUT) {
