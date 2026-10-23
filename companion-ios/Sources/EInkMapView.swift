@@ -88,6 +88,8 @@ struct MapCameraCommand: Equatable {
         case region(MKCoordinateRegion)
         case rect(MKMapRect)
         case followUser
+        /// Keep the zoom, move the middle here (the device's own position).
+        case center(CLLocationCoordinate2D)
     }
     let token = UUID()
     let target: Target
@@ -357,6 +359,9 @@ struct EInkMapView: UIViewRepresentable {
             map.setVisibleMapRect(rect, edgePadding: pad, animated: true)
         case .followUser:
             map.setUserTrackingMode(.follow, animated: true)
+        case .center(let c):
+            stopFollowing()
+            map.setCenter(c, animated: true)
         }
     }
 

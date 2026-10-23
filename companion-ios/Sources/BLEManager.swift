@@ -955,6 +955,7 @@ final class BLEManager: NSObject, ObservableObject {
         sw.lapAvgSpeedKmh = 26.1; sw.lapAvgPowerW = 252; sw.lapAvgCadence = 90
         lf.stopwatch = sw
         lf.view = LiveFrame.View(page: 0, pageCount: 5, screen: 0)
+<<<<<<< HEAD
         // The current firmware's caps (stopwatch commands, MUSIC), and the
         // cover's track playing, 2:34 into 5:31, over AMS.
         lf.caps = 0x03
@@ -962,6 +963,9 @@ final class BLEManager: NSObject, ObservableObject {
                                    elapsedMs: 154_000, durationMs: 331_000, rate: 1)
         mediaRemote = true
         demoFrame = lf
+=======
+        lf.position = LiveFrame.Position(lat: 37.7694, lon: -122.4862, courseDeg: 62, current: true)
+>>>>>>> origin/feat/ble-state-sync
         live.showDemo(lf)
         // Tick like a connected head unit: a status notify every second, so
         // screens are exercised under the same republish load as on a ride.
