@@ -134,7 +134,7 @@ struct DashboardEditorView: View {
             }
             pageSections
         }
-        .background(Color(uiColor: .systemGroupedBackground))
+        .background(Palette.paper)
     }
 
     private var pageSections: some View {
@@ -247,15 +247,15 @@ struct DashboardEditorView: View {
             }
         }
         .frame(width: 124, height: 206)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .clipShape(Rectangle())
     }
 
     private func carouselCard(_ i: Int) -> some View {
         ZStack(alignment: .topTrailing) {
             cardFace(i)
             .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(pageIx == i ? Color.accentColor : Palette.hairline,
+                Rectangle()
+                    .stroke(pageIx == i ? Palette.ink : Palette.hairline,
                             lineWidth: pageIx == i ? 2.5 : 1))
             // The map can't be removed; the last remaining data/music page
             // can't either.
@@ -270,7 +270,7 @@ struct DashboardEditorView: View {
                     Image(systemName: "minus.circle.fill")
                         .font(.system(size: 22))
                         .symbolRenderingMode(.palette)
-                        .foregroundStyle(.white, .red)
+                        .foregroundStyle(.white, .black)
                         .background(Circle().fill(.white).padding(2))
                 }
                 .buttonStyle(.plain)
@@ -294,7 +294,7 @@ struct DashboardEditorView: View {
         // the custom-preview variant runs a different internal interaction
         // that broke the drop delegates — the card lifted beautifully and
         // could no longer be dropped anywhere.
-        .contentShape(.dragPreview, RoundedRectangle(cornerRadius: 8))
+        .contentShape(.dragPreview, Rectangle())
         .onDrag {
             draggedPage = config.pages[i].id
             return NSItemProvider(object: config.pages[i].id.uuidString as NSString)
@@ -346,7 +346,7 @@ struct DashboardEditorView: View {
             .foregroundStyle(Palette.muted)
             .frame(width: 124, height: 206)
             .background(
-                RoundedRectangle(cornerRadius: 8)
+                Rectangle()
                     .strokeBorder(Palette.hairline,
                                   style: StrokeStyle(lineWidth: 1.5, dash: [6, 5])))
         }

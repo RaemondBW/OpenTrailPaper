@@ -139,6 +139,25 @@ struct EInkMapView: UIViewRepresentable {
         map.delegate = context.coordinator
         map.showsUserLocation = showsUserLocation
         map.showsCompass = false
+        // Muted Apple Maps: greys instead of colour, so the black route and
+        // hexes read on it like ink on the app's white paper.
+        map.preferredConfiguration = MKStandardMapConfiguration(emphasisStyle: .muted)
+        // ...and no colour at all: a grey layer in saturation blend mode takes
+        // the colour out of everything under it (tiles, overlays, pins) while
+        // passing touches through. A filter on the layer, not a new renderer.
+        let desaturate = UIView()
+        desaturate.isUserInteractionEnabled = false
+        desaturate.backgroundColor = .gray
+        desaturate.layer.compositingFilter = "saturationBlendMode"
+        desaturate.translatesAutoresizingMaskIntoConstraints = false
+        desaturate.accessibilityElementsHidden = true
+        map.addSubview(desaturate)
+        NSLayoutConstraint.activate([
+            desaturate.leadingAnchor.constraint(equalTo: map.leadingAnchor),
+            desaturate.trailingAnchor.constraint(equalTo: map.trailingAnchor),
+            desaturate.topAnchor.constraint(equalTo: map.topAnchor),
+            desaturate.bottomAnchor.constraint(equalTo: map.bottomAnchor),
+        ])
 
         let tap = UITapGestureRecognizer(target: context.coordinator,
                                          action: #selector(Coordinator.handleTap(_:)))
@@ -154,8 +173,8 @@ struct EInkMapView: UIViewRepresentable {
             let button = MKUserTrackingButton(mapView: map)
             button.translatesAutoresizingMaskIntoConstraints = false
             button.backgroundColor = UIColor(Palette.surface)
-            button.layer.cornerRadius = 8
-            button.layer.borderWidth = 1
+            button.layer.cornerRadius = 0
+            button.layer.borderWidth = 2
             button.layer.borderColor = UIColor(Palette.hairline).cgColor
             map.addSubview(button)
             NSLayoutConstraint.activate([

@@ -52,7 +52,7 @@ struct CloudRoutesSheet: View {
                 if connected.count < SyncAccounts.routeProviders.count {
                     Card(padding: 0) {
                         HStack(spacing: 14) {
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            Rectangle()
                                 .strokeBorder(Palette.faint, style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
                                 .frame(width: 44, height: 44)
                                 .overlay(Image(systemName: "plus").font(.system(size: 16, weight: .semibold))
@@ -75,7 +75,7 @@ struct CloudRoutesSheet: View {
 
     private func providerRow(_ p: SyncProvider) -> some View {
         HStack(spacing: 14) {
-            RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Palette.accentWash)
+            Rectangle().fill(Palette.accentWash)
                 .frame(width: 44, height: 44)
                 .overlay(Image(systemName: p == .strava ? "point.topleft.down.to.point.bottomright.curvepath" : "bicycle")
                     .font(.system(size: 19, weight: .semibold)).foregroundStyle(Palette.accent))
@@ -258,7 +258,7 @@ private struct CloudRoutesList: View {
         }
         .padding(.vertical, 14).padding(.horizontal, 16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Palette.accentWash, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .background(Palette.accentWash, in: Rectangle())
     }
 
     private func loadMore() async {
@@ -314,8 +314,8 @@ private struct RoundButton: View {
             Image(systemName: systemName).font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(tint)
                 .frame(width: 44, height: 44)
-                .background(Palette.surface, in: Circle())
-                .overlay(Circle().strokeBorder(Palette.hairline, lineWidth: 1))
+                .background(Palette.surface, in: Rectangle())
+                .overlay(Rectangle().strokeBorder(Palette.ink, lineWidth: 2))
         }
         .accessibilityLabel(label)
     }
@@ -352,9 +352,9 @@ private struct RouteThumb: View {
     let shape: [LatLon]?
 
     var body: some View {
-        RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Palette.paper)
-            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(Palette.hairline, lineWidth: 1))
+        Rectangle().fill(Palette.paper)
+            .overlay(Rectangle()
+                .strokeBorder(Palette.ink, lineWidth: 2))
             .frame(width: 58, height: 58)
             .overlay {
                 if let shape {

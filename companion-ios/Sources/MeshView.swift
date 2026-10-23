@@ -129,7 +129,7 @@ struct MeshView: View {
         // baseline to align to, so it hung below the icons beside it.
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Mesh").font(TypeScale.screenTitle).foregroundStyle(Palette.ink)
+                Text("MESH").font(TypeScale.screenTitle).foregroundStyle(Palette.ink)
                 Text(subtitle)
                     .font(BarlowFont.condensed(16, .medium))
                     .tracking(1.2)
@@ -138,13 +138,13 @@ struct MeshView: View {
             }
             Spacer()
             if attached {
-                Toggle("Mesh radio", isOn: Binding(
-                    get: { ble.meshState.enabled },
-                    set: { ble.setMeshEnabled($0) }))
-                    .labelsHidden()
-                    .tint(Palette.accent)
-                    .padding(.trailing, 12)
-                    .accessibilityLabel("Mesh radio")
+                SegmentedSwitch(options: [("On", true), ("Off", false)],
+                                selection: Binding(
+                                    get: { ble.meshState.enabled },
+                                    set: { ble.setMeshEnabled($0) }),
+                                accessibilityName: "Mesh radio")
+                    .fixedSize()
+                    .padding(.trailing, 8)
             }
             Button { showNodes = true } label: {
                 Image(systemName: "person.2")
@@ -156,7 +156,7 @@ struct MeshView: View {
                                 .font(BarlowFont.condensed(11, .bold))
                                 .foregroundStyle(Palette.accentInk)
                                 .padding(.horizontal, 4).padding(.vertical, 1)
-                                .background(Palette.accent).clipShape(Capsule())
+                                .background(Palette.accent).clipShape(Rectangle())
                                 .offset(x: 10, y: -8)
                         }
                     }
@@ -219,8 +219,8 @@ struct MeshView: View {
                                                                 : Palette.ink)
                             .background(channel == c.index ? Palette.accent
                                                            : Palette.surface)
-                            .clipShape(Capsule())
-                            .overlay(Capsule().strokeBorder(
+                            .clipShape(Rectangle())
+                            .overlay(Rectangle().strokeBorder(
                                 channel == c.index ? .clear : Palette.hairline,
                                 lineWidth: 1))
                         }
@@ -237,8 +237,8 @@ struct MeshView: View {
                     .padding(.horizontal, 12).padding(.vertical, 8)
                     .foregroundStyle(Palette.accent)
                     .background(Palette.surface)
-                    .clipShape(Capsule())
-                    .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))
+                    .clipShape(Rectangle())
+                    .overlay(Rectangle().strokeBorder(Palette.ink, lineWidth: 2))
             }
             .padding(.trailing, 16)
             }
@@ -352,9 +352,9 @@ struct MeshView: View {
                     .lineLimit(1...4)
                     .padding(.horizontal, 14).padding(.vertical, 10)
                     .background(Palette.surface)
-                    .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous)
-                        .strokeBorder(Palette.hairline, lineWidth: 1))
+                    .clipShape(Rectangle())
+                    .overlay(Rectangle()
+                        .strokeBorder(Palette.ink, lineWidth: 2))
 
                 Button(action: send) {
                     Image(systemName: "arrow.up")
@@ -362,7 +362,7 @@ struct MeshView: View {
                         .foregroundStyle(Palette.accentInk)
                         .frame(width: 42, height: 42)
                         .background(canSend ? Palette.accent : Palette.faint)
-                        .clipShape(Circle())
+                        .clipShape(Rectangle())
                 }
                 .disabled(!canSend)
             }
@@ -428,8 +428,8 @@ private struct MeshBubble: View {
             }
             .padding(.horizontal, 14).padding(.vertical, 10)
             .background(message.outgoing ? Palette.accent : Palette.surface)
-            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous)
+            .clipShape(Rectangle())
+            .overlay(Rectangle()
                 .strokeBorder(message.outgoing ? .clear : Palette.hairline, lineWidth: 1))
             if !message.outgoing { Spacer(minLength: 40) }
         }

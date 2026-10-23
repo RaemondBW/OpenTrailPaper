@@ -12,7 +12,7 @@ struct SensorsView: View {
             ScrollView {
                 VStack(spacing: 14) {
                     HStack {
-                        Text("Sensors").font(TypeScale.screenTitle).foregroundStyle(Palette.ink)
+                        Text("SENSORS").font(TypeScale.screenTitle).foregroundStyle(Palette.ink)
                         Spacer()
                         if ble.scanningSensors { ProgressView().padding(.trailing, 2) }
                     }
@@ -57,15 +57,15 @@ struct SensorsView: View {
                         .font(BarlowFont.condensed(20, .semibold))
                         .frame(maxWidth: .infinity).padding(.vertical, 15)
                         .background(Palette.surface).foregroundStyle(Palette.accent)
-                        .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: 26, style: .continuous)
-                            .strokeBorder(Palette.hairline, lineWidth: 1))
+                        .clipShape(Rectangle())
+                        .overlay(Rectangle()
+                            .strokeBorder(Palette.ink, lineWidth: 2))
 
                         Button("Done") { dismiss() }
                             .font(BarlowFont.condensed(20, .semibold))
                             .frame(maxWidth: .infinity).padding(.vertical, 15)
                             .background(Palette.accent).foregroundStyle(.white)
-                            .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
+                            .clipShape(Rectangle())
                     }
                     .padding(16).background(Palette.paper)
                 }

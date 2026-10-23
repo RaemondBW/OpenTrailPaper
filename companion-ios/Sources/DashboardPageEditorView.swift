@@ -60,7 +60,7 @@ struct DashboardPageEditorView: View {
                         .foregroundStyle(Palette.surface)
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 16).padding(.vertical, 12)
-                        .background(Palette.ink, in: RoundedRectangle(cornerRadius: 12))
+                        .background(Palette.ink, in: Rectangle())
                         .padding(.top, 12)
                         .transition(.opacity)
                 }
@@ -165,7 +165,7 @@ struct DashboardPageEditorView: View {
                         .font(BarlowFont.condensed(19, .semibold))
                         .foregroundStyle(Palette.accentInk)
                         .frame(maxWidth: .infinity).frame(height: 44)
-                        .background(canAdd ? Palette.accent : Palette.faint, in: Capsule())
+                        .background(canAdd ? Palette.accent : Palette.faint, in: Rectangle())
                 }
                 .disabled(!canAdd)
                 Button {
@@ -178,7 +178,7 @@ struct DashboardPageEditorView: View {
                         .font(BarlowFont.condensed(19, .semibold))
                         .foregroundStyle(hasRadar ? Palette.faint : Palette.ink)
                         .frame(maxWidth: .infinity).frame(height: 44)
-                        .overlay(Capsule().strokeBorder(hasRadar ? Palette.hairline : Palette.ink,
+                        .overlay(Rectangle().strokeBorder(hasRadar ? Palette.hairline : Palette.ink,
                                                         lineWidth: hasRadar ? 1 : 1.5))
                 }
                 .disabled(hasRadar || !canAdd)
@@ -385,8 +385,8 @@ private struct PanelCanvas: View {
                 if let t = drag?.target { indicator(t, k: k) }
             }
             .frame(width: geo.size.width, height: preview.bodyH * k, alignment: .topLeading)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Palette.ink, lineWidth: 1))
+            .clipShape(Rectangle())
+            .overlay(Rectangle().strokeBorder(Palette.ink, lineWidth: 1))
         }
         .aspectRatio(preview.panelW / preview.bodyH, contentMode: .fit)
         .foregroundStyle(.black)
@@ -423,8 +423,8 @@ private struct PanelCanvas: View {
                         .font(BarlowFont.condensed(12, .semibold))
                         .foregroundStyle(isSel ? Palette.accentInk : Palette.muted)
                         .frame(width: 20, height: 20)
-                        .background(isSel ? Palette.accent : Palette.surface, in: Circle())
-                        .overlay(Circle().strokeBorder(isSel ? Palette.accent : Palette.hairline, lineWidth: 1))
+                        .background(isSel ? Palette.accent : Palette.surface, in: Rectangle())
+                        .overlay(Rectangle().strokeBorder(isSel ? Palette.accent : Palette.hairline, lineWidth: 1))
                 }
                 .buttonStyle(.plain)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
@@ -491,7 +491,7 @@ private struct PanelCanvas: View {
             switch t {
             case .before, .after:
                 let y: CGFloat = { if case .before = t { return row.y - preview.gutter / 2 } else { return row.y + row.h + preview.gutter / 2 } }()
-                RoundedRectangle(cornerRadius: 2)
+                Rectangle()
                     .fill(Palette.accent)
                     .frame(width: row.mainW * k, height: 4)
                     .offset(x: preview.margin * k, y: (y - preview.statusH) * k - 2)
@@ -555,8 +555,8 @@ private struct FieldTray: View {
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.horizontal, 12).padding(.vertical, 9)
-                            .background(Palette.surface, in: RoundedRectangle(cornerRadius: 12))
-                            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Palette.hairline, lineWidth: 1))
+                            .background(Palette.surface, in: Rectangle())
+                            .overlay(Rectangle().strokeBorder(Palette.ink, lineWidth: 2))
                         }
                         .buttonStyle(.plain)
                     }
