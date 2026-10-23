@@ -2838,6 +2838,37 @@ void task(void*) {
                              now.speedSource != speed_source::NONE,
                              powerFresh ? now.powerW : 0, powerFresh,
                              cadenceFresh ? now.cadenceRpm : 0, cadenceFresh);
+
+            // The page on screen and the stopwatch, for the app's live view
+            // (ble_server's live stream). A copy under a spinlock; the BLE
+            // task only reads it while the app's Ride tab is streaming.
+            ble_server::LiveView lv;
+            lv.pageCount = (unsigned char)dash_config::pageCount();
+            if (screen == SCREEN_DASH) {
+                lv.page = (unsigned char)dashPage;
+                lv.screen = 0;
+            } else if (screen == SCREEN_MAP) {
+                lv.page = (unsigned char)mapSlot();
+                lv.screen = 1;
+            }
+            lv.swRunning = stopwatch.running;
+            lv.swAccumMs = stopwatch.accumMs;
+            lv.swStartMs = stopwatch.startMs;
+            lv.swLaps = (unsigned char)stopwatch.lapCount;
+            if (stopwatch.lapCount > 0) {
+                lv.swLastLapEndMs = stopwatch.lapEndMs[stopwatch.lapCount - 1];
+                lv.swLastSplitMs = stopwatch.lapSplitMs(stopwatch.lapCount - 1);
+            }
+            const float swV = stopwatch.currentAvgSpeedKmh();
+            lv.swLapSpeedDkmh = swV < 0 ? 0xFFFF
+                                : (unsigned short)(swV * 10.0f > 65534 ? 65534 : swV * 10.0f + 0.5f);
+            const int swP = stopwatch.currentAvgPowerW();
+            lv.swLapPowerW = swP < 0 ? 0xFFFF : (unsigned short)(swP > 65534 ? 65534 : swP);
+            const int swC = stopwatch.currentAvgCadenceRpm();
+            lv.swLapCadenceRpm = swC < 0 ? 0xFF : (unsigned char)(swC > 254 ? 254 : swC);
+            lv.swShowPower = stopwatch.showPower();
+            lv.swShowCadence = stopwatch.showCadence();
+            ble_server::publishLiveView(lv);
         }
 
         // Auto-sleep after a quiet period to save battery — a bike computer

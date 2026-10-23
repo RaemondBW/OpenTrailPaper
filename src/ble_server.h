@@ -80,6 +80,29 @@ void requestUnpair();
 // AMS client hook: the phone's GAP Device Name, read over the admitted link.
 void notePhoneName(const char* utf8);
 
+// What the device's pages show that only the UI task knows, for the app's live
+// stream (the "UART" service; protocol in ble_server.cpp). The UI task
+// publishes it every loop pass; the BLE task reads it only while the app's
+// Ride tab is streaming, and sends a frame at once when the page or the
+// stopwatch's state (not its running time) changes.
+struct LiveView {
+    unsigned char page = 0xFF;       // dash_config page on screen; 0xFF = none
+    unsigned char pageCount = 0;
+    unsigned char screen = 2;        // 0 dashboard page, 1 map, 2 anything else
+    bool swRunning = false;
+    unsigned long swAccumMs = 0;     // Stopwatch::accumMs
+    unsigned long swStartMs = 0;     // Stopwatch::startMs (millis()), running
+    unsigned char swLaps = 0;
+    unsigned long swLastLapEndMs = 0;   // elapsed at the last LAP (0 = none)
+    unsigned long swLastSplitMs = 0;    // that lap's own time (0 = none)
+    unsigned short swLapSpeedDkmh = 0xFFFF;   // lap in progress, 0.1 km/h
+    unsigned short swLapPowerW = 0xFFFF;
+    unsigned char swLapCadenceRpm = 0xFF;
+    bool swShowPower = false;
+    bool swShowCadence = false;
+};
+void publishLiveView(const LiveView& v);
+
 // Queue a media transport command (media_state.h MediaCmd) for the phone.
 // Called from the UI task; the server task sends the notify.
 void mediaCommand(unsigned char cmd);
