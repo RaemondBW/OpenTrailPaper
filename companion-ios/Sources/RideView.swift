@@ -61,7 +61,7 @@ struct RideView: View {
                 }
             }
             .onChange(of: ble.state) { _, st in if st == .connected { ble.refreshSensors() } }
-            .onChange(of: config.pages.count) { _, n in if pageIx >= n { pageIx = 0 } }
+            .onChange(of: config.pages.count) { _, n in if pageIx > n { pageIx = 0 } }
         }
     }
 
@@ -138,27 +138,41 @@ struct RideView: View {
 
     private var pageSelector: some View {
         let pages = config.pages
+        let sel = min(pageIx, pages.count)
         return HStack(spacing: 0) {
             ForEach(Array(pages.enumerated()), id: \.element.id) { i, p in
-                let on = i == min(pageIx, pages.count - 1)
-                Button { pageIx = i } label: {
+                selectorCell(on: i == sel, divider: i > 0) {
                     Text(pageName(i, in: pages))
                         .font(BarlowFont.text(12, .bold)).tracking(2)
                         .lineLimit(1).minimumScaleFactor(0.6)
-                        .frame(maxWidth: .infinity, minHeight: 34)
-                        .foregroundStyle(on ? Palette.paper : Palette.ink)
-                        .background(on ? Palette.ink : Palette.paper)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .overlay(alignment: .leading) {
-                    if i > 0 { Rectangle().fill(Palette.ink).frame(width: Rule.border) }
-                }
+                } tap: { withAnimation { pageIx = i } }
+                .frame(maxWidth: .infinity)
                 .accessibilityLabel("Dashboard page \(pageName(i, in: pages).capitalized)")
-                .accessibilityAddTraits(on ? [.isSelected, .isButton] : .isButton)
             }
+            // The "add new" page that ends the swipe, as a narrow + cell.
+            selectorCell(on: sel == pages.count, divider: !pages.isEmpty) {
+                Image(systemName: "plus").font(.system(size: 14, weight: .bold))
+            } tap: { withAnimation { pageIx = pages.count } }
+            .frame(width: 44)
+            .accessibilityLabel("Add a page")
         }
         .einkBorder()
+    }
+
+    private func selectorCell<L: View>(on: Bool, divider: Bool, @ViewBuilder label: () -> L,
+                                       tap: @escaping () -> Void) -> some View {
+        Button(action: tap) {
+            label()
+                .frame(maxWidth: .infinity, minHeight: 34)
+                .foregroundStyle(on ? Palette.paper : Palette.ink)
+                .background(on ? Palette.ink : Palette.paper)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .overlay(alignment: .leading) {
+            if divider { Rectangle().fill(Palette.ink).frame(width: Rule.border) }
+        }
+        .accessibilityAddTraits(on ? [.isSelected, .isButton] : .isButton)
     }
 
     /// "PAGE 1" counts field pages only, as the device's page dots and the
@@ -175,20 +189,84 @@ struct RideView: View {
         }
     }
 
-    /// The selected page as the device draws it, live: a scaled copy of the
-    /// panel (540 x 960) fitted into the space the header leaves.
+    /// The pages as the device draws them, live: scaled copies of the panel
+    /// (540 x 960) fitted into the space the header leaves, swiped between
+    /// like the device's own page cycle, then one last "add new" page.
     private var page: some View {
         let pages = config.pages
-        let p = pages.isEmpty ? nil : pages[min(pageIx, pages.count - 1)]
-        return TimelineView(.everyMinute) { ctx in
-            devicePage(p, now: ctx.date)
-                .frame(maxWidth: .infinity)
-                .aspectRatio(540 / 960, contentMode: .fit)
-                .overlay(Rectangle().strokeBorder(Palette.ink, lineWidth: Rule.border))
+        return TabView(selection: Binding(get: { min(pageIx, pages.count) },
+                                          set: { pageIx = $0 })) {
+            ForEach(Array(pages.enumerated()), id: \.element.id) { i, p in
+                TimelineView(.everyMinute) { ctx in
+                    panelFrame { devicePage(p, now: ctx.date) }
+                }
+                .tag(i)
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("Device page \(pageName(i, in: pages).capitalized)")
+            }
+            panelFrame { addNewPage }.tag(pages.count)
         }
+        .tabViewStyle(.page(indexDisplayMode: .never))
+    }
+
+    private func panelFrame<C: View>(@ViewBuilder _ content: () -> C) -> some View {
+        content()
+            .frame(maxWidth: .infinity)
+            .aspectRatio(540 / 960, contentMode: .fit)
+            .overlay(Rectangle().strokeBorder(Palette.ink, lineWidth: Rule.border))
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// The last page: add a page to the device's cycle, which then syncs
+    /// (now, or on the next connect) like an edit made in the editor.
+    @ViewBuilder private var addNewPage: some View {
+        let c = config
+        let full = c.contentPages >= DashConfig.maxPages
+        VStack(spacing: 14) {
+            Image(systemName: "plus")
+                .font(.system(size: 44, weight: .bold))
+            Text("ADD NEW")
+                .font(BarlowFont.text(22, .bold)).tracking(3)
+            Group {
+                if ble.dashTarget == nil {
+                    Text("Connect once to load your device's pages, then add more here.")
+                } else if full {
+                    Text("The device holds \(DashConfig.maxPages) pages besides the map. Remove one in Edit to add another.")
+                } else {
+                    Menu {
+                        Button { addPage(.newData) } label: { Label("Data page", systemImage: "rectangle.3.group") }
+                        if !c.hasMusicPage {
+                            Button { addPage(.music) } label: { Label("Music controls", systemImage: "music.note") }
+                        }
+                        if !c.hasWorkoutPage {
+                            Button { addPage(.workout) } label: { Label("Workout", systemImage: "figure.outdoor.cycle") }
+                        }
+                        if !c.hasStopwatchPage {
+                            Button { addPage(.stopwatch) } label: { Label("Stopwatch", systemImage: "stopwatch") }
+                        }
+                    } label: {
+                        BlockButtonLabel(title: "Choose a page", systemImage: "plus")
+                    }
+                }
+            }
+            .font(BarlowFont.text(13))
+            .multilineTextAlignment(.center)
+            .padding(.horizontal, 24)
+        }
+        .foregroundStyle(Palette.ink)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Palette.paper)
+        .overlay(Rectangle().inset(by: 14)
+            .strokeBorder(Palette.ink, style: StrokeStyle(lineWidth: 2, dash: [8, 6])))
         .accessibilityElement(children: .contain)
-        .accessibilityLabel(pages.isEmpty ? "Device page"
-                            : "Device page \(pageName(min(pageIx, pages.count - 1), in: pages).capitalized)")
+        .accessibilityLabel("Add a new page")
+    }
+
+    private func addPage(_ p: DashConfig.Page) {
+        guard var c = ble.dashTarget else { return }
+        c.pages.append(p)
+        ble.saveDashConfig(c)
+        withAnimation { pageIx = c.pages.count - 1 }
     }
 
     @ViewBuilder private func devicePage(_ p: DashConfig.Page?, now: Date) -> some View {
@@ -500,4 +578,10 @@ private struct LiveMusicPage: View {
                 }.value
             }
     }
+}
+
+private extension DashConfig.Page {
+    /// A new data page starts from the device's default fields, not empty,
+    /// so it is a usable page the moment it lands; Edit reworks it.
+    static var newData: DashConfig.Page { DashConfig.Page(kind: .fields, layout: .deviceDefault) }
 }
