@@ -506,11 +506,15 @@ struct RideView: View {
     }
 
     /// The STOPWATCH page from the live stream: the device's clock, counted
-    /// on between frames while it runs, its state and the laps. The buttons
-    /// stay the device's own (greyed here). Without the stream (older
-    /// firmware) the page shows its layout with no time.
+    /// on between frames while it runs, its state and the laps. START/PAUSE,
+    /// RESET and LAP drive the device's own clock ([0x10] on the live
+    /// service), enabled by its rules; the next frame redraws the page. On
+    /// firmware that streams but takes no commands they stay greyed, and
+    /// without the stream (older firmware) the page shows its layout with no
+    /// time.
     @ViewBuilder private func stopwatchPage(_ status: PanelStatus) -> some View {
-        if let sw = frame?.stopwatch {
+        if let f = frame, let sw = f.stopwatch {
+            let controls = f.takesStopwatchCommands
             TimelineView(.periodic(from: .now, by: sw.running ? 0.25 : 3600)) { ctx in
                 let ms = live.stopwatchElapsedMs(at: ctx.date) ?? sw.elapsedMs
                 let lapMs = sw.lapMs &+ (ms &- sw.elapsedMs)
@@ -521,14 +525,20 @@ struct RideView: View {
                     note: sw.laps == 0 ? nil
                         : "LAP \(sw.laps + 1) · \(Self.stopwatchText(lapMs))"
                           + (sw.lastSplitMs.map { " · LAST \(Self.lapText($0))" } ?? ""),
-                    controlsEnabled: false)
+                    controlsEnabled: controls,
+                    canReset: !sw.running && sw.elapsedMs > 0,
+                    canLap: sw.running && sw.laps < 99,
+                    onControl: { ble.stopwatchCommand(UInt8($0 + 1)) },
+                    controlsHint: "Update the device's firmware to use these from the app")
             }
         } else {
             StopwatchPagePreview(status: status, time: "--:--", state: "--", running: false,
                                  note: connected && !ble.liveSupported
                                     ? "Update the device's firmware to see its stopwatch here"
                                     : nil,
-                                 controlsEnabled: false)
+                                 controlsEnabled: false,
+                                 controlsHint: connected ? "Waiting for the device"
+                                                         : "Connect the device first")
         }
     }
 
@@ -784,6 +794,8 @@ private struct LiveMapPage: View {
 /// the app sent it, dithered to the panel's tones.
 private struct LiveMusicPage: View {
     @EnvironmentObject var ble: BLEManager
+    /// The live stream: the device's player position (MUSIC record).
+    @EnvironmentObject var live: DeviceLive
     @ObservedObject var art: AlbumArtFeeder
     let status: PanelStatus
     @State private var image: UIImage?
@@ -797,28 +809,49 @@ private struct LiveMusicPage: View {
         // an app can only drive the Music app's own player, so the buttons
         // are live while the Music app is the one playing.
         let musicApp = player.nowPlayingItem != nil
+        // What the device knows of the player (AMS, via the live stream):
+        // play state and position for ANY app, which the phone can't see.
+        let music = ble.state == .connected ? live.frame?.music : nil
         // Firmware that relays remote commands over AMS drives any player;
-        // older firmware leaves the app only the Music app's own player.
-        let remote = ble.mediaRemote
-        MusicPreview(status: status, track: track,
-                     art: track != nil && art.cover?.key == track?.key ? image : nil,
-                     playing: musicApp ? player.playbackState == .playing : track != nil,
-                     progress: nil,
-                     onTransport: { b in
-                         if remote {
-                             ble.mediaCommand(b == 0 ? 3 : b == 1 ? 1 : 2)
-                         } else {
-                             switch b {
-                             case 0: player.skipToPreviousItem()
-                             case 1: player.playbackState == .playing ? player.pause() : player.play()
-                             default: player.skipToNextItem()
+        // older firmware leaves the app only the Music app's own player. A
+        // device whose AMS link is down (pairing declined) can't relay them
+        // either, so the Music app's player takes over when it is the one.
+        let remote = ble.mediaRemote && (music?.ams ?? true || !musicApp)
+        let playing = music.map { $0.present && $0.playing }
+            ?? (musicApp ? player.playbackState == .playing : track != nil)
+        // Counted on between frames while playing; a paused bar holds still.
+        TimelineView(.periodic(from: .now, by: music?.playing == true ? 0.5 : 3600)) { ctx in
+            let progress: (pos: Int, dur: Int)? = {
+                guard let m = music, let dur = m.durationMs,
+                      let pos = live.musicPositionMs(at: ctx.date) else { return nil }
+                return (Int(pos / 1000), Int((dur + 500) / 1000))
+            }()
+            MusicPreview(status: status, track: track,
+                         art: track != nil && art.cover?.key == track?.key ? image : nil,
+                         playing: playing,
+                         progress: progress,
+                         onTransport: { b in
+                             if remote {
+                                 ble.mediaCommand(b == 0 ? 3 : b == 1 ? 1 : 2)
+                             } else {
+                                 switch b {
+                                 case 0: player.skipToPreviousItem()
+                                 case 1: player.playbackState == .playing ? player.pause() : player.play()
+                                 default: player.skipToNextItem()
+                                 }
                              }
-                         }
-                         tick += 1
-                     },
-                     transportEnabled: remote || musicApp,
-                     transportHint: remote || musicApp ? nil
-                        : "Update the device's firmware to control other players from here")
+                             tick += 1
+                         },
+                         transportEnabled: remote || musicApp,
+                         transportHint: remote || musicApp ? nil
+                            : "Update the device's firmware to control other players from here",
+                         // Volume only goes through the device (AMS): iOS has
+                         // no API for an app to set the system volume.
+                         onVolume: remote ? { v in ble.mediaCommand(v == 0 ? 4 : 5) } : nil,
+                         volumeHint: ble.mediaRemote
+                            ? "The device's music link (AMS) is off: pair it in Bluetooth settings"
+                            : "Update the device's firmware, or use the phone's volume buttons")
+        }
             .id(tick)
             .task(id: art.cover?.key) {
                 guard let c = art.cover else { image = nil; return }

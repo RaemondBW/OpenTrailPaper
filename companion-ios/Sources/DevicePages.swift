@@ -355,14 +355,17 @@ struct MusicPreview: View {
     /// The cover as the device draws it (pre-dithered to its five tones).
     var art: UIImage? = nil
     var playing = true
-    /// Position / length, when known. The AMS feed the device gets does not
-    /// reach the app, so the live page passes nil and the bar stays empty.
+    /// Position / length in seconds, when known: the live page passes the
+    /// device's own (the live stream's MUSIC record), nil leaves the bar empty.
     var progress: (pos: Int, dur: Int)? = (154, 331)
     /// Transport taps (0 prev, 1 play/pause, 2 next); nil = not interactive.
     /// `transportEnabled` false draws them but leaves them dead.
     var onTransport: ((Int) -> Void)? = nil
     var transportEnabled = true
     var transportHint: String? = nil
+    /// Volume taps (0 up, 1 down); nil = drawn but dead.
+    var onVolume: ((Int) -> Void)? = nil
+    var volumeHint: String? = nil
 
     var body: some View {
         DevicePanel(status: status, title: "MUSIC") { k in
@@ -395,6 +398,7 @@ struct MusicPreview: View {
                     }
                     .frame(width: 76 * k, height: 76 * k)
                     .offset(x: 462 * k, y: (140 + CGFloat(v) * 92) * k)
+                    .opacity(onTransport != nil && onVolume == nil ? 0.35 : 1)
                 }
 
                 if let t = track {
@@ -439,12 +443,15 @@ struct MusicPreview: View {
                                  label: ["Previous track", playing ? "Pause" : "Play", "Next track"][b],
                                  enabled: transportEnabled, hint: transportHint, k: k) { onTransport(b) }
                     }
-                    // Volume: no public iOS API sets it, and the device's own
-                    // AMS volume command isn't reachable from the app.
+                    // Volume: no public iOS API sets it, but the device can —
+                    // over AMS, the same command as its own +/- buttons.
                     ForEach(0..<2, id: \.self) { v in
                         PanelTap(x: 462, y: 140 + CGFloat(v) * 92, w: 76, h: 76,
-                                 label: v == 0 ? "Volume up" : "Volume down", enabled: false,
-                                 hint: "Use the phone's volume buttons", k: k) {}
+                                 label: v == 0 ? "Volume up" : "Volume down",
+                                 enabled: onVolume != nil,
+                                 hint: onVolume != nil ? nil
+                                    : volumeHint ?? "Use the phone's volume buttons",
+                                 k: k) { onVolume?(v) }
                     }
                 }
             }
@@ -485,6 +492,23 @@ struct StopwatchPagePreview: View {
     var note: String? = nil
     /// false: the buttons are drawn greyed and do nothing (no BLE command).
     var controlsEnabled = true
+    /// The device's own enablement (Stopwatch::canReset / canLap): RESET only
+    /// while paused with time on the clock, LAP only while running. A button
+    /// the device would refuse is drawn light and does nothing, as on the glass.
+    var canReset: Bool? = nil
+    var canLap: Bool? = nil
+    /// Button taps (0 START/PAUSE, 1 RESET, 2 LAP); nil = not interactive.
+    var onControl: ((Int) -> Void)? = nil
+    /// Why the buttons are dead, for VoiceOver (with controlsEnabled false).
+    var controlsHint: String? = nil
+
+    private func enabled(_ i: Int) -> Bool {
+        switch i {
+        case 1: return canReset ?? !running
+        case 2: return canLap ?? running
+        default: return true
+        }
+    }
 
     var body: some View {
         DevicePanel(status: status, title: "STOPWATCH") { k in
@@ -502,19 +526,31 @@ struct StopwatchPagePreview: View {
                 ForEach(0..<3, id: \.self) { i in
                     let xs: [CGFloat] = [24, 240, 384]
                     let ws: [CGFloat] = [204, 132, 132]
+                    let on = enabled(i)
                     ZStack {
-                        Rectangle().strokeBorder(.black, lineWidth: max(1, (i == 1 && running ? 1 : 3) * k))
+                        Rectangle().strokeBorder(.black, lineWidth: max(1, (on ? 3 : 1) * k))
                         Text([running ? "PAUSE" : "START", "RESET", "LAP"][i])
                             .font(.custom("BarlowCondensed-Bold", fixedSize: 30 * k))
-                            .foregroundStyle(.black.opacity(i == 1 && running ? 0.35 : 1))
+                            .foregroundStyle(.black.opacity(on ? 1 : 0.35))
                     }
                     .frame(width: ws[i] * k, height: 156 * k)
                     .offset(x: xs[i] * k, y: 780 * k)
                     .opacity(controlsEnabled ? 1 : 0.35)
+                    .accessibilityHidden(onControl != nil)   // the PanelTap speaks for it
                     .accessibilityElement()
                     .accessibilityLabel([running ? "Pause" : "Start", "Reset", "Lap"][i])
                     .accessibilityAddTraits(.isButton)
-                    .accessibilityHint(controlsEnabled ? "" : "Only on the device")
+                    .accessibilityHint(controlsEnabled ? "" : controlsHint ?? "Only on the device")
+                }
+                if let onControl {
+                    ForEach(0..<3, id: \.self) { i in
+                        let xs: [CGFloat] = [24, 240, 384]
+                        let ws: [CGFloat] = [204, 132, 132]
+                        PanelTap(x: xs[i], y: 780, w: ws[i], h: 156,
+                                 label: [running ? "Pause" : "Start", "Reset", "Lap"][i],
+                                 enabled: controlsEnabled && enabled(i),
+                                 hint: controlsEnabled ? nil : controlsHint, k: k) { onControl(i) }
+                    }
                 }
             }
         }

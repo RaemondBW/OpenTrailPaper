@@ -103,6 +103,17 @@ struct LiveView {
 };
 void publishLiveView(const LiveView& v);
 
+// Stopwatch buttons pressed in the app (live stream RX [0x10][op]). The BLE
+// callback only queues them; the UI task takes them one at a time, oldest
+// first, and runs each exactly as the page's own tap (same canReset/canLap
+// rules). 0 = nothing queued.
+enum LiveStopwatchOp : unsigned char {
+    LIVE_SW_TOGGLE = 1,   // START <-> PAUSE
+    LIVE_SW_RESET = 2,    // only while paused with time on the clock
+    LIVE_SW_LAP = 3,      // only while running
+};
+unsigned char takeStopwatchCommand();
+
 // Queue a media transport command (media_state.h MediaCmd) for the phone.
 // Called from the UI task; the server task sends the notify.
 void mediaCommand(unsigned char cmd);

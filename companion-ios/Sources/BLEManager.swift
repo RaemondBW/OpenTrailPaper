@@ -955,6 +955,13 @@ final class BLEManager: NSObject, ObservableObject {
         sw.lapAvgSpeedKmh = 26.1; sw.lapAvgPowerW = 252; sw.lapAvgCadence = 90
         lf.stopwatch = sw
         lf.view = LiveFrame.View(page: 0, pageCount: 5, screen: 0)
+        // The current firmware's caps (stopwatch commands, MUSIC), and the
+        // cover's track playing, 2:34 into 5:31, over AMS.
+        lf.caps = 0x03
+        lf.music = LiveFrame.Music(present: true, playing: true, ams: true,
+                                   elapsedMs: 154_000, durationMs: 331_000, rate: 1)
+        mediaRemote = true
+        demoFrame = lf
         live.showDemo(lf)
         // Tick like a connected head unit: a status notify every second, so
         // screens are exercised under the same republish load as on a ride.
@@ -968,17 +975,61 @@ final class BLEManager: NSObject, ObservableObject {
                 s.heartRate = 156 + Int(4 * sin(t / 9))
                 s.speedKmh = 24.6 + 2 * sin(t / 6)
                 self.status = s
+                var lf = self.demoFrame
                 lf.power = s.power; lf.power3s = s.power.map { $0 + 3 }
                 lf.heartRate = s.heartRate; lf.speedKmh = s.speedKmh
                 lf.cadence = 88 + Int(3 * sin(t / 5))
                 lf.distanceM += s.speedKmh / 3.6
                 lf.rideTimeS += 1; lf.movingTimeS += 1
-                lf.stopwatch?.elapsedMs += 1000; lf.stopwatch?.lapMs += 1000
+                if lf.stopwatch?.running == true {
+                    lf.stopwatch?.elapsedMs += 1000; lf.stopwatch?.lapMs += 1000
+                }
+                if var m = lf.music, m.playing {
+                    m.elapsedMs += 1000
+                    if let d = m.durationMs, m.elapsedMs >= d { m.elapsedMs = 0 }   // next track
+                    lf.music = m
+                }
+                self.demoFrame = lf
                 self.live.showDemo(lf)
             }
         }
     }
     private var demoTicker: Timer?
+    /// -demo-live: the frame the ticker streams, which the demo's stopwatch
+    /// and music buttons change the way the device would.
+    private var demoFrame = LiveFrame()
+
+    /// -demo-live: a stopwatch button, by the device's rules (Stopwatch).
+    private func demoStopwatch(_ op: UInt8) {
+        guard var sw = demoFrame.stopwatch else { return }
+        switch op {
+        case 1:
+            sw.running.toggle()
+        case 2 where !sw.running && sw.elapsedMs > 0:
+            sw = LiveFrame.Stopwatch(showPower: sw.showPower, showCadence: sw.showCadence)
+        case 3 where sw.running && sw.laps < 99:
+            sw.laps += 1; sw.lastSplitMs = sw.lapMs; sw.lapMs = 0
+        default:
+            return
+        }
+        demoFrame.stopwatch = sw
+        live.showDemo(demoFrame)
+    }
+
+    /// -demo-live: play/pause and track skips move the demo track's position.
+    private func demoMedia(_ cmd: UInt8) {
+        guard var m = demoFrame.music else { return }
+        switch cmd {
+        case 1:
+            m.elapsedMs = live.musicPositionMs(at: Date()) ?? m.elapsedMs
+            m.playing.toggle(); m.rate = m.playing ? 1 : 0
+        case 2: m.elapsedMs = 0
+        case 3: m.elapsedMs = m.elapsedMs > 3000 ? 0 : m.elapsedMs
+        default: return   // volume: nothing to show
+        }
+        demoFrame.music = m
+        live.showDemo(demoFrame)
+    }
 
     override init() {
         super.init()
@@ -1075,6 +1126,18 @@ final class BLEManager: NSObject, ObservableObject {
             }
             live.clear()
         }
+    }
+
+    /// The STOPWATCH page's buttons, pressed in the app: [0x10][op], op 1
+    /// START/PAUSE, 2 RESET, 3 LAP. The device runs it as its own tap (same
+    /// rules) and answers with a fresh STOPWATCH record within ~300 ms; the
+    /// page redraws from that, so there is nothing to guess here. Only for a
+    /// device whose HELLO says it takes them.
+    func stopwatchCommand(_ op: UInt8) {
+        if isDemoLive { demoStopwatch(op); return }
+        guard live.frame?.takesStopwatchCommands == true, state == .connected,
+              let p = peripheral, let rx = liveRxChar else { return }
+        p.writeValue(Data([0x10, op]), for: rx, type: .withResponse)
     }
 
     /// START / keepalive. Only once TX is notifying: a frame sent before that
@@ -3743,9 +3806,13 @@ extension BLEManager: CBPeripheralDelegate {
         }
     }
 
-    /// Play/pause, next or previous for whatever is playing: the device sends
-    /// it to iOS over AMS (media_state.h MediaCmd: 1 toggle, 2 next, 3 prev).
+    /// Play/pause, next, previous or volume for whatever is playing: the
+    /// device sends it to iOS over AMS (media_state.h MediaCmd: 1 toggle,
+    /// 2 next, 3 prev, 4 volume up, 5 volume down).
+    /// 4 / 5 are system volume up / down, which AMS applies to whatever is
+    /// playing (no public iOS API lets the app set it itself).
     func mediaCommand(_ cmd: UInt8) {
+        if isDemoLive { demoMedia(cmd); return }
         guard mediaRemote else { return }
         writeMedia(Data([0x04, cmd]), ack: .other)
     }

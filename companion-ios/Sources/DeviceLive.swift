@@ -5,7 +5,9 @@ import Foundation
 // for the Ride tab. Protocol (v1) in src/ble_server.cpp, "Live state stream".
 //
 // Phone -> device on RX: [0x01][ver] START / keepalive (every 5 s while the
-// Ride tab is on screen and the app is in the foreground), [0x02] STOP.
+// Ride tab is on screen and the app is in the foreground), [0x02] STOP,
+// [0x10][op] a stopwatch button (1 START/PAUSE, 2 RESET, 3 LAP; only when
+// HELLO's caps say the device takes it).
 // Device -> phone on TX: [ver][seq] + records [type][len][body], little-endian.
 // Unknown record types are skipped and bodies longer than this app knows are
 // read from the front, so newer firmware stays readable.
@@ -88,8 +90,29 @@ struct LiveFrame: Equatable {
     var radarConnected = false
     var radar: Radar?
 
+    struct Music: Equatable {
+        /// A player exists on the phone (as the device knows it).
+        var present = false
+        /// Moving: playing, rewinding or fast-forwarding.
+        var playing = false
+        /// The device hears the player over AMS (so its remote commands
+        /// reach any app, not just Music).
+        var ams = false
+        var elapsedMs: UInt32 = 0
+        /// nil = unknown (a live stream, or no duration reported yet).
+        var durationMs: UInt32?
+        /// 1.0 normal, 0 paused, negative rewinding.
+        var rate = 0.0
+    }
+    /// The device's player position (MUSIC 0x06); nil on firmware without it.
+    var music: Music?
+
     /// From HELLO: the device's keepalive timeout.
     var keepaliveTimeoutS: Int?
+    /// From HELLO: b0 takes stopwatch commands, b1 sends MUSIC. 0 on the
+    /// first firmware with the stream (a 2-byte HELLO).
+    var caps: UInt8 = 0
+    var takesStopwatchCommands: Bool { caps & 0x01 != 0 }
 
     /// Apply one notify's records. Sections that are sent only while they
     /// have something to say (position, radar) are cleared by `startFrame`.
@@ -103,6 +126,7 @@ struct LiveFrame: Equatable {
             switch type {
             case 0x00:
                 keepaliveTimeoutS = b.u8(0).map(Int.init)
+                caps = b.u8(2) ?? 0
             case 0x01:
                 guard len >= 32 else { break }
                 let f = b.u16(0) ?? 0
@@ -166,6 +190,13 @@ struct LiveFrame: Equatable {
                 let n = min(Int(b.u8(1) ?? 0), len - 2)
                 radar = Radar(live: (b.u8(0) ?? 0) & 1 != 0,
                               distancesM: (0..<n).compactMap { b.u8(2 + $0).map(Int.init) })
+            case 0x06:
+                guard len >= 11 else { break }
+                let f = b.u8(0) ?? 0
+                let dur = b.u32(5) ?? 0
+                music = Music(present: f & 1 != 0, playing: f & 2 != 0, ams: f & 4 != 0,
+                              elapsedMs: b.u32(1) ?? 0, durationMs: dur == 0 ? nil : dur,
+                              rate: Double(Int16(bitPattern: b.u16(9) ?? 0)) / 100)
             default:
                 break   // a newer record: skipped by its length
             }
@@ -211,6 +242,9 @@ final class DeviceLive: ObservableObject {
     @Published private(set) var frame: LiveFrame?
     /// When the frame arrived, for counting a running stopwatch on.
     private(set) var receivedAt = Date.distantPast
+    /// When the MUSIC record last changed (every frame while playing): the
+    /// moment its elapsed time was true, give or take the link's latency.
+    private var musicAt = Date.distantPast
 
     private var seq: UInt8?
     private var building = LiveFrame()
@@ -224,8 +258,10 @@ final class DeviceLive: ObservableObject {
             seq = s
             building.startFrame()
         }
+        let music = building.music
         building.apply(records: d.dropFirst(2))
         receivedAt = Date()
+        if building.music != music { musicAt = receivedAt }
         if frame != building { frame = building }
         armStale()
     }
@@ -240,9 +276,24 @@ final class DeviceLive: ObservableObject {
 
     /// Screenshot demo (-demo-live): a frame as if streamed.
     func showDemo(_ f: LiveFrame) {
+        if f.music != building.music { musicAt = Date() }
         building = f
         receivedAt = Date()
         if frame != f { frame = f }
+    }
+
+    /// The player's position now, in ms: the device's, counted on at its
+    /// rate while playing (capped at 10 s past the last frame, so a stream
+    /// that stalls doesn't run the bar off on its own) and held while paused,
+    /// clamped to the track. nil without a MUSIC record or a player.
+    func musicPositionMs(at now: Date) -> UInt32? {
+        guard let m = frame?.music, m.present else { return nil }
+        var p = Double(m.elapsedMs)
+        if m.playing {
+            p += min(max(0, now.timeIntervalSince(musicAt)), 10) * 1000 * m.rate
+        }
+        if let d = m.durationMs { p = min(p, Double(d)) }
+        return UInt32(max(0, p))
     }
 
     /// Frames come every second; a stream silent for 4 s is gone (out of
