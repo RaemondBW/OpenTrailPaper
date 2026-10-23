@@ -18,6 +18,15 @@ submitting.
   page in the Home-key cycle. It needs firmware v1.23. Older firmware
   leaves the page out, and the editor shows the layout the device kept.
   The Android app has the same option.
+- Rides: the list no longer reloads when the device reconnects. The app
+  remembers the device's ride list, downloaded or not, and shows it straight
+  away, including while the device is out of range. While the app checks the
+  device, "Checking for new rides…" shows above the list. When the check
+  finishes, new rides appear at the top and rides deleted from the device
+  drop out. Rides downloaded to the phone stay. Thumbnails already on screen
+  don't reload. The header no longer shows a separate "Syncing…" label.
+  Tapping a ride that isn't downloaded while disconnected now says to
+  connect. The Android app does the same.
 
 ## 1.3 (build 17)
 
