@@ -58,6 +58,7 @@
 		8F39135FF7E1E777F4833280 /* Barlow-Medium.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 9D58367A52D10F5F1C035423 /* Barlow-Medium.ttf */; };
 		90BE2D6324721EC08C93E435 /* GPXExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05C73BCF289591ECA86720C6 /* GPXExporter.swift */; };
 		937C33A6DB0DBC569E69366E /* SyncAccounts.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8892300C56FF2C207FA2543 /* SyncAccounts.swift */; };
+		942F6EC6FE73A3ED48A85497 /* Link.pb.swift in Sources */ = {isa = PBXBuildFile; fileRef = E466A993E5761DEEBCAC6B32 /* Link.pb.swift */; };
 		9A51A79216A6D77B6B223CE3 /* Barlow-SemiBold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 42632703DAE05E73F934FFE1 /* Barlow-SemiBold.ttf */; };
 		A18EC8ED01301E3919DCC9DD /* TransferLiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82E5375DC5035B5F4E4A7D8F /* TransferLiveActivity.swift */; };
 		A44F34DFEC944328672D82B2 /* FITDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 590A2666A030966B6741EDAF /* FITDecoder.swift */; };
@@ -67,6 +68,7 @@
 		B1BE7F5A245A3C270036C6E2 /* algos.c in Sources */ = {isa = PBXBuildFile; fileRef = ABBED3B34B25D9BCAFA3FDB5 /* algos.c */; };
 		B6B82479D49F3167B6660F6E /* PerfMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F44F9C159DFCF28A303BE08 /* PerfMonitor.swift */; };
 		B7B9A2B225320284C4D52661 /* DeviceSettingsSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78C78BE2E3D4CB0B74C0CB4D /* DeviceSettingsSync.swift */; };
+		BA3006795FB353A64367C848 /* SwiftProtobuf in Frameworks */ = {isa = PBXBuildFile; productRef = 333BEDEE81DC7A5D3CDE7F87 /* SwiftProtobuf */; };
 		BE0814223F037C69E39B93D7 /* RidesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F897B750389038E18EE9AC09 /* RidesView.swift */; };
 		BF7FEB57C05E17549C09CF25 /* DashLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9D6BB31E96DD85DBE9B68CA /* DashLayout.swift */; };
 		C462314C3BD9E277B9F451A9 /* MapsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7C77C595BBAE5BCBD82A004 /* MapsView.swift */; };
@@ -225,6 +227,7 @@
 		E15692F37161BEC610966D47 /* TileCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TileCache.swift; sourceTree = "<group>"; };
 		E1B62C507D47EAD0BDDDD24F /* RideDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RideDetailView.swift; sourceTree = "<group>"; };
 		E284B25E233005D7FEF20F6F /* coordijk.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = coordijk.h; sourceTree = "<group>"; };
+		E466A993E5761DEEBCAC6B32 /* Link.pb.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Link.pb.swift; sourceTree = "<group>"; };
 		E467F3BA417A6A968F920F77 /* DeviceMock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceMock.swift; sourceTree = "<group>"; };
 		EA4DEBA21E2DA3752C6057B1 /* CloudRoutesSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudRoutesSheet.swift; sourceTree = "<group>"; };
 		F14CD69E3959EF829E9F0717 /* BarlowCondensed-SemiBold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "BarlowCondensed-SemiBold.ttf"; sourceTree = "<group>"; };
@@ -246,6 +249,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				592497FD48D74D86C61AC752 /* FirebaseAppCheck in Frameworks */,
+				BA3006795FB353A64367C848 /* SwiftProtobuf in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -346,6 +350,7 @@
 				BD2E2E20BB8A15D1939F6CA5 /* GPXImporter.swift */,
 				AD6BA4ACE6890EF09B9A8F6F /* H3Tiles.swift */,
 				2A59688151174F730E1FDAD4 /* Info.plist */,
+				E466A993E5761DEEBCAC6B32 /* Link.pb.swift */,
 				B784675A7E0FFAA781206855 /* MapBuilder.swift */,
 				A7C77C595BBAE5BCBD82A004 /* MapsView.swift */,
 				C74406B4D6CC045B23CAA7BA /* MeshChannels.swift */,
@@ -498,6 +503,7 @@
 			name = OpenTrailPaper;
 			packageProductDependencies = (
 				880B86FA551AFFB25164DF8A /* FirebaseAppCheck */,
+				333BEDEE81DC7A5D3CDE7F87 /* SwiftProtobuf */,
 			);
 			productName = OpenTrailPaper;
 			productReference = 6AEE6D137CDDF2F463F27932 /* OpenTrailPaper.app */;
@@ -538,6 +544,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				B8F27F0FC5266ADB974E291A /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */,
+				889AD0EB6CD14216563DDA80 /* XCRemoteSwiftPackageReference "swift-protobuf" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 50CE6737CF57F2CA89F9BC4F /* Products */;
@@ -618,6 +625,7 @@
 				90BE2D6324721EC08C93E435 /* GPXExporter.swift in Sources */,
 				1DF666D61184241ADCE839E6 /* GPXImporter.swift in Sources */,
 				431EACF518E6E7F25D9682EC /* H3Tiles.swift in Sources */,
+				942F6EC6FE73A3ED48A85497 /* Link.pb.swift in Sources */,
 				5D72742ADF79FE45ED70CBEA /* MapBuilder.swift in Sources */,
 				C462314C3BD9E277B9F451A9 /* MapsView.swift in Sources */,
 				600D81E288833B6FE703B454 /* MeshChannels.swift in Sources */,
@@ -984,6 +992,14 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
+		889AD0EB6CD14216563DDA80 /* XCRemoteSwiftPackageReference "swift-protobuf" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/apple/swift-protobuf";
+			requirement = {
+				kind = exactVersion;
+				version = 1.39.0;
+			};
+		};
 		B8F27F0FC5266ADB974E291A /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/firebase/firebase-ios-sdk";
@@ -995,6 +1011,11 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		333BEDEE81DC7A5D3CDE7F87 /* SwiftProtobuf */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 889AD0EB6CD14216563DDA80 /* XCRemoteSwiftPackageReference "swift-protobuf" */;
+			productName = SwiftProtobuf;
+		};
 		880B86FA551AFFB25164DF8A /* FirebaseAppCheck */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = B8F27F0FC5266ADB974E291A /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
