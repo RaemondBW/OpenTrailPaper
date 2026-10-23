@@ -5,7 +5,9 @@ import Foundation
 /// simulated device in-process (no Bluetooth) and logs one "[link] selftest"
 /// line per check and a summary. Covers the Hello handshake, request ids,
 /// multi-page lists, the two-queue writer with flow control, uploads (window,
-/// acks, CRC), downloads (acks, resume, whole-file CRC) and Result errors.
+/// acks, CRC), downloads (acks, resume, whole-file CRC), Result errors, a
+/// small upload on a transport that never re-pumps by itself, one upload at a
+/// time (queue, cancel of a queued one, BUSY retry) and Service Changed.
 @MainActor
 final class LinkSelfTest: LinkTransport {
     private static var running: LinkSelfTest?
@@ -27,10 +29,14 @@ final class LinkSelfTest: LinkTransport {
     /// MTU 185, so fragments and Chunks are realistically small.
     let maxWrite = 182
     private var budget = 3
-    var canWrite: Bool { budget > 0 }
+    /// false: CoreBluetooth's queue never fills, so peripheralIsReady never
+    /// comes and nothing pumps the client but its own calls.
+    private var autoRepump = true
+    var canWrite: Bool { !autoRepump || budget > 0 }
+    private var subscribes = 0
 
     func write(_ fragment: Data, withResponse: Bool) {
-        if !withResponse {
+        if !withResponse && autoRepump {
             budget -= 1
             if budget == 0 {
                 // CoreBluetooth's queue drains, then peripheralIsReady.
@@ -52,6 +58,7 @@ final class LinkSelfTest: LinkTransport {
     }
 
     func subscribe() {
+        subscribes += 1
         DispatchQueue.main.async { [weak self] in
             self?.client.notifyStateChanged(isNotifying: true, error: nil)
         }
@@ -63,6 +70,16 @@ final class LinkSelfTest: LinkTransport {
     private var devCounter: UInt8 = 0
     private var hellos = 0
     private var upload: (xfer: UInt32, size: Int, crc: UInt32, data: Data, acked: Int)?
+    /// The device's one upload slot is taken (UploadBegin..TransferDone/cancel).
+    private var uploadActive = false
+    private var busyAnswered = 0
+    /// Refuse this many UploadBegins as BUSY (an upload the client can't see).
+    private var forceBusy = 0
+    /// Ack every this many bytes; the firmware's 4096 sends no ack for a
+    /// shorter upload's last chunk.
+    private var ackEvery = 1024
+    private var ackLast = true
+    private var begins: [String] = []
     private var uploadEndAt: Int?
     private var controlDuringUpload = false
     private var download: (xfer: UInt32, file: Data, sent: Int, acked: Int, window: Int, req: UInt32)?
@@ -125,6 +142,13 @@ final class LinkSelfTest: LinkTransport {
                 send(m.req, .fileList(fl))
             }
         case .uploadBegin(let b)?:
+            if uploadActive || forceBusy > 0 {
+                if forceBusy > 0 { forceBusy -= 1 }
+                busyAnswered += 1
+                return result(m.req, .resultBusy)
+            }
+            uploadActive = true
+            begins.append(b.name)
             upload = (b.xfer, Int(b.size), b.crc32, Data(), 0)
             uploadEndAt = nil
             var r = LinkUploadReady()
@@ -136,7 +160,7 @@ final class LinkSelfTest: LinkTransport {
             check(Int(c.offset) == u.data.count, "upload chunk in order")
             check(u.data.count + c.data.count - u.acked <= 4096, "upload inside the window")
             u.data.append(c.data)
-            if u.data.count - u.acked >= 1024 || u.data.count == u.size {
+            if u.data.count - u.acked >= ackEvery || (ackLast && u.data.count == u.size) {
                 u.acked = u.data.count
                 var a = LinkTransferAck()
                 a.xfer = u.xfer
@@ -147,6 +171,7 @@ final class LinkSelfTest: LinkTransport {
         case .uploadEnd(let e)?:
             guard let u = upload, e.xfer == u.xfer else { return result(m.req, .resultBadRequest) }
             uploadEndAt = u.data.count
+            uploadActive = false
             var d = LinkTransferDone()
             d.xfer = u.xfer
             let ok = u.data.count == u.size && CRC32.checksum(u.data) == u.crc
@@ -166,8 +191,9 @@ final class LinkSelfTest: LinkTransport {
             d.acked = Int(a.received)
             download = d
             streamDownload()
-        case .transferCancel?:
-            download = nil
+        case .transferCancel(let c)?:
+            if let u = upload, u.xfer == c.xfer, uploadEndAt == nil { uploadActive = false }
+            if download?.xfer == c.xfer { download = nil }
         default:
             result(m.req, .resultUnsupported)
         }
@@ -306,6 +332,82 @@ final class LinkSelfTest: LinkTransport {
                     if case .failure(.crcMismatch) = r { self.check(true, "") }
                     else { self.check(false, "bad CRC caught (got \(r))") }
                     next()
+                }
+            }),
+            ("small upload, no outside pump", { next in
+                // Firmware acks every 4 KB only and CoreBluetooth never asks for
+                // more: UploadEnd must still go out in the same pump.
+                self.autoRepump = false
+                self.ackEvery = 4096
+                self.ackLast = false
+                let data = Data((0..<3_000).map { UInt8(truncatingIfNeeded: $0 &* 5) })
+                var b = LinkUploadBegin()
+                b.target = .workout
+                b.name = "small"
+                self.client.upload(b, data: data) { r in
+                    if case .failure(let e) = r { self.check(false, "small upload: \(e)") }
+                    self.check(self.uploadEndAt == data.count && self.upload?.data == data,
+                               "small upload complete without an ack or re-pump")
+                    self.autoRepump = true
+                    self.ackEvery = 1024
+                    self.ackLast = true
+                    next()
+                }
+            }),
+            ("one upload at a time", { next in
+                // Three at once, the middle one (an older cover) cancelled while
+                // queued: the device sees no overlap and no BUSY, in order.
+                self.begins = []
+                self.busyAnswered = 0
+                let data = Data(repeating: 0x5A, count: 6_000)
+                var b = LinkUploadBegin()
+                b.target = .mapTile
+                var results: [String: Bool] = [:]
+                @MainActor func start(_ name: String) -> UInt32 {
+                    b.name = name
+                    return self.client.upload(b, data: data) { r in
+                        if case .success = r { results[name] = true } else { results[name] = false }
+                        guard results.count == 2 else { return }
+                        self.check(results == ["a": true, "c": true], "queued uploads done (\(results))")
+                        self.check(self.begins == ["a", "c"], "device saw a then c (\(self.begins))")
+                        self.check(self.busyAnswered == 0, "no BUSY (got \(self.busyAnswered))")
+                        next()
+                    }
+                }
+                _ = start("a")
+                let older = start("b")
+                _ = start("c")
+                self.client.cancel(older)
+            }),
+            ("busy retry", { next in
+                self.forceBusy = 1
+                var b = LinkUploadBegin()
+                b.target = .albumArt
+                b.name = "art"
+                self.client.upload(b, data: Data(repeating: 1, count: 500)) { r in
+                    if case .failure(let e) = r { self.check(false, "BUSY not retried: \(e)") }
+                    else { self.check(self.forceBusy == 0, "upload after one BUSY") }
+                    next()
+                }
+            }),
+            ("service changed", { next in
+                // Service Changed mid-session: requests survive, no new Hello.
+                let hellosBefore = self.hellos
+                let subsBefore = self.subscribes
+                self.check(self.client.servicesInvalidated(), "session kept")
+                self.client.request(.getSettings(LinkGetSettings())) { reply in
+                    if case .message(let m) = reply, case .settings? = m.body {
+                        self.check(self.hellos == hellosBefore, "no second Hello")
+                        self.check(self.subscribes == subsBefore + 1, "TX subscribed again")
+                    } else {
+                        self.check(false, "request across Service Changed: \(reply)")
+                    }
+                    next()
+                    return true
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    self.check(self.client.ready && self.client.suspended, "waiting for rediscovery")
+                    self.client.attach(self)
                 }
             }),
         ]

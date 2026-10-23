@@ -12,7 +12,13 @@ import SwiftProtobuf
 // Everything here runs on the main actor (the central's queue is .main).
 // State is per connection: `reset()` on disconnect drops pending requests,
 // timers and transfers WITHOUT calling their handlers — BLEManager's
-// didDisconnect already winds every feature's UI down.
+// didDisconnect already winds every feature's UI down. A Service Changed
+// inside the connection keeps the session (`servicesInvalidated`); if the
+// link service does not come back, everything waiting is failed instead.
+//
+// The device runs one upload and one download at a time (a second gets
+// RESULT_BUSY), so uploads and downloads each wait their turn in a FIFO here;
+// callers just call `upload` / `download`.
 
 enum LinkUUID {
     static let service = CBUUID(string: "B1C51000-9E0F-4B7A-9C6D-1F2E3A4B5C6D")
@@ -167,12 +173,29 @@ final class LinkClient {
     private var outgoing: [Data] = []
     private var pumping = false
 
-    // MARK: transfers
+    // MARK: transfers: one of each direction on the device, the rest queued
 
     private var nextXfer: UInt32 = 1
-    private var uploads: [UInt32: Upload] = [:]
-    private var downloads: [UInt32: Download] = [:]
+    private var upCurrent: Upload?
+    private var upQueue: [Upload] = []
+    private var dlCurrent: Download?
+    private var dlQueue: [Download] = []
     private var watchdog: Timer?
+
+    /// How long to wait for work the device defers until its SD card is free
+    /// (SetDash, map and tile lists): a ride may be recording.
+    static let cardWait: TimeInterval = 600
+    /// UploadBegin / DownloadRequest refused as BUSY (an upload this client did
+    /// not start, e.g. the legacy path): tried again this often, this far apart.
+    static let busyRetries = 5
+    static let busyRetryDelay: TimeInterval = 2
+
+    // MARK: Service Changed
+
+    /// The link's characteristics were invalidated mid-session; writes wait
+    /// for discovery to attach the new ones.
+    private(set) var suspended = false
+    private var suspendTimer: Timer?
 
     // MARK: - Session
 
@@ -180,6 +203,7 @@ final class LinkClient {
     /// and say Hello once that is confirmed (or after 2 s regardless).
     func attach(peripheral p: CBPeripheral, rx: CBCharacteristic?, tx: CBCharacteristic?) {
         guard let rx, let tx else {
+            if suspended { failSession("link characteristics gone after Service Changed") }
             if phase == .idle { fallBack("link characteristics missing") }
             return
         }
@@ -187,6 +211,17 @@ final class LinkClient {
     }
 
     func attach(_ t: LinkTransport) {
+        if suspended {
+            // Same session on the new characteristics: subscribe again (the
+            // device's CCCD is still on; this re-arms iOS) and carry on.
+            suspended = false
+            suspendTimer?.invalidate(); suspendTimer = nil
+            transport = t
+            t.subscribe()
+            NSLog("[link] resumed after Service Changed")
+            pump()
+            return
+        }
         guard phase == .idle || phase == .subscribing else { return }
         transport = t
         phase = .subscribing
@@ -268,18 +303,62 @@ final class LinkClient {
         pump()
     }
 
+    /// Service Changed invalidated the link service. A ready session keeps
+    /// everything (pending requests, transfers, queues) and only stops writing
+    /// until `attach` brings the rediscovered characteristics; returns true.
+    /// Before DeviceHello there is nothing to keep: reset, return false.
+    @discardableResult
+    func servicesInvalidated() -> Bool {
+        guard phase == .ready else { reset(); return false }
+        NSLog("[link] Service Changed: paused until rediscovery")
+        suspended = true
+        transport = nil
+        // `outgoing` stays: the rest of a half-written message goes to the
+        // same handle once the new characteristic objects arrive.
+        suspendTimer?.invalidate()
+        suspendTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.suspended else { return }
+                self.failSession("link service not rediscovered")
+            }
+        }
+        return true
+    }
+
+    /// Rediscovery found no link service.
+    func serviceMissing() {
+        if suspended { failSession("link service gone after Service Changed") }
+    }
+
+    /// The session can't go on but the connection does: reset, then fail
+    /// every pending request and transfer so each feature winds down (and
+    /// clears its in-flight state) as on a timeout.
+    func failSession(_ why: String) {
+        NSLog("[link] session failed: %@", why)
+        let handlers = pending.values.map(\.handler)
+        let ups = (upCurrent.map { [$0] } ?? []) + upQueue
+        let dls = (dlCurrent.map { [$0] } ?? []) + dlQueue
+        reset()
+        for h in handlers { _ = h(.failed(.notReady)) }
+        for u in ups where !u.cancelled { u.done(.failure(.notReady)) }
+        for d in dls { d.done(.failure(.notReady), d.prefix + d.buf) }
+    }
+
     /// The connection ended: forget everything about it. No handler is called.
     func reset() {
         helloTimer?.invalidate(); helloTimer = nil
         watchdog?.invalidate(); watchdog = nil
+        suspendTimer?.invalidate(); suspendTimer = nil
+        suspended = false
         for p in pending.values { p.timer?.invalidate() }
-        if !pending.isEmpty || !uploads.isEmpty || !downloads.isEmpty {
-            NSLog("[link] reset: dropped %d requests, %d uploads, %d downloads",
-                  pending.count, uploads.count, downloads.count)
+        let ups = (upCurrent == nil ? 0 : 1) + upQueue.count
+        let dls = (dlCurrent == nil ? 0 : 1) + dlQueue.count
+        if !pending.isEmpty || ups > 0 || dls > 0 {
+            NSLog("[link] reset: dropped %d requests, %d uploads, %d downloads", pending.count, ups, dls)
         }
         pending = [:]
-        uploads = [:]
-        downloads = [:]
+        upCurrent = nil; upQueue = []
+        dlCurrent = nil; dlQueue = []
         control = []
         outgoing = []
         reassembler.reset()
@@ -386,7 +465,9 @@ final class LinkClient {
     }
 
     /// Write as much as CoreBluetooth takes; peripheralIsReady calls again.
-    /// Not re-entered: nextBulk() may queue UploadEnd, which pumps.
+    /// Not re-entered: nextBulk() may queue UploadEnd, whose own pump() returns
+    /// at once — so this loop goes round again while control has messages,
+    /// rather than leaving UploadEnd for some later, unrelated pump.
     func pump() {
         guard ready, !pumping, let t = transport else { return }
         pumping = true
@@ -398,9 +479,9 @@ final class LinkClient {
                                                    counter: &txCounter)
                 } else if let chunk = nextBulk() {
                     outgoing = LinkFrame.fragments(chunk, payloadMax: payloadMax(t), counter: &txCounter)
-                } else {
+                } else if control.isEmpty {
                     return
-                }
+                }   // else nextBulk() queued UploadEnd: send it now
             }
             while !outgoing.isEmpty {
                 guard t.canWrite else { return }
@@ -453,6 +534,7 @@ final class LinkClient {
 
     private final class Upload {
         let xfer: UInt32
+        let begin: LinkUploadBegin
         let data: Data
         let label: String
         var window = 16 * 1024
@@ -460,6 +542,11 @@ final class LinkClient {
         var sent = 0
         var acked = 0
         var endSent = false
+        /// Cancelled by the phone after UploadEnd: the device is saving it
+        /// anyway and holds its one upload slot until TransferDone, so this
+        /// stays current (its handler is not called) until that arrives.
+        var cancelled = false
+        var busyTries = 0
         var beginReq: UInt32 = 0
         var endReq: UInt32 = 0
         var lastActivity = Date()
@@ -467,16 +554,17 @@ final class LinkClient {
         var allSent: (() -> Void)?
         var done: (Result<LinkTransferDone, LinkError>) -> Void
 
-        init(xfer: UInt32, data: Data, label: String,
+        init(xfer: UInt32, begin: LinkUploadBegin, data: Data, label: String,
              done: @escaping (Result<LinkTransferDone, LinkError>) -> Void) {
-            self.xfer = xfer; self.data = data; self.label = label; self.done = done
+            self.xfer = xfer; self.begin = begin; self.data = data; self.label = label; self.done = done
         }
     }
 
     /// Send `data` to `target` (UploadBegin → UploadReady → Chunks → UploadEnd →
     /// TransferDone). `begin` fills the target-specific fields; xfer, size and
-    /// CRC are set here. `progress`: bytes written; `allSent`: UploadEnd went
-    /// out (the device now checks and saves); `done`: TransferDone or the
+    /// CRC are set here. Waits its turn behind earlier uploads (the device
+    /// takes one at a time). `progress`: bytes written; `allSent`: UploadEnd
+    /// went out (the device now checks and saves); `done`: TransferDone or the
     /// error. Returns the xfer (for `cancel`), 0 if not ready.
     @discardableResult
     func upload(_ begin: LinkUploadBegin, data: Data,
@@ -488,18 +576,12 @@ final class LinkClient {
         b.xfer = xfer
         b.size = UInt32(data.count)
         b.crc32 = CRC32.checksum(data)
-        let label = "\(b.target) \(b.name)"
-        let u = Upload(xfer: xfer, data: data, label: label, done: done)
+        let u = Upload(xfer: xfer, begin: b, data: data, label: "\(b.target) \(b.name)", done: done)
         u.progress = progress
         u.allSent = allSent
-        uploads[xfer] = u
-        NSLog("[link] upload %u begin: %@, %d bytes", xfer, label, data.count)
-        armWatchdog()
-        u.beginReq = request(.uploadBegin(b), timeout: 15) { [weak self] reply in
-            // UploadReady is routed by xfer (handleTransfer); here only errors.
-            if case .failure(let e)? = reply.result { self?.finishUpload(xfer, .failure(e)) }
-            return true
-        }
+        upQueue.append(u)
+        if upCurrent != nil { NSLog("[link] upload %u queued: %@ (%d waiting)", xfer, u.label, upQueue.count) }
+        startNextUpload()
         return xfer
     }
 
@@ -509,81 +591,152 @@ final class LinkClient {
         return x
     }
 
-    /// The next Chunk to write, if an upload has one inside its window; also
-    /// queues UploadEnd once the last byte is out.
-    private func nextBulk() -> Data? {
-        for u in uploads.values.sorted(by: { $0.xfer < $1.xfer }) where u.ready && !u.endSent {
-            if u.sent >= u.data.count {
-                u.endSent = true
-                var end = LinkUploadEnd()
-                end.xfer = u.xfer
-                let xfer = u.xfer
-                // TransferDone may wait for the SD card (a ride recording): no timeout.
-                u.endReq = request(.uploadEnd(end), timeout: nil) { [weak self] reply in
-                    if case .failure(let e)? = reply.result { self?.finishUpload(xfer, .failure(e)) }
-                    return true
+    private func startNextUpload() {
+        guard ready, upCurrent == nil, !upQueue.isEmpty else { return }
+        let u = upQueue.removeFirst()
+        upCurrent = u
+        NSLog("[link] upload %u begin: %@, %d bytes", u.xfer, u.label, u.data.count)
+        sendUploadBegin(u)
+    }
+
+    private func sendUploadBegin(_ u: Upload) {
+        let xfer = u.xfer
+        u.lastActivity = Date()
+        armWatchdog()
+        u.beginReq = request(.uploadBegin(u.begin), timeout: 15) { [weak self] reply in
+            // UploadReady is routed by xfer (handleTransfer); here only errors.
+            guard let self, let u = self.upCurrent, u.xfer == xfer,
+                  case .failure(let e)? = reply.result else { return true }
+            u.beginReq = 0
+            if e.code == .resultBusy, u.busyTries < Self.busyRetries {
+                // Another upload holds the device's slot: try again shortly.
+                u.busyTries += 1
+                NSLog("[link] upload %u busy, retry %d", xfer, u.busyTries)
+                DispatchQueue.main.asyncAfter(deadline: .now() + Self.busyRetryDelay) { [weak self] in
+                    guard let self, self.ready, self.upCurrent === u else { return }
+                    self.sendUploadBegin(u)
                 }
-                u.allSent?()
-                continue
+                return true
             }
-            let n = min(chunkSize, u.data.count - u.sent)
-            guard u.sent + n - u.acked <= u.window else { continue }
-            var c = LinkChunk()
-            c.xfer = u.xfer
-            c.offset = UInt32(u.sent)
-            let s = u.data.startIndex + u.sent
-            c.data = u.data.subdata(in: s..<(s + n))
-            var m = LinkPhoneMsg()
-            m.chunk = c
-            u.sent += n
-            u.lastActivity = Date()
-            u.progress?(u.sent)
-            return encode(m)
+            // No answer: the device may yet take it; tell it not to.
+            if case .timeout = e { self.sendCancel(xfer, .resultTimeout) }
+            self.finishUpload(xfer, .failure(e))
+            return true
         }
-        return nil
+    }
+
+    private func sendCancel(_ xfer: UInt32, _ reason: LinkResultCode) {
+        var c = LinkTransferCancel()
+        c.xfer = xfer
+        c.reason = reason
+        send(.transferCancel(c))
+    }
+
+    /// The next Chunk to write, if the running upload has one inside its
+    /// window; also queues UploadEnd once the last byte is out.
+    private func nextBulk() -> Data? {
+        guard let u = upCurrent, u.ready, !u.endSent else { return nil }
+        if u.sent >= u.data.count {
+            u.endSent = true
+            var end = LinkUploadEnd()
+            end.xfer = u.xfer
+            let xfer = u.xfer
+            // TransferDone may wait for the SD card (a ride recording): no timeout.
+            u.endReq = request(.uploadEnd(end), timeout: nil) { [weak self] reply in
+                if case .failure(let e)? = reply.result { self?.finishUpload(xfer, .failure(e)) }
+                return true
+            }
+            u.allSent?()
+            return nil
+        }
+        let n = min(chunkSize, u.data.count - u.sent)
+        guard u.sent + n - u.acked <= u.window else { return nil }
+        var c = LinkChunk()
+        c.xfer = u.xfer
+        c.offset = UInt32(u.sent)
+        let s = u.data.startIndex + u.sent
+        c.data = u.data.subdata(in: s..<(s + n))
+        var m = LinkPhoneMsg()
+        m.chunk = c
+        u.sent += n
+        u.lastActivity = Date()
+        u.progress?(u.sent)
+        return encode(m)
     }
 
     private func finishUpload(_ xfer: UInt32, _ r: Result<LinkTransferDone, LinkError>) {
-        guard let u = uploads.removeValue(forKey: xfer) else { return }
+        guard let u = upCurrent, u.xfer == xfer else { return }
+        upCurrent = nil
         dropPending(u.beginReq)
         dropPending(u.endReq)
         switch r {
-        case .success: NSLog("[link] upload %u done: %@", xfer, u.label)
+        case .success: NSLog("[link] upload %u done: %@%@", xfer, u.label, u.cancelled ? " (was cancelled)" : "")
         case .failure(let e): NSLog("[link] upload %u failed: %@ (%@)", xfer, u.label, e.description)
         }
-        u.done(r)
+        if !u.cancelled { u.done(r) }
+        startNextUpload()
     }
 
     private func dropPending(_ req: UInt32) {
         if req != 0 { pending.removeValue(forKey: req)?.timer?.invalidate() }
     }
 
-    /// Stop a transfer (either direction) and forget it; its handler is not
-    /// called.
+    private func currentUpload(_ xfer: UInt32) -> Upload? {
+        guard let u = upCurrent, u.xfer == xfer else { return nil }
+        return u
+    }
+
+    private func currentDownload(_ xfer: UInt32) -> Download? {
+        guard let d = dlCurrent, d.xfer == xfer else { return nil }
+        return d
+    }
+
+    /// Stop a transfer (either direction, running or still queued) and forget
+    /// it; its handler is not called.
     func cancel(_ xfer: UInt32) {
-        if let u = uploads.removeValue(forKey: xfer) {
-            dropPending(u.beginReq); dropPending(u.endReq)
-        } else if let d = downloads.removeValue(forKey: xfer) {
-            dropPending(d.req)
-        } else {
+        if let i = upQueue.firstIndex(where: { $0.xfer == xfer }) {
+            NSLog("[link] upload %u dropped from the queue", xfer)
+            upQueue.remove(at: i)
             return
         }
-        NSLog("[link] transfer %u cancelled", xfer)
-        var c = LinkTransferCancel()
-        c.xfer = xfer
-        c.reason = .resultCancelled
-        send(.transferCancel(c))
+        if let i = dlQueue.firstIndex(where: { $0.xfer == xfer }) {
+            NSLog("[link] download %u dropped from the queue", xfer)
+            dlQueue.remove(at: i)
+            return
+        }
+        if let u = currentUpload(xfer) {
+            guard !u.cancelled else { return }
+            NSLog("[link] transfer %u cancelled", xfer)
+            if u.endSent {
+                // Past the device's cancel point: it saves this one and answers
+                // TransferDone, which frees the slot for the next.
+                u.cancelled = true
+                return
+            }
+            upCurrent = nil
+            dropPending(u.beginReq); dropPending(u.endReq)
+            sendCancel(xfer, .resultCancelled)
+            startNextUpload()   // UploadBegin queues behind the cancel
+        } else if let d = currentDownload(xfer) {
+            NSLog("[link] transfer %u cancelled", xfer)
+            dlCurrent = nil
+            dropPending(d.req)
+            sendCancel(xfer, .resultCancelled)
+            startNextDownload()
+        }
     }
 
     // MARK: - Downloads
 
     private final class Download {
         let xfer: UInt32
+        let request: LinkDownloadRequest
         let label: String
         /// Bytes the phone already had (a resumed ride), for the whole-file CRC.
         var prefix: Data
         var buf = Data()
         var begun = false
+        var busyTries = 0
         var req: UInt32 = 0
         var size = 0
         var ackedAt = 0
@@ -592,18 +745,20 @@ final class LinkClient {
         var done: (Result<Data, LinkError>, Data) -> Void
         var next: Int { prefix.count + buf.count }
 
-        init(xfer: UInt32, label: String, prefix: Data,
+        init(xfer: UInt32, request: LinkDownloadRequest, label: String, prefix: Data,
              done: @escaping (Result<Data, LinkError>, Data) -> Void) {
-            self.xfer = xfer; self.label = label; self.prefix = prefix; self.done = done
+            self.xfer = xfer; self.request = request; self.label = label; self.prefix = prefix
+            self.done = done
         }
     }
 
     /// Fetch a file: DownloadRequest → DownloadBegin → Chunks (acked every
     /// 2 KB) → TransferDone, then the whole file's size and CRC are checked.
-    /// `resume`: the start of the file already in hand; only the rest is asked
-    /// for. `progress`: (bytes of the file in hand, file size); `done` gets the
-    /// whole file, or the error and the start of the file collected so far
-    /// (empty when what arrived can't be trusted), to resume from.
+    /// Waits its turn behind earlier downloads (the device sends one at a
+    /// time). `resume`: the start of the file already in hand; only the rest
+    /// is asked for. `progress`: (bytes of the file in hand, file size); `done`
+    /// gets the whole file, or the error and the start of the file collected
+    /// so far (empty when what arrived can't be trusted), to resume from.
     /// Returns the xfer, 0 if not ready.
     @discardableResult
     func download(_ source: LinkSource, name: String, resume: Data = Data(),
@@ -611,35 +766,66 @@ final class LinkClient {
                   done: @escaping (Result<Data, LinkError>, Data) -> Void) -> UInt32 {
         guard ready else { done(.failure(.notReady), resume); return 0 }
         let xfer = takeXfer()
-        let label = "\(source) \(name)"
-        let d = Download(xfer: xfer, label: label, prefix: resume, done: done)
-        d.progress = progress
-        downloads[xfer] = d
         var r = LinkDownloadRequest()
         r.xfer = xfer
         r.source = source
         r.name = name
         r.offset = UInt32(resume.count)
         r.window = 8 * 1024
-        NSLog("[link] download %u begin: %@ from %d", xfer, label, resume.count)
+        let d = Download(xfer: xfer, request: r, label: "\(source) \(name)", prefix: resume, done: done)
+        d.progress = progress
+        dlQueue.append(d)
+        if dlCurrent != nil { NSLog("[link] download %u queued: %@ (%d waiting)", xfer, d.label, dlQueue.count) }
+        startNextDownload()
+        return xfer
+    }
+
+    private func startNextDownload() {
+        guard ready, dlCurrent == nil, !dlQueue.isEmpty else { return }
+        let d = dlQueue.removeFirst()
+        dlCurrent = d
+        NSLog("[link] download %u begin: %@ from %d", d.xfer, d.label, d.prefix.count)
+        sendDownloadRequest(d)
+    }
+
+    private func sendDownloadRequest(_ d: Download) {
+        let xfer = d.xfer
+        d.lastActivity = Date()
         armWatchdog()
-        d.req = request(.download(r), timeout: 15) { [weak self] reply in
+        // 30 s: before DownloadBegin the device hashes the resume prefix from
+        // the card, which takes a while for a multi-MB ride.
+        d.req = request(.download(d.request), timeout: 30) { [weak self] reply in
             // DownloadBegin is routed by xfer (handleTransfer); here only errors.
-            if case .failure(let e)? = reply.result { self?.finishDownload(xfer, .failure(e), keep: true) }
+            guard let self, let d = self.dlCurrent, d.xfer == xfer,
+                  case .failure(let e)? = reply.result else { return true }
+            d.req = 0
+            if e.code == .resultBusy, d.busyTries < Self.busyRetries {
+                d.busyTries += 1
+                NSLog("[link] download %u busy, retry %d", xfer, d.busyTries)
+                DispatchQueue.main.asyncAfter(deadline: .now() + Self.busyRetryDelay) { [weak self] in
+                    guard let self, self.ready, self.dlCurrent === d else { return }
+                    self.sendDownloadRequest(d)
+                }
+                return true
+            }
+            // No answer: the device may still start streaming; tell it not to.
+            if case .timeout = e { self.sendCancel(xfer, .resultTimeout) }
+            self.finishDownload(xfer, .failure(e), keep: true)
             return true
         }
-        return xfer
     }
 
     /// `keep`: what arrived is good, hand it back for a resume.
     private func finishDownload(_ xfer: UInt32, _ r: Result<Data, LinkError>, keep: Bool = false) {
-        guard let d = downloads.removeValue(forKey: xfer) else { return }
+        guard let d = currentDownload(xfer) else { return }
+        dlCurrent = nil
         dropPending(d.req)
         switch r {
         case .success(let data): NSLog("[link] download %u done: %@, %d bytes", xfer, d.label, data.count)
         case .failure(let e): NSLog("[link] download %u failed at %d: %@ (%@)", xfer, d.next, d.label, e.description)
         }
         d.done(r, keep ? d.prefix + d.buf : Data())
+        startNextDownload()
     }
 
     private func ack(_ d: Download) {
@@ -656,22 +842,22 @@ final class LinkClient {
     private func handleTransfer(_ m: LinkDeviceMsg) -> Bool {
         switch m.body {
         case .uploadReady(let r)?:
-            guard let u = uploads[r.xfer] else { return false }
+            guard let u = currentUpload(r.xfer) else { return false }
             u.ready = true
             if r.window > 0 { u.window = Int(r.window) }
             u.lastActivity = Date()
             pump()
             return true
         case .transferAck(let a)?:
-            if let u = uploads[a.xfer] {
+            if let u = currentUpload(a.xfer) {
                 u.acked = max(u.acked, Int(a.received))
                 u.lastActivity = Date()
                 pump()
                 return true
             }
-            return downloads[a.xfer] != nil
+            return currentDownload(a.xfer) != nil
         case .downloadBegin(let b)?:
-            guard let d = downloads[b.xfer] else { return false }
+            guard let d = currentDownload(b.xfer) else { return false }
             if Int(b.offset) != d.prefix.count {
                 guard b.offset == 0 else {
                     failDownload(d, .badData("device resumed at \(b.offset), asked \(d.prefix.count)"))
@@ -687,7 +873,7 @@ final class LinkClient {
             d.progress?(d.next, d.size)
             return true
         case .chunk(let c)?:
-            guard let d = downloads[c.xfer] else { return false }
+            guard let d = currentDownload(c.xfer) else { return false }
             guard d.begun, Int(c.offset) == d.next else {
                 failDownload(d, .badData("chunk at \(c.offset), expected \(d.next)"))
                 return true
@@ -698,11 +884,11 @@ final class LinkClient {
             d.progress?(d.next, d.size)
             return true
         case .transferDone(let t)?:
-            if uploads[t.xfer] != nil {
+            if currentUpload(t.xfer) != nil {
                 finishUpload(t.xfer, t.code == .resultOk ? .success(t) : .failure(.result(t.code, t.detail)))
                 return true
             }
-            guard let d = downloads[t.xfer] else { return false }
+            guard let d = currentDownload(t.xfer) else { return false }
             guard t.code == .resultOk else {
                 finishDownload(t.xfer, .failure(.result(t.code, t.detail)), keep: true)
                 return true
@@ -718,11 +904,11 @@ final class LinkClient {
             }
             return true
         case .transferCancel(let c)?:
-            if uploads[c.xfer] != nil {
+            if currentUpload(c.xfer) != nil {
                 finishUpload(c.xfer, .failure(.result(c.reason, "cancelled by the device")))
                 return true
             }
-            if downloads[c.xfer] != nil {
+            if currentDownload(c.xfer) != nil {
                 finishDownload(c.xfer, .failure(.result(c.reason, "cancelled by the device")), keep: true)
                 return true
             }
@@ -734,18 +920,16 @@ final class LinkClient {
 
     /// A download gone wrong on this side: tell the device and give up.
     private func failDownload(_ d: Download, _ e: LinkError) {
-        var c = LinkTransferCancel()
-        c.xfer = d.xfer
-        c.reason = e.code ?? .resultBadRequest
-        send(.transferCancel(c))
+        sendCancel(d.xfer, e.code ?? .resultBadRequest)
         finishDownload(d.xfer, .failure(e), keep: true)
     }
 
-    /// Stalled transfers: an upload with nothing sent or acked for 20 s
-    /// (window full, or never got UploadReady), a download with no data for
-    /// 20 s (the device gives up after 10 s without an ack, so by then it is
-    /// gone). An upload waiting for TransferDone waits: the device may be
-    /// waiting for the SD card.
+    /// Stalled transfers: a running upload with nothing sent or acked for 20 s
+    /// (window full), a running download with no data for 20 s (the device
+    /// gives up after 10 s without an ack, so by then it is gone). Until
+    /// UploadReady / DownloadBegin the request's own timeout watches; an
+    /// upload waiting for TransferDone waits: the device may be waiting for
+    /// the SD card.
     private func armWatchdog() {
         guard watchdog == nil else { return }
         watchdog = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
@@ -755,17 +939,14 @@ final class LinkClient {
 
     private func checkStalls() {
         let now = Date()
-        for u in Array(uploads.values) where !u.endSent && now.timeIntervalSince(u.lastActivity) > 20 {
-            var c = LinkTransferCancel()
-            c.xfer = u.xfer
-            c.reason = .resultTimeout
-            send(.transferCancel(c))
+        if let u = upCurrent, u.ready, !u.endSent, now.timeIntervalSince(u.lastActivity) > 20 {
+            sendCancel(u.xfer, .resultTimeout)
             finishUpload(u.xfer, .failure(.timeout))
         }
-        for d in Array(downloads.values) where now.timeIntervalSince(d.lastActivity) > 20 {
+        if let d = dlCurrent, d.begun, now.timeIntervalSince(d.lastActivity) > 20 {
             failDownload(d, .timeout)
         }
-        if uploads.isEmpty && downloads.isEmpty {
+        if upCurrent == nil && upQueue.isEmpty && dlCurrent == nil && dlQueue.isEmpty {
             watchdog?.invalidate(); watchdog = nil
         }
     }

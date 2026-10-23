@@ -587,6 +587,9 @@ final class BLEManager: NSObject, ObservableObject {
     private var tileJobStarted = Date()
     private var tileJobBytes = 0
     private var tileJobFailed = false
+    /// Tiles in a row refused as BUSY (something outside the link queue, e.g.
+    /// a legacy update, holds the device's upload slot): retried, not failed.
+    private var tileBusyRetries = 0
     private var tilesMoreComing = false             // app still building tiles to enqueue
 
     private var central: CBCentralManager!
@@ -1942,7 +1945,9 @@ final class BLEManager: NSObject, ObservableObject {
         var l = LinkListRequest()
         l.kind = kind
         var tiles: [LinkTileEntry] = []
-        link.request(.list(l)) { reply in
+        // The device walks the card only when it is free (not while a ride
+        // records), so the answer may come minutes later.
+        link.request(.list(l), timeout: LinkClient.cardWait) { reply in
             if case .message(let m) = reply, case .tileList(let page)? = m.body {
                 tiles += page.tiles
                 guard page.last else { return false }
@@ -2363,7 +2368,8 @@ final class BLEManager: NSObject, ObservableObject {
             guard link.has(.maps) else { return }
             var l = LinkListRequest()
             l.kind = .listMaps
-            link.request(.list(l))   // MapCoverageList, applied in handleLinkMessage
+            // MapCoverageList, applied in handleLinkMessage; waits for the card.
+            link.request(.list(l), timeout: LinkClient.cardWait)
             return
         }
         guard let c = mapChar, let p = peripheral else { return }
@@ -2636,8 +2642,22 @@ final class BLEManager: NSObject, ObservableObject {
                 guard let self, self.currentTileId == tile.id, self.currentIsPoi == tile.poi else { return }
                 self.mapXfer = 0
                 switch r {
-                case .success: self.tileSaved()
+                case .success:
+                    self.tileBusyRetries = 0
+                    self.tileSaved()
+                case .failure(let e) where e.code == .resultBusy && self.tileBusyRetries < 12:
+                    // LinkClient already retried for a while; put the tile back
+                    // and wait, so a busy device can't fail the whole queue.
+                    self.tileBusyRetries += 1
+                    NSLog("[link] tile %@ busy, waiting (%d)", tile.id, self.tileBusyRetries)
+                    self.currentTileId = nil
+                    self.tileQueue.insert(tile, at: 0)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+                        guard let self, self.currentTileId == nil, self.mapXfer == 0 else { return }
+                        self.sendNextTile()
+                    }
                 case .failure(let e):
+                    self.tileBusyRetries = 0
                     NSLog("[link] tile %@ failed: %@", tile.id, e.description)
                     self.tileFailed()
                 }
@@ -2844,7 +2864,7 @@ final class BLEManager: NSObject, ObservableObject {
         if link.ready {
             var e = LinkMeshChannelEdit()
             e.index = UInt32(index)
-            e.name = String(name.prefix(15))
+            e.name = Self.utf8Prefix(name, 15)   // link.options: 16 bytes with the NUL
             e.psk = psk
             meshCommand(.setChannel(e))
             return
@@ -2985,8 +3005,10 @@ final class BLEManager: NSObject, ObservableObject {
     func setMeshNames(long: String, short: String) {
         if link.ready {
             var n = LinkMeshRename()
-            n.longName = String(long.prefix(38))
-            n.shortName = String(short.prefix(4))
+            // Bytes, not characters: the device refuses a message whose string
+            // overflows (link.options: 40 / 8 bytes with the NUL).
+            n.longName = Self.utf8Prefix(long, 39)
+            n.shortName = Self.utf8Prefix(String(short.prefix(4)), 7)
             meshCommand(.rename(n))
             return
         }
@@ -3009,7 +3031,7 @@ final class BLEManager: NSObject, ObservableObject {
         if link.ready {
             var pr = LinkMeshPrimary()
             pr.keyIndex = UInt32(max(1, min(10, key)))
-            pr.name = String(name.prefix(14))
+            pr.name = Self.utf8Prefix(name, 15)   // link.options: 16 bytes with the NUL
             meshCommand(.primary(pr))
             return
         }
@@ -4518,10 +4540,12 @@ extension BLEManager: CBPeripheralDelegate {
         MainActor.assumeIsolated {
             NSLog("[link] services modified: %@", invalidated.map(\.uuid.uuidString).joined(separator: ","))
             if invalidated.contains(where: { $0.uuid == LinkUUID.service }) {
-                // Its characteristics are dead; discovery attaches the new ones
-                // and says Hello again.
-                link.reset()
-                liveTopicsSent = [.ride]
+                // Same connection, same device session: the link keeps its
+                // requests, transfers and queues and only pauses writing until
+                // discovery hands it the new characteristics (no second Hello,
+                // which would make the device drop its session work). Before
+                // DeviceHello it simply starts over.
+                if !link.servicesInvalidated() { liveTopicsSent = [.ride] }
             }
             if invalidated.contains(where: { $0.uuid == BikeUUID.service }) {
                 legacyActive = false   // re-subscribed on rediscovery (if legacy)
@@ -4546,7 +4570,11 @@ extension BLEManager: CBPeripheralDelegate {
         let offered = services.contains { $0.uuid == LinkUUID.service }
         MainActor.assumeIsolated {
             linkOffered = offered
-            if !offered { NSLog("[link] no link service: legacy protocol") }
+            if !offered {
+                NSLog("[link] no link service: legacy protocol")
+                // Gone after a Service Changed: fail what waited on it.
+                link.serviceMissing()
+            }
         }
     }
 
@@ -4877,8 +4905,8 @@ extension BLEManager: CBPeripheralDelegate {
     func sendMediaArt(_ gray: [UInt8], width: Int, height: Int) -> Bool {
         if link.ready {
             guard link.has(.mediaArt), !otaInProgress else { return false }
-            // One upload at a time on the device: a newer cover replaces the
-            // one still going (the device also drops it when the title changes).
+            // A newer cover replaces the one still queued or going (the device
+            // also drops a half-received one when the title changes).
             if artXfer != 0 { link.cancel(artXfer); artXfer = 0 }
             let tones = mediaToneArt
             let payload = tones
@@ -4890,7 +4918,7 @@ extension BLEManager: CBPeripheralDelegate {
             b.artWidth = UInt32(width)
             b.artHeight = UInt32(height)
             artGen += 1
-            sendArtLink(payload, begin: b, gen: artGen, tries: 0)
+            sendArtLink(payload, begin: b)
             return artXfer != 0
         }
         guard let p = peripheral, mediaChar != nil, !otaInProgress else { return false }
@@ -4909,21 +4937,15 @@ extension BLEManager: CBPeripheralDelegate {
         return true
     }
 
-    /// One album-art upload on the link. The device takes one upload at a
-    /// time, so a cover refused as BUSY (a map or tile sync running) is tried
-    /// again every 5 s for a few minutes, unless a newer cover took over.
-    private func sendArtLink(_ payload: Data, begin b: LinkUploadBegin, gen: Int, tries: Int) {
+    /// One album-art upload on the link. LinkClient runs one upload at a time
+    /// (the device takes no more), so a cover may wait behind a tile or route;
+    /// a newer cover cancels this one, queued or running (sendMediaArt).
+    private func sendArtLink(_ payload: Data, begin b: LinkUploadBegin) {
         var xfer: UInt32 = 0
         xfer = link.upload(b, data: payload) { [weak self] r in
             guard let self, self.artXfer == xfer else { return }
             self.artXfer = 0
-            guard case .failure(let e) = r else { return }
-            artLog.error("art upload failed: \(e.description, privacy: .public)")
-            guard e.code == .resultBusy, tries < 60 else { return }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
-                guard let self, self.artGen == gen, self.artXfer == 0, self.link.has(.mediaArt) else { return }
-                self.sendArtLink(payload, begin: b, gen: gen, tries: tries + 1)
-            }
+            if case .failure(let e) = r { artLog.error("art upload failed: \(e.description, privacy: .public)") }
         }
         artXfer = xfer
     }
@@ -5040,8 +5062,10 @@ extension BLEManager: CBPeripheralDelegate {
             dashWritesOutstanding = 1
             dashWriteError = false
             dashWriteText = text
-            // Answered with the layout the device applied, or PARSE_ERROR.
-            link.request(.setDash(d)) { [weak self] reply in
+            // Answered with the layout the device applied, or PARSE_ERROR. The
+            // device applies it once the card is free (after a recording ends):
+            // until then the layout shows as syncing, not failed.
+            link.request(.setDash(d), timeout: LinkClient.cardWait) { [weak self] reply in
                 guard let self else { return true }
                 if case .message(let m) = reply, case .dash(let applied)? = m.body {
                     self.dashWriteAcked(ok: true)
