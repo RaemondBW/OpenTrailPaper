@@ -19,6 +19,7 @@
 #include "routes.h"
 #include "ble_sensors.h"
 #include "ble_server.h"
+#include "link.h"
 #include "ride_recorder.h"
 #include "ui_dashboard.h"
 #include "board_power.h"
@@ -644,6 +645,10 @@ void setup() {
     xTaskCreatePinnedToCore(gps_service::task, "gps", 4096, nullptr, 3, nullptr, 0);
     xTaskCreatePinnedToCore(ble_sensors::task, "ble", 6144, nullptr, 2, nullptr, 0);
     xTaskCreatePinnedToCore(ble_server::task, "srv", 4096, nullptr, 1, nullptr, 0);
+    // The phone link: decodes the app's requests, does the SD work they need
+    // and is the one sender on its TX characteristic (src/link.cpp).
+    xTaskCreatePinnedToCore(phone_link::task, "link", phone_link::TASK_STACK, nullptr, 1,
+                            nullptr, 0);
     xTaskCreatePinnedToCore(ride_recorder::task, "rec", 6144, nullptr, 3, nullptr, 1);
     xTaskCreatePinnedToCore(batteryTask, "bat", 3072, nullptr, 1, nullptr, 1);
     // No task at all when nothing is fitted — the whole feature costs an absent
