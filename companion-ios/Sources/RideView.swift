@@ -1,5 +1,6 @@
 import SwiftUI
 import MapKit
+import MediaPlayer
 
 // The Ride tab is the head unit's live dashboard on the phone: the same pages,
 // laid out the way the device packs them (DashLayout), filled with what the
@@ -11,8 +12,6 @@ struct RideView: View {
     @State private var showDashEditor = false
     @State private var showWorkouts = false
     @State private var pageIx = 0
-    @State private var aboveTiles: CGFloat = 0
-    @State private var belowTiles: CGFloat = 0
 
     private var connected: Bool { ble.state == .connected }
     /// The rider's layout (unsynced edit, else the device's, cached across
@@ -23,38 +22,35 @@ struct RideView: View {
         NavigationStack {
             VStack(spacing: 0) {
                 header
-                // One screen, not a scroll: the tiles take the height the rest
-                // leaves. Only when that gets too short (a small phone at a
-                // large text size, several warnings) does the page scroll.
-                GeometryReader { geo in
+                // The device page at the full content width, the panel's
+                // own 9:16 — on a phone that is taller than the space under
+                // the header, so the tab scrolls rather than shrink the
+                // device until its buttons are too small to hit.
+                ScrollViewReader { proxy in
                     ScrollView {
                         VStack(spacing: 10) {
-                            VStack(spacing: 10) {
-                                warnings
-                                pageSelector
-                                // The WORKOUT page shows it in full; without one,
-                                // this strip is where a loaded workout shows.
-                                if ble.workoutStatus.loaded && !config.hasWorkoutPage { workoutStrip }
-                                if connected && ble.status.hasRoute { routeStrip }
-                            }
-                            .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { aboveTiles = $0 }
-
+                            warnings
+                            pageSelector
                             page
-                                .frame(height: max(320, geo.size.height - aboveTiles - belowTiles - 24 - 20))
-
-                            VStack(spacing: 10) {
-                                if !connected {
-                                    PrimaryButton(title: primaryTitle,
-                                                  systemImage: "antenna.radiowaves.left.and.right") {
-                                        ble.connectTapped()
-                                    }
+                            if !connected {
+                                PrimaryButton(title: primaryTitle,
+                                              systemImage: "antenna.radiowaves.left.and.right") {
+                                    ble.connectTapped()
                                 }
                             }
-                            .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { belowTiles = $0 }
+                            Color.clear.frame(height: 0).id("rideBottom")
                         }
                         .padding(.horizontal, 16).padding(.vertical, 12)
                     }
                     .scrollBounceBehavior(.basedOnSize)
+                    .onAppear {
+                        // Screenshot hook: the bottom of the device page.
+                        if ProcessInfo.processInfo.arguments.contains("-ride-scroll-bottom") {
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                                proxy.scrollTo("rideBottom", anchor: .bottom)
+                            }
+                        }
+                    }
                 }
             }
             .background(Palette.paper.ignoresSafeArea())
@@ -205,14 +201,11 @@ struct RideView: View {
     private var page: some View {
         let pages = config.pages
         let p = pages.isEmpty ? nil : pages[min(pageIx, pages.count - 1)]
-        return GeometryReader { geo in
-            let w = min(geo.size.width, geo.size.height * 540 / 960)
-            TimelineView(.everyMinute) { ctx in
-                devicePage(p, now: ctx.date)
-                    .frame(width: w, height: w * 960 / 540)
-                    .overlay(Rectangle().strokeBorder(Palette.ink, lineWidth: Rule.border))
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        return TimelineView(.everyMinute) { ctx in
+            devicePage(p, now: ctx.date)
+                .frame(maxWidth: .infinity)
+                .aspectRatio(540 / 960, contentMode: .fit)
+                .overlay(Rectangle().strokeBorder(Palette.ink, lineWidth: Rule.border))
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(pages.isEmpty ? "Device page"
@@ -236,21 +229,22 @@ struct RideView: View {
                     .offset(y: 64 * k)
             }
         case .map:
-            MapPagePreview(fields: config.mapFields, status: status,
-                           value: { liveText($0, now: now) },
-                           map: AnyView(LiveDeviceMap(route: connected && ble.status.hasRoute
-                                                      ? ble.sentRouteCoords : [],
-                                                      showsUser: ble.locationPermission.isGranted)))
+            LiveMapPage(fields: config.mapFields, status: status,
+                        value: { liveText($0, now: now) },
+                        route: connected && ble.status.hasRoute ? ble.sentRouteCoords : [],
+                        showsUser: ble.locationPermission.isGranted)
         case .music:
             LiveMusicPage(art: ble.albumArt, status: status)
         case .workout:
             WorkoutPagePreview(status: status, model: workoutModel,
-                               onPick: connected ? { ble.loadWorkout($0) } : nil)
+                               actions: connected ? workoutActions : nil)
         case .stopwatch:
             // The stopwatch lives on the device alone: nothing of it crosses
-            // the link, so the page shows its layout with no time.
+            // the link either way, so the page shows its layout with no time
+            // and its buttons greyed.
             StopwatchPagePreview(status: status, time: "--:--", state: "--", running: false,
-                                 note: "The stopwatch isn't sent over Bluetooth")
+                                 note: "The stopwatch isn't sent over Bluetooth",
+                                 controlsEnabled: false)
         }
     }
 
@@ -279,6 +273,23 @@ struct RideView: View {
         return v.isClock ? clockText(now) : v.text
     }
 
+    /// The WORKOUT page's taps, as the workout characteristic's commands —
+    /// the same ones the device's own taps run (ui_dashboard.cpp).
+    private var workoutActions: WorkoutPageActions {
+        WorkoutPageActions(
+            toggle: {
+                let w = ble.workoutStatus
+                let started = w.running || w.paused || w.done || w.elapsedSec > 0
+                if !started { ble.workoutStart() }         // 0x20
+                else if w.running { ble.workoutPause() }   // 0x21
+                else { ble.workoutResume() }               // 0x22
+            },
+            jump: { ble.workoutJump(block: $0) },          // 0x25 [idx]
+            unload: { ble.workoutUnload() },               // 0x27
+            load: { ble.loadWorkout($0) },                 // 0x11 name
+            refresh: { ble.refreshWorkouts() })            // 0x06 + 0x30
+    }
+
     /// The WORKOUT page's model: the device's session status (0xC0), the
     /// loaded file's blocks, live power, and the device's /workouts for the
     /// picker when nothing is loaded.
@@ -305,40 +316,6 @@ struct RideView: View {
         }
         m.picker = ble.deviceWorkouts
         return m
-    }
-
-    private var workoutStrip: some View {
-        let w = ble.workoutStatus
-        let state = w.running ? "RUNNING" : w.paused ? "PAUSED" : w.done ? "DONE" : "READY"
-        return Button { showWorkouts = true } label: {
-            HStack(spacing: 10) {
-                Tag(text: state, inverted: w.running || w.done)
-                Text(w.name).font(BarlowFont.text(14, .bold)).lineLimit(1)
-                Spacer(minLength: 4)
-                Text("BLOCK \(w.blockIndex + 1)/\(w.blockCount)")
-                    .font(BarlowFont.text(11, .bold)).tracking(1.5)
-            }
-            .foregroundStyle(Palette.ink)
-            .padding(.horizontal, 10).padding(.vertical, 8)
-            .einkBorder()
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Workout \(w.name), \(state.lowercased()), block \(w.blockIndex + 1) of \(w.blockCount)")
-    }
-
-    private var routeStrip: some View {
-        HStack(spacing: 10) {
-            Text("ACTIVE ROUTE").font(BarlowFont.text(11, .bold)).tracking(2)
-            Spacer()
-            Text(String(format: "%.1f", Units.distance(ble.status.remainingKm, miles: useMiles)))
-                .font(DisplayFont.anton(20))
-            Text("\(Units.distLabel(useMiles).uppercased()) LEFT").font(BarlowFont.text(11, .bold)).tracking(1.5)
-        }
-        .foregroundStyle(Palette.ink)
-        .padding(.horizontal, 10).padding(.vertical, 6)
-        .einkBorder()
-        .accessibilityElement(children: .combine)
     }
 
     // MARK: Live values
@@ -447,20 +424,38 @@ struct ConnectionBanner: View {
     }
 }
 
-/// The MAP page's map: the app's e-ink-styled map (muted, desaturated) around
-/// the phone's position — the device does not send its own — with the route
-/// this phone last sent while the device reports one active.
-private struct LiveDeviceMap: View {
+/// The MAP page: the app's e-ink-styled map (muted, desaturated) around the
+/// phone's position — the device does not send its own — with the route this
+/// phone last sent while the device reports one active, the page's data
+/// strip, and the zoom stack. Zoom is phone-only: there is no BLE command
+/// for the device's map zoom.
+private struct LiveMapPage: View {
+    let fields: [String]
+    let status: PanelStatus
+    let value: (String) -> String
     let route: [CLLocationCoordinate2D]
     let showsUser: Bool
     @State private var line: MKPolyline?
     @State private var camera: MapCameraCommand?
+    @State private var region: MKCoordinateRegion?
 
     var body: some View {
-        EInkMapView(route: line, camera: camera, showsUserLocation: showsUser)
-            .allowsHitTesting(false)
+        MapPagePreview(fields: fields, status: status, value: value,
+                       map: AnyView(EInkMapView(route: line, camera: camera,
+                                                showsUserLocation: showsUser,
+                                                onRegionChange: { region = $0 })
+                                        .allowsHitTesting(false)),
+                       onZoom: zoom)
             .onAppear { update() }
             .onChange(of: route.count) { update() }
+    }
+
+    private func zoom(_ dir: Int) {
+        guard var r = region else { return }
+        let f = dir > 0 ? 0.5 : 2.0
+        r.span = MKCoordinateSpan(latitudeDelta: min(max(r.span.latitudeDelta * f, 0.002), 60),
+                                  longitudeDelta: min(max(r.span.longitudeDelta * f, 0.002), 60))
+        camera = MapCameraCommand(target: .region(r))
     }
 
     private func update() {
@@ -483,12 +478,32 @@ private struct LiveMusicPage: View {
     @ObservedObject var art: AlbumArtFeeder
     let status: PanelStatus
     @State private var image: UIImage?
+    /// Bumped after a transport tap so play/pause redraws from the player.
+    @State private var tick = 0
 
     var body: some View {
         let track = art.nowPlaying
+        let player = MPMusicPlayerController.systemMusicPlayer
+        // The device sends its transport over AMS, which reaches any player;
+        // an app can only drive the Music app's own player, so the buttons
+        // are live while the Music app is the one playing.
+        let musicApp = player.nowPlayingItem != nil
         MusicPreview(status: status, track: track,
                      art: track != nil && art.cover?.key == track?.key ? image : nil,
-                     playing: track != nil, progress: nil)
+                     playing: musicApp ? player.playbackState == .playing : track != nil,
+                     progress: nil,
+                     onTransport: { b in
+                         switch b {
+                         case 0: player.skipToPreviousItem()
+                         case 1: player.playbackState == .playing ? player.pause() : player.play()
+                         default: player.skipToNextItem()
+                         }
+                         tick += 1
+                     },
+                     transportEnabled: musicApp,
+                     transportHint: musicApp ? nil
+                        : "Controls the Music app only; other players are controlled on the device")
+            .id(tick)
             .task(id: art.cover?.key) {
                 guard let c = art.cover else { image = nil; return }
                 let side = AlbumArtFeeder.side

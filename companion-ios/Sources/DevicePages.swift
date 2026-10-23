@@ -59,15 +59,20 @@ struct PanelText: View {
     let baseline: CGFloat
     var align: Align = .left
     var color: Color = .black
-    /// Truncate (shrink) to this width, as the firmware's truncToWidth does;
-    /// only for `.center`.
+    /// Truncate to this width, as the firmware's truncToWidth does (`.left`
+    /// and `.center`; centred text shrinks a little first).
     var maxWidth: CGFloat? = nil
     let k: CGFloat
 
     var body: some View {
         let top = baseline * k - font.ui(k).ascender
         let t = Text(text).font(font.font(k)).foregroundStyle(color).lineLimit(1).fixedSize()
-        if let maxWidth, align == .center {
+        if let maxWidth, align == .left {
+            Text(text).font(font.font(k)).foregroundStyle(color)
+                .lineLimit(1).truncationMode(.tail)
+                .frame(width: maxWidth * k, alignment: .leading)
+                .offset(x: x * k, y: top)
+        } else if let maxWidth, align == .center {
             Text(text).font(font.font(k)).foregroundStyle(color)
                 .lineLimit(1).minimumScaleFactor(0.6).truncationMode(.tail)
                 .frame(width: maxWidth * k)
@@ -130,6 +135,95 @@ private func panelFill(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat,
     Rectangle().fill(color).frame(width: w * k, height: h * k).offset(x: x * k, y: y * k)
 }
 
+// MARK: - Touch
+
+/// A touch target over a control the panel draws, at the device's own rect
+/// (ui_render.h) scaled into the preview, so a tap lands where the button
+/// is drawn. Pressing inverts the rect, the device's own tap feedback.
+struct PanelTap: View {
+    let x: CGFloat, y: CGFloat, w: CGFloat, h: CGFloat
+    let label: String
+    var enabled = true
+    var hint: String? = nil
+    let k: CGFloat
+    let action: () -> Void
+    @State private var flash = false
+
+    var body: some View {
+        Button {
+            flash = true
+            action()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) { flash = false }
+        } label: {
+            Color.clear.contentShape(Rectangle())
+        }
+        .buttonStyle(PanelPressStyle(flash: flash))
+        .frame(width: w * k, height: h * k)
+        .disabled(!enabled)
+        .accessibilityLabel(label)
+        .accessibilityHint(hint ?? "")
+        .accessibilityAddTraits(.isButton)
+        .offset(x: x * k, y: y * k)
+    }
+}
+
+/// Inverts whatever is drawn under the button while it is held (or briefly
+/// after a quick tap) — e-paper has no hover or highlight, only black/white.
+private struct PanelPressStyle: ButtonStyle {
+    let flash: Bool
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .overlay(Rectangle().fill(.white).blendMode(.difference)
+                .opacity(configuration.isPressed || flash ? 1 : 0)
+                .allowsHitTesting(false))
+    }
+}
+
+/// The device's pager (ui_render_pager): page up / down, "1-8 OF 12", and an
+/// action button. kPagerTop / kPagerUp / kPagerDown / kPagerAction.
+struct PanelPager: View {
+    let first: Int, count: Int, total: Int
+    let action: String
+    let k: CGFloat
+    var onUp: (() -> Void)? = nil
+    var onDown: (() -> Void)? = nil
+    var onAction: (() -> Void)? = nil
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            Rectangle().fill(panelPaper).frame(width: 540 * k, height: 103 * k).offset(y: 857 * k)
+            Rectangle().fill(.black).frame(width: 540 * k, height: 3 * k).offset(y: 857 * k)
+            if total > 0 {
+                pagerButton(24, "chevron.up", enabled: first > 0)
+                pagerButton(116, "chevron.down", enabled: first + count < total)
+                PanelText(text: count > 0 ? "\(first + 1)-\(first + count) OF \(total)" : "",
+                          font: .arialB, x: 282, baseline: 914, align: .center, k: k)
+            }
+            Rectangle().strokeBorder(.black, lineWidth: max(1, 3 * k))
+                .frame(width: 148 * k, height: 80 * k).offset(x: 368 * k, y: 868 * k)
+            PanelText(text: action, font: .arialB, x: 442, baseline: 914, align: .center, k: k)
+            if onUp != nil || onDown != nil || onAction != nil {
+                if total > 0 {
+                    PanelTap(x: 24, y: 868, w: 80, h: 80, label: "Page up", enabled: first > 0, k: k) { onUp?() }
+                    PanelTap(x: 116, y: 868, w: 80, h: 80, label: "Page down",
+                             enabled: first + count < total, k: k) { onDown?() }
+                }
+                PanelTap(x: 368, y: 868, w: 148, h: 80, label: action.capitalized, k: k) { onAction?() }
+            }
+        }
+    }
+
+    private func pagerButton(_ x: CGFloat, _ icon: String, enabled: Bool) -> some View {
+        ZStack {
+            Rectangle().strokeBorder(.black, lineWidth: max(1, 3 * k))
+            Image(systemName: icon).font(.system(size: 34 * k, weight: .heavy))
+                .foregroundStyle(.black.opacity(enabled ? 1 : 0.3))
+        }
+        .frame(width: 80 * k, height: 80 * k)
+        .offset(x: x * k, y: 868 * k)
+    }
+}
+
 // MARK: - Sample text shared by the cards
 
 func previewPanelLabel(_ id: String) -> String {
@@ -165,6 +259,8 @@ struct MapPagePreview: View {
     var status: PanelStatus = .sample
     var value: (String) -> String = previewSample
     var map: AnyView? = nil
+    /// +1 zoom in, -1 out. The zoom stack's rects, (462, 560/640, 76, 76).
+    var onZoom: ((Int) -> Void)? = nil
 
     var body: some View {
         DevicePanel(status: status) { k in
@@ -189,6 +285,12 @@ struct MapPagePreview: View {
                     }
                     .frame(width: 76 * k, height: 76 * k)
                     .offset(x: 462 * k, y: (560 + CGFloat(v) * 80) * k)
+                }
+                if let onZoom {
+                    PanelTap(x: 462, y: 560, w: 76, h: 76, label: "Zoom in",
+                             hint: "Zooms this map; the device's map zooms on the device", k: k) { onZoom(1) }
+                    PanelTap(x: 462, y: 640, w: 76, h: 76, label: "Zoom out",
+                             hint: "Zooms this map; the device's map zooms on the device", k: k) { onZoom(-1) }
                 }
 
                 // Data strip: the CONFIGURED fields, drawn like dash cells.
@@ -256,6 +358,11 @@ struct MusicPreview: View {
     /// Position / length, when known. The AMS feed the device gets does not
     /// reach the app, so the live page passes nil and the bar stays empty.
     var progress: (pos: Int, dur: Int)? = (154, 331)
+    /// Transport taps (0 prev, 1 play/pause, 2 next); nil = not interactive.
+    /// `transportEnabled` false draws them but leaves them dead.
+    var onTransport: ((Int) -> Void)? = nil
+    var transportEnabled = true
+    var transportHint: String? = nil
 
     var body: some View {
         DevicePanel(status: status, title: "MUSIC") { k in
@@ -324,6 +431,21 @@ struct MusicPreview: View {
                     }
                     .frame(width: [140.0, 188.0, 140.0][b] * k, height: 120 * k)
                     .offset(x: [24.0, 176.0, 376.0][b] * k, y: 780 * k)
+                    .opacity(onTransport != nil && !transportEnabled ? 0.35 : 1)
+                }
+                if let onTransport {
+                    ForEach(0..<3, id: \.self) { b in
+                        PanelTap(x: [24.0, 176.0, 376.0][b], y: 780, w: [140.0, 188.0, 140.0][b], h: 120,
+                                 label: ["Previous track", playing ? "Pause" : "Play", "Next track"][b],
+                                 enabled: transportEnabled, hint: transportHint, k: k) { onTransport(b) }
+                    }
+                    // Volume: no public iOS API sets it, and the device's own
+                    // AMS volume command isn't reachable from the app.
+                    ForEach(0..<2, id: \.self) { v in
+                        PanelTap(x: 462, y: 140 + CGFloat(v) * 92, w: 76, h: 76,
+                                 label: v == 0 ? "Volume up" : "Volume down", enabled: false,
+                                 hint: "Use the phone's volume buttons", k: k) {}
+                    }
                 }
             }
         }
@@ -361,6 +483,8 @@ struct StopwatchPagePreview: View {
     var running = true
     /// A line under the state, for the Ride tab to say why it shows "--".
     var note: String? = nil
+    /// false: the buttons are drawn greyed and do nothing (no BLE command).
+    var controlsEnabled = true
 
     var body: some View {
         DevicePanel(status: status, title: "STOPWATCH") { k in
@@ -386,6 +510,11 @@ struct StopwatchPagePreview: View {
                     }
                     .frame(width: ws[i] * k, height: 156 * k)
                     .offset(x: xs[i] * k, y: 780 * k)
+                    .opacity(controlsEnabled ? 1 : 0.35)
+                    .accessibilityElement()
+                    .accessibilityLabel([running ? "Pause" : "Start", "Reset", "Lap"][i])
+                    .accessibilityAddTraits(.isButton)
+                    .accessibilityHint(controlsEnabled ? "" : "Only on the device")
                 }
             }
         }
@@ -422,6 +551,10 @@ struct WorkoutPageModel {
     var picker: [String] = []
 
     static let sample = WorkoutPageModel()
+
+    /// workout_service's g_started, as near as the status says it: anything
+    /// but a freshly loaded, untouched session.
+    var started: Bool { running || paused || done || elapsed > 0 }
 
     /// The block being run, if the file's blocks line up with the status.
     var current: Block? { blocks.count == blockCount && blocks.indices.contains(blockIdx) ? blocks[blockIdx] : nil }
@@ -482,16 +615,42 @@ struct WorkoutPageModel {
 
 /// The device's WORKOUT page: ui_render_workout when a workout is loaded, the
 /// workout picker (ui_render_workout_picker) when not.
+/// What the WORKOUT page's controls do — the device's own taps
+/// (ui_dashboard.cpp), sent as the workout characteristic's commands.
+struct WorkoutPageActions {
+    /// PAUSE / START BLOCK: workout_service::toggle() — start, pause or resume.
+    var toggle: () -> Void
+    /// A block strip or an ALL BLOCKS row: jumpToSeg(idx), which also starts it.
+    var jump: (Int) -> Void
+    /// READY's "< BACK · ALL WORKOUTS": unload, back to the picker.
+    var unload: () -> Void
+    /// A picker row: load that file.
+    var load: (String) -> Void
+    /// The picker's REFRESH: re-read /workouts.
+    var refresh: () -> Void
+}
+
 struct WorkoutPagePreview: View {
     var status: PanelStatus = .sample
     var model: WorkoutPageModel = .sample
-    /// Tapping a picker row loads that workout, as a tap on the device does.
-    var onPick: ((String) -> Void)? = nil
+    /// nil = a static card (the editor); set = every control is live.
+    var actions: WorkoutPageActions? = nil
+
+    /// The ALL BLOCKS list and the pages of it / of the picker: on-device
+    /// UI state, kept here the same way.
+    @State private var allOpen = ProcessInfo.processInfo.arguments.contains("-workout-all")
+    @State private var listPage = 0
+    @State private var pickPage = 0
+
+    static let rowTop: CGFloat = 143, rowH: CGFloat = 88, rowsPerPage = 8
 
     var body: some View {
         DevicePanel(status: status) { k in
-            if model.loaded { loaded(k) } else { picker(k) }
+            if !model.loaded { picker(k) }
+            else if allOpen { blockList(k) }
+            else { loaded(k) }
         }
+        .onChange(of: model.loaded) { _, l in if !l { allOpen = false } }
     }
 
     // MARK: loaded
@@ -506,7 +665,7 @@ struct WorkoutPagePreview: View {
         let remain = m.blockRemaining
         return ZStack(alignment: .topLeading) {
             // Header: what session, where in it.
-            PanelText(text: m.name, font: .arialL, x: 24, baseline: 92, k: k)
+            PanelText(text: m.name, font: .arialL, x: 24, baseline: 92, maxWidth: 492, k: k)
             PanelText(text: "BLOCK \(m.blockIdx + 1) OF \(m.blockCount)", font: .arialB, x: 24, baseline: 126, k: k)
             panelFill(0, 140, 540, 3, k: k)
 
@@ -556,6 +715,82 @@ struct WorkoutPagePreview: View {
             panelRect(276, 868, 240, 80, k: k)
             PanelText(text: m.running ? "PAUSE BLOCK" : "START BLOCK", font: .arialB, x: 144, baseline: 914, align: .center, k: k)
             PanelText(text: "ALL BLOCKS", font: .arialB, x: 396, baseline: 914, align: .center, k: k)
+
+            if let a = actions {
+                let ready = !m.started
+                PanelTap(x: 24, y: 754, w: 240, h: 104,
+                         label: ready ? "Back to all workouts" : "Redo previous block", k: k) {
+                    if ready { a.unload() } else { a.jump(max(0, m.blockIdx - 1)) }
+                }
+                PanelTap(x: 276, y: 754, w: 240, h: 104, label: "Start next block",
+                         enabled: m.blockCount > 0, k: k) {
+                    a.jump(min(m.blockIdx + 1, max(0, m.blockCount - 1)))
+                }
+                PanelTap(x: 24, y: 868, w: 240, h: 80,
+                         label: m.running ? "Pause block" : "Start block", k: k) { a.toggle() }
+                PanelTap(x: 276, y: 868, w: 240, h: 80, label: "All blocks", k: k) {
+                    listPage = m.blockIdx / Self.rowsPerPage
+                    allOpen = true
+                }
+            }
+        }
+    }
+
+    // MARK: ALL BLOCKS (ui_render_workout_list)
+
+    private func blockList(_ k: CGFloat) -> some View {
+        let m = model
+        let first = listPage * Self.rowsPerPage
+        let rows = Array(max(0, first)..<min(m.blockCount, first + Self.rowsPerPage))
+        let total = m.blocks.reduce(0) { $0 + $1.seconds }
+        return ZStack(alignment: .topLeading) {
+            PanelText(text: "START A BLOCK", font: .arialL, x: 24, baseline: 92, k: k)
+            PanelText(text: "\(m.name) · \(WorkoutPageModel.mmss(total > 0 ? total : m.total))",
+                      font: .impactT, x: 24, baseline: 134, maxWidth: 492, k: k)
+            panelFill(0, 140, 540, 3, k: k)
+            ForEach(rows, id: \.self) { i in
+                let top = Self.rowTop + CGFloat(i - first) * Self.rowH
+                let done = i < m.blockIdx, now = i == m.blockIdx
+                let x: CGFloat = now ? 16 : 24
+                ZStack(alignment: .topLeading) {
+                    panelFill(0, top + Self.rowH - 1, 540, 1, k: k)
+                    if now { panelFill(0, top, 8, Self.rowH, k: k) }
+                    ZStack {
+                        if done { Hatch(spacing: 5 * k).stroke(.black, lineWidth: max(0.5, 1 * k)) }
+                        else if now { Rectangle().fill(.black) }
+                        Rectangle().strokeBorder(.black, lineWidth: max(1, 2 * k))
+                    }
+                    .clipped()
+                    .frame(width: 10 * k, height: 52 * k)
+                    .offset(x: x * k, y: (top + 18) * k)
+                    if m.blocks.count == m.blockCount {
+                        let b = m.blocks[i]
+                        let t = m.title(b)
+                        PanelText(text: t.zone, font: .arialB, x: x + 24, baseline: top + 52, k: k)
+                        PanelText(text: t.name, font: .arialB, x: x + 82, baseline: top + 40, k: k)
+                        PanelText(text: WorkoutPageModel.mmss(b.seconds), font: .impactT, x: 396,
+                                  baseline: top + 58, align: .right, k: k)
+                        PanelText(text: "\(b.watts)W", font: .impactT, x: 516, baseline: top + 58,
+                                  align: .right, k: k)
+                    } else {
+                        PanelText(text: "BLOCK \(i + 1)", font: .arialB, x: x + 82, baseline: top + 40, k: k)
+                    }
+                    PanelText(text: done ? "DONE" : now ? "RUNNING NOW" : "TAP TO START", font: .arialL,
+                              x: x + 82, baseline: top + 66, color: .black.opacity(0.6), k: k)
+                }
+                if let a = actions {
+                    PanelTap(x: 0, y: top, w: 540, h: Self.rowH, label: "Start block \(i + 1)", k: k) {
+                        a.jump(i)
+                        allOpen = false
+                    }
+                }
+            }
+            PanelPager(first: first, count: rows.count, total: m.blockCount, action: "CLOSE", k: k,
+                       onUp: actions == nil ? nil : { if listPage > 0 { listPage -= 1 } },
+                       onDown: actions == nil ? nil : {
+                           if (listPage + 1) * Self.rowsPerPage < m.blockCount { listPage += 1 }
+                       },
+                       onAction: actions == nil ? nil : { allOpen = false })
         }
     }
 
@@ -628,7 +863,7 @@ struct WorkoutPagePreview: View {
     /// Redo-previous and start-next strips.
     private func strips(_ k: CGFloat) -> some View {
         let m = model
-        let ready = !m.running && !m.paused && !m.done && m.elapsed == 0
+        let ready = !m.started
         return ZStack(alignment: .topLeading) {
             panelRect(24, 754, 240, 104, k: k, line: 2,
                       fill: .clear)
@@ -691,7 +926,8 @@ struct WorkoutPagePreview: View {
 
     private func picker(_ k: CGFloat) -> some View {
         let list = model.picker
-        let rowTop: CGFloat = 143, rowH: CGFloat = 88
+        let first = min(pickPage * Self.rowsPerPage, max(0, list.count - 1))
+        let rows = Array(list.enumerated()).dropFirst(first).prefix(Self.rowsPerPage)
         return ZStack(alignment: .topLeading) {
             if list.isEmpty {
                 PanelText(text: "NO WORKOUTS ON THE CARD", font: .impactT, x: 270, baseline: 400, align: .center, k: k)
@@ -704,28 +940,25 @@ struct WorkoutPagePreview: View {
                 PanelText(text: "\(list.count) WORKOUT\(list.count == 1 ? "" : "S")", font: .impactT,
                           x: 24, baseline: 134, k: k)
                 panelFill(0, 140, 540, 3, k: k)
-                ForEach(Array(list.prefix(8).enumerated()), id: \.offset) { r, name in
-                    let top = rowTop + CGFloat(r) * rowH
-                    Button { onPick?(name) } label: {
-                        ZStack(alignment: .topLeading) {
-                            Rectangle().fill(panelPaper)
-                            PanelText(text: Self.title(name), font: .arialB, x: 24, baseline: 34, k: k)
-                            PanelText(text: name, font: .arialL, x: 24, baseline: 70,
-                                      color: .black.opacity(0.6), k: k)
-                            panelFill(0, rowH - 1, 540, 1, k: k)
-                        }
-                        .frame(width: 540 * k, height: rowH * k, alignment: .topLeading)
+                ForEach(Array(rows), id: \.offset) { i, name in
+                    let top = Self.rowTop + CGFloat(i - first) * Self.rowH
+                    PanelText(text: Self.title(name), font: .arialB, x: 24, baseline: top + 34, k: k)
+                    PanelText(text: name, font: .arialL, x: 24, baseline: top + 70,
+                              color: .black.opacity(0.6), k: k)
+                    panelFill(0, top + Self.rowH - 1, 540, 1, k: k)
+                    if let a = actions {
+                        PanelTap(x: 0, y: top, w: 540, h: Self.rowH,
+                                 label: "Load workout \(Self.title(name))", k: k) { a.load(name) }
                     }
-                    .buttonStyle(.plain)
-                    .disabled(onPick == nil)
-                    .accessibilityLabel("Load workout \(Self.title(name))")
-                    .offset(y: top * k)
                 }
             }
-            // Footer: REFRESH, like ui_render_pager's.
-            panelFill(0, 856, 540, 3, k: k)
-            panelRect(24, 872, 492, 72, k: k)
-            PanelText(text: "REFRESH", font: .arialB, x: 270, baseline: 918, align: .center, k: k)
+            PanelPager(first: list.isEmpty ? 0 : first, count: rows.count, total: list.count,
+                       action: "REFRESH", k: k,
+                       onUp: actions == nil ? nil : { if pickPage > 0 { pickPage -= 1 } },
+                       onDown: actions == nil ? nil : {
+                           if (pickPage + 1) * Self.rowsPerPage < list.count { pickPage += 1 }
+                       },
+                       onAction: actions.map { a in { a.refresh() } })
         }
     }
 
