@@ -549,6 +549,8 @@ struct WorkoutPageModel {
     ]
     /// The device's /workouts, shown as its picker when nothing is loaded.
     var picker: [String] = []
+    /// The workout file couldn't be read, so there is no block profile.
+    var fileUnavailable = false
 
     static let sample = WorkoutPageModel()
 
@@ -834,7 +836,8 @@ struct WorkoutPagePreview: View {
         }
         return ZStack(alignment: .topLeading) {
             if blocks.isEmpty {
-                PanelText(text: "Reading the workout file…", font: .arialL, x: 270, baseline: 650,
+                PanelText(text: model.fileUnavailable ? "Block profile unavailable" : "Reading the workout file…",
+                          font: .arialL, x: 270, baseline: 650,
                           align: .center, color: .black.opacity(0.6), k: k)
             }
             ForEach(bars) { bar in

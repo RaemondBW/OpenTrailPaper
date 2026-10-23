@@ -302,6 +302,7 @@ struct RideView: View {
             m.blocks = []
         }
         m.picker = ble.deviceWorkouts
+        m.fileUnavailable = ble.loadedWorkoutFileUnavailable
         return m
     }
 

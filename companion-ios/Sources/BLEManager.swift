@@ -650,6 +650,16 @@ final class BLEManager: NSObject, ObservableObject {
     /// which opens the builder.
     @Published private(set) var loadedWorkoutFile: FetchedWorkout?
     private var workoutFetchForPage = false
+    /// The loaded workout's title while its file waits on the /workouts list.
+    private var workoutPageAwaitingList = ""
+    /// A title whose file isn't on the device (or failed to read): not asked
+    /// for again until a different workout loads.
+    private var workoutPageGaveUp = "" {
+        didSet { loadedWorkoutFileUnavailable = !workoutPageGaveUp.isEmpty }
+    }
+    /// The WORKOUT page couldn't get the loaded workout's file, so it shows
+    /// the session without its block profile rather than "Reading…".
+    @Published private(set) var loadedWorkoutFileUnavailable = false
     /// The route last sent from this phone, drawn on the Ride tab's MAP page
     /// while the device reports one active (it can't send its own back).
     @Published var sentRouteCoords: [CLLocationCoordinate2D] = []
@@ -2872,16 +2882,44 @@ final class BLEManager: NSObject, ObservableObject {
 
     /// The loaded workout's blocks for the WORKOUT page: the phone's copy if it
     /// has one, else the device's file (0x12, answered 0xD1…/0xD2).
-    private func fetchLoadedWorkoutFile(_ name: String) {
-        if let text = LocalWorkouts.read(name) {
-            loadedWorkoutFile = FetchedWorkout(name: name, text: text)
+    ///
+    /// The status carries the device's title, not the file name: the device
+    /// drops the extension and uppercases it ("sweet_spot.erg" reads
+    /// "SWEET_SPOT"), so the file is found by matching that title against the
+    /// phone's files and the device's /workouts list. If the list hasn't come
+    /// yet it is asked for and the fetch resumes when it lands (0xB2).
+    private func fetchLoadedWorkoutFile(_ title: String) {
+        if let file = LocalWorkouts.list().first(where: { Self.workoutFile($0, isTitled: title) }),
+           let text = LocalWorkouts.read(file) {
+            loadedWorkoutFile = FetchedWorkout(name: title, text: text)
             return
         }
-        guard workoutChar?.isNotifying == true, !workoutFetchForPage else { return }
+        guard workoutChar?.isNotifying == true, !workoutFetchForPage,
+              workoutPageGaveUp != title else { return }
+        guard let file = deviceWorkouts.first(where: { Self.workoutFile($0, isTitled: title) }) else {
+            // Ask for the list once; if the title still matches nothing after
+            // it, stop asking (the page shows its fallback, not a spinner).
+            if workoutPageAwaitingList == title {
+                workoutPageGaveUp = title
+                workoutPageAwaitingList = ""
+            } else {
+                workoutPageAwaitingList = title
+                workoutWrite(Data([0x06]))
+            }
+            return
+        }
         workoutFetchForPage = true
         workoutFetchBuf = Data()
-        workoutFetchName = name
-        workoutWrite(Data([0x12]) + Data(name.utf8))
+        workoutFetchName = title
+        workoutWrite(Data([0x12]) + Data(file.utf8))
+    }
+
+    /// Whether `file` is the one the device titles `title` (its name without
+    /// the extension, uppercased — workout_service's load()).
+    static func workoutFile(_ file: String, isTitled title: String) -> Bool {
+        let base = (file as NSString).deletingPathExtension
+        return file.caseInsensitiveCompare(title) == .orderedSame
+            || base.caseInsensitiveCompare(title) == .orderedSame
     }
 
     /// Just the session status (0x30 → 0xC0), for screens that show it.
@@ -2949,6 +2987,15 @@ final class BLEManager: NSObject, ObservableObject {
         case 0xA0:   // ack: [ok/fail][msg]
             let ok = body.first == 1
             let msg = String(data: body.dropFirst(), encoding: .utf8) ?? ""
+            // A failed page fetch ("file not found") answers here, not with
+            // 0xD2 — without this the page waits on it forever. It's the
+            // page's own background read, so no "Failed" message for it.
+            if !ok, workoutFetchForPage {
+                workoutFetchForPage = false
+                workoutFetchBuf = Data()
+                workoutPageGaveUp = workoutFetchName
+                return
+            }
             workoutMessage = ok ? "Loaded \(msg)" : "Failed: \(msg)"
             if ok { workoutWrite(Data([0x06])) }   // list now includes it
         case 0xB0: workoutListBuild = []
@@ -2956,7 +3003,9 @@ final class BLEManager: NSObject, ObservableObject {
             if let name = String(data: body, encoding: .utf8), !name.isEmpty {
                 workoutListBuild.append(name)
             }
-        case 0xB2: deviceWorkouts = workoutListBuild.sorted()
+        case 0xB2:
+            deviceWorkouts = workoutListBuild.sorted()
+            if !workoutPageAwaitingList.isEmpty { fetchLoadedWorkoutFile(workoutPageAwaitingList) }
         case 0xD1: workoutFetchBuf.append(contentsOf: body)
         case 0xD2:
             if let text = String(data: workoutFetchBuf, encoding: .utf8) {
@@ -3177,6 +3226,7 @@ extension BLEManager: CBCentralManagerDelegate {
             workoutChar = nil
             workoutStatus = WorkoutStatus()
             workoutFetchForPage = false
+            workoutPageAwaitingList = ""; workoutPageGaveUp = ""
             // Pending edits stay cached; the next connect reads and merges.
             resetSyncLinkState()
             mediaChar = nil; mediaToneArt = false   // the next device may be older firmware
