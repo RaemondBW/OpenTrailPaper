@@ -1,22 +1,58 @@
 import SwiftUI
 
-// Live device status — connection, GPS, battery, and ride data streamed
-// over BLE. Mirrors the head unit's dashboard at a glance.
+// The Ride tab is the head unit's live dashboard on the phone: the same pages,
+// laid out the way the device packs them (DashLayout), filled with what the
+// device streams over BLE. Fields the link doesn't carry, and everything while
+// disconnected, read "--" — the last known layout stays on screen.
 struct RideView: View {
     @EnvironmentObject var ble: BLEManager
     @AppStorage(UnitPref.key) private var useMiles = false
     @State private var showDashEditor = false
     @State private var showWorkouts = false
+    @State private var pageIx = 0
+    @State private var aboveTiles: CGFloat = 0
+    @State private var belowTiles: CGFloat = 0
+
+    private var connected: Bool { ble.state == .connected }
+    /// The rider's layout (unsynced edit, else the device's, cached across
+    /// disconnects); the device default only before it has ever been read.
+    private var config: DashConfig { ble.dashTarget ?? .deviceDefault }
 
     var body: some View {
         NavigationStack {
-            // One screen, not a scroll: everything is laid out to fit a phone
-            // with the connect button and a route card both showing. Only when
-            // it truly can't (a small phone at a large text size) does the page
-            // fall back to scrolling, rather than clip.
-            ViewThatFits(in: .vertical) {
-                content.frame(maxHeight: .infinity, alignment: .top)
-                ScrollView { content }
+            VStack(spacing: 0) {
+                header
+                // One screen, not a scroll: the tiles take the height the rest
+                // leaves. Only when that gets too short (a small phone at a
+                // large text size, several warnings) does the page scroll.
+                GeometryReader { geo in
+                    ScrollView {
+                        VStack(spacing: 10) {
+                            VStack(spacing: 10) {
+                                warnings
+                                pageSelector
+                                if ble.workoutStatus.loaded { workoutStrip }
+                                if connected && ble.status.hasRoute { routeStrip }
+                            }
+                            .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { aboveTiles = $0 }
+
+                            page
+                                .frame(height: max(320, geo.size.height - aboveTiles - belowTiles - 24 - 20))
+
+                            VStack(spacing: 10) {
+                                if !connected {
+                                    PrimaryButton(title: primaryTitle,
+                                                  systemImage: "antenna.radiowaves.left.and.right") {
+                                        ble.connectTapped()
+                                    }
+                                }
+                            }
+                            .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { belowTiles = $0 }
+                        }
+                        .padding(.horizontal, 16).padding(.vertical, 12)
+                    }
+                    .scrollBounceBehavior(.basedOnSize)
+                }
             }
             .background(Palette.paper.ignoresSafeArea())
             .navigationBarHidden(true)
@@ -33,217 +69,255 @@ struct RideView: View {
                 }
             }
             .onChange(of: ble.state) { _, st in if st == .connected { ble.refreshSensors() } }
+            .onChange(of: config.pages.count) { _, n in if pageIx >= n { pageIx = 0 } }
         }
     }
 
-    private var content: some View {
+    // MARK: Header
+
+    private var header: some View {
+        ScreenHeader(title: "Ride") {
+            HStack(spacing: 8) {
+                Rectangle()
+                    .fill(connected ? Palette.ink : Color.clear)
+                    .overlay(Rectangle().strokeBorder(Palette.ink, lineWidth: 1.5))
+                    .frame(width: 8, height: 8)
+                Text(statusLine)
+                    .font(BarlowFont.text(11, .bold)).tracking(1.5)
+                    .foregroundStyle(Palette.ink)
+                    .lineLimit(1).minimumScaleFactor(0.7)
+            }
+            .accessibilityElement(children: .combine)
+        } trailing: {
+            HStack(spacing: 8) {
+                Button { showWorkouts = true } label: {
+                    BlockButtonLabel(title: "Workouts", filled: false)
+                }
+                .buttonStyle(.plain)
+                .accessibilityHint("Load or build a structured workout")
+                Button { showDashEditor = true } label: {
+                    BlockButtonLabel(title: "Edit", systemImage: "pencil")
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Edit dashboard")
+            }
+            .fixedSize()
+        }
+    }
+
+    /// "CONNECTED · 76% · GPS 9 SATS", or the connection state.
+    private var statusLine: String {
+        guard connected else { return connectLabel.uppercased() }
         let s = ble.status
-        return VStack(spacing: 12) {
-            header(s)
-            gpsCard(s)
-            // Speed beside heart rate and power, which stack: the speed card
-            // takes the height of the pair.
-            HStack(spacing: 12) {
-                speedCard(s)
-                VStack(spacing: 12) {
-                    sensorCard("Heart Rate", s.heartRate.map { "\($0)" }, unit: "bpm",
-                               sensor: ble.connectedSensor(kind: 1))
-                    sensorCard("Power", s.power.map { "\($0)" }, unit: "W",
-                               sensor: ble.connectedSensor(kind: 2))
-                }
-            }
-            .fixedSize(horizontal: false, vertical: true)
-            if s.hasRoute { routeCard(s) }
-            dashboardCard
-            workoutCard
-            Spacer(minLength: 0)
-            if ble.state != .connected {
-                PrimaryButton(title: primaryTitle,
-                              systemImage: "antenna.radiowaves.left.and.right") {
-                    ble.connectTapped()
-                }
-            }
-        }
-        .padding(16)
+        var parts = ["CONNECTED", "\(s.battery)%"]
+        parts.append(s.gpsFix ? "GPS \(s.sats) SATS" : "NO GPS FIX · \(s.sats) SATS")
+        if s.recording { parts.append("REC") }
+        return parts.joined(separator: " · ")
     }
 
-    // The head unit's own dashboard, and the way in to rearranging it.
-    //
-    // Here rather than in Settings because it belongs beside the numbers it is
-    // about: the fields above are what the device is showing, and this is where
-    // you decide which of them deserve the big type. The thumbnail is a real
-    // preview of the panel layout, so the card says what it does without being
-    // opened.
-    private var dashboardCard: some View {
-        Button { showDashEditor = true } label: {
-            tile(title: "Dashboard",
-                 subtitle: ble.dashLayout == nil
-                     ? "Connect to change which fields the device shows"
-                     : "Reorder and resize the fields on the device") {
-                if let l = ble.dashLayout, !l.items.isEmpty {
-                    DashPreview(layout: l)
-                        .frame(width: 34, height: 60)
-                } else {
-                    RoundedRectangle(cornerRadius: 3)
-                        .stroke(Palette.hairline, lineWidth: 1)
-                        .frame(width: 34, height: 60)
-                        .overlay(Image(systemName: "rectangle.3.group")
-                            .font(.system(size: 13))
-                            .foregroundStyle(Palette.faint))
+    // MARK: Warnings
+
+    @ViewBuilder private var warnings: some View {
+        if ble.bluetoothPermission.fixableInSettings || ble.bluetoothPermission == .unavailable {
+            WarningBanner(title: "Bluetooth not allowed",
+                          message: "The app can't reach your OpenTrailPaper without it.") {
+                if ble.bluetoothPermission.fixableInSettings {
+                    Button("SETTINGS") { openAppSettings() }
+                        .font(BarlowFont.text(11, .bold)).tracking(1.5)
+                        .foregroundStyle(Palette.ink)
                 }
             }
+        } else if ble.state == .poweredOff {
+            WarningBanner(title: "Bluetooth is off",
+                          message: "Turn it on in Control Centre to connect.")
         }
-        .buttonStyle(.plain)
-    }
-
-    // Structured workouts: load/build one, and the live session at a glance.
-    private var workoutCard: some View {
-        Button { showWorkouts = true } label: {
-            tile(title: "Workouts", subtitle: workoutCardSubtitle) {
-                Image(systemName: "figure.outdoor.cycle")
-                    .font(.system(size: 24))
-                    .foregroundStyle(Palette.muted)
-                    .frame(width: 34, height: 60)
-            }
-        }
-        .buttonStyle(.plain)
-    }
-
-    private var workoutCardSubtitle: String {
-        let w = ble.workoutStatus
-        if w.loaded {
-            let state = w.running ? "running" : w.paused ? "paused" : w.done ? "done" : "ready"
-            return "\(w.name) — block \(w.blockIndex + 1)/\(w.blockCount), \(state)"
-        }
-        return "Send a structured workout to the device, or build one"
-    }
-
-    // A compact full-width row for the two ways into the device's setup: a
-    // picture on the left, a title and a status line, and the chevron.
-    private func tile<Icon: View>(title: String, subtitle: String,
-                                  @ViewBuilder icon: () -> Icon) -> some View {
-        Card(padding: 12) {
-            HStack(spacing: 10) {
-                icon()
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title).font(BarlowFont.text(17, .semibold))
-                        .foregroundStyle(Palette.ink).lineLimit(1)
-                    Text(subtitle).font(BarlowFont.text(13, .medium))
-                        .foregroundStyle(Palette.muted)
-                        .lineLimit(2).fixedSize(horizontal: false, vertical: true)
-                }
-                Spacer(minLength: 0)
-                Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Palette.faint)
-            }
+        if ble.dashTarget == nil {
+            WarningBanner(title: "Default layout",
+                          message: "Connect once to load your device's own dashboard pages.",
+                          systemImage: "rectangle.3.group")
+        } else if ble.pendingDashConfig != nil {
+            WarningBanner(title: connected ? "Syncing layout" : "Layout waiting to sync",
+                          message: connected ? nil : "Your edits go to the device on the next connect.",
+                          systemImage: "arrow.triangle.2.circlepath")
         }
     }
 
-    // "Ride" title + a compact device-status pill (green dot + name + battery).
-    private func header(_ s: DeviceStatus) -> some View {
-        HStack(alignment: .center) {
-            Text("Ride").font(TypeScale.screenTitle).foregroundStyle(Palette.ink)
-            Spacer()
-            HStack(spacing: 7) {
-                Circle().fill(ble.state == .connected ? Palette.good : Palette.faint)
-                    .frame(width: 9, height: 9)
-                Text(ble.state == .connected ? "OpenTrailPaper" : connectLabel)
-                    .font(BarlowFont.text(14, .semibold)).foregroundStyle(Palette.ink)
-                if ble.state == .connected {
-                    Text("\(s.battery)%").font(BarlowFont.text(14, .semibold))
-                        .foregroundStyle(Palette.muted)
+    // MARK: Pages
+
+    private var pageSelector: some View {
+        let pages = config.pages
+        return HStack(spacing: 0) {
+            ForEach(Array(pages.enumerated()), id: \.element.id) { i, p in
+                let on = i == min(pageIx, pages.count - 1)
+                Button { pageIx = i } label: {
+                    Text(pageName(i, in: pages))
+                        .font(BarlowFont.text(12, .bold)).tracking(2)
+                        .lineLimit(1).minimumScaleFactor(0.6)
+                        .frame(maxWidth: .infinity, minHeight: 34)
+                        .foregroundStyle(on ? Palette.paper : Palette.ink)
+                        .background(on ? Palette.ink : Palette.paper)
+                        .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .overlay(alignment: .leading) {
+                    if i > 0 { Rectangle().fill(Palette.ink).frame(width: Rule.border) }
+                }
+                .accessibilityLabel("Dashboard page \(pageName(i, in: pages).capitalized)")
+                .accessibilityAddTraits(on ? [.isSelected, .isButton] : .isButton)
             }
-            .padding(.horizontal, 12).padding(.vertical, 7)
-            .background(Palette.surface)
-            .clipShape(Capsule())
-            .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))
         }
-        .padding(.top, 8)
+        .einkBorder()
     }
 
-    private func gpsCard(_ s: DeviceStatus) -> some View {
-        Card(padding: 12) {
-            HStack(spacing: 12) {
-                ZStack {
-                    Circle().fill(s.gpsFix ? Palette.accentWash : Palette.paper)
-                        .frame(width: 38, height: 38)
-                    Image(systemName: s.gpsFix ? "location.fill" : "star")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(s.gpsFix ? Palette.accent : Palette.muted)
-                }
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(s.gpsFix ? "GPS lock" : "Acquiring GPS")
-                        .font(BarlowFont.text(16, .semibold)).foregroundStyle(Palette.ink)
-                    Text(s.gpsFix ? "\(s.sats) satellites in view"
-                                  : "\(s.sats) satellites · clear view of sky helps")
-                        .font(BarlowFont.text(13)).foregroundStyle(Palette.muted)
-                }
-                Spacer()
-                VStack(alignment: .trailing, spacing: 0) {
-                    Text("\(s.sats)").font(TypeScale.value(26))
-                        .foregroundStyle(s.gpsFix ? Palette.good : Palette.accent)
-                    Text("SATS").trackedLabel()
-                }
-            }
+    /// "PAGE 1" counts field pages only, as the device's page dots and the
+    /// dashboard editor do; the others are named for what they show.
+    private func pageName(_ i: Int, in pages: [DashConfig.Page]) -> String {
+        switch pages[i].kind {
+        case .fields:
+            let n = pages.prefix(i + 1).filter { $0.kind == .fields }.count
+            return "PAGE \(n)"
+        case .map: return "MAP"
+        case .music: return "MUSIC"
+        case .workout: return "WORKOUT"
+        case .stopwatch: return "STOPWATCH"
         }
     }
 
-    private func speedCard(_ s: DeviceStatus) -> some View {
-        // Half width now, so the unit sits under the number rather than
-        // beside it: the number keeps its size up to three digits.
-        Card {
-            VStack(alignment: .leading, spacing: 0) {
-                Text("Speed").trackedLabel()
-                Spacer(minLength: 4)
-                Text(String(format: "%.1f", Units.speed(s.speedKmh, miles: useMiles)))
-                    .font(TypeScale.hero(72)).foregroundStyle(Palette.ink)
-                    .lineLimit(1).minimumScaleFactor(0.5)
-                Text(Units.speedLabel(useMiles))
-                    .font(BarlowFont.condensed(22, .semibold)).foregroundStyle(Palette.muted)
-            }
-            .frame(maxHeight: .infinity, alignment: .topLeading)
-        }
-    }
-
-    private func sensorCard(_ label: String, _ value: String?, unit: String,
-                            sensor: BikeSensor?) -> some View {
-        // Subtitle shows the connected sensor's name, else live/searching state.
-        let subtitle: String
-        let subtitleColor: Color
-        if let sensor {
-            subtitle = "\(sensor.name) · connected"; subtitleColor = Palette.good
-        } else if value != nil {
-            subtitle = "Live"; subtitleColor = Palette.good
+    @ViewBuilder private var page: some View {
+        let pages = config.pages
+        if pages.isEmpty {
+            DashTiles(layout: .deviceDefault, values: values)
         } else {
-            subtitle = ble.state == .connected ? "Searching…" : "Not connected"
-            subtitleColor = Palette.accent
-        }
-        return Card(padding: 12) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(label).trackedLabel()
-                HStack(alignment: .firstTextBaseline, spacing: 4) {
-                    Text(value ?? "—").font(TypeScale.value(30)).foregroundStyle(Palette.ink)
-                    Text(unit).font(BarlowFont.condensed(14, .medium)).foregroundStyle(Palette.muted)
-                }
-                Text(subtitle).font(BarlowFont.text(12, .medium))
-                    .foregroundStyle(subtitleColor).lineLimit(1)
+            let p = pages[min(pageIx, pages.count - 1)]
+            switch p.kind {
+            case .fields:
+                DashTiles(layout: p.layout, values: values)
+            case .map:
+                mapPage
+            case .music:
+                placeholderPage("Music", "Your phone's now-playing, with play, pause and skip on the device.",
+                                icon: "music.note")
+            case .workout:
+                placeholderPage("Workout", ble.workoutStatus.loaded
+                                ? "\(ble.workoutStatus.name) — block \(ble.workoutStatus.blockIndex + 1) of \(ble.workoutStatus.blockCount)"
+                                : "No workout loaded. Send one from Workouts.",
+                                icon: "figure.outdoor.cycle")
+            case .stopwatch:
+                placeholderPage("Stopwatch", "Lap timer on the device.", icon: "stopwatch")
             }
         }
     }
 
-    private func routeCard(_ s: DeviceStatus) -> some View {
-        Card(padding: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Active route").trackedLabel()
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(String(format: "%.1f", Units.distance(s.remainingKm, miles: useMiles)))
-                        .font(TypeScale.value(30)).foregroundStyle(Palette.ink)
-                    Text("\(Units.distLabel(useMiles)) remaining")
-                        .font(BarlowFont.text(14, .medium)).foregroundStyle(Palette.muted)
+    /// The map page: the map itself is the device's own, so the phone shows a
+    /// hatched stand-in above the page's three-field strip.
+    private var mapPage: some View {
+        VStack(spacing: 10) {
+            VStack(spacing: 6) {
+                Image(systemName: "map").font(.system(size: 28, weight: .bold))
+                Text("MAP ON DEVICE").font(BarlowFont.text(12, .bold)).tracking(2)
+            }
+            .foregroundStyle(Palette.ink)
+            .padding(14)
+            .background(Palette.paper)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(HatchedBackground())
+            .einkBorder()
+            .accessibilityElement(children: .combine)
+            HStack(spacing: 10) {
+                ForEach(Array(config.mapFields.enumerated()), id: \.offset) { _, f in
+                    DashTile(item: DashItem(field: f, size: .small, half: true),
+                             value: values(f), inverted: false)
                 }
             }
+            .frame(height: 96)
         }
+    }
+
+    private func placeholderPage(_ title: String, _ text: String, icon: String) -> some View {
+        VStack(spacing: 8) {
+            Image(systemName: icon).font(.system(size: 30, weight: .bold))
+            Text(title.uppercased()).font(DisplayFont.anton(28))
+            Text(text).font(BarlowFont.text(14)).multilineTextAlignment(.center)
+        }
+        .foregroundStyle(Palette.ink)
+        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .einkBorder()
+        .accessibilityElement(children: .combine)
+    }
+
+    private var workoutStrip: some View {
+        let w = ble.workoutStatus
+        let state = w.running ? "RUNNING" : w.paused ? "PAUSED" : w.done ? "DONE" : "READY"
+        return Button { showWorkouts = true } label: {
+            HStack(spacing: 10) {
+                Tag(text: state, inverted: w.running || w.done)
+                Text(w.name).font(BarlowFont.text(14, .bold)).lineLimit(1)
+                Spacer(minLength: 4)
+                Text("BLOCK \(w.blockIndex + 1)/\(w.blockCount)")
+                    .font(BarlowFont.text(11, .bold)).tracking(1.5)
+            }
+            .foregroundStyle(Palette.ink)
+            .padding(.horizontal, 10).padding(.vertical, 8)
+            .einkBorder()
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Workout \(w.name), \(state.lowercased()), block \(w.blockIndex + 1) of \(w.blockCount)")
+    }
+
+    private var routeStrip: some View {
+        HStack(spacing: 10) {
+            Text("ACTIVE ROUTE").font(BarlowFont.text(11, .bold)).tracking(2)
+            Spacer()
+            Text(String(format: "%.1f", Units.distance(ble.status.remainingKm, miles: useMiles)))
+                .font(DisplayFont.anton(20))
+            Text("\(Units.distLabel(useMiles).uppercased()) LEFT").font(BarlowFont.text(11, .bold)).tracking(1.5)
+        }
+        .foregroundStyle(Palette.ink)
+        .padding(.horizontal, 10).padding(.vertical, 6)
+        .einkBorder()
+        .accessibilityElement(children: .combine)
+    }
+
+    // MARK: Live values
+
+    /// What a field shows right now: the value and its unit, "--" when the
+    /// link doesn't carry it (or there is no link), and the power zone.
+    private func values(_ field: String) -> DashValue {
+        let s = ble.status
+        let live = connected
+        func num(_ v: Int?) -> String { live ? v.map(String.init) ?? "--" : "--" }
+        switch field {
+        case "speed", "avgspeed":
+            let v = field == "speed" && live
+                ? String(format: "%.1f", Units.speed(s.speedKmh, miles: useMiles)) : "--"
+            return DashValue(text: v, unit: Units.speedLabel(useMiles).uppercased())
+        case "power3s", "power":
+            let w = live ? s.power : nil
+            return DashValue(text: num(w), unit: "W", zone: .some(w.map { Self.powerZone($0, ftp: ble.ftpWatts) } ?? 0))
+        case "hr": return DashValue(text: num(s.heartRate), unit: "BPM")
+        case "cadence": return DashValue(text: "--", unit: "RPM")
+        case "distance": return DashValue(text: "--", unit: Units.distLabel(useMiles).uppercased())
+        case "ridetime", "movingtime": return DashValue(text: "--", unit: "")
+        case "climb", "altitude": return DashValue(text: "--", unit: Units.elevLabel(useMiles).uppercased())
+        case "grade": return DashValue(text: "--", unit: "%")
+        case "battery": return DashValue(text: live ? "\(s.battery)" : "--", unit: "%")
+        case "sats": return DashValue(text: live ? "\(s.sats)" : "--", unit: "")
+        case "clock": return DashValue(text: "", unit: "", isClock: true)
+        case "routeleft":
+            let v = live && s.hasRoute ? String(format: "%.1f", Units.distance(s.remainingKm, miles: useMiles)) : "--"
+            return DashValue(text: v, unit: Units.distLabel(useMiles).uppercased())
+        default: return DashValue(text: "--", unit: "")
+        }
+    }
+
+    /// Coggan's seven power zones as % of FTP: <55, <75, <90, <105, <120, <150, above.
+    static func powerZone(_ watts: Int, ftp: Int) -> Int {
+        guard ftp > 0 else { return 0 }
+        let pct = Double(watts) / Double(ftp) * 100
+        let bounds: [Double] = [55, 75, 90, 105, 120, 150]
+        return (bounds.firstIndex { pct < $0 } ?? 6) + 1
     }
 
     private var connectLabel: String {
@@ -257,6 +331,113 @@ struct RideView: View {
     private var primaryTitle: String {
         ble.state == .connecting && ble.linkSecuring ? "Pairing…"
             : ble.state == .scanning || ble.state == .connecting ? "Searching…" : "Connect to OpenTrailPaper"
+    }
+}
+
+/// One field's live reading for a dashboard tile.
+struct DashValue {
+    var text: String
+    var unit: String
+    /// Power zone 1–7 (0 = no reading yet); nil for fields without zones.
+    var zone: Int? = nil
+    /// Time of day, drawn from the phone's clock (same wall clock as the device).
+    var isClock = false
+}
+
+/// A field page as tiles, packed in the device's rows (`DashLayout.rows`) with
+/// the device's height weights, the radar rail down the right if the page has
+/// one. The page's biggest field (hero or large) is the inverted tile.
+private struct DashTiles: View {
+    let layout: DashLayout
+    let values: (String) -> DashValue
+
+    var body: some View {
+        let rows = layout.rows
+        let weights = rows.map { $0.map(\.size.weight).max() ?? 2 }
+        let total = CGFloat(weights.reduce(0, +))
+        let primary = primaryId
+        GeometryReader { geo in
+            let gap: CGFloat = 10
+            let avail = geo.size.height - gap * CGFloat(max(0, rows.count - 1))
+            HStack(spacing: gap) {
+                VStack(spacing: gap) {
+                    ForEach(Array(rows.enumerated()), id: \.offset) { r, row in
+                        HStack(spacing: gap) {
+                            ForEach(row) { item in
+                                DashTile(item: item, value: values(item.field),
+                                         inverted: item.id == primary)
+                            }
+                        }
+                        .frame(height: max(44, avail * CGFloat(weights[r]) / max(total, 1)))
+                    }
+                }
+                if let rail = layout.verticalItem {
+                    DashTile(item: rail, value: values(rail.field), inverted: false)
+                        .frame(width: geo.size.width * 0.22)
+                }
+            }
+        }
+    }
+
+    /// The first field of the largest size, if it is at least large.
+    private var primaryId: UUID? {
+        let items = layout.normalizedItems.filter { !$0.vertical }
+        guard let top = items.map(\.size.weight).max(), top >= DashSize.large.weight else { return nil }
+        return items.first { $0.size.weight == top }?.id
+    }
+}
+
+/// One bordered dashboard tile: tracked caps caption, Anton value, unit,
+/// and for the inverted tile a seven-block zone bar where there is zone data.
+private struct DashTile: View {
+    let item: DashItem
+    let value: DashValue
+    let inverted: Bool
+
+    var body: some View {
+        GeometryReader { geo in
+            let h = geo.size.height
+            let size = min(max(h * (inverted ? 0.55 : 0.5), 22), inverted ? 110 : 64)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(item.panelLabel)
+                    .font(.custom("Barlow-Bold", fixedSize: h < 70 ? 10 : 12)).tracking(2)
+                    .lineLimit(1).minimumScaleFactor(0.6)
+                Spacer(minLength: 0)
+                HStack(alignment: .lastTextBaseline, spacing: 5) {
+                    if value.isClock {
+                        TimelineView(.everyMinute) { ctx in
+                            Text(ctx.date.formatted(date: .omitted, time: .shortened))
+                                .font(DisplayFont.antonFixed(size))
+                                .lineLimit(1).minimumScaleFactor(0.4)
+                        }
+                    } else {
+                        Text(value.text)
+                            .font(DisplayFont.antonFixed(size))
+                            .lineLimit(1).minimumScaleFactor(0.4)
+                    }
+                    if !value.unit.isEmpty && !value.isClock {
+                        Text(value.unit)
+                            .font(.custom("Barlow-Bold", fixedSize: inverted ? 16 : 11))
+                            .lineLimit(1)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: inverted ? .center : .leading)
+                Spacer(minLength: 0)
+                if inverted, let zone = value.zone {
+                    ZoneBar(zone: zone, color: Palette.paper)
+                }
+            }
+            .padding(.horizontal, inverted ? 14 : 12)
+            .padding(.vertical, h < 70 ? 6 : 8)
+            .frame(width: geo.size.width, height: h, alignment: .topLeading)
+        }
+        .foregroundStyle(inverted ? Palette.paper : Palette.ink)
+        .background(inverted ? Palette.ink : Palette.paper)
+        .einkBorder()
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(item.fieldLabel)
+        .accessibilityValue(value.isClock ? Date().formatted(date: .omitted, time: .shortened)
+                            : value.text == "--" ? "No reading" : "\(value.text) \(value.unit)")
     }
 }
 

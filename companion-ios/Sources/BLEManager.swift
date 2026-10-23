@@ -807,6 +807,9 @@ final class BLEManager: NSObject, ObservableObject {
     // reads the layout FROM the device, so without this it can only show its
     // "connect first" empty state.
     private let isDemoDash = ProcessInfo.processInfo.arguments.contains("-demo-dash")
+    // Screenshot demo: a connected device mid-ride, for the Ride tab's live
+    // dashboard — two field pages and the map, with numbers in the tiles.
+    private let isDemoLive = ProcessInfo.processInfo.arguments.contains("-demo-live")
 
     // Screenshot demo: a connected device holding part of a selected area,
     // firmware with the cycling layer, tiles that predate it. See demoMaps().
@@ -835,6 +838,27 @@ final class BLEManager: NSObject, ObservableObject {
         if isDemoOfflineSettings { seedOfflineSettingsDemo() }
         if isDemoUpdate { state = .connected; deviceFirmware = "v0.83" }
         if isDemoDash { state = .connected; dashConfig = .deviceDefault }
+        if isDemoLive {
+            state = .connected
+            dashConfig = DashConfig(text: """
+                power3s hero
+                speed medium half
+                hr medium half
+                distance medium half
+                ridetime medium half
+                cadence medium half
+                climb medium half
+                page
+                climb large
+                grade medium half
+                altitude medium half
+                hr medium half
+                power3s medium half
+                page map
+                """)
+            status = DeviceStatus(gpsFix: true, recording: true, hasRoute: false, battery: 76,
+                                  sats: 9, heartRate: 156, power: 247, speedKmh: 24.6)
+        }
         locationManager.delegate = self
         locationManager.desiredAccuracy = kCLLocationAccuracyHundredMeters
         let a = locationManager.authorizationStatus
@@ -2952,7 +2976,7 @@ extension BLEManager: CBCentralManagerDelegate {
     }
 
     nonisolated func centralManagerDidUpdateState(_ c: CBCentralManager) {
-        if isDemoUpdate || isDemoDash { return }   // demo holds a fake connected state
+        if isDemoUpdate || isDemoDash || isDemoLive { return }   // demo holds a fake connected state
         MainActor.assumeIsolated {
             bluetoothReady = (c.state == .poweredOn)
             bluetoothPoweredOn = (c.state == .poweredOn)
