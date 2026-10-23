@@ -200,6 +200,14 @@ void statusBar(const RideState& s, uint8_t* fb, const char* title) {
             else epd_draw_circle(x + i * 16, 32, 5, 0x00, fb);
         }
     x += dotsW;
+    // No usable SD card: nothing is being recorded and maps/routes are off, so
+    // it leads the chips — the rider should see it before setting off, not at
+    // the end of the ride. Rare, so it costs nothing on a normal day.
+    if (s.sdCard != SD_CARD_OK) {
+        const char* label = s.sdCard == SD_CARD_UNREADABLE ? " · SD ERR" : " · NO SD";
+        if (!title) text(&Arial_L, x, 40, label, fb);
+        x += textWidth(&Arial_L, label);
+    }
     // The "· HR" / "· PWR" labels only appear when connected, so they need no
     // extra checkmark — keeping them text-only frees room for the battery %.
     if (s.hrConnected) {
@@ -1486,6 +1494,9 @@ void ui_render_menu(const MenuInfo& m, uint8_t* fb) {
                  (unsigned long)(sec % 60),
                  units::distM(m.rideDistanceM, m.useMiles),
                  m.useMiles ? "mi" : "km");
+    } else if (!m.sdOk) {
+        // startRide() refuses without a card; say why the tap does nothing.
+        snprintf(startSub, sizeof(startSub), "no SD card · can't record");
     } else {
         int n = (m.hr ? 1 : 0) + (m.pwr ? 1 : 0) + (m.cad ? 1 : 0) + (m.radar ? 1 : 0) +
                 (m.spd ? 1 : 0);

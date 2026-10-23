@@ -40,6 +40,7 @@ struct RideView: View {
         let s = ble.status
         return VStack(spacing: 12) {
             header(s)
+            if ble.state == .connected && s.sdCard.isProblem { SDCardNotice(state: s.sdCard) }
             gpsCard(s)
             // Speed beside heart rate and power, which stack: the speed card
             // takes the height of the pair.
