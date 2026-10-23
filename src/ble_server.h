@@ -100,6 +100,15 @@ struct LiveView {
     unsigned char swLapCadenceRpm = 0xFF;
     bool swShowPower = false;
     bool swShowCadence = false;
+    // The newest completed laps, newest first (row 0 = lap swLaps), as many
+    // as the page's table shows (LIVE_SW_ROWS = ui_render's kSwRows). Same
+    // encodings and sentinels as Stopwatch's own per-lap arrays.
+    static constexpr int LIVE_SW_ROWS = 7;
+    unsigned char swRows = 0;
+    unsigned long swRowSplitMs[LIVE_SW_ROWS] = {};
+    unsigned short swRowSpeedDkmh[LIVE_SW_ROWS] = {};   // 0xFFFF none
+    unsigned short swRowPowerW[LIVE_SW_ROWS] = {};      // 0xFFFF none
+    unsigned char swRowCadenceRpm[LIVE_SW_ROWS] = {};   // 0xFF none
 };
 void publishLiveView(const LiveView& v);
 

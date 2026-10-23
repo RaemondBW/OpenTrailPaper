@@ -23,15 +23,21 @@ struct PanelStatus: Equatable {
 
 /// The firmware's faces, at the sizes their ascenders give: Arial_L/B for
 /// text, Impact_T/H for numbers. Drawn with the bundled Barlow / Barlow
-/// Condensed, the app's stand-ins for Arial and Impact.
+/// Condensed, the app's stand-ins for Arial and Impact. `digits(px)` is a
+/// value face sized like the firmware's vf_face_digit: its '0' is `px` panel
+/// pixels tall, for layouts whose columns are measured in those pixels.
 enum PanelFont {
     case arialL, arialB, impactT, impactH
+    case digits(CGFloat)
+
+    /// Barlow Condensed Bold's '0' ink height per point of size.
+    static let barlowDigitPerPt: CGFloat = 0.722
 
     var name: String {
         switch self {
         case .arialL: return "Barlow-Medium"
         case .arialB: return "Barlow-Bold"
-        case .impactT, .impactH: return "BarlowCondensed-Bold"
+        case .impactT, .impactH, .digits: return "BarlowCondensed-Bold"
         }
     }
     /// Point size whose cap height matches the device face's ascender.
@@ -41,12 +47,17 @@ enum PanelFont {
         case .arialB: return 27
         case .impactT: return 54
         case .impactH: return 160
+        case .digits(let px): return px / Self.barlowDigitPerPt
         }
     }
     func ui(_ k: CGFloat) -> UIFont {
         UIFont(name: name, size: size * k) ?? .systemFont(ofSize: size * k, weight: .bold)
     }
     func font(_ k: CGFloat) -> Font { .custom(name, fixedSize: size * k) }
+    /// `s`'s advance in panel pixels.
+    func width(_ s: String) -> CGFloat {
+        (s as NSString).size(withAttributes: [.font: ui(1)]).width
+    }
 }
 
 /// Text at a device-pixel baseline, aligned like epd text: left from `x`,
@@ -481,13 +492,37 @@ extension ArtDither {
 
 // MARK: - STOPWATCH
 
-/// The device's STOPWATCH page (ui_render_stopwatch), no laps: the time across
-/// the middle, what it is doing, and START/PAUSE · RESET · LAP.
+/// What the STOPWATCH page draws once a lap is done (ui_render_stopwatch's
+/// lap layout): the total, the lap in progress with its averages, and the
+/// table of completed laps.
+struct StopwatchLapPage: Equatable {
+    var totalMs: UInt32
+    var running: Bool
+    /// The lap in progress: laps completed + 1.
+    var lapNumber: Int
+    var lapMs: UInt32
+    var lapSpeedKmh: Double?
+    var lapCadence: Int?
+    var lapPowerW: Int?
+    /// The metric columns (speed always; Stopwatch::showCadence/showPower).
+    var showCadence: Bool
+    var showPower: Bool
+    var useMiles = false
+    /// Completed laps, newest first, as many as the device's table shows.
+    /// nil: the firmware doesn't send them (no STOPWATCH_LAPS record).
+    var rows: [LiveFrame.StopwatchLaps.Lap]?
+}
+
+/// The device's STOPWATCH page (ui_render_stopwatch). No laps: the time
+/// across the middle, what it is doing, and START/PAUSE · RESET · LAP. With
+/// `lapPage`, the layout the device switches to after LAP.
 struct StopwatchPagePreview: View {
     var status: PanelStatus = .sample
     var time = "12:34"
     var state = "RUNNING"
     var running = true
+    /// The lap layout; nil = the no-laps one (time, state, note).
+    var lapPage: StopwatchLapPage? = nil
     /// A line under the state, for the Ride tab to say why it shows "--".
     var note: String? = nil
     /// false: the buttons are drawn greyed and do nothing (no BLE command).
@@ -513,14 +548,18 @@ struct StopwatchPagePreview: View {
     var body: some View {
         DevicePanel(status: status, title: "STOPWATCH") { k in
             ZStack(alignment: .topLeading) {
-                Text(time).font(.custom("BarlowCondensed-Bold", fixedSize: 190 * k))
-                    .lineLimit(1).minimumScaleFactor(0.5)
-                    .frame(width: 540 * k)
-                    .offset(y: 250 * k)
-                PanelText(text: state, font: .arialB, x: 270, baseline: 530, align: .center, k: k)
-                if let note {
-                    PanelText(text: note, font: .arialL, x: 270, baseline: 570, align: .center,
-                              color: .black.opacity(0.6), k: k)
+                if let lapPage {
+                    StopwatchLapLayout(p: lapPage, k: k)
+                } else {
+                    Text(time).font(.custom("BarlowCondensed-Bold", fixedSize: 190 * k))
+                        .lineLimit(1).minimumScaleFactor(0.5)
+                        .frame(width: 540 * k)
+                        .offset(y: 250 * k)
+                    PanelText(text: state, font: .arialB, x: 270, baseline: 530, align: .center, k: k)
+                    if let note {
+                        PanelText(text: note, font: .arialL, x: 270, baseline: 570, align: .center,
+                                  color: .black.opacity(0.6), k: k)
+                    }
                 }
                 panelFill(0, 756, 540, 3, k: k)
                 ForEach(0..<3, id: \.self) { i in
@@ -553,6 +592,156 @@ struct StopwatchPagePreview: View {
                     }
                 }
             }
+        }
+    }
+
+    /// The running time (ui_render swFmt): MM:SS, H:MM:SS past the hour.
+    static func timeText(_ ms: UInt32) -> String {
+        let sec = Int(ms / 1000)
+        return sec >= 3600 ? String(format: "%d:%02d:%02d", sec / 3600, sec / 60 % 60, sec % 60)
+                           : String(format: "%02d:%02d", sec / 60, sec % 60)
+    }
+
+    /// A finished lap (swFmtLap): M:SS.t under the hour, H:MM:SS over.
+    static func lapText(_ ms: UInt32) -> String {
+        let sec = Int(ms / 1000)
+        return sec >= 3600 ? String(format: "%d:%02d:%02d", sec / 3600, sec / 60 % 60, sec % 60)
+                           : String(format: "%d:%02d.%d", sec / 60, sec % 60, Int(ms % 1000 / 100))
+    }
+}
+
+/// ui_render_stopwatch's lap layout, at its pixel positions: TOTAL at the
+/// top, the lap in progress, a rule, then the completed laps newest first
+/// (kSwRows rows of LAP, SPLIT and the metric columns).
+private struct StopwatchLapLayout: View {
+    let p: StopwatchLapPage
+    let k: CGFloat
+
+    // ui_render.cpp's lap geometry.
+    private static let listTop: CGFloat = 344     // kSwListTop
+    private static let rowTop: CGFloat = 384      // kSwRowTop
+    private static let rowH: CGFloat = 52         // kSwRowH
+    private static let rows = 7                   // kSwRows
+    private static let colsLeft: CGFloat = 72     // kSwColsLeft
+    private static let right: CGFloat = 516       // CONTENT_X + CONTENT_W
+    private static let avgLeft: CGFloat = 160     // kSwAvgLeft
+    private static let dark = Color.black.opacity(0.6)
+
+    private enum Metric { case speed, cadence, power }
+    private var metrics: [Metric] {
+        [.speed] + (p.showCadence ? [.cadence] : []) + (p.showPower ? [.power] : [])
+    }
+    private func unit(_ m: Metric) -> String {
+        switch m {
+        case .speed: return Units.speedLabel(p.useMiles).uppercased()
+        case .cadence: return "RPM"
+        case .power: return "W"
+        }
+    }
+    private func value(_ m: Metric, speed: Double?, cadence: Int?, power: Int?) -> String {
+        switch m {
+        case .speed: return speed.map { String(format: "%.1f", Units.speed($0, miles: p.useMiles)) } ?? "--"
+        case .cadence: return cadence.map(String.init) ?? "--"
+        case .power: return power.map(String.init) ?? "--"
+        }
+    }
+
+    // The device picks its faces by measuring Anton (its value font), so the
+    // app measures Anton too and gets the same choice; it draws them in
+    // Barlow Condensed at that digit height, like the other pages.
+    private static let antonDigitPerPt: CGFloat = 0.875
+    private static func antonWidth(_ s: String, px: CGFloat) -> CGFloat {
+        let f = UIFont(name: "Anton-Regular", size: px / antonDigitPerPt)
+            ?? PanelFont.digits(px).ui(1)
+        return (s as NSString).size(withAttributes: [.font: f]).width
+    }
+    /// swFace(elapsed, 95, CONTENT_W - 140): the ladder's largest face no
+    /// taller than 95 px whose widest time of this form fits.
+    private static func totalFace(_ ms: UInt32) -> CGFloat {
+        let sec = ms / 1000
+        let hint = sec >= 36000 ? "00:00:00" : sec >= 3600 ? "0:00:00" : "00:00"
+        let ladder: [CGFloat] = [219, 158, 120, 95, 81, 46]   // Impact_128 .. Impact_V
+        return ladder.first { $0 <= 95 && antonWidth(hint, px: $0) <= 492 - 140 } ?? 46
+    }
+    /// swRowFace: the largest of 38..22 px whose widest split fits a column.
+    private static func rowFace(step: CGFloat, hourLap: Bool) -> CGFloat {
+        let hint = hourLap ? "0:00:00" : "00:00.0"
+        let faces: [CGFloat] = [38, 34, 30, 26, 22]
+        return faces.first { antonWidth(hint, px: $0) <= step - 10 } ?? 22
+    }
+
+    var body: some View {
+        let right = Self.right
+        // --- Total, at the top: label pair left, digits flush right.
+        let tf = Self.totalFace(p.totalMs)
+        let totalBase = 64 + 24 + tf
+        PanelText(text: "TOTAL", font: .arialB, x: 24, baseline: totalBase - 30, k: k)
+        PanelText(text: p.running ? "RUNNING" : "PAUSED", font: .arialL, x: 24,
+                  baseline: totalBase, color: Self.dark, k: k)
+        PanelText(text: StopwatchPagePreview.timeText(p.totalMs), font: .digits(tf), x: right,
+                  baseline: totalBase, align: .right, k: k)
+
+        // --- The lap in progress: number, state, time (Impact_B), averages.
+        PanelText(text: "LAP \(p.lapNumber)", font: .arialB, x: 24, baseline: 254, k: k)
+        PanelText(text: p.running ? "IN PROGRESS" : "PAUSED", font: .arialL, x: 24,
+                  baseline: 284, color: Self.dark, k: k)
+        PanelText(text: StopwatchPagePreview.timeText(p.lapMs), font: .digits(81), x: right,
+                  baseline: 284, align: .right, k: k)
+        PanelText(text: "LAP AVERAGE", font: .arialL, x: 24, baseline: 328, color: Self.dark, k: k)
+        averages(left: Self.avgLeft, right: right, base: 328)
+        panelFill(0, Self.listTop, 540, 2, k: k)
+
+        // --- Completed laps, newest first.
+        let ms = metrics
+        let cols = 1 + ms.count
+        let step = ((right - Self.colsLeft) / CGFloat(cols)).rounded(.down)
+        let colRight = { (c: Int) -> CGFloat in
+            c == cols - 1 ? right : Self.colsLeft + step * CGFloat(c + 1)
+        }
+        let shown = Array((p.rows ?? []).prefix(Self.rows))
+        let rf = Self.rowFace(step: step, hourLap: shown.contains { $0.splitMs >= 3_600_000 })
+        let capBase = Self.rowTop - 12
+        PanelText(text: "LAP", font: .arialL, x: 24, baseline: capBase, color: Self.dark, k: k)
+        PanelText(text: "SPLIT", font: .arialL, x: colRight(0), baseline: capBase, align: .right,
+                  color: Self.dark, k: k)
+        ForEach(Array(ms.enumerated()), id: \.offset) { c, m in
+            PanelText(text: m == .power ? "WATTS" : unit(m), font: .arialL, x: colRight(c + 1),
+                      baseline: capBase, align: .right, color: Self.dark, k: k)
+        }
+        ForEach(Array(shown.enumerated()), id: \.offset) { r, lap in
+            let top = Self.rowTop + CGFloat(r) * Self.rowH
+            let base = top + ((Self.rowH + rf) / 2).rounded(.down)
+            panelFill(0, top, 540, 1, k: k)
+            PanelText(text: "\(lap.number)", font: .digits(rf), x: 24, baseline: base, k: k)
+            PanelText(text: StopwatchPagePreview.lapText(lap.splitMs), font: .digits(rf),
+                      x: colRight(0), baseline: base, align: .right, k: k)
+            ForEach(Array(ms.enumerated()), id: \.offset) { c, m in
+                PanelText(text: value(m, speed: lap.avgSpeedKmh, cadence: lap.avgCadence,
+                                      power: lap.avgPowerW),
+                          font: .digits(rf), x: colRight(c + 1), baseline: base, align: .right, k: k)
+            }
+        }
+        if p.rows == nil {
+            PanelText(text: "Update the device's firmware to see its laps here", font: .arialL,
+                      x: 270, baseline: Self.rowTop + 40, align: .center, color: Self.dark, k: k)
+        }
+    }
+
+    /// swAverages: each value + unit pair centred in an equal share of
+    /// [left, right], the value (Impact_T) right-aligned 6 px before its unit.
+    @ViewBuilder private func averages(left: CGFloat, right: CGFloat, base: CGFloat) -> some View {
+        let ms = metrics
+        let share = ((right - left) / CGFloat(ms.count)).rounded(.down)
+        ForEach(Array(ms.enumerated()), id: \.offset) { i, m in
+            let v = value(m, speed: p.lapSpeedKmh, cadence: p.lapCadence, power: p.lapPowerW)
+            let u = unit(m)
+            let uw = PanelFont.arialL.width(u)
+            let w = PanelFont.digits(30).width(v) + 6 + uw
+            let cx = left + share * CGFloat(i) + (share / 2).rounded(.down)
+            let r = (cx + w / 2).rounded(.down)
+            PanelText(text: v, font: .digits(30), x: r - uw - 6, baseline: base, align: .right, k: k)
+            PanelText(text: u, font: .arialL, x: r, baseline: base, align: .right,
+                      color: Self.dark, k: k)
         }
     }
 }

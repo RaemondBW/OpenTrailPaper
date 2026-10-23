@@ -1422,7 +1422,8 @@ void saveUploadedWorkout() {
 //
 //   0x00 HELLO (first frame of a stream, and the answer to each START) 3 bytes
 //        u8 keepalive timeout s, u8 frame period in 0.1 s,
-//        u8 caps: b0 takes [0x10] stopwatch commands, b1 sends MUSIC
+//        u8 caps: b0 takes [0x10] stopwatch commands, b1 sends MUSIC,
+//                 b2 sends STOPWATCH_LAPS
 //        (a 2-byte HELLO, from the first firmware with this service, = 0)
 //   0x01 RIDE (always)                                          32 bytes
 //        u16 flags: b0 GPS fix, b1 recording, b2 auto-paused, b3 route active,
@@ -1470,6 +1471,18 @@ void saveUploadedWorkout() {
 //      The app counts the elapsed time on at the rate between frames while
 //      playing and holds it while paused, clamped to the duration. Title,
 //      artist and album stay on the media characteristic ([0xA2]).
+//   0x07 STOPWATCH_LAPS (always, from firmware with HELLO caps b2)
+//                                                          2 + 10 x n bytes
+//        u8 columns the page's lap table shows (ui_render swMetrics), in
+//           order: b0 speed (always set), b1 cadence, b2 power
+//        u8 n: completed laps that follow, newest first — the table's rows
+//           (at most 7, kSwRows; fewer when the MTU can't carry 7: the record
+//           is cut to fit one notify, never split)
+//        n x { u8 lap number (1-based), u32 split ms (that lap's own time),
+//              u16 avg speed 0.1 km/h (0xFFFF = "--"),
+//              u8 avg cadence rpm (0xFF = "--"), u16 avg power W (0xFFFF = "--") }
+//      n = 0 with no laps. Sent with every frame, so a LAP or RESET (which
+//      sends a frame at once) redraws the app's table with the device's.
 const char* SVC_LIVE    = "b1c51000-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
 const char* CHR_LIVE_RX = "b1c51001-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
 const char* CHR_LIVE_TX = "b1c51002-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
@@ -1479,6 +1492,7 @@ constexpr uint32_t LIVE_PERIOD_MS = 1000;
 constexpr uint16_t LIVE_MIN_MTU = 43;
 constexpr uint8_t  LIVE_CAP_STOPWATCH_CMD = 0x01;   // HELLO caps (see above)
 constexpr uint8_t  LIVE_CAP_MUSIC = 0x02;
+constexpr uint8_t  LIVE_CAP_STOPWATCH_LAPS = 0x04;
 
 NimBLECharacteristic* liveTxChr = nullptr;
 volatile bool liveSubscribed = false;    // TX notifications on (CCCD)
@@ -1578,7 +1592,9 @@ inline uint16_t liveI16(double v) {
 }
 
 // Every record, each [type][len][body], into `out`; returns the length.
-size_t buildLiveRecords(uint8_t* out, size_t cap, bool hello) {
+// `notifyCap` is one notify's payload (MTU - 3): a record must fit one, with
+// the frame's 2-byte header, so the variable-length ones are cut to it.
+size_t buildLiveRecords(uint8_t* out, size_t cap, bool hello, size_t notifyCap) {
     RideState s = g_state.snapshot();
     LiveView v;
     portENTER_CRITICAL(&liveViewMux);
@@ -1606,7 +1622,7 @@ size_t buildLiveRecords(uint8_t* out, size_t cap, bool hello) {
         if (uint8_t* b = rec(0x00, 3)) {
             b[0] = LIVE_TIMEOUT_MS / 1000;
             b[1] = LIVE_PERIOD_MS / 100;
-            b[2] = LIVE_CAP_STOPWATCH_CMD | LIVE_CAP_MUSIC;
+            b[2] = LIVE_CAP_STOPWATCH_CMD | LIVE_CAP_MUSIC | LIVE_CAP_STOPWATCH_LAPS;
         }
     }
     if (uint8_t* b = rec(0x01, 32)) {
@@ -1687,16 +1703,37 @@ size_t buildLiveRecords(uint8_t* out, size_t cap, bool hello) {
             put16(b + 9, liveI16(r));
         }
     }
+    {
+        // The lap table's rows. Last, so a frame that needs another notify
+        // for it still has every fixed record in the first.
+        constexpr size_t kRow = 10;
+        size_t rows = v.swRows;
+        while (rows > 0 && 2 + 2 + 2 + kRow * rows > notifyCap) --rows;
+        if (uint8_t* b = rec(0x07, 2 + kRow * rows)) {
+            b[0] = 1 | (v.swShowCadence ? 2 : 0) | (v.swShowPower ? 4 : 0);
+            b[1] = (uint8_t)rows;
+            for (size_t r = 0; r < rows; ++r) {
+                uint8_t* e = b + 2 + kRow * r;
+                e[0] = (uint8_t)(v.swLaps - r);
+                put32(e + 1, v.swRowSplitMs[r]);
+                put16(e + 5, v.swRowSpeedDkmh[r]);
+                e[7] = v.swRowCadenceRpm[r];
+                put16(e + 8, v.swRowPowerW[r]);
+            }
+        }
+    }
     return n;
 }
 
 // The records in as few notifies as the MTU allows, never splitting one.
 void sendLiveFrame(bool hello) {
-    uint8_t recs[160];
-    const size_t total = buildLiveRecords(recs, sizeof(recs), hello);
-    uint8_t pkt[sizeof(recs) + 2];
+    // Static, not on the stack: the server task's stack is 4 KB and this
+    // runs only there (serviceLive).
+    static uint8_t recs[256];
+    static uint8_t pkt[sizeof(recs) + 2];
     const size_t payload = negotiatedMTU > 3 ? negotiatedMTU - 3 : 20;
     const size_t cap = payload < sizeof(pkt) ? payload : sizeof(pkt);
+    const size_t total = buildLiveRecords(recs, sizeof(recs), hello, cap);
     const uint8_t seq = liveSeq++;
     size_t i = 0;
     while (i < total) {
