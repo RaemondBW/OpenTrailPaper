@@ -11,8 +11,13 @@ import MapKit
 // Deliberately not a per-contact inbox. A mesh channel is one shared
 // conversation, the way a radio net is, and direct messages are the exception —
 // so the channel is the default view and picking a node narrows it.
-struct MeshView: View {
-    @EnvironmentObject var ble: BLEManager
+struct MeshView: View, Equatable {
+    // Not @EnvironmentObject: see BLEScope — this screen redraws only when
+    // what it shows changes, not on every BLE publish.
+    @StateObject private var scope: BLEScope<MeshSnapshot>
+    private var ble: BLEManager { scope.ble }
+    init(ble: BLEManager) { _scope = StateObject(wrappedValue: BLEScope(ble, MeshSnapshot.init)) }
+    nonisolated static func == (a: MeshView, b: MeshView) -> Bool { true }
     @State private var draft = ""
     /// Who we are talking to, as a node NUMBER rather than a `MeshNode` — the
     /// node list is rebuilt from the device on every refresh, so a stored struct
@@ -59,6 +64,7 @@ struct MeshView: View {
     }
 
     var body: some View {
+        let _ = PerfMonitor.body("Mesh")
         NavigationStack {
             VStack(spacing: 0) {
                 header

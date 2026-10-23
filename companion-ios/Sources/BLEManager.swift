@@ -926,7 +926,22 @@ final class BLEManager: NSObject, ObservableObject {
         albumArt.showDemo(MediaTrack(title: "Turn Your Lights Down Low",
                                      artist: "Bob Marley & The Wailers", album: "Exodus"),
                           gray: gray)
+        // Tick like a connected head unit: a status notify every second, so
+        // screens are exercised under the same republish load as on a ride.
+        var t = 0.0
+        demoTicker = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                t += 1
+                var s = self.status
+                s.power = 238 + Int(30 * sin(t / 4))
+                s.heartRate = 156 + Int(4 * sin(t / 9))
+                s.speedKmh = 24.6 + 2 * sin(t / 6)
+                self.status = s
+            }
+        }
     }
+    private var demoTicker: Timer?
 
     override init() {
         super.init()

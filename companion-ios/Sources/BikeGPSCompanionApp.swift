@@ -12,11 +12,12 @@ struct BikeGPSCompanionApp: App {
         // Up before any transfer: it ends Live Activities a killed run left
         // behind, and watches for the app leaving the foreground.
         TransferCenter.shared.runDemoIfRequested()
+        PerfMonitor.shared.start()
     }
 
     var body: some Scene {
         WindowGroup {
-            RootView()
+            RootView(ble: ble).equatable()
                 .environmentObject(ble)
                 .environmentObject(appState)
                 .tint(Palette.ink)
@@ -84,29 +85,40 @@ final class AppState: ObservableObject {
     @Published var showTutorial: Bool = RootView.shouldOnboard
 }
 
-struct RootView: View {
-    @EnvironmentObject var ble: BLEManager
+struct RootView: View, Equatable {
+    // Not @EnvironmentObject: observing the whole manager re-ran this body —
+    // and re-laid-out every live tab under it — on each BLE publish (status
+    // alone is every second), which stuttered scrolling. Only the Mesh
+    // badge's count is watched here; see BLEScope.
+    @StateObject private var unread: BLEScope<Int>
+    private var ble: BLEManager { unread.ble }
     @EnvironmentObject var appState: AppState
     @State private var tab = RootView.initialTab
 
-    init() { RootView.configureAppearance() }
+    init(ble: BLEManager) {
+        _unread = StateObject(wrappedValue: BLEScope(ble) { $0.meshState.unread })
+        RootView.configureAppearance()
+    }
+    nonisolated static func == (a: RootView, b: RootView) -> Bool { true }
 
     var body: some View {
+        let _ = PerfMonitor.body("Root")
         // The system tab bar can't be squared, inverted or ruled, so it is
         // hidden and drawn here instead (EinkTabBar). TabView still owns the
         // tabs, so each keeps its navigation and scroll state when switched.
         TabView(selection: $tab) {
             RideView().einkTabBarInset().tag(0).toolbar(.hidden, for: .tabBar)
-            RouteView().einkTabBarInset().tag(1).toolbar(.hidden, for: .tabBar)
-            RidesView().einkTabBarInset().tag(2).toolbar(.hidden, for: .tabBar)
-            MeshView().einkTabBarInset().tag(3).toolbar(.hidden, for: .tabBar)
-            SettingsView().einkTabBarInset().tag(4).toolbar(.hidden, for: .tabBar)
+            RouteTab().einkTabBarInset().tag(1).toolbar(.hidden, for: .tabBar)
+            RidesTab().einkTabBarInset().tag(2).toolbar(.hidden, for: .tabBar)
+            MeshTab().einkTabBarInset().tag(3).toolbar(.hidden, for: .tabBar)
+            SettingsTab().einkTabBarInset().tag(4).toolbar(.hidden, for: .tabBar)
         }
         // Drawn over the TabView; each tab insets its own content by the
         // bar's height (`einkTabBarInset`), since a TabView does not pass a
         // safe-area inset of its own on to its pages.
         .overlay(alignment: .bottom) {
             EinkTabBar(selection: $tab, badges: [3: ble.meshState.unread])
+                .environmentObject(ble)
         }
         .toggleStyle(EinkToggleStyle())
         .fullScreenCover(isPresented: $appState.showTutorial) {

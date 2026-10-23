@@ -6,8 +6,13 @@ import UniformTypeIdentifiers
 // Search a destination, build a cycling route with MapKit (or pick one saved
 // on Strava / RideWithGPS), preview it, and send it to the head unit as GPX
 // over BLE.
-struct RouteView: View {
-    @EnvironmentObject var ble: BLEManager
+struct RouteView: View, Equatable {
+    // Not @EnvironmentObject: see BLEScope — this screen redraws only when
+    // what it shows changes, not on every BLE publish.
+    @StateObject private var scope: BLEScope<RouteSnapshot>
+    private var ble: BLEManager { scope.ble }
+    init(ble: BLEManager) { _scope = StateObject(wrappedValue: BLEScope(ble, RouteSnapshot.init)) }
+    nonisolated static func == (a: RouteView, b: RouteView) -> Bool { true }
     @StateObject private var model = RouteModel()
     @ObservedObject private var store = EInkTileStore.shared
     @ObservedObject private var sync = SyncAccounts.shared
@@ -25,6 +30,7 @@ struct RouteView: View {
     private var hasRoute: Bool { model.route != nil || model.imported != nil }
 
     var body: some View {
+        let _ = PerfMonitor.body("Route")
         NavigationStack {
             VStack(spacing: 0) {
                 ScreenHeader(title: "Route") {

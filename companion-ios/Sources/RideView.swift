@@ -19,6 +19,7 @@ struct RideView: View {
     private var config: DashConfig { ble.dashTarget ?? .deviceDefault }
 
     var body: some View {
+        let _ = PerfMonitor.body("Ride")
         NavigationStack {
             VStack(spacing: 0) {
                 header

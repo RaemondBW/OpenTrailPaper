@@ -41,9 +41,78 @@ enum PairingCopy {
         "The app stops connecting to this device and looks for one to pair with.\n\nTo pair the device with a different phone, also unpair it on the device (Menu › Paired Devices › Phone › Unpair). To pair this iPhone again later, first remove the old pairing: \(iosForgetSteps)"
 }
 
+/// Only what the Settings tab shows of the BLE manager (see BLEScope). Every
+/// BLE publish used to re-evaluate the whole Settings body — dozens of cards,
+/// UIKit steppers and pickers — mid-scroll, which made scrolling stutter.
+struct SettingsSnapshot: Equatable {
+    var state: BLEManager.ConnState
+    var otaPhase: BLEManager.OTAPhase
+    var otaInProgress: Bool
+    var otaProgress: Double
+    var otaMessage: String?
+    var deviceFirmware: String
+    var updateAvailable: Bool
+    var battery: Int
+    var pairedDeviceId: UUID?
+    var pairedDeviceName: String?
+    var bluetoothPermission: PermissionState
+    var bluetoothPoweredOn: Bool
+    var locationPermission: PermissionState
+    var settingsCache: DeviceSettingsCache
+    var settingsSyncNote: String?
+    var ftpWatts: Int, tzMinutes: Int, backlight: Int
+    var clock24h: Bool, usbDrive: Bool
+    var wheelCircMm: Int?
+    var sensors: [BikeSensor]
+    var deviceTiles: Int
+    var logFileURL: URL?
+    var deviceLogs: [LogFile]
+    var loadingLogs: Bool
+    var downloadingLog: Bool
+    var downloadingName: String?
+    var downloadProgress: Double
+    var queuedDownloads: [String]
+    var unpairNeedsIOSForget: Bool
+
+    @MainActor init(_ b: BLEManager) {
+        state = b.state; otaPhase = b.otaPhase; otaInProgress = b.otaInProgress
+        otaProgress = b.otaProgress; otaMessage = b.otaMessage
+        deviceFirmware = b.deviceFirmware; updateAvailable = b.updateAvailable
+        battery = b.status.battery
+        pairedDeviceId = b.pairedDeviceId; pairedDeviceName = b.pairedDeviceName
+        bluetoothPermission = b.bluetoothPermission; bluetoothPoweredOn = b.bluetoothPoweredOn
+        locationPermission = b.locationPermission
+        settingsCache = b.settingsCache; settingsSyncNote = b.settingsSyncNote
+        ftpWatts = b.ftpWatts; tzMinutes = b.tzMinutes; backlight = b.backlight
+        clock24h = b.clock24h; usbDrive = b.usbDrive; wheelCircMm = b.wheelCircMm
+        sensors = b.sensors; deviceTiles = b.deviceTileIds.count
+        logFileURL = b.logFileURL; deviceLogs = b.deviceLogs; loadingLogs = b.loadingLogs
+        downloadingLog = b.downloadingLog
+        // Ride downloads tick progress too; only a log's matters here.
+        downloadingName = b.downloadingLog ? b.downloadingName : nil
+        downloadProgress = b.downloadingLog ? b.downloadProgress : 0
+        queuedDownloads = b.queuedDownloads
+        unpairNeedsIOSForget = b.unpairNeedsIOSForget
+    }
+}
+
+/// The Settings tab: hands SettingsView the manager without observing it, so
+/// the tab's redraws come from its BLEScope alone.
+struct SettingsTab: View {
+    @EnvironmentObject private var ble: BLEManager
+    var body: some View { SettingsView(ble: ble).equatable() }
+}
+
 // Edit device settings (FTP, timezone) and push them over BLE.
-struct SettingsView: View {
-    @EnvironmentObject var ble: BLEManager
+struct SettingsView: View, Equatable {
+    @StateObject private var scope: BLEScope<SettingsSnapshot>
+    private var ble: BLEManager { scope.ble }
+
+    init(ble: BLEManager) { _scope = StateObject(wrappedValue: BLEScope(ble, SettingsSnapshot.init)) }
+
+    /// Same manager, same view: the parent's re-evaluations (every BLE
+    /// publish) stop here.
+    nonisolated static func == (a: SettingsView, b: SettingsView) -> Bool { true }
     @ObservedObject private var release = FirmwareRelease.shared
     @EnvironmentObject var appState: AppState
     @AppStorage(UnitPref.key) private var useMiles = false
@@ -57,6 +126,7 @@ struct SettingsView: View {
     @AppStorage("wheelRimBsd") private var wheelRimBsd = WheelSize.defaultRim
 
     var body: some View {
+        let _ = PerfMonitor.body("Settings")
         NavigationStack {
             VStack(spacing: 0) {
             // The sync state lives in the header, one line whose text changes
@@ -136,7 +206,9 @@ struct SettingsView: View {
             }
             .background(Palette.paper.ignoresSafeArea())
             .navigationBarHidden(true)
-            .sheet(item: $ble.logFileURL) { url in DiagnosticsView(url: url) }
+            .sheet(item: Binding(get: { ble.logFileURL }, set: { ble.logFileURL = $0 })) { url in
+                DiagnosticsView(url: url)
+            }
             .sheet(isPresented: $showSensors) { SensorsView() }
             .sheet(isPresented: $showMaps) { MapsView() }
             .onAppear {
@@ -202,7 +274,8 @@ struct SettingsView: View {
         } message: {
             Text(ble.state == .connected ? PairingCopy.unpairMessage : PairingCopy.forgetMessage)
         }
-        .alert("Unpaired", isPresented: $ble.unpairNeedsIOSForget) {
+        .alert("Unpaired", isPresented: Binding(get: { ble.unpairNeedsIOSForget },
+                                                set: { ble.unpairNeedsIOSForget = $0 })) {
             Button("OK", role: .cancel) {}
         } message: {
             Text(PairingCopy.afterUnpairMessage)

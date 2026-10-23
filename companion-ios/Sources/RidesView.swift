@@ -5,8 +5,13 @@ import CoreImage
 
 // Lists recorded rides on the device and downloads a selected .fit file
 // over BLE, then offers the system share sheet (Strava, Files, AirDrop…).
-struct RidesView: View {
-    @EnvironmentObject var ble: BLEManager
+struct RidesView: View, Equatable {
+    // Not @EnvironmentObject: see BLEScope — this screen redraws only when
+    // what it shows changes, not on every BLE publish.
+    @StateObject private var scope: BLEScope<RidesSnapshot>
+    private var ble: BLEManager { scope.ble }
+    init(ble: BLEManager) { _scope = StateObject(wrappedValue: BLEScope(ble, RidesSnapshot.init)) }
+    nonisolated static func == (a: RidesView, b: RidesView) -> Bool { true }
     @StateObject private var previews = RidePreviewStore()
     @State private var detail: RideDetailData?
     @State private var failedURL: URL?          // parsed badly → offer to share it
@@ -160,6 +165,7 @@ struct RidesView: View {
     }
 
     var body: some View {
+        let _ = PerfMonitor.body("Rides")
         NavigationStack {
             VStack(spacing: 0) {
             header
