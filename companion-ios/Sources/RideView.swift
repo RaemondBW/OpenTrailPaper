@@ -1,4 +1,5 @@
 import SwiftUI
+import MapKit
 
 // The Ride tab is the head unit's live dashboard on the phone: the same pages,
 // laid out the way the device packs them (DashLayout), filled with what the
@@ -31,7 +32,9 @@ struct RideView: View {
                             VStack(spacing: 10) {
                                 warnings
                                 pageSelector
-                                if ble.workoutStatus.loaded { workoutStrip }
+                                // The WORKOUT page shows it in full; without one,
+                                // this strip is where a loaded workout shows.
+                                if ble.workoutStatus.loaded && !config.hasWorkoutPage { workoutStrip }
                                 if connected && ble.status.hasRoute { routeStrip }
                             }
                             .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { aboveTiles = $0 }
@@ -60,6 +63,12 @@ struct RideView: View {
             .sheet(isPresented: $showWorkouts) { WorkoutsView() }
             .onAppear {
                 ble.refreshSensors()
+                // The session may have changed on the device while this tab
+                // was away; ask rather than trust the last notify.
+                if connected { ble.requestWorkoutStatus() }
+                if ble.workoutStatus.loaded { showWorkoutPage() }
+                // Screenshot hook: `-ridePage N` opens page N.
+                if let v = UserDefaults.standard.string(forKey: "ridePage"), let n = Int(v) { pageIx = n }
                 // Screenshot hook, alongside -tab-*/-demo-* in
                 // BikeGPSCompanionApp: opens the layout editor straight away so
                 // the dashboard preview can be captured and compared against
@@ -70,6 +79,10 @@ struct RideView: View {
             }
             .onChange(of: ble.state) { _, st in if st == .connected { ble.refreshSensors() } }
             .onChange(of: config.pages.count) { _, n in if pageIx >= n { pageIx = 0 } }
+            // A workout loaded (here or on the device): go to its page.
+            .onChange(of: ble.workoutStatus.loaded) { _, loaded in
+                if loaded { showWorkoutPage() }
+            }
         }
     }
 
@@ -169,6 +182,10 @@ struct RideView: View {
         .einkBorder()
     }
 
+    private func showWorkoutPage() {
+        if let i = config.pages.firstIndex(where: { $0.isWorkout }) { pageIx = i }
+    }
+
     /// "PAGE 1" counts field pages only, as the device's page dots and the
     /// dashboard editor do; the others are named for what they show.
     private func pageName(_ i: Int, in pages: [DashConfig.Page]) -> String {
@@ -183,67 +200,111 @@ struct RideView: View {
         }
     }
 
-    @ViewBuilder private var page: some View {
+    /// The selected page as the device draws it, live: a scaled copy of the
+    /// panel (540 x 960) fitted into the space the header leaves.
+    private var page: some View {
         let pages = config.pages
-        if pages.isEmpty {
-            DashTiles(layout: .deviceDefault, values: values)
-        } else {
-            let p = pages[min(pageIx, pages.count - 1)]
-            switch p.kind {
-            case .fields:
-                DashTiles(layout: p.layout, values: values)
-            case .map:
-                mapPage
-            case .music:
-                placeholderPage("Music", "Your phone's now-playing, with play, pause and skip on the device.",
-                                icon: "music.note")
-            case .workout:
-                placeholderPage("Workout", ble.workoutStatus.loaded
-                                ? "\(ble.workoutStatus.name) — block \(ble.workoutStatus.blockIndex + 1) of \(ble.workoutStatus.blockCount)"
-                                : "No workout loaded. Send one from Workouts.",
-                                icon: "figure.outdoor.cycle")
-            case .stopwatch:
-                placeholderPage("Stopwatch", "Lap timer on the device.", icon: "stopwatch")
+        let p = pages.isEmpty ? nil : pages[min(pageIx, pages.count - 1)]
+        return GeometryReader { geo in
+            let w = min(geo.size.width, geo.size.height * 540 / 960)
+            TimelineView(.everyMinute) { ctx in
+                devicePage(p, now: ctx.date)
+                    .frame(width: w, height: w * 960 / 540)
+                    .overlay(Rectangle().strokeBorder(Palette.ink, lineWidth: Rule.border))
             }
-        }
-    }
-
-    /// The map page: the map itself is the device's own, so the phone shows a
-    /// hatched stand-in above the page's three-field strip.
-    private var mapPage: some View {
-        VStack(spacing: 10) {
-            VStack(spacing: 6) {
-                Image(systemName: "map").font(.system(size: 28, weight: .bold))
-                Text("MAP ON DEVICE").font(BarlowFont.text(12, .bold)).tracking(2)
-            }
-            .foregroundStyle(Palette.ink)
-            .padding(14)
-            .background(Palette.paper)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(HatchedBackground())
-            .einkBorder()
-            .accessibilityElement(children: .combine)
-            HStack(spacing: 10) {
-                ForEach(Array(config.mapFields.enumerated()), id: \.offset) { _, f in
-                    DashTile(item: DashItem(field: f, size: .small, half: true),
-                             value: values(f), inverted: false)
-                }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(pages.isEmpty ? "Device page"
+                            : "Device page \(pageName(min(pageIx, pages.count - 1), in: pages).capitalized)")
+    }
+
+    @ViewBuilder private func devicePage(_ p: DashConfig.Page?, now: Date) -> some View {
+        let status = panelStatus(now)
+        switch p?.kind ?? .fields {
+        case .fields:
+            DevicePanel(status: status) { k in
+                DashPreview(layout: p?.layout ?? .deviceDefault,
+                            liveText: { liveText($0, now: now) },
+                            liveWatts: { f in
+                                guard connected, f == "power3s" || f == "power",
+                                      let w = ble.status.power else { return nil }
+                                return Double(w)
+                            },
+                            ftp: Double(ble.ftpWatts))
+                    .frame(width: 540 * k)
+                    .offset(y: 64 * k)
             }
-            .frame(height: 96)
+        case .map:
+            MapPagePreview(fields: config.mapFields, status: status,
+                           value: { liveText($0, now: now) },
+                           map: AnyView(LiveDeviceMap(route: connected && ble.status.hasRoute
+                                                      ? ble.sentRouteCoords : [],
+                                                      showsUser: ble.locationPermission.isGranted)))
+        case .music:
+            LiveMusicPage(art: ble.albumArt, status: status)
+        case .workout:
+            WorkoutPagePreview(status: status, model: workoutModel,
+                               onPick: connected ? { ble.loadWorkout($0) } : nil)
+        case .stopwatch:
+            // The stopwatch lives on the device alone: nothing of it crosses
+            // the link, so the page shows its layout with no time.
+            StopwatchPagePreview(status: status, time: "--:--", state: "--", running: false,
+                                 note: "The stopwatch isn't sent over Bluetooth")
         }
     }
 
-    private func placeholderPage(_ title: String, _ text: String, icon: String) -> some View {
-        VStack(spacing: 8) {
-            Image(systemName: icon).font(.system(size: 30, weight: .bold))
-            Text(title.uppercased()).font(DisplayFont.anton(28))
-            Text(text).font(BarlowFont.text(14)).multilineTextAlignment(.center)
+    /// The status bar as the device prints it, from what the link reports.
+    private func panelStatus(_ now: Date) -> PanelStatus {
+        let s = ble.status
+        var sensors = ""
+        if connected && s.heartRate != nil { sensors += "· HR " }
+        if connected && s.power != nil { sensors += "· PWR" }
+        return PanelStatus(clock: clockText(now),
+                           satellites: connected ? s.sats : 0,
+                           battery: connected ? s.battery : 0,
+                           linked: connected,
+                           sensors: sensors)
+    }
+
+    private func clockText(_ now: Date) -> String {
+        let f = DateFormatter()
+        f.dateFormat = ble.clock24h ? "H:mm" : "h:mm"
+        return f.string(from: now)
+    }
+
+    /// A field's text on the panel: live where the link carries it, else "--".
+    private func liveText(_ field: String, now: Date) -> String {
+        let v = values(field)
+        return v.isClock ? clockText(now) : v.text
+    }
+
+    /// The WORKOUT page's model: the device's session status (0xC0), the
+    /// loaded file's blocks, live power, and the device's /workouts for the
+    /// picker when nothing is loaded.
+    private var workoutModel: WorkoutPageModel {
+        let w = ble.workoutStatus
+        let ftp = w.ftpW > 0 ? Int(w.ftpW) : ble.ftpWatts
+        var m = WorkoutPageModel()
+        m.loaded = connected && w.loaded
+        m.name = w.name
+        m.blockIdx = w.blockIndex
+        m.blockCount = w.blockCount
+        m.running = w.running
+        m.paused = w.paused
+        m.done = w.done
+        m.elapsed = Int(w.elapsedSec)
+        m.total = Int(w.totalSec)
+        m.targetW = Int(w.targetW)
+        m.ftpW = ftp
+        m.power = connected ? ble.status.power : nil
+        if let f = ble.loadedWorkoutFile, f.name == w.name {
+            m.blocks = WorkoutPageModel.blocks(fromFile: f.text, ftp: ftp)
+        } else {
+            m.blocks = []
         }
-        .foregroundStyle(Palette.ink)
-        .padding(20)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .einkBorder()
-        .accessibilityElement(children: .combine)
+        m.picker = ble.deviceWorkouts
+        return m
     }
 
     private var workoutStrip: some View {
@@ -344,103 +405,6 @@ struct DashValue {
     var isClock = false
 }
 
-/// A field page as tiles, packed in the device's rows (`DashLayout.rows`) with
-/// the device's height weights, the radar rail down the right if the page has
-/// one. The page's biggest field (hero or large) is the inverted tile.
-private struct DashTiles: View {
-    let layout: DashLayout
-    let values: (String) -> DashValue
-
-    var body: some View {
-        let rows = layout.rows
-        let weights = rows.map { $0.map(\.size.weight).max() ?? 2 }
-        let total = CGFloat(weights.reduce(0, +))
-        let primary = primaryId
-        GeometryReader { geo in
-            let gap: CGFloat = 10
-            let avail = geo.size.height - gap * CGFloat(max(0, rows.count - 1))
-            HStack(spacing: gap) {
-                VStack(spacing: gap) {
-                    ForEach(Array(rows.enumerated()), id: \.offset) { r, row in
-                        HStack(spacing: gap) {
-                            ForEach(row) { item in
-                                DashTile(item: item, value: values(item.field),
-                                         inverted: item.id == primary)
-                            }
-                        }
-                        .frame(height: max(44, avail * CGFloat(weights[r]) / max(total, 1)))
-                    }
-                }
-                if let rail = layout.verticalItem {
-                    DashTile(item: rail, value: values(rail.field), inverted: false)
-                        .frame(width: geo.size.width * 0.22)
-                }
-            }
-        }
-    }
-
-    /// The first field of the largest size, if it is at least large.
-    private var primaryId: UUID? {
-        let items = layout.normalizedItems.filter { !$0.vertical }
-        guard let top = items.map(\.size.weight).max(), top >= DashSize.large.weight else { return nil }
-        return items.first { $0.size.weight == top }?.id
-    }
-}
-
-/// One bordered dashboard tile: tracked caps caption, Anton value, unit,
-/// and for the inverted tile a seven-block zone bar where there is zone data.
-private struct DashTile: View {
-    let item: DashItem
-    let value: DashValue
-    let inverted: Bool
-
-    var body: some View {
-        GeometryReader { geo in
-            let h = geo.size.height
-            let size = min(max(h * (inverted ? 0.55 : 0.5), 22), inverted ? 110 : 64)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(item.panelLabel)
-                    .font(.custom("Barlow-Bold", fixedSize: h < 70 ? 10 : 12)).tracking(2)
-                    .lineLimit(1).minimumScaleFactor(0.6)
-                Spacer(minLength: 0)
-                HStack(alignment: .lastTextBaseline, spacing: 5) {
-                    if value.isClock {
-                        TimelineView(.everyMinute) { ctx in
-                            Text(ctx.date.formatted(date: .omitted, time: .shortened))
-                                .font(DisplayFont.antonFixed(size))
-                                .lineLimit(1).minimumScaleFactor(0.4)
-                        }
-                    } else {
-                        Text(value.text)
-                            .font(DisplayFont.antonFixed(size))
-                            .lineLimit(1).minimumScaleFactor(0.4)
-                    }
-                    if !value.unit.isEmpty && !value.isClock {
-                        Text(value.unit)
-                            .font(.custom("Barlow-Bold", fixedSize: inverted ? 16 : 11))
-                            .lineLimit(1)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: inverted ? .center : .leading)
-                Spacer(minLength: 0)
-                if inverted, let zone = value.zone {
-                    ZoneBar(zone: zone, color: Palette.paper)
-                }
-            }
-            .padding(.horizontal, inverted ? 14 : 12)
-            .padding(.vertical, h < 70 ? 6 : 8)
-            .frame(width: geo.size.width, height: h, alignment: .topLeading)
-        }
-        .foregroundStyle(inverted ? Palette.paper : Palette.ink)
-        .background(inverted ? Palette.ink : Palette.paper)
-        .einkBorder()
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(item.fieldLabel)
-        .accessibilityValue(value.isClock ? Date().formatted(date: .omitted, time: .shortened)
-                            : value.text == "--" ? "No reading" : "\(value.text) \(value.unit)")
-    }
-}
-
 struct ConnectionBanner: View {
     @EnvironmentObject var ble: BLEManager
 
@@ -480,5 +444,57 @@ struct ConnectionBanner: View {
         case .poweredOff: return "Bluetooth is off"
         case .idle: return "Not connected"
         }
+    }
+}
+
+/// The MAP page's map: the app's e-ink-styled map (muted, desaturated) around
+/// the phone's position — the device does not send its own — with the route
+/// this phone last sent while the device reports one active.
+private struct LiveDeviceMap: View {
+    let route: [CLLocationCoordinate2D]
+    let showsUser: Bool
+    @State private var line: MKPolyline?
+    @State private var camera: MapCameraCommand?
+
+    var body: some View {
+        EInkMapView(route: line, camera: camera, showsUserLocation: showsUser)
+            .allowsHitTesting(false)
+            .onAppear { update() }
+            .onChange(of: route.count) { update() }
+    }
+
+    private func update() {
+        if route.count > 1 {
+            var c = route
+            let l = MKPolyline(coordinates: &c, count: c.count)
+            line = l
+            camera = MapCameraCommand(target: showsUser ? .followUser
+                                      : .rect(l.boundingMapRect.paddedForDisplay()))
+        } else {
+            line = nil
+            camera = MapCameraCommand(target: .followUser)
+        }
+    }
+}
+
+/// The MUSIC page, live: the track the device reported over AMS and the cover
+/// the app sent it, dithered to the panel's tones.
+private struct LiveMusicPage: View {
+    @ObservedObject var art: AlbumArtFeeder
+    let status: PanelStatus
+    @State private var image: UIImage?
+
+    var body: some View {
+        let track = art.nowPlaying
+        MusicPreview(status: status, track: track,
+                     art: track != nil && art.cover?.key == track?.key ? image : nil,
+                     playing: track != nil, progress: nil)
+            .task(id: art.cover?.key) {
+                guard let c = art.cover else { image = nil; return }
+                let side = AlbumArtFeeder.side
+                image = await Task.detached(priority: .utility) {
+                    ArtDither.panelImage(gray: c.gray, side: side)
+                }.value
+            }
     }
 }

@@ -71,7 +71,8 @@ struct DeviceMock: View {
     @ViewBuilder
     private func screen(smooth: RideSim, stepped: RideSim) -> some View {
         VStack(spacing: 0) {
-            StatusBar(sim: stepped, k: k)
+            DeviceStatusBar(clock: RideSim.hm(stepped.clock), satellites: stepped.satellites,
+                            battery: stepped.battery, k: k)
                 .frame(height: statusH * k)
             Rectangle().fill(.black).frame(height: 2 * k)
 
@@ -159,22 +160,37 @@ struct EInkDevice: View {
 // paired, and the fuel gauge — the same order and the same abbreviations the
 // device prints, because this is the one row a rider learns to read at a
 // glance and reordering it here would teach the wrong glance.
-private struct StatusBar: View {
-    let sim: RideSim
+//
+// Shared with the Ride tab's live device pages, which feed it the device's own
+// numbers instead of RideSim's. `title` replaces the sensor list, as the
+// device's MUSIC / STOPWATCH pages print their name there.
+struct DeviceStatusBar: View {
+    let clock: String
+    let satellites: Int
+    let battery: Int
+    var sensors: String = "· HR · PWR"
+    var title: String? = nil
+    var phoneLinked = true
     let k: CGFloat
 
     var body: some View {
         HStack(spacing: 9 * k) {
-            Text(RideSim.hm(sim.clock))
-                .font(.custom("BarlowCondensed-Bold", size: 40 * k))
-            phone
-            satellites
-            Text("· HR · PWR")
-                .font(.custom("BarlowCondensed-Bold", size: 36 * k))
+            Text(clock)
+                .font(.custom("BarlowCondensed-Bold", fixedSize: 40 * k))
+            if phoneLinked { phone }
+            satelliteDots
+            if let title {
+                Spacer(minLength: 0)
+                Text(title).font(.custom("BarlowCondensed-Bold", fixedSize: 30 * k))
+                    .kerning(5 * k)
+            } else {
+                Text(sensors)
+                    .font(.custom("BarlowCondensed-Bold", fixedSize: 36 * k))
+            }
             Spacer(minLength: 0)
-            Text("\(sim.battery)%")
-                .font(.custom("BarlowCondensed-Bold", size: 36 * k))
-            battery
+            Text("\(battery)%")
+                .font(.custom("BarlowCondensed-Bold", fixedSize: 36 * k))
+            batteryGlyph
         }
         .foregroundStyle(.black)
         .lineLimit(1)
@@ -189,7 +205,7 @@ private struct StatusBar: View {
 
     /// One dot per satellite, capped at four — the device shows lock quality,
     /// not an exact count, and four dots is what "plenty" looks like.
-    private var satellites: some View {
+    private var satelliteDots: some View {
         HStack(spacing: 4 * k) {
             ForEach(0..<4, id: \.self) { i in
                 // Empty dots stay as outlines. Dropping them entirely would let
@@ -199,13 +215,13 @@ private struct StatusBar: View {
                 Circle()
                     .strokeBorder(.black, lineWidth: 1.5 * k)
                     .background(Circle().fill(
-                        i < min(4, max(0, sim.satellites - 8)) ? .black : .clear))
+                        i < min(4, max(0, satellites - 8)) ? .black : .clear))
                     .frame(width: 9 * k, height: 9 * k)
             }
         }
     }
 
-    private var battery: some View {
+    private var batteryGlyph: some View {
         HStack(spacing: 1.5 * k) {
             ZStack(alignment: .leading) {
                 RoundedRectangle(cornerRadius: 2 * k)
@@ -213,7 +229,7 @@ private struct StatusBar: View {
                 RoundedRectangle(cornerRadius: 1 * k)
                     .fill(.black)
                     .padding(3.5 * k)
-                    .frame(width: 44 * k * CGFloat(sim.battery) / 100, alignment: .leading)
+                    .frame(width: 44 * k * CGFloat(min(max(battery, 0), 100)) / 100, alignment: .leading)
             }
             .frame(width: 44 * k, height: 22 * k)
             RoundedRectangle(cornerRadius: 1 * k)

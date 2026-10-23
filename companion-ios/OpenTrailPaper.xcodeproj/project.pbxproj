@@ -32,6 +32,7 @@
 		43AAF30082DA51F92552EE19 /* PhoneMock.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B4C752C73B32E5B3E92EAE4 /* PhoneMock.swift */; };
 		4608B467E047801D5219DD54 /* faceijk.c in Sources */ = {isa = PBXBuildFile; fileRef = 21F000263728C013838D0605 /* faceijk.c */; };
 		4C0F6C64C32AF7035999D782 /* ArtDither.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F0FA5A490092653FA6B10D1 /* ArtDither.swift */; };
+		4DF251C87736B5314A937BCE /* DevicePages.swift in Sources */ = {isa = PBXBuildFile; fileRef = D35859366D0F2C3EA5BAC557 /* DevicePages.swift */; };
 		50C29F659BE2ACD7B9B29D73 /* Barlow-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = F21BF62E40922CF797D8119D /* Barlow-Regular.ttf */; };
 		5707B12C50214644BFA07242 /* Barlow-Bold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 2A29CA8B02FE737A4E1B8291 /* Barlow-Bold.ttf */; };
 		578D5A6227F3573A17A1CE9B /* MeshScanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2ACAD995F312514690C2FF16 /* MeshScanner.swift */; };
@@ -205,6 +206,7 @@
 		CDD609424C1648F1D8704550 /* EInkTileStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EInkTileStore.swift; sourceTree = "<group>"; };
 		CE54303A2F8572AD4AEDB745 /* CloudRoutes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudRoutes.swift; sourceTree = "<group>"; };
 		CFA97C48F8209FC8F994A6B2 /* TransferCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransferCenter.swift; sourceTree = "<group>"; };
+		D35859366D0F2C3EA5BAC557 /* DevicePages.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevicePages.swift; sourceTree = "<group>"; };
 		D66117B8CB78BBC0949D8DF3 /* demo.fit */ = {isa = PBXFileReference; path = demo.fit; sourceTree = "<group>"; };
 		E15692F37161BEC610966D47 /* TileCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TileCache.swift; sourceTree = "<group>"; };
 		E1B62C507D47EAD0BDDDD24F /* RideDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RideDetailView.swift; sourceTree = "<group>"; };
@@ -305,6 +307,7 @@
 				A9D6BB31E96DD85DBE9B68CA /* DashLayout.swift */,
 				D66117B8CB78BBC0949D8DF3 /* demo.fit */,
 				E467F3BA417A6A968F920F77 /* DeviceMock.swift */,
+				D35859366D0F2C3EA5BAC557 /* DevicePages.swift */,
 				78C78BE2E3D4CB0B74C0CB4D /* DeviceSettingsSync.swift */,
 				336612AF0918144CAB1C1FCD /* DiagnosticsView.swift */,
 				062C37A066E27E1DEC3AF253 /* EInkMapView.swift */,
@@ -550,6 +553,7 @@
 				8885B18C0FC6E6E98283CD24 /* DashboardEditorView.swift in Sources */,
 				B0FDE7FE636803E478340742 /* DashboardPageEditorView.swift in Sources */,
 				0F07C59EAB533AC46B37D7ED /* DeviceMock.swift in Sources */,
+				4DF251C87736B5314A937BCE /* DevicePages.swift in Sources */,
 				B7B9A2B225320284C4D52661 /* DeviceSettingsSync.swift in Sources */,
 				F71D1CFFCC25AD4A7A19D698 /* DiagnosticsView.swift in Sources */,
 				2593A42A317117DDFBAF716E /* EInkMapView.swift in Sources */,

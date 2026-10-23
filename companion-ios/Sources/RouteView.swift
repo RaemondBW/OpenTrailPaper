@@ -308,11 +308,13 @@ struct RouteView: View {
                 guard !text.isEmpty, let c = step.polyline.coordinates.first else { return nil }
                 return BLEManager.Maneuver(lat: c.latitude, lon: c.longitude, text: text)
             }
+            ble.sentRouteCoords = coords
             ble.uploadRoute(name: model.fileName, gpx: gpx, maneuvers: turns)
         } else if let imported = model.imported {
             // Someone else's route: no time estimate and no turn cues, sent
             // through the same GPX path as one built here.
             let gpx = GPXExporter.make(name: model.fileName, coordinates: imported.coordinates)
+            ble.sentRouteCoords = imported.coordinates
             ble.uploadRoute(name: model.fileName, gpx: gpx)
         }
     }
