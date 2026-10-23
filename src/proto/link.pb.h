@@ -206,6 +206,7 @@ typedef struct _otp_link_Hello {
     char app_version[32]; /* e.g. "2.4 (61)" */
     pb_size_t features_count;
     otp_link_Feature features[32]; /* phone-side features */
+    uint64_t unix_ms; /* phone clock (UTC); sets the device clock until GPS has a fix */
 } otp_link_Hello;
 
 typedef struct _otp_link_DeviceHello {
@@ -1058,7 +1059,7 @@ extern "C" {
 #define otp_link_PhoneMsg_init_default           {0, 0, {otp_link_Hello_init_default}}
 #define otp_link_DeviceMsg_init_default          {0, 0, {otp_link_DeviceHello_init_default}}
 #define otp_link_Result_init_default             {_otp_link_ResultCode_MIN, ""}
-#define otp_link_Hello_init_default              {0, _otp_link_Platform_MIN, "", 0, {_otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN}}
+#define otp_link_Hello_init_default              {0, _otp_link_Platform_MIN, "", 0, {_otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN}, 0}
 #define otp_link_DeviceHello_init_default        {0, "", 0, {_otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN}, 0, 0, 0, 0, 0, 0, 0}
 #define otp_link_Unpair_init_default             {0}
 #define otp_link_GetSettings_init_default        {0}
@@ -1135,7 +1136,7 @@ extern "C" {
 #define otp_link_PhoneMsg_init_zero              {0, 0, {otp_link_Hello_init_zero}}
 #define otp_link_DeviceMsg_init_zero             {0, 0, {otp_link_DeviceHello_init_zero}}
 #define otp_link_Result_init_zero                {_otp_link_ResultCode_MIN, ""}
-#define otp_link_Hello_init_zero                 {0, _otp_link_Platform_MIN, "", 0, {_otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN}}
+#define otp_link_Hello_init_zero                 {0, _otp_link_Platform_MIN, "", 0, {_otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN}, 0}
 #define otp_link_DeviceHello_init_zero           {0, "", 0, {_otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN}, 0, 0, 0, 0, 0, 0, 0}
 #define otp_link_Unpair_init_zero                {0}
 #define otp_link_GetSettings_init_zero           {0}
@@ -1217,6 +1218,7 @@ extern "C" {
 #define otp_link_Hello_platform_tag              2
 #define otp_link_Hello_app_version_tag           3
 #define otp_link_Hello_features_tag              4
+#define otp_link_Hello_unix_ms_tag               5
 #define otp_link_DeviceHello_proto_tag           1
 #define otp_link_DeviceHello_firmware_tag        2
 #define otp_link_DeviceHello_features_tag        3
@@ -1694,7 +1696,8 @@ X(a, STATIC,   SINGULAR, STRING,   detail,            2)
 X(a, STATIC,   SINGULAR, UINT32,   proto,             1) \
 X(a, STATIC,   SINGULAR, UENUM,    platform,          2) \
 X(a, STATIC,   SINGULAR, STRING,   app_version,       3) \
-X(a, STATIC,   REPEATED, UENUM,    features,          4)
+X(a, STATIC,   REPEATED, UENUM,    features,          4) \
+X(a, STATIC,   SINGULAR, UINT64,   unix_ms,           5)
 #define otp_link_Hello_CALLBACK NULL
 #define otp_link_Hello_DEFAULT NULL
 
@@ -2480,7 +2483,7 @@ extern const pb_msgdesc_t otp_link_AgnssInfo_msg;
 #define otp_link_GetDash_size                    0
 #define otp_link_GetMapLayers_size               0
 #define otp_link_GetSettings_size                0
-#define otp_link_Hello_size                      105
+#define otp_link_Hello_size                      116
 #define otp_link_Lap_size                        30
 #define otp_link_ListRequest_size                2
 #define otp_link_LiveFrame_size                  608

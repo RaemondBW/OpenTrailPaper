@@ -3081,7 +3081,6 @@ void applyPhoneLocation(const PhoneFix& f) {
     // estimator is shared by the legacy write (host task) and the link task.
     if (sharedLocMutex) xSemaphoreTake(sharedLocMutex, portMAX_DELAY);
     const uint32_t nowMs = millis();
-    bool noGpsFix = false;
     static phone_motion::Estimator motion;
     motion.update(lat, lon, f.accM > 0 ? (float)f.accM : 0.0f, nowMs, f.speedMs,
                   f.courseDeg);
@@ -3094,27 +3093,31 @@ void applyPhoneLocation(const PhoneFix& f) {
         if (f.haveAlt) st.phoneAltM = (float)f.altM;
         st.phoneAccM = f.accM > 0 ? (float)f.accM : 0.0f;
         st.phoneUtc = haveTime ? (time_t)f.utc : 0;
-        // The clock (status bar, CLOCK field) otherwise waits for GPS time,
-        // which a unit indoors after a reboot may not get for a long while.
-        // The phone's network time is as good; GPS takes over once it has a fix.
-        noGpsFix = !st.gpsFix;
-        if (haveTime && noGpsFix) {
-            st.utc = (time_t)f.utc;
-            st.timeValid = true;
-        }
         st.phoneFixValid = true;
         st.phoneFixMs = nowMs;
         // Speed/heading on the display while the phone is the source.
         speed_source::publish(st, nowMs);
     });
     if (sharedLocMutex) xSemaphoreGive(sharedLocMutex);
-    // Keep the clock ticking between phone fixes (and after the app stops
-    // sending): the server task's 1 Hz pass reads it back while GPS has no fix.
-    if (haveTime && noGpsFix) {
-        struct timeval tv = {(time_t)f.utc, 0};
-        settimeofday(&tv, nullptr);
-        phoneClockSet = true;
-    }
+    if (haveTime) applyPhoneTime((time_t)f.utc);
+}
+
+// The clock (status bar, CLOCK field) otherwise waits for GPS time, which a
+// unit indoors after a reboot may not get for a long while. The phone's network
+// time is as good: it comes with the link's Hello on every connection and with
+// each phone location. It sets the system clock, which the server task's 1 Hz
+// pass reads back into RideState, until GPS has a fix and takes over.
+void applyPhoneTime(time_t utc) {
+    if (utc < 1735689600) return;   // before 2025: not a real clock
+    bool noGpsFix = false;
+    g_state.with([&](RideState& st) {
+        noGpsFix = !st.gpsFix;
+        if (noGpsFix) { st.utc = utc; st.timeValid = true; }
+    });
+    if (!noGpsFix) return;
+    struct timeval tv = {utc, 0};
+    settimeofday(&tv, nullptr);
+    phoneClockSet = true;
 }
 
 bool legacyUpdateBusy() { return ble_server::otaPhase != 0; }

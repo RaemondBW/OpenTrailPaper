@@ -254,6 +254,7 @@ final class LinkClient {
         h.platform = .ios
         h.appVersion = Self.appVersion
         h.features = Self.phoneFeatures
+        h.unixMs = UInt64(Date().timeIntervalSince1970 * 1000)   // the device's clock until GPS
         var m = LinkPhoneMsg()
         m.req = takeReq()
         m.hello = h

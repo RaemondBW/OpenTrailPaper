@@ -12,6 +12,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <time.h>
 
 #include "ble_server.h"
 
@@ -50,6 +51,8 @@ struct PhoneFix {
     float courseDeg = __builtin_nanf("");
 };
 void applyPhoneLocation(const PhoneFix& f);
+// Sets the clock from the phone's time while GPS has no fix (Hello, locations).
+void applyPhoneTime(time_t utc);
 
 // --- Firmware update ------------------------------------------------------
 bool legacyUpdateBusy();   // a legacy OTA transfer or install is running

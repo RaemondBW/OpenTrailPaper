@@ -1513,6 +1513,7 @@ void onHello(uint32_t req, const otp_link_Hello& h) {
     diag::log("link: hello from %s app %s (proto %u, %u feature(s)), MTU %u", platform,
               h.app_version, (unsigned)h.proto, (unsigned)h.features_count,
               (unsigned)ble_shared::mtu());
+    if (h.unix_ms) ble_shared::applyPhoneTime((time_t)(h.unix_ms / 1000));
 
     otp_link_DeviceHello& d = msg(req, otp_link_DeviceMsg_hello_tag).body.hello;
     d.proto = otp_link_ProtoVersion_PROTO_VERSION_CURRENT;

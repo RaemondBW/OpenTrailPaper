@@ -1719,6 +1719,9 @@ nonisolated struct LinkHello: Sendable {
   /// phone-side features
   var features: [LinkFeature] = []
 
+  /// phone clock (UTC); sets the device clock until GPS has a fix
+  var unixMs: UInt64 = 0
+
   var unknownFields = SwiftProtobuf.UnknownStorage()
 
   init() {}
@@ -4757,7 +4760,7 @@ nonisolated extension LinkResult: SwiftProtobuf.Message, SwiftProtobuf._MessageI
 
 nonisolated extension LinkHello: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   static let protoMessageName: String = _protobuf_package + ".Hello"
-  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}proto\0\u{1}platform\0\u{3}app_version\0\u{1}features\0")
+  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}proto\0\u{1}platform\0\u{3}app_version\0\u{1}features\0\u{3}unix_ms\0")
 
   mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -4769,6 +4772,7 @@ nonisolated extension LinkHello: SwiftProtobuf.Message, SwiftProtobuf._MessageIm
       case 2: try { try decoder.decodeSingularEnumField(value: &self.platform) }()
       case 3: try { try decoder.decodeSingularStringField(value: &self.appVersion) }()
       case 4: try { try decoder.decodeRepeatedEnumField(value: &self.features) }()
+      case 5: try { try decoder.decodeSingularUInt64Field(value: &self.unixMs) }()
       default: break
       }
     }
@@ -4787,6 +4791,9 @@ nonisolated extension LinkHello: SwiftProtobuf.Message, SwiftProtobuf._MessageIm
     if !self.features.isEmpty {
       try visitor.visitPackedEnumField(value: self.features, fieldNumber: 4)
     }
+    if self.unixMs != 0 {
+      try visitor.visitSingularUInt64Field(value: self.unixMs, fieldNumber: 5)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -4795,6 +4802,7 @@ nonisolated extension LinkHello: SwiftProtobuf.Message, SwiftProtobuf._MessageIm
     if lhs.platform != rhs.platform {return false}
     if lhs.appVersion != rhs.appVersion {return false}
     if lhs.features != rhs.features {return false}
+    if lhs.unixMs != rhs.unixMs {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

@@ -4510,6 +4510,7 @@ class BleManager(private val app: Application) {
         // The device's media buttons drive this phone's players (MediaRemote):
         // Android has no AMS for the device to relay them over.
         .addFeatures(Feature.FEATURE_MEDIA_COMMAND_HANDLER)
+        .setUnixMs(System.currentTimeMillis())   // the device's clock until GPS has a fix
         .build()
 
     private fun onLinkReady(h: DeviceHello) {

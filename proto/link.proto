@@ -201,6 +201,7 @@ message Hello {
   Platform platform = 2;
   string app_version = 3;         // e.g. "2.4 (61)"
   repeated Feature features = 4;  // phone-side features
+  uint64 unix_ms = 5;             // phone clock (UTC); sets the device clock until GPS has a fix
 }
 
 message DeviceHello {
