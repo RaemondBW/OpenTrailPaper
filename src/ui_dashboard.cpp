@@ -2839,12 +2839,12 @@ void task(void*) {
                              powerFresh ? now.powerW : 0, powerFresh,
                              cadenceFresh ? now.cadenceRpm : 0, cadenceFresh);
 
-            // Stopwatch buttons pressed in the app (live stream RX [0x10]):
-            // queued by the BLE callback, run here on the UI task exactly as
-            // the page's own taps, with the same enablement rules. Each one
-            // counts as the rider touching the device (keeps it awake,
-            // repaints the page now); the state change below makes the BLE
-            // task push a fresh STOPWATCH frame on its next pass.
+            // Stopwatch buttons pressed in the app (the link's
+            // StopwatchCommand): queued by the link task, run here on the UI
+            // task exactly as the page's own taps, with the same enablement
+            // rules. Each one counts as the rider touching the device (keeps
+            // it awake, repaints the page now); the state change below makes
+            // the link task push a fresh LiveFrame on its next pass.
             while (unsigned char op = ble_server::takeStopwatchCommand()) {
                 const uint32_t t = millis();
                 bool did = false;
@@ -2860,8 +2860,8 @@ void task(void*) {
             }
 
             // The page on screen and the stopwatch, for the app's live view
-            // (ble_server's live stream). A copy under a spinlock; the BLE
-            // task only reads it while the app's Ride tab is streaming.
+            // (the phone link's LiveFrames). A copy under a spinlock; the link
+            // task only reads it while the app subscribes to those topics.
             ble_server::LiveView lv;
             lv.pageCount = (unsigned char)dash_config::pageCount();
             if (screen == SCREEN_DASH) {
