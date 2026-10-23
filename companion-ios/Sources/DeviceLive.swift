@@ -255,6 +255,7 @@ final class DeviceLive: ObservableObject {
         guard d.count >= 2, d[d.startIndex] >= 1 else { return }
         let s = d[d.startIndex + 1]
         if s != seq {
+            if seq == nil { NSLog("[live] first frame (%d bytes)", d.count) }
             seq = s
             building.startFrame()
         }
@@ -268,6 +269,7 @@ final class DeviceLive: ObservableObject {
 
     /// The stream stopped (STOP, disconnect, background).
     func clear() {
+        if frame != nil { NSLog("[live] frame cleared") }
         staleTimer?.invalidate(); staleTimer = nil
         seq = nil
         building = LiveFrame()
@@ -301,7 +303,7 @@ final class DeviceLive: ObservableObject {
     private func armStale() {
         staleTimer?.invalidate()
         staleTimer = Timer.scheduledTimer(withTimeInterval: 4, repeats: false) { [weak self] _ in
-            MainActor.assumeIsolated { self?.clear() }
+            MainActor.assumeIsolated { NSLog("[live] stale: no frame for 4 s"); self?.clear() }
         }
     }
 

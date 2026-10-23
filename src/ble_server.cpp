@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <NimBLEDevice.h>
+#include "nimble/nimble/host/services/gatt/include/services/gatt/ble_svc_gatt.h"
 #include <SD.h>
 #include <Update.h>
 #include <esp_heap_caps.h>
@@ -1487,7 +1488,10 @@ volatile bool liveKick = false;          // send a frame on the next pass
 volatile bool liveHelloDue = false;
 uint8_t liveSeq = 0;
 uint32_t liveLastMs = 0;
-bool liveStreaming = false;              // BLE task's view, for the log lines
+bool liveStreaming = false;
+// Service Changed, queued once per boot by the first admitted link.
+volatile bool gattChangedDue = false;
+uint32_t gattChangedDueMs = 0;              // BLE task's view, for the log lines
 
 // What only the UI task knows (the stopwatch, the page on screen), handed
 // over by publishLiveView() under a spinlock: the UI task never waits on BLE.
@@ -1530,6 +1534,7 @@ class LiveRxCb : public NimBLECharacteristicCallbacks {
         if (v.empty() || !phoneConnected) return;
         switch ((uint8_t)v[0]) {
             case 0x01:
+                if (!liveStarted) diag::log("ble live: START from the app");
                 liveKeepaliveMs = millis();
                 liveStarted = true;
                 liveKick = true;
@@ -1554,6 +1559,7 @@ class LiveRxCb : public NimBLECharacteristicCallbacks {
 class LiveTxCb : public NimBLECharacteristicCallbacks {
     void onSubscribe(NimBLECharacteristic*, NimBLEConnInfo&, uint16_t subValue) override {
         liveSubscribed = (subValue & 0x0001) != 0;
+        diag::log("ble live: app %s", liveSubscribed ? "subscribed" : "unsubscribed");
         if (liveSubscribed) liveKick = true;
     }
 };
@@ -1714,6 +1720,11 @@ void sendLiveFrame(bool hello) {
 void serviceLive() {
     if (!liveTxChr) return;
     const uint32_t now = millis();
+    if (gattChangedDue && phoneConnected && (int32_t)(now - gattChangedDueMs) >= 0) {
+        gattChangedDue = false;
+        ble_svc_gatt_changed(0x0001, 0xFFFF);
+        diag::log("ble: service changed indicated (phone rediscovers)");
+    }
     if (liveStarted && now - liveKeepaliveMs > LIVE_TIMEOUT_MS) {
         liveStarted = false;
         diag::log("ble live: keepalive missed — stream stopped");
@@ -1916,6 +1927,20 @@ class ServerCb : public NimBLEServerCallbacks {
         pairCode = 0;          // done — drop the code sheet
         admit(info, !linkPeerKnown);
         ams::onSecured(info.getConnHandle(), true);
+        // iOS caches a bonded device's GATT table and reuses it until told
+        // otherwise, so services a firmware update added (the live stream)
+        // stayed invisible to a phone paired before it. Once per boot — every
+        // update ends in one — tell the phone the whole table may have
+        // changed; it rediscovers (cheap) and finds what's there now.
+        // Sent from the BLE task a moment later, not here: this callback runs
+        // before NimBLE restores the bonded phone's subscriptions for the
+        // link, so an indication from here found nobody subscribed.
+        static bool gattChangedQueued = false;
+        if (!gattChangedQueued) {
+            gattChangedQueued = true;
+            gattChangedDueMs = millis() + 2000;
+            gattChangedDue = true;
+        }
     }
     void onConnParamsUpdate(NimBLEConnInfo& info) override {
         diag::log("ble interval negotiated: handle=%u interval=%.1fms latency=%u timeout=%ums",

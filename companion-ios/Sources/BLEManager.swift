@@ -1096,6 +1096,7 @@ final class BLEManager: NSObject, ObservableObject {
     /// The Ride tab on screen (true) or gone (false).
     func liveViewer(_ on: Bool) {
         liveViewers = max(0, liveViewers + (on ? 1 : -1))
+        NSLog("[live] viewer %@ -> %d", on ? "on" : "off", liveViewers)
         updateLiveStream()
     }
 
@@ -1107,6 +1108,9 @@ final class BLEManager: NSObject, ObservableObject {
     }
 
     private func updateLiveStream() {
+        NSLog("[live] update: viewers=%d active=%d connected=%d tx=%d rx=%d notifying=%d",
+              liveViewers, appActive ? 1 : 0, state == .connected ? 1 : 0,
+              liveTxChar != nil ? 1 : 0, liveRxChar != nil ? 1 : 0, liveTxChar?.isNotifying == true ? 1 : 0)
         guard let p = peripheral, let tx = liveTxChar else {
             liveKeepalive?.invalidate(); liveKeepalive = nil
             return
@@ -1146,6 +1150,7 @@ final class BLEManager: NSObject, ObservableObject {
     private func sendLiveStart() {
         guard liveWanted, let p = peripheral, let rx = liveRxChar,
               liveTxChar?.isNotifying == true else { return }
+        NSLog("[live] START sent")
         p.writeValue(Data([0x01, LiveUUID.protocolVersion]), for: rx, type: .withResponse)
     }
 
@@ -3580,7 +3585,25 @@ extension BLEManager: CBPeripheralDelegate {
         }
     }
 
+    /// The device said its GATT table changed (Service Changed — it says so
+    /// once per boot, so a firmware update's new services show up on a phone
+    /// whose iOS cached the old table). Characteristics of the invalidated
+    /// services are dead; drop the live ones and rediscover, and discovery
+    /// sets everything up again as on connect.
+    nonisolated func peripheral(_ p: CBPeripheral, didModifyServices invalidated: [CBService]) {
+        MainActor.assumeIsolated {
+            NSLog("[live] services modified: %@", invalidated.map(\.uuid.uuidString).joined(separator: ","))
+            if invalidated.contains(where: { $0.uuid == LiveUUID.service }) {
+                liveKeepalive?.invalidate(); liveKeepalive = nil
+                liveTxChar = nil; liveRxChar = nil
+                live.clear()
+            }
+            p.discoverServices([BikeUUID.service, LiveUUID.service])
+        }
+    }
+
     nonisolated func peripheral(_ p: CBPeripheral, didDiscoverServices error: Error?) {
+        NSLog("[live] services: %@", (p.services ?? []).map(\.uuid.uuidString).joined(separator: ","))
         // Discover ALL characteristics (nil) — an explicit list previously
         // omitted the sensors + map characteristics, so those features never
         // worked. nil is also future-proof as new characteristics are added.
