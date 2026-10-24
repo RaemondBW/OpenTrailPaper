@@ -29,6 +29,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -40,10 +41,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.raemond.opentrailpaper.ble.BikeSensor
 import com.raemond.opentrailpaper.ble.BleManager
 import com.raemond.opentrailpaper.ble.DeviceStatus
 import com.raemond.opentrailpaper.data.Units
+import com.raemond.opentrailpaper.link.proto.LiveTopic
 import java.util.Locale
 
 /**
@@ -59,6 +64,30 @@ fun RideScreen(ble: BleManager) {
 
     LaunchedEffect(ble.state) {
         if (ble.state == BleManager.ConnState.CONNECTED) ble.refreshSensors()
+    }
+
+    // Link firmware can stream more than the 1 Hz ride summary while this tab
+    // is in view (BleManager.liveFrame): STOPWATCH, MUSIC, POSITION, VIEW. This
+    // screen draws only the RIDE part (always on), so it asks for nothing more
+    // — each extra topic costs larger frames and extra pushes on the device.
+    // Add a topic here when a view here starts reading it. No-op on legacy
+    // firmware.
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    DisposableEffect(lifecycle) {
+        val ridePage = emptySet<LiveTopic>()
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_START -> ble.setLiveTopics(ridePage)
+                Lifecycle.Event.ON_STOP -> ble.setLiveTopics(emptySet())
+                else -> Unit
+            }
+        }
+        if (lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) ble.setLiveTopics(ridePage)
+        lifecycle.addObserver(observer)
+        onDispose {
+            lifecycle.removeObserver(observer)
+            ble.setLiveTopics(emptySet())
+        }
     }
 
     Column(
@@ -266,10 +295,21 @@ private fun SpeedCard(s: DeviceStatus, useMiles: Boolean) {
         }
         HorizontalDivider(Modifier.padding(vertical = 6.dp), color = Palette.hairline)
         Row(horizontalArrangement = Arrangement.spacedBy(22.dp)) {
-            // Avg and max are a whole-ride roll-up the head unit keeps and the
-            // status packet does not carry; the Rides tab is where they live.
-            MiniStat("Avg", "—")
+            // The ride summary comes over the phone link (distance and moving
+            // time); the legacy status packet carries neither, and nothing
+            // carries the max, so those stay a dash.
+            val avg = s.avgSpeedKmh
+            MiniStat(
+                "Avg",
+                avg?.let { String.format(Locale.US, "%.1f", Units.speed(it, useMiles)) } ?: "—",
+            )
             MiniStat("Max", "—")
+            s.distanceM?.let {
+                MiniStat(
+                    "Dist",
+                    String.format(Locale.US, "%.1f %s", Units.distance(it / 1000.0, useMiles), Units.distLabel(useMiles)),
+                )
+            }
         }
     }
 }

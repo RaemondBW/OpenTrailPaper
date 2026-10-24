@@ -1,27 +1,14 @@
-import CoreBluetooth
 import Foundation
 
-// The device's live state stream: a Nordic-UART-shaped service of its own,
-// for the Ride tab. Protocol (v1) in src/ble_server.cpp, "Live state stream".
-//
-// Phone -> device on RX: [0x01][ver] START / keepalive (every 5 s while the
-// Ride tab is on screen and the app is in the foreground), [0x02] STOP,
-// [0x10][op] a stopwatch button (1 START/PAUSE, 2 RESET, 3 LAP; only when
-// HELLO's caps say the device takes it).
-// Device -> phone on TX: [ver][seq] + records [type][len][body], little-endian.
-// Unknown record types are skipped and bodies longer than this app knows are
-// read from the front, so newer firmware stays readable.
-enum LiveUUID {
-    static let service = CBUUID(string: "B1C51000-9E0F-4B7A-9C6D-1F2E3A4B5C6D")
-    static let rx      = CBUUID(string: "B1C51001-9E0F-4B7A-9C6D-1F2E3A4B5C6D")
-    static let tx      = CBUUID(string: "B1C51002-9E0F-4B7A-9C6D-1F2E3A4B5C6D")
-    /// The highest protocol version this app parses (sent in START).
-    static let protocolVersion: UInt8 = 1
-}
+// The device's live state for the Ride tab: LinkLiveFrame messages on the
+// phone link (docs/ble-link.md, "Live state"), as the app's own model. The
+// device fills only the parts the phone subscribed to (BLEManager's
+// LiveSubscribe, chosen from the page in view), and an absent optional field
+// is "no reading".
 
 /// Everything the device's pages draw, as of the last frame.
 struct LiveFrame: Equatable {
-    // RIDE (0x01)
+    // RIDE
     var gpsFix = false
     var recording = false
     var paused = false
@@ -34,7 +21,8 @@ struct LiveFrame: Equatable {
     var timeValid = false
     var battery = 0
     var sats = 0
-    var speedKmh = 0.0
+    /// nil = no speed reading.
+    var speedKmh: Double?
     var power: Int?
     var power3s: Int?
     var heartRate: Int?
@@ -66,11 +54,8 @@ struct LiveFrame: Equatable {
     }
     var stopwatch: Stopwatch?
 
-    /// The stopwatch page's lap table (STOPWATCH_LAPS 0x07): its columns and
-    /// the newest completed laps, newest first. nil on firmware without the
-    /// record (HELLO caps b2). Kept across frames rather than cleared by
-    /// `startFrame`: it is sent with every frame (n = 0 with no laps), and a
-    /// frame spread over several notifies must not blank the table between them.
+    /// The stopwatch page's lap table: its columns and the newest completed
+    /// laps, newest first. nil on firmware without FEATURE_STOPWATCH_LAPS.
     struct StopwatchLaps: Equatable {
         struct Lap: Equatable {
             var number = 0
@@ -123,146 +108,91 @@ struct LiveFrame: Equatable {
         /// 1.0 normal, 0 paused, negative rewinding.
         var rate = 0.0
     }
-    /// The device's player position (MUSIC 0x06); nil on firmware without it.
+    /// The device's player position; nil unless MUSIC is subscribed.
     var music: Music?
 
-    /// From HELLO: the device's keepalive timeout.
-    var keepaliveTimeoutS: Int?
-    /// From HELLO: b0 takes stopwatch commands, b1 sends MUSIC, b2 sends
-    /// STOPWATCH_LAPS. 0 on the first firmware with the stream (a 2-byte HELLO).
-    var caps: UInt8 = 0
-    var takesStopwatchCommands: Bool { caps & 0x01 != 0 }
-    var sendsStopwatchLaps: Bool { caps & 0x04 != 0 }
-    /// Firmware that holds 7 configurable pages plus the map (5 before).
-    var holdsEightPages: Bool { caps & 0x08 != 0 }
+    /// The device takes StopwatchCommand (FEATURE_STOPWATCH).
+    var takesStopwatchCommands = false
+}
 
-    /// Apply one notify's records. Sections that are sent only while they
-    /// have something to say (position, radar) are cleared by `startFrame`.
-    mutating func apply(records d: Data) {
-        var i = d.startIndex
-        while i + 2 <= d.endIndex {
-            let type = d[i], len = Int(d[i + 1])
-            let start = i + 2
-            guard start + len <= d.endIndex else { return }
-            let b = Reader(d[start..<(start + len)])
-            switch type {
-            case 0x00:
-                keepaliveTimeoutS = b.u8(0).map(Int.init)
-                caps = b.u8(2) ?? 0
-            case 0x01:
-                guard len >= 32 else { break }
-                let f = b.u16(0) ?? 0
-                gpsFix = f & 1 << 0 != 0
-                recording = f & 1 << 1 != 0
-                paused = f & 1 << 2 != 0
-                routeActive = f & 1 << 3 != 0
-                charging = f & 1 << 4 != 0
-                hrLive = f & 1 << 5 != 0
-                powerLive = f & 1 << 6 != 0
-                cadenceLive = f & 1 << 7 != 0
-                wheelSpeed = f & 1 << 8 != 0
-                let gradeValid = f & 1 << 9 != 0
-                let altValid = f & 1 << 10 != 0
-                altitudeBaro = f & 1 << 11 != 0
-                radarConnected = f & 1 << 12 != 0
-                timeValid = f & 1 << 14 != 0
-                battery = Int(b.u8(2) ?? 0)
-                sats = Int(b.u8(3) ?? 0)
-                speedKmh = Double(b.u16(4) ?? 0) / 10
-                power = b.u16(6).flatMap { $0 == 0xFFFF ? nil : Int($0) }
-                power3s = b.u16(8).flatMap { $0 == 0xFFFF ? nil : Int($0) }
-                heartRate = b.u8(10).flatMap { $0 == 0xFF ? nil : Int($0) }
-                cadence = b.u8(11).flatMap { $0 == 0xFF ? nil : Int($0) }
-                distanceM = Double(b.u32(12) ?? 0)
-                rideTimeS = Int(b.u32(16) ?? 0)
-                movingTimeS = Int(b.u32(20) ?? 0)
-                climbM = Double(b.u16(24) ?? 0)
-                gradePct = gradeValid ? Double(Int16(bitPattern: b.u16(26) ?? 0)) / 10 : nil
-                altitudeM = altValid ? Double(Int16(bitPattern: b.u16(28) ?? 0)) : nil
-                routeLeftKm = Double(b.u16(30) ?? 0) / 10
-            case 0x02:
-                guard len >= 19 else { break }
-                let f = b.u8(0) ?? 0
-                var s = Stopwatch()
-                s.running = f & 1 != 0
-                s.showPower = f & 2 != 0
-                s.showCadence = f & 4 != 0
-                s.elapsedMs = b.u32(1) ?? 0
-                s.laps = Int(b.u8(5) ?? 0)
-                s.lapMs = b.u32(6) ?? 0
-                s.lastSplitMs = b.u32(10).flatMap { $0 == 0 ? nil : $0 }
-                s.lapAvgSpeedKmh = b.u16(14).flatMap { $0 == 0xFFFF ? nil : Double($0) / 10 }
-                s.lapAvgPowerW = b.u16(16).flatMap { $0 == 0xFFFF ? nil : Int($0) }
-                s.lapAvgCadence = b.u8(18).flatMap { $0 == 0xFF ? nil : Int($0) }
-                stopwatch = s
-            case 0x03:
-                guard len >= 3 else { break }
-                let p = b.u8(0) ?? 0xFF
-                view = View(page: p == 0xFF ? nil : Int(p), pageCount: Int(b.u8(1) ?? 0),
-                            screen: Int(b.u8(2) ?? 2))
-            case 0x04:
-                guard len >= 11 else { break }
-                let c = b.u16(8) ?? 0xFFFF
-                position = Position(lat: Double(Int32(bitPattern: b.u32(0) ?? 0)) / 1e7,
-                                    lon: Double(Int32(bitPattern: b.u32(4) ?? 0)) / 1e7,
-                                    courseDeg: c == 0xFFFF ? nil : Double(c) / 10,
-                                    current: (b.u8(10) ?? 0) & 1 != 0)
-            case 0x05:
-                guard len >= 2 else { break }
-                let n = min(Int(b.u8(1) ?? 0), len - 2)
-                radar = Radar(live: (b.u8(0) ?? 0) & 1 != 0,
-                              distancesM: (0..<n).compactMap { b.u8(2 + $0).map(Int.init) })
-            case 0x06:
-                guard len >= 11 else { break }
-                let f = b.u8(0) ?? 0
-                let dur = b.u32(5) ?? 0
-                music = Music(present: f & 1 != 0, playing: f & 2 != 0, ams: f & 4 != 0,
-                              elapsedMs: b.u32(1) ?? 0, durationMs: dur == 0 ? nil : dur,
-                              rate: Double(Int16(bitPattern: b.u16(9) ?? 0)) / 100)
-            case 0x07:
-                guard len >= 2 else { break }
-                let cols = b.u8(0) ?? 1
-                let n = min(Int(b.u8(1) ?? 0), (len - 2) / 10)
-                var t = StopwatchLaps(showCadence: cols & 2 != 0, showPower: cols & 4 != 0)
-                t.laps = (0..<n).map { r in
-                    let o = 2 + 10 * r
-                    return StopwatchLaps.Lap(
-                        number: Int(b.u8(o) ?? 0),
-                        splitMs: b.u32(o + 1) ?? 0,
-                        avgSpeedKmh: b.u16(o + 5).flatMap { $0 == 0xFFFF ? nil : Double($0) / 10 },
-                        avgCadence: b.u8(o + 7).flatMap { $0 == 0xFF ? nil : Int($0) },
-                        avgPowerW: b.u16(o + 8).flatMap { $0 == 0xFFFF ? nil : Int($0) })
-                }
-                stopwatchLaps = t
-            default:
-                break   // a newer record: skipped by its length
+extension LiveFrame {
+    /// One link frame. `laps`: the device has FEATURE_STOPWATCH_LAPS;
+    /// `stopwatchCommands`: FEATURE_STOPWATCH.
+    init(link f: LinkLiveFrame, laps: Bool, stopwatchCommands: Bool) {
+        self.init()
+        takesStopwatchCommands = stopwatchCommands
+        if f.hasRide {
+            let r = f.ride
+            gpsFix = r.fix
+            recording = r.recording
+            paused = r.autoPaused
+            routeActive = r.routeActive
+            charging = r.charging
+            hrLive = r.hasHrBpm
+            powerLive = r.hasPowerW
+            cadenceLive = r.hasCadenceRpm
+            wheelSpeed = r.speedFromWheel
+            timeValid = r.timeValid
+            battery = Int(r.batteryPct)
+            sats = Int(r.sats)
+            speedKmh = r.hasSpeedDkmh ? Double(r.speedDkmh) / 10 : nil
+            power = r.hasPowerW ? Int(r.powerW) : nil
+            power3s = r.hasPower3SW ? Int(r.power3SW) : nil
+            heartRate = r.hasHrBpm ? Int(r.hrBpm) : nil
+            cadence = r.hasCadenceRpm ? Int(r.cadenceRpm) : nil
+            distanceM = Double(r.distanceM)
+            rideTimeS = Int(r.elapsedS)
+            movingTimeS = Int(r.movingS)
+            climbM = Double(r.climbM)
+            gradePct = r.hasGradeDpct ? Double(r.gradeDpct) / 10 : nil
+            altitudeM = r.hasAltitudeM ? Double(r.altitudeM) : nil
+            altitudeBaro = r.altitudeBaro
+            routeLeftKm = r.hasRouteLeftM ? Double(r.routeLeftM) / 1000 : 0
+            radarConnected = r.radarConnected
+        }
+        if f.hasStopwatch {
+            let w = f.stopwatch
+            var s = Stopwatch()
+            s.running = w.running
+            s.showPower = w.showsPower
+            s.showCadence = w.showsCadence
+            s.elapsedMs = w.elapsedMs
+            s.laps = Int(w.laps)
+            s.lapMs = w.lapMs
+            s.lastSplitMs = w.hasLastSplitMs ? w.lastSplitMs : nil
+            s.lapAvgSpeedKmh = w.hasLapSpeedDkmh ? Double(w.lapSpeedDkmh) / 10 : nil
+            s.lapAvgPowerW = w.hasLapPowerW ? Int(w.lapPowerW) : nil
+            s.lapAvgCadence = w.hasLapCadenceRpm ? Int(w.lapCadenceRpm) : nil
+            stopwatch = s
+            if laps {
+                stopwatchLaps = StopwatchLaps(
+                    showCadence: w.showsCadence, showPower: w.showsPower,
+                    laps: w.recent.map {
+                        .init(number: Int($0.number), splitMs: $0.splitMs,
+                              avgSpeedKmh: $0.hasSpeedDkmh ? Double($0.speedDkmh) / 10 : nil,
+                              avgCadence: $0.hasCadenceRpm ? Int($0.cadenceRpm) : nil,
+                              avgPowerW: $0.hasPowerW ? Int($0.powerW) : nil)
+                    })
             }
-            i = start + len
         }
-    }
-
-    /// A new frame (new seq): the sections sent only while present go, so a
-    /// radar that disconnected or a position that never came doesn't linger.
-    mutating func startFrame() {
-        position = nil
-        radar = nil
-    }
-
-    private struct Reader {
-        let d: Data
-        init(_ d: Data) { self.d = d }
-        func u8(_ o: Int) -> UInt8? {
-            o < d.count ? d[d.startIndex + o] : nil
+        if f.hasView {
+            view = View(page: f.view.hasPage ? Int(f.view.page) : nil,
+                        pageCount: Int(f.view.pageCount), screen: f.view.screen.rawValue)
         }
-        func u16(_ o: Int) -> UInt16? {
-            guard o + 2 <= d.count else { return nil }
-            let s = d.startIndex + o
-            return UInt16(d[s]) | UInt16(d[s + 1]) << 8
+        if f.hasPosition {
+            let p = f.position
+            position = Position(lat: Double(p.latE7) / 1e7, lon: Double(p.lonE7) / 1e7,
+                                courseDeg: p.hasCourseDdeg ? Double(p.courseDdeg) / 10 : nil,
+                                current: p.current)
         }
-        func u32(_ o: Int) -> UInt32? {
-            guard o + 4 <= d.count else { return nil }
-            let s = d.startIndex + o
-            return UInt32(d[s]) | UInt32(d[s + 1]) << 8 | UInt32(d[s + 2]) << 16 | UInt32(d[s + 3]) << 24
+        if f.hasRadar {
+            radar = Radar(live: f.radar.live, distancesM: f.radar.distancesM.map(Int.init))
+        }
+        if f.hasMusic {
+            let m = f.music
+            music = Music(present: m.hasPlayer_p, playing: m.playing, ams: m.fromAms,
+                          elapsedMs: m.elapsedMs, durationMs: m.durationMs == 0 ? nil : m.durationMs,
+                          rate: Double(m.ratePct) / 100)
         }
     }
 }
@@ -274,50 +204,34 @@ struct LiveFrame: Equatable {
 /// every screen's BLEScope check for numbers only the Ride tab draws.
 @MainActor
 final class DeviceLive: ObservableObject {
-    /// nil = no stream (old firmware, not started yet, or it went quiet);
-    /// the Ride tab falls back to the status characteristic.
+    /// nil = no stream (firmware without the link, not started yet, or it
+    /// went quiet); the Ride tab then falls back to the status values.
     @Published private(set) var frame: LiveFrame?
     /// When the frame arrived, for counting a running stopwatch on.
     private(set) var receivedAt = Date.distantPast
-    /// When the MUSIC record last changed (every frame while playing): the
+    /// When the MUSIC part last changed (every frame while playing): the
     /// moment its elapsed time was true, give or take the link's latency.
     private var musicAt = Date.distantPast
-
-    private var seq: UInt8?
-    private var building = LiveFrame()
     private var staleTimer: Timer?
 
-    /// One TX notification.
-    func ingest(_ d: Data) {
-        guard d.count >= 2, d[d.startIndex] >= 1 else { return }
-        let s = d[d.startIndex + 1]
-        if s != seq {
-            if seq == nil { NSLog("[live] first frame (%d bytes)", d.count) }
-            seq = s
-            building.startFrame()
-        }
-        let music = building.music
-        building.apply(records: d.dropFirst(2))
+    /// One LiveFrame from the link.
+    func ingest(_ f: LinkLiveFrame, laps: Bool, stopwatchCommands: Bool) {
+        let next = LiveFrame(link: f, laps: laps, stopwatchCommands: stopwatchCommands)
         receivedAt = Date()
-        if building.music != music { musicAt = receivedAt }
-        if frame != building { frame = building }
-        if building.holdsEightPages { DashConfig.deviceHoldsMorePages = true }
+        if next.music != frame?.music { musicAt = receivedAt }
+        if frame != next { frame = next }
         armStale()
     }
 
-    /// The stream stopped (STOP, disconnect, background).
+    /// The stream stopped (disconnect).
     func clear() {
-        if frame != nil { NSLog("[live] frame cleared") }
         staleTimer?.invalidate(); staleTimer = nil
-        seq = nil
-        building = LiveFrame()
         if frame != nil { frame = nil }
     }
 
     /// Screenshot demo (-demo-live): a frame as if streamed.
     func showDemo(_ f: LiveFrame) {
-        if f.music != building.music { musicAt = Date() }
-        building = f
+        if f.music != frame?.music { musicAt = Date() }
         receivedAt = Date()
         if frame != f { frame = f }
     }
@@ -325,7 +239,7 @@ final class DeviceLive: ObservableObject {
     /// The player's position now, in ms: the device's, counted on at its
     /// rate while playing (capped at 10 s past the last frame, so a stream
     /// that stalls doesn't run the bar off on its own) and held while paused,
-    /// clamped to the track. nil without a MUSIC record or a player.
+    /// clamped to the track. nil without a MUSIC part or a player.
     func musicPositionMs(at now: Date) -> UInt32? {
         guard let m = frame?.music, m.present else { return nil }
         var p = Double(m.elapsedMs)
@@ -337,11 +251,11 @@ final class DeviceLive: ObservableObject {
     }
 
     /// Frames come every second; a stream silent for 4 s is gone (out of
-    /// range, keepalive refused), and stale numbers must not pose as live.
+    /// range), and stale numbers must not pose as live.
     private func armStale() {
         staleTimer?.invalidate()
         staleTimer = Timer.scheduledTimer(withTimeInterval: 4, repeats: false) { [weak self] _ in
-            MainActor.assumeIsolated { NSLog("[live] stale: no frame for 4 s"); self?.clear() }
+            MainActor.assumeIsolated { self?.clear() }
         }
     }
 

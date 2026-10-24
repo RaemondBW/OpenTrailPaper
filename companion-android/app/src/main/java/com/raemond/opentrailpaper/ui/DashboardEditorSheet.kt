@@ -181,6 +181,8 @@ fun DashboardEditorSheet(ble: BleManager, onDismiss: () -> Unit) {
                     when {
                         ble.pendingDashConfig == null ->
                             "Not connected · edits are saved and sync on the next connect"
+                        connected && ble.dashWaitingForDevice ->
+                            "Waiting for the device · it saves the layout once the ride stops recording"
                         connected -> "Syncing layout…"
                         else -> "Will sync when connected"
                     },
@@ -190,6 +192,7 @@ fun DashboardEditorSheet(ble: BleManager, onDismiss: () -> Unit) {
             PageCarousel(
                 useMiles = ble.useMiles,
                 config = config,
+                maxPages = ble.dashMaxPages,
                 pageIx = pageIx,
                 onSelect = { i ->
                     pageIx = i
@@ -346,6 +349,8 @@ fun DashboardEditorSheet(ble: BleManager, onDismiss: () -> Unit) {
 private fun PageCarousel(
     useMiles: Boolean,
     config: DashConfig,
+    /** Content pages the device holds (DeviceHello.dash_max_pages, else 4). */
+    maxPages: Int,
     pageIx: Int,
     onSelect: (Int) -> Unit,
     onRemove: (Int) -> Unit,
@@ -424,7 +429,7 @@ private fun PageCarousel(
             }
         }
 
-        if (config.contentPages < DashConfig.MAX_PAGES) {
+        if (config.contentPages < maxPages) {
             AddPageCard(
                 hasMusic = config.hasMusicPage,
                 hasWorkout = config.hasWorkoutPage,

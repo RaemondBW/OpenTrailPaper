@@ -49,11 +49,64 @@ import com.raemond.opentrailpaper.data.SettingsMerge
 import com.raemond.opentrailpaper.data.FirmwareRelease
 import com.raemond.opentrailpaper.data.Prefs
 import com.raemond.opentrailpaper.transfer.TransferCenter
+import com.raemond.opentrailpaper.BuildConfig
+import com.raemond.opentrailpaper.link.Cancellable
+import com.raemond.opentrailpaper.link.LinkClient
+import com.raemond.opentrailpaper.link.LinkClock
+import com.raemond.opentrailpaper.link.LinkText
+import com.raemond.opentrailpaper.link.LinkTransport
+import com.raemond.opentrailpaper.link.proto.ArtFormat
+import com.raemond.opentrailpaper.link.proto.DeleteRequest
+import com.raemond.opentrailpaper.link.proto.DeviceHello
+import com.raemond.opentrailpaper.link.proto.DeviceMsg
+import com.raemond.opentrailpaper.link.proto.Empty
+import com.raemond.opentrailpaper.link.proto.Feature
+import com.raemond.opentrailpaper.link.proto.GetMapLayers
+import com.raemond.opentrailpaper.link.proto.Hello
+import com.raemond.opentrailpaper.link.proto.ListKind
+import com.raemond.opentrailpaper.link.proto.ListRequest
+import com.raemond.opentrailpaper.link.proto.LiveFrame
+import com.raemond.opentrailpaper.link.proto.LiveSubscribe
+import com.raemond.opentrailpaper.link.proto.LiveTopic
+import com.raemond.opentrailpaper.link.proto.MapLayers
+import com.raemond.opentrailpaper.link.proto.MediaClear
+import com.raemond.opentrailpaper.link.proto.MediaMeta
+import com.raemond.opentrailpaper.link.proto.MediaTrack
+import com.raemond.opentrailpaper.link.proto.MeshChannelEdit
+import com.raemond.opentrailpaper.link.proto.MeshCommand
+import com.raemond.opentrailpaper.link.proto.MeshGet
+import com.raemond.opentrailpaper.link.proto.MeshPrimary
+import com.raemond.opentrailpaper.link.proto.MeshRename
+import com.raemond.opentrailpaper.link.proto.MeshSend
+import com.raemond.opentrailpaper.link.proto.MeshShare
+import com.raemond.opentrailpaper.link.proto.MeshTopic
+import com.raemond.opentrailpaper.link.proto.PhoneLocation
+import com.raemond.opentrailpaper.link.proto.PhoneMsg
+import com.raemond.opentrailpaper.link.proto.Platform
+import com.raemond.opentrailpaper.link.proto.ProtoVersion
+import com.raemond.opentrailpaper.link.proto.ResultCode
+import com.raemond.opentrailpaper.link.proto.RouteFinish
+import com.raemond.opentrailpaper.link.proto.RouteManeuvers
+import com.raemond.opentrailpaper.link.proto.SensorCommand
+import com.raemond.opentrailpaper.link.proto.SensorOp
+import com.raemond.opentrailpaper.link.proto.Source
+import com.raemond.opentrailpaper.link.proto.StopwatchCommand
+import com.raemond.opentrailpaper.link.proto.StopwatchOp
+import com.raemond.opentrailpaper.link.proto.Target
+import com.raemond.opentrailpaper.link.proto.Unpair
+import com.raemond.opentrailpaper.link.proto.UploadBegin
+import com.raemond.opentrailpaper.link.proto.WorkoutCommand
+import com.raemond.opentrailpaper.link.proto.WorkoutOp
+import com.raemond.opentrailpaper.link.proto.DashConfig as PDashConfig
+import com.raemond.opentrailpaper.link.proto.Maneuver as PManeuver
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.ByteArrayOutputStream
@@ -206,15 +259,33 @@ class BleManager(private val app: Application) {
     }
 
     /** Ask the device for its mask (sent once the map characteristic notifies). */
-    fun requestMapLayers() = writeChar(mapChar, byteArrayOf(0x09))
+    fun requestMapLayers() {
+        if (linkReady) {
+            if (has(Feature.FEATURE_MAP_LAYERS)) link.send(PhoneMsg.newBuilder().setGetMapLayers(GetMapLayers.getDefaultInstance()))
+        } else {
+            writeChar(mapChar, byteArrayOf(0x09))
+        }
+    }
+
+    /** Set the device's mask; it answers (and echoes) with its own. */
+    private fun sendMapLayers(mask: Int) {
+        if (linkReady) {
+            link.send(PhoneMsg.newBuilder().setSetMapLayers(MapLayers.newBuilder().setMask(mask)))
+        } else {
+            writeChar(mapChar, byteArrayOf(0x0A, (mask and 0xFF).toByte(), ((mask shr 8) and 0xFF).toByte()))
+        }
+    }
+
+    private val mapLayersPath: Boolean
+        get() = if (linkReady) has(Feature.FEATURE_MAP_LAYERS) else mapChar != null && mapLayersSupported
 
     /** Change the device's map layers: applied now when connected, otherwise
      *  remembered and sent on the next connect. */
     fun updateMapLayers(mask: Int) {
         mapLayers = mask
         val k = layersDeviceKey() ?: return
-        if (mapChar != null && mapLayersSupported) {
-            writeChar(mapChar, byteArrayOf(0x0A, (mask and 0xFF).toByte(), ((mask shr 8) and 0xFF).toByte()))
+        if (mapLayersPath) {
+            sendMapLayers(mask)
             Prefs.mapLayersByDevice = Prefs.mapLayersByDevice + (k to mask.toLong())
             Prefs.mapLayersPending = Prefs.mapLayersPending - k
         } else {
@@ -227,9 +298,9 @@ class BleManager(private val app: Application) {
         mapLayersSupported = true
         Prefs.mapLayersSupported = Prefs.mapLayersSupported + k
         val pending = Prefs.mapLayersPending[k]?.toInt()
-        if (pending != null && pending != mask && mapChar != null) {
+        if (pending != null && pending != mask && (linkReady || mapChar != null)) {
             // An edit made while disconnected: it wins over the device's value.
-            writeChar(mapChar, byteArrayOf(0x0A, (pending and 0xFF).toByte(), ((pending shr 8) and 0xFF).toByte()))
+            sendMapLayers(pending)
             mapLayers = pending
         } else {
             Prefs.mapLayersPending = Prefs.mapLayersPending - k
@@ -377,8 +448,29 @@ class BleManager(private val app: Application) {
      */
     var dashConfig by mutableStateOf<DashConfig?>(null); private set
 
+    /**
+     * Content pages (the map page not counted) the device holds: its
+     * DeviceHello.dash_max_pages over the link, [DashConfig.MAX_PAGES] on
+     * legacy firmware. Remembered per device, so the editor offline offers
+     * what the device will take.
+     */
+    var dashMaxPages by mutableStateOf(DashConfig.MAX_PAGES); private set
+
+    private fun noteDashMaxPages(n: Int) {
+        val pages = if (n > 0) n.coerceAtMost(DashConfig.PARSE_MAX_PAGES) else DashConfig.MAX_PAGES
+        dashMaxPages = pages
+        val k = settingsDeviceId.takeIf { it != DeviceSettingsCache.UNPAIRED } ?: return
+        Prefs.dashMaxPagesByDevice = Prefs.dashMaxPagesByDevice + (k to pages.toLong())
+    }
+
     /** The rider's offline layout, while it waits for the device. */
     var pendingDashConfig by mutableStateOf<DashConfig?>(null); private set
+
+    /**
+     * A layout write has gone unanswered for a few seconds: the device holds
+     * it until the SD card is free (a ride is recording). Not a failure.
+     */
+    var dashWaitingForDevice by mutableStateOf(false); private set
 
     /** What the editor edits: the unsynced layout, else the device's. */
     val dashTarget: DashConfig? get() = pendingDashConfig ?: dashConfig
@@ -458,8 +550,8 @@ class BleManager(private val app: Application) {
     /** The device refused the last send — radio off, or its outbox is full. */
     var meshSendRejected by mutableStateOf(false); private set
 
-    /** Whether this firmware has the mesh characteristic at all. */
-    val meshSupported: Boolean get() = meshChar != null
+    /** Whether this firmware has the mesh at all (the characteristic, or FEATURE_MESH). */
+    val meshSupported: Boolean get() = if (linkReady) has(Feature.FEATURE_MESH) else meshChar != null
 
     /** Whether Mesh has something to talk to. */
     val meshAttached: Boolean get() = state == ConnState.CONNECTED && meshSupported
@@ -481,6 +573,67 @@ class BleManager(private val app: Application) {
     private var gatt: BluetoothGatt? = null
     private var device: BluetoothDevice? = null
     private val queue = GattQueue()
+
+    // MARK: phone link (docs/ble-link.md)
+    //
+    // Firmware with service b1c51000 gets every feature over one protobuf
+    // channel (link/LinkClient.kt); without it, or when Hello goes
+    // unanswered, the legacy characteristics below. Decided per connection.
+
+    private enum class LinkMode { NONE, HANDSHAKE, LINK, LEGACY }
+    private var linkMode = LinkMode.NONE
+    private var linkRx: BluetoothGattCharacteristic? = null
+    private var linkTx: BluetoothGattCharacteristic? = null
+
+    /** The link is up on this connection: every feature goes through it. */
+    var linkReady by mutableStateOf(false); private set
+
+    /** What the device said about itself in DeviceHello (null: legacy or not connected). */
+    var deviceHello by mutableStateOf<DeviceHello?>(null); private set
+    private var linkFeatures by mutableStateOf<Set<Feature>>(emptySet())
+
+    /** The device listed [f] in its DeviceHello on this connection. */
+    fun has(f: Feature): Boolean = linkReady && f in linkFeatures
+
+    private val liveFrameFlow = MutableStateFlow<LiveFrame?>(null)
+
+    /**
+     * The device's live state (link firmware only): RIDE always, plus the
+     * topics asked for with [setLiveTopics]. null when not connected over the link.
+     */
+    val liveFrame: StateFlow<LiveFrame?> = liveFrameFlow.asStateFlow()
+
+    /** The track the device's AMS reports (iOS phones); empty otherwise. */
+    var deviceMediaTrack by mutableStateOf<MediaTrack?>(null); private set
+
+    private val link: LinkClient = LinkClient(
+        transport = object : LinkTransport {
+            override val maxWrite: Int get() = max(20, mtu - 3)
+            override fun write(fragment: ByteArray, withoutResponse: Boolean, done: (Boolean) -> Unit) {
+                val c = linkRx ?: return done(false)
+                queue.enqueue(
+                    GattQueue.Op.Write(
+                        c, fragment,
+                        if (withoutResponse) BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                        else BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
+                        done,
+                    ),
+                )
+            }
+        },
+        clock = LinkClock { ms, block ->
+            val r = Runnable(block)
+            main.postDelayed(r, ms)
+            Cancellable { main.removeCallbacks(r) }
+        },
+        log = { android.util.Log.i(LINK_TAG, it) },
+    ).also {
+        it.listener = object : LinkClient.Listener {
+            override fun onReady(hello: DeviceHello) = onLinkReady(hello)
+            override fun onFallback(reason: String) = onLinkFallback(reason)
+            override fun onMessage(msg: DeviceMsg) = onLinkMessage(msg)
+        }
+    }
 
     private var settingsChar: BluetoothGattCharacteristic? = null
     private var statusChar: BluetoothGattCharacteristic? = null
@@ -535,6 +688,8 @@ class BleManager(private val app: Application) {
     private var tileJobStarted = 0L
     private var tileJobBytes = 0L
     private var tileJobFailed = false
+    /** RESULT_BUSY answers in a row for this job's tiles (LinkClient retries each first). */
+    private var tileBusyStreak = 0
     private var tilesMoreComing = false
     private var tileIdsBuilding = mutableListOf<String>()
 
@@ -907,9 +1062,15 @@ class BleManager(private val app: Application) {
      * Not connected: forget here only.
      */
     fun unpairDevice() {
-        val c = settingsChar
-        if (state != ConnState.CONNECTED || c == null) { forgetDevice(); return }
-        writeChar(c, byteArrayOf(0xFE.toByte(), 0x55))
+        // The legacy FE 55 is still accepted in link mode; it is the way to
+        // unpair firmware whose link lacks FEATURE_UNPAIR.
+        val c = settingsChar ?: gatt?.getService(BikeUuid.service)?.getCharacteristic(BikeUuid.settings)
+        if (state != ConnState.CONNECTED || (c == null && !has(Feature.FEATURE_UNPAIR))) { forgetDevice(); return }
+        if (has(Feature.FEATURE_UNPAIR)) {
+            link.send(PhoneMsg.newBuilder().setUnpair(Unpair.getDefaultInstance()))
+        } else {
+            writeChar(c, byteArrayOf(0xFE.toByte(), 0x55))
+        }
         // The device drops the link once it has acted; give the write a moment.
         main.postDelayed({ forgetDevice() }, 1500)
     }
@@ -1175,6 +1336,30 @@ class BleManager(private val app: Application) {
             state = ConnState.IDLE
             return
         }
+        loadMapLayersState()
+        // The link first: with it the legacy characteristics are never
+        // subscribed, and the device sends every push on the link alone.
+        val ls = g.getService(LinkUuid.service)
+        val rx = ls?.getCharacteristic(LinkUuid.rx)
+        val tx = ls?.getCharacteristic(LinkUuid.tx)
+        if (rx != null && tx != null) {
+            linkRx = rx
+            linkTx = tx
+            linkMode = LinkMode.HANDSHAKE
+            android.util.Log.i(LINK_TAG, "service found, subscribing TX (mtu $mtu)")
+            queue.enqueue(GattQueue.Op.Notify(tx, true))
+            link.begin(linkHello())
+            return
+        }
+        android.util.Log.i(LINK_TAG, "no link service: legacy protocol")
+        bindLegacy(service)
+    }
+
+    /** The legacy characteristics: firmware without the link, or a link that never said hello. */
+    private fun bindLegacy(service: android.bluetooth.BluetoothGattService) {
+        linkMode = LinkMode.LEGACY
+        // Legacy firmware says nothing about its page limit: the safe one.
+        noteDashMaxPages(0)
         settingsChar = service.getCharacteristic(BikeUuid.settings)
         statusChar = service.getCharacteristic(BikeUuid.status)
         routeChar = service.getCharacteristic(BikeUuid.route)
@@ -1182,7 +1367,6 @@ class BleManager(private val app: Application) {
         otaChar = service.getCharacteristic(BikeUuid.ota)
         sensorsChar = service.getCharacteristic(BikeUuid.sensors)
         mapChar = service.getCharacteristic(BikeUuid.map)
-        loadMapLayersState()
         dashChar = service.getCharacteristic(BikeUuid.dash)
         // Absent on firmware built before the mesh landed, so every mesh call
         // below no-ops rather than crashing on an older device. Same for media
@@ -1210,8 +1394,13 @@ class BleManager(private val app: Application) {
 
     /** A protected read came back: the first one on a link admits it. */
     private fun onProtectedRead(uuid: java.util.UUID) {
-        if (admittedSinceConnect) return
         if (uuid != BikeUuid.settings && uuid != BikeUuid.status) return
+        markAdmitted()
+    }
+
+    /** The device has us: a protected read on the legacy path, DeviceHello on the link. */
+    private fun markAdmitted() {
+        if (admittedSinceConnect) return
         admittedSinceConnect = true
         admissionWatchdog?.cancel(); admissionWatchdog = null
         rememberPairedDevice()   // an authenticated read: the device has our bond
@@ -1235,6 +1424,7 @@ class BleManager(private val app: Application) {
      */
     private fun onNotifyEnabled(uuid: java.util.UUID) {
         when (uuid) {
+            LinkUuid.tx -> link.onTxSubscribed()
             BikeUuid.ota -> queryDeviceFirmware()
             BikeUuid.sensors -> refreshSensors()   // one snapshot
             // Same ordering constraint: every mesh reply is a notification, so
@@ -1253,6 +1443,10 @@ class BleManager(private val app: Application) {
     }
 
     private fun dispatch(uuid: java.util.UUID, data: ByteArray) {
+        if (uuid == LinkUuid.tx) { link.onFragment(data); return }
+        // Link (or deciding): the device sends nothing on the legacy
+        // characteristics, and anything that still arrives is not acted on.
+        if (linkMode != LinkMode.LEGACY) return
         when (uuid) {
             BikeUuid.status -> parseStatus(data)
             BikeUuid.settings -> parseSettings(data)
@@ -1276,7 +1470,12 @@ class BleManager(private val app: Application) {
             dashChar?.let { queue.enqueue(GattQueue.Op.Read(it)) }
             return
         }
-        val cfg = DashConfig.parse(String(data, Charsets.UTF_8))
+        adoptDashText(String(data, Charsets.UTF_8))
+    }
+
+    /** The layout the device holds: a legacy read/notify, or DashConfig over the link. */
+    private fun adoptDashText(text: String) {
+        val cfg = DashConfig.parse(text)
         dashConfig = cfg
         dashSeenThisLink = true
         settingsCache = settingsCache.copy(dashText = cfg.configText)
@@ -1286,6 +1485,20 @@ class BleManager(private val app: Application) {
     }
 
     private fun handleDisconnect(statusCode: Int) {
+        // The link's transfers end with this connection. Their handles are
+        // dropped first, so the failure callbacks the reset fires are ignored
+        // and the legacy-shaped cleanup below decides what the rider sees.
+        otaUpload = null; mapUpload = null; tileUpload = null; routeUpload = null
+        artUpload = null; workoutUpload = null; workoutFetch = null; dlHandle = null
+        link.reset("disconnected")
+        linkMode = LinkMode.NONE
+        linkReady = false
+        linkFeatures = emptySet()
+        deviceHello = null
+        deviceMediaTrack = null
+        liveFrameFlow.value = null
+        linkRx = null; linkTx = null
+        lastLinkMediaMeta = null
         settingsChar = null; statusChar = null; routeChar = null; ridesChar = null
         sensorsChar = null; mapChar = null; otaChar = null; dashChar = null
         meshChar = null; mediaChar = null; workoutChar = null
@@ -1293,6 +1506,7 @@ class BleManager(private val app: Application) {
         settingsSeenThisLink = false; settingsWriteInFlight = null
         settingsWriteFailedThisLink = false
         dashSeenThisLink = false; dashWriteInFlight = null; dashWriteFailedThisLink = false
+        dashWaitingForDevice = false
         mediaToneArt = false   // the next device may be older firmware
         lastMediaMeta = null
         updateMediaRemote()    // no link, no media observers
@@ -1533,6 +1747,7 @@ class BleManager(private val app: Application) {
     fun setCurrentDevice(id: String) {
         if (id == settingsDeviceId || demoOfflineSettings) return
         settingsDeviceId = id
+        dashMaxPages = Prefs.dashMaxPagesByDevice[id]?.toInt() ?: DashConfig.MAX_PAGES
         rides = RideListingStore.load(id)   // that device's last-known ride list
         settingsCache = DeviceSettingsStore.setCurrent(id)
         dashConfig = settingsCache.dashText?.let { DashConfig.parse(it) }
@@ -1543,6 +1758,7 @@ class BleManager(private val app: Application) {
 
     private fun loadSettingsCache() {
         settingsDeviceId = DeviceSettingsStore.currentDevice
+        dashMaxPages = Prefs.dashMaxPagesByDevice[settingsDeviceId]?.toInt() ?: DashConfig.MAX_PAGES
         rides = RideListingStore.load(settingsDeviceId)   // last-known ride list
         settingsCache = DeviceSettingsStore.load(settingsDeviceId)
         settingsCache.dashText?.let { dashConfig = DashConfig.parse(it) }
@@ -1591,7 +1807,8 @@ class BleManager(private val app: Application) {
     private fun syncSettings() {
         if (!settingsSeenThisLink || settingsWriteInFlight != null || settingsWriteFailedThisLink) return
         val dev = settingsCache.device ?: return
-        val ch = settingsChar ?: return
+        val ch = settingsChar
+        if (!linkReady && ch == null) return
         val r = SettingsMerge.merge(dev, null, settingsCache.pending)
         val kept = SettingsMerge.clearSatisfied(
             settingsCache.pending - r.dropped.map { it.key }.toSet(), dev,
@@ -1602,6 +1819,22 @@ class BleManager(private val app: Application) {
         val payload = r.payload ?: return
         val pushed = r.pushed
         settingsWriteInFlight = pushed
+        if (linkReady) {
+            // Only the fields that changed: the device keeps the rest.
+            link.request(
+                PhoneMsg.newBuilder().setSetSettings(LinkCodec.settingsChange(pushed)),
+                onFail = { _, _ -> settingsWriteAcked(pushed, false) },
+            ) { m ->
+                if (m.hasSettings()) {
+                    settingsWriteAcked(pushed, true)
+                    onLinkSettings(m.settings)
+                } else {
+                    settingsWriteAcked(pushed, m.hasResult() && m.result.code == ResultCode.RESULT_OK)
+                }
+                true
+            }
+            return
+        }
         writeChar(ch, payload) { ok -> settingsWriteAcked(pushed, ok) }
     }
 
@@ -1629,6 +1862,15 @@ class BleManager(private val app: Application) {
     // pending app edits are merged on top and pushed (syncSettings).
     private fun parseSettings(d: ByteArray) {
         val snap = DeviceSettingsValues.decode(d) ?: return
+        adoptDeviceSettings(snap)
+    }
+
+    /** Settings over the link: a reply, or a push after Hello / a device-side edit. */
+    private fun onLinkSettings(s: com.raemond.opentrailpaper.link.proto.Settings) {
+        adoptDeviceSettings(LinkCodec.settings(s, has(Feature.FEATURE_WHEEL_SIZE), settingsCache.device))
+    }
+
+    private fun adoptDeviceSettings(snap: DeviceSettingsValues) {
         val before = settingsCache.device
         if (settingsCache.pending.isNotEmpty()) {
             // The device keeps no change time, so an offline edit wins even
@@ -1676,6 +1918,36 @@ class BleManager(private val app: Application) {
      * outgrows a single write, and the GattQueue drains the chunks in order.
      */
     private fun writeDash(text: String) {
+        if (linkReady) {
+            if (!has(Feature.FEATURE_DASH)) return
+            val max = deviceHello?.dashMaxText ?: 0
+            if (max > 0 && text.toByteArray(Charsets.UTF_8).size > max) {
+                android.util.Log.i(LINK_TAG, "dash: layout over the device's $max bytes, not sent")
+                dashWriteFailedThisLink = true
+                return
+            }
+            dashWriteInFlight = text
+            // The device writes it once the SD card is free, so a recording
+            // ride holds the answer back: wait, and say so after a moment.
+            main.postDelayed({
+                if (dashWriteInFlight == text && linkReady) dashWaitingForDevice = true
+            }, DASH_WAITING_NOTICE_MS)
+            link.request(
+                PhoneMsg.newBuilder().setSetDash(PDashConfig.newBuilder().setText(text)),
+                timeoutMs = LinkClient.SD_DEFERRED_TIMEOUT_MS,
+                onFail = { _, _ -> dashWriteAcked(text, false) },
+            ) { m ->
+                if (m.hasDash()) {
+                    // What the device applied, which may differ (it drops what it can't draw).
+                    dashWriteAcked(text, true)
+                    adoptDashText(m.dash.text)
+                } else {
+                    dashWriteAcked(text, false)   // PARSE_ERROR: nothing usable
+                }
+                true
+            }
+            return
+        }
         val ch = dashChar ?: return
         val data = text.toByteArray(Charsets.UTF_8)
         // Every chunk is acknowledged in order; the layout counts as delivered
@@ -1754,6 +2026,7 @@ class BleManager(private val app: Application) {
     private fun dashWriteAcked(text: String, ok: Boolean) {
         if (dashWriteInFlight != text) return   // a link that has since dropped
         dashWriteInFlight = null
+        dashWaitingForDevice = false
         if (!ok) {
             dashWriteFailedThisLink = true   // stays pending; the next connect retries
             return
@@ -1780,7 +2053,8 @@ class BleManager(private val app: Application) {
      */
     private fun updateMediaRemote() {
         mediaAccessGranted = mediaRemote.accessGranted
-        if (mediaChar != null && dashConfig?.hasMusicPage == true) {
+        val path = if (linkReady) has(Feature.FEATURE_MEDIA_META) else mediaChar != null
+        if (path && dashConfig?.hasMusicPage == true) {
             mediaRemote.start()
         } else {
             mediaRemote.stop()
@@ -1825,6 +2099,19 @@ class BleManager(private val app: Application) {
         artist: String,
         album: String,
     ) {
+        if (linkReady) {
+            if (!has(Feature.FEATURE_MEDIA_META)) return
+            // link.options: 64-byte fields, NUL included; cut on a character.
+            val meta = MediaMeta.newBuilder()
+                .setPlaying(playing).setPositionS(posSec).setDurationS(durSec)
+                .setTitle(LinkText.cut(title, 63)).setArtist(LinkText.cut(artist, 63))
+                .setAlbum(LinkText.cut(album, 63))
+                .build()
+            if (meta == lastLinkMediaMeta) return   // players repeat themselves (see below)
+            lastLinkMediaMeta = meta
+            link.send(PhoneMsg.newBuilder().setMediaMeta(meta))
+            return
+        }
         if (mediaChar == null) return
         val out = ByteArrayOutputStream()
         out.write(0x01)
@@ -1834,9 +2121,8 @@ class BleManager(private val app: Application) {
         // Three NUL-terminated UTF-8 strings; the device truncates to its own
         // caps, so only the packet has to stay comfortably under one write.
         for (s in listOf(title, artist, album)) {
-            out.write(s.toByteArray(Charsets.UTF_8).let {
-                if (it.size > 60) it.copyOf(60) else it
-            })
+            // Cut on a character boundary: a raw 60-byte cut could halve one.
+            out.write(LinkText.cut(s, 60).toByteArray(Charsets.UTF_8))
             out.write(0)
         }
         // Players republish identical metadata in bursts (Spotify: ~40 times
@@ -1849,11 +2135,20 @@ class BleManager(private val app: Application) {
     }
 
     private var lastMediaMeta: ByteArray? = null
+    private var lastLinkMediaMeta: MediaMeta? = null
 
     fun sendMediaClear() {
         lastMediaMeta = null
+        if (linkReady) {
+            lastLinkMediaMeta = null
+            artUpload?.cancel(); artUpload = null
+            if (has(Feature.FEATURE_MEDIA_META)) link.send(PhoneMsg.newBuilder().setMediaClear(MediaClear.getDefaultInstance()))
+            return
+        }
         writeChar(mediaChar, byteArrayOf(0x02))
     }
+
+    private var artUpload: LinkClient.Handle? = null
 
     /**
      * Streamed: [0x10 w h] begin, [0x11]+bytes, [0x12] end, as 8-bit
@@ -1861,6 +2156,7 @@ class BleManager(private val app: Application) {
      * when the device says it takes them, a third of the bytes.
      */
     fun sendMediaArt(gray: ByteArray, width: Int, height: Int) {
+        if (linkReady) { sendMediaArtLink(gray, width, height); return }
         if (mediaChar == null) return
         val tones = mediaToneArt
         val payload = if (tones) ArtDither.pack(ArtDither.dither(gray, width, height)) else gray
@@ -1891,6 +2187,32 @@ class BleManager(private val app: Application) {
         writeChar(mediaChar, byteArrayOf(0x12)) {
             if (gatt === g) g?.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_BALANCED)
         }
+    }
+
+    private fun sendMediaArtLink(gray: ByteArray, width: Int, height: Int) {
+        if (!has(Feature.FEATURE_MEDIA_ART)) return
+        val tones = has(Feature.FEATURE_MEDIA_ART_TONE)
+        val payload = if (tones) ArtDither.pack(ArtDither.dither(gray, width, height)) else gray
+        // LinkClient queues it behind any other upload, and it replaces the
+        // old track's art there, queued or running.
+        val g = gatt
+        g?.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
+        var handle: LinkClient.Handle? = null
+        handle = link.upload(
+            UploadBegin.newBuilder().setTarget(Target.TARGET_ALBUM_ART)
+                .setArtFormat(if (tones) ArtFormat.ART_TONE5 else ArtFormat.ART_GRAY8)
+                .setArtWidth(width).setArtHeight(height),
+            payload,
+            object : LinkClient.UploadListener {
+                override fun onDone(code: ResultCode, detail: String) {
+                    if (artUpload === handle) artUpload = null
+                    if (gatt === g && artUpload == null) {
+                        g?.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_BALANCED)
+                    }
+                }
+            },
+        )
+        if (handle != null && linkReady) artUpload = handle
     }
 
     // MARK: workouts (upload, control, live status — CHR_WORKOUT)
@@ -1925,8 +2247,29 @@ class BleManager(private val app: Application) {
     /** One snapshot of files + session state; also runs when notifications
      * first come up so the Workouts screen opens populated. */
     fun refreshWorkouts() {
+        if (linkReady) {
+            if (!has(Feature.FEATURE_WORKOUTS)) return
+            listFiles(ListKind.LIST_WORKOUTS) { names -> if (names != null) deviceWorkouts = names.map { it.name }.sorted() }
+            workoutCommand(WorkoutOp.WORKOUT_OP_STATUS)
+            return
+        }
         workoutWrite(byteArrayOf(0x06))
         workoutWrite(byteArrayOf(0x30))
+    }
+
+    private var workoutUpload: LinkClient.Handle? = null
+    private var workoutFetch: LinkClient.Handle? = null
+
+    /** A control op over the link; the WorkoutStatus answer lands in [onLinkMessage]. */
+    private fun workoutCommand(op: WorkoutOp, build: WorkoutCommand.Builder.() -> Unit = {}) {
+        if (!has(Feature.FEATURE_WORKOUTS)) return
+        link.send(PhoneMsg.newBuilder().setWorkout(WorkoutCommand.newBuilder().setOp(op).apply(build)))
+    }
+
+    /** Upload, load and delete answer with a Result; it reads the same as the legacy 0xA0. */
+    private fun workoutOutcome(ok: Boolean, name: String, detail: String) {
+        workoutMessage = if (ok) "Loaded $name" else "Failed: ${detail.ifEmpty { name }}"
+        if (ok) refreshWorkouts()
     }
 
     /**
@@ -1936,6 +2279,24 @@ class BleManager(private val app: Application) {
      * control CoreBluetooth lacks.
      */
     fun uploadWorkout(name: String, text: String) {
+        if (linkReady) {
+            if (!has(Feature.FEATURE_WORKOUTS)) { workoutMessage = "Not supported by this firmware"; return }
+            val fname = LinkText.cut(name, 40)
+            var handle: LinkClient.Handle? = null
+            handle = link.upload(
+                UploadBegin.newBuilder().setTarget(Target.TARGET_WORKOUT).setName(fname),
+                text.toByteArray(Charsets.UTF_8),
+                object : LinkClient.UploadListener {
+                    override fun onDone(code: ResultCode, detail: String) {
+                        if (workoutUpload !== handle) return
+                        workoutUpload = null
+                        workoutOutcome(code == ResultCode.RESULT_OK, fname, detail)
+                    }
+                },
+            )
+            workoutUpload = handle
+            return
+        }
         if (workoutChar == null) { workoutMessage = "Not connected"; return }
         val data = text.toByteArray(Charsets.UTF_8)
         workoutWrite(byteArrayOf(0x01) + name.toByteArray(Charsets.UTF_8).let {
@@ -1952,35 +2313,87 @@ class BleManager(private val app: Application) {
         // reply always includes the file this upload just created.
     }
 
-    fun loadWorkout(name: String) = workoutWrite(byteArrayOf(0x11) + name.toByteArray())
+    fun loadWorkout(name: String) {
+        if (linkReady) {
+            if (!has(Feature.FEATURE_WORKOUTS)) return
+            link.request(
+                PhoneMsg.newBuilder().setWorkout(
+                    WorkoutCommand.newBuilder().setOp(WorkoutOp.WORKOUT_OP_LOAD).setName(LinkText.cut(name, 47)),
+                ),
+                onFail = { code, d -> if (code == ResultCode.RESULT_TIMEOUT) workoutOutcome(false, name, d) },
+            ) { m ->
+                if (m.hasResult()) workoutOutcome(m.result.code == ResultCode.RESULT_OK, name, m.result.detail)
+                true
+            }
+            return
+        }
+        workoutWrite(byteArrayOf(0x11) + name.toByteArray())
+    }
 
     /** Pull a workout file off the device so the builder can edit it. */
     fun fetchWorkout(name: String) {
         workoutFetchBuf = ByteArrayOutputStream()
         workoutFetchName = name
         fetchedWorkout = null
+        if (linkReady) {
+            if (!has(Feature.FEATURE_WORKOUTS)) return
+            workoutFetch?.cancel()
+            var handle: LinkClient.Handle? = null
+            handle = link.download(Source.SOURCE_WORKOUT, name, object : LinkClient.DownloadListener {
+                override fun onDone(data: ByteArray) {
+                    if (workoutFetch !== handle) return
+                    workoutFetch = null
+                    fetchedWorkout = FetchedWorkout(name, String(data, Charsets.UTF_8))
+                }
+
+                override fun onFail(code: ResultCode, detail: String, partial: ByteArray?) {
+                    if (workoutFetch !== handle) return
+                    workoutFetch = null
+                    workoutMessage = "Failed: ${detail.ifEmpty { "couldn't read $name" }}"
+                }
+            })
+            workoutFetch = handle
+            return
+        }
         workoutWrite(byteArrayOf(0x12) + name.toByteArray())
     }
 
     fun deleteWorkout(name: String) {
+        if (linkReady) {
+            if (!has(Feature.FEATURE_WORKOUTS)) return
+            deviceWorkouts = deviceWorkouts - name
+            deleteFile(ListKind.LIST_WORKOUTS, name) { ok, detail ->
+                if (!ok) workoutMessage = "Failed: ${detail.ifEmpty { "delete failed" }}"
+                refreshWorkouts()
+            }
+            return
+        }
         workoutWrite(byteArrayOf(0x07) + name.toByteArray())
         workoutWrite(byteArrayOf(0x06))
     }
 
-    fun workoutStart() = workoutWrite(byteArrayOf(0x20))
-    fun workoutPause() = workoutWrite(byteArrayOf(0x21))
-    fun workoutResume() = workoutWrite(byteArrayOf(0x22))
-    fun workoutStop() = workoutWrite(byteArrayOf(0x23))
+    fun workoutStart() = workoutOp(WorkoutOp.WORKOUT_OP_START, 0x20)
+    fun workoutPause() = workoutOp(WorkoutOp.WORKOUT_OP_PAUSE, 0x21)
+    fun workoutResume() = workoutOp(WorkoutOp.WORKOUT_OP_RESUME, 0x22)
+    fun workoutStop() = workoutOp(WorkoutOp.WORKOUT_OP_STOP, 0x23)
 
     /** Stop AND unload — the device page returns to its no-workout state. */
-    fun workoutUnload() = workoutWrite(byteArrayOf(0x27))
-    fun workoutSkip() = workoutWrite(byteArrayOf(0x24))
-    fun workoutJump(block: Int) =
-        workoutWrite(byteArrayOf(0x25, block.coerceIn(0, 255).toByte()))
+    fun workoutUnload() = workoutOp(WorkoutOp.WORKOUT_OP_UNLOAD, 0x27)
+    fun workoutSkip() = workoutOp(WorkoutOp.WORKOUT_OP_SKIP, 0x24)
+    fun workoutJump(block: Int) {
+        val seg = block.coerceIn(0, 255)
+        if (linkReady) workoutCommand(WorkoutOp.WORKOUT_OP_JUMP) { setSegment(seg) }
+        else workoutWrite(byteArrayOf(0x25, seg.toByte()))
+    }
+
+    private fun workoutOp(op: WorkoutOp, legacy: Int) {
+        if (linkReady) workoutCommand(op) else workoutWrite(byteArrayOf(legacy.toByte()))
+    }
 
     fun setWorkoutPauseEachBlock(on: Boolean) {
         workoutStatus = workoutStatus.copy(pauseEachBlock = on) // local; status confirms
-        workoutWrite(byteArrayOf(0x26, if (on) 1 else 0))
+        if (linkReady) workoutCommand(WorkoutOp.WORKOUT_OP_PAUSE_EACH) { setPauseEach(on) }
+        else workoutWrite(byteArrayOf(0x26, if (on) 1 else 0))
     }
 
     private fun handleWorkoutNotify(d: ByteArray) {
@@ -2041,6 +2454,19 @@ class BleManager(private val app: Application) {
     // MARK: rides (device -> phone)
 
     fun refreshRides() {
+        if (linkReady) {
+            if (!has(Feature.FEATURE_RIDES)) return
+            ridesBuilding = mutableListOf()
+            loadingRides = true
+            listFiles(ListKind.LIST_RIDES) { files ->
+                loadingRides = false
+                ridesCheckedThisLink = true    // refused while recording, too: the banner explains
+                if (files == null) return@listFiles
+                ridesBuilding = files.mapTo(mutableListOf()) { RideFile(it.name, it.size) }
+                publishRideList()
+            }
+            return
+        }
         if (ridesChar == null) return
         // The device holds ONE pending request: a list command written while a
         // transfer is in flight is overwritten by (or overwrites) the next
@@ -2062,13 +2488,18 @@ class BleManager(private val app: Application) {
         dlQueue.removeAll { it == Transfer.Ride(name) }
         publishQueue()
         cachedRideFile(name).delete()
+        partialRideFile(name).delete()
+        if (linkReady) {
+            if (has(Feature.FEATURE_RIDES)) deleteFile(ListKind.LIST_RIDES, name)
+            return
+        }
         // Offline: just drop the local cache. Connected: also delete on device.
         if (ridesChar == null) return
         writeChar(ridesChar, byteArrayOf(0x03) + name.toByteArray())
     }
 
     fun downloadRide(name: String) {
-        if (ridesChar == null) {
+        if (!ridesPath) {
             lastMessage = "Connect to your OpenTrailPaper to download this ride"
             return
         }
@@ -2077,12 +2508,21 @@ class BleManager(private val app: Application) {
 
     /** Pull today's log off the device (reuses the reliable ride-transfer path). */
     fun downloadLog() {
-        if (ridesChar == null) { lastMessage = "Not connected"; return }
+        if (!logsPath) { lastMessage = "Not connected"; return }
         enqueueTransfer(Transfer.Log(""))
     }
 
     /** List the per-day log files on the device (reply parsed via 0x30/0x31). */
     fun requestLogList() {
+        if (linkReady) {
+            if (!has(Feature.FEATURE_LOGS)) return
+            loadingLogs = true
+            listFiles(ListKind.LIST_LOGS) { files ->
+                loadingLogs = false
+                if (files != null) deviceLogs = files.map { LogFile(it.name, it.size) }.sortedByDescending { it.name }
+            }
+            return
+        }
         if (ridesChar == null) return
         if (dlActive != null || dlQueue.isNotEmpty()) { logListPending = true; return }
         logsBuilding = mutableListOf()
@@ -2092,9 +2532,13 @@ class BleManager(private val app: Application) {
 
     /** Download one specific day's log file. */
     fun downloadLogFile(name: String) {
-        if (ridesChar == null) { lastMessage = "Not connected"; return }
+        if (!logsPath) { lastMessage = "Not connected"; return }
         enqueueTransfer(Transfer.Log(name))
     }
+
+    /** Somewhere to send ride / log requests: the link with the feature, else the legacy characteristic. */
+    private val ridesPath: Boolean get() = if (linkReady) has(Feature.FEATURE_RIDES) else ridesChar != null
+    private val logsPath: Boolean get() = if (linkReady) has(Feature.FEATURE_LOGS) else ridesChar != null
 
     // MARK: serialized transfer queue
 
@@ -2113,7 +2557,7 @@ class BleManager(private val app: Application) {
         publishQueue()
         if (dlActive != null) return
         if (dlQueue.isEmpty()) { runDeferredListRequests(); return }
-        if (ridesChar == null) {          // link gone; nothing can be fetched
+        if (!ridesPath && !logsPath) {    // link gone; nothing can be fetched
             dlQueue.clear()
             publishQueue()
             return
@@ -2134,6 +2578,12 @@ class BleManager(private val app: Application) {
         downloadProgress = 0.0
         downloadingLog = t is Transfer.Log
         downloadingName = t.displayName
+        if (linkReady) {
+            startLinkDownload(t)
+            publishQueue()
+            armDownloadWatchdog()
+            return
+        }
         when (t) {
             is Transfer.Ride -> {
                 dlName = t.name
@@ -2163,6 +2613,7 @@ class BleManager(private val app: Application) {
         }
         dlWatchdog?.cancel()
         dlWatchdog = null
+        dlHandle?.let { dlHandle = null; it.cancel() }
         dlActive = null
         downloadingName = null
         downloadingLog = false
@@ -2179,6 +2630,78 @@ class BleManager(private val app: Application) {
         dlQueue.clear()
         if (message != null) lastMessage = message
         endActiveTransfer()
+    }
+
+    private var dlHandle: LinkClient.Handle? = null
+
+    /** A partial ride from an interrupted link download, resumed from where it stopped. */
+    private fun partialRideFile(name: String) =
+        File(File(app.cacheDir, "partial-rides").apply { mkdirs() }, name.replace("/", "_"))
+
+    /**
+     * The link's download for the queue's active transfer: same queue, same
+     * progress and notification, plus a whole-file CRC and — for rides — a
+     * resume from the bytes an interrupted attempt left behind.
+     */
+    private fun startLinkDownload(t: Transfer) {
+        val (source, name) = when (t) {
+            is Transfer.Ride -> Source.SOURCE_RIDE to t.name
+            is Transfer.Log -> if (t.name.isEmpty()) Source.SOURCE_LOG_TODAY to "" else Source.SOURCE_LOG to t.name
+        }
+        dlName = name
+        if (t is Transfer.Ride) downloadedFile = null else logFile = null
+        val partial = if (t is Transfer.Ride) partialRideFile(name) else null
+        val prefix = partial?.takeIf { it.exists() && it.length() > 0 }?.let { runCatching { it.readBytes() }.getOrNull() }
+        var handle: LinkClient.Handle? = null
+        handle = link.download(source, name, object : LinkClient.DownloadListener {
+            override fun onBegin(size: Long, offset: Long) {
+                if (dlHandle !== handle) return
+                dlLastActivity = SystemClock.elapsedRealtime()
+                dlExpected = size.toInt()
+                TransferCenter.update(t.transferId, completed = offset, total = size, indeterminate = false)
+            }
+
+            override fun onProgress(received: Long, total: Long) {
+                if (dlHandle !== handle) return
+                dlLastActivity = SystemClock.elapsedRealtime()
+                downloadProgress = if (total > 0) min(1.0, received.toDouble() / total) else 0.0
+                TransferCenter.update(t.transferId, completed = received)
+            }
+
+            override fun onDone(data: ByteArray) {
+                partial?.delete()
+                if (dlHandle !== handle) return
+                dlHandle = null
+                saveDownload(data)
+            }
+
+            override fun onFail(code: ResultCode, detail: String, partial0: ByteArray?) {
+                // Keep what arrived, so the next try resumes (even after a drop).
+                if (partial != null) {
+                    if (code == ResultCode.RESULT_CRC_MISMATCH || code == ResultCode.RESULT_NOT_FOUND ||
+                        partial0 == null || partial0.isEmpty()
+                    ) {
+                        partial.delete()
+                    } else {
+                        runCatching { partial.writeBytes(partial0) }
+                    }
+                }
+                if (dlHandle !== handle) return
+                dlHandle = null
+                when (code) {
+                    ResultCode.RESULT_RECORDING -> {
+                        ridesCheckedThisLink = true
+                        cancelAllTransfers("Device busy — stop the ride first")
+                    }
+                    ResultCode.RESULT_NO_SD -> cancelAllTransfers("The device's SD card isn't available")
+                    ResultCode.RESULT_NOT_FOUND -> { lastMessage = "${t.displayName} isn't on the device"; endActiveTransfer() }
+                    ResultCode.RESULT_CRC_MISMATCH -> { lastMessage = "Transfer corrupted — try again"; endActiveTransfer() }
+                    else -> { lastMessage = "Transfer failed — try again"; endActiveTransfer() }
+                }
+            }
+        }, prefix = prefix)
+        // (A refusal reported before download() returned has already moved the queue on.)
+        if (dlActive === t) dlHandle = handle
     }
 
     private fun publishQueue() {
@@ -2231,11 +2754,7 @@ class BleManager(private val app: Application) {
             0x03 -> {   // list done
                 loadingRides = false
                 ridesCheckedThisLink = true
-                val listed = ridesBuilding.sortedByDescending { it.name }   // newest first
-                ridesBuilding = mutableListOf()
-                // Unchanged list: leave `rides` alone so nothing recomposes.
-                if (listed != rides) rides = listed
-                RideListingStore.save(listed, settingsDeviceId)
+                publishRideList()
             }
 
             0x30 -> {   // log-list entry: [u32 size][name]
@@ -2313,6 +2832,14 @@ class BleManager(private val app: Application) {
         }
     }
 
+    private fun publishRideList() {
+        val listed = ridesBuilding.sortedByDescending { it.name }   // newest first
+        ridesBuilding = mutableListOf()
+        // Unchanged list: leave `rides` alone so nothing recomposes.
+        if (listed != rides) rides = listed
+        RideListingStore.save(listed, settingsDeviceId)
+    }
+
     private fun finishDownload() {
         val bytes = dlBuffer.toByteArray()
         // A short transfer means packets were lost, and a zero-length one means
@@ -2324,6 +2851,11 @@ class BleManager(private val app: Application) {
             endActiveTransfer()
             return
         }
+        saveDownload(bytes)
+    }
+
+    /** A whole file arrived (either protocol): report it, release the line, save it. */
+    private fun saveDownload(bytes: ByteArray) {
         // Take the name BEFORE releasing the line — starting the next queued
         // transfer clears it (`bytes` is already a copy).
         val wasLog = downloadingLog
@@ -2371,6 +2903,15 @@ class BleManager(private val app: Application) {
     // MARK: routes
 
     fun refreshRoutes() {
+        if (linkReady) {
+            if (!has(Feature.FEATURE_ROUTES)) return
+            loadingRoutes = true
+            listFiles(ListKind.LIST_ROUTES) { files ->
+                loadingRoutes = false
+                if (files != null) deviceRoutes = files.map { it.name }.sorted()
+            }
+            return
+        }
         if (routeChar == null) return
         deviceRoutes = emptyList()
         loadingRoutes = true
@@ -2378,6 +2919,12 @@ class BleManager(private val app: Application) {
     }
 
     fun deleteRoute(name: String) {
+        if (linkReady) {
+            if (!has(Feature.FEATURE_ROUTES)) return
+            deviceRoutes = deviceRoutes.filterNot { it == name }
+            deleteFile(ListKind.LIST_ROUTES, name)
+            return
+        }
         if (routeChar == null) return
         deviceRoutes = deviceRoutes.filterNot { it == name }
         writeChar(routeChar, byteArrayOf(0x07) + name.toByteArray())
@@ -2411,6 +2958,7 @@ class BleManager(private val app: Application) {
      * flow control iOS gets from its 12 ms sleep and stricter than it.
      */
     fun uploadRoute(name: String, gpx: String, maneuvers: List<Maneuver> = emptyList()) {
+        if (linkReady) { uploadRouteLink(name, gpx, maneuvers); return }
         if (routeChar == null) { lastMessage = "Not connected"; return }
         val data = gpx.toByteArray(Charsets.UTF_8)
         val maxLen = maxPayload - 1
@@ -2469,6 +3017,104 @@ class BleManager(private val app: Application) {
         }
     }
 
+    private var routeUpload: LinkClient.Handle? = null
+
+    /**
+     * The link's route: the GPX as an upload (TransferDone = parsed and
+     * stored), then the turn cues in pages and RouteFinish, whose Result
+     * raises "Start navigation?" on the device.
+     */
+    private fun uploadRouteLink(name: String, gpx: String, maneuvers: List<Maneuver>) {
+        if (!has(Feature.FEATURE_ROUTES)) { lastMessage = "This firmware can't take routes"; return }
+        val data = gpx.toByteArray(Charsets.UTF_8)
+        val limit = deviceHello?.routeMaxBytes ?: 0
+        if (limit > 0 && data.size > limit) {
+            lastMessage = "Route too large for the device (${data.size / 1024} KB)"
+            return
+        }
+        routeUpload?.cancel()
+        lastUploadProgress = 0.0
+        routeSent = false
+        routeReceived = false
+        TransferCenter.begin(
+            ROUTE_TRANSFER, TransferCenter.Kind.ROUTE, "Sending route", detail = name,
+            total = data.size.toLong(),
+        )
+        var handle: LinkClient.Handle? = null
+        handle = link.upload(
+            UploadBegin.newBuilder().setTarget(Target.TARGET_ROUTE).setName(LinkText.cut(name, 38)),
+            data,
+            object : LinkClient.UploadListener {
+                override fun onProgress(sent: Long, acked: Long, total: Long) {
+                    if (routeUpload !== handle) return
+                    lastUploadProgress = sent.toDouble() / max(total, 1)
+                    TransferCenter.update(ROUTE_TRANSFER, completed = sent)
+                }
+
+                override fun onDone(code: ResultCode, detail: String) {
+                    if (routeUpload !== handle) return
+                    routeUpload = null
+                    lastUploadProgress = null
+                    if (code != ResultCode.RESULT_OK) {
+                        routeSent = false
+                        lastMessage = if (code == ResultCode.RESULT_PARSE_ERROR) {
+                            "Device couldn’t read the route — try sending again"
+                        } else {
+                            "Route not sent (${detail.ifEmpty { code.name }})"
+                        }
+                        TransferCenter.finish(ROUTE_TRANSFER, success = false, message = lastMessage)
+                        return
+                    }
+                    routeSent = true
+                    TransferCenter.finish(ROUTE_TRANSFER, success = true, message = "Route “$name” sent")
+                    finishRouteLink(name, maneuvers)
+                }
+            },
+        )
+        routeUpload = handle
+    }
+
+    private fun finishRouteLink(name: String, maneuvers: List<Maneuver>) {
+        if (!has(Feature.FEATURE_NAVIGATION)) {
+            routeReceived = true   // parsed and stored is all this firmware does
+            lastMessage = "Route “$name” sent"
+            return
+        }
+        val cap = deviceHello?.maxManeuvers?.takeIf { it > 0 } ?: 128
+        val cues = maneuvers.take(cap)
+        for (page in cues.chunked(16)) {
+            link.send(
+                PhoneMsg.newBuilder().setManeuvers(
+                    RouteManeuvers.newBuilder().addAllItems(
+                        page.map {
+                            PManeuver.newBuilder()
+                                .setLatE7((it.lat * 1e7).roundToLong().toInt())
+                                .setLonE7((it.lon * 1e7).roundToLong().toInt())
+                                .setText(DeviceText.maneuverText(it.text))
+                                .build()
+                        },
+                    ),
+                ),
+            )
+        }
+        link.request(
+            PhoneMsg.newBuilder().setRouteFinish(RouteFinish.getDefaultInstance()),
+            onFail = { code, _ ->
+                if (code == ResultCode.RESULT_TIMEOUT) lastMessage = "Route “$name” sent — the device didn’t confirm it"
+            },
+        ) { m ->
+            if (m.hasResult() && m.result.code == ResultCode.RESULT_OK) {
+                routeReceived = true
+                lastMessage = "Route “$name” sent — ${cues.size} turns"
+            } else {
+                routeSent = false
+                routeReceived = false
+                lastMessage = "Device couldn’t read the route — try sending again"
+            }
+            true
+        }
+    }
+
     // MARK: firmware / OTA
 
     /** True when the device is running something other than the newest release. */
@@ -2479,13 +3125,18 @@ class BleManager(private val app: Application) {
         }
 
     fun queryDeviceFirmware() {
-        writeChar(otaChar, byteArrayOf(0x05))
+        // Over the link the version came in DeviceHello.
+        if (linkReady) deviceHello?.firmware?.let(::onFirmwareVersion) else writeChar(otaChar, byteArrayOf(0x05))
     }
+
+    private var otaUpload: LinkClient.Handle? = null
+
+    private val otaPath: Boolean get() = if (linkReady) has(Feature.FEATURE_FIRMWARE_UPDATE) else otaChar != null
 
     private fun keepAwake(on: Boolean) { keepScreenOn = on }
 
     fun startFirmwareUpdate() {
-        if (otaChar == null) { otaMessage = "Not connected"; return }
+        if (!otaPath) { otaMessage = "Not connected"; return }
         val release = FirmwareRelease.latest ?: run {
             otaMessage = "No release found — check for updates first"
             return
@@ -2509,7 +3160,7 @@ class BleManager(private val app: Application) {
     }
 
     private fun startFirmwareUpload(data: ByteArray, tag: String) {
-        if (otaChar == null) {
+        if (!otaPath) {
             keepAwake(false); otaMessage = "Not connected"
             TransferCenter.finish(OTA_TRANSFER, success = false, message = "Not connected")
             return
@@ -2527,6 +3178,48 @@ class BleManager(private val app: Application) {
         otaProgress = 0.0
         otaMessage = "Preparing…"
         otaWatchdog?.cancel(); otaWatchdog = null
+
+        if (linkReady) {
+            // CRC-32 over the whole image, checked by the device before it saves.
+            var handle: LinkClient.Handle? = null
+            handle = link.upload(
+                UploadBegin.newBuilder().setTarget(Target.TARGET_FIRMWARE).setName(LinkText.cut(tag, 63)),
+                data,
+                object : LinkClient.UploadListener {
+                    override fun onProgress(sent: Long, acked: Long, total: Long) {
+                        if (otaUpload !== handle) return
+                        if (otaPhase != OtaPhase.SENDING) { otaPhase = OtaPhase.SENDING; otaMessage = "Sending firmware…" }
+                        otaSentBytes = sent.toInt()
+                        otaProgress = sent.toDouble() / max(total, 1)
+                        TransferCenter.update(OTA_TRANSFER, completed = sent)
+                    }
+
+                    override fun onWaiting() {
+                        if (otaUpload !== handle) return
+                        otaPhase = OtaPhase.SAVING
+                        otaMessage = "Saving to the device…"
+                        TransferCenter.update(OTA_TRANSFER, detail = "Saving to the device…", indeterminate = true)
+                    }
+
+                    override fun onDone(code: ResultCode, detail: String) {
+                        if (otaUpload !== handle) return
+                        otaUpload = null
+                        if (code == ResultCode.RESULT_OK) {
+                            otaCommitSent = true   // saved: the reboot that follows is expected
+                            otaSaved()
+                        } else {
+                            otaFinish(
+                                OtaPhase.FAILED,
+                                "Transfer failed (${detail.ifEmpty { code.name }}). " +
+                                    "The device is unchanged — tap to try again.",
+                            )
+                        }
+                    }
+                },
+            )
+            otaUpload = handle
+            return
+        }
 
         // begin: [0x01][u32 size][32-char md5 hex]
         val md5 = MessageDigest.getInstance("MD5").digest(data)
@@ -2591,35 +3284,7 @@ class BleManager(private val app: Application) {
 
     private fun handleOtaNotify(d: ByteArray) {
         when (d.firstOrNull()?.toInt()?.and(0xFF) ?: return) {
-            0xA3 -> {   // running version
-                deviceFirmware = String(d, 1, d.size - 1, Charsets.UTF_8)
-                if (otaTargetVersion.isNotEmpty() && deviceFirmware == otaTargetVersion) {
-                    // Now on the new version — success (this also clears an
-                    // earlier transient failure, e.g. a reconnect seen mid-flash).
-                    if (otaInProgress) {
-                        otaProgress = 1.0
-                        otaFinish(OtaPhase.DONE, "Updated to $deviceFirmware 🎉")
-                    } else if (otaPhase == OtaPhase.FAILED) {
-                        otaWatchdog?.cancel()
-                        otaPhase = OtaPhase.IDLE
-                        otaMessage = null
-                    }
-                } else if (otaInProgress && otaCommitSent) {
-                    // Reconnected but STILL on the old version. The device
-                    // flashes from SD and reboots ONCE MORE, so don't fail yet —
-                    // give it a short grace for that second reboot to land.
-                    otaPhase = OtaPhase.VERIFYING
-                    otaMessage = "Installing — flashing from the SD card…"
-                    TransferCenter.update(
-                        OTA_TRANSFER, detail = "Installing — flashing from the SD card…", indeterminate = true,
-                    )
-                    armOtaWatchdog(
-                        60,
-                        "Device restarted but is still on $deviceFirmware. The install " +
-                            "didn't take — try again, or use the SD-card method.",
-                    )
-                }
-            }
+            0xA3 -> onFirmwareVersion(String(d, 1, d.size - 1, Charsets.UTF_8))   // running version
 
             0xA0 -> {
                 otaPhase = OtaPhase.SENDING
@@ -2627,19 +3292,7 @@ class BleManager(private val app: Application) {
                 pumpOtaChunks()
             }
 
-            0xA1 -> {   // received + saved to SD
-                // The device reboots and flashes from SD now; wait for the
-                // reconnect version-check to confirm. Arm the watchdog in case it
-                // never returns.
-                otaProgress = 1.0
-                otaPhase = OtaPhase.INSTALLING
-                otaMessage = "Installing — the device is restarting…"
-                TransferCenter.update(
-                    OTA_TRANSFER, detail = "Installing — the device is restarting…", indeterminate = true,
-                )
-                keepAwake(false)
-                armOtaWatchdog(150, INSTALL_WATCHDOG_MSG)
-            }
+            0xA1 -> otaSaved()   // received + saved to SD
 
             0xA2 -> otaFinish(OtaPhase.FAILED, "Update canceled.")
 
@@ -2653,15 +3306,71 @@ class BleManager(private val app: Application) {
         }
     }
 
+    /** The device's running firmware: the legacy A3 reply, or DeviceHello. */
+    private fun onFirmwareVersion(version: String) {
+        deviceFirmware = version
+        if (otaTargetVersion.isNotEmpty() && deviceFirmware == otaTargetVersion) {
+            // Now on the new version — success (this also clears an
+            // earlier transient failure, e.g. a reconnect seen mid-flash).
+            if (otaInProgress) {
+                otaProgress = 1.0
+                otaFinish(OtaPhase.DONE, "Updated to $deviceFirmware 🎉")
+            } else if (otaPhase == OtaPhase.FAILED) {
+                otaWatchdog?.cancel()
+                otaPhase = OtaPhase.IDLE
+                otaMessage = null
+            }
+        } else if (otaInProgress && otaCommitSent) {
+            // Reconnected but STILL on the old version. The device
+            // flashes from SD and reboots ONCE MORE, so don't fail yet —
+            // give it a short grace for that second reboot to land.
+            otaPhase = OtaPhase.VERIFYING
+            otaMessage = "Installing — flashing from the SD card…"
+            TransferCenter.update(
+                OTA_TRANSFER, detail = "Installing — flashing from the SD card…", indeterminate = true,
+            )
+            armOtaWatchdog(
+                60,
+                "Device restarted but is still on $deviceFirmware. The install " +
+                    "didn't take — try again, or use the SD-card method.",
+            )
+        }
+    }
+
+    /** The image is on the device's SD card and it is rebooting into it. */
+    private fun otaSaved() {
+        // The device reboots and flashes from SD now; wait for the reconnect
+        // version-check to confirm. Arm the watchdog in case it never returns.
+        otaProgress = 1.0
+        otaPhase = OtaPhase.INSTALLING
+        otaMessage = "Installing — the device is restarting…"
+        TransferCenter.update(
+            OTA_TRANSFER, detail = "Installing — the device is restarting…", indeterminate = true,
+        )
+        keepAwake(false)
+        armOtaWatchdog(150, INSTALL_WATCHDOG_MSG)
+    }
+
     // MARK: sensor management (the device's HR / power / cadence sensors)
 
     fun startSensorScan() {
+        if (linkReady) {
+            if (!has(Feature.FEATURE_SENSORS)) return
+            scanningSensors = true
+            sensorCommand(SensorOp.SENSOR_OP_SCAN_START)
+            return
+        }
         if (sensorsChar == null) return
         scanningSensors = true
         writeChar(sensorsChar, byteArrayOf(0x01))
     }
 
     fun stopSensorScan() {
+        if (linkReady) {
+            scanningSensors = false
+            sensorCommand(SensorOp.SENSOR_OP_SCAN_STOP)
+            return
+        }
         if (sensorsChar == null) return
         scanningSensors = false
         writeChar(sensorsChar, byteArrayOf(0x02))
@@ -2669,11 +3378,36 @@ class BleManager(private val app: Application) {
 
     /** One snapshot of the device's sensors + status, without starting a scan. */
     fun refreshSensors() {
-        writeChar(sensorsChar, byteArrayOf(0x05))
+        if (linkReady) sensorCommand(SensorOp.SENSOR_OP_LIST) else writeChar(sensorsChar, byteArrayOf(0x05))
     }
 
-    fun pairSensor(addr: String) = writeChar(sensorsChar, byteArrayOf(0x03) + addr.toByteArray())
-    fun forgetSensor(addr: String) = writeChar(sensorsChar, byteArrayOf(0x04) + addr.toByteArray())
+    fun pairSensor(addr: String) {
+        if (linkReady) sensorCommand(SensorOp.SENSOR_OP_PAIR, addr)
+        else writeChar(sensorsChar, byteArrayOf(0x03) + addr.toByteArray())
+    }
+
+    fun forgetSensor(addr: String) {
+        if (linkReady) sensorCommand(SensorOp.SENSOR_OP_FORGET, addr)
+        else writeChar(sensorsChar, byteArrayOf(0x04) + addr.toByteArray())
+    }
+
+    /** The SensorList answers (and the scan's pushes) land in [onLinkMessage]. */
+    private fun sensorCommand(op: SensorOp, address: String = "") {
+        if (!has(Feature.FEATURE_SENSORS)) return
+        link.send(
+            PhoneMsg.newBuilder().setSensors(
+                SensorCommand.newBuilder().setOp(op).setAddress(LinkText.cut(address, 19)),
+            ),
+        )
+    }
+
+    private fun publishSensors(list: List<BikeSensor>) {
+        sensors = list.sortedWith(
+            compareByDescending<BikeSensor> { it.connected }
+                .thenByDescending { it.paired }
+                .thenByDescending { it.rssi },
+        )
+    }
 
     /** Connected sensors whose kind mask includes [bit] (1 HR, 2 power, 4 cadence, 8 radar, 16 speed). */
     fun connectedSensor(bit: Int): BikeSensor? =
@@ -2691,6 +3425,20 @@ class BleManager(private val app: Application) {
      * comes up and whenever the device says something changed.
      */
     fun refreshMesh() {
+        if (linkReady) {
+            val topics = mutableListOf(
+                MeshTopic.MESH_TOPIC_STATE, MeshTopic.MESH_TOPIC_HISTORY,
+                MeshTopic.MESH_TOPIC_NODES, MeshTopic.MESH_TOPIC_CHANNELS,
+            )
+            if (meshPresets.isEmpty()) topics += MeshTopic.MESH_TOPIC_PRESETS
+            if (meshRegions.isEmpty() && has(Feature.FEATURE_MESH_RADIO_CONFIG)) topics += MeshTopic.MESH_TOPIC_REGIONS
+            // A fresh history replaces the old; half-built pages from an
+            // earlier ask must not leak into it.
+            meshMessagesBuilding.clear()
+            meshNodesBuilding.clear()
+            meshCommand { setGet(MeshGet.newBuilder().addAllTopics(topics)) }
+            return
+        }
         if (meshChar == null) return
         writeChar(meshChar, byteArrayOf(0x01))     // state
         writeChar(meshChar, byteArrayOf(0x03))     // history
@@ -2702,9 +3450,15 @@ class BleManager(private val app: Application) {
         if (meshRegions.isEmpty()) writeChar(meshChar, byteArrayOf(0x10))
     }
 
+    /** One mesh command over the link; its answers (and refreshed topics) land in [onLinkMessage]. */
+    private fun meshCommand(build: MeshCommand.Builder.() -> Unit) {
+        if (!has(Feature.FEATURE_MESH)) return
+        link.send(PhoneMsg.newBuilder().setMesh(MeshCommand.newBuilder().apply(build)))
+    }
+
     /** Sends to one node, or to the whole channel when [to] is null. */
     fun sendMeshText(text: String, to: Int? = null, channel: Int = 0) {
-        if (meshChar == null) return
+        if (!linkReady && meshChar == null) return
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return
         // 200 bytes is the device's own cap. Cut on a character boundary so a
@@ -2718,6 +3472,24 @@ class BleManager(private val app: Application) {
             body = cut.toByteArray(Charsets.UTF_8)
         }
         meshSendRejected = false
+        if (linkReady) {
+            if (!has(Feature.FEATURE_MESH)) return
+            link.request(
+                PhoneMsg.newBuilder().setMesh(
+                    MeshCommand.newBuilder().setSend(
+                        MeshSend.newBuilder().setDest(to ?: MeshState.BROADCAST_ADDR).setChannel(channel)
+                            .setText(String(body, Charsets.UTF_8)),
+                    ),
+                ),
+                // A dropped link is not a refusal; no answer at all is.
+                onFail = { code, _ -> if (code == ResultCode.RESULT_TIMEOUT) meshSendRejected = true },
+            ) { m ->
+                // MeshQueued, or Result REFUSED (radio off / outbox full).
+                meshSendRejected = !m.hasMeshQueued() && !(m.hasResult() && m.result.code == ResultCode.RESULT_OK)
+                true
+            }
+            return
+        }
         val cmd = Packet(body.size + 6)
         cmd.u8(0x02)
         cmd.u32(to ?: MeshState.BROADCAST_ADDR)
@@ -2726,14 +3498,24 @@ class BleManager(private val app: Application) {
         writeChar(meshChar, cmd.bytes())
     }
 
-    fun setMeshEnabled(on: Boolean) =
-        writeChar(meshChar, byteArrayOf(0x06, if (on) 1 else 0))
+    fun setMeshEnabled(on: Boolean) {
+        if (linkReady) meshCommand { setRadioOn(on) } else writeChar(meshChar, byteArrayOf(0x06, if (on) 1 else 0))
+    }
 
     /**
      * Renames this node on the mesh. [short] is what other apps show on a map pin,
      * so it is kept to four characters as Meshtastic does.
      */
     fun setMeshNames(long: String, short: String) {
+        if (linkReady) {
+            meshCommand {
+                setRename(
+                    MeshRename.newBuilder().setLongName(LinkText.cut(long.take(38), 39))
+                        .setShortName(LinkText.cut(short.take(4), 7)),
+                )
+            }
+            return
+        }
         if (meshChar == null) return
         val l = long.take(38).toByteArray(Charsets.UTF_8)
         val s = short.take(4).toByteArray(Charsets.UTF_8)
@@ -2755,6 +3537,12 @@ class BleManager(private val app: Application) {
      * interop.
      */
     fun setMeshChannel(name: String, key: Int) {
+        if (linkReady) {
+            meshCommand {
+                setPrimary(MeshPrimary.newBuilder().setKeyIndex(key.coerceIn(1, 10)).setName(LinkText.cut(name.take(14), 15)))
+            }
+            return
+        }
         if (meshChar == null) return
         val cmd = Packet(20)
         cmd.u8(0x07)
@@ -2763,38 +3551,63 @@ class BleManager(private val app: Application) {
         writeChar(meshChar, cmd.bytes())
     }
 
-    fun markMeshRead() = writeChar(meshChar, byteArrayOf(0x08))
+    fun markMeshRead() {
+        if (linkReady) meshCommand { setMarkRead(Empty.getDefaultInstance()) } else writeChar(meshChar, byteArrayOf(0x08))
+    }
 
-    fun requestMeshStats() = writeChar(meshChar, byteArrayOf(0x09))
+    fun requestMeshStats() {
+        if (linkReady) {
+            meshCommand { setGet(MeshGet.newBuilder().addTopics(MeshTopic.MESH_TOPIC_STATS)) }
+        } else {
+            writeChar(meshChar, byteArrayOf(0x09))
+        }
+    }
 
     /**
      * Switches the modem. Note this can move the frequency as well as the speed:
      * bandwidth is part of a preset, and the channel's frequency slot is
      * bandwidth-wide.
      */
-    fun setMeshPreset(index: Int) = writeChar(meshChar, byteArrayOf(0x0b, index.toByte()))
+    fun setMeshPreset(index: Int) {
+        if (linkReady) meshCommand { setPreset(index) } else writeChar(meshChar, byteArrayOf(0x0b, index.toByte()))
+    }
 
     /**
      * Sets the regulatory region. A legal setting, not a preference: it must match
      * both the country and the band the LoRa module was built for. The device
      * retunes and forgets everything it heard on the old band.
      */
-    fun setMeshRegion(index: Int) = writeChar(meshChar, byteArrayOf(0x11, index.toByte()))
+    fun setMeshRegion(index: Int) {
+        if (linkReady) meshCommand { setRegion(index) } else writeChar(meshChar, byteArrayOf(0x11, index.toByte()))
+    }
 
     /** TX power in dBm; 0 asks for the most the region and the radio allow. */
-    fun setMeshTxPower(dbm: Int) = writeChar(meshChar, byteArrayOf(0x12, dbm.toByte()))
+    fun setMeshTxPower(dbm: Int) {
+        if (linkReady) meshCommand { setTxPowerDbm(dbm) } else writeChar(meshChar, byteArrayOf(0x12, dbm.toByte()))
+    }
 
     /**
      * Pins the frequency slot (1-based, like Meshtastic's channel number), or 0
      * to go back to deriving it from the channel name.
      */
-    fun setMeshFreqSlot(slot: Int) = writeChar(meshChar, byteArrayOf(0x13, slot.toByte()))
+    fun setMeshFreqSlot(slot: Int) {
+        if (linkReady) meshCommand { setSlot(slot) } else writeChar(meshChar, byteArrayOf(0x13, slot.toByte()))
+    }
 
     /**
      * Adds or replaces a private channel. Slot 0 is the primary and is refused by
      * the firmware — it decides the frequency.
      */
     fun setMeshPrivateChannel(index: Int, name: String, psk: ByteArray) {
+        if (linkReady) {
+            meshCommand {
+                setSetChannel(
+                    MeshChannelEdit.newBuilder().setIndex(index).setName(LinkText.cut(name.take(15), 15))
+                        .setPsk(com.google.protobuf.ByteString.copyFrom(psk, 0, minOf(psk.size, 32))),
+                )
+            }
+            return
+        }
         if (meshChar == null) return
         val n = name.take(15).toByteArray(Charsets.UTF_8)
         val cmd = Packet(n.size + psk.size + 4)
@@ -2809,6 +3622,7 @@ class BleManager(private val app: Application) {
 
     fun forgetMeshChannel(index: Int) {
         if (index == 0) return              // the primary cannot be forgotten
+        if (linkReady) { meshCommand { setDeleteChannel(index) }; return }
         writeChar(meshChar, byteArrayOf(0x0e, index.toByte()))
     }
 
@@ -2816,8 +3630,13 @@ class BleManager(private val app: Application) {
      * Turns position sharing on or off for one channel. The device broadcasts on a
      * distance and interval trigger, not continuously — see docs/meshtastic.md.
      */
-    fun setMeshShareLocation(index: Int, on: Boolean) =
-        writeChar(meshChar, byteArrayOf(0x0f, index.toByte(), if (on) 1 else 0))
+    fun setMeshShareLocation(index: Int, on: Boolean) {
+        if (linkReady) {
+            meshCommand { setShare(MeshShare.newBuilder().setIndex(index).setOn(on)) }
+        } else {
+            writeChar(meshChar, byteArrayOf(0x0f, index.toByte(), if (on) 1 else 0))
+        }
+    }
 
     /** The lowest free private slot, or null when the device is full. */
     val firstFreeMeshChannel: Int?
@@ -3035,19 +3854,20 @@ class BleManager(private val app: Application) {
                 )
             }
 
-            0x12 -> sensors = sensorsBuilding.sortedWith(         // list end — publish
-                compareByDescending<BikeSensor> { it.connected }
-                    .thenByDescending { it.paired }
-                    .thenByDescending { it.rssi },
-            )
+            0x12 -> publishSensors(sensorsBuilding)                // list end — publish
         }
     }
 
     // MARK: vector-map upload (phone -> device SD, mirrors the OTA transfer)
 
-    val canUploadMap: Boolean get() = mapChar != null
+    val canUploadMap: Boolean
+        get() = if (linkReady) has(Feature.FEATURE_MAPS) || has(Feature.FEATURE_MAP_TILES) else mapChar != null
+
+    private var mapUpload: LinkClient.Handle? = null
+    private var tileUpload: LinkClient.Handle? = null
 
     fun uploadMap(ebm: ByteArray, name: String) {
+        if (linkReady) { uploadMapLink(ebm, name); return }
         if (mapChar == null) { mapMessage = "Not connected"; return }
         mapData = ebm
         mapSentBytes = 0
@@ -3068,7 +3888,68 @@ class BleManager(private val app: Application) {
         writeChar(mapChar, cmd.bytes())
     }
 
+    private fun uploadMapLink(ebm: ByteArray, name: String) {
+        if (!has(Feature.FEATURE_MAPS)) { mapMessage = "This firmware can't take whole maps"; return }
+        mapUpload?.cancel()
+        mapData = ebm
+        mapUploading = true
+        mapProgress = 0.0
+        mapMessage = "Sending map…"
+        keepAwake(true)
+        TransferCenter.begin(
+            MAP_TRANSFER, TransferCenter.Kind.MAP_UPLOAD, "Sending map", detail = name,
+            total = ebm.size.toLong(),
+        )
+        var handle: LinkClient.Handle? = null
+        handle = link.upload(
+            UploadBegin.newBuilder().setTarget(Target.TARGET_MAP).setName(LinkText.cut(name, 50)),
+            ebm,
+            object : LinkClient.UploadListener {
+                override fun onProgress(sent: Long, acked: Long, total: Long) {
+                    if (mapUpload !== handle) return
+                    mapProgress = sent.toDouble() / max(total, 1)
+                    TransferCenter.update(MAP_TRANSFER, completed = sent)
+                }
+
+                override fun onWaiting() {
+                    if (mapUpload === handle) mapMessage = "Saving to device…"
+                }
+
+                override fun onDone(code: ResultCode, detail: String) {
+                    if (mapUpload !== handle) return
+                    mapUpload = null
+                    if (code == ResultCode.RESULT_OK) mapInstalled() else mapFailed(detail.ifEmpty { code.name })
+                }
+            },
+        )
+        mapUpload = handle
+    }
+
+    private fun mapInstalled() {
+        mapUploading = false
+        mapProgress = 1.0
+        mapMessage = "Map installed"
+        TransferCenter.finish(MAP_TRANSFER, success = true, message = "Map installed")
+        keepAwake(false)
+        refreshDeviceMaps()
+    }
+
+    private fun mapFailed(code: String) {
+        mapUploading = false
+        keepAwake(false)
+        mapMessage = "Map upload failed ($code)"
+        TransferCenter.finish(MAP_TRANSFER, success = false, message = "Map upload failed ($code)")
+    }
+
     fun cancelMapUpload() {
+        if (linkReady) {
+            mapUpload?.let { mapUpload = null; it.cancel() }
+            mapUploading = false
+            keepAwake(false)
+            mapMessage = "Canceled"
+            TransferCenter.finish(MAP_TRANSFER, success = false, message = "Canceled")
+            return
+        }
         queue.clear()
         writeChar(mapChar, byteArrayOf(0x04))
         mapUploading = false
@@ -3078,7 +3959,14 @@ class BleManager(private val app: Application) {
     }
 
     /** Ask the device which map areas it already has (streamed back via notify). */
-    fun refreshDeviceMaps() = writeChar(mapChar, byteArrayOf(0x05))
+    fun refreshDeviceMaps() {
+        if (linkReady) {
+            // One MapCoverageList answer, handled with the pushes.
+            if (has(Feature.FEATURE_MAPS)) link.send(PhoneMsg.newBuilder().setList(ListRequest.newBuilder().setKind(ListKind.LIST_MAPS)))
+            return
+        }
+        writeChar(mapChar, byteArrayOf(0x05))
+    }
 
     /**
      * Ask the device which H3 tile ids are already on its SD, so the caller can
@@ -3086,6 +3974,19 @@ class BleManager(private val app: Application) {
      * file's version too; firmware that keeps none ignores that (DeviceTileList).
      */
     fun refreshDeviceTiles() {
+        if (linkReady) {
+            if (has(Feature.FEATURE_MAP_TILES)) {
+                listTiles(ListKind.LIST_MAP_TILES) { m ->
+                    if (m != null) applyTileList(m.keys.toList(), m.filterValues { it.isNotEmpty() }, has(Feature.FEATURE_MAP_TILE_VERSIONS))
+                }
+            }
+            if (has(Feature.FEATURE_MAP_POI)) {
+                listTiles(ListKind.LIST_MAP_POIS) { m ->
+                    if (m != null) applyPoiList(m.keys.toList(), m.filterValues { it.isNotEmpty() }, has(Feature.FEATURE_MAP_TILE_VERSIONS))
+                }
+            }
+            return
+        }
         writeChar(mapChar, DeviceTileList.request(0x07))
         writeChar(mapChar, DeviceTileList.request(0x08))   // .poi files (new firmware only)
     }
@@ -3097,7 +3998,10 @@ class BleManager(private val app: Application) {
     /** [resend]: a Redownload — tiles and POIs go out even though the device
      *  already has them (POIs still only to firmware that draws them). */
     fun startTileStream(resend: Boolean = false) {
-        if (mapChar == null) { tileMessage = "Not connected"; return }
+        if (if (linkReady) !has(Feature.FEATURE_MAP_TILES) else mapChar == null) {
+            tileMessage = "Not connected"
+            return
+        }
         resendAll = resend
         tileJobStarted = System.nanoTime()
         tileJobBytes = 0
@@ -3105,6 +4009,7 @@ class BleManager(private val app: Application) {
         tilesTotal = 0
         tilesDone = 0
         tileJobFailed = false
+        tileBusyStreak = 0
         tilesMoreComing = true
         tilesUploading = true
         tileMessage = "Sending tiles…"
@@ -3167,6 +4072,11 @@ class BleManager(private val app: Application) {
     fun cancelTileUpload() {
         tileQueue.clear()
         tilesMoreComing = false
+        if (linkReady) {
+            tileUpload?.let { tileUpload = null; it.cancel() }
+            finishTileJob("Canceled")
+            return
+        }
         queue.clear()
         if (currentTileId != null) writeChar(mapChar, byteArrayOf(0x04))
         finishTileJob("Canceled")
@@ -3198,7 +4108,7 @@ class BleManager(private val app: Application) {
     }
 
     private fun sendNextTile() {
-        if (!tilesUploading || mapChar == null) return
+        if (!tilesUploading || (!linkReady && mapChar == null)) return
         val tile = tileQueue.removeFirstOrNull() ?: run {   // queue drained
             if (tilesMoreComing) return                     // more still building — idle, wait
             finishTileJob(if (tileJobFailed) "Some tiles failed" else "Tiles installed")
@@ -3219,6 +4129,7 @@ class BleManager(private val app: Application) {
         // A .poi goes under "<id>.poi"; saveTile strips the extension and stores
         // it by its magic either way, the name just reads well in logs.
         // Firmware that keeps versions gets the record after a NUL.
+        if (linkReady) { sendTileLink(tile); return }
         val name = if (tile.poi) "${tile.id}.poi" else tile.id
         val field = DeviceTileList.beginName(name, currentVersion.takeIf { deviceKeepsVersions })
         val cmd = Packet(5 + field.size)
@@ -3226,6 +4137,46 @@ class BleManager(private val app: Application) {
         cmd.u32(tile.data.size)
         cmd.raw(field)
         writeChar(mapChar, cmd.bytes())
+    }
+
+    /** One tile or .poi over the link; TransferDone means saved (or skipped on error). */
+    private fun sendTileLink(tile: TileJob) {
+        val begin = UploadBegin.newBuilder()
+            .setTarget(if (tile.poi) Target.TARGET_MAP_POI else Target.TARGET_MAP_TILE)
+            .setName(tile.id)
+        if (has(Feature.FEATURE_MAP_TILE_VERSIONS)) currentVersion?.let { begin.setTileVersion(LinkText.cut(it, 31)) }
+        var handle: LinkClient.Handle? = null
+        handle = link.upload(begin, tile.data, object : LinkClient.UploadListener {
+            override fun onProgress(sent: Long, acked: Long, total: Long) {
+                if (tileUpload === handle) mapProgress = sent.toDouble() / max(total, 1)
+            }
+
+            override fun onDone(code: ResultCode, detail: String) {
+                if (tileUpload !== handle) return
+                tileUpload = null
+                when {
+                    code == ResultCode.RESULT_OK -> { tileBusyStreak = 0; tileSaved() }
+                    // Still busy after LinkClient's own retries (another upload
+                    // the device is saving): the same tile goes again later,
+                    // rather than every queued tile failing in turn behind it.
+                    code == ResultCode.RESULT_BUSY && tileBusyStreak < TILE_BUSY_RETRIES -> {
+                        tileBusyStreak += 1
+                        val id = tile.id
+                        main.postDelayed({
+                            if (tilesUploading && linkReady && currentTileId == id && tileUpload == null) sendTileLink(tile)
+                        }, TILE_BUSY_RETRY_MS)
+                    }
+                    code == ResultCode.RESULT_BUSY -> {
+                        tileJobFailed = true
+                        tileQueue.clear()
+                        tilesMoreComing = false
+                        finishTileJob("The device is busy · try again")
+                    }
+                    else -> { tileBusyStreak = 0; tileFailed() }
+                }
+            }
+        })
+        tileUpload = handle
     }
 
     private fun pumpMapChunks() {
@@ -3255,55 +4206,12 @@ class BleManager(private val app: Application) {
             0xB0 -> pumpMapChunks()                               // device ready (map or tile)
 
             0xB1 -> {                                             // saved + active
-                val id = currentTileId
-                if (id != null) {                                 // a tile finished
-                    tileJobBytes += mapData.size
-                    val version = currentVersion ?: PrebuiltTiles.phoneRecord()
-                    // Kept by the device too: mirror it, as its next list would.
-                    if (deviceKeepsVersions) {
-                        if (currentIsPoi) devicePoiRecords = devicePoiRecords + (id to version)
-                        else deviceTileRecords = deviceTileRecords + (id to version)
-                    }
-                    if (currentIsPoi) {
-                        tileVersions.setPoi(deviceKey, id, version)
-                        devicePoiIds = devicePoiIds + id
-                        poiSentAt = poiSentAt + (id to System.currentTimeMillis())
-                        Prefs.poiSentAt = poiSentAt
-                    } else {
-                        tileVersions.setTile(deviceKey, id, version)
-                        deviceTileIds = deviceTileIds + id
-                        flaggedTileIds = flaggedTileIds + id
-                        Prefs.flaggedTileIds = flaggedTileIds
-                        tileSentAt = tileSentAt + (id to System.currentTimeMillis())
-                        Prefs.tileSentAt = tileSentAt
-                    }
-                    saveVersionsSoon()
-                    tilesDone += 1
-                    currentTileId = null
-                    sendNextTile()
-                    reportTiles()
-                } else {
-                    mapUploading = false
-                    mapProgress = 1.0
-                    mapMessage = "Map installed"
-                    TransferCenter.finish(MAP_TRANSFER, success = true, message = "Map installed")
-                    keepAwake(false)
-                    refreshDeviceMaps()
-                }
+                if (currentTileId != null) tileSaved() else mapInstalled()
             }
 
             0xBF -> {
                 val code = if (d.size > 1) d[1].toInt() and 0xFF else -1
-                if (currentTileId != null) {                      // skip it, keep going
-                    tileJobFailed = true
-                    currentTileId = null
-                    sendNextTile()
-                } else {
-                    mapUploading = false
-                    keepAwake(false)
-                    mapMessage = "Map upload failed ($code)"
-                    TransferCenter.finish(MAP_TRANSFER, success = false, message = "Map upload failed ($code)")
-                }
+                if (currentTileId != null) tileFailed() else mapFailed("$code")
             }
 
             0xD0 -> {                                             // tile-list begin
@@ -3317,14 +4225,7 @@ class BleManager(private val app: Application) {
                 DeviceTileList.parseEntries(String(d, 1, d.size - 1, Charsets.UTF_8), tileIdsBuilding, tileRecordsBuilding)
             }
 
-            0xD2 -> {                                             // tile-list end
-                deviceKeepsVersions = tileListVersioned
-                deviceTileRecords = tileRecordsBuilding
-                deviceTileIds = tileIdsBuilding.toSet()
-                Prefs.deviceTileIds = deviceTileIds
-                tileVersions.pruneTiles(deviceKey, deviceTileIds)
-                saveVersionsSoon()
-            }
+            0xD2 -> applyTileList(tileIdsBuilding, tileRecordsBuilding, tileListVersioned)  // tile-list end
 
             0xD3 -> {                                             // poi-list begin
                 poiIdsBuilding = mutableListOf()
@@ -3337,13 +4238,7 @@ class BleManager(private val app: Application) {
                 DeviceTileList.parseEntries(String(d, 1, d.size - 1, Charsets.UTF_8), poiIdsBuilding, poiRecordsBuilding)
             }
 
-            0xD5 -> {                                             // poi-list end
-                devicePoiRecords = if (poiListVersioned) poiRecordsBuilding else emptyMap()
-                devicePoiIds = poiIdsBuilding.toSet()
-                tileVersions.prunePois(deviceKey, devicePoiIds)
-                saveVersionsSoon()
-                deviceSupportsPois = true
-            }
+            0xD5 -> applyPoiList(poiIdsBuilding, poiRecordsBuilding, poiListVersioned)  // poi-list end
 
             0xE0 -> {                                             // map-layer mask
                 if (d.size >= 3) handleMapLayersNotify((d[1].toInt() and 0xFF) or ((d[2].toInt() and 0xFF) shl 8))
@@ -3368,6 +4263,63 @@ class BleManager(private val app: Application) {
             0xC2 -> deviceMaps = deviceMapsBuilding.toList()       // map-list end
             // 0xB4 progress is device-side; nothing to do here.
         }
+    }
+
+    /** The current tile is saved on the device (B1, or TransferDone over the link). */
+    private fun tileSaved() {
+        val id = currentTileId ?: return
+        tileJobBytes += mapData.size
+        val version = currentVersion ?: PrebuiltTiles.phoneRecord()
+        // Kept by the device too: mirror it, as its next list would.
+        if (deviceKeepsVersions) {
+            if (currentIsPoi) devicePoiRecords = devicePoiRecords + (id to version)
+            else deviceTileRecords = deviceTileRecords + (id to version)
+        }
+        if (currentIsPoi) {
+            tileVersions.setPoi(deviceKey, id, version)
+            devicePoiIds = devicePoiIds + id
+            poiSentAt = poiSentAt + (id to System.currentTimeMillis())
+            Prefs.poiSentAt = poiSentAt
+        } else {
+            tileVersions.setTile(deviceKey, id, version)
+            deviceTileIds = deviceTileIds + id
+            flaggedTileIds = flaggedTileIds + id
+            Prefs.flaggedTileIds = flaggedTileIds
+            tileSentAt = tileSentAt + (id to System.currentTimeMillis())
+            Prefs.tileSentAt = tileSentAt
+        }
+        saveVersionsSoon()
+        tilesDone += 1
+        currentTileId = null
+        sendNextTile()
+        reportTiles()
+    }
+
+    /** The current tile failed (BF, or a refused / failed link upload): skip it, keep going. */
+    private fun tileFailed() {
+        if (currentTileId == null) return
+        tileJobFailed = true
+        currentTileId = null
+        sendNextTile()
+    }
+
+    /** The device's tile list (legacy D0-D2, or TileList pages over the link). */
+    private fun applyTileList(ids: List<String>, records: Map<String, String>, versioned: Boolean) {
+        deviceKeepsVersions = versioned
+        deviceTileRecords = records
+        deviceTileIds = ids.toSet()
+        Prefs.deviceTileIds = deviceTileIds
+        tileVersions.pruneTiles(deviceKey, deviceTileIds)
+        saveVersionsSoon()
+    }
+
+    /** The device's .poi list (legacy D3-D5, or TileList pages over the link). */
+    private fun applyPoiList(ids: List<String>, records: Map<String, String>, versioned: Boolean) {
+        devicePoiRecords = if (versioned) records else emptyMap()
+        devicePoiIds = ids.toSet()
+        tileVersions.prunePois(deviceKey, devicePoiIds)
+        saveVersionsSoon()
+        deviceSupportsPois = true
     }
 
     // MARK: GPS aiding + live phone position
@@ -3404,8 +4356,12 @@ class BleManager(private val app: Application) {
     }
 
     /** Begin streaming the phone's location to the device. */
+    /** Somewhere to send the phone's position. */
+    private val locationPath: Boolean
+        get() = if (linkReady) has(Feature.FEATURE_PHONE_LOCATION) else routeChar != null
+
     fun startLocationStream() {
-        if (routeChar == null) return
+        if (!locationPath) return
         if (!locationAuthorized) { wantsAiding = false; return }
         wantsAiding = true
         beginLocationUpdates()
@@ -3464,13 +4420,31 @@ class BleManager(private val app: Application) {
     }
 
     private fun transmitAiding(loc: Location) {
-        if (routeChar == null) return
+        if (!locationPath) return
         // Throttle so we don't flood the link with position updates.
         val minGap = if (status.recording) 1000L else 3000L
         val last = lastAidingSent
         val now = System.currentTimeMillis()
         if (last != null && now - last < minGap) return
 
+        // A cached fix (the getLastKnownLocation seed) says nothing about how
+        // we're moving NOW.
+        val current = SystemClock.elapsedRealtimeNanos() - loc.elapsedRealtimeNanos < 10_000_000_000L
+        if (linkReady) {
+            val b = PhoneLocation.newBuilder()
+                .setLatE7((loc.latitude * 1e7).roundToLong().toInt())
+                .setLonE7((loc.longitude * 1e7).roundToLong().toInt())
+                .setUtc((now / 1000).toInt())
+                .setAltM(loc.altitude.roundToInt().coerceIn(-2000, 9000))
+            // Absent = unknown, where the legacy packet needed sentinels.
+            if (loc.hasAccuracy() && loc.accuracy > 0) b.setAccuracyM(loc.accuracy.roundToInt().coerceIn(1, 9999))
+            if (current && loc.hasSpeed() && loc.speed >= 0f) b.setSpeedCms((loc.speed * 100f).roundToInt())
+            if (current && loc.hasBearing()) {
+                b.setCourseCdeg(((loc.bearing % 360f + 360f) % 360f * 100f).roundToInt().coerceIn(0, 35999))
+            }
+            if (link.send(PhoneMsg.newBuilder().setLocation(b), numbered = false)) lastAidingSent = now
+            return
+        }
         val p = Packet(21)
         p.u8(0x08)
         p.i32((loc.latitude * 1e7).roundToLong().toInt())
@@ -3483,9 +4457,7 @@ class BleManager(private val app: Application) {
         // Speed (cm/s) and bearing (0.01 deg): the device shows them while this
         // is its position source. 0xFFFF = none (no speed/bearing on the fix,
         // e.g. stationary or a network fix); the device then derives or holds.
-        // Firmware before this ignores the trailing bytes. A cached fix (the
-        // getLastKnownLocation seed) says nothing about how we're moving NOW.
-        val current = SystemClock.elapsedRealtimeNanos() - loc.elapsedRealtimeNanos < 10_000_000_000L
+        // Firmware before this ignores the trailing bytes.
         p.i16(if (current && loc.hasSpeed() && loc.speed >= 0f)
             (loc.speed * 100f).roundToInt().coerceIn(0, 0xFFFE) else 0xFFFF)
         p.i16(if (current && loc.hasBearing())
@@ -3500,7 +4472,7 @@ class BleManager(private val app: Application) {
      * dropout doesn't flap the stream.
      */
     private fun syncLocationStreamToDeviceFix() {
-        if (state != ConnState.CONNECTED || routeChar == null) return
+        if (state != ConnState.CONNECTED || !locationPath) return
         val firstStatus = !sawStatusSinceConnect
         sawStatusSinceConnect = true
         if (firstStatus) rememberPairedDevice()   // the device admitted us: ours
@@ -3529,7 +4501,198 @@ class BleManager(private val app: Application) {
         }
     }
 
+    // MARK: - phone link: session and pushes
+
+    private fun linkHello(): Hello = Hello.newBuilder()
+        .setProto(ProtoVersion.PROTO_VERSION_CURRENT_VALUE)
+        .setPlatform(Platform.PLATFORM_ANDROID)
+        .setAppVersion(LinkText.cut("${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})", 31))
+        // The device's media buttons drive this phone's players (MediaRemote):
+        // Android has no AMS for the device to relay them over.
+        .addFeatures(Feature.FEATURE_MEDIA_COMMAND_HANDLER)
+        .setUnixMs(System.currentTimeMillis())   // the device's clock until GPS has a fix
+        .build()
+
+    private fun onLinkReady(h: DeviceHello) {
+        // Also after a legacy fallback (a late DeviceHello): the legacy
+        // characteristics stay bound but every feature checks linkReady first,
+        // and dispatch ignores them outside LEGACY mode.
+        linkMode = LinkMode.LINK
+        linkFeatures = h.featuresList.toSet()
+        deviceHello = h
+        linkReady = true
+        markAdmitted()
+        onFirmwareVersion(h.firmware)
+        // Everything the legacy protocol inferred from silence or packet
+        // lengths, the device now just says.
+        deviceSupportsPois = has(Feature.FEATURE_MAP_POI)
+        deviceKeepsVersions = has(Feature.FEATURE_MAP_TILE_VERSIONS)
+        // Remembered from an older firmware on this device; this one says.
+        if (!has(Feature.FEATURE_MAP_LAYERS)) mapLayersSupported = false
+        if (has(Feature.FEATURE_DASH)) noteDashMaxPages(h.dashMaxPages)
+        // The device pushes settings, dashboard, map layers, workout status and
+        // live frames by itself after Hello; these it only answers.
+        if (has(Feature.FEATURE_SENSORS)) refreshSensors()
+        if (has(Feature.FEATURE_MESH)) refreshMesh()
+        if (has(Feature.FEATURE_WORKOUTS)) refreshWorkouts()
+        if (liveExtraTopics.isNotEmpty()) sendLiveSubscribe()
+        updateMediaRemote()
+    }
+
+    private fun onLinkFallback(reason: String) {
+        android.util.Log.i(LINK_TAG, "legacy fallback for this connection: $reason")
+        val service = gatt?.getService(BikeUuid.service) ?: return
+        bindLegacy(service)
+    }
+
+    /** Pushes, and answers no request callback claimed. */
+    private fun onLinkMessage(m: DeviceMsg) {
+        when (m.bodyCase) {
+            DeviceMsg.BodyCase.SETTINGS -> onLinkSettings(m.settings)
+            DeviceMsg.BodyCase.LIVE -> onLiveFrame(m.live)
+            DeviceMsg.BodyCase.MAP_LAYERS -> handleMapLayersNotify(m.mapLayers.mask)
+            DeviceMsg.BodyCase.DASH -> adoptDashText(m.dash.text)
+            DeviceMsg.BodyCase.MEDIA_TRACK -> deviceMediaTrack = m.mediaTrack
+            // A device button with no AMS behind it: this phone's player acts.
+            DeviceMsg.BodyCase.MEDIA_COMMAND -> mediaRemote.handleCommand(m.mediaCommand.cmdValue)
+            DeviceMsg.BodyCase.WORKOUT_STATUS -> workoutStatus = LinkCodec.workoutStatus(m.workoutStatus)
+            DeviceMsg.BodyCase.SENSOR_LIST -> publishSensors(m.sensorList.sensorsList.mapNotNull(LinkCodec::sensor))
+            DeviceMsg.BodyCase.MESH_STATE ->
+                meshState = LinkCodec.meshState(m.meshState, has(Feature.FEATURE_MESH_RADIO_CONFIG))
+            DeviceMsg.BodyCase.MESH_HISTORY -> {
+                val now = System.currentTimeMillis()
+                m.meshHistory.messagesList.mapTo(meshMessagesBuilding) { LinkCodec.meshMessage(it, now) }
+                if (m.meshHistory.last) {
+                    meshMessages = meshMessagesBuilding.toList()
+                    meshMessagesBuilding.clear()
+                }
+            }
+            DeviceMsg.BodyCase.MESH_NODES -> {
+                val now = System.currentTimeMillis()
+                m.meshNodes.nodesList.mapTo(meshNodesBuilding) { LinkCodec.meshNode(it, now) }
+                if (m.meshNodes.last) {
+                    meshNodes = meshNodesBuilding.sortedByDescending { it.lastHeardMs }
+                    meshNodesBuilding.clear()
+                }
+            }
+            DeviceMsg.BodyCase.MESH_STATS -> meshStats = LinkCodec.meshStats(m.meshStats)
+            DeviceMsg.BodyCase.MESH_PRESETS -> meshPresets = m.meshPresets.presetsList.map(LinkCodec::meshPreset)
+            DeviceMsg.BodyCase.MESH_CHANNELS ->
+                meshChannels = m.meshChannels.channelsList.map(LinkCodec::meshChannel).sortedBy { it.index }
+            DeviceMsg.BodyCase.MESH_REGIONS -> meshRegions = m.meshRegions.regionsList.map(LinkCodec::meshRegion)
+            DeviceMsg.BodyCase.MESH_CHANGED -> refreshMesh()
+            DeviceMsg.BodyCase.MESH_QUEUED -> meshSendRejected = false
+            DeviceMsg.BodyCase.MAP_COVERAGE -> deviceMaps = m.mapCoverage.mapsList.map(LinkCodec::deviceMap)
+            DeviceMsg.BodyCase.RESULT -> Unit   // a fire-and-forget command's answer (errors logged by the client)
+            else -> android.util.Log.i(LINK_TAG, "unhandled push ${m.bodyCase}")
+        }
+    }
+
+    // MARK: lists and deletes
+
+    /**
+     * A file list, all pages. [done] gets the entries, or null when the device
+     * refused (RECORDING, NO_SD...) or didn't answer.
+     */
+    private fun listFiles(kind: ListKind, done: (List<com.raemond.opentrailpaper.link.proto.FileEntry>?) -> Unit) {
+        val acc = ArrayList<com.raemond.opentrailpaper.link.proto.FileEntry>()
+        link.request(
+            PhoneMsg.newBuilder().setList(ListRequest.newBuilder().setKind(kind)),
+            onFail = { _, _ -> done(null) },
+        ) { m ->
+            when {
+                m.hasFileList() -> {
+                    acc += m.fileList.filesList
+                    if (m.fileList.last) done(acc)
+                    m.fileList.last
+                }
+                m.hasResult() -> {
+                    done(null)
+                    true
+                }
+                else -> false
+            }
+        }
+    }
+
+    /** Tile / POI ids, all pages: id -> version record ("" when unknown). */
+    private fun listTiles(kind: ListKind, done: (Map<String, String>?) -> Unit) {
+        val acc = LinkedHashMap<String, String>()
+        link.request(
+            PhoneMsg.newBuilder().setList(ListRequest.newBuilder().setKind(kind)),
+            // Deferred by the device until the SD card is free (recording).
+            timeoutMs = LinkClient.SD_DEFERRED_TIMEOUT_MS,
+            onFail = { _, _ -> done(null) },
+        ) { m ->
+            when {
+                m.hasTileList() -> {
+                    for (t in m.tileList.tilesList) acc[t.h3] = t.version
+                    if (m.tileList.last) done(acc)
+                    m.tileList.last
+                }
+                m.hasResult() -> { done(null); true }
+                else -> false
+            }
+        }
+    }
+
+    private fun deleteFile(kind: ListKind, name: String, done: (Boolean, String) -> Unit = { _, _ -> }) {
+        link.request(
+            PhoneMsg.newBuilder().setDeleteFile(DeleteRequest.newBuilder().setKind(kind).setName(LinkText.cut(name, 63))),
+            onFail = { _, d -> done(false, d) },
+        ) { m ->
+            done(m.hasResult() && m.result.code == ResultCode.RESULT_OK, if (m.hasResult()) m.result.detail else "")
+            true
+        }
+    }
+
+    // MARK: live state
+
+    private var liveExtraTopics: Set<LiveTopic> = emptySet()
+
+    /**
+     * Topics on top of RIDE (always on: status, fix, ride summary). A screen
+     * asks for what it draws while it is visible and drops it when it goes —
+     * no keepalive, the subscription lasts until changed or disconnected.
+     */
+    fun setLiveTopics(extra: Set<LiveTopic>) {
+        val want = extra - LiveTopic.LIVE_TOPIC_RIDE
+        if (want == liveExtraTopics) return
+        liveExtraTopics = want
+        sendLiveSubscribe()
+    }
+
+    private fun sendLiveSubscribe() {
+        if (!has(Feature.FEATURE_LIVE)) return
+        val topics = listOf(LiveTopic.LIVE_TOPIC_RIDE) + liveExtraTopics.sortedBy { it.number }
+        android.util.Log.i(LINK_TAG, "subscribe ${topics.joinToString { it.name.removePrefix("LIVE_TOPIC_") }}")
+        link.send(PhoneMsg.newBuilder().setLiveSubscribe(LiveSubscribe.newBuilder().addAllTopics(topics)))
+    }
+
+    private fun onLiveFrame(f: LiveFrame) {
+        liveFrameFlow.value = f
+        if (f.hasRide()) {
+            status = LinkCodec.status(f.ride)
+            syncLocationStreamToDeviceFix()
+            updateBackgroundLocationMode()
+        }
+    }
+
+    /** Start/pause, reset or lap on the device's stopwatch (no reply: the next frame shows it). */
+    fun stopwatchCommand(op: StopwatchOp) {
+        if (!has(Feature.FEATURE_STOPWATCH)) return
+        link.send(PhoneMsg.newBuilder().setStopwatch(StopwatchCommand.newBuilder().setOp(op)), numbered = false)
+    }
+
     companion object {
+        private const val LINK_TAG = "link"
+
+        /** A tile still BUSY after LinkClient's retries goes again after this, up to this many times in a row. */
+        private const val TILE_BUSY_RETRY_MS = 5_000L
+        private const val TILE_BUSY_RETRIES = 6
+        /** A layout write unanswered this long is shown as waiting for the device. */
+        private const val DASH_WAITING_NOTICE_MS = 4_000L
+
         // TransferCenter ids for the one-at-a-time transfers.
         private const val OTA_TRANSFER = "ble.ota"
         private const val MAP_TRANSFER = "ble.map"

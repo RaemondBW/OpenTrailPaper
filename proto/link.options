@@ -1,0 +1,69 @@
+# nanopb limits for proto/link.proto (firmware only; the apps are unbounded).
+# String sizes include the terminating NUL. Keep them at least as large as the
+# firmware buffers the fields land in, and in step with docs/ble-link.md.
+otp.link.Hello.app_version            max_size:32
+otp.link.Hello.features               max_count:32
+otp.link.DeviceHello.firmware         max_size:24
+otp.link.DeviceHello.features         max_count:64
+otp.link.Result.detail                max_size:80
+otp.link.TransferDone.detail          max_size:80
+
+otp.link.StopwatchState.recent        max_count:10
+otp.link.Radar.distances_m            max_count:8
+otp.link.LiveSubscribe.topics         max_count:16
+
+otp.link.UploadBegin.name             max_size:64
+otp.link.UploadBegin.tile_version     max_size:32
+otp.link.Chunk.data                   max_size:512
+otp.link.DownloadRequest.name         max_size:64
+
+otp.link.FileEntry.name               max_size:64
+otp.link.FileList.files               max_count:16
+otp.link.MapCoverageList.maps         max_count:16
+otp.link.TileEntry.h3                 max_size:20
+otp.link.TileEntry.version            max_size:32
+otp.link.TileList.tiles               max_count:32
+otp.link.DeleteRequest.name           max_size:64
+
+otp.link.Maneuver.text                max_size:48
+otp.link.RouteManeuvers.items         max_count:16
+
+otp.link.SensorCommand.address        max_size:20
+otp.link.Sensor.name                  max_size:32
+otp.link.Sensor.address               max_size:20
+otp.link.SensorList.sensors           max_count:10
+
+otp.link.DashConfig.text              max_size:2048
+
+otp.link.MediaMeta.title              max_size:64
+otp.link.MediaMeta.artist             max_size:64
+otp.link.MediaMeta.album              max_size:64
+otp.link.MediaTrack.title             max_size:64
+otp.link.MediaTrack.artist            max_size:64
+otp.link.MediaTrack.album             max_size:64
+
+otp.link.WorkoutCommand.name          max_size:48
+otp.link.WorkoutStatus.name           max_size:48
+
+otp.link.MeshGet.topics               max_count:8
+otp.link.MeshSend.text                max_size:201
+otp.link.MeshRename.long_name         max_size:40
+otp.link.MeshRename.short_name        max_size:8
+otp.link.MeshPrimary.name             max_size:16
+otp.link.MeshChannelEdit.name         max_size:16
+otp.link.MeshChannelEdit.psk          max_size:32
+otp.link.MeshState.channel_name       max_size:16
+otp.link.MeshState.short_name         max_size:8
+otp.link.MeshState.long_name          max_size:40
+otp.link.MeshMessage.text             max_size:201
+otp.link.MeshHistory.messages         max_count:4
+otp.link.MeshNode.short_name          max_size:8
+otp.link.MeshNode.long_name           max_size:40
+otp.link.MeshNodes.nodes              max_count:8
+otp.link.MeshPreset.name              max_size:16
+otp.link.MeshPresets.presets          max_count:8
+otp.link.MeshChannel.name             max_size:16
+otp.link.MeshChannel.psk              max_size:32
+otp.link.MeshChannels.channels        max_count:8
+otp.link.MeshRegion.name              max_size:16
+otp.link.MeshRegions.regions          max_count:25
