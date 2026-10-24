@@ -176,12 +176,28 @@ void printSerialTelemetry() {
 #endif
 }
 
-bool waitForBytes(uint32_t timeoutMs) {
+// True once a whole NMEA sentence with a valid checksum arrives.
+bool waitForNmea(uint32_t timeoutMs) {
     uint32_t start = millis();
+    char line[96];
+    size_t n = 0;
     while (millis() - start < timeoutMs) {
-        if (SerialGPS.available()) {
-            while (SerialGPS.available()) SerialGPS.read();
-            return true;
+        while (SerialGPS.available()) {
+            char c = SerialGPS.read();
+            if (c == '$') { n = 0; line[n++] = c; continue; }
+            if (!n) continue;
+            if (c == '\r' || c == '\n') {
+                line[n] = 0;
+                const char* star = strchr(line, '*');
+                if (star && star - line > 1 && strlen(star) >= 3) {
+                    uint8_t ck = 0;
+                    for (const char* p = line + 1; p < star; ++p) ck ^= (uint8_t)*p;
+                    if (ck == (uint8_t)strtoul(star + 1, nullptr, 16)) return true;
+                }
+                n = 0;
+                continue;
+            }
+            if (n < sizeof(line) - 1) line[n++] = c; else n = 0;
         }
         delay(10);
     }
@@ -277,10 +293,35 @@ bool begin() {
         return true;
     }
 
+    // An L76K that has been switched to another baud (PCAS01, kept by its
+    // backup supply) never answers at 9600, and its output read at the wrong
+    // rate is just noise. Find it, put it back to 9600 and save that.
+    static const uint32_t kL76KBauds[] = {115200, 38400, 57600, 19200, 4800};
+    for (uint32_t baud : kL76KBauds) {
+        SerialGPS.updateBaudRate(baud);
+        delay(50);
+        if (!initL76K()) continue;
+        diag::log("gps: L76K answered at %lu baud; restoring 9600", (unsigned long)baud);
+        SerialGPS.write("$PCAS01,1*1D\r\n");
+        SerialGPS.flush();
+        delay(200);
+        SerialGPS.updateBaudRate(9600);
+        delay(200);
+        if (initL76K()) {
+            SerialGPS.write("$PCAS00*01\r\n");   // save to the module's flash
+            Serial.printf("[gps] CASIC/L76K found @%lu, reset to 9600\n", (unsigned long)baud);
+            moduleDetected = true;
+            moduleKind = GPS_CASIC;
+            return true;
+        }
+        diag::log("gps: L76K did not come back at 9600");
+    }
+
     // Not an L76K — try u-blox M10Q default baud rate. It streams NMEA out
-    // of the box, so just verify data is flowing.
+    // of the box; require a checksummed sentence, not just any byte, since a
+    // receiver at another baud also produces bytes here.
     SerialGPS.updateBaudRate(38400);
-    if (waitForBytes(2000)) {
+    if (waitForNmea(2000)) {
         Serial.println("[gps] u-blox M10Q detected @38400");
         moduleDetected = true;
         moduleKind = GPS_UBLOX;
@@ -288,7 +329,7 @@ bool begin() {
     }
 
     SerialGPS.updateBaudRate(9600);
-    if (waitForBytes(2000)) {
+    if (waitForNmea(2000)) {
         Serial.println("[gps] NMEA stream detected @9600");
         moduleDetected = true;
         return true;
