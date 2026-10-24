@@ -250,6 +250,8 @@ bool sessionLive() {
 // stack can't take (out of buffers) is retried like the legacy sendChunk;
 // one that never goes ends the message (the phone's counter check drops the
 // partial, and the next message starts with FIRST).
+constexpr uint32_t NOTIFY_STALL_MS = 3000;
+
 bool send(bool bulk = false) {
     if (!sessionLive() || !txChr) return false;
     pb_ostream_t os = pb_ostream_from_buffer(txBuf, otp_link_DeviceMsg_size);
@@ -269,9 +271,15 @@ bool send(bool bulk = false) {
         if (!sessionLive()) return false;
         size_t used = 0;
         const size_t n = link_frag_build(txBuf, len, off, S.txCounter, frag, maxFrag, &used);
+        // The controller drains a few packets per connection event, and the
+        // interval can sit at 300 ms until a bulk request takes effect, so
+        // wait in time, not tries: up to 3 s (under the 4 s supervision
+        // timeout) while the session lasts.
         bool ok = false;
-        for (int r = 0; r < 40; ++r) {
+        const uint32_t t0 = millis();
+        while (sessionLive()) {
             if (txChr->notify(frag, n, handle)) { ok = true; break; }
+            if (millis() - t0 > NOTIFY_STALL_MS) break;
             vTaskDelay(pdMS_TO_TICKS(8));
         }
         if (!ok) {
