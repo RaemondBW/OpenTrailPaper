@@ -1,7 +1,7 @@
 #pragma once
 
 // GPS on Serial2 (pins 43/44). Handles both module variants LilyGO ships:
-// L76K (9600 baud, PCAS init strings) and u-blox MIA-M10Q (38400, UBX).
+// L76K (115200 baud, PCAS init strings) and u-blox MIA-M10Q (38400, UBX).
 // Feeds TinyGPSPlus and publishes fixes into g_state.
 
 #include <cstdint>
