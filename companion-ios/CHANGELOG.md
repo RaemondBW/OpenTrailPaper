@@ -8,6 +8,12 @@ submitting.
 
 ## Unreleased
 
+- Route: with Strava or RideWithGPS connected, import one of your saved
+  routes (iOS: the download button on the Route map; Android: the file
+  button). Pick it from the list, which shows each route's distance and
+  climbing, and send it to the device like a GPX file. To see private
+  Strava routes, disconnect and connect Strava again in Settings >
+  Accounts; until you do, only public ones are listed.
 - Dashboard editor: Add a page > Stopwatch puts the device's new STOPWATCH
   page in the Home-key cycle. It needs firmware v1.23. Older firmware
   leaves the page out, and the editor shows the layout the device kept.

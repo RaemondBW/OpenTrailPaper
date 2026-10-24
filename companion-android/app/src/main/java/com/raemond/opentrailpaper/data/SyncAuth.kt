@@ -16,6 +16,10 @@ data class SyncTokens(
     val refreshToken: String?,
     val expiresAt: Long?,
     val athleteName: String?,
+    /** Strava's athlete id, for its route list. Null for accounts connected before it was kept. */
+    val athleteId: Long? = null,
+    /** What the rider granted, as Strava reports it ("read,read_all,..."); null = not reported. */
+    val scope: String? = null,
 ) {
     fun expiresWithin(marginS: Long, nowS: Long) = expiresAt != null && nowS >= expiresAt - marginS
 }

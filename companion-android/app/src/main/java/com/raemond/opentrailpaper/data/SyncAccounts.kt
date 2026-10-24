@@ -196,6 +196,9 @@ object SyncAccounts {
                     refreshToken = json.optString("refresh_token").takeIf { it.isNotEmpty() },
                     expiresAt = if (json.has("expires_at")) json.optLong("expires_at") else null,
                     athleteName = athlete?.optString("name")?.takeIf { it.isNotEmpty() },
+                    // Intervals' ids are strings ("i123"); only Strava's are used.
+                    athleteId = athlete?.optLong("id")?.takeIf { it > 0 },
+                    scope = json.optString("scope").takeIf { it.isNotEmpty() },
                 ),
             )
         } catch (e: Exception) {
@@ -271,6 +274,8 @@ object SyncAccounts {
                     .put("refresh", t.refreshToken)
                     .put("exp", t.expiresAt)
                     .put("name", t.athleteName)
+                    .put("aid", t.athleteId)
+                    .put("scope", t.scope)
                     .toString(),
             )
         }.apply()
@@ -286,6 +291,8 @@ object SyncAccounts {
                 refreshToken = j.optString("refresh").takeIf { it.isNotEmpty() },
                 expiresAt = if (j.isNull("exp")) null else j.optLong("exp"),
                 athleteName = j.optString("name").takeIf { it.isNotEmpty() },
+                athleteId = if (j.isNull("aid")) null else j.optLong("aid"),
+                scope = j.optString("scope").takeIf { it.isNotEmpty() },
             )
         }.getOrNull()
     }
@@ -368,6 +375,83 @@ object SyncAccounts {
         }
     }
 
+    // --- routes ---------------------------------------------------------------
+
+    /** The accounts that have saved routes to import (Intervals.icu has none). */
+    val routeProviders = listOf(Provider.STRAVA, Provider.RIDEWITHGPS)
+
+    /**
+     * One page (from 1) of the rider's saved routes. Strava straight from the
+     * phone with the bearer token; RideWithGPS through the service, which adds
+     * the API key. Both through [TokenKeeper], so an expired token is refreshed
+     * and a dead sign-in comes back as [SyncSignedOutException].
+     */
+    suspend fun routes(p: Provider, page: Int): CloudRoutePage = withContext(Dispatchers.IO) {
+        val keeper = keepers[p]?.takeIf { isConnected(p) } ?: throw SyncException("Connect ${p.title} in Settings first.")
+        when (p) {
+            Provider.STRAVA -> {
+                val athlete = stravaAthleteId(keeper)
+                val text = routeCall(p) {
+                    keeper.authorized { token ->
+                        getText(
+                            "https://www.strava.com/api/v3/athletes/$athlete/routes" +
+                                "?page=$page&per_page=${CloudRoutes.STRAVA_PAGE_SIZE}",
+                            token,
+                        )
+                    }
+                }
+                CloudRoutes.parseStrava(text, page)
+            }
+            Provider.RIDEWITHGPS -> {
+                val base = serviceUrl ?: throw SyncException("This build has no sync service configured.")
+                CloudRoutes.parseRwgps(routeCall(p) { keeper.authorized { getText("$base/v1/rwgps/routes?page=$page", it) } })
+            }
+            Provider.INTERVALS -> throw SyncException("Intervals.icu has no saved routes.")
+        }
+    }
+
+    /** The route as GPX text, for [RouteImport.importGpx]. */
+    suspend fun routeGpx(p: Provider, route: CloudRoute): String = withContext(Dispatchers.IO) {
+        val keeper = keepers[p]?.takeIf { isConnected(p) } ?: throw SyncException("Connect ${p.title} in Settings first.")
+        val id = Uri.encode(route.id)
+        when (p) {
+            Provider.STRAVA -> routeCall(p) {
+                keeper.authorized { getText("https://www.strava.com/api/v3/routes/$id/export_gpx", it, accept = "application/gpx+xml") }
+            }
+            Provider.RIDEWITHGPS -> {
+                val base = serviceUrl ?: throw SyncException("This build has no sync service configured.")
+                routeCall(p) { keeper.authorized { getText("$base/v1/rwgps/routes/$id/gpx", it, accept = "application/gpx+xml") } }
+            }
+            Provider.INTERVALS -> throw SyncException("Intervals.icu has no saved routes.")
+        }
+    }
+
+    /**
+     * Strava lists routes by athlete id. Kept from the sign-in since route
+     * import; an account connected before that looks it up once (GET /athlete).
+     */
+    private suspend fun stravaAthleteId(keeper: TokenKeeper): Long {
+        tokens[Provider.STRAVA]?.athleteId?.let { return it }
+        val me = routeCall(Provider.STRAVA) { keeper.authorized { getJson("https://www.strava.com/api/v3/athlete", it) } }
+        val id = me.optLong("id").takeIf { it > 0 } ?: throw SyncException("Strava did not say which athlete this is.")
+        tokens[Provider.STRAVA]?.let { store(Provider.STRAVA, it.copy(athleteId = id)) }
+        return id
+    }
+
+    /** Route-specific wording for what a provider's refusal means here. */
+    private suspend fun <R> routeCall(p: Provider, call: suspend () -> R): R = try {
+        call()
+    } catch (e: SyncHttpException) {
+        throw when (e.code) {
+            // Strava's answer to a token without the scope a private route needs.
+            403 -> SyncSignedOutException(
+                "${p.title} did not allow reading routes with this sign-in. Disconnect and connect ${p.title} again in Settings.",
+            )
+            404 -> SyncException("That route is no longer on ${p.title}.")
+            else -> e
+        }
+    }
+
     // --- http -----------------------------------------------------------------
 
     private suspend fun postJson(path: String, body: JSONObject): JSONObject = withContext(Dispatchers.IO) {
@@ -380,6 +464,12 @@ object SyncAccounts {
     }
 
     private suspend fun getJson(url: String, token: String): JSONObject = finish(open(url, "GET", token))
+
+    private suspend fun getText(url: String, token: String, accept: String = "application/json"): String {
+        val c = open(url, "GET", token)
+        c.setRequestProperty("Accept", accept)
+        return finishText(c)
+    }
 
     /** [progress] names a TransferCenter entry to report the file's bytes to. */
     private suspend fun multipart(
@@ -443,7 +533,10 @@ object SyncAccounts {
         return c
     }
 
-    private fun finish(c: HttpURLConnection): JSONObject {
+    private fun finish(c: HttpURLConnection): JSONObject =
+        finishText(c).let { text -> runCatching { JSONObject(text) }.getOrElse { JSONObject() } }
+
+    private fun finishText(c: HttpURLConnection): String {
         val code = c.responseCode
         val text = (if (code in 200..299) c.inputStream else c.errorStream)
             ?.bufferedReader()?.use { it.readText() } ?: ""
@@ -453,7 +546,7 @@ object SyncAccounts {
             val reason = runCatching { JSONObject(text).optString("reason") }.getOrNull()?.takeIf { it.isNotEmpty() }
             throw SyncHttpException(code, SyncErrors.describe(code, text, who(c.url.host)), reason)
         }
-        return runCatching { JSONObject(text) }.getOrElse { JSONObject() }
+        return text
     }
 
     /** Who answered, for error wording: our service, or a provider by name. */

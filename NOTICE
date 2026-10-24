@@ -14,6 +14,15 @@ H3 — hexagonal hierarchical geospatial indexing system
   Licensed under the Apache License, Version 2.0
   https://github.com/uber/h3
 
+intervals.icu icon
+  companion-ios/Sources/Assets.xcassets/logo-intervals.imageset/
+  companion-android/app/src/main/res/drawable/logo_intervals.xml
+  Icons by selfh.st/icons (CC BY 4.0)
+  https://selfh.st/icons/  https://creativecommons.org/licenses/by/4.0/
+
+Service logos (Strava, Ride with GPS, intervals.icu) are trademarks of their
+owners, shown only to label uploads to those services.
+
 --------------------------------------------------------------------------------
 Third-party components fetched at build time (not included in this repository)
 --------------------------------------------------------------------------------
