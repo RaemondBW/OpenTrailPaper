@@ -99,6 +99,7 @@ fun RideScreen(ble: BleManager) {
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         Header(ble, s)
+        if (ble.state == BleManager.ConnState.CONNECTED && s.sdCard.isProblem) SdCardNotice(s.sdCard)
         GpsCard(s)
         SpeedCard(s, useMiles)
         Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {

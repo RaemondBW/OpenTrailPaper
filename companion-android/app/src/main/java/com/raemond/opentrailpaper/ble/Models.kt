@@ -87,11 +87,23 @@ data class RideFile(val name: String, val size: Int)
 data class LogFile(val name: String, val size: Int)
 
 /**
+ * The device's SD card, from status flag bits 3-5. Firmware from before it was
+ * reported never sets bit 3, so that reads as [UNKNOWN], not as a missing card.
+ */
+enum class SdCardState {
+    UNKNOWN, OK, MISSING, UNREADABLE;
+
+    /** No usable card: nothing records and map tiles have nowhere to go. */
+    val isProblem: Boolean get() = this == MISSING || this == UNREADABLE
+}
+
+/**
  * Live status pushed by the device once a second. The first nine fields are
  * the legacy STATUS packet; the rest only come over the phone link
  * (LiveFrame.ride) and stay null on older firmware.
  */
 data class DeviceStatus(
+    val sdCard: SdCardState = SdCardState.UNKNOWN,
     val gpsFix: Boolean = false,
     val recording: Boolean = false,
     val hasRoute: Boolean = false,

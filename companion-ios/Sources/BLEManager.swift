@@ -96,8 +96,18 @@ struct LogFile: Identifiable, Hashable {
     var id: String { name }
 }
 
+// The device's SD card, from status flag bits 3-5. Firmware from before it was
+// reported never sets bit 3, so that reads as `.unknown`, not as a missing card.
+enum SDCardState {
+    case unknown, ok, missing, unreadable
+
+    /// No usable card: nothing records and map tiles have nowhere to go.
+    var isProblem: Bool { self == .missing || self == .unreadable }
+}
+
 // Live status pushed by the device once a second.
 struct DeviceStatus {
+    var sdCard = SDCardState.unknown
     var gpsFix = false
     var recording = false
     var hasRoute = false
@@ -2297,6 +2307,10 @@ final class BLEManager: NSObject, ObservableObject {
         guard peripheral != nil else { return false }
         return link.ready ? (link.has(.maps) || link.has(.mapTiles)) : mapChar != nil
     }
+
+    /// Tiles go to the SD card, so a device reporting none can't take them —
+    /// say so up front instead of letting the job end in "Some tiles failed".
+    var sdCardBlocksMaps: Bool { status.sdCard.isProblem && !isDemoMaps }
 
     /// The link transfer of the map or tile being sent (0 = none).
     private var mapXfer: UInt32 = 0
@@ -4726,7 +4740,14 @@ extension BLEManager: CBPeripheralDelegate {
             if ch.uuid == BikeUUID.mesh { refreshMesh() }
             // Map layers: firmware without them never answers, which is what
             // keeps the app's switches hidden for it.
-            if ch.uuid == BikeUUID.map { requestMapLayers() }
+            if ch.uuid == BikeUUID.map {
+                requestMapLayers()
+                // The cached tile list is one global key, not per device or
+                // card, and was only re-asked when Maps opened: confirm it on
+                // every connect, so a fresh or swapped card isn't shown as
+                // already holding the old one's hexes.
+                refreshDeviceTiles()
+            }
             if ch.uuid == BikeUUID.workout {
                 workoutLog.info("notify state: \(ch.isNotifying) error=\(error?.localizedDescription ?? "none", privacy: .public)")
                 refreshWorkouts()
@@ -5151,6 +5172,9 @@ extension BLEManager: CBPeripheralDelegate {
         s.gpsFix = flags & 1 != 0
         s.recording = flags & 2 != 0
         s.hasRoute = flags & 4 != 0
+        if flags & 8 != 0 {
+            s.sdCard = flags & 16 != 0 ? .missing : flags & 32 != 0 ? .unreadable : .ok
+        }
         s.battery = Int(d[1])
         s.sats = Int(d[2])
         s.heartRate = d[3] == 0xFF ? nil : Int(d[3])
@@ -5162,7 +5186,15 @@ extension BLEManager: CBPeripheralDelegate {
     }
 
     private func applyStatus(_ s: DeviceStatus) {
+        let sdBefore = status.sdCard
         status = s
+        if s.sdCard.isProblem {
+            // Without a card the device has no tiles, whatever the cache says.
+            // Memory only: the card may well come back with them on it.
+            if !deviceTileIds.isEmpty { deviceTileIds = [] }
+        } else if s.sdCard == .ok && sdBefore.isProblem {
+            refreshDeviceTiles()   // a card went in: ask what is on THIS one
+        }
         syncLocationStreamToDeviceFix()
         updateBackgroundLocationMode()   // background GPS only while recording
     }

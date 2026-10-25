@@ -170,6 +170,7 @@ struct RideView: View {
             WarningBanner(title: "Bluetooth is off",
                           message: "Turn it on in Control Centre to connect.")
         }
+        if connected && ble.status.sdCard.isProblem { SDCardNotice(state: ble.status.sdCard) }
         if ble.dashTarget == nil {
             WarningBanner(title: "Default layout",
                           message: "Connect once to load your device's own dashboard pages.",

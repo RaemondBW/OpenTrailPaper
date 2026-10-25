@@ -398,6 +398,19 @@ struct PendingSyncHint: View {
     }
 }
 
+/// The device reports no usable SD card: rides don't record and map tiles have
+/// nowhere to go. A hatched warning, shown on the Ride tab and the Maps screen.
+struct SDCardNotice: View {
+    let state: SDCardState
+    var body: some View {
+        WarningBanner(title: state == .unreadable ? "Device can't read its SD card" : "No SD card in the device",
+                      message: state == .unreadable
+                          ? "Reformat it as FAT32 (exFAT isn't supported). Until then rides aren't recorded and maps can't be sent."
+                          : "Insert a FAT32 microSD card. Until then rides aren't recorded and maps can't be sent.",
+                      systemImage: "sdcard")
+    }
+}
+
 // Full-width secondary action — PrimaryButton's block, outlined rather than
 // filled, so the eye still lands on the primary one first.
 struct SecondaryButton: View {
