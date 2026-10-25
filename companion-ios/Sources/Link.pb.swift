@@ -162,6 +162,9 @@ nonisolated enum LinkFeature: SwiftProtobuf.Enum, Swift.CaseIterable {
   /// Unpair
   case unpair // = 28
 
+  /// TARGET_SEGMENTS, GetSegments / SegmentsInfo
+  case segments // = 29
+
   /// Phone-side features (listed in Hello):
   case mediaCommandHandler // = 64
   case UNRECOGNIZED(Int)
@@ -201,6 +204,7 @@ nonisolated enum LinkFeature: SwiftProtobuf.Enum, Swift.CaseIterable {
     case 26: self = .workouts
     case 27: self = .agnss
     case 28: self = .unpair
+    case 29: self = .segments
     case 64: self = .mediaCommandHandler
     default: self = .UNRECOGNIZED(rawValue)
     }
@@ -237,6 +241,7 @@ nonisolated enum LinkFeature: SwiftProtobuf.Enum, Swift.CaseIterable {
     case .workouts: return 26
     case .agnss: return 27
     case .unpair: return 28
+    case .segments: return 29
     case .mediaCommandHandler: return 64
     case .UNRECOGNIZED(let i): return i
     }
@@ -273,6 +278,7 @@ nonisolated enum LinkFeature: SwiftProtobuf.Enum, Swift.CaseIterable {
     .workouts,
     .agnss,
     .unpair,
+    .segments,
     .mediaCommandHandler,
   ]
 
@@ -474,6 +480,56 @@ nonisolated enum LinkLiveTopic: SwiftProtobuf.Enum, Swift.CaseIterable {
 
 }
 
+/// The device's SD card. A card that answers but won't mount is almost always
+/// exFAT (the firmware reads FAT only).
+nonisolated enum LinkSdCard: SwiftProtobuf.Enum, Swift.CaseIterable {
+  typealias RawValue = Int
+  case unknown // = 0
+
+  /// mounted, or lent to a USB host
+  case ok // = 1
+
+  /// nothing in the slot
+  case missing // = 2
+
+  /// a card answered, its filesystem did not mount
+  case unreadable // = 3
+  case UNRECOGNIZED(Int)
+
+  init() {
+    self = .unknown
+  }
+
+  init?(rawValue: Int) {
+    switch rawValue {
+    case 0: self = .unknown
+    case 1: self = .ok
+    case 2: self = .missing
+    case 3: self = .unreadable
+    default: self = .UNRECOGNIZED(rawValue)
+    }
+  }
+
+  var rawValue: Int {
+    switch self {
+    case .unknown: return 0
+    case .ok: return 1
+    case .missing: return 2
+    case .unreadable: return 3
+    case .UNRECOGNIZED(let i): return i
+    }
+  }
+
+  // The compiler won't synthesize support with the UNRECOGNIZED case.
+  static let allCases: [LinkSdCard] = [
+    .unknown,
+    .ok,
+    .missing,
+    .unreadable,
+  ]
+
+}
+
 nonisolated enum LinkScreen: SwiftProtobuf.Enum, Swift.CaseIterable {
   typealias RawValue = Int
   case dash // = 0
@@ -587,6 +643,9 @@ nonisolated enum LinkTarget: SwiftProtobuf.Enum, Swift.CaseIterable {
 
   /// receiver-specific assistance blob
   case agnss // = 8
+
+  /// starred Strava segments, the whole set (segment_match.h blob); replaces the set
+  case segments // = 9
   case UNRECOGNIZED(Int)
 
   init() {
@@ -604,6 +663,7 @@ nonisolated enum LinkTarget: SwiftProtobuf.Enum, Swift.CaseIterable {
     case 6: self = .workout
     case 7: self = .albumArt
     case 8: self = .agnss
+    case 9: self = .segments
     default: self = .UNRECOGNIZED(rawValue)
     }
   }
@@ -619,6 +679,7 @@ nonisolated enum LinkTarget: SwiftProtobuf.Enum, Swift.CaseIterable {
     case .workout: return 6
     case .albumArt: return 7
     case .agnss: return 8
+    case .segments: return 9
     case .UNRECOGNIZED(let i): return i
     }
   }
@@ -634,6 +695,7 @@ nonisolated enum LinkTarget: SwiftProtobuf.Enum, Swift.CaseIterable {
     .workout,
     .albumArt,
     .agnss,
+    .segments,
   ]
 
 }
@@ -1352,6 +1414,14 @@ nonisolated struct LinkPhoneMsg: Sendable {
     set {body = .agnssInfo(newValue)}
   }
 
+  var getSegments: LinkGetSegments {
+    get {
+      if case .getSegments(let v)? = body {return v}
+      return LinkGetSegments()
+    }
+    set {body = .getSegments(newValue)}
+  }
+
   var unknownFields = SwiftProtobuf.UnknownStorage()
 
   nonisolated enum OneOf_Body: Equatable, Sendable {
@@ -1384,6 +1454,7 @@ nonisolated struct LinkPhoneMsg: Sendable {
     case workout(LinkWorkoutCommand)
     case mesh(LinkMeshCommand)
     case agnssInfo(LinkAgnssInfoRequest)
+    case getSegments(LinkGetSegments)
 
   }
 
@@ -1639,6 +1710,15 @@ nonisolated struct LinkDeviceMsg: Sendable {
     set {body = .agnssInfo(newValue)}
   }
 
+  /// reply to GetSegments, and pushed ahead of a TARGET_SEGMENTS TransferDone
+  var segments: LinkSegmentsInfo {
+    get {
+      if case .segments(let v)? = body {return v}
+      return LinkSegmentsInfo()
+    }
+    set {body = .segments(newValue)}
+  }
+
   var unknownFields = SwiftProtobuf.UnknownStorage()
 
   nonisolated enum OneOf_Body: Equatable, Sendable {
@@ -1679,6 +1759,8 @@ nonisolated struct LinkDeviceMsg: Sendable {
     /// reply to a send
     case meshQueued(LinkMeshQueued)
     case agnssInfo(LinkAgnssInfo)
+    /// reply to GetSegments, and pushed ahead of a TARGET_SEGMENTS TransferDone
+    case segments(LinkSegmentsInfo)
 
   }
 
@@ -1757,6 +1839,9 @@ nonisolated struct LinkDeviceHello: Sendable {
   var workoutMaxBytes: UInt32 = 0
 
   var maxManeuvers: UInt32 = 0
+
+  /// newest TARGET_SEGMENTS blob version read (FEATURE_SEGMENTS)
+  var segmentsVersion: UInt32 = 0
 
   var unknownFields = SwiftProtobuf.UnknownStorage()
 
@@ -2119,6 +2204,12 @@ nonisolated struct LinkRideState: @unchecked Sendable {
   var timeValid: Bool {
     get {_storage._timeValid}
     set {_uniqueStorage()._timeValid = newValue}
+  }
+
+  /// UNKNOWN from firmware before it was reported
+  var sdCard: LinkSdCard {
+    get {_storage._sdCard}
+    set {_uniqueStorage()._sdCard = newValue}
   }
 
   var unknownFields = SwiftProtobuf.UnknownStorage()
@@ -3611,6 +3702,35 @@ nonisolated struct LinkAgnssInfo: Sendable {
   init() {}
 }
 
+nonisolated struct LinkGetSegments: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  init() {}
+}
+
+nonisolated struct LinkSegmentsInfo: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  /// false before the first set (nothing accepted or on the card)
+  var present: Bool = false
+
+  /// segments in the set the device holds
+  var count: UInt32 = 0
+
+  /// newest blob version the device reads (as DeviceHello.segments_version)
+  var version: UInt32 = 0
+
+  var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  init() {}
+}
+
 // MARK: - Code below here is support for the SwiftProtobuf runtime.
 
 fileprivate nonisolated let _protobuf_package = "otp.link"
@@ -3620,7 +3740,7 @@ nonisolated extension LinkProtoVersion: SwiftProtobuf._ProtoNameProviding {
 }
 
 nonisolated extension LinkFeature: SwiftProtobuf._ProtoNameProviding {
-  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0FEATURE_NONE\0\u{1}FEATURE_SETTINGS\0\u{1}FEATURE_WHEEL_SIZE\0\u{1}FEATURE_LIVE\0\u{1}FEATURE_STOPWATCH\0\u{1}FEATURE_STOPWATCH_LAPS\0\u{1}FEATURE_ROUTES\0\u{1}FEATURE_NAVIGATION\0\u{1}FEATURE_PHONE_LOCATION\0\u{1}FEATURE_RIDES\0\u{1}FEATURE_LOGS\0\u{1}FEATURE_FIRMWARE_UPDATE\0\u{1}FEATURE_SENSORS\0\u{1}FEATURE_MAPS\0\u{1}FEATURE_MAP_TILES\0\u{1}FEATURE_MAP_TILE_VERSIONS\0\u{1}FEATURE_MAP_POI\0\u{1}FEATURE_MAP_LAYERS\0\u{1}FEATURE_DASH\0\u{1}FEATURE_MESH\0\u{1}FEATURE_MESH_RADIO_CONFIG\0\u{1}FEATURE_MEDIA_META\0\u{1}FEATURE_MEDIA_ART\0\u{1}FEATURE_MEDIA_ART_TONE\0\u{1}FEATURE_MEDIA_TRACK\0\u{1}FEATURE_MEDIA_REMOTE\0\u{1}FEATURE_WORKOUTS\0\u{1}FEATURE_AGNSS\0\u{1}FEATURE_UNPAIR\0\u{2}$FEATURE_MEDIA_COMMAND_HANDLER\0")
+  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0FEATURE_NONE\0\u{1}FEATURE_SETTINGS\0\u{1}FEATURE_WHEEL_SIZE\0\u{1}FEATURE_LIVE\0\u{1}FEATURE_STOPWATCH\0\u{1}FEATURE_STOPWATCH_LAPS\0\u{1}FEATURE_ROUTES\0\u{1}FEATURE_NAVIGATION\0\u{1}FEATURE_PHONE_LOCATION\0\u{1}FEATURE_RIDES\0\u{1}FEATURE_LOGS\0\u{1}FEATURE_FIRMWARE_UPDATE\0\u{1}FEATURE_SENSORS\0\u{1}FEATURE_MAPS\0\u{1}FEATURE_MAP_TILES\0\u{1}FEATURE_MAP_TILE_VERSIONS\0\u{1}FEATURE_MAP_POI\0\u{1}FEATURE_MAP_LAYERS\0\u{1}FEATURE_DASH\0\u{1}FEATURE_MESH\0\u{1}FEATURE_MESH_RADIO_CONFIG\0\u{1}FEATURE_MEDIA_META\0\u{1}FEATURE_MEDIA_ART\0\u{1}FEATURE_MEDIA_ART_TONE\0\u{1}FEATURE_MEDIA_TRACK\0\u{1}FEATURE_MEDIA_REMOTE\0\u{1}FEATURE_WORKOUTS\0\u{1}FEATURE_AGNSS\0\u{1}FEATURE_UNPAIR\0\u{1}FEATURE_SEGMENTS\0\u{2}#FEATURE_MEDIA_COMMAND_HANDLER\0")
 }
 
 nonisolated extension LinkPlatform: SwiftProtobuf._ProtoNameProviding {
@@ -3635,6 +3755,10 @@ nonisolated extension LinkLiveTopic: SwiftProtobuf._ProtoNameProviding {
   static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0LIVE_TOPIC_NONE\0\u{1}LIVE_TOPIC_RIDE\0\u{1}LIVE_TOPIC_STOPWATCH\0\u{1}LIVE_TOPIC_VIEW\0\u{1}LIVE_TOPIC_POSITION\0\u{1}LIVE_TOPIC_RADAR\0\u{1}LIVE_TOPIC_MUSIC\0")
 }
 
+nonisolated extension LinkSdCard: SwiftProtobuf._ProtoNameProviding {
+  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0SD_CARD_UNKNOWN\0\u{1}SD_CARD_OK\0\u{1}SD_CARD_MISSING\0\u{1}SD_CARD_UNREADABLE\0")
+}
+
 nonisolated extension LinkScreen: SwiftProtobuf._ProtoNameProviding {
   static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0SCREEN_DASH\0\u{1}SCREEN_MAP\0\u{1}SCREEN_OTHER\0")
 }
@@ -3644,7 +3768,7 @@ nonisolated extension LinkStopwatchOp: SwiftProtobuf._ProtoNameProviding {
 }
 
 nonisolated extension LinkTarget: SwiftProtobuf._ProtoNameProviding {
-  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0TARGET_NONE\0\u{1}TARGET_FIRMWARE\0\u{1}TARGET_MAP\0\u{1}TARGET_MAP_TILE\0\u{1}TARGET_MAP_POI\0\u{1}TARGET_ROUTE\0\u{1}TARGET_WORKOUT\0\u{1}TARGET_ALBUM_ART\0\u{1}TARGET_AGNSS\0")
+  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0TARGET_NONE\0\u{1}TARGET_FIRMWARE\0\u{1}TARGET_MAP\0\u{1}TARGET_MAP_TILE\0\u{1}TARGET_MAP_POI\0\u{1}TARGET_ROUTE\0\u{1}TARGET_WORKOUT\0\u{1}TARGET_ALBUM_ART\0\u{1}TARGET_AGNSS\0\u{1}TARGET_SEGMENTS\0")
 }
 
 nonisolated extension LinkArtFormat: SwiftProtobuf._ProtoNameProviding {
@@ -3685,7 +3809,7 @@ nonisolated extension LinkGnssModule: SwiftProtobuf._ProtoNameProviding {
 
 nonisolated extension LinkPhoneMsg: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   static let protoMessageName: String = _protobuf_package + ".PhoneMsg"
-  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}req\0\u{1}hello\0\u{1}unpair\0\u{4}\u{7}get_settings\0\u{3}set_settings\0\u{4}\u{4}live_subscribe\0\u{1}stopwatch\0\u{4}\u{4}upload_begin\0\u{1}chunk\0\u{3}upload_end\0\u{1}download\0\u{3}transfer_ack\0\u{3}transfer_cancel\0\u{2}\u{5}list\0\u{3}delete_file\0\u{2}\u{9}location\0\u{1}maneuvers\0\u{3}route_finish\0\u{2}\u{8}sensors\0\u{4}\u{a}get_map_layers\0\u{3}set_map_layers\0\u{4}\u{9}get_dash\0\u{3}set_dash\0\u{4}\u{9}media_meta\0\u{3}media_clear\0\u{3}media_command\0\u{2}\u{8}workout\0\u{2}\u{a}mesh\0\u{4}\u{14}agnss_info\0")
+  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}req\0\u{1}hello\0\u{1}unpair\0\u{4}\u{7}get_settings\0\u{3}set_settings\0\u{4}\u{4}live_subscribe\0\u{1}stopwatch\0\u{4}\u{4}upload_begin\0\u{1}chunk\0\u{3}upload_end\0\u{1}download\0\u{3}transfer_ack\0\u{3}transfer_cancel\0\u{2}\u{5}list\0\u{3}delete_file\0\u{2}\u{9}location\0\u{1}maneuvers\0\u{3}route_finish\0\u{2}\u{8}sensors\0\u{4}\u{a}get_map_layers\0\u{3}set_map_layers\0\u{4}\u{9}get_dash\0\u{3}set_dash\0\u{4}\u{9}media_meta\0\u{3}media_clear\0\u{3}media_command\0\u{2}\u{8}workout\0\u{2}\u{a}mesh\0\u{4}\u{14}agnss_info\0\u{4}\u{a}get_segments\0")
 
   mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -4058,6 +4182,19 @@ nonisolated extension LinkPhoneMsg: SwiftProtobuf.Message, SwiftProtobuf._Messag
           self.body = .agnssInfo(v)
         }
       }()
+      case 130: try {
+        var v: LinkGetSegments?
+        var hadOneofValue = false
+        if let current = self.body {
+          hadOneofValue = true
+          if case .getSegments(let m) = current {v = m}
+        }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.body = .getSegments(v)
+        }
+      }()
       default: break
       }
     }
@@ -4184,6 +4321,10 @@ nonisolated extension LinkPhoneMsg: SwiftProtobuf.Message, SwiftProtobuf._Messag
       guard case .agnssInfo(let v)? = self.body else { preconditionFailure() }
       try visitor.visitSingularMessageField(value: v, fieldNumber: 120)
     }()
+    case .getSegments?: try {
+      guard case .getSegments(let v)? = self.body else { preconditionFailure() }
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 130)
+    }()
     case nil: break
     }
     try unknownFields.traverse(visitor: &visitor)
@@ -4199,7 +4340,7 @@ nonisolated extension LinkPhoneMsg: SwiftProtobuf.Message, SwiftProtobuf._Messag
 
 nonisolated extension LinkDeviceMsg: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   static let protoMessageName: String = _protobuf_package + ".DeviceMsg"
-  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}req\0\u{1}hello\0\u{1}result\0\u{2}\u{7}settings\0\u{2}\u{5}live\0\u{4}\u{5}upload_ready\0\u{1}chunk\0\u{4}\u{2}download_begin\0\u{3}transfer_ack\0\u{3}transfer_cancel\0\u{3}transfer_done\0\u{4}\u{4}file_list\0\u{3}map_coverage\0\u{3}tile_list\0\u{4}\u{12}sensor_list\0\u{4}\u{a}map_layers\0\u{2}\u{a}dash\0\u{4}\u{a}media_track\0\u{4}\u{2}media_command\0\u{4}\u{8}workout_status\0\u{4}\u{a}mesh_state\0\u{3}mesh_history\0\u{3}mesh_nodes\0\u{3}mesh_stats\0\u{3}mesh_presets\0\u{3}mesh_channels\0\u{3}mesh_regions\0\u{3}mesh_changed\0\u{3}mesh_queued\0\u{4}\u{c}agnss_info\0")
+  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}req\0\u{1}hello\0\u{1}result\0\u{2}\u{7}settings\0\u{2}\u{5}live\0\u{4}\u{5}upload_ready\0\u{1}chunk\0\u{4}\u{2}download_begin\0\u{3}transfer_ack\0\u{3}transfer_cancel\0\u{3}transfer_done\0\u{4}\u{4}file_list\0\u{3}map_coverage\0\u{3}tile_list\0\u{4}\u{12}sensor_list\0\u{4}\u{a}map_layers\0\u{2}\u{a}dash\0\u{4}\u{a}media_track\0\u{4}\u{2}media_command\0\u{4}\u{8}workout_status\0\u{4}\u{a}mesh_state\0\u{3}mesh_history\0\u{3}mesh_nodes\0\u{3}mesh_stats\0\u{3}mesh_presets\0\u{3}mesh_channels\0\u{3}mesh_regions\0\u{3}mesh_changed\0\u{3}mesh_queued\0\u{4}\u{c}agnss_info\0\u{2}\u{a}segments\0")
 
   mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -4585,6 +4726,19 @@ nonisolated extension LinkDeviceMsg: SwiftProtobuf.Message, SwiftProtobuf._Messa
           self.body = .agnssInfo(v)
         }
       }()
+      case 130: try {
+        var v: LinkSegmentsInfo?
+        var hadOneofValue = false
+        if let current = self.body {
+          hadOneofValue = true
+          if case .segments(let m) = current {v = m}
+        }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.body = .segments(v)
+        }
+      }()
       default: break
       }
     }
@@ -4715,6 +4869,10 @@ nonisolated extension LinkDeviceMsg: SwiftProtobuf.Message, SwiftProtobuf._Messa
       guard case .agnssInfo(let v)? = self.body else { preconditionFailure() }
       try visitor.visitSingularMessageField(value: v, fieldNumber: 120)
     }()
+    case .segments?: try {
+      guard case .segments(let v)? = self.body else { preconditionFailure() }
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 130)
+    }()
     case nil: break
     }
     try unknownFields.traverse(visitor: &visitor)
@@ -4815,7 +4973,7 @@ nonisolated extension LinkHello: SwiftProtobuf.Message, SwiftProtobuf._MessageIm
 
 nonisolated extension LinkDeviceHello: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   static let protoMessageName: String = _protobuf_package + ".DeviceHello"
-  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}proto\0\u{1}firmware\0\u{1}features\0\u{3}max_message\0\u{1}mtu\0\u{3}dash_max_pages\0\u{3}dash_max_text\0\u{3}route_max_bytes\0\u{3}workout_max_bytes\0\u{3}max_maneuvers\0")
+  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}proto\0\u{1}firmware\0\u{1}features\0\u{3}max_message\0\u{1}mtu\0\u{3}dash_max_pages\0\u{3}dash_max_text\0\u{3}route_max_bytes\0\u{3}workout_max_bytes\0\u{3}max_maneuvers\0\u{3}segments_version\0")
 
   mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -4833,6 +4991,7 @@ nonisolated extension LinkDeviceHello: SwiftProtobuf.Message, SwiftProtobuf._Mes
       case 8: try { try decoder.decodeSingularUInt32Field(value: &self.routeMaxBytes) }()
       case 9: try { try decoder.decodeSingularUInt32Field(value: &self.workoutMaxBytes) }()
       case 10: try { try decoder.decodeSingularUInt32Field(value: &self.maxManeuvers) }()
+      case 11: try { try decoder.decodeSingularUInt32Field(value: &self.segmentsVersion) }()
       default: break
       }
     }
@@ -4869,6 +5028,9 @@ nonisolated extension LinkDeviceHello: SwiftProtobuf.Message, SwiftProtobuf._Mes
     if self.maxManeuvers != 0 {
       try visitor.visitSingularUInt32Field(value: self.maxManeuvers, fieldNumber: 10)
     }
+    if self.segmentsVersion != 0 {
+      try visitor.visitSingularUInt32Field(value: self.segmentsVersion, fieldNumber: 11)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -4883,6 +5045,7 @@ nonisolated extension LinkDeviceHello: SwiftProtobuf.Message, SwiftProtobuf._Mes
     if lhs.routeMaxBytes != rhs.routeMaxBytes {return false}
     if lhs.workoutMaxBytes != rhs.workoutMaxBytes {return false}
     if lhs.maxManeuvers != rhs.maxManeuvers {return false}
+    if lhs.segmentsVersion != rhs.segmentsVersion {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
@@ -5134,7 +5297,7 @@ nonisolated extension LinkLiveFrame: SwiftProtobuf.Message, SwiftProtobuf._Messa
 
 nonisolated extension LinkRideState: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   static let protoMessageName: String = _protobuf_package + ".RideState"
-  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}fix\0\u{1}recording\0\u{3}auto_paused\0\u{3}route_active\0\u{1}charging\0\u{3}battery_pct\0\u{1}sats\0\u{3}speed_dkmh\0\u{3}speed_from_wheel\0\u{3}power_w\0\u{3}power3s_w\0\u{3}hr_bpm\0\u{3}cadence_rpm\0\u{3}distance_m\0\u{3}elapsed_s\0\u{3}moving_s\0\u{3}climb_m\0\u{3}grade_dpct\0\u{3}altitude_m\0\u{3}altitude_baro\0\u{3}route_left_m\0\u{3}radar_connected\0\u{3}radar_live\0\u{3}time_valid\0")
+  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}fix\0\u{1}recording\0\u{3}auto_paused\0\u{3}route_active\0\u{1}charging\0\u{3}battery_pct\0\u{1}sats\0\u{3}speed_dkmh\0\u{3}speed_from_wheel\0\u{3}power_w\0\u{3}power3s_w\0\u{3}hr_bpm\0\u{3}cadence_rpm\0\u{3}distance_m\0\u{3}elapsed_s\0\u{3}moving_s\0\u{3}climb_m\0\u{3}grade_dpct\0\u{3}altitude_m\0\u{3}altitude_baro\0\u{3}route_left_m\0\u{3}radar_connected\0\u{3}radar_live\0\u{3}time_valid\0\u{3}sd_card\0")
 
   fileprivate class _StorageClass {
     var _fix: Bool = false
@@ -5161,6 +5324,7 @@ nonisolated extension LinkRideState: SwiftProtobuf.Message, SwiftProtobuf._Messa
     var _radarConnected: Bool = false
     var _radarLive: Bool = false
     var _timeValid: Bool = false
+    var _sdCard: LinkSdCard = .unknown
 
       // This property is used as the initial default value for new instances of the type.
       // The type itself is protecting the reference to its storage via CoW semantics.
@@ -5195,6 +5359,7 @@ nonisolated extension LinkRideState: SwiftProtobuf.Message, SwiftProtobuf._Messa
       _radarConnected = source._radarConnected
       _radarLive = source._radarLive
       _timeValid = source._timeValid
+      _sdCard = source._sdCard
     }
   }
 
@@ -5237,6 +5402,7 @@ nonisolated extension LinkRideState: SwiftProtobuf.Message, SwiftProtobuf._Messa
         case 22: try { try decoder.decodeSingularBoolField(value: &_storage._radarConnected) }()
         case 23: try { try decoder.decodeSingularBoolField(value: &_storage._radarLive) }()
         case 24: try { try decoder.decodeSingularBoolField(value: &_storage._timeValid) }()
+        case 25: try { try decoder.decodeSingularEnumField(value: &_storage._sdCard) }()
         default: break
         }
       }
@@ -5321,6 +5487,9 @@ nonisolated extension LinkRideState: SwiftProtobuf.Message, SwiftProtobuf._Messa
       if _storage._timeValid != false {
         try visitor.visitSingularBoolField(value: _storage._timeValid, fieldNumber: 24)
       }
+      if _storage._sdCard != .unknown {
+        try visitor.visitSingularEnumField(value: _storage._sdCard, fieldNumber: 25)
+      }
     }
     try unknownFields.traverse(visitor: &visitor)
   }
@@ -5354,6 +5523,7 @@ nonisolated extension LinkRideState: SwiftProtobuf.Message, SwiftProtobuf._Messa
         if _storage._radarConnected != rhs_storage._radarConnected {return false}
         if _storage._radarLive != rhs_storage._radarLive {return false}
         if _storage._timeValid != rhs_storage._timeValid {return false}
+        if _storage._sdCard != rhs_storage._sdCard {return false}
         return true
       }
       if !storagesAreEqual {return false}
@@ -8366,6 +8536,65 @@ nonisolated extension LinkAgnssInfo: SwiftProtobuf.Message, SwiftProtobuf._Messa
   static func ==(lhs: LinkAgnssInfo, rhs: LinkAgnssInfo) -> Bool {
     if lhs.module != rhs.module {return false}
     if lhs.fix != rhs.fix {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+nonisolated extension LinkGetSegments: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  static let protoMessageName: String = _protobuf_package + ".GetSegments"
+  static let _protobuf_nameMap = SwiftProtobuf._NameMap()
+
+  mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    // Load everything into unknown fields
+    while try decoder.nextFieldNumber() != nil {}
+  }
+
+  func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  static func ==(lhs: LinkGetSegments, rhs: LinkGetSegments) -> Bool {
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+nonisolated extension LinkSegmentsInfo: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  static let protoMessageName: String = _protobuf_package + ".SegmentsInfo"
+  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}present\0\u{1}count\0\u{1}version\0")
+
+  mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularBoolField(value: &self.present) }()
+      case 2: try { try decoder.decodeSingularUInt32Field(value: &self.count) }()
+      case 3: try { try decoder.decodeSingularUInt32Field(value: &self.version) }()
+      default: break
+      }
+    }
+  }
+
+  func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if self.present != false {
+      try visitor.visitSingularBoolField(value: self.present, fieldNumber: 1)
+    }
+    if self.count != 0 {
+      try visitor.visitSingularUInt32Field(value: self.count, fieldNumber: 2)
+    }
+    if self.version != 0 {
+      try visitor.visitSingularUInt32Field(value: self.version, fieldNumber: 3)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  static func ==(lhs: LinkSegmentsInfo, rhs: LinkSegmentsInfo) -> Bool {
+    if lhs.present != rhs.present {return false}
+    if lhs.count != rhs.count {return false}
+    if lhs.version != rhs.version {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

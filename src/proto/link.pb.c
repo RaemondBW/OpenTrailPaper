@@ -237,6 +237,14 @@ PB_BIND(otp_link_AgnssInfoRequest, otp_link_AgnssInfoRequest, AUTO)
 PB_BIND(otp_link_AgnssInfo, otp_link_AgnssInfo, AUTO)
 
 
+PB_BIND(otp_link_GetSegments, otp_link_GetSegments, AUTO)
+
+
+PB_BIND(otp_link_SegmentsInfo, otp_link_SegmentsInfo, AUTO)
+
+
+
+
 
 
 

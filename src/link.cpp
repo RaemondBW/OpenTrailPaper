@@ -44,6 +44,7 @@
 #include "ride_recorder.h"
 #include "ride_state.h"
 #include "routes.h"
+#include "segments.h"
 #include "sd_bus.h"
 #include "settings.h"
 #include "speed_source.h"
@@ -205,6 +206,7 @@ const char* targetName(otp_link_Target t) {
     case otp_link_Target_TARGET_WORKOUT: return "workout";
     case otp_link_Target_TARGET_ALBUM_ART: return "album art";
     case otp_link_Target_TARGET_AGNSS: return "agnss";
+    case otp_link_Target_TARGET_SEGMENTS: return "segments";
     default: return "?";
     }
 }
@@ -463,6 +465,9 @@ void sendLiveFrame() {
         r.radar_connected = s.radar.connected;
         r.radar_live = s.radar.live;
         r.time_valid = s.timeValid;
+        r.sd_card = s.sdCard == SD_CARD_NONE ? otp_link_SdCard_SD_CARD_MISSING
+                  : s.sdCard == SD_CARD_UNREADABLE ? otp_link_SdCard_SD_CARD_UNREADABLE
+                  : otp_link_SdCard_SD_CARD_OK;
     }
     if (t & (1u << otp_link_LiveTopic_LIVE_TOPIC_STOPWATCH)) {
         otp_link_StopwatchState& w = f.stopwatch;
@@ -1055,6 +1060,9 @@ void onUploadBegin(uint32_t req, const otp_link_UploadBegin& b) {
         case otp_link_Target_TARGET_AGNSS:
             if (b.size > AGNSS_MAX) rc = otp_link_ResultCode_RESULT_TOO_LARGE;
             break;
+        case otp_link_Target_TARGET_SEGMENTS:
+            if (b.size > seg::BLOB_MAX) rc = otp_link_ResultCode_RESULT_TOO_LARGE;
+            break;
         default:
             rc = otp_link_ResultCode_RESULT_UNSUPPORTED;
             why = "target";
@@ -1163,10 +1171,21 @@ bool commitAllowed() {
         return ble_shared::sdFree();
     case otp_link_Target_TARGET_ROUTE:
     case otp_link_Target_TARGET_WORKOUT:
+    case otp_link_Target_TARGET_SEGMENTS:
         return !usb_storage::hostActive();
     default:
         return true;
     }
+}
+
+// The starred set the device holds, for GetSegments and after an upload.
+void sendSegmentsInfo(uint32_t req) {
+    otp_link_SegmentsInfo& g = msg(req, otp_link_DeviceMsg_segments_tag).body.segments;
+    const int n = segments::count();
+    g.present = n >= 0;
+    g.count = n < 0 ? 0 : (uint32_t)n;
+    g.version = seg::BLOB_VERSION;
+    send();
 }
 
 void commitUpload() {
@@ -1249,6 +1268,18 @@ void commitUpload() {
         gps_service::agnssInject(up.buf, up.size);
         gps_service::agnssEnd();   // buffered; the GPS task feeds the module
         break;
+    case otp_link_Target_TARGET_SEGMENTS: {
+        // Validated as a whole, kept on the card and handed to the UI task
+        // (segments.h); a rejected blob leaves the previous set live.
+        const char* err = "rejected";
+        if (!segments::submit(up.buf, up.size, &err)) {
+            rc = otp_link_ResultCode_RESULT_PARSE_ERROR;
+            detail = err;
+        }
+        // What the device holds now, just ahead of the TransferDone.
+        if (up.epoch == S.epoch) sendSegmentsInfo(0);
+        break;
+    }
     default:
         rc = otp_link_ResultCode_RESULT_UNSUPPORTED;
         break;
@@ -1499,6 +1530,7 @@ constexpr otp_link_Feature kFeatures[] = {
     otp_link_Feature_FEATURE_WORKOUTS,
     otp_link_Feature_FEATURE_AGNSS,
     otp_link_Feature_FEATURE_UNPAIR,
+    otp_link_Feature_FEATURE_SEGMENTS,
 };
 
 // Transfers, scans and queued requests of a session that ended (or an app
@@ -1554,6 +1586,7 @@ void onHello(uint32_t req, const otp_link_Hello& h) {
     d.route_max_bytes = ROUTE_MAX;
     d.workout_max_bytes = WORKOUT_MAX;
     d.max_maneuvers = routes::MAX_MANEUVERS;
+    d.segments_version = seg::BLOB_VERSION;
     if (!send()) return;
 
     // The initial state, unasked.
@@ -1808,6 +1841,7 @@ void dispatch(const otp_link_PhoneMsg& m) {
         break;
     case otp_link_PhoneMsg_workout_tag: onWorkout(req, m.body.workout); break;
     case otp_link_PhoneMsg_mesh_tag: onMesh(req, m.body.mesh); break;
+    case otp_link_PhoneMsg_get_segments_tag: sendSegmentsInfo(req); break;
     case otp_link_PhoneMsg_agnss_info_tag: {
         const int k = gps_service::moduleKindCode();
         otp_link_AgnssInfo& a = msg(req, otp_link_DeviceMsg_agnss_info_tag).body.agnss_info;

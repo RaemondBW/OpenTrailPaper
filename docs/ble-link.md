@@ -141,6 +141,7 @@ version string. `dash_max_pages` replaces the "holds 8 pages" capability bit.
 | `MeshCommand.send` | `MeshQueued` or `Result` REFUSED |
 | other `MeshCommand` | `Result`, then the refreshed topics as pushes |
 | `AgnssInfoRequest` | `AgnssInfo` |
+| `GetSegments` | `SegmentsInfo` |
 | `Unpair` | none: the device disconnects |
 
 ## Live state
@@ -158,11 +159,17 @@ The device sends a frame each second and on the next pass after any change to
 a subscribed part (stopwatch state, view, music, page). Only subscribed parts
 are filled. "No reading" is an absent `optional` field, not a sentinel value.
 
+`RideState.sd_card` reports the card: OK, MISSING (nothing in the slot) or
+UNREADABLE (a card answered but won't mount, almost always exFAT). It is
+UNKNOWN (0) from firmware before it was reported, which the apps must read as
+"don't know", never as a missing card. It carries the same three states as the
+legacy status flags' bits 3-5.
+
 ## Transfers
 
 One mechanism for every byte stream. Firmware, maps, tiles, POI files, GPX
-routes, workouts, album art and AGNSS go up. Rides, logs and workout files
-come down.
+routes, workouts, album art, AGNSS and starred segments go up. Rides, logs
+and workout files come down.
 
 Offsets are absolute file positions everywhere. `Chunk.offset` is the
 position in the whole file. `TransferAck.received` is the absolute position up
@@ -224,6 +231,18 @@ changes before it commits.
 
 **Tiles**: `name` is the H3 cell id; POI files use `TARGET_MAP_POI`. The
 version record (`cdn:<hex>`, `cdn:`, `phone:<secs>`) goes in `tile_version`.
+
+**Starred segments** (FEATURE_SEGMENTS): `UploadBegin{TARGET_SEGMENTS}` with
+the whole set as one blob in segment_match.h's format (`"OTSG"`, version,
+count, then each segment), at most `seg::BLOB_MAX` bytes. The blob version
+must not be newer than `DeviceHello.segments_version` (2 = with elevation).
+The device validates the blob as a whole, keeps it on the card
+(`/segments/starred.bin`) and hands it to the matcher. A rejected blob gets
+`TransferDone{PARSE_ERROR, detail}` and the previous set stays. Either way a
+`SegmentsInfo{present, count, version}` push (`req = 0`) comes just before the
+`TransferDone`. `GetSegments` asks for the same `SegmentsInfo` at
+any time (the app's "N on the device"). The legacy route characteristic's
+0x09..0x0C ops stay for apps without the link.
 
 ## Lists
 

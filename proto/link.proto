@@ -58,6 +58,7 @@ enum Feature {
   FEATURE_WORKOUTS = 26;           // TARGET_WORKOUT, LIST_WORKOUTS, WorkoutCommand
   FEATURE_AGNSS = 27;              // TARGET_AGNSS, AgnssInfoRequest
   FEATURE_UNPAIR = 28;             // Unpair
+  FEATURE_SEGMENTS = 29;           // TARGET_SEGMENTS, GetSegments / SegmentsInfo
   // Phone-side features (listed in Hello):
   FEATURE_MEDIA_COMMAND_HANDLER = 64;  // phone acts on device MediaCommand pushes (no AMS)
 }
@@ -136,6 +137,8 @@ message PhoneMsg {
     MeshCommand mesh = 100;
 
     AgnssInfoRequest agnss_info = 120;
+
+    GetSegments get_segments = 130;
   }
 }
 
@@ -182,6 +185,8 @@ message DeviceMsg {
     MeshQueued mesh_queued = 108;        // reply to a send
 
     AgnssInfo agnss_info = 120;
+
+    SegmentsInfo segments = 130;         // reply to GetSegments, and pushed ahead of a TARGET_SEGMENTS TransferDone
   }
 }
 
@@ -215,6 +220,7 @@ message DeviceHello {
   uint32 route_max_bytes = 8;     // GPX upload limit
   uint32 workout_max_bytes = 9;
   uint32 max_maneuvers = 10;
+  uint32 segments_version = 11;   // newest TARGET_SEGMENTS blob version read (FEATURE_SEGMENTS)
 }
 
 // Phone-initiated unpair (the app's Unpair button). No reply: the device
@@ -296,6 +302,16 @@ message RideState {
   bool radar_connected = 22;
   bool radar_live = 23;
   bool time_valid = 24;
+  SdCard sd_card = 25;                // UNKNOWN from firmware before it was reported
+}
+
+// The device's SD card. A card that answers but won't mount is almost always
+// exFAT (the firmware reads FAT only).
+enum SdCard {
+  SD_CARD_UNKNOWN = 0;
+  SD_CARD_OK = 1;                     // mounted, or lent to a USB host
+  SD_CARD_MISSING = 2;                // nothing in the slot
+  SD_CARD_UNREADABLE = 3;             // a card answered, its filesystem did not mount
 }
 
 message StopwatchState {
@@ -379,6 +395,7 @@ enum Target {
   TARGET_WORKOUT = 6;    // .erg/.mrc text, name = file name; loaded after saving
   TARGET_ALBUM_ART = 7;  // art_format / art_width / art_height
   TARGET_AGNSS = 8;      // receiver-specific assistance blob
+  TARGET_SEGMENTS = 9;   // starred Strava segments, the whole set (segment_match.h blob); replaces the set
 }
 
 enum ArtFormat {
@@ -879,4 +896,20 @@ message AgnssInfoRequest {}
 message AgnssInfo {
   GnssModule module = 1;
   bool fix = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Starred segments (FEATURE_SEGMENTS)
+//
+// The set itself is a TARGET_SEGMENTS upload: the blob of segment_match.h,
+// at most DeviceHello.segments_version. The device validates it as a whole;
+// a rejected blob (TransferDone RESULT_PARSE_ERROR) leaves the previous set.
+// Either way a SegmentsInfo push (req 0) comes just before the TransferDone.
+
+message GetSegments {}
+
+message SegmentsInfo {
+  bool present = 1;      // false before the first set (nothing accepted or on the card)
+  uint32 count = 2;      // segments in the set the device holds
+  uint32 version = 3;    // newest blob version the device reads (as DeviceHello.segments_version)
 }
