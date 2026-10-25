@@ -4124,8 +4124,25 @@ final class BLEManager: NSObject, ObservableObject {
     @Published private(set) var deviceSegmentVersion = 1
     private var segmentAck: CheckedContinuation<Bool, Never>?
 
-    /// Ask the device how many segments it has ([0x0C] -> [0x25][0][u16]).
+    /// SegmentsInfo over the link: the answer to GetSegments, and pushed
+    /// just ahead of a segments upload's TransferDone.
+    private func applySegmentsInfo(_ g: LinkSegmentsInfo) {
+        segmentsSupported = true
+        deviceSegmentCount = g.present ? Int(g.count) : nil
+        deviceSegmentVersion = max(1, Int(g.version))
+    }
+
+    /// Ask the device how many segments it has (GetSegments over the link,
+    /// else [0x0C] -> [0x25][0][u16]).
     func querySegments() {
+        if link.ready {
+            guard link.has(.segments) else { segmentsSupported = false; return }
+            link.request(.getSegments(LinkGetSegments())) { [weak self] reply in
+                if case .message(let m) = reply, case .segments(let g)? = m.body { self?.applySegmentsInfo(g) }
+                return true
+            }
+            return
+        }
         guard let c = routeChar, let p = peripheral else { return }
         p.writeValue(Data([0x0C]), for: c, type: .withResponse)
         Task { @MainActor in
@@ -4138,6 +4155,20 @@ final class BLEManager: NSObject, ObservableObject {
     /// device to accept it. False when it refused, the link dropped, or no
     /// answer came within 30 s.
     func uploadSegments(_ blob: Data) async -> Bool {
+        if link.ready {
+            // TARGET_SEGMENTS: the device pushes SegmentsInfo (the new count)
+            // just ahead of the TransferDone, PARSE_ERROR when it refused.
+            guard link.has(.segments) else { segmentsSupported = false; return false }
+            var b = LinkUploadBegin()
+            b.target = .segments
+            b.name = "starred"
+            return await withCheckedContinuation { (k: CheckedContinuation<Bool, Never>) in
+                link.upload(b, data: blob, done: { r in
+                    if case .failure(let e) = r { NSLog("[link] segments upload: %@", e.description) }
+                    if case .success = r { k.resume(returning: true) } else { k.resume(returning: false) }
+                })
+            }
+        }
         guard let c = routeChar, let p = peripheral else { return false }
         let maxLen = max(20, p.maximumWriteValueLength(for: .withResponse)) - 1
         var packets = [Data([0x09])]
@@ -4743,6 +4774,14 @@ extension BLEManager: CBPeripheralDelegate {
         refreshSensors()
         if link.has(.mesh) { refreshMesh() }
         if link.has(.workouts) { listWorkoutsLink() }
+        // The cached tile list is one global key, not per device or card:
+        // confirm it on every connect, as the legacy path does.
+        if link.has(.mapTiles) || link.has(.mapPoi) { refreshDeviceTiles() }
+        segmentsSupported = link.has(.segments)
+        if link.has(.segments) {
+            deviceSegmentVersion = max(1, Int(h.segmentsVersion))
+            querySegments()   // the count, for Settings > Accounts
+        }
         updateAlbumArt()
     }
 
@@ -4768,6 +4807,8 @@ extension BLEManager: CBPeripheralDelegate {
             applySensorList(l)
         case .workoutStatus(let w):
             applyWorkoutStatus(w)
+        case .segments(let g):
+            applySegmentsInfo(g)
         case .mediaTrack(let t):
             albumArt.deviceTrackChanged(MediaTrack(title: t.title, artist: t.artist, album: t.album))
         case .mediaCommand(let c):
@@ -5225,6 +5266,12 @@ extension BLEManager: CBPeripheralDelegate {
         s.power = r.hasPowerW ? Int(r.powerW) : nil
         s.speedKmh = Double(r.speedDkmh) / 10
         s.remainingKm = r.hasRouteLeftM ? Double(r.routeLeftM) / 1000 : 0
+        switch r.sdCard {
+        case .ok: s.sdCard = .ok
+        case .missing: s.sdCard = .missing
+        case .unreadable: s.sdCard = .unreadable
+        default: s.sdCard = .unknown   // firmware before it was reported
+        }
         applyStatus(s)
     }
 
