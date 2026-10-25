@@ -1865,6 +1865,7 @@ final class BLEManager: NSObject, ObservableObject {
         publishQueue()
         try? FileManager.default.removeItem(at: BLEManager.cachedURL(for: name))
         if dlPartial?.name == name { dlPartial = nil }
+        RideNames.shared.forget(name)
         // Offline: just drop the local cache. Connected: also delete on device.
         if link.ready {
             guard link.has(.rides) else { return }

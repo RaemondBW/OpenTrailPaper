@@ -48,6 +48,7 @@ import com.raemond.opentrailpaper.data.SettingField
 import com.raemond.opentrailpaper.data.SettingsMerge
 import com.raemond.opentrailpaper.data.FirmwareRelease
 import com.raemond.opentrailpaper.data.Prefs
+import com.raemond.opentrailpaper.data.RideNames
 import com.raemond.opentrailpaper.transfer.TransferCenter
 import com.raemond.opentrailpaper.BuildConfig
 import com.raemond.opentrailpaper.link.Cancellable
@@ -2489,6 +2490,7 @@ class BleManager(private val app: Application) {
         publishQueue()
         cachedRideFile(name).delete()
         partialRideFile(name).delete()
+        RideNames.forget(name)
         if (linkReady) {
             if (has(Feature.FEATURE_RIDES)) deleteFile(ListKind.LIST_RIDES, name)
             return

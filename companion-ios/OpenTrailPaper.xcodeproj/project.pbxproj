@@ -35,6 +35,7 @@
 		431EACF518E6E7F25D9682EC /* H3Tiles.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD6BA4ACE6890EF09B9A8F6F /* H3Tiles.swift */; };
 		43AAF30082DA51F92552EE19 /* PhoneMock.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B4C752C73B32E5B3E92EAE4 /* PhoneMock.swift */; };
 		4608B467E047801D5219DD54 /* faceijk.c in Sources */ = {isa = PBXBuildFile; fileRef = 21F000263728C013838D0605 /* faceijk.c */; };
+		4625F9DA3A53A697D591B7EA /* RideNames.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0357BDFF6CDBFD4821E44AFE /* RideNames.swift */; };
 		4C0F6C64C32AF7035999D782 /* ArtDither.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F0FA5A490092653FA6B10D1 /* ArtDither.swift */; };
 		4DF251C87736B5314A937BCE /* DevicePages.swift in Sources */ = {isa = PBXBuildFile; fileRef = D35859366D0F2C3EA5BAC557 /* DevicePages.swift */; };
 		50C29F659BE2ACD7B9B29D73 /* Barlow-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = F21BF62E40922CF797D8119D /* Barlow-Regular.ttf */; };
@@ -131,6 +132,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		0357BDFF6CDBFD4821E44AFE /* RideNames.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RideNames.swift; sourceTree = "<group>"; };
 		05C73BCF289591ECA86720C6 /* GPXExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GPXExporter.swift; sourceTree = "<group>"; };
 		062C37A066E27E1DEC3AF253 /* EInkMapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EInkMapView.swift; sourceTree = "<group>"; };
 		0641658A779893A7975FA99F /* MeshView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshView.swift; sourceTree = "<group>"; };
@@ -372,6 +374,7 @@
 				4B4C752C73B32E5B3E92EAE4 /* PhoneMock.swift */,
 				0D1BB43B64D584E90FCD1A2A /* PrebuiltTiles.swift */,
 				E1B62C507D47EAD0BDDDD24F /* RideDetailView.swift */,
+				0357BDFF6CDBFD4821E44AFE /* RideNames.swift */,
 				A1B38F0A13FA33BFE4E04416 /* RideSim.swift */,
 				F897B750389038E18EE9AC09 /* RidesView.swift */,
 				C4E83FB3A70437DD5D0F8629 /* RideView.swift */,
@@ -649,6 +652,7 @@
 				43AAF30082DA51F92552EE19 /* PhoneMock.swift in Sources */,
 				7ECE54D8F2955E11043A1D8C /* PrebuiltTiles.swift in Sources */,
 				72A4059778F0676C0911C393 /* RideDetailView.swift in Sources */,
+				4625F9DA3A53A697D591B7EA /* RideNames.swift in Sources */,
 				27D3072E86C963D6934C56BA /* RideSim.swift in Sources */,
 				2D50FCD8D5DDF2010C20E161 /* RideView.swift in Sources */,
 				BE0814223F037C69E39B93D7 /* RidesView.swift in Sources */,

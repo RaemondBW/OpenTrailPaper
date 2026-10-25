@@ -832,19 +832,29 @@ struct SyncAccountsCard: View {
 // MARK: - Upload grid (ride page)
 
 /// One tile per connected account, side by side; tap a tile to upload. A
-/// finished upload turns its tile black.
+/// finished upload turns its tile black. Above the tiles, the activity name the
+/// upload goes under, prefilled with the ride's current name (the rider's last
+/// rename, else `defaultName`); all three services take the name with the
+/// file. The name is remembered for the ride (RideNames).
 struct SyncUploadButtons: View {
     let fileURL: URL
-    let name: String
+    let defaultName: String
     @ObservedObject private var sync = SyncAccounts.shared
+    @ObservedObject private var names = RideNames.shared
     @State private var uploading: SyncProvider?
     @State private var status: [SyncProvider: String] = [:]
+    @State private var draft = ""
+    @FocusState private var editing: Bool
+
+    private var file: String { fileURL.lastPathComponent }
 
     var body: some View {
         let connected = SyncProvider.allCases.filter { sync.isConnected($0) }
         if !connected.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
+                nameField
                 Text("Upload to").trackedLabel()
+                    .padding(.top, 4)
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10),
                                          count: min(connected.count, 3)),
                           spacing: 10) {
@@ -864,7 +874,39 @@ struct SyncUploadButtons: View {
                 for p in UploadLog.providers(for: fileURL.lastPathComponent) where status[p] == nil {
                     status[p] = "Uploaded"
                 }
+                draft = names.name(for: file, default: defaultName)
             }
+        }
+    }
+
+    /// A bordered one-line field under a tracked label; the tiles upload
+    /// whatever it holds. Blank uploads under the default name.
+    private var nameField: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Activity name").trackedLabel()
+            HStack(spacing: 8) {
+                TextField(defaultName, text: $draft)
+                    .font(BarlowFont.text(16, .semibold))
+                    .foregroundStyle(Palette.ink)
+                    .textInputAutocapitalization(.sentences)
+                    .submitLabel(.done)
+                    .focused($editing)
+                    .onSubmit { names.rename(file, to: draft, default: defaultName) }
+                if !draft.isEmpty && editing {
+                    Button { draft = "" } label: {
+                        Image(systemName: "xmark").font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(Palette.ink)
+                            .frame(width: 28, height: 28)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Clear name")
+                }
+            }
+            .padding(.horizontal, 12).frame(minHeight: 44)
+            .background(Palette.paper)
+            .einkBorder()
+            .disabled(uploading != nil)
+            .accessibilityLabel("Activity name for uploads")
         }
     }
 
@@ -907,6 +949,9 @@ struct SyncUploadButtons: View {
     }
 
     private func upload(_ p: SyncProvider) {
+        editing = false
+        let name = names.rename(file, to: draft, default: defaultName)
+        draft = name
         uploading = p
         status[p] = nil
         Task {
