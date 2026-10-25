@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources xmlns:tools="http://schemas.android.com/tools">
-    <!-- The window background is the app's warm "paper", so there is no white
+    <!-- The window background is the app's white "paper", so there is no
          flash between the splash and the first Compose frame. -->
     <style name="Theme.OpenTrailPaper" parent="android:Theme.Material.Light.NoActionBar">
         <item name="android:windowBackground">@color/paper</item>

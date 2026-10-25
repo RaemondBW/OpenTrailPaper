@@ -121,6 +121,8 @@ object MapSnapshotter {
         val ty1 = floor((top + h) / TILE).toInt()
         val maxTile = (1 shl zoom) - 1
         var drewAny = false
+        // Greyscale ground, the ride drawn in ink over it (the e-ink look).
+        val ground = Paint(Paint.FILTER_BITMAP_FLAG).apply { colorFilter = MapStyle.einkFilter() }
         for (ty in ty0..ty1) {
             if (ty < 0 || ty > maxTile) continue
             for (tx in tx0..tx1) {
@@ -130,7 +132,7 @@ object MapSnapshotter {
                     tile,
                     (tx * TILE - left).toFloat(),
                     (ty * TILE - top).toFloat(),
-                    null,
+                    ground,
                 )
                 drewAny = true
             }
@@ -140,12 +142,11 @@ object MapSnapshotter {
             return null   // offline: let the caller fall back to the track glyph
         }
 
+        val width = 3.5f * (w / 340f).coerceIn(1f, 3f)
         val line = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
-            strokeWidth = 3.5f * (w / 340f).coerceIn(1f, 3f)
             strokeCap = Paint.Cap.ROUND
             strokeJoin = Paint.Join.ROUND
-            color = Palette.accent.toArgb()
         }
         val path = Path()
         for ((i, c) in coords.withIndex()) {
@@ -154,16 +155,28 @@ object MapSnapshotter {
             val y = (p[1] - top).toFloat()
             if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
         }
+        // A white casing first, then the ink line on it.
+        line.color = Palette.paper.toArgb()
+        line.strokeWidth = width * 2f
+        canvas.drawPath(path, line)
+        line.color = Palette.ink.toArgb()
+        line.strokeWidth = width
         canvas.drawPath(path, line)
 
-        // Start marker.
+        // Start: a ring. End: a solid square.
         val start = px(coords.first())
-        canvas.drawCircle(
-            (start[0] - left).toFloat(),
-            (start[1] - top).toFloat(),
-            line.strokeWidth * 1.2f,
-            Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Palette.good.toArgb() },
-        )
+        val sx = (start[0] - left).toFloat()
+        val sy = (start[1] - top).toFloat()
+        val r = width * 1.6f
+        val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Palette.paper.toArgb() }
+        canvas.drawCircle(sx, sy, r, fill)
+        line.strokeWidth = width * 0.8f
+        canvas.drawCircle(sx, sy, r, line)
+        val end = px(coords.last())
+        val ex = (end[0] - left).toFloat()
+        val ey = (end[1] - top).toFloat()
+        fill.color = Palette.ink.toArgb()
+        canvas.drawRect(ex - r, ey - r, ex + r, ey + r, fill)
         return out
     }
 
