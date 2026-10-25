@@ -28,6 +28,9 @@ struct RideState {
     bool     everHadFix = false;   // lat/lon hold the last known position
     double   latitude = 0.0;
     double   longitude = 0.0;
+    // millis() when latitude/longitude last came from a fix: tells a new fix
+    // from the same one read twice, and stamps it (the segment matcher).
+    uint32_t gpsFixMs = 0;
     float    altitudeM = 0.0f;
     // THE speed: what the dashboard shows, the recorder times "moving" by and
     // the phone gets. Arbitrated by speed_source::publish() from the sources

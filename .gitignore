@@ -116,3 +116,4 @@ cloud/sync-auth/node_modules/
 tools/wheel_speed_test/wheel_speed_test
 tools/link_test/link_test
 tools/phone_motion_test/phone_motion_test
+tools/segment_test/segment_test

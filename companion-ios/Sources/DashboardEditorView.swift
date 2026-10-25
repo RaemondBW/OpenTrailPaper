@@ -186,6 +186,24 @@ struct DashboardEditorView: View {
                     }
                     .padding(.vertical, 4)
                 }
+            } else if config.pages.indices.contains(pageIx), config.pages[pageIx].isSegment {
+                Section {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label("Segment", systemImage: "flag.checkered")
+                        Text("Live Strava segments. Sync your starred segments in Settings > Accounts > Strava. Away from them the page shows the nearest start within 5 km; ride through a start and it times the effort against your PR, then shows your result. Efforts are timed on any page. Needs device firmware v1.23 or newer.")
+                            .font(TypeScale.body).foregroundStyle(Palette.muted)
+                        Toggle(isOn: Binding(
+                            get: { config.pages.indices.contains(pageIx) ? config.pages[pageIx].autoShow : true },
+                            set: { v in
+                                guard config.pages.indices.contains(pageIx) else { return }
+                                config.pages[pageIx].autoShow = v
+                                dirty = true
+                            })) {
+                            Text("Switch to this page when a segment starts").font(TypeScale.body)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
             } else if config.pages.indices.contains(pageIx) {
                 Section {
                     VStack(alignment: .leading, spacing: 8) {
@@ -245,6 +263,7 @@ struct DashboardEditorView: View {
             case .map: MapPagePreview(fields: config.mapFields)
             case .workout: WorkoutPagePreview()
             case .stopwatch: StopwatchPagePreview()
+            case .segment: SegmentPagePreview()
             case .fields: DashPreview(layout: config.pages[i].layout)
             }
         }
@@ -337,6 +356,13 @@ struct DashboardEditorView: View {
                     addPage(.stopwatch, proxy)
                 } label: {
                     Label("Stopwatch", systemImage: "stopwatch")
+                }
+            }
+            if !config.hasSegmentPage {
+                Button {
+                    addPage(.segment, proxy)
+                } label: {
+                    Label("Segment", systemImage: "flag.checkered")
                 }
             }
         } label: {
@@ -800,7 +826,7 @@ struct DashPreview: View {
 }
 
 
-// Thumbnails of the device's MUSIC, MAP, WORKOUT and STOPWATCH screens live
+// Thumbnails of the device's MUSIC, MAP, WORKOUT, STOPWATCH and SEGMENT screens live
 // in DevicePages.swift, shared with the Ride tab's live copies of them.
 
 // Live reorder for the page carousel: as the lifted card crosses a neighbour,

@@ -230,16 +230,21 @@ struct DashConfig: Equatable {
         let id = UUID()
         var kind: Kind
         var layout: DashLayout
-        enum Kind { case fields, music, map, workout, stopwatch }
+        /// `.segment` only: switch the panel to it when an effort starts
+        /// (`page segment`); false = `page segment manual`.
+        var autoShow = true
+        enum Kind { case fields, music, map, workout, stopwatch, segment }
         var isMusic: Bool { kind == .music }
         var isMap: Bool { kind == .map }
         var isWorkout: Bool { kind == .workout }
         var isStopwatch: Bool { kind == .stopwatch }
+        var isSegment: Bool { kind == .segment }
         static var music: Page { Page(kind: .music, layout: DashLayout(items: [])) }
         static var fields: Page { Page(kind: .fields, layout: DashLayout(items: [])) }
         static var map: Page { Page(kind: .map, layout: DashLayout(items: [])) }
         static var workout: Page { Page(kind: .workout, layout: DashLayout(items: [])) }
         static var stopwatch: Page { Page(kind: .stopwatch, layout: DashLayout(items: [])) }
+        static var segment: Page { Page(kind: .segment, layout: DashLayout(items: [])) }
     }
 
     var pages: [Page]
@@ -286,6 +291,7 @@ struct DashConfig: Equatable {
         var out: [Page] = []
         var chunk = ""
         var kind = Page.Kind.fields
+        var autoShow = true
         var sawMap = false
         func commit() {
             let layout = kind == .fields ? DashLayout(text: chunk) : DashLayout(items: [])
@@ -293,9 +299,10 @@ struct DashConfig: Equatable {
             if kind == .map {
                 if sawMap { keep = false } else { sawMap = true }
             }
-            if keep { out.append(Page(kind: kind, layout: layout)) }
+            if keep { out.append(Page(kind: kind, layout: layout, autoShow: autoShow)) }
             chunk = ""
             kind = .fields
+            autoShow = true
         }
         var strip = ["speed", "distance", "ridetime"]
         for rawLine in text.split(separator: "\n", omittingEmptySubsequences: false) {
@@ -308,6 +315,10 @@ struct DashConfig: Equatable {
                 else if tok.count > 1, tok[1] == "map" { kind = .map }
                 else if tok.count > 1, tok[1] == "workout" { kind = .workout }
                 else if tok.count > 1, tok[1] == "stopwatch" { kind = .stopwatch }
+                else if tok.count > 1, tok[1] == "segment" {
+                    kind = .segment
+                    autoShow = !(tok.count > 2 && tok[2] == "manual")
+                }
             } else if tok.first == "map" {
                 for i in 0..<3 where tok.count > i + 1 {
                     if tok[i + 1] != "radar", DashField.named(String(tok[i + 1])) != nil {
@@ -348,6 +359,9 @@ struct DashConfig: Equatable {
                 // parses as an empty page), so the device echoes the layout
                 // back without it and the editor follows.
                 s += "page stopwatch\n"
+            } else if page.isSegment {
+                // Same story on firmware before segments.
+                s += page.autoShow ? "page segment\n" : "page segment manual\n"
             } else if i > 0 {
                 s += "page\n"
             }
@@ -372,6 +386,7 @@ struct DashConfig: Equatable {
     var hasMusicPage: Bool { pages.contains { $0.isMusic } }
     var hasWorkoutPage: Bool { pages.contains { $0.isWorkout } }
     var hasStopwatchPage: Bool { pages.contains { $0.isStopwatch } }
+    var hasSegmentPage: Bool { pages.contains { $0.isSegment } }
 
     static var deviceDefault: DashConfig {
         DashConfig(pages: [Page(kind: .fields, layout: .deviceDefault), .map])

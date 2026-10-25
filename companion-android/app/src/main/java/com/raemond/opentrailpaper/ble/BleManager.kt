@@ -100,6 +100,7 @@ import com.raemond.opentrailpaper.link.proto.WorkoutCommand
 import com.raemond.opentrailpaper.link.proto.WorkoutOp
 import com.raemond.opentrailpaper.link.proto.DashConfig as PDashConfig
 import com.raemond.opentrailpaper.link.proto.Maneuver as PManeuver
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -110,6 +111,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.security.MessageDigest
@@ -1510,6 +1512,9 @@ class BleManager(private val app: Application) {
         settingsChar = null; statusChar = null; routeChar = null; ridesChar = null
         sensorsChar = null; mapChar = null; otaChar = null; dashChar = null
         meshChar = null; mediaChar = null; workoutChar = null
+        // The next device may be another one, or older firmware.
+        segmentsSupported = null; deviceSegmentCount = null; deviceSegmentVersion = 1
+        segmentAck?.complete(false); segmentAck = null
         // Pending edits stay cached; the next connect reads and merges.
         settingsSeenThisLink = false; settingsWriteInFlight = null
         settingsWriteFailedThisLink = false
@@ -2970,6 +2975,66 @@ class BleManager(private val app: Application) {
                 routeReceived = false
                 lastMessage = "Device couldn’t read the route — try sending again"
             }
+
+            0x25 -> {      // starred segments: [status][u16 count]
+                if (d.size < 4) return
+                val count = (d[2].toInt() and 0xFF) or ((d[3].toInt() and 0xFF) shl 8)
+                segmentsSupported = true
+                deviceSegmentCount = if (count == 0xFFFF) null else count
+                // The newest blob version the firmware reads; absent = 1 (no elevation).
+                deviceSegmentVersion = if (d.size >= 5) d[4].toInt() and 0xFF else 1
+                val status = d[1].toInt() and 0xFF
+                if (status != 0) segmentAck?.let { segmentAck = null; it.complete(status == 1) }
+            }
+        }
+    }
+
+    // MARK: starred segments (route characteristic, 0x09..0x0C)
+
+    /** Starred segments the device holds; null = it hasn't said (or has none yet). */
+    var deviceSegmentCount by mutableStateOf<Int?>(null); private set
+    /**
+     * Does the connected firmware take segments? null = not asked yet. Firmware
+     * before them never answers the query, which is how false is found.
+     */
+    var segmentsSupported by mutableStateOf<Boolean?>(null); private set
+    /** The newest segment blob version the device reads (2 = with elevation). */
+    var deviceSegmentVersion by mutableStateOf(1); private set
+    private var segmentAck: CompletableDeferred<Boolean>? = null
+
+    /** Ask the device how many segments it has ([0x0C] -> [0x25][0][u16]). */
+    fun querySegments() {
+        val ch = routeChar ?: return
+        writeChar(ch, byteArrayOf(0x0C))
+        scope.launch {
+            delay(4000)
+            if (segmentsSupported == null && routeChar != null) segmentsSupported = false
+        }
+    }
+
+    /**
+     * Send the whole starred set ([com.raemond.opentrailpaper.data.StravaSegments.encode])
+     * and wait for the device to accept it. False when it refused, the link
+     * dropped, or no answer came within 30 s. Paced by [GattQueue] like routes.
+     */
+    suspend fun uploadSegments(blob: ByteArray): Boolean {
+        val ch = routeChar ?: return false
+        val maxLen = maxPayload - 1
+        val packets = mutableListOf(byteArrayOf(0x09))
+        var i = 0
+        while (i < blob.size) {
+            val end = min(i + maxLen, blob.size)
+            packets += byteArrayOf(0x0A) + blob.copyOfRange(i, end)
+            i = end
+        }
+        packets += byteArrayOf(0x0B)
+        segmentAck?.complete(false)
+        val ack = CompletableDeferred<Boolean>()
+        segmentAck = ack
+        packets.forEach { writeChar(ch, it) }
+        return withTimeoutOrNull(30_000 + packets.size * 50L) { ack.await() } ?: run {
+            if (segmentAck === ack) segmentAck = null
+            false
         }
     }
 
