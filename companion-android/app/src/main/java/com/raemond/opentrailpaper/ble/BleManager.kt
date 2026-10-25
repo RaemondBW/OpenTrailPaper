@@ -63,6 +63,8 @@ import com.raemond.opentrailpaper.link.proto.DeviceMsg
 import com.raemond.opentrailpaper.link.proto.Empty
 import com.raemond.opentrailpaper.link.proto.Feature
 import com.raemond.opentrailpaper.link.proto.GetMapLayers
+import com.raemond.opentrailpaper.link.proto.GetSegments
+import com.raemond.opentrailpaper.link.proto.SegmentsInfo
 import com.raemond.opentrailpaper.link.proto.Hello
 import com.raemond.opentrailpaper.link.proto.ListKind
 import com.raemond.opentrailpaper.link.proto.ListRequest
@@ -1924,15 +1926,20 @@ class BleManager(private val app: Application) {
             speedKmh = le16(d, 6) / 10.0,
             remainingKm = le16(d, 8) / 10.0,
         )
+        noteSdCard(sdBefore)
+        syncLocationStreamToDeviceFix()
+        updateBackgroundLocationMode()
+    }
+
+    /** After a status from either path: the card went, or came back. */
+    private fun noteSdCard(before: SdCardState) {
         if (status.sdCard.isProblem) {
             // Without a card the device has no tiles, whatever the cache says.
             // Memory only: the card may well come back with them on it.
             if (deviceTileIds.isNotEmpty()) deviceTileIds = emptySet()
-        } else if (status.sdCard == SdCardState.OK && sdBefore.isProblem) {
+        } else if (status.sdCard == SdCardState.OK && before.isProblem) {
             refreshDeviceTiles()   // a card went in: ask what is on THIS one
         }
-        syncLocationStreamToDeviceFix()
-        updateBackgroundLocationMode()
     }
 
     // MARK: dashboard layout
@@ -3002,8 +3009,23 @@ class BleManager(private val app: Application) {
     var deviceSegmentVersion by mutableStateOf(1); private set
     private var segmentAck: CompletableDeferred<Boolean>? = null
 
-    /** Ask the device how many segments it has ([0x0C] -> [0x25][0][u16]). */
+    /** SegmentsInfo over the link: the answer to GetSegments, and pushed ahead of an upload's TransferDone. */
+    private fun onSegmentsInfo(g: SegmentsInfo) {
+        segmentsSupported = true
+        deviceSegmentCount = if (g.present) g.count else null
+        deviceSegmentVersion = maxOf(1, g.version)
+    }
+
+    /** Ask the device how many segments it has (GetSegments over the link, else [0x0C] -> [0x25][0][u16]). */
     fun querySegments() {
+        if (linkReady) {
+            if (!has(Feature.FEATURE_SEGMENTS)) { segmentsSupported = false; return }
+            link.request(PhoneMsg.newBuilder().setGetSegments(GetSegments.getDefaultInstance())) { m ->
+                if (m.hasSegments()) onSegmentsInfo(m.segments)
+                true
+            }
+            return
+        }
         val ch = routeChar ?: return
         writeChar(ch, byteArrayOf(0x0C))
         scope.launch {
@@ -3018,6 +3040,23 @@ class BleManager(private val app: Application) {
      * dropped, or no answer came within 30 s. Paced by [GattQueue] like routes.
      */
     suspend fun uploadSegments(blob: ByteArray): Boolean {
+        if (linkReady) {
+            // TARGET_SEGMENTS: the device pushes SegmentsInfo (the new count)
+            // just ahead of the TransferDone, PARSE_ERROR when it refused.
+            if (!has(Feature.FEATURE_SEGMENTS)) { segmentsSupported = false; return false }
+            val done = CompletableDeferred<Boolean>()
+            link.upload(
+                UploadBegin.newBuilder().setTarget(Target.TARGET_SEGMENTS).setName("starred"),
+                blob,
+                object : LinkClient.UploadListener {
+                    override fun onDone(code: ResultCode, detail: String) {
+                        if (code != ResultCode.RESULT_OK) android.util.Log.i(LINK_TAG, "segments upload: $code $detail")
+                        done.complete(code == ResultCode.RESULT_OK)
+                    }
+                },
+            )
+            return done.await()
+        }
         val ch = routeChar ?: return false
         val maxLen = maxPayload - 1
         val packets = mutableListOf(byteArrayOf(0x09))
@@ -4627,6 +4666,14 @@ class BleManager(private val app: Application) {
         if (has(Feature.FEATURE_SENSORS)) refreshSensors()
         if (has(Feature.FEATURE_MESH)) refreshMesh()
         if (has(Feature.FEATURE_WORKOUTS)) refreshWorkouts()
+        // The cached tile list is one global key, not per device or card:
+        // confirm it on every connect, as the legacy path does.
+        if (has(Feature.FEATURE_MAP_TILES) || has(Feature.FEATURE_MAP_POI)) refreshDeviceTiles()
+        segmentsSupported = has(Feature.FEATURE_SEGMENTS)
+        if (has(Feature.FEATURE_SEGMENTS)) {
+            deviceSegmentVersion = maxOf(1, h.segmentsVersion)
+            querySegments()   // the count, for Settings > Accounts
+        }
         if (liveExtraTopics.isNotEmpty()) sendLiveSubscribe()
         updateMediaRemote()
     }
@@ -4648,6 +4695,7 @@ class BleManager(private val app: Application) {
             // A device button with no AMS behind it: this phone's player acts.
             DeviceMsg.BodyCase.MEDIA_COMMAND -> mediaRemote.handleCommand(m.mediaCommand.cmdValue)
             DeviceMsg.BodyCase.WORKOUT_STATUS -> workoutStatus = LinkCodec.workoutStatus(m.workoutStatus)
+            DeviceMsg.BodyCase.SEGMENTS -> onSegmentsInfo(m.segments)
             DeviceMsg.BodyCase.SENSOR_LIST -> publishSensors(m.sensorList.sensorsList.mapNotNull(LinkCodec::sensor))
             DeviceMsg.BodyCase.MESH_STATE ->
                 meshState = LinkCodec.meshState(m.meshState, has(Feature.FEATURE_MESH_RADIO_CONFIG))
@@ -4764,7 +4812,9 @@ class BleManager(private val app: Application) {
     private fun onLiveFrame(f: LiveFrame) {
         liveFrameFlow.value = f
         if (f.hasRide()) {
+            val sdBefore = status.sdCard
             status = LinkCodec.status(f.ride)
+            noteSdCard(sdBefore)
             syncLocationStreamToDeviceFix()
             updateBackgroundLocationMode()
         }

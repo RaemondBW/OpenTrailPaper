@@ -4,6 +4,7 @@ import com.raemond.opentrailpaper.data.DeviceSettingsValues
 import com.raemond.opentrailpaper.data.SettingField
 import com.raemond.opentrailpaper.link.proto.MapCoverage
 import com.raemond.opentrailpaper.link.proto.RideState
+import com.raemond.opentrailpaper.link.proto.SdCard
 import com.raemond.opentrailpaper.link.proto.Sensor
 import com.raemond.opentrailpaper.link.proto.Settings
 import com.raemond.opentrailpaper.link.proto.MeshChannel as PMeshChannel
@@ -24,6 +25,7 @@ object LinkCodec {
 
     /** LiveFrame.ride as the status the app has always shown. */
     fun status(r: RideState): DeviceStatus = DeviceStatus(
+        sdCard = sdCard(r.sdCard),
         gpsFix = r.fix,
         recording = r.recording,
         hasRoute = r.routeActive,
@@ -43,6 +45,14 @@ object LinkCodec {
         gradePct = if (r.hasGradeDpct()) r.gradeDpct / 10.0 else null,
         altitudeM = if (r.hasAltitudeM()) r.altitudeM else null,
     )
+
+    /** UNKNOWN (firmware before it was reported) stays unknown, never "missing". */
+    fun sdCard(c: SdCard): SdCardState = when (c) {
+        SdCard.SD_CARD_OK -> SdCardState.OK
+        SdCard.SD_CARD_MISSING -> SdCardState.MISSING
+        SdCard.SD_CARD_UNREADABLE -> SdCardState.UNREADABLE
+        else -> SdCardState.UNKNOWN
+    }
 
     /**
      * Settings as the cache's device values. The link always carries every

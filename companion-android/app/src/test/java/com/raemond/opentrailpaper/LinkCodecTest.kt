@@ -1,10 +1,12 @@
 package com.raemond.opentrailpaper
 
 import com.raemond.opentrailpaper.ble.LinkCodec
+import com.raemond.opentrailpaper.ble.SdCardState
 import com.raemond.opentrailpaper.data.DashConfig
 import com.raemond.opentrailpaper.data.SettingField
 import com.raemond.opentrailpaper.link.proto.MeshMessage
 import com.raemond.opentrailpaper.link.proto.RideState
+import com.raemond.opentrailpaper.link.proto.SdCard
 import com.raemond.opentrailpaper.link.proto.Settings
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -26,6 +28,16 @@ class LinkCodecTest {
         assertNull(s.heartRate)             // absent = no reading
         assertNull(s.cadence)
         assertEquals(24.0, s.avgSpeedKmh!!, 1e-9)
+    }
+
+    @Test fun sdCardUnknownFromOlderFirmwareIsNotMissing() {
+        assertEquals(SdCardState.UNKNOWN, LinkCodec.status(RideState.getDefaultInstance()).sdCard)
+        assertFalse(SdCardState.UNKNOWN.isProblem)
+        val missing = LinkCodec.status(RideState.newBuilder().setSdCard(SdCard.SD_CARD_MISSING).build())
+        assertEquals(SdCardState.MISSING, missing.sdCard)
+        assertTrue(missing.sdCard.isProblem)
+        assertEquals(SdCardState.UNREADABLE, LinkCodec.sdCard(SdCard.SD_CARD_UNREADABLE))
+        assertEquals(SdCardState.OK, LinkCodec.sdCard(SdCard.SD_CARD_OK))
     }
 
     @Test fun settingsChangeCarriesOnlyTheEditedFields() {
