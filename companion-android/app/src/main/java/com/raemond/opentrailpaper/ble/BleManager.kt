@@ -2084,6 +2084,12 @@ class BleManager(private val app: Application) {
 
     fun mediaAccessIntent() = mediaRemote.accessSettingsIntent()
 
+    /** What this phone is playing, for the Ride tab's MUSIC page (null: nothing, or no music page). */
+    val phoneTrack: PhoneTrack? get() = mediaRemote.nowPlaying
+
+    /** The MUSIC page's buttons from the Ride tab: the same MediaCmd the device's own send. */
+    fun phoneMediaCommand(cmd: Int) = mediaRemote.handleCommand(cmd)
+
     /** Called on every editor resume: adopt the current grant and (re)arm the
      * observers, so granting takes effect the moment the rider comes back. */
     fun refreshMediaAccess() {

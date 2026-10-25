@@ -133,6 +133,22 @@ val PanelPaper = Color(0xFFF7F5EF)
  *  bar. Callers apply it so the preview is always the shape of the real screen. */
 const val DASH_PANEL_ASPECT = PANEL_W / BODY_H
 
+/**
+ * What a live panel shows in place of the samples: the Ride tab's copy of the
+ * device fills its cells from the link. Sizing still runs off the samples and
+ * worst-case hints, exactly like [DashPreview]'s `live`.
+ */
+interface DashFeed {
+    /** The value as the panel prints it ("--" when the link doesn't carry it). */
+    fun text(field: String): String
+    /** The unit caption, or null for none. */
+    fun unit(field: String): String?
+    /** Power zone 1-7 to fill the bar to; 0 = no reading. */
+    fun zone(field: String): Int
+    /** Radar targets, metres behind, nearest first. */
+    fun radar(): List<Int>
+}
+
 internal class Placed(
     val x: Float,
     val y: Float,
@@ -180,6 +196,7 @@ fun DashPreview(
     modifier: Modifier = Modifier,
     live: RideSim? = null,
     useMiles: Boolean = false,
+    feed: DashFeed? = null,
 ) {
     BoxWithConstraints(
         modifier
@@ -201,7 +218,7 @@ fun DashPreview(
                         .offset(x = (p.x * k).dp, y = ((p.y - STATUS_H) * k).dp)
                         .size(width = (p.w * k).dp, height = (p.h * k).dp),
                 ) {
-                    Cell(p, k, live, useMiles)
+                    Cell(p, k, live, useMiles, feed)
                 }
             }
         }
@@ -214,14 +231,14 @@ fun DashPreview(
  * changes nothing inside — that is the point of editing on the panel.
  */
 @Composable
-internal fun Cell(p: Placed, k: Float, live: RideSim?, useMiles: Boolean) {
+internal fun Cell(p: Placed, k: Float, live: RideSim?, useMiles: Boolean, feed: DashFeed? = null) {
     Box(
         Modifier
             .fillMaxSize()
             .border((RULE * k).dp, Color.Black),
     ) {
         if (p.item.field == "radar") {
-            RadarSample(k, p.h, useMiles)
+            RadarSample(k, p.h, useMiles, feed?.radar() ?: listOf(52, 118))
         } else if (p.hero) {
             Column(
                 Modifier
@@ -231,10 +248,10 @@ internal fun Cell(p: Placed, k: Float, live: RideSim?, useMiles: Boolean) {
             ) {
                 Caption(p, k, Modifier.padding(top = (PAD * k).dp).fillMaxWidth(), centre = true)
                 Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    Value(p, k, live)
+                    Value(p, k, live, feed)
                 }
                 if (isPower(p.item.field)) {
-                    ZoneBar(k, p.w - 2 * PAD, filled = zone(p.item.field, live))
+                    ZoneBar(k, p.w - 2 * PAD, filled = feed?.zone(p.item.field) ?: zone(p.item.field, live))
                     Spacer(Modifier.height((PAD * k).dp))
                 }
             }
@@ -246,7 +263,7 @@ internal fun Cell(p: Placed, k: Float, live: RideSim?, useMiles: Boolean) {
                     .padding(top = ((PAD + p.label.ascender) * k).dp),
                 contentAlignment = Alignment.Center,
             ) {
-                Value(p, k, live)
+                Value(p, k, live, feed)
             }
         }
     }
@@ -269,17 +286,17 @@ private fun Caption(p: Placed, k: Float, modifier: Modifier = Modifier, centre: 
  * pushes it off-axis by half the unit's width.
  */
 @Composable
-private fun Value(p: Placed, k: Float, live: RideSim?) {
+private fun Value(p: Placed, k: Float, live: RideSim?, feed: DashFeed? = null) {
     Row(
         verticalAlignment = Alignment.Bottom,
         horizontalArrangement = Arrangement.spacedBy((5 * k).dp),
     ) {
         Text(
-            live?.text(p.item.field) ?: sample(p.item.field),
+            feed?.text(p.item.field) ?: live?.text(p.item.field) ?: sample(p.item.field),
             style = condensed((p.value.cap / CAP_RATIO * k).sp, FontWeight.Bold),
             maxLines = 1,
         )
-        unitFor(p.item.field)?.let {
+        (if (feed != null) feed.unit(p.item.field) else unitFor(p.item.field))?.let {
             Text(
                 it,
                 style = barlow((UNIT_FACE.cap / CAP_RATIO * k).sp, FontWeight.SemiBold),
@@ -306,21 +323,21 @@ private fun ZoneBar(k: Float, width: Float, filled: Int) {
 }
 
 @Composable
-private fun RadarSample(k: Float, height: Float, useMiles: Boolean) {
+private fun RadarSample(k: Float, height: Float, useMiles: Boolean, distances: List<Int>) {
     val riderBottom = if (height < 600) 120f else 130f
     val laneTop = riderBottom + 34
     val laneHeight = height - 78 - laneTop
-    Text("BEHIND · 2", fontSize = (17 * k).sp, fontWeight = FontWeight.Bold,
+    Text("BEHIND · ${distances.size}", fontSize = (17 * k).sp, fontWeight = FontWeight.Bold,
         modifier = Modifier.offset((16 * k).dp, (25 * k).dp))
     Text("▲  YOU", fontSize = (20 * k).sp, fontWeight = FontWeight.Bold,
         modifier = Modifier.offset((20 * k).dp, ((riderBottom - 36) * k).dp))
     Box(Modifier.offset((13 * k).dp, (laneTop * k).dp)
         .size((2 * k).dp, (laneHeight * k).dp).background(Color.Black))
-    for (distance in listOf(52, 118)) {
+    for ((i, distance) in distances.filter { it in 0..150 }.withIndex()) {
         val y = laneTop + laneHeight * distance / 150
         Box(Modifier.offset((24 * k).dp, ((y - 11) * k).dp)
             .size((44 * k).dp, (22 * k).dp).border((2 * k).dp, Color.Black))
-        if (distance == 52 || laneHeight * 66 / 150 > 66) {
+        if (i == 0 || laneHeight * 66 / 150 > 66) {
             Text("${Units.elevation(distance.toDouble(), useMiles).roundToInt()}", fontSize = (30 * k).sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center,
                 modifier = Modifier.offset((80 * k).dp, ((y - 22) * k).dp).width((72 * k).dp))
             Text(if (useMiles) "ft" else "m", fontSize = (14 * k).sp, textAlign = TextAlign.Center,
@@ -506,353 +523,4 @@ private fun zone(field: String, live: RideSim?): Int {
         pct < 150 -> 6
         else -> 7
     }
-}
-
-// MARK: - page thumbnails
-
-// Thumbnails of the device's MUSIC and MAP screens, same idiom as DashPreview:
-// device geometry (540x960) scaled by width, drawn with the same content the
-// panel shows so the carousel cards are honest previews. Ports of MusicPreview
-// and MapPagePreview in companion-ios/Sources/DashboardEditorView.swift.
-
-private fun previewPanelLabel(id: String): String =
-    if (id == "power3s") "POWER · 3S"
-    else (DashField.named(id)?.label ?: id).uppercase()
-
-private fun previewSample(id: String): String =
-    if (id == "ridetime" || id == "movingtime") "1:47" else sample(id)
-
-@Composable
-fun MusicPreview(modifier: Modifier = Modifier) {
-    PanelMock(modifier) { k ->
-        // Status band: clock, title, battery — as the device draws it.
-        PanelText("14:25", 30f * k, FontWeight.Bold, x = 14f * k, y = 14f * k)
-        PanelText(
-            "MUSIC", 26f * k, FontWeight.Black,
-            x = 0f, y = 16f * k, width = 540f * k, align = TextAlign.Center,
-            tracking = 6f * k,
-        )
-        PanelText("76%", 30f * k, FontWeight.Bold, x = 440f * k, y = 14f * k)
-
-        Canvas(Modifier.fillMaxSize()) {
-            val s = k * density
-            fun rect(x: Float, y: Float, w: Float, h: Float, fill: Boolean, stroke: Float = 2f) {
-                if (fill) {
-                    drawRect(Color.Black, Offset(x * s, y * s), Size(w * s, h * s))
-                } else {
-                    drawRect(
-                        Color.Black, Offset(x * s, y * s), Size(w * s, h * s),
-                        style = Stroke((stroke * s).coerceAtLeast(1f)),
-                    )
-                }
-            }
-            // Status rule
-            rect(0f, 61f, 540f, 3f, fill = true)
-            // Album art frame + vinyl placeholder
-            rect(108f, 96f, 324f, 324f, fill = false)
-            drawCircle(
-                Color.Black, 104f * s, Offset(270f * s, 258f * s),
-                style = Stroke((2f * s).coerceAtLeast(1f)),
-            )
-            drawCircle(Color.Black, 34f * s, Offset(270f * s, 258f * s))
-            drawCircle(PanelPaper, 12f * s, Offset(270f * s, 258f * s))
-            // Volume stepper boxes with their + / - glyphs
-            rect(462f, 140f, 76f, 76f, fill = false, stroke = 3f)
-            rect(462f, 232f, 76f, 76f, fill = false, stroke = 3f)
-            rect(486f, 175f, 28f, 6f, fill = true)
-            rect(497f, 164f, 6f, 28f, fill = true)
-            rect(486f, 267f, 28f, 6f, fill = true)
-            // Progress + fill
-            rect(24f, 640f, 492f, 14f, fill = false)
-            rect(26f, 642f, 228f, 10f, fill = true)
-            // Transport boxes
-            rect(24f, 780f, 140f, 120f, fill = false)
-            rect(176f, 780f, 188f, 120f, fill = false)
-            rect(376f, 780f, 140f, 120f, fill = false)
-            // prev: triangle to a bar; pause: two bars; next mirrored
-            fun tri(cx: Float, cy: Float, w: Float, h: Float, left: Boolean) {
-                val p = Path().apply {
-                    if (left) {
-                        moveTo((cx + w / 2) * s, (cy - h / 2) * s)
-                        lineTo((cx + w / 2) * s, (cy + h / 2) * s)
-                        lineTo((cx - w / 2) * s, cy * s)
-                    } else {
-                        moveTo((cx - w / 2) * s, (cy - h / 2) * s)
-                        lineTo((cx - w / 2) * s, (cy + h / 2) * s)
-                        lineTo((cx + w / 2) * s, cy * s)
-                    }
-                    close()
-                }
-                drawPath(p, Color.Black)
-            }
-            tri(88f, 840f, 26f, 32f, left = true)
-            rect(66f, 824f, 6f, 32f, fill = true)
-            rect(254f, 822f, 12f, 36f, fill = true)
-            rect(274f, 822f, 12f, 36f, fill = true)
-            tri(432f, 840f, 26f, 32f, left = false)
-            rect(448f, 824f, 6f, 32f, fill = true)
-        }
-
-        PanelText(
-            "VOL", 20f * k, FontWeight.Bold,
-            x = 462f * k, y = 106f * k, width = 76f * k, align = TextAlign.Center,
-            tracking = 4f * k,
-        )
-        PanelText(
-            "TURN YOUR LIGHTS DOWN LOW", 34f * k, FontWeight.Black,
-            x = 24f * k, y = 470f * k, width = 492f * k,
-        )
-        PanelText(
-            "Bob Marley & The Wailers", 24f * k, FontWeight.SemiBold,
-            x = 24f * k, y = 530f * k, width = 492f * k,
-        )
-        PanelText(
-            "Exodus", 20f * k, FontWeight.Normal,
-            x = 24f * k, y = 570f * k, width = 492f * k, faded = true,
-        )
-        PanelText("2:34", 20f * k, FontWeight.Normal, x = 24f * k, y = 668f * k)
-        PanelText("5:31", 20f * k, FontWeight.Normal, x = 470f * k, y = 668f * k)
-    }
-}
-
-@Composable
-fun MapPagePreview(fields: List<String>, modifier: Modifier = Modifier) {
-    PanelMock(modifier) { k ->
-        Canvas(Modifier.fillMaxSize()) {
-            val s = k * density
-            // Status rule, then the street grid clipped to the map band.
-            drawRect(Color.Black, Offset(0f, 61f * s), Size(540f * s, 3f * s))
-            clipRect(0f, 64f * s, 540f * s, 810f * s) {
-                rotate(18f, pivot = Offset(270f * s, 430f * s)) {
-                    for (i in 0 until 4) {
-                        drawRect(
-                            Color.Black.copy(alpha = if (i == 1) 0.9f else 0.35f),
-                            Offset(-80f * s, (150f + i * 150f) * s),
-                            Size(700f * s, (if (i == 1) 7f else 3f) * s),
-                        )
-                    }
-                    for (i in 0 until 3) {
-                        drawRect(
-                            Color.Black.copy(alpha = 0.35f),
-                            Offset((120f + i * 160f) * s, 80f * s),
-                            Size(3f * s, 700f * s),
-                        )
-                    }
-                }
-                // Position dot
-                drawCircle(Color.Black, 13f * s, Offset(270f * s, 433f * s))
-                drawCircle(
-                    Color.Black, 22f * s, Offset(270f * s, 433f * s),
-                    style = Stroke((2f * s).coerceAtLeast(1f)),
-                )
-                // Zoom stack
-                for (v in 0 until 2) {
-                    drawRect(
-                        PanelPaper, Offset(462f * s, (560f + v * 80f) * s),
-                        Size(76f * s, 76f * s),
-                    )
-                    drawRect(
-                        Color.Black, Offset(462f * s, (560f + v * 80f) * s),
-                        Size(76f * s, 76f * s), style = Stroke((3f * s).coerceAtLeast(1f)),
-                    )
-                    drawRect(
-                        Color.Black, Offset(486f * s, (595f + v * 80f) * s),
-                        Size(28f * s, 6f * s),
-                    )
-                    if (v == 0) {
-                        drawRect(Color.Black, Offset(497f * s, 584f * s), Size(6f * s, 28f * s))
-                    }
-                }
-            }
-            // Data strip rule + cell boxes, boxed like the data pages' cells.
-            drawRect(Color.Black, Offset(0f, 810f * s), Size(540f * s, 3f * s))
-            for (c in 0 until 3) {
-                drawRect(
-                    Color.Black, Offset((24f + c * 168f) * s, 825f * s),
-                    Size(156f * s, 123f * s), style = Stroke((2f * s).coerceAtLeast(1f)),
-                )
-            }
-        }
-        // The CONFIGURED fields, drawn like dash cells.
-        for (c in 0 until 3) {
-            val id = fields.getOrElse(c) { "speed" }
-            PanelText(
-                previewPanelLabel(id), 15f * k, FontWeight.Bold,
-                x = (38f + c * 168f) * k, y = 837f * k, width = 130f * k,
-                tracking = 2f * k,
-            )
-            PanelText(
-                previewSample(id), 48f * k, FontWeight.Black,
-                x = (24f + c * 168f) * k, y = 862f * k, width = 156f * k,
-                align = TextAlign.Center,
-            )
-        }
-    }
-}
-
-/** Miniature of the device's STOPWATCH page (ui_render_stopwatch): the time
- * across the middle, START/STOP and RESET along the footer. Port of
- * StopwatchPagePreview in DashboardEditorView.swift. */
-// The device's three footer buttons (ui_render.cpp kStopwatchToggle/Reset/Lap).
-private val swBtnX = floatArrayOf(24f, 240f, 384f)
-private val swBtnW = floatArrayOf(204f, 132f, 132f)
-
-@Composable
-fun StopwatchPagePreview(modifier: Modifier = Modifier) {
-    PanelMock(modifier) { k ->
-        PanelText("14:25", 30f * k, FontWeight.Bold, x = 14f * k, y = 14f * k)
-        PanelText(
-            "STOPWATCH", 22f * k, FontWeight.Black,
-            x = 0f, y = 18f * k, width = 540f * k, align = TextAlign.Center,
-            tracking = 4f * k,
-        )
-        PanelText("76%", 30f * k, FontWeight.Bold, x = 440f * k, y = 14f * k)
-        PanelText(
-            "12:34", 170f * k, FontWeight.Black,
-            x = 0f, y = 280f * k, width = 540f * k, align = TextAlign.Center,
-        )
-        PanelText(
-            "RUNNING", 20f * k, FontWeight.Bold,
-            x = 0f, y = 510f * k, width = 540f * k, align = TextAlign.Center,
-            tracking = 3f * k,
-        )
-        Canvas(Modifier.fillMaxSize()) {
-            val s = k * density
-            drawRect(Color.Black, Offset(0f, 61f * s), Size(540f * s, 3f * s))
-            drawRect(Color.Black, Offset(0f, 756f * s), Size(540f * s, 3f * s))
-            // START/PAUSE, RESET (disabled while running: one thin rule), LAP.
-            for (i in 0 until 3) {
-                drawRect(
-                    Color.Black, Offset(swBtnX[i] * s, 780f * s),
-                    Size(swBtnW[i] * s, 156f * s),
-                    style = Stroke(((if (i == 1) 1f else 3f) * s).coerceAtLeast(1f)),
-                )
-            }
-        }
-        listOf("PAUSE", "RESET", "LAP").forEachIndexed { i, label ->
-            PanelText(
-                label, 26f * k, FontWeight.Black,
-                x = swBtnX[i] * k, y = 840f * k, width = swBtnW[i] * k,
-                align = TextAlign.Center, faded = i == 1,
-            )
-        }
-    }
-}
-
-/** Miniature of the device's workout page: countdown hero, reversed power
- * band, session profile, block strips. Static — it's a card, not a sim.
- * Port of WorkoutPagePreview in DashboardEditorView.swift. */
-@Composable
-fun WorkoutPagePreview(modifier: Modifier = Modifier) {
-    PanelMock(modifier) { k ->
-        PanelText("14:25", 30f * k, FontWeight.Bold, x = 14f * k, y = 14f * k)
-        PanelText("76%", 30f * k, FontWeight.Bold, x = 440f * k, y = 14f * k)
-        PanelText("BLOCK 3 OF 9", 24f * k, FontWeight.Bold, x = 24f * k, y = 90f * k)
-        PanelText("5:12", 150f * k, FontWeight.Black, x = 24f * k, y = 150f * k)
-        PanelText("LEFT", 24f * k, FontWeight.Bold, x = 440f * k, y = 290f * k)
-        Canvas(Modifier.fillMaxSize()) {
-            val s = k * density
-            drawRect(Color.Black, Offset(0f, 61f * s), Size(540f * s, 3f * s))
-            // Block progress: outline + fill
-            drawRect(
-                Color.Black, Offset(24f * s, 352f * s), Size(492f * s, 20f * s),
-                style = Stroke((2f * s).coerceAtLeast(1f)),
-            )
-            drawRect(Color.Black, Offset(24f * s, 352f * s), Size(190f * s, 20f * s))
-            // Reversed power band; its white texts compose after this canvas.
-            drawRect(Color.Black, Offset(0f, 392f * s), Size(540f * s, 132f * s))
-            // Session profile bars
-            val hts = listOf(50f, 70f, 110f, 40f, 110f, 40f, 124f, 40f, 34f)
-            val wds = listOf(80f, 40f, 64f, 24f, 64f, 24f, 33f, 24f, 48f)
-            val xs = listOf(24f, 106f, 148f, 214f, 240f, 306f, 332f, 367f, 393f)
-            for (i in 0 until 9) {
-                drawRect(
-                    if (i == 4) Color.Black
-                    else Color.Black.copy(alpha = if (i < 4) 0.45f else 0.18f),
-                    Offset(xs[i] * s, (706f - hts[i]) * s),
-                    Size(wds[i] * s, hts[i] * s),
-                )
-            }
-            drawRect(Color.Black, Offset(24f * s, 703f * s), Size(492f * s, 3f * s))
-            // Stat boxes + buttons
-            for (i in 0 until 2) {
-                drawRect(
-                    Color.Black, Offset((24f + i * 252f) * s, 754f * s),
-                    Size(240f * s, 104f * s), style = Stroke((2f * s).coerceAtLeast(1f)),
-                )
-                drawRect(
-                    Color.Black, Offset((24f + i * 252f) * s, 868f * s),
-                    Size(240f * s, 80f * s), style = Stroke((3f * s).coerceAtLeast(1f)),
-                )
-            }
-        }
-        // On top of the band the canvas painted.
-        PanelText(
-            "246", 66f * k, FontWeight.Black,
-            x = 24f * k, y = 412f * k, white = true,
-        )
-        PanelText(
-            "IN RANGE", 20f * k, FontWeight.Bold,
-            x = 380f * k, y = 400f * k, white = true,
-        )
-        PanelText(
-            "PAUSE", 20f * k, FontWeight.Bold,
-            x = 24f * k, y = 896f * k, width = 240f * k, align = TextAlign.Center,
-        )
-        PanelText(
-            "ALL BLOCKS", 20f * k, FontWeight.Bold,
-            x = 276f * k, y = 896f * k, width = 240f * k, align = TextAlign.Center,
-        )
-    }
-}
-
-/** Shared scaffold: paper ground, 540x960 device space, font scale pinned. */
-@Composable
-private fun PanelMock(modifier: Modifier, content: @Composable (k: Float) -> Unit) {
-    BoxWithConstraints(
-        modifier
-            .background(PanelPaper)
-            .clipToBounds(),
-    ) {
-        val k = maxWidth.value / PANEL_W
-        val density = LocalDensity.current
-        CompositionLocalProvider(
-            LocalDensity provides Density(density.density, fontScale = 1f),
-            LocalTextStyle provides LocalTextStyle.current.copy(color = Color.Black),
-        ) {
-            content(k)
-        }
-    }
-}
-
-@Composable
-private fun PanelText(
-    text: String,
-    sizeDp: Float,
-    weight: FontWeight,
-    x: Float,
-    y: Float,
-    width: Float? = null,
-    align: TextAlign = TextAlign.Start,
-    tracking: Float = 0f,
-    faded: Boolean = false,
-    white: Boolean = false,
-) {
-    Text(
-        text,
-        fontSize = sizeDp.sp,
-        fontWeight = weight,
-        letterSpacing = tracking.sp,
-        textAlign = align,
-        maxLines = 1,
-        overflow = TextOverflow.Ellipsis,
-        color = when {
-            white -> Color.White
-            faded -> Color.Black.copy(alpha = 0.6f)
-            else -> Color.Black
-        },
-        modifier = Modifier
-            .offset(x = x.dp, y = y.dp)
-            .then(if (width != null) Modifier.width(width.dp) else Modifier),
-    )
 }
