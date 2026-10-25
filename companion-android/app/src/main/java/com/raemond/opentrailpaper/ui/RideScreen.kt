@@ -799,6 +799,9 @@ private fun AddNewPage(ble: BleManager, config: DashConfig, modifier: Modifier, 
                         if (!config.hasStopwatchPage) {
                             DropdownMenuItem(text = { Text("Stopwatch") }, onClick = { add(DashConfig.Page.stopwatch()) })
                         }
+                        if (!config.hasSegmentPage) {
+                            DropdownMenuItem(text = { Text("Segment") }, onClick = { add(DashConfig.Page.segment()) })
+                        }
                     }
                 }
             }

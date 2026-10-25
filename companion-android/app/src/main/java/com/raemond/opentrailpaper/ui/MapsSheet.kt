@@ -699,7 +699,7 @@ private fun DeviceMapLayersDialog(ble: BleManager, onDismiss: () -> Unit) {
                             Text(title, style = barlow(16.sp, FontWeight.SemiBold), color = Palette.ink)
                             Text(detail, style = barlow(12.sp), color = Palette.muted)
                         }
-                        androidx.compose.material3.Switch(
+                        EinkSwitch(
                             checked = ble.mapLayers and bit != 0,
                             onCheckedChange = { on ->
                                 ble.updateMapLayers(if (on) ble.mapLayers or bit else ble.mapLayers and bit.inv())

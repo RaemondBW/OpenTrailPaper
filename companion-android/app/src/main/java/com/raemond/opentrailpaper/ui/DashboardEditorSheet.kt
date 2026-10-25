@@ -42,7 +42,6 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -325,7 +324,7 @@ fun DashboardEditorSheet(ble: BleManager, onDismiss: () -> Unit) {
                                 style = TypeScale.body, color = Palette.ink,
                                 modifier = Modifier.weight(1f),
                             )
-                            Switch(
+                            EinkSwitch(
                                 checked = page.autoShow,
                                 onCheckedChange = { on ->
                                     config = config.copy(
