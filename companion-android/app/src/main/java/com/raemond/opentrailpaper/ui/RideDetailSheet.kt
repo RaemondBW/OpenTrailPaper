@@ -1,5 +1,9 @@
 package com.raemond.opentrailpaper.ui
 
+import com.raemond.opentrailpaper.data.UploadLog
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -83,7 +87,14 @@ fun RideDetailSheet(
             ?: "Ride"
     }
 
-    FullScreenSheet(title = title, onDismiss = onDismiss) {
+    // "Sunday morning ride" and "JUL 19 · 7:15", as the Rides list names it.
+    val heading = remember(preview.startEpochMs) { preview.startEpochMs?.let { rideHeading(it) } }
+    BackHeaderSheet(
+        title = heading?.first ?: "Ride",
+        subtitle = heading?.second,
+        backLabel = "Back to rides",
+        onDismiss = onDismiss,
+    ) {
         // Fits on one screen: the map takes whatever height the stats and
         // upload grid leave, and the page only scrolls once even a short map
         // doesn't fit (a long list of connected accounts).
@@ -101,9 +112,9 @@ fun RideDetailSheet(
                     Modifier
                         .fillMaxWidth()
                         .height(mapHeight)
-                        
-                        .border(Rule.border, Palette.hairline)
-                        .background(Palette.paper),
+                        .background(Palette.paper)
+                        .einkBorder()
+                        .padding(Rule.border),
                 ) {
                     val bounds = remember(preview) { BoundingBox.around(preview.coordinates) }
                     OsmMap(
@@ -124,7 +135,7 @@ fun RideDetailSheet(
                     // Straight to a connected account (Settings > Accounts); the share
                     // button below stays for everything else.
                     UploadButtons(file, title)
-                    PrimaryButton("Share .fit file", icon = Icons.Filled.Share) {
+                    SecondaryButton("Share .fit file", icon = Icons.Filled.Share) {
                         Share.fit(context, file)
                     }
                 }
@@ -133,75 +144,86 @@ fun RideDetailSheet(
     }
 }
 
+/** "Sunday morning ride" and "Jul 19 · 07:15" for a ride that started at [epochMs]. */
+private fun rideHeading(epochMs: Long): Pair<String, String> {
+    val d = Date(epochMs)
+    val cal = java.util.Calendar.getInstance().apply { time = d }
+    val weekday = SimpleDateFormat("EEEE", Locale.getDefault()).format(d)
+    val h = cal.get(java.util.Calendar.HOUR_OF_DAY)
+    val part = when {
+        h < 5 -> "night"
+        h < 12 -> "morning"
+        h < 17 -> "afternoon"
+        h < 21 -> "evening"
+        else -> "night"
+    }
+    return "$weekday $part ride" to SimpleDateFormat("MMM d · HH:mm", Locale.getDefault()).format(d)
+}
+
 /**
- * Mirrors the device's ride-complete screen in one card: distance, moving time
+ * Mirrors the device's ride-complete screen in one box: distance, moving time
  * and DEM ascent, then avg speed / avg + normalized power / avg HR, read
- * straight from the FIT session.
+ * straight from the FIT session. 2dp rules between cells.
  */
 @Composable
 private fun StatsCard(preview: RidePreview, useMiles: Boolean) {
-    Card(padding = 14.dp) {
+    Column(Modifier.fillMaxWidth().einkBorder()) {
         StatRow(
             listOf(
                 StatCell(
                     "Distance",
                     String.format(Locale.US, "%.1f", Units.distance(preview.distanceKm, useMiles)),
-                    Units.distLabel(useMiles), 40.sp,
+                    Units.distLabel(useMiles), 38.sp,
                 ),
-                StatCell("Moving Time", hms(preview.movingTime), "", 26.sp),
+                StatCell("Moving", hms(preview.movingTime), "", 26.sp),
                 StatCell(
                     "Ascent",
                     String.format(Locale.US, "%.0f", Units.elevation(preview.ascentM, useMiles)),
                     Units.elevLabel(useMiles), 26.sp,
                 ),
             ),
+            small = false,
         )
-        HorizontalDivider(Modifier.padding(vertical = 12.dp), color = Palette.hairline)
+        Box(Modifier.fillMaxWidth().height(Rule.divider).background(Palette.ink))
         StatRow(
             listOf(
-                StatCell(
-                    "Avg Speed",
-                    String.format(Locale.US, "%.1f", Units.speed(preview.avgSpeedKmh, useMiles)),
-                    Units.speedLabel(useMiles),
-                ),
-                StatCell("Avg Power", preview.avgPower?.toString() ?: "—", "W"),
-                StatCell("Norm Power", preview.normPower?.toString() ?: "—", "W"),
-                StatCell("Avg HR", preview.avgHeartRate?.toString() ?: "—", "bpm"),
+                StatCell("Avg spd", String.format(Locale.US, "%.1f", Units.speed(preview.avgSpeedKmh, useMiles)), ""),
+                StatCell("Avg pwr", preview.avgPower?.toString() ?: "--", ""),
+                StatCell("NP", preview.normPower?.toString() ?: "--", ""),
+                StatCell("Avg HR", preview.avgHeartRate?.toString() ?: "--", ""),
             ),
+            small = true,
         )
     }
 }
 
 private data class StatCell(val label: String, val value: String, val unit: String, val size: TextUnit = 22.sp)
 
-/**
- * Labels on one line and values on the next, so both line up across columns
- * even when one value is set larger.
- */
+/** One row of the stats box: cells split by 2dp rules, label over value. */
 @Composable
-private fun StatRow(cells: List<StatCell>) {
-    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            for (c in cells) {
+private fun StatRow(cells: List<StatCell>, small: Boolean) {
+    Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min)) {
+        cells.forEachIndexed { i, c ->
+            if (i > 0) Box(Modifier.width(Rule.divider).fillMaxHeight().background(Palette.ink))
+            Column(
+                Modifier
+                    .weight(1f)
+                    .padding(horizontal = if (small) 10.dp else 12.dp, vertical = 8.dp),
+            ) {
                 Text(
-                    c.label.uppercase(), style = condensed(11.sp, FontWeight.Medium), color = Palette.muted,
-                    letterSpacing = 0.8.sp, maxLines = 1, softWrap = false, modifier = Modifier.weight(1f),
+                    c.label.uppercase(),
+                    style = caps(if (small) 10.sp else 11.sp, if (small) 1.5.sp else 2.sp),
+                    color = Palette.ink, maxLines = 1, softWrap = false,
                 )
-            }
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            for (c in cells) {
-                Row(Modifier.weight(1f).alignByBaseline()) {
+                Row(verticalAlignment = Alignment.Bottom) {
                     Text(
-                        c.value,
-                        style = if (c.size > 30.sp) TypeScale.hero(c.size) else TypeScale.value(c.size),
-                        color = Palette.ink, maxLines = 1, softWrap = false,
+                        c.value, style = anton(c.size), color = Palette.ink, maxLines = 1, softWrap = false,
                         modifier = Modifier.alignByBaseline(),
                     )
                     if (c.unit.isNotEmpty()) {
                         Spacer(Modifier.size(3.dp))
                         Text(
-                            c.unit, style = barlow(11.sp), color = Palette.muted,
+                            c.unit.uppercase(), style = caps(if (small) 11.sp else 12.sp, 0.sp), color = Palette.ink,
                             modifier = Modifier.alignByBaseline(),
                         )
                     }
@@ -217,6 +239,11 @@ private fun UploadButtons(file: File, name: String) {
     val scope = rememberCoroutineScope()
     var uploading by remember { mutableStateOf<SyncAccounts.Provider?>(null) }
     val status = remember { mutableStateMapOf<SyncAccounts.Provider, String>() }
+    val context = LocalContext.current
+    // Uploaded earlier from this phone: show the tile as done.
+    LaunchedEffect(file.name) {
+        for (p in UploadLog.providers(context, file.name)) if (status[p] == null) status[p] = "Uploaded"
+    }
     val connected = SyncAccounts.Provider.entries.filter { SyncAccounts.isConnected(it) }
     if (connected.isEmpty()) return
     fun uploaded(p: SyncAccounts.Provider) = status[p]?.startsWith("Uploaded") == true
@@ -251,6 +278,7 @@ private fun UploadButtons(file: File, name: String) {
                             } catch (e: Exception) {
                                 e.message ?: "Upload failed."
                             }
+                            if (uploaded(p)) UploadLog.record(context, p, file.name)
                             uploading = null
                         }
                     }
@@ -261,7 +289,7 @@ private fun UploadButtons(file: File, name: String) {
         // Full messages go under the grid; a tile only has room for a word.
         for (p in connected.filter { failed(it) }) {
             val s = status[p].orEmpty()
-            Text(if (p.title in s) s else "${p.title}: $s", style = barlow(12.sp), color = Palette.accentDark)
+            Text(if (p.title in s) s else "${p.title}: $s", style = barlow(12.sp, FontWeight.SemiBold), color = Palette.ink)
         }
     }
 }
@@ -277,52 +305,50 @@ private fun UploadTile(
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
-    val shape = RectangleShape
+    // A finished upload turns its tile black; one in flight or failed is hatched.
+    val fg = if (done) Palette.paper else Palette.ink
     Column(
         modifier = modifier
             .alpha(if (dimmed) 0.5f else 1f)
-            .clip(shape)
-            .background(Palette.surface)
-            .border(1.dp, if (done) Palette.good else Palette.hairline, shape)
+            .then(
+                when {
+                    done -> Modifier.background(Palette.ink)
+                    state == "Uploading" || failed -> Modifier.hatched()
+                    else -> Modifier.background(Palette.paper)
+                },
+            )
+            .einkBorder()
             .clickable(enabled = enabled, onClickLabel = "Upload to ${p.title}", onClick = onClick)
-            .padding(vertical = 14.dp, horizontal = 8.dp),
+            .padding(vertical = 10.dp, horizontal = 6.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        ProviderLogo(p, 44.dp)
-        Text(p.title, style = condensed(17.sp), color = Palette.ink, maxLines = 1)
-        val tint = when {
-            done -> Palette.good
-            failed -> Palette.accentDark
-            else -> Palette.muted
-        }
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
+        ProviderLogo(p, 40.dp)
+        Text(p.title, style = barlow(13.sp, FontWeight.Bold), color = fg, maxLines = 1)
+        Text(
             when (state) {
-                "Uploading" -> BlockSpinner()
-                "Uploaded" -> Icon(Icons.Filled.Check, null, Modifier.size(13.dp), tint = tint)
-                "Upload" -> Icon(Icons.Filled.ArrowUpward, null, Modifier.size(13.dp), tint = tint)
-            }
-            Text(state, style = barlow(12.sp, FontWeight.SemiBold), color = tint)
-        }
+                "Uploading" -> "UPLOADING…"
+                "Uploaded" -> "✓ UPLOADED"
+                "Try again" -> "TRY AGAIN"
+                else -> "↑ UPLOAD"
+            },
+            style = caps(11.sp, 1.5.sp), color = fg, maxLines = 1,
+        )
     }
 }
 
 /**
- * The service's logo as a rounded app-icon tile. Ride with GPS and
+ * The service's logo as a square tile. Ride with GPS and
  * intervals.icu use their published marks as-is (Ride with GPS asks for its
  * colours to be left alone) on a light tile; Strava's chevrons sit on its orange.
  */
 @Composable
 fun ProviderLogo(p: SyncAccounts.Provider, size: Dp) {
-    val shape = RectangleShape
     val strava = p == SyncAccounts.Provider.STRAVA
     Box(
         Modifier.size(size)
-            .background(if (strava) Palette.strava else Color.White, shape)
-            .then(if (strava) Modifier else Modifier.border(Rule.border, Palette.hairline, shape)),
+            .background(if (strava) Palette.strava else Color.White)
+            .then(if (strava) Modifier else Modifier.border(Rule.border, Palette.ink)),
         contentAlignment = Alignment.Center,
     ) {
         when (p) {
@@ -378,10 +404,10 @@ fun RideParseErrorSheet(
             Icon(
                 Icons.Filled.Warning,
                 contentDescription = null,
-                tint = Palette.accent,
+                tint = Palette.ink,
                 modifier = Modifier.size(44.dp),
             )
-            Text("Couldn't read this ride", style = TypeScale.title, color = Palette.ink)
+            Text("COULDN'T READ THIS RIDE", style = TypeScale.title, color = Palette.ink)
             Text(
                 if (canRetry) {
                     "The app couldn't parse this file. Download it again from the device, " +

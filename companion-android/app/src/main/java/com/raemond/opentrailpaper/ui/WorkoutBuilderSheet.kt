@@ -233,7 +233,6 @@ fun WorkoutBuilderSheet(ble: BleManager, seed: WorkoutSeed?, onDismiss: () -> Un
                             Modifier
                                 .weight(b.minutes.toFloat().coerceAtLeast(0.5f))
                                 .height(h.dp)
-                                
                                 .background(
                                     when {
                                         b.key == openKey -> Palette.accent
@@ -330,7 +329,6 @@ private fun BlockRow(
                 textAlign = TextAlign.Center,
                 modifier = Modifier
                     .size(42.dp)
-                    
                     .background(if (block.pct >= 95) Palette.ink else Palette.paper)
                     .padding(top = 10.dp),
             )
@@ -365,7 +363,6 @@ private fun BlockRow(
                             modifier = Modifier
                                 .weight(1f)
                                 .height(42.dp)
-                                
                                 .background(if (z == block.zone) Palette.ink else Palette.paper)
                                 .clickable { onChange(block.copy(zone = z)) }
                                 .padding(top = 10.dp),
@@ -379,7 +376,6 @@ private fun BlockRow(
                     Row(
                         Modifier
                             .weight(1f)
-                            
                             .background(Palette.paper),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
@@ -418,7 +414,6 @@ private fun BottomButton(label: String, modifier: Modifier = Modifier, action: (
     Row(
         modifier
             .height(48.dp)
-            
             .background(Palette.surface)
             .clickable(onClick = action),
         verticalAlignment = Alignment.CenterVertically,

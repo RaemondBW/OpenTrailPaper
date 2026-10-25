@@ -453,7 +453,6 @@ private fun PageCard(
             Modifier
                 .padding(top = 9.dp, end = 9.dp)
                 .size(width = 124.dp, height = 206.dp)
-                
                 .border(
                     border.dp,
                     if (selected) Palette.accent else Palette.hairline,
@@ -489,7 +488,6 @@ private fun PageCard(
                 Modifier
                     .align(Alignment.TopEnd)
                     .size(24.dp)
-                    
                     .background(Color.White)
                     .clickable(onClick = onRemove),
                 contentAlignment = Alignment.Center,
@@ -523,7 +521,6 @@ private fun AddPageCard(
         Column(
             Modifier
                 .size(width = 124.dp, height = 206.dp)
-                
                 .border(1.5.dp, Palette.hairline)
                 .clickable { menu = true },
             horizontalAlignment = Alignment.CenterHorizontally,

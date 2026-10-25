@@ -129,7 +129,6 @@ fun DashboardPageEditor(
                     Row(
                         Modifier
                             .align(Alignment.CenterStart)
-                            
                             .clickable(onClick = onBack)
                             .padding(horizontal = 8.dp, vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
@@ -142,7 +141,6 @@ fun DashboardPageEditor(
                     Box(
                         Modifier
                             .align(Alignment.CenterEnd)
-                            
                             .background(if (canSend) Palette.accent else Palette.faint.copy(alpha = 0.55f))
                             .clickable(enabled = canSend) {
                                 onSend()
@@ -323,7 +321,6 @@ private fun PanelCanvas(
         modifier
             .background(PanelPaper)
             .border(1.dp, Palette.ink)
-            
             .clipToBounds()
             // A tap on bare paper clears the selection. Cells consume their own
             // taps first, so this only fires between them.
@@ -420,7 +417,6 @@ private fun PanelCanvas(
                                 .align(Alignment.BottomEnd)
                                 .padding(end = 4.dp, bottom = if (zoneBar) (18 * k + 14).dp else 4.dp)
                                 .size(20.dp)
-                                
                                 .background(if (isSel) Palette.accent else Palette.surface)
                                 .border(1.dp, if (isSel) Palette.accent else Palette.hairline, RectangleShape)
                                 .pointerInput(key) { detectTapGestures { onCycleSize(key) } },
@@ -554,7 +550,6 @@ private fun Inspector(
                         "Reset to default",
                         style = barlow(14.sp, FontWeight.SemiBold), color = Palette.muted,
                         modifier = Modifier
-                            
                             .clickable(onClick = onReset)
                             .padding(6.dp),
                     )
@@ -567,7 +562,6 @@ private fun Inspector(
                         Modifier
                             .weight(1f)
                             .fillMaxSize()
-                            
                             .background(if (canAddField) Palette.accent else Palette.faint)
                             .clickable(enabled = canAddField, onClick = onOpenAdd),
                         contentAlignment = Alignment.Center,
@@ -578,7 +572,6 @@ private fun Inspector(
                         Modifier
                             .weight(1f)
                             .fillMaxSize()
-                            
                             .border(
                                 if (hasRadar) 1.dp else 1.5.dp,
                                 if (hasRadar) Palette.hairline else Palette.ink,
@@ -649,7 +642,6 @@ private fun Inspector(
                         Row(
                             Modifier
                                 .weight(1f)
-                                
                                 .clickable(onClick = onOpenChange),
                             verticalAlignment = Alignment.Bottom,
                         ) {
@@ -705,7 +697,6 @@ private fun HeaderAction(label: String, color: Color, onClick: () -> Unit) {
     Text(
         label, style = barlow(14.sp, FontWeight.SemiBold), color = color,
         modifier = Modifier
-            
             .clickable(onClick = onClick)
             .padding(horizontal = 7.dp, vertical = 4.dp),
     )
@@ -769,7 +760,6 @@ private fun FieldTray(
                             .fillMaxWidth()
                             .background(Palette.surface)
                             .border(Rule.border, Palette.hairline)
-                            
                             .clickable { onPick(f.id) }
                             .padding(horizontal = 12.dp, vertical = 9.dp),
                     ) {

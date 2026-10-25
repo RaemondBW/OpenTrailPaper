@@ -23,7 +23,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -85,6 +89,52 @@ fun FullScreenSheet(
                         .weight(1f)
                         .windowInsetsPadding(WindowInsets.navigationBars),
                 ) {
+                    Column(Modifier.fillMaxSize(), content = content)
+                }
+            }
+        }
+    }
+}
+
+/**
+ * A full-screen page headed the e-ink way: a square back button, the page's
+ * name in CAPS with a tracked line under it, and the 3dp rule. For pages that
+ * read as a place you went into (a ride) rather than a sheet you finish.
+ */
+@Composable
+fun BackHeaderSheet(
+    title: String,
+    onDismiss: () -> Unit,
+    subtitle: String? = null,
+    backLabel: String = "Back",
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Overlay {
+        BackHandler(onBack = onDismiss)
+        Surface(
+            Modifier.fillMaxSize().pointerInput(Unit) {},
+            color = Palette.paper,
+        ) {
+            Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.statusBars)) {
+                Row(
+                    Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    SquareIconButton(Icons.AutoMirrored.Filled.ArrowBack, backLabel, onClick = onDismiss)
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            title.uppercase(), style = anton(24.sp), color = Palette.ink, maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.semantics { heading() },
+                        )
+                        if (subtitle != null) {
+                            Text(subtitle.uppercase(), style = caps(12.sp), color = Palette.ink, maxLines = 1)
+                        }
+                    }
+                }
+                Box(Modifier.fillMaxWidth().height(Rule.title).background(Palette.ink))
+                Box(Modifier.weight(1f).windowInsetsPadding(WindowInsets.navigationBars)) {
                     Column(Modifier.fillMaxSize(), content = content)
                 }
             }
