@@ -2,7 +2,8 @@ package com.raemond.opentrailpaper.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
@@ -11,13 +12,6 @@ import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.WifiTethering
 import androidx.compose.material.icons.automirrored.filled.ViewList
-import androidx.compose.material3.Badge
-import androidx.compose.material3.BadgedBox
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -31,9 +25,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.sp
 import com.raemond.opentrailpaper.ble.BleManager
 import com.raemond.opentrailpaper.data.Prefs
 import com.raemond.opentrailpaper.data.RouteImport
@@ -117,47 +108,19 @@ fun RootScreen(
         Scaffold(
             containerColor = Palette.paper,
             bottomBar = {
-                // Cream tab bar with a vermilion selected state and Barlow
-                // labels, matching the iOS tab bar.
-                Column {
-                    HorizontalDivider(color = Palette.hairline)
-                    NavigationBar(containerColor = Palette.paper, tonalElevation = 0.dp) {
-                        TABS.forEachIndexed { index, item ->
-                            NavigationBarItem(
-                                selected = tab == index,
-                                onClick = { tab = index },
-                                icon = {
-                                    // Unread mesh messages arrive while another
-                                    // tab is up, so the count has to be visible
-                                    // from anywhere in the app.
-                                    val unread =
-                                        if (item.label == "Mesh") ble.meshState.unread else 0
-                                    BadgedBox(badge = {
-                                        if (unread > 0) {
-                                            Badge(
-                                                containerColor = Palette.accent,
-                                                contentColor = Palette.accentInk,
-                                            ) { Text("$unread") }
-                                        }
-                                    }) {
-                                        Icon(item.icon, contentDescription = item.label)
-                                    }
-                                },
-                                label = {
-                                    Text(item.label, style = condensed(11.sp, FontWeight.SemiBold))
-                                },
-                                colors = NavigationBarItemDefaults.colors(
-                                    selectedIconColor = Palette.accent,
-                                    selectedTextColor = Palette.accent,
-                                    unselectedIconColor = Palette.muted,
-                                    unselectedTextColor = Palette.muted,
-                                    indicatorColor = Palette.accentWash,
-                                ),
-                            )
-                        }
-                    }
-                }
+                // The device's tab bar: 3dp top rule, CAPS labels, the
+                // selected tab inverted (EinkTabBar.kt, as on iOS).
+                EinkTabBar(
+                    tabs = TABS.map {
+                        EinkTab(it.label, it.icon, if (it.label == "Mesh") ble.meshState.unread else 0)
+                    },
+                    selected = tab,
+                    onSelect = { tab = it },
+                )
             },
+            // The bar pads itself for the gesture bar; the content only
+            // needs the status bar kept clear.
+            contentWindowInsets = WindowInsets.statusBars,
         ) { padding ->
             Box(Modifier.padding(padding)) {
                 when (tab) {
