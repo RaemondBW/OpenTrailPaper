@@ -327,9 +327,9 @@ private fun ChannelCard(
                 )
             }
             EinkSwitch(
-checked = channel.sharesLocation,
-onCheckedChange = onShareLocation,
-)
+                checked = channel.sharesLocation,
+                onCheckedChange = onShareLocation,
+            )
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             TextButton(onClick = onRead) {

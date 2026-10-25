@@ -226,9 +226,8 @@ fun ScreenHeader(
                     style = TypeScale.screenTitle,
                     color = Palette.ink,
                     maxLines = 1,
-                    modifier = Modifier.weight(1f, fill = false).semantics { heading() },
+                    modifier = Modifier.weight(1f).semantics { heading() },
                 )
-                Spacer(Modifier.weight(1f))
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically,

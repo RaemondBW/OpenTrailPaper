@@ -1,5 +1,6 @@
 package com.raemond.opentrailpaper.ui
 
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -33,8 +34,6 @@ import androidx.compose.material.icons.filled.SettingsInputAntenna
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.WifiTetheringOff
-import androidx.compose.material3.Badge
-import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -262,38 +261,23 @@ private fun MeshHeader(
     onNodes: () -> Unit,
     onSettings: () -> Unit,
 ) {
-    Row(
-        Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(Modifier.weight(1f)) {
-            Text("Mesh", style = TypeScale.screenTitle, color = Palette.ink)
-            TrackedLabel(subtitle)
-        }
-        if (attached) {
-            EinkSwitch(
-checked = enabled,
-onCheckedChange = onToggleRadio,
-)
-        }
-        IconButton(onClick = onNodes, enabled = enabled) {
-            BadgedBox(badge = {
-                if (nodeCount > 0) {
-                    Badge(containerColor = Palette.accent, contentColor = Palette.accentInk) {
-                        Text("$nodeCount", style = condensed(11.sp, FontWeight.Bold))
-                    }
-                }
-            }) {
-                Icon(
-                    Icons.Filled.Group,
-                    contentDescription = "Nodes",
-                    tint = if (enabled) Palette.ink else Palette.faint,
+    ScreenHeader("Mesh", subtitle = { TrackedLabel(subtitle) }) {
+        if (attached) EinkSwitch(checked = enabled, onCheckedChange = onToggleRadio)
+        Box {
+            SquareIconButton(Icons.Filled.Group, "Nodes", enabled = enabled, onClick = onNodes)
+            if (nodeCount > 0) {
+                Text(
+                    "$nodeCount", style = barlow(10.sp, FontWeight.Bold), color = Palette.paper,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .offset(x = 6.dp, y = (-6).dp)
+                        .background(Palette.ink)
+                        .border(1.dp, Palette.paper)
+                        .padding(horizontal = 4.dp, vertical = 1.dp),
                 )
             }
         }
-        IconButton(onClick = onSettings) {
-            Icon(Icons.Filled.SettingsInputAntenna, contentDescription = "Radio", tint = Palette.ink)
-        }
+        SquareIconButton(Icons.Filled.SettingsInputAntenna, "Radio", onClick = onSettings)
     }
 }
 

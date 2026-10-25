@@ -237,8 +237,10 @@ private fun SessionSection(ble: BleManager) {
             )
             Text("Target ${s.targetW} W", style = TypeScale.body, color = Palette.muted)
         }
-        BlockProgressBar(value = (s.elapsedSec.toFloat() / s.totalSec.coerceAtLeast(1).toFloat())
-                    .coerceIn(0f, 1f), modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp))
+        BlockProgressBar(
+            value = (s.elapsedSec.toFloat() / s.totalSec.coerceAtLeast(1).toFloat()).coerceIn(0f, 1f),
+            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+        )
         Row {
             Text(
                 clock(s.elapsedSec),
@@ -264,10 +266,10 @@ private fun SessionSection(ble: BleManager) {
                 )
             }
             EinkSwitch(
-checked = s.pauseEachBlock,
-onCheckedChange = { ble.setWorkoutPauseEachBlock(it) },
-enabled = ble.state == BleManager.ConnState.CONNECTED,
-)
+                checked = s.pauseEachBlock,
+                onCheckedChange = { ble.setWorkoutPauseEachBlock(it) },
+                enabled = ble.state == BleManager.ConnState.CONNECTED,
+            )
         }
 
         Row(

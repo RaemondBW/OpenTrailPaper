@@ -105,9 +105,9 @@ fun MeshSettingsSheet(ble: BleManager, onDismiss: () -> Unit) {
                     Text("LoRa radio", style = barlow(16.sp), color = Palette.ink,
                         modifier = Modifier.weight(1f))
                     EinkSwitch(
-checked = state.enabled,
-onCheckedChange = { ble.setMeshEnabled(it) },
-)
+                        checked = state.enabled,
+                        onCheckedChange = { ble.setMeshEnabled(it) },
+                    )
                 }
                 InfoRow("Node", state.nodeId)
                 InfoRow("Channel", "${state.channel} · key ${state.channelKey}")
