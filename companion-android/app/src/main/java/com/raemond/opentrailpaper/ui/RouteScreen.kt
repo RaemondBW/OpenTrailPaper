@@ -14,8 +14,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -28,10 +26,8 @@ import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Signpost
 import androidx.compose.material.icons.automirrored.filled.Send
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
@@ -46,6 +42,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
@@ -288,8 +285,8 @@ fun RouteScreen(ble: BleManager) {
             modifier = Modifier
                 .align(Alignment.TopStart)
                 .padding(16.dp)
-                .background(Palette.surface, RoundedCornerShape(50))
-                .border(1.dp, Palette.hairline, RoundedCornerShape(50))
+                .background(Palette.surface)
+                .border(Rule.border, Palette.hairline)
                 .padding(horizontal = 16.dp, vertical = 9.dp),
         )
 
@@ -384,7 +381,7 @@ fun RouteScreen(ble: BleManager) {
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
-                        CircularProgressIndicator(Modifier.size(20.dp), color = Palette.accent)
+                        BlockSpinner()
                         Text("Building route…", style = TypeScale.body, color = Palette.muted)
                     }
                 }
@@ -569,8 +566,8 @@ private fun RoundMapButton(
     Box(
         Modifier
             .size(42.dp)
-            .background(Palette.surface, CircleShape)
-            .border(1.dp, Palette.hairline, CircleShape)
+            .background(Palette.surface, RectangleShape)
+            .border(Rule.border, Palette.hairline, RectangleShape)
             .clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
@@ -597,12 +594,12 @@ private fun SearchField(
         onValueChange = onValueChange,
         modifier = Modifier
             .fillMaxWidth()
-            .background(Palette.surface, RoundedCornerShape(14.dp))
-            .border(1.dp, Palette.hairline, RoundedCornerShape(14.dp)),
+            .background(Palette.surface)
+            .border(Rule.border, Palette.hairline),
         placeholder = { Text("Search destination", color = Palette.faint) },
         leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null, tint = Palette.muted) },
         trailingIcon = {
-            if (searching) CircularProgressIndicator(Modifier.size(18.dp), color = Palette.accent)
+            if (searching) BlockSpinner()
         },
         singleLine = true,
         // Searches fire on submit, never per keystroke: Nominatim is a shared
@@ -631,8 +628,8 @@ private fun ResultsList(results: List<Routing.Place>, onPick: (Routing.Place) ->
     Column(
         Modifier
             .fillMaxWidth()
-            .background(Palette.surface, RoundedCornerShape(14.dp))
-            .border(1.dp, Palette.hairline, RoundedCornerShape(14.dp)),
+            .background(Palette.surface)
+            .border(Rule.border, Palette.hairline),
     ) {
         results.take(4).forEachIndexed { i, item ->
             Column(
@@ -688,7 +685,7 @@ private fun RouteSummaryCard(
                                 style = condensed(12.sp, FontWeight.SemiBold).copy(letterSpacing = 1.2.sp),
                                 color = Palette.accentDark,
                                 modifier = Modifier
-                                    .background(Palette.accentWash, RoundedCornerShape(50))
+                                    .background(Palette.accentWash)
                                     .padding(horizontal = 8.dp, vertical = 3.dp),
                             )
                         }
@@ -731,8 +728,8 @@ private fun RouteSummaryCard(
             Box(
                 Modifier
                     .size(44.dp)
-                    .background(Palette.paper, CircleShape)
-                    .border(1.dp, Palette.hairline, CircleShape)
+                    .background(Palette.paper, RectangleShape)
+                    .border(Rule.border, Palette.hairline, RectangleShape)
                     .clickable(onClick = onClear),
                 contentAlignment = Alignment.Center,
             ) {
@@ -780,7 +777,7 @@ private fun RouteSummaryCard(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.Center,
                 ) {
-                    CircularProgressIndicator(Modifier.size(18.dp), color = Palette.accent)
+                    BlockSpinner()
                     Spacer(Modifier.size(12.dp))
                     Text("Fetching turn cues…", style = barlow(13.sp), color = Palette.muted)
                 }
@@ -827,12 +824,7 @@ private fun RouteSummaryCard(
         when {
             progress != null -> {
                 Text("Sending to device…", style = barlow(12.sp), color = Palette.muted)
-                LinearProgressIndicator(
-                    progress = { progress.toFloat() },
-                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                    color = Palette.accent,
-                    trackColor = Palette.hairline,
-                )
+                BlockProgressBar(value = progress.toFloat(), modifier = Modifier.fillMaxWidth().padding(top = 4.dp))
             }
 
             sent -> Row(
@@ -873,7 +865,7 @@ private fun ModeBadge(mode: String) {
         modifier = Modifier
             .background(
                 if (mode == "Cycling") Palette.good else Palette.muted,
-                RoundedCornerShape(50),
+                RectangleShape,
             )
             .padding(horizontal = 7.dp, vertical = 3.dp),
     )
@@ -916,7 +908,7 @@ private fun SavedRoutesSheet(ble: BleManager, onDismiss: () -> Unit) {
             ble.loadingRoutes -> Box(
                 Modifier.fillMaxSize(),
                 contentAlignment = Alignment.Center,
-            ) { CircularProgressIndicator(color = Palette.accent) }
+            ) { BlockSpinner() }
 
             ble.deviceRoutes.isEmpty() -> Box(
                 Modifier.fillMaxSize(),

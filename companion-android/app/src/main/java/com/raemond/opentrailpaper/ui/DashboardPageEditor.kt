@@ -28,8 +28,6 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.Text
@@ -42,9 +40,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -131,7 +129,7 @@ fun DashboardPageEditor(
                     Row(
                         Modifier
                             .align(Alignment.CenterStart)
-                            .clip(RoundedCornerShape(8.dp))
+                            
                             .clickable(onClick = onBack)
                             .padding(horizontal = 8.dp, vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
@@ -144,7 +142,7 @@ fun DashboardPageEditor(
                     Box(
                         Modifier
                             .align(Alignment.CenterEnd)
-                            .clip(RoundedCornerShape(16.dp))
+                            
                             .background(if (canSend) Palette.accent else Palette.faint.copy(alpha = 0.55f))
                             .clickable(enabled = canSend) {
                                 onSend()
@@ -188,7 +186,7 @@ fun DashboardPageEditor(
                             Modifier
                                 .align(Alignment.TopCenter)
                                 .padding(top = 12.dp, start = 12.dp, end = 12.dp)
-                                .background(Palette.ink, RoundedCornerShape(12.dp))
+                                .background(Palette.ink)
                                 .padding(horizontal = 16.dp, vertical = 12.dp),
                         ) {
                             Text(it, style = barlow(14.sp, FontWeight.SemiBold), color = Palette.surface,
@@ -323,9 +321,9 @@ private fun PanelCanvas(
 
     BoxWithConstraints(
         modifier
-            .background(PanelPaper, RoundedCornerShape(8.dp))
-            .border(1.dp, Palette.ink, RoundedCornerShape(8.dp))
-            .clip(RoundedCornerShape(8.dp))
+            .background(PanelPaper)
+            .border(1.dp, Palette.ink)
+            
             .clipToBounds()
             // A tap on bare paper clears the selection. Cells consume their own
             // taps first, so this only fires between them.
@@ -422,9 +420,9 @@ private fun PanelCanvas(
                                 .align(Alignment.BottomEnd)
                                 .padding(end = 4.dp, bottom = if (zoneBar) (18 * k + 14).dp else 4.dp)
                                 .size(20.dp)
-                                .clip(CircleShape)
+                                
                                 .background(if (isSel) Palette.accent else Palette.surface)
-                                .border(1.dp, if (isSel) Palette.accent else Palette.hairline, CircleShape)
+                                .border(1.dp, if (isSel) Palette.accent else Palette.hairline, RectangleShape)
                                 .pointerInput(key) { detectTapGestures { onCycleSize(key) } },
                             contentAlignment = Alignment.Center,
                         ) {
@@ -487,7 +485,7 @@ private fun PanelCanvas(
                                 .offset(x = (MARGIN * k).dp, y = ((y - STATUS_H) * k).dp - 2.dp)
                                 .size(width = (row.mainW * k).dp, height = 4.dp)
                                 .zIndex(15f)
-                                .background(Palette.accent, RoundedCornerShape(2.dp)),
+                                .background(Palette.accent),
                         )
                     }
                     is DropTarget.Left, is DropTarget.Right -> {
@@ -556,7 +554,7 @@ private fun Inspector(
                         "Reset to default",
                         style = barlow(14.sp, FontWeight.SemiBold), color = Palette.muted,
                         modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
+                            
                             .clickable(onClick = onReset)
                             .padding(6.dp),
                     )
@@ -569,7 +567,7 @@ private fun Inspector(
                         Modifier
                             .weight(1f)
                             .fillMaxSize()
-                            .clip(RoundedCornerShape(22.dp))
+                            
                             .background(if (canAddField) Palette.accent else Palette.faint)
                             .clickable(enabled = canAddField, onClick = onOpenAdd),
                         contentAlignment = Alignment.Center,
@@ -580,11 +578,11 @@ private fun Inspector(
                         Modifier
                             .weight(1f)
                             .fillMaxSize()
-                            .clip(RoundedCornerShape(22.dp))
+                            
                             .border(
                                 if (hasRadar) 1.dp else 1.5.dp,
                                 if (hasRadar) Palette.hairline else Palette.ink,
-                                RoundedCornerShape(22.dp),
+                                RectangleShape,
                             )
                             .clickable(enabled = !hasRadar && canAddField, onClick = onAddRadar),
                         contentAlignment = Alignment.Center,
@@ -651,7 +649,7 @@ private fun Inspector(
                         Row(
                             Modifier
                                 .weight(1f)
-                                .clip(RoundedCornerShape(8.dp))
+                                
                                 .clickable(onClick = onOpenChange),
                             verticalAlignment = Alignment.Bottom,
                         ) {
@@ -707,7 +705,7 @@ private fun HeaderAction(label: String, color: Color, onClick: () -> Unit) {
     Text(
         label, style = barlow(14.sp, FontWeight.SemiBold), color = color,
         modifier = Modifier
-            .clip(RoundedCornerShape(8.dp))
+            
             .clickable(onClick = onClick)
             .padding(horizontal = 7.dp, vertical = 4.dp),
     )
@@ -734,7 +732,7 @@ private fun FieldTray(
             Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .background(Palette.paper, RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp))
+                .background(Palette.paper)
                 .pointerInput(Unit) {}
                 .windowInsetsPadding(WindowInsets.navigationBars),
         ) {
@@ -743,7 +741,7 @@ private fun FieldTray(
                     .align(Alignment.CenterHorizontally)
                     .padding(top = 8.dp)
                     .size(width = 36.dp, height = 5.dp)
-                    .background(Palette.hairline, RoundedCornerShape(3.dp)),
+                    .background(Palette.hairline),
             )
             Row(
                 Modifier.fillMaxWidth().height(48.dp).padding(horizontal = 20.dp),
@@ -755,7 +753,7 @@ private fun FieldTray(
                 )
                 Text(
                     "Cancel", style = barlow(16.sp, FontWeight.SemiBold), color = Palette.accent,
-                    modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable(onClick = onDismiss).padding(6.dp),
+                    modifier = Modifier.clickable(onClick = onDismiss).padding(6.dp),
                 )
             }
             LazyVerticalGrid(
@@ -769,9 +767,9 @@ private fun FieldTray(
                     Column(
                         Modifier
                             .fillMaxWidth()
-                            .background(Palette.surface, RoundedCornerShape(12.dp))
-                            .border(1.dp, Palette.hairline, RoundedCornerShape(12.dp))
-                            .clip(RoundedCornerShape(12.dp))
+                            .background(Palette.surface)
+                            .border(Rule.border, Palette.hairline)
+                            
                             .clickable { onPick(f.id) }
                             .padding(horizontal = 12.dp, vertical = 9.dp),
                     ) {

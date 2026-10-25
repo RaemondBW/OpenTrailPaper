@@ -14,15 +14,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -329,14 +326,10 @@ private fun ChannelCard(
                     color = if (channel.isPrimary) Palette.accent else Palette.muted,
                 )
             }
-            Switch(
-                checked = channel.sharesLocation,
-                onCheckedChange = onShareLocation,
-                colors = SwitchDefaults.colors(
-                    checkedThumbColor = Palette.accentInk,
-                    checkedTrackColor = Palette.accent,
-                ),
-            )
+            EinkSwitch(
+checked = channel.sharesLocation,
+onCheckedChange = onShareLocation,
+)
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             TextButton(onClick = onRead) {
@@ -390,7 +383,7 @@ private fun MeshShareSheet(channel: MeshChannel, onDismiss: () -> Unit) {
                         .widthIn(max = 280.dp)
                         .fillMaxWidth()
                         .aspectRatio(1f)
-                        .background(Color.White, RoundedCornerShape(18.dp))
+                        .background(Color.White)
                         .padding(16.dp),
                 )
             }

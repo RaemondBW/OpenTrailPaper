@@ -14,7 +14,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -234,7 +233,7 @@ fun WorkoutBuilderSheet(ble: BleManager, seed: WorkoutSeed?, onDismiss: () -> Un
                             Modifier
                                 .weight(b.minutes.toFloat().coerceAtLeast(0.5f))
                                 .height(h.dp)
-                                .clip(RoundedCornerShape(topStart = 3.dp, topEnd = 3.dp))
+                                
                                 .background(
                                     when {
                                         b.key == openKey -> Palette.accent
@@ -331,7 +330,7 @@ private fun BlockRow(
                 textAlign = TextAlign.Center,
                 modifier = Modifier
                     .size(42.dp)
-                    .clip(RoundedCornerShape(9.dp))
+                    
                     .background(if (block.pct >= 95) Palette.ink else Palette.paper)
                     .padding(top = 10.dp),
             )
@@ -366,7 +365,7 @@ private fun BlockRow(
                             modifier = Modifier
                                 .weight(1f)
                                 .height(42.dp)
-                                .clip(RoundedCornerShape(9.dp))
+                                
                                 .background(if (z == block.zone) Palette.ink else Palette.paper)
                                 .clickable { onChange(block.copy(zone = z)) }
                                 .padding(top = 10.dp),
@@ -380,7 +379,7 @@ private fun BlockRow(
                     Row(
                         Modifier
                             .weight(1f)
-                            .clip(RoundedCornerShape(10.dp))
+                            
                             .background(Palette.paper),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
@@ -419,7 +418,7 @@ private fun BottomButton(label: String, modifier: Modifier = Modifier, action: (
     Row(
         modifier
             .height(48.dp)
-            .clip(RoundedCornerShape(12.dp))
+            
             .background(Palette.surface)
             .clickable(onClick = action),
         verticalAlignment = Alignment.CenterVertically,

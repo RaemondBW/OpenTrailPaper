@@ -16,7 +16,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChevronRight
@@ -189,8 +188,8 @@ private fun Header(ble: BleManager, s: DeviceStatus) {
         Spacer(Modifier.weight(1f))
         Row(
             Modifier
-                .background(Palette.surface, RoundedCornerShape(50))
-                .border(1.dp, Palette.hairline, RoundedCornerShape(50))
+                .background(Palette.surface)
+                .border(Rule.border, Palette.hairline)
                 .padding(horizontal = 12.dp, vertical = 7.dp),
             horizontalArrangement = Arrangement.spacedBy(7.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -411,7 +410,7 @@ private fun DashboardCard(ble: BleManager, onOpen: () -> Unit) {
                     Modifier
                         .width(62.dp)
                         .height(110.dp)
-                        .border(1.dp, Palette.hairline, RoundedCornerShape(4.dp)),
+                        .border(Rule.border, Palette.hairline),
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(Icons.Filled.GridView, contentDescription = null, tint = Palette.faint)

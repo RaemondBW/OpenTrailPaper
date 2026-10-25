@@ -16,7 +16,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bluetooth
@@ -32,14 +31,10 @@ import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -51,6 +46,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -151,14 +147,10 @@ fun SettingsScreen(ble: BleManager, host: HostActions, onShowTutorial: () -> Uni
             Card {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     TrackedLabel("USB drive", Modifier.weight(1f))
-                    Switch(
-                        checked = ble.usbDrive,
-                        onCheckedChange = { ble.updateUsbDrive(it) },
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = Color.White,
-                            checkedTrackColor = Palette.accent,
-                        ),
-                    )
+                    EinkSwitch(
+checked = ble.usbDrive,
+onCheckedChange = { ble.updateUsbDrive(it) },
+)
                 }
                 Text(
                     if (ble.usbDrive) {
@@ -339,9 +331,7 @@ private fun AccountsCard() {
                     )
                 }
                 when {
-                    SyncAccounts.busy == p -> CircularProgressIndicator(
-                        Modifier.size(20.dp), color = Palette.accent, strokeWidth = 2.dp,
-                    )
+                    SyncAccounts.busy == p -> BlockSpinner()
                     SyncAccounts.isConnected(p) -> TextButton(onClick = {
                         scope.launch { SyncAccounts.disconnect(p) }
                     }) { Text("Disconnect", style = barlow(14.sp), color = Palette.muted) }
@@ -610,7 +600,7 @@ private fun StepButton(label: String, onClick: () -> Unit) {
     Box(
         Modifier
             .size(40.dp)
-            .background(Palette.paper, RoundedCornerShape(12.dp))
+            .background(Palette.paper)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
@@ -677,7 +667,7 @@ private fun FirmwareCard(ble: BleManager, onInstall: () -> Unit) {
                     style = barlow(11.sp, FontWeight.Bold),
                     color = Color.White,
                     modifier = Modifier
-                        .background(Palette.accent, RoundedCornerShape(50))
+                        .background(Palette.accent)
                         .padding(horizontal = 8.dp, vertical = 4.dp),
                 )
             }
@@ -700,7 +690,7 @@ private fun FirmwareCard(ble: BleManager, onInstall: () -> Unit) {
                 Column(
                     Modifier
                         .fillMaxWidth()
-                        .background(Palette.paper, RoundedCornerShape(8.dp))
+                        .background(Palette.paper)
                         .clickable { expanded = !expanded }
                         .padding(10.dp)
                         .animateContentSize(),
@@ -781,12 +771,7 @@ private fun FirmwareCard(ble: BleManager, onInstall: () -> Unit) {
 
             downloadProgress != null -> {
                 Text("Downloading firmware…", style = barlow(12.sp), color = Palette.muted)
-                LinearProgressIndicator(
-                    progress = { downloadProgress.toFloat() },
-                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                    color = Palette.accent,
-                    trackColor = Palette.hairline,
-                )
+                BlockProgressBar(value = downloadProgress.toFloat(), modifier = Modifier.fillMaxWidth().padding(top = 4.dp))
             }
 
             ble.updateAvailable -> PrimaryButton(
@@ -819,7 +804,7 @@ private fun OtaProgress(ble: BleManager) {
             if (ble.otaPhase == BleManager.OtaPhase.SENDING) {
                 Icon(Icons.Filled.Download, contentDescription = null, tint = Palette.accent)
             } else {
-                CircularProgressIndicator(Modifier.size(20.dp), color = Palette.accent)
+                BlockSpinner()
             }
             Column {
                 Text(
@@ -842,12 +827,7 @@ private fun OtaProgress(ble: BleManager) {
             }
         }
         if (ble.otaPhase == BleManager.OtaPhase.SENDING) {
-            LinearProgressIndicator(
-                progress = { ble.otaProgress.toFloat() },
-                modifier = Modifier.fillMaxWidth(),
-                color = Palette.accent,
-                trackColor = Palette.hairline,
-            )
+            BlockProgressBar(value = ble.otaProgress.toFloat(), modifier = Modifier.fillMaxWidth())
             Text(
                 "${(ble.otaProgress * 100).toInt()}% sent",
                 style = barlow(11.sp),
@@ -906,12 +886,7 @@ private fun DiagnosticsCard(ble: BleManager) {
                 style = barlow(12.sp),
                 color = Palette.muted,
             )
-            LinearProgressIndicator(
-                progress = { ble.downloadProgress.toFloat() },
-                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                color = Palette.accent,
-                trackColor = Palette.hairline,
-            )
+            BlockProgressBar(value = ble.downloadProgress.toFloat(), modifier = Modifier.fillMaxWidth().padding(top = 4.dp))
         } else {
             PrimaryButton("Download today's log", icon = Icons.Filled.Description) {
                 ble.downloadLog()
@@ -923,7 +898,7 @@ private fun DiagnosticsCard(ble: BleManager) {
                     Text("Other days", style = TypeScale.bodyStrong, color = Palette.accent)
                 }
                 if (ble.loadingLogs) {
-                    CircularProgressIndicator(Modifier.size(16.dp), color = Palette.accent)
+                    BlockSpinner()
                 }
             }
             ble.deviceLogs.forEach { log ->
@@ -1054,7 +1029,7 @@ private fun PermissionRow(
                     modifier = Modifier
                         .background(
                             if (state.isGranted) Palette.good else Palette.accent,
-                            RoundedCornerShape(50),
+                            RectangleShape,
                         )
                         .padding(horizontal = 7.dp, vertical = 3.dp),
                 )

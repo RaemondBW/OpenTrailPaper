@@ -15,7 +15,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -32,12 +31,8 @@ import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -46,7 +41,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -185,7 +180,7 @@ fun WorkoutsSheet(ble: BleManager, onDismiss: () -> Unit) {
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .padding(bottom = 12.dp)
-                        .background(Palette.surface, RoundedCornerShape(50))
+                        .background(Palette.surface)
                         .padding(horizontal = 14.dp, vertical = 8.dp),
                 )
             }
@@ -230,7 +225,7 @@ private fun SessionSection(ble: BleManager) {
                     else -> "READY"
                 },
                 style = barlow(12.sp, FontWeight.Bold),
-                color = if (s.running) Color(0xFF2E7D32) else Palette.muted,
+                color = if (s.running) Palette.ink else Palette.muted,
             )
         }
         Row(Modifier.padding(top = 4.dp)) {
@@ -242,15 +237,8 @@ private fun SessionSection(ble: BleManager) {
             )
             Text("Target ${s.targetW} W", style = TypeScale.body, color = Palette.muted)
         }
-        LinearProgressIndicator(
-            progress = {
-                (s.elapsedSec.toFloat() / s.totalSec.coerceAtLeast(1).toFloat())
-                    .coerceIn(0f, 1f)
-            },
-            color = Palette.accent,
-            trackColor = Palette.hairline,
-            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-        )
+        BlockProgressBar(value = (s.elapsedSec.toFloat() / s.totalSec.coerceAtLeast(1).toFloat())
+                    .coerceIn(0f, 1f), modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp))
         Row {
             Text(
                 clock(s.elapsedSec),
@@ -275,15 +263,11 @@ private fun SessionSection(ble: BleManager) {
                     color = Palette.muted,
                 )
             }
-            Switch(
-                checked = s.pauseEachBlock,
-                onCheckedChange = { ble.setWorkoutPauseEachBlock(it) },
-                enabled = ble.state == BleManager.ConnState.CONNECTED,
-                colors = SwitchDefaults.colors(
-                    checkedThumbColor = Color.White,
-                    checkedTrackColor = Palette.accent,
-                ),
-            )
+            EinkSwitch(
+checked = s.pauseEachBlock,
+onCheckedChange = { ble.setWorkoutPauseEachBlock(it) },
+enabled = ble.state == BleManager.ConnState.CONNECTED,
+)
         }
 
         Row(
@@ -334,7 +318,7 @@ private fun ControlButton(
             colors = androidx.compose.material3.ButtonDefaults.buttonColors(
                 containerColor = Palette.accent,
             ),
-            shape = RoundedCornerShape(10.dp),
+            shape = RectangleShape,
             modifier = modifier.height(40.dp),
         ) {
             Icon(icon, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -345,7 +329,7 @@ private fun ControlButton(
         OutlinedButton(
             onClick = action,
             enabled = enabled,
-            shape = RoundedCornerShape(10.dp),
+            shape = RectangleShape,
             modifier = modifier.height(40.dp),
         ) {
             Icon(icon, contentDescription = null, tint = Palette.ink,
@@ -422,7 +406,7 @@ private fun LibrarySection(
                                     else -> "LOADED"
                                 },
                                 style = barlow(12.sp, FontWeight.Bold),
-                                color = if (s.running) Color(0xFF2E7D32) else Palette.accent,
+                                color = if (s.running) Palette.ink else Palette.accent,
                             )
                         }
                     }
@@ -438,7 +422,7 @@ private fun LibrarySection(
                         Icon(
                             Icons.Filled.CheckCircle,
                             contentDescription = "Loaded",
-                            tint = Color(0xFF2E7D32),
+                            tint = Palette.ink,
                         )
                     } else {
                         Icon(

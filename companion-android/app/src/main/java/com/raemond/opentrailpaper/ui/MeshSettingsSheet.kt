@@ -20,7 +20,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
@@ -105,14 +104,10 @@ fun MeshSettingsSheet(ble: BleManager, onDismiss: () -> Unit) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Text("LoRa radio", style = barlow(16.sp), color = Palette.ink,
                         modifier = Modifier.weight(1f))
-                    Switch(
-                        checked = state.enabled,
-                        onCheckedChange = { ble.setMeshEnabled(it) },
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = Palette.accentInk,
-                            checkedTrackColor = Palette.accent,
-                        ),
-                    )
+                    EinkSwitch(
+checked = state.enabled,
+onCheckedChange = { ble.setMeshEnabled(it) },
+)
                 }
                 InfoRow("Node", state.nodeId)
                 InfoRow("Channel", "${state.channel} · key ${state.channelKey}")

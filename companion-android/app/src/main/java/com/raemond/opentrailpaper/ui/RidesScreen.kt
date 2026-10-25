@@ -21,7 +21,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Download
@@ -30,9 +29,7 @@ import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Wifi
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -260,7 +257,7 @@ private fun CheckingRow() {
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        CircularProgressIndicator(Modifier.size(14.dp), color = Palette.muted, strokeWidth = 2.dp)
+        BlockSpinner()
         Text("Checking for new rides…", style = barlow(13.sp, FontWeight.Medium), color = Palette.muted)
     }
 }
@@ -289,7 +286,7 @@ private fun RidesHeader(ble: BleManager) {
             Modifier
                 .size(34.dp)
                 .background(Palette.surface, CircleShape)
-                .border(1.dp, Palette.hairline, CircleShape)
+                .border(Rule.border, Palette.hairline, CircleShape)
                 .combinedClickable(onClick = { if (connected) ble.refreshRides() else ble.startScan() }),
             contentAlignment = Alignment.Center,
         ) {
@@ -315,7 +312,7 @@ private fun InProgressBanner() {
             Icon(
                 Icons.Filled.FiberManualRecord,
                 contentDescription = null,
-                tint = androidx.compose.ui.graphics.Color.Red,
+                tint = Palette.ink,
             )
             Column {
                 Text(
@@ -466,21 +463,16 @@ private fun RideBanner(
         Modifier
             .fillMaxWidth()
             .height(170.dp)
-            .clip(RoundedCornerShape(12.dp))
+            
             .background(Palette.paper)
-            .border(1.dp, Palette.hairline, RoundedCornerShape(12.dp)),
+            .border(Rule.border, Palette.hairline),
         contentAlignment = Alignment.Center,
     ) {
         val coords = preview?.coordinates
         when {
             coords != null && coords.size > 1 -> RouteMapThumbnail(ride.name, coords)
             downloading -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                LinearProgressIndicator(
-                    progress = { progress.toFloat() },
-                    modifier = Modifier.size(width = 160.dp, height = 4.dp),
-                    color = Palette.accent,
-                    trackColor = Palette.hairline,
-                )
+                BlockProgressBar(value = progress.toFloat(), modifier = Modifier.size(width = 160.dp, height = 4.dp))
                 Spacer(Modifier.size(8.dp))
                 Text("Downloading…", style = barlow(12.sp), color = Palette.muted)
             }

@@ -11,11 +11,11 @@ import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.windowInsetsPadding
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -69,17 +69,17 @@ fun FullScreenSheet(
                 ) {
                     leading()
                     Text(
-                        title,
-                        style = condensed(22.sp, FontWeight.Bold),
+                        title.uppercase(),
+                        style = anton(22.sp).copy(letterSpacing = 1.sp), maxLines = 1,
                         color = Palette.ink,
                         modifier = Modifier.weight(1f).padding(start = 4.dp),
                     )
                     trailing()
                     TextButton(onClick = onDismiss) {
-                        Text(confirmLabel, style = TypeScale.bodyStrong, color = Palette.accent)
+                        Text(confirmLabel.uppercase(), style = caps(13.sp), color = Palette.ink)
                     }
                 }
-                HorizontalDivider(color = Palette.hairline)
+                Box(Modifier.fillMaxWidth().height(Rule.title).background(Palette.ink))
                 Box(
                     Modifier
                         .weight(1f)

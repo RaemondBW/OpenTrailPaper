@@ -1,5 +1,6 @@
 package com.raemond.opentrailpaper.ui
 
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.border
@@ -16,16 +17,13 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -730,9 +728,9 @@ private fun HeaderPill(label: String, filled: Boolean, onClick: () -> Unit) {
         modifier = Modifier
             .background(
                 if (filled) Palette.accent else Palette.surface,
-                RoundedCornerShape(50),
+                RectangleShape,
             )
-            .border(1.dp, Palette.hairline, RoundedCornerShape(50))
+            .border(Rule.border, Palette.hairline)
             .clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 9.dp),
     )
@@ -1008,8 +1006,8 @@ private fun FloatingCard(content: @Composable androidx.compose.foundation.layout
     Column(
         Modifier
             .fillMaxWidth()
-            .background(Palette.surface, RoundedCornerShape(20.dp))
-            .border(1.dp, Palette.hairline, RoundedCornerShape(20.dp))
+            .background(Palette.surface)
+            .border(Rule.border, Palette.hairline)
             .padding(16.dp),
         content = content,
     )
@@ -1030,7 +1028,7 @@ private fun StreamCard(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            CircularProgressIndicator(Modifier.size(20.dp), color = Palette.accent)
+            BlockSpinner()
             Column(Modifier.weight(1f)) {
                 Text(
                     if (building) "Downloading maps" else "Sending to device",
@@ -1049,12 +1047,7 @@ private fun StreamCard(
             }
         }
         Spacer(Modifier.size(10.dp))
-        LinearProgressIndicator(
-            progress = { sent.toFloat() / total },
-            modifier = Modifier.fillMaxWidth(),
-            color = Palette.good,
-            trackColor = Palette.hairline,
-        )
+        BlockProgressBar(value = sent.toFloat() / total, modifier = Modifier.fillMaxWidth())
         Text(
             "$sent of $total sent" +
                 if (building && built > sent) " · $built built" else "",
@@ -1167,8 +1160,8 @@ private fun CountChip(n: Int, label: String, color: androidx.compose.ui.graphics
         Box(
             Modifier
                 .size(12.dp)
-                .background(color.copy(alpha = 0.35f), RoundedCornerShape(3.dp))
-                .border(1.5.dp, color, RoundedCornerShape(3.dp)),
+                .background(color.copy(alpha = 0.35f))
+                .border(1.5.dp, color),
         )
         Text("$n $label", style = barlow(13.sp, FontWeight.SemiBold), color = Palette.ink)
     }
@@ -1179,8 +1172,8 @@ private fun CountChip(n: Int, label: String, color: androidx.compose.ui.graphics
 private fun Legend(showNew: Boolean, showPois: Boolean, modifier: Modifier = Modifier) {
     Column(
         modifier
-            .background(Palette.surface.copy(alpha = 0.92f), RoundedCornerShape(10.dp))
-            .border(1.dp, Palette.hairline, RoundedCornerShape(10.dp))
+            .background(Palette.surface.copy(alpha = 0.92f))
+            .border(Rule.border, Palette.hairline)
             .padding(8.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {

@@ -17,7 +17,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
@@ -25,7 +24,6 @@ import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Warning
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -41,6 +39,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.text.font.FontWeight
@@ -102,8 +101,8 @@ fun RideDetailSheet(
                     Modifier
                         .fillMaxWidth()
                         .height(mapHeight)
-                        .clip(RoundedCornerShape(18.dp))
-                        .border(1.dp, Palette.hairline, RoundedCornerShape(18.dp))
+                        
+                        .border(Rule.border, Palette.hairline)
                         .background(Palette.paper),
                 ) {
                     val bounds = remember(preview) { BoundingBox.around(preview.coordinates) }
@@ -278,7 +277,7 @@ private fun UploadTile(
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
-    val shape = RoundedCornerShape(18.dp)
+    val shape = RectangleShape
     Column(
         modifier = modifier
             .alpha(if (dimmed) 0.5f else 1f)
@@ -302,9 +301,7 @@ private fun UploadTile(
             horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             when (state) {
-                "Uploading" -> CircularProgressIndicator(
-                    Modifier.size(10.dp), color = Palette.muted, strokeWidth = 1.5.dp,
-                )
+                "Uploading" -> BlockSpinner()
                 "Uploaded" -> Icon(Icons.Filled.Check, null, Modifier.size(13.dp), tint = tint)
                 "Upload" -> Icon(Icons.Filled.ArrowUpward, null, Modifier.size(13.dp), tint = tint)
             }
@@ -320,12 +317,12 @@ private fun UploadTile(
  */
 @Composable
 fun ProviderLogo(p: SyncAccounts.Provider, size: Dp) {
-    val shape = RoundedCornerShape(size * 0.27f)
+    val shape = RectangleShape
     val strava = p == SyncAccounts.Provider.STRAVA
     Box(
         Modifier.size(size)
-            .background(if (strava) Color(0xFFFC4C02) else Color.White, shape)
-            .then(if (strava) Modifier else Modifier.border(1.dp, Palette.hairline, shape)),
+            .background(if (strava) Palette.strava else Color.White, shape)
+            .then(if (strava) Modifier else Modifier.border(Rule.border, Palette.hairline, shape)),
         contentAlignment = Alignment.Center,
     ) {
         when (p) {
