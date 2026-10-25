@@ -2691,6 +2691,9 @@ void setRelaxedSleepExperiment(bool on) {
 
 void mediaCommand(unsigned char cmd) { mediaCmdPending = cmd; }
 
+std::atomic<int> showPageReq{-1};
+int takeShowPage() { return showPageReq.exchange(-1); }
+
 unsigned char takeStopwatchCommand() {
     uint8_t op = 0;
     portENTER_CRITICAL(&liveSwMux);
@@ -3355,5 +3358,6 @@ void readLiveView(ble_server::LiveView& out) {
 uint8_t takeLiveViewChanges() { return ble_server::liveViewChanges.exchange(0); }
 
 void queueStopwatch(uint8_t op) { ble_server::liveSwPush(op); }
+void queueShowPage(uint32_t page) { ble_server::showPageReq.store(page > 255 ? 255 : (int)page); }
 
 }  // namespace ble_shared

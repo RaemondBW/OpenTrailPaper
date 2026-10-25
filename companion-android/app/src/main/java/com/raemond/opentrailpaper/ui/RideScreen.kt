@@ -47,6 +47,7 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -80,6 +81,7 @@ import com.raemond.opentrailpaper.link.proto.LiveFrame
 import com.raemond.opentrailpaper.link.proto.LiveTopic
 import com.raemond.opentrailpaper.link.proto.StopwatchOp
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -115,6 +117,14 @@ fun RideScreen(ble: BleManager) {
 
     LaunchedEffect(ble.state) {
         if (connected) ble.refreshSensors()
+    }
+
+    // Paging here pages the panel too: once a swipe settles, not on opening
+    // the tab, and not while the layout editor is up.
+    LaunchedEffect(pager) {
+        snapshotFlow { pager.settledPage }.drop(1).collect { i ->
+            if (ble.state == BleManager.ConnState.CONNECTED && !showDashEditor) ble.showDevicePage(i)
+        }
     }
 
     // The link streams only what the page in view needs besides RIDE (always

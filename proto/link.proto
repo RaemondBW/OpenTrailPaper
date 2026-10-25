@@ -59,6 +59,7 @@ enum Feature {
   FEATURE_AGNSS = 27;              // TARGET_AGNSS, AgnssInfoRequest
   FEATURE_UNPAIR = 28;             // Unpair
   FEATURE_SEGMENTS = 29;           // TARGET_SEGMENTS, GetSegments / SegmentsInfo
+  FEATURE_SHOW_PAGE = 30;          // ShowPage
   // Phone-side features (listed in Hello):
   FEATURE_MEDIA_COMMAND_HANDLER = 64;  // phone acts on device MediaCommand pushes (no AMS)
 }
@@ -105,6 +106,7 @@ message PhoneMsg {
 
     LiveSubscribe live_subscribe = 15;
     StopwatchCommand stopwatch = 16;
+    ShowPage show_page = 17;
 
     UploadBegin upload_begin = 20;
     Chunk chunk = 21;
@@ -375,6 +377,15 @@ enum StopwatchOp {
   STOPWATCH_OP_TOGGLE = 1;            // start / pause
   STOPWATCH_OP_RESET = 2;             // only when paused with time
   STOPWATCH_OP_LAP = 3;               // only while running
+}
+
+// The app's view of the device moved to another page: show it on the panel
+// too. `page` is the slot in the dash layout (the map is one of the slots),
+// as in ViewState.page. Only taken while the panel shows a page or the map,
+// never over a menu, sheet or nav prompt. No reply: the next LiveFrame's
+// ViewState is the answer.
+message ShowPage {
+  uint32 page = 1;
 }
 
 // No reply: the next LiveFrame's StopwatchState is the answer.

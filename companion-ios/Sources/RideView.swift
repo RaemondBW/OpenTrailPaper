@@ -86,6 +86,8 @@ struct RideView: View {
             .onChange(of: ble.state) { _, st in if st == .connected { ble.refreshSensors() } }
             .onChange(of: config.pages.count) { _, n in if pageIx > n { pageIx = 0 } }
             .onChange(of: liveTopics) { _, t in ble.liveTopicsInView(t) }
+            // Paging here pages the panel too (not while editing a layout).
+            .onChange(of: pageIx) { _, i in if !editing && connected { ble.showDevicePage(i) } }
         }
     }
 

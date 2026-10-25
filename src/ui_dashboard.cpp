@@ -2982,6 +2982,27 @@ void task(void*) {
                 if (did) noteActivity();
             }
 
+            // A page the rider moved to in the app's view of the device:
+            // follow it, like the panel's own page button, but only from a
+            // page or the map — never over a menu, sheet, overlay or nav
+            // prompt. An out-of-range slot (a layout the app hasn't synced)
+            // is ignored.
+            {
+                const int want = ble_server::takeShowPage();
+                if (want >= 0 && want < dash_config::pageCount() &&
+                    (screen == SCREEN_DASH || screen == SCREEN_MAP) &&
+                    !powerOverlay && !routes::navPending()) {
+                    const int curSlot = screen == SCREEN_MAP ? mapSlot() : dashPage;
+                    if (want != curSlot) {
+                        dashPage = want;
+                        screen = dash_config::page(want).kind == DP_MAP ? SCREEN_MAP : SCREEN_DASH;
+                        segReturnPage = -1;   // the rider chose: no auto-return
+                        forceDraw = true;
+                    }
+                    noteActivity();
+                }
+            }
+
             // The page on screen and the stopwatch, for the app's live view
             // (the phone link's LiveFrames). A copy under a spinlock; the link
             // task only reads it while the app subscribes to those topics.

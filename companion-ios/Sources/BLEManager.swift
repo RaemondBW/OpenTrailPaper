@@ -1214,6 +1214,20 @@ final class BLEManager: NSObject, ObservableObject {
         link.send(.stopwatch(c))
     }
 
+    /// The rider moved to another page in the Ride tab's view of the device:
+    /// show the same page on the panel. `slot` is the page's index in the
+    /// layout the device has applied, so nothing is sent while a layout edit
+    /// is still on its way (the slots may not match yet). The device only
+    /// follows from a page or the map, never over a menu; the next LiveFrame's
+    /// ViewState is the answer. Only for a device that lists FEATURE_SHOW_PAGE.
+    func showDevicePage(_ slot: Int) {
+        guard link.has(.showPage), pendingDashConfig == nil,
+              let c = dashConfig, c.pages.indices.contains(slot) else { return }
+        var m = LinkShowPage()
+        m.page = UInt32(slot)
+        link.send(.showPage(m))
+    }
+
     /// Create the Bluetooth central. iOS shows the Bluetooth permission prompt
     /// the first time this runs. Idempotent; skipped in the update demo.
     private func startCentral() {

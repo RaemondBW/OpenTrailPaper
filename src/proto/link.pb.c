@@ -57,6 +57,9 @@ PB_BIND(otp_link_Radar, otp_link_Radar, AUTO)
 PB_BIND(otp_link_MusicState, otp_link_MusicState, AUTO)
 
 
+PB_BIND(otp_link_ShowPage, otp_link_ShowPage, AUTO)
+
+
 PB_BIND(otp_link_StopwatchCommand, otp_link_StopwatchCommand, AUTO)
 
 

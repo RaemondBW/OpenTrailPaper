@@ -93,6 +93,7 @@ import com.raemond.opentrailpaper.link.proto.RouteManeuvers
 import com.raemond.opentrailpaper.link.proto.SensorCommand
 import com.raemond.opentrailpaper.link.proto.SensorOp
 import com.raemond.opentrailpaper.link.proto.Source
+import com.raemond.opentrailpaper.link.proto.ShowPage
 import com.raemond.opentrailpaper.link.proto.StopwatchCommand
 import com.raemond.opentrailpaper.link.proto.StopwatchOp
 import com.raemond.opentrailpaper.link.proto.Target
@@ -4830,6 +4831,20 @@ class BleManager(private val app: Application) {
     fun stopwatchCommand(op: StopwatchOp) {
         if (!has(Feature.FEATURE_STOPWATCH)) return
         link.send(PhoneMsg.newBuilder().setStopwatch(StopwatchCommand.newBuilder().setOp(op)), numbered = false)
+    }
+
+    /**
+     * The rider moved to another page in the Ride tab's view of the device:
+     * show the same page on the panel. [slot] indexes the layout the device has
+     * applied, so nothing goes while a layout edit is still on its way. The
+     * device follows only from a page or the map, never over a menu; the next
+     * frame's view is the answer.
+     */
+    fun showDevicePage(slot: Int) {
+        if (!has(Feature.FEATURE_SHOW_PAGE) || pendingDashConfig != null) return
+        val c = dashConfig ?: return
+        if (slot !in c.pages.indices) return
+        link.send(PhoneMsg.newBuilder().setShowPage(ShowPage.newBuilder().setPage(slot)), numbered = false)
     }
 
     companion object {

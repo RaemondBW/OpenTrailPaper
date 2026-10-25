@@ -49,6 +49,7 @@ typedef enum _otp_link_Feature {
     otp_link_Feature_FEATURE_AGNSS = 27, /* TARGET_AGNSS, AgnssInfoRequest */
     otp_link_Feature_FEATURE_UNPAIR = 28, /* Unpair */
     otp_link_Feature_FEATURE_SEGMENTS = 29, /* TARGET_SEGMENTS, GetSegments / SegmentsInfo */
+    otp_link_Feature_FEATURE_SHOW_PAGE = 30, /* ShowPage */
     /* Phone-side features (listed in Hello): */
     otp_link_Feature_FEATURE_MEDIA_COMMAND_HANDLER = 64 /* phone acts on device MediaCommand pushes (no AMS) */
 } otp_link_Feature;
@@ -387,6 +388,15 @@ typedef struct _otp_link_LiveFrame {
     bool has_music;
     otp_link_MusicState music;
 } otp_link_LiveFrame;
+
+/* The app's view of the device moved to another page: show it on the panel
+ too. `page` is the slot in the dash layout (the map is one of the slots),
+ as in ViewState.page. Only taken while the panel shows a page or the map,
+ never over a menu, sheet or nav prompt. No reply: the next LiveFrame's
+ ViewState is the answer. */
+typedef struct _otp_link_ShowPage {
+    uint32_t page;
+} otp_link_ShowPage;
 
 /* No reply: the next LiveFrame's StopwatchState is the answer. */
 typedef struct _otp_link_StopwatchCommand {
@@ -840,6 +850,7 @@ typedef struct _otp_link_PhoneMsg {
         otp_link_Settings set_settings; /* only the fields present are changed */
         otp_link_LiveSubscribe live_subscribe;
         otp_link_StopwatchCommand stopwatch;
+        otp_link_ShowPage show_page;
         otp_link_UploadBegin upload_begin;
         otp_link_Chunk chunk;
         otp_link_UploadEnd upload_end;
@@ -1011,6 +1022,7 @@ extern "C" {
 
 
 
+
 #define otp_link_StopwatchCommand_op_ENUMTYPE otp_link_StopwatchOp
 
 #define otp_link_UploadBegin_target_ENUMTYPE otp_link_Target
@@ -1108,6 +1120,7 @@ extern "C" {
 #define otp_link_Position_init_default           {0, 0, false, 0, 0, 0}
 #define otp_link_Radar_init_default              {0, 0, {0, 0, 0, 0, 0, 0, 0, 0}}
 #define otp_link_MusicState_init_default         {0, 0, 0, 0, 0, 0}
+#define otp_link_ShowPage_init_default           {0}
 #define otp_link_StopwatchCommand_init_default   {_otp_link_StopwatchOp_MIN}
 #define otp_link_UploadBegin_init_default        {0, _otp_link_Target_MIN, "", 0, 0, "", _otp_link_ArtFormat_MIN, 0, 0}
 #define otp_link_UploadReady_init_default        {0, 0}
@@ -1187,6 +1200,7 @@ extern "C" {
 #define otp_link_Position_init_zero              {0, 0, false, 0, 0, 0}
 #define otp_link_Radar_init_zero                 {0, 0, {0, 0, 0, 0, 0, 0, 0, 0}}
 #define otp_link_MusicState_init_zero            {0, 0, 0, 0, 0, 0}
+#define otp_link_ShowPage_init_zero              {0}
 #define otp_link_StopwatchCommand_init_zero      {_otp_link_StopwatchOp_MIN}
 #define otp_link_UploadBegin_init_zero           {0, _otp_link_Target_MIN, "", 0, 0, "", _otp_link_ArtFormat_MIN, 0, 0}
 #define otp_link_UploadReady_init_zero           {0, 0}
@@ -1341,6 +1355,7 @@ extern "C" {
 #define otp_link_LiveFrame_position_tag          5
 #define otp_link_LiveFrame_radar_tag             6
 #define otp_link_LiveFrame_music_tag             7
+#define otp_link_ShowPage_page_tag               1
 #define otp_link_StopwatchCommand_op_tag         1
 #define otp_link_UploadBegin_xfer_tag            1
 #define otp_link_UploadBegin_target_tag          2
@@ -1550,6 +1565,7 @@ extern "C" {
 #define otp_link_PhoneMsg_set_settings_tag       11
 #define otp_link_PhoneMsg_live_subscribe_tag     15
 #define otp_link_PhoneMsg_stopwatch_tag          16
+#define otp_link_PhoneMsg_show_page_tag          17
 #define otp_link_PhoneMsg_upload_begin_tag       20
 #define otp_link_PhoneMsg_chunk_tag              21
 #define otp_link_PhoneMsg_upload_end_tag         22
@@ -1617,6 +1633,7 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (body,get_settings,body.get_settings),  10) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (body,set_settings,body.set_settings),  11) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (body,live_subscribe,body.live_subscribe),  15) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (body,stopwatch,body.stopwatch),  16) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (body,show_page,body.show_page),  17) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (body,upload_begin,body.upload_begin),  20) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (body,chunk,body.chunk),  21) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (body,upload_end,body.upload_end),  22) \
@@ -1648,6 +1665,7 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (body,get_segments,body.get_segments), 130)
 #define otp_link_PhoneMsg_body_set_settings_MSGTYPE otp_link_Settings
 #define otp_link_PhoneMsg_body_live_subscribe_MSGTYPE otp_link_LiveSubscribe
 #define otp_link_PhoneMsg_body_stopwatch_MSGTYPE otp_link_StopwatchCommand
+#define otp_link_PhoneMsg_body_show_page_MSGTYPE otp_link_ShowPage
 #define otp_link_PhoneMsg_body_upload_begin_MSGTYPE otp_link_UploadBegin
 #define otp_link_PhoneMsg_body_chunk_MSGTYPE otp_link_Chunk
 #define otp_link_PhoneMsg_body_upload_end_MSGTYPE otp_link_UploadEnd
@@ -1895,6 +1913,11 @@ X(a, STATIC,   SINGULAR, UINT32,   duration_ms,       5) \
 X(a, STATIC,   SINGULAR, SINT32,   rate_pct,          6)
 #define otp_link_MusicState_CALLBACK NULL
 #define otp_link_MusicState_DEFAULT NULL
+
+#define otp_link_ShowPage_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UINT32,   page,              1)
+#define otp_link_ShowPage_CALLBACK NULL
+#define otp_link_ShowPage_DEFAULT NULL
 
 #define otp_link_StopwatchCommand_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, UENUM,    op,                1)
@@ -2392,6 +2415,7 @@ extern const pb_msgdesc_t otp_link_ViewState_msg;
 extern const pb_msgdesc_t otp_link_Position_msg;
 extern const pb_msgdesc_t otp_link_Radar_msg;
 extern const pb_msgdesc_t otp_link_MusicState_msg;
+extern const pb_msgdesc_t otp_link_ShowPage_msg;
 extern const pb_msgdesc_t otp_link_StopwatchCommand_msg;
 extern const pb_msgdesc_t otp_link_UploadBegin_msg;
 extern const pb_msgdesc_t otp_link_UploadReady_msg;
@@ -2473,6 +2497,7 @@ extern const pb_msgdesc_t otp_link_SegmentsInfo_msg;
 #define otp_link_Position_fields &otp_link_Position_msg
 #define otp_link_Radar_fields &otp_link_Radar_msg
 #define otp_link_MusicState_fields &otp_link_MusicState_msg
+#define otp_link_ShowPage_fields &otp_link_ShowPage_msg
 #define otp_link_StopwatchCommand_fields &otp_link_StopwatchCommand_msg
 #define otp_link_UploadBegin_fields &otp_link_UploadBegin_msg
 #define otp_link_UploadReady_fields &otp_link_UploadReady_msg
@@ -2603,6 +2628,7 @@ extern const pb_msgdesc_t otp_link_SegmentsInfo_msg;
 #define otp_link_SensorList_size                 720
 #define otp_link_Sensor_size                     70
 #define otp_link_Settings_size                   35
+#define otp_link_ShowPage_size                   6
 #define otp_link_StopwatchCommand_size           2
 #define otp_link_StopwatchState_size             368
 #define otp_link_TileEntry_size                  54

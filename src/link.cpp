@@ -1531,6 +1531,7 @@ constexpr otp_link_Feature kFeatures[] = {
     otp_link_Feature_FEATURE_AGNSS,
     otp_link_Feature_FEATURE_UNPAIR,
     otp_link_Feature_FEATURE_SEGMENTS,
+    otp_link_Feature_FEATURE_SHOW_PAGE,
 };
 
 // Transfers, scans and queued requests of a session that ended (or an app
@@ -1792,6 +1793,10 @@ void dispatch(const otp_link_PhoneMsg& m) {
         if (m.body.stopwatch.op >= otp_link_StopwatchOp_STOPWATCH_OP_TOGGLE &&
             m.body.stopwatch.op <= otp_link_StopwatchOp_STOPWATCH_OP_LAP)
             ble_shared::queueStopwatch((uint8_t)m.body.stopwatch.op);
+        break;
+    case otp_link_PhoneMsg_show_page_tag:
+        // No reply: the next LiveFrame's ViewState is the answer.
+        ble_shared::queueShowPage(m.body.show_page.page);
         break;
     case otp_link_PhoneMsg_upload_begin_tag: onUploadBegin(req, m.body.upload_begin); break;
     case otp_link_PhoneMsg_chunk_tag: onChunk(m.body.chunk); break;

@@ -165,6 +165,9 @@ nonisolated enum LinkFeature: SwiftProtobuf.Enum, Swift.CaseIterable {
   /// TARGET_SEGMENTS, GetSegments / SegmentsInfo
   case segments // = 29
 
+  /// ShowPage
+  case showPage // = 30
+
   /// Phone-side features (listed in Hello):
   case mediaCommandHandler // = 64
   case UNRECOGNIZED(Int)
@@ -205,6 +208,7 @@ nonisolated enum LinkFeature: SwiftProtobuf.Enum, Swift.CaseIterable {
     case 27: self = .agnss
     case 28: self = .unpair
     case 29: self = .segments
+    case 30: self = .showPage
     case 64: self = .mediaCommandHandler
     default: self = .UNRECOGNIZED(rawValue)
     }
@@ -242,6 +246,7 @@ nonisolated enum LinkFeature: SwiftProtobuf.Enum, Swift.CaseIterable {
     case .agnss: return 27
     case .unpair: return 28
     case .segments: return 29
+    case .showPage: return 30
     case .mediaCommandHandler: return 64
     case .UNRECOGNIZED(let i): return i
     }
@@ -279,6 +284,7 @@ nonisolated enum LinkFeature: SwiftProtobuf.Enum, Swift.CaseIterable {
     .agnss,
     .unpair,
     .segments,
+    .showPage,
     .mediaCommandHandler,
   ]
 
@@ -1238,6 +1244,14 @@ nonisolated struct LinkPhoneMsg: Sendable {
     set {body = .stopwatch(newValue)}
   }
 
+  var showPage: LinkShowPage {
+    get {
+      if case .showPage(let v)? = body {return v}
+      return LinkShowPage()
+    }
+    set {body = .showPage(newValue)}
+  }
+
   var uploadBegin: LinkUploadBegin {
     get {
       if case .uploadBegin(let v)? = body {return v}
@@ -1432,6 +1446,7 @@ nonisolated struct LinkPhoneMsg: Sendable {
     case setSettings(LinkSettings)
     case liveSubscribe(LinkLiveSubscribe)
     case stopwatch(LinkStopwatchCommand)
+    case showPage(LinkShowPage)
     case uploadBegin(LinkUploadBegin)
     case chunk(LinkChunk)
     case uploadEnd(LinkUploadEnd)
@@ -2423,6 +2438,23 @@ nonisolated struct LinkMusicState: Sendable {
 
   /// 100 = normal, 0 paused, negative rewinding
   var ratePct: Int32 = 0
+
+  var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  init() {}
+}
+
+/// The app's view of the device moved to another page: show it on the panel
+/// too. `page` is the slot in the dash layout (the map is one of the slots),
+/// as in ViewState.page. Only taken while the panel shows a page or the map,
+/// never over a menu, sheet or nav prompt. No reply: the next LiveFrame's
+/// ViewState is the answer.
+nonisolated struct LinkShowPage: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  var page: UInt32 = 0
 
   var unknownFields = SwiftProtobuf.UnknownStorage()
 
@@ -3740,7 +3772,7 @@ nonisolated extension LinkProtoVersion: SwiftProtobuf._ProtoNameProviding {
 }
 
 nonisolated extension LinkFeature: SwiftProtobuf._ProtoNameProviding {
-  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0FEATURE_NONE\0\u{1}FEATURE_SETTINGS\0\u{1}FEATURE_WHEEL_SIZE\0\u{1}FEATURE_LIVE\0\u{1}FEATURE_STOPWATCH\0\u{1}FEATURE_STOPWATCH_LAPS\0\u{1}FEATURE_ROUTES\0\u{1}FEATURE_NAVIGATION\0\u{1}FEATURE_PHONE_LOCATION\0\u{1}FEATURE_RIDES\0\u{1}FEATURE_LOGS\0\u{1}FEATURE_FIRMWARE_UPDATE\0\u{1}FEATURE_SENSORS\0\u{1}FEATURE_MAPS\0\u{1}FEATURE_MAP_TILES\0\u{1}FEATURE_MAP_TILE_VERSIONS\0\u{1}FEATURE_MAP_POI\0\u{1}FEATURE_MAP_LAYERS\0\u{1}FEATURE_DASH\0\u{1}FEATURE_MESH\0\u{1}FEATURE_MESH_RADIO_CONFIG\0\u{1}FEATURE_MEDIA_META\0\u{1}FEATURE_MEDIA_ART\0\u{1}FEATURE_MEDIA_ART_TONE\0\u{1}FEATURE_MEDIA_TRACK\0\u{1}FEATURE_MEDIA_REMOTE\0\u{1}FEATURE_WORKOUTS\0\u{1}FEATURE_AGNSS\0\u{1}FEATURE_UNPAIR\0\u{1}FEATURE_SEGMENTS\0\u{2}#FEATURE_MEDIA_COMMAND_HANDLER\0")
+  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0FEATURE_NONE\0\u{1}FEATURE_SETTINGS\0\u{1}FEATURE_WHEEL_SIZE\0\u{1}FEATURE_LIVE\0\u{1}FEATURE_STOPWATCH\0\u{1}FEATURE_STOPWATCH_LAPS\0\u{1}FEATURE_ROUTES\0\u{1}FEATURE_NAVIGATION\0\u{1}FEATURE_PHONE_LOCATION\0\u{1}FEATURE_RIDES\0\u{1}FEATURE_LOGS\0\u{1}FEATURE_FIRMWARE_UPDATE\0\u{1}FEATURE_SENSORS\0\u{1}FEATURE_MAPS\0\u{1}FEATURE_MAP_TILES\0\u{1}FEATURE_MAP_TILE_VERSIONS\0\u{1}FEATURE_MAP_POI\0\u{1}FEATURE_MAP_LAYERS\0\u{1}FEATURE_DASH\0\u{1}FEATURE_MESH\0\u{1}FEATURE_MESH_RADIO_CONFIG\0\u{1}FEATURE_MEDIA_META\0\u{1}FEATURE_MEDIA_ART\0\u{1}FEATURE_MEDIA_ART_TONE\0\u{1}FEATURE_MEDIA_TRACK\0\u{1}FEATURE_MEDIA_REMOTE\0\u{1}FEATURE_WORKOUTS\0\u{1}FEATURE_AGNSS\0\u{1}FEATURE_UNPAIR\0\u{1}FEATURE_SEGMENTS\0\u{1}FEATURE_SHOW_PAGE\0\u{2}\"FEATURE_MEDIA_COMMAND_HANDLER\0")
 }
 
 nonisolated extension LinkPlatform: SwiftProtobuf._ProtoNameProviding {
@@ -3809,7 +3841,7 @@ nonisolated extension LinkGnssModule: SwiftProtobuf._ProtoNameProviding {
 
 nonisolated extension LinkPhoneMsg: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   static let protoMessageName: String = _protobuf_package + ".PhoneMsg"
-  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}req\0\u{1}hello\0\u{1}unpair\0\u{4}\u{7}get_settings\0\u{3}set_settings\0\u{4}\u{4}live_subscribe\0\u{1}stopwatch\0\u{4}\u{4}upload_begin\0\u{1}chunk\0\u{3}upload_end\0\u{1}download\0\u{3}transfer_ack\0\u{3}transfer_cancel\0\u{2}\u{5}list\0\u{3}delete_file\0\u{2}\u{9}location\0\u{1}maneuvers\0\u{3}route_finish\0\u{2}\u{8}sensors\0\u{4}\u{a}get_map_layers\0\u{3}set_map_layers\0\u{4}\u{9}get_dash\0\u{3}set_dash\0\u{4}\u{9}media_meta\0\u{3}media_clear\0\u{3}media_command\0\u{2}\u{8}workout\0\u{2}\u{a}mesh\0\u{4}\u{14}agnss_info\0\u{4}\u{a}get_segments\0")
+  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}req\0\u{1}hello\0\u{1}unpair\0\u{4}\u{7}get_settings\0\u{3}set_settings\0\u{4}\u{4}live_subscribe\0\u{1}stopwatch\0\u{3}show_page\0\u{4}\u{3}upload_begin\0\u{1}chunk\0\u{3}upload_end\0\u{1}download\0\u{3}transfer_ack\0\u{3}transfer_cancel\0\u{2}\u{5}list\0\u{3}delete_file\0\u{2}\u{9}location\0\u{1}maneuvers\0\u{3}route_finish\0\u{2}\u{8}sensors\0\u{4}\u{a}get_map_layers\0\u{3}set_map_layers\0\u{4}\u{9}get_dash\0\u{3}set_dash\0\u{4}\u{9}media_meta\0\u{3}media_clear\0\u{3}media_command\0\u{2}\u{8}workout\0\u{2}\u{a}mesh\0\u{4}\u{14}agnss_info\0\u{4}\u{a}get_segments\0")
 
   mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -3894,6 +3926,19 @@ nonisolated extension LinkPhoneMsg: SwiftProtobuf.Message, SwiftProtobuf._Messag
         if let v = v {
           if hadOneofValue {try decoder.handleConflictingOneOf()}
           self.body = .stopwatch(v)
+        }
+      }()
+      case 17: try {
+        var v: LinkShowPage?
+        var hadOneofValue = false
+        if let current = self.body {
+          hadOneofValue = true
+          if case .showPage(let m) = current {v = m}
+        }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.body = .showPage(v)
         }
       }()
       case 20: try {
@@ -4232,6 +4277,10 @@ nonisolated extension LinkPhoneMsg: SwiftProtobuf.Message, SwiftProtobuf._Messag
     case .stopwatch?: try {
       guard case .stopwatch(let v)? = self.body else { preconditionFailure() }
       try visitor.visitSingularMessageField(value: v, fieldNumber: 16)
+    }()
+    case .showPage?: try {
+      guard case .showPage(let v)? = self.body else { preconditionFailure() }
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 17)
     }()
     case .uploadBegin?: try {
       guard case .uploadBegin(let v)? = self.body else { preconditionFailure() }
@@ -5854,6 +5903,36 @@ nonisolated extension LinkMusicState: SwiftProtobuf.Message, SwiftProtobuf._Mess
     if lhs.elapsedMs != rhs.elapsedMs {return false}
     if lhs.durationMs != rhs.durationMs {return false}
     if lhs.ratePct != rhs.ratePct {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+nonisolated extension LinkShowPage: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  static let protoMessageName: String = _protobuf_package + ".ShowPage"
+  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}page\0")
+
+  mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularUInt32Field(value: &self.page) }()
+      default: break
+      }
+    }
+  }
+
+  func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if self.page != 0 {
+      try visitor.visitSingularUInt32Field(value: self.page, fieldNumber: 1)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  static func ==(lhs: LinkShowPage, rhs: LinkShowPage) -> Bool {
+    if lhs.page != rhs.page {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

@@ -122,6 +122,9 @@ enum LiveStopwatchOp : unsigned char {
     LIVE_SW_LAP = 3,      // only while running
 };
 unsigned char takeStopwatchCommand();
+// The dash slot the app last asked the panel to show (link ShowPage), or -1.
+// Taking it clears it; only the latest request counts.
+int takeShowPage();
 
 // Queue a media transport command (media_state.h MediaCmd) for the phone.
 // Called from the UI task; the server task sends the notify.

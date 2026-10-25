@@ -109,7 +109,7 @@ version string. `dash_max_pages` replaces the "holds 8 pages" capability bit.
 
 - The phone gives every request a non-zero `req` that is unique on the
   connection (a counter). Messages that need no reply (`PhoneLocation`,
-  `Chunk`, `TransferAck`, `StopwatchCommand`) may use 0.
+  `Chunk`, `TransferAck`, `StopwatchCommand`, `ShowPage`) may use 0.
 - The device echoes `req` on every message that answers it, including each
   page of a multi-page list. Unsolicited pushes have `req = 0`. That includes
   pushes a request caused: LiveFrames after `LiveSubscribe`, SensorLists while
@@ -158,6 +158,14 @@ no keepalive: the subscription lasts until changed or until the connection ends.
 The device sends a frame each second and on the next pass after any change to
 a subscribed part (stopwatch state, view, music, page). Only subscribed parts
 are filled. "No reading" is an absent `optional` field, not a sentinel value.
+
+Paging the Ride tab pages the panel too: the app sends `ShowPage{page}` with
+the slot it moved to (FEATURE_SHOW_PAGE), indexing the layout the device has
+applied, never one still being saved. The device follows only while it shows a
+page or the map, never over a menu, sheet, overlay or nav prompt, and ignores a
+slot past the end. There is no reply; the next frame's `ViewState` shows where
+the panel is. The app sends it on the rider's paging only, not on opening the
+tab or while editing a layout.
 
 `RideState.sd_card` reports the card: OK, MISSING (nothing in the slot) or
 UNREADABLE (a card answered but won't mount, almost always exFAT). It is
