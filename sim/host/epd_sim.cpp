@@ -15,6 +15,10 @@ constexpr int kNativeW = 960, kNativeH = 540, kBytes = kNativeW / 2 * kNativeH;
 std::vector<uint8_t> g_fb(kBytes, 0xFF), g_glass(kBytes, 0xFF);
 std::mutex g_glassMutex;
 std::atomic<uint32_t> g_paints{0};
+// Scrubs (epdc_clear_dirty: the scoped resync before a paint) and whole-panel
+// clears. Neither changes what the sim's glass shows — residue isn't modelled —
+// but the firmware's decision to pay for one is what a test can check.
+std::atomic<uint32_t> g_scrubs{0}, g_clears{0};
 
 uint8_t nativeLevel(const std::vector<uint8_t>& fb, int nx, int ny) {
     uint8_t b = fb[(size_t)ny * (kNativeW / 2) + (nx >> 1)];
@@ -37,14 +41,17 @@ void epdc_power_off_wait() {}
 void epdc_park_pins() {}
 bool epdc_power_off_verify() { return true; }
 void epdc_clear(int) {
+    ++g_clears;
     std::lock_guard<std::mutex> lk(g_glassMutex);
     std::fill(g_glass.begin(), g_glass.end(), 0xFF);
 }
-void epdc_clear_dirty(int) {}
+void epdc_clear_dirty(int) { ++g_scrubs; }
 int epdc_grey_levels() { return 16; }
 
 uint8_t* sim::framebuffer() { return g_fb.data(); }
 uint32_t sim::paintCount() { return g_paints.load(); }
+uint32_t sim::scrubCount() { return g_scrubs.load(); }
+uint32_t sim::clearCount() { return g_clears.load(); }
 
 // Portrait, as the rider holds it: drawing (x, y) is native (y, 539 - x) for
 // the inverted-portrait rotation the UI uses (epd_compat.cpp).

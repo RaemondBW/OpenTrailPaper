@@ -109,7 +109,7 @@ Asynchronous events (log lines, when subscribed) come as `{"event":…}`.
 
 | cmd | arguments | does |
 |-----|-----------|------|
-| `status` | — | screen, page, settings, ride state, phone link, advertisement, bonds, paint count, clocks |
+| `status` | — | screen, page, settings, ride state, turn-by-turn (`nav`: prompt, next turn and the distance to it), phone link, advertisement, bonds, panel counts (`paints`, `scrubs` — the scoped pre-paint resync, `clears` — whole-panel), clocks |
 | `console` | `line`, `wait_ms` | runs a serial console command; returns its output |
 | `screenshot` | `path` | writes the panel as a 540×960 PNG |
 | `tap` | `x`, `y`, `ms` | a touch at panel coordinates (portrait, 540×960) |

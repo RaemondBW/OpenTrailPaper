@@ -24,7 +24,7 @@ card, NVS and NimBLE, and `sim/host/` for the hardware:
 | Hardware | In the sim |
 |---|---|
 | Tasks, mutexes, queues, ring buffers | threads ([rtos_sim.cpp](host/rtos_sim.cpp)); the clock can run N× faster |
-| E-paper panel | a framebuffer; every paint is counted, screenshots are PNGs of what's on the glass |
+| E-paper panel | a framebuffer; every paint, scrub and clear is counted, screenshots are PNGs of what's on the glass |
 | Touch, BOOT/side/home keys | injected from the control channel; a press is held until the firmware has read it |
 | SD card | a directory (`<dir>/sd`), removable; optionally slow (`sd latency_ms`), slow to come up after power-on (`--sd-ready-ms`), or holding a file whose reading resets the device (`--sd-crash-on-read`) |
 | NVS | files under `<dir>/nvs`, kept across reboots |

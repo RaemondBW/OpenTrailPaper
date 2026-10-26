@@ -8,6 +8,7 @@
 #include "ble_shared.h"
 #include "dash_config.h"
 #include "ride_state.h"
+#include "routes.h"
 #include "settings.h"
 #include "json.h"
 #include "sim.h"
@@ -172,6 +173,23 @@ std::string dashText() {
 
 const char* screenName(int s) { return s == 0 ? "dash" : s == 1 ? "map" : "other"; }
 
+// Turn-by-turn as the banner would show it: the next maneuver and the distance
+// to it, from routes:: (the same calls the renderer makes).
+std::string navJson() {
+    char text[routes::MANEUVER_TEXT] = "";
+    float m = -1;
+    const bool next = routes::nextTurn(text, sizeof text, m);
+    std::ostringstream o;
+    o << "{\"route\":" << (routes::active() ? "true" : "false")
+      << ",\"pending\":" << (routes::navPending() ? "true" : "false")
+      << ",\"active\":" << (routes::navActive() ? "true" : "false")
+      << ",\"maneuvers\":" << routes::maneuverCount()
+      << ",\"next\":" << (next ? json::esc(text) : "null")
+      << ",\"next_m\":" << (next ? m : -1)
+      << ",\"remaining_km\":" << routes::remainingKm() << "}";
+    return o.str();
+}
+
 std::string statusJson() {
     RideState s = g_state.snapshot();
     ble_server::LiveView v;
@@ -180,6 +198,7 @@ std::string statusJson() {
     o.precision(10);
     o << "{\"uptime_ms\":" << millis() << ",\"wall_unix\":" << (long)time(nullptr)
       << ",\"speed\":" << sim_clock::factor() << ",\"paints\":" << sim::paintCount()
+      << ",\"scrubs\":" << sim::scrubCount() << ",\"clears\":" << sim::clearCount()
       << ",\"screen\":\"" << screenName(v.screen) << "\",\"page\":" << (v.page == 0xFF ? -1 : (int)v.page)
       << ",\"page_count\":" << (int)v.pageCount << ",\"phone_connected\":" << (ble_server::isPhoneConnected() ? "true" : "false")
       << ",\"phone_paired\":" << (ble_server::phonePaired() ? "true" : "false")
@@ -198,6 +217,7 @@ std::string statusJson() {
       << ",\"miles\":" << (settings::useMiles() ? "true" : "false") << ",\"clock24h\":" << (settings::clock24h() ? "true" : "false")
       << ",\"show_offline\":" << (settings::showOffline() ? "true" : "false") << ",\"auto_pause_s\":" << settings::autoPauseSec()
       << ",\"wheel_mm\":" << settings::wheelCircMm() << ",\"backlight\":" << settings::backlight() << "}"
+      << ",\"nav\":" << navJson()
       << ",\"dash\":" << json::esc(dashText())
       << ",\"sd_present\":" << (sim::sdPresent() ? "true" : "false")
       << ",\"gps\":" << sim::gpsStatusJson()
