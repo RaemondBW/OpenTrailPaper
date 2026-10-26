@@ -144,6 +144,32 @@ jobs:
       - name: Speed sensor host tests
         run: sh tools/wheel_speed_test/run_wheel_speed_test.sh
 
+  # The firmware itself, run on the host (sim/README.md): pairing, the phone
+  # link, sensors, rides, routes, OTA — driven end to end by sim/tests.
+  # macOS because the sim uses a few Darwin APIs (thread names, re-exec).
+  firmware-sim:
+    name: Firmware sim
+    if: ${{ !startsWith(github.ref, 'refs/tags/android-v') }}
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      # TinyGPS++ and epdiy's headers, as the firmware build uses them.
+      - name: Clone LilyGO board support
+        run: |
+          git clone --depth 1 \
+            https://github.com/Xinyuan-LilyGO/T5S3-4.7-e-paper-PRO \
+            vendor/T5S3-4.7-e-paper-PRO
+      - name: Install protoc
+        run: brew install protobuf
+      - name: Build and test
+        run: sim/test.sh -q
+      - name: Keep the console logs and panels of failed tests
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sim-test-artifacts
+          path: sim/build/test-artifacts
+
   ios:
     name: Companion app (iOS)
     if: ${{ !startsWith(github.ref, 'refs/tags/android-v') }}
