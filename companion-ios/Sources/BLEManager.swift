@@ -1152,6 +1152,7 @@ final class BLEManager: NSObject, ObservableObject {
                 MainActor.assumeIsolated {
                     self?.appActive = true
                     self?.updateLiveTopics()
+                    self?.reconnectIfStalled()
                 }
             },
         ]
@@ -1480,6 +1481,19 @@ final class BLEManager: NSObject, ObservableObject {
         if pairedDeviceId == nil { armPairedFallback() }
     }
 
+    /// Back in the foreground: a reconnect to our device whose 2 s retry
+    /// (didFailToConnect) was due while the app was suspended goes now,
+    /// instead of leaving the app showing "connecting" with nothing pending.
+    private func reconnectIfStalled() {
+        guard let central, central.state == .poweredOn, let p = peripheral,
+              p.state == .disconnected, state != .connected,
+              !refusedIds.contains(p.identifier) else { return }
+        NSLog("[ble] foreground: reconnecting")
+        p.delegate = self
+        state = .connecting
+        central.connect(p)
+    }
+
     /// The rider's Connect / Scan button: the explicit retry that lifts a
     /// refusal. Never called automatically.
     func connectTapped() {
@@ -1508,6 +1522,8 @@ final class BLEManager: NSObject, ObservableObject {
     /// the device. Stop every automatic reconnect and say what to do.
     private func refuse(_ p: CBPeripheral, iosKeysStale: Bool) {
         let id = p.identifier
+        NSLog("[ble] refused by %@ (stale keys=%d, barren=%d)",
+              id.uuidString, iosKeysStale ? 1 : 0, barrenConnects)
         refusedIds.insert(id)
         let wasPaired = advPaired[id]
         if wasPaired == true { refusedWhilePaired.insert(id) }
@@ -4446,7 +4462,12 @@ extension BLEManager: CBCentralManagerDelegate {
     /// A connect that never came up. iOS reports stale pairing keys here too
     /// (the device was unpaired after iOS bonded): that is a refusal, and
     /// retrying would only repeat it. Anything else gets the same bounded
-    /// treatment as a barren connect, a moment later.
+    /// treatment as a barren connect, a moment later — except for OUR
+    /// device: a connect that never reached it is no refusal (the device
+    /// logs none), just radio. A link that timed out with the app in the
+    /// background failed its reconnects three times without the device ever
+    /// seeing one, and the app then told the rider the device wasn't
+    /// accepting this iPhone until it was force-quit (2026-10-26).
     nonisolated func centralManager(_ c: CBCentralManager,
                                     didFailToConnect p: CBPeripheral,
                                     error: Error?) {
@@ -4455,8 +4476,12 @@ extension BLEManager: CBCentralManagerDelegate {
             linkSecuring = false
             connectedAt = nil
             let code = (error as? CBError)?.code
-            let stale = code == .peerRemovedPairingInformation || code == .encryptionTimedOut
-            barrenConnects += 1
+            let ours = pairedDeviceId == p.identifier
+            NSLog("[ble] connect failed: %@ (ours=%d barren=%d)",
+                  error.map { "\($0)" } ?? "no error", ours ? 1 : 0, barrenConnects)
+            let stale = code == .peerRemovedPairingInformation ||
+                (code == .encryptionTimedOut && !ours)
+            if !ours { barrenConnects += 1 }
             if stale || barrenConnects >= 3 {
                 refuse(p, iosKeysStale: stale)
                 peripheral = nil
@@ -4550,6 +4575,8 @@ extension BLEManager: CBCentralManagerDelegate {
             // quick drop or a mid-handshake auth error is not enough: a radio
             // drop mid-ride must keep reconnecting. It takes the stale-keys
             // error or three barren connects.
+            NSLog("[ble] disconnected: %@ (admitted=%d)",
+                  error.map { "\($0)" } ?? "no error", admitted ? 1 : 0)
             var refused = false
             var iosKeysStale = false
             if !admitted {

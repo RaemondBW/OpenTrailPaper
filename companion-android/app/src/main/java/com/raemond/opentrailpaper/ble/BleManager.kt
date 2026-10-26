@@ -750,6 +750,9 @@ class BleManager(private val app: Application) {
         app.getSystemService(Context.LOCATION_SERVICE) as LocationManager?
     private var wantsAiding = false
     private var sawStatusSinceConnect = false
+    /// The link came up this attempt (STATE_CONNECTED). A connect that never
+    /// got that far never reached the device, so it is no refusal.
+    private var linkUpSinceConnect = false
     private var fixStableJob: Job? = null
 
     /** Most recent phone fix, so the map screens can frame the user. */
@@ -1201,6 +1204,7 @@ class BleManager(private val app: Application) {
             main.post {
                 when (newState) {
                     BluetoothProfile.STATE_CONNECTED -> {
+                        linkUpSinceConnect = true
                         // Fixed pairing: every characteristic needs an
                         // encrypted link, so bond BEFORE touching any. Left to
                         // the first read, Android's retry-after-pairing is
@@ -1561,6 +1565,8 @@ class BleManager(private val app: Application) {
 
         status = DeviceStatus()
         val admitted = sawStatusSinceConnect || admittedSinceConnect
+        val linkWasUp = linkUpSinceConnect
+        linkUpSinceConnect = false
         sawStatusSinceConnect = false
         admittedSinceConnect = false
         admissionWatchdog?.cancel(); admissionWatchdog = null
@@ -1596,13 +1602,16 @@ class BleManager(private val app: Application) {
         // us before any status (the firmware pushes nothing until the link
         // proves the bond) was unpaired on the device, or now belongs to
         // another phone. Three in a row, so a reboot or range drop doesn't
-        // cry wolf.
-        if (!admitted) {
+        // cry wolf. A connect that never came up (133, a timeout, failed to
+        // establish) never reached the device: radio, not a refusal — a link
+        // lost with the app in the background counted three of those and
+        // told the rider the device wasn't accepting the phone (2026-10-26).
+        if (!admitted && linkWasUp) {
             barrenConnects += 1
             if (barrenConnects == 3 && !onFallbackAttempt && pairedDeviceAddress != null) {
                 pairingIssue = PairingIssue.NOT_RECOGNISED
             }
-        } else {
+        } else if (admitted) {
             barrenConnects = 0
         }
         // Keep `rides` (the last-known list): the Rides tab keeps showing it
