@@ -249,10 +249,11 @@ std::string handle(const json::Value& r) {
             sim::gpsTrack(pts, r.num("speed_kmh", 25), r.boolean("loop", false));
         } else {
             sim::gpsSet(r.num("lat"), r.num("lon"), r.num("alt", 50), r.num("speed_kmh", 0), r.num("course", 0),
-                        r.boolean("fix", true), (int)r.num("sats", 10));
+                        r.boolean("fix", true), (int)r.num("sats", 10), r.boolean("time", true));
         }
         return ok();
     }
+    if (cmd == "gps_silent") { sim::gpsSilent(r.boolean("on", true)); return ok(); }
     if (cmd == "battery") { sim::setBattery((int)r.num("pct", 100), r.boolean("charging", false)); return ok(); }
     if (cmd == "wallclock") { sim_clock::setWallMicros((int64_t)(r.num("unix") * 1e6)); return ok(); }
     if (cmd == "sd") { sim::setSdPresent(r.boolean("present", true)); return ok(); }

@@ -19,7 +19,9 @@ namespace {
 std::mutex m;
 uint32_t moduleBaud = 9600;
 bool output = true;
+bool silent = false;   // unplugged / browned out: sends and hears nothing
 bool fix = false;
+bool timeKnown = true;   // without a fix: does the module report UTC (a cold one indoors doesn't)
 int sats = 0;
 double lat = 0, lon = 0, alt = 50, speedKmh = 0, course = 0;
 std::vector<std::pair<double, double>> track;
@@ -133,7 +135,7 @@ void tick() {
     {
         std::lock_guard<std::mutex> lk(m);
         if (fix) advance();
-        if (!output) return;
+        if (!output || silent) return;
         int64_t us = utcBaseUs + (int64_t)sim_clock::micros64();
         time_t t = (time_t)(us / 1000000);
         struct tm g;
@@ -152,6 +154,7 @@ void tick() {
                 << co << "," << date << ",,,A,V";
             gsa << "GNGSA,A,3,01,02,03,04,05,06,07,08,,,,,1.5,0.9,1.2,1";
         } else {
+            if (!timeKnown) hms[0] = date[0] = 0;
             gga << "GNGGA," << hms << ",,,,,0," << sats << ",25.5,,,,,,";
             rmc << "GNRMC," << hms << ",V,,,,,,," << date << ",,,N,V";
             gsa << "GNGSA,A,1,,,,,,,,,,,,,25.5,25.5,25.5,1";
@@ -176,13 +179,14 @@ void sim::gpsBegin() {
             if (fscanf(f, "%u", &b) == 1 && b) moduleBaud = b;
             fclose(f);
         }
+        timeKnown = !sim::opts.gpsCold;
         utcBaseUs = std::chrono::duration_cast<std::chrono::microseconds>(
                         std::chrono::system_clock::now().time_since_epoch()).count();
     }
     // What the firmware writes to the module.
     Serial2.sink = [](const uint8_t* b, size_t n) {
         std::lock_guard<std::mutex> lk(m);
-        if (Serial2.baudRate() != moduleBaud) return;   // garbage to the module
+        if (silent || Serial2.baudRate() != moduleBaud) return;   // garbage to the module
         for (size_t i = 0; i < n; ++i) {
             char c = (char)b[i];
             if (c == '$') cmdLine.clear();
@@ -199,8 +203,9 @@ void sim::gpsBegin() {
     }).detach();
 }
 
-void sim::gpsSet(double la, double lo, double al, double sp, double co, bool f, int s) {
+void sim::gpsSet(double la, double lo, double al, double sp, double co, bool f, int s, bool t) {
     std::lock_guard<std::mutex> lk(m);
+    timeKnown = t;
     lat = la; lon = lo; alt = al; speedKmh = sp; course = co; fix = f; sats = s;
     track.clear();
 }
@@ -216,12 +221,17 @@ void sim::gpsTrack(const std::vector<std::pair<double, double>>& pts, double sp,
     if (sats < 6) sats = 10;
 }
 
+void sim::gpsSilent(bool on) {
+    std::lock_guard<std::mutex> lk(m);
+    silent = on;
+}
+
 std::string sim::gpsStatusJson() {
     std::lock_guard<std::mutex> lk(m);
     std::ostringstream o;
     o.precision(10);
     o << "{\"module_baud\":" << moduleBaud << ",\"uart_baud\":" << Serial2.baudRate() << ",\"output\":"
-      << (output ? "true" : "false") << ",\"fix\":" << (fix ? "true" : "false") << ",\"lat\":" << lat
+      << (output ? "true" : "false") << ",\"silent\":" << (silent ? "true" : "false") << ",\"fix\":" << (fix ? "true" : "false") << ",\"lat\":" << lat
       << ",\"lon\":" << lon << ",\"speed_kmh\":" << speedKmh << ",\"track_left\":"
       << (track.empty() ? 0 : (int)(track.size() - trackIdx - 1)) << "}";
     return o.str();

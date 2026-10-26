@@ -15,6 +15,7 @@ struct Options {
     double speed = 1.0;
     int notifyWindow = 32;
     int connIntervalMs = 0, packetsPerEvent = 0;
+    bool gpsCold = false;             // the module has no UTC until it has a fix (indoors)
     std::vector<std::string> argv;    // for reboot (re-exec)
 };
 extern Options opts;
@@ -41,8 +42,11 @@ bool writePng(const std::string& path);
 
 // Modules
 void gpsBegin();
-void gpsSet(double lat, double lon, double alt, double speedKmh, double course, bool fix, int sats);
+// `time`: without a fix, whether the module still reports UTC (false: a cold
+// receiver indoors, empty time and date fields).
+void gpsSet(double lat, double lon, double alt, double speedKmh, double course, bool fix, int sats, bool time = true);
 void gpsTrack(const std::vector<std::pair<double, double>>& pts, double speedKmh, bool loop);
+void gpsSilent(bool on);   // the module stops talking (loose connector, brownout)
 std::string gpsStatusJson();
 void bleBegin();
 std::string bleStatusJson();

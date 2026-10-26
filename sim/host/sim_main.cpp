@@ -53,6 +53,7 @@ void usage() {
             "  --ctl-port N           control channel (default 7879)\n"
             "  --speed F              device clock at F x real time\n"
             "  --gps-baud N           the GPS module's baud at power-on (default: as saved, else 9600)\n"
+            "  --gps-cold             the GPS module reports no UTC until it has a fix (indoors)\n"
             "  --wallclock now|UNIX   start with the clock set (the board boots with it unset)\n"
             "  --notify-window N      notifications queued before notify() fails (default 32)\n"
             "  --conn-interval-ms N --packets-per-event K   pace notifications like a slow link\n"
@@ -200,6 +201,7 @@ int main(int argc, char** argv) {
         else if (a == "--ctl-port") sim::opts.ctlPort = atoi(next().c_str());
         else if (a == "--speed") sim::opts.speed = atof(next().c_str());
         else if (a == "--gps-baud") gpsBaud = next();
+        else if (a == "--gps-cold") sim::opts.gpsCold = true;
         else if (a == "--wallclock") wallclock = next();
         else if (a == "--notify-window") sim::opts.notifyWindow = atoi(next().c_str());
         else if (a == "--conn-interval-ms") sim::opts.connIntervalMs = atoi(next().c_str());

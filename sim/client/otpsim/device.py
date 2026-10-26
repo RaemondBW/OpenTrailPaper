@@ -141,11 +141,19 @@ class SimDevice:
     def button(self, name="boot", ms=150):
         self.cmd("button", name=name, ms=ms)
 
-    def gps(self, lat, lon, speed_kmh=0, course=0, alt=50, fix=True, sats=10):
-        self.cmd("gps", lat=lat, lon=lon, speed_kmh=speed_kmh, course=course, alt=alt, fix=fix, sats=sats)
+    def gps(self, lat, lon, speed_kmh=0, course=0, alt=50, fix=True, sats=10, time=True):
+        """What the module reports. With fix=False and time=False it is a cold
+        receiver indoors: no position and no UTC either."""
+        self.cmd("gps", lat=lat, lon=lon, speed_kmh=speed_kmh, course=course, alt=alt, fix=fix, sats=sats,
+                 time=time)
 
     def gps_track(self, points, speed_kmh=25, loop=False):
         self.cmd("gps", track=[list(p) for p in points], speed_kmh=speed_kmh, loop=loop)
+
+    def gps_silent(self, on=True):
+        """The module stops sending (and hearing) anything: a loose connector
+        or a brownout. Its state is kept; off again, it carries on."""
+        self.cmd("gps_silent", on=on)
 
     def sensor(self, kind, **values):
         return self.cmd("sensor", kind=kind, **values)["addr"]

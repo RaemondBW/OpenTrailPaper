@@ -114,7 +114,8 @@ Asynchronous events (log lines, when subscribed) come as `{"event":…}`.
 | `screenshot` | `path` | writes the panel as a 540×960 PNG |
 | `tap` | `x`, `y`, `ms` | a touch at panel coordinates (portrait, 540×960) |
 | `button` | `name` (`boot`, `home`, `side`), `ms` | presses a key |
-| `gps` | `lat`, `lon`, `alt`, `speed_kmh`, `course`, `fix`, `sats`; or `track` [[lat,lon],…] with `speed_kmh` | sets what the GPS module reports |
+| `gps` | `lat`, `lon`, `alt`, `speed_kmh`, `course`, `fix`, `sats`, `time` (no fix: still report UTC; default true); or `track` [[lat,lon],…] with `speed_kmh` | sets what the GPS module reports |
+| `gps_silent` | `on` | the GPS module goes quiet (sends and hears nothing) until `on: false` |
 | `sensor` | `kind` (`hr`, `power`, `csc`, `speed`, `radar`), `addr`, `name`, `advertising`, values (`bpm`, `watts`, `cadence`, `speed_kmh`, `targets`) | adds or updates a virtual BLE sensor |
 | `sensor_remove` | `addr` | the sensor goes away (out of range) |
 | `battery` | `pct`, `charging` | the fuel gauge's reading |
