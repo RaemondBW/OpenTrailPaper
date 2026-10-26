@@ -34,13 +34,14 @@
 		42D2FCE22B005258F3DFCE9C /* BarlowCondensed-SemiBold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = F14CD69E3959EF829E9F0717 /* BarlowCondensed-SemiBold.ttf */; };
 		431EACF518E6E7F25D9682EC /* H3Tiles.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD6BA4ACE6890EF09B9A8F6F /* H3Tiles.swift */; };
 		43AAF30082DA51F92552EE19 /* PhoneMock.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B4C752C73B32E5B3E92EAE4 /* PhoneMock.swift */; };
+		45BEB01BB7D65347DAEE51AC /* FirmwareSimTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC11E5DFB14B643DA807A09D /* FirmwareSimTests.swift */; };
 		4608B467E047801D5219DD54 /* faceijk.c in Sources */ = {isa = PBXBuildFile; fileRef = 21F000263728C013838D0605 /* faceijk.c */; };
 		4625F9DA3A53A697D591B7EA /* RideNames.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0357BDFF6CDBFD4821E44AFE /* RideNames.swift */; };
 		4C0F6C64C32AF7035999D782 /* ArtDither.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F0FA5A490092653FA6B10D1 /* ArtDither.swift */; };
 		4DF251C87736B5314A937BCE /* DevicePages.swift in Sources */ = {isa = PBXBuildFile; fileRef = D35859366D0F2C3EA5BAC557 /* DevicePages.swift */; };
 		50C29F659BE2ACD7B9B29D73 /* Barlow-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = F21BF62E40922CF797D8119D /* Barlow-Regular.ttf */; };
-		5707B12C50214644BFA07242 /* Barlow-Bold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 2A29CA8B02FE737A4E1B8291 /* Barlow-Bold.ttf */; };
 		53056AA52FEFE3404542FCAC /* StravaSegments.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1ADA7245422C723F1EEBF718 /* StravaSegments.swift */; };
+		5707B12C50214644BFA07242 /* Barlow-Bold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 2A29CA8B02FE737A4E1B8291 /* Barlow-Bold.ttf */; };
 		578D5A6227F3573A17A1CE9B /* MeshScanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2ACAD995F312514690C2FF16 /* MeshScanner.swift */; };
 		592497FD48D74D86C61AC752 /* FirebaseAppCheck in Frameworks */ = {isa = PBXBuildFile; productRef = 880B86FA551AFFB25164DF8A /* FirebaseAppCheck */; };
 		59AED5C1500B37FB3E7E3010 /* vec3d.c in Sources */ = {isa = PBXBuildFile; fileRef = 85064AEE7F2DEAD8495F5FDC /* vec3d.c */; };
@@ -52,6 +53,7 @@
 		60DA897C9E52D250126A6751 /* TransferActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = C35B7FEEC24D9CFF746CDE0D /* TransferActivityAttributes.swift */; };
 		613DD6B69A732D8C8542E5CD /* LinkFraming.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9AA41F973F1F1A8BDCE39F9 /* LinkFraming.swift */; };
 		6AA4DF1FE104BA3E6B753B99 /* LinkClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = ACA9E1AAE2E13DBEA7DB02DB /* LinkClient.swift */; };
+		6E9B79719D38EC6D684D4AA3 /* Radio.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1EC3DC238B4DA6B113F321B5 /* Radio.swift */; };
 		71268E6995708D3AAE38E6BB /* TransferActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = C35B7FEEC24D9CFF746CDE0D /* TransferActivityAttributes.swift */; };
 		72A4059778F0676C0911C393 /* RideDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1B62C507D47EAD0BDDDD24F /* RideDetailView.swift */; };
 		789541902FD7AFA80C22063A /* CloudRoutes.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE54303A2F8572AD4AEDB745 /* CloudRoutes.swift */; };
@@ -67,6 +69,7 @@
 		9A51A79216A6D77B6B223CE3 /* Barlow-SemiBold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 42632703DAE05E73F934FFE1 /* Barlow-SemiBold.ttf */; };
 		A18EC8ED01301E3919DCC9DD /* TransferLiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82E5375DC5035B5F4E4A7D8F /* TransferLiveActivity.swift */; };
 		A44F34DFEC944328672D82B2 /* FITDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 590A2666A030966B6741EDAF /* FITDecoder.swift */; };
+		A9EAC6E0B2CDAE7DD3FA652E /* SimRadio.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA7C1FE66A54E027373C8A25 /* SimRadio.swift */; };
 		ABE6FDB260BAA3609F5C5516 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 756CD94A1C875E17A3321CC8 /* OnboardingView.swift */; };
 		ABEFB9015E664E3613CA5DE5 /* Barlow-OFL.txt in Resources */ = {isa = PBXBuildFile; fileRef = BF078E0B8E06C6EE70924923 /* Barlow-OFL.txt */; };
 		B0FDE7FE636803E478340742 /* DashboardPageEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D5700252C3393AC06C9BEB9 /* DashboardPageEditorView.swift */; };
@@ -99,6 +102,7 @@
 		F71D1CFFCC25AD4A7A19D698 /* DiagnosticsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 336612AF0918144CAB1C1FCD /* DiagnosticsView.swift */; };
 		FA250688D82139C6EEF7990D /* CloudRoutesSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA4DEBA21E2DA3752C6057B1 /* CloudRoutesSheet.swift */; };
 		FB766E892D24ED9F1215F002 /* coordijk.c in Sources */ = {isa = PBXBuildFile; fileRef = A5CBCC5E20270A3D4DF70257 /* coordijk.c */; };
+		FE22FE673909952549D63B94 /* SimHarness.swift in Sources */ = {isa = PBXBuildFile; fileRef = 446F73388D9904723ABF6126 /* SimHarness.swift */; };
 		FF0F4581FC7558266780F24B /* vertexGraph.c in Sources */ = {isa = PBXBuildFile; fileRef = 94274D68499F022BC3F0DBC8 /* vertexGraph.c */; };
 /* End PBXBuildFile section */
 
@@ -146,8 +150,9 @@
 		13F29A55A7651044F3D95A3C /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		158AB26E91BB4024B25490AD /* h3shim.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = h3shim.c; sourceTree = "<group>"; };
 		1727B3F48F1EFA384DE4B5C8 /* h3api.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = h3api.h; sourceTree = "<group>"; };
-		1D1F0D3AE5B8C7616380C71A /* Anton-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Anton-Regular.ttf"; sourceTree = "<group>"; };
 		1ADA7245422C723F1EEBF718 /* StravaSegments.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StravaSegments.swift; sourceTree = "<group>"; };
+		1D1F0D3AE5B8C7616380C71A /* Anton-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Anton-Regular.ttf"; sourceTree = "<group>"; };
+		1EC3DC238B4DA6B113F321B5 /* Radio.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Radio.swift; sourceTree = "<group>"; };
 		21F000263728C013838D0605 /* faceijk.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = faceijk.c; sourceTree = "<group>"; };
 		22AE81B336FF77D1655400EA /* constants.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = constants.h; sourceTree = "<group>"; };
 		27A939183F2903B61CA144FB /* bbox.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = bbox.h; sourceTree = "<group>"; };
@@ -162,6 +167,7 @@
 		37C3CA9775B956BC238BAA42 /* BikeGPSCompanionApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BikeGPSCompanionApp.swift; sourceTree = "<group>"; };
 		403E838590B5304D34C70F23 /* mathExtensions.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = mathExtensions.h; sourceTree = "<group>"; };
 		42632703DAE05E73F934FFE1 /* Barlow-SemiBold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Barlow-SemiBold.ttf"; sourceTree = "<group>"; };
+		446F73388D9904723ABF6126 /* SimHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimHarness.swift; sourceTree = "<group>"; };
 		4535B7FCECE70B9CA5BF0840 /* ScrollSmoothnessTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScrollSmoothnessTests.swift; sourceTree = "<group>"; };
 		4B31F90CE651E6EE9951FBB2 /* SegmentSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentSync.swift; sourceTree = "<group>"; };
 		4B4C752C73B32E5B3E92EAE4 /* PhoneMock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneMock.swift; sourceTree = "<group>"; };
@@ -228,6 +234,7 @@
 		CB3F4FE4971EC341C310BFBE /* polygon.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = polygon.h; sourceTree = "<group>"; };
 		CB4C7FC4CD9B1C363CD59A20 /* baseCells.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = baseCells.c; sourceTree = "<group>"; };
 		CBBFA5634178A1D43462F629 /* BLEManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BLEManager.swift; sourceTree = "<group>"; };
+		CC11E5DFB14B643DA807A09D /* FirmwareSimTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FirmwareSimTests.swift; sourceTree = "<group>"; };
 		CC8F9A2A7C26F2C54766428B /* directedEdge.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = directedEdge.c; sourceTree = "<group>"; };
 		CDD609424C1648F1D8704550 /* EInkTileStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EInkTileStore.swift; sourceTree = "<group>"; };
 		CE29D3750A6DE845B01EBE71 /* LinkSelfTest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkSelfTest.swift; sourceTree = "<group>"; };
@@ -241,6 +248,7 @@
 		E466A993E5761DEEBCAC6B32 /* Link.pb.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Link.pb.swift; sourceTree = "<group>"; };
 		E467F3BA417A6A968F920F77 /* DeviceMock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceMock.swift; sourceTree = "<group>"; };
 		EA4DEBA21E2DA3752C6057B1 /* CloudRoutesSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudRoutesSheet.swift; sourceTree = "<group>"; };
+		EA7C1FE66A54E027373C8A25 /* SimRadio.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimRadio.swift; sourceTree = "<group>"; };
 		F14CD69E3959EF829E9F0717 /* BarlowCondensed-SemiBold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "BarlowCondensed-SemiBold.ttf"; sourceTree = "<group>"; };
 		F21BF62E40922CF797D8119D /* Barlow-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Barlow-Regular.ttf"; sourceTree = "<group>"; };
 		F2E1BEE825D22D8612B19893 /* iterators.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = iterators.c; sourceTree = "<group>"; };
@@ -271,7 +279,9 @@
 		0C70B80E01FDC4F961994A3B /* UITests */ = {
 			isa = PBXGroup;
 			children = (
+				CC11E5DFB14B643DA807A09D /* FirmwareSimTests.swift */,
 				4535B7FCECE70B9CA5BF0840 /* ScrollSmoothnessTests.swift */,
+				446F73388D9904723ABF6126 /* SimHarness.swift */,
 			);
 			path = UITests;
 			sourceTree = "<group>";
@@ -377,6 +387,7 @@
 				6F44F9C159DFCF28A303BE08 /* PerfMonitor.swift */,
 				4B4C752C73B32E5B3E92EAE4 /* PhoneMock.swift */,
 				0D1BB43B64D584E90FCD1A2A /* PrebuiltTiles.swift */,
+				1EC3DC238B4DA6B113F321B5 /* Radio.swift */,
 				E1B62C507D47EAD0BDDDD24F /* RideDetailView.swift */,
 				0357BDFF6CDBFD4821E44AFE /* RideNames.swift */,
 				A1B38F0A13FA33BFE4E04416 /* RideSim.swift */,
@@ -386,6 +397,7 @@
 				4B31F90CE651E6EE9951FBB2 /* SegmentSync.swift */,
 				0D0FC030F1FACFFD44C96837 /* SensorsView.swift */,
 				BE5C27C920995C9292457A9C /* SettingsView.swift */,
+				EA7C1FE66A54E027373C8A25 /* SimRadio.swift */,
 				73ECF60CAA9C73957BC40AC2 /* SketchIcon.swift */,
 				1ADA7245422C723F1EEBF718 /* StravaSegments.swift */,
 				F8892300C56FF2C207FA2543 /* SyncAccounts.swift */,
@@ -657,6 +669,7 @@
 				B6B82479D49F3167B6660F6E /* PerfMonitor.swift in Sources */,
 				43AAF30082DA51F92552EE19 /* PhoneMock.swift in Sources */,
 				7ECE54D8F2955E11043A1D8C /* PrebuiltTiles.swift in Sources */,
+				6E9B79719D38EC6D684D4AA3 /* Radio.swift in Sources */,
 				72A4059778F0676C0911C393 /* RideDetailView.swift in Sources */,
 				4625F9DA3A53A697D591B7EA /* RideNames.swift in Sources */,
 				27D3072E86C963D6934C56BA /* RideSim.swift in Sources */,
@@ -666,6 +679,7 @@
 				BE45AB2D9DB1E0AB42312DE5 /* SegmentSync.swift in Sources */,
 				5D1E2FE5B8652DC846C39AF7 /* SensorsView.swift in Sources */,
 				F5E522C16FCFE097E2072926 /* SettingsView.swift in Sources */,
+				A9EAC6E0B2CDAE7DD3FA652E /* SimRadio.swift in Sources */,
 				C7F7382D5542409C17015EFB /* SketchIcon.swift in Sources */,
 				53056AA52FEFE3404542FCAC /* StravaSegments.swift in Sources */,
 				937C33A6DB0DBC569E69366E /* SyncAccounts.swift in Sources */,
@@ -701,7 +715,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				45BEB01BB7D65347DAEE51AC /* FirmwareSimTests.swift in Sources */,
 				3468F65C046C1094771FB187 /* ScrollSmoothnessTests.swift in Sources */,
+				FE22FE673909952549D63B94 /* SimHarness.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
