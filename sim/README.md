@@ -26,7 +26,7 @@ card, NVS and NimBLE, and `sim/host/` for the hardware:
 | Tasks, mutexes, queues, ring buffers | threads ([rtos_sim.cpp](host/rtos_sim.cpp)); the clock can run N× faster |
 | E-paper panel | a framebuffer; every paint is counted, screenshots are PNGs of what's on the glass |
 | Touch, BOOT/side/home keys | injected from the control channel; a press is held until the firmware has read it |
-| SD card | a directory (`<dir>/sd`), removable |
+| SD card | a directory (`<dir>/sd`), removable; optionally slow (`sd latency_ms`), slow to come up after power-on (`--sd-ready-ms`), or holding a file whose reading resets the device (`--sd-crash-on-read`) |
 | NVS | files under `<dir>/nvs`, kept across reboots |
 | L76K GPS on UART2 | an emulated module: obeys PCAS commands (baud, output, version, save), keeps its baud across restarts, streams NMEA for a fix or a track; a wrong UART baud reads garbage |
 | BLE stack + radio | [nimble_sim.cpp](host/nimble_sim.cpp): NimBLE's API over TCP. Connections, pairing (the firmware's passkey callback), bonds (kept in `<dir>/bonds.txt`), encryption, attribute permissions, CCCDs, MTU, notify back-pressure and slow connection intervals |
@@ -84,6 +84,18 @@ refusals, reconnects, backgrounding — runs against the real firmware. See
 A test that passes with the bug present proves nothing. When a test guards a
 fix, check it against the unfixed code once: `test_download_survives_a_slow_link`
 fails with the old 320 ms notify retry budget and passes with the fix.
+
+## Checks the board can't make
+
+Two classes of bug only show on hardware by luck — a freeze when the timing
+lines up — so the sim reports them whenever the code path runs, and the
+tests assert the console is clean of them:
+
+- `[sim] SD ACCESS WITHOUT sdLock: …` — a card call from a running task that
+  doesn't hold `sdLock()`. On the board the card shares its SPI bus with the
+  LoRa radio, and an unlocked call can wedge it.
+- `[sim] LOCK ORDER INVERSION: …` — two mutexes taken in both orders (with
+  `portMAX_DELAY`), i.e. an ABBA deadlock waiting for its interleaving.
 
 ## Known gaps
 

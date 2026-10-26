@@ -35,6 +35,12 @@ typedef struct { int owner; int count; } portMUX_TYPE;
 
 void sim_critical_enter(void);
 void sim_critical_exit(void);
+// Sim-only introspection (the lock checks): does this task hold `sem`; have
+// firmware tasks started; the calling task's name.
+bool sim_sem_held_by_me(void* sem);
+void sim_name_sem(void* sem, const char* name);
+bool sim_tasks_started(void);
+const char* sim_task_name(void);
 #define portENTER_CRITICAL(m) sim_critical_enter()
 #define portEXIT_CRITICAL(m) sim_critical_exit()
 #define portENTER_CRITICAL_ISR(m) sim_critical_enter()

@@ -15,6 +15,8 @@ struct Options {
     double speed = 1.0;
     int notifyWindow = 32;
     int connIntervalMs = 0, packetsPerEvent = 0;
+    int sdReadyMs = 0;                // the card ignores SD.begin() for this long after power-on
+    std::string sdCrashOnRead;        // reading this card file resets the device
     std::vector<std::string> argv;    // for reboot (re-exec)
 };
 extern Options opts;
@@ -50,6 +52,12 @@ void controlBegin();
 void setBattery(int pct, bool charging);
 bool sdPresent();
 void setSdPresent(bool on);
+void setSdLatency(int ms);   // device-time cost of every card open/read/write
+
+// The function containing `addr` (a return address), demangled; "?" if unknown.
+std::string symbolName(void* addr);
+// Logs `line` the first time `key` is seen (the sim's own checks).
+void warnOnce(const std::string& key, const std::string& line);
 
 [[noreturn]] void reboot(const char* why);
 [[noreturn]] void powerOff(const char* why);
