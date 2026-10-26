@@ -277,9 +277,12 @@ class LinkClient:
             with self._plock:
                 self._pending.pop(req, None)
 
-    def download(self, source, name="", window=8192, timeout=30.0, ack_every=2048):
+    def download(self, source, name="", window=8192, timeout=30.0, ack_every=2048, have=b""):
         """DownloadRequest → DownloadBegin → chunks (acked) → TransferDone.
-        Returns the bytes, CRC-checked."""
+        Returns the bytes, CRC-checked. `have`: what the phone already holds
+        from an interrupted download — it asks to resume after it, and keeps
+        as much of it as DownloadBegin.offset says (0: start over). The
+        DownloadBegin is kept in `last_download_begin`."""
         self._xfer += 1
         xfer = self._xfer
         req = self.next_req()
@@ -287,12 +290,15 @@ class LinkClient:
         with self._plock:
             self._pending[req] = q
         got = bytearray()
+        self.last_download_begin = None
         state = {"acked": 0}
         done = queue.Queue()
+        begun = threading.Event()   # `have` is applied before any chunk lands
 
         def watch(m):
             b = body_name(m)
             if b == "chunk" and m.chunk.xfer == xfer:
+                begun.wait(timeout)
                 if m.chunk.offset != len(got):
                     done.put(("gap", m.chunk.offset))
                     return
@@ -306,8 +312,13 @@ class LinkClient:
         self.on_push(watch)
         try:
             self.send(pb.PhoneMsg(req=req, download=pb.DownloadRequest(xfer=xfer, source=source, name=name,
-                                                                         window=window)))
+                                                                         window=window, offset=len(have))))
             r = q.get(timeout=timeout)
+            if body_name(r) == "download_begin":
+                self.last_download_begin = r.download_begin
+                got.extend(have[:r.download_begin.offset])
+                state["acked"] = len(got)
+            begun.set()
             # Chunks and TransferDone for this transfer may carry the request's req.
             def forward():
                 while True:

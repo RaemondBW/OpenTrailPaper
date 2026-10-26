@@ -111,7 +111,7 @@ enum : uint8_t {
     D_SERVICE_CHANGED = 0x89, D_SECURITY = 0x8A, D_ADV = 0x8B, D_PEER_READ = 0x90,
     D_PEER_SUBSCRIBE = 0x91, D_PEER_WRITE = 0x92,
 };
-enum : uint8_t { F_PHONE_BONDED = 1, F_PAIR = 2, F_AUTO_PASSKEY = 4 };
+enum : uint8_t { F_PHONE_BONDED = 1, F_PAIR = 2, F_AUTO_PASSKEY = 4, F_STALE_KEYS = 8 };
 enum : uint8_t { ATT_OK = 0, ATT_NOT_PERMITTED = 0x03, ATT_INSUF_AUTHEN = 0x05,
                  ATT_NOT_FOUND = 0x0A, ATT_INSUF_ENC = 0x0F };
 
@@ -126,6 +126,9 @@ struct Conn {
     std::atomic<bool> dropping{false};   // a disconnect was requested: nothing more completes
     bool securityDone = false;
     bool awaitingPasskey = false;
+    // The bonded peer's CCCDs (Service Changed among them) are restored only
+    // once encryption completes and the host's callback has returned.
+    bool cccdsRestored = false;
     uint32_t passkey = 0;
     std::set<const NimBLECharacteristic*> subs;
     // writer
@@ -297,6 +300,7 @@ void finishPairing(const std::shared_ptr<Conn>& c, bool ok) {
     sendSecurity(c);
     NimBLEConnInfo ci = c->info;
     if (g_server->callbacks()) g_server->callbacks()->onAuthenticationComplete(ci);
+    if (ok) c->cccdsRestored = true;
 }
 
 // Encryption or pairing, as iOS/Android and NimBLE would run it. Started by
@@ -308,7 +312,7 @@ void runSecurity(const std::shared_ptr<Conn>& c) {
     const bool deviceBond = bonded(c->info.idAddr_);
     if (phoneBond) {
         c->securityDone = true;
-        if (deviceBond) {
+        if (deviceBond && !(c->flags & F_STALE_KEYS)) {
             c->info.encrypted_ = c->info.bonded_ = c->info.authenticated_ = true;
             c->info.keySize_ = 16;
         } else {
@@ -317,17 +321,30 @@ void runSecurity(const std::shared_ptr<Conn>& c) {
         sendSecurity(c);
         NimBLEConnInfo ci = c->info;
         if (g_server->callbacks()) g_server->callbacks()->onAuthenticationComplete(ci);
+        if (c->info.encrypted_) c->cccdsRestored = true;
         return;
     }
     if (!(c->flags & F_PAIR)) return;   // the phone won't pair: stays unencrypted
     c->securityDone = true;
-    if (deviceBond && g_refuse && g_refuse(c->handle)) return;   // the guard dropped it
+    if (deviceBond) {
+        // A pairing request from a peer we hold a bond for. The firmware's
+        // guard (ble_pair_guard) may refuse it; otherwise NimBLE-Arduino's own
+        // repeat-pairing handler deletes the old bond and lets pairing run.
+        if (g_refuse && g_refuse(c->handle)) return;   // the guard dropped it
+        removeBond(c->info.idAddr_);
+    }
+    // The phone puts its passkey dialog up as soon as pairing starts — before
+    // the device's passkey callback has run, so a refusal there comes too late
+    // to spare the rider the dialog.
+    const bool askRider = !(c->flags & F_AUTO_PASSKEY);
+    if (askRider) {
+        c->awaitingPasskey = true;
+        c->send(D_PASSKEY_REQ, "");
+    }
     uint32_t code = g_server->callbacks() ? g_server->callbacks()->onPassKeyDisplay() : 123456;
     if (c->gone || c->dropping) return;
-    if (c->flags & F_AUTO_PASSKEY) { finishPairing(c, true); return; }
-    c->awaitingPasskey = true;
+    if (!askRider) { finishPairing(c, true); return; }
     c->passkey = code;
-    c->send(D_PASSKEY_REQ, "");
     std::weak_ptr<Conn> w = c;
     simble::postAfter(30000, [w] {
         if (auto c2 = w.lock()) if (c2->awaitingPasskey) finishPairing(c2, false);
@@ -456,7 +473,17 @@ void handleFrame(const std::shared_ptr<Conn>& c, uint8_t type, const std::string
             c->send(D_SUBSCRIBE_RSP, b.substr(0, 16) + (char)st);
             break;
         }
-        case P_SECURE: runSecurity(c); break;
+        case P_SECURE:
+            // On a link already encrypted with a bond, the phone asking again
+            // is a key refresh: the host reports another encryption change.
+            if (c->securityDone && c->info.encrypted_ && c->info.bonded_ && g_server) {
+                sendSecurity(c);
+                NimBLEConnInfo ci = c->info;
+                if (g_server->callbacks()) g_server->callbacks()->onAuthenticationComplete(ci);
+            } else {
+                runSecurity(c);
+            }
+            break;
         case P_DISCONNECT: endConn(c, b.empty() ? 0x13 : (uint8_t)b[0], false); break;
         case P_PASSKEY: {
             if (!c->awaitingPasskey || b.size() < 4) break;
@@ -724,7 +751,12 @@ void dropPhone(int reason) {
 
 std::string statusJson() {
     std::ostringstream o;
-    o << "{\"advertising\":" << (g_advOn ? "true" : "false")
+    bool scanning;
+    {
+        std::lock_guard<std::mutex> lk(g_scanM);
+        scanning = g_scanning;
+    }
+    o << "{\"advertising\":" << (g_advOn ? "true" : "false") << ",\"scanning\":" << (scanning ? "true" : "false")
       << ",\"adv_name\":\"" << g_adv.data_.name << "\",\"adv_mfg\":\"" << hex(g_adv.data_.mfg) << "\"";
     o << ",\"bonds\":[";
     {
@@ -926,7 +958,8 @@ NimBLEAddress NimBLEDevice::getBondedAddress(int i) {
     return i >= 0 && i < (int)g_bonds.size() ? g_bonds[i] : NimBLEAddress();
 }
 bool NimBLEDevice::isBonded(const NimBLEAddress& a) { return bonded(a); }
-bool NimBLEDevice::deleteBond(const NimBLEAddress& a) { return removeBond(a); }
+// NimBLE-Arduino's deleteBond is ble_gap_unpair.
+bool NimBLEDevice::deleteBond(const NimBLEAddress& a) { return ble_gap_unpair(a.getBase()) == 0; }
 bool NimBLEDevice::deleteAllBonds() {
     std::lock_guard<std::mutex> lk(g_bondM);
     g_bonds.clear();
@@ -955,8 +988,13 @@ extern "C" int ble_gap_update_params(uint16_t h, const ble_gap_upd_params* p) {
     return 0;
 }
 
+// A phone's bond carries an IRK, and the controller's resolving list can't
+// change while advertising or scanning: NimBLE answers BLE_HS_EBUSY and
+// deletes nothing.
 extern "C" int ble_gap_unpair(const ble_addr_t* addr) {
     NimBLEAddress a(*addr);
+    if (!bonded(a)) return 5;   // BLE_HS_ENOENT
+    if (g_advOn || NimBLEDevice::getScan()->isScanning()) return BLE_HS_EBUSY;
     removeBond(a);
     for (auto& c : allConns())
         if (c->info.idAddr_ == a) simble::post([c] { endConn(c, 0x16, true); });
@@ -967,8 +1005,9 @@ extern "C" void ble_pair_guard_harden(void) {}
 extern "C" void ble_pair_guard_set_refuse(ble_pair_guard_refuse_fn* fn) { g_refuse = fn; }
 extern "C" int ble_pair_guard_install(uint16_t) { return 0; }
 
+// An indication: only links whose Service Changed CCCD is in place get it.
 extern "C" void ble_svc_gatt_changed(uint16_t, uint16_t) {
-    for (auto& c : allConns()) c->send(D_SERVICE_CHANGED, "");
+    for (auto& c : allConns()) if (c->cccdsRestored) c->send(D_SERVICE_CHANGED, "");
 }
 
 // ---- NimBLE API: central --------------------------------------------------------------

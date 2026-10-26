@@ -103,3 +103,8 @@ tests assert the console is clean of them:
 - No radio-level effects beyond what's modelled (range, interference, the
   controller's own scheduling).
 - The panel's waveforms and refresh modes aren't modelled: a paint is instant.
+- A phone can connect while the device isn't advertising (the controller
+  would refuse it), so a second central during a live phone link is always
+  possible here.
+- Light sleep, BT modem sleep and power_mgmt.cpp aren't built: link drops
+  caused by sleep clocks are out of reach.

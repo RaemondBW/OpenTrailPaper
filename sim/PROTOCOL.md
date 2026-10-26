@@ -30,7 +30,7 @@ printed: `aa:bb:cc:dd:ee:ff`). Integers are little-endian.
 | 0x03 | READ            | `16B chr` |
 | 0x04 | WRITE           | `16B chr` `u8 withResponse` `data` |
 | 0x05 | SUBSCRIBE       | `16B chr` `u16 cccd` (1 notify, 2 indicate, 0 off) |
-| 0x06 | SECURE          | — (start encryption or pairing now, as a phone does after an "insufficient authentication" error) |
+| 0x06 | SECURE          | — (start encryption or pairing now, as a phone does after an "insufficient authentication" error; on a link already encrypted with a bond, a key refresh: the firmware sees another authentication-complete) |
 | 0x07 | DISCONNECT      | `u8 reason` |
 | 0x08 | PASSKEY         | `u32 passkey` (what the rider typed) |
 | 0x0A | ADV             | — (asks for the current advertisement) |
@@ -43,8 +43,11 @@ CONNECT flags:
 - bit 0 — the phone holds a bond with this device (iOS/Android "paired").
 - bit 1 — pair if the device asks (a phone with no bond starting pairing).
 - bit 2 — confirm the passkey automatically (the sim enters the code the panel
-  shows, as a rider would). Without it the device sends PASSKEY_REQ and waits
-  for PASSKEY.
+  shows, as a rider would). Without it the device sends PASSKEY_REQ (the
+  phone's passkey dialog, which appears as soon as pairing starts — before the
+  firmware's passkey callback runs) and waits for PASSKEY.
+- bit 3 — the phone's bond holds keys that don't match the device's (bit 0
+  set): encryption fails even though the device holds a bond.
 
 The identity is the phone's identity address (its IRK-resolved address). A
 test that wants to be "the same phone" across connections reuses it.
@@ -79,8 +82,12 @@ insufficient encryption, 0x03 not permitted, 0x0A not found.
    It runs as NimBLE + iOS/Android would run it:
    - phone bonded, device holds the bond → SECURITY(encrypted, bonded,
      authenticated) and `onAuthenticationComplete`.
-   - phone bonded, device has no bond (it was unpaired) → encryption fails:
-     SECURITY(0,…) and the firmware drops the link (DISCONNECTED 0x05).
+   - phone bonded, device has no bond (it was unpaired), or the keys don't
+     match (flag bit 3) → encryption fails: SECURITY(0,…) and the firmware
+     decides what happens to the link.
+   - phone not bonded, flags bit 1, device holds a bond for its identity (the
+     phone forgot the device) → the firmware's pairing guard may refuse; if it
+     doesn't, NimBLE-Arduino deletes the old bond and pairing runs.
    - phone not bonded, flags bit 1 → pairing: the firmware's passkey callback
      runs (the code appears on the panel), PASSKEY_REQ unless bit 2, then the
      bond is stored and SECURITY follows. A wrong PASSKEY fails pairing.
@@ -92,6 +99,14 @@ insufficient encryption, 0x03 not permitted, 0x0A not found.
 
 The firmware may drop the link at any point (refusal, unpair, OTA reboot):
 DISCOVERED… DISCONNECTED, then the socket closes.
+
+SERVICE_CHANGED is an indication: it reaches a link only once its CCCDs are
+restored, i.e. after the firmware's `onAuthenticationComplete` has returned
+for an encrypted, bonded link.
+
+Bonds carry an IRK, so `ble_gap_unpair` / `deleteBond` fail with
+BLE_HS_EBUSY (deleting nothing) while the device is advertising or scanning,
+as on the controller.
 
 ### Back-pressure
 
@@ -109,7 +124,7 @@ Asynchronous events (log lines, when subscribed) come as `{"event":…}`.
 
 | cmd | arguments | does |
 |-----|-----------|------|
-| `status` | — | screen, page, settings, ride state, turn-by-turn (`nav`: prompt, next turn and the distance to it), phone link, advertisement, bonds, panel counts (`paints`, `scrubs` — the scoped pre-paint resync, `clears` — whole-panel), clocks |
+| `status` | — | screen, page, settings, ride state, turn-by-turn (`nav`: prompt, next turn and the distance to it), phone link, advertisement, scanning, bonds, panel counts (`paints`, `scrubs` — the scoped pre-paint resync, `clears` — whole-panel), clocks |
 | `console` | `line`, `wait_ms` | runs a serial console command; returns its output |
 | `screenshot` | `path` | writes the panel as a 540×960 PNG |
 | `tap` | `x`, `y`, `ms` | a touch at panel coordinates (portrait, 540×960) |

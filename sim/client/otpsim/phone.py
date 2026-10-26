@@ -162,9 +162,11 @@ class SimPhone:
 
     # -- connection -------------------------------------------------------------------------------
 
-    def connect(self, pair=True, auto_passkey=True, timeout=5.0):
+    def connect(self, pair=True, auto_passkey=True, stale_keys=False, timeout=5.0):
         """Connect; `pair`: start pairing if the device asks (a phone without
-        a bond). Returns once CONNECTED arrives — security follows."""
+        a bond). `stale_keys`: the phone's bond holds keys that no longer
+        match the device's, so encryption fails. Returns once CONNECTED
+        arrives — security follows."""
         self.sock = socket.create_connection(("127.0.0.1", self.port), timeout=timeout)
         self.sock.settimeout(None)
         self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -177,7 +179,7 @@ class SimPhone:
         self.disconnect_reason = None
         self._reader = threading.Thread(target=self._read_loop, daemon=True)
         self._reader.start()
-        flags = (1 if self.bonded else 0) | (2 if pair else 0) | (4 if auto_passkey else 0)
+        flags = (1 if self.bonded else 0) | (2 if pair else 0) | (4 if auto_passkey else 0) | (8 if stale_keys else 0)
         ident = bytes(int(x, 16) for x in self.identity.split(":"))
         name = self.name.encode()
         self._send(P_CONNECT, struct.pack("<BHB", 1, self.mtu, flags) + ident + bytes([len(name)]) + name)
