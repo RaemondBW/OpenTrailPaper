@@ -149,6 +149,11 @@ android {
         // with to the OSM tile, routing and geocoding servers.
         buildConfig = true
     }
+    // The firmware-sim tests (src/testDebug, Robolectric) build the app's
+    // own Application, which reads its strings.
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+    }
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
@@ -234,4 +239,9 @@ dependencies {
     // The byte formats shared with the firmware are pure Kotlin, so they are
     // testable on the JVM with no device and no network.
     testImplementation("junit:junit:4.13.2")
+    // Only for the firmware-sim tests (src/testDebug): they run the real
+    // BleManager, which needs Android's main looper, SharedPreferences and
+    // the android.bluetooth value classes on the JVM. The other unit tests
+    // stay plain JUnit.
+    testImplementation("org.robolectric:robolectric:4.14.1")
 }

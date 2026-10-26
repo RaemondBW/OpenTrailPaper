@@ -3,21 +3,13 @@ package com.raemond.opentrailpaper.ble
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Application
-import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
-import android.bluetooth.BluetoothGattCallback
 import android.bluetooth.BluetoothGattCharacteristic
-import android.bluetooth.BluetoothManager
+import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothProfile
-import android.bluetooth.le.ScanCallback
-import android.bluetooth.le.ScanFilter
-import android.bluetooth.le.ScanResult
-import android.bluetooth.le.ScanSettings
-import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.location.Location
 import android.location.LocationListener
@@ -26,7 +18,6 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.os.ParcelUuid
 import android.os.SystemClock
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -136,7 +127,11 @@ import kotlin.math.roundToLong
  * serialized rather than fired freely as they are on iOS.
  */
 @SuppressLint("MissingPermission")
-class BleManager(private val app: Application) {
+class BleManager(
+    private val app: Application,
+    /** Android's stack; the firmware simulator's in debug builds and tests (Radio.kt). */
+    private val radio: Radio = AndroidRadio(app),
+) {
 
     /**
      * CONNECTED means the device ADMITTED us: the link is authenticated and the
@@ -572,12 +567,8 @@ class BleManager(private val app: Application) {
     private val main = Handler(Looper.getMainLooper())
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
-    private val btManager =
-        app.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager?
-    private val adapter: BluetoothAdapter? get() = btManager?.adapter
-
-    private var gatt: BluetoothGatt? = null
-    private var device: BluetoothDevice? = null
+    private var gatt: RadioGatt? = null
+    private var device: RadioDevice? = null
     private val queue = GattQueue()
 
     // MARK: phone link (docs/ble-link.md)
@@ -758,10 +749,14 @@ class BleManager(private val app: Application) {
     /** Most recent phone fix, so the map screens can frame the user. */
     var lastLocation by mutableStateOf<Location?>(null); private set
 
-    private val adapterReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action != BluetoothAdapter.ACTION_STATE_CHANGED) return
-            main.post { onAdapterStateChanged() }
+    /** Adapter on/off and bond changes (Android: the two broadcasts), on main. */
+    private val radioListener = object : Radio.Listener {
+        override fun onAdapterStateChanged() {
+            main.post { this@BleManager.onAdapterStateChanged() }
+        }
+
+        override fun onBondStateChanged(address: String?, bond: Int) {
+            main.post { this@BleManager.onBondStateChanged(address, bond) }
         }
     }
 
@@ -814,14 +809,14 @@ class BleManager(private val app: Application) {
      * has forgotten the device but Android may still hold the bond, and then
      * the device lets us straight in.
      */
-    private val pairedElsewhereSeen = LinkedHashMap<String, BluetoothDevice>()
+    private val pairedElsewhereSeen = LinkedHashMap<String, RadioDevice>()
     private var fallbackJob: Job? = null
     private var onFallbackAttempt = false
     private var forgetting = false
     /** Connections in a row that ended before the device sent any status. */
     private var barrenConnects = 0
     /** Waiting for Android to finish bonding before the GATT session starts. */
-    private var awaitingBond: BluetoothGatt? = null
+    private var awaitingBond: RadioGatt? = null
 
     // Admission bookkeeping, per link. The firmware lets nothing through
     // without an authenticated (passkey, Secure Connections) bond, and drops
@@ -850,27 +845,13 @@ class BleManager(private val app: Application) {
     /** Last advertised paired flag per address (null: firmware without it). */
     private val advertisedPaired = HashMap<String, Boolean?>()
 
-    private val bondReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action != BluetoothDevice.ACTION_BOND_STATE_CHANGED) return
-            val dev: BluetoothDevice? = if (Build.VERSION.SDK_INT >= 33) {
-                intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
-            } else {
-                @Suppress("DEPRECATION")
-                intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
-            }
-            val bond = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.ERROR)
-            main.post { onBondStateChanged(dev?.address, bond) }
-        }
-    }
-
-    private val scanCallback = object : ScanCallback() {
-        override fun onScanResult(callbackType: Int, result: ScanResult) {
-            val pairedFlag = advertisesPaired(result.scanRecord?.getManufacturerSpecificData(0xFFFF))
+    private val scanCallback = object : Radio.ScanListener {
+        override fun onResult(device: RadioDevice, mfgFFFF: ByteArray?) {
+            val pairedFlag = advertisesPaired(mfgFFFF)
             main.post {
-                advertisedPaired[result.device.address] = pairedFlag
+                advertisedPaired[device.address] = pairedFlag
                 if (gatt != null) return@post
-                val dev = result.device
+                val dev = device
                 val saved = pairedDeviceAddress
                 if (refusedAddress != null && dev.address.equals(refusedAddress, ignoreCase = true)) {
                     if (System.currentTimeMillis() - lastRefusedScanLog > 5000) {
@@ -919,7 +900,7 @@ class BleManager(private val app: Application) {
             }
         }
 
-        override fun onScanFailed(errorCode: Int) {
+        override fun onFailed(errorCode: Int) {
             main.post {
                 scanning = false
                 state = ConnState.IDLE
@@ -929,7 +910,7 @@ class BleManager(private val app: Application) {
 
 
     private fun onAdapterStateChanged() {
-        val on = adapter?.isEnabled == true
+        val on = radio.isEnabled
         bluetoothPoweredOn = on
         bluetoothReady = on && bluetoothPermission.isGranted
         if (on) {
@@ -978,10 +959,10 @@ class BleManager(private val app: Application) {
             // refused without location — so that IS the Bluetooth permission
             // here, and reporting it as granted would leave a scan that silently
             // returns nothing with nothing on screen to explain it.
-            if (adapter == null) PermissionState.UNAVAILABLE else locationPermission
+            if (!radio.available) PermissionState.UNAVAILABLE else locationPermission
         }
 
-        bluetoothPoweredOn = adapter?.isEnabled == true
+        bluetoothPoweredOn = radio.isEnabled
         bluetoothReady = bluetoothPoweredOn && bluetoothPermission.isGranted
         // Permission granted while we were away: bring the radio up now, so the
         // device connects without the user having to hunt for a button.
@@ -990,42 +971,36 @@ class BleManager(private val app: Application) {
 
     /** Onboarding / Settings: bring Bluetooth up once it's allowed. */
     fun startCentral() {
-        if (!bluetoothPermission.isGranted || adapter?.isEnabled != true) return
+        if (!bluetoothPermission.isGranted || !radio.isEnabled) return
         if (gatt == null && !scanning) startScan()
     }
 
     // MARK: scanning + connection
 
     fun startScan() {
-        val scanner = adapter?.bluetoothLeScanner ?: return
-        if (!bluetoothPermission.isGranted || adapter?.isEnabled != true) return
+        if (!radio.canScan) return
+        if (!bluetoothPermission.isGranted || !radio.isEnabled) return
         if (scanning || gatt != null) return
         // Our device, known: no scan. autoConnect has no timeout and fires the
         // moment it is in range — the same path every reconnect takes. Not
         // while it is refusing us: scan instead, and watch its advertisement
         // for the paired flag to clear (see scanCallback).
         pairedDeviceAddress?.takeIf { !it.equals(refusedAddress, ignoreCase = true) }?.let { saved ->
-            val dev = runCatching { adapter?.getRemoteDevice(saved) }.getOrNull()
+            val dev = radio.remoteDevice(saved)
             // Only while Android still holds the bond: without it, connecting
             // means createBond, and the advertisement (scan below) has to say
             // first whether the device would have us.
             if (dev != null && dev.bondState == BluetoothDevice.BOND_BONDED) {
                 device = dev
                 state = ConnState.CONNECTING
-                gatt = dev.connectGatt(app, true, gattCallback, BluetoothDevice.TRANSPORT_LE)
+                gatt = dev.connectGatt(true, gattCallback)
                 queue.attach(gatt)
                 return
             }
         }
         scanning = true
         state = ConnState.SCANNING
-        scanner.startScan(
-            listOf(ScanFilter.Builder().setServiceUuid(ParcelUuid(BikeUuid.service)).build()),
-            ScanSettings.Builder()
-                .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
-                .build(),
-            scanCallback,
-        )
+        radio.startScan(BikeUuid.service, scanCallback)
         if (pairedDeviceAddress == null) armPairedFallback()
     }
 
@@ -1123,7 +1098,7 @@ class BleManager(private val app: Application) {
             // app scanning past its own device until a restart (2026-10-11).
             // The scan adopts it only once it advertises unpaired; still
             // paired, it gets the paired-elsewhere path and its dialog.
-            runCatching { adapter?.getRemoteDevice(addr) }.getOrNull()?.let(::removeBond)
+            radio.remoteDevice(addr)?.let(::removeBond)
         }
         if (gatt != null) {
             forgetting = true
@@ -1163,7 +1138,7 @@ class BleManager(private val app: Application) {
     }
 
     /** MTU first, then discovery — every chunk size derives from the MTU. */
-    private fun startGattSession(g: BluetoothGatt) {
+    private fun startGattSession(g: RadioGatt) {
         state = ConnState.CONNECTING
         // A link that never gets admitted (keys the device doesn't hold, a
         // read that never answers) must not sit on "Connecting…" forever, nor
@@ -1182,16 +1157,16 @@ class BleManager(private val app: Application) {
     private fun stopScan() {
         if (!scanning) return
         scanning = false
-        runCatching { adapter?.bluetoothLeScanner?.stopScan(scanCallback) }
+        runCatching { radio.stopScan(scanCallback) }
     }
 
-    private fun connect(target: BluetoothDevice) {
+    private fun connect(target: RadioDevice) {
         if (target.address.equals(refusedAddress, ignoreCase = true)) return
         device = target
         // Settings cache and offline edits are keyed by this identity.
         setCurrentDevice(target.address)
         state = ConnState.CONNECTING
-        gatt = target.connectGatt(app, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+        gatt = target.connectGatt(false, gattCallback)
         queue.attach(gatt)
     }
 
@@ -1199,8 +1174,8 @@ class BleManager(private val app: Application) {
         gatt?.disconnect()
     }
 
-    private val gattCallback = object : BluetoothGattCallback() {
-        override fun onConnectionStateChange(g: BluetoothGatt, statusCode: Int, newState: Int) {
+    private val gattCallback = object : RadioGattCallback {
+        override fun onConnectionStateChange(g: RadioGatt, statusCode: Int, newState: Int) {
             main.post {
                 when (newState) {
                     BluetoothProfile.STATE_CONNECTED -> {
@@ -1231,19 +1206,19 @@ class BleManager(private val app: Application) {
             }
         }
 
-        override fun onMtuChanged(g: BluetoothGatt, newMtu: Int, statusCode: Int) {
+        override fun onMtuChanged(g: RadioGatt, newMtu: Int, statusCode: Int) {
             main.post {
                 if (statusCode == BluetoothGatt.GATT_SUCCESS) mtu = newMtu
                 queue.complete(statusCode == BluetoothGatt.GATT_SUCCESS)
             }
         }
 
-        override fun onServicesDiscovered(g: BluetoothGatt, statusCode: Int) {
+        override fun onServicesDiscovered(g: RadioGatt, statusCode: Int) {
             main.post { bindCharacteristics(g) }
         }
 
         override fun onCharacteristicWrite(
-            g: BluetoothGatt,
+            g: RadioGatt,
             ch: BluetoothGattCharacteristic,
             statusCode: Int,
         ) {
@@ -1254,8 +1229,8 @@ class BleManager(private val app: Application) {
         }
 
         override fun onDescriptorWrite(
-            g: BluetoothGatt,
-            d: android.bluetooth.BluetoothGattDescriptor,
+            g: RadioGatt,
+            d: BluetoothGattDescriptor,
             statusCode: Int,
         ) {
             main.post {
@@ -1267,28 +1242,15 @@ class BleManager(private val app: Application) {
             }
         }
 
-        @Suppress("DEPRECATION")
+        // Both of Android's read callbacks (pre- and post-API 33) land here,
+        // the value already copied off the binder thread (Radio.kt).
         override fun onCharacteristicRead(
-            g: BluetoothGatt,
-            ch: BluetoothGattCharacteristic,
-            statusCode: Int,
-        ) {
-            val value = ch.value?.copyOf() ?: ByteArray(0)
-            main.post {
-                noteAuthFailure(statusCode)
-                queue.complete(statusCode == BluetoothGatt.GATT_SUCCESS)
-                if (statusCode == BluetoothGatt.GATT_SUCCESS) onProtectedRead(ch.uuid)
-                if (statusCode == BluetoothGatt.GATT_SUCCESS) dispatch(ch.uuid, value)
-            }
-        }
-
-        override fun onCharacteristicRead(
-            g: BluetoothGatt,
+            g: RadioGatt,
             ch: BluetoothGattCharacteristic,
             value: ByteArray,
             statusCode: Int,
         ) {
-            val copy = value.copyOf()
+            val copy = value
             main.post {
                 noteAuthFailure(statusCode)
                 queue.complete(statusCode == BluetoothGatt.GATT_SUCCESS)
@@ -1297,18 +1259,12 @@ class BleManager(private val app: Application) {
             }
         }
 
-        @Suppress("DEPRECATION")
-        override fun onCharacteristicChanged(g: BluetoothGatt, ch: BluetoothGattCharacteristic) {
-            val value = ch.value?.copyOf() ?: return
-            main.post { dispatch(ch.uuid, value) }
-        }
-
         override fun onCharacteristicChanged(
-            g: BluetoothGatt,
+            g: RadioGatt,
             ch: BluetoothGattCharacteristic,
             value: ByteArray,
         ) {
-            val copy = value.copyOf()
+            val copy = value
             main.post { dispatch(ch.uuid, copy) }
         }
     }
@@ -1327,21 +1283,14 @@ class BleManager(private val app: Application) {
         loadMapLayersState()   // last device's map layers, for the Maps screen while disconnected
         poiSentAt = Prefs.poiSentAt
         refreshPermissions()
-        app.registerReceiver(
-            adapterReceiver,
-            IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED),
-        )
-        app.registerReceiver(
-            bondReceiver,
-            IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED),
-        )
+        radio.setListener(radioListener)
         // Returning users get Bluetooth up immediately so the device auto-
         // connects. First-run users start it from the tutorial's Bluetooth step,
         // so the system prompt lands on that screen.
         if (Prefs.onboarded) startCentral()
     }
 
-    private fun bindCharacteristics(g: BluetoothGatt) {
+    private fun bindCharacteristics(g: RadioGatt) {
         val service = g.getService(BikeUuid.service) ?: run {
             state = ConnState.IDLE
             return
@@ -1677,10 +1626,9 @@ class BleManager(private val app: Application) {
         return (data[1].toInt() and 0x01) != 0
     }
 
-    /** BluetoothDevice.removeBond() is hidden API but has been stable since
-     *  API 19 and is what every BLE accessory app uses; best effort. */
-    private fun removeBond(dev: BluetoothDevice) {
-        runCatching { dev.javaClass.getMethod("removeBond").invoke(dev) }
+    /** Best effort (hidden API on Android; see AndroidRadio). */
+    private fun removeBond(dev: RadioDevice) {
+        runCatching { dev.removeBond() }
     }
 
     private fun teardownConnection(reconnect: Boolean) {
@@ -1688,8 +1636,8 @@ class BleManager(private val app: Application) {
         queue.attach(null)
         gatt?.close()
         gatt = null
-        if (!reconnect || adapter?.isEnabled != true || !bluetoothPermission.isGranted) {
-            state = if (adapter?.isEnabled == true) ConnState.IDLE else ConnState.POWERED_OFF
+        if (!reconnect || !radio.isEnabled || !bluetoothPermission.isGranted) {
+            state = if (radio.isEnabled) ConnState.IDLE else ConnState.POWERED_OFF
             return
         }
         // Hand the device straight back to the stack instead of dropping it and
@@ -1702,7 +1650,7 @@ class BleManager(private val app: Application) {
         val known = device
         if (known != null) {
             state = ConnState.CONNECTING
-            gatt = known.connectGatt(app, true, gattCallback, BluetoothDevice.TRANSPORT_LE)
+            gatt = known.connectGatt(true, gattCallback)
             queue.attach(gatt)
         } else {
             startScan()
