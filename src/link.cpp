@@ -468,6 +468,8 @@ void sendLiveFrame() {
         r.sd_card = s.sdCard == SD_CARD_NONE ? otp_link_SdCard_SD_CARD_MISSING
                   : s.sdCard == SD_CARD_UNREADABLE ? otp_link_SdCard_SD_CARD_UNREADABLE
                   : otp_link_SdCard_SD_CARD_OK;
+        r.has_show_offline = true;
+        r.show_offline = settings::showOffline();
     }
     if (t & (1u << otp_link_LiveTopic_LIVE_TOPIC_STOPWATCH)) {
         otp_link_StopwatchState& w = f.stopwatch;

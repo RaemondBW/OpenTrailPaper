@@ -305,6 +305,12 @@ typedef struct _otp_link_RideState {
     bool radar_live;
     bool time_valid;
     otp_link_SdCard sd_card; /* UNKNOWN from firmware before it was reported */
+    /* The device's "Show offline" setting: a field whose sensor is not live
+ (power_w / hr_bpm / cadence_rpm absent, route_left_m absent) is drawn
+ greyed out (true) or left off the page (false). Absent from firmware
+ before it was reported. */
+    bool has_show_offline;
+    bool show_offline;
 } otp_link_RideState;
 
 typedef struct _otp_link_Lap {
@@ -1113,7 +1119,7 @@ extern "C" {
 #define otp_link_Settings_init_default           {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
 #define otp_link_LiveSubscribe_init_default      {0, {_otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN}}
 #define otp_link_LiveFrame_init_default          {0, false, otp_link_RideState_init_default, false, otp_link_StopwatchState_init_default, false, otp_link_ViewState_init_default, false, otp_link_Position_init_default, false, otp_link_Radar_init_default, false, otp_link_MusicState_init_default}
-#define otp_link_RideState_init_default          {0, 0, 0, 0, 0, 0, 0, false, 0, 0, false, 0, false, 0, false, 0, false, 0, 0, 0, 0, 0, false, 0, false, 0, 0, false, 0, 0, 0, 0, _otp_link_SdCard_MIN}
+#define otp_link_RideState_init_default          {0, 0, 0, 0, 0, 0, 0, false, 0, 0, false, 0, false, 0, false, 0, false, 0, 0, 0, 0, 0, false, 0, false, 0, 0, false, 0, 0, 0, 0, _otp_link_SdCard_MIN, false, 0}
 #define otp_link_StopwatchState_init_default     {0, 0, 0, 0, 0, 0, false, 0, false, 0, false, 0, false, 0, 0, {otp_link_Lap_init_default, otp_link_Lap_init_default, otp_link_Lap_init_default, otp_link_Lap_init_default, otp_link_Lap_init_default, otp_link_Lap_init_default, otp_link_Lap_init_default, otp_link_Lap_init_default, otp_link_Lap_init_default, otp_link_Lap_init_default}}
 #define otp_link_Lap_init_default                {0, 0, false, 0, false, 0, false, 0}
 #define otp_link_ViewState_init_default          {false, 0, 0, _otp_link_Screen_MIN}
@@ -1193,7 +1199,7 @@ extern "C" {
 #define otp_link_Settings_init_zero              {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
 #define otp_link_LiveSubscribe_init_zero         {0, {_otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN}}
 #define otp_link_LiveFrame_init_zero             {0, false, otp_link_RideState_init_zero, false, otp_link_StopwatchState_init_zero, false, otp_link_ViewState_init_zero, false, otp_link_Position_init_zero, false, otp_link_Radar_init_zero, false, otp_link_MusicState_init_zero}
-#define otp_link_RideState_init_zero             {0, 0, 0, 0, 0, 0, 0, false, 0, 0, false, 0, false, 0, false, 0, false, 0, 0, 0, 0, 0, false, 0, false, 0, 0, false, 0, 0, 0, 0, _otp_link_SdCard_MIN}
+#define otp_link_RideState_init_zero             {0, 0, 0, 0, 0, 0, 0, false, 0, 0, false, 0, false, 0, false, 0, false, 0, 0, 0, 0, 0, false, 0, false, 0, 0, false, 0, 0, 0, 0, _otp_link_SdCard_MIN, false, 0}
 #define otp_link_StopwatchState_init_zero        {0, 0, 0, 0, 0, 0, false, 0, false, 0, false, 0, false, 0, 0, {otp_link_Lap_init_zero, otp_link_Lap_init_zero, otp_link_Lap_init_zero, otp_link_Lap_init_zero, otp_link_Lap_init_zero, otp_link_Lap_init_zero, otp_link_Lap_init_zero, otp_link_Lap_init_zero, otp_link_Lap_init_zero, otp_link_Lap_init_zero}}
 #define otp_link_Lap_init_zero                   {0, 0, false, 0, false, 0, false, 0}
 #define otp_link_ViewState_init_zero             {false, 0, 0, _otp_link_Screen_MIN}
@@ -1316,6 +1322,7 @@ extern "C" {
 #define otp_link_RideState_radar_live_tag        23
 #define otp_link_RideState_time_valid_tag        24
 #define otp_link_RideState_sd_card_tag           25
+#define otp_link_RideState_show_offline_tag      26
 #define otp_link_Lap_number_tag                  1
 #define otp_link_Lap_split_ms_tag                2
 #define otp_link_Lap_speed_dkmh_tag              3
@@ -1853,7 +1860,8 @@ X(a, STATIC,   OPTIONAL, UINT32,   route_left_m,     21) \
 X(a, STATIC,   SINGULAR, BOOL,     radar_connected,  22) \
 X(a, STATIC,   SINGULAR, BOOL,     radar_live,       23) \
 X(a, STATIC,   SINGULAR, BOOL,     time_valid,       24) \
-X(a, STATIC,   SINGULAR, UENUM,    sd_card,          25)
+X(a, STATIC,   SINGULAR, UENUM,    sd_card,          25) \
+X(a, STATIC,   OPTIONAL, BOOL,     show_offline,     26)
 #define otp_link_RideState_CALLBACK NULL
 #define otp_link_RideState_DEFAULT NULL
 
@@ -2582,7 +2590,7 @@ extern const pb_msgdesc_t otp_link_SegmentsInfo_msg;
 #define otp_link_Hello_size                      116
 #define otp_link_Lap_size                        30
 #define otp_link_ListRequest_size                2
-#define otp_link_LiveFrame_size                  613
+#define otp_link_LiveFrame_size                  616
 #define otp_link_LiveSubscribe_size              32
 #define otp_link_Maneuver_size                   61
 #define otp_link_MapCoverageList_size            640
@@ -2620,7 +2628,7 @@ extern const pb_msgdesc_t otp_link_SegmentsInfo_msg;
 #define otp_link_Position_size                   22
 #define otp_link_Radar_size                      50
 #define otp_link_Result_size                     83
-#define otp_link_RideState_size                  116
+#define otp_link_RideState_size                  119
 #define otp_link_RouteFinish_size                0
 #define otp_link_RouteManeuvers_size             1008
 #define otp_link_SegmentsInfo_size               14

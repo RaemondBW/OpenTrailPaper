@@ -22,6 +22,9 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.PointMode
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
@@ -138,6 +141,13 @@ interface DashFeed {
     fun zone(field: String): Int
     /** Radar targets, metres behind, nearest first. */
     fun radar(): List<Int>
+    /** Is there a source for this field right now (the device's dashFieldAvailable)? */
+    fun available(field: String): Boolean = true
+    /** Fields without a source are left off the page (the device's "Show
+     *  offline" off) rather than greyed. */
+    val hidesUnavailable: Boolean get() = false
+    /** Greyed out as the device greys a cell: its sensor is gone, or no value. */
+    fun greyed(field: String): Boolean = false
 }
 
 internal class Placed(
@@ -203,7 +213,14 @@ fun DashPreview(
             LocalDensity provides Density(density.density, fontScale = 1f),
             LocalTextStyle provides LocalTextStyle.current.copy(color = Color.Black),
         ) {
-            for (p in place(layout).cells) {
+            // With "Show offline" off the device drops a field whose sensor is
+            // gone before packing, and its row partner widens (ui_render.cpp).
+            val shown = if (feed?.hidesUnavailable == true) {
+                DashLayout(layout.items.filter { it.vertical || feed.available(it.field) })
+            } else {
+                layout
+            }
+            for (p in place(shown).cells) {
                 Box(
                     Modifier
                         .offset(x = (p.x * k).dp, y = ((p.y - STATUS_H) * k).dp)
@@ -223,9 +240,27 @@ fun DashPreview(
  */
 @Composable
 internal fun Cell(p: Placed, k: Float, live: RideSim?, useMiles: Boolean, feed: DashFeed? = null) {
+    val greyed = p.item.field != "radar" && feed?.greyed(p.item.field) == true
     Box(
         Modifier
             .fillMaxSize()
+            .then(if (greyed) Modifier.drawWithCache {
+                // The panel's 25% dot tone: a 2 px dot on a 4 px pitch.
+                val pitch = 4 * k * density
+                val inset = RULE * k * density
+                val area: androidx.compose.ui.geometry.Size = this.size
+                val dots = buildList {
+                    var y = inset + pitch / 4
+                    while (y < area.height - inset) {
+                        var x = inset + pitch / 4
+                        while (x < area.width - inset) { add(Offset(x, y)); x += pitch }
+                        y += pitch
+                    }
+                }
+                onDrawBehind {
+                    drawPoints(dots, PointMode.Points, Color.Black, strokeWidth = pitch / 2)
+                }
+            } else Modifier)
             .border((RULE * k).dp, Color.Black),
     ) {
         if (p.item.field == "radar") {

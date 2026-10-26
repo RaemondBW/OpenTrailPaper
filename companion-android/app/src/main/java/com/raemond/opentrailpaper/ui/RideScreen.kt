@@ -474,6 +474,18 @@ private class LiveFeed(
 ) : DashFeed {
     private val r = f?.takeIf { it.hasRide() }?.ride
 
+    // A sensor's value is in the frame exactly while the device counts it live.
+    override fun available(field: String): Boolean = r == null || when (field) {
+        "power", "power3s" -> r.hasPowerW()
+        "hr" -> r.hasHrBpm()
+        "cadence" -> r.hasCadenceRpm()
+        "routeleft" -> r.routeActive
+        else -> true
+    }
+    override val hidesUnavailable: Boolean get() = r != null && r.hasShowOffline() && !r.showOffline
+    override fun greyed(field: String): Boolean =
+        r != null && (!available(field) || text(field).startsWith("--"))
+
     private fun watts(field: String): Int? = when {
         !connected -> null
         r != null -> if (field == "power3s") r.takeIf { it.hasPower3SW() }?.power3SW else r.takeIf { it.hasPowerW() }?.powerW

@@ -2227,6 +2227,19 @@ nonisolated struct LinkRideState: @unchecked Sendable {
     set {_uniqueStorage()._sdCard = newValue}
   }
 
+  /// The device's "Show offline" setting: a field whose sensor is not live
+  /// (power_w / hr_bpm / cadence_rpm absent, route_left_m absent) is drawn
+  /// greyed out (true) or left off the page (false). Absent from firmware
+  /// before it was reported.
+  var showOffline: Bool {
+    get {_storage._showOffline ?? false}
+    set {_uniqueStorage()._showOffline = newValue}
+  }
+  /// Returns true if `showOffline` has been explicitly set.
+  var hasShowOffline: Bool {_storage._showOffline != nil}
+  /// Clears the value of `showOffline`. Subsequent reads from it will return its default value.
+  mutating func clearShowOffline() {_uniqueStorage()._showOffline = nil}
+
   var unknownFields = SwiftProtobuf.UnknownStorage()
 
   init() {}
@@ -5346,7 +5359,7 @@ nonisolated extension LinkLiveFrame: SwiftProtobuf.Message, SwiftProtobuf._Messa
 
 nonisolated extension LinkRideState: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   static let protoMessageName: String = _protobuf_package + ".RideState"
-  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}fix\0\u{1}recording\0\u{3}auto_paused\0\u{3}route_active\0\u{1}charging\0\u{3}battery_pct\0\u{1}sats\0\u{3}speed_dkmh\0\u{3}speed_from_wheel\0\u{3}power_w\0\u{3}power3s_w\0\u{3}hr_bpm\0\u{3}cadence_rpm\0\u{3}distance_m\0\u{3}elapsed_s\0\u{3}moving_s\0\u{3}climb_m\0\u{3}grade_dpct\0\u{3}altitude_m\0\u{3}altitude_baro\0\u{3}route_left_m\0\u{3}radar_connected\0\u{3}radar_live\0\u{3}time_valid\0\u{3}sd_card\0")
+  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}fix\0\u{1}recording\0\u{3}auto_paused\0\u{3}route_active\0\u{1}charging\0\u{3}battery_pct\0\u{1}sats\0\u{3}speed_dkmh\0\u{3}speed_from_wheel\0\u{3}power_w\0\u{3}power3s_w\0\u{3}hr_bpm\0\u{3}cadence_rpm\0\u{3}distance_m\0\u{3}elapsed_s\0\u{3}moving_s\0\u{3}climb_m\0\u{3}grade_dpct\0\u{3}altitude_m\0\u{3}altitude_baro\0\u{3}route_left_m\0\u{3}radar_connected\0\u{3}radar_live\0\u{3}time_valid\0\u{3}sd_card\0\u{3}show_offline\0")
 
   fileprivate class _StorageClass {
     var _fix: Bool = false
@@ -5374,6 +5387,7 @@ nonisolated extension LinkRideState: SwiftProtobuf.Message, SwiftProtobuf._Messa
     var _radarLive: Bool = false
     var _timeValid: Bool = false
     var _sdCard: LinkSdCard = .unknown
+    var _showOffline: Bool? = nil
 
       // This property is used as the initial default value for new instances of the type.
       // The type itself is protecting the reference to its storage via CoW semantics.
@@ -5409,6 +5423,7 @@ nonisolated extension LinkRideState: SwiftProtobuf.Message, SwiftProtobuf._Messa
       _radarLive = source._radarLive
       _timeValid = source._timeValid
       _sdCard = source._sdCard
+      _showOffline = source._showOffline
     }
   }
 
@@ -5452,6 +5467,7 @@ nonisolated extension LinkRideState: SwiftProtobuf.Message, SwiftProtobuf._Messa
         case 23: try { try decoder.decodeSingularBoolField(value: &_storage._radarLive) }()
         case 24: try { try decoder.decodeSingularBoolField(value: &_storage._timeValid) }()
         case 25: try { try decoder.decodeSingularEnumField(value: &_storage._sdCard) }()
+        case 26: try { try decoder.decodeSingularBoolField(value: &_storage._showOffline) }()
         default: break
         }
       }
@@ -5539,6 +5555,9 @@ nonisolated extension LinkRideState: SwiftProtobuf.Message, SwiftProtobuf._Messa
       if _storage._sdCard != .unknown {
         try visitor.visitSingularEnumField(value: _storage._sdCard, fieldNumber: 25)
       }
+      try { if let v = _storage._showOffline {
+        try visitor.visitSingularBoolField(value: v, fieldNumber: 26)
+      } }()
     }
     try unknownFields.traverse(visitor: &visitor)
   }
@@ -5573,6 +5592,7 @@ nonisolated extension LinkRideState: SwiftProtobuf.Message, SwiftProtobuf._Messa
         if _storage._radarLive != rhs_storage._radarLive {return false}
         if _storage._timeValid != rhs_storage._timeValid {return false}
         if _storage._sdCard != rhs_storage._sdCard {return false}
+        if _storage._showOffline != rhs_storage._showOffline {return false}
         return true
       }
       if !storagesAreEqual {return false}

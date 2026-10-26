@@ -17,6 +17,9 @@ struct LiveFrame: Equatable {
     var hrLive = false
     var powerLive = false
     var cadenceLive = false
+    /// The device's "Show offline": a field whose sensor isn't live is greyed
+    /// (true) or left off the page (false). nil = firmware that doesn't say.
+    var showOffline: Bool?
     var wheelSpeed = false
     var timeValid = false
     var battery = 0
@@ -116,6 +119,19 @@ struct LiveFrame: Equatable {
 }
 
 extension LiveFrame {
+    /// Is there a source for this dashboard field right now? The device's
+    /// dashFieldAvailable (ui_render.cpp), on what the link carries: a
+    /// sensor's value is present exactly while the device counts it live.
+    func fieldAvailable(_ field: String) -> Bool {
+        switch field {
+        case "power", "power3s": return powerLive
+        case "hr": return hrLive
+        case "cadence": return cadenceLive
+        case "routeleft": return routeActive
+        default: return true
+        }
+    }
+
     /// One link frame. `laps`: the device has FEATURE_STOPWATCH_LAPS;
     /// `stopwatchCommands`: FEATURE_STOPWATCH.
     init(link f: LinkLiveFrame, laps: Bool, stopwatchCommands: Bool) {
@@ -149,6 +165,7 @@ extension LiveFrame {
             altitudeBaro = r.altitudeBaro
             routeLeftKm = r.hasRouteLeftM ? Double(r.routeLeftM) / 1000 : 0
             radarConnected = r.radarConnected
+            showOffline = r.hasShowOffline ? r.showOffline : nil
         }
         if f.hasStopwatch {
             let w = f.stopwatch

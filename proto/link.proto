@@ -305,6 +305,11 @@ message RideState {
   bool radar_live = 23;
   bool time_valid = 24;
   SdCard sd_card = 25;                // UNKNOWN from firmware before it was reported
+  // The device's "Show offline" setting: a field whose sensor is not live
+  // (power_w / hr_bpm / cadence_rpm absent, route_left_m absent) is drawn
+  // greyed out (true) or left off the page (false). Absent from firmware
+  // before it was reported.
+  optional bool show_offline = 26;
 }
 
 // The device's SD card. A card that answers but won't mount is almost always

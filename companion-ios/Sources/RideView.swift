@@ -532,7 +532,9 @@ struct RideView: View {
                 DashPreview(layout: p?.layout ?? .deviceDefault,
                             liveText: { liveText($0, now: now) },
                             liveWatts: liveWatts,
-                            ftp: Double(ble.ftpWatts))
+                            ftp: Double(ble.ftpWatts),
+                            available: frame.map { f in { f.fieldAvailable($0) } },
+                            hidesUnavailable: frame?.showOffline == false)
                     .frame(width: 540 * k)
                     .offset(y: 64 * k)
             }
