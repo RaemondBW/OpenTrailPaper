@@ -37,6 +37,8 @@ void homeKeyPress();
 // The panel
 uint8_t* framebuffer();
 uint32_t paintCount();
+uint32_t scrubCount();   // epdc_clear_dirty() calls
+uint32_t clearCount();   // whole-panel epdc_clear() calls
 bool writePng(const std::string& path);
 
 // Modules
