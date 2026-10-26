@@ -6,6 +6,7 @@
 #include <ff.h>
 
 #include "sim.h"
+#include "sim_clock.h"
 
 #include <algorithm>
 #include <atomic>
@@ -66,6 +67,31 @@ void sim::setSdPresent(bool on) {
     else if (FILE* f = fopen(removedMarker().c_str(), "w")) fclose(f);
 }
 
+// The SD card shares its SPI bus with the LoRa radio, and every card access
+// must hold sdLock() (sd_bus.h). On the board an unlocked one interleaves with
+// a radio transfer and wedges the card; here nothing would go wrong, so the
+// sim says so instead: once firmware tasks are running, a card call from a
+// task that doesn't hold the SD mutex is logged once per caller.
+extern SemaphoreHandle_t g_sdMutex;
+namespace {
+void checkBus(const char* op, const char* path, void* caller) {
+    if (!g_sdMutex || !sim_tasks_started() || sim_sem_held_by_me(g_sdMutex)) return;
+    std::string fn = sim::symbolName(caller);
+    sim::warnOnce(std::string("sd-unlocked:") + fn + ":" + op,
+                  std::string("[sim] SD ACCESS WITHOUT sdLock: ") + op + " " + (path ? path : "") + " from " + fn +
+                      " (task " + sim_task_name() + ")");
+}
+#define CHECK_BUS(op, path) checkBus(op, path, __builtin_return_address(0))
+
+// A slow card: every open, read and write costs this much device time, as a
+// 4 MHz SPI card's seconds of finalize-and-flush do on the board.
+std::atomic<int> g_latencyMs{0};
+void cardTime() {
+    if (int ms = g_latencyMs.load()) sim_clock::sleepMs(ms);
+}
+}  // namespace
+void sim::setSdLatency(int ms) { g_latencyMs = ms; }
+
 namespace fs {
 
 class FileImpl {
@@ -80,6 +106,8 @@ public:
 
 size_t File::write(const uint8_t* b, size_t n) {
     if (!p_ || !p_->f || !g_present) return 0;
+    CHECK_BUS("write", p_->cardPath.c_str());
+    cardTime();
     return fwrite(b, 1, n, p_->f);
 }
 int File::available() {
@@ -99,6 +127,10 @@ int File::peek() {
 }
 size_t File::read(uint8_t* b, size_t n) {
     if (!p_ || !p_->f || !g_present) return 0;
+    CHECK_BUS("read", p_->cardPath.c_str());
+    cardTime();
+    if (!sim::opts.sdCrashOnRead.empty() && sim::opts.sdCrashOnRead == p_->cardPath)
+        sim::reboot("watchdog: --sd-crash-on-read");
     return fread(b, 1, n, p_->f);
 }
 void File::flush() { if (p_ && p_->f) fflush(p_->f); }
@@ -134,6 +166,8 @@ void File::rewindDirectory() { if (p_) p_->next = 0; }
 
 File FS::open(const char* path, const char* mode, bool) {
     if (!g_present) return File();
+    CHECK_BUS("open", path);
+    cardTime();
     auto impl = std::make_shared<FileImpl>();
     impl->cardPath = path;
     impl->host = hostPath(path);
@@ -157,11 +191,16 @@ File FS::open(const char* path, const char* mode, bool) {
     return File(impl);
 }
 bool FS::exists(const char* path) {
+    CHECK_BUS("exists", path);
     struct stat st;
     return g_present && stat(hostPath(path).c_str(), &st) == 0;
 }
-bool FS::remove(const char* path) { return g_present && unlink(hostPath(path).c_str()) == 0; }
+bool FS::remove(const char* path) {
+    CHECK_BUS("remove", path);
+    return g_present && unlink(hostPath(path).c_str()) == 0;
+}
 bool FS::rename(const char* from, const char* to) {
+    CHECK_BUS("rename", from);
     return g_present && ::rename(hostPath(from).c_str(), hostPath(to).c_str()) == 0;
 }
 bool FS::mkdir(const char* path) {
@@ -175,7 +214,9 @@ SDFS SD;
 
 bool SDFS::begin(uint8_t, SPIClass&, uint32_t, const char*, uint8_t, bool) {
     initPresent();
-    mounted_ = g_present.load();
+    // A card still coming up after power-on fails the init handshake, as a
+    // real 32 GB SDHC did for its first ~1.5-2 s (investigations/sd-boot-mount).
+    mounted_ = g_present.load() && millis() >= (uint32_t)sim::opts.sdReadyMs;
     return mounted_;
 }
 void SDFS::end() { mounted_ = false; }
@@ -187,6 +228,7 @@ uint64_t SDFS::usedBytes() { return g_present ? 64ull << 20 : 0; }
 
 extern "C" FRESULT f_opendir(FF_DIR* dp, const char* path) {
     if (!g_present) return FR_DISK_ERR;
+    CHECK_BUS("f_opendir", path);
     const char* p = strchr(path, ':');
     if (!p || path[0] != '0') return FR_INVALID_DRIVE;
     DIR* d = opendir(hostPath(p + 1).c_str());
@@ -195,6 +237,7 @@ extern "C" FRESULT f_opendir(FF_DIR* dp, const char* path) {
     return FR_OK;
 }
 extern "C" FRESULT f_readdir(FF_DIR* dp, FILINFO* fi) {
+    CHECK_BUS("f_readdir", "");
     DIR* d = (DIR*)dp->d;
     for (;;) {
         dirent* e = readdir(d);

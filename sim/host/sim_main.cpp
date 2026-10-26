@@ -57,6 +57,8 @@ void usage() {
             "  --wallclock now|UNIX   start with the clock set (the board boots with it unset)\n"
             "  --notify-window N      notifications queued before notify() fails (default 32)\n"
             "  --conn-interval-ms N --packets-per-event K   pace notifications like a slow link\n"
+            "  --sd-ready-ms N        the card answers SD.begin() only N ms after power-on\n"
+            "  --sd-crash-on-read P   reading card file P resets the device (a file that kills it)\n"
             "  --quiet                don't echo the console to stdout\n"
             "  --no-stdin             don't read console commands from stdin\n");
 }
@@ -79,6 +81,8 @@ void setup() {
     g_state.begin();
     g_i2cMutex = xSemaphoreCreateMutex();
     g_sdMutex = xSemaphoreCreateRecursiveMutex();
+    sim_name_sem(g_i2cMutex, "i2cLock");
+    sim_name_sem(g_sdMutex, "sdLock");
     power_mgmt::prepare();
     Wire.begin(BOARD_SDA, BOARD_SCL);
     pinMode(BOARD_BOOT_BTN, INPUT_PULLUP);
@@ -206,6 +210,8 @@ int main(int argc, char** argv) {
         else if (a == "--notify-window") sim::opts.notifyWindow = atoi(next().c_str());
         else if (a == "--conn-interval-ms") sim::opts.connIntervalMs = atoi(next().c_str());
         else if (a == "--packets-per-event") sim::opts.packetsPerEvent = atoi(next().c_str());
+        else if (a == "--sd-ready-ms") sim::opts.sdReadyMs = atoi(next().c_str());
+        else if (a == "--sd-crash-on-read") sim::opts.sdCrashOnRead = next();
         else if (a == "--quiet") sim::opts.quiet = true;
         else if (a == "--no-stdin") readStdin = false;
         else { usage(); return a == "--help" || a == "-h" ? 0 : 1; }

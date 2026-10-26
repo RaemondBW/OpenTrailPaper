@@ -197,7 +197,7 @@ std::string statusJson() {
       << "},\"settings\":{\"ftp\":" << settings::ftpWatts() << ",\"tz_min\":" << settings::tzMinutes()
       << ",\"miles\":" << (settings::useMiles() ? "true" : "false") << ",\"clock24h\":" << (settings::clock24h() ? "true" : "false")
       << ",\"show_offline\":" << (settings::showOffline() ? "true" : "false") << ",\"auto_pause_s\":" << settings::autoPauseSec()
-      << ",\"wheel_mm\":" << settings::wheelCircMm() << "}"
+      << ",\"wheel_mm\":" << settings::wheelCircMm() << ",\"backlight\":" << settings::backlight() << "}"
       << ",\"dash\":" << json::esc(dashText())
       << ",\"sd_present\":" << (sim::sdPresent() ? "true" : "false")
       << ",\"gps\":" << sim::gpsStatusJson()
@@ -256,7 +256,11 @@ std::string handle(const json::Value& r) {
     if (cmd == "gps_silent") { sim::gpsSilent(r.boolean("on", true)); return ok(); }
     if (cmd == "battery") { sim::setBattery((int)r.num("pct", 100), r.boolean("charging", false)); return ok(); }
     if (cmd == "wallclock") { sim_clock::setWallMicros((int64_t)(r.num("unix") * 1e6)); return ok(); }
-    if (cmd == "sd") { sim::setSdPresent(r.boolean("present", true)); return ok(); }
+    if (cmd == "sd") {
+        if (r.has("latency_ms")) sim::setSdLatency((int)r.num("latency_ms"));
+        else sim::setSdPresent(r.boolean("present", true));
+        return ok();
+    }
     if (cmd == "speed") { sim_clock::setFactor(r.num("factor", 1)); return ok(); }
     if (cmd == "ble_drop") { simble::dropPhone((int)r.num("reason", 0x08)); return ok(); }
     if (cmd == "log") {

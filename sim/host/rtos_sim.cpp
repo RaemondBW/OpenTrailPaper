@@ -2,6 +2,7 @@
 // (sim_clock.h), so `speed` in the control channel speeds every task up alike.
 #include "sim_rtos.h"
 #include "sim_clock.h"
+#include "sim.h"
 
 #include <condition_variable>
 #include <deque>
@@ -12,6 +13,30 @@
 #include <cstring>
 #include <cstdlib>
 #include <pthread.h>
+#include <cxxabi.h>
+#include <dlfcn.h>
+#include <set>
+
+std::string sim::symbolName(void* addr) {
+    Dl_info info;
+    if (!addr || !dladdr(addr, &info) || !info.dli_sname) return "?";
+    int st = 0;
+    char* d = abi::__cxa_demangle(info.dli_sname[0] == '_' && info.dli_sname[1] == 'Z' ? info.dli_sname
+                                  : info.dli_sname, nullptr, nullptr, &st);
+    std::string out = st == 0 && d ? d : info.dli_sname;
+    free(d);
+    return out;
+}
+
+void sim::warnOnce(const std::string& key, const std::string& line) {
+    static std::mutex m;
+    static std::set<std::string> seen;
+    {
+        std::lock_guard<std::mutex> lk(m);
+        if (!seen.insert(key).second) return;
+    }
+    sim::consoleLine(line);
+}
 
 namespace {
 
@@ -24,6 +49,7 @@ struct Task {
     uint32_t notify = 0;
 };
 thread_local Task* t_self = nullptr;
+std::string taskName() { return t_self ? t_self->name : "main"; }
 std::mutex g_tasksMutex;
 std::vector<Task*> g_tasks;
 
@@ -34,7 +60,43 @@ struct Sem {
     unsigned count = 0, max = 1;
     std::thread::id owner;
     unsigned depth = 0;
+    std::string name;   // the function that created it, for the lock-order check
 };
+
+// Lock order. Every mutex a task takes with portMAX_DELAY while it already
+// holds another adds an edge held -> taken; an edge one way and later the
+// other way is an ABBA deadlock waiting for the right interleaving, so it is
+// reported the first time both orders have been seen, whether or not this run
+// happened to hang. (Timed takes back off on their own and are not edges.)
+thread_local std::vector<Sem*> t_held;
+std::mutex g_orderM;
+std::map<std::pair<Sem*, Sem*>, std::string> g_order;   // edge -> where first seen
+
+std::string taskName();
+
+void noteTaken(Sem* s, bool blocking) {
+    if (s->kind != Sem::MUTEX && s->kind != Sem::RECURSIVE) return;
+    if (blocking) {
+        std::lock_guard<std::mutex> lk(g_orderM);
+        for (Sem* a : t_held) {
+            if (a == s) continue;
+            auto edge = std::make_pair(a, s);
+            if (g_order.count(edge)) continue;
+            g_order[edge] = taskName();
+            auto rev = g_order.find(std::make_pair(s, a));
+            if (rev != g_order.end())
+                sim::consoleLine("[sim] LOCK ORDER INVERSION: " + a->name + " then " + s->name + " (task " +
+                                 taskName() + "), but " + s->name + " then " + a->name + " (task " +
+                                 rev->second + ")");
+        }
+    }
+    t_held.push_back(s);
+}
+
+void noteGiven(Sem* s) {
+    for (auto it = t_held.rbegin(); it != t_held.rend(); ++it)
+        if (*it == s) { t_held.erase(std::next(it).base()); return; }
+}
 
 // Wait on `cv` until `ready()` or `ticks` of sim time pass.
 template <typename Pred>
@@ -121,16 +183,19 @@ uint32_t ulTaskNotifyTake(BaseType_t clear, TickType_t wait) {
     return v;
 }
 
-static SemaphoreHandle_t makeSem(Sem::Kind k, unsigned max, unsigned initial) {
+static SemaphoreHandle_t makeSem(Sem::Kind k, unsigned max, unsigned initial, void* creator = nullptr) {
     Sem* s = new Sem();
+    s->name = sim::symbolName(creator);
     s->kind = k;
     s->max = max;
     s->count = initial;
     return s;
 }
 
-SemaphoreHandle_t xSemaphoreCreateMutex(void) { return makeSem(Sem::MUTEX, 1, 1); }
-SemaphoreHandle_t xSemaphoreCreateRecursiveMutex(void) { return makeSem(Sem::RECURSIVE, 1, 1); }
+SemaphoreHandle_t xSemaphoreCreateMutex(void) { return makeSem(Sem::MUTEX, 1, 1, __builtin_return_address(0)); }
+SemaphoreHandle_t xSemaphoreCreateRecursiveMutex(void) {
+    return makeSem(Sem::RECURSIVE, 1, 1, __builtin_return_address(0));
+}
 SemaphoreHandle_t xSemaphoreCreateBinary(void) { return makeSem(Sem::BINARY, 1, 0); }
 SemaphoreHandle_t xSemaphoreCreateCounting(UBaseType_t max, UBaseType_t initial) {
     return makeSem(Sem::COUNTING, max, initial);
@@ -148,6 +213,8 @@ BaseType_t xSemaphoreTake(SemaphoreHandle_t h, TickType_t wait) {
     --s->count;
     s->owner = std::this_thread::get_id();
     s->depth = 1;
+    lk.unlock();
+    noteTaken(s, wait == portMAX_DELAY);
     return pdTRUE;
 }
 
@@ -161,6 +228,7 @@ BaseType_t xSemaphoreGive(SemaphoreHandle_t h) {
     s->depth = 0;
     s->owner = std::thread::id();
     s->cv.notify_one();
+    noteGiven(s);
     return pdTRUE;
 }
 
@@ -168,6 +236,26 @@ BaseType_t xSemaphoreTakeRecursive(SemaphoreHandle_t s, TickType_t w) { return x
 BaseType_t xSemaphoreGiveRecursive(SemaphoreHandle_t s) { return xSemaphoreGive(s); }
 BaseType_t xSemaphoreGiveFromISR(SemaphoreHandle_t s, BaseType_t*) { return xSemaphoreGive(s); }
 void vSemaphoreDelete(SemaphoreHandle_t s) { delete (Sem*)s; }
+
+// Whether the calling task holds `h` (the SD bus check in fs_sim.cpp).
+bool sim_sem_held_by_me(void* h) {
+    Sem* s = (Sem*)h;
+    if (!s) return false;
+    std::lock_guard<std::mutex> lk(s->m);
+    return s->depth && s->owner == std::this_thread::get_id();
+}
+void sim_name_sem(void* h, const char* name) {
+    if (h) ((Sem*)h)->name = name;
+}
+bool sim_tasks_started(void) {
+    std::lock_guard<std::mutex> lk(g_tasksMutex);
+    return !g_tasks.empty();
+}
+const char* sim_task_name(void) {
+    thread_local std::string n;
+    n = taskName();
+    return n.c_str();
+}
 
 QueueHandle_t xQueueCreate(UBaseType_t len, UBaseType_t size) {
     Queue* q = new Queue();

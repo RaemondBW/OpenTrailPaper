@@ -120,7 +120,7 @@ Asynchronous events (log lines, when subscribed) come as `{"event":…}`.
 | `sensor_remove` | `addr` | the sensor goes away (out of range) |
 | `battery` | `pct`, `charging` | the fuel gauge's reading |
 | `wallclock` | `unix` | sets the device's clock (as the RTC would) |
-| `sd` | `present` | inserts or removes the card |
+| `sd` | `present`; or `latency_ms` | inserts or removes the card; or makes every card open/read/write cost that much device time (a slow card) |
 | `speed` | `factor` | runs the device clock N× real time |
 | `log` | `since` | log lines after sequence number `since` |
 | `wait_log` | `pattern` (regex), `timeout_ms`, `since` | waits for a log line |

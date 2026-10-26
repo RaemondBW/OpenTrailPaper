@@ -170,6 +170,10 @@ class SimDevice:
     def set_sd(self, present):
         self.cmd("sd", present=present)
 
+    def set_sd_latency(self, ms):
+        """Every card open/read/write costs `ms` of device time (a slow card)."""
+        self.cmd("sd", latency_ms=ms)
+
     def set_speed(self, factor):
         self.cmd("speed", factor=factor)
 
