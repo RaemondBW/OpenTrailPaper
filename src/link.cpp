@@ -465,8 +465,12 @@ void sendLiveFrame() {
         r.radar_connected = s.radar.connected;
         r.radar_live = s.radar.live;
         r.time_valid = s.timeValid;
-        r.sd_card = s.sdCard == SD_CARD_NONE ? otp_link_SdCard_SD_CARD_MISSING
-                  : s.sdCard == SD_CARD_UNREADABLE ? otp_link_SdCard_SD_CARD_UNREADABLE
+        // From the recorder, not the snapshot: RideState.sdCard is only filled
+        // in on the UI task's own copy each frame, so g_state always said OK
+        // and the app never saw a missing card (found by the sim, 2026-10-26).
+        const uint8_t card = ride_recorder::sdCardState();
+        r.sd_card = card == SD_CARD_NONE ? otp_link_SdCard_SD_CARD_MISSING
+                  : card == SD_CARD_UNREADABLE ? otp_link_SdCard_SD_CARD_UNREADABLE
                   : otp_link_SdCard_SD_CARD_OK;
         r.has_show_offline = true;
         r.show_offline = settings::showOffline();
