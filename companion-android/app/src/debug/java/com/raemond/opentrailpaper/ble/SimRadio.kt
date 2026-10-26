@@ -93,11 +93,23 @@ class SimRadio(
 
     override fun setListener(listener: Radio.Listener) { this.listener = listener }
 
-    /** Bluetooth switched off/on in the shade (tests). */
+    /**
+     * Bluetooth switched off/on in the shade (tests). Off goes as on a phone:
+     * the adapter reports the change first (ACTION_STATE_CHANGED with
+     * isEnabled false from STATE_TURNING_OFF), and the stack takes the links
+     * down a little later, so an app that closes its gatt on the broadcast
+     * never hears that gatt's disconnect.
+     */
     fun setEnabled(on: Boolean) {
         enabled = on
-        if (!on) synchronized(gatts) { gatts.toList() }.forEach { it.linkLost(LINK_LOST) }
         listener?.onAdapterStateChanged()
+        if (!on) {
+            val links = synchronized(gatts) { gatts.toList() }
+            Thread({
+                Thread.sleep(ADAPTER_OFF_LINK_DROP_MS)
+                links.forEach { it.linkLost(LINK_LOST) }
+            }, "simradio-adapter-off").apply { isDaemon = true }.start()
+        }
     }
 
     /** The phone's bond with the device is gone (Settings > Forget), as the rider would. */
@@ -525,6 +537,8 @@ class SimRadio(
 
         /** HCI 0x08, connection (supervision) timeout: a link that just went. */
         const val LINK_LOST = 0x08
+        /** Bluetooth off: how long after the adapter broadcast the stack drops the links. */
+        const val ADAPTER_OFF_LINK_DROP_MS = 300L
 
         private const val P_CONNECT = 0x01
         private const val P_DISCOVER = 0x02
