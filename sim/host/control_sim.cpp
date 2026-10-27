@@ -226,7 +226,8 @@ std::string statusJson() {
       << "},\"settings\":{\"ftp\":" << settings::ftpWatts() << ",\"tz_min\":" << settings::tzMinutes()
       << ",\"miles\":" << (settings::useMiles() ? "true" : "false") << ",\"clock24h\":" << (settings::clock24h() ? "true" : "false")
       << ",\"show_offline\":" << (settings::showOffline() ? "true" : "false") << ",\"auto_pause_s\":" << settings::autoPauseSec()
-      << ",\"wheel_mm\":" << settings::wheelCircMm() << ",\"backlight\":" << settings::backlight() << "}"
+      << ",\"wheel_mm\":" << settings::wheelCircMm() << ",\"backlight\":" << settings::backlight()
+      << ",\"map_layers\":" << settings::mapLayers() << "}"
       << ",\"nav\":" << navJson()
       << ",\"dash\":" << json::esc(dashText())
       << ",\"sd_present\":" << (sim::sdPresent() ? "true" : "false")

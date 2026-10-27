@@ -124,7 +124,7 @@ Asynchronous events (log lines, when subscribed) come as `{"event":…}`.
 
 | cmd | arguments | does |
 |-----|-----------|------|
-| `status` | — | screen, page, settings, ride state, turn-by-turn (`nav`: prompt, next turn and the distance to it), phone link, advertisement, scanning, bonds, the card's size and use (`sd`, as last counted), panel counts (`paints`, `scrubs` — the scoped pre-paint resync, `clears` — whole-panel), clocks |
+| `status` | — | screen, page, settings (`map_layers`: the map layer mask, src/map_view.h), ride state, turn-by-turn (`nav`: prompt, next turn and the distance to it), phone link, advertisement, scanning, bonds, the card's size and use (`sd`, as last counted), panel counts (`paints`, `scrubs` — the scoped pre-paint resync, `clears` — whole-panel), clocks |
 | `console` | `line`, `wait_ms` | runs a serial console command; returns its output |
 | `screenshot` | `path` | writes the panel as a 540×960 PNG |
 | `tiles` | `poi` | the map tiles (or, with `poi`, the .poi files) on the card as the device lists them to a phone, each with the version record it keeps: `{"tiles":[{"id":…,"version":"cdn:…"},…]}` (`""`: none) |

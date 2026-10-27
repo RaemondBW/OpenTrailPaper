@@ -15,6 +15,14 @@ start and never written. Overpass (POST/GET /api/interpreter) answers 503 by
 default, or a canned body (--overpass-file), so a test whose selection falls
 back to Overpass fails visibly instead of reaching the internet.
 
+Cycling-POI sets, <dir>/pois/<set>/ (built by build_poi_fixture.py):
+overpass.json, the area's POIs as Overpass returns them, and <id>.poi for each
+cell. While a set is in use (/_ctl/pois) the CDN serves its non-empty .poi
+files instead of the fixture's, with their sizes and hashes in the group
+indexes (an empty one is poiSize 0 and no file, as the CDN does), and
+Overpass answers the apps' POI query (and only that) with the set's elements
+inside the query's bbox.
+
 Prints "tile_cdn listening on 127.0.0.1:<port>" once it accepts requests.
 
 Test controls, under /_ctl/ (POST, query parameters):
@@ -22,27 +30,53 @@ Test controls, under /_ctl/ (POST, query parameters):
     /_ctl/log                 every request so far, as JSON (GET)
     /_ctl/file?path=/v1/...   what is served at that path now, unlogged (GET)
     /_ctl/area                the fixture's area.json (centre, box, cells), if any (GET)
-    /_ctl/reset               forget bumps, faults and the log
+    /_ctl/reset               forget bumps, faults, the POI set and the log
+    /_ctl/pois?set=<name>     serve that POI set (see above); no name: the
+                              fixture's own .poi files again, no Overpass POIs
     /_ctl/bump?id=<h3>[&ext=ebm|poi]
                               publish a new version of that file: the same bytes
                               plus an unknown extension section (the firmware
                               skips it by length, map_tiles.cpp), with its new
                               size and hash (sha256[:16]) in the group index
     /_ctl/fault?match=<glob>&kind=truncate|status:<code>|close
+    /_ctl/fault?match=/api/interpreter&kind=...
                               misbehave on matching paths (fnmatch on the path
                               without the query, e.g. "*.ebm"): a 200 with half
-                              the body, an HTTP error, or a dropped connection
+                              the body, an HTTP error, or a dropped connection;
+                              also kind=garble (a 200 of the same length with
+                              every byte flipped; for Overpass, an HTML error
+                              page) and, for Overpass, kind=remark (a 200 with no
+                              elements and the "runtime error" remark Overpass
+                              sends when a query times out)
 """
 import argparse
 import fnmatch
 import hashlib
 import json
 import os
+import re
 import struct
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
+
+# What Overpass sends, with a 200, when a query runs out of time.
+OVERPASS_TIMEOUT = (b'{"version":0.6,"generator":"Overpass API 0.7.62.1 084b4234","osm3s":'
+                    b'{"timestamp_osm_base":"2026-10-08T20:21:06Z"},"elements":[],'
+                    b'"remark":"runtime error: Query timed out in \\"query\\" at line 3 after 61 seconds."}')
+GATEWAY_PAGE = (b"<!DOCTYPE html><html><head><title>504 Gateway Time-out</title></head>"
+                b"<body><h1>Gateway Time-out</h1></body></html>")
+BBOX = re.compile(r"\((-?[0-9.]+),(-?[0-9.]+),(-?[0-9.]+),(-?[0-9.]+)\)")
+
+
+def overpass_kind(query):
+    """"poi", "coast" or "map": which of the apps' queries this is."""
+    if "bicycle_repair_station" in query and "highway" not in query:
+        return "poi"
+    if "coastline" in query and "highway" not in query:
+        return "coast"
+    return "map"
 
 
 class Cdn:
@@ -58,6 +92,15 @@ class Cdn:
                     self.files["/v1/" + rel] = f.read()
         area = os.path.join(root, "area.json")
         self.area = open(area, "rb").read() if os.path.isfile(area) else None
+        self.poi_sets = {}   # name -> (overpass elements, {id: .poi bytes})
+        pois = os.path.join(root, "pois")
+        for name in sorted(os.listdir(pois)) if os.path.isdir(pois) else []:
+            d = os.path.join(pois, name)
+            if not os.path.isfile(os.path.join(d, "overpass.json")):
+                continue
+            elements = json.load(open(os.path.join(d, "overpass.json")))["elements"]
+            files = {n[:-4]: open(os.path.join(d, n), "rb").read() for n in os.listdir(d) if n.endswith(".poi")}
+            self.poi_sets[name] = (elements, files)
         self.overpass_status = overpass_status
         self.overpass_body = overpass_body
         self.lock = threading.Lock()
@@ -65,15 +108,64 @@ class Cdn:
 
     def reset(self):
         with self.lock:
-            self.over = {}     # path -> bytes (bumped files and their indexes)
+            self.over = {}     # path -> bytes, or None: gone (bumped files, a POI set, their indexes)
             self.faults = []   # (glob, kind)
             self.log = []
+            self.poi_set = None
 
     def body(self, path):
         with self.lock:
             if path in self.over:
                 return self.over[path]
         return self.files.get(path)
+
+    def use_pois(self, name):
+        """Serve POI set [name] (None: the fixture's own .poi files)."""
+        if name is not None and name not in self.poi_sets:
+            raise KeyError(name)
+        files = self.poi_sets[name][1] if name else {}
+        with self.lock:
+            for p in [p for p in self.over if p.endswith(".poi")]:
+                del self.over[p]
+            self.poi_set = name
+        out = {}
+        for ipath in [p for p in self.files if p.endswith("/index.json")]:
+            g = ipath.split("/")[2]
+            idx = json.loads(self.body(ipath))         # with any bumped tiles
+            base = json.loads(self.files[ipath])["cells"]
+            for cid, e in idx["cells"].items():
+                if name is None:                       # the fixture's own
+                    e[2], e[3] = base[cid][2], base[cid][3]
+                    continue
+                body = files.get(cid)
+                path = f"/v1/{g}/{cid}.poi"
+                if body and struct.unpack_from("<H", body, 6)[0] > 0:
+                    e[2], e[3] = len(body), hashlib.sha256(body).hexdigest()[:16]
+                    new = body
+                else:
+                    e[2], e[3] = 0, ""
+                    new = None
+                with self.lock:
+                    self.over[path] = new
+                out[cid] = [e[2], e[3]]
+            with self.lock:
+                self.over[ipath] = json.dumps(idx, separators=(",", ":")).encode()
+        return {"set": name, "cells": out}
+
+    def overpass_pois(self, query):
+        """The POI set's elements inside the query's bbox, as Overpass answers."""
+        elements = self.poi_sets[self.poi_set][0]
+        m = BBOX.search(query)
+        if m:
+            s, w, n, e = map(float, m.groups())
+
+            def inside(el):
+                c = el if "lat" in el else el.get("center", {})
+                return s <= c.get("lat", 99) <= n and w <= c.get("lon", 999) <= e
+            elements = [el for el in elements if inside(el)]
+        return json.dumps({"version": 0.6, "generator": "tile_cdn.py stand-in",
+                           "osm3s": {"timestamp_osm_base": "2026-10-08T20:21:06Z"},
+                           "elements": elements}).encode()
 
     def bump(self, cell, ext):
         g = cell[:6]
@@ -122,10 +214,13 @@ def handler(cdn):
             if self.command != "HEAD":
                 self.wfile.write(body)
 
-        def record(self, status, path, fault=None):
+        def record(self, status, path, fault=None, overpass=None):
+            e = {"method": self.command, "path": path, "status": status, "fault": fault,
+                 "ua": self.headers.get("User-Agent", "")}
+            if overpass:
+                e["overpass"] = overpass   # which query: "poi", "map" or "coast"
             with cdn.lock:
-                cdn.log.append({"method": self.command, "path": path, "status": status, "fault": fault,
-                                "ua": self.headers.get("User-Agent", "")})
+                cdn.log.append(e)
 
         def ctl(self, path, q):
             arg = lambda k, d=None: q.get(k, [d])[0]
@@ -146,6 +241,13 @@ def handler(cdn):
                 except KeyError as e:
                     return self.send(404, json.dumps({"error": str(e)}).encode(), "application/json")
                 return self.send(200, json.dumps(r).encode(), "application/json")
+            if path == "/_ctl/pois":
+                try:
+                    r = cdn.use_pois(arg("set") or None)
+                except KeyError as e:
+                    return self.send(404, json.dumps({"error": f"no POI set {e}", "sets": sorted(cdn.poi_sets)})
+                                     .encode(), "application/json")
+                return self.send(200, json.dumps(r).encode(), "application/json")
             if path == "/_ctl/fault":
                 with cdn.lock:
                     cdn.faults.append((arg("match", "*"), arg("kind", "status:500")))
@@ -157,15 +259,13 @@ def handler(cdn):
             path = u.path
             if path.startswith("/_ctl/"):
                 return self.ctl(path, parse_qs(u.query))
+            form = b""
             if self.command == "POST":
                 n = int(self.headers.get("Content-Length") or 0)
                 if n:
-                    self.rfile.read(n)
+                    form = self.rfile.read(n)
             if path.endswith("/api/interpreter"):
-                status = cdn.overpass_status if cdn.overpass_body is None else 200
-                self.record(status, path)
-                return self.send(status, cdn.overpass_body or b"stand-in CDN: no Overpass here",
-                                 "application/json" if cdn.overpass_body else "text/plain")
+                return self.overpass(path, form, u.query)
             body = cdn.body(path)
             kind = cdn.fault_for(path) if body is not None else None
             if kind == "close":
@@ -181,9 +281,36 @@ def handler(cdn):
                 return self.send(404, b"not found", "text/plain")
             if kind == "truncate":
                 body = body[: len(body) // 2]
+            if kind == "garble":
+                body = bytes(b ^ 0xFF for b in body)
             self.record(200, path, kind)
             ctype = "application/json" if path.endswith(".json") else "application/octet-stream"
             self.send(200, body, ctype)
+
+        def overpass(self, path, form, query):
+            q = parse_qs(form.decode("utf-8", "replace") or query).get("data", [""])[0]
+            which = overpass_kind(q)
+            if which == "poi" and cdn.poi_set:
+                status, body, ctype = 200, cdn.overpass_pois(q), "application/json"
+            elif cdn.overpass_body is not None:
+                status, body, ctype = 200, cdn.overpass_body, "application/json"
+            else:
+                status, body, ctype = cdn.overpass_status, b"stand-in CDN: no Overpass here", "text/plain"
+            kind = cdn.fault_for(path)
+            if kind == "close":
+                self.record(-1, path, kind, which)
+                self.close_connection = True
+                return
+            if kind and kind.startswith("status:"):
+                status, body, ctype = int(kind.split(":", 1)[1]), b"stand-in Overpass fault", "text/plain"
+            elif kind == "truncate" and status == 200:
+                body = body[: len(body) // 2]
+            elif kind == "garble":
+                status, body, ctype = 200, GATEWAY_PAGE, "text/html"
+            elif kind == "remark":
+                status, body, ctype = 200, OVERPASS_TIMEOUT, "application/json"
+            self.record(status, path, kind, which)
+            self.send(status, body, ctype)
 
         do_GET = do_POST = do_HEAD = serve
 

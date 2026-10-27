@@ -123,11 +123,17 @@ def main():
 
     readme = os.path.join(a.out, "README.md")
     keep = open(readme).read() if os.path.exists(readme) else None
+    # The POI sets (build_poi_fixture.py) are not the CDN's: kept as they are.
+    pois = os.path.join(a.out, "pois")
+    if os.path.isdir(pois):
+        os.rename(pois, os.path.join(staging, "pois"))
     shutil.rmtree(a.out, ignore_errors=True)
     os.rename(staging, a.out)
     if keep is not None:
         open(readme, "w").write(keep)
     print(f"wrote {a.out}: {total} bytes")
+    if os.path.isdir(os.path.join(a.out, "pois")):
+        print("kept pois/; rebuild it for new cells: sim/cdn/build_poi_fixture.py")
 
 
 if __name__ == "__main__":
