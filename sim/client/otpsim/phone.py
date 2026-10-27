@@ -80,6 +80,10 @@ class SimPhone:
         # This phone's own GATT server: {(svc, chr): bytes}
         self.peer_values = {}
         self.peer_subscriptions = {}
+        self._pace = None            # (interval s, packets per event)
+        self._event_start = 0.0
+        self._event_sent = 0
+        self._pace_lock = threading.Lock()
 
     # -- frames --------------------------------------------------------------------------------
 
@@ -247,7 +251,33 @@ class SimPhone:
             raise GattError("read " + chr_uuid, b[16])
         return bytes(b[17:])
 
+    def pace_writes(self, interval_ms, per_event):
+        """Pace this phone's writes like a real connection: at most
+        `per_event` packets per connection event every `interval_ms`, and a
+        write with response waits for the next event (its answer comes back
+        in it). The device's notifications are paced by the sim itself
+        (--conn-interval-ms / --packets-per-event). None turns it off."""
+        self._pace = None if interval_ms is None else (interval_ms / 1000.0, max(1, per_event))
+        self._event_start, self._event_sent = time.monotonic(), 0
+
+    def _paced(self, response):
+        iv, k = self._pace
+        now = time.monotonic()
+        if now >= self._event_start + iv:
+            self._event_start += iv * int((now - self._event_start) / iv)
+            self._event_sent = 0
+        if self._event_sent >= k:
+            nxt = self._event_start + iv
+            time.sleep(max(0.0, nxt - time.monotonic()))
+            self._event_start, self._event_sent = nxt, 0
+        self._event_sent += 1
+        if response:   # the response arrives in the next event, not this one
+            self._event_sent = k
+
     def write(self, chr_uuid, data, response=True):
+        if self._pace:
+            with self._pace_lock:
+                self._paced(response)
         self._send(P_WRITE, ubytes(chr_uuid) + bytes([1 if response else 0]) + bytes(data))
         if response:
             _, b = self._wait([D_WRITE_RSP])

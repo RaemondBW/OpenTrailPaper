@@ -68,6 +68,10 @@ CardUsage sdUsage(bool recount = false);
 void setSdSizeMb(uint64_t mb, uint32_t clusterKb = 0);
 // `otp-sim card-tool ...`: host-side helpers for building card images.
 int cardTool(int argc, char** argv);
+// A computer has the card mounted over USB (usb_storage::hostActive): the
+// firmware keeps off the card until it is released, then rescans it.
+void setUsbHost(bool on);
+bool usbHost();
 
 // The function containing `addr` (a return address), demangled; "?" if unknown.
 std::string symbolName(void* addr);

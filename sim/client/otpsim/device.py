@@ -197,6 +197,13 @@ class SimDevice:
             f.truncate(max(0, want))
         return self.sd_usage()
 
+    def usb_host(self, on=True):
+        """A computer mounts the card over USB (on) or ejects it (off). While
+        it holds the card the firmware stays off it; a test edits `sd` in
+        between, as the rider would in Finder. On release the device rescans
+        its maps."""
+        self.cmd("usb", host=on)
+
     def set_speed(self, factor):
         self.cmd("speed", factor=factor)
 

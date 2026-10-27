@@ -136,6 +136,7 @@ Asynchronous events (log lines, when subscribed) come as `{"event":…}`.
 | `battery` | `pct`, `charging` | the fuel gauge's reading |
 | `wallclock` | `unix` | sets the device's clock (as the RTC would) |
 | `sd` | `present`; or `latency_ms`; or `size_mb` (+ `cluster_kb`); or `usage` | inserts or removes the card; or makes every card open/read/write cost that much device time (a slow card); or swaps in a card of that size with the same files; or just reports. Answers `sd`: `card_bytes`, `total_bytes`, `used_bytes`, `free_bytes`, `cluster_bytes` (usage recounted from `<dir>/sd`) |
+| `usb` | `host` | a computer mounts the card over USB (`true`: the firmware keeps off it) or lets it go (`false`: the firmware rescans its maps) |
 | `speed` | `factor` | runs the device clock N× real time |
 | `log` | `since` | log lines after sequence number `since` |
 | `wait_log` | `pattern` (regex), `timeout_ms`, `since` | waits for a log line |
