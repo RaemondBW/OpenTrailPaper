@@ -63,6 +63,21 @@ enum Sock {
     }
 }
 
+// MARK: - Bluetooth off / on
+
+/// The app's SimRadio switches Bluetooth off and on when told by a Darwin
+/// notification (SimBLE.bluetoothOffNote / bluetoothOnNote, Sources/SimRadio.swift),
+/// as the Settings switch would: CoreBluetooth's state change, and no
+/// didDisconnect for the links it takes down.
+enum SimBluetooth {
+    static func set(on: Bool) {
+        let name = on ? "com.raemond.opentrailpaper.sim.bluetooth-on"
+                      : "com.raemond.opentrailpaper.sim.bluetooth-off"
+        CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
+                                             CFNotificationName(name as CFString), nil, nil, true)
+    }
+}
+
 // MARK: - the sim's control channel
 
 /// JSON-lines commands to `otp-sim`'s control port (sim/PROTOCOL.md).

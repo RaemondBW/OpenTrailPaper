@@ -22,7 +22,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Assume.assumeTrue
 import org.junit.Before
-import org.junit.Ignore
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -455,8 +454,7 @@ class BleManagerSimTest {
 
         // The device goes out of reach (the link drops, reconnects fail),
         // then the phone stops trying while the rider changes the wheel size
-        // on the device. (Bluetooth is switched off only after the drop is
-        // handled: see bluetoothOffAndOnComesBackConnected for why.)
+        // on the device.
         sim.stop()
         waitFor("the drop noticed", 10_000) { ble.state != ConnState.CONNECTED && !ble.linkReady }
         radio.setEnabled(false)
@@ -479,13 +477,12 @@ class BleManagerSimTest {
      * must come back CONNECTED. Found while writing (10): Android reports the
      * adapter turning off (ACTION_STATE_CHANGED, isEnabled false from
      * TURNING_OFF) before the GATT link's own disconnect; onAdapterStateChanged
-     * then closes the gatt, so that disconnect callback never arrives and
-     * handleDisconnect's per-link reset (admittedSinceConnect, linkReady, the
-     * LinkClient session) never runs. On the next connect markAdmitted() sees
-     * the stale admittedSinceConnect and returns early: the link works but
-     * the app says "Connecting…" for good.
+     * then closes the gatt, so that disconnect callback never arrives. The
+     * per-link reset (admittedSinceConnect, linkReady, the LinkClient session)
+     * used to run only from it: on the next connect markAdmitted() saw the
+     * stale admittedSinceConnect and returned early, and the app said
+     * "Connecting…" for good. teardownConnection now ends a link it closes.
      */
-    @Ignore("App bug (not fixed here): BleManager.onAdapterStateChanged(off) closes the gatt without the per-link reset; stuck CONNECTING after Bluetooth off/on")
     @Test
     fun bluetoothOffAndOnComesBackConnected() {
         val radio = radio()

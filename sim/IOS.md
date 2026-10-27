@@ -36,6 +36,7 @@ SimRadio behaves as iOS does, so BLEManager sees what it would on a phone:
 | DISCONNECTED (any other reason) | `didDisconnect` `.peripheralDisconnected` |
 | socket closes with no DISCONNECTED (e.g. `ble_drop`) | `didDisconnect` `.connectionTimeout` (supervision timeout) |
 | `cancelPeer` (active or pending) | `didDisconnect` with no error |
+| Bluetooth off (Darwin notification `com.raemond.opentrailpaper.sim.bluetooth-off`, `SimBluetooth.set(on:)` in the UI tests) | `.poweredOff`, the link dropped with no `didDisconnect`; `-on` reports `.poweredOn` |
 
 The bond (phone identity address, "bonded" flag, peripheral identifier) is
 kept in the app's UserDefaults (`sim.ble.*`). Scanning asks the device for its

@@ -30,8 +30,8 @@ ShowPage pages the device; and regressions for app link bugs: two uploads /
 downloads at once queue instead of failing BUSY, two ride downloads both
 arrive intact, the ride list never blanks across a reconnect, the phone's GPS
 stream stops at once for a device that already has a fix, a setting edited
-offline reaches the device on reconnect. `bluetoothOffAndOnComesBackConnected`
-is an open app bug (ignored). Bluetooth off in SimRadio reports the adapter
+offline reaches the device on reconnect, Bluetooth switched off and on comes
+back connected. Bluetooth off in SimRadio reports the adapter
 change before the links drop, as Android does. Each test's SimRadio log and the sim console tail
 are in the test report's standard output.
 

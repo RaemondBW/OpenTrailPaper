@@ -1451,6 +1451,105 @@ class BleManager(
     }
 
     private fun handleDisconnect(statusCode: Int) {
+        val admitted = sawStatusSinceConnect || admittedSinceConnect
+        val linkWasUp = linkUpSinceConnect
+        val authFailed = authFailedSinceConnect
+        val bondFailed = bondFailedSinceConnect
+        endConnection()
+        // Refused: the firmware drops a phone it won't have with HCI 0x05
+        // (Authentication Failure), before any pairing dialog; 0x3D (MIC
+        // failure) is keys that don't match the device's. A protected op
+        // refused for authentication says the same, and so does a device
+        // that advertises it is paired dropping a phone that holds no bond
+        // with it. Any of these, before admission: stop, don't loop.
+        // OUR device, bonded: a failed op alone isn't enough — a radio drop
+        // mid-handshake must keep reconnecting mid-ride. The device's own 0x05
+        // or a MIC failure still is.
+        val dev = device
+        val oursBonded = dev != null && dev.address.equals(pairedDeviceAddress, ignoreCase = true) &&
+            dev.bondState == BluetoothDevice.BOND_BONDED
+        val refused = !admitted && dev != null && (
+            statusCode == 5 || statusCode == 61 || (authFailed && !oursBonded) ||
+                (advertisedPaired[dev.address] == true &&
+                    dev.bondState != BluetoothDevice.BOND_BONDED)
+            )
+        android.util.Log.i(
+            "Pairing",
+            "disconnect: status=$statusCode admitted=$admitted authFailed=$authFailed " +
+                "bondFailed=$bondFailed bond=${dev?.bondState} " +
+                "advertisedPaired=${dev?.let { advertisedPaired[it.address] }} refused=$refused",
+        )
+        // Ours, and turning us away: a remembered device that keeps dropping
+        // us before any status (the firmware pushes nothing until the link
+        // proves the bond) was unpaired on the device, or now belongs to
+        // another phone. Three in a row, so a reboot or range drop doesn't
+        // cry wolf. A connect that never came up (133, a timeout, failed to
+        // establish) never reached the device: radio, not a refusal — a link
+        // lost with the app in the background counted three of those and
+        // told the rider the device wasn't accepting the phone (2026-10-26).
+        if (!admitted && linkWasUp) {
+            barrenConnects += 1
+            if (barrenConnects == 3 && !onFallbackAttempt && pairedDeviceAddress != null) {
+                pairingIssue = PairingIssue.NOT_RECOGNISED
+            }
+        } else if (admitted) {
+            barrenConnects = 0
+        }
+
+        // Not ours to reconnect to: forgetDevice() dropped it, or it was the
+        // one-off try at a paired-elsewhere device and it turned us away.
+        when {
+            forgetting -> {
+                forgetting = false
+                device = null
+                teardownConnection(reconnect = false)
+                startScan()
+            }
+            onFallbackAttempt && !admitted -> {
+                onFallbackAttempt = false
+                pairingIssue = PairingIssue.PAIRED_ELSEWHERE
+                device = null
+                teardownConnection(reconnect = false)
+                startScan()
+            }
+            refused -> {
+                // No autoConnect back into the same refusal. Scan instead:
+                // the device advertising paired=0 (the rider unpaired it)
+                // brings us back without a tap.
+                refusedAddress = dev!!.address
+                refusalLiftsOnUnpaired = true
+                rejectedAddresses.add(dev.address)
+                pairingIssue = PairingIssue.REFUSED
+                teardownConnection(reconnect = false)
+                startScan()
+            }
+            bondFailed && !admitted -> {
+                // Cancelled, timed out, or a wrong code. Reconnecting would
+                // createBond again and pop the system dialog again — the loop
+                // riders hit. One dialog; the rider retries from it.
+                refusedAddress = dev?.address
+                refusalLiftsOnUnpaired = false
+                pairingIssue = PairingIssue.PAIRING_FAILED
+                teardownConnection(reconnect = false)
+                startScan()
+            }
+            else -> {
+                onFallbackAttempt = false
+                teardownConnection(reconnect = true)
+            }
+        }
+    }
+
+    /**
+     * Everything this connection set up ends with it: the link session, the
+     * characteristics, the admission bookkeeping, transfers. Run when the
+     * link's disconnect is reported, and by [teardownConnection] when a gatt
+     * is closed with its link still up (Bluetooth switched off: Android
+     * reports the adapter first, and a closed gatt reports nothing more) —
+     * missed there, the next link found admittedSinceConnect still set and
+     * never left "Connecting…".
+     */
+    private fun endConnection() {
         // The link's transfers end with this connection. Their handles are
         // dropped first, so the failure callbacks the reset fires are ignored
         // and the legacy-shaped cleanup below decides what the rider sees.
@@ -1513,56 +1612,13 @@ class BleManager(
         deviceKeepsVersions = false     // and this from the next versioned list
 
         status = DeviceStatus()
-        val admitted = sawStatusSinceConnect || admittedSinceConnect
-        val linkWasUp = linkUpSinceConnect
         linkUpSinceConnect = false
         sawStatusSinceConnect = false
         admittedSinceConnect = false
         admissionWatchdog?.cancel(); admissionWatchdog = null
-        val authFailed = authFailedSinceConnect
-        val bondFailed = bondFailedSinceConnect
         authFailedSinceConnect = false
         bondFailedSinceConnect = false
         awaitingBond = null
-        // Refused: the firmware drops a phone it won't have with HCI 0x05
-        // (Authentication Failure), before any pairing dialog; 0x3D (MIC
-        // failure) is keys that don't match the device's. A protected op
-        // refused for authentication says the same, and so does a device
-        // that advertises it is paired dropping a phone that holds no bond
-        // with it. Any of these, before admission: stop, don't loop.
-        // OUR device, bonded: a failed op alone isn't enough — a radio drop
-        // mid-handshake must keep reconnecting mid-ride. The device's own 0x05
-        // or a MIC failure still is.
-        val dev = device
-        val oursBonded = dev != null && dev.address.equals(pairedDeviceAddress, ignoreCase = true) &&
-            dev.bondState == BluetoothDevice.BOND_BONDED
-        val refused = !admitted && dev != null && (
-            statusCode == 5 || statusCode == 61 || (authFailed && !oursBonded) ||
-                (advertisedPaired[dev.address] == true &&
-                    dev.bondState != BluetoothDevice.BOND_BONDED)
-            )
-        android.util.Log.i(
-            "Pairing",
-            "disconnect: status=$statusCode admitted=$admitted authFailed=$authFailed " +
-                "bondFailed=$bondFailed bond=${dev?.bondState} " +
-                "advertisedPaired=${dev?.let { advertisedPaired[it.address] }} refused=$refused",
-        )
-        // Ours, and turning us away: a remembered device that keeps dropping
-        // us before any status (the firmware pushes nothing until the link
-        // proves the bond) was unpaired on the device, or now belongs to
-        // another phone. Three in a row, so a reboot or range drop doesn't
-        // cry wolf. A connect that never came up (133, a timeout, failed to
-        // establish) never reached the device: radio, not a refusal — a link
-        // lost with the app in the background counted three of those and
-        // told the rider the device wasn't accepting the phone (2026-10-26).
-        if (!admitted && linkWasUp) {
-            barrenConnects += 1
-            if (barrenConnects == 3 && !onFallbackAttempt && pairedDeviceAddress != null) {
-                pairingIssue = PairingIssue.NOT_RECOGNISED
-            }
-        } else if (admitted) {
-            barrenConnects = 0
-        }
         // Keep `rides` (the last-known list): the Rides tab keeps showing it
         // while disconnected and through the re-check on reconnect.
         ridesBuilding = mutableListOf(); loadingRides = false; ridesCheckedThisLink = false
@@ -1574,49 +1630,7 @@ class BleManager(
         deviceRoutes = emptyList(); loadingRoutes = false
         lastUploadProgress = null; routeSent = false; routeReceived = false
         sensors = emptyList(); scanningSensors = false
-
-        // Not ours to reconnect to: forgetDevice() dropped it, or it was the
-        // one-off try at a paired-elsewhere device and it turned us away.
-        when {
-            forgetting -> {
-                forgetting = false
-                device = null
-                teardownConnection(reconnect = false)
-                startScan()
-            }
-            onFallbackAttempt && !admitted -> {
-                onFallbackAttempt = false
-                pairingIssue = PairingIssue.PAIRED_ELSEWHERE
-                device = null
-                teardownConnection(reconnect = false)
-                startScan()
-            }
-            refused -> {
-                // No autoConnect back into the same refusal. Scan instead:
-                // the device advertising paired=0 (the rider unpaired it)
-                // brings us back without a tap.
-                refusedAddress = dev!!.address
-                refusalLiftsOnUnpaired = true
-                rejectedAddresses.add(dev.address)
-                pairingIssue = PairingIssue.REFUSED
-                teardownConnection(reconnect = false)
-                startScan()
-            }
-            bondFailed && !admitted -> {
-                // Cancelled, timed out, or a wrong code. Reconnecting would
-                // createBond again and pop the system dialog again — the loop
-                // riders hit. One dialog; the rider retries from it.
-                refusedAddress = dev?.address
-                refusalLiftsOnUnpaired = false
-                pairingIssue = PairingIssue.PAIRING_FAILED
-                teardownConnection(reconnect = false)
-                startScan()
-            }
-            else -> {
-                onFallbackAttempt = false
-                teardownConnection(reconnect = true)
-            }
-        }
+        mtu = 23   // the next link negotiates its own
     }
 
     /** Manufacturer data after the 0xFFFF company id: [0x4F][flags], bit0 =
@@ -1632,6 +1646,9 @@ class BleManager(
     }
 
     private fun teardownConnection(reconnect: Boolean) {
+        // A gatt closed with its link up never reports the disconnect
+        // (Bluetooth off, forgetDevice mid-pairing): end the connection here.
+        if (linkUpSinceConnect) endConnection()
         queue.clear()
         queue.attach(null)
         gatt?.close()

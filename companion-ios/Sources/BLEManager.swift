@@ -4439,6 +4439,18 @@ extension BLEManager: RadioEvents {
         // the answer to our prompt lands here.
         bluetoothPermission = cs == .unauthorized
             ? .denied : Self.state(of: CBCentralManager.authorization)
+        // Off (or reset, or no longer allowed): every link is gone and every
+        // peripheral object invalid, but CoreBluetooth calls no didDisconnect
+        // for them. End the connection here and let the peripheral go;
+        // poweredOn's startScan retrieves ours afresh. (.unknown is the
+        // state before the first update — a restored peripheral waits it out.)
+        if cs != .poweredOn, cs != .unknown, peripheral != nil {
+            NSLog("[ble] Bluetooth %d: ending the connection", cs.rawValue)
+            endConnection()
+            peripheral = nil
+            restoredPeripheral = false
+            forgetting = false
+        }
         switch cs {
         case .poweredOn: startScan()
         case .poweredOff: state = .poweredOff
@@ -4524,6 +4536,88 @@ extension BLEManager: RadioEvents {
     }
 
     func radioDidDisconnect(_ p: any RadioPeer, error: Error?) {
+        // Bluetooth went off: radioStateChanged ended this link and let the
+        // peripheral go. A late report of the same link changes nothing (and
+        // must not count as a barren connect).
+        if peripheral == nil, central.state != .poweredOn { return }
+        let admitted = authenticatedSinceConnect || sawStatusSinceConnect
+        let authFailed = authFailedSinceConnect
+        let quick = connectedAt.map { -$0.timeIntervalSinceNow < 8 } ?? false
+        endConnection()
+        // Was this the device turning us away? It drops a phone it won't
+        // have before any protected data: at once when it's paired and we
+        // aren't its phone, or when our pairing request arrives after iOS
+        // forgot it. Signals, strongest first: iOS saying the keys are
+        // gone; a protected request failing for lack of authentication;
+        // a quick drop from a device that advertises "paired"; and, for a
+        // device reached without seeing its advertisement, three barren
+        // connects in a row (so a reboot or a range drop doesn't cry wolf).
+        // OUR device advertises "paired" too — to us — so for it a single
+        // quick drop or a mid-handshake auth error is not enough: a radio
+        // drop mid-ride must keep reconnecting. It takes the stale-keys
+        // error or three barren connects.
+        NSLog("[ble] disconnected: %@ (admitted=%d)",
+              error.map { "\($0)" } ?? "no error", admitted ? 1 : 0)
+        var refused = false
+        var iosKeysStale = false
+        if !admitted {
+            barrenConnects += 1
+            let code = (error as? CBError)?.code
+            iosKeysStale = code == .peerRemovedPairingInformation || code == .encryptionTimedOut
+            let ours = pairedDeviceId == p.identifier
+            refused = iosKeysStale ||
+                (!ours && authFailed) ||
+                (!ours && quick && advPaired[p.identifier] == true) ||
+                (barrenConnects >= 3 && !onFallbackAttempt)
+        } else {
+            barrenConnects = 0
+        }
+
+        // Hand the peripheral straight back to CoreBluetooth instead of
+        // dropping it and re-scanning. connect() on a known peripheral has no
+        // timeout — CB reconnects the instant the device is reachable again,
+        // without a scan/discover/connect round trip. Re-scanning meant every
+        // brief drop cost seconds and a visible "connecting…" flap, which is
+        // what made the link look like it was cycling in and out while the
+        // app was foregrounded, and what made log downloads and map sends
+        // fail: they abort on disconnect and the retry raced the rescan.
+        //
+        // Except when the device is not (or no longer) ours to reconnect to:
+        // forgetDevice() dropped it, it was dropped already (peripheral nil),
+        // or it was the one-off try at a paired-elsewhere device and it
+        // turned us away — then say so and go back to looking.
+        if forgetting || peripheral == nil {
+            forgetting = false
+            peripheral = nil
+            startScan()
+        } else if refused {
+            // No reconnect: that would only be refused again (and older
+            // firmware answered with a pairing dialog — the loop).
+            onFallbackAttempt = false
+            refuse(p, iosKeysStale: iosKeysStale)
+            peripheral = nil
+            startScan()   // listens for it to unpair; never connects to it
+        } else if onFallbackAttempt && !admitted {
+            onFallbackAttempt = false
+            pairingIssue = .pairedElsewhere
+            peripheral = nil
+            startScan()
+        } else {
+            onFallbackAttempt = false
+            peripheral = p
+            p.delegate = self
+            state = .connecting
+            central.connectPeer(p)
+        }
+    }
+
+    /// Everything this connection set up ends with it: the link session, the
+    /// characteristics, the admission bookkeeping, transfers. Run on
+    /// didDisconnect, and by radioStateChanged when Bluetooth goes off —
+    /// CoreBluetooth reports no didDisconnect for the links that takes down,
+    /// and a stale session there left the app on "Scanning…" with the
+    /// peripheral still set, so nothing ever connected again.
+    private func endConnection() {
         settingsChar = nil; statusChar = nil; routeChar = nil; ridesChar = nil
         sensorsChar = nil; mapChar = nil; otaChar = nil; meshChar = nil
         dashChar = nil
@@ -4586,36 +4680,6 @@ extension BLEManager: RadioEvents {
             finishTileJob(message: "Interrupted — reconnect to resume")
         }
         status = DeviceStatus()
-        let admitted = authenticatedSinceConnect || sawStatusSinceConnect
-        // Was this the device turning us away? It drops a phone it won't
-        // have before any protected data: at once when it's paired and we
-        // aren't its phone, or when our pairing request arrives after iOS
-        // forgot it. Signals, strongest first: iOS saying the keys are
-        // gone; a protected request failing for lack of authentication;
-        // a quick drop from a device that advertises "paired"; and, for a
-        // device reached without seeing its advertisement, three barren
-        // connects in a row (so a reboot or a range drop doesn't cry wolf).
-        // OUR device advertises "paired" too — to us — so for it a single
-        // quick drop or a mid-handshake auth error is not enough: a radio
-        // drop mid-ride must keep reconnecting. It takes the stale-keys
-        // error or three barren connects.
-        NSLog("[ble] disconnected: %@ (admitted=%d)",
-              error.map { "\($0)" } ?? "no error", admitted ? 1 : 0)
-        var refused = false
-        var iosKeysStale = false
-        if !admitted {
-            barrenConnects += 1
-            let code = (error as? CBError)?.code
-            iosKeysStale = code == .peerRemovedPairingInformation || code == .encryptionTimedOut
-            let quick = connectedAt.map { -$0.timeIntervalSinceNow < 8 } ?? false
-            let ours = pairedDeviceId == p.identifier
-            refused = iosKeysStale ||
-                (!ours && authFailedSinceConnect) ||
-                (!ours && quick && advPaired[p.identifier] == true) ||
-                (barrenConnects >= 3 && !onFallbackAttempt)
-        } else {
-            barrenConnects = 0
-        }
         sawStatusSinceConnect = false
         authenticatedSinceConnect = false
         authFailedSinceConnect = false
@@ -4632,43 +4696,6 @@ extension BLEManager: RadioEvents {
         deviceRoutes = []; loadingRoutes = false
         lastUploadProgress = nil; routeSent = false; routeReceived = false
         sensors = []; scanningSensors = false
-
-        // Hand the peripheral straight back to CoreBluetooth instead of
-        // dropping it and re-scanning. connect() on a known peripheral has no
-        // timeout — CB reconnects the instant the device is reachable again,
-        // without a scan/discover/connect round trip. Re-scanning meant every
-        // brief drop cost seconds and a visible "connecting…" flap, which is
-        // what made the link look like it was cycling in and out while the
-        // app was foregrounded, and what made log downloads and map sends
-        // fail: they abort on disconnect and the retry raced the rescan.
-        //
-        // Except when the device is not (or no longer) ours to reconnect to:
-        // forgetDevice() dropped it, it was dropped already (peripheral nil),
-        // or it was the one-off try at a paired-elsewhere device and it
-        // turned us away — then say so and go back to looking.
-        if forgetting || peripheral == nil {
-            forgetting = false
-            peripheral = nil
-            startScan()
-        } else if refused {
-            // No reconnect: that would only be refused again (and older
-            // firmware answered with a pairing dialog — the loop).
-            onFallbackAttempt = false
-            refuse(p, iosKeysStale: iosKeysStale)
-            peripheral = nil
-            startScan()   // listens for it to unpair; never connects to it
-        } else if onFallbackAttempt && !admitted {
-            onFallbackAttempt = false
-            pairingIssue = .pairedElsewhere
-            peripheral = nil
-            startScan()
-        } else {
-            onFallbackAttempt = false
-            peripheral = p
-            p.delegate = self
-            state = .connecting
-            central.connectPeer(p)
-        }
     }
 }
 
