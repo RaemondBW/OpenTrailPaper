@@ -153,6 +153,16 @@ android {
     // own Application, which reads its strings.
     testOptions {
         unitTests.isIncludeAndroidResources = true
+        // ...and build the app's H3 JNI library for the host JVM into
+        // sim/build/h3jni (sim/HostH3.kt), where H3Native's loadLibrary
+        // finds it. Prepended at run time, after AGP has set its own path.
+        unitTests.all { test ->
+            val h3 = rootProject.file("../sim/build/h3jni").path
+            test.doFirst {
+                val path = test.systemProperties["java.library.path"]?.toString()
+                test.systemProperty("java.library.path", if (path.isNullOrEmpty()) h3 else "$h3${File.pathSeparator}$path")
+            }
+        }
     }
     packaging {
         resources {

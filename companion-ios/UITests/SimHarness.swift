@@ -20,6 +20,19 @@ enum SimEnv {
     static var radioPort: UInt16 { port("OTP_SIM_RADIO_PORT", 7922) }
     /// The stand-in tile CDN (sim/cdn/tile_cdn.py), started by run_ios_tests.sh.
     static var cdnPort: UInt16 { port("OTP_CDN_PORT", 7923) }
+    /// The device's directory (`otp-sim --dir`): its card is `<dir>/sd`.
+    static var deviceDir: URL? { path("OTP_SIM_DIR") }
+
+    private static func path(_ key: String) -> URL? {
+        ProcessInfo.processInfo.environment[key].flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0) }
+    }
+
+    /// A map file on the device's card (map_store's layout:
+    /// /maps/tiles/<first 6>/<rest>.<ext>), or nil without the device's directory.
+    static func cardFile(_ id: String, _ ext: String) -> Data? {
+        guard let d = deviceDir else { return nil }
+        return try? Data(contentsOf: d.appendingPathComponent("sd/maps/tiles/\(id.prefix(6))/\(id.dropFirst(6)).\(ext)"))
+    }
 }
 
 // MARK: - sockets
@@ -298,6 +311,32 @@ enum TileCdn {
         _ = try json("POST", "_ctl/fault?match=\(match)&kind=\(kind)")
     }
 
+    /// Serves the POI set `set` (sim/fixtures/appmaps/pois/<set>, made by
+    /// sim/cdn/build_poi_fixture.py) instead of the fixture's .poi files, and
+    /// answers Overpass's POI query from it; nil: back to the fixture's.
+    /// Returns each cell's new index entry: id -> .poi hash ("" for none).
+    @discardableResult
+    static func pois(_ set: String?) throws -> [String: String] {
+        let r = try json("POST", "_ctl/pois?set=\(set ?? "")") as? [String: Any]
+        var out: [String: String] = [:]
+        for (id, e) in r?["cells"] as? [String: [Any]] ?? [:] where e.count == 2 { out[id] = e[1] as? String }
+        return out
+    }
+
+    /// A POI set's .poi for `id`, as the reference writer (docs/mapgen.js
+    /// buildPoi) built it. From the stand-in, not the fixture's directory: a
+    /// test runner reading under ~/Documents waits on a privacy prompt.
+    static func poiSetFile(_ set: String, _ id: String) -> Data? {
+        guard let (code, data) = try? request("GET", "_ctl/poi?set=\(set)&id=\(id)"), code == 200 else { return nil }
+        return data
+    }
+
+    /// The Overpass requests so far, by query ("poi", "map", "coast").
+    static func overpassQueries() throws -> [String] {
+        try log().filter { ($0["path"] as? String)?.hasSuffix("/api/interpreter") == true }
+            .map { $0["overpass"] as? String ?? "" }
+    }
+
     /// Publishes a new version of `<id>.<ext>`; returns its new index hash.
     static func bump(_ id: String, ext: String = "ebm") throws -> String {
         let r = try json("POST", "_ctl/bump?id=\(id)&ext=\(ext)") as? [String: Any]
@@ -333,6 +372,18 @@ enum Panel {
     /// position marker, the scale, the data fields): roads, water, parks.
     /// Writes the screenshot to `file`.
     static func mapInk(_ file: URL) throws -> Int {
+        let (w, h, px) = try gray(file)
+        var dark = 0
+        for y in 70..<min(745, h) where !(395...505).contains(y) {
+            for x in 0..<min(455, w) where !(y < 150 && x > 440) {
+                if px[y * w + x] < 100 { dark += 1 }
+            }
+        }
+        return dark
+    }
+
+    /// The panel as a screenshot written to `file`: width, height, gray pixels.
+    static func gray(_ file: URL) throws -> (Int, Int, [UInt8]) {
         try SimControl.call(["cmd": "screenshot", "path": file.path])
         guard let img = UIImage(contentsOfFile: file.path)?.cgImage else {
             throw SimControl.Failure(description: "no screenshot at \(file.path)")
@@ -342,12 +393,20 @@ enum Panel {
         let ctx = CGContext(data: &px, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w,
                             space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue)
         ctx?.draw(img, in: CGRect(x: 0, y: 0, width: w, height: h))
-        var dark = 0
-        for y in 70..<min(745, h) where !(395...505).contains(y) {
-            for x in 0..<min(455, w) where !(y < 150 && x > 440) {
-                if px[y * w + x] < 100 { dark += 1 }
+        return (w, h, px)
+    }
+
+    /// Pixels of the map area (below the status bar, above the data fields)
+    /// that differ between two screenshots: inside `box` and elsewhere.
+    static func diff(_ a: (Int, Int, [UInt8]), _ b: (Int, Int, [UInt8]), box: CGRect) -> (inside: Int, outside: Int) {
+        let (w, h, pa) = a
+        let pb = b.2
+        var inside = 0, outside = 0
+        for y in 70..<min(745, h) {
+            for x in 0..<w where pa[y * w + x] != pb[y * w + x] {
+                if box.contains(CGPoint(x: x, y: y)) { inside += 1 } else { outside += 1 }
             }
         }
-        return dark
+        return (inside, outside)
     }
 }

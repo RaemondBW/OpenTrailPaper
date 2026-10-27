@@ -216,8 +216,15 @@ enum MapBuilder {
                 guard let http = resp as? HTTPURLResponse else { continue }
                 await DownloadStats.shared.request(kind, host: host, status: http.statusCode,
                     seconds: Date().timeIntervalSince(started), bytes: data.count)
-                if http.statusCode == 200 { return data }
-                lastStatus = http.statusCode
+                if http.statusCode == 200 {
+                    // A query that ran out of time or memory still answers 200,
+                    // with what it had (often nothing) and a "runtime error"
+                    // remark. That is not "nothing here": retry, then report.
+                    guard let remark = runtimeErrorRemark(data) else { return data }
+                    lastError = BuildError.overpass("Overpass: \(remark)")
+                } else {
+                    lastStatus = http.statusCode
+                }
                 // 429 (rate limit) / 504 (timeout) / 5xx (overload) → back off, try next mirror.
             } catch is CancellationError {
                 throw CancellationError()
@@ -236,6 +243,17 @@ enum MapBuilder {
             throw BuildError.overpass(lastError.localizedDescription)
         }
         throw BuildError.overpass("no response from map servers")
+    }
+
+    /// Overpass's "runtime error: …" remark (a timeout, out of memory), or nil.
+    /// It follows the elements, so only the end of the answer is looked at.
+    static func runtimeErrorRemark(_ data: Data) -> String? {
+        let tail = String(decoding: data.suffix(2048), as: UTF8.self)
+        guard let r = tail.range(of: #""remark"\s*:\s*"((?:[^"\\]|\\.)*)""#, options: .regularExpression)
+        else { return nil }
+        let remark = String(tail[r]).replacingOccurrences(of: #"^"remark"\s*:\s*""#, with: "", options: .regularExpression)
+            .dropLast()
+        return remark.contains("runtime error") ? String(remark) : nil
     }
 
     // Encode many H3 tiles' .ebm blobs from already-fetched region JSON, parsing

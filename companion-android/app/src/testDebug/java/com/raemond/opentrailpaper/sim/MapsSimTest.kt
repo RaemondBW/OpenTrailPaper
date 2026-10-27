@@ -1,48 +1,19 @@
 package com.raemond.opentrailpaper.sim
 
-import android.Manifest
-import android.app.Application
-import android.content.Context
-import android.os.Looper
-import com.raemond.opentrailpaper.ble.BleManager
-import com.raemond.opentrailpaper.ble.BleManager.ConnState
-import com.raemond.opentrailpaper.ble.SimRadio
-import com.raemond.opentrailpaper.data.Prefs
-import com.raemond.opentrailpaper.link.proto.Feature
-import com.raemond.opentrailpaper.map.CdnVersions
-import com.raemond.opentrailpaper.map.DebugEndpoints
-import com.raemond.opentrailpaper.map.MapDownloadProgress
-import com.raemond.opentrailpaper.map.MapEndpoints
-import com.raemond.opentrailpaper.map.MapTile
 import com.raemond.opentrailpaper.map.PoiCache
 import com.raemond.opentrailpaper.map.PrebuiltTiles
 import com.raemond.opentrailpaper.map.TileCache
-import com.raemond.opentrailpaper.map.runMapDownload
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
-import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
-import org.junit.Assert.fail
-import org.junit.Assume.assumeTrue
-import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
-import org.robolectric.RuntimeEnvironment
-import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
-import java.io.File
-import java.time.Duration
 
 /**
  * The map flow end to end: the app's real download pipeline (runMapDownload —
@@ -58,144 +29,12 @@ import java.time.Duration
  * (files/otp-endpoints, DebugEndpoints). Nothing here touches the network:
  * Overpass is the stand-in too, answering 503.
  *
- * The area is picked as the Maps screen picks it, minus the H3 cover (JNI,
- * not loadable on the JVM): the fixture lists the cells the apps' own cover
- * gives for its box (sim/cdn/fetch_fixture.py).
+ * The harness (device, stand-in CDN, BleManager, the download) is
+ * MapSimHarness; the cycling POIs have their own tests, PoiSimTest.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35], application = SimTestApp::class)
-class MapsSimTest {
-
-    private lateinit var app: Application
-    private lateinit var sim: FirmwareSim
-    private lateinit var cdn: TileCdn
-    private var radio: SimRadio? = null
-    private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
-    private val log = StringBuilder()
-
-    private val tiles: List<MapTile> get() = cdn.cells.map { it.tile }
-    private val ids: Set<String> get() = cdn.cells.map { it.tile.id }.toSet()
-
-    @Before
-    fun setUp() {
-        if (System.getenv("OTP_SIM_REQUIRED") != null) {
-            check(FirmwareSim.binary != null) { "OTP_SIM_REQUIRED, but sim/build/otp-sim is not built" }
-        }
-        assumeTrue("sim/build/otp-sim is not built (run sim/build.sh)", FirmwareSim.binary != null)
-        assumeTrue("sim/cdn/tile_cdn.py not found", TileCdn.root != null)
-        app = RuntimeEnvironment.getApplication()
-        shadowOf(app).grantPermissions(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_SCAN)
-        Prefs.onboarded = true
-        TileCache.init(app)        // and PoiCache
-        // Process-wide caches of the CDN's indexes: each test starts as a
-        // fresh app would.
-        PrebuiltTiles.IndexCache.clear()
-        CdnVersions.clear()
-        cdn = TileCdn.start()
-        // The debug build's switch, as on an emulator (sim/ANDROID.md).
-        File(app.filesDir, "otp-endpoints").writeText("tiles=${cdn.baseUrl}\noverpass=${cdn.overpassUrl}\n")
-        DebugEndpoints.init(app)
-        assertEquals("the app's CDN is the stand-in", cdn.baseUrl, MapEndpoints.tileBaseUrl)
-        sim = FirmwareSim.start()
-    }
-
-    @After
-    fun tearDown() {
-        scope.cancel()
-        if (::sim.isInitialized) println(dump())
-        runCatching { radio?.setEnabled(false) }
-        if (::sim.isInitialized) sim.close()
-        if (::cdn.isInitialized) cdn.close()
-    }
-
-    // ---- harness -----------------------------------------------------------------------------
-
-    private fun connect(): BleManager {
-        val store = app.getSharedPreferences("simradio-maps", Context.MODE_PRIVATE)
-        val r = SimRadio(
-            "127.0.0.1", sim.blePort, store,
-            SimRadio.Options(
-                phoneName = "Sim maps",
-                directConnectTimeoutMs = 1_500,
-                log = { synchronized(log) { log.append(System.currentTimeMillis() % 100_000).append(' ').append(it).append('\n') } },
-            ),
-        )
-        radio = r
-        val ble = BleManager(app, r)
-        waitFor("pairing and Hello", 30_000) { ble.state == ConnState.CONNECTED && ble.linkReady && ble.deviceHello != null }
-        assumeTrue("firmware without map tiles", ble.has(Feature.FEATURE_MAP_TILES))
-        // What the Maps screen asks for when it opens.
-        ble.refreshDeviceTiles()
-        waitFor("the device's tile and POI lists", 15_000) { ble.deviceSupportsPois }
-        return ble
-    }
-
-    /** The main looper, moving with the wall clock (see BleManagerSimTest.LooperClock). */
-    private fun waitFor(what: String, timeoutMs: Long, cond: () -> Boolean) {
-        val end = System.currentTimeMillis() + timeoutMs
-        var last = System.nanoTime()
-        while (true) {
-            val now = System.nanoTime()
-            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(maxOf(1L, (now - last) / 1_000_000)))
-            last = now
-            if (cond()) return
-            if (System.currentTimeMillis() > end) fail("timed out waiting for $what\n${dump()}")
-            Thread.sleep(20)
-        }
-    }
-
-    private fun dump(): String {
-        val cdnLog = runCatching { cdn.log().joinToString("\n") { "${it.get("method").asString} ${it.get("path").asString} ${it.get("status")}" } }
-            .getOrDefault("")
-        return "--- SimRadio ---\n${synchronized(log) { log.toString().lines().takeLast(40).joinToString("\n") }}" +
-            "\n--- stand-in CDN ---\n$cdnLog" +
-            "\n--- otp-sim console (tail) ---\n${sim.consoleTail(40)}"
-    }
-
-    /**
-     * What MapsSheet.startDownload does for the selection [tiles]: Download
-     * (new hexes, plus POIs the device lacks), or Redownload (the hexes on the
-     * device). Returns the status the screen would show at the end.
-     */
-    private fun download(ble: BleManager, redownload: Boolean = false, timeoutMs: Long = 90_000): String? {
-        val missing0 = if (redownload) tiles.filter { ble.tileIsCurrent(it.id) } else tiles.filter { !ble.tileIsCurrent(it.id) }
-        val poiWork0 = when {
-            !redownload -> tiles.filter { ble.poiNeedsSend(it.id) }
-            ble.deviceSupportsPois -> tiles.filter { ble.tileIsCurrent(it.id) }
-            else -> emptyList()
-        }
-        var result: String? = null
-        val job: Job = scope.launch {
-            result = runMapDownload(
-                ble, missing0, poiWork0, redownload, force = false,
-                tileRecords = ble.tileRecords, poiRecords = ble.poiRecords, devicePois = ble.devicePoiIds,
-                progress = MapDownloadProgress(status = {}, total = {}, built = {}, failed = {}),
-            )
-        }
-        waitFor("the download and its transfer", timeoutMs) { job.isCompleted && !ble.tilesUploading }
-        // The device's own list again, as the app re-reads it after a send.
-        ble.refreshDeviceTiles()
-        runFor(1_500)
-        return result
-    }
-
-    private fun runFor(ms: Long) {
-        val end = System.currentTimeMillis() + ms
-        waitFor("($ms ms)", ms + 5_000) { System.currentTimeMillis() >= end }
-    }
-
-    private fun fixtureBytes(id: String, ext: String) = File(cdn.fixture, "v1/${id.take(6)}/$id.$ext").readBytes()
-
-    /** The file on the device's card (map_store's layout: /maps/tiles/<first 6>/<rest>.<ext>). */
-    private fun cardFile(id: String, ext: String) = File(sim.dir, "sd/maps/tiles/${id.take(6)}/${id.drop(6)}.$ext")
-
-    private fun tileGets(paths: List<String>) = paths.filter { it.endsWith(".ebm") }
-    private fun poiGets(paths: List<String>) = paths.filter { it.endsWith(".poi") }
-    private fun overpass(paths: List<String>) = paths.filter { it.endsWith("/api/interpreter") }
-
-    /** Tiles and POI files the device saved since [seq] (its "tile saved:" log). */
-    private fun savedSince(seq: Long): List<String> =
-        sim.logSince(seq).mapNotNull { Regex("tile saved: (\\S+)").find(it)?.groupValues?.get(1) }
+class MapsSimTest : MapSimHarness() {
 
     /** The device holds exactly the fixture's tiles, each with its CDN version and bytes. */
     private fun assertDeviceHoldsTheArea(except: Map<String, Pair<Int, String>> = emptyMap()) {
@@ -219,12 +58,6 @@ class MapsSimTest {
                     cardFile(c.tile.id, "poi").readBytes())
             }
         }
-    }
-
-    private fun assertNoInternet(paths: List<String>) {
-        // Every request the run made reached the stand-in; it has no Overpass
-        // data, so a selection inside the fixture must never ask for it.
-        assertEquals("Overpass was asked: $paths", emptyList<String>(), overpass(paths))
     }
 
     // ---- scenarios ---------------------------------------------------------------------------
@@ -372,51 +205,5 @@ class MapsSimTest {
         assertFalse(ble.deviceTileIds.contains(truncated))
         val paths = cdn.paths()
         assertTrue("the fallback went to the stand-in's Overpass: $paths", overpass(paths).isNotEmpty())
-    }
-
-    // ---- the device's panel ------------------------------------------------------------------
-
-    /**
-     * Dark pixels on the device's map screen, away from the fixed furniture
-     * (status bar, compass, zoom buttons, the "NO MAP HERE" box, the position
-     * marker, the scale and the data fields): roads, water and parks.
-     */
-    private fun screenshotOfMap(name: String): Int {
-        sim.cmd("console", "line" to "screen map", "wait_ms" to 500)
-        waitFor("the map screen", 10_000) { sim.status().get("screen").asString == "map" }
-        runFor(2_500)   // let it draw the ground around the fix
-        val out = File(System.getProperty("java.io.tmpdir"), "otp-maps-${System.nanoTime()}-$name.png")
-        sim.cmd("screenshot", "path" to out.path)
-        val (w, px) = grayPng(out.readBytes())
-        var dark = 0
-        for (y in 70 until 745) for (x in 0 until 455) {          // above the scale bar
-            if (y in 395..505) continue                       // the "NO MAP HERE" box and the marker
-            if (y < 150 && x > 440) continue
-            if ((px[y * w + x].toInt() and 0xFF) < 100) dark++
-        }
-        println("screenshot $name: $out, $dark dark pixels")
-        return dark
-    }
-
-    /** The sim's screenshots: 8-bit grayscale PNG, filter 0 on every row
-     *  (sim/host/epd_sim.cpp). Returns the width and the pixels. */
-    private fun grayPng(b: ByteArray): Pair<Int, ByteArray> {
-        fun be32(i: Int) = ((b[i].toInt() and 0xFF) shl 24) or ((b[i + 1].toInt() and 0xFF) shl 16) or
-            ((b[i + 2].toInt() and 0xFF) shl 8) or (b[i + 3].toInt() and 0xFF)
-        var i = 8
-        var w = 0
-        var h = 0
-        val idat = java.io.ByteArrayOutputStream()
-        while (i + 8 <= b.size) {
-            val len = be32(i)
-            val type = String(b, i + 4, 4, Charsets.US_ASCII)
-            if (type == "IHDR") { w = be32(i + 8); h = be32(i + 12) }
-            if (type == "IDAT") idat.write(b, i + 8, len)
-            i += 12 + len
-        }
-        val raw = java.util.zip.InflaterInputStream(idat.toByteArray().inputStream()).readBytes()
-        val px = ByteArray(w * h)
-        for (y in 0 until h) System.arraycopy(raw, y * (w + 1) + 1, px, y * w, w)
-        return w to px
     }
 }

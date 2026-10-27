@@ -33,6 +33,7 @@ CTL=${OTP_SIM_CTL_PORT:-7921}
 RADIO=${OTP_SIM_RADIO_PORT:-7922}
 CDN=${OTP_CDN_PORT:-7923}
 FIXTURE=${OTP_CDN_FIXTURE:-sim/fixtures/appmaps}
+case $FIXTURE in /*) ;; *) FIXTURE=$ROOT/$FIXTURE ;; esac
 BUNDLE=com.raemond.opentrailpaper
 DD=${OTP_DERIVED_DATA:-$ROOT/sim/build/ios-dd}
 ONLY=OpenTrailPaperUITests/FirmwareSimTests
@@ -124,6 +125,7 @@ TEST_RUNNER_OTP_SIM_BLE_PORT=$BLE \
 TEST_RUNNER_OTP_SIM_CTL_PORT=$CTL \
 TEST_RUNNER_OTP_SIM_RADIO_PORT=$RADIO \
 TEST_RUNNER_OTP_CDN_PORT=$CDN \
+TEST_RUNNER_OTP_SIM_DIR=$DIR/device \
 xcodebuild test \
     -project companion-ios/OpenTrailPaper.xcodeproj \
     -scheme OpenTrailPaper \

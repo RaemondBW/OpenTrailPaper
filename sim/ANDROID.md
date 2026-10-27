@@ -62,9 +62,42 @@ the device (control `tiles`, sim/PROTOCOL.md) and its card.
   Overpass (503) and the download reports the failure; the rest are sent.
 
 The area is the fixture's list of cells (with their bboxes) rather than an H3
-cover of a drawn box: the cover is JNI, which a JVM test can't load. The app
-keeps CDN indexes for an hour; the update tests clear that cache as an hour
-passing would.
+cover of a drawn box. The app keeps CDN indexes for an hour; the update tests
+clear that cache as an hour passing would. The harness both test classes use
+is `MapSimHarness`.
+
+### Cycling POIs
+
+`PoiSimTest` sends the fixture's POI sets (sim/fixtures/appmaps/pois: made-up
+water, toilets, repair stands and bike shops, each cell's `.poi` built by the
+reference writer, docs/mapgen.js buildPoi), which the stand-in serves on
+request (`/_ctl/pois?set=`), and checks the device's card holds exactly the
+reference bytes:
+
+- `areaPoisReachTheDeviceByteForByte`: the CDN's .poi files, and the empty
+  file the app synthesises for a cell listed with no POIs; CDN version
+  records; each file fetched once, no Overpass.
+- `poiChangeUpstreamResendsOnlyThatHex`: one cell's POIs change on the CDN;
+  the Maps screen's version check wants POIs for that hex only, and "Send
+  POIs" fetches and sends that one file (no tile, no other .poi).
+- `areaWithNoPoisGetsEmptyPoiFiles`: nothing fetched, an empty .poi per hex.
+- `garbledCdnPoisNeverReachTheDevice`: .poi bodies of the right size with
+  every byte flipped are refused (fall back to Overpass, 503); the tiles and
+  the empty .poi files still go, the screen says the POIs could not be fetched.
+- `overpassPoisReachTheDeviceByteForByte`: the CDN's .poi files fail (500);
+  the app builds them on the phone from the stand-in's Overpass answer, and
+  they match the reference writer's bytes. Needs H3 (the cell of each POI):
+  `HostH3` builds the app's own JNI library (src/main/cpp) for the host into
+  sim/build/h3jni, which app/build.gradle.kts puts on the unit tests'
+  java.library.path.
+- `truncatedOverpassPoisNeverReachTheDevice`, `overpassErrorPageNeverReachesTheDevice`,
+  `overpassTimeoutNeverReachesTheDeviceAsNoPois`: Overpass's POI answer is
+  half a JSON, an HTML error page, or its 200 "runtime error" timeout remark
+  with no elements. None reaches the device or the app's POI cache.
+- `waterLayerSwitchHidesAndShowsTheIcon`: the device draws the water point
+  150 m north of the rider; switching the water layer off in the app
+  (`updateMapLayers`, the device's `settings.map_layers`) removes that icon
+  and nothing else, and on brings it back.
 
 ### The tile CDN override (debug builds)
 

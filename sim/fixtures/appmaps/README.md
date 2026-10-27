@@ -15,6 +15,29 @@ apps by the stand-in CDN, [`sim/cdn/tile_cdn.py`](../../cdn/tile_cdn.py)
   Any selection inside the box gets only these hexes, so the apps never fall
   back to Overpass for it.
 
+## Cycling POIs (`pois/`)
+
+The real area has one POI, so the POI tests use made-up ones (not OSM data):
+`pois/<set>/` holds `overpass.json`, what Overpass would answer the apps' POI
+query with for the whole area, and each cell's `.poi` as the reference
+writer (`docs/mapgen.js` buildPoi) builds it from that, with each POI in the
+one H3 cell containing it. [`sim/cdn/build_poi_fixture.py`](../../cdn/build_poi_fixture.py)
+writes them (node + cc).
+
+- `woodstock`: eleven elements — drinking water (one 150 m north of the
+  centre), toilets (one a building with a centre, seasonal), a repair stand,
+  bike shops, a water tap and a fountain, one customers-only water point —
+  plus a private toilet and a non-drinking tap that no builder keeps. Five
+  cells get POIs, two none.
+- `changed`: the same with one cell edited upstream (a new repair stand, the
+  old one's pump gone).
+- `none`: no POIs anywhere.
+
+The stand-in CDN serves a set on request (`/_ctl/pois?set=<name>`): its
+non-empty files in place of the fixture's `.poi`, with their sizes and
+hashes in the index (the empty ones as `poiSize` 0), and its elements as
+Overpass's answer to the POI query.
+
 ## Attribution
 
 Map data © OpenStreetMap contributors, available under the
