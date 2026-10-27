@@ -114,8 +114,9 @@ class BleManagerSimTest {
      */
     private fun waitFor(what: String, timeoutMs: Long, every: () -> Unit = {}, cond: () -> Boolean) {
         val end = System.currentTimeMillis() + timeoutMs
+        val clock = LooperClock()
         while (true) {
-            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(20))
+            clock.advance()
             every()
             if (cond()) return
             if (System.currentTimeMillis() > end) fail("timed out waiting for $what\n${dump()}")
@@ -123,11 +124,29 @@ class BleManagerSimTest {
         }
     }
 
+    /**
+     * Moves the main looper's (paused) clock by the real time since the last
+     * step, so the app's delays (the 6 s paired-elsewhere fallback, link
+     * timeouts) keep pace with the sim, which runs in real time. A fixed step
+     * per loop let a slow runner fall behind: 30 s of waiting came to under
+     * 6 s on the looper.
+     */
+    private class LooperClock {
+        private var last = System.nanoTime()
+        fun advance() {
+            val now = System.nanoTime()
+            val ms = maxOf(1L, (now - last) / 1_000_000)
+            last = now
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(ms))
+        }
+    }
+
     /** Keep the looper running for [ms], checking [every] throughout. */
     private fun runFor(ms: Long, every: () -> Unit = {}) {
         val end = System.currentTimeMillis() + ms
+        val clock = LooperClock()
         while (System.currentTimeMillis() < end) {
-            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(20))
+            clock.advance()
             every()
             Thread.sleep(20)
         }
