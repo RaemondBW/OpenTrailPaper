@@ -191,8 +191,10 @@ final class FirmwareSimTests: XCTestCase {
 
     /// Settings → Maps on SD card → Select area → a box dragged around the
     /// phone's position (the fixture's centre: the map centres on the rider at
-    /// a fixed span). Returns the number of hexes the Download button offers.
-    private func selectAreaAroundTheRider(_ area: TileCdn.Area, beforeDownload: () -> Void = {},
+    /// a fixed span). Returns the number of hexes the Download button (or
+    /// `button`, e.g. "Send POIs for 2 hexes") offers.
+    private func selectAreaAroundTheRider(_ area: TileCdn.Area, button: NSPredicate = downloadButton,
+                                          centreOnRider: Bool = false, beforeDownload: () -> Void = {},
                                           file: StaticString = #filePath, line: UInt = #line) throws -> Int {
         app.buttons["Settings"].firstMatch.tap()
         let mapsRow = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Maps on SD card'")).firstMatch
@@ -202,6 +204,12 @@ final class FirmwareSimTests: XCTestCase {
         XCTAssertTrue(select.waitForExistence(timeout: 10), "Maps screen didn't open", file: file, line: line)
         allowLocationIfAsked()
         Thread.sleep(forTimeInterval: 3)   // the map centres on the rider's first fix
+        if centreOnRider {
+            // With tiles on the device the screen frames their coverage
+            // instead; the locate button brings the rider back to the middle.
+            app.buttons["Tracking"].firstMatch.tap()
+            Thread.sleep(forTimeInterval: 2)
+        }
         select.tap()
         // A box ~60 pt across around the middle of the map: well inside the
         // fixture's box (±0.04°/±0.05°) at the screen's ~0.25° span.
@@ -218,8 +226,17 @@ final class FirmwareSimTests: XCTestCase {
                     file: file, line: line)
             throw XCTSkip("selection outside the fixture")
         }
-        let download = app.buttons.matching(NSPredicate(format: "label CONTAINS[c] 'download ' AND label CONTAINS[c] ' hex'")).firstMatch
-        XCTAssertTrue(download.waitForExistence(timeout: 10), "no Download button after drawing a box", file: file, line: line)
+        let download = app.buttons.matching(button).firstMatch
+        if !download.waitForExistence(timeout: 10) {
+            // What the screen shows instead (a screenshot needs no UI query:
+            // the app may not idle for one, sim/IOS.md).
+            let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+            shot.name = "no \(button) button"
+            shot.lifetime = .keepAlways
+            add(shot)
+            XCTFail("no \(button) button after drawing a box", file: file, line: line)
+            throw XCTSkip("no \(button) button")
+        }
         // The Download button waits for the device's tile list (canUploadMap).
         let enabled = NSPredicate(format: "isEnabled == true")
         expectation(for: enabled, evaluatedWith: download)
@@ -231,6 +248,8 @@ final class FirmwareSimTests: XCTestCase {
         download.tap()
         return n
     }
+
+    private static let downloadButton = NSPredicate(format: "label CONTAINS[c] 'download ' AND label CONTAINS[c] ' hex'")
 
     /// Watches the device's tiles from a thread of its own for `seconds`,
     /// failing the test the moment `bad` finds something wrong with them. A
@@ -430,5 +449,312 @@ final class FirmwareSimTests: XCTestCase {
         for (id, v) in before where id != changed { XCTAssertEqual(now[id], v, "\(id) should be untouched") }
         let tiles = try TileCdn.paths().filter { $0.hasSuffix(".ebm") }
         XCTAssertEqual(tiles, ["/v1/\(changed.prefix(6))/\(changed).ebm"], "only the changed tile is fetched")
+    }
+
+    // MARK: cycling POIs (sim/fixtures/appmaps/pois, made by sim/cdn/build_poi_fixture.py)
+    //
+    // The device is checked with the app closed: a failure recorded while the
+    // Maps screen is up can wait forever on XCTest's snapshot of an app that
+    // never idles (sim/IOS.md), hiding the message.
+
+    /// XCTAssert, but said in the log first: a failure recorded here can sit
+    /// behind XCTest's failure triage, which has been seen to hang (sim/IOS.md).
+    private func expect(_ ok: Bool, _ msg: @autoclosure () -> String = "",
+                        file: StaticString = #filePath, line: UInt = #line) {
+        if !ok { fail(msg(), file: file, line: line) }
+    }
+    private func expectEqual<T: Equatable>(_ a: T, _ b: T, _ msg: @autoclosure () -> String = "",
+                                           file: StaticString = #filePath, line: UInt = #line) {
+        if a != b { fail("\(msg()): \(a) != \(b)", file: file, line: line) }
+    }
+    private func fail(_ msg: String, file: StaticString = #filePath, line: UInt = #line) {
+        print("FirmwareSimTests FAIL (line \(line)): \(msg)")
+        XCTFail(msg, file: file, line: line)
+    }
+
+    /// Where the fixture's water point, 150 m north of the centre, is drawn on
+    /// the device's map at the centre: north up, 2 m/px, the rider at (270, 430).
+    private let waterIcon = CGRect(x: 245, y: 330, width: 50, height: 50)
+
+    /// The primary button when the device needs POIs: "Send POIs for N
+    /// hexes", or "Download N hexes" when the box also takes in a hex the
+    /// device lacks, which then goes too, with its POIs.
+    private static let sendPoisButton = NSPredicate(
+        format: "label CONTAINS[c] 'send pois for ' OR label BEGINSWITH[c] 'download '")
+
+    /// The device's map screen, freshly drawn, as gray pixels (kept in the
+    /// result bundle as `name`).
+    private func deviceMap(_ name: String) throws -> (Int, Int, [UInt8]) {
+        try SimControl.call(["cmd": "console", "line": "screen dash", "wait_ms": 300])
+        try SimControl.call(["cmd": "console", "line": "screen map", "wait_ms": 500])
+        _ = SimControl.waitStatus(timeout: 10) { $0["screen"] as? String == "map" }
+        Thread.sleep(forTimeInterval: 3)
+        let shot = FileManager.default.temporaryDirectory.appendingPathComponent("\(name).png")
+        let px = try Panel.gray(shot)
+        if let data = try? Data(contentsOf: shot) {
+            let a = XCTAttachment(data: data, uniformTypeIdentifier: "public.png")
+            a.name = name
+            a.lifetime = .keepAlways
+            add(a)
+        }
+        return px
+    }
+
+    /// The rider standing at the fixture's centre, facing north.
+    private func fixAtTheCentre(_ area: TileCdn.Area) throws {
+        try SimControl.call(["cmd": "gps", "lat": area.lat, "lon": area.lon, "fix": true, "sats": 9,
+                             "course": 0, "speed_kmh": 0])
+    }
+
+    /// Waits until the device's .poi records satisfy `done`; returns them.
+    private func waitForPois(_ timeout: TimeInterval = 60, _ done: ([String: String]) -> Bool) -> [String: String] {
+        var pois: [String: String] = [:]
+        let end = Date().addingTimeInterval(timeout)
+        repeat {
+            pois = (try? SimControl.tiles(poi: true)) ?? [:]
+            if done(pois) { break }
+            Thread.sleep(forTimeInterval: 0.5)
+        } while Date() < end
+        return pois
+    }
+
+    /// Lets the transfer queue drain, then closes the app (see above).
+    private func settleAndClose() {
+        Thread.sleep(forTimeInterval: 2)
+        app.terminate()
+    }
+
+    /// The .poi on the device's card is the POI set's reference file.
+    private func assertCardHolds(_ set: String, _ id: String, file: StaticString = #filePath, line: UInt = #line) {
+        guard let want = TileCdn.poiSetFile(set, id) else {
+            return fail("the stand-in has no \(set)/\(id).poi", file: file, line: line)
+        }
+        guard let got = SimEnv.cardFile(id, "poi") else {
+            return fail("\(id).poi is not on the device's card (OTP_SIM_DIR \(SimEnv.deviceDir?.path ?? "unset"))",
+                           file: file, line: line)
+        }
+        expectEqual(got, want, "\(id).poi on the card is not the reference writer's (\(set))", file: file, line: line)
+    }
+
+    /// The hex the woodstock and changed POI sets differ in (the rider's, at
+    /// the centre: the box the POI tests draw is around it), with its .poi
+    /// hash in each. Leaves the CDN serving `serve`.
+    private func editedHex(serve: String) throws -> (id: String, woodstock: String, changed: String) {
+        let a = try TileCdn.pois("woodstock"), b = try TileCdn.pois("changed")
+        try TileCdn.pois(serve)
+        let ids = a.keys.filter { a[$0] != b[$0] }
+        guard ids.count == 1, let id = ids.first else { throw XCTSkip("the POI sets should differ in one hex: \(ids)") }
+        return (id, a[id] ?? "", b[id] ?? "")
+    }
+
+    /// Hexes on the device now that were not in `before`.
+    private func newHexes(since before: [String: String]) throws -> [String] {
+        try SimControl.tiles().keys.filter { before[$0] == nil }.sorted()
+    }
+
+    /// The CDN files a download that adds `added` to the device fetches for
+    /// them: each tile, and each .poi with POIs.
+    private func filesFor(_ added: [String], _ hashes: [String: String]) -> [String] {
+        added.flatMap { a in
+            ["/v1/\(a.prefix(6))/\(a).ebm"] + (hashes[a] == "" ? [] : ["/v1/\(a.prefix(6))/\(a).poi"])
+        }
+    }
+
+    // MARK: 9. the area's POIs reach the device, which draws them
+
+    /// After test07/08: the CDN now has POIs for the area (the woodstock
+    /// set). A box around the rider; the Maps screen offers the hexes whose
+    /// .poi changed, and the device ends up with each selected hex's .poi byte
+    /// for byte the reference writer's, with the CDN's records, and draws the
+    /// water point north of the rider where there was none.
+    func test09_AreaPoisReachTheDeviceAndAreDrawn() throws {
+        executionTimeAllowance = 240
+        let area = try requireCdn()
+        let onDevice = try SimControl.tiles()
+        guard !onDevice.isEmpty else { throw XCTSkip("needs test07's tiles on the device") }
+        try fixAtTheCentre(area)
+        let before = try deviceMap("device-pois-before")
+        let hashes = try TileCdn.pois("woodstock")
+        let had = try SimControl.tiles(poi: true)
+
+        mapsLaunch(area)
+        _ = try selectAreaAroundTheRider(area, button: Self.sendPoisButton, centreOnRider: true)
+        // The hexes whose .poi went out: the ones that changed or are new.
+        _ = waitForPois { p in
+            let now = (try? SimControl.tiles()) ?? onDevice
+            return now.keys.contains { had[$0] != p[$0] && p[$0] == "cdn:" + (hashes[$0] ?? "?") }
+                && now.keys.allSatisfy { p[$0] != nil }
+        }
+        settleAndClose()
+
+        let pois = try SimControl.tiles(poi: true)
+        let added = try newHexes(since: onDevice)
+        let sent = pois.keys.filter { had[$0] != pois[$0] }.sorted()
+        print("FirmwareSimTests test09: sent \(sent), added \(added), records \(pois)")
+        expect(!(sent.isEmpty), "no .poi reached the device")
+        for id in sent {
+            expectEqual(pois[id], "cdn:" + (hashes[id] ?? "?"), "\(id).poi's version record on the device")
+            assertCardHolds("woodstock", id)
+        }
+        let paths = try TileCdn.paths()
+        expectEqual(Set(paths.filter { $0.hasSuffix(".poi") }),
+                       Set(sent.filter { hashes[$0] != "" }.map { "/v1/\($0.prefix(6))/\($0).poi" }),
+                       "the .poi files fetched: \(paths)")
+        expectEqual(Set(paths.filter { $0.hasSuffix(".ebm") }), Set(added.map { "/v1/\($0.prefix(6))/\($0).ebm" }),
+                       "a tile already on the device was fetched: \(paths)")
+        expect(!(paths.contains { $0.hasSuffix("/api/interpreter") }), "Overpass was asked: \(paths)")
+
+        let after = try deviceMap("device-pois-after")
+        let d = Panel.diff(before, after, box: waterIcon)
+        print("FirmwareSimTests test09: water icon diff \(d)")
+        expect(d.inside > 150, "no water icon drawn north of the rider (\(d.inside) pixels changed there)")
+    }
+
+    // MARK: 10. a POI edit upstream is sent for that hex only
+
+    /// After test09: the rider's hex's POIs change upstream (the changed set).
+    /// Only that .poi is fetched and sent (and a hex new to the device, if
+    /// the box takes one in); the device's other .poi files are untouched.
+    func test10_PoiChangeUpstreamIsSentForThatHexOnly() throws {
+        executionTimeAllowance = 240
+        let area = try requireCdn()
+        let (id, woodstock, _) = try editedHex(serve: "changed")
+        let hashes = try TileCdn.pois("changed")
+        guard try SimControl.tiles(poi: true)[id] == "cdn:" + woodstock else {
+            throw XCTSkip("needs test09's POIs for \(id) on the device")
+        }
+        let before = try SimControl.tiles(poi: true)
+        let tilesBefore = try SimControl.tiles()
+        mapsLaunch(area)
+        _ = try selectAreaAroundTheRider(area, button: Self.sendPoisButton, centreOnRider: true)
+        _ = waitForPois { $0[id] == "cdn:" + (hashes[id] ?? "?") }
+        settleAndClose()
+
+        let pois = try SimControl.tiles(poi: true)
+        let added = try newHexes(since: tilesBefore)
+        print("FirmwareSimTests test10: \(id) -> \(pois[id] ?? "none"), added \(added)")
+        expectEqual(pois[id], "cdn:" + (hashes[id] ?? "?"), "the device's record for the changed hex")
+        for (other, v) in before where other != id { expectEqual(pois[other], v, "\(other).poi should be untouched") }
+        assertCardHolds("changed", id)
+        let paths = try TileCdn.paths()
+        expectEqual(Set(paths.filter { $0.hasSuffix(".poi") || $0.hasSuffix(".ebm") }),
+                       Set(["/v1/\(id.prefix(6))/\(id).poi"] + filesFor(added, hashes)),
+                       "only the changed .poi (and a hex new to the device) is fetched")
+    }
+
+    // MARK: 11. the rider's layer switch hides the device's water icons
+
+    /// The Maps screen's "Device map layers" sheet: Drinking water off
+    /// reaches the device (settings.map_layers), whose map loses the water
+    /// icon north of the rider and nothing else; on again, it is back.
+    func test11_WaterLayerSwitchHidesTheIcon() throws {
+        executionTimeAllowance = 180
+        let area = try requireCdn()
+        guard (try SimControl.tiles(poi: true)).values.contains(where: { $0 != "cdn:" && !$0.isEmpty }) else {
+            throw XCTSkip("needs test09's POIs on the device")
+        }
+        func layers(_ s: [String: Any]?) -> Int? { (s?["settings"] as? [String: Any])?["map_layers"] as? Int }
+        expectEqual(layers(try? SimControl.status()), 0x3F, "all of the device's map layers should start on")
+        try fixAtTheCentre(area)
+        let on = try deviceMap("device-water-on")
+
+        mapsLaunch(area)
+        app.buttons["Settings"].firstMatch.tap()
+        let mapsRow = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Maps on SD card'")).firstMatch
+        expect(mapsRow.waitForExistence(timeout: 10))
+        mapsRow.tap()
+        let layersButton = app.buttons["Device map layers"]
+        expect(layersButton.waitForExistence(timeout: 15), "no Device map layers button on the Maps screen")
+        layersButton.tap()
+        let water = app.switches.matching(NSPredicate(format: "label BEGINSWITH 'Drinking water'")).firstMatch
+        expect(water.waitForExistence(timeout: 10), "no Drinking water switch")
+        // The app's toggle style is an ON | OFF pair at the row's trailing
+        // edge: tap the half wanted.
+        func flip(to mask: Int) -> Bool {
+            for _ in 0..<3 {
+                water.coordinate(withNormalizedOffset: CGVector(dx: mask & 0x04 != 0 ? 0.80 : 0.93, dy: 0.5)).tap()
+                if SimControl.waitStatus(timeout: 5, { layers($0) == mask }) != nil { return true }
+                print("FirmwareSimTests test11: device layers \(String(describing: layers(try? SimControl.status()))), want \(mask), switch \(String(describing: water.value))")
+                let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+                shot.name = "layers want \(mask)"
+                shot.lifetime = .keepAlways
+                add(shot)
+            }
+            return false
+        }
+        let wentOff = flip(to: 0x3B)
+        let off = try deviceMap("device-water-off")
+        let cameBack = flip(to: 0x3F)
+        let back = try deviceMap("device-water-back")
+        app.terminate()
+
+        expect(wentOff, "the device's layers never lost drinking water")
+        expect(cameBack, "the device's layers never got drinking water back")
+        let d = Panel.diff(on, off, box: waterIcon)
+        let d2 = Panel.diff(on, back, box: waterIcon)
+        print("FirmwareSimTests test11: off \(d), back \(d2)")
+        expect(d.inside > 150, "the water icon is still drawn (\(d.inside) pixels changed)")
+        expect(d.outside < 20, "more than the water icon changed (\(d.outside) pixels elsewhere)")
+        expect(d2.inside + d2.outside < 20, "the map did not come back as it was (\(d2))")
+    }
+
+    // MARK: 12. Overpass timing out is not "no POIs here"
+
+    /// The CDN cannot serve the rider's hex's .poi (500), so the app asks
+    /// Overpass, which answers as it does when a query runs out of time: a
+    /// 200 with no elements and a "runtime error" remark. That must not reach
+    /// the device as an empty .poi; the Maps screen says the POIs could not be
+    /// fetched and the device keeps what it had.
+    func test12_OverpassTimeoutNeverReachesTheDeviceAsNoPois() throws {
+        executionTimeAllowance = 240
+        let area = try requireCdn()
+        let (id, _, changed) = try editedHex(serve: "woodstock")
+        guard try SimControl.tiles(poi: true)[id] == "cdn:" + changed else {
+            throw XCTSkip("needs test10's POIs for \(id) on the device")
+        }
+        let before = try SimControl.tiles(poi: true)
+        let card = SimEnv.cardFile(id, "poi")
+        try TileCdn.fault("*.poi", "status:500")
+        try TileCdn.fault("/api/interpreter", "remark")
+        mapsLaunch(area)
+        _ = try selectAreaAroundTheRider(area, button: Self.sendPoisButton, centreOnRider: true)
+        let note = app.staticTexts.matching(NSPredicate(format: "label CONTAINS[c] 'could not be fetched'")).firstMatch
+        let said = note.waitForExistence(timeout: 90)
+        settleAndClose()
+
+        let after = try SimControl.tiles(poi: true)
+        print("FirmwareSimTests test12: said \(said), \(id): \(before[id] ?? "none") -> \(after[id] ?? "none")")
+        expect(said, "the Maps screen never said the POIs could not be fetched")
+        for (other, v) in before { expectEqual(after[other], v, "\(other).poi's record on the device changed") }
+        expectEqual(SimEnv.cardFile(id, "poi"), card, "\(id).poi on the card changed")
+        let queries = try TileCdn.overpassQueries()
+        expect(queries.contains("poi"), "Overpass's POI query was never asked: \(queries)")
+    }
+
+    // MARK: 13. POIs built on the phone from Overpass
+
+    /// The CDN cannot serve the hex's .poi (500): the app builds it from the
+    /// (stand-in's) Overpass answer to its POI query, with its own H3 and
+    /// MapBuilder.buildPoi. The device must hold the reference writer's bytes
+    /// for the same POIs, recorded as built on this phone.
+    func test13_OverpassPoisAreBuiltOnThePhone() throws {
+        executionTimeAllowance = 240
+        let area = try requireCdn()
+        let (id, _, changed) = try editedHex(serve: "woodstock")
+        guard try SimControl.tiles(poi: true)[id] == "cdn:" + changed else {
+            throw XCTSkip("needs test12's POIs for \(id) on the device (test10's, kept)")
+        }
+        try TileCdn.fault("*.poi", "status:500")
+        mapsLaunch(area)
+        _ = try selectAreaAroundTheRider(area, button: Self.sendPoisButton, centreOnRider: true)
+        _ = waitForPois { $0[id]?.hasPrefix("phone:") == true }
+        settleAndClose()
+
+        let pois = try SimControl.tiles(poi: true)
+        print("FirmwareSimTests test13: \(id) -> \(pois[id] ?? "none")")
+        expect(pois[id]?.hasPrefix("phone:") == true, "\(id).poi's record: \(pois[id] ?? "none")")
+        assertCardHolds("woodstock", id)
+        let queries = try TileCdn.overpassQueries()
+        expect(!queries.isEmpty && queries.allSatisfy { $0 == "poi" }, "Overpass queries: \(queries)")
     }
 }

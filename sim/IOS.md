@@ -93,6 +93,35 @@ then holds is read from the device (control `tiles`).
   version of one hex on the device; the Maps screen offers "Redownload 1 hex",
   only that tile is fetched, and the device records its new version.
 
+Cycling POIs, after test08, from the fixture's POI sets
+(sim/fixtures/appmaps/pois, each cell's `.poi` built by the reference writer
+docs/mapgen.js; the stand-in serves one on `/_ctl/pois?set=`). The tests read
+the device's card (`OTP_SIM_DIR`, which run_ios_tests.sh passes to the test
+runner) and the reference files from the stand-in (`/_ctl/poi`: a runner
+reading under ~/Documents would wait on a privacy prompt). They draw their box
+around the rider (the screen's locate button: with tiles on the device the
+Maps screen frames their coverage instead), so it holds the centre hex, the
+one the POI sets edit. The device is checked with the app closed, and each
+failure is printed (`FirmwareSimTests FAIL`) before it is recorded, since
+XCTest's failure triage can hang on the Maps screen:
+
+- `test09_AreaPoisReachTheDeviceAndAreDrawn`: the CDN gets POIs for the area;
+  "Send POIs for N hexes" offers exactly the hexes whose .poi changed, the
+  device holds every hex's .poi byte for byte with the CDN's records, only
+  those .poi files are fetched (no tile, no Overpass), and the device's map
+  now draws the water point 150 m north of the rider (screenshot diff).
+- `test10_PoiChangeUpstreamIsSentForThatHexOnly`: one cell's POIs change
+  upstream; "Send POIs for 1 hex" fetches and sends that .poi only.
+- `test11_WaterLayerSwitchHidesTheIcon`: Maps → Device map layers →
+  Drinking water off reaches the device (`settings.map_layers`) and removes
+  that icon and nothing else; on brings it back.
+- `test12_OverpassTimeoutNeverReachesTheDeviceAsNoPois`: the CDN's .poi fails
+  (500) and Overpass answers with its 200 "runtime error" timeout remark; the
+  screen says the POIs could not be fetched and the device keeps what it had.
+- `test13_OverpassPoisAreBuiltOnThePhone`: the CDN's .poi fails; the app
+  builds it from the stand-in's Overpass answer, and the device holds the
+  reference writer's bytes, recorded `phone:…`.
+
 The fixture covers the area around the centre generously (±0.04° / ±0.05°),
 so the box, however the map frames it, gets only fixture hexes; a box outside
 it fails at once, naming the group index the screen looked up. The tests

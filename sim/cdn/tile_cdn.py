@@ -33,6 +33,9 @@ Test controls, under /_ctl/ (POST, query parameters):
     /_ctl/reset               forget bumps, faults, the POI set and the log
     /_ctl/pois?set=<name>     serve that POI set (see above); no name: the
                               fixture's own .poi files again, no Overpass POIs
+    /_ctl/poi?set=<name>&id=<h3>
+                              that set's .poi for the cell, empty ones too: the
+                              reference writer's bytes, for a test to compare (GET)
     /_ctl/bump?id=<h3>[&ext=ebm|poi]
                               publish a new version of that file: the same bytes
                               plus an unknown extension section (the firmware
@@ -248,6 +251,9 @@ def handler(cdn):
                     return self.send(404, json.dumps({"error": f"no POI set {e}", "sets": sorted(cdn.poi_sets)})
                                      .encode(), "application/json")
                 return self.send(200, json.dumps(r).encode(), "application/json")
+            if path == "/_ctl/poi":
+                body = cdn.poi_sets.get(arg("set", ""), (None, {}))[1].get(arg("id", ""))
+                return self.send(200, body) if body is not None else self.send(404)
             if path == "/_ctl/fault":
                 with cdn.lock:
                     cdn.faults.append((arg("match", "*"), arg("kind", "status:500")))
