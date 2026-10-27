@@ -89,8 +89,29 @@ class TileCdn private constructor(val fixture: File, private val proc: Process, 
     fun bump(id: String, ext: String = "ebm"): JsonObject =
         JsonParser.parseString(String(ctl("_ctl/bump?id=$id&ext=$ext"))).asJsonObject
 
-    /** Misbehave on paths matching [match]: "truncate", "status:<code>" or "close". */
+    /** Misbehave on paths matching [match]: "truncate", "status:<code>", "close" or
+     *  "garble"; on Overpass (match "/api/interpreter") also "remark" (its timeout). */
     fun fault(match: String, kind: String) { ctl("_ctl/fault?match=$match&kind=$kind") }
+
+    /**
+     * Serve the POI set [set] (sim/fixtures/appmaps/pois/<set>, built by
+     * sim/cdn/build_poi_fixture.py) in place of the fixture's own .poi files,
+     * and answer Overpass's POI query from it; null: back to the fixture's.
+     * Returns each cell's new index entry, id -> (poiSize, poiHash).
+     */
+    fun pois(set: String?): Map<String, Pair<Int, String>> {
+        val r = JsonParser.parseString(String(ctl("_ctl/pois?set=${set ?: ""}"))).asJsonObject
+        return r.getAsJsonObject("cells")?.entrySet()?.associate { (id, e) ->
+            id to (e.asJsonArray[0].asInt to e.asJsonArray[1].asString)
+        } ?: emptyMap()
+    }
+
+    /** A POI set's .poi for [id], as the reference writer (docs/mapgen.js buildPoi) built it. */
+    fun poiSetFile(set: String, id: String): ByteArray = File(fixture, "pois/$set/$id.poi").readBytes()
+
+    /** The Overpass requests so far, by query ("poi", "map", "coast"). */
+    fun overpassQueries(log: List<JsonObject> = log()): List<String> =
+        log.filter { it.get("path").asString.endsWith("/api/interpreter") }.map { it.get("overpass")?.asString ?: "" }
 
     private fun ctl(path: String): ByteArray {
         val (code, body) = request("POST", path)
