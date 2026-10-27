@@ -15,6 +15,23 @@ namespace map_tiles {
 bool load(const uint8_t* data, size_t len);
 bool loaded();
 
+// EBM2 structure. A tile's header names its grid, and the grid sizes the
+// sub-tile index; nothing else ties either to the length of the file, so every
+// reader has to check them against it before it reads — a tile already on a
+// card may have been stored by firmware that never looked.
+// Where the sub-tile index ends: 0 when the header is not usable (not EBM2, a
+// grid of no cells, a cell size that is not a small positive number, or an
+// index that does not fit in the blob).
+size_t tileIndexEnd(const uint8_t* blob, size_t len);
+// Where the road data ends and the sections after it (ELV1, WTR2, ...) begin:
+// past the index and every entry in it that lies inside the blob. 0 as above.
+size_t tileDataEnd(const uint8_t* blob, size_t len);
+// The whole structure: header and index as above, and every index entry,
+// polyline record and section inside the blob. What a tile must be to be
+// stored (saveTile, saveAndActivate). Readers do not need it — they skip
+// whatever does not fit — but the phone deserves to hear that a tile is bad.
+bool tileValid(const uint8_t* blob, size_t len);
+
 // Projects features around (lat, lon) into `out` (features/featureCount
 // only — route and rider fields are the caller's). Coordinates are
 // screen px with the position at (centerX, centerY). Internal scratch
