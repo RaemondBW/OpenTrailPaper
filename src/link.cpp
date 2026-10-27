@@ -18,6 +18,7 @@
 #include <SD.h>
 #include <esp_heap_caps.h>
 #include <freertos/ringbuf.h>
+#include <algorithm>
 #include <atomic>
 #include <math.h>
 #include <string.h>
@@ -72,7 +73,12 @@ constexpr uint32_t WORKOUT_MAX = 16 * 1024;         // as the legacy WORKOUT buf
 constexpr uint32_t AGNSS_MAX = 32 * 1024;           // gps_service's assistance buffer
 constexpr uint32_t FIRMWARE_MAX = 8 * 1024 * 1024;  // larger than any app partition
 constexpr uint32_t ART_MAX_SIDE = 320;
-constexpr int LIST_MAX = 512;                       // files per FileList walk
+// Files per FileList walk: listBuf starts at LIST_FIRST and grows as a walk
+// needs it, up to LIST_MAX (~590 KB of PSRAM). It used to stop at 512, in
+// directory order — oldest rides first — so on a card with more the app never
+// saw the newest, the ride just recorded included.
+constexpr int LIST_FIRST = 512;
+constexpr int LIST_MAX = 8192;
 constexpr int FILE_PAGE = 16;                       // link.options max_count
 constexpr int TILE_PAGE = 32;
 constexpr int MESH_HISTORY_PAGE = 4;
@@ -105,6 +111,7 @@ otp_link_DeviceMsg* outMsg = nullptr;   // PSRAM: message being built
 uint8_t* txBuf = nullptr;               // PSRAM: encoded DeviceMsg
 uint8_t* ioBuf = nullptr;               // PSRAM: 4 KB SD read scratch
 otp_link_FileEntry* listBuf = nullptr;  // PSRAM: one directory walk
+int listCap = 0;                        // entries listBuf holds
 char* dashPending = nullptr;            // PSRAM: a SetDash waiting for the card
 
 struct Session {
@@ -845,21 +852,50 @@ void onMesh(uint32_t req, const otp_link_MeshCommand& c) {
 
 struct ListWalk {
     int n = 0;
-    bool truncated = false;
+    int dropped = 0;
+    bool newest = false;   // past the cap, keep the newest names (rides)
 };
 
 void collectFile(const char* name, uint32_t size, void* ctx) {
     ListWalk* w = (ListWalk*)ctx;
-    if (w->n >= LIST_MAX) { w->truncated = true; return; }
-    otp_link_FileEntry& e = listBuf[w->n++];
-    copyStr(e.name, sizeof(e.name), name);
-    e.size = size;
+    if (w->n == listCap && listCap < LIST_MAX) {
+        const int cap = std::min(listCap * 2, LIST_MAX);
+        void* p = heap_caps_realloc(listBuf, sizeof(otp_link_FileEntry) * cap, MALLOC_CAP_SPIRAM);
+        if (p) {
+            listBuf = (otp_link_FileEntry*)p;
+            listCap = cap;
+        }
+    }
+    otp_link_FileEntry* e;
+    if (w->n < listCap) {
+        e = &listBuf[w->n++];
+    } else {
+        // Out of room. Ride names are YYYYMMDD-HHMMSS, so the smallest is the
+        // oldest: a newer ride takes its place, and the app always sees the
+        // newest rides there are.
+        ++w->dropped;
+        if (!w->newest) return;
+        int old = 0;
+        for (int i = 1; i < w->n; ++i)
+            if (strcmp(listBuf[i].name, listBuf[old].name) < 0) old = i;
+        if (strcmp(name, listBuf[old].name) <= 0) return;
+        e = &listBuf[old];
+    }
+    copyStr(e->name, sizeof(e->name), name);
+    e->size = size;
 }
 
 void sendFileList(uint32_t req, otp_link_ListKind kind, ble_shared::Dir dir) {
     ListWalk w;
+    w.newest = dir == ble_shared::Dir::Rides;
     ble_shared::listDir(dir, collectFile, &w);   // a missing directory is an empty list
-    if (w.truncated) diag::log("link: list %d cut at %d files", (int)kind, LIST_MAX);
+    if (w.dropped) diag::log("link: list %d cut at %d files (%d left out)", (int)kind, w.n, w.dropped);
+    // Rides newest first, as both apps show them: should the link drop part
+    // way, what arrived is the rides the rider most likely wants.
+    if (w.newest)
+        std::sort(listBuf, listBuf + w.n, [](const otp_link_FileEntry& a, const otp_link_FileEntry& b) {
+            return strcmp(a.name, b.name) > 0;
+        });
     int i = 0;
     do {
         otp_link_FileList& l = msg(req, otp_link_DeviceMsg_file_list_tag).body.file_list;
@@ -2011,8 +2047,9 @@ void begin(NimBLEServer* server, uint32_t rxProperties) {
     outMsg = (otp_link_DeviceMsg*)heap_caps_malloc(sizeof(otp_link_DeviceMsg), MALLOC_CAP_SPIRAM);
     txBuf = (uint8_t*)heap_caps_malloc(otp_link_DeviceMsg_size, MALLOC_CAP_SPIRAM);
     ioBuf = (uint8_t*)heap_caps_malloc(4096, MALLOC_CAP_SPIRAM);
-    listBuf = (otp_link_FileEntry*)heap_caps_malloc(sizeof(otp_link_FileEntry) * LIST_MAX,
+    listBuf = (otp_link_FileEntry*)heap_caps_malloc(sizeof(otp_link_FileEntry) * LIST_FIRST,
                                                     MALLOC_CAP_SPIRAM);
+    listCap = listBuf ? LIST_FIRST : 0;
     dashPending = (char*)heap_caps_malloc(sizeof(otp_link_DashConfig::text), MALLOC_CAP_SPIRAM);
     if (!rxAsmBuf || !rxRing || !inMsg || !outMsg || !txBuf || !ioBuf || !listBuf || !dashPending) {
         diag::log("link: out of PSRAM — the phone link is off");

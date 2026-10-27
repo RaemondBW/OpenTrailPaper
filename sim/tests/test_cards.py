@@ -37,7 +37,7 @@ PROFILES = ["empty", "typical", "nearly_full", pytest.param("heavy", marks=SLOW)
 CARD_OP_MS = 2
 BOOT_BOUND_S = {"empty": 4, "typical": 5, "nearly_full": 5, "heavy": 10}
 
-LIST_MAX = 512        # link.cpp: files per FileList walk
+LIST_MAX = 8192       # link.cpp: files per FileList walk (past it, rides keep the newest)
 TILE_LIST_MAX = 4096  # ble_server.cpp lockTileList
 HISTORY_MAX = 256     # ui_dashboard.cpp kRideListMax: the newest 256, by design
 ROWS = 5              # kMenuRowCount
@@ -176,18 +176,34 @@ def test_boots_to_the_dashboard(boot_card, card_image, profile, record_property)
 
 # ---- the app's lists ----------------------------------------------------------------------------
 
-@pytest.mark.parametrize("profile", [
-    "empty", "typical", "nearly_full",
-    pytest.param("heavy", marks=[SLOW, pytest.mark.xfail(strict=True, reason=(
-        "BUG: LIST_RIDES stops at LIST_MAX=512 files (link.cpp) with nothing in FileList to say so — "
-        "the device only logs 'link: list 1 cut at 512 files'. The walk is in directory order, oldest "
-        "first on FAT, so on a card with >512 rides the app never sees the newest ones."))]),
-])
+@pytest.mark.parametrize("profile", PROFILES)
 def test_app_ride_list_matches_the_card(boot_card, profile):
+    """Every ride, newest first. (Up to 512 once, in directory order: on a
+    card with more the app never saw the newest.)"""
     dev, card = boot_card(profile)
     link = link_to(dev)
-    got = listed(link, pb.LIST_RIDES)
+    pages = link.request(list=pb.ListRequest(kind=pb.LIST_RIDES), all_pages=True, timeout=10)
+    names = [f.name for p in pages for f in p.file_list.files]
+    got = {f.name: f.size for p in pages for f in p.file_list.files}
     assert got == card.rides, "app sees %d rides, the card has %d" % (len(got), len(card.rides))
+    assert names == sorted(names, reverse=True)
+
+
+@SLOW
+def test_past_the_list_cap_the_app_gets_the_newest_rides(boot_card):
+    """More rides than one walk holds: the newest LIST_MAX are listed, newest
+    first, whatever order the directory keeps them in."""
+    dev, card = boot_card("empty")
+    rides = os.path.join(dev.sd, "rides")
+    os.makedirs(rides, exist_ok=True)
+    base = 1577836800                    # 2020-01-01; one ride an hour
+    names = [time.strftime("%Y%m%d-%H%M%S.fit", time.gmtime(base + 3600 * i)) for i in range(LIST_MAX + 300)]
+    for n in random.Random(4).sample(names, len(names)):   # directory order isn't age order
+        open(os.path.join(rides, n), "wb").close()
+    link = link_to(dev)
+    pages = link.request(list=pb.ListRequest(kind=pb.LIST_RIDES), all_pages=True, timeout=30)
+    got = [f.name for p in pages for f in p.file_list.files]
+    assert got == sorted(names, reverse=True)[:LIST_MAX]
 
 
 @pytest.mark.parametrize("profile", PROFILES)
@@ -276,14 +292,10 @@ def test_a_ride_records_saves_and_downloads(boot_card, profile):
     check_fit(got)
     for n in random.Random(profile).sample(sorted(card.rides), min(20, len(card.rides))):
         assert digest(os.path.join(dev.sd, "rides", n)) == digest(os.path.join(card.sd, "rides", n)), n
-    if len(card.rides) < LIST_MAX:
-        assert name in listed(link, pb.LIST_RIDES)
+    assert name in listed(link, pb.LIST_RIDES)
 
 
 @SLOW
-@pytest.mark.xfail(strict=True, reason=(
-    "BUG: the ride just recorded on a card with >512 rides never reaches the app: LIST_RIDES is cut "
-    "at 512 files in directory order (oldest first), so the newest ride is past the cut."))
 def test_the_newest_ride_reaches_the_app_on_a_heavy_card(boot_card):
     dev, card = boot_card("heavy")
     link = link_to(dev)
