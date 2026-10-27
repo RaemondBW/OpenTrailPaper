@@ -35,6 +35,50 @@ is an open app bug (ignored). Bluetooth off in SimRadio reports the adapter
 change before the links drop, as Android does. Each test's SimRadio log and the sim console tail
 are in the test report's standard output.
 
+### Maps
+
+`MapsSimTest` runs the map flow end to end without the network:
+`runMapDownload` (map/MapDownload.kt — what the Maps screen's Download /
+Redownload buttons run: CDN index, tile and POI caches, PrebuiltTiles, the
+Overpass fallback) fetches the fixture area from the stand-in CDN, and the
+real BleManager sends it to the sim over SimRadio. Each test starts
+`sim/cdn/tile_cdn.py` (python3) on a free port serving
+`sim/fixtures/appmaps` (seven real tiles, see its README), and points the app
+at it through the debug override below. What the device holds is read from
+the device (control `tiles`, sim/PROTOCOL.md) and its card.
+
+- `downloadedAreaReachesTheDeviceWithItsVersions`: every tile from the CDN
+  (no Overpass), in the app's caches with `cdn:<hash>`; the device holds
+  exactly those tiles and .poi files, with the CDN's version records and
+  bytes, and its map screen at a fix inside the area is no longer
+  "NO MAP HERE" (screenshot).
+- `newCdnVersionResendsOnlyThatHex`: the CDN publishes a new version of one
+  hex; Redownload fetches and sends that one only, and the device records the
+  new version.
+- `redownloadOfCurrentAreaSendsNothing`: nothing changed: "All 7 hexes are up
+  to date.", only index.json is read, the device saves nothing.
+- `badTilesFromTheCdnAreReportedAndNotSent`: one tile truncated, one a 500.
+  Neither reaches the device or the cache; the fallback goes to the stand-in's
+  Overpass (503) and the download reports the failure; the rest are sent.
+
+The area is the fixture's list of cells (with their bboxes) rather than an H3
+cover of a drawn box: the cover is JNI, which a JVM test can't load. The app
+keeps CDN indexes for an hour; the update tests clear that cache as an hour
+passing would.
+
+### The tile CDN override (debug builds)
+
+`files/otp-endpoints` (`map/DebugEndpoints.kt`, src/debug; the release copy
+is a stub that returns null) sends map downloads to another tile CDN and one
+Overpass endpoint, e.g. the stand-in:
+
+    sim/cdn/tile_cdn.py --dir sim/fixtures/appmaps --port 7923
+    adb shell run-as com.raemond.opentrailpaper sh -c \
+        'printf "tiles=http://10.0.2.2:7923/v1/\noverpass=http://10.0.2.2:7923/api/interpreter\n" > files/otp-endpoints'
+
+Read at start. Debug builds allow plain HTTP to 10.0.2.2 / localhost only
+(src/debug/res/xml/network_security_config.xml).
+
 ## The debug app on an emulator
 
     sim/build/otp-sim --dir /tmp/otpsim-android --ble-port 7878 --ctl-port 7879

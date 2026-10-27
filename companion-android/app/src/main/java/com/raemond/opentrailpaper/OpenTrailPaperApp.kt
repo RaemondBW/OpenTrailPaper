@@ -4,6 +4,7 @@ import android.app.Application
 import com.raemond.opentrailpaper.ble.AndroidRadio
 import com.raemond.opentrailpaper.ble.BleManager
 import com.raemond.opentrailpaper.ble.DebugRadio
+import com.raemond.opentrailpaper.map.DebugEndpoints
 import com.raemond.opentrailpaper.data.DeviceSettingsStore
 import com.raemond.opentrailpaper.data.Prefs
 import com.raemond.opentrailpaper.data.RideListingStore
@@ -29,6 +30,8 @@ class OpenTrailPaperApp : Application() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        // Debug builds can point map downloads at a stand-in CDN (sim/ANDROID.md).
+        DebugEndpoints.init(this)
         Prefs.init(this)
         DeviceSettingsStore.init(this)
         RideListingStore.init(this)

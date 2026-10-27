@@ -236,10 +236,33 @@ std::string statusJson() {
     return o.str();
 }
 
+// The tiles (or .poi files) on the card, as the device lists them to a phone:
+// the TileList answer's own walk and version records (ble_shared::lockTileList,
+// link.cpp), so a test sees what any phone asking now would see.
+std::string tilesJson(bool poi) {
+    ble_shared::TileListing tl;
+    if (!ble_shared::lockTileList(poi, true, tl)) return "null";
+    std::ostringstream o;
+    o << "[";
+    for (int i = 0; i < tl.n; ++i) {
+        o << (i ? "," : "") << "{\"id\":" << json::esc(tl.ids[i])
+          << ",\"version\":" << json::esc(tl.vers ? tl.vers[i] : "") << "}";
+    }
+    o << "]";
+    ble_shared::unlockTileList();
+    return o.str();
+}
+
 std::string handle(const json::Value& r) {
     const std::string cmd = r.str("cmd");
     auto ok = [](const std::string& extra = "") { return std::string("\"ok\":true") + (extra.empty() ? "" : "," + extra); };
     if (cmd == "status") return ok("\"status\":" + statusJson());
+    if (cmd == "tiles") {
+        const bool poi = r.boolean("poi", false);
+        const std::string list = tilesJson(poi);
+        if (list == "null") return "\"ok\":false,\"error\":\"no memory for the tile list\"";
+        return ok("\"tiles\":" + list);
+    }
     if (cmd == "console") {
         uint64_t since = sim::logSeq();
         sim::feedConsole(r.str("line"));

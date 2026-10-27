@@ -26,8 +26,12 @@ enum PrebuiltTiles {
     static let fileTimeout: TimeInterval = 20
 
     /// Base URL from Info.plist (OTPTileBaseURL); an empty value turns the CDN
-    /// off. Missing key (e.g. a host test) = the default.
+    /// off. Missing key (e.g. a host test) = the default. A DEBUG build
+    /// launched with `-sim-tiles <url>` uses that instead (SimEndpoints).
     static let configuredBase: URL? = {
+        #if DEBUG
+        if let sim = SimEndpoints.tileBase { return baseURL(sim) }
+        #endif
         let raw = (Bundle.main.object(forInfoDictionaryKey: "OTPTileBaseURL") as? String) ?? defaultBase
         return baseURL(raw)
     }()
