@@ -46,7 +46,8 @@ compile() {   # src, compiler, flags, ext
     fi
 }
 rm -f "$OUT/failed"
-for f in $FW_CPP; do compile src/$f clang++ "$CXXFLAGS" cpp; done
+# POSIX calls on the card's VFS mount (opendir("/sd/rides")…) go to the sim's card.
+for f in $FW_CPP; do compile src/$f clang++ "$CXXFLAGS -include sim/shim/sim_posix.h" cpp; done
 # The rasteriser half of epd_compat (the panel half is host/epd_sim.cpp), built
 # as the preview tool builds it.
 compile src/epd_compat clang++ "$CXXFLAGS -UARDUINO" cpp

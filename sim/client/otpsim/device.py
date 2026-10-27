@@ -174,6 +174,29 @@ class SimDevice:
         """Every card open/read/write costs `ms` of device time (a slow card)."""
         self.cmd("sd", latency_ms=ms)
 
+    def sd_usage(self):
+        """The card's size and use, recounted from <dir>/sd: card_bytes,
+        total_bytes, used_bytes, free_bytes, cluster_bytes."""
+        return self.cmd("sd", usage=True)["sd"]
+
+    def set_sd_size(self, mb, cluster_kb=0):
+        """Swap in a card of `mb` MB with the same files on it."""
+        return self.cmd("sd", size_mb=mb, cluster_kb=cluster_kb)["sd"]
+
+    def fill_card(self, leave_bytes=0, name="filler.bin"):
+        """Fill the card behind the firmware's back (a sparse file at its
+        root) until only `leave_bytes` (rounded down to whole clusters) are
+        free. Returns the usage afterwards."""
+        u = self.sd_usage()
+        cl = u["cluster_bytes"]
+        path = os.path.join(self.sd, name)
+        have = os.path.getsize(path) if os.path.exists(path) else 0
+        have_alloc = -(-have // cl) * cl
+        want = have_alloc + u["free_bytes"] - (leave_bytes // cl) * cl
+        with open(path, "ab") as f:
+            f.truncate(max(0, want))
+        return self.sd_usage()
+
     def set_speed(self, factor):
         self.cmd("speed", factor=factor)
 

@@ -124,7 +124,7 @@ Asynchronous events (log lines, when subscribed) come as `{"event":…}`.
 
 | cmd | arguments | does |
 |-----|-----------|------|
-| `status` | — | screen, page, settings, ride state, turn-by-turn (`nav`: prompt, next turn and the distance to it), phone link, advertisement, scanning, bonds, panel counts (`paints`, `scrubs` — the scoped pre-paint resync, `clears` — whole-panel), clocks |
+| `status` | — | screen, page, settings, ride state, turn-by-turn (`nav`: prompt, next turn and the distance to it), phone link, advertisement, scanning, bonds, the card's size and use (`sd`, as last counted), panel counts (`paints`, `scrubs` — the scoped pre-paint resync, `clears` — whole-panel), clocks |
 | `console` | `line`, `wait_ms` | runs a serial console command; returns its output |
 | `screenshot` | `path` | writes the panel as a 540×960 PNG |
 | `tap` | `x`, `y`, `ms` | a touch at panel coordinates (portrait, 540×960) |
@@ -135,10 +135,26 @@ Asynchronous events (log lines, when subscribed) come as `{"event":…}`.
 | `sensor_remove` | `addr` | the sensor goes away (out of range) |
 | `battery` | `pct`, `charging` | the fuel gauge's reading |
 | `wallclock` | `unix` | sets the device's clock (as the RTC would) |
-| `sd` | `present`; or `latency_ms` | inserts or removes the card; or makes every card open/read/write cost that much device time (a slow card) |
+| `sd` | `present`; or `latency_ms`; or `size_mb` (+ `cluster_kb`); or `usage` | inserts or removes the card; or makes every card open/read/write cost that much device time (a slow card); or swaps in a card of that size with the same files; or just reports. Answers `sd`: `card_bytes`, `total_bytes`, `used_bytes`, `free_bytes`, `cluster_bytes` (usage recounted from `<dir>/sd`) |
 | `speed` | `factor` | runs the device clock N× real time |
 | `log` | `since` | log lines after sequence number `since` |
 | `wait_log` | `pattern` (regex), `timeout_ms`, `since` | waits for a log line |
 | `subscribe_log` | `on` | streams log lines as events |
 | `reboot` | — | restarts the firmware (NVS and card kept) |
 | `quit` | — | exits the sim |
+
+## Command line
+
+`otp-sim --help` lists the options. Those about the card: `--sd DIR` (its
+root, default `<dir>/sd`), `--sd-size-mb N` (capacity, default 32 GB),
+`--sd-cluster-kb N` (FAT cluster size), `--sd-latency-ms N` (device time per
+card call), `--sd-ready-ms N`, `--sd-crash-on-read PATH`.
+
+`otp-sim card-tool` builds card contents with the firmware's own code (used by
+`otpsim/cards.py`):
+
+- `card-tool h3 S W N E` prints the res-6 H3 cells (map tiles) covering the
+  box, one per line: `<id> <s> <w> <n> <e>`.
+- `card-tool fit SDROOT` reads ride specs from stdin, one per line —
+  `<card path> <start unix> <seconds> <lat> <lon> <bearing> <km/h> <hr|0> <watts|0>`
+  — and writes each as a finished FIT activity with `FitWriter`.

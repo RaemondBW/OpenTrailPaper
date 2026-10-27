@@ -26,7 +26,7 @@ card, NVS and NimBLE, and `sim/host/` for the hardware:
 | Tasks, mutexes, queues, ring buffers | threads ([rtos_sim.cpp](host/rtos_sim.cpp)); the clock can run N× faster |
 | E-paper panel | a framebuffer; every paint, scrub and clear is counted, screenshots are PNGs of what's on the glass |
 | Touch, BOOT/side/home keys | injected from the control channel; a press is held until the firmware has read it |
-| SD card | a directory (`<dir>/sd`), removable; optionally slow (`sd latency_ms`), slow to come up after power-on (`--sd-ready-ms`), or holding a file whose reading resets the device (`--sd-crash-on-read`) |
+| SD card | a directory (`<dir>/sd`), removable, with a size (`--sd-size-mb`, default 32 GB): FAT32 clusters are counted and writes run short when it's full (see below); optionally slow (`--sd-latency-ms`, `sd latency_ms`), slow to come up after power-on (`--sd-ready-ms`), or holding a file whose reading resets the device (`--sd-crash-on-read`) |
 | NVS | files under `<dir>/nvs`, kept across reboots |
 | L76K GPS on UART2 | an emulated module: obeys PCAS commands (baud, output, version, save), keeps its baud across restarts, streams NMEA for a fix or a track; a wrong UART baud reads garbage |
 | BLE stack + radio | [nimble_sim.cpp](host/nimble_sim.cpp): NimBLE's API over TCP. Connections, pairing (the firmware's passkey callback), bonds (kept in `<dir>/bonds.txt`), encryption, attribute permissions, CCCDs, MTU, notify back-pressure and slow connection intervals |
@@ -72,6 +72,42 @@ with SimDevice.start() as dev:                    # boots otp-sim
     dev.screenshot("panel.png")
 ```
 
+## SD cards: real contents, a real size
+
+The card is `<dir>/sd`, and it is as big as `--sd-size-mb` says (default
+32 GB; `sd size_mb` changes it live). `SD.cardSize()`, `totalBytes()` and
+`usedBytes()` report that card: usage is counted from the directory in FAT32
+clusters (`--sd-cluster-kb`, default 32 KB from 2 GB up, else 16 KB), directory
+entries and the FATs included, and is recounted on every `usedBytes()` and
+mount, so files a test drops in are seen. Every write path the firmware has
+goes through it — `fs::File` writes, truncating opens, removes and `mkdir`, and
+the POSIX calls some firmware makes on the VFS mount (`opendir("/sd/rides")`,
+`stat`, `fopen`), which `sim/shim/sim_posix.h` redirects to the card. A write
+that needs a cluster the card hasn't got is cut short where the free space
+ends (0 and `ENOSPC` when nothing fits), as FatFs's `f_write` does; a new
+directory needs a free cluster; `rename` onto an existing name fails
+(`FR_EXIST`).
+
+[client/otpsim/cards.py](client/otpsim/cards.py) fills a card before boot,
+in the firmware's own layout: `empty`, `typical` (150 rides, 12 routes,
+4 workouts, ~200 Bay Area map tiles, 60 days of logs), `heavy` (1000 rides,
+100 routes, ~5000 tiles, a year of big logs) and `nearly_full` (typical on a
+128 MB card with 4 MB left). Rides are real FIT files from the firmware's
+`FitWriter` and tile names real H3 cells, both via `otp-sim card-tool`. Tiles
+are a small valid EBM2 built from `data/sf.ebm`; `cards.set_tile_source(fn)`
+swaps in real ones.
+
+```python
+card = cards.build("typical", "/tmp/cards/typical")    # ~0.5 s (heavy: ~6 s)
+card.install(dev_dir)                                   # an APFS clone: instant
+dev = SimDevice(dir=dev_dir, args=card.sim_args)
+dev.fill_card(leave_bytes=0)                            # and now it's full
+```
+
+`sim/tests/test_cards.py` runs the device against each profile and against a
+card that fills up. The `heavy` profile and the ride that fills a card are
+marked slow: `sim/test.sh --slow` runs them too (~2 min more).
+
 ## Testing the apps
 
 The apps reach the sim through a debug-only radio that speaks simble instead
@@ -98,6 +134,13 @@ tests assert the console is clean of them:
   `portMAX_DELAY`), i.e. an ABBA deadlock waiting for its interleaving.
 
 ## Known gaps
+
+- The card costs no time unless asked (`--sd-latency-ms`), and then a flat
+  cost per call: FAT's directory searches, which make opening a file by name
+  grow with the directory, aren't modelled. Directory listings come back
+  sorted by name (FAT: creation order).
+- A full card fails the write that doesn't fit, immediately; on the board
+  newlib's stdio buffer can defer the failure to a later write or the close.
 
 - Timing is approximate: a sped-up clock scales delays, not CPU work.
 - No radio-level effects beyond what's modelled (range, interference, the

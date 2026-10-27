@@ -190,6 +190,16 @@ std::string navJson() {
     return o.str();
 }
 
+// The card's size and usage, as SD.cardSize/totalBytes/usedBytes report them.
+std::string sdJson(bool recount) {
+    const sim::CardUsage u = sim::sdUsage(recount);
+    std::ostringstream o;
+    o << "{\"present\":" << (sim::sdPresent() ? "true" : "false") << ",\"card_bytes\":" << u.cardBytes
+      << ",\"total_bytes\":" << u.totalBytes << ",\"used_bytes\":" << u.usedBytes
+      << ",\"free_bytes\":" << (u.totalBytes - u.usedBytes) << ",\"cluster_bytes\":" << u.clusterBytes << "}";
+    return o.str();
+}
+
 std::string statusJson() {
     RideState s = g_state.snapshot();
     ble_server::LiveView v;
@@ -220,6 +230,7 @@ std::string statusJson() {
       << ",\"nav\":" << navJson()
       << ",\"dash\":" << json::esc(dashText())
       << ",\"sd_present\":" << (sim::sdPresent() ? "true" : "false")
+      << ",\"sd\":" << sdJson(false)
       << ",\"gps\":" << sim::gpsStatusJson()
       << ",\"ble\":" << sim::bleStatusJson() << "}";
     return o.str();
@@ -278,8 +289,9 @@ std::string handle(const json::Value& r) {
     if (cmd == "wallclock") { sim_clock::setWallMicros((int64_t)(r.num("unix") * 1e6)); return ok(); }
     if (cmd == "sd") {
         if (r.has("latency_ms")) sim::setSdLatency((int)r.num("latency_ms"));
-        else sim::setSdPresent(r.boolean("present", true));
-        return ok();
+        else if (r.has("size_mb")) sim::setSdSizeMb((uint64_t)r.num("size_mb"), (uint32_t)r.num("cluster_kb", 0));
+        else if (!r.has("usage")) sim::setSdPresent(r.boolean("present", true));
+        return ok("\"sd\":" + sdJson(true));
     }
     if (cmd == "speed") { sim_clock::setFactor(r.num("factor", 1)); return ok(); }
     if (cmd == "ble_drop") { simble::dropPhone((int)r.num("reason", 0x08)); return ok(); }

@@ -59,6 +59,10 @@ void usage() {
             "  --conn-interval-ms N --packets-per-event K   pace notifications like a slow link\n"
             "  --sd-ready-ms N        the card answers SD.begin() only N ms after power-on\n"
             "  --sd-crash-on-read P   reading card file P resets the device (a file that kills it)\n"
+            "  --sd-latency-ms N      every card open/read/write costs N ms of device time (a slow card)\n"
+            "  --sd-size-mb N         the card's capacity (default 32 GB); writes fail when it is full\n"
+            "  --sd-cluster-kb N      its FAT cluster size (default 32 KB from 2 GB up, else 16 KB)\n"
+            "otp-sim card-tool h3|fit ...   build card contents (sim/host/cardtool_sim.cpp)\n"
             "  --quiet                don't echo the console to stdout\n"
             "  --no-stdin             don't read console commands from stdin\n");
 }
@@ -192,6 +196,7 @@ void loop() {
 int main(int argc, char** argv) {
     bool readStdin = true;
     std::string wallclock, gpsBaud;
+    if (argc > 1 && !strcmp(argv[1], "card-tool")) return sim::cardTool(argc - 2, argv + 2);
     for (int i = 0; i < argc; ++i) sim::opts.argv.push_back(argv[i]);
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -212,6 +217,9 @@ int main(int argc, char** argv) {
         else if (a == "--packets-per-event") sim::opts.packetsPerEvent = atoi(next().c_str());
         else if (a == "--sd-ready-ms") sim::opts.sdReadyMs = atoi(next().c_str());
         else if (a == "--sd-crash-on-read") sim::opts.sdCrashOnRead = next();
+        else if (a == "--sd-latency-ms") sim::setSdLatency(atoi(next().c_str()));
+        else if (a == "--sd-size-mb") sim::opts.sdSizeMb = strtoull(next().c_str(), nullptr, 10);
+        else if (a == "--sd-cluster-kb") sim::opts.sdClusterKb = (uint32_t)atoi(next().c_str());
         else if (a == "--quiet") sim::opts.quiet = true;
         else if (a == "--no-stdin") readStdin = false;
         else { usage(); return a == "--help" || a == "-h" ? 0 : 1; }

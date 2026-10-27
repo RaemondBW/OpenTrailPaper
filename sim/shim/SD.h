@@ -13,7 +13,7 @@ public:
     uint64_t cardSize();
     size_t numSectors() { return cardSize() / 512; }
     size_t sectorSize() { return 512; }
-    uint64_t totalBytes() { return cardSize(); }
+    uint64_t totalBytes();
     uint64_t usedBytes();
     bool readRAW(uint8_t*, uint32_t) { return false; }
     bool writeRAW(uint8_t*, uint32_t) { return false; }

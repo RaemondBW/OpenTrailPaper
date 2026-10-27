@@ -18,6 +18,8 @@ struct Options {
     bool gpsCold = false;             // the module has no UTC until it has a fix (indoors)
     int sdReadyMs = 0;                // the card ignores SD.begin() for this long after power-on
     std::string sdCrashOnRead;        // reading this card file resets the device
+    uint64_t sdSizeMb = 0;            // the card's capacity (0: 32 GB)
+    uint32_t sdClusterKb = 0;         // FAT cluster size (0: as SD Formatter picks for the size)
     std::vector<std::string> argv;    // for reboot (re-exec)
 };
 extern Options opts;
@@ -59,6 +61,13 @@ void setBattery(int pct, bool charging);
 bool sdPresent();
 void setSdPresent(bool on);
 void setSdLatency(int ms);   // device-time cost of every card open/read/write
+// The card's capacity and what is on it (fs_sim.cpp). setSdSizeMb swaps in a
+// card of another size with the same contents, as if the files were copied over.
+struct CardUsage { uint64_t cardBytes, totalBytes, usedBytes, clusterBytes; };
+CardUsage sdUsage(bool recount = false);
+void setSdSizeMb(uint64_t mb, uint32_t clusterKb = 0);
+// `otp-sim card-tool ...`: host-side helpers for building card images.
+int cardTool(int argc, char** argv);
 
 // The function containing `addr` (a return address), demangled; "?" if unknown.
 std::string symbolName(void* addr);
