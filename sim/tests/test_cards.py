@@ -19,7 +19,7 @@ import time
 
 import pytest
 
-from conftest import ARTIFACTS, paired_phone
+from conftest import ARTIFACTS, TIME_SCALE, paired_phone
 from otpsim import LinkClient, LinkError, SimDevice, cards, pb
 from test_regressions_rides import HISTORY_ROW, fit_crc, read_png
 from test_rides import SAVE_BUTTON, check_fit, line_track, record_ride
@@ -138,7 +138,7 @@ def test_boots_to_the_dashboard(boot_card, card_image, profile, record_property)
     dash = time.time() - t0
     record_property("boot_s", round(dash, 2))
     print("\n%s: tasks started %.2f s, dashboard %.2f s" % (profile, tasks, dash))
-    assert dash < BOOT_BOUND_S[profile], "%s card: %.1f s to the dashboard" % (profile, dash)
+    assert dash < BOOT_BOUND_S[profile] * TIME_SCALE, "%s card: %.1f s to the dashboard" % (profile, dash)
 
     line = dev.wait_log(r"sd: ready, \d+ MB free", since=0)
     said = int(re.search(r"(\d+) MB free", line).group(1))
@@ -220,7 +220,7 @@ def test_ride_history_pages_through_the_card(boot_card, profile, tmp_path):
         paints = dev.status()["paints"]
         dev.tap(*PAGER_DOWN)
         try:   # a tap past the last page changes nothing, and nothing is painted
-            dev.wait_status(lambda s: s["paints"] > paints, timeout=1.5, interval=0.05)
+            dev.wait_status(lambda s: s["paints"] > paints, timeout=1.5 * TIME_SCALE, interval=0.05)
         except TimeoutError:
             pass
         nxt = list_rows(dev, shot)

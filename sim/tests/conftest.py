@@ -13,6 +13,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "client"))
 
 from otpsim import LinkClient, SimDevice, SimPhone, pb  # noqa: E402
 
+# Wall-clock bounds (boot time, throughput) are set on a developer Mac; a CI
+# runner is slower, so it scales them (OTP_SIM_TIME_SCALE=3 in build.yml).
+TIME_SCALE = float(os.environ.get("OTP_SIM_TIME_SCALE", "1"))
+
 ARTIFACTS = os.path.join(os.path.dirname(__file__), "..", "build", "test-artifacts")
 
 

@@ -17,7 +17,7 @@ import zlib
 
 import pytest
 
-from conftest import paired_phone
+from conftest import TIME_SCALE, paired_phone
 from otpsim import LinkClient, LinkError, SimDevice, pb
 from otpsim.tiles import (MAJOR, MINOR, PATH, PRIMARY, SECONDARY, TERTIARY, card_path, fixture_manifest,
                           fixture_pois, fixture_tiles, keep_roads, samples_along, screen_roads)
@@ -417,7 +417,7 @@ def test_the_whole_region_five_times_over_a_normal_link(device, link):
     secs = time.time() - t
     report("normal link", n, size, secs, raw)
     assert listed(link) == {h: newer_record(v) for h, _, v in TILES}
-    assert size / secs > 0.5 * raw, "the device held the link up: %.1f KB/s of %.1f" % (
+    assert size / secs > 0.5 * raw / TIME_SCALE, "the device held the link up: %.1f KB/s of %.1f" % (
         size / secs / 1024, raw / 1024)
     alive(device)
 

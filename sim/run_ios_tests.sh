@@ -74,6 +74,12 @@ until printf '{"cmd":"status"}\n' | nc -w 1 127.0.0.1 "$CTL" 2>/dev/null | grep 
     sleep 0.2
 done
 echo "== otp-sim pid $SIM_PID: simble $BLE, control $CTL, state $DIR"
+# The firmware's idle auto-shutdown (10 min) would power the device off
+# while xcodebuild is still building on a slow runner.
+printf '{"cmd":"wait_log","pattern":"boot: all tasks started","since":0,"timeout_ms":30000}\n' |
+    nc -w 31 127.0.0.1 "$CTL" | grep -q '"ok":true' || { echo "otp-sim did not finish booting" >&2; exit 1; }
+printf '{"cmd":"console","line":"autosleep off"}\n' | nc -w 3 127.0.0.1 "$CTL" | grep -q 'autosleep: OFF' ||
+    { echo "otp-sim did not take autosleep off" >&2; exit 1; }
 
 # The stand-in tile CDN and Overpass: the map tests launch the app pointed at
 # it (-sim-tiles / -sim-overpass), so nothing reaches the internet.
