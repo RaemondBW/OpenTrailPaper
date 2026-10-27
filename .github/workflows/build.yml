@@ -170,6 +170,67 @@ jobs:
           name: sim-test-artifacts
           path: sim/build/test-artifacts
 
+  # The apps' own connection code against the firmware sim, through their
+  # debug-only SimRadio (sim/ANDROID.md, sim/IOS.md). On macOS because
+  # otp-sim is built with the Mac toolchain.
+  android-sim:
+    name: Android app vs firmware sim
+    if: ${{ !startsWith(github.ref, 'refs/tags/android-v') }}
+    runs-on: macos-26
+    env:
+      OTP_SIM_REQUIRED: "1"   # fail, don't skip, if otp-sim didn't build
+    steps:
+      - uses: actions/checkout@v4
+      - name: Clone LilyGO board support
+        run: |
+          git clone --depth 1 \
+            https://github.com/Xinyuan-LilyGO/T5S3-4.7-e-paper-PRO \
+            vendor/T5S3-4.7-e-paper-PRO
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build the sim and run the tests
+        run: sim/build.sh && sim/run_android_tests.sh
+      - name: Keep the test report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-sim-report
+          path: companion-android/app/build/reports/tests
+
+  # Not yet required: a UI test on a shared runner may be flaky until it has
+  # a track record. Make it blocking once it has stayed green.
+  ios-sim:
+    name: iOS app vs firmware sim
+    if: ${{ !startsWith(github.ref, 'refs/tags/android-v') }}
+    runs-on: macos-26
+    continue-on-error: true
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Clone LilyGO board support
+        run: |
+          git clone --depth 1 \
+            https://github.com/Xinyuan-LilyGO/T5S3-4.7-e-paper-PRO \
+            vendor/T5S3-4.7-e-paper-PRO
+      - name: Generate project
+        run: brew install xcodegen && (cd companion-ios && xcodegen generate)
+      # No signing certificate on a runner; the simulator doesn't need one.
+      - name: Build the sim and run the tests
+        env:
+          OTP_XCODEBUILD_ARGS: CODE_SIGNING_ALLOWED=NO
+          TMPDIR: ${{ runner.temp }}/
+        run: sim/build.sh && sim/run_ios_tests.sh
+      - name: Keep the sim, app and xcodebuild logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-sim-logs
+          path: ${{ runner.temp }}/otpsim-ios.*
+
   ios:
     name: Companion app (iOS)
     if: ${{ !startsWith(github.ref, 'refs/tags/android-v') }}

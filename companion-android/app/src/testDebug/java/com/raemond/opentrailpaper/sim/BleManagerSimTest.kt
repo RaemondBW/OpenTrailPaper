@@ -66,6 +66,11 @@ class BleManagerSimTest {
 
     @Before
     fun setUp() {
+        // CI sets OTP_SIM_REQUIRED where the sim is built, so a missing
+        // binary fails there instead of passing as skipped.
+        if (System.getenv("OTP_SIM_REQUIRED") != null) {
+            check(FirmwareSim.binary != null) { "OTP_SIM_REQUIRED, but sim/build/otp-sim is not built" }
+        }
         assumeTrue(
             "sim/build/otp-sim is not built (run sim/build.sh) — skipping the firmware-sim tests",
             FirmwareSim.binary != null,

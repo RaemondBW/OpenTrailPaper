@@ -8,12 +8,23 @@
 #   sim/run_ios_tests.sh test03_Background…  # one test (method name)
 #
 # Env: OTP_IOS_SIM (simulator UDID), OTP_SIM_BLE_PORT / OTP_SIM_CTL_PORT /
-# OTP_SIM_RADIO_PORT (default 7920 / 7921 / 7922), OTP_DERIVED_DATA.
+# OTP_SIM_RADIO_PORT (default 7920 / 7921 / 7922), OTP_DERIVED_DATA,
+# OTP_XCODEBUILD_ARGS (extra xcodebuild settings, e.g. CODE_SIGNING_ALLOWED=NO
+# on a runner with no signing certificate).
 set -eu
 cd "$(dirname "$0")/.."
 ROOT=$(pwd)
 
 UDID=${OTP_IOS_SIM:-14EF0FB8-65FC-468C-B51C-F62B9D2C4369}
+# No such simulator here (a CI runner): use the first available iPhone.
+if ! xcrun simctl list devices available | grep -q "$UDID"; then
+    UDID=$(xcrun simctl list devices available -j | python3 -c '
+import json, sys
+d = json.load(sys.stdin)["devices"]
+ios = sorted((r for r in d if "iOS" in r), key=lambda r: [int(x) for x in r.rsplit("iOS-", 1)[1].split("-")], reverse=True)
+print(next(dev["udid"] for r in ios for dev in d[r] if dev["name"].startswith("iPhone")))')
+    echo "== simulator $UDID"
+fi
 BLE=${OTP_SIM_BLE_PORT:-7920}
 CTL=${OTP_SIM_CTL_PORT:-7921}
 RADIO=${OTP_SIM_RADIO_PORT:-7922}
@@ -89,6 +100,7 @@ xcodebuild test \
     -only-testing:"$ONLY" \
     -test-timeouts-enabled YES \
     -resultBundlePath "$DIR/results.xcresult" \
+    ${OTP_XCODEBUILD_ARGS:-} \
     2>&1 | tee "$DIR/xcodebuild.log" | grep -E '^(Test Case|Test Suite|\*\*|.*error:|.*: error|.*XCTAssert|    Executed)'
 RC=$(grep -q '\*\* TEST SUCCEEDED \*\*' "$DIR/xcodebuild.log" && echo 0 || echo 1)
 set -e
