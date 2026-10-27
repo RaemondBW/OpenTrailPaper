@@ -16,6 +16,12 @@ underneath differs.
   TCP to simble (PROTOCOL.md). Chosen at launch by `-sim-ble host:port` or env
   `OTP_SIM_BLE`; otherwise the app uses CoreBluetooth. `-sim-forget-bond` is
   iOS's "Forget This Device".
+- `SimEndpoints` (same file, `#if DEBUG`): map downloads from another tile
+  CDN and one Overpass endpoint: `-sim-tiles <base URL>` (env
+  `OTP_SIM_TILES`) replaces Info.plist's `OTPTileBaseURL`, `-sim-overpass
+  <URL>` (env `OTP_SIM_OVERPASS`) the Overpass mirror list
+  (`PrebuiltTiles.configuredBase`, `MapBuilder.overpassPost`). A Release
+  build has neither.
 
 SimRadio behaves as iOS does, so BLEManager sees what it would on a phone:
 
@@ -53,13 +59,51 @@ sim/run_ios_tests.sh test03_BackgroundLinkLossReconnectsOnForeground
 ```
 
 The script builds the sim if needed, starts a factory-fresh one (ports
-7920/7921), reinstalls the app on simulator `OTP_IOS_SIM`, runs
-`companion-ios/UITests/FirmwareSimTests.swift` and stops the sim. Logs
-(otp-sim, the app's `[ble]`/`[link]`/`[sim-ble]` lines, xcodebuild, the
-result bundle) are kept in the temp dir it prints.
+7920/7921) and the stand-in tile CDN (`sim/cdn/tile_cdn.py` on 7923, serving
+`sim/fixtures/appmaps`, or `OTP_CDN_FIXTURE`), reinstalls the app on
+simulator `OTP_IOS_SIM`, runs `companion-ios/UITests/FirmwareSimTests.swift`
+and stops both. Logs (otp-sim, the app's `[ble]`/`[link]`/`[sim-ble]` lines,
+the CDN's requests, xcodebuild, the result bundle) are kept in the temp dir
+it prints.
 
 The tests drive the device over the control port (`UITests/SimHarness.swift`,
 `SimControl`), and the app reaches simble through `RangeProxy` (port 7922), a
 relay in the test process that plays the radio path: `connectFails` makes
 every connect fail before the link is up without the device hearing of it,
 the "device at the edge of range" case.
+
+### Maps
+
+The map tests launch the app with `-sim-tiles` / `-sim-overpass` pointing at
+the stand-in CDN (`TileCdn` in SimHarness.swift), and the phone's location
+(`XCUIDevice.location`) at the fixture's centre, so the Maps screen opens on
+it. They go through the UI as a rider does: Settings → Maps on SD card →
+Select area → drag a box in the middle of the map → Download. What the device
+then holds is read from the device (control `tiles`).
+
+- `test06_TruncatedTilesAreReportedAndNotSent`: every tile is truncated by the
+  CDN. None reaches the device; the app falls back to Overpass (the stand-in:
+  503) and the Maps screen reports the failure.
+- `test07_MapAreaDownloadReachesTheDevice`: the device holds exactly the hexes
+  the Download button offered, all fixture hexes, with the CDN's version
+  records (tile and .poi); no Overpass request; and its map screen at a GPS
+  fix in the area goes from "NO MAP HERE" to a drawn map (screenshot, kept in
+  the result bundle).
+- `test08_NewCdnVersionIsRedownloaded` (after test07): the CDN publishes a new
+  version of one hex on the device; the Maps screen offers "Redownload 1 hex",
+  only that tile is fetched, and the device records its new version.
+
+The fixture covers the area around the centre generously (±0.04° / ±0.05°),
+so the box, however the map frames it, gets only fixture hexes; a box outside
+it fails at once, naming the group index the screen looked up. The tests
+reset the app's location authorization and allow the prompt, since an
+earlier test may have answered it.
+
+Known gap: when the Maps screen gets into some states (the selection off the
+fixture, so every hex falls to the failing Overpass; a broken tile or a
+wrong version record on the device, as with the app code deliberately
+broken), XCUITest's wait for the app to idle never returns, and the test ends
+on its 4-minute allowance rather than an assertion. While the download runs,
+a thread watches the device and prints `FirmwareSimTests device watch: FAIL:
+…` to the log when a bad tile arrives, so the reason is in xcodebuild.log
+even then.

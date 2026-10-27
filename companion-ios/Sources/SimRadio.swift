@@ -130,6 +130,23 @@ private extension Data {
     var le16: UInt16 { count >= 2 ? UInt16(self[startIndex]) | UInt16(self[startIndex + 1]) << 8 : 0 }
 }
 
+/// DEBUG only: where map downloads go instead of the public tile CDN and
+/// Overpass — the stand-in CDN the sim UI tests serve a fixture from
+/// (sim/cdn/tile_cdn.py, sim/IOS.md). `-sim-tiles <base URL>` (env
+/// OTP_SIM_TILES) replaces Info.plist's OTPTileBaseURL; `-sim-overpass <URL>`
+/// (env OTP_SIM_OVERPASS) replaces the Overpass mirror list with that one
+/// endpoint. Read by PrebuiltTiles.configuredBase and MapBuilder.
+enum SimEndpoints {
+    static var tileBase: String? { value("-sim-tiles", env: "OTP_SIM_TILES") }
+    static var overpass: String? { value("-sim-overpass", env: "OTP_SIM_OVERPASS") }
+
+    private static func value(_ flag: String, env: String) -> String? {
+        let args = ProcessInfo.processInfo.arguments
+        if let i = args.firstIndex(of: flag), i + 1 < args.count, !args[i + 1].isEmpty { return args[i + 1] }
+        return ProcessInfo.processInfo.environment[env].flatMap { $0.isEmpty ? nil : $0 }
+    }
+}
+
 @MainActor
 final class SimRadio: RadioCentral {
     /// `-sim-ble host:port` or OTP_SIM_BLE; nil = use CoreBluetooth.

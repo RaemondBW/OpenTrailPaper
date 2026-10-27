@@ -21,6 +21,7 @@ Test controls, under /_ctl/ (POST, query parameters):
 
     /_ctl/log                 every request so far, as JSON (GET)
     /_ctl/file?path=/v1/...   what is served at that path now, unlogged (GET)
+    /_ctl/area                the fixture's area.json (centre, box, cells), if any (GET)
     /_ctl/reset               forget bumps, faults and the log
     /_ctl/bump?id=<h3>[&ext=ebm|poi]
                               publish a new version of that file: the same bytes
@@ -55,6 +56,8 @@ class Cdn:
                 rel = os.path.relpath(p, self.base).replace(os.sep, "/")
                 with open(p, "rb") as f:
                     self.files["/v1/" + rel] = f.read()
+        area = os.path.join(root, "area.json")
+        self.area = open(area, "rb").read() if os.path.isfile(area) else None
         self.overpass_status = overpass_status
         self.overpass_body = overpass_body
         self.lock = threading.Lock()
@@ -129,6 +132,8 @@ def handler(cdn):
             if path == "/_ctl/log":
                 with cdn.lock:
                     return self.send(200, json.dumps(cdn.log).encode(), "application/json")
+            if path == "/_ctl/area":
+                return self.send(200, cdn.area, "application/json") if cdn.area else self.send(404)
             if path == "/_ctl/file":
                 body = cdn.body(arg("path", ""))
                 return self.send(200, body) if body is not None else self.send(404)

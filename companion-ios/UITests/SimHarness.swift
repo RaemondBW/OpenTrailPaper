@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import XCTest
+import UIKit
 
 // Helpers for the firmware-sim UI tests (FirmwareSimTests, sim/IOS.md). The
 // Simulator shares the Mac's network, so the test talks TCP straight to the
@@ -17,6 +18,8 @@ enum SimEnv {
     static var ctlPort: UInt16 { port("OTP_SIM_CTL_PORT", 7921) }
     /// Where the app connects: RangeProxy, in front of simble.
     static var radioPort: UInt16 { port("OTP_SIM_RADIO_PORT", 7922) }
+    /// The stand-in tile CDN (sim/cdn/tile_cdn.py), started by run_ios_tests.sh.
+    static var cdnPort: UInt16 { port("OTP_CDN_PORT", 7923) }
 }
 
 // MARK: - sockets
@@ -106,6 +109,15 @@ enum SimControl {
             Thread.sleep(forTimeInterval: 0.25)
         } while Date() < end
         return nil
+    }
+
+    /// The map tiles (or .poi files) on the card, id -> version record ("" for
+    /// none), as the device lists them to a phone (control `tiles`).
+    static func tiles(poi: Bool = false) throws -> [String: String] {
+        let list = try call(["cmd": "tiles", "poi": poi])["tiles"] as? [[String: Any]] ?? []
+        var out: [String: String] = [:]
+        for t in list { if let id = t["id"] as? String { out[id] = t["version"] as? String ?? "" } }
+        return out
     }
 
     static func bonds(_ s: [String: Any]) -> [String] {
@@ -214,5 +226,113 @@ final class RangeProxy {
         group.wait()
         close(phone)
         close(device)
+    }
+}
+
+// MARK: - the stand-in tile CDN
+
+/// The stand-in for tiles.opentrailpaper.com and Overpass that
+/// run_ios_tests.sh starts (sim/cdn/tile_cdn.py), serving a fixture of real
+/// tiles (sim/fixtures/appmaps), and its /_ctl/ test controls.
+enum TileCdn {
+    struct Failure: Error, CustomStringConvertible { let description: String }
+
+    static var base: String { "http://127.0.0.1:\(SimEnv.cdnPort)/" }
+    /// What the app is launched with to use it (SimEndpoints, DEBUG only).
+    static var launchArguments: [String] {
+        ["-sim-tiles", base + "v1/", "-sim-overpass", base + "api/interpreter"]
+    }
+
+    /// One fixture cell: its id and its index entry.
+    struct Cell { let id: String; let ebmSize: Int; let ebmHash: String; let poiSize: Int; let poiHash: String }
+    struct Area { let lat: Double; let lon: Double; let cells: [String: Cell] }
+
+    @discardableResult
+    static func request(_ method: String, _ path: String, timeout: TimeInterval = 5) throws -> (Int, Data) {
+        guard let url = URL(string: base + path) else { throw Failure(description: "bad path \(path)") }
+        var req = URLRequest(url: url)
+        req.httpMethod = method
+        req.timeoutInterval = timeout
+        let done = DispatchSemaphore(value: 0)
+        var out: (Int, Data)?
+        var err: Error?
+        URLSession.shared.dataTask(with: req) { data, resp, e in
+            if let e { err = e } else { out = ((resp as? HTTPURLResponse)?.statusCode ?? -1, data ?? Data()) }
+            done.signal()
+        }.resume()
+        _ = done.wait(timeout: .now() + timeout + 1)
+        if let err { throw Failure(description: "tile CDN \(path): \(err)") }
+        guard let out else { throw Failure(description: "tile CDN \(path): no answer") }
+        return out
+    }
+
+    private static func json(_ method: String, _ path: String) throws -> Any {
+        let (code, data) = try request(method, path)
+        guard code == 200 else { throw Failure(description: "tile CDN \(path): HTTP \(code)") }
+        return try JSONSerialization.jsonObject(with: data)
+    }
+
+    static func reachable() -> Bool { (try? request("GET", "_ctl/log", timeout: 2))?.0 == 200 }
+
+    /// Every request so far (method, path, status, fault).
+    static func log() throws -> [[String: Any]] { try json("GET", "_ctl/log") as? [[String: Any]] ?? [] }
+    static func paths() throws -> [String] { try log().compactMap { $0["path"] as? String } }
+    static func reset() throws { _ = try json("POST", "_ctl/reset") }
+    /// Misbehave on paths matching `match` (fnmatch): "truncate", "status:<code>", "close".
+    static func fault(_ match: String, _ kind: String) throws {
+        _ = try json("POST", "_ctl/fault?match=\(match)&kind=\(kind)")
+    }
+
+    /// Publishes a new version of `<id>.<ext>`; returns its new index hash.
+    static func bump(_ id: String, ext: String = "ebm") throws -> String {
+        let r = try json("POST", "_ctl/bump?id=\(id)&ext=\(ext)") as? [String: Any]
+        guard let h = r?["hash"] as? String else { throw Failure(description: "bump \(id): \(String(describing: r))") }
+        return h
+    }
+
+    /// The fixture's area: its centre and its cells with their CDN index entries.
+    static func area() throws -> Area {
+        guard let a = try json("GET", "_ctl/area") as? [String: Any],
+              let c = a["center"] as? [Double], c.count == 2,
+              let cells = a["cells"] as? [[String: Any]] else { throw Failure(description: "bad area.json") }
+        var out: [String: Cell] = [:]
+        for cell in cells {
+            guard let id = cell["id"] as? String else { continue }
+            let (code, data) = try request("GET", "_ctl/file?path=/v1/\(id.prefix(6))/index.json")
+            guard code == 200, let idx = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let e = (idx["cells"] as? [String: Any])?[id] as? [Any], e.count == 4 else {
+                throw Failure(description: "no index entry for \(id)")
+            }
+            out[id] = Cell(id: id, ebmSize: e[0] as? Int ?? -1, ebmHash: e[1] as? String ?? "",
+                           poiSize: e[2] as? Int ?? -1, poiHash: e[3] as? String ?? "")
+        }
+        return Area(lat: c[0], lon: c[1], cells: out)
+    }
+}
+
+// MARK: - the device's panel
+
+enum Panel {
+    /// Dark pixels on the device's map screen away from its fixed furniture
+    /// (status bar, compass, zoom buttons, the "NO MAP HERE" box and the
+    /// position marker, the scale, the data fields): roads, water, parks.
+    /// Writes the screenshot to `file`.
+    static func mapInk(_ file: URL) throws -> Int {
+        try SimControl.call(["cmd": "screenshot", "path": file.path])
+        guard let img = UIImage(contentsOfFile: file.path)?.cgImage else {
+            throw SimControl.Failure(description: "no screenshot at \(file.path)")
+        }
+        let w = img.width, h = img.height
+        var px = [UInt8](repeating: 255, count: w * h)
+        let ctx = CGContext(data: &px, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w,
+                            space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue)
+        ctx?.draw(img, in: CGRect(x: 0, y: 0, width: w, height: h))
+        var dark = 0
+        for y in 70..<min(745, h) where !(395...505).contains(y) {
+            for x in 0..<min(455, w) where !(y < 150 && x > 440) {
+                if px[y * w + x] < 100 { dark += 1 }
+            }
+        }
+        return dark
     }
 }

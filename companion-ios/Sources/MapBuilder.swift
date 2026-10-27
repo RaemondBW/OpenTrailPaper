@@ -192,11 +192,16 @@ enum MapBuilder {
 
         var lastStatus = 0
         var lastError: Error? = nil
-        let total = overpassEndpoints.count * 2
+        var endpoints = overpassEndpoints
+        #if DEBUG
+        // A stand-in Overpass for the sim tests (SimEndpoints, -sim-overpass).
+        if let sim = SimEndpoints.overpass { endpoints = [sim] }
+        #endif
+        let total = endpoints.count * 2
         // Two passes over the mirror list (so a transient failure gets retried).
         for attempt in 0..<total {
             try Task.checkCancellation()
-            let urlStr = overpassEndpoints[(startMirror + attempt) % overpassEndpoints.count]
+            let urlStr = endpoints[(startMirror + attempt) % endpoints.count]
             guard let url = URL(string: urlStr) else { continue }
             let host = url.host ?? urlStr
             onProgress?("server \(host) (try \(attempt + 1)/\(total))")
