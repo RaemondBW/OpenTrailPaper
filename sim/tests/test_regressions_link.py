@@ -5,8 +5,6 @@ pass with it in place."""
 import os
 import time
 
-import pytest
-
 from conftest import paired_phone
 from otpsim import Disconnected, LinkClient, SimPhone, pb
 
@@ -190,13 +188,11 @@ def test_69c5f86_a_key_refresh_keeps_the_link_session(device, phone):
     assert device.status()["ble"]["bonds"] == [phone.identity]
 
 
-@pytest.mark.xfail(strict=True, reason="new bug: on the link a phone just paired over, a second "
-                   "authentication-complete (a key refresh) is taken for 'a new bond while paired' — "
-                   "onAuthenticationComplete rejects it before admit()'s 69c5f86 guard, deleting the "
-                   "phone's bond and dropping it")
 def test_a_key_refresh_on_the_pairing_link_keeps_the_new_phone(device, phone):
-    """The 69c5f86 guard sits in admit(); a link whose phone paired on it
-    (linkPeerKnown false) never reaches it on the second event."""
+    """The 69c5f86 guard sat in admit(); a link whose phone paired on it
+    (linkPeerKnown false) never reached it on the second event, and was
+    rejected as 'a new bond while paired' — its bond deleted, the phone
+    dropped."""
     link = LinkClient(phone).hello()
     link.wait_push("live", timeout=5)
     refresh_keys(phone)
