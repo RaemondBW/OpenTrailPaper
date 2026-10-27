@@ -6,7 +6,7 @@
 # Gradle (e.g. --info).
 set -e
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-[ -x "$ROOT/sim/build/otp-sim" ] || "$ROOT/sim/build.sh"
+"$ROOT/sim/build.sh" >/dev/null   # incremental: seconds when nothing changed
 command -v python3 >/dev/null || { echo "python3 is needed for the stand-in tile CDN" >&2; exit 1; }
 : "${JAVA_HOME:=/opt/homebrew/opt/openjdk@17}"
 : "${ANDROID_HOME:=/opt/homebrew/share/android-commandlinetools}"

@@ -37,8 +37,23 @@ class FirmwareSim private constructor(
 
         fun freePort(): Int = ServerSocket(0).use { it.localPort }
 
-        fun start(dir: File = Files.createTempDirectory("otp-sim-android").toFile()): FirmwareSim =
-            FirmwareSim(dir, freePort(), freePort()).also { it.launch() }
+        /**
+         * A free port can be taken by something else before otp-sim binds it;
+         * then it exits with "can't listen", and we try again on new ports.
+         */
+        fun start(dir: File = Files.createTempDirectory("otp-sim-android").toFile()): FirmwareSim {
+            repeat(3) {
+                val sim = FirmwareSim(dir, freePort(), freePort())
+                try {
+                    sim.launch()
+                    return sim
+                } catch (e: IllegalStateException) {
+                    sim.stop()
+                    if (!sim.consoleTail().contains("can't listen")) throw e
+                }
+            }
+            return FirmwareSim(dir, freePort(), freePort()).also { it.launch() }
+        }
     }
 
     fun launch(bootTimeoutMs: Long = 60_000) {

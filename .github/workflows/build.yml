@@ -148,9 +148,21 @@ jobs:
   # link, sensors, rides, routes, OTA — driven end to end by sim/tests.
   # macOS because the sim uses a few Darwin APIs (thread names, re-exec).
   firmware-sim:
-    name: Firmware sim
+    name: Firmware sim (${{ matrix.part }})
     if: ${{ !startsWith(github.ref, 'refs/tags/android-v') }}
     runs-on: macos-26
+    # The suite split three ways to run side by side (~5 min each). A new
+    # test file has to be added to one of these lists to run in CI.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - part: core
+            tests: test_boot.py test_link.py test_pairing.py test_rides.py test_resilience.py
+          - part: regressions
+            tests: test_regressions_gps.py test_regressions_link.py test_regressions_rides.py test_regressions_ui.py
+          - part: cards and maps
+            tests: test_cards.py test_maps.py
     steps:
       - uses: actions/checkout@v4
       # TinyGPS++ and epdiy's headers, as the firmware build uses them.
@@ -162,12 +174,12 @@ jobs:
       - name: Install protoc
         run: brew install protobuf
       - name: Build and test
-        run: sim/test.sh -q
+        run: sim/test.sh -q ${{ matrix.tests }}
       - name: Keep the console logs and panels of failed tests
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: sim-test-artifacts
+          name: sim-test-artifacts-${{ strategy.job-index }}
           path: sim/build/test-artifacts
 
   # The apps' own connection code against the firmware sim, through their
