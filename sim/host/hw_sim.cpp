@@ -1,6 +1,7 @@
 // Stand-ins for the board's hardware modules. Each keeps the module's
 // interface and reports the hardware as the sim has it: no LoRa radio, no
-// Qwiic sensors, no RTC chip, no USB mass storage; power management and the
+// Qwiic sensors, no RTC chip, no USB stack (a host mounting the card is the
+// control channel's `usb`); power management and the
 // crash reporter are inert. The fuel gauge's reading is set by the control
 // channel (`battery`).
 #include <Arduino.h>
@@ -38,11 +39,19 @@ void sleepStats(uint32_t& ok, uint32_t& rejected, uint64_t& us) { ok = rejected 
 void sleepStatsMax(uint32_t& maxMs, uint32_t& longCallsTotal) { maxMs = longCallsTotal = 0; }
 }  // namespace power_mgmt
 
+namespace {
+std::atomic<bool> g_usbHost{false};
+}
+void sim::setUsbHost(bool on) { g_usbHost = on; }
+bool sim::usbHost() { return g_usbHost; }
+
+// No USB stack: a test plays the computer (control `usb`), editing <dir>/sd
+// while the host "has" it.
 namespace usb_storage {
 void begin() {}
 void setDriveEnabled(bool) {}
-bool driveEnabled() { return false; }
-bool hostActive() { return false; }
+bool driveEnabled() { return g_usbHost; }
+bool hostActive() { return g_usbHost; }
 void poll() {}
 }  // namespace usb_storage
 

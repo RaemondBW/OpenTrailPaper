@@ -1,0 +1,251 @@
+{
+ "bbox": {
+  "e": -121.32303399711137,
+  "n": 45.83099907027286,
+  "s": 45.57307724448611,
+  "w": -121.70825523470808
+ },
+ "cells": {
+  "8628f2807ffffff": {
+   "bbox": [
+    45.75411736506277,
+    -121.60510329452813,
+    45.81434592379063,
+    -121.51466707563308
+   ],
+   "ebm_hash": "a97d5dc9504db641",
+   "ebm_size": 15654,
+   "ebm_version": "cdn:a97d5dc9504db641"
+  },
+  "8628f2817ffffff": {
+   "bbox": [
+    45.77075640663121,
+    -121.5254355496211,
+    45.83099907027286,
+    -121.43495428146336
+   ],
+   "ebm_hash": "bcb297795bf47775",
+   "ebm_size": 8836,
+   "ebm_version": "cdn:bcb297795bf47775",
+   "poi_hash": "0df6214e08772e96",
+   "poi_size": 46,
+   "poi_version": "cdn:0df6214e08772e96"
+  },
+  "8628f2827ffffff": {
+   "bbox": [
+    45.700573581510106,
+    -121.62871654642002,
+    45.76083941258602,
+    -121.53834353023679
+   ],
+   "ebm_hash": "6a1000eca237e112",
+   "ebm_size": 21065,
+   "ebm_version": "cdn:6a1000eca237e112",
+   "poi_hash": "b1781167d74b21b5",
+   "poi_size": 52,
+   "poi_version": "cdn:b1781167d74b21b5"
+  },
+  "8628f282fffffff": {
+   "bbox": [
+    45.73742675057912,
+    -121.68470531154672,
+    45.79764115070036,
+    -121.59431444774256
+   ],
+   "ebm_hash": "314d952e62344c75",
+   "ebm_size": 11417,
+   "ebm_version": "cdn:314d952e62344c75"
+  },
+  "8628f2837ffffff": {
+   "bbox": [
+    45.71722782110901,
+    -121.5491121356158,
+    45.77750779142989,
+    -121.45869402883488
+   ],
+   "ebm_hash": "c6e1715aef067b91",
+   "ebm_size": 40565,
+   "ebm_version": "cdn:c6e1715aef067b91",
+   "poi_hash": "1fff2db90778ac54",
+   "poi_size": 58,
+   "poi_version": "cdn:1fff2db90778ac54"
+  },
+  "8628f2907ffffff": {
+   "bbox": [
+    45.61006411423205,
+    -121.59636986569326,
+    45.67041851272567,
+    -121.50607791029738
+   ],
+   "ebm_hash": "64e6ada3980acaa8",
+   "ebm_size": 11929,
+   "ebm_version": "cdn:64e6ada3980acaa8",
+   "poi_hash": "b65083d3bb185034",
+   "poi_size": 76,
+   "poi_version": "cdn:b65083d3bb185034"
+  },
+  "8628f290fffffff": {
+   "bbox": [
+    45.646994337080734,
+    -121.65229803684079,
+    45.70729737880195,
+    -121.56198816591365
+   ],
+   "ebm_hash": "805142763ebc75df",
+   "ebm_size": 33743,
+   "ebm_version": "cdn:805142763ebc75df",
+   "poi_hash": "751098bd4fdc2eb0",
+   "poi_size": 58,
+   "poi_version": "cdn:751098bd4fdc2eb0"
+  },
+  "8628f2917ffffff": {
+   "bbox": [
+    45.62669712629425,
+    -121.51682642307304,
+    45.68706567896931,
+    -121.4264895998727
+   ],
+   "ebm_hash": "da90bf3879c5f593",
+   "ebm_size": 18750,
+   "ebm_version": "cdn:da90bf3879c5f593"
+  },
+  "8628f291fffffff": {
+   "bbox": [
+    45.663663694825885,
+    -121.57275688893417,
+    45.72398091021767,
+    -121.482401886409
+   ],
+   "ebm_hash": "467acf2ad4656691",
+   "ebm_size": 47248,
+   "ebm_version": "cdn:467acf2ad4656691",
+   "poi_hash": "dc084b63364e0401",
+   "poi_size": 184,
+   "poi_version": "cdn:dc084b63364e0401"
+  },
+  "8628f292fffffff": {
+   "bbox": [
+    45.59337971832694,
+    -121.6758478218564,
+    45.653719908630165,
+    -121.5856010387258
+   ],
+   "ebm_hash": "9885ac7ad773a004",
+   "ebm_size": 16269,
+   "ebm_version": "cdn:9885ac7ad773a004"
+  },
+  "8628f2937ffffff": {
+   "bbox": [
+    45.57307724448611,
+    -121.54047080518292,
+    45.63348295250541,
+    -121.45019693075294
+   ],
+   "ebm_hash": "91a97d6fb17eaab5",
+   "ebm_size": 17277,
+   "ebm_version": "cdn:91a97d6fb17eaab5"
+  },
+  "8628f2957ffffff": {
+   "bbox": [
+    45.683867877123475,
+    -121.70825523470808,
+    45.744119515219886,
+    -121.61792761405304
+   ],
+   "ebm_hash": "343b8586b7c59911",
+   "ebm_size": 24983,
+   "ebm_version": "cdn:343b8586b7c59911",
+   "poi_hash": "b244f5f37740e6a8",
+   "poi_size": 64,
+   "poi_version": "cdn:b244f5f37740e6a8"
+  },
+  "8628f2987ffffff": {
+   "bbox": [
+    45.696847799197336,
+    -121.41347834545009,
+    45.75719319983698,
+    -121.32303399711137
+   ],
+   "ebm_hash": "37166140cbc8a6db",
+   "ebm_size": 27942,
+   "ebm_version": "cdn:37166140cbc8a6db",
+   "poi_hash": "babd8c1ba5bec8dc",
+   "poi_size": 46,
+   "poi_version": "cdn:babd8c1ba5bec8dc"
+  },
+  "8628f298fffffff": {
+   "bbox": [
+    45.73383046054843,
+    -121.46944222850618,
+    45.79412451618854,
+    -121.37897933737996
+   ],
+   "ebm_hash": "f414107d4f2fdc60",
+   "ebm_size": 11921,
+   "ebm_version": "cdn:f414107d4f2fdc60"
+  },
+  "8628f29a7ffffff": {
+   "bbox": [
+    45.64327861942858,
+    -121.43721772002165,
+    45.70366127208497,
+    -121.34683633479233
+   ],
+   "ebm_hash": "3b5ce53d631f244a",
+   "ebm_size": 20237,
+   "ebm_version": "cdn:3b5ce53d631f244a",
+   "poi_hash": "90b60d94d5c43990",
+   "poi_size": 64,
+   "poi_version": "cdn:90b60d94d5c43990"
+  },
+  "8628f29afffffff": {
+   "bbox": [
+    45.68028156053829,
+    -121.493150249534,
+    45.740612895633255,
+    -121.4027504207661
+   ],
+   "ebm_hash": "a76d89bce5d57b54",
+   "ebm_size": 56155,
+   "ebm_version": "cdn:a76d89bce5d57b54",
+   "poi_hash": "978b3036208b6270",
+   "poi_size": 76,
+   "poi_version": "cdn:978b3036208b6270"
+  }
+ },
+ "centre": {
+  "h3": "8628f291fffffff",
+  "lat": 45.7054,
+  "lon": -121.5215
+ },
+ "fetched": "2026-10-27",
+ "license": "ODbL 1.0, (c) OpenStreetMap contributors (see README.md)",
+ "name": "hood-river",
+ "osm_snapshot": {
+  "us_oregon": "2026-10-08T20:21:06Z",
+  "us_oregon.border": "2026-10-08T20:21:06Z",
+  "us_washington": "2026-10-08T20:21:06Z",
+  "us_washington.border": "2026-10-08T20:21:06Z"
+ },
+ "outside": {
+  "lat": 45.7054,
+  "lon": -122.100352
+ },
+ "radius_km": 9.0,
+ "source": "https://tiles.opentrailpaper.com/v1/",
+ "track": {
+  "cells": [
+   "8628f2827ffffff",
+   "8628f291fffffff",
+   "8628f29afffffff"
+  ],
+  "from": [
+   45.7054,
+   -121.5858169
+  ],
+  "to": [
+   45.7054,
+   -121.4571831
+  ]
+ }
+}

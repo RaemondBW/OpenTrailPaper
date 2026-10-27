@@ -26,7 +26,7 @@ card, NVS and NimBLE, and `sim/host/` for the hardware:
 | Tasks, mutexes, queues, ring buffers | threads ([rtos_sim.cpp](host/rtos_sim.cpp)); the clock can run N× faster |
 | E-paper panel | a framebuffer; every paint, scrub and clear is counted, screenshots are PNGs of what's on the glass |
 | Touch, BOOT/side/home keys | injected from the control channel; a press is held until the firmware has read it |
-| SD card | a directory (`<dir>/sd`), removable; optionally slow (`sd latency_ms`), slow to come up after power-on (`--sd-ready-ms`), or holding a file whose reading resets the device (`--sd-crash-on-read`) |
+| SD card | a directory (`<dir>/sd`), removable; optionally slow (`sd latency_ms`), slow to come up after power-on (`--sd-ready-ms`), or holding a file whose reading resets the device (`--sd-crash-on-read`); a computer can hold it over USB (`usb host`) while a test edits the directory, and the firmware rescans its maps when it lets go |
 | NVS | files under `<dir>/nvs`, kept across reboots |
 | L76K GPS on UART2 | an emulated module: obeys PCAS commands (baud, output, version, save), keeps its baud across restarts, streams NMEA for a fix or a track; a wrong UART baud reads garbage |
 | BLE stack + radio | [nimble_sim.cpp](host/nimble_sim.cpp): NimBLE's API over TCP. Connections, pairing (the firmware's passkey callback), bonds (kept in `<dir>/bonds.txt`), encryption, attribute permissions, CCCDs, MTU, notify back-pressure and slow connection intervals |
@@ -34,7 +34,7 @@ card, NVS and NimBLE, and `sim/host/` for the hardware:
 | The phone's GATT server (AMS, name) | provided by whatever connects as the phone |
 | OTA | the image lands in `<dir>/ota.bin`; the reboot re-execs the sim |
 | Fuel gauge | set from the control channel |
-| LoRa, Qwiic sensors, RTC chip, USB drive, light sleep | absent (the firmware's "not fitted" paths) |
+| LoRa, Qwiic sensors, RTC chip, the USB stack itself, light sleep | absent (the firmware's "not fitted" paths) |
 
 Two TCP ports, both described in [PROTOCOL.md](PROTOCOL.md):
 
@@ -79,11 +79,42 @@ of CoreBluetooth / BluetoothGatt, so their own connection logic — pairing,
 refusals, reconnects, backgrounding — runs against the real firmware. See
 [IOS.md](IOS.md) and [ANDROID.md](ANDROID.md).
 
+## Maps: real tiles
+
+`sim/fixtures/tiles/` holds sixteen real H3 res-6 tiles around Hood River,
+Oregon, as the CDN serves them (375 KB, OSM data under the ODbL — see its
+README; `build_fixture.py` rebuilds it). `otpsim.tiles` hands them out
+(`fixture_tiles()`, `fixture_pois()` → `[(h3, bytes, version)]`,
+`fixture_manifest()` for the centre, bbox, a track and a point outside),
+writes them straight onto a card directory (`install_on_card()`), reads
+`.ebm` roads and projects them onto the map page as the firmware does.
+
+[tests/test_maps.py](tests/test_maps.py) sends the region as the apps' map
+download does and lists it back; draws it (ink against the "NO MAP HERE"
+page, and the fixture's own streets must land on inked pixels — and must not
+when the projection is moved 30 m); rides across tile boundaries; replaces a
+tile with a newer version; deletes tiles over USB; times big transfers on a
+normal and a slow link; and sends damaged tiles. The firmware's `timing`
+console switch logs every map frame (polys per road class, tiles drawn of
+those wanted, ` cut` for a partial frame), which the tests read too.
+
+`SimPhone.pace_writes(interval_ms, per_event)` paces the phone's own writes
+like a connection interval; the sim's `--conn-interval-ms` paces only the
+device's notifications.
+
 ## Writing tests that fail for the right reason
 
 A test that passes with the bug present proves nothing. When a test guards a
 fix, check it against the unfixed code once: `test_download_survives_a_slow_link`
-fails with the old 320 ms notify retry budget and passes with the fix.
+fails with the old 320 ms notify retry budget and passes with the fix. The
+map tests were checked the same way: with the tile decoder's y axis flipped,
+with saveTile no longer dropping the cached copy of a replaced tile, and with
+the card rescan keeping its tile cache, the draw, ride, replace and delete
+tests fail.
+
+A firmware bug a test finds but doesn't fix is a strict `xfail` naming it
+(`test_a_tile_whose_grid_overruns_the_file_does_not_crash_the_map`), so the
+fix turns it into a failure to remove the marker.
 
 ## Checks the board can't make
 
@@ -108,3 +139,9 @@ tests assert the console is clean of them:
   possible here.
 - Light sleep, BT modem sleep and power_mgmt.cpp aren't built: link drops
   caused by sleep clocks are out of reach.
+- Phone → device writes cost nothing unless the test paces them
+  (`pace_writes`); BLE retransmissions and a full controller write queue
+  aren't modelled.
+- No address sanitizer: an out-of-bounds read only shows when it faults.
+  A damaged tile's small overreads (a header with no index behind it) pass
+  silently.

@@ -59,6 +59,10 @@ void setBattery(int pct, bool charging);
 bool sdPresent();
 void setSdPresent(bool on);
 void setSdLatency(int ms);   // device-time cost of every card open/read/write
+// A computer has the card mounted over USB (usb_storage::hostActive): the
+// firmware keeps off the card until it is released, then rescans it.
+void setUsbHost(bool on);
+bool usbHost();
 
 // The function containing `addr` (a return address), demangled; "?" if unknown.
 std::string symbolName(void* addr);

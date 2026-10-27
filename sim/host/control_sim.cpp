@@ -281,6 +281,7 @@ std::string handle(const json::Value& r) {
         else sim::setSdPresent(r.boolean("present", true));
         return ok();
     }
+    if (cmd == "usb") { sim::setUsbHost(r.boolean("host", true)); return ok(); }
     if (cmd == "speed") { sim_clock::setFactor(r.num("factor", 1)); return ok(); }
     if (cmd == "ble_drop") { simble::dropPhone((int)r.num("reason", 0x08)); return ok(); }
     if (cmd == "log") {
