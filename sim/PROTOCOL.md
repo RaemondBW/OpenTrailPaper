@@ -127,6 +127,7 @@ Asynchronous events (log lines, when subscribed) come as `{"event":…}`.
 | `status` | — | screen, page, settings, ride state, turn-by-turn (`nav`: prompt, next turn and the distance to it), phone link, advertisement, scanning, bonds, panel counts (`paints`, `scrubs` — the scoped pre-paint resync, `clears` — whole-panel), clocks |
 | `console` | `line`, `wait_ms` | runs a serial console command; returns its output |
 | `screenshot` | `path` | writes the panel as a 540×960 PNG |
+| `tiles` | `poi` | the map tiles (or, with `poi`, the .poi files) on the card as the device lists them to a phone, each with the version record it keeps: `{"tiles":[{"id":…,"version":"cdn:…"},…]}` (`""`: none) |
 | `tap` | `x`, `y`, `ms` | a touch at panel coordinates (portrait, 540×960) |
 | `button` | `name` (`boot`, `home`, `side`), `ms` | presses a key |
 | `gps` | `lat`, `lon`, `alt`, `speed_kmh`, `course`, `fix`, `sats`, `time` (no fix: still report UTC; default true); or `track` [[lat,lon],…] with `speed_kmh` | sets what the GPS module reports |
