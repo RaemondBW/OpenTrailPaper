@@ -142,4 +142,43 @@ final class FirmwareSimTests: XCTestCase {
         app.buttons[start ? "Units, mi" : "Units, km"].tap()
         XCTAssertNotNil(SimControl.waitStatus(timeout: 10) { miles($0) == start })
     }
+
+    // MARK: 5. regression: the link survives the device's Service Changed
+
+    /// 868ace8 / 56fc2b3: the device indicates Service Changed once per boot,
+    /// ~2 s after it admits the phone (so an iOS that cached an older GATT
+    /// table looks again). The app must rediscover and carry on over the same
+    /// session: a setting changed afterwards still reaches the device.
+    func test05_LinkSurvivesServiceChanged() throws {
+        // Broken, the app spins "Syncing with device…" forever and XCUITest
+        // waits for it to idle; fail instead (run_ios_tests.sh enables test
+        // timeouts).
+        executionTimeAllowance = 180
+        launchConnected()
+        // A new boot, so the device owes this phone its Service Changed.
+        try SimControl.call(["cmd": "reboot"])
+        Thread.sleep(forTimeInterval: 1)
+        let back = Date().addingTimeInterval(30)
+        while (try? SimControl.status()) == nil && Date() < back { Thread.sleep(forTimeInterval: 0.3) }
+        XCTAssertNotNil(SimControl.waitStatus(timeout: 30) { SimControl.phoneConnected($0) },
+                        "the app never reconnected after the reboot")
+        XCTAssertNoThrow(try SimControl.call(["cmd": "wait_log", "since": 0, "timeout_ms": 20_000,
+                                               "pattern": "service changed indicated"], timeout: 25),
+                         "the device never indicated Service Changed")
+        // The app rediscovers at once; give it past LinkClient's 10 s
+        // rediscovery deadline, so a session that never resumed has failed.
+        Thread.sleep(forTimeInterval: 12)
+        XCTAssertTrue(connectedLabel.waitForExistence(timeout: 10), "app not CONNECTED after Service Changed")
+
+        func miles(_ s: [String: Any]) -> Bool? { (s["settings"] as? [String: Any])?["miles"] as? Bool }
+        let start = try XCTUnwrap(miles(try SimControl.status()), "status has no settings.miles")
+        app.buttons["Settings"].firstMatch.tap()
+        let button = app.buttons[start ? "Units, km" : "Units, mi"]
+        XCTAssertTrue(button.waitForExistence(timeout: 10))
+        button.tap()
+        XCTAssertNotNil(SimControl.waitStatus(timeout: 10) { miles($0) == !start },
+                        "a setting changed after Service Changed never reached the device")
+        app.buttons[start ? "Units, mi" : "Units, km"].tap()
+        XCTAssertNotNil(SimControl.waitStatus(timeout: 10) { miles($0) == start })
+    }
 }
