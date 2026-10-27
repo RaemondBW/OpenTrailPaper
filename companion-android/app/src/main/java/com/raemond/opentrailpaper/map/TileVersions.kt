@@ -3,7 +3,6 @@ package com.raemond.opentrailpaper.map
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import com.raemond.opentrailpaper.BuildConfig
 import java.io.File
 
 /**
@@ -158,7 +157,7 @@ object CdnVersions {
 
     /** Fetch the indexes for [ids] that are not known or are over an hour old,
      *  and meta.json. */
-    suspend fun load(ids: Collection<String>, baseUrl: String = BuildConfig.TILE_BASE_URL) {
+    suspend fun load(ids: Collection<String>, baseUrl: String = MapEndpoints.tileBaseUrl) {
         if (baseUrl.isBlank()) return
         val now = System.currentTimeMillis()
         if (now - failedAt < RETRY_AFTER_MS) return

@@ -95,6 +95,23 @@ class FirmwareSim private constructor(
 
     fun status(): JsonObject = cmd("status").getAsJsonObject("status")
 
+    /**
+     * The map tiles (or .poi files) on the card, id -> version record ("" for
+     * none), as the device lists them to a phone (control `tiles`).
+     */
+    fun tiles(poi: Boolean = false): Map<String, String> =
+        cmd("tiles", "poi" to poi).getAsJsonArray("tiles").associate {
+            val o = it.asJsonObject
+            o.get("id").asString to o.get("version").asString
+        }
+
+    /** The console's sequence number now, for [logSince]. */
+    fun logSeq(): Long = cmd("seq").get("seq").asLong
+
+    /** Console lines after [since]. */
+    fun logSince(since: Long): List<String> =
+        cmd("log", "since" to since).getAsJsonArray("lines").map { it.asJsonArray[1].asString }
+
     /** The radio link to the phone is lost (default: supervision timeout). */
     fun dropPhone(reason: Int = 0x08) { cmd("ble_drop", "reason" to reason) }
 
