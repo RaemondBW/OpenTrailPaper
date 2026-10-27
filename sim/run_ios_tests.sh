@@ -87,6 +87,7 @@ xcodebuild test \
     -destination "id=$UDID" \
     -derivedDataPath "$DD" \
     -only-testing:"$ONLY" \
+    -test-timeouts-enabled YES \
     -resultBundlePath "$DIR/results.xcresult" \
     2>&1 | tee "$DIR/xcodebuild.log" | grep -E '^(Test Case|Test Suite|\*\*|.*error:|.*: error|.*XCTAssert|    Executed)'
 RC=$(grep -q '\*\* TEST SUCCEEDED \*\*' "$DIR/xcodebuild.log" && echo 0 || echo 1)

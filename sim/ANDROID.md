@@ -26,7 +26,13 @@ fresh device directory per test and is skipped when the sim isn't built (set
 `OTP_SIM=/path/to/otp-sim` to use another binary). Scenarios: first pairing +
 Hello; link drops reconnect without NOT_RECOGNISED; reconnects that never come
 up (sim stopped) are not a refusal; a second phone is refused without looping;
-ShowPage pages the device. Each test's SimRadio log and the sim console tail
+ShowPage pages the device; and regressions for app link bugs: two uploads /
+downloads at once queue instead of failing BUSY, two ride downloads both
+arrive intact, the ride list never blanks across a reconnect, the phone's GPS
+stream stops at once for a device that already has a fix, a setting edited
+offline reaches the device on reconnect. `bluetoothOffAndOnComesBackConnected`
+is an open app bug (ignored). Bluetooth off in SimRadio reports the adapter
+change before the links drop, as Android does. Each test's SimRadio log and the sim console tail
 are in the test report's standard output.
 
 ## The debug app on an emulator
