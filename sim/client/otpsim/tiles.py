@@ -13,11 +13,16 @@ import json
 import math
 import os
 import struct
+import zlib
 
 FIXTURE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "fixtures", "tiles"))
 
 # MapFeatureClass (src/map_view.h)
 MAJOR, PRIMARY, SECONDARY, TERTIARY, MINOR, PATH = range(6)
+
+# MapPoiType and MAP_PF_* flags (src/map_view.h, docs/mapgen.js POI_*)
+WATER, TOILETS, REPAIR, BIKE_SHOP = 1, 2, 3, 4
+PF_RESTRICTED, PF_PUMP = 0x80, 0x01
 
 # The map page's geometry (src/ui_dashboard.cpp buildMapScreenData, ui_render.h)
 RIDER_X, RIDER_Y = 270, 430
@@ -52,6 +57,25 @@ def fixture_pois(fixture_dir=FIXTURE_DIR):
             with open(os.path.join(fixture_dir, h3 + ".poi"), "rb") as f:
                 out.append((h3, f.read(), c["poi_version"]))
     return out
+
+
+POI_DIR = os.path.join(FIXTURE_DIR, "pois")
+
+
+def poi_set(name, poi_dir=POI_DIR):
+    """A synthetic POI set (sim/fixtures/tiles/pois/, built by
+    build_pois.mjs with docs/mapgen.js buildPoi): (meta, [(h3, poi bytes,
+    version record)]). meta: `stand` {lat, lon} (where to open the map),
+    `cells`, and `pois` [{name, kind, type, flags, lat, lon, cell}] (type 0:
+    in the input only, the builder drops it)."""
+    with open(os.path.join(poi_dir, "pois.json")) as f:
+        meta = json.load(f)["sets"][name]
+    out = []
+    for h3 in sorted(meta["cells"]):
+        with open(os.path.join(poi_dir, meta["cells"][h3]["file"]), "rb") as f:
+            data = f.read()
+        out.append((h3, data, "phone:%d" % (zlib.crc32(data) & 0x7FFFFFFF)))
+    return meta, out
 
 
 def card_path(sd_root, h3, ext=".ebm"):
@@ -185,3 +209,65 @@ def keep_roads(data, keep):
         struct.pack_into("<II", out, 36 + k * 8, len(out), len(body))
         out += body
     return bytes(out) + data[old_end:]
+
+
+# -- .poi files --------------------------------------------------------------------------
+# The format of src/map_tiles.cpp (reader) and docs/mapgen.js buildPoi (writer),
+# little-endian: 'EPOI', u8 version (1), u8 recordSize (6), u16 count, u64 H3
+# cell, f64 lat0, f64 lon0, f32 kx, f32 ky (40 bytes), then count records of
+# u8 type, u8 flags, i16 x, i16 y (metres E/N of lat0/lon0), padded to
+# recordSize.
+POI_HEADER = struct.Struct("<4sBBHQddff")
+
+
+def read_poi(data):
+    """A .poi as a dict: version, rec_size, count, cell, lat0, lon0, kx, ky,
+    and records [(type, flags, x, y)] (as many as the file holds)."""
+    magic, ver, rs, count, cell, lat0, lon0, kx, ky = POI_HEADER.unpack_from(data)
+    recs = []
+    for i in range(count):
+        o = POI_HEADER.size + i * max(rs, 6)
+        if o + 6 > len(data):
+            break
+        recs.append(struct.unpack_from("<BBhh", data, o))
+    return dict(magic=magic, version=ver, rec_size=rs, count=count, cell=cell, lat0=lat0, lon0=lon0,
+                kx=kx, ky=ky, records=recs)
+
+
+def write_poi(lat0, lon0, records, cell=0, kx=None, ky=110540.0, version=1, rec_size=6, count=None,
+              magic=b"EPOI"):
+    """Encode a .poi as buildPoi does — or, with the keyword arguments, as it
+    must not: another version, a longer record (zero padded), a count that is
+    not the number of records. records: [(type, flags, x, y)]; or use
+    poi_record() for a lat/lon."""
+    if kx is None:
+        kx = 111320.0 * math.cos(math.radians(lat0))
+    n = len(records) if count is None else count
+    out = bytearray(POI_HEADER.pack(magic, version, rec_size, n, cell, lat0, lon0, kx, ky))
+    for t, f, x, y in records:
+        out += struct.pack("<BBhh", t, f, x, y) + bytes(max(rec_size - 6, 0))
+    return bytes(out)
+
+
+def poi_record(poi, ptype, flags, lat, lon):
+    """(type, flags, x, y) for a POI at lat/lon in the frame of `poi` (a
+    read_poi() dict), rounded as buildPoi rounds."""
+    kx, ky = struct.unpack("<ff", struct.pack("<ff", poi["kx"], poi["ky"]))
+    return (ptype, flags, int(round((lon - poi["lon0"]) * kx)), int(round((lat - poi["lat0"]) * ky)))
+
+
+def poi_screen(data, lat, lon, mpp=DEFAULT_MPP, cx=RIDER_X, cy=RIDER_Y):
+    """Every POI of a .poi as [(type, flags, x, y)] in panel px around the
+    rider at (lat, lon), north up, computed as map_tiles projectPoisInto does
+    (the file's own origin and scales, float maths)."""
+    p = read_poi(data)
+    px, py = (lon - p["lon0"]) * p["kx"], (lat - p["lat0"]) * p["ky"]
+    out = []
+    for t, f, x, y in p["records"]:
+        out.append((t, f, cx + (x - px) / mpp, cy - (y - py) / mpp))
+    return out
+
+
+def poi_latlon(poi, rec):
+    """A record of `poi` (a read_poi() dict) back to (lat, lon)."""
+    return (poi["lat0"] + rec[3] / poi["ky"], poi["lon0"] + rec[2] / poi["kx"])
