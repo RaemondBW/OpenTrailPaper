@@ -16,6 +16,24 @@ from otpsim import LinkClient, SimDevice, SimPhone, pb  # noqa: E402
 ARTIFACTS = os.path.join(os.path.dirname(__file__), "..", "build", "test-artifacts")
 
 
+def pytest_addoption(parser):
+    parser.addoption("--slow", action="store_true",
+                     help="also run the tests marked slow (heavy SD card profiles, riding a card full)")
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "slow: minutes, not seconds; skipped unless --slow")
+
+
+def pytest_collection_modifyitems(config, items):
+    if config.getoption("--slow"):
+        return
+    skip = pytest.mark.skip(reason="slow: run with --slow")
+    for item in items:
+        if "slow" in item.keywords:
+            item.add_marker(skip)
+
+
 @pytest.hookimpl(tryfirst=True, hookwrapper=True)
 def pytest_runtest_makereport(item, call):
     outcome = yield
