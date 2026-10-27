@@ -191,6 +191,13 @@ jobs:
           distribution: temurin
           java-version: "17"
       - uses: gradle/actions/setup-gradle@v4
+      # The map tests download from the stand-in tile CDN (sim/cdn); make
+      # sure nothing can reach the real CDN, Overpass or Open-Meteo instead.
+      - name: Keep the map tests off the network
+        run: |
+          printf '0.0.0.0 %s\n' tiles.opentrailpaper.com overpass-api.de overpass.private.coffee \
+            maps.mail.ru api.open-meteo.com | sudo tee -a /etc/hosts
+          sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder || true
       # The runner image ships the Android SDK.
       - name: Build the sim and run the tests
         run: |
@@ -220,6 +227,13 @@ jobs:
             vendor/T5S3-4.7-e-paper-PRO
       - name: Generate project
         run: brew install xcodegen && (cd companion-ios && xcodegen generate)
+      # The map tests download from the stand-in tile CDN (sim/cdn); make
+      # sure nothing can reach the real CDN, Overpass or Open-Meteo instead.
+      - name: Keep the map tests off the network
+        run: |
+          printf '0.0.0.0 %s\n' tiles.opentrailpaper.com overpass-api.de overpass.private.coffee \
+            maps.mail.ru api.open-meteo.com | sudo tee -a /etc/hosts
+          sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder || true
       # No signing certificate on a runner; the simulator doesn't need one.
       - name: Build the sim and run the tests
         env:
