@@ -3,6 +3,7 @@ each replayed against the sim. Every test names the commit that fixed it and
 was checked to fail with that fix reverted (by hand, in today's src/) and to
 pass with it in place."""
 import os
+import struct
 import time
 
 from conftest import paired_phone
@@ -223,7 +224,9 @@ def test_ea06a72_the_device_keeps_each_tiles_version_record(device, link):
     was, so hexes sent from another phone or before a reinstall showed as
     'update available' when identical. The device keeps the record sent with
     each tile and lists it back — to any session, across reboots."""
-    tile = b"EBM2" + bytes(60)
+    # The smallest tile the device stores: a 1x1 grid, its one sub-tile empty
+    # (a header alone is refused since the device checks a tile's structure).
+    tile = b"EBM2" + struct.pack("<dddii", 37.7, -122.5, 0.02, 1, 1) + bytes(8)
     rec = "cdn:0123456789abcdef"
     link.upload(pb.TARGET_MAP_TILE, "8828308281fffff", tile, tile_version=rec)
 

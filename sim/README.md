@@ -130,9 +130,21 @@ download does and lists it back; draws it (ink against the "NO MAP HERE"
 page, and the fixture's own streets must land on inked pixels — and must not
 when the projection is moved 30 m); rides across tile boundaries; replaces a
 tile with a newer version; deletes tiles over USB; times big transfers on a
-normal and a slow link; and sends damaged tiles. The firmware's `timing`
-console switch logs every map frame (polys per road class, tiles drawn of
-those wanted, ` cut` for a partial frame), which the tests read too.
+normal and a slow link; and damages tiles twenty ways (grid, cell size, index
+entries, record and point counts, elevation and water sections): the link
+must refuse each, and each put on the card over USB must not take the device
+down. The firmware's `timing` console switch logs every map frame (polys per
+road class, tiles drawn of those wanted, ` cut` for a partial frame, `pois=`
+kept/dropped), which the tests read too.
+
+[tests/test_pois.py](tests/test_pois.py) does the same for the cycling POIs
+(`.poi` next to each tile), with the synthetic sets of
+`sim/fixtures/tiles/pois/` (`build_pois.mjs`: made-up OSM nodes encoded by the
+real `docs/mapgen.js` buildPoi; `otpsim.tiles.poi_set()`): each icon on the
+glass is compared with the one the MAP LAYERS screen draws for its type, at
+the place the file puts it — per type and flag, across a cell edge, by zoom
+and layer, replaced, emptied and deleted, past the frame's 256-POI budget,
+damaged, and along a ride on a route.
 
 `SimPhone.pace_writes(interval_ms, per_event)` paces the phone's own writes
 like a connection interval; the sim's `--conn-interval-ms` paces only the
@@ -148,9 +160,8 @@ with saveTile no longer dropping the cached copy of a replaced tile, and with
 the card rescan keeping its tile cache, the draw, ride, replace and delete
 tests fail.
 
-A firmware bug a test finds but doesn't fix is a strict `xfail` naming it
-(`test_a_tile_whose_grid_overruns_the_file_does_not_crash_the_map`), so the
-fix turns it into a failure to remove the marker.
+A firmware bug a test finds but doesn't fix is a strict `xfail` naming it,
+so the fix turns it into a failure to remove the marker.
 
 ## Checks the board can't make
 

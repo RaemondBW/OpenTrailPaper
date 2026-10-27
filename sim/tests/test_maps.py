@@ -456,44 +456,190 @@ def test_a_tile_that_is_not_a_tile_is_refused(device, link):
     assert not os.path.exists(card_path(device.sd, CENTRE_H3))
 
 
-@pytest.mark.parametrize("damage", ["truncated", "noise"])
-def test_a_damaged_tile_does_not_take_the_map_down(device, link, tmp_path, damage):
-    """A tile whose header is fine but whose body is cut short or noise (the
-    link's CRC only proves it arrived as sent). The firmware checks only the
-    header, so it is stored; the map page must draw what it can of it and the
-    neighbours, keep running, and recover when the good tile is sent."""
+# Damaged tiles, each way the reader can be misled. A tile's header names its
+# grid and the grid sizes its index; the index names where each sub-tile's
+# roads are; the sections after the roads carry their own counts. The link
+# refuses all of them (map_tiles::tileValid); a tile already on the card (put
+# there by firmware that only checked the magic, or by a computer) is read
+# with every offset and count checked against the file, and skipped where
+# they do not fit.
+
+def _grid(nx, ny):
+    def f(b):
+        struct.pack_into("<ii", b, 28, nx, ny)
+    return f
+
+
+def _cell_deg(v):
+    def f(b):
+        struct.pack_into("<d", b, 20, v)
+    return f
+
+
+def _entry(off=None, ln=None):
+    """The first sub-tile with roads: its offset (absolute, or from the end
+    of the file when negative) and length."""
+    def f(b):
+        k, o, l = _first_entry(b)
+        o = o if off is None else (len(b) + off if off < 0 else off)
+        l = l if ln is None else ln
+        struct.pack_into("<II", b, 36 + k * 8, o & 0xFFFFFFFF, l & 0xFFFFFFFF)
+    return f
+
+
+def _first_entry(b):
+    nx, ny = struct.unpack_from("<ii", b, 28)
+    for k in range(nx * ny):
+        o, l = struct.unpack_from("<II", b, 36 + k * 8)
+        if o:
+            return k, o, l
+    raise AssertionError("no roads")
+
+
+def _records(count=None, points=None):
+    """The first sub-tile's record count, or its first polyline's point count."""
+    def f(b):
+        _, o, _ = _first_entry(b)
+        if count is not None:
+            struct.pack_into("<H", b, o, count)
+        if points is not None:
+            struct.pack_into("<H", b, o + 3, points)
+    return f
+
+
+def _sections_at(b):
+    nx, ny = struct.unpack_from("<ii", b, 28)
+    end = 36 + nx * ny * 8
+    for k in range(nx * ny):
+        o, l = struct.unpack_from("<II", b, 36 + k * 8)
+        if o:
+            end = max(end, o + l)
+    return end
+
+
+def _elevation(gw, gh):
+    def f(b):
+        p = _sections_at(b)
+        assert b[p:p + 4] == b"ELV1"
+        struct.pack_into("<ii", b, p + 4, gw, gh)
+    return f
+
+
+def _water(polys=None, points=None):
+    def f(b):
+        p = _sections_at(b)
+        if b[p:p + 4] == b"ELV1":
+            gw, gh = struct.unpack_from("<ii", b, p + 4)
+            p += 44 + gw * gh * 2
+        assert b[p:p + 4] == b"WTR2", b[p:p + 4]
+        if polys is not None:
+            struct.pack_into("<H", b, p + 4, polys)
+        if points is not None:
+            struct.pack_into("<H", b, p + 6, points)
+    return f
+
+
+def _half(b):
+    del b[len(b) // 2:]
+
+
+def _noise(b):
+    b[36:] = os.urandom(len(b) - 36)
+
+
+DAMAGE = {
+    "grid_overruns_the_file": _grid(30000, 30000),       # nx*ny*8 bytes of index past the end
+    "grid_wraps_int32": _grid(65536, 65536),             # nx*ny overflows to 0
+    "grid_negative": _grid(-6, 4),
+    "grid_empty": _grid(0, 4),
+    "cell_size_zero": _cell_deg(0.0),                    # sub-tiles in view: floor(x / 0)
+    "cell_size_nan": _cell_deg(float("nan")),
+    "cell_size_tiny": _cell_deg(1e-300),                 # billions of sub-tiles in view
+    "entry_past_the_end": _entry(off=-1, ln=1000),
+    "entry_wraps_uint32": _entry(off=0xFFFFFF00, ln=0x200),   # off + len wraps past 4 GB
+    "entry_into_the_index": _entry(off=8),
+    "entry_too_short": _entry(off=-1, ln=1),             # no room for the record count
+    "record_count_overruns": _records(count=0xFFFF),
+    "point_count_overruns": _records(points=0xFFFF),
+    "elevation_grid_overruns": _elevation(0x7FFFFFFF, 0x7FFFFFFF),
+    "elevation_grid_negative": _elevation(-1, 2),
+    "elevation_grid_wraps": _elevation(0x10000, 0x8000),  # gw*gh*2 = 2^32: 0 in 32 bits
+    "water_count_overruns": _water(polys=0xFFFF),
+    "water_points_overrun": _water(points=0xFFFF),
+    "truncated": _half,
+    "noise": _noise,
+}
+
+
+def damaged_tile(kind, good):
+    b = bytearray(good)
+    DAMAGE[kind](b)
+    return bytes(b)
+
+
+def test_the_damage_cases_are_what_they_say():
+    """Each case damages what it names, on the centre tile as it is (has
+    elevation and water: the sections cases need them)."""
+    good = dict((h, d) for h, d, _ in TILES)[CENTRE_H3]
+    assert _sections_at(bytearray(good)) < len(good)
+    for kind in DAMAGE:
+        assert damaged_tile(kind, good) != good, kind
+
+
+@pytest.mark.parametrize("kind", sorted(DAMAGE))
+def test_a_damaged_tile_is_refused(device, link, kind):
+    """The link's CRC only proves the tile arrived as sent: the device checks
+    its structure too, refuses it with PARSE_ERROR, and keeps what it had."""
+    good = dict((h, d) for h, d, _ in TILES)[CENTRE_H3]
+    send_tiles(link, [(CENTRE_H3, good, "cdn:0000000000000001")])
+    bad = damaged_tile(kind, good)
+    with pytest.raises(LinkError) as e:
+        link.upload(pb.TARGET_MAP_TILE, CENTRE_H3, bad, tile_version="cdn:0000000000000002")
+    assert e.value.code == "RESULT_PARSE_ERROR"
+    assert listed(link) == {CENTRE_H3: "cdn:0000000000000001"}
+    with open(card_path(device.sd, CENTRE_H3), "rb") as f:
+        assert f.read() == good
+
+
+@pytest.mark.parametrize("kind", sorted(DAMAGE))
+def test_a_damaged_tile_on_the_card_does_not_take_the_map_down(device, link, tmp_path, kind):
+    """The same tiles already on the card (stored by firmware that checked
+    only the magic, or copied there by a computer): the device, standing on
+    the tile, keeps running — through the elevation lookup every few seconds
+    on any screen, and the map page at every zoom — draws the neighbours, and
+    recovers when the good tile is sent."""
     lat, lon = CENTRE
     good = dict((h, d) for h, d, _ in TILES)[CENTRE_H3]
-    bad = good[:len(good) // 2] if damage == "truncated" else good[:36] + os.urandom(len(good) - 36)
-    send_tiles(link, [t for t in TILES if t[0] != CENTRE_H3] + [(CENTRE_H3, bad, "cdn:damaged")])
-    seq = open_map(device, lat, lon)
+    bad = damaged_tile(kind, good)
+    send_tiles(link, [t for t in TILES if t[0] != CENTRE_H3])
+
+    def put(sd):
+        p = card_path(sd, CENTRE_H3)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "wb") as f:
+            f.write(bad)
+    seq = open_map(device, *moved(lat, lon, 0, -6000))   # off the tile while the card is changed
     wait_frame(device, seq)
-    for _ in range(3):                         # zoom out and back: every tile path
-        device.console("zoom out")
-    for _ in range(3):
-        device.console("zoom in")
-    time.sleep(2)
+    over_usb(device, put)
+    device.console("screen dash")
+    device.gps(lat, lon)
+    device.wait_status(lambda s: abs(s["ride"]["lat"] - lat) < 1e-5, timeout=10)
+    time.sleep(4 * TIME_SCALE)                # the dashboard's elevation lookup, at least once
     alive(device)
-    g = glass(device, tmp_path, "damaged")
-    assert not shows_no_map(g)
+    seq = device.log_seq()
+    device.console("screen map")
+    wait_frame(device, seq)
+    for _ in range(4):                        # zoom out and back: every tile path
+        device.console("zoom out")
+    seq = device.log_seq()
+    wait_frame(device, seq, lambda f: f["mpp"] == 32, timeout=20)
+    for _ in range(4):
+        device.console("zoom in")
+    seq = device.log_seq()
+    wait_frame(device, seq, lambda f: f["mpp"] == 2, timeout=20)
+    alive(device)
     seq = device.log_seq()
     send_tiles(link, [(CENTRE_H3, good, "cdn:good")])
     wait_frame(device, seq, lambda f: f["polys"] > 200 and f["mpp"] == 2)
     time.sleep(0.5)
     assert road_hits(glass(device, tmp_path, "fixed"), lat, lon)[0] > 0.95
-
-
-@pytest.mark.xfail(strict=True, reason=(
-    "firmware bug: saveTile accepts any EBM2 header, and map_tiles projectBlobInto trusts its "
-    "grid size (nx*ny index entries) without checking it against the blob length, so a tile whose "
-    "header claims a larger grid than the file holds is read far out of bounds: the sim segfaults "
-    "on the first map frame (on the board: a panic, again every time the map opens there)"))
-def test_a_tile_whose_grid_overruns_the_file_does_not_crash_the_map(device, link):
-    lat, lon = CENTRE
-    good = bytearray(dict((h, d) for h, d, _ in TILES)[CENTRE_H3])
-    struct.pack_into("<ii", good, 28, 30000, 30000)
-    send_tiles(link, [(CENTRE_H3, bytes(good), "cdn:bad-grid")])
-    seq = open_map(device, lat, lon)
-    time.sleep(3)
-    alive(device)
-    wait_frame(device, seq)
