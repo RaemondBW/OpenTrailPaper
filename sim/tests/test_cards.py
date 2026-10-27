@@ -124,6 +124,30 @@ def fit_problems(data):
     return None
 
 
+def fit_messages(data):
+    """Walk a FIT file's messages: [(global message number, {field: bytes})].
+    Every message must decode, and the last must end where data_size says."""
+    end = data[0] + struct.unpack_from("<I", data, 4)[0]
+    defs, out, i = {}, [], data[0]
+    while i < end:
+        h = data[i]
+        assert not h & 0xA0, "header 0x%02x at %d" % (h, i)   # no compressed time / dev data
+        if h & 0x40:
+            gnum, n = struct.unpack_from("<HB", data, i + 3)
+            defs[h & 0xF] = (gnum, [tuple(data[i + 6 + 3 * k:i + 9 + 3 * k]) for k in range(n)])
+            i += 6 + 3 * n
+        else:
+            gnum, fields = defs[h & 0xF]
+            i += 1
+            vals = {}
+            for num, size, _ in fields:
+                vals[num] = data[i:i + size]
+                i += size
+            out.append((gnum, vals))
+    assert i == end, "messages run to %d, data ends at %d" % (i, end)
+    return out
+
+
 # ---- booting ------------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("profile", PROFILES)
@@ -282,15 +306,18 @@ def ride_until_full(dev, seconds):
     dev.wait_status(lambda s: s["ride"]["recording"], timeout=10)
     seq = dev.log_seq()
     assert dev.fill_card(0)["free_bytes"] == 0
-    dev.wait_status(lambda s: s["ride"]["elapsed_s"] >= seconds, timeout=seconds / 10 * 3 + 30, interval=0.5)
+    st = dev.wait_status(lambda s: s["ride"]["elapsed_s"] >= seconds, timeout=seconds / 10 * 3 + 30, interval=0.5)
+    dev.screenshot(os.path.join(dev.dir, "riding.png"))
     dev.button("boot")
     dev.wait_status(lambda s: s["screen"] == "other", timeout=10)
+    time.sleep(1)
+    dev.screenshot(os.path.join(dev.dir, "sheet.png"))
     dev.tap(*SAVE_BUTTON)
     dev.wait_status(lambda s: not s["ride"]["recording"], timeout=20)
     dev.set_speed(1)
     new = rides_on(dev) - before
     assert len(new) == 1, new
-    return new.pop(), seq
+    return new.pop(), seq, st
 
 
 @pytest.fixture(scope="module")
@@ -305,8 +332,8 @@ def full_ride(request, card_image):
     dev = SimDevice(dir=d, args=FAST + card.sim_args)
     dev.launch(60)
     try:
-        name, seq = ride_until_full(dev, 300)
-        out = dict(dev=dev, card=card, name=name, log=dev.log(since=seq),
+        name, seq, st = ride_until_full(dev, 300)
+        out = dict(dev=dev, card=card, name=name, log=dev.log(since=seq), status=st,
                    data=open(os.path.join(dev.sd, "rides", name), "rb").read())
         yield out
     finally:
@@ -328,24 +355,39 @@ def test_a_card_filling_mid_ride_keeps_the_device_and_earlier_rides(full_ride):
 
 
 @SLOW
-@pytest.mark.xfail(strict=True, reason=(
-    "BUG: a ride that fills the card is saved as a corrupt FIT, and logged 'ride saved'. "
-    "FitWriter::writeBytes ignores short writes and keeps counting, so finish() stamps the header "
-    "with data_size for records that were never written, its tail and CRC don't fit, and the file "
-    "ends wherever the card did. Next boot calls it an interrupted ride."))
 def test_a_ride_that_fills_the_card_is_saved_as_a_valid_fit(full_ride):
-    assert fit_problems(full_ride["data"]) is None, fit_problems(full_ride["data"])
+    """Cut back to the records that leave room for the closing messages in
+    the space the file already had: a whole activity whose session describes
+    the records kept, and which the next boot leaves alone."""
+    data = full_ride["data"]
+    assert fit_problems(data) is None, fit_problems(data)
+    msgs = fit_messages(data)
+    records = [v for g, v in msgs if g == 20]
+    session = [v for g, v in msgs if g == 18]
+    assert 100 < len(records) < 300, len(records)        # filled ~150 s in, rode 300 s
+    assert len(session) == 1 and [g for g, _ in msgs][-1] == 34   # ... then activity
+    stamps = [struct.unpack("<I", r[253])[0] for r in records]
+    assert stamps == sorted(stamps)
+    assert session[0][9] == records[-1][5]               # total_distance = the last record's
+    assert session[0][253] == records[-1][253]           # and it ends where they do
+    dev = full_ride["dev"]
+    dev.reboot()
+    dev.wait_status(lambda s: s["screen"] in ("dash", "other"), timeout=20)
+    time.sleep(2)
+    assert open(os.path.join(dev.sd, "rides", full_ride["name"]), "rb").read() == data
+    assert not [l for l in dev.log() if "interrupted" in l and full_ride["name"] in l]
 
 
 @SLOW
-@pytest.mark.xfail(strict=True, reason=(
-    "BUG: nobody is told the card filled mid-ride: the recorder says nothing (only diag's own "
-    "'SD open/short write FAILED' every 30 s), the end-of-ride screen offers SAVE as usual, and "
-    "the log says 'ride saved'."))
 def test_the_rider_is_told_when_the_card_fills_mid_ride(full_ride):
+    """The status bar says SD FULL while the ride runs on, the end-of-ride
+    sheet says the ride is saved only up to then, and the log never calls it
+    plainly 'ride saved'."""
     told = [l for l in full_ride["log"]
             if re.search(r"(rec|ride).*(card full|no space|write fail|not saved|ENOSPC)", l, re.I)]
     assert told, "no recorder message about the full card"
+    assert full_ride["status"]["ride"]["card_full"]
+    assert not [l for l in full_ride["log"] if re.search(r"\bride saved:", l)]
 
 
 def full_device(boot_card):
