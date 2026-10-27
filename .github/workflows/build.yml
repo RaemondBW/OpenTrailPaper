@@ -190,10 +190,12 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-      - uses: android-actions/setup-android@v3
       - uses: gradle/actions/setup-gradle@v4
+      # The runner image ships the Android SDK.
       - name: Build the sim and run the tests
-        run: sim/build.sh && sim/run_android_tests.sh
+        run: |
+          export ANDROID_HOME=${ANDROID_HOME:-$HOME/Library/Android/sdk}
+          sim/build.sh && sim/run_android_tests.sh
       - name: Keep the test report
         if: failure()
         uses: actions/upload-artifact@v4
