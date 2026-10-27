@@ -431,4 +431,28 @@ final class FirmwareSimTests: XCTestCase {
         let tiles = try TileCdn.paths().filter { $0.hasSuffix(".ebm") }
         XCTAssertEqual(tiles, ["/v1/\(changed.prefix(6))/\(changed).ebm"], "only the changed tile is fetched")
     }
+
+    // MARK: 9. Bluetooth off and on
+
+    /// Bluetooth switched off and on with the device connected: the app must
+    /// come back CONNECTED. CoreBluetooth reports .poweredOff and no
+    /// didDisconnect for the link it takes down; the app kept that link's
+    /// session and its peripheral, so on .poweredOn it scanned, ignored every
+    /// advertisement (a peripheral was still set) and never connected again.
+    func test09_BluetoothOffAndOnComesBackConnected() throws {
+        launchConnected()
+        SimBluetooth.set(on: false)
+        defer { SimBluetooth.set(on: true) }
+        XCTAssertNotNil(SimControl.waitStatus(timeout: 15) { !SimControl.phoneConnected($0) },
+                        "the device should lose the phone when its Bluetooth goes off")
+        let off = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label CONTAINS[c] 'Bluetooth off' OR label CONTAINS[c] 'Bluetooth is off'"))
+            .firstMatch
+        XCTAssertTrue(off.waitForExistence(timeout: 10), "the app should say Bluetooth is off")
+        SimBluetooth.set(on: true)
+        XCTAssertNotNil(SimControl.waitStatus(timeout: 30) { SimControl.phoneConnected($0) },
+                        "the app never reconnected after Bluetooth came back on")
+        XCTAssertTrue(connectedLabel.waitForExistence(timeout: 20), "app never showed CONNECTED again")
+        XCTAssertFalse(refusalAlert.exists, "the app said the device isn't accepting this iPhone")
+    }
 }

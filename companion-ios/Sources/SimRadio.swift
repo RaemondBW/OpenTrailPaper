@@ -24,6 +24,10 @@ import UIKit
 //    or connectionTimeout for reason 0x08; a link that vanishes without a
 //    word (socket closed) is a supervision timeout, CBError.connectionTimeout;
 //  - cancelPeer ends an active or pending connect with didDisconnect(nil);
+//  - Bluetooth switched off (a UI test posts SimBLE.bluetoothOffNote, a
+//    Darwin notification) reports .poweredOff and drops the link with no
+//    didDisconnect, as CoreBluetooth does; on (bluetoothOnNote) reports
+//    .poweredOn, and nothing reconnects until the app asks again;
 //  - in the background the app keeps running (a background task), as
 //    bluetooth-central wakes it for CoreBluetooth's events.
 // Only the link service is reported; the legacy characteristics are
@@ -38,6 +42,10 @@ enum SimBLE {
     static let dSubscribeRsp: UInt8 = 0x85, dNotify: UInt8 = 0x86, dDisconnected: UInt8 = 0x87
     static let dServiceChanged: UInt8 = 0x89, dSecurity: UInt8 = 0x8A, dAdv: UInt8 = 0x8B
     static let dPeerRead: UInt8 = 0x90
+
+    /// Darwin notifications: Bluetooth switched off / on (FirmwareSimTests).
+    static let bluetoothOffNote = "com.raemond.opentrailpaper.sim.bluetooth-off"
+    static let bluetoothOnNote = "com.raemond.opentrailpaper.sim.bluetooth-on"
 
     static let gapService = CBUUID(string: "1800")
     static let gapName = CBUUID(string: "2A00")
@@ -202,11 +210,40 @@ final class SimRadio: RadioCentral {
         DispatchQueue.main.async { [weak self] in
             self?.events?.radioStateChanged(.poweredOn)
         }
+        // Bluetooth off / on, from a UI test (another process): Darwin
+        // notifications. The radio lives as long as the app.
+        let center = CFNotificationCenterGetDarwinNotifyCenter()
+        let me = Unmanaged.passUnretained(self).toOpaque()
+        for name in [SimBLE.bluetoothOffNote, SimBLE.bluetoothOnNote] {
+            CFNotificationCenterAddObserver(center, me, { _, observer, name, _, _ in
+                guard let observer, let name else { return }
+                let on = (name.rawValue as String) == SimBLE.bluetoothOnNote
+                let radio = Unmanaged<SimRadio>.fromOpaque(observer).takeUnretainedValue()
+                DispatchQueue.main.async { MainActor.assumeIsolated { radio.setPowered(on) } }
+            }, name as CFString, nil, .deliverImmediately)
+        }
+    }
+
+    /// Bluetooth switched off or on. CoreBluetooth reports the state change
+    /// and, switching off, drops every link WITHOUT a didDisconnect: the
+    /// peripherals are simply invalid.
+    private func setPowered(_ on: Bool) {
+        guard (state == .poweredOn) != on else { return }
+        NSLog("[sim-ble] Bluetooth %@", on ? "on" : "off")
+        if !on {
+            stopScan()
+            device.powerOff()
+        }
+        state = on ? .poweredOn : .poweredOff
+        events?.radioStateChanged(state)
     }
 
     // MARK: RadioCentral
 
-    func connectPeer(_ p: any RadioPeer) { (p as? SimPeer)?.connect() }
+    func connectPeer(_ p: any RadioPeer) {
+        guard state == .poweredOn else { return }   // CoreBluetooth: API misuse, ignored
+        (p as? SimPeer)?.connect()
+    }
     func cancelPeer(_ p: any RadioPeer) { (p as? SimPeer)?.cancel() }
 
     func retrievePeers(withIdentifiers ids: [UUID]) -> [any RadioPeer] {
@@ -385,6 +422,14 @@ final class SimPeer: RadioPeer {
             guard let self else { return }
             self.events?.radioDidDisconnect(self, error: nil)
         }
+    }
+
+    /// Bluetooth off: the link and any pending connect are gone, silently.
+    /// The device sees the link vanish (a supervision timeout).
+    func powerOff() {
+        wanted = false
+        conn?.cancel()
+        reset()
     }
 
     private func reset() {
