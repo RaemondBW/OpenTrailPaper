@@ -217,13 +217,15 @@ def test_ride_history_pages_through_the_card(boot_card, profile, tmp_path):
     rows = list_rows(dev, shot)
     pages = 1
     while pages <= want_pages + 1:
-        paints = dev.status()["paints"]
         dev.tap(*PAGER_DOWN)
-        try:   # a tap past the last page changes nothing, and nothing is painted
-            dev.wait_status(lambda s: s["paints"] > paints, timeout=1.5 * TIME_SCALE, interval=0.05)
-        except TimeoutError:
-            pass
+        # The tap paints the pressed button first and the next page after it,
+        # so wait for the rows themselves to change; past the last page they
+        # never do.
+        deadline = time.time() + 2.0 * TIME_SCALE
         nxt = list_rows(dev, shot)
+        while nxt == rows and time.time() < deadline:
+            time.sleep(0.1)
+            nxt = list_rows(dev, shot)
         if nxt == rows:
             break
         rows = nxt
