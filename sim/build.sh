@@ -22,7 +22,7 @@ CFLAGS="-std=gnu11 -g -O1 $WARN $INC $DEFS"
 
 # Firmware sources compiled as-is. Everything else in src/ is hardware and
 # has a stand-in in sim/host/.
-FW_CPP="link settings dash_config dash_layout ui_dashboard ui_render vfont
+FW_CPP="link settings dash_config dash_layout ui_render vfont
   map_view map_tiles map_store routes segments ride_recorder fit_writer workout
   workout_service diag diag_sd media radar mesh_service mesh_proto mesh_crypto
   gps_service ble_server ble_sensors ams_client"
@@ -36,10 +36,11 @@ H3_C=$(ls companion-ios/Sources/H3/lib/*.c | sed 's/\.c$//')
 objs=""
 NEWEST_HDR=$(ls -t src/*.h src/proto/*.h sim/shim/*.h sim/shim/*/*.h sim/host/*.h sim/build.sh 2>/dev/null | head -1)
 JOBS=${JOBS:-$(sysctl -n hw.ncpu 2>/dev/null || echo 4)}
-compile() {   # src, compiler, flags, ext
+compile() {   # src, compiler, flags, ext[, another source it #includes]
     o="$OUT/obj/$(echo "$1" | tr '/' '_').o"
     objs="$objs $o"
-    if [ ! -f "$o" ] || [ "$1.$4" -nt "$o" ] || [ "$NEWEST_HDR" -nt "$o" ] || [ -n "$FORCE" ]; then
+    if [ ! -f "$o" ] || [ "$1.$4" -nt "$o" ] || [ "$NEWEST_HDR" -nt "$o" ] || [ -n "$FORCE" ] ||
+       { [ -n "$5" ] && [ "$5" -nt "$o" ]; }; then
         while [ "$(jobs -p | wc -l)" -ge "$JOBS" ]; do sleep 0.05; done
         ( $2 $3 -c "$1.$4" -o "$o.tmp" 2> "$o.log" && mv "$o.tmp" "$o" ) || \
             { echo "FAIL $1.$4"; head -${ERRLINES:-15} "$o.log"; rm -f "$o.tmp"; touch "$OUT/failed"; } &
@@ -48,6 +49,12 @@ compile() {   # src, compiler, flags, ext
 rm -f "$OUT/failed"
 # POSIX calls on the card's VFS mount (opendir("/sd/rides")…) go to the sim's card.
 for f in $FW_CPP; do compile src/$f clang++ "$CXXFLAGS -include sim/shim/sim_posix.h" cpp; done
+# Firmware files wrapped by sim/host/tu/<name>.cpp: the file as it is plus
+# read-only control hooks into its file-local state (e.g. ui_dashboard's
+# segment matcher). Built in place of src/<name>.cpp.
+for f in sim/host/tu/*.cpp; do
+    [ -f "$f" ] && compile "${f%.cpp}" clang++ "$CXXFLAGS -include sim/shim/sim_posix.h" cpp "src/$(basename "$f")"
+done
 # The rasteriser half of epd_compat (the panel half is host/epd_sim.cpp), built
 # as the preview tool builds it.
 compile src/epd_compat clang++ "$CXXFLAGS -UARDUINO" cpp

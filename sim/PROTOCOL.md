@@ -142,6 +142,7 @@ Asynchronous events (log lines, when subscribed) come as `{"event":…}`.
 | `log` | `since` | log lines after sequence number `since` |
 | `wait_log` | `pattern` (regex), `timeout_ms`, `since` | waits for a log line |
 | `subscribe_log` | `on` | streams log lines as events |
+| `segments` | — | the live Strava segments as the SEGMENT page sees them (ui_dashboard's matcher, via `host/tu/ui_dashboard.cpp`): `count` (accepted set, `-1` none), `loaded` (adopted by the UI task), `phase` (`idle`/`armed`/`active`/`done`/`abandoned`), `busy`, and `list` — per relevant segment `name`, `phase`, `elapsed_ms`, `done_m`, `len_m`, `pr_s`, `delta_ms` (+ behind PR pace; `null` with no PR), `new_pr`, `off_route`, `avg_power`, `avg_hr`, `nearest`, `nearest_m` |
 | `reboot` | — | restarts the firmware (NVS and card kept) |
 | `quit` | — | exits the sim |
 
