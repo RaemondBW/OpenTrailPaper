@@ -130,4 +130,23 @@ object RouteImport {
             null -> fail("Couldn't open that file")
         }
     }
+
+    /**
+     * A GPX that came from an account rather than a file (Strava's export,
+     * RideWithGPS through the sync service): the same parse, decimation and
+     * hand-off as [read], so it reaches the device exactly like a file does.
+     * Returns whether it was a usable route. [source] and [climbMeters] are
+     * carried along for the summary card.
+     */
+    fun importGpx(
+        gpx: String,
+        fallbackName: String,
+        source: String? = null,
+        climbMeters: Double? = null,
+    ): Boolean =
+        when (val result = runCatching { GpxImporter.parse(gpx.byteInputStream(), fallbackName) }.getOrNull()) {
+            is ImportResult.Ok -> { offer(result.route.copy(source = source, climbMeters = climbMeters)); true }
+            ImportResult.NoPoints -> { fail("That route has no points in it"); false }
+            ImportResult.NotGpx, null -> { fail("That route didn't come back as GPX"); false }
+        }
 }

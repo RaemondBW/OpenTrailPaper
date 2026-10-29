@@ -54,6 +54,11 @@ object MapSnapshotter {
      * Renders [coords] over map tiles at [widthPx]×[heightPx], or null if the
      * track has no extent or no tile could be fetched.
      */
+    /** The already-rendered snapshot, if it's in memory — lets a row that is
+     *  recomposed from scratch show its map in the first frame. */
+    fun cached(key: String, widthPx: Int, heightPx: Int): Bitmap? =
+        memory.get("$key@${widthPx}x$heightPx")
+
     suspend fun snapshot(
         key: String,
         coords: List<LatLon>,
