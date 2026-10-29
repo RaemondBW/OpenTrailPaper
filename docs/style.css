@@ -87,6 +87,14 @@ header.nav nav a.gh {
   padding: 8px 16px; border-radius: 6px;
 }
 header.nav nav a.gh:hover { background: #000; color: #fff; }
+header.nav nav a.gh { display: inline-flex; align-items: center; gap: 7px; }
+header.nav nav a.gh .gh-mark { flex: none; }
+header.nav nav a.gh .gh-stars {
+  display: inline-flex; align-items: center; gap: 4px;
+  margin-left: 3px; padding-left: 9px; border-left: 1px solid rgba(255,255,255,.35);
+  font-variant-numeric: tabular-nums;
+}
+header.nav nav a.gh .gh-stars[hidden] { display: none; }
 @media (max-width: 720px) {
   header.nav .wrap nav a { font-size: 0.82rem; }
   header.nav .wrap nav a.gh { padding: 6px 10px; }
@@ -786,3 +794,9 @@ code { font-family: var(--mono); background: var(--paper-dim); padding: 1px 5px;
 .hw-link:hover { color: var(--accent); }
 .hw-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .hw-ext { font-size: 0.72em; margin-left: 6px; color: var(--accent); vertical-align: 2px; }
+/* Phones: the mark stands in for the word so the star count still fits. */
+@media (max-width: 720px) {
+  header.nav nav a.gh { gap: 6px; }
+  header.nav nav a.gh > span:not(.gh-stars) { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  header.nav nav a.gh .gh-stars { margin-left: 1px; padding-left: 7px; }
+}

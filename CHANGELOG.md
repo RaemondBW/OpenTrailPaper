@@ -7,6 +7,18 @@ so write for the rider, newest version first, one `## vX.YY` heading each.
 
 ## v1.23
 
+- Roads through parks are easier to follow on the map. Where a road or
+  cycleway crosses a park's striped fill it now has a thin white border, so
+  it reads as a clean line instead of disappearing into the stripes.
+- The GPS debug page no longer shows more satellites in use than in view.
+  The in-view count is refreshed every five seconds and the in-use count
+  every second, so for a moment after the sky changed (or right after the
+  GPS woke) the older number could be the smaller one.
+- The GPS module now talks to the device at 115200 baud instead of 9600, so
+  each second's position update takes about 25 ms on the wire instead of
+  300 ms and the device can sleep for the difference. The module is found
+  at whatever rate it was left at, moved to 115200 and keeps that setting,
+  so a GPS that came from another firmware at an odd rate still gets a fix.
 - New optional STOPWATCH page, off until you add it from the app's
   dashboard editor (Add a page > Stopwatch). It shows big digits with three
   buttons along the bottom: START/PAUSE, RESET and LAP. LAP works while the
