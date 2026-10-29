@@ -168,8 +168,14 @@ def test_units_change_the_speed_on_the_panel(device, link, tmp_path):
 
 
 def test_the_clock_setting_changes_the_status_bar(device, link, tmp_path):
-    link.request(set_settings=pb.Settings(clock_24h=True, tz_min=0))
-    device.set_wallclock(1_767_279_600)                  # 15:00 UTC
+    # An afternoon hour, whatever the time now: the 12-hour clock carries no
+    # AM/PM, so a morning reads the same either way. The device clock is the
+    # phone's (Hello); the time zone moves it to 15:xx local.
+    utc_h = time.gmtime(device.status()["wall_unix"]).tm_hour
+    tz = ((15 - utc_h + 12) % 24 - 12) * 60
+    if tz < -720:
+        tz += 1440
+    link.request(set_settings=pb.Settings(clock_24h=True, tz_min=tz))
     time.sleep(1.5)
     h24 = glass(device, tmp_path, "24h")
     link.request(set_settings=pb.Settings(clock_24h=False))

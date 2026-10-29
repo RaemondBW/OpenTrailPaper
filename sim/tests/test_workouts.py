@@ -533,3 +533,35 @@ def test_session_complete_on_the_last_block_finishes_the_session(device, link):
     time.sleep(0.5)
     w = device.workout()
     assert w["done"] or w["elapsed_s"] >= 150, w
+
+
+def _white_run(g, y, x0=468, x1=520):
+    """White pixels across row y of the correction arrow's box (drawn white
+    on the page's black block)."""
+    return sum(1 for x in range(x0, x1) if g.px(x, y) >= 0xC0)
+
+
+def test_the_arrow_says_which_way_to_go(device, link, tmp_path):
+    """The dark block's correction: below the target band an up arrow (GO
+    HARDER), above it a down arrow (EASE OFF), inside ±8 W the two bars of
+    IN RANGE — the rider's power against the block's target."""
+    from test_regressions_ui import glass, pair_sensor
+    addr = pair_sensor(device, link, "power", watts=150, cadence=90)
+    device.wait_status(lambda s: s["ride"]["power"] == 150, timeout=30)
+    upload(link, "steady.erg", erg(blocks([(30, 200)])))
+    _show_workout_page(device, link)
+    cmd(link, pb.WORKOUT_OP_START)
+
+    def arrow(name):
+        time.sleep(4.5)                                   # 3 s power settles, a frame is drawn
+        g = glass(device, tmp_path, name)
+        return _white_run(g, 290), _white_run(g, 300), _white_run(g, 312)
+
+    top, mid, bottom = arrow("harder")                   # 150 W against 200 W
+    assert 0 < top < mid < bottom and bottom > 30, (top, mid, bottom)
+    device.sensor("power", addr=addr, watts=260, cadence=90)
+    top, mid, bottom = arrow("easier")
+    assert top > mid > bottom > 0 and top > 30, (top, mid, bottom)
+    device.sensor("power", addr=addr, watts=204, cadence=90)
+    top, mid, bottom = arrow("in_range")
+    assert mid == 0 and top >= 35 and bottom >= 35, (top, mid, bottom)
