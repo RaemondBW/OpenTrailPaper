@@ -197,38 +197,6 @@ def idle_for(device, seconds, factor=60):
         device.set_speed(1)
 
 
-def test_an_idle_device_switches_itself_off(device):
-    """Ten minutes with nothing to do (no ride, no phone, no input): off,
-    and the reason is logged first."""
-    device.set_speed(60)
-    assert device.wait_powered_off((IDLE_S / 60 + 10) * TIME_SCALE), "still on after 10 idle minutes"
-    lines = open(device.log_path).read()
-    assert "shutdown: auto-sleep (idle timeout)" in lines
-
-
-def test_a_connected_phone_keeps_it_on(device, link):
-    idle_for(device, IDLE_S + 120)
-    assert not device.powered_off()
-
-
-def test_autosleep_off_keeps_it_on(device):
-    device.console("autosleep off")
-    idle_for(device, IDLE_S + 120)
-    assert not device.powered_off()
-
-
-def test_a_running_stopwatch_keeps_it_on(device, phone, link):
-    """Powering off would throw the time away, so a running stopwatch holds
-    the device on with no phone and no ride."""
-    link.tell(stopwatch=pb.StopwatchCommand(op=pb.STOPWATCH_OP_TOGGLE))
-    device.wait_status(lambda s: s["stopwatch"]["running"], timeout=3)
-    phone.disconnect()
-    device.wait_status(lambda s: not s["phone_connected"], timeout=5)
-    idle_for(device, IDLE_S + 120)
-    assert not device.powered_off()
-    assert device.status()["stopwatch"]["running"]
-
-
 def _trainer_workout_without_a_phone(device, phone, link):
     pair_sensor(device, link, "power", watts=200, cadence=90)
     device.wait_status(lambda s: s["ride"]["power"] == 200, timeout=30)

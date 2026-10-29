@@ -275,15 +275,6 @@ class SimDevice:
         process has exited."""
         return self.proc is not None and self.proc.poll() is not None
 
-    def wait_powered_off(self, timeout=30):
-        """Wait for the device to switch itself off. True if it did."""
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            if self.powered_off():
-                return True
-            time.sleep(0.1)
-        return self.powered_off()
-
     def workout(self):
         """The WORKOUT page's model (status "workout")."""
         return self.status()["workout"]
@@ -314,7 +305,8 @@ class SimDevice:
 
     def wait_powered_off(self, timeout=30):
         """Wait for the firmware to power the device off (deep sleep: the sim
-        exits). Raises TimeoutError if it is still on after `timeout` s."""
+        exits). True once it has; raises TimeoutError if it is still on after
+        `timeout` s."""
         try:
             self.proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -329,6 +321,7 @@ class SimDevice:
             tail = f.read()[-4000:]
         if "[sim] powered off" not in tail:
             raise RuntimeError("otp-sim exited without powering off (see %s)" % self.log_path)
+        return True
 
     def power_on(self, boot_timeout=30):
         """BOOT pressed on a powered-off device: the next boot of the same
