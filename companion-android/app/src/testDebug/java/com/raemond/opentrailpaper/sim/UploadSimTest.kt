@@ -53,10 +53,12 @@ class UploadSimTest : AppSimHarness() {
     @After
     fun tearDownCloud() {
         io.cancel()
+        // The harness skips (no otp-sim) before setUpCloud runs: nothing to undo.
+        if (!::cloud.isInitialized) return
         for (p in Provider.entries) runCatching { setTokens(p, null) }
         File(app.filesDir, "otp-endpoints").delete()
         DebugEndpoints.init(app)
-        if (::cloud.isInitialized) cloud.close()
+        cloud.close()
     }
 
     /** The account as connected (SyncAccounts' own store), with fake tokens. */
