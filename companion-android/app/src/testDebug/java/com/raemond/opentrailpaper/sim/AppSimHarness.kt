@@ -105,7 +105,7 @@ abstract class AppSimHarness {
             every()
             if (cond()) return
             if (System.currentTimeMillis() > end) fail("timed out waiting for $what\n${dump()}")
-            Thread.sleep(20)
+            Thread.sleep(STEP_MS)
         }
     }
 
@@ -116,7 +116,7 @@ abstract class AppSimHarness {
         while (System.currentTimeMillis() < end) {
             clock.advance()
             every()
-            Thread.sleep(20)
+            Thread.sleep(STEP_MS)
         }
     }
 
@@ -298,6 +298,13 @@ abstract class AppSimHarness {
     protected fun consoleSince(seq: Long, re: Regex): List<String> = sim.logSince(seq).filter { re.containsMatchIn(it) }
 
     companion object {
+        /**
+         * The looper step. Every GATT write waits for its callback on the main
+         * looper (GattQueue), so the step bounds the phone's write rate: at
+         * MTU 23 an upload is two writes per 16-byte chunk.
+         */
+        const val STEP_MS = 5L
+
         /** ui_render.cpp kSaveButton's centre on the ride summary. */
         const val SAVE_X = 24 + 120
         const val SAVE_Y = 700 + 48

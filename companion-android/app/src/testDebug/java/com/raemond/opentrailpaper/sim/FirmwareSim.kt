@@ -86,6 +86,33 @@ class FirmwareSim private constructor(
         cmd("wait_log", "pattern" to "boot: all tasks started", "timeout_ms" to bootTimeoutMs, "since" to 0)
     }
 
+    /**
+     * After the firmware restarts itself (an OTA's reboot re-execs otp-sim on
+     * the same ports), its control channel is a new one: connect again and
+     * wait for the boot to finish.
+     */
+    @Synchronized
+    fun reconnectControl(timeoutMs: Long = 30_000) {
+        runCatching { sock?.close() }
+        sock = null; reader = null; writer = null
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (true) {
+            try {
+                val s = Socket("127.0.0.1", ctlPort)
+                s.soTimeout = 90_000
+                sock = s
+                reader = BufferedReader(InputStreamReader(s.getInputStream(), Charsets.UTF_8))
+                writer = OutputStreamWriter(s.getOutputStream(), Charsets.UTF_8)
+                break
+            } catch (e: java.io.IOException) {
+                if (proc?.isAlive != true) error("otp-sim exited (see $consoleLog)")
+                if (System.currentTimeMillis() > deadline) throw e
+                Thread.sleep(50)
+            }
+        }
+        cmd("wait_log", "pattern" to "boot: all tasks started", "timeout_ms" to timeoutMs, "since" to 0)
+    }
+
     @Synchronized
     fun cmd(name: String, vararg args: Pair<String, Any?>): JsonObject {
         val req = JsonObject()
