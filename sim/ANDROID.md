@@ -35,6 +35,46 @@ back connected. Bluetooth off in SimRadio reports the adapter
 change before the links drop, as Android does. Each test's SimRadio log and the sim console tail
 are in the test report's standard output.
 
+### Rides, the link's edges, uploads
+
+`AppSimHarness` (shared by the three classes below) adds the rider's side of
+the device: FIT files the firmware's own FitWriter writes onto the card
+(`otp-sim card-tool fit`, as sim/client/otpsim/cards.py does), a ride
+recorded on the device (GPS track, BOOT, SAVE), and the Rides tab's
+once-per-link check. Its waits scale with `OTP_SIM_TIME_SCALE` (CI: 3).
+
+`RideSyncSimTest`: a ride recorded on the device lists with the card's size,
+downloads byte for byte and FitDecoder reads the device's distance, moving
+time and track; FitWriter files (with and without HR / power) decode to the
+session the device wrote; 600 rides list newest first and are kept for the
+next launch; a delete reaches the card; rides recorded while the phone was
+away appear on reconnect; a download cut by a drop resumes from the bytes
+kept (the device's log shows the offset); a resume over a ride that changed
+on the card never saves a mixture. `@Ignore`d BUG: a delete while the device
+records is refused by the device but the app drops the ride and its phone
+copy without a word.
+
+`LinkEdgeSimTest`: every transfer at MTU 23 / 185 / 247 / 517 (the device
+offers 247); a slow link (300 ms, 4 packets, window 4); a drop in the middle
+of a log download, a route upload, a workout upload and a firmware update
+(the device restarts nothing and the retry installs); the firmware update
+end to end (the GitHub release stood in for by reflection on
+FirmwareRelease; the sim re-execs on the OTA reboot, so the release offered
+is the version it runs) and an update that doesn't take (reported after the
+app's 60 s grace); a storm of drops; a second phone racing the reconnect; an
+app restart (a new BleManager on the same bond store); the phone setting the
+clock of a device without GPS; the device's logs for diagnostics. `@Ignore`d
+BUG: a workout upload cut by a drop is never reported.
+
+`UploadSimTest`: a ride downloaded from the sim is uploaded by the real
+SyncAccounts to `CloudStandIn`, an in-test HTTP stand-in for Strava,
+Intervals.icu and the sync service (RideWithGPS trips, token refresh), with
+fake tokens only: the FIT byte for byte with each service's fields, an
+expired token renewed first, a refused one renewed once then "connect
+again", a rejection showing Strava's reason. `@Ignore`d BUG: Strava's answer
+with its null fields (`"error": null`) reads as the error "null" on Android
+(org.json's optString).
+
 ### Maps
 
 `MapsSimTest` runs the map flow end to end without the network:
@@ -109,7 +149,8 @@ Overpass endpoint, e.g. the stand-in:
     adb shell run-as com.raemond.opentrailpaper sh -c \
         'printf "tiles=http://10.0.2.2:7923/v1/\noverpass=http://10.0.2.2:7923/api/interpreter\n" > files/otp-endpoints'
 
-Read at start. Debug builds allow plain HTTP to 10.0.2.2 / localhost only
+`strava=<origin>`, `intervals=<origin>` and `sync=<base URL>` lines send
+ride uploads to stand-ins too (UploadSimTest). Read at start. Debug builds allow plain HTTP to 10.0.2.2 / localhost only
 (src/debug/res/xml/network_security_config.xml).
 
 ## The debug app on an emulator

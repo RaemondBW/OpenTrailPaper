@@ -98,7 +98,7 @@ abstract class AppSimHarness {
      * happen on the way).
      */
     protected fun waitFor(what: String, timeoutMs: Long, every: () -> Unit = {}, cond: () -> Boolean) {
-        val end = System.currentTimeMillis() + timeoutMs
+        val end = System.currentTimeMillis() + (timeoutMs * TIME_SCALE).toLong()
         val clock = LooperClock()
         while (true) {
             clock.advance()
@@ -244,7 +244,7 @@ abstract class AppSimHarness {
 
     /** Polls the device's status (no looper: nothing on the phone side waits on it). */
     protected fun waitDevice(what: String, timeoutMs: Long, pred: (JsonObject) -> Boolean): JsonObject {
-        val end = System.currentTimeMillis() + timeoutMs
+        val end = System.currentTimeMillis() + (timeoutMs * TIME_SCALE).toLong()
         while (true) {
             val st = sim.status()
             if (pred(st)) return st
@@ -287,7 +287,7 @@ abstract class AppSimHarness {
     }
 
     private fun waitUntil(what: String, timeoutMs: Long, pump: (Long) -> Unit, cond: () -> Boolean) {
-        val end = System.currentTimeMillis() + timeoutMs
+        val end = System.currentTimeMillis() + (timeoutMs * TIME_SCALE).toLong()
         while (!cond()) {
             if (System.currentTimeMillis() > end) fail("timed out waiting for $what\n${dump()}")
             pump(100)
@@ -298,6 +298,12 @@ abstract class AppSimHarness {
     protected fun consoleSince(seq: Long, re: Regex): List<String> = sim.logSince(seq).filter { re.containsMatchIn(it) }
 
     companion object {
+        /**
+         * Wall-clock bounds are set on a developer Mac; a slower CI runner
+         * scales them (OTP_SIM_TIME_SCALE, as the firmware suite does).
+         */
+        val TIME_SCALE: Double = System.getenv("OTP_SIM_TIME_SCALE")?.toDoubleOrNull() ?: 1.0
+
         /**
          * The looper step. Every GATT write waits for its callback on the main
          * looper (GattQueue), so the step bounds the phone's write rate: at

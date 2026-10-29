@@ -55,15 +55,18 @@ xcrun simctl launch <udid> com.raemond.opentrailpaper -didOnboard YES -sim-ble 1
 ## UI tests
 
 ```sh
-sim/run_ios_tests.sh                 # all of FirmwareSimTests
+sim/run_ios_tests.sh                 # every class: FirmwareSimTests, FirmwareSimAppFlowTests
+sim/run_ios_tests.sh FirmwareSimAppFlowTests
 sim/run_ios_tests.sh test03_BackgroundLinkLossReconnectsOnForeground
 ```
 
-The script builds the sim if needed, starts a factory-fresh one (ports
-7920/7921) and the stand-in tile CDN (`sim/cdn/tile_cdn.py` on 7923, serving
-`sim/fixtures/appmaps`, or `OTP_CDN_FIXTURE`), reinstalls the app on
-simulator `OTP_IOS_SIM`, runs `companion-ios/UITests/FirmwareSimTests.swift`
-and stops both. Logs (otp-sim, the app's `[ble]`/`[link]`/`[sim-ble]` lines,
+The script builds the sim if needed and, for each test class, starts a
+factory-fresh one (ports 7920/7921) and the stand-in tile CDN
+(`sim/cdn/tile_cdn.py` on 7923, serving `sim/fixtures/appmaps`, or
+`OTP_CDN_FIXTURE`), reinstalls the app on simulator `OTP_IOS_SIM`, runs the
+class (`companion-ios/UITests/FirmwareSimTests.swift`, then
+`FirmwareSimAppFlowTests.swift`; each pairs its own phone first) and stops
+both. Logs (otp-sim, the app's `[ble]`/`[link]`/`[sim-ble]` lines,
 the CDN's requests, xcodebuild, the result bundle) are kept in the temp dir
 it prints.
 
@@ -137,3 +140,31 @@ on its 4-minute allowance rather than an assertion. While the download runs,
 a thread watches the device and prints `FirmwareSimTests device watch: FAIL:
 …` to the log when a bad tile arrives, so the reason is in xcodebuild.log
 even then.
+
+### Rides and the link's edges
+
+`FirmwareSimAppFlowTests` (a device of its own). run_ios_tests.sh has
+`otp-sim card-tool fit` write rides with the firmware's FitWriter
+(`OTP_RIDE_FIXTURES`: rides/ and manifest.txt — "summary", the newest, an
+hour at 27 km/h with 145 bpm and 210 W; "long", four hours; forty short
+"history" rides), which the tests copy onto the device's card.
+
+- `test15_AFreshPhonePairsWithTheDevice`.
+- `test16_EveryRideOnTheCardIsListed`: 41 rides; the Rides header says
+  "41 ON DEVICE" and there is a row for each.
+- `test17_ADownloadedRideShowsTheDevicesSummary`: a tap downloads the newest
+  ride and its page shows the session FitWriter wrote (distance, moving,
+  ascent, speed, power, NP, heart rate).
+- `test18_ARideDeletedInTheAppIsGoneFromTheCard`: long-press → Delete ride.
+- `test19_ARideRecordedWhileTheAppWasClosedIsListedOnRelaunch`: the app
+  relaunched reconnects on its bond, keeps the downloaded ride, lists the new.
+- `test20_ADownloadCutByALinkDropResumesWhereItStopped`: the link made slow
+  (control `link_pace`), dropped a third of the way into a long ride; the row
+  isn't left at its percentage, and the next tap resumes (the device's log
+  shows the offset).
+- `test21_AStormOfLinkDropsEndsConnectedOnOneLink`.
+
+Not covered on iOS (the Android suite covers them): MTU (SimRadio's is
+fixed), uploads to Strava / Intervals / RideWithGPS (the tokens live in the
+Keychain, out of a UI test's reach), the firmware update (its release comes
+from GitHub, with no debug-only override).

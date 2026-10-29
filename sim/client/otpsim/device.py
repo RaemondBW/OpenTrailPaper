@@ -207,6 +207,12 @@ class SimDevice:
     def set_speed(self, factor):
         self.cmd("speed", factor=factor)
 
+    def link_pace(self, interval_ms=None, packets=None, window=None):
+        """The phone link's pace, live (control `link_pace`): None leaves a value as it is."""
+        args = {k: v for k, v in (("interval_ms", interval_ms), ("packets", packets), ("window", window))
+                if v is not None}
+        return self.cmd("link_pace", **args)
+
     def drop_phone(self, reason=0x08):
         """The radio link to the phone is lost (default: supervision timeout)."""
         self.cmd("ble_drop", reason=reason)

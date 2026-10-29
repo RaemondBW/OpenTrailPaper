@@ -143,6 +143,7 @@ Asynchronous events (log lines, when subscribed) come as `{"event":…}`.
 | `wait_log` | `pattern` (regex), `timeout_ms`, `since` | waits for a log line |
 | `subscribe_log` | `on` | streams log lines as events |
 | `reboot` | — | restarts the firmware (NVS and card kept) |
+| `link_pace` | `interval_ms`, `packets`, `window` (each optional) | changes the phone link's pace live, as `--conn-interval-ms` / `--packets-per-event` / `--notify-window` set it at start (0 interval: unpaced); answers the values in force |
 | `quit` | — | exits the sim |
 
 ## Command line
