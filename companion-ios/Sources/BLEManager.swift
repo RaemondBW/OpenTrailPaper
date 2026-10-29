@@ -64,10 +64,29 @@ struct DeviceMap: Identifiable, Equatable {
 }
 
 // A recorded ride file on the device.
-struct RideFile: Identifiable, Hashable {
+struct RideFile: Identifiable, Hashable, Codable {
     let name: String
     let size: Int
     var id: String { name }
+}
+
+/// The device's ride list as last seen, saved per device (keyed like the
+/// settings cache) so the Rides tab can show it at launch and while
+/// disconnected, before the device is asked again.
+struct RideListingStore {
+    private static func key(_ id: String) -> String { "rideListing.\(id)" }
+
+    let defaults: UserDefaults
+
+    func load(_ id: String) -> [RideFile] {
+        guard let d = defaults.data(forKey: Self.key(id)),
+              let list = try? JSONDecoder().decode([RideFile].self, from: d) else { return [] }
+        return list
+    }
+
+    func save(_ list: [RideFile], for id: String) {
+        if let d = try? JSONEncoder().encode(list) { defaults.set(d, forKey: Self.key(id)) }
+    }
 }
 
 // A per-day diagnostics log file on the device (/logs/YYYYMMDD.log).
@@ -378,8 +397,16 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var bluetoothPoweredOn = false
 
     // Ride download
+    /// The device's ride list as last seen — kept across disconnects and
+    /// relaunches (saved per device, see RideListingStore) so the Rides tab
+    /// never blanks while the device is re-checked. Replaced only when a new
+    /// list completes.
     @Published var rides: [RideFile] = []
     @Published var loadingRides = false
+    /// The ride list has completed (or been refused) on this link, so opening
+    /// the Rides tab again doesn't re-ask the device.
+    private(set) var ridesCheckedThisLink = false
+    private let rideListingStore = RideListingStore(defaults: .standard)
     @Published var downloadingName: String? = nil
     @Published var downloadProgress: Double = 0
     @Published var downloadedFileURL: URL? = nil       // set when a ride is ready
@@ -397,6 +424,9 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var deviceLogs: [LogFile] = []        // per-day log files on the device
     @Published var loadingLogs = false
     private var logsBuilding: [LogFile] = []
+    // Device ride-list entries collect here and replace `rides` only when the
+    // list completes, so a refresh doesn't blank the Rides tab mid-fetch.
+    private var ridesBuilding: [RideFile] = []
     // Firmware now comes from GitHub Releases at runtime (FirmwareRelease), not
     // from a copy baked into the app. See that file for why the bundle went.
 
@@ -1197,6 +1227,7 @@ final class BLEManager: NSObject, ObservableObject {
         pairedDeviceName = nil
         UserDefaults.standard.removeObject(forKey: Self.pairedDeviceKey)
         UserDefaults.standard.removeObject(forKey: Self.pairedDeviceNameKey)
+        rides = []   // not ours any more; its saved list returns if it's re-paired
         pairingIssue = nil
         barrenConnects = 0
         rejectedIds = forgotten.map { [$0] } ?? []
@@ -1252,6 +1283,7 @@ final class BLEManager: NSObject, ObservableObject {
     func setCurrentDevice(_ id: String) {
         guard id != settingsDeviceID, !isDemoOfflineSettings else { return }
         settingsDeviceID = id
+        rides = rideListingStore.load(id)   // that device's last-known ride list
         settingsCache = settingsStore.setCurrent(id)
         dashConfig = settingsCache.dashText.map { DashConfig(text: $0) }
         dashConflict = nil
@@ -1261,6 +1293,7 @@ final class BLEManager: NSObject, ObservableObject {
 
     private func loadSettingsCache() {
         settingsDeviceID = settingsStore.currentDevice
+        rides = rideListingStore.load(settingsDeviceID)   // last-known ride list
         settingsCache = settingsStore.load(settingsDeviceID)
         if let t = settingsCache.dashText { dashConfig = DashConfig(text: t) }
         applyEffectiveSettings()
@@ -1373,13 +1406,15 @@ final class BLEManager: NSObject, ObservableObject {
         // list spinning forever or the download waiting on its watchdog. Wait
         // for the line instead.
         guard dlActive == nil, dlQueue.isEmpty else { listRefreshPending = true; return }
-        rides = []
+        ridesBuilding = []
         loadingRides = true
         p.writeValue(Data([0x01]), for: c, type: .withResponse)
     }
 
     func deleteRide(_ name: String) {
         rides.removeAll { $0.name == name }
+        ridesBuilding.removeAll { $0.name == name }
+        rideListingStore.save(rides, for: settingsDeviceID)
         // Drop it from the download queue too, so a deleted ride doesn't get
         // fetched (and re-cached) moments later.
         dlQueue.removeAll { $0 == .ride(name) }
@@ -2442,7 +2477,10 @@ final class BLEManager: NSObject, ObservableObject {
     }
 
     func downloadRide(_ name: String) {
-        guard ridesChar != nil, peripheral != nil else { return }
+        guard ridesChar != nil, peripheral != nil else {
+            lastMessage = "Connect to your OpenTrailPaper to download this ride"
+            return
+        }
         enqueueTransfer(.ride(name))
     }
 
@@ -2566,10 +2604,15 @@ final class BLEManager: NSObject, ObservableObject {
             guard d.count > 5 else { return }
             let size = Int(d[1]) | (Int(d[2]) << 8) | (Int(d[3]) << 16) | (Int(d[4]) << 24)
             let name = String(decoding: d[5...], as: UTF8.self)
-            rides.append(RideFile(name: name, size: size))
+            ridesBuilding.append(RideFile(name: name, size: size))
         case 0x03:  // list done
             loadingRides = false
-            rides.sort { $0.name > $1.name }   // newest first
+            ridesCheckedThisLink = true
+            let listed = ridesBuilding.sorted { $0.name > $1.name }   // newest first
+            ridesBuilding = []
+            // Unchanged list: leave `rides` alone so nothing re-renders.
+            if listed != rides { rides = listed }
+            rideListingStore.save(listed, for: settingsDeviceID)
         case 0x30:  // log-list entry: [u32 size][name]
             guard d.count > 5 else { return }
             let size = Int(d[1]) | (Int(d[2]) << 8) | (Int(d[3]) << 16) | (Int(d[4]) << 24)
@@ -2628,6 +2671,7 @@ final class BLEManager: NSObject, ObservableObject {
             // routine list-refresh fails silently mid-ride (the Rides tab shows
             // an "in progress" banner + the already-synced rides instead).
             loadingRides = false
+            ridesCheckedThisLink = true
             guard dlActive != nil else { return }
             // A recording device refuses every file, so drop the whole queue
             // rather than failing each one in turn with its own toast.
@@ -2668,6 +2712,17 @@ final class BLEManager: NSObject, ObservableObject {
     static func isCached(_ name: String) -> Bool {
         FileManager.default.fileExists(atPath: cachedURL(for: name).path)
     }
+    /// What the Rides tab lists: the device's last-known ride list merged with
+    /// the rides cached on this phone, one entry per name (the device's entry
+    /// wins), newest first. A ride the device no longer lists stays while it's
+    /// cached here. Pure, so the order is stable across refreshes.
+    static func mergeRides(device: [RideFile], cached: [RideFile]) -> [RideFile] {
+        var seen = Set<String>()
+        var out: [RideFile] = []
+        for r in device + cached where seen.insert(r.name).inserted { out.append(r) }
+        return out.sorted { $0.name > $1.name }
+    }
+
     // Rides already downloaded to this phone — available offline.
     static func cachedRides() -> [RideFile] {
         let urls = (try? FileManager.default.contentsOfDirectory(
@@ -3089,7 +3144,9 @@ extension BLEManager: CBCentralManagerDelegate {
             authFailedSinceConnect = false
             linkSecuring = false
             connectedAt = nil
-            rides = []; loadingRides = false
+            // Keep `rides` (the last-known list): the Rides tab keeps showing
+            // it while disconnected and through the re-check on reconnect.
+            ridesBuilding = []; loadingRides = false; ridesCheckedThisLink = false
             // Nothing queued can proceed without a link, and a half-received
             // file must not be mistaken for a complete one on reconnect.
             if dlActive != nil || !dlQueue.isEmpty {

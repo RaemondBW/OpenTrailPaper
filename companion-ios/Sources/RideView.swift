@@ -302,26 +302,3 @@ struct ConnectionBanner: View {
         }
     }
 }
-
-struct Stat: View {
-    let label: String
-    let value: String
-    var unit: String = ""
-    var big: Bool = false
-
-    var body: some View {
-        Card {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(label).trackedLabel()
-                HStack(alignment: .firstTextBaseline, spacing: 4) {
-                    Text(value)
-                        .font(big ? TypeScale.hero(52) : TypeScale.value())
-                        .foregroundStyle(Palette.ink)
-                        .minimumScaleFactor(0.5)
-                        .lineLimit(1)
-                    Text(unit).font(TypeScale.label).foregroundStyle(Palette.muted)
-                }
-            }
-        }
-    }
-}

@@ -12,6 +12,7 @@
 		0C42D2727BDA16264307140C /* MeshView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0641658A779893A7975FA99F /* MeshView.swift */; };
 		0F07C59EAB533AC46B37D7ED /* DeviceMock.swift in Sources */ = {isa = PBXBuildFile; fileRef = E467F3BA417A6A968F920F77 /* DeviceMock.swift */; };
 		16EC6863A291CCDEDD9671F7 /* TransferWidgetBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97E8FC1262D85FFAB30C82B2 /* TransferWidgetBundle.swift */; };
+		1DF666D61184241ADCE839E6 /* GPXImporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD2E2E20BB8A15D1939F6CA5 /* GPXImporter.swift */; };
 		1E84B7CD7869CDE2FAD486B0 /* BarlowCondensed-Bold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 08F073C2FF3FF2C629AFE7E8 /* BarlowCondensed-Bold.ttf */; };
 		206AAAF21E4BC20EAB8D7C79 /* vertex.c in Sources */ = {isa = PBXBuildFile; fileRef = 861D40F3D0D6EE123389E135 /* vertex.c */; };
 		220B52732EE34DEE8CBA4238 /* MeshChannelsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36C9973B7C9E0A6EF2F31B32 /* MeshChannelsSheet.swift */; };
@@ -44,6 +45,7 @@
 		60DA897C9E52D250126A6751 /* TransferActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = C35B7FEEC24D9CFF746CDE0D /* TransferActivityAttributes.swift */; };
 		71268E6995708D3AAE38E6BB /* TransferActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = C35B7FEEC24D9CFF746CDE0D /* TransferActivityAttributes.swift */; };
 		72A4059778F0676C0911C393 /* RideDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1B62C507D47EAD0BDDDD24F /* RideDetailView.swift */; };
+		789541902FD7AFA80C22063A /* CloudRoutes.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE54303A2F8572AD4AEDB745 /* CloudRoutes.swift */; };
 		79F918433F0C02EF0915A0EE /* RouteView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A26EB50B7E6CF1B4A63235CA /* RouteView.swift */; };
 		7ECE54D8F2955E11043A1D8C /* PrebuiltTiles.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D1BB43B64D584E90FCD1A2A /* PrebuiltTiles.swift */; };
 		83694D7794E82A7B30BED93A /* TransferWidget.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 921C1E384F6ED732B31C24E3 /* TransferWidget.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
@@ -79,6 +81,7 @@
 		F5E522C16FCFE097E2072926 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE5C27C920995C9292457A9C /* SettingsView.swift */; };
 		F6958E6E296967C90F9CDC75 /* TileCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = E15692F37161BEC610966D47 /* TileCache.swift */; };
 		F71D1CFFCC25AD4A7A19D698 /* DiagnosticsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 336612AF0918144CAB1C1FCD /* DiagnosticsView.swift */; };
+		FA250688D82139C6EEF7990D /* CloudRoutesSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA4DEBA21E2DA3752C6057B1 /* CloudRoutesSheet.swift */; };
 		FB766E892D24ED9F1215F002 /* coordijk.c in Sources */ = {isa = PBXBuildFile; fileRef = A5CBCC5E20270A3D4DF70257 /* coordijk.c */; };
 		FF0F4581FC7558266780F24B /* vertexGraph.c in Sources */ = {isa = PBXBuildFile; fileRef = 94274D68499F022BC3F0DBC8 /* vertexGraph.c */; };
 /* End PBXBuildFile section */
@@ -178,6 +181,7 @@
 		B61D714603B1F9543D8049F1 /* vertex.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = vertex.h; sourceTree = "<group>"; };
 		B784675A7E0FFAA781206855 /* MapBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapBuilder.swift; sourceTree = "<group>"; };
 		B8D421E4B1C588F4073BC375 /* localij.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = localij.c; sourceTree = "<group>"; };
+		BD2E2E20BB8A15D1939F6CA5 /* GPXImporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GPXImporter.swift; sourceTree = "<group>"; };
 		BE5C27C920995C9292457A9C /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		BE9D3D566A0847CF4753797F /* vec2d.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = vec2d.c; sourceTree = "<group>"; };
 		BFEB166F13A60DC2EDA5E981 /* FirmwareRelease.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FirmwareRelease.swift; sourceTree = "<group>"; };
@@ -193,12 +197,14 @@
 		CBBFA5634178A1D43462F629 /* BLEManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BLEManager.swift; sourceTree = "<group>"; };
 		CC8F9A2A7C26F2C54766428B /* directedEdge.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = directedEdge.c; sourceTree = "<group>"; };
 		CDD609424C1648F1D8704550 /* EInkTileStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EInkTileStore.swift; sourceTree = "<group>"; };
+		CE54303A2F8572AD4AEDB745 /* CloudRoutes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudRoutes.swift; sourceTree = "<group>"; };
 		CFA97C48F8209FC8F994A6B2 /* TransferCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransferCenter.swift; sourceTree = "<group>"; };
 		D66117B8CB78BBC0949D8DF3 /* demo.fit */ = {isa = PBXFileReference; path = demo.fit; sourceTree = "<group>"; };
 		E15692F37161BEC610966D47 /* TileCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TileCache.swift; sourceTree = "<group>"; };
 		E1B62C507D47EAD0BDDDD24F /* RideDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RideDetailView.swift; sourceTree = "<group>"; };
 		E284B25E233005D7FEF20F6F /* coordijk.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = coordijk.h; sourceTree = "<group>"; };
 		E467F3BA417A6A968F920F77 /* DeviceMock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceMock.swift; sourceTree = "<group>"; };
+		EA4DEBA21E2DA3752C6057B1 /* CloudRoutesSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudRoutesSheet.swift; sourceTree = "<group>"; };
 		F14CD69E3959EF829E9F0717 /* BarlowCondensed-SemiBold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "BarlowCondensed-SemiBold.ttf"; sourceTree = "<group>"; };
 		F21BF62E40922CF797D8119D /* Barlow-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Barlow-Regular.ttf"; sourceTree = "<group>"; };
 		F2E1BEE825D22D8612B19893 /* iterators.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = iterators.c; sourceTree = "<group>"; };
@@ -282,6 +288,8 @@
 				F993B08CE32DB569E2279B90 /* BikeGPS-Bridging-Header.h */,
 				37C3CA9775B956BC238BAA42 /* BikeGPSCompanionApp.swift */,
 				CBBFA5634178A1D43462F629 /* BLEManager.swift */,
+				CE54303A2F8572AD4AEDB745 /* CloudRoutes.swift */,
+				EA4DEBA21E2DA3752C6057B1 /* CloudRoutesSheet.swift */,
 				F99E928FB741D98CDD96ABA0 /* DashboardEditorView.swift */,
 				5D5700252C3393AC06C9BEB9 /* DashboardPageEditorView.swift */,
 				A9D6BB31E96DD85DBE9B68CA /* DashLayout.swift */,
@@ -294,6 +302,7 @@
 				BFEB166F13A60DC2EDA5E981 /* FirmwareRelease.swift */,
 				590A2666A030966B6741EDAF /* FITDecoder.swift */,
 				05C73BCF289591ECA86720C6 /* GPXExporter.swift */,
+				BD2E2E20BB8A15D1939F6CA5 /* GPXImporter.swift */,
 				AD6BA4ACE6890EF09B9A8F6F /* H3Tiles.swift */,
 				2A59688151174F730E1FDAD4 /* Info.plist */,
 				B784675A7E0FFAA781206855 /* MapBuilder.swift */,
@@ -522,6 +531,8 @@
 				4C0F6C64C32AF7035999D782 /* ArtDither.swift in Sources */,
 				5BC98F4BF77D1A33EF8F546B /* BLEManager.swift in Sources */,
 				021E5D177FE3BCD463AA49BF /* BikeGPSCompanionApp.swift in Sources */,
+				789541902FD7AFA80C22063A /* CloudRoutes.swift in Sources */,
+				FA250688D82139C6EEF7990D /* CloudRoutesSheet.swift in Sources */,
 				BF7FEB57C05E17549C09CF25 /* DashLayout.swift in Sources */,
 				8885B18C0FC6E6E98283CD24 /* DashboardEditorView.swift in Sources */,
 				B0FDE7FE636803E478340742 /* DashboardPageEditorView.swift in Sources */,
@@ -533,6 +544,7 @@
 				A44F34DFEC944328672D82B2 /* FITDecoder.swift in Sources */,
 				E2849FECF35C56ECDF172183 /* FirmwareRelease.swift in Sources */,
 				90BE2D6324721EC08C93E435 /* GPXExporter.swift in Sources */,
+				1DF666D61184241ADCE839E6 /* GPXImporter.swift in Sources */,
 				431EACF518E6E7F25D9682EC /* H3Tiles.swift in Sources */,
 				5D72742ADF79FE45ED70CBEA /* MapBuilder.swift in Sources */,
 				C462314C3BD9E277B9F451A9 /* MapsView.swift in Sources */,
