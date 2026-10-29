@@ -8,6 +8,11 @@ submitting.
 
 ## Unreleased
 
+- Name a ride before uploading it: tapping Upload to Strava, Intervals.icu
+  or RideWithGPS asks for the activity name first, filled in with the
+  ride's current name. The new name is kept for that ride on this phone, so
+  the next upload starts from it and the ride list and ride page show it.
+  (iOS and Android.)
 - Dashboard editor: Add a page > Stopwatch puts the device's new STOPWATCH
   page in the Home-key cycle. It needs firmware v1.23. Older firmware
   leaves the page out, and the editor shows the layout the device kept.
