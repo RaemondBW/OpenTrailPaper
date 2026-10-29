@@ -407,7 +407,11 @@ struct MapsView: View {
     // A floating "modal" card at the bottom. Progress states show a spinner +
     // live hex counts; idle/selection states show the controls.
     @ViewBuilder private var bottomBar: some View {
-        Group {
+        VStack(spacing: 8) {
+            if ble.sdCardBlocksMaps {
+                SDCardNotice(state: ble.status.sdCard)
+                    .shadow(color: .black.opacity(0.14), radius: 14, y: 5)
+            }
             if building || ble.tilesUploading {
                 streamCard
             } else if let b = box {
@@ -494,11 +498,13 @@ struct MapsView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 PrimaryButton(title: !ble.canUploadMap ? "Connect device to send"
+                                    : ble.sdCardBlocksMaps ? "Device needs an SD card"
                                     : new > 0 ? "Download \(new) hex\(new == 1 ? "" : "es")"
                                     : poiOnly > 0 ? "Send POIs for \(poiOnly) hex\(poiOnly == 1 ? "" : "es")"
                                     : "Nothing to download",
                               systemImage: "arrow.down.circle",
-                              enabled: ble.canUploadMap && (new > 0 || poiOnly > 0)) { download() }
+                              enabled: ble.canUploadMap && !ble.sdCardBlocksMaps
+                                       && (new > 0 || poiOnly > 0)) { download() }
                 // Rebuild hexes the device already has from fresh map data —
                 // the rider's choice, never automatic: it costs a fetch and a
                 // transfer per hex. Offered on old firmware too (fresher roads),
@@ -509,7 +515,7 @@ struct MapsView: View {
                     let n = redownloadCount
                     SecondaryButton(title: "Redownload \(n > 0 ? n : onDevice) hex\((n > 0 ? n : onDevice) == 1 ? "" : "es")",
                                     systemImage: "arrow.clockwise",
-                                    enabled: ble.canUploadMap) {
+                                    enabled: ble.canUploadMap && !ble.sdCardBlocksMaps) {
                         if n == 0 { confirmUpToDate = true }
                         else if n > Self.redownloadConfirmOver { confirmRedownload = true }
                         else { download(redownload: true) }

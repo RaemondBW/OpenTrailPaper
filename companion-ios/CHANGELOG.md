@@ -17,6 +17,13 @@ submitting.
   page in the Home-key cycle. It needs firmware v1.23. Older firmware
   leaves the page out, and the editor shows the layout the device kept.
   The Android app has the same option.
+- A notice on the Ride tab and the Maps screen says when the device has no
+  SD card, or one it can't read (reformat it as FAT32). Map downloads are
+  held until a card is in, instead of failing with "Some tiles failed".
+  Needs firmware v1.23; older firmware doesn't report the card. The
+  Android app has the same notice.
+- The list of hexes on the device is refreshed every time it connects, so
+  a new or swapped card no longer shows the old card's hexes as downloaded.
 
 ## 1.3 (build 17)
 
