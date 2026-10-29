@@ -97,17 +97,32 @@ class Mesh:
         """Puts a frame on the air for the device."""
         return self.dev.lora_rx(frame, **kw)
 
+    def deliver(self, frame, timeout=10, **kw):
+        """Puts a frame on the air and waits until the device has read it out
+        of the radio's FIFO, so the next one cannot overwrite it.
+
+        For tests that put many frames on the air to fill a table, not to test
+        reception under load. The air runs on device time, and on a slow or
+        loaded host the mesh task's 250 ms poll can oversleep by more than a
+        LongFast frame's ~600 ms on air — something no real ESP32 does — so a
+        burst queued back to back loses frames to `overrun` in the sim alone."""
+        self.hear(frame, **kw)
+        self._wait_air_clear(timeout)
+
     def drain(self, timeout=10):
         """Waits until everything on the air has reached the device and the
         mesh task has had time to handle it (it polls every 250 ms)."""
+        self._wait_air_clear(timeout)
+        self.dev_sleep(400)
+
+    def _wait_air_clear(self, timeout):
         deadline = time.time() + timeout * TIME_SCALE
         while True:
             st = self.dev.lora()
             if st["in_flight"] == 0 and not st["fifo"]:
-                break
+                return
             assert time.time() < deadline, "frames never left the air: %s" % st
-            time.sleep(0.05)
-        self.dev_sleep(400)
+            time.sleep(0.02)
 
     def dev_sleep(self, device_ms):
         """Waits `device_ms` of device time."""

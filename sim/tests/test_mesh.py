@@ -261,8 +261,8 @@ def test_the_message_history_keeps_the_newest_48_in_order(mesh):
     complete."""
     mesh.dev.set_speed(4)
     for i in range(53):
-        mesh.hear(alex().text("msg %02d" % i))
-    mesh.drain(timeout=60)
+        mesh.deliver(alex().text("msg %02d" % i))
+    mesh.drain()
     mesh.dev.set_speed(1)
     texts = [x.text for x in mesh.history()]
     assert texts == ["msg %02d" % i for i in range(5, 53)]
@@ -285,15 +285,15 @@ def test_a_channel_with_the_wrong_key_is_ignored_not_shown_as_garbage(mesh):
     clash = M.Channel("LongFast", bytes(same_hash_key))
     assert clash.hash == M.Channel().hash
     for i in range(10):
-        mesh.hear(other.text("private %d" % i, packet_id=0x100 + i))
-    mesh.drain(timeout=30)
+        mesh.deliver(other.text("private %d" % i, packet_id=0x100 + i))
+    mesh.drain()
     spy = M.VirtualNode(0x5B15B15B, "Spy", "SPY", channel=clash)
     mesh.dev.set_speed(4)
     for i in range(60):
         frame = [spy.text("secret %d" % i, packet_id=0x200 + i), spy.nodeinfo(packet_id=0x300 + i),
                  spy.position(45.7, -121.5, packet_id=0x400 + i)][i % 3]
-        mesh.hear(frame)
-    mesh.drain(timeout=60)
+        mesh.deliver(frame)
+    mesh.drain()
     mesh.dev.set_speed(1)
     assert mesh.history() == []
     assert mesh.nodes() == [], "a frame we could not decrypt created a node"

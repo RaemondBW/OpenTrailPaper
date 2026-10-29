@@ -461,7 +461,13 @@ def test_an_indoor_ride_on_a_wheel_sensor_records_distance_and_speed(device, lin
     assert speeds and all(abs(v - 30) < 2 for v in speeds), speeds
     dists = [r["distance_m"] for r in recs]
     assert all(b >= a for a, b in zip(dists, dists[1:])), "distance went backwards"
-    per_s = (dists[-1] - dists[5]) / max(1, len(dists) - 6)
-    assert 7.3 < per_s < 9.4, "distance grew %.1f m per record at 30 km/h (8.3)" % per_s
+    # Per second of the records' own timestamps, not per record: the recorder
+    # ticks on a 1 s vTaskDelay, so a loaded host (the sim's clock keeps
+    # running while its threads wait for a CPU) writes fewer records than
+    # seconds go by, while the wheel keeps counting in device time.
+    secs = recs[-1]["timestamp"] - recs[5]["timestamp"]
+    assert secs >= 40, "the records span %d s of a 60 s ride" % secs
+    per_s = (dists[-1] - dists[5]) / secs
+    assert 7.3 < per_s < 9.4, "distance grew %.1f m per second at 30 km/h (8.3)" % per_s
     ses = fit.session(data)
     assert abs(ses["total_distance_m"] - dists[-1]) < 20, (ses, dists[-1])

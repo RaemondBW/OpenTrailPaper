@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from conftest import paired_phone
+from conftest import TIME_SCALE, paired_phone
 from otpsim import LinkClient, LinkError, SimDevice, pb
 
 SAVE_BUTTON = (24 + 120, 700 + 48)   # ui_render.cpp kSaveButton centre
@@ -77,6 +77,30 @@ def test_a_ride_is_not_downloadable_while_recording(device, link):
     with pytest.raises(LinkError) as e:
         link.download(pb.SOURCE_RIDE, "anything.fit")
     assert e.value.code in ("RESULT_RECORDING", "RESULT_NOT_FOUND")
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "BUG: ride_recorder::task (src/ride_recorder.cpp) counts the ride timer (timerS, and movingS/pausedS "
+    "with it) once per loop, and paces the loop with vTaskDelay(RECORD_INTERVAL_MS): a second AFTER the "
+    "tick's work, not a 1 s period (vTaskDelayUntil). The work — the FIT write under sdLock, waiting behind "
+    "the map for the card — is time the timer never counts, so on a slow card the ride clock runs slow, "
+    "records come at under 1 Hz and the average speed reads high"))
+def test_the_ride_timer_keeps_time_on_a_slow_card(device):
+    """A card that takes 100 ms an operation (a slow card, or one the map is
+    busy with): the ride's elapsed time still counts every second ridden."""
+    device.gps_track(line_track(37.77, -122.45, 3), speed_kmh=30)
+    device.wait_status(lambda s: s["ride"]["gps_fix"], timeout=10)
+    device.button("boot")
+    device.wait_status(lambda s: s["ride"]["recording"], timeout=10)
+    device.set_sd_latency(100)
+    device.set_speed(2)
+    st0 = device.status()
+    st = device.wait_status(lambda s: s["uptime_ms"] - st0["uptime_ms"] >= 40000, timeout=40 * TIME_SCALE)
+    device.set_speed(1)
+    device.set_sd_latency(0)
+    ridden = (st["uptime_ms"] - st0["uptime_ms"]) / 1000.0
+    counted = st["ride"]["elapsed_s"] - st0["ride"]["elapsed_s"]
+    assert abs(counted - ridden) <= 1.5, "the ride timer counted %d s of %.1f s ridden" % (counted, ridden)
 
 
 def test_download_survives_a_slow_link():
