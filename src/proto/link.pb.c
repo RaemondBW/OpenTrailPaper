@@ -57,6 +57,9 @@ PB_BIND(otp_link_Radar, otp_link_Radar, AUTO)
 PB_BIND(otp_link_MusicState, otp_link_MusicState, AUTO)
 
 
+PB_BIND(otp_link_ShowPage, otp_link_ShowPage, AUTO)
+
+
 PB_BIND(otp_link_StopwatchCommand, otp_link_StopwatchCommand, AUTO)
 
 
@@ -235,6 +238,14 @@ PB_BIND(otp_link_AgnssInfoRequest, otp_link_AgnssInfoRequest, AUTO)
 
 
 PB_BIND(otp_link_AgnssInfo, otp_link_AgnssInfo, AUTO)
+
+
+PB_BIND(otp_link_GetSegments, otp_link_GetSegments, AUTO)
+
+
+PB_BIND(otp_link_SegmentsInfo, otp_link_SegmentsInfo, AUTO)
+
+
 
 
 

@@ -263,6 +263,26 @@ static void test_nanopb(void) {
     CHECK(dm2.body.live.ride.grade_dpct == -125);
     CHECK(dm2.body.live.stopwatch.recent_count == 10);
     CHECK(dm2.body.live.position.lon_e7 == -1800000000);
+    CHECK(dm2.body.live.ride.sd_card == otp_link_SdCard_SD_CARD_UNKNOWN);   // older firmware
+
+    // The SD card state and the segments receipt survive the trip.
+    f->ride.sd_card = otp_link_SdCard_SD_CARD_UNREADABLE;
+    len = encode_device(&dm, buf, sizeof(buf));
+    is = pb_istream_from_buffer(buf, len);
+    CHECK(pb_decode(&is, otp_link_DeviceMsg_fields, &dm2));
+    CHECK(dm2.body.live.ride.sd_card == otp_link_SdCard_SD_CARD_UNREADABLE);
+    memset(&dm, 0, sizeof(dm));
+    dm.req = 42;
+    dm.which_body = otp_link_DeviceMsg_segments_tag;
+    dm.body.segments.present = true;
+    dm.body.segments.count = 0;        // an empty set is still a set
+    dm.body.segments.version = 2;
+    len = encode_device(&dm, buf, sizeof(buf));
+    is = pb_istream_from_buffer(buf, len);
+    CHECK(pb_decode(&is, otp_link_DeviceMsg_fields, &dm2));
+    CHECK(dm2.req == 42 && dm2.which_body == otp_link_DeviceMsg_segments_tag);
+    CHECK(dm2.body.segments.present && dm2.body.segments.count == 0 &&
+          dm2.body.segments.version == 2);
 
     // A bulk Chunk sized by the doc's formula (MTU - 3 - 1 - 16) fits one
     // fragment at MTU 247 for a counter-style xfer id and offsets below

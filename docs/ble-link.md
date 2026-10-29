@@ -109,7 +109,7 @@ version string. `dash_max_pages` replaces the "holds 8 pages" capability bit.
 
 - The phone gives every request a non-zero `req` that is unique on the
   connection (a counter). Messages that need no reply (`PhoneLocation`,
-  `Chunk`, `TransferAck`, `StopwatchCommand`) may use 0.
+  `Chunk`, `TransferAck`, `StopwatchCommand`, `ShowPage`) may use 0.
 - The device echoes `req` on every message that answers it, including each
   page of a multi-page list. Unsolicited pushes have `req = 0`. That includes
   pushes a request caused: LiveFrames after `LiveSubscribe`, SensorLists while
@@ -141,6 +141,7 @@ version string. `dash_max_pages` replaces the "holds 8 pages" capability bit.
 | `MeshCommand.send` | `MeshQueued` or `Result` REFUSED |
 | other `MeshCommand` | `Result`, then the refreshed topics as pushes |
 | `AgnssInfoRequest` | `AgnssInfo` |
+| `GetSegments` | `SegmentsInfo` |
 | `Unpair` | none: the device disconnects |
 
 ## Live state
@@ -158,11 +159,25 @@ The device sends a frame each second and on the next pass after any change to
 a subscribed part (stopwatch state, view, music, page). Only subscribed parts
 are filled. "No reading" is an absent `optional` field, not a sentinel value.
 
+Paging the Ride tab pages the panel too: the app sends `ShowPage{page}` with
+the slot it moved to (FEATURE_SHOW_PAGE), indexing the layout the device has
+applied, never one still being saved. The device follows only while it shows a
+page or the map, never over a menu, sheet, overlay or nav prompt, and ignores a
+slot past the end. There is no reply; the next frame's `ViewState` shows where
+the panel is. The app sends it on the rider's paging only, not on opening the
+tab or while editing a layout.
+
+`RideState.sd_card` reports the card: OK, MISSING (nothing in the slot) or
+UNREADABLE (a card answered but won't mount, almost always exFAT). It is
+UNKNOWN (0) from firmware before it was reported, which the apps must read as
+"don't know", never as a missing card. It carries the same three states as the
+legacy status flags' bits 3-5.
+
 ## Transfers
 
 One mechanism for every byte stream. Firmware, maps, tiles, POI files, GPX
-routes, workouts, album art and AGNSS go up. Rides, logs and workout files
-come down.
+routes, workouts, album art, AGNSS and starred segments go up. Rides, logs
+and workout files come down.
 
 Offsets are absolute file positions everywhere. `Chunk.offset` is the
 position in the whole file. `TransferAck.received` is the absolute position up
@@ -224,6 +239,18 @@ changes before it commits.
 
 **Tiles**: `name` is the H3 cell id; POI files use `TARGET_MAP_POI`. The
 version record (`cdn:<hex>`, `cdn:`, `phone:<secs>`) goes in `tile_version`.
+
+**Starred segments** (FEATURE_SEGMENTS): `UploadBegin{TARGET_SEGMENTS}` with
+the whole set as one blob in segment_match.h's format (`"OTSG"`, version,
+count, then each segment), at most `seg::BLOB_MAX` bytes. The blob version
+must not be newer than `DeviceHello.segments_version` (2 = with elevation).
+The device validates the blob as a whole, keeps it on the card
+(`/segments/starred.bin`) and hands it to the matcher. A rejected blob gets
+`TransferDone{PARSE_ERROR, detail}` and the previous set stays. Either way a
+`SegmentsInfo{present, count, version}` push (`req = 0`) comes just before the
+`TransferDone`. `GetSegments` asks for the same `SegmentsInfo` at
+any time (the app's "N on the device"). The legacy route characteristic's
+0x09..0x0C ops stay for apps without the link.
 
 ## Lists
 

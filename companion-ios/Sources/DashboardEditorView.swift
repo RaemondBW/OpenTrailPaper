@@ -186,6 +186,24 @@ struct DashboardEditorView: View {
                     }
                     .padding(.vertical, 4)
                 }
+            } else if config.pages.indices.contains(pageIx), config.pages[pageIx].isSegment {
+                Section {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label("Segment", systemImage: "flag.checkered")
+                        Text("Live Strava segments. Sync your starred segments in Settings > Accounts > Strava. Away from them the page shows the nearest start within 5 km; ride through a start and it times the effort against your PR, then shows your result. Efforts are timed on any page. Needs device firmware v1.23 or newer.")
+                            .font(TypeScale.body).foregroundStyle(Palette.muted)
+                        Toggle(isOn: Binding(
+                            get: { config.pages.indices.contains(pageIx) ? config.pages[pageIx].autoShow : true },
+                            set: { v in
+                                guard config.pages.indices.contains(pageIx) else { return }
+                                config.pages[pageIx].autoShow = v
+                                dirty = true
+                            })) {
+                            Text("Switch to this page when a segment starts").font(TypeScale.body)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
             } else if config.pages.indices.contains(pageIx) {
                 Section {
                     VStack(alignment: .leading, spacing: 8) {
@@ -245,6 +263,7 @@ struct DashboardEditorView: View {
             case .map: MapPagePreview(fields: config.mapFields)
             case .workout: WorkoutPagePreview()
             case .stopwatch: StopwatchPagePreview()
+            case .segment: SegmentPagePreview()
             case .fields: DashPreview(layout: config.pages[i].layout)
             }
         }
@@ -337,6 +356,13 @@ struct DashboardEditorView: View {
                     addPage(.stopwatch, proxy)
                 } label: {
                     Label("Stopwatch", systemImage: "stopwatch")
+                }
+            }
+            if !config.hasSegmentPage {
+                Button {
+                    addPage(.segment, proxy)
+                } label: {
+                    Label("Segment", systemImage: "flag.checkered")
                 }
             }
         } label: {
@@ -457,6 +483,11 @@ struct DashPreview: View {
     var liveText: ((String) -> String)? = nil
     var liveWatts: ((String) -> Double?)? = nil
     var ftp: Double = 250
+    /// The Ride tab's live panel: which fields have a source right now (nil =
+    /// all of them, as in the editor), and whether the ones without are left
+    /// off the page (the device's "Show offline" off) rather than greyed.
+    var available: ((String) -> Bool)? = nil
+    var hidesUnavailable = false
 
     // Device geometry (ui_render.h). Everything is computed in these units.
     // Not private: the page editor lays its drop targets over the same grid.
@@ -525,7 +556,23 @@ struct DashPreview: View {
 
     // MARK: layout — ui_render.cpp's packer, verbatim in device pixels
 
+    /// The layout the device packs: with "Show offline" off, a field whose
+    /// sensor is gone is dropped first, and its row partner widens to fill —
+    /// ui_render.cpp's filter. The vertical tile always stays.
+    private var shown: DashLayout {
+        guard hidesUnavailable, let available else { return layout }
+        return DashLayout(items: layout.items.filter { $0.vertical || available($0.field) })
+    }
+
+    /// Greyed out as the device greys a cell: its sensor is gone, or it has
+    /// no value to show.
+    private func isStale(_ field: String) -> Bool {
+        guard let available, field != "radar" else { return false }
+        return !available(field) || (liveText?(field) ?? "").hasPrefix("--")
+    }
+
     private func place() -> Placement {
+        let layout = shown
         let rows = layout.rows
         guard !rows.isEmpty else { return Placement(cells: [], rows: [], totalWeight: 1, railY: 0, railH: 0) }
         let weights = rows.map { $0.map(\.size.weight).max() ?? 1 }
@@ -631,6 +678,12 @@ struct DashPreview: View {
         ZStack(alignment: .topLeading) {
             Rectangle()
                 .strokeBorder(Color.black, lineWidth: rule * k)
+            if isStale(p.item.field) {
+                // The panel's 25% dot tone, under the caption and value.
+                Rectangle()
+                    .fill(ImagePaint(image: Self.dotTone, scale: k))
+                    .padding(rule * k)
+            }
 
             if p.item.field == "radar" {
                 radarSample(k: k, height: p.h)
@@ -657,6 +710,17 @@ struct DashPreview: View {
             }
         }
     }
+
+    /// ui_render's TONE_25: a 2 px dot on a 4 px pitch, in device pixels.
+    private static let dotTone: Image = {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let img = UIGraphicsImageRenderer(size: CGSize(width: 4, height: 4), format: format).image { ctx in
+            UIColor.black.setFill()
+            ctx.fill(CGRect(x: 0, y: 0, width: 2, height: 2))
+        }
+        return Image(uiImage: img)
+    }()
 
     private func radarSample(k: CGFloat, height: CGFloat) -> some View {
         let riderBottom: CGFloat = height < 600 ? 120 : 130
@@ -800,7 +864,7 @@ struct DashPreview: View {
 }
 
 
-// Thumbnails of the device's MUSIC, MAP, WORKOUT and STOPWATCH screens live
+// Thumbnails of the device's MUSIC, MAP, WORKOUT, STOPWATCH and SEGMENT screens live
 // in DevicePages.swift, shared with the Ride tab's live copies of them.
 
 // Live reorder for the page carousel: as the lifted card crosses a neighbour,

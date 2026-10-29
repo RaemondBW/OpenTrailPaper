@@ -48,6 +48,8 @@ typedef enum _otp_link_Feature {
     otp_link_Feature_FEATURE_WORKOUTS = 26, /* TARGET_WORKOUT, LIST_WORKOUTS, WorkoutCommand */
     otp_link_Feature_FEATURE_AGNSS = 27, /* TARGET_AGNSS, AgnssInfoRequest */
     otp_link_Feature_FEATURE_UNPAIR = 28, /* Unpair */
+    otp_link_Feature_FEATURE_SEGMENTS = 29, /* TARGET_SEGMENTS, GetSegments / SegmentsInfo */
+    otp_link_Feature_FEATURE_SHOW_PAGE = 30, /* ShowPage */
     /* Phone-side features (listed in Hello): */
     otp_link_Feature_FEATURE_MEDIA_COMMAND_HANDLER = 64 /* phone acts on device MediaCommand pushes (no AMS) */
 } otp_link_Feature;
@@ -86,6 +88,15 @@ typedef enum _otp_link_LiveTopic {
     otp_link_LiveTopic_LIVE_TOPIC_MUSIC = 6
 } otp_link_LiveTopic;
 
+/* The device's SD card. A card that answers but won't mount is almost always
+ exFAT (the firmware reads FAT only). */
+typedef enum _otp_link_SdCard {
+    otp_link_SdCard_SD_CARD_UNKNOWN = 0,
+    otp_link_SdCard_SD_CARD_OK = 1, /* mounted, or lent to a USB host */
+    otp_link_SdCard_SD_CARD_MISSING = 2, /* nothing in the slot */
+    otp_link_SdCard_SD_CARD_UNREADABLE = 3 /* a card answered, its filesystem did not mount */
+} otp_link_SdCard;
+
 typedef enum _otp_link_Screen {
     otp_link_Screen_SCREEN_DASH = 0,
     otp_link_Screen_SCREEN_MAP = 1,
@@ -108,7 +119,8 @@ typedef enum _otp_link_Target {
     otp_link_Target_TARGET_ROUTE = 5, /* GPX, name = route name; clears pending maneuvers */
     otp_link_Target_TARGET_WORKOUT = 6, /* .erg/.mrc text, name = file name; loaded after saving */
     otp_link_Target_TARGET_ALBUM_ART = 7, /* art_format / art_width / art_height */
-    otp_link_Target_TARGET_AGNSS = 8 /* receiver-specific assistance blob */
+    otp_link_Target_TARGET_AGNSS = 8, /* receiver-specific assistance blob */
+    otp_link_Target_TARGET_SEGMENTS = 9 /* starred Strava segments, the whole set (segment_match.h blob); replaces the set */
 } otp_link_Target;
 
 typedef enum _otp_link_ArtFormat {
@@ -221,6 +233,7 @@ typedef struct _otp_link_DeviceHello {
     uint32_t route_max_bytes; /* GPX upload limit */
     uint32_t workout_max_bytes;
     uint32_t max_maneuvers;
+    uint32_t segments_version; /* newest TARGET_SEGMENTS blob version read (FEATURE_SEGMENTS) */
 } otp_link_DeviceHello;
 
 /* Phone-initiated unpair (the app's Unpair button). No reply: the device
@@ -291,6 +304,13 @@ typedef struct _otp_link_RideState {
     bool radar_connected;
     bool radar_live;
     bool time_valid;
+    otp_link_SdCard sd_card; /* UNKNOWN from firmware before it was reported */
+    /* The device's "Show offline" setting: a field whose sensor is not live
+ (power_w / hr_bpm / cadence_rpm absent, route_left_m absent) is drawn
+ greyed out (true) or left off the page (false). Absent from firmware
+ before it was reported. */
+    bool has_show_offline;
+    bool show_offline;
 } otp_link_RideState;
 
 typedef struct _otp_link_Lap {
@@ -374,6 +394,15 @@ typedef struct _otp_link_LiveFrame {
     bool has_music;
     otp_link_MusicState music;
 } otp_link_LiveFrame;
+
+/* The app's view of the device moved to another page: show it on the panel
+ too. `page` is the slot in the dash layout (the map is one of the slots),
+ as in ViewState.page. Only taken while the panel shows a page or the map,
+ never over a menu, sheet or nav prompt. No reply: the next LiveFrame's
+ ViewState is the answer. */
+typedef struct _otp_link_ShowPage {
+    uint32_t page;
+} otp_link_ShowPage;
 
 /* No reply: the next LiveFrame's StopwatchState is the answer. */
 typedef struct _otp_link_StopwatchCommand {
@@ -808,6 +837,15 @@ typedef struct _otp_link_AgnssInfoRequest {
     char dummy_field;
 } otp_link_AgnssInfoRequest;
 
+typedef struct _otp_link_AgnssInfo {
+    otp_link_GnssModule module;
+    bool fix;
+} otp_link_AgnssInfo;
+
+typedef struct _otp_link_GetSegments {
+    char dummy_field;
+} otp_link_GetSegments;
+
 typedef struct _otp_link_PhoneMsg {
     uint32_t req;
     pb_size_t which_body;
@@ -818,6 +856,7 @@ typedef struct _otp_link_PhoneMsg {
         otp_link_Settings set_settings; /* only the fields present are changed */
         otp_link_LiveSubscribe live_subscribe;
         otp_link_StopwatchCommand stopwatch;
+        otp_link_ShowPage show_page;
         otp_link_UploadBegin upload_begin;
         otp_link_Chunk chunk;
         otp_link_UploadEnd upload_end;
@@ -840,13 +879,15 @@ typedef struct _otp_link_PhoneMsg {
         otp_link_WorkoutCommand workout;
         otp_link_MeshCommand mesh;
         otp_link_AgnssInfoRequest agnss_info;
+        otp_link_GetSegments get_segments;
     } body;
 } otp_link_PhoneMsg;
 
-typedef struct _otp_link_AgnssInfo {
-    otp_link_GnssModule module;
-    bool fix;
-} otp_link_AgnssInfo;
+typedef struct _otp_link_SegmentsInfo {
+    bool present; /* false before the first set (nothing accepted or on the card) */
+    uint32_t count; /* segments in the set the device holds */
+    uint32_t version; /* newest blob version the device reads (as DeviceHello.segments_version) */
+} otp_link_SegmentsInfo;
 
 typedef struct _otp_link_DeviceMsg {
     uint32_t req;
@@ -881,6 +922,7 @@ typedef struct _otp_link_DeviceMsg {
         otp_link_MeshChanged mesh_changed; /* something changed: ask again */
         otp_link_MeshQueued mesh_queued; /* reply to a send */
         otp_link_AgnssInfo agnss_info;
+        otp_link_SegmentsInfo segments; /* reply to GetSegments, and pushed ahead of a TARGET_SEGMENTS TransferDone */
     } body;
 } otp_link_DeviceMsg;
 
@@ -910,6 +952,10 @@ extern "C" {
 #define _otp_link_LiveTopic_MAX otp_link_LiveTopic_LIVE_TOPIC_MUSIC
 #define _otp_link_LiveTopic_ARRAYSIZE ((otp_link_LiveTopic)(otp_link_LiveTopic_LIVE_TOPIC_MUSIC+1))
 
+#define _otp_link_SdCard_MIN otp_link_SdCard_SD_CARD_UNKNOWN
+#define _otp_link_SdCard_MAX otp_link_SdCard_SD_CARD_UNREADABLE
+#define _otp_link_SdCard_ARRAYSIZE ((otp_link_SdCard)(otp_link_SdCard_SD_CARD_UNREADABLE+1))
+
 #define _otp_link_Screen_MIN otp_link_Screen_SCREEN_DASH
 #define _otp_link_Screen_MAX otp_link_Screen_SCREEN_OTHER
 #define _otp_link_Screen_ARRAYSIZE ((otp_link_Screen)(otp_link_Screen_SCREEN_OTHER+1))
@@ -919,8 +965,8 @@ extern "C" {
 #define _otp_link_StopwatchOp_ARRAYSIZE ((otp_link_StopwatchOp)(otp_link_StopwatchOp_STOPWATCH_OP_LAP+1))
 
 #define _otp_link_Target_MIN otp_link_Target_TARGET_NONE
-#define _otp_link_Target_MAX otp_link_Target_TARGET_AGNSS
-#define _otp_link_Target_ARRAYSIZE ((otp_link_Target)(otp_link_Target_TARGET_AGNSS+1))
+#define _otp_link_Target_MAX otp_link_Target_TARGET_SEGMENTS
+#define _otp_link_Target_ARRAYSIZE ((otp_link_Target)(otp_link_Target_TARGET_SEGMENTS+1))
 
 #define _otp_link_ArtFormat_MIN otp_link_ArtFormat_ART_GRAY8
 #define _otp_link_ArtFormat_MAX otp_link_ArtFormat_ART_TONE5
@@ -973,10 +1019,12 @@ extern "C" {
 #define otp_link_LiveSubscribe_topics_ENUMTYPE otp_link_LiveTopic
 
 
+#define otp_link_RideState_sd_card_ENUMTYPE otp_link_SdCard
 
 
 
 #define otp_link_ViewState_screen_ENUMTYPE otp_link_Screen
+
 
 
 
@@ -1058,24 +1106,27 @@ extern "C" {
 #define otp_link_AgnssInfo_module_ENUMTYPE otp_link_GnssModule
 
 
+
+
 /* Initializer values for message structs */
 #define otp_link_PhoneMsg_init_default           {0, 0, {otp_link_Hello_init_default}}
 #define otp_link_DeviceMsg_init_default          {0, 0, {otp_link_DeviceHello_init_default}}
 #define otp_link_Result_init_default             {_otp_link_ResultCode_MIN, ""}
 #define otp_link_Hello_init_default              {0, _otp_link_Platform_MIN, "", 0, {_otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN}, 0}
-#define otp_link_DeviceHello_init_default        {0, "", 0, {_otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN}, 0, 0, 0, 0, 0, 0, 0}
+#define otp_link_DeviceHello_init_default        {0, "", 0, {_otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN}, 0, 0, 0, 0, 0, 0, 0, 0}
 #define otp_link_Unpair_init_default             {0}
 #define otp_link_GetSettings_init_default        {0}
 #define otp_link_Settings_init_default           {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
 #define otp_link_LiveSubscribe_init_default      {0, {_otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN}}
 #define otp_link_LiveFrame_init_default          {0, false, otp_link_RideState_init_default, false, otp_link_StopwatchState_init_default, false, otp_link_ViewState_init_default, false, otp_link_Position_init_default, false, otp_link_Radar_init_default, false, otp_link_MusicState_init_default}
-#define otp_link_RideState_init_default          {0, 0, 0, 0, 0, 0, 0, false, 0, 0, false, 0, false, 0, false, 0, false, 0, 0, 0, 0, 0, false, 0, false, 0, 0, false, 0, 0, 0, 0}
+#define otp_link_RideState_init_default          {0, 0, 0, 0, 0, 0, 0, false, 0, 0, false, 0, false, 0, false, 0, false, 0, 0, 0, 0, 0, false, 0, false, 0, 0, false, 0, 0, 0, 0, _otp_link_SdCard_MIN, false, 0}
 #define otp_link_StopwatchState_init_default     {0, 0, 0, 0, 0, 0, false, 0, false, 0, false, 0, false, 0, 0, {otp_link_Lap_init_default, otp_link_Lap_init_default, otp_link_Lap_init_default, otp_link_Lap_init_default, otp_link_Lap_init_default, otp_link_Lap_init_default, otp_link_Lap_init_default, otp_link_Lap_init_default, otp_link_Lap_init_default, otp_link_Lap_init_default}}
 #define otp_link_Lap_init_default                {0, 0, false, 0, false, 0, false, 0}
 #define otp_link_ViewState_init_default          {false, 0, 0, _otp_link_Screen_MIN}
 #define otp_link_Position_init_default           {0, 0, false, 0, 0, 0}
 #define otp_link_Radar_init_default              {0, 0, {0, 0, 0, 0, 0, 0, 0, 0}}
 #define otp_link_MusicState_init_default         {0, 0, 0, 0, 0, 0}
+#define otp_link_ShowPage_init_default           {0}
 #define otp_link_StopwatchCommand_init_default   {_otp_link_StopwatchOp_MIN}
 #define otp_link_UploadBegin_init_default        {0, _otp_link_Target_MIN, "", 0, 0, "", _otp_link_ArtFormat_MIN, 0, 0}
 #define otp_link_UploadReady_init_default        {0, 0}
@@ -1136,23 +1187,26 @@ extern "C" {
 #define otp_link_MeshQueued_init_default         {0}
 #define otp_link_AgnssInfoRequest_init_default   {0}
 #define otp_link_AgnssInfo_init_default          {_otp_link_GnssModule_MIN, 0}
+#define otp_link_GetSegments_init_default        {0}
+#define otp_link_SegmentsInfo_init_default       {0, 0, 0}
 #define otp_link_PhoneMsg_init_zero              {0, 0, {otp_link_Hello_init_zero}}
 #define otp_link_DeviceMsg_init_zero             {0, 0, {otp_link_DeviceHello_init_zero}}
 #define otp_link_Result_init_zero                {_otp_link_ResultCode_MIN, ""}
 #define otp_link_Hello_init_zero                 {0, _otp_link_Platform_MIN, "", 0, {_otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN}, 0}
-#define otp_link_DeviceHello_init_zero           {0, "", 0, {_otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN}, 0, 0, 0, 0, 0, 0, 0}
+#define otp_link_DeviceHello_init_zero           {0, "", 0, {_otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN, _otp_link_Feature_MIN}, 0, 0, 0, 0, 0, 0, 0, 0}
 #define otp_link_Unpair_init_zero                {0}
 #define otp_link_GetSettings_init_zero           {0}
 #define otp_link_Settings_init_zero              {false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, false, 0}
 #define otp_link_LiveSubscribe_init_zero         {0, {_otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN, _otp_link_LiveTopic_MIN}}
 #define otp_link_LiveFrame_init_zero             {0, false, otp_link_RideState_init_zero, false, otp_link_StopwatchState_init_zero, false, otp_link_ViewState_init_zero, false, otp_link_Position_init_zero, false, otp_link_Radar_init_zero, false, otp_link_MusicState_init_zero}
-#define otp_link_RideState_init_zero             {0, 0, 0, 0, 0, 0, 0, false, 0, 0, false, 0, false, 0, false, 0, false, 0, 0, 0, 0, 0, false, 0, false, 0, 0, false, 0, 0, 0, 0}
+#define otp_link_RideState_init_zero             {0, 0, 0, 0, 0, 0, 0, false, 0, 0, false, 0, false, 0, false, 0, false, 0, 0, 0, 0, 0, false, 0, false, 0, 0, false, 0, 0, 0, 0, _otp_link_SdCard_MIN, false, 0}
 #define otp_link_StopwatchState_init_zero        {0, 0, 0, 0, 0, 0, false, 0, false, 0, false, 0, false, 0, 0, {otp_link_Lap_init_zero, otp_link_Lap_init_zero, otp_link_Lap_init_zero, otp_link_Lap_init_zero, otp_link_Lap_init_zero, otp_link_Lap_init_zero, otp_link_Lap_init_zero, otp_link_Lap_init_zero, otp_link_Lap_init_zero, otp_link_Lap_init_zero}}
 #define otp_link_Lap_init_zero                   {0, 0, false, 0, false, 0, false, 0}
 #define otp_link_ViewState_init_zero             {false, 0, 0, _otp_link_Screen_MIN}
 #define otp_link_Position_init_zero              {0, 0, false, 0, 0, 0}
 #define otp_link_Radar_init_zero                 {0, 0, {0, 0, 0, 0, 0, 0, 0, 0}}
 #define otp_link_MusicState_init_zero            {0, 0, 0, 0, 0, 0}
+#define otp_link_ShowPage_init_zero              {0}
 #define otp_link_StopwatchCommand_init_zero      {_otp_link_StopwatchOp_MIN}
 #define otp_link_UploadBegin_init_zero           {0, _otp_link_Target_MIN, "", 0, 0, "", _otp_link_ArtFormat_MIN, 0, 0}
 #define otp_link_UploadReady_init_zero           {0, 0}
@@ -1213,6 +1267,8 @@ extern "C" {
 #define otp_link_MeshQueued_init_zero            {0}
 #define otp_link_AgnssInfoRequest_init_zero      {0}
 #define otp_link_AgnssInfo_init_zero             {_otp_link_GnssModule_MIN, 0}
+#define otp_link_GetSegments_init_zero           {0}
+#define otp_link_SegmentsInfo_init_zero          {0, 0, 0}
 
 /* Field tags (for use in manual encoding/decoding) */
 #define otp_link_Result_code_tag                 1
@@ -1232,6 +1288,7 @@ extern "C" {
 #define otp_link_DeviceHello_route_max_bytes_tag 8
 #define otp_link_DeviceHello_workout_max_bytes_tag 9
 #define otp_link_DeviceHello_max_maneuvers_tag   10
+#define otp_link_DeviceHello_segments_version_tag 11
 #define otp_link_Settings_ftp_w_tag              1
 #define otp_link_Settings_tz_min_tag             2
 #define otp_link_Settings_use_miles_tag          3
@@ -1264,6 +1321,8 @@ extern "C" {
 #define otp_link_RideState_radar_connected_tag   22
 #define otp_link_RideState_radar_live_tag        23
 #define otp_link_RideState_time_valid_tag        24
+#define otp_link_RideState_sd_card_tag           25
+#define otp_link_RideState_show_offline_tag      26
 #define otp_link_Lap_number_tag                  1
 #define otp_link_Lap_split_ms_tag                2
 #define otp_link_Lap_speed_dkmh_tag              3
@@ -1303,6 +1362,7 @@ extern "C" {
 #define otp_link_LiveFrame_position_tag          5
 #define otp_link_LiveFrame_radar_tag             6
 #define otp_link_LiveFrame_music_tag             7
+#define otp_link_ShowPage_page_tag               1
 #define otp_link_StopwatchCommand_op_tag         1
 #define otp_link_UploadBegin_xfer_tag            1
 #define otp_link_UploadBegin_target_tag          2
@@ -1503,6 +1563,8 @@ extern "C" {
 #define otp_link_MeshRegion_name_tag             6
 #define otp_link_MeshRegions_regions_tag         1
 #define otp_link_MeshQueued_packet_id_tag        1
+#define otp_link_AgnssInfo_module_tag            1
+#define otp_link_AgnssInfo_fix_tag               2
 #define otp_link_PhoneMsg_req_tag                1
 #define otp_link_PhoneMsg_hello_tag              2
 #define otp_link_PhoneMsg_unpair_tag             3
@@ -1510,6 +1572,7 @@ extern "C" {
 #define otp_link_PhoneMsg_set_settings_tag       11
 #define otp_link_PhoneMsg_live_subscribe_tag     15
 #define otp_link_PhoneMsg_stopwatch_tag          16
+#define otp_link_PhoneMsg_show_page_tag          17
 #define otp_link_PhoneMsg_upload_begin_tag       20
 #define otp_link_PhoneMsg_chunk_tag              21
 #define otp_link_PhoneMsg_upload_end_tag         22
@@ -1532,8 +1595,10 @@ extern "C" {
 #define otp_link_PhoneMsg_workout_tag            90
 #define otp_link_PhoneMsg_mesh_tag               100
 #define otp_link_PhoneMsg_agnss_info_tag         120
-#define otp_link_AgnssInfo_module_tag            1
-#define otp_link_AgnssInfo_fix_tag               2
+#define otp_link_PhoneMsg_get_segments_tag       130
+#define otp_link_SegmentsInfo_present_tag        1
+#define otp_link_SegmentsInfo_count_tag          2
+#define otp_link_SegmentsInfo_version_tag        3
 #define otp_link_DeviceMsg_req_tag               1
 #define otp_link_DeviceMsg_hello_tag             2
 #define otp_link_DeviceMsg_result_tag            3
@@ -1564,6 +1629,7 @@ extern "C" {
 #define otp_link_DeviceMsg_mesh_changed_tag      107
 #define otp_link_DeviceMsg_mesh_queued_tag       108
 #define otp_link_DeviceMsg_agnss_info_tag        120
+#define otp_link_DeviceMsg_segments_tag          130
 
 /* Struct field encoding specification for nanopb */
 #define otp_link_PhoneMsg_FIELDLIST(X, a) \
@@ -1574,6 +1640,7 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (body,get_settings,body.get_settings),  10) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (body,set_settings,body.set_settings),  11) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (body,live_subscribe,body.live_subscribe),  15) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (body,stopwatch,body.stopwatch),  16) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (body,show_page,body.show_page),  17) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (body,upload_begin,body.upload_begin),  20) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (body,chunk,body.chunk),  21) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (body,upload_end,body.upload_end),  22) \
@@ -1595,7 +1662,8 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (body,media_clear,body.media_clear),  81) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (body,media_command,body.media_command),  82) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (body,workout,body.workout),  90) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (body,mesh,body.mesh), 100) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (body,agnss_info,body.agnss_info), 120)
+X(a, STATIC,   ONEOF,    MESSAGE,  (body,agnss_info,body.agnss_info), 120) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (body,get_segments,body.get_segments), 130)
 #define otp_link_PhoneMsg_CALLBACK NULL
 #define otp_link_PhoneMsg_DEFAULT NULL
 #define otp_link_PhoneMsg_body_hello_MSGTYPE otp_link_Hello
@@ -1604,6 +1672,7 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (body,agnss_info,body.agnss_info), 120)
 #define otp_link_PhoneMsg_body_set_settings_MSGTYPE otp_link_Settings
 #define otp_link_PhoneMsg_body_live_subscribe_MSGTYPE otp_link_LiveSubscribe
 #define otp_link_PhoneMsg_body_stopwatch_MSGTYPE otp_link_StopwatchCommand
+#define otp_link_PhoneMsg_body_show_page_MSGTYPE otp_link_ShowPage
 #define otp_link_PhoneMsg_body_upload_begin_MSGTYPE otp_link_UploadBegin
 #define otp_link_PhoneMsg_body_chunk_MSGTYPE otp_link_Chunk
 #define otp_link_PhoneMsg_body_upload_end_MSGTYPE otp_link_UploadEnd
@@ -1626,6 +1695,7 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (body,agnss_info,body.agnss_info), 120)
 #define otp_link_PhoneMsg_body_workout_MSGTYPE otp_link_WorkoutCommand
 #define otp_link_PhoneMsg_body_mesh_MSGTYPE otp_link_MeshCommand
 #define otp_link_PhoneMsg_body_agnss_info_MSGTYPE otp_link_AgnssInfoRequest
+#define otp_link_PhoneMsg_body_get_segments_MSGTYPE otp_link_GetSegments
 
 #define otp_link_DeviceMsg_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, UINT32,   req,               1) \
@@ -1657,7 +1727,8 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (body,mesh_channels,body.mesh_channels), 105)
 X(a, STATIC,   ONEOF,    MESSAGE,  (body,mesh_regions,body.mesh_regions), 106) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (body,mesh_changed,body.mesh_changed), 107) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (body,mesh_queued,body.mesh_queued), 108) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (body,agnss_info,body.agnss_info), 120)
+X(a, STATIC,   ONEOF,    MESSAGE,  (body,agnss_info,body.agnss_info), 120) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (body,segments,body.segments), 130)
 #define otp_link_DeviceMsg_CALLBACK NULL
 #define otp_link_DeviceMsg_DEFAULT NULL
 #define otp_link_DeviceMsg_body_hello_MSGTYPE otp_link_DeviceHello
@@ -1689,6 +1760,7 @@ X(a, STATIC,   ONEOF,    MESSAGE,  (body,agnss_info,body.agnss_info), 120)
 #define otp_link_DeviceMsg_body_mesh_changed_MSGTYPE otp_link_MeshChanged
 #define otp_link_DeviceMsg_body_mesh_queued_MSGTYPE otp_link_MeshQueued
 #define otp_link_DeviceMsg_body_agnss_info_MSGTYPE otp_link_AgnssInfo
+#define otp_link_DeviceMsg_body_segments_MSGTYPE otp_link_SegmentsInfo
 
 #define otp_link_Result_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, UENUM,    code,              1) \
@@ -1715,7 +1787,8 @@ X(a, STATIC,   SINGULAR, UINT32,   dash_max_pages,    6) \
 X(a, STATIC,   SINGULAR, UINT32,   dash_max_text,     7) \
 X(a, STATIC,   SINGULAR, UINT32,   route_max_bytes,   8) \
 X(a, STATIC,   SINGULAR, UINT32,   workout_max_bytes,   9) \
-X(a, STATIC,   SINGULAR, UINT32,   max_maneuvers,    10)
+X(a, STATIC,   SINGULAR, UINT32,   max_maneuvers,    10) \
+X(a, STATIC,   SINGULAR, UINT32,   segments_version,  11)
 #define otp_link_DeviceHello_CALLBACK NULL
 #define otp_link_DeviceHello_DEFAULT NULL
 
@@ -1786,7 +1859,9 @@ X(a, STATIC,   SINGULAR, BOOL,     altitude_baro,    20) \
 X(a, STATIC,   OPTIONAL, UINT32,   route_left_m,     21) \
 X(a, STATIC,   SINGULAR, BOOL,     radar_connected,  22) \
 X(a, STATIC,   SINGULAR, BOOL,     radar_live,       23) \
-X(a, STATIC,   SINGULAR, BOOL,     time_valid,       24)
+X(a, STATIC,   SINGULAR, BOOL,     time_valid,       24) \
+X(a, STATIC,   SINGULAR, UENUM,    sd_card,          25) \
+X(a, STATIC,   OPTIONAL, BOOL,     show_offline,     26)
 #define otp_link_RideState_CALLBACK NULL
 #define otp_link_RideState_DEFAULT NULL
 
@@ -1846,6 +1921,11 @@ X(a, STATIC,   SINGULAR, UINT32,   duration_ms,       5) \
 X(a, STATIC,   SINGULAR, SINT32,   rate_pct,          6)
 #define otp_link_MusicState_CALLBACK NULL
 #define otp_link_MusicState_DEFAULT NULL
+
+#define otp_link_ShowPage_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UINT32,   page,              1)
+#define otp_link_ShowPage_CALLBACK NULL
+#define otp_link_ShowPage_DEFAULT NULL
 
 #define otp_link_StopwatchCommand_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, UENUM,    op,                1)
@@ -2314,6 +2394,18 @@ X(a, STATIC,   SINGULAR, BOOL,     fix,               2)
 #define otp_link_AgnssInfo_CALLBACK NULL
 #define otp_link_AgnssInfo_DEFAULT NULL
 
+#define otp_link_GetSegments_FIELDLIST(X, a) \
+
+#define otp_link_GetSegments_CALLBACK NULL
+#define otp_link_GetSegments_DEFAULT NULL
+
+#define otp_link_SegmentsInfo_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, BOOL,     present,           1) \
+X(a, STATIC,   SINGULAR, UINT32,   count,             2) \
+X(a, STATIC,   SINGULAR, UINT32,   version,           3)
+#define otp_link_SegmentsInfo_CALLBACK NULL
+#define otp_link_SegmentsInfo_DEFAULT NULL
+
 extern const pb_msgdesc_t otp_link_PhoneMsg_msg;
 extern const pb_msgdesc_t otp_link_DeviceMsg_msg;
 extern const pb_msgdesc_t otp_link_Result_msg;
@@ -2331,6 +2423,7 @@ extern const pb_msgdesc_t otp_link_ViewState_msg;
 extern const pb_msgdesc_t otp_link_Position_msg;
 extern const pb_msgdesc_t otp_link_Radar_msg;
 extern const pb_msgdesc_t otp_link_MusicState_msg;
+extern const pb_msgdesc_t otp_link_ShowPage_msg;
 extern const pb_msgdesc_t otp_link_StopwatchCommand_msg;
 extern const pb_msgdesc_t otp_link_UploadBegin_msg;
 extern const pb_msgdesc_t otp_link_UploadReady_msg;
@@ -2391,6 +2484,8 @@ extern const pb_msgdesc_t otp_link_MeshChanged_msg;
 extern const pb_msgdesc_t otp_link_MeshQueued_msg;
 extern const pb_msgdesc_t otp_link_AgnssInfoRequest_msg;
 extern const pb_msgdesc_t otp_link_AgnssInfo_msg;
+extern const pb_msgdesc_t otp_link_GetSegments_msg;
+extern const pb_msgdesc_t otp_link_SegmentsInfo_msg;
 
 /* Defines for backwards compatibility with code written before nanopb-0.4.0 */
 #define otp_link_PhoneMsg_fields &otp_link_PhoneMsg_msg
@@ -2410,6 +2505,7 @@ extern const pb_msgdesc_t otp_link_AgnssInfo_msg;
 #define otp_link_Position_fields &otp_link_Position_msg
 #define otp_link_Radar_fields &otp_link_Radar_msg
 #define otp_link_MusicState_fields &otp_link_MusicState_msg
+#define otp_link_ShowPage_fields &otp_link_ShowPage_msg
 #define otp_link_StopwatchCommand_fields &otp_link_StopwatchCommand_msg
 #define otp_link_UploadBegin_fields &otp_link_UploadBegin_msg
 #define otp_link_UploadReady_fields &otp_link_UploadReady_msg
@@ -2470,6 +2566,8 @@ extern const pb_msgdesc_t otp_link_AgnssInfo_msg;
 #define otp_link_MeshQueued_fields &otp_link_MeshQueued_msg
 #define otp_link_AgnssInfoRequest_fields &otp_link_AgnssInfoRequest_msg
 #define otp_link_AgnssInfo_fields &otp_link_AgnssInfo_msg
+#define otp_link_GetSegments_fields &otp_link_GetSegments_msg
+#define otp_link_SegmentsInfo_fields &otp_link_SegmentsInfo_msg
 
 /* Maximum encoded size of messages (where known) */
 #define OTP_LINK_LINK_PB_H_MAX_SIZE              otp_link_PhoneMsg_size
@@ -2478,7 +2576,7 @@ extern const pb_msgdesc_t otp_link_AgnssInfo_msg;
 #define otp_link_Chunk_size                      527
 #define otp_link_DashConfig_size                 2050
 #define otp_link_DeleteRequest_size              67
-#define otp_link_DeviceHello_size                201
+#define otp_link_DeviceHello_size                207
 #define otp_link_DeviceMsg_size                  2060
 #define otp_link_DownloadBegin_size              18
 #define otp_link_DownloadRequest_size            85
@@ -2487,11 +2585,12 @@ extern const pb_msgdesc_t otp_link_AgnssInfo_msg;
 #define otp_link_FileList_size                   1172
 #define otp_link_GetDash_size                    0
 #define otp_link_GetMapLayers_size               0
+#define otp_link_GetSegments_size                0
 #define otp_link_GetSettings_size                0
 #define otp_link_Hello_size                      116
 #define otp_link_Lap_size                        30
 #define otp_link_ListRequest_size                2
-#define otp_link_LiveFrame_size                  610
+#define otp_link_LiveFrame_size                  616
 #define otp_link_LiveSubscribe_size              32
 #define otp_link_Maneuver_size                   61
 #define otp_link_MapCoverageList_size            640
@@ -2529,13 +2628,15 @@ extern const pb_msgdesc_t otp_link_AgnssInfo_msg;
 #define otp_link_Position_size                   22
 #define otp_link_Radar_size                      50
 #define otp_link_Result_size                     83
-#define otp_link_RideState_size                  113
+#define otp_link_RideState_size                  119
 #define otp_link_RouteFinish_size                0
 #define otp_link_RouteManeuvers_size             1008
+#define otp_link_SegmentsInfo_size               14
 #define otp_link_SensorCommand_size              23
 #define otp_link_SensorList_size                 720
 #define otp_link_Sensor_size                     70
 #define otp_link_Settings_size                   35
+#define otp_link_ShowPage_size                   6
 #define otp_link_StopwatchCommand_size           2
 #define otp_link_StopwatchState_size             368
 #define otp_link_TileEntry_size                  54

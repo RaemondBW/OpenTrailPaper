@@ -6,6 +6,15 @@
 #include <ctime>
 #include "radar.h"
 
+// The SD card as the UI reports it (ride_recorder::sdCardState()). UNREADABLE
+// is a card that answered but would not mount: exFAT or unformatted, since the
+// FAT driver is built without exFAT — the fix is reformatting it as FAT32.
+enum SdCardState : uint8_t {
+    SD_CARD_OK = 0,           // mounted (or lent to a USB host)
+    SD_CARD_NONE = 1,         // nothing answered: no card in the slot
+    SD_CARD_UNREADABLE = 2,   // a card answered, the filesystem did not mount
+};
+
 // Single shared snapshot of everything the UI and recorder consume.
 // Producers (GPS task, BLE callbacks, battery poll) take the lock, update
 // their fields, release. Consumers copy the whole struct under the lock.
@@ -19,6 +28,9 @@ struct RideState {
     bool     everHadFix = false;   // lat/lon hold the last known position
     double   latitude = 0.0;
     double   longitude = 0.0;
+    // millis() when latitude/longitude last came from a fix: tells a new fix
+    // from the same one read twice, and stamps it (the segment matcher).
+    uint32_t gpsFixMs = 0;
     float    altitudeM = 0.0f;
     // THE speed: what the dashboard shows, the recorder times "moving" by and
     // the phone gets. Arbitrated by speed_source::publish() from the sources
@@ -100,12 +112,17 @@ struct RideState {
     float    gradePercent = 0.0f;
     bool     gradeValid = false;
     float    climbedM = 0.0f;
+    // The SD card filled mid-ride: the ride keeps timing but its file stopped
+    // growing. The status bar says SD FULL.
+    bool     cardFull = false;
 
     // Loaded route progress, mirrored here (rather than read from routes::) so
     // the dashboard's ROUTE LEFT field stays renderable on the host preview
     // build, which has no routes module.
     bool     routeActive = false;
     float    routeRemainingKm = 0.0f;
+    // SdCardState, mirrored the same way for the status bar's "NO SD" chip.
+    uint8_t  sdCard = SD_CARD_OK;
 
     // Optional Qwiic sensors (aux_sensors.h). All absent-safe: baroValid and
     // compassValid stay false when the chips are not fitted, and every consumer
@@ -145,6 +162,7 @@ struct RideSummary {
     time_t   endUtc = 0;
     int16_t  tzMin = -420;
     bool     useMiles = false;
+    bool     cardFull = false;     // the SD card filled: the saved track ends early
 };
 
 // Metric <-> imperial display helpers. Host-safe (used by the preview harness

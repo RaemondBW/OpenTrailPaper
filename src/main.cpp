@@ -17,6 +17,7 @@
 #include "rtc_clock.h"
 #include "settings.h"
 #include "routes.h"
+#include "segments.h"
 #include "ble_sensors.h"
 #include "ble_server.h"
 #include "link.h"
@@ -452,11 +453,14 @@ void setup() {
         ui_dashboard::bootDetailFor("SD card", "%lu MB free · %d rides",
                                     (unsigned long)ride_recorder::sdFreeMB(),
                                     ride_recorder::rideCount());
+    else if (ride_recorder::sdCardState() == SD_CARD_UNREADABLE)
+        ui_dashboard::bootDetailFor("SD card", "unreadable · FAT32?");
     else
-        ui_dashboard::bootDetailFor("SD card", "no card — logging off");
+        ui_dashboard::bootDetailFor("SD card", "No SD card");
     ui_dashboard::bootStatus("SD card", sdOk);
     if (sdOk) {
         routes::begin();
+        segments::begin();   // starred Strava segments, for the SEGMENT page
     }
     // Restore the wall clock from the coin-cell RTC (which, unlike the ESP32's
     // internal clock, survives a full power-off). Must happen before the GPS

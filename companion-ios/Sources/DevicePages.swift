@@ -1,7 +1,7 @@
 import SwiftUI
 import UIKit
 
-// The device's non-field pages — MUSIC, MAP, WORKOUT, STOPWATCH — drawn in the
+// The device's non-field pages — MUSIC, MAP, WORKOUT, STOPWATCH, SEGMENT — drawn in the
 // panel's own pixels (540 x 960, ui_render.h) and scaled once, the same idiom
 // as DashPreview. One renderer per page, used twice: the dashboard editor's
 // carousel cards (sample data, the defaults below) and the Ride tab's live
@@ -1194,5 +1194,242 @@ struct WorkoutPagePreview: View {
     static func title(_ file: String) -> String {
         let stem = file.split(separator: ".").dropLast().joined(separator: ".")
         return (stem.isEmpty ? file : stem).replacingOccurrences(of: "_", with: " ")
+    }
+}
+
+// MARK: - SEGMENT
+
+/// What the SEGMENT page shows mid-effort (ui_render_segment's on-segment
+/// layout). Every value is optional: nil draws "--", as the device does for a
+/// reading it hasn't got.
+struct SegmentPageModel {
+    var name: String?
+    /// "2.1 KM · 6.4%", the map tile's right-hand header.
+    var detail: String?
+    /// The line in a north-up frame, 0...1 on both axes (y down).
+    var line: [CGPoint] = []
+    /// Heights along the segment, evenly spaced; empty = no profile.
+    var profile: [Double] = []
+    /// "68 - 200 M", the elevation tile's header.
+    var elevRange: String?
+    /// How far along, 0...1; nil = nothing ridden yet.
+    var done: Double?
+    var elapsedMs: UInt32?
+    /// Against PR pace; negative = ahead. nil = no PR (or no effort).
+    var deltaMs: Int32?
+    var powerW: Int?
+    var heartRate: Int?
+
+    /// The editor card: a made-up switchback climb part way up.
+    static let sample = SegmentPageModel(
+        name: "HAWK HILL CLIMB", detail: "2.1 KM · 6.4%",
+        line: [CGPoint(x: 0.18, y: 0.92), CGPoint(x: 0.42, y: 0.84), CGPoint(x: 0.66, y: 0.80),
+               CGPoint(x: 0.72, y: 0.66), CGPoint(x: 0.44, y: 0.58), CGPoint(x: 0.30, y: 0.46),
+               CGPoint(x: 0.52, y: 0.36), CGPoint(x: 0.76, y: 0.30), CGPoint(x: 0.70, y: 0.16),
+               CGPoint(x: 0.48, y: 0.08)],
+        profile: [68, 74, 83, 95, 104, 112, 126, 141, 150, 163, 178, 186, 194, 200],
+        elevRange: "68 - 200 M", done: 0.46, elapsedMs: 309_000, deltaMs: -11_000,
+        powerW: 247, heartRate: 156)
+
+    /// The Ride tab: the device doesn't stream its segment state, so every
+    /// tile reads "--".
+    static let placeholder = SegmentPageModel()
+}
+
+/// The device's SEGMENT page (ui_render_segment), on a segment: the map tile
+/// (ridden part thick, the rest dashed), the elevation tile (ridden part
+/// solid, the rest hatched), SEGMENT TIME and the PR delta (solid while
+/// ahead), then POWER and HEART RATE. Tiles at the firmware's rects: 24 px
+/// margins, 14 px gaps, 2 px borders, no footer.
+struct SegmentPagePreview: View {
+    var status: PanelStatus = .sample
+    var model: SegmentPageModel = .sample
+    /// A line under the map's "--", for the Ride tab to say why.
+    var note: String? = nil
+
+    private static let x: CGFloat = 24, w: CGFloat = 492, gap: CGFloat = 14
+    private static let half: CGFloat = (492 - 14) / 2   // 239
+
+    var body: some View {
+        DevicePanel(status: status) { k in
+            ZStack(alignment: .topLeading) {
+                mapTile(k)
+                elevationTile(k)
+                valueTile(Self.x, 644, Self.half, 166, label: "SEGMENT TIME",
+                          value: model.elapsedMs.map(Self.timeText) ?? "--", k: k)
+                deltaTile(k)
+                valueTile(Self.x, 824, Self.half, 112, label: "POWER",
+                          value: model.powerW.map(String.init) ?? "--", unit: "W", k: k)
+                valueTile(Self.x + Self.half + Self.gap, 824, Self.half, 112, label: "HEART RATE",
+                          value: model.heartRate.map(String.init) ?? "--", unit: "BPM", k: k)
+            }
+        }
+    }
+
+    // segLabel: the tracked caps label, its baseline 29 px under the tile top.
+    private func tileLabel(_ s: String, _ x: CGFloat, _ y: CGFloat, color: Color = .black,
+                           _ k: CGFloat) -> some View {
+        PanelText(text: s, font: .arialL, x: x + 16, baseline: y + 29, color: color, k: k)
+    }
+
+    private func mapTile(_ k: CGFloat) -> some View {
+        let r = CGRect(x: Self.x, y: 78, width: Self.w, height: 396)
+        let inner = r.insetBy(dx: 40, dy: 64)
+        let pts = model.line.map { CGPoint(x: (inner.minX + $0.x * inner.width) * k,
+                                           y: (inner.minY + $0.y * inner.height) * k) }
+        let split = splitLine(pts)
+        return ZStack(alignment: .topLeading) {
+            panelRect(r.minX, r.minY, r.width, r.height, k: k, line: 2)
+            PanelText(text: model.name ?? "--", font: .arialB, x: r.minX + 16, baseline: r.minY + 36,
+                      maxWidth: 300, k: k)
+            PanelText(text: model.detail ?? "", font: .arialL, x: r.maxX - 16, baseline: r.minY + 34,
+                      align: .right, k: k)
+            if pts.count >= 2 {
+                Path { p in p.addLines(split.rest) }
+                    .stroke(.black, style: StrokeStyle(lineWidth: 3 * k, lineCap: .round,
+                                                       dash: [7 * k, 7 * k]))
+                Path { p in p.addLines(split.done) }
+                    .stroke(.black, style: StrokeStyle(lineWidth: 8 * k, lineCap: .round, lineJoin: .round))
+                // Start: an open circle. Finish: a flag square.
+                Circle().strokeBorder(.black, lineWidth: 4 * k)
+                    .background(Circle().fill(panelPaper))
+                    .frame(width: 22 * k, height: 22 * k)
+                    .offset(x: pts[0].x - 11 * k, y: pts[0].y - 11 * k)
+                flag(k).offset(x: pts[pts.count - 1].x - 9 * k, y: pts[pts.count - 1].y - 9 * k)
+                if model.done != nil, let at = split.done.last {
+                    // The rider, in a white disc.
+                    Circle().fill(.black).frame(width: 40 * k, height: 40 * k)
+                        .overlay(Circle().fill(panelPaper).padding(3 * k))
+                        .overlay(Circle().fill(.black).padding(11 * k))
+                        .offset(x: at.x - 20 * k, y: at.y - 20 * k)
+                }
+            } else {
+                PanelText(text: "--", font: .digits(72), x: r.midX, baseline: r.midY + 36,
+                          align: .center, k: k)
+                if let note {
+                    PanelText(text: note, font: .arialL, x: r.midX, baseline: r.midY + 84,
+                              align: .center, color: .black.opacity(0.6), maxWidth: r.width - 32, k: k)
+                }
+            }
+        }
+    }
+
+    private func flag(_ k: CGFloat) -> some View {
+        let s = 18 * k
+        return ZStack(alignment: .topLeading) {
+            Rectangle().fill(panelPaper)
+            Rectangle().fill(.black).frame(width: s / 2, height: s / 2)
+            Rectangle().fill(.black).frame(width: s / 2, height: s / 2).offset(x: s / 2, y: s / 2)
+            Rectangle().strokeBorder(.black, lineWidth: 3 * k)
+        }
+        .frame(width: s, height: s)
+    }
+
+    /// The line cut at `done`, by length along it.
+    private func splitLine(_ pts: [CGPoint]) -> (done: [CGPoint], rest: [CGPoint]) {
+        guard pts.count >= 2, let f = model.done else { return ([], pts) }
+        var lens = [CGFloat](repeating: 0, count: pts.count)
+        for i in 1..<pts.count {
+            lens[i] = lens[i - 1] + hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y)
+        }
+        let at = lens[pts.count - 1] * CGFloat(min(max(f, 0), 1))
+        var done = [pts[0]]
+        var i = 1
+        while i < pts.count && lens[i] <= at { done.append(pts[i]); i += 1 }
+        guard i < pts.count else { return (done, []) }
+        let t = (at - lens[i - 1]) / max(lens[i] - lens[i - 1], 0.001)
+        let cut = CGPoint(x: pts[i - 1].x + t * (pts[i].x - pts[i - 1].x),
+                          y: pts[i - 1].y + t * (pts[i].y - pts[i - 1].y))
+        done.append(cut)
+        return (done, [cut] + pts[i...])
+    }
+
+    private func elevationTile(_ k: CGFloat) -> some View {
+        let r = CGRect(x: Self.x, y: 488, width: Self.w, height: 142)
+        let x0 = r.minX + 16, w = r.width - 32
+        let top = r.minY + 29 + 12, base = r.maxY - 12
+        let prof = model.profile
+        let lo = prof.min() ?? 0, hi = max(prof.max() ?? 1, lo + 20)
+        func pt(_ i: Int) -> CGPoint {
+            CGPoint(x: (x0 + w * CGFloat(i) / CGFloat(max(prof.count - 1, 1))) * k,
+                    y: (base - CGFloat((prof[i] - lo) / (hi - lo)) * (base - top)) * k)
+        }
+        let area = Path { p in
+            guard prof.count >= 2 else { return }
+            p.move(to: CGPoint(x: x0 * k, y: base * k))
+            for i in prof.indices { p.addLine(to: pt(i)) }
+            p.addLine(to: CGPoint(x: (x0 + w) * k, y: base * k))
+            p.closeSubpath()
+        }
+        let doneX = (x0 + w * CGFloat(min(max(model.done ?? 0, 0), 1))) * k
+        return ZStack(alignment: .topLeading) {
+            panelRect(r.minX, r.minY, r.width, r.height, k: k, line: 2)
+            tileLabel("ELEVATION", r.minX, r.minY, k)
+            PanelText(text: model.elevRange ?? "--", font: .arialL, x: r.maxX - 16,
+                      baseline: r.minY + 29, align: .right, k: k)
+            if prof.count >= 2 {
+                // The rest hatched at 45 degrees under a 3 px outline, the
+                // ridden part solid.
+                Hatch(spacing: 6 * k).stroke(.black, lineWidth: 2 * k)
+                    .frame(width: 540 * k, height: 960 * k)
+                    .mask(area.fill(.black))
+                area.fill(.black)
+                    .mask(Rectangle().frame(width: max(0, doneX), height: 960 * k)
+                        .frame(width: 540 * k, height: 960 * k, alignment: .topLeading))
+                Path { p in p.addLines(prof.indices.map(pt)) }.stroke(.black, lineWidth: 3 * k)
+                if model.done != nil {
+                    panelFill(doneX / k - 1, top - 6, 3, base - top + 6, k: k)
+                }
+            }
+            panelFill(x0, base, w, 2, k: k)
+        }
+    }
+
+    private func deltaTile(_ k: CGFloat) -> some View {
+        let x = Self.x + Self.half + Self.gap
+        guard let d = model.deltaMs else {
+            return valueTile(x, 644, Self.half, 166, label: "PR DELTA", value: "--", k: k)
+        }
+        let text = Self.deltaText(d)
+        let even = !(text.hasPrefix("+") || text.hasPrefix("-"))
+        return valueTile(x, 644, Self.half, 166,
+                         label: even ? "ON PR PACE" : d < 0 ? "AHEAD OF PR" : "BEHIND PR",
+                         value: text, inverted: !even && d < 0, k: k)
+    }
+
+    /// segValueTile: label top left, the value centred under it (with a unit,
+    /// sat 16 px off the bottom).
+    private func valueTile(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat,
+                           label text: String, value: String, unit: String? = nil,
+                           inverted: Bool = false, k: CGFloat) -> some View {
+        let fg: Color = inverted ? panelPaper : .black
+        let px: CGFloat = h >= 150 ? 72 : 48
+        let base = unit != nil ? y + h - 16 : ((y + 35 + y + h) / 2 + px / 2).rounded(.down)
+        let uw = unit.map { PanelFont.arialL.width($0) + 8 } ?? 0
+        let vw = PanelFont.digits(px).width(value)
+        let vx = x + (w - vw - uw) / 2
+        return ZStack(alignment: .topLeading) {
+            panelRect(x, y, w, h, k: k, line: 2, fill: inverted ? .black : .clear)
+            tileLabel(text, x, y, color: fg, k)
+            PanelText(text: value, font: .digits(px), x: vx, baseline: base, color: fg, k: k)
+            if let unit {
+                PanelText(text: unit, font: .arialL, x: vx + vw + 8, baseline: base - 6, color: fg, k: k)
+            }
+        }
+    }
+
+    /// segFmtTime: M:SS under the hour, H:MM:SS over.
+    static func timeText(_ ms: UInt32) -> String {
+        let s = Int(ms / 1000)
+        return s >= 3600 ? String(format: "%d:%02d:%02d", s / 3600, s / 60 % 60, s % 60)
+                         : String(format: "%d:%02d", s / 60, s % 60)
+    }
+
+    /// segFmtDelta: "+0:12" behind, "-0:08" ahead, "0:00" level.
+    static func deltaText(_ ms: Int32) -> String {
+        let sec = (Int(ms.magnitude) + 500) / 1000
+        let sign = sec == 0 ? "" : ms < 0 ? "-" : "+"
+        return sign + (sec >= 3600 ? String(format: "%d:%02d:%02d", sec / 3600, sec / 60 % 60, sec % 60)
+                                   : String(format: "%d:%02d", sec / 60, sec % 60))
     }
 }

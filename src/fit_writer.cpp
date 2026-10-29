@@ -34,6 +34,13 @@ constexpr uint8_t L_LAP      = 3;
 constexpr uint8_t L_SESSION  = 4;
 constexpr uint8_t L_ACTIVITY = 5;
 constexpr uint8_t L_DEVICE_INFO = 6;
+constexpr uint8_t L_FILLER = 7;
+
+// Padding for a ride cut short on a full card (FitWriter::salvage): a
+// manufacturer-specific message (0xFF00, the first of that range) whose one
+// byte-array field is all invalid (0xFF), which readers skip as unknown.
+constexpr uint16_t MSG_FILLER = 0xFF00;
+constexpr uint8_t  T_BYTE = 0x0D;
 
 // {field number, size, base type}
 const uint8_t FIELDS_FILE_ID[][3] = {
@@ -176,6 +183,16 @@ constexpr uint32_t PROLOGUE_BYTES = 12 +          // header
                                     (6 + 9 * 3);  // record definition
 constexpr uint32_t RECORD_BYTES = 25;
 
+// What finish() appends after the records: timer-stop event, lap definition +
+// message, session definition + message, activity definition + message. Keep
+// in sync with writeTail(). The CRC's 2 bytes come after it.
+constexpr uint32_t TAIL_BYTES = 8 + (6 + 8 * 3) + 25 + (6 + 16 * 3) + 38 +
+                                (6 + 7 * 3) + 18;
+// One filler: its definition (6 + one field) and a data message carrying 1 to
+// 255 bytes.
+constexpr uint32_t FILLER_MIN = (6 + 3) + 1 + 1;
+constexpr uint32_t FILLER_MAX = (6 + 3) + 1 + 255;
+
 // Byte offsets within a record message, mirroring writeRecord().
 constexpr uint32_t REC_OFF_TIMESTAMP = 1;
 constexpr uint32_t REC_OFF_DISTANCE  = 15;
@@ -183,8 +200,35 @@ constexpr uint32_t REC_OFF_DISTANCE  = 15;
 }  // namespace
 
 void FitWriter::writeBytes(const uint8_t* data, size_t len) {
-    file_.write(data, len);
+    if (failed_) return;
+    // A short write is a full card (or a card gone bad): stop here, counting
+    // nothing more, and let finish() cut the file back to what is whole.
+    if (file_.write(data, len) != len) {
+        failed_ = everFailed_ = true;
+        return;
+    }
     dataSize_ += len;
+}
+
+void FitWriter::track(fs::FS& fs, const char* path) {
+    fs_ = &fs;
+    snprintf(path_, sizeof(path_), "%s", path);
+    failed_ = everFailed_ = cut_ = false;
+}
+
+// `len` bytes of filler messages (0 or at least FILLER_MIN).
+void FitWriter::writeFiller(uint32_t len) {
+    while (len) {
+        uint32_t n = len < FILLER_MAX ? len : FILLER_MAX;
+        if (len - n && len - n < FILLER_MIN) n = len - FILLER_MIN;
+        const uint8_t field[1][3] = {{0, (uint8_t)(n - FILLER_MIN + 1), T_BYTE}};
+        writeDefinition(L_FILLER, MSG_FILLER, field, 1);
+        uint8_t buf[1 + 255];
+        memset(buf, 0xFF, sizeof(buf));
+        buf[0] = L_FILLER;
+        writeBytes(buf, n - (6 + 3));
+        len -= n;
+    }
 }
 
 void FitWriter::writeDefinition(uint8_t localType, uint16_t globalNum,
@@ -206,13 +250,15 @@ bool FitWriter::begin(fs::FS& fs, const char* path, time_t startUtc) {
     // re-reading the file, and a write-only handle reads back zero bytes.
     file_ = fs.open(path, "w+");
     if (!file_) return false;
+    track(fs, path);
     startUtc_ = startUtc;
     dataSize_ = 0;
+    records_ = 0;
 
     // Legacy 12-byte header; data_size patched in finish().
     uint8_t hdr[12] = {12, 0x10, 0, 0, 0, 0, 0, 0, '.', 'F', 'I', 'T'};
     put16(&hdr[2], 2132);  // profile version
-    file_.write(hdr, sizeof(hdr));
+    if (file_.write(hdr, sizeof(hdr)) != sizeof(hdr)) failed_ = everFailed_ = true;
 
     writeDefinition(L_FILE_ID, MSG_FILE_ID, FIELDS_FILE_ID, 5);
     uint8_t fid[14];
@@ -249,18 +295,18 @@ bool FitWriter::begin(fs::FS& fs, const char* path, time_t startUtc) {
 }
 
 void FitWriter::checkpoint() {
-    if (!file_) return;
+    if (!file_ || failed_) return;
     uint32_t pos = file_.position();     // current end of data
     file_.seek(4);                       // header data_size field
     uint8_t sz[4];
     put32(sz, dataSize_);
-    file_.write(sz, 4);
+    if (file_.write(sz, 4) != 4) failed_ = everFailed_ = true;
     file_.seek(pos);                     // resume appending records
     file_.flush();
 }
 
 void FitWriter::writeRecord(const Record& r) {
-    if (!file_) return;
+    if (!file_ || failed_) return;
     uint8_t buf[25];
     buf[0] = L_RECORD;
     put32(&buf[1], fitTime(r.utc));
@@ -290,6 +336,7 @@ void FitWriter::writeRecord(const Record& r) {
     buf[23] = r.heartRate;
     buf[24] = r.cadence;
     writeBytes(buf, sizeof(buf));
+    if (!failed_) ++records_;
 }
 
 // Open `path` with `mode`, validate the prologue, and replay the record
@@ -299,10 +346,13 @@ void FitWriter::writeRecord(const Record& r) {
 // moving bar and climb hysteresis mirror ride_recorder's accumulateStats).
 // Returns true with the handle open and `res.status` still INVALID when the
 // file is an unfinished ride with records to keep; returns false — handle
-// closed, status terminal — for everything else.
+// closed, status terminal — for everything else. A salvage passes
+// `maxRecords`: it walks no further than that, and its header is no evidence
+// of a finished ride either way.
 static uint16_t get16(const uint8_t* p) { return (uint16_t)(p[0] | (p[1] << 8)); }
 static bool scanUnfinished(fs::FS& fs, const char* path, const char* mode,
-                           File& f, FitWriter::RepairResult& res) {
+                           File& f, FitWriter::RepairResult& res,
+                           uint32_t maxRecords = UINT32_MAX) {
     using RR = FitWriter::RepairResult;
     f = fs.open(path, mode);
     if (!f) return false;                    // INVALID
@@ -323,7 +373,7 @@ static bool scanUnfinished(fs::FS& fs, const char* path, const char* mode,
     // else is a ride that was still being written when the device went down;
     // its data_size only reflects the last checkpoint, so don't trust it.
     uint32_t headerDataSize = get32(&prologue[4]);
-    if (fileSize == 12 + headerDataSize + 2) {
+    if (maxRecords == UINT32_MAX && fileSize == 12 + headerDataSize + 2) {
         f.close();
         res.status = RR::ALREADY_FINISHED;
         return false;
@@ -339,6 +389,7 @@ static bool scanUnfinished(fs::FS& fs, const char* path, const char* mode,
     // at PROLOGUE_BYTES and every record is consumed in order — per-record
     // seeks once made recovery slow enough to blow the interrupt watchdog.
     uint32_t records = (fileSize - PROLOGUE_BYTES) / RECORD_BYTES;
+    if (records > maxRecords) records = maxRecords;
     time_t   endUtc = res.startUtc;
     double   distanceM = 0;
     uint32_t good = 0;
@@ -393,10 +444,13 @@ FitWriter::RepairResult FitWriter::repair(fs::FS& fs, const char* path) {
     // record, so finish() appends the usual tail and fixes up size + CRC.
     FitWriter w;
     w.file_ = f;
+    f = File();   // one owner: finish() closes it, then reopens it to check
+    w.track(fs, path);
+    w.records_ = (uint32_t)res.records;
     w.startUtc_ = res.startUtc;
     w.dataSize_ = PROLOGUE_BYTES - 12 + (uint32_t)res.records * RECORD_BYTES;
     if (!w.file_.seek(PROLOGUE_BYTES + (uint32_t)res.records * RECORD_BYTES)) {
-        f.close();
+        w.file_.close();
         return res;  // INVALID
     }
     if (!w.finish(res.endUtc, res.distanceM, res.elapsedS, {})) return res;  // no roll-up on repair
@@ -426,6 +480,8 @@ bool FitWriter::resume(fs::FS& fs, const char* path, RepairResult* out) {
             // bytes can survive past the new CRC; the next boot's scan then
             // re-walks and re-finalizes the same records — idempotent.
             file_ = f;
+            track(fs, path);
+            records_ = (uint32_t)res.records;
             startUtc_ = res.startUtc;
             dataSize_ = PROLOGUE_BYTES - 12 + (uint32_t)res.records * RECORD_BYTES;
             res.status = RepairResult::UNFINISHED;
@@ -441,7 +497,77 @@ bool FitWriter::resume(fs::FS& fs, const char* path, RepairResult* out) {
 bool FitWriter::finish(time_t endUtc, double totalDistanceM, uint32_t timerS,
                        const Summary& sum) {
     if (!file_) return false;
+    cut_ = false;
+    if (!failed_) {
+        writeTail(endUtc, totalDistanceM, timerS, sum);
+        // The card's own word on the length: a write the buffers took but the
+        // card refused only shows here, after the close. (Longer than written
+        // is a resumed ride's stale tail, not a failure, but is cut the same.)
+        const uint32_t want = 12 + dataSize_ + 2, got = sizeOnCard();
+        if (!failed_ && got == want) return true;
+        if (got < want) everFailed_ = true;
+    } else {
+        file_.close();
+    }
+    return salvage();
+}
 
+uint32_t FitWriter::sizeOnCard() {
+    File f = fs_ ? fs_->open(path_, "r") : File();
+    uint32_t n = f ? f.size() : 0;
+    f.close();
+    return n;
+}
+
+// A ride whose writes ran out of card: keep the whole records that leave room
+// for the tail and CRC inside the bytes the file already has — a full card
+// has no other clusters to give — pad any gap left before the tail, and close
+// it as a valid ride with its totals replayed from what was kept.
+bool FitWriter::salvage() {
+    if (!fs_) return false;
+    const uint32_t size = sizeOnCard();
+    if (size < PROLOGUE_BYTES + TAIL_BYTES + 2) return false;
+    const uint32_t room = size - PROLOGUE_BYTES - TAIL_BYTES - 2;
+    uint32_t keep = room / RECORD_BYTES;
+    const uint32_t gap = room % RECORD_BYTES;
+    if (gap && gap < FILLER_MIN) {   // too small to pad: give up one more record
+        if (!keep) return false;
+        --keep;
+    }
+
+    RepairResult res;
+    File f;
+    if (!scanUnfinished(*fs_, path_, "r+", f, res, keep)) return false;
+    const uint32_t end = PROLOGUE_BYTES + (uint32_t)res.records * RECORD_BYTES;
+    if (!f.seek(end)) {
+        f.close();
+        return false;
+    }
+    file_ = f;
+    f = File();   // one owner, as in repair()
+    failed_ = false;
+    startUtc_ = res.startUtc;
+    dataSize_ = end - 12;
+    writeFiller(size - end - TAIL_BYTES - 2);
+
+    Summary sum = {};
+    sum.movingS = res.movingS;
+    sum.avgSpeedKmh = res.movingS ? (float)(res.distanceM / 1000.0 / (res.movingS / 3600.0)) : 0;
+    sum.avgPowerW = res.powerCount ? (uint16_t)(res.powerSum / res.powerCount) : 0;
+    sum.avgHrBpm = res.hrCount ? (uint8_t)(res.hrSum / res.hrCount) : 0;
+    sum.ascentM = (float)res.climbM;
+    // Records are 1 Hz while the timer runs: their count is the timer.
+    writeTail(res.endUtc, res.distanceM, (uint32_t)res.records, sum);
+    if (failed_ || sizeOnCard() != size) {
+        failed_ = everFailed_ = true;
+        return false;
+    }
+    cut_ = (uint32_t)res.records < records_;
+    return true;
+}
+
+void FitWriter::writeTail(time_t endUtc, double totalDistanceM, uint32_t timerS,
+                          const Summary& sum) {
     uint32_t ts = fitTime(endUtc);
     uint32_t start = fitTime(startUtc_);
     uint32_t elapsedMs = (ts - start) * 1000;
@@ -511,7 +637,7 @@ bool FitWriter::finish(time_t endUtc, double totalDistanceM, uint32_t timerS,
     file_.seek(4);
     uint8_t sz[4];
     put32(sz, dataSize_);
-    file_.write(sz, 4);
+    if (file_.write(sz, 4) != 4) failed_ = everFailed_ = true;
     file_.flush();
 
     file_.seek(0);
@@ -520,14 +646,17 @@ bool FitWriter::finish(time_t endUtc, double totalDistanceM, uint32_t timerS,
     // read() returns int and gives -1 on error; a size_t here would wrap to a
     // huge value and spin forever (the boot-time recovery hit this and hung the
     // whole device, so the SD never got mounted).
+    // Only up to the end of the data: a salvaged file already runs on past it,
+    // over the bytes the CRC is about to take.
     int n;
-    while ((n = file_.read(chunk, sizeof(chunk))) > 0) {
+    uint32_t left = 12 + dataSize_;
+    while (left && (n = file_.read(chunk, left < sizeof(chunk) ? left : sizeof(chunk))) > 0) {
         for (int i = 0; i < n; ++i) crc = crc16(crc, chunk[i]);
+        left -= (uint32_t)n;
     }
     file_.seek(12 + dataSize_);
     uint8_t crcBuf[2];
     put16(crcBuf, crc);
-    file_.write(crcBuf, 2);
+    if (file_.write(crcBuf, 2) != 2) failed_ = everFailed_ = true;
     file_.close();
-    return true;
 }

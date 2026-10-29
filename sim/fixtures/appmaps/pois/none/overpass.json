@@ -1,0 +1,9 @@
+{
+ "version": 0.6,
+ "generator": "Overpass API (sim fixture, build_poi_fixture.py)",
+ "osm3s": {
+  "timestamp_osm_base": "2026-10-08T20:21:06Z",
+  "copyright": "Made-up POIs for the OpenTrailPaper sim tests."
+ },
+ "elements": []
+}

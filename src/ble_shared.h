@@ -101,5 +101,7 @@ constexpr uint8_t LIVE_CHANGED_STOPWATCH = 0x02;   // run state, laps, reset
 uint8_t takeLiveViewChanges();
 // Stopwatch button from the app (ble_server::LiveStopwatchOp), run on the UI task.
 void queueStopwatch(uint8_t op);
+// The app showed another page (link ShowPage); the UI task takes it.
+void queueShowPage(uint32_t page);
 
 }  // namespace ble_shared

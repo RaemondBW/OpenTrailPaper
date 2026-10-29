@@ -3,21 +3,13 @@ package com.raemond.opentrailpaper.ble
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Application
-import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
-import android.bluetooth.BluetoothGattCallback
 import android.bluetooth.BluetoothGattCharacteristic
-import android.bluetooth.BluetoothManager
+import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothProfile
-import android.bluetooth.le.ScanCallback
-import android.bluetooth.le.ScanFilter
-import android.bluetooth.le.ScanResult
-import android.bluetooth.le.ScanSettings
-import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.location.Location
 import android.location.LocationListener
@@ -26,7 +18,6 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.os.ParcelUuid
 import android.os.SystemClock
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -48,6 +39,7 @@ import com.raemond.opentrailpaper.data.SettingField
 import com.raemond.opentrailpaper.data.SettingsMerge
 import com.raemond.opentrailpaper.data.FirmwareRelease
 import com.raemond.opentrailpaper.data.Prefs
+import com.raemond.opentrailpaper.data.RideNames
 import com.raemond.opentrailpaper.transfer.TransferCenter
 import com.raemond.opentrailpaper.BuildConfig
 import com.raemond.opentrailpaper.link.Cancellable
@@ -62,6 +54,8 @@ import com.raemond.opentrailpaper.link.proto.DeviceMsg
 import com.raemond.opentrailpaper.link.proto.Empty
 import com.raemond.opentrailpaper.link.proto.Feature
 import com.raemond.opentrailpaper.link.proto.GetMapLayers
+import com.raemond.opentrailpaper.link.proto.GetSegments
+import com.raemond.opentrailpaper.link.proto.SegmentsInfo
 import com.raemond.opentrailpaper.link.proto.Hello
 import com.raemond.opentrailpaper.link.proto.ListKind
 import com.raemond.opentrailpaper.link.proto.ListRequest
@@ -90,6 +84,7 @@ import com.raemond.opentrailpaper.link.proto.RouteManeuvers
 import com.raemond.opentrailpaper.link.proto.SensorCommand
 import com.raemond.opentrailpaper.link.proto.SensorOp
 import com.raemond.opentrailpaper.link.proto.Source
+import com.raemond.opentrailpaper.link.proto.ShowPage
 import com.raemond.opentrailpaper.link.proto.StopwatchCommand
 import com.raemond.opentrailpaper.link.proto.StopwatchOp
 import com.raemond.opentrailpaper.link.proto.Target
@@ -99,6 +94,7 @@ import com.raemond.opentrailpaper.link.proto.WorkoutCommand
 import com.raemond.opentrailpaper.link.proto.WorkoutOp
 import com.raemond.opentrailpaper.link.proto.DashConfig as PDashConfig
 import com.raemond.opentrailpaper.link.proto.Maneuver as PManeuver
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -109,6 +105,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.security.MessageDigest
@@ -130,7 +127,11 @@ import kotlin.math.roundToLong
  * serialized rather than fired freely as they are on iOS.
  */
 @SuppressLint("MissingPermission")
-class BleManager(private val app: Application) {
+class BleManager(
+    private val app: Application,
+    /** Android's stack; the firmware simulator's in debug builds and tests (Radio.kt). */
+    private val radio: Radio = AndroidRadio(app),
+) {
 
     /**
      * CONNECTED means the device ADMITTED us: the link is authenticated and the
@@ -566,12 +567,8 @@ class BleManager(private val app: Application) {
     private val main = Handler(Looper.getMainLooper())
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
-    private val btManager =
-        app.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager?
-    private val adapter: BluetoothAdapter? get() = btManager?.adapter
-
-    private var gatt: BluetoothGatt? = null
-    private var device: BluetoothDevice? = null
+    private var gatt: RadioGatt? = null
+    private var device: RadioDevice? = null
     private val queue = GattQueue()
 
     // MARK: phone link (docs/ble-link.md)
@@ -744,15 +741,22 @@ class BleManager(private val app: Application) {
         app.getSystemService(Context.LOCATION_SERVICE) as LocationManager?
     private var wantsAiding = false
     private var sawStatusSinceConnect = false
+    /// The link came up this attempt (STATE_CONNECTED). A connect that never
+    /// got that far never reached the device, so it is no refusal.
+    private var linkUpSinceConnect = false
     private var fixStableJob: Job? = null
 
     /** Most recent phone fix, so the map screens can frame the user. */
     var lastLocation by mutableStateOf<Location?>(null); private set
 
-    private val adapterReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action != BluetoothAdapter.ACTION_STATE_CHANGED) return
-            main.post { onAdapterStateChanged() }
+    /** Adapter on/off and bond changes (Android: the two broadcasts), on main. */
+    private val radioListener = object : Radio.Listener {
+        override fun onAdapterStateChanged() {
+            main.post { this@BleManager.onAdapterStateChanged() }
+        }
+
+        override fun onBondStateChanged(address: String?, bond: Int) {
+            main.post { this@BleManager.onBondStateChanged(address, bond) }
         }
     }
 
@@ -805,14 +809,14 @@ class BleManager(private val app: Application) {
      * has forgotten the device but Android may still hold the bond, and then
      * the device lets us straight in.
      */
-    private val pairedElsewhereSeen = LinkedHashMap<String, BluetoothDevice>()
+    private val pairedElsewhereSeen = LinkedHashMap<String, RadioDevice>()
     private var fallbackJob: Job? = null
     private var onFallbackAttempt = false
     private var forgetting = false
     /** Connections in a row that ended before the device sent any status. */
     private var barrenConnects = 0
     /** Waiting for Android to finish bonding before the GATT session starts. */
-    private var awaitingBond: BluetoothGatt? = null
+    private var awaitingBond: RadioGatt? = null
 
     // Admission bookkeeping, per link. The firmware lets nothing through
     // without an authenticated (passkey, Secure Connections) bond, and drops
@@ -841,27 +845,13 @@ class BleManager(private val app: Application) {
     /** Last advertised paired flag per address (null: firmware without it). */
     private val advertisedPaired = HashMap<String, Boolean?>()
 
-    private val bondReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action != BluetoothDevice.ACTION_BOND_STATE_CHANGED) return
-            val dev: BluetoothDevice? = if (Build.VERSION.SDK_INT >= 33) {
-                intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
-            } else {
-                @Suppress("DEPRECATION")
-                intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
-            }
-            val bond = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.ERROR)
-            main.post { onBondStateChanged(dev?.address, bond) }
-        }
-    }
-
-    private val scanCallback = object : ScanCallback() {
-        override fun onScanResult(callbackType: Int, result: ScanResult) {
-            val pairedFlag = advertisesPaired(result.scanRecord?.getManufacturerSpecificData(0xFFFF))
+    private val scanCallback = object : Radio.ScanListener {
+        override fun onResult(device: RadioDevice, mfgFFFF: ByteArray?) {
+            val pairedFlag = advertisesPaired(mfgFFFF)
             main.post {
-                advertisedPaired[result.device.address] = pairedFlag
+                advertisedPaired[device.address] = pairedFlag
                 if (gatt != null) return@post
-                val dev = result.device
+                val dev = device
                 val saved = pairedDeviceAddress
                 if (refusedAddress != null && dev.address.equals(refusedAddress, ignoreCase = true)) {
                     if (System.currentTimeMillis() - lastRefusedScanLog > 5000) {
@@ -910,7 +900,7 @@ class BleManager(private val app: Application) {
             }
         }
 
-        override fun onScanFailed(errorCode: Int) {
+        override fun onFailed(errorCode: Int) {
             main.post {
                 scanning = false
                 state = ConnState.IDLE
@@ -920,7 +910,7 @@ class BleManager(private val app: Application) {
 
 
     private fun onAdapterStateChanged() {
-        val on = adapter?.isEnabled == true
+        val on = radio.isEnabled
         bluetoothPoweredOn = on
         bluetoothReady = on && bluetoothPermission.isGranted
         if (on) {
@@ -969,10 +959,10 @@ class BleManager(private val app: Application) {
             // refused without location — so that IS the Bluetooth permission
             // here, and reporting it as granted would leave a scan that silently
             // returns nothing with nothing on screen to explain it.
-            if (adapter == null) PermissionState.UNAVAILABLE else locationPermission
+            if (!radio.available) PermissionState.UNAVAILABLE else locationPermission
         }
 
-        bluetoothPoweredOn = adapter?.isEnabled == true
+        bluetoothPoweredOn = radio.isEnabled
         bluetoothReady = bluetoothPoweredOn && bluetoothPermission.isGranted
         // Permission granted while we were away: bring the radio up now, so the
         // device connects without the user having to hunt for a button.
@@ -981,42 +971,36 @@ class BleManager(private val app: Application) {
 
     /** Onboarding / Settings: bring Bluetooth up once it's allowed. */
     fun startCentral() {
-        if (!bluetoothPermission.isGranted || adapter?.isEnabled != true) return
+        if (!bluetoothPermission.isGranted || !radio.isEnabled) return
         if (gatt == null && !scanning) startScan()
     }
 
     // MARK: scanning + connection
 
     fun startScan() {
-        val scanner = adapter?.bluetoothLeScanner ?: return
-        if (!bluetoothPermission.isGranted || adapter?.isEnabled != true) return
+        if (!radio.canScan) return
+        if (!bluetoothPermission.isGranted || !radio.isEnabled) return
         if (scanning || gatt != null) return
         // Our device, known: no scan. autoConnect has no timeout and fires the
         // moment it is in range — the same path every reconnect takes. Not
         // while it is refusing us: scan instead, and watch its advertisement
         // for the paired flag to clear (see scanCallback).
         pairedDeviceAddress?.takeIf { !it.equals(refusedAddress, ignoreCase = true) }?.let { saved ->
-            val dev = runCatching { adapter?.getRemoteDevice(saved) }.getOrNull()
+            val dev = radio.remoteDevice(saved)
             // Only while Android still holds the bond: without it, connecting
             // means createBond, and the advertisement (scan below) has to say
             // first whether the device would have us.
             if (dev != null && dev.bondState == BluetoothDevice.BOND_BONDED) {
                 device = dev
                 state = ConnState.CONNECTING
-                gatt = dev.connectGatt(app, true, gattCallback, BluetoothDevice.TRANSPORT_LE)
+                gatt = dev.connectGatt(true, gattCallback)
                 queue.attach(gatt)
                 return
             }
         }
         scanning = true
         state = ConnState.SCANNING
-        scanner.startScan(
-            listOf(ScanFilter.Builder().setServiceUuid(ParcelUuid(BikeUuid.service)).build()),
-            ScanSettings.Builder()
-                .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
-                .build(),
-            scanCallback,
-        )
+        radio.startScan(BikeUuid.service, scanCallback)
         if (pairedDeviceAddress == null) armPairedFallback()
     }
 
@@ -1114,7 +1098,7 @@ class BleManager(private val app: Application) {
             // app scanning past its own device until a restart (2026-10-11).
             // The scan adopts it only once it advertises unpaired; still
             // paired, it gets the paired-elsewhere path and its dialog.
-            runCatching { adapter?.getRemoteDevice(addr) }.getOrNull()?.let(::removeBond)
+            radio.remoteDevice(addr)?.let(::removeBond)
         }
         if (gatt != null) {
             forgetting = true
@@ -1154,7 +1138,7 @@ class BleManager(private val app: Application) {
     }
 
     /** MTU first, then discovery — every chunk size derives from the MTU. */
-    private fun startGattSession(g: BluetoothGatt) {
+    private fun startGattSession(g: RadioGatt) {
         state = ConnState.CONNECTING
         // A link that never gets admitted (keys the device doesn't hold, a
         // read that never answers) must not sit on "Connecting…" forever, nor
@@ -1173,16 +1157,16 @@ class BleManager(private val app: Application) {
     private fun stopScan() {
         if (!scanning) return
         scanning = false
-        runCatching { adapter?.bluetoothLeScanner?.stopScan(scanCallback) }
+        runCatching { radio.stopScan(scanCallback) }
     }
 
-    private fun connect(target: BluetoothDevice) {
+    private fun connect(target: RadioDevice) {
         if (target.address.equals(refusedAddress, ignoreCase = true)) return
         device = target
         // Settings cache and offline edits are keyed by this identity.
         setCurrentDevice(target.address)
         state = ConnState.CONNECTING
-        gatt = target.connectGatt(app, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+        gatt = target.connectGatt(false, gattCallback)
         queue.attach(gatt)
     }
 
@@ -1190,11 +1174,12 @@ class BleManager(private val app: Application) {
         gatt?.disconnect()
     }
 
-    private val gattCallback = object : BluetoothGattCallback() {
-        override fun onConnectionStateChange(g: BluetoothGatt, statusCode: Int, newState: Int) {
+    private val gattCallback = object : RadioGattCallback {
+        override fun onConnectionStateChange(g: RadioGatt, statusCode: Int, newState: Int) {
             main.post {
                 when (newState) {
                     BluetoothProfile.STATE_CONNECTED -> {
+                        linkUpSinceConnect = true
                         // Fixed pairing: every characteristic needs an
                         // encrypted link, so bond BEFORE touching any. Left to
                         // the first read, Android's retry-after-pairing is
@@ -1221,19 +1206,19 @@ class BleManager(private val app: Application) {
             }
         }
 
-        override fun onMtuChanged(g: BluetoothGatt, newMtu: Int, statusCode: Int) {
+        override fun onMtuChanged(g: RadioGatt, newMtu: Int, statusCode: Int) {
             main.post {
                 if (statusCode == BluetoothGatt.GATT_SUCCESS) mtu = newMtu
                 queue.complete(statusCode == BluetoothGatt.GATT_SUCCESS)
             }
         }
 
-        override fun onServicesDiscovered(g: BluetoothGatt, statusCode: Int) {
+        override fun onServicesDiscovered(g: RadioGatt, statusCode: Int) {
             main.post { bindCharacteristics(g) }
         }
 
         override fun onCharacteristicWrite(
-            g: BluetoothGatt,
+            g: RadioGatt,
             ch: BluetoothGattCharacteristic,
             statusCode: Int,
         ) {
@@ -1244,8 +1229,8 @@ class BleManager(private val app: Application) {
         }
 
         override fun onDescriptorWrite(
-            g: BluetoothGatt,
-            d: android.bluetooth.BluetoothGattDescriptor,
+            g: RadioGatt,
+            d: BluetoothGattDescriptor,
             statusCode: Int,
         ) {
             main.post {
@@ -1257,28 +1242,15 @@ class BleManager(private val app: Application) {
             }
         }
 
-        @Suppress("DEPRECATION")
+        // Both of Android's read callbacks (pre- and post-API 33) land here,
+        // the value already copied off the binder thread (Radio.kt).
         override fun onCharacteristicRead(
-            g: BluetoothGatt,
-            ch: BluetoothGattCharacteristic,
-            statusCode: Int,
-        ) {
-            val value = ch.value?.copyOf() ?: ByteArray(0)
-            main.post {
-                noteAuthFailure(statusCode)
-                queue.complete(statusCode == BluetoothGatt.GATT_SUCCESS)
-                if (statusCode == BluetoothGatt.GATT_SUCCESS) onProtectedRead(ch.uuid)
-                if (statusCode == BluetoothGatt.GATT_SUCCESS) dispatch(ch.uuid, value)
-            }
-        }
-
-        override fun onCharacteristicRead(
-            g: BluetoothGatt,
+            g: RadioGatt,
             ch: BluetoothGattCharacteristic,
             value: ByteArray,
             statusCode: Int,
         ) {
-            val copy = value.copyOf()
+            val copy = value
             main.post {
                 noteAuthFailure(statusCode)
                 queue.complete(statusCode == BluetoothGatt.GATT_SUCCESS)
@@ -1287,18 +1259,12 @@ class BleManager(private val app: Application) {
             }
         }
 
-        @Suppress("DEPRECATION")
-        override fun onCharacteristicChanged(g: BluetoothGatt, ch: BluetoothGattCharacteristic) {
-            val value = ch.value?.copyOf() ?: return
-            main.post { dispatch(ch.uuid, value) }
-        }
-
         override fun onCharacteristicChanged(
-            g: BluetoothGatt,
+            g: RadioGatt,
             ch: BluetoothGattCharacteristic,
             value: ByteArray,
         ) {
-            val copy = value.copyOf()
+            val copy = value
             main.post { dispatch(ch.uuid, copy) }
         }
     }
@@ -1317,21 +1283,14 @@ class BleManager(private val app: Application) {
         loadMapLayersState()   // last device's map layers, for the Maps screen while disconnected
         poiSentAt = Prefs.poiSentAt
         refreshPermissions()
-        app.registerReceiver(
-            adapterReceiver,
-            IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED),
-        )
-        app.registerReceiver(
-            bondReceiver,
-            IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED),
-        )
+        radio.setListener(radioListener)
         // Returning users get Bluetooth up immediately so the device auto-
         // connects. First-run users start it from the tutorial's Bluetooth step,
         // so the system prompt lands on that screen.
         if (Prefs.onboarded) startCentral()
     }
 
-    private fun bindCharacteristics(g: BluetoothGatt) {
+    private fun bindCharacteristics(g: RadioGatt) {
         val service = g.getService(BikeUuid.service) ?: run {
             state = ConnState.IDLE
             return
@@ -1433,7 +1392,14 @@ class BleManager(private val app: Application) {
             BikeUuid.mesh -> refreshMesh()
             // Map layers: firmware without them never answers, which is what
             // keeps the app's switches hidden for it.
-            BikeUuid.map -> requestMapLayers()
+            BikeUuid.map -> {
+                requestMapLayers()
+                // The cached tile list is one global pref, not per device or
+                // card, and was only re-asked when Maps opened: confirm it on
+                // every connect, so a fresh or swapped card isn't shown as
+                // already holding the old one's hexes.
+                refreshDeviceTiles()
+            }
             // Every workout reply is a notification too: ask only once the
             // CCCD write has landed, so the Workouts screen opens populated.
             BikeUuid.workout -> refreshWorkouts()
@@ -1485,74 +1451,11 @@ class BleManager(private val app: Application) {
     }
 
     private fun handleDisconnect(statusCode: Int) {
-        // The link's transfers end with this connection. Their handles are
-        // dropped first, so the failure callbacks the reset fires are ignored
-        // and the legacy-shaped cleanup below decides what the rider sees.
-        otaUpload = null; mapUpload = null; tileUpload = null; routeUpload = null
-        artUpload = null; workoutUpload = null; workoutFetch = null; dlHandle = null
-        link.reset("disconnected")
-        linkMode = LinkMode.NONE
-        linkReady = false
-        linkFeatures = emptySet()
-        deviceHello = null
-        deviceMediaTrack = null
-        liveFrameFlow.value = null
-        linkRx = null; linkTx = null
-        lastLinkMediaMeta = null
-        settingsChar = null; statusChar = null; routeChar = null; ridesChar = null
-        sensorsChar = null; mapChar = null; otaChar = null; dashChar = null
-        meshChar = null; mediaChar = null; workoutChar = null
-        // Pending edits stay cached; the next connect reads and merges.
-        settingsSeenThisLink = false; settingsWriteInFlight = null
-        settingsWriteFailedThisLink = false
-        dashSeenThisLink = false; dashWriteInFlight = null; dashWriteFailedThisLink = false
-        dashWaitingForDevice = false
-        mediaToneArt = false   // the next device may be older firmware
-        lastMediaMeta = null
-        updateMediaRemote()    // no link, no media observers
-        stopLocationStream()   // no device to send the phone's position to
-
-        // If we drop mid-update: after the data is sent + commit requested, a
-        // disconnect is EXPECTED (the device reboots into the new firmware) —
-        // show "installing" and let the reconnect confirm the version. Dropping
-        // mid-transfer means nothing was flashed.
-        if (otaInProgress) {
-            keepAwake(false)
-            if (otaCommitSent) {
-                otaPhase = OtaPhase.INSTALLING
-                otaMessage = "Installing — the device is restarting…"
-                armOtaWatchdog(150, INSTALL_WATCHDOG_MSG)
-            } else {
-                otaFinish(
-                    OtaPhase.FAILED,
-                    "Connection dropped mid-transfer. The device is unchanged — try again.",
-                )
-            }
-        }
-        if (mapUploading && currentTileId == null) {
-            mapUploading = false
-            keepAwake(false)
-            mapMessage = "Upload interrupted — try again"
-        }
-        TransferCenter.finish(MAP_TRANSFER, success = false, message = "Connection dropped")
-        TransferCenter.finish(ROUTE_TRANSFER, success = false, message = "Connection dropped")
-        if (tilesUploading) {
-            tileQueue.clear()
-            finishTileJob("Interrupted — reconnect to resume")
-        }
-        deviceSupportsPois = false      // re-learnt from the next 0x08 answer
-        deviceKeepsVersions = false     // and this from the next versioned list
-
-        status = DeviceStatus()
         val admitted = sawStatusSinceConnect || admittedSinceConnect
-        sawStatusSinceConnect = false
-        admittedSinceConnect = false
-        admissionWatchdog?.cancel(); admissionWatchdog = null
+        val linkWasUp = linkUpSinceConnect
         val authFailed = authFailedSinceConnect
         val bondFailed = bondFailedSinceConnect
-        authFailedSinceConnect = false
-        bondFailedSinceConnect = false
-        awaitingBond = null
+        endConnection()
         // Refused: the firmware drops a phone it won't have with HCI 0x05
         // (Authentication Failure), before any pairing dialog; 0x3D (MIC
         // failure) is keys that don't match the device's. A protected op
@@ -1580,26 +1483,18 @@ class BleManager(private val app: Application) {
         // us before any status (the firmware pushes nothing until the link
         // proves the bond) was unpaired on the device, or now belongs to
         // another phone. Three in a row, so a reboot or range drop doesn't
-        // cry wolf.
-        if (!admitted) {
+        // cry wolf. A connect that never came up (133, a timeout, failed to
+        // establish) never reached the device: radio, not a refusal — a link
+        // lost with the app in the background counted three of those and
+        // told the rider the device wasn't accepting the phone (2026-10-26).
+        if (!admitted && linkWasUp) {
             barrenConnects += 1
             if (barrenConnects == 3 && !onFallbackAttempt && pairedDeviceAddress != null) {
                 pairingIssue = PairingIssue.NOT_RECOGNISED
             }
-        } else {
+        } else if (admitted) {
             barrenConnects = 0
         }
-        // Keep `rides` (the last-known list): the Rides tab keeps showing it
-        // while disconnected and through the re-check on reconnect.
-        ridesBuilding = mutableListOf(); loadingRides = false; ridesCheckedThisLink = false
-        // Nothing queued can proceed without a link, and a half-received file
-        // must not be mistaken for a complete one on reconnect.
-        if (dlActive != null || dlQueue.isNotEmpty()) {
-            cancelAllTransfers("Connection dropped mid-download — try again")
-        }
-        deviceRoutes = emptyList(); loadingRoutes = false
-        lastUploadProgress = null; routeSent = false; routeReceived = false
-        sensors = emptyList(); scanningSensors = false
 
         // Not ours to reconnect to: forgetDevice() dropped it, or it was the
         // one-off try at a paired-elsewhere device and it turned us away.
@@ -1645,6 +1540,99 @@ class BleManager(private val app: Application) {
         }
     }
 
+    /**
+     * Everything this connection set up ends with it: the link session, the
+     * characteristics, the admission bookkeeping, transfers. Run when the
+     * link's disconnect is reported, and by [teardownConnection] when a gatt
+     * is closed with its link still up (Bluetooth switched off: Android
+     * reports the adapter first, and a closed gatt reports nothing more) —
+     * missed there, the next link found admittedSinceConnect still set and
+     * never left "Connecting…".
+     */
+    private fun endConnection() {
+        // The link's transfers end with this connection. Their handles are
+        // dropped first, so the failure callbacks the reset fires are ignored
+        // and the legacy-shaped cleanup below decides what the rider sees.
+        otaUpload = null; mapUpload = null; tileUpload = null; routeUpload = null
+        artUpload = null; workoutUpload = null; workoutFetch = null; dlHandle = null
+        link.reset("disconnected")
+        linkMode = LinkMode.NONE
+        linkReady = false
+        linkFeatures = emptySet()
+        deviceHello = null
+        deviceMediaTrack = null
+        liveFrameFlow.value = null
+        linkRx = null; linkTx = null
+        lastLinkMediaMeta = null
+        settingsChar = null; statusChar = null; routeChar = null; ridesChar = null
+        sensorsChar = null; mapChar = null; otaChar = null; dashChar = null
+        meshChar = null; mediaChar = null; workoutChar = null
+        // The next device may be another one, or older firmware.
+        segmentsSupported = null; deviceSegmentCount = null; deviceSegmentVersion = 1
+        segmentAck?.complete(false); segmentAck = null
+        // Pending edits stay cached; the next connect reads and merges.
+        settingsSeenThisLink = false; settingsWriteInFlight = null
+        settingsWriteFailedThisLink = false
+        dashSeenThisLink = false; dashWriteInFlight = null; dashWriteFailedThisLink = false
+        dashWaitingForDevice = false
+        mediaToneArt = false   // the next device may be older firmware
+        lastMediaMeta = null
+        updateMediaRemote()    // no link, no media observers
+        stopLocationStream()   // no device to send the phone's position to
+
+        // If we drop mid-update: after the data is sent + commit requested, a
+        // disconnect is EXPECTED (the device reboots into the new firmware) —
+        // show "installing" and let the reconnect confirm the version. Dropping
+        // mid-transfer means nothing was flashed.
+        if (otaInProgress) {
+            keepAwake(false)
+            if (otaCommitSent) {
+                otaPhase = OtaPhase.INSTALLING
+                otaMessage = "Installing — the device is restarting…"
+                armOtaWatchdog(150, INSTALL_WATCHDOG_MSG)
+            } else {
+                otaFinish(
+                    OtaPhase.FAILED,
+                    "Connection dropped mid-transfer. The device is unchanged — try again.",
+                )
+            }
+        }
+        if (mapUploading && currentTileId == null) {
+            mapUploading = false
+            keepAwake(false)
+            mapMessage = "Upload interrupted — try again"
+        }
+        TransferCenter.finish(MAP_TRANSFER, success = false, message = "Connection dropped")
+        TransferCenter.finish(ROUTE_TRANSFER, success = false, message = "Connection dropped")
+        if (tilesUploading) {
+            tileQueue.clear()
+            finishTileJob("Interrupted — reconnect to resume")
+        }
+        deviceSupportsPois = false      // re-learnt from the next 0x08 answer
+        deviceKeepsVersions = false     // and this from the next versioned list
+
+        status = DeviceStatus()
+        linkUpSinceConnect = false
+        sawStatusSinceConnect = false
+        admittedSinceConnect = false
+        admissionWatchdog?.cancel(); admissionWatchdog = null
+        authFailedSinceConnect = false
+        bondFailedSinceConnect = false
+        awaitingBond = null
+        // Keep `rides` (the last-known list): the Rides tab keeps showing it
+        // while disconnected and through the re-check on reconnect.
+        ridesBuilding = mutableListOf(); loadingRides = false; ridesCheckedThisLink = false
+        // Nothing queued can proceed without a link, and a half-received file
+        // must not be mistaken for a complete one on reconnect.
+        if (dlActive != null || dlQueue.isNotEmpty()) {
+            cancelAllTransfers("Connection dropped mid-download — try again")
+        }
+        deviceRoutes = emptyList(); loadingRoutes = false
+        lastUploadProgress = null; routeSent = false; routeReceived = false
+        sensors = emptyList(); scanningSensors = false
+        mtu = 23   // the next link negotiates its own
+    }
+
     /** Manufacturer data after the 0xFFFF company id: [0x4F][flags], bit0 =
      *  paired. null for firmware from before fixed pairing (no flag at all). */
     private fun advertisesPaired(data: ByteArray?): Boolean? {
@@ -1652,19 +1640,21 @@ class BleManager(private val app: Application) {
         return (data[1].toInt() and 0x01) != 0
     }
 
-    /** BluetoothDevice.removeBond() is hidden API but has been stable since
-     *  API 19 and is what every BLE accessory app uses; best effort. */
-    private fun removeBond(dev: BluetoothDevice) {
-        runCatching { dev.javaClass.getMethod("removeBond").invoke(dev) }
+    /** Best effort (hidden API on Android; see AndroidRadio). */
+    private fun removeBond(dev: RadioDevice) {
+        runCatching { dev.removeBond() }
     }
 
     private fun teardownConnection(reconnect: Boolean) {
+        // A gatt closed with its link up never reports the disconnect
+        // (Bluetooth off, forgetDevice mid-pairing): end the connection here.
+        if (linkUpSinceConnect) endConnection()
         queue.clear()
         queue.attach(null)
         gatt?.close()
         gatt = null
-        if (!reconnect || adapter?.isEnabled != true || !bluetoothPermission.isGranted) {
-            state = if (adapter?.isEnabled == true) ConnState.IDLE else ConnState.POWERED_OFF
+        if (!reconnect || !radio.isEnabled || !bluetoothPermission.isGranted) {
+            state = if (radio.isEnabled) ConnState.IDLE else ConnState.POWERED_OFF
             return
         }
         // Hand the device straight back to the stack instead of dropping it and
@@ -1677,7 +1667,7 @@ class BleManager(private val app: Application) {
         val known = device
         if (known != null) {
             state = ConnState.CONNECTING
-            gatt = known.connectGatt(app, true, gattCallback, BluetoothDevice.TRANSPORT_LE)
+            gatt = known.connectGatt(true, gattCallback)
             queue.attach(gatt)
         } else {
             startScan()
@@ -1893,7 +1883,14 @@ class BleManager(private val app: Application) {
         if (d.size < 10) return
         val flags = d[0].toInt() and 0xFF
         val power = le16(d, 4)
+        val sdBefore = status.sdCard
         status = DeviceStatus(
+            sdCard = when {
+                flags and 8 == 0 -> SdCardState.UNKNOWN
+                flags and 16 != 0 -> SdCardState.MISSING
+                flags and 32 != 0 -> SdCardState.UNREADABLE
+                else -> SdCardState.OK
+            },
             gpsFix = flags and 1 != 0,
             recording = flags and 2 != 0,
             hasRoute = flags and 4 != 0,
@@ -1904,8 +1901,20 @@ class BleManager(private val app: Application) {
             speedKmh = le16(d, 6) / 10.0,
             remainingKm = le16(d, 8) / 10.0,
         )
+        noteSdCard(sdBefore)
         syncLocationStreamToDeviceFix()
         updateBackgroundLocationMode()
+    }
+
+    /** After a status from either path: the card went, or came back. */
+    private fun noteSdCard(before: SdCardState) {
+        if (status.sdCard.isProblem) {
+            // Without a card the device has no tiles, whatever the cache says.
+            // Memory only: the card may well come back with them on it.
+            if (deviceTileIds.isNotEmpty()) deviceTileIds = emptySet()
+        } else if (status.sdCard == SdCardState.OK && before.isProblem) {
+            refreshDeviceTiles()   // a card went in: ask what is on THIS one
+        }
     }
 
     // MARK: dashboard layout
@@ -2083,6 +2092,12 @@ class BleManager(private val app: Application) {
     var mediaAccessGranted by mutableStateOf(false); private set
 
     fun mediaAccessIntent() = mediaRemote.accessSettingsIntent()
+
+    /** What this phone is playing, for the Ride tab's MUSIC page (null: nothing, or no music page). */
+    val phoneTrack: PhoneTrack? get() = mediaRemote.nowPlaying
+
+    /** The MUSIC page's buttons from the Ride tab: the same MediaCmd the device's own send. */
+    fun phoneMediaCommand(cmd: Int) = mediaRemote.handleCommand(cmd)
 
     /** Called on every editor resume: adopt the current grant and (re)arm the
      * observers, so granting takes effect the moment the rider comes back. */
@@ -2489,6 +2504,7 @@ class BleManager(private val app: Application) {
         publishQueue()
         cachedRideFile(name).delete()
         partialRideFile(name).delete()
+        RideNames.forget(name)
         if (linkReady) {
             if (has(Feature.FEATURE_RIDES)) deleteFile(ListKind.LIST_RIDES, name)
             return
@@ -2947,6 +2963,98 @@ class BleManager(private val app: Application) {
                 routeReceived = false
                 lastMessage = "Device couldn’t read the route — try sending again"
             }
+
+            0x25 -> {      // starred segments: [status][u16 count]
+                if (d.size < 4) return
+                val count = (d[2].toInt() and 0xFF) or ((d[3].toInt() and 0xFF) shl 8)
+                segmentsSupported = true
+                deviceSegmentCount = if (count == 0xFFFF) null else count
+                // The newest blob version the firmware reads; absent = 1 (no elevation).
+                deviceSegmentVersion = if (d.size >= 5) d[4].toInt() and 0xFF else 1
+                val status = d[1].toInt() and 0xFF
+                if (status != 0) segmentAck?.let { segmentAck = null; it.complete(status == 1) }
+            }
+        }
+    }
+
+    // MARK: starred segments (route characteristic, 0x09..0x0C)
+
+    /** Starred segments the device holds; null = it hasn't said (or has none yet). */
+    var deviceSegmentCount by mutableStateOf<Int?>(null); private set
+    /**
+     * Does the connected firmware take segments? null = not asked yet. Firmware
+     * before them never answers the query, which is how false is found.
+     */
+    var segmentsSupported by mutableStateOf<Boolean?>(null); private set
+    /** The newest segment blob version the device reads (2 = with elevation). */
+    var deviceSegmentVersion by mutableStateOf(1); private set
+    private var segmentAck: CompletableDeferred<Boolean>? = null
+
+    /** SegmentsInfo over the link: the answer to GetSegments, and pushed ahead of an upload's TransferDone. */
+    private fun onSegmentsInfo(g: SegmentsInfo) {
+        segmentsSupported = true
+        deviceSegmentCount = if (g.present) g.count else null
+        deviceSegmentVersion = maxOf(1, g.version)
+    }
+
+    /** Ask the device how many segments it has (GetSegments over the link, else [0x0C] -> [0x25][0][u16]). */
+    fun querySegments() {
+        if (linkReady) {
+            if (!has(Feature.FEATURE_SEGMENTS)) { segmentsSupported = false; return }
+            link.request(PhoneMsg.newBuilder().setGetSegments(GetSegments.getDefaultInstance())) { m ->
+                if (m.hasSegments()) onSegmentsInfo(m.segments)
+                true
+            }
+            return
+        }
+        val ch = routeChar ?: return
+        writeChar(ch, byteArrayOf(0x0C))
+        scope.launch {
+            delay(4000)
+            if (segmentsSupported == null && routeChar != null) segmentsSupported = false
+        }
+    }
+
+    /**
+     * Send the whole starred set ([com.raemond.opentrailpaper.data.StravaSegments.encode])
+     * and wait for the device to accept it. False when it refused, the link
+     * dropped, or no answer came within 30 s. Paced by [GattQueue] like routes.
+     */
+    suspend fun uploadSegments(blob: ByteArray): Boolean {
+        if (linkReady) {
+            // TARGET_SEGMENTS: the device pushes SegmentsInfo (the new count)
+            // just ahead of the TransferDone, PARSE_ERROR when it refused.
+            if (!has(Feature.FEATURE_SEGMENTS)) { segmentsSupported = false; return false }
+            val done = CompletableDeferred<Boolean>()
+            link.upload(
+                UploadBegin.newBuilder().setTarget(Target.TARGET_SEGMENTS).setName("starred"),
+                blob,
+                object : LinkClient.UploadListener {
+                    override fun onDone(code: ResultCode, detail: String) {
+                        if (code != ResultCode.RESULT_OK) android.util.Log.i(LINK_TAG, "segments upload: $code $detail")
+                        done.complete(code == ResultCode.RESULT_OK)
+                    }
+                },
+            )
+            return done.await()
+        }
+        val ch = routeChar ?: return false
+        val maxLen = maxPayload - 1
+        val packets = mutableListOf(byteArrayOf(0x09))
+        var i = 0
+        while (i < blob.size) {
+            val end = min(i + maxLen, blob.size)
+            packets += byteArrayOf(0x0A) + blob.copyOfRange(i, end)
+            i = end
+        }
+        packets += byteArrayOf(0x0B)
+        segmentAck?.complete(false)
+        val ack = CompletableDeferred<Boolean>()
+        segmentAck = ack
+        packets.forEach { writeChar(ch, it) }
+        return withTimeoutOrNull(30_000 + packets.size * 50L) { ack.await() } ?: run {
+            if (segmentAck === ack) segmentAck = null
+            false
         }
     }
 
@@ -3866,6 +3974,10 @@ class BleManager(private val app: Application) {
     private var mapUpload: LinkClient.Handle? = null
     private var tileUpload: LinkClient.Handle? = null
 
+    /** Tiles go to the SD card, so a device reporting none can't take them —
+     *  say so up front instead of letting the job end in "Some tiles failed". */
+    val sdCardBlocksMaps: Boolean get() = status.sdCard.isProblem
+
     fun uploadMap(ebm: ByteArray, name: String) {
         if (linkReady) { uploadMapLink(ebm, name); return }
         if (mapChar == null) { mapMessage = "Not connected"; return }
@@ -4535,6 +4647,14 @@ class BleManager(private val app: Application) {
         if (has(Feature.FEATURE_SENSORS)) refreshSensors()
         if (has(Feature.FEATURE_MESH)) refreshMesh()
         if (has(Feature.FEATURE_WORKOUTS)) refreshWorkouts()
+        // The cached tile list is one global key, not per device or card:
+        // confirm it on every connect, as the legacy path does.
+        if (has(Feature.FEATURE_MAP_TILES) || has(Feature.FEATURE_MAP_POI)) refreshDeviceTiles()
+        segmentsSupported = has(Feature.FEATURE_SEGMENTS)
+        if (has(Feature.FEATURE_SEGMENTS)) {
+            deviceSegmentVersion = maxOf(1, h.segmentsVersion)
+            querySegments()   // the count, for Settings > Accounts
+        }
         if (liveExtraTopics.isNotEmpty()) sendLiveSubscribe()
         updateMediaRemote()
     }
@@ -4556,6 +4676,7 @@ class BleManager(private val app: Application) {
             // A device button with no AMS behind it: this phone's player acts.
             DeviceMsg.BodyCase.MEDIA_COMMAND -> mediaRemote.handleCommand(m.mediaCommand.cmdValue)
             DeviceMsg.BodyCase.WORKOUT_STATUS -> workoutStatus = LinkCodec.workoutStatus(m.workoutStatus)
+            DeviceMsg.BodyCase.SEGMENTS -> onSegmentsInfo(m.segments)
             DeviceMsg.BodyCase.SENSOR_LIST -> publishSensors(m.sensorList.sensorsList.mapNotNull(LinkCodec::sensor))
             DeviceMsg.BodyCase.MESH_STATE ->
                 meshState = LinkCodec.meshState(m.meshState, has(Feature.FEATURE_MESH_RADIO_CONFIG))
@@ -4672,7 +4793,9 @@ class BleManager(private val app: Application) {
     private fun onLiveFrame(f: LiveFrame) {
         liveFrameFlow.value = f
         if (f.hasRide()) {
+            val sdBefore = status.sdCard
             status = LinkCodec.status(f.ride)
+            noteSdCard(sdBefore)
             syncLocationStreamToDeviceFix()
             updateBackgroundLocationMode()
         }
@@ -4682,6 +4805,20 @@ class BleManager(private val app: Application) {
     fun stopwatchCommand(op: StopwatchOp) {
         if (!has(Feature.FEATURE_STOPWATCH)) return
         link.send(PhoneMsg.newBuilder().setStopwatch(StopwatchCommand.newBuilder().setOp(op)), numbered = false)
+    }
+
+    /**
+     * The rider moved to another page in the Ride tab's view of the device:
+     * show the same page on the panel. [slot] indexes the layout the device has
+     * applied, so nothing goes while a layout edit is still on its way. The
+     * device follows only from a page or the map, never over a menu; the next
+     * frame's view is the answer.
+     */
+    fun showDevicePage(slot: Int) {
+        if (!has(Feature.FEATURE_SHOW_PAGE) || pendingDashConfig != null) return
+        val c = dashConfig ?: return
+        if (slot !in c.pages.indices) return
+        link.send(PhoneMsg.newBuilder().setShowPage(ShowPage.newBuilder().setPage(slot)), numbered = false)
     }
 
     companion object {

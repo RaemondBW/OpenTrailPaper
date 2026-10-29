@@ -47,6 +47,7 @@
 #include "power_mgmt.h"
 #include "dash_config.h"
 #include "stopwatch.h"
+#include "segments.h"
 
 namespace {
 
@@ -110,6 +111,42 @@ int workoutListPage = 0;
 // and only this task touches it (taps, the render, the auto-sleep check).
 // Static storage, ~400 bytes for the 99 lap marks.
 Stopwatch stopwatch;
+
+// Live Strava segments: the starred set (adopted from segments:: when the app
+// syncs a new one) and the matcher timing efforts against it. Fed each fix
+// below, whatever page is up — an effort is timed even off the SEGMENT page.
+// Only this task touches either.
+seg::SegmentDb segDb;
+seg::Matcher segMatcher;
+// Where the panel was before an effort switched it to the SEGMENT page, so
+// the result lapsing puts the rider back. -1 = we didn't switch.
+int segReturnPage = -1;
+bool segReturnMap = false;
+// Which of the relevant segments (Matcher::list) the page shows, by segment
+// index; -1 = the first. A new effort selects itself; one that drops out of
+// the list (its result lapsed) falls back to the first.
+int segSel = -1;
+
+// The view the SEGMENT page shows: the selected segment, with its place in
+// the list for the page's arrows. `list`/`n` get the list itself.
+void segSelectedView(uint32_t now, seg::View& v, int* list, int& n) {
+    n = segMatcher.list(now, list, seg::MAX_LIST);
+    int pos = -1;
+    for (int i = 0; i < n; ++i) if (list[i] == segSel) pos = i;
+    if (pos < 0) {
+        pos = n > 0 ? 0 : -1;
+        segSel = n > 0 ? list[0] : -1;
+    }
+    segMatcher.view(now, segSel, v);
+    v.listPos = pos + 1;
+    v.listCount = n;
+}
+
+int segmentSlot() {
+    for (int i = 0; i < dash_config::pageCount(); ++i)
+        if (dash_config::page(i).kind == DP_SEGMENT) return i;
+    return -1;
+}
 
 // The picker (WORKOUT page, nothing loaded): which page of rows, and the
 // page last drawn — taps resolve against what the rider SAW, not a list that
@@ -780,6 +817,25 @@ void handleTap(int x, int y) {
     switch (screen) {
         case SCREEN_DASH:
         case SCREEN_MAP:
+            // The SEGMENT page's pager (two or more relevant segments): the
+            // list pager's up / down, previous / next segment. Like the other
+            // paged lists it stops at the ends (that arrow is not drawn).
+            if (screen == SCREEN_DASH &&
+                dash_config::page(dashPage).kind == DP_SEGMENT &&
+                (inRect(kPagerUp, x, y) || inRect(kPagerDown, x, y))) {
+                seg::View v;
+                int list[seg::MAX_LIST], n = 0;
+                segSelectedView(millis(), v, list, n);
+                if (n >= 2) {
+                    const int to = v.listPos - 1 + (inRect(kPagerUp, x, y) ? -1 : 1);
+                    if (to >= 0 && to < n) {
+                        segSel = list[to];
+                        ackPagerTap(inRect(kPagerUp, x, y) ? kPagerUp : kPagerDown);
+                        forceDraw = true;
+                    }
+                    break;
+                }
+            }
             // Transport controls on the MUSIC page. Handled before the shared
             // dash/map targets so the buttons win over the "strip" fallthrough;
             // the status bar above them still opens the menu as everywhere.
@@ -1303,13 +1359,14 @@ void renderMapScreen(const RideState& s, uint8_t* fb) {
     if (dbgTiming)
         diag::log("map: project=%lu draw=%lu polys=%d (tiles=%d base=%d) "
                   "cls[maj=%d pri=%d sec=%d ter=%d min=%d path=%d] ntiles=%d/%d%s "
-                  "mpp=%d",
+                  "mpp=%d pois=%d/%d",
                   (unsigned long)(m1 - m0), (unsigned long)(millis() - m1),
                   map.featureCount, map.tilePolys, map.featureCount - map.tilePolys,
                   map.clsCount[0], map.clsCount[1], map.clsCount[2], map.clsCount[3],
                   map.clsCount[4], map.clsCount[5],
                   map.projectedTiles, map.wantedTiles,
-                  map.partial ? " cut" : "", (int)mapMpp);
+                  map.partial ? " cut" : "", (int)mapMpp,
+                  map.poiCount, map_tiles::projectStats().poisDropped);
     drawNavBanner(fb);
     drawPauseBanner(s, fb);
 }
@@ -2736,6 +2793,7 @@ void task(void*) {
                 screen = SCREEN_SUMMARY;
             }
             routes::begin();
+            segments::begin();
             map_store::rescanCard();
             applySdUpdate();      // a firmware.bin may have been on the card
             usb_storage::begin(); // no-op if it already came up
@@ -2839,6 +2897,72 @@ void task(void*) {
                              powerFresh ? now.powerW : 0, powerFresh,
                              cadenceFresh ? now.cadenceRpm : 0, cadenceFresh);
 
+            // Live segments. A new starred set from the app replaces the old
+            // one (and abandons whatever effort was being timed on it).
+            if (segments::takePending(segDb)) {
+                segMatcher.attach(&segDb);
+                forceDraw = true;
+            }
+            // Power and heart rate for the effort's averages (the result
+            // screen), with the same 15 s freshness as everywhere else.
+            const bool hrFresh = now.hrConnected && now.heartRateBpm != 0xFF &&
+                                 ms - now.hrMs <= 15000;
+            segMatcher.sample(ms, powerFresh ? now.powerW : 0, powerFresh,
+                              hrFresh ? now.heartRateBpm : 0, hrFresh);
+            // Each fix once, stamped with when it arrived: the device's own
+            // GPS, else a fresh phone fix while the receiver has none.
+            static uint32_t lastSegFix = 0;
+            if (now.gpsFix && now.gpsFixMs != lastSegFix) {
+                lastSegFix = now.gpsFixMs;
+                segMatcher.update(now.gpsFixMs, now.latitude, now.longitude);
+            } else if (!now.gpsFix && now.phoneFixValid &&
+                       ms - now.phoneFixMs < 5000 &&
+                       now.phoneFixMs != lastSegFix) {
+                lastSegFix = now.phoneFixMs;
+                segMatcher.update(now.phoneFixMs, now.phoneLat, now.phoneLon);
+            } else {
+                segMatcher.tick(ms);
+            }
+            // The SEGMENT page comes up by itself when an effort starts (unless
+            // the rider set it to manual), and the panel goes back to where it
+            // was once the result has had its time. Only from the ride
+            // screens: never over a menu, a sheet or the nav prompt.
+            int startedSeg = -1;
+            const bool started = segMatcher.takeStarted(&startedSeg);
+            if (started) segSel = startedSeg;   // a new effort shows itself
+            const int slot = segmentSlot();
+            if (started && slot >= 0 && dash_config::page(slot).autoShow &&
+                (screen == SCREEN_DASH || screen == SCREEN_MAP) &&
+                !powerOverlay && !routes::navPending()) {
+                const bool onIt = screen == SCREEN_DASH && dashPage == slot;
+                if (!onIt) {
+                    // A second effort straight after the first keeps the
+                    // original place to go back to.
+                    if (segReturnPage < 0) {
+                        segReturnMap = screen == SCREEN_MAP;
+                        segReturnPage = dashPage;
+                    }
+                    screen = SCREEN_DASH;
+                    dashPage = slot;
+                }
+            }
+            if (segReturnPage >= 0) {
+                const seg::Phase ph = segMatcher.phase();
+                const bool stillOnIt = screen == SCREEN_DASH && dashPage == slot;
+                if (!stillOnIt) {
+                    segReturnPage = -1;   // the rider moved on: leave them be
+                } else if (ph == seg::IDLE || ph == seg::ARMED) {
+                    if (segReturnPage < dash_config::pageCount()) {
+                        dashPage = segReturnPage;
+                        screen = segReturnMap ? SCREEN_MAP : SCREEN_DASH;
+                        if (screen == SCREEN_DASH &&
+                            dash_config::page(dashPage).kind == DP_MAP)
+                            screen = SCREEN_MAP;
+                    }
+                    segReturnPage = -1;
+                }
+            }
+
             // Stopwatch buttons pressed in the app (the link's
             // StopwatchCommand): queued by the link task, run here on the UI
             // task exactly as the page's own taps, with the same enablement
@@ -2857,6 +2981,27 @@ void task(void*) {
                     did = stopwatch.canLap() && stopwatch.lap(t);
                 }
                 if (did) noteActivity();
+            }
+
+            // A page the rider moved to in the app's view of the device:
+            // follow it, like the panel's own page button, but only from a
+            // page or the map — never over a menu, sheet, overlay or nav
+            // prompt. An out-of-range slot (a layout the app hasn't synced)
+            // is ignored.
+            {
+                const int want = ble_server::takeShowPage();
+                if (want >= 0 && want < dash_config::pageCount() &&
+                    (screen == SCREEN_DASH || screen == SCREEN_MAP) &&
+                    !powerOverlay && !routes::navPending()) {
+                    const int curSlot = screen == SCREEN_MAP ? mapSlot() : dashPage;
+                    if (want != curSlot) {
+                        dashPage = want;
+                        screen = dash_config::page(want).kind == DP_MAP ? SCREEN_MAP : SCREEN_DASH;
+                        segReturnPage = -1;   // the rider chose: no auto-return
+                        forceDraw = true;
+                    }
+                    noteActivity();
+                }
             }
 
             // The page on screen and the stopwatch, for the app's live view
@@ -2907,7 +3052,7 @@ void task(void*) {
         // Wake with BOOT.
         if (autoSleepEnabled && millis() - lastActivityMs > AUTO_SLEEP_MS &&
             !ride_recorder::isRecording() && !routes::navActive() &&
-            !stopwatch.running &&
+            !stopwatch.running && !segMatcher.busy() &&
             !ble_server::isPhoneConnected() && !ble_server::linkPending()) {
             uint8_t* fb = epdc_framebuffer();
             shutdownDevice(fb, "auto-sleep (idle timeout)");   // does not return
@@ -3097,6 +3242,32 @@ void task(void*) {
             }
         }
 
+        // The SEGMENT page during an effort: in step with its clock, like the
+        // stopwatch above. Any other change of what it shows (armed, done,
+        // the result lapsing, a new nearest segment) repaints too.
+        {
+            static uint32_t lastSegSec = UINT32_MAX;
+            static int lastSegPhase = -1;
+            if (screen == SCREEN_DASH &&
+                dash_config::page(dashPage).kind == DP_SEGMENT) {
+                // The shown segment, its phase and place in the list: any
+                // change of those repaints, as does its clock's second.
+                static int lastSegKey = -1;
+                seg::View v;
+                int list[seg::MAX_LIST], n = 0;
+                segSelectedView(millis(), v, list, n);
+                const seg::Phase ph = v.phase;
+                const uint32_t sec = ph == seg::ACTIVE ? v.elapsedMs / 1000 : 0;
+                const int key = (v.segIndex + 1) * 1000 + v.listPos * 32 + v.listCount;
+                if (sec != lastSegSec || (int)ph != lastSegPhase || key != lastSegKey) {
+                    lastSegSec = sec;
+                    lastSegPhase = (int)ph;
+                    lastSegKey = key;
+                    forceDraw = true;
+                }
+            }
+        }
+
         bool navPrompt = routes::navPending();
         if (navPrompt && !lastNavPrompt) navPromptShownAt = millis();
         static int lastDashPage = 0;
@@ -3162,6 +3333,7 @@ void task(void*) {
             s.showOffline = settings::showOffline();
             s.routeActive = routes::active();
             s.routeRemainingKm = routes::remainingKm();
+            s.sdCard = ride_recorder::sdCardState();
             // Swap to a downloaded map that covers where we are, if one exists.
             // Not while a host computer owns the SD card.
             if (s.everHadFix && !usb_storage::hostActive())
@@ -3234,6 +3406,11 @@ void task(void*) {
                             ui_render_workout(s, wv, fb);
                     } else if (pg.kind == DP_STOPWATCH) {
                         ui_render_stopwatch(s, stopwatch, millis(), fb);
+                    } else if (pg.kind == DP_SEGMENT) {
+                        seg::View v;
+                        int list[seg::MAX_LIST], n = 0;
+                        segSelectedView(millis(), v, list, n);
+                        ui_render_segment(s, v, fb);
                     } else {
                         // Compact hero whenever a banner (turn OR pause) owns
                         // the band, so no field hides underneath it.
@@ -3248,7 +3425,8 @@ void task(void*) {
                     // stays in their status bar.
                     const bool densePage = pg.kind == DP_MUSIC ||
                                            pg.kind == DP_WORKOUT ||
-                                           pg.kind == DP_STOPWATCH;
+                                           pg.kind == DP_STOPWATCH ||
+                                           pg.kind == DP_SEGMENT;
                     drawNavBanner(fb, densePage ? 500.0f : 0);
                     if (pg.kind == DP_FIELDS) drawPauseBanner(s, fb);
                     break;

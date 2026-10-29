@@ -149,6 +149,21 @@ android {
         // with to the OSM tile, routing and geocoding servers.
         buildConfig = true
     }
+    // The firmware-sim tests (src/testDebug, Robolectric) build the app's
+    // own Application, which reads its strings.
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+        // ...and build the app's H3 JNI library for the host JVM into
+        // sim/build/h3jni (sim/HostH3.kt), where H3Native's loadLibrary
+        // finds it. Prepended at run time, after AGP has set its own path.
+        unitTests.all { test ->
+            val h3 = rootProject.file("../sim/build/h3jni").path
+            test.doFirst {
+                val path = test.systemProperties["java.library.path"]?.toString()
+                test.systemProperty("java.library.path", if (path.isNullOrEmpty()) h3 else "$h3${File.pathSeparator}$path")
+            }
+        }
+    }
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
@@ -234,4 +249,9 @@ dependencies {
     // The byte formats shared with the firmware are pure Kotlin, so they are
     // testable on the JVM with no device and no network.
     testImplementation("junit:junit:4.13.2")
+    // Only for the firmware-sim tests (src/testDebug): they run the real
+    // BleManager, which needs Android's main looper, SharedPreferences and
+    // the android.bluetooth value classes on the JVM. The other unit tests
+    // stay plain JUnit.
+    testImplementation("org.robolectric:robolectric:4.14.1")
 }

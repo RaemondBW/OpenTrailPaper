@@ -1,6 +1,12 @@
 package com.raemond.opentrailpaper.ui
 
-import android.graphics.Bitmap
+import com.raemond.opentrailpaper.data.UploadLog
+import com.raemond.opentrailpaper.data.SyncAccounts
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -13,26 +19,19 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Download
-import androidx.compose.material.icons.filled.FiberManualRecord
 import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Wifi
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -44,7 +43,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
@@ -63,6 +61,7 @@ import com.raemond.opentrailpaper.ble.BleManager
 import com.raemond.opentrailpaper.ble.RideFile
 import com.raemond.opentrailpaper.data.FitDecoder
 import com.raemond.opentrailpaper.data.LatLon
+import com.raemond.opentrailpaper.data.RideNames
 import com.raemond.opentrailpaper.data.RidePreview
 import com.raemond.opentrailpaper.data.Units
 import com.raemond.opentrailpaper.map.MapSnapshotter
@@ -124,99 +123,107 @@ fun RidesScreen(ble: BleManager) {
         }
     }
 
-    Column(
-        Modifier
-            .fillMaxSize()
-            .background(Palette.paper)
-            .verticalScroll(rememberScrollState())
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
-    ) {
+    val context = LocalContext.current
+    // Read so a ride's tag turns "✓ STRAVA" as soon as its upload lands.
+    val uploadsVersion = UploadLog.version
+
+    Column(Modifier.fillMaxSize().background(Palette.paper)) {
         RidesHeader(ble)
-        if (ble.status.recording) InProgressBanner()
-        AnimatedVisibility(checking, enter = fadeIn(), exit = fadeOut()) { CheckingRow() }
-        if (rides.isNotEmpty()) WeekSummary(rides, previews, ble.useMiles)
+        Column(
+            Modifier
+                .weight(1f)
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            if (ble.status.recording) InProgressBanner()
+            AnimatedVisibility(checking, enter = fadeIn(), exit = fadeOut()) { CheckingRow() }
+            if (rides.isNotEmpty()) WeekSummary(rides, previews, ble.useMiles)
 
-        when {
-            // With nothing cached yet, the checking row above stands in for the
-            // empty state until the device answers.
-            rides.isEmpty() -> if (!checking) Card {
-                Text(
-                    when {
-                        ble.status.recording -> "No synced rides yet"
-                        ble.state == BleManager.ConnState.CONNECTED -> "No rides found"
-                        else -> "No cached rides"
-                    },
-                    style = TypeScale.title,
-                    color = Palette.ink,
-                )
-                Text(
-                    when {
-                        ble.status.recording ->
-                            "The current ride is being recorded to the SD card — it'll appear " +
-                                "here once you finish and stop it."
-
-                        ble.state == BleManager.ConnState.CONNECTED ->
-                            "Rides are saved to the SD card and sync here automatically."
-
-                        else ->
-                            "Connect to your OpenTrailPaper to download rides. Downloaded rides " +
-                                "stay here for offline viewing."
-                    },
-                    style = barlow(14.sp),
-                    color = Palette.muted,
-                )
-            }
-
-            else -> {
-                // Keyed by name so a new ride at the top, or one dropping out,
-                // moves rows instead of recomposing each with its neighbour's
-                // state (and reloading its map).
-                rides.forEach { ride -> key(ride.name) {
-                    val cached = ble.isCached(ride.name)
-                    // Lazily decode cached rides off the main thread so the list
-                    // shows thumbnails and stats without re-parsing every frame.
-                    LaunchedEffect(ride.name, cached) {
-                        if (!cached || previews.containsKey(ride.name)) return@LaunchedEffect
-                        if (loading.put(ride.name, true) == true) return@LaunchedEffect
-                        val decoded = withContext(Dispatchers.Default) {
-                            runCatching {
-                                FitDecoder.decode(ble.cachedRideFile(ride.name).readBytes())
-                            }.getOrNull()
-                        }
-                        loading.remove(ride.name)
-                        if (decoded != null) previews[ride.name] = decoded
-                    }
-
-                    RideRow(
-                        ride = ride,
-                        cached = cached,
-                        preview = previews[ride.name],
-                        downloading = ble.downloadingName == ride.name,
-                        queued = ride.name in ble.queuedDownloads,
-                        progress = ble.downloadProgress,
-                        useMiles = ble.useMiles,
-                        onTap = {
-                            val file = ble.cachedRideFile(ride.name)
-                            val p = previews[ride.name]
-                            when {
-                                p != null -> detail = file to p
-                                file.exists() -> failedFile = file
-                                else -> ble.downloadRide(ride.name)
-                            }
-                        },
-                        onDelete = {
-                            ble.deleteRide(ride.name)
-                            previews.remove(ride.name)
-                            cachedNames = ble.cachedRides()
-                        },
+            when {
+                // With nothing cached yet, the checking row above stands in for
+                // the empty state until the device answers.
+                rides.isEmpty() -> if (!checking) Card {
+                    Text(
+                        when {
+                            ble.status.recording -> "No synced rides yet"
+                            ble.state == BleManager.ConnState.CONNECTED -> "No rides found"
+                            else -> "No cached rides"
+                        }.uppercase(),
+                        style = TypeScale.title,
+                        color = Palette.ink,
                     )
-                } }
-                Text(
-                    "Tap to preview & share · long-press to delete",
-                    style = barlow(12.sp),
-                    color = Palette.muted,
-                )
+                    Text(
+                        when {
+                            ble.status.recording ->
+                                "The current ride is being recorded to the SD card — it'll appear " +
+                                    "here once you finish and stop it."
+
+                            ble.state == BleManager.ConnState.CONNECTED ->
+                                "Rides are saved to the SD card and sync here automatically."
+
+                            else ->
+                                "Connect to your OpenTrailPaper to download rides. Downloaded rides " +
+                                    "stay here for offline viewing."
+                        },
+                        style = barlow(14.sp),
+                        color = Palette.muted,
+                    )
+                }
+
+                else -> {
+                    // Keyed by name so a new ride at the top, or one dropping
+                    // out, moves rows instead of recomposing each with its
+                    // neighbour's state (and reloading its map).
+                    rides.forEachIndexed { index, ride -> key(ride.name) {
+                        val cached = ble.isCached(ride.name)
+                        // Lazily decode cached rides off the main thread so the
+                        // list shows thumbnails and stats without re-parsing
+                        // every frame.
+                        LaunchedEffect(ride.name, cached) {
+                            if (!cached || previews.containsKey(ride.name)) return@LaunchedEffect
+                            if (loading.put(ride.name, true) == true) return@LaunchedEffect
+                            val decoded = withContext(Dispatchers.Default) {
+                                runCatching {
+                                    FitDecoder.decode(ble.cachedRideFile(ride.name).readBytes())
+                                }.getOrNull()
+                            }
+                            loading.remove(ride.name)
+                            if (decoded != null) previews[ride.name] = decoded
+                        }
+
+                        RideRow(
+                            ride = ride,
+                            featured = index == 0,
+                            cached = cached,
+                            preview = previews[ride.name],
+                            downloading = ble.downloadingName == ride.name,
+                            queued = ride.name in ble.queuedDownloads,
+                            progress = ble.downloadProgress,
+                            uploads = remember(ride.name, uploadsVersion) { UploadLog.providers(context, ride.name) },
+                            useMiles = ble.useMiles,
+                            onTap = {
+                                val file = ble.cachedRideFile(ride.name)
+                                val p = previews[ride.name]
+                                when {
+                                    p != null -> detail = file to p
+                                    file.exists() -> failedFile = file
+                                    else -> ble.downloadRide(ride.name)
+                                }
+                            },
+                            onDelete = {
+                                ble.deleteRide(ride.name)
+                                previews.remove(ride.name)
+                                cachedNames = ble.cachedRides()
+                            },
+                        )
+                    } }
+                    Text(
+                        "Tap to preview & share · long-press to delete",
+                        style = barlow(12.sp),
+                        color = Palette.muted,
+                    )
+                }
             }
         }
     }
@@ -256,50 +263,34 @@ internal fun mergeRides(device: List<RideFile>, cached: List<RideFile>): List<Ri
 @Composable
 private fun CheckingRow() {
     Row(
-        Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+        Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        CircularProgressIndicator(Modifier.size(14.dp), color = Palette.muted, strokeWidth = 2.dp)
-        Text("Checking for new rides…", style = barlow(13.sp, FontWeight.Medium), color = Palette.muted)
+        BlockSpinner()
+        Text("CHECKING FOR NEW RIDES", style = caps(12.sp), color = Palette.ink)
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
+/** RIDES title, how many the device holds, and refresh / connect. */
 @Composable
 private fun RidesHeader(ble: BleManager) {
-    Row(
-        Modifier.fillMaxWidth().padding(top = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text("Rides", style = TypeScale.screenTitle, color = Palette.ink)
-        Spacer(Modifier.weight(1f))
-        // While the list is being checked the "Checking for new rides…" row
-        // says so; no second status here.
-        if (!(ble.state == BleManager.ConnState.CONNECTED && ble.loadingRides)) {
-            Text(
-                if (ble.state == BleManager.ConnState.CONNECTED) "Synced" else "Offline",
-                style = barlow(13.sp, FontWeight.Medium),
-                color = Palette.muted,
-            )
-        }
-        Spacer(Modifier.size(8.dp))
-        val connected = ble.state == BleManager.ConnState.CONNECTED
-        Box(
-            Modifier
-                .size(34.dp)
-                .background(Palette.surface, CircleShape)
-                .border(1.dp, Palette.hairline, CircleShape)
-                .combinedClickable(onClick = { if (connected) ble.refreshRides() else ble.startScan() }),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                if (connected) Icons.Filled.Refresh else Icons.Filled.Wifi,
-                contentDescription = if (connected) "Refresh" else "Scan",
-                tint = Palette.accent,
-                modifier = Modifier.size(16.dp),
-            )
-        }
+    val connected = ble.state == BleManager.ConnState.CONNECTED
+    ScreenHeader("Rides") {
+        Text(
+            when {
+                !connected -> "OFFLINE"
+                ble.rides.isEmpty() -> "SYNCED"
+                else -> "${ble.rides.size} ON DEVICE"
+            },
+            style = caps(12.sp),
+            color = Palette.ink,
+            maxLines = 1,
+        )
+        SquareIconButton(
+            if (connected) Icons.Filled.Refresh else Icons.Filled.Wifi,
+            label = if (connected) "Check for new rides" else "Connect to device",
+        ) { if (connected) ble.refreshRides() else ble.startScan() }
     }
 }
 
@@ -307,28 +298,22 @@ private fun RidesHeader(ble: BleManager) {
  *  underway (and why new rides haven't synced yet). */
 @Composable
 private fun InProgressBanner() {
-    Card {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Icon(
-                Icons.Filled.FiberManualRecord,
-                contentDescription = null,
-                tint = androidx.compose.ui.graphics.Color.Red,
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .einkBorder()
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Tag("● REC", inverted = true)
+        Column {
+            Text("RIDE IN PROGRESS", style = caps(12.sp), color = Palette.ink)
+            Text(
+                "Recording to the SD card — it'll sync here when you stop.",
+                style = barlow(13.sp),
+                color = Palette.ink,
             )
-            Column {
-                Text(
-                    "Ride in progress",
-                    style = barlow(15.sp, FontWeight.SemiBold),
-                    color = Palette.ink,
-                )
-                Text(
-                    "Recording to the SD card — it'll sync here when you stop.",
-                    style = barlow(12.sp),
-                    color = Palette.muted,
-                )
-            }
         }
     }
 }
@@ -344,24 +329,30 @@ private fun WeekSummary(
     val loaded = recent.mapNotNull { previews[it.name] }
     val dist = loaded.sumOf { it.distanceKm }
     val time = loaded.sumOf { it.duration }
-    Card {
-        Row(Modifier.fillMaxWidth()) {
-            SummaryCell("${recent.size}", "rides this week", Modifier.weight(1f))
-            SummaryCell(
-                String.format(Locale.US, "%.1f", Units.distance(dist, useMiles)),
-                "${Units.distLabel(useMiles)} distance",
-                Modifier.weight(1f),
-            )
-            SummaryCell(shortTime(time), "riding time", Modifier.weight(1f))
-        }
+    // Separate boxes with gutters, like the device's data cells.
+    Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        SummaryCell("This week", "${recent.size}", if (recent.size == 1) "ride" else "rides", Modifier.weight(1f))
+        SummaryCell(
+            "Distance",
+            String.format(Locale.US, "%.0f", Units.distance(dist, useMiles)),
+            Units.distLabel(useMiles),
+            Modifier.weight(1f),
+        )
+        SummaryCell("Time", hoursMinutes(time), "hours", Modifier.weight(1f))
     }
 }
 
 @Composable
-private fun SummaryCell(value: String, label: String, modifier: Modifier = Modifier) {
-    Column(modifier) {
-        Text(value, style = TypeScale.value(26.sp), color = Palette.ink)
-        Text(label, style = barlow(12.sp), color = Palette.muted, maxLines = 1)
+private fun SummaryCell(label: String, value: String, unit: String, modifier: Modifier = Modifier) {
+    Column(
+        modifier
+            .fillMaxHeight()
+            .einkBorder()
+            .padding(10.dp),
+    ) {
+        TrackedLabel(label)
+        Text(value, style = anton(34.sp), color = Palette.ink, maxLines = 1)
+        Text(unit, style = barlow(12.sp), color = Palette.ink, maxLines = 1)
     }
 }
 
@@ -369,89 +360,147 @@ private fun SummaryCell(value: String, label: String, modifier: Modifier = Modif
 @Composable
 private fun RideRow(
     ride: RideFile,
+    /** The newest ride: a big card with its map. The rest are compact rows. */
+    featured: Boolean,
     cached: Boolean,
     preview: RidePreview?,
     downloading: Boolean,
     queued: Boolean,
     progress: Double,
+    uploads: List<SyncAccounts.Provider>,
     useMiles: Boolean,
     onTap: () -> Unit,
     onDelete: () -> Unit,
 ) {
-    Card(Modifier.combinedClickable(onClick = onTap, onLongClick = onDelete)) {
-        RideBanner(ride, cached, preview, downloading, queued, progress)
-        Spacer(Modifier.size(12.dp))
-        Row(verticalAlignment = Alignment.Top) {
-            Column(Modifier.weight(1f)) {
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalAlignment = Alignment.Bottom,
-                ) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(Palette.paper)
+            .einkBorder()
+            .combinedClickable(
+                onClickLabel = if (cached) "Open the ride" else "Download the ride from the device",
+                onClick = onTap,
+                onLongClick = onDelete,
+            ),
+    ) {
+        if (featured) {
+            // The latest ride: map on top, then name, date and four numbers.
+            Box(Modifier.fillMaxWidth().height(150.dp).clipToBounds()) {
+                RideBanner(ride, cached, preview, downloading, queued, progress)
+            }
+            Box(Modifier.fillMaxWidth().height(Rule.border).background(Palette.ink))
+            Column(
+                Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Row(verticalAlignment = Alignment.Bottom) {
                     Text(
-                        rideName(ride.name),
-                        style = condensed(20.sp, FontWeight.SemiBold),
-                        color = Palette.ink,
+                        rideName(ride.name), style = barlow(16.sp, FontWeight.Bold), color = Palette.ink,
+                        maxLines = 1, modifier = Modifier.weight(1f),
                     )
-                    Text(dateSubtitle(ride.name), style = barlow(13.sp), color = Palette.muted)
+                    Text(dateSubtitle(ride.name).uppercase(), style = barlow(12.sp, FontWeight.SemiBold), color = Palette.ink)
                 }
                 if (preview != null) {
-                    Row(
-                        Modifier.padding(top = 6.dp),
-                        horizontalArrangement = Arrangement.spacedBy(14.dp),
-                    ) {
-                        StatItem(
-                            String.format(
-                                Locale.US,
-                                "%.1f %s",
-                                Units.distance(preview.distanceKm, useMiles),
-                                Units.distLabel(useMiles),
-                            ),
-                            "Distance",
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        BigStat(
+                            String.format(Locale.US, "%.1f", Units.distance(preview.distanceKm, useMiles)),
+                            Units.distLabel(useMiles), Modifier.weight(1f),
                         )
-                        StatItem(shortTime(preview.duration), "Time")
-                        StatItem(
-                            String.format(
-                                Locale.US,
-                                "%.1f",
-                                Units.speed(preview.avgSpeedKmh, useMiles),
-                            ),
-                            "${Units.speedLabel(useMiles)} avg",
+                        BigStat(clock(preview.duration), "Time", Modifier.weight(1f))
+                        BigStat(
+                            String.format(Locale.US, "%.1f", Units.speed(preview.avgSpeedKmh, useMiles)),
+                            Units.speedLabel(useMiles), Modifier.weight(1f),
                         )
-                        preview.avgPower?.let { StatItem("$it W", "Power") }
+                        BigStat(preview.avgPower?.toString() ?: "--", "W avg", Modifier.weight(1f))
                     }
                 } else {
-                    Text(
-                        String.format(
-                            Locale.US,
-                            "%.0f KB · not downloaded",
-                            ride.size / 1024.0,
-                        ),
-                        style = barlow(12.sp),
-                        color = Palette.muted,
-                        modifier = Modifier.padding(top = 4.dp),
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.weight(1f)) { StatusLine(ride, preview, downloading, progress, useMiles) }
+                        RideTag(cached, downloading, queued, progress, uploads)
+                    }
                 }
             }
-            if (queued) {
-                Icon(Icons.Filled.Schedule, contentDescription = null, tint = Palette.muted)
-            } else if (!cached && !downloading) {
-                Icon(Icons.Filled.Download, contentDescription = null, tint = Palette.accent)
+        } else {
+            // An older ride: track glyph, name and stats on one line, state tag.
+            Row(
+                Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Box(Modifier.size(64.dp, 48.dp).einkBorder(), contentAlignment = Alignment.Center) {
+                    val coords = preview?.coordinates
+                    if (coords != null && coords.size > 1) {
+                        RouteThumbnail(coords, Modifier.fillMaxSize().padding(6.dp))
+                    } else {
+                        Icon(
+                            if (cached) Icons.Filled.Map else Icons.Filled.Download, contentDescription = null,
+                            tint = Palette.ink, modifier = Modifier.size(18.dp),
+                        )
+                    }
+                }
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(rideName(ride.name), style = barlow(15.sp, FontWeight.Bold), color = Palette.ink, maxLines = 1)
+                    StatusLine(ride, preview, downloading, progress, useMiles)
+                }
+                RideTag(cached, downloading, queued, progress, uploads)
             }
         }
     }
 }
 
 @Composable
-private fun StatItem(value: String, label: String) {
-    Column {
-        Text(value, style = condensed(16.sp, FontWeight.SemiBold), color = Palette.ink)
-        Text(label, style = barlow(10.sp), color = Palette.muted)
+private fun BigStat(value: String, label: String, modifier: Modifier = Modifier) {
+    Column(modifier) {
+        Text(value, style = anton(22.sp), color = Palette.ink, maxLines = 1)
+        Text(label.uppercase(), style = caps(11.sp, 1.sp), color = Palette.ink, maxLines = 1)
+    }
+}
+
+@Composable
+private fun StatusLine(ride: RideFile, preview: RidePreview?, downloading: Boolean, progress: Double, useMiles: Boolean) {
+    when {
+        preview != null -> Text(
+            String.format(
+                Locale.US, "%.1f %s · %s · %.1f %s",
+                Units.distance(preview.distanceKm, useMiles), Units.distLabel(useMiles),
+                clock(preview.duration),
+                Units.speed(preview.avgSpeedKmh, useMiles), Units.speedLabel(useMiles),
+            ),
+            style = barlow(13.sp), color = Palette.ink, maxLines = 1,
+        )
+        downloading -> BlockProgressBar(progress.toFloat(), Modifier.width(120.dp), segments = 8, height = 8.dp)
+        else -> Text(
+            dateSubtitle(ride.name) + String.format(Locale.US, " · %.0f KB", ride.size / 1024.0),
+            style = barlow(13.sp), color = Palette.ink, maxLines = 1,
+        )
+    }
+}
+
+/** ✓ STRAVA once uploaded; else where the ride is, or the transfer state. */
+@Composable
+private fun RideTag(
+    cached: Boolean,
+    downloading: Boolean,
+    queued: Boolean,
+    progress: Double,
+    uploads: List<SyncAccounts.Provider>,
+) {
+    val first = uploads.firstOrNull()
+    when {
+        downloading -> Tag("${(progress * 100).toInt()}%")
+        queued -> Tag("Queued")
+        first != null -> Tag(
+            "✓ " + UploadLog.shortTitle(first) + if (uploads.size > 1) " +${uploads.size - 1}" else "",
+            inverted = true,
+        )
+        cached -> Tag("On phone")
+        else -> Tag("On device")
     }
 }
 
 /**
- * Large map banner: a real map snapshot with the route drawn on it once the ride
- * is decoded, otherwise a prompt to download.
+ * Map banner for the big card: a real map snapshot with the route drawn on it
+ * once the ride is decoded, otherwise a prompt to download.
  */
 @Composable
 private fun RideBanner(
@@ -462,59 +511,46 @@ private fun RideBanner(
     queued: Boolean,
     progress: Double,
 ) {
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .height(170.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .background(Palette.paper)
-            .border(1.dp, Palette.hairline, RoundedCornerShape(12.dp)),
-        contentAlignment = Alignment.Center,
-    ) {
-        val coords = preview?.coordinates
+    val coords = preview?.coordinates
+    Box(Modifier.fillMaxSize().background(Palette.paper), contentAlignment = Alignment.Center) {
         when {
             coords != null && coords.size > 1 -> RouteMapThumbnail(ride.name, coords)
-            downloading -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                LinearProgressIndicator(
-                    progress = { progress.toFloat() },
-                    modifier = Modifier.size(width = 160.dp, height = 4.dp),
-                    color = Palette.accent,
-                    trackColor = Palette.hairline,
-                )
-                Spacer(Modifier.size(8.dp))
-                Text("Downloading…", style = barlow(12.sp), color = Palette.muted)
+            downloading -> Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                BlockProgressBar(progress.toFloat(), Modifier.width(180.dp))
+                Text("DOWNLOADING…", style = caps(12.sp), color = Palette.ink)
             }
 
-            queued -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(
-                    Icons.Filled.Schedule,
-                    contentDescription = null,
-                    tint = Palette.muted,
-                    modifier = Modifier.size(30.dp),
-                )
-                Spacer(Modifier.size(8.dp))
+            queued -> Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                BlockSpinner()
                 Text(
-                    "Queued — starts after the current download",
-                    style = barlow(12.sp),
-                    color = Palette.muted,
+                    "QUEUED — STARTS AFTER THE CURRENT DOWNLOAD",
+                    style = caps(11.sp, 1.5.sp),
+                    color = Palette.ink,
                     textAlign = TextAlign.Center,
                     modifier = Modifier.padding(horizontal = 16.dp),
                 )
             }
 
-            else -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(
-                    if (cached) Icons.Filled.Map else Icons.Filled.Download,
-                    contentDescription = null,
-                    tint = Palette.muted,
-                    modifier = Modifier.size(30.dp),
-                )
-                Spacer(Modifier.size(8.dp))
-                Text(
-                    if (cached) "Loading map…" else "Tap to download",
-                    style = barlow(12.sp),
-                    color = Palette.muted,
-                )
+            else -> Box(Modifier.fillMaxSize().hatched(), contentAlignment = Alignment.Center) {
+                Column(
+                    Modifier.background(Palette.paper).padding(14.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Icon(
+                        if (cached) Icons.Filled.Map else Icons.Filled.Download,
+                        contentDescription = null,
+                        tint = Palette.ink,
+                        modifier = Modifier.size(28.dp),
+                    )
+                    Text(if (cached) "LOADING MAP…" else "TAP TO DOWNLOAD", style = caps(12.sp), color = Palette.ink)
+                }
             }
         }
     }
@@ -617,14 +653,20 @@ private fun daysAgo(name: String): Int {
     return ((System.currentTimeMillis() - d.time) / 86_400_000L).toInt()
 }
 
-private fun shortTime(seconds: Double): String {
+/** "1:47": hours and minutes. */
+private fun clock(seconds: Double): String {
     val m = (seconds / 60).toInt()
-    val h = m / 60
-    return if (h > 0) "${h}h ${m % 60}m" else "${m}m"
+    return String.format(Locale.US, "%d:%02d", m / 60, m % 60)
 }
 
-/** Human name like "Saturday afternoon ride" from the file's timestamp. */
+private fun hoursMinutes(seconds: Double) = clock(seconds)
+
+/**
+ * The rider's name for it (renamed on upload), else a human name like
+ * "Saturday afternoon ride" from the file's timestamp.
+ */
 private fun rideName(fileName: String): String {
+    RideNames.names[fileName]?.let { return it }
     val d = rideDate(fileName) ?: return fileName
     val cal = Calendar.getInstance().apply { time = d }
     val weekday = SimpleDateFormat("EEEE", Locale.getDefault()).format(d)

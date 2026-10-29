@@ -18,6 +18,7 @@
 #include <SD.h>
 #include <esp_heap_caps.h>
 #include <freertos/ringbuf.h>
+#include <algorithm>
 #include <atomic>
 #include <math.h>
 #include <string.h>
@@ -44,6 +45,7 @@
 #include "ride_recorder.h"
 #include "ride_state.h"
 #include "routes.h"
+#include "segments.h"
 #include "sd_bus.h"
 #include "settings.h"
 #include "speed_source.h"
@@ -71,7 +73,12 @@ constexpr uint32_t WORKOUT_MAX = 16 * 1024;         // as the legacy WORKOUT buf
 constexpr uint32_t AGNSS_MAX = 32 * 1024;           // gps_service's assistance buffer
 constexpr uint32_t FIRMWARE_MAX = 8 * 1024 * 1024;  // larger than any app partition
 constexpr uint32_t ART_MAX_SIDE = 320;
-constexpr int LIST_MAX = 512;                       // files per FileList walk
+// Files per FileList walk: listBuf starts at LIST_FIRST and grows as a walk
+// needs it, up to LIST_MAX (~590 KB of PSRAM). It used to stop at 512, in
+// directory order — oldest rides first — so on a card with more the app never
+// saw the newest, the ride just recorded included.
+constexpr int LIST_FIRST = 512;
+constexpr int LIST_MAX = 8192;
 constexpr int FILE_PAGE = 16;                       // link.options max_count
 constexpr int TILE_PAGE = 32;
 constexpr int MESH_HISTORY_PAGE = 4;
@@ -104,6 +111,7 @@ otp_link_DeviceMsg* outMsg = nullptr;   // PSRAM: message being built
 uint8_t* txBuf = nullptr;               // PSRAM: encoded DeviceMsg
 uint8_t* ioBuf = nullptr;               // PSRAM: 4 KB SD read scratch
 otp_link_FileEntry* listBuf = nullptr;  // PSRAM: one directory walk
+int listCap = 0;                        // entries listBuf holds
 char* dashPending = nullptr;            // PSRAM: a SetDash waiting for the card
 
 struct Session {
@@ -205,6 +213,7 @@ const char* targetName(otp_link_Target t) {
     case otp_link_Target_TARGET_WORKOUT: return "workout";
     case otp_link_Target_TARGET_ALBUM_ART: return "album art";
     case otp_link_Target_TARGET_AGNSS: return "agnss";
+    case otp_link_Target_TARGET_SEGMENTS: return "segments";
     default: return "?";
     }
 }
@@ -463,6 +472,15 @@ void sendLiveFrame() {
         r.radar_connected = s.radar.connected;
         r.radar_live = s.radar.live;
         r.time_valid = s.timeValid;
+        // From the recorder, not the snapshot: RideState.sdCard is only filled
+        // in on the UI task's own copy each frame, so g_state always said OK
+        // and the app never saw a missing card (found by the sim, 2026-10-26).
+        const uint8_t card = ride_recorder::sdCardState();
+        r.sd_card = card == SD_CARD_NONE ? otp_link_SdCard_SD_CARD_MISSING
+                  : card == SD_CARD_UNREADABLE ? otp_link_SdCard_SD_CARD_UNREADABLE
+                  : otp_link_SdCard_SD_CARD_OK;
+        r.has_show_offline = true;
+        r.show_offline = settings::showOffline();
     }
     if (t & (1u << otp_link_LiveTopic_LIVE_TOPIC_STOPWATCH)) {
         otp_link_StopwatchState& w = f.stopwatch;
@@ -834,21 +852,50 @@ void onMesh(uint32_t req, const otp_link_MeshCommand& c) {
 
 struct ListWalk {
     int n = 0;
-    bool truncated = false;
+    int dropped = 0;
+    bool newest = false;   // past the cap, keep the newest names (rides)
 };
 
 void collectFile(const char* name, uint32_t size, void* ctx) {
     ListWalk* w = (ListWalk*)ctx;
-    if (w->n >= LIST_MAX) { w->truncated = true; return; }
-    otp_link_FileEntry& e = listBuf[w->n++];
-    copyStr(e.name, sizeof(e.name), name);
-    e.size = size;
+    if (w->n == listCap && listCap < LIST_MAX) {
+        const int cap = std::min(listCap * 2, LIST_MAX);
+        void* p = heap_caps_realloc(listBuf, sizeof(otp_link_FileEntry) * cap, MALLOC_CAP_SPIRAM);
+        if (p) {
+            listBuf = (otp_link_FileEntry*)p;
+            listCap = cap;
+        }
+    }
+    otp_link_FileEntry* e;
+    if (w->n < listCap) {
+        e = &listBuf[w->n++];
+    } else {
+        // Out of room. Ride names are YYYYMMDD-HHMMSS, so the smallest is the
+        // oldest: a newer ride takes its place, and the app always sees the
+        // newest rides there are.
+        ++w->dropped;
+        if (!w->newest) return;
+        int old = 0;
+        for (int i = 1; i < w->n; ++i)
+            if (strcmp(listBuf[i].name, listBuf[old].name) < 0) old = i;
+        if (strcmp(name, listBuf[old].name) <= 0) return;
+        e = &listBuf[old];
+    }
+    copyStr(e->name, sizeof(e->name), name);
+    e->size = size;
 }
 
 void sendFileList(uint32_t req, otp_link_ListKind kind, ble_shared::Dir dir) {
     ListWalk w;
+    w.newest = dir == ble_shared::Dir::Rides;
     ble_shared::listDir(dir, collectFile, &w);   // a missing directory is an empty list
-    if (w.truncated) diag::log("link: list %d cut at %d files", (int)kind, LIST_MAX);
+    if (w.dropped) diag::log("link: list %d cut at %d files (%d left out)", (int)kind, w.n, w.dropped);
+    // Rides newest first, as both apps show them: should the link drop part
+    // way, what arrived is the rides the rider most likely wants.
+    if (w.newest)
+        std::sort(listBuf, listBuf + w.n, [](const otp_link_FileEntry& a, const otp_link_FileEntry& b) {
+            return strcmp(a.name, b.name) > 0;
+        });
     int i = 0;
     do {
         otp_link_FileList& l = msg(req, otp_link_DeviceMsg_file_list_tag).body.file_list;
@@ -1055,6 +1102,9 @@ void onUploadBegin(uint32_t req, const otp_link_UploadBegin& b) {
         case otp_link_Target_TARGET_AGNSS:
             if (b.size > AGNSS_MAX) rc = otp_link_ResultCode_RESULT_TOO_LARGE;
             break;
+        case otp_link_Target_TARGET_SEGMENTS:
+            if (b.size > seg::BLOB_MAX) rc = otp_link_ResultCode_RESULT_TOO_LARGE;
+            break;
         default:
             rc = otp_link_ResultCode_RESULT_UNSUPPORTED;
             why = "target";
@@ -1163,10 +1213,21 @@ bool commitAllowed() {
         return ble_shared::sdFree();
     case otp_link_Target_TARGET_ROUTE:
     case otp_link_Target_TARGET_WORKOUT:
+    case otp_link_Target_TARGET_SEGMENTS:
         return !usb_storage::hostActive();
     default:
         return true;
     }
+}
+
+// The starred set the device holds, for GetSegments and after an upload.
+void sendSegmentsInfo(uint32_t req) {
+    otp_link_SegmentsInfo& g = msg(req, otp_link_DeviceMsg_segments_tag).body.segments;
+    const int n = segments::count();
+    g.present = n >= 0;
+    g.count = n < 0 ? 0 : (uint32_t)n;
+    g.version = seg::BLOB_VERSION;
+    send();
 }
 
 void commitUpload() {
@@ -1249,6 +1310,18 @@ void commitUpload() {
         gps_service::agnssInject(up.buf, up.size);
         gps_service::agnssEnd();   // buffered; the GPS task feeds the module
         break;
+    case otp_link_Target_TARGET_SEGMENTS: {
+        // Validated as a whole, kept on the card and handed to the UI task
+        // (segments.h); a rejected blob leaves the previous set live.
+        const char* err = "rejected";
+        if (!segments::submit(up.buf, up.size, &err)) {
+            rc = otp_link_ResultCode_RESULT_PARSE_ERROR;
+            detail = err;
+        }
+        // What the device holds now, just ahead of the TransferDone.
+        if (up.epoch == S.epoch) sendSegmentsInfo(0);
+        break;
+    }
     default:
         rc = otp_link_ResultCode_RESULT_UNSUPPORTED;
         break;
@@ -1499,6 +1572,8 @@ constexpr otp_link_Feature kFeatures[] = {
     otp_link_Feature_FEATURE_WORKOUTS,
     otp_link_Feature_FEATURE_AGNSS,
     otp_link_Feature_FEATURE_UNPAIR,
+    otp_link_Feature_FEATURE_SEGMENTS,
+    otp_link_Feature_FEATURE_SHOW_PAGE,
 };
 
 // Transfers, scans and queued requests of a session that ended (or an app
@@ -1554,6 +1629,7 @@ void onHello(uint32_t req, const otp_link_Hello& h) {
     d.route_max_bytes = ROUTE_MAX;
     d.workout_max_bytes = WORKOUT_MAX;
     d.max_maneuvers = routes::MAX_MANEUVERS;
+    d.segments_version = seg::BLOB_VERSION;
     if (!send()) return;
 
     // The initial state, unasked.
@@ -1760,6 +1836,10 @@ void dispatch(const otp_link_PhoneMsg& m) {
             m.body.stopwatch.op <= otp_link_StopwatchOp_STOPWATCH_OP_LAP)
             ble_shared::queueStopwatch((uint8_t)m.body.stopwatch.op);
         break;
+    case otp_link_PhoneMsg_show_page_tag:
+        // No reply: the next LiveFrame's ViewState is the answer.
+        ble_shared::queueShowPage(m.body.show_page.page);
+        break;
     case otp_link_PhoneMsg_upload_begin_tag: onUploadBegin(req, m.body.upload_begin); break;
     case otp_link_PhoneMsg_chunk_tag: onChunk(m.body.chunk); break;
     case otp_link_PhoneMsg_upload_end_tag: onUploadEnd(req, m.body.upload_end); break;
@@ -1808,6 +1888,7 @@ void dispatch(const otp_link_PhoneMsg& m) {
         break;
     case otp_link_PhoneMsg_workout_tag: onWorkout(req, m.body.workout); break;
     case otp_link_PhoneMsg_mesh_tag: onMesh(req, m.body.mesh); break;
+    case otp_link_PhoneMsg_get_segments_tag: sendSegmentsInfo(req); break;
     case otp_link_PhoneMsg_agnss_info_tag: {
         const int k = gps_service::moduleKindCode();
         otp_link_AgnssInfo& a = msg(req, otp_link_DeviceMsg_agnss_info_tag).body.agnss_info;
@@ -1966,8 +2047,9 @@ void begin(NimBLEServer* server, uint32_t rxProperties) {
     outMsg = (otp_link_DeviceMsg*)heap_caps_malloc(sizeof(otp_link_DeviceMsg), MALLOC_CAP_SPIRAM);
     txBuf = (uint8_t*)heap_caps_malloc(otp_link_DeviceMsg_size, MALLOC_CAP_SPIRAM);
     ioBuf = (uint8_t*)heap_caps_malloc(4096, MALLOC_CAP_SPIRAM);
-    listBuf = (otp_link_FileEntry*)heap_caps_malloc(sizeof(otp_link_FileEntry) * LIST_MAX,
+    listBuf = (otp_link_FileEntry*)heap_caps_malloc(sizeof(otp_link_FileEntry) * LIST_FIRST,
                                                     MALLOC_CAP_SPIRAM);
+    listCap = listBuf ? LIST_FIRST : 0;
     dashPending = (char*)heap_caps_malloc(sizeof(otp_link_DashConfig::text), MALLOC_CAP_SPIRAM);
     if (!rxAsmBuf || !rxRing || !inMsg || !outMsg || !txBuf || !ioBuf || !listBuf || !dashPending) {
         diag::log("link: out of PSRAM — the phone link is off");
