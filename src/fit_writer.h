@@ -55,10 +55,23 @@ public:
     // Timer-stop event, lap, session, activity, then header/CRC fixup. The
     // summary is folded into the session message (empty for a repaired ride,
     // where only distance/time can be recovered).
+    //
+    // After a failed write (writeFailed()) the file is cut instead: the whole
+    // records that leave room for the closing messages inside the space the
+    // file already holds are kept and finished, with totals replayed from
+    // them, so a full card still ends in a valid, shorter ride (cutShort()).
+    // False when not even that could be written.
     bool finish(time_t endUtc, double totalDistanceM, uint32_t timerS,
                 const Summary& sum);
 
     bool isOpen() const { return (bool)file_; }
+
+    // A write came up short — on a full card, FatFs writes what fits and no
+    // more. From then on records are dropped (the ride keeps timing) and
+    // finish() cuts the file back to what it can close properly.
+    bool writeFailed() const { return everFailed_; }
+    // The last finish() had to drop records to save the ride.
+    bool cutShort() const { return cut_; }
 
     struct RepairResult {
         enum Status {
@@ -111,8 +124,21 @@ private:
     void writeBytes(const uint8_t* data, size_t len);
     void writeDefinition(uint8_t localType, uint16_t globalNum,
                          const uint8_t (*fields)[3], uint8_t fieldCount);
+    void writeFiller(uint32_t len);
+    void writeTail(time_t endUtc, double totalDistanceM, uint32_t timerS,
+                   const Summary& sum);
+    uint32_t sizeOnCard();
+    bool salvage();
+    void track(fs::FS& fs, const char* path);
 
     File file_;
     time_t startUtc_ = 0;
     uint32_t dataSize_ = 0;  // bytes written after the 12-byte header
+    uint32_t records_ = 0;   // records written whole
+    // Where file_ lives, so finish() can reopen it to check or cut it.
+    fs::FS* fs_ = nullptr;
+    char path_[64] = "";
+    bool failed_ = false;       // stop writing: the last write came up short
+    bool everFailed_ = false;   // ... at any point since begin()/resume()
+    bool cut_ = false;
 };

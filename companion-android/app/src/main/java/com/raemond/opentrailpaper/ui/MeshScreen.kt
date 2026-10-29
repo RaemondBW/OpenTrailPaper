@@ -1,5 +1,6 @@
 package com.raemond.opentrailpaper.ui
 
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -18,8 +19,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -35,13 +34,9 @@ import androidx.compose.material.icons.filled.SettingsInputAntenna
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.WifiTetheringOff
-import androidx.compose.material3.Badge
-import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
@@ -53,6 +48,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
@@ -265,42 +261,23 @@ private fun MeshHeader(
     onNodes: () -> Unit,
     onSettings: () -> Unit,
 ) {
-    Row(
-        Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(Modifier.weight(1f)) {
-            Text("Mesh", style = TypeScale.screenTitle, color = Palette.ink)
-            TrackedLabel(subtitle)
-        }
-        if (attached) {
-            Switch(
-                checked = enabled,
-                onCheckedChange = onToggleRadio,
-                colors = SwitchDefaults.colors(
-                    checkedThumbColor = Palette.accentInk,
-                    checkedTrackColor = Palette.accent,
-                ),
-            )
-        }
-        IconButton(onClick = onNodes, enabled = enabled) {
-            BadgedBox(badge = {
-                if (nodeCount > 0) {
-                    Badge(containerColor = Palette.accent, contentColor = Palette.accentInk) {
-                        Text("$nodeCount", style = condensed(11.sp, FontWeight.Bold))
-                    }
-                }
-            }) {
-                Icon(
-                    Icons.Filled.Group,
-                    contentDescription = "Nodes",
-                    tint = if (enabled) Palette.ink else Palette.faint,
+    ScreenHeader("Mesh", subtitle = { TrackedLabel(subtitle) }) {
+        if (attached) EinkSwitch(checked = enabled, onCheckedChange = onToggleRadio)
+        Box {
+            SquareIconButton(Icons.Filled.Group, "Nodes", enabled = enabled, onClick = onNodes)
+            if (nodeCount > 0) {
+                Text(
+                    "$nodeCount", style = barlow(10.sp, FontWeight.Bold), color = Palette.paper,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .offset(x = 6.dp, y = (-6).dp)
+                        .background(Palette.ink)
+                        .border(1.dp, Palette.paper)
+                        .padding(horizontal = 4.dp, vertical = 1.dp),
                 )
             }
         }
-        IconButton(onClick = onSettings) {
-            Icon(Icons.Filled.SettingsInputAntenna, contentDescription = "Radio", tint = Palette.ink)
-        }
+        SquareIconButton(Icons.Filled.SettingsInputAntenna, "Radio", onClick = onSettings)
     }
 }
 
@@ -329,11 +306,11 @@ private fun ChannelBar(
                 val on = c.index == selected
                 Row(
                     Modifier
-                        .background(if (on) Palette.accent else Palette.surface, CircleShape)
+                        .background(if (on) Palette.accent else Palette.surface, RectangleShape)
                         .border(
                             1.dp,
                             if (on) Color.Transparent else Palette.hairline,
-                            CircleShape,
+                            RectangleShape,
                         )
                         .clickable { if (on) onManage() else onSelect(c.index) }
                         .padding(horizontal = 12.dp, vertical = 6.dp),
@@ -361,8 +338,8 @@ private fun ChannelBar(
         Box(
             Modifier
                 .padding(start = 8.dp, end = 16.dp)
-                .background(Palette.surface, CircleShape)
-                .border(1.dp, Palette.hairline, CircleShape)
+                .background(Palette.surface, RectangleShape)
+                .border(Rule.border, Palette.hairline, RectangleShape)
                 .clickable(onClick = onManage)
                 .padding(horizontal = 12.dp, vertical = 8.dp),
         ) {
@@ -464,12 +441,12 @@ private fun MeshBubble(message: MeshMessage, senderName: String) {
                 .weight(1f, fill = false)
                 .background(
                     if (message.outgoing) Palette.accent else Palette.surface,
-                    RoundedCornerShape(18.dp),
+                    RectangleShape,
                 )
                 .border(
                     1.dp,
                     if (message.outgoing) Color.Transparent else Palette.hairline,
-                    RoundedCornerShape(18.dp),
+                    RectangleShape,
                 )
                 .padding(horizontal = 14.dp, vertical = 10.dp),
             horizontalAlignment = if (message.outgoing) Alignment.End else Alignment.Start,
@@ -572,7 +549,7 @@ private fun Composer(
                     },
                     textStyle = barlow(16.sp),
                     maxLines = 4,
-                    shape = RoundedCornerShape(20.dp),
+                    shape = RectangleShape,
                     keyboardOptions = KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Send),
                     keyboardActions = KeyboardActions(onSend = { if (canSend) onSend() }),
                     colors = TextFieldDefaults.colors(
@@ -588,7 +565,7 @@ private fun Composer(
                 Box(
                     Modifier
                         .size(42.dp)
-                        .background(if (canSend) Palette.accent else Palette.faint, CircleShape)
+                        .background(if (canSend) Palette.accent else Palette.faint, RectangleShape)
                         .clickable(enabled = canSend, onClick = onSend),
                     contentAlignment = Alignment.Center,
                 ) {

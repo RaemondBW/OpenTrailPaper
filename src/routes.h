@@ -37,6 +37,7 @@ float remainingKm();
 // Maneuvers (turn cues) are uploaded alongside the route geometry. The
 // device prompts to start navigation, then shows the next turn.
 constexpr int MANEUVER_TEXT = 48;
+constexpr int MAX_MANEUVERS = 128;   // addManeuver ignores any past this
 
 void clearManeuvers();
 void addManeuver(double lat, double lon, const char* instruction);

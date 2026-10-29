@@ -80,6 +80,11 @@ object Prefs {
     var mapLayersSupported: Set<String>
         get() = sp.getStringSet("mapLayersSupported", emptySet()) ?: emptySet()
         set(v) = sp.edit().putStringSet("mapLayersSupported", v).apply()
+    // Dashboard content pages each device holds (DeviceHello.dash_max_pages),
+    // so the editor offers the right number while disconnected.
+    var dashMaxPagesByDevice: Map<String, Long>
+        get() = stamps("dashMaxPages")
+        set(v) = sp.edit().putStringSet("dashMaxPages", v.map { "${it.key}=${it.value}" }.toSet()).apply()
     var mapLayersLastDevice: String?
         get() = sp.getString("mapLayersLastDevice", null)
         set(v) = sp.edit().putString("mapLayersLastDevice", v).apply()

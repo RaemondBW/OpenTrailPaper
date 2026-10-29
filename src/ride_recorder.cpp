@@ -24,6 +24,11 @@ namespace {
 
 FitWriter fit;
 bool sdOk = false;
+// Whether the last mount attempt found a card at all: it answered CMD0 but
+// SD.begin() still failed. That is a card the FAT driver cannot read — exFAT
+// (the SDXC default; FatFs is built with FF_FS_EXFAT 0) or unformatted — and
+// the rider fixes it differently from an empty slot, so the UI says which.
+bool cardAnswered = false;
 // Set when a mount succeeds AFTER boot gave up. Everything gated on the boot
 // mount (routes, the map index, USB mass storage) was skipped in that case and
 // has to be re-run, or the card sits mounted and completely unused.
@@ -36,6 +41,10 @@ char ridePath[48];
 // there. Only startRide()/stopRide() move this.
 bool rideActive = false;
 bool loggedFileLost = false;   // so a lost handle logs once, not once a second
+// A ride file write came up short (FitWriter::writeFailed): noticed once, and
+// whether it was the card filling up, which the rider is told about.
+bool fileWriteFailed = false;
+bool cardFull = false;
 
 double lastLat = 0, lastLon = 0;
 bool havePrevFix = false;
@@ -523,6 +532,7 @@ bool mountLocked(bool logFailures) {
         {1000, 1000000},   // last-ditch, slow clock for a marginal card
     };
     unsigned attempt = 0;
+    bool answered = false;   // published once at the end: read lock-free
     for (auto& a : kAttempts) {
         ++attempt;
         uint32_t f = a.freq;
@@ -530,6 +540,7 @@ bool mountLocked(bool logFailures) {
         uint32_t start = millis();
         diag::storageStage(2, attempt);
         SdProbe probe = sdSpiForceIdle();
+        if (probe.r1 == 1) answered = true;
         if (logFailures)
             diag::log("sd probe: try=%u uptime=%lu ready=%d wait=%lu cmd0=0x%02x "
                       "cmd8=0x%02x echo=0x%08lx CS=%d/%d MISO=%d",
@@ -549,6 +560,7 @@ bool mountLocked(bool logFailures) {
             diag::log("sd mount: OK try=%u clock=%luHz duration=%lums type=%u size=%lluMB",
                       attempt, (unsigned long)f, (unsigned long)(millis() - start),
                       SD.cardType(), SD.cardSize() / (1024ULL * 1024ULL));
+            cardAnswered = true;
             return true;
         }
         if (logFailures) {
@@ -567,6 +579,7 @@ bool mountLocked(bool logFailures) {
         SD.end();
         diag::drainDriverLogs();
     }
+    cardAnswered = answered;
     return false;
 }
 
@@ -603,6 +616,23 @@ bool begin() {
     // task calls recoverRides() once it is running, still before usb_storage
     // hands the card to a host.
     return true;
+}
+
+// Once per ride, the first time the FIT writer reports a short write: say
+// what happened, and if it is the card filling up, put it in front of the
+// rider (status bar, end-of-ride sheet). The ride keeps timing either way.
+static void noteWriteFailure() {
+    if (fileWriteFailed || !fit.writeFailed()) return;
+    fileWriteFailed = true;
+    cardFull = sdFreeMB() == 0;
+    if (cardFull) {
+        diag::log("rec: SD card full — ride file stops at %lu s; the ride keeps "
+                  "timing", (unsigned long)timerS);
+        g_state.with([](RideState& st) { st.cardFull = true; });
+    } else {
+        diag::log("rec: ride file write failed (%s) at %lu s — records not being "
+                  "written", ridePath, (unsigned long)timerS);
+    }
 }
 
 void startRide() {
@@ -644,6 +674,7 @@ void startRide() {
     resetStats();
     rideActive = true;
     loggedFileLost = false;
+    fileWriteFailed = cardFull = false;
     g_state.with([](RideState& st) {
         st.recording = true;
         st.ridePaused = false;
@@ -654,6 +685,7 @@ void startRide() {
         st.gradeValid = false;
     });
     diag::log("ride start -> %s", ridePath);
+    noteWriteFailure();   // a card already full fails the very first bytes
 }
 
 void stopRide(bool save) {
@@ -665,13 +697,22 @@ void stopRide(bool save) {
     endUtc = s.timeValid ? s.utc : startUtc + timerS + pausedS;
     RideSummary sm = summary();   // fold the roll-up into the FIT session message
     sdLock();
-    fit.finish(endUtc, distanceM, timerS,
-               {movingS, sm.avgSpeedKmh, sm.avgPowerW, sm.normPowerW,
-                sm.avgHrBpm, (float)climbedM});
+    const bool saved = fit.finish(endUtc, distanceM, timerS,
+                                  {movingS, sm.avgSpeedKmh, sm.avgPowerW, sm.normPowerW,
+                                   sm.avgHrBpm, (float)climbedM});
     if (!save) SD.remove(ridePath);
     sdUnlock();
+    noteWriteFailure();   // the closing writes can be the ones that don't fit
+    const char* why = cardFull ? "SD card full"
+                    : fit.writeFailed() ? "SD write failed" : "ride file lost";
     if (!save) {
         diag::log("ride discarded");
+    } else if (!saved) {
+        diag::log("rec: ride NOT saved (%s): %s", why, ridePath);
+    } else if (fit.cutShort()) {
+        // A valid file, but not the whole ride: say so, never plain "saved".
+        diag::log("rec: ride cut short (%s) and kept up to there: %.2f km "
+                  "ridden, %lu s", why, distanceM / 1000.0, (unsigned long)timerS);
     } else {
         diag::log("ride saved: %.2f km, %lu s (+%lu s paused)", distanceM / 1000.0,
                   (unsigned long)timerS, (unsigned long)pausedS);
@@ -679,6 +720,7 @@ void stopRide(bool save) {
                       distanceM / 1000.0, (unsigned long)timerS,
                       (unsigned long)pausedS);
     }
+    fileWriteFailed = cardFull = false;
     // Ride is over — clear the trip so the dashboard reads zero, ready for the
     // next ride (the summary was already captured before stopping).
     resetStats();
@@ -690,6 +732,7 @@ void stopRide(bool save) {
         st.movingS = 0;
         st.climbedM = 0;
         st.gradeValid = false;
+        st.cardFull = false;
     });
 }
 
@@ -738,6 +781,7 @@ RideSummary summary() {
     r.endUtc = endUtc ? endUtc : startUtc + timerS + pausedS;
     r.tzMin = g_state.snapshot().tzMin;
     r.useMiles = g_state.snapshot().useMiles;
+    r.cardFull = cardFull;
     return r;
 }
 
@@ -894,6 +938,12 @@ void recoverRides() {
 
 // SD is "unavailable" to the firmware while a host computer owns it over USB.
 bool sdMounted() { return sdOk && !usb_storage::hostActive(); }
+
+// A card lent to a USB host is still a card: only a failed mount counts here.
+uint8_t sdCardState() {
+    if (sdOk) return SD_CARD_OK;
+    return cardAnswered ? SD_CARD_UNREADABLE : SD_CARD_NONE;
+}
 
 // One readdir() pass over the directory, NOT File::openNextFile(): that wraps
 // every entry in a File, which stat()s and fopen()s it by path — and each of
@@ -1242,6 +1292,7 @@ void task(void*) {
             sdLock();
             fit.writeRecord(r);
             sdUnlock();
+            noteWriteFailure();
         }
 
         g_state.with([&](RideState& st) {
@@ -1260,6 +1311,7 @@ void task(void*) {
             sdLock();
             fit.checkpoint();
             sdUnlock();
+            noteWriteFailure();
             lastFlushS = timerS;
         }
     }

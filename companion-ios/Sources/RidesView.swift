@@ -296,6 +296,7 @@ private struct RideRow: View {
     let onTap: () -> Void
     let onDelete: () -> Void
     @AppStorage(UnitPref.key) private var useMiles = false
+    @ObservedObject private var names = RideNames.shared
 
     var body: some View {
         Button(action: onTap) {
@@ -457,8 +458,10 @@ private struct RideRow: View {
         return String(format: "%d:%02d", m / 60, m % 60)
     }
 
-    // Human name like "Saturday afternoon ride" from the file's timestamp.
+    // The rider's name for it (renamed on upload), else a human name like
+    // "Saturday afternoon ride" from the file's timestamp.
     private var rideName: String {
+        if let n = names.names[ride.name] { return n }
         guard let d = RidesView.rideDate(ride.name) else { return ride.name }
         let wd = d.formatted(.dateTime.weekday(.wide))
         let h = Calendar.current.component(.hour, from: d)

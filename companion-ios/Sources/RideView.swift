@@ -4,8 +4,8 @@ import MediaPlayer
 
 // The Ride tab is the head unit's live dashboard on the phone: the same pages,
 // laid out the way the device packs them (DashLayout), filled with what the
-// device streams over BLE: the live state stream (DeviceLive) while this tab
-// is up and the firmware has it, else the 1 Hz status characteristic. Fields
+// device streams over BLE: LiveFrames on the phone link (DeviceLive), with the
+// parts the page in view needs, else the 1 Hz status characteristic. Fields
 // neither carries, and everything while disconnected, read "--" — the last
 // known layout stays on screen.
 struct RideView: View {
@@ -66,7 +66,8 @@ struct RideView: View {
             }
             .sheet(isPresented: $showWorkouts) { WorkoutsView() }
             .onAppear {
-                ble.liveViewer(true)   // stream while this tab is up
+                ble.liveViewer(true)   // the page's topics while this tab is up
+                ble.liveTopicsInView(liveTopics)
                 ble.refreshSensors()
                 // The session may have changed on the device while this tab
                 // was away; ask rather than trust the last notify.
@@ -84,6 +85,9 @@ struct RideView: View {
             .onDisappear { ble.liveViewer(false) }
             .onChange(of: ble.state) { _, st in if st == .connected { ble.refreshSensors() } }
             .onChange(of: config.pages.count) { _, n in if pageIx > n { pageIx = 0 } }
+            .onChange(of: liveTopics) { _, t in ble.liveTopicsInView(t) }
+            // Paging here pages the panel too (not while editing a layout).
+            .onChange(of: pageIx) { _, i in if !editing && connected { ble.showDevicePage(i) } }
         }
     }
 
@@ -168,6 +172,7 @@ struct RideView: View {
             WarningBanner(title: "Bluetooth is off",
                           message: "Turn it on in Control Centre to connect.")
         }
+        if connected && ble.status.sdCard.isProblem { SDCardNotice(state: ble.status.sdCard) }
         if ble.dashTarget == nil {
             WarningBanner(title: "Default layout",
                           message: "Connect once to load your device's own dashboard pages.",
@@ -251,6 +256,7 @@ struct RideView: View {
         case .music: return "MUSIC"
         case .workout: return "WORKOUT"
         case .stopwatch: return "STOPWATCH"
+        case .segment: return "SEGMENT"
         }
     }
 
@@ -311,6 +317,9 @@ struct RideView: View {
                         }
                         if !c.hasStopwatchPage {
                             Button { addPage(.stopwatch) } label: { Label("Stopwatch", systemImage: "stopwatch") }
+                        }
+                        if !c.hasSegmentPage {
+                            Button { addPage(.segment) } label: { Label("Segment", systemImage: "flag.checkered") }
                         }
                     } label: {
                         BlockButtonLabel(title: "Choose a page", systemImage: "plus")
@@ -448,6 +457,15 @@ struct RideView: View {
         }
     }
 
+    /// `page segment` / `page segment manual` for the page being edited.
+    private var segmentAutoShow: Binding<Bool> {
+        Binding(get: { draft.pages.indices.contains(pageIx) ? draft.pages[pageIx].autoShow : true },
+                set: { v in
+                    guard draft.pages.indices.contains(pageIx) else { return }
+                    draft.pages[pageIx].autoShow = v
+                })
+    }
+
     /// What there is to set on a page that isn't laid out by hand.
     @ViewBuilder private func pageSettings(_ p: DashConfig.Page) -> some View {
         switch p.kind {
@@ -489,6 +507,18 @@ struct RideView: View {
                     .font(BarlowFont.text(13)).foregroundStyle(Palette.muted)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
+        case .segment:
+            Group {
+                VStack(alignment: .leading, spacing: 10) {
+                    Toggle(isOn: segmentAutoShow) {
+                        Text("Switch to this page when a segment starts")
+                            .font(BarlowFont.text(14, .semibold)).foregroundStyle(Palette.ink)
+                    }
+                    Text("Live Strava segments: sync your starred ones in Settings › Accounts › Strava. Efforts are timed on any page. Needs device firmware v1.23 or newer.")
+                        .font(BarlowFont.text(12.5)).foregroundStyle(Palette.muted)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
         case .fields:
             EmptyView()
         }
@@ -502,7 +532,9 @@ struct RideView: View {
                 DashPreview(layout: p?.layout ?? .deviceDefault,
                             liveText: { liveText($0, now: now) },
                             liveWatts: liveWatts,
-                            ftp: Double(ble.ftpWatts))
+                            ftp: Double(ble.ftpWatts),
+                            available: frame.map { f in { f.fieldAvailable($0) } },
+                            hidesUnavailable: frame?.showOffline == false)
                     .frame(width: 540 * k)
                     .offset(y: 64 * k)
             }
@@ -519,6 +551,29 @@ struct RideView: View {
                                actions: connected ? workoutActions : nil)
         case .stopwatch:
             stopwatchPage(status)
+        case .segment:
+            // The device doesn't stream its segment state: the page's tiles
+            // as it draws them, every value "--".
+            SegmentPagePreview(status: status, model: .placeholder,
+                               note: ble.deviceSegmentCount.map {
+                                   "\($0) starred segment\($0 == 1 ? "" : "s") on the device"
+                               } ?? "Live segment times show on the device")
+        }
+    }
+
+    /// What the device should stream for the page in view, besides RIDE
+    /// (always on): the stopwatch, the player, the map's position and view,
+    /// and radar where a tile shows it.
+    private var liveTopics: Set<LinkLiveTopic> {
+        let pages = config.pages
+        guard pageIx < pages.count else { return [] }
+        let p = pages[pageIx]
+        switch p.kind {
+        case .stopwatch: return [.stopwatch]
+        case .music: return [.music]
+        case .map: return config.mapFields.contains("radar") ? [.position, .view, .radar] : [.position, .view]
+        case .fields: return p.layout.items.contains { $0.field == "radar" } ? [.radar] : []
+        case .workout, .segment: return []
         }
     }
 
@@ -681,7 +736,9 @@ struct RideView: View {
         let elevUnit = Units.elevLabel(useMiles).uppercased()
         switch field {
         case "speed":
-            let v = live ? Units.speed(f?.speedKmh ?? s.speedKmh, miles: useMiles) : nil
+            // A frame's absent speed is "no reading"; the status's is 0.
+            let kmh = f.map(\.speedKmh) ?? s.speedKmh
+            let v = live ? kmh.map { Units.speed($0, miles: useMiles) } : nil
             return DashValue(text: one(v), unit: speedUnit)
         case "avgspeed":
             return DashValue(text: one(f.map { Units.speed($0.avgSpeedKmh, miles: useMiles) }), unit: speedUnit)

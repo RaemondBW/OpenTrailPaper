@@ -19,8 +19,6 @@ import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.DirectionsBike
 import androidx.compose.material.icons.filled.Add
@@ -31,7 +29,6 @@ import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Route
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.Lock
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -52,6 +49,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
@@ -100,13 +98,13 @@ fun RouteSourceSheet(
         onDismissRequest = onDismiss,
         sheetState = state,
         containerColor = Palette.paper,
-        shape = RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp),
+        shape = RectangleShape,
         dragHandle = {
             Box(
                 Modifier
                     .padding(top = 10.dp, bottom = 4.dp)
                     .size(width = 38.dp, height = 5.dp)
-                    .background(Palette.hairline, RoundedCornerShape(3.dp)),
+                    .background(Palette.hairline),
             )
         },
     ) {
@@ -187,7 +185,7 @@ private fun SourceRow(
         horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         Box(
-            Modifier.size(44.dp).background(Palette.accentWash, RoundedCornerShape(12.dp)),
+            Modifier.size(44.dp).background(Palette.accentWash),
             contentAlignment = Alignment.Center,
         ) {
             Icon(icon, null, tint = Palette.accent, modifier = Modifier.size(22.dp))
@@ -195,7 +193,7 @@ private fun SourceRow(
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(title, style = condensed(21.sp, FontWeight.SemiBold), color = Palette.ink)
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                if (connected) Box(Modifier.size(7.dp).background(Palette.good, CircleShape))
+                if (connected) Box(Modifier.size(7.dp).background(Palette.good, RectangleShape))
                 Text(detail, style = barlow(13.sp), color = Palette.muted)
             }
         }
@@ -326,7 +324,7 @@ fun CloudRoutesSheet(
                         loading && routes.isEmpty() -> Box(
                             Modifier.fillMaxWidth().padding(vertical = 40.dp),
                             contentAlignment = Alignment.Center,
-                        ) { CircularProgressIndicator(color = Palette.accent) }
+                        ) { BlockSpinner() }
                         // The LazyColumn only composes this footer once it scrolls
                         // into view, so reaching the bottom loads the next page
                         // (and again straight away if a short page leaves it on screen).
@@ -359,8 +357,8 @@ private fun CloudRouteRow(
         Modifier
             .fillMaxWidth()
             .alpha(if (dimmed) 0.45f else 1f)
-            .background(Palette.surface, RoundedCornerShape(18.dp))
-            .border(1.dp, Palette.hairline, RoundedCornerShape(18.dp))
+            .background(Palette.surface)
+            .border(Rule.border, Palette.hairline)
             .clickable(enabled = enabled, onClick = onClick)
             .padding(start = 12.dp, top = 12.dp, bottom = 12.dp, end = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -391,7 +389,7 @@ private fun CloudRouteRow(
             }
         }
         if (importing) {
-            CircularProgressIndicator(Modifier.size(18.dp), color = Palette.accent, strokeWidth = 2.dp)
+            BlockSpinner()
         } else {
             Icon(Icons.Filled.ChevronRight, null, tint = Palette.faint, modifier = Modifier.size(22.dp))
         }
@@ -416,8 +414,8 @@ private fun RouteThumb(shape: List<LatLon>?) {
     Box(
         Modifier
             .size(58.dp)
-            .background(Palette.paper, RoundedCornerShape(12.dp))
-            .border(1.dp, Palette.hairline, RoundedCornerShape(12.dp)),
+            .background(Palette.paper)
+            .border(Rule.border, Palette.hairline),
         contentAlignment = Alignment.Center,
     ) {
         if (shape == null) {
@@ -460,9 +458,7 @@ private fun LoadingMore() {
         horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        CircularProgressIndicator(
-            Modifier.size(16.dp), color = Palette.accent, trackColor = Palette.hairline, strokeWidth = 2.5.dp,
-        )
+        BlockSpinner()
         TrackedLabel("Loading more")
     }
 }
@@ -542,7 +538,7 @@ private fun PrivateRoutesNote() {
     Row(
         Modifier
             .fillMaxWidth()
-            .background(Palette.accentWash, RoundedCornerShape(18.dp))
+            .background(Palette.accentWash)
             .padding(horizontal = 16.dp, vertical = 14.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
@@ -569,8 +565,8 @@ private fun RoundIconButton(
     Box(
         Modifier
             .size(44.dp)
-            .background(Palette.surface, CircleShape)
-            .border(1.dp, Palette.hairline, CircleShape)
+            .background(Palette.surface, RectangleShape)
+            .border(Rule.border, Palette.hairline, RectangleShape)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {

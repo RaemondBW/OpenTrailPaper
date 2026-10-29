@@ -1,0 +1,148 @@
+{
+ "version": 0.6,
+ "generator": "Overpass API (sim fixture, build_poi_fixture.py)",
+ "osm3s": {
+  "timestamp_osm_base": "2026-10-08T20:21:06Z",
+  "copyright": "Made-up POIs for the OpenTrailPaper sim tests."
+ },
+ "elements": [
+  {
+   "type": "node",
+   "id": 9100000001,
+   "lat": 41.97105,
+   "lon": -72.0397,
+   "tags": {
+    "amenity": "drinking_water",
+    "name": "Common water fountain"
+   }
+  },
+  {
+   "type": "node",
+   "id": 9100000002,
+   "lat": 41.9672,
+   "lon": -72.0445,
+   "tags": {
+    "amenity": "toilets",
+    "drinking_water": "yes",
+    "access": "yes"
+   }
+  },
+  {
+   "type": "node",
+   "id": 9100000003,
+   "lat": 41.9745,
+   "lon": -72.0352,
+   "tags": {
+    "amenity": "bicycle_repair_station",
+    "service:bicycle:tools": "yes",
+    "service:bicycle:stand": "yes"
+   }
+  },
+  {
+   "type": "node",
+   "id": 9100000004,
+   "lat": 41.962,
+   "lon": -72.029,
+   "tags": {
+    "shop": "bicycle",
+    "name": "Quiet Corner Cycles",
+    "service:bicycle:repair": "yes",
+    "service:bicycle:retail": "yes",
+    "service:bicycle:rental": "yes"
+   }
+  },
+  {
+   "type": "way",
+   "id": 9200000005,
+   "center": {
+    "lat": 41.958,
+    "lon": -72.05
+   },
+   "nodes": [
+    9300000001,
+    9300000002,
+    9300000003,
+    9300000004,
+    9300000001
+   ],
+   "tags": {
+    "amenity": "toilets",
+    "building": "yes",
+    "seasonal": "summer"
+   }
+  },
+  {
+   "type": "node",
+   "id": 9100000006,
+   "lat": 42.0,
+   "lon": -72.0,
+   "tags": {
+    "man_made": "water_tap",
+    "drinking_water": "yes"
+   }
+  },
+  {
+   "type": "node",
+   "id": 9100000007,
+   "lat": 41.945,
+   "lon": -72.0,
+   "tags": {
+    "amenity": "fountain",
+    "drinking_water": "yes",
+    "fee": "no"
+   }
+  },
+  {
+   "type": "node",
+   "id": 9100000008,
+   "lat": 41.995,
+   "lon": -72.075,
+   "tags": {
+    "amenity": "drinking_water",
+    "access": "customers"
+   }
+  },
+  {
+   "type": "node",
+   "id": 9100000009,
+   "lat": 41.935,
+   "lon": -72.08,
+   "tags": {
+    "shop": "bicycle",
+    "service:bicycle:second_hand": "yes",
+    "service:bicycle:ebike": "yes",
+    "service:bicycle:pump": "yes"
+   }
+  },
+  {
+   "type": "node",
+   "id": 9100000010,
+   "lat": 41.969,
+   "lon": -72.042,
+   "tags": {
+    "amenity": "toilets",
+    "access": "private"
+   }
+  },
+  {
+   "type": "node",
+   "id": 9100000011,
+   "lat": 41.9705,
+   "lon": -72.036,
+   "tags": {
+    "man_made": "water_tap",
+    "drinking_water": "no"
+   }
+  },
+  {
+   "type": "node",
+   "id": 9100000012,
+   "lat": 41.965,
+   "lon": -72.033,
+   "tags": {
+    "amenity": "bicycle_repair_station",
+    "service:bicycle:pump": "yes"
+   }
+  }
+ ]
+}

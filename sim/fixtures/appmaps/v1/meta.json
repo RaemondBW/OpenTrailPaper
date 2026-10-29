@@ -1,0 +1,48 @@
+{
+ "version": "v1",
+ "merged": "2026-10-10T08:53:36.380Z",
+ "cells": 7364691,
+ "groups": 23073,
+ "fragments": {
+  "us_connecticut": {
+   "region": "us/connecticut",
+   "phase": "interior",
+   "osm": "2026-10-08T20:21:06Z",
+   "built": "2026-10-10T05:12:54.935Z",
+   "cells": 119,
+   "fresh": false
+  },
+  "us_connecticut.border": {
+   "region": "us/connecticut",
+   "phase": "border",
+   "osm": "2026-10-08T20:21:06Z",
+   "built": "2026-10-10T05:55:23.975Z",
+   "cells": 259,
+   "fresh": false
+  },
+  "us_massachusetts": {
+   "region": "us/massachusetts",
+   "phase": "interior",
+   "osm": "2026-10-08T20:21:06Z",
+   "built": "2026-10-10T04:45:53.973Z",
+   "cells": 985,
+   "fresh": false
+  },
+  "us_massachusetts.border": {
+   "region": "us/massachusetts",
+   "phase": "border",
+   "osm": "2026-10-08T20:21:06Z",
+   "built": "2026-10-10T05:55:29.929Z",
+   "cells": 498,
+   "fresh": false
+  },
+  "us_rhode-island.border": {
+   "region": "us/rhode-island",
+   "phase": "border",
+   "osm": "2026-10-08T20:21:06Z",
+   "built": "2026-10-10T05:55:29.943Z",
+   "cells": 131,
+   "fresh": false
+  }
+ }
+}
