@@ -148,18 +148,26 @@ class FirmwareSim private constructor(
     fun loraRx(frame: ByteArray, rssi: Int? = null, snr: Int? = null): JsonObject =
         cmd("lora_rx", "hex" to frame.joinToString("") { "%02x".format(it) }, "rssi" to rssi, "snr" to snr)
 
-    /** What the device transmitted after [since] (a seq), and the last seq. */
+    /**
+     * What the device transmitted after [since] (a seq), and the seq of the
+     * last one returned. The sim logs a transmission as it starts; only those
+     * finished (and re-armed for: the firmware's mesh task polls every
+     * 250 ms) are returned, so a test that answers one is not answering into
+     * a radio still transmitting. The rest come on a later call.
+     */
     fun loraTx(since: Long = 0): Pair<List<LoraFrame>, Long> {
         val r = cmd("lora_tx", "since" to since)
-        val frames = r.getAsJsonArray("frames").map {
-            val o = it.asJsonObject
-            val hex = o.get("hex").asString
-            LoraFrame(
-                o.get("seq").asLong, o.get("start_ms").asLong, o.get("end_ms").asLong, o.get("freq_mhz").asDouble,
-                ByteArray(hex.length / 2) { i -> hex.substring(2 * i, 2 * i + 2).toInt(16).toByte() },
-            )
-        }
-        return frames to r.get("seq").asLong
+        val now = r.get("now_ms").asLong
+        val frames = r.getAsJsonArray("frames").map { it.asJsonObject }
+            .takeWhile { it.get("end_ms").asLong + 300 <= now }
+            .map { o ->
+                val hex = o.get("hex").asString
+                LoraFrame(
+                    o.get("seq").asLong, o.get("start_ms").asLong, o.get("end_ms").asLong, o.get("freq_mhz").asDouble,
+                    ByteArray(hex.length / 2) { i -> hex.substring(2 * i, 2 * i + 2).toInt(16).toByte() },
+                )
+            }
+        return frames to (frames.lastOrNull()?.seq ?: since)
     }
 
     /** The radio's state and counters (control `lora`). */
