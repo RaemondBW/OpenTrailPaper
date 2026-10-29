@@ -179,6 +179,22 @@ restarts the firmware (control `reboot`) and reattaches the control channel.
   never sent nor reported; eight data pages on the card lose the map; a
   compact card file over 2 KB once padded reaches the app cut off.
 
+### Routes
+
+`RouteSimTest` runs RouteScreen's Send path on a planner-style GPX (metadata
+bounds, waypoints ahead of the track, ele/time): GpxImporter →
+DeviceText.routeFileName → GpxExporter → `BleManager.uploadRoute`, and reads
+the device's card and status `nav`:
+
+- `importedGpxReachesTheDeviceAsTheRouteTheAppShowed`: the card holds the
+  app's GPX byte for byte under the app's name; every point, no waypoint; the
+  device's route as long as the app measured; the NAVIGATE prompt with the cues.
+- `routesAreListedAndDeletedFromTheApp`: `refreshRoutes` lists the card;
+  `deleteRoute` removes the file and unloads the route the device had loaded.
+- `aTrackOverTheDeviceCapIsThinnedOnceByTheApp` (`@Ignore`, a bug): an
+  8,192-point track is thinned to 4,097 points, one over the device's cap,
+  which then halves it again.
+
 ### The tile CDN override (debug builds)
 
 `files/otp-endpoints` (`map/DebugEndpoints.kt`, src/debug; the release copy

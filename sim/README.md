@@ -165,6 +165,25 @@ that jumps across the map, line noise, a GPS week rollover and a ride across
 UTC midnight. [tests/test_endurance.py](tests/test_endurance.py) (slow) rides
 four hours watching memory.
 
+## Routes, navigation and segments
+
+[tests/test_navigation.py](tests/test_navigation.py) sends routes as the apps
+do (GPX upload, cues, RouteFinish) and as a rider copies them onto the card,
+then rides them with the GPS model: storage and naming, refusals, delete,
+reload from NAVIGATE after a reboot, the countdown to each turn, out-and-backs,
+detours and rejoining, joining midway, arrival, the NAVIGATE prompt, the cue
+cap, very long tracks, recording while navigating, and the route's ridden /
+ahead styles on the glass. [tests/test_segments.py](tests/test_segments.py)
+syncs starred Strava segments (segment_match.h's blob) and rides through
+them, reading the SEGMENT page's matcher through the control `segments`
+command.
+
+That command needs ui_dashboard.cpp's file-local matcher, so the sim builds
+`sim/host/tu/ui_dashboard.cpp` — which `#include`s the firmware file unchanged
+and adds read-only hooks after it — in place of `src/ui_dashboard.cpp`
+(build.sh rebuilds it whenever the firmware file changes). Further hooks into
+that file's state go there too.
+
 `SimPhone.pace_writes(interval_ms, per_event)` paces the phone's own writes
 like a connection interval; the sim's `--conn-interval-ms` paces only the
 device's notifications.

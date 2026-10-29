@@ -173,6 +173,10 @@ jobs:
             tests: test_workouts.py
           - part: dashboard and settings
             tests: test_dashboard.py test_settings.py test_stopwatch.py
+          - part: navigation
+            tests: test_navigation.py
+          - part: segments
+            tests: test_segments.py
     env:
       OTP_SIM_TIME_SCALE: "3"   # wall-clock bounds in the tests, for a slower runner
     steps:

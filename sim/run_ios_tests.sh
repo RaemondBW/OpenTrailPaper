@@ -97,6 +97,15 @@ with open(sys.argv[1], "w") as specs, open(sys.argv[2], "w") as man:
 EOF
 "$BIN" card-tool fit "$RIDES" <"$RIDES/specs.txt" >/dev/null
 
+# Route files in the simulator's Files app ("On My iPhone"), for the route
+# import test's document picker (sim/fixtures/routes).
+FILES=$(xcrun simctl get_app_container "$UDID" com.apple.DocumentsApp groups 2>/dev/null |
+    awk '$1 == "group.com.apple.FileProvider.LocalStorage" { $1 = ""; sub(/^ /, ""); print }')
+if [ -n "$FILES" ]; then
+    mkdir -p "$FILES/File Provider Storage"
+    cp sim/fixtures/routes/*.gpx "$FILES/File Provider Storage/"
+fi
+
 # The app's log ([ble], [link], [sim-ble] lines), for reading after a run.
 start_app_log() {
     xcrun simctl spawn "$UDID" log stream --style compact \

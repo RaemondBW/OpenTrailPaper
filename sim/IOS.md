@@ -201,3 +201,13 @@ Not covered on iOS (the Android suite covers them): MTU (SimRadio's is
 fixed), uploads to Strava / Intervals / RideWithGPS (the tokens live in the
 Keychain, out of a UI test's reach), the firmware update (its release comes
 from GitHub, with no debug-only override).
+
+### Routes
+
+`testN01_GpxImportedThroughFilesReachesTheDevice`: Route → Import a route → GPX file
+→ the system document picker → On My iPhone → `lost_lake_loop.gpx` → Send to
+device. run_ios_tests.sh copies `sim/fixtures/routes/*.gpx` into the
+simulator's Files storage (the `group.com.apple.FileProvider.LocalStorage`
+container) before the run. The device must hold the file's 400 track points
+(not its waypoints) as `routes/lost_lake_loop.gpx`, loaded, 6 km long, and the
+app must say the device received it.

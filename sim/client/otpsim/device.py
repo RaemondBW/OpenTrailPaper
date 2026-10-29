@@ -285,6 +285,15 @@ class SimDevice:
         """The WORKOUT page's model (status "workout")."""
         return self.status()["workout"]
 
+    # ---- segments (cov/nav) ----
+    def segments(self):
+        """The SEGMENT page's matcher (host/tu/ui_dashboard.cpp): `count` (the
+        set accepted, segments::count), `loaded` (adopted by the UI task),
+        `phase` of the primary segment, and `list`: each relevant segment's
+        name, phase, elapsed_ms, done_m, len_m, pr_s, delta_ms, new_pr, ..."""
+        return self.cmd("segments")["segments"]
+    # ---- end segments ----
+
     def reboot(self, timeout=30):
         seq = 0
         self.cmd("reboot")

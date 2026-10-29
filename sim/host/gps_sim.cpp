@@ -220,9 +220,16 @@ void sim::gpsBegin() {
     };
     std::thread([] {
         pthread_setname_np("gps_module");
+        // 1 Hz on a schedule, not "sleep a second after each tick": the tick's
+        // own time (more of it at a sped-up clock) would otherwise stretch
+        // every second, and a rider at 36 km/h covered 1 km in 103 s.
+        uint64_t next = sim_clock::micros64() / 1000 + 1000;
         for (;;) {
-            sim_clock::sleepMs(1000);
+            const uint64_t now = sim_clock::micros64() / 1000;
+            if (next > now) sim_clock::sleepMs((uint32_t)(next - now));
             tick();
+            next += 1000;
+            if (now > next + 5000) next = now + 1000;   // the clock jumped: don't race to catch up
         }
     }).detach();
 }

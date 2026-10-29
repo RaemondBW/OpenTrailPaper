@@ -29,6 +29,7 @@
 #include <unistd.h>
 
 extern SharedRideState g_state;
+namespace sim { std::string segmentsJson(); }   // host/tu/ui_dashboard.cpp
 std::string sensorCommand(const json::Value& r);   // sensors_sim.cpp
 // -- sensors / radar / media inspection (sensors_sim.cpp, media_sim.cpp) --
 std::string sensorStateCommand(const json::Value& r);
@@ -419,6 +420,9 @@ std::string handle(const json::Value& r) {
     }
     // ---- end link pace ----
 
+    // ---- segments (cov/nav) ----
+    if (cmd == "segments") return ok("\"segments\":" + sim::segmentsJson());
+    // ---- end segments ----
     return "\"ok\":false,\"error\":" + json::esc("unknown cmd '" + cmd + "'");
 }
 

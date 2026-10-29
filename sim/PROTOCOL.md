@@ -146,6 +146,7 @@ Asynchronous events (log lines, when subscribed) come as `{"event":…}`.
 | `subscribe_log` | `on` | streams log lines as events |
 | `reboot` | — | restarts the firmware (NVS and card kept): a power cut — RTC memory lost, the next boot is a power-on |
 | `link_pace` | `interval_ms`, `packets`, `window` (each optional) | changes the phone link's pace live, as `--conn-interval-ms` / `--packets-per-event` / `--notify-window` set it at start (0 interval: unpaced); answers the values in force |
+| `segments` | — | the live Strava segments as the SEGMENT page sees them (ui_dashboard's matcher, via `host/tu/ui_dashboard.cpp`): `count` (accepted set, `-1` none), `loaded` (adopted by the UI task), `phase` (`idle`/`armed`/`active`/`done`/`abandoned`), `busy`, and `list` — per relevant segment `name`, `phase`, `elapsed_ms`, `done_m`, `len_m`, `pr_s`, `delta_ms` (+ behind PR pace; `null` with no PR), `new_pr`, `off_route`, `avg_power`, `avg_hr`, `nearest`, `nearest_m` |
 | `quit` | — | exits the sim |
 | **power and robustness** | | |
 | `reset` | `reason` (`panic`, `task_wdt`, `int_wdt`, `wdt`, `brownout`, `sw`, `ext`) | the chip resets for that reason: `esp_reset_reason()` says so on the next boot and RTC memory (`RTC_NOINIT_ATTR`: the crash reporter's breadcrumbs, diag's storage trace) survives. Unflushed card writes are lost, as with `reboot` |
