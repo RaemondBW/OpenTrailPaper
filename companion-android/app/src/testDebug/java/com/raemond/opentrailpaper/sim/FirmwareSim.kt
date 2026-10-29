@@ -18,6 +18,8 @@ class FirmwareSim private constructor(
     val dir: File,
     val blePort: Int,
     val ctlPort: Int,
+    /** Extra otp-sim arguments, e.g. `--lora` (sim/host/sim_main.cpp usage()). */
+    val args: List<String> = emptyList(),
 ) : AutoCloseable {
     private var proc: Process? = null
     private var sock: Socket? = null
@@ -41,9 +43,12 @@ class FirmwareSim private constructor(
          * A free port can be taken by something else before otp-sim binds it;
          * then it exits with "can't listen", and we try again on new ports.
          */
-        fun start(dir: File = Files.createTempDirectory("otp-sim-android").toFile()): FirmwareSim {
+        fun start(
+            dir: File = Files.createTempDirectory("otp-sim-android").toFile(),
+            args: List<String> = emptyList(),
+        ): FirmwareSim {
             repeat(3) {
-                val sim = FirmwareSim(dir, freePort(), freePort())
+                val sim = FirmwareSim(dir, freePort(), freePort(), args)
                 try {
                     sim.launch()
                     return sim
@@ -52,14 +57,14 @@ class FirmwareSim private constructor(
                     if (!sim.consoleTail().contains("can't listen")) throw e
                 }
             }
-            return FirmwareSim(dir, freePort(), freePort()).also { it.launch() }
+            return FirmwareSim(dir, freePort(), freePort(), args).also { it.launch() }
         }
     }
 
     fun launch(bootTimeoutMs: Long = 60_000) {
         val bin = binary ?: error("sim/build/otp-sim not built")
         proc = ProcessBuilder(
-            bin.path, "--dir", dir.path, "--ble-port", "$blePort", "--ctl-port", "$ctlPort", "--no-stdin",
+            listOf(bin.path, "--dir", dir.path, "--ble-port", "$blePort", "--ctl-port", "$ctlPort", "--no-stdin") + args,
         ).redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.appendTo(consoleLog)).start()
         // Never outlive the test JVM, however it ends.
         proc?.let { p -> Runtime.getRuntime().addShutdownHook(Thread { p.destroyForcibly() }) }
@@ -129,6 +134,36 @@ class FirmwareSim private constructor(
 
     /** The radio link to the phone is lost (default: supervision timeout). */
     fun dropPhone(reason: Int = 0x08) { cmd("ble_drop", "reason" to reason) }
+
+    // ---- the LoRa radio (start with args = listOf("--lora"); see MeshAir) ----------------------
+
+    /** One frame the device's radio put on the air (control `lora_tx`). */
+    class LoraFrame(val seq: Long, val startMs: Long, val endMs: Long, val freqMhz: Double, val bytes: ByteArray)
+
+    /**
+     * Puts [frame] on the air for the device, on the channel it is tuned to;
+     * it arrives after its time on air. Returns the sim's answer (`lost`,
+     * `start_ms`, `end_ms` in device time).
+     */
+    fun loraRx(frame: ByteArray, rssi: Int? = null, snr: Int? = null): JsonObject =
+        cmd("lora_rx", "hex" to frame.joinToString("") { "%02x".format(it) }, "rssi" to rssi, "snr" to snr)
+
+    /** What the device transmitted after [since] (a seq), and the last seq. */
+    fun loraTx(since: Long = 0): Pair<List<LoraFrame>, Long> {
+        val r = cmd("lora_tx", "since" to since)
+        val frames = r.getAsJsonArray("frames").map {
+            val o = it.asJsonObject
+            val hex = o.get("hex").asString
+            LoraFrame(
+                o.get("seq").asLong, o.get("start_ms").asLong, o.get("end_ms").asLong, o.get("freq_mhz").asDouble,
+                ByteArray(hex.length / 2) { i -> hex.substring(2 * i, 2 * i + 2).toInt(16).toByte() },
+            )
+        }
+        return frames to r.get("seq").asLong
+    }
+
+    /** The radio's state and counters (control `lora`). */
+    fun lora(): JsonObject = cmd("lora").getAsJsonObject("lora")
 
     /** The device goes away entirely (powered off): nothing listens on its ports. */
     fun stop() {

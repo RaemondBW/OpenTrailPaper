@@ -99,6 +99,39 @@ reference bytes:
   (`updateMapLayers`, the device's `settings.map_layers`) removes that icon
   and nothing else, and on brings it back.
 
+### Mesh (Meshtastic)
+
+`MeshSimTest` starts the sim with its SX1262 stand-in (`--lora`, and
+`--mac` for a known node number) and turns the mesh on as the Mesh screen's
+switch does. Stock Meshtastic nodes exist only as frames: `MeshAir` (a
+Kotlin port of the needed subset of sim/client/otpsim/mesh.py — header,
+AES-CTR channel encryption, Data/User/Position/Routing) builds what
+`VirtualNode`s put on the air (`FirmwareSim.loraRx`, control `lora_rx`) and
+decrypts what the device sent (`loraTx`, control `lora_tx`).
+
+- `inviteUrlJoinsThePrivateChannelAndItsMessagesStayOnIt`: a stock-format
+  invite URL (`?add=true#` ChannelSet with LoRa config), parsed by
+  MeshChannelUrl and joined as the Channels sheet joins it; the device holds
+  the name, key and Meshtastic's hash; group messages land in that thread,
+  a same-name other-key stranger never shows; the reply goes out under the
+  group's key.
+- `neighboursShowNamesPositionsSignalAndHops`: ten nodes (two pages): names,
+  positions (and a blurred one), RSSI/SNR of the latest packet, hops (and
+  unknown for a pre-2.3 sender), last heard, newest first, id fallbacks.
+- `broadcastFromTheAppGoesOnTheAirAndShowsSent`: on the air as a LongFast
+  broadcast from the device's node, cut to 200 bytes on a character
+  boundary; SENT in the thread.
+- `directMessageIsDeliveredOnTheNodesAckAndFailsOnItsNak`: a legacy
+  (channel-encrypted, want_ack) DM to a keyless node; ACK -> ACKED, NAK ->
+  FAILED.
+- `sendWithTheRadioOffIsRefusedAndNothingIsTransmitted`.
+- `busyChatIncludingWhileThePhoneWasAwayArrivesWholeAndInOrder`: ten
+  messages, some while Bluetooth was off: all, once, in order, unread count.
+- Ignored as firmware bugs (reasons in the annotations): the radio switch's
+  state never follows by itself; a joined channel whose hash equals the
+  primary's is never heard; forgetting a channel leaves blank messages in
+  the public thread.
+
 ### The tile CDN override (debug builds)
 
 `files/otp-endpoints` (`map/DebugEndpoints.kt`, src/debug; the release copy
