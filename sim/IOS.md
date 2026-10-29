@@ -140,7 +140,7 @@ even then.
 
 ### Routes
 
-`test40_ImportedGpxRouteReachesTheDevice`: Route → Import a route → GPX file
+`testN01_GpxImportedThroughFilesReachesTheDevice`: Route → Import a route → GPX file
 → the system document picker → On My iPhone → `lost_lake_loop.gpx` → Send to
 device. run_ios_tests.sh copies `sim/fixtures/routes/*.gpx` into the
 simulator's Files storage (the `group.com.apple.FileProvider.LocalStorage`

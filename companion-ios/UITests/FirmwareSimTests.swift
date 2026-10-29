@@ -810,7 +810,7 @@ extension FirmwareSimTests {
     /// points, not the two waypoints the file lists ahead of it — under the
     /// app's file name, loaded (an imported route has no turn cues, so no
     /// NAVIGATE prompt) and as long as the file's track.
-    func test40_ImportedGpxRouteReachesTheDevice() throws {
+    func testN01_GpxImportedThroughFilesReachesTheDevice() throws {
         executionTimeAllowance = 240
         guard SimEnv.deviceDir != nil else { throw XCTSkip("needs OTP_SIM_DIR (run sim/run_ios_tests.sh)") }
         launchConnected()
