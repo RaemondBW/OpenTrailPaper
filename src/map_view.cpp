@@ -789,10 +789,21 @@ void ui_render_map(const MapScreenData& map, const RideState& s, uint8_t* fb) {
         epd_fill_rect({bx, by, bw, bh}, 0xFF, fb);
         for (int i = 0; i < 2; ++i)
             epd_draw_rect({bx - i, by - i, bw + 2 * i, bh + 2 * i}, 0x00, fb);
-        ui::text(&Arial_B, W / 2, by + 38, "NO MAP HERE", fb,
-                 EPD_DRAW_ALIGN_CENTER, 0x00);
-        ui::text(&Arial_L, W / 2, by + 70, "Download this area from the app",
-                 fb, EPD_DRAW_ALIGN_CENTER, 0x00);
+        // Downloaded maps live on the card, so without one the app's advice
+        // would not help: say what is actually missing.
+        const char* head = "NO MAP HERE";
+        const char* sub = "Download this area from the app";
+        if (s.sdCard == SD_CARD_NONE) {
+            head = "NO SD CARD";
+            sub = "Insert a FAT32 card for maps";
+        } else if (s.sdCard == SD_CARD_UNREADABLE) {
+            head = "SD CARD UNREADABLE";
+            sub = "Reformat it as FAT32 (not exFAT)";
+        }
+        ui::text(&Arial_B, W / 2, by + 38, head, fb, EPD_DRAW_ALIGN_CENTER,
+                 0x00);
+        ui::text(&Arial_L, W / 2, by + 70, sub, fb, EPD_DRAW_ALIGN_CENTER,
+                 0x00);
     }
 
     // Label when the map is centered on the phone's position (device GPS cold).

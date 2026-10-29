@@ -9,6 +9,7 @@ struct RideDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @AppStorage(UnitPref.key) private var useMiles = false
     @State private var showShare = false
+    @ObservedObject private var names = RideNames.shared
 
     private var polyline: MKPolyline {
         MKPolyline(coordinates: preview.coordinates, count: preview.coordinates.count)
@@ -67,7 +68,7 @@ struct RideDetailView: View {
 
                     // Straight to a connected account (Settings > Accounts);
                     // the share sheet below stays for everything else.
-                    SyncUploadButtons(fileURL: fileURL, name: dateTitle)
+                    SyncUploadButtons(fileURL: fileURL, defaultName: dateTitle)
                     PrimaryButton(title: "Share .fit file",
                                   systemImage: "square.and.arrow.up") {
                         showShare = true
@@ -76,7 +77,7 @@ struct RideDetailView: View {
                 .padding(16)
             }
             .background(Palette.paper)
-            .navigationTitle(dateTitle)
+            .navigationTitle(names.name(for: fileURL.lastPathComponent, default: dateTitle))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

@@ -570,46 +570,50 @@ fun MapsSheet(
                     .onSizeChanged { cardHeightPx = it.height }
                     .padding(horizontal = 16.dp, vertical = 10.dp),
             ) {
-                when {
-                    building || ble.tilesUploading -> StreamCard(
-                        building = building,
-                        buildStatus = status,
-                        tileMessage = ble.tileMessage,
-                        sent = ble.tilesDone,
-                        total = max(max(ble.tilesTotal, downloadTotal), 1),
-                        built = converted.size,
-                        onCancel = { cancelDownload() },
-                    )
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (ble.sdCardBlocksMaps) SdCardNotice(ble.status.sdCard)
+                    when {
+                        building || ble.tilesUploading -> StreamCard(
+                            building = building,
+                            buildStatus = status,
+                            tileMessage = ble.tileMessage,
+                            sent = ble.tilesDone,
+                            total = max(max(ble.tilesTotal, downloadTotal), 1),
+                            built = converted.size,
+                            onCancel = { cancelDownload() },
+                        )
 
-                    box != null -> SelectionCard(
-                        box = box!!,
-                        newCount = newTiles.size,
-                        poiOnlyCount = poiOnlyCount,
-                        onDeviceCount = onDeviceCount,
-                        updateCount = updateCount,
-                        newerDataCount = newerDataCount,
-                        redownloadCount = redownloadCount,
-                        dataDateText = dataDateText,
-                        onRedownload = {
-                            when {
-                                redownloadCount == 0 -> confirmUpToDate = true
-                                redownloadCount > REDOWNLOAD_CONFIRM_OVER -> confirmRedownload = true
-                                else -> startDownload(redownload = true)
-                            }
-                        },
-                        skipped = excluded.count { id -> tiles.any { it.id == id } },
-                        canSend = ble.canUploadMap,
-                        status = status,
-                        onDownload = { startDownload() },
-                        onClear = {
-                            box = null
-                            tiles = emptyList()
-                            excluded = emptySet()
-                            converted = emptySet()
-                        },
-                    )
+                        box != null -> SelectionCard(
+                            box = box!!,
+                            newCount = newTiles.size,
+                            poiOnlyCount = poiOnlyCount,
+                            onDeviceCount = onDeviceCount,
+                            updateCount = updateCount,
+                            newerDataCount = newerDataCount,
+                            redownloadCount = redownloadCount,
+                            dataDateText = dataDateText,
+                            onRedownload = {
+                                when {
+                                    redownloadCount == 0 -> confirmUpToDate = true
+                                    redownloadCount > REDOWNLOAD_CONFIRM_OVER -> confirmRedownload = true
+                                    else -> startDownload(redownload = true)
+                                }
+                            },
+                            skipped = excluded.count { id -> tiles.any { it.id == id } },
+                            canSend = ble.canUploadMap && !ble.sdCardBlocksMaps,
+                            needsCard = ble.canUploadMap && ble.sdCardBlocksMaps,
+                            status = status,
+                            onDownload = { startDownload() },
+                            onClear = {
+                                box = null
+                                tiles = emptyList()
+                                excluded = emptySet()
+                                converted = emptySet()
+                            },
+                        )
 
-                    else -> HintCard(drawMode, ble.deviceTileIds.size)
+                        else -> HintCard(drawMode, ble.deviceTileIds.size)
+                    }
                 }
             }
         }
@@ -1076,6 +1080,7 @@ private fun SelectionCard(
     dataDateText: String?,
     skipped: Int,
     canSend: Boolean,
+    needsCard: Boolean,
     status: String?,
     onDownload: () -> Unit,
     onRedownload: () -> Unit,
@@ -1131,6 +1136,7 @@ private fun SelectionCard(
         Spacer(Modifier.size(10.dp))
         PrimaryButton(
             title = when {
+                needsCard -> "Device needs an SD card"
                 !canSend -> "Connect device to send"
                 newCount > 0 -> "Download $newCount hex${if (newCount == 1) "" else "es"}"
                 poiOnlyCount > 0 -> "Send POIs for $poiOnlyCount hex${if (poiOnlyCount == 1) "" else "es"}"

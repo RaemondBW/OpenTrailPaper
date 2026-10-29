@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.SdCard
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
@@ -36,6 +37,7 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.raemond.opentrailpaper.R
+import com.raemond.opentrailpaper.ble.SdCardState
 
 // Design system for the OpenTrailPaper companion app — a straight port of
 // companion-ios/Sources/Theme.swift, so the two phones look like one product.
@@ -118,6 +120,39 @@ fun PendingSyncHint(text: String, modifier: Modifier = Modifier) {
                 modifier = Modifier.padding(end = 6.dp).size(14.dp),
             )
             Text(text, style = barlow(12.sp, FontWeight.SemiBold), color = Palette.accentDark)
+        }
+    }
+}
+
+/** The device reports no usable SD card: rides don't record and map tiles have
+ *  nowhere to go. Shown on the Ride tab and the Maps sheet. */
+@Composable
+fun SdCardNotice(state: SdCardState, modifier: Modifier = Modifier) {
+    val unreadable = state == SdCardState.UNREADABLE
+    Row(
+        modifier
+            .fillMaxWidth()
+            .background(Palette.accentWash, RoundedCornerShape(14.dp))
+            .padding(12.dp),
+    ) {
+        Icon(
+            Icons.Filled.SdCard, contentDescription = null,
+            tint = Palette.accent,
+            modifier = Modifier.padding(end = 10.dp).size(20.dp),
+        )
+        Column {
+            Text(
+                if (unreadable) "Device can't read its SD card" else "No SD card in the device",
+                style = barlow(15.sp, FontWeight.SemiBold), color = Palette.ink,
+            )
+            Text(
+                if (unreadable) {
+                    "Reformat it as FAT32 (exFAT isn't supported). Until then rides aren't recorded and maps can't be sent."
+                } else {
+                    "Insert a FAT32 microSD card. Until then rides aren't recorded and maps can't be sent."
+                },
+                style = barlow(13.sp), color = Palette.muted,
+            )
         }
     }
 }
