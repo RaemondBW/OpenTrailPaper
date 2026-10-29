@@ -148,15 +148,25 @@ time_t toUnix(int y, unsigned m, unsigned d, unsigned hh, unsigned mm, unsigned 
     return static_cast<time_t>(days) * 86400 + hh * 3600 + mm * 60 + ss;
 }
 
+// Satellites in view: the GSV totals of the three constellations, but never
+// fewer than are in use. The lean output profile sends GSV only every fifth
+// fix while GGA (in use) comes every fix, so a sky that just filled in, or the
+// first seconds after a wake before any GSV, would otherwise read in use > in
+// view (#111). A satellite in use is in view by definition.
+int satsInView(int inUse) {
+    int inView = (gpgsvInView.isValid() ? atoi(gpgsvInView.value()) : 0) +
+                 (glgsvInView.isValid() ? atoi(glgsvInView.value()) : 0) +
+                 (bdgsvInView.isValid() ? atoi(bdgsvInView.value()) : 0);
+    return inView > inUse ? inView : inUse;
+}
+
 // Compact 1 Hz acquisition telemetry to USB serial, so first-fix behaviour can
 // be watched and iterated on live. Serial-only (never the SD log). Everything
 // here is read-only against the shared TinyGPS parser, called from the GPS task.
 void printSerialTelemetry() {
 #if GPS_DEBUG_SERIAL
     bool fix = gps.location.isValid() && gps.location.age() < 3000;
-    int inView = (gpgsvInView.isValid() ? atoi(gpgsvInView.value()) : 0) +
-                 (glgsvInView.isValid() ? atoi(glgsvInView.value()) : 0) +
-                 (bdgsvInView.isValid() ? atoi(bdgsvInView.value()) : 0);
+    int inView = satsInView(gps.satellites.isValid() ? (int)gps.satellites.value() : 0);
     int fixType = gngsaFix.isValid() && *gngsaFix.value()
                       ? atoi(gngsaFix.value())
                       : (gpgsaFix.isValid() ? atoi(gpgsaFix.value()) : 0);
@@ -1014,10 +1024,7 @@ void getDebug(GpsDebug& out) {
     out.failedCksum = gps.failedChecksum();
     out.withFix = gps.sentencesWithFix();
     out.satsInUse = gps.satellites.isValid() ? (int)gps.satellites.value() : 0;
-    out.satsInView =
-        (gpgsvInView.isValid() ? atoi(gpgsvInView.value()) : 0) +
-        (glgsvInView.isValid() ? atoi(glgsvInView.value()) : 0) +
-        (bdgsvInView.isValid() ? atoi(bdgsvInView.value()) : 0);
+    out.satsInView = satsInView(out.satsInUse);
     out.bestSnr = bestSnr;
     out.hdop = gps.hdop.isValid() ? gps.hdop.hdop() : 0;
     out.locValid = gps.location.isValid();
