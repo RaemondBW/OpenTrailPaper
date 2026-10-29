@@ -810,13 +810,21 @@ struct SyncAccountsCard: View {
 
 // MARK: - Upload grid (ride page)
 
-/// One tile per connected account, side by side; tap a tile to upload.
+/// One tile per connected account, side by side. Tapping one first asks for the
+/// activity name, prefilled with the ride's current name (the rider's last
+/// rename, else `defaultName`), then uploads under it; all three services take
+/// the name with the file. The name is remembered for the ride (RideNames).
 struct SyncUploadButtons: View {
     let fileURL: URL
-    let name: String
+    let defaultName: String
     @ObservedObject private var sync = SyncAccounts.shared
+    @ObservedObject private var names = RideNames.shared
     @State private var uploading: SyncProvider?
     @State private var status: [SyncProvider: String] = [:]
+    @State private var naming: SyncProvider?
+    @State private var draft = ""
+
+    private var file: String { fileURL.lastPathComponent }
 
     var body: some View {
         let connected = SyncProvider.allCases.filter { sync.isConnected($0) }
@@ -835,6 +843,17 @@ struct SyncUploadButtons: View {
                         .foregroundStyle(Palette.accentDark)
                 }
             }
+            .alert(naming.map { "Upload to \($0.title)" } ?? "Upload",
+                   isPresented: Binding(get: { naming != nil }, set: { if !$0 { naming = nil } }),
+                   presenting: naming) { p in
+                TextField(defaultName, text: $draft)
+                    .textInputAutocapitalization(.sentences)
+                    .submitLabel(.send)
+                Button("Cancel", role: .cancel) {}
+                Button("Upload") { upload(p) }
+            } message: { p in
+                Text("The ride's name on \(p.title). It is kept for this ride on this phone.")
+            }
         }
     }
 
@@ -842,7 +861,10 @@ struct SyncUploadButtons: View {
     private func failed(_ p: SyncProvider) -> Bool { status[p] != nil && !uploaded(p) }
 
     private func tile(_ p: SyncProvider) -> some View {
-        Button { upload(p) } label: {
+        Button {
+            draft = names.name(for: file, default: defaultName)
+            naming = p
+        } label: {
             VStack(spacing: 8) {
                 ProviderLogo(provider: p, size: 44)
                 Text(p.title).font(BarlowFont.condensed(17, .semibold)).foregroundStyle(Palette.ink)
@@ -879,6 +901,7 @@ struct SyncUploadButtons: View {
     }
 
     private func upload(_ p: SyncProvider) {
+        let name = names.rename(file, to: draft, default: defaultName)
         uploading = p
         status[p] = nil
         Task {

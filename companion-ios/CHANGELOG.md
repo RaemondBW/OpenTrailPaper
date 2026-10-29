@@ -23,10 +23,22 @@ submitting.
   climbing, and send it to the device like a GPX file. To see private
   Strava routes, disconnect and connect Strava again in Settings >
   Accounts; until you do, only public ones are listed.
+- Name a ride before uploading it: tapping Upload to Strava, Intervals.icu
+  or RideWithGPS asks for the activity name first, filled in with the
+  ride's current name. The new name is kept for that ride on this phone, so
+  the next upload starts from it and the ride list and ride page show it.
+  (iOS and Android.)
 - Dashboard editor: Add a page > Stopwatch puts the device's new STOPWATCH
   page in the Home-key cycle. It needs firmware v1.23. Older firmware
   leaves the page out, and the editor shows the layout the device kept.
   The Android app has the same option.
+- A notice on the Ride tab and the Maps screen says when the device has no
+  SD card, or one it can't read (reformat it as FAT32). Map downloads are
+  held until a card is in, instead of failing with "Some tiles failed".
+  Needs firmware v1.23; older firmware doesn't report the card. The
+  Android app has the same notice.
+- The list of hexes on the device is refreshed every time it connects, so
+  a new or swapped card no longer shows the old card's hexes as downloaded.
 
 ## 1.3 (build 17)
 

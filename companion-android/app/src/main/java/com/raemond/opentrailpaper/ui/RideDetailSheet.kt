@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -57,6 +58,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.raemond.opentrailpaper.data.BoundingBox
+import com.raemond.opentrailpaper.data.RideNames
 import com.raemond.opentrailpaper.data.RidePreview
 import com.raemond.opentrailpaper.data.SyncAccounts
 import com.raemond.opentrailpaper.data.Units
@@ -78,11 +80,12 @@ fun RideDetailSheet(
     onDismiss: () -> Unit,
 ) {
     val context = LocalContext.current
-    val title = remember(preview.startEpochMs) {
+    val defaultName = remember(preview.startEpochMs) {
         preview.startEpochMs
             ?.let { SimpleDateFormat("MMM d, HH:mm", Locale.getDefault()).format(Date(it)) }
             ?: "Ride"
     }
+    val title = RideNames.name(file.name, defaultName)
 
     FullScreenSheet(title = title, onDismiss = onDismiss) {
         // Fits on one screen: the map takes whatever height the stats and
@@ -124,7 +127,7 @@ fun RideDetailSheet(
 
                     // Straight to a connected account (Settings > Accounts); the share
                     // button below stays for everything else.
-                    UploadButtons(file, title)
+                    UploadButtons(file, defaultName)
                     PrimaryButton("Share .fit file", icon = Icons.Filled.Share) {
                         Share.fit(context, file)
                     }
@@ -212,16 +215,38 @@ private fun StatRow(cells: List<StatCell>) {
     }
 }
 
-/** One tile per connected account, side by side; tap a tile to upload. */
+/**
+ * One tile per connected account, side by side. Tapping one first asks for the
+ * activity name, prefilled with the ride's current name (the rider's last
+ * rename, else [defaultName]), then uploads under it; all three services take
+ * the name with the file. The name is remembered for the ride (RideNames).
+ */
 @Composable
-private fun UploadButtons(file: File, name: String) {
+private fun UploadButtons(file: File, defaultName: String) {
     val scope = rememberCoroutineScope()
     var uploading by remember { mutableStateOf<SyncAccounts.Provider?>(null) }
     val status = remember { mutableStateMapOf<SyncAccounts.Provider, String>() }
     val connected = SyncAccounts.Provider.entries.filter { SyncAccounts.isConnected(it) }
     if (connected.isEmpty()) return
+    var naming by remember { mutableStateOf<SyncAccounts.Provider?>(null) }
+    var draft by remember { mutableStateOf("") }
     fun uploaded(p: SyncAccounts.Provider) = status[p]?.startsWith("Uploaded") == true
     fun failed(p: SyncAccounts.Provider) = status[p] != null && !uploaded(p)
+
+    fun upload(p: SyncAccounts.Provider) {
+        naming = null
+        val name = RideNames.rename(file.name, draft, defaultName)
+        uploading = p
+        status.remove(p)
+        scope.launch {
+            status[p] = try {
+                SyncAccounts.upload(file, p, name)
+            } catch (e: Exception) {
+                e.message ?: "Upload failed."
+            }
+            uploading = null
+        }
+    }
 
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         TrackedLabel("Upload to")
@@ -244,16 +269,8 @@ private fun UploadButtons(file: File, name: String) {
                         dimmed = uploading != null && uploading != p,
                         modifier = Modifier.weight(1f),
                     ) {
-                        uploading = p
-                        status.remove(p)
-                        scope.launch {
-                            status[p] = try {
-                                SyncAccounts.upload(file, p, name)
-                            } catch (e: Exception) {
-                                e.message ?: "Upload failed."
-                            }
-                            uploading = null
-                        }
+                        draft = RideNames.name(file.name, defaultName)
+                        naming = p
                     }
                 }
                 repeat(columns - row.size) { Spacer(Modifier.weight(1f)) }
@@ -264,6 +281,25 @@ private fun UploadButtons(file: File, name: String) {
             val s = status[p].orEmpty()
             Text(if (p.title in s) s else "${p.title}: $s", style = barlow(12.sp), color = Palette.accentDark)
         }
+    }
+
+    naming?.let { p ->
+        AlertDialog(
+            onDismissRequest = { naming = null },
+            title = { Text("Upload to ${p.title}") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "The ride's name on ${p.title}. It is kept for this ride on this phone.",
+                        style = barlow(14.sp), color = Palette.muted,
+                    )
+                    MeshTextField(draft, { draft = it }, defaultName)
+                }
+            },
+            confirmButton = { TextButton(onClick = { upload(p) }) { Text("Upload") } },
+            dismissButton = { TextButton(onClick = { naming = null }) { Text("Cancel") } },
+            containerColor = Palette.surface,
+        )
     }
 }
 

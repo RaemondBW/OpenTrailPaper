@@ -24,6 +24,11 @@ namespace {
 
 FitWriter fit;
 bool sdOk = false;
+// Whether the last mount attempt found a card at all: it answered CMD0 but
+// SD.begin() still failed. That is a card the FAT driver cannot read — exFAT
+// (the SDXC default; FatFs is built with FF_FS_EXFAT 0) or unformatted — and
+// the rider fixes it differently from an empty slot, so the UI says which.
+bool cardAnswered = false;
 // Set when a mount succeeds AFTER boot gave up. Everything gated on the boot
 // mount (routes, the map index, USB mass storage) was skipped in that case and
 // has to be re-run, or the card sits mounted and completely unused.
@@ -523,6 +528,7 @@ bool mountLocked(bool logFailures) {
         {1000, 1000000},   // last-ditch, slow clock for a marginal card
     };
     unsigned attempt = 0;
+    bool answered = false;   // published once at the end: read lock-free
     for (auto& a : kAttempts) {
         ++attempt;
         uint32_t f = a.freq;
@@ -530,6 +536,7 @@ bool mountLocked(bool logFailures) {
         uint32_t start = millis();
         diag::storageStage(2, attempt);
         SdProbe probe = sdSpiForceIdle();
+        if (probe.r1 == 1) answered = true;
         if (logFailures)
             diag::log("sd probe: try=%u uptime=%lu ready=%d wait=%lu cmd0=0x%02x "
                       "cmd8=0x%02x echo=0x%08lx CS=%d/%d MISO=%d",
@@ -549,6 +556,7 @@ bool mountLocked(bool logFailures) {
             diag::log("sd mount: OK try=%u clock=%luHz duration=%lums type=%u size=%lluMB",
                       attempt, (unsigned long)f, (unsigned long)(millis() - start),
                       SD.cardType(), SD.cardSize() / (1024ULL * 1024ULL));
+            cardAnswered = true;
             return true;
         }
         if (logFailures) {
@@ -567,6 +575,7 @@ bool mountLocked(bool logFailures) {
         SD.end();
         diag::drainDriverLogs();
     }
+    cardAnswered = answered;
     return false;
 }
 
@@ -894,6 +903,12 @@ void recoverRides() {
 
 // SD is "unavailable" to the firmware while a host computer owns it over USB.
 bool sdMounted() { return sdOk && !usb_storage::hostActive(); }
+
+// A card lent to a USB host is still a card: only a failed mount counts here.
+uint8_t sdCardState() {
+    if (sdOk) return SD_CARD_OK;
+    return cardAnswered ? SD_CARD_UNREADABLE : SD_CARD_NONE;
+}
 
 // One readdir() pass over the directory, NOT File::openNextFile(): that wraps
 // every entry in a File, which stat()s and fopen()s it by path — and each of

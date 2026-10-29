@@ -7,6 +7,11 @@ so write for the rider, newest version first, one `## vX.YY` heading each.
 
 ## v1.23
 
+- The GPS module now talks to the device at 115200 baud instead of 9600, so
+  each second's position update takes about 25 ms on the wire instead of
+  300 ms and the device can sleep for the difference. Nothing is written
+  to the module: it is switched on every boot and goes back to its default
+  rate whenever it loses power.
 - New optional STOPWATCH page, off until you add it from the app's
   dashboard editor (Add a page > Stopwatch). It shows big digits with three
   buttons along the bottom: START/PAUSE, RESET and LAP. LAP works while the
@@ -36,6 +41,14 @@ so write for the rider, newest version first, one `## vX.YY` heading each.
   switches itself on when an effort starts and goes back afterwards; the
   dashboard editor can turn that off. The device's times come from its own
   GPS and can differ from Strava's by a second or two.
+- The device now says when it has no usable SD card. A "NO SD" chip shows
+  in the status bar ("SD ERR" for a card it can't read), the boot screen
+  says "No SD card", Start Ride in the menu explains it can't record, and
+  the map's "no map here" box tells you to insert a card. A card that is
+  present but won't mount is almost always exFAT, which the device can't
+  read, so those messages ask for FAT32. Put a card in while it's on and
+  it is picked up within 30 seconds and the warnings clear. The companion
+  apps get the same status and show it too.
 
 ## v1.22
 

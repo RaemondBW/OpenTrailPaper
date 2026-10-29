@@ -6,6 +6,15 @@
 #include <ctime>
 #include "radar.h"
 
+// The SD card as the UI reports it (ride_recorder::sdCardState()). UNREADABLE
+// is a card that answered but would not mount: exFAT or unformatted, since the
+// FAT driver is built without exFAT — the fix is reformatting it as FAT32.
+enum SdCardState : uint8_t {
+    SD_CARD_OK = 0,           // mounted (or lent to a USB host)
+    SD_CARD_NONE = 1,         // nothing answered: no card in the slot
+    SD_CARD_UNREADABLE = 2,   // a card answered, the filesystem did not mount
+};
+
 // Single shared snapshot of everything the UI and recorder consume.
 // Producers (GPS task, BLE callbacks, battery poll) take the lock, update
 // their fields, release. Consumers copy the whole struct under the lock.
@@ -109,6 +118,8 @@ struct RideState {
     // build, which has no routes module.
     bool     routeActive = false;
     float    routeRemainingKm = 0.0f;
+    // SdCardState, mirrored the same way for the status bar's "NO SD" chip.
+    uint8_t  sdCard = SD_CARD_OK;
 
     // Optional Qwiic sensors (aux_sensors.h). All absent-safe: baroValid and
     // compassValid stay false when the chips are not fitted, and every consumer

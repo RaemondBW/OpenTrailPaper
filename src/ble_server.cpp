@@ -3049,9 +3049,16 @@ void task(void*) {
         RideState s = g_state.snapshot();
         // { u8 flags, u8 battery, u8 sats, u8 hr, u16 power, u16 speed_x10,
         //   u16 remainingKm_x10 }
+        // flags: bit0 GPS fix, bit1 recording, bit2 route active, bit3 SD state
+        // reported (bits 4-5 are meaningful), bit4 no SD card, bit5 a card that
+        // will not mount (exFAT/unformatted). Bit 3 is what lets an app tell
+        // older firmware, which never sets bits 3-5, from "card is fine".
         uint8_t buf[10];
+        const uint8_t sd = ride_recorder::sdCardState();
         uint8_t flags = (s.gpsFix ? 1 : 0) | (s.recording ? 2 : 0) |
-                        (routes::active() ? 4 : 0);
+                        (routes::active() ? 4 : 0) | 8 |
+                        (sd == SD_CARD_NONE ? 16 : 0) |
+                        (sd == SD_CARD_UNREADABLE ? 32 : 0);
         buf[0] = flags;
         buf[1] = s.batteryPercent;
         buf[2] = s.satellites;
