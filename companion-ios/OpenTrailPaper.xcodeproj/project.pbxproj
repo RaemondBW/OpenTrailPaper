@@ -84,6 +84,7 @@
 		C527901A5554A7F6BD1B62FD /* Anton-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 1D1F0D3AE5B8C7616380C71A /* Anton-Regular.ttf */; };
 		C7F7382D5542409C17015EFB /* SketchIcon.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73ECF60CAA9C73957BC40AC2 /* SketchIcon.swift */; };
 		CD0EDC65F5A9395EE7649CDE /* directedEdge.c in Sources */ = {isa = PBXBuildFile; fileRef = CC8F9A2A7C26F2C54766428B /* directedEdge.c */; };
+		CEEEC7E7A3BA7507D6BD3B08 /* FirmwareSimAppFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28530DC9AFD8CD97DBBD5434 /* FirmwareSimAppFlowTests.swift */; };
 		D017F03AE055F1971F5815BA /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79F3F907C8247AC1B8A63959 /* Theme.swift */; };
 		D18324D7B11DC7874A2252C3 /* mathExtensions.c in Sources */ = {isa = PBXBuildFile; fileRef = C79A61A359DA1F3938DE464C /* mathExtensions.c */; };
 		D51119ACFAB6419E07143355 /* EInkTileStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = CDD609424C1648F1D8704550 /* EInkTileStore.swift */; };
@@ -156,6 +157,7 @@
 		21F000263728C013838D0605 /* faceijk.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = faceijk.c; sourceTree = "<group>"; };
 		22AE81B336FF77D1655400EA /* constants.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = constants.h; sourceTree = "<group>"; };
 		27A939183F2903B61CA144FB /* bbox.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = bbox.h; sourceTree = "<group>"; };
+		28530DC9AFD8CD97DBBD5434 /* FirmwareSimAppFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FirmwareSimAppFlowTests.swift; sourceTree = "<group>"; };
 		2A29CA8B02FE737A4E1B8291 /* Barlow-Bold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Barlow-Bold.ttf"; sourceTree = "<group>"; };
 		2A59688151174F730E1FDAD4 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		2ACAD995F312514690C2FF16 /* MeshScanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshScanner.swift; sourceTree = "<group>"; };
@@ -279,6 +281,7 @@
 		0C70B80E01FDC4F961994A3B /* UITests */ = {
 			isa = PBXGroup;
 			children = (
+				28530DC9AFD8CD97DBBD5434 /* FirmwareSimAppFlowTests.swift */,
 				CC11E5DFB14B643DA807A09D /* FirmwareSimTests.swift */,
 				4535B7FCECE70B9CA5BF0840 /* ScrollSmoothnessTests.swift */,
 				446F73388D9904723ABF6126 /* SimHarness.swift */,
@@ -715,6 +718,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				CEEEC7E7A3BA7507D6BD3B08 /* FirmwareSimAppFlowTests.swift in Sources */,
 				45BEB01BB7D65347DAEE51AC /* FirmwareSimTests.swift in Sources */,
 				3468F65C046C1094771FB187 /* ScrollSmoothnessTests.swift in Sources */,
 				FE22FE673909952549D63B94 /* SimHarness.swift in Sources */,

@@ -158,7 +158,7 @@ jobs:
       matrix:
         include:
           - part: core
-            tests: test_boot.py test_link.py test_pairing.py test_rides.py test_resilience.py
+            tests: test_boot.py test_link.py test_pairing.py test_rides.py test_resilience.py test_app_sync.py
           - part: regressions
             tests: test_regressions_gps.py test_regressions_link.py test_regressions_rides.py test_regressions_ui.py
           - part: cards and maps
@@ -203,6 +203,7 @@ jobs:
     runs-on: macos-26
     env:
       OTP_SIM_REQUIRED: "1"   # fail, don't skip, if otp-sim didn't build
+      OTP_SIM_TIME_SCALE: "3" # wall-clock bounds in the app-flow tests, for a slower runner
     steps:
       - uses: actions/checkout@v4
       - name: Clone LilyGO board support
@@ -215,12 +216,13 @@ jobs:
           distribution: temurin
           java-version: "17"
       - uses: gradle/actions/setup-gradle@v4
-      # The map tests download from the stand-in tile CDN (sim/cdn); make
-      # sure nothing can reach the real CDN, Overpass or Open-Meteo instead.
-      - name: Keep the map tests off the network
+      # The map tests download from the stand-in tile CDN (sim/cdn) and the
+      # upload tests go to CloudStandIn; make sure nothing can reach the real
+      # CDN, Overpass, Open-Meteo, Strava or Intervals.icu instead.
+      - name: Keep the map and upload tests off the network
         run: |
           printf '0.0.0.0 %s\n' tiles.opentrailpaper.com overpass-api.de overpass.private.coffee \
-            maps.mail.ru api.open-meteo.com | sudo tee -a /etc/hosts
+            maps.mail.ru api.open-meteo.com www.strava.com intervals.icu | sudo tee -a /etc/hosts
           sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder || true
       # The runner image ships the Android SDK.
       - name: Build the sim and run the tests
@@ -241,7 +243,7 @@ jobs:
     if: ${{ !startsWith(github.ref, 'refs/tags/android-v') }}
     runs-on: macos-26
     continue-on-error: true
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - name: Clone LilyGO board support

@@ -403,6 +403,22 @@ std::string handle(const json::Value& r) {
     if (cmd == "gps_time") { sim::gpsSetUtc((int64_t)r.num("unix")); return ok(); }
     if (cmd == "gps_raw") { sim::gpsRaw(r.str("data")); return ok(); }
     if (cmd == "gps_paced") { sim::gpsPaced(r.boolean("on", true)); return ok(); }
+
+    // ---- the phone link's pace, live (app-flow tests) -----------------------------------
+    // What --conn-interval-ms / --packets-per-event / --notify-window set at
+    // start, changed mid-run: a link that turns slow (or fast again) under a
+    // connected app, e.g. to land a drop in the middle of a download. Each
+    // field is optional; 0 interval = unpaced. Answers the values now in force.
+    if (cmd == "link_pace") {
+        if (r.has("interval_ms")) sim::opts.connIntervalMs = (int)r.num("interval_ms");
+        if (r.has("packets")) sim::opts.packetsPerEvent = (int)r.num("packets");
+        if (r.has("window")) sim::opts.notifyWindow = (int)r.num("window", 32);
+        return ok("\"interval_ms\":" + std::to_string(sim::opts.connIntervalMs) +
+                  ",\"packets\":" + std::to_string(sim::opts.packetsPerEvent) +
+                  ",\"window\":" + std::to_string(sim::opts.notifyWindow));
+    }
+    // ---- end link pace ----
+
     return "\"ok\":false,\"error\":" + json::esc("unknown cmd '" + cmd + "'");
 }
 
