@@ -781,4 +781,44 @@ final class FirmwareSimTests: XCTestCase {
         let queries = try TileCdn.overpassQueries()
         expect(!queries.isEmpty && queries.allSatisfy { $0 == "poi" }, "Overpass queries: \(queries)")
     }
+
+    // MARK: 40. sensors (the Sensors sheet drives the device's BLE central)
+
+    /// Settings → Sensors: the sheet's scan lists a strap the device can hear
+    /// (the sim's virtual one, sim/PROTOCOL.md `sensor`); Connect pairs it and
+    /// the device's heart rate becomes the strap's; Forget drops it, and the
+    /// device does not take it back while it stays in range.
+    func test40_SensorsSheetConnectsAndForgetsAStrap() throws {
+        let addr = "c0:ff:ee:00:40:01"
+        try SimControl.call(["cmd": "sensor", "kind": "hr", "addr": addr, "bpm": 136, "name": "HRM-Sim40"])
+        launchConnected()
+        func hr() -> (connected: Bool, bpm: Int) {
+            let st = (try? SimControl.call(["cmd": "sensor_state"]))?["state"] as? [String: Any] ?? [:]
+            return (st["hr_connected"] as? Bool ?? false, st["hr_bpm"] as? Int ?? -1)
+        }
+        app.buttons["Settings"].firstMatch.tap()
+        let open = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Sensors'")).firstMatch
+        XCTAssertTrue(open.waitForExistence(timeout: 10), "no Sensors row in Settings")
+        open.tap()
+        let name = app.staticTexts["HRM-Sim40"]
+        XCTAssertTrue(name.waitForExistence(timeout: 20), "the sheet's scan never listed the strap")
+        app.buttons["Connect"].firstMatch.tap()
+        let end = Date().addingTimeInterval(30)
+        while Date() < end && hr().bpm != 136 { Thread.sleep(forTimeInterval: 0.25) }
+        XCTAssertEqual(hr().bpm, 136, "the strap the rider connected never reached the device")
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Connected'"))
+            .firstMatch.waitForExistence(timeout: 15), "the sheet never showed the strap connected")
+
+        let forget = app.buttons["Forget"].firstMatch
+        XCTAssertTrue(forget.waitForExistence(timeout: 5))
+        forget.tap()
+        let gone = Date().addingTimeInterval(10)
+        while Date() < gone && hr().connected { Thread.sleep(forTimeInterval: 0.25) }
+        XCTAssertFalse(hr().connected, "the forgotten strap stayed connected")
+        Thread.sleep(forTimeInterval: 5)   // the sheet keeps scanning: it must stay off
+        XCTAssertFalse(hr().connected, "the device reconnected to a forgotten strap")
+        XCTAssertTrue(app.buttons["Connect"].firstMatch.waitForExistence(timeout: 10),
+                      "the forgotten strap isn't offered to connect again")
+        try SimControl.call(["cmd": "sensor_remove", "addr": addr])
+    }
 }

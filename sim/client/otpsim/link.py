@@ -196,11 +196,13 @@ class LinkClient:
                 return getattr(m, kind)
 
     def drain_pushes(self):
+        """Empty the push queue; returns what was in it (DeviceMsgs)."""
+        out = []
         while True:
             try:
-                self.pushes.get_nowait()
+                out.append(self.pushes.get_nowait())
             except queue.Empty:
-                return
+                return out
 
     # -- transfers -----------------------------------------------------------------------------
 

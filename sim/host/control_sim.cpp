@@ -28,6 +28,9 @@
 
 extern SharedRideState g_state;
 std::string sensorCommand(const json::Value& r);   // sensors_sim.cpp
+// -- sensors / radar / media inspection (sensors_sim.cpp, media_sim.cpp) --
+std::string sensorStateCommand(const json::Value& r);
+std::string mediaStateCommand(const json::Value& r);
 
 // ---- the log --------------------------------------------------------------------------
 
@@ -344,6 +347,9 @@ std::string handle(const json::Value& r) {
     if (cmd == "reboot") { std::thread([] { sim_clock::sleepMs(50); sim::reboot("control"); }).detach(); return ok(); }
     if (cmd == "quit") { std::thread([] { std::this_thread::sleep_for(std::chrono::milliseconds(50)); _exit(0); }).detach(); return ok(); }
     if (cmd == "sensor" || cmd == "sensor_remove") return sensorCommand(r);
+    // -- sensors / radar / media inspection --
+    if (cmd == "sensor_state") return sensorStateCommand(r);
+    if (cmd == "media_state") return mediaStateCommand(r);
     return "\"ok\":false,\"error\":" + json::esc("unknown cmd '" + cmd + "'");
 }
 

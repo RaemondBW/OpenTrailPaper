@@ -79,7 +79,9 @@ class SimPhone:
         self._wlock = threading.Lock()
         # This phone's own GATT server: {(svc, chr): bytes}
         self.peer_values = {}
+        self.peer_props = {}         # {(svc, chr): props}; default READ | NOTIFY
         self.peer_subscriptions = {}
+        self.peer_writes = queue.Queue()   # (svc, chr, bytes) the device wrote
         self._pace = None            # (interval s, packets per event)
         self._event_start = 0.0
         self._event_sent = 0
@@ -143,7 +145,7 @@ class SimPhone:
             key = (ustr(b[0:16]), ustr(b[16:32]))
             self.peer_subscriptions[key] = struct.unpack_from("<H", b, 32)[0]
         elif t == D_PEER_WRITE:
-            pass
+            self.peer_writes.put((ustr(b[0:16]), ustr(b[16:32]), bytes(b[32:])))
         else:
             self._rsp.put((t, bytes(b)))
 
@@ -192,7 +194,8 @@ class SimPhone:
         self.connected = True
         # The phone's own GATT server, as iOS exposes it.
         if self.peer_values:
-            body = b"".join(ubytes(s) + ubytes(c) + struct.pack("<I", READ | NOTIFY) for (s, c) in self.peer_values)
+            body = b"".join(ubytes(s) + ubytes(c) + struct.pack("<I", self.peer_props.get((s, c), READ | NOTIFY))
+                            for (s, c) in self.peer_values)
             self._send(P_PEER_SERVICES, body)
         return self
 
@@ -330,3 +333,89 @@ class SimPhone:
         self.peer_values[key] = bytes(value)
         if notify and self.connected and self.peer_subscriptions.get(key):
             self._send(P_PEER_NOTIFY, ubytes(svc) + ubytes(chr_uuid) + bytes(value))
+
+    # -- Apple Media Service, as an iPhone publishes it ------------------------------------------
+
+    AMS_SVC = "89d3502b-0f36-433a-8ef4-c502ad55f8dc"
+    AMS_REMOTE_CMD = "9b3c81d8-57b1-4a8a-b8df-0e56f7ca51c2"
+    AMS_ENTITY_UPD = "2f7cabce-808d-411f-9a0c-bb92ba96c102"
+    AMS_ENTITY_ATTR = "c6b2f38c-23ab-46d8-a6ab-a3a870bbd5d7"
+    # Entities and attributes (Apple's AMS spec).
+    AMS_PLAYER, AMS_QUEUE, AMS_TRACK = 0, 1, 2
+    AMS_PLAYBACK_INFO = 1
+    AMS_ARTIST, AMS_ALBUM, AMS_TITLE, AMS_DURATION = 0, 1, 2, 3
+    # RemoteCommandIDs
+    AMS_CMD = {0: "play", 1: "pause", 2: "toggle", 3: "next", 4: "previous", 5: "volume_up", 6: "volume_down"}
+
+    def offer_ams(self):
+        """Publish AMS on this phone's GATT server (call before connect()):
+        the device's AMS client finds it once the link is encrypted."""
+        for c, props in ((self.AMS_REMOTE_CMD, WRITE | NOTIFY), (self.AMS_ENTITY_UPD, WRITE | NOTIFY),
+                         (self.AMS_ENTITY_ATTR, WRITE | READ)):
+            key = (self.AMS_SVC, c)
+            self.peer_values[key] = b""
+            self.peer_props[key] = props
+        return self
+
+    def ams_subscribed(self):
+        """The device subscribed to Entity Update and named the attributes it
+        wants: {entity: [attributes]}."""
+        if not self.peer_subscriptions.get((self.AMS_SVC, self.AMS_ENTITY_UPD)):
+            return None
+        want = {}
+        for svc, chr_uuid, data in list(self._peer_write_log()):
+            if chr_uuid == self.AMS_ENTITY_UPD and data:
+                want[data[0]] = list(data[1:])
+        return want
+
+    def _peer_write_log(self):
+        # Drain the queue into a log, so both ams_subscribed and ams_commands see every write.
+        log = getattr(self, "_pw_log", None)
+        if log is None:
+            log = self._pw_log = []
+        while True:
+            try:
+                log.append(self.peer_writes.get_nowait())
+            except queue.Empty:
+                break
+        return log
+
+    def ams_commands(self):
+        """Remote commands the device has written, by name, oldest first."""
+        return [self.AMS_CMD.get(d[0], d[0]) for s, c, d in self._peer_write_log()
+                if c == self.AMS_REMOTE_CMD and d]
+
+    def wait_ams_ready(self, timeout=10.0):
+        """Until the device has subscribed to Entity Update and asked for the
+        track and player attributes."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            want = self.ams_subscribed()
+            if want and self.AMS_TRACK in want and self.AMS_PLAYER in want:
+                return want
+            time.sleep(0.05)
+        raise TimeoutError("the device never subscribed to AMS")
+
+    def ams_update(self, entity, attr, value, truncated=False):
+        """One Entity Update notification: [entity][attribute][flags][utf-8]."""
+        if isinstance(value, str):
+            value = value.encode()
+        pkt = bytes([entity, attr, 1 if truncated else 0]) + value
+        self._send(P_PEER_NOTIFY, ubytes(self.AMS_SVC) + ubytes(self.AMS_ENTITY_UPD) + pkt)
+
+    def ams_track(self, title=None, artist=None, album=None, duration=None):
+        """The track attributes iOS sends on a track change, one notification each."""
+        if artist is not None:
+            self.ams_update(self.AMS_TRACK, self.AMS_ARTIST, artist)
+        if album is not None:
+            self.ams_update(self.AMS_TRACK, self.AMS_ALBUM, album)
+        if title is not None:
+            self.ams_update(self.AMS_TRACK, self.AMS_TITLE, title)
+        if duration is not None:
+            self.ams_update(self.AMS_TRACK, self.AMS_DURATION, duration if isinstance(duration, str) else "%.3f" % duration)
+
+    def ams_playback(self, state, rate=1.0, elapsed=0.0):
+        """PlaybackInfo: state 0 paused, 1 playing, 2 rewinding, 3 fast-forwarding;
+        None sends the empty value iOS uses for "no player"."""
+        value = "" if state is None else "%d,%.1f,%.3f" % (state, rate, elapsed)
+        self.ams_update(self.AMS_PLAYER, self.AMS_PLAYBACK_INFO, value)

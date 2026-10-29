@@ -161,6 +161,39 @@ class SimDevice:
     def remove_sensor(self, addr):
         self.cmd("sensor_remove", addr=addr)
 
+    # -- sensors / radar / media inspection (PROTOCOL.md: sensor_state, media_state) --
+
+    def sensor_state(self):
+        """What the firmware made of its sensors: {"state": RideState's sensor
+        fields, speed arbitration and radar tracks, "links": per kind pairing
+        and link}."""
+        r = self.cmd("sensor_state")
+        return dict(state=r["state"], links={l["kind"]: l for l in r["links"]})
+
+    def media_state(self):
+        """The device's now-playing store as the MUSIC page reads it."""
+        return self.cmd("media_state")["media"]
+
+    def wait_sensor_state(self, predicate, timeout=10, interval=0.1):
+        deadline = time.time() + timeout
+        last = None
+        while time.time() < deadline:
+            last = self.sensor_state()
+            if predicate(last["state"]):
+                return last["state"]
+            time.sleep(interval)
+        raise TimeoutError("sensor state never matched; last: %s" % (last and last["state"]))
+
+    def wait_media(self, predicate, timeout=10, interval=0.1):
+        deadline = time.time() + timeout
+        last = None
+        while time.time() < deadline:
+            last = self.media_state()
+            if predicate(last):
+                return last
+            time.sleep(interval)
+        raise TimeoutError("media state never matched; last: %s" % last)
+
     def battery(self, pct, charging=False):
         self.cmd("battery", pct=pct, charging=charging)
 

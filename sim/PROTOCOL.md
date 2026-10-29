@@ -132,8 +132,10 @@ Asynchronous events (log lines, when subscribed) come as `{"event":…}`.
 | `button` | `name` (`boot`, `home`, `side`), `ms` | presses a key |
 | `gps` | `lat`, `lon`, `alt`, `speed_kmh`, `course`, `fix`, `sats`, `time` (no fix: still report UTC; default true); or `track` [[lat,lon],…] with `speed_kmh` | sets what the GPS module reports |
 | `gps_silent` | `on` | the GPS module goes quiet (sends and hears nothing) until `on: false` |
-| `sensor` | `kind` (`hr`, `power`, `csc`, `speed`, `radar`), `addr`, `name`, `advertising`, values (`bpm`, `watts`, `cadence`, `speed_kmh`, `targets`) | adds or updates a virtual BLE sensor |
+| `sensor` | `kind` (`hr`, `power`, `csc`, `speed`, `cadence`, `radar`), `addr`, `name`, `make`, `model`, `advertising`, `rssi`, values (`bpm`, `watts`, `cadence`, `speed_kmh`, `targets`), `sending`, `drop`; see [Virtual sensors](#virtual-sensors) | adds or updates a virtual BLE sensor |
 | `sensor_remove` | `addr` | the sensor goes away (out of range) |
+| `sensor_state` | — | what the firmware made of its sensors: `state` (RideState's sensor values, their ages, the speed source, the radar tracks) and `links` (per kind: paired address(es), live address, name, connected) |
+| `media_state` | — | the now-playing store the MUSIC page draws: track, playing, `position_ms`, `duration_s`, `rate`, `ams` (AMS running), `ams_live`, album art `art_w`/`art_h`, `art_hash` (FNV-1a of the panel tones, -1 none) and `art_tones` (pixels per tone, black → white) |
 | `battery` | `pct`, `charging` | the fuel gauge's reading |
 | `wallclock` | `unix` | sets the device's clock (as the RTC would) |
 | `sd` | `present`; or `latency_ms`; or `size_mb` (+ `cluster_kb`); or `usage` | inserts or removes the card; or makes every card open/read/write cost that much device time (a slow card); or swaps in a card of that size with the same files; or just reports. Answers `sd`: `card_bytes`, `total_bytes`, `used_bytes`, `free_bytes`, `cluster_bytes` (usage recounted from `<dir>/sd`) |
@@ -144,6 +146,30 @@ Asynchronous events (log lines, when subscribed) come as `{"event":…}`.
 | `subscribe_log` | `on` | streams log lines as events |
 | `reboot` | — | restarts the firmware (NVS and card kept) |
 | `quit` | — | exits the sim |
+
+## Virtual sensors
+
+`sensor` creates a peripheral the first time an `addr` is used (each kind has
+a default address) and updates it after. It advertises its kind's service
+and a Device Information service (`make`, `model`), and while the device is
+connected and `sending` is true it notifies standard packets: once a second
+(radar: 4 Hz) from cumulative counters that advance with `speed_kmh` /
+`cadence`.
+
+| kind | service | packets |
+|------|---------|---------|
+| `hr` | 0x180D | Heart Rate Measurement; `hr_wide` → 16-bit value, `contact` true/false/null → contact bits |
+| `power` | 0x1818 | Cycling Power Measurement with crank data (`crank: false` drops it); `balance` (%), `torque`, `power_wheel` add those optional fields before it |
+| `csc` / `speed` / `cadence` | 0x1816 | CSC Measurement with wheel and crank / wheel / crank data; CSC Feature says the same unless `feature` (a number; `null` leaves the characteristic out) |
+| `radar` | Varia 6a4e3200 | header + 3 bytes per track; past six tracks the rest follow in continuation packets (header + 2). `targets`: `[m, …]` (ids by position) or `[[id, m], …]`; 0 m is "passed" |
+
+Counters and shape: `wheel_mm` (the tyre the virtual wheel rolls on, default
+2105), `wheel_revs` / `crank_revs` (set the cumulative counters, e.g. near
+2^32), `reset: true` (counters back to zero, as after a battery swap),
+`adv_uuids` (replace what the advert lists, e.g. `["fe1f"]`). `drop: true`
+ends the link with a supervision timeout but keeps advertising;
+`sensor_remove` takes it out of range altogether. Virtual sensors belong to
+the sim process: `reboot` re-execs it, so a test puts them back afterwards.
 
 ## Command line
 
