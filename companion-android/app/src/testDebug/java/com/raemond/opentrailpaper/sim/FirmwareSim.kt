@@ -63,6 +63,11 @@ class FirmwareSim private constructor(
         ).redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.appendTo(consoleLog)).start()
         // Never outlive the test JVM, however it ends.
         proc?.let { p -> Runtime.getRuntime().addShutdownHook(Thread { p.destroyForcibly() }) }
+        attachControl(bootTimeoutMs)
+    }
+
+    /** Connect the control channel and wait for the firmware's boot to finish. */
+    private fun attachControl(bootTimeoutMs: Long) {
         val deadline = System.currentTimeMillis() + bootTimeoutMs
         while (true) {
             try {
@@ -79,6 +84,22 @@ class FirmwareSim private constructor(
             }
         }
         cmd("wait_log", "pattern" to "boot: all tasks started", "timeout_ms" to bootTimeoutMs, "since" to 0)
+    }
+
+    /**
+     * The firmware restarts (control `reboot`: NVS and card kept). The sim
+     * re-execs itself in the same process, closing every socket, so the
+     * phone's link drops and the control channel is reattached to the new
+     * image once it has booted (the Kotlin twin of device.py reboot()).
+     */
+    @Synchronized
+    fun reboot(bootTimeoutMs: Long = 60_000) {
+        cmd("reboot")
+        // The old image answers, then closes everything 50 ms later.
+        Thread.sleep(300)
+        runCatching { sock?.close() }
+        sock = null; reader = null; writer = null
+        attachControl(bootTimeoutMs)
     }
 
     @Synchronized
