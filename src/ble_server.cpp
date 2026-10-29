@@ -13,6 +13,7 @@
 #include "ride_recorder.h"
 #include "settings.h"
 #include "routes.h"
+#include "segments.h"
 #include "gps_service.h"
 #include "phone_motion.h"
 #include "speed_source.h"
@@ -360,6 +361,17 @@ class MediaCb : public NimBLECharacteristicCallbacks {
 //                        [i16 h-accuracy m][u16 speed cm/s][u16 course 0.01 deg]
 //                      speed/course 0xFFFF = the phone has no valid value
 //                      (iOS reports -1 standing still; Android may lack them).
+//   [0x09] segments begin : the rider's starred Strava segments follow, one
+//                      blob (segment_match.h's format), replacing the set
+//   [0x0A] segments data  : blob bytes, appended in order
+//   [0x0B] segments end   : validate + store -> the device notifies
+//                      [0x25][1 accepted | 2 rejected][u16 count][u8 ver]
+//   [0x0C] segments query : the device notifies [0x25][0][u16 count]
+//                      (0xFFFF = no set yet). Every [0x25] carries a fifth
+//                      byte, the newest blob version the firmware reads
+//                      (2 = with elevation); absent means 1. Firmware before segments
+//                      ignores 0x09..0x0C and never answers, which is how the
+//                      app tells it needs an update.
 constexpr size_t ROUTE_MAX = 256 * 1024;  // 256 KB GPX cap (PSRAM)
 char* routeBuf = nullptr;
 size_t routeLen = 0;
@@ -374,6 +386,15 @@ char routeReqName[48];
 // BLE callback, so 0x05 stashes the outcome here and the server loop notifies.
 volatile bool routeTrackLoaded = false;   // did the last 0x03 track parse OK
 volatile int  pendingRouteAck  = 0;       // 0 none, 1 received-ok, 2 parse-failed
+
+// Starred-segment upload (0x09..0x0C). Buffered here, handed to segments::
+// in the server task (it writes the SD). segAck: 0 none, else the status
+// byte + 1 for the [0x25] notify (so 1 = query answer).
+uint8_t* segBuf = nullptr;
+volatile size_t segLen = 0;
+volatile bool segOverflow = false;
+volatile bool segSubmitPending = false;
+volatile int segAck = 0;
 
 class RouteCb : public NimBLECharacteristicCallbacks {
     void onWrite(NimBLECharacteristic* c, NimBLEConnInfo&) override {
@@ -420,6 +441,22 @@ class RouteCb : public NimBLECharacteristicCallbacks {
             Serial.printf("[srv] navigation ready: %d maneuvers\n",
                           routes::maneuverCount());
             pendingRouteAck = routeTrackLoaded ? 1 : 2;   // tell the phone
+        } else if (op == 0x09) {  // segments begin
+            if (!segBuf)
+                segBuf = (uint8_t*)heap_caps_malloc(seg::BLOB_MAX, MALLOC_CAP_SPIRAM);
+            segLen = 0;
+            segOverflow = false;
+        } else if (op == 0x0A) {  // segments data
+            if (segBuf && segLen + plen <= seg::BLOB_MAX) {
+                memcpy(segBuf + segLen, payload, plen);
+                segLen += plen;
+            } else {
+                segOverflow = true;
+            }
+        } else if (op == 0x0B) {  // segments end -> validate + store in the task
+            segSubmitPending = true;
+        } else if (op == 0x0C) {  // segments query
+            segAck = 1;
         } else if (op == 0x06) {  // list routes
             routeReq = RREQ_LIST;
         } else if (op == 0x07 && plen > 0) {  // delete route
@@ -2922,6 +2959,14 @@ void task(void*) {
                 workoutListPending = false;
                 sendWorkoutList();
             }
+            if (segSubmitPending) {
+                segSubmitPending = false;
+                const char* err = "upload too large";
+                const bool ok = segBuf && !segOverflow &&
+                                segments::submit(segBuf, segLen, &err);
+                if (!ok) diag::log("segments: upload refused (%s)", err);
+                segAck = ok ? 2 : 3;
+            }
         }
         if (sensorReq == SREQ_LIST) {
             sensorReq = SREQ_NONE;
@@ -2932,6 +2977,17 @@ void task(void*) {
         if (routeChr && pendingRouteAck) {
             int a = pendingRouteAck; pendingRouteAck = 0;
             notifyByte2(a == 1 ? 0x23 : 0x24);
+        }
+        if (routeChr && segAck) {
+            const int a = segAck; segAck = 0;
+            const int n = segments::count();
+            const uint16_t c = n < 0 ? 0xFFFF : (uint16_t)n;
+            // The fifth byte: the newest blob version this firmware reads,
+            // so the app sends elevation (v2) only to firmware that takes it.
+            uint8_t pkt[5] = {0x25, (uint8_t)(a - 1), (uint8_t)(c & 0xFF),
+                              (uint8_t)(c >> 8), seg::BLOB_VERSION};
+            routeChr->setValue(pkt, sizeof(pkt));
+            routeChr->notify();
         }
         // Workout progress: pushed on any command, and each second while the
         // session clock runs so the app's screen counts down live. RAM only.

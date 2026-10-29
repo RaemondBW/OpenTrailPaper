@@ -129,7 +129,7 @@ Service `B1C50000-9E0F-4B7A-9C6D-1F2E3A4B5C6D`:
 |----------------|-------------|--------|---------|
 | Settings | `…0001` | read/write/notify | `i16 ftpW, i16 tzMin, u8 miles, u8 backlight, u8 clock24, u8 usbDrive` (LE) |
 | Status   | `…0002` | notify | `u8 flags, u8 batt, u8 sats, u8 hr, u16 power, u16 speed×10, u16 remainKm×10` |
-| Route    | `…0003` | write/notify | framed: `0x01`+name, `0x02`+gpx chunks, `0x03` end track, `0x04`+turn, `0x05` end nav, `0x08`+GPS aiding |
+| Route    | `…0003` | write/notify | framed: `0x01`+name, `0x02`+gpx chunks, `0x03` end track, `0x04`+turn, `0x05` end nav, `0x08`+GPS aiding, `0x09`/`0x0A`/`0x0B` starred-segment blob (`src/segment_match.h`), `0x0C` segment count → `0x25` |
 | Rides    | `…0004` | write/notify | list / download / delete, plus the per-day log files |
 | OTA      | `…0005` | write/notify | `0x01`+size+md5, `0x02`+chunks, `0x03` commit |
 | Sensors  | `…0006` | write/notify | scan / stop / pair / forget / snapshot |

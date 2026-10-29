@@ -2695,6 +2695,16 @@ final class BLEManager: NSObject, ObservableObject {
             routeSent = false
             routeReceived = false
             lastMessage = "Device couldn’t read the route — try sending again"
+        case 0x25 where d.count >= 4:   // starred segments: [status][u16 count]
+            let count = Int(d[d.startIndex + 2]) | Int(d[d.startIndex + 3]) << 8
+            segmentsSupported = true
+            deviceSegmentCount = count == 0xFFFF ? nil : count
+            // The newest blob version the firmware reads; absent = 1 (no elevation).
+            deviceSegmentVersion = d.count >= 5 ? Int(d[d.startIndex + 4]) : 1
+            if d[d.startIndex + 1] != 0, let k = segmentAck {
+                segmentAck = nil
+                k.resume(returning: d[d.startIndex + 1] == 1)
+            }
         default: break
         }
     }
@@ -2889,6 +2899,56 @@ final class BLEManager: NSObject, ObservableObject {
         }
     }
 
+    // MARK: starred segments (route characteristic, 0x09..0x0C)
+
+    /// Starred segments the device holds; nil = it hasn't said (or has none yet).
+    @Published private(set) var deviceSegmentCount: Int?
+    /// Does the connected firmware take segments? nil = not asked yet. Firmware
+    /// before them never answers the query, which is how false is found.
+    @Published private(set) var segmentsSupported: Bool?
+    /// The newest segment blob version the device reads (2 = with elevation).
+    @Published private(set) var deviceSegmentVersion = 1
+    private var segmentAck: CheckedContinuation<Bool, Never>?
+
+    /// Ask the device how many segments it has ([0x0C] -> [0x25][0][u16]).
+    func querySegments() {
+        guard let c = routeChar, let p = peripheral else { return }
+        p.writeValue(Data([0x0C]), for: c, type: .withResponse)
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            if segmentsSupported == nil, routeChar != nil { segmentsSupported = false }
+        }
+    }
+
+    /// Send the whole starred set (StravaSegments.encode) and wait for the
+    /// device to accept it. False when it refused, the link dropped, or no
+    /// answer came within 30 s.
+    func uploadSegments(_ blob: Data) async -> Bool {
+        guard let c = routeChar, let p = peripheral else { return false }
+        let maxLen = max(20, p.maximumWriteValueLength(for: .withResponse)) - 1
+        var packets = [Data([0x09])]
+        var i = 0
+        while i < blob.count {
+            let end = min(i + maxLen, blob.count)
+            packets.append(Data([0x0A]) + blob[i..<end])
+            i = end
+        }
+        packets.append(Data([0x0B]))
+        if let k = segmentAck { segmentAck = nil; k.resume(returning: false) }
+        for packet in packets {
+            guard routeChar != nil else { return false }
+            p.writeValue(packet, for: c, type: .withResponse)
+            try? await Task.sleep(nanoseconds: 12_000_000)  // pace writes, as routes do
+        }
+        return await withCheckedContinuation { (k: CheckedContinuation<Bool, Never>) in
+            segmentAck = k
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 30_000_000_000)
+                if let k = segmentAck { segmentAck = nil; k.resume(returning: false) }
+            }
+        }
+    }
+
     // MARK: route upload (chunked with a 1-byte opcode per packet)
 
     static let routeTransferId = "ble.route"
@@ -3070,6 +3130,9 @@ extension BLEManager: CBCentralManagerDelegate {
             settingsChar = nil; statusChar = nil; routeChar = nil; ridesChar = nil
             sensorsChar = nil; mapChar = nil; otaChar = nil; meshChar = nil
             dashChar = nil
+            // The next device may be another one, or older firmware.
+            segmentsSupported = nil; deviceSegmentCount = nil; deviceSegmentVersion = 1
+            if let k = segmentAck { segmentAck = nil; k.resume(returning: false) }
             // Pending edits stay cached; the next connect reads and merges.
             resetSyncLinkState()
             mediaChar = nil; mediaToneArt = false   // the next device may be older firmware
