@@ -8,7 +8,9 @@
 //    word) and leaves it listening; sleep() deafens it until listen().
 //  * A transmission lasts its LoRa time-on-air (Semtech's formula, the one
 //    lora_radio::airtimeMs uses) of device time; DIO1 fires when it is done.
-//    The radio is half-duplex: what arrives while it transmits is lost.
+//    The radio is half-duplex: what arrives while it transmits is lost, and
+//    at TxDone it drops to standby, receiving again only once the firmware
+//    calls finishSend()/listen().
 //  * A received frame is heard only if the radio is listening, tuned to the
 //    sender's frequency, bandwidth, spreading factor and sync word (the coding
 //    rate travels in the LoRa header, so it need not match), and it arrives a
@@ -67,6 +69,7 @@ struct TxRecord {
     Tune tune;
     int powerDbm;
     std::vector<uint8_t> data;
+    bool aborted = false;
 };
 
 enum Mode { OFF, SLEEP, STANDBY, RX, TX };
@@ -82,6 +85,7 @@ uint32_t g_airFreeAt = 0;            // when the channel is next free (device ms
 // anything that ends inside one of these spans was not heard.
 struct Span { uint32_t from, to; };
 std::deque<Span> g_deaf;
+Span g_lastDeaf{0, 0};               // the last frame lost to it, for diagnosis
 uint32_t g_deafSince = 0;
 bool g_listening = false;
 std::vector<uint8_t> g_txFrame;
@@ -148,7 +152,11 @@ void settle() {
         if (!g_ok || !f.tune.same(g_tune)) { g_n.mistuned++; continue; }
         // A packet is only received if the radio listened to all of it: the
         // preamble starts the demodulator.
-        if (wasDeaf(f.startMs, f.endMs)) { g_n.deaf++; continue; }
+        if (wasDeaf(f.startMs, f.endMs)) {
+            g_n.deaf++;
+            g_lastDeaf = {f.startMs, f.endMs};
+            continue;
+        }
         if (g_fifoFull && g_modelOverrun) g_n.overrun++;
         g_fifo = std::move(f);
         g_fifoFull = true;
@@ -275,6 +283,10 @@ bool startSend(const uint8_t* buf, size_t len) {
     // from the air is cut off (we stop listening now).
     g_txStart = now();
     g_txEnd = g_txStart + airtime(g_tune, len);
+    // Logged as it starts, so the air can relay it while it is still going
+    // out and other radios' channel-activity detection sees it.
+    g_txLog.push_back(TxRecord{++g_txSeq, g_txStart, g_txEnd, g_tune, g_cfg.powerDbm, g_txFrame});
+    while (g_txLog.size() > 2000) g_txLog.pop_front();
     sdUnlock();
     return true;
 }
@@ -283,18 +295,17 @@ void finishSend() {
     {
         std::lock_guard<std::recursive_mutex> lk(g_m);
         if (!g_ok) return;
-        if (g_mode == TX) {
-            TxRecord r{++g_txSeq, g_txStart, now(), g_tune, g_cfg.powerDbm, g_txFrame};
-            g_txLog.push_back(std::move(r));
-            while (g_txLog.size() > 2000) g_txLog.pop_front();
-            g_n.tx++;
-        }
+        if (g_mode == TX) g_n.tx++;
     }
     listen();
 }
 
 void abortSend() {
     diag::log("lora: transmit timed out — resetting to receive");
+    {
+        std::lock_guard<std::recursive_mutex> lk(g_m);
+        if (!g_txLog.empty() && g_txLog.back().startMs == g_txStart) g_txLog.back().aborted = true;
+    }
     listen();
 }
 
@@ -382,9 +393,13 @@ std::string loraCommand(const json::Value& r) {
         // On the air after the link's latency, and not before the channel is
         // free: frames follow each other, they do not overlap.
         uint32_t start = now() + g_latencyMs + (uint32_t)r.num("delay_ms", 0);
+        // `elapsed_ms`: the sender started this long ago (the air relays a
+        // transmission while it is going out), so it ends that much sooner.
+        const uint32_t elapsed = (uint32_t)r.num("elapsed_ms", 0);
         if ((int32_t)(g_airFreeAt - start) > 0) start = g_airFreeAt;
-        f.startMs = start;
-        f.endMs = start + airtime(f.tune, f.data.size());
+        const uint32_t on = airtime(f.tune, f.data.size());
+        f.startMs = start - (elapsed < on ? elapsed : on);
+        f.endMs = f.startMs + on;
         g_airFreeAt = f.endMs;
         o << "\"ok\":true,\"lost\":false,\"start_ms\":" << f.startMs << ",\"end_ms\":" << f.endMs;
         g_air.push_back(std::move(f));
@@ -398,11 +413,11 @@ std::string loraCommand(const json::Value& r) {
         for (auto& t : g_txLog) {
             if (t.seq <= since) continue;
             o << (first ? "" : ",") << "{\"seq\":" << t.seq << ",\"start_ms\":" << t.startMs << ",\"end_ms\":" << t.endMs
-              << "," << tuneJson(t.tune) << ",\"power_dbm\":" << t.powerDbm << ",\"hex\":\"" << hex(t.data) << "\"}";
+              << "," << tuneJson(t.tune) << ",\"power_dbm\":" << t.powerDbm << ",\"aborted\":" << (t.aborted ? "true" : "false") << ",\"hex\":\"" << hex(t.data) << "\"}";
             first = false;
             last = t.seq;
         }
-        o << "],\"seq\":" << last;
+        o << "],\"seq\":" << last << ",\"now_ms\":" << now();
         return o.str();
     }
     // `lora`: set impairments (any of them), and report.
@@ -428,6 +443,9 @@ std::string loraCommand(const json::Value& r) {
       << ",\"fifo\":" << (g_fifoFull ? "true" : "false") << ",\"queued\":" << g_n.queued << ",\"lost\":" << g_n.lost
       << ",\"mistuned\":" << g_n.mistuned << ",\"deaf\":" << g_n.deaf << ",\"overrun\":" << g_n.overrun
       << ",\"crc\":" << g_n.crc << ",\"read\":" << g_n.read << ",\"tx\":" << g_n.tx << ",\"cad_busy\":" << g_n.cadBusy
+      << ",\"last_deaf_frame\":[" << g_lastDeaf.from << "," << g_lastDeaf.to << "],\"deaf_spans\":[";
+    for (size_t i = 0; i < g_deaf.size(); ++i) o << (i ? "," : "") << "[" << g_deaf[i].from << "," << g_deaf[i].to << "]";
+    o << "],\"now_ms\":" << now() << ",\"listening\":" << (g_listening ? "true" : "false")
       << ",\"begins\":" << g_n.begins << ",\"tx_seq\":" << g_txSeq << "}";
     return o.str();
 }

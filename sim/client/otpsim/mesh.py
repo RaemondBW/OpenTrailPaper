@@ -374,11 +374,13 @@ class VirtualNode:
         self.private_key = _clamp(private_key or hashlib.sha256(b"vnode%08x" % num).digest())
         self.public_key = x25519(self.private_key)
         self.hop_limit = hop_limit
-        self._next_id = int.from_bytes(hashlib.sha256(b"id%08x" % num).digest()[:4], "little") | 1
-
-    def new_id(self):
-        self._next_id = (self._next_id * 1103515245 + 12345) & 0xFFFFFFFF or 1
-        return self._next_id
+    @staticmethod
+    def new_id():
+        """A fresh random packet id (never 0), as a stock node picks them."""
+        while True:
+            pid = int.from_bytes(os.urandom(4), "little")
+            if pid:
+                return pid
 
     def packet(self, data, dest=BROADCAST, packet_id=None, channel=None, want_ack=False, hop_limit=None,
                hop_start=None, pki_to=None, sender=None):
@@ -487,8 +489,10 @@ def airtime_ms(nbytes, sf=11, bw_khz=250.0, cr=5, preamble=16):
 class Air:
     """Relays every transmission of each device to the others, as their
     radios would hear it: on the sender's tuning (a receiver tuned elsewhere
-    hears nothing), after a time on air, through each receiver's own `lora`
-    impairments. `link(a, b, loss_pct=…, rssi=…, snr=…)` shapes one direction;
+    hears nothing), from the moment it starts (so the others' channel-
+    activity detection sees it) to the end of its time on air, through each
+    receiver's own `lora` impairments. Devices must run at the same clock
+    speed. `link(a, b, loss_pct=…, rssi=…, snr=…)` shapes one direction;
     `cut(a, b)` puts them out of range of each other. Listeners (callables
     taking (device, frame dict)) see every transmission, e.g. a VirtualNode's
     test that wants to know what went out.
@@ -549,6 +553,8 @@ class Air:
                 continue
             self._seq[id(src)] = r["seq"]
             for f in r["frames"]:
+                if f.get("aborted"):
+                    continue
                 with self._lock:
                     self.log.append((self.devices.index(src), f))
                 for cb in list(self.listeners):
@@ -565,7 +571,8 @@ class Air:
                         continue
                     try:
                         dst.cmd("lora_rx", hex=f["hex"], freq_mhz=f["freq_mhz"], bw_khz=f["bw_khz"], sf=f["sf"],
-                                cr=f["cr"], sync_word=f["sync_word"], **shape)
+                                cr=f["cr"], sync_word=f["sync_word"],
+                                elapsed_ms=max(0, r["now_ms"] - f["start_ms"]), **shape)
                     except Exception:
                         pass
 

@@ -34,7 +34,8 @@ card, NVS and NimBLE, and `sim/host/` for the hardware:
 | The phone's GATT server (AMS, name) | provided by whatever connects as the phone |
 | OTA | the image lands in `<dir>/ota.bin`; the reboot re-execs the sim |
 | Fuel gauge | set from the control channel |
-| LoRa, Qwiic sensors, RTC chip, the USB stack itself, light sleep | absent (the firmware's "not fitted" paths) |
+| SX1262 LoRa radio (the mesh) | with `--lora`: [lora_sim.cpp](host/lora_sim.cpp) behind `lora_radio.h` — tuning, time on air, half-duplex, a one-packet FIFO, CRC errors, channel-activity detection; its air is the control channel (`lora_rx`/`lora_tx`/`lora`). Without it, absent |
+| Qwiic sensors, RTC chip, the USB stack itself, light sleep | absent (the firmware's "not fitted" paths) |
 
 Two TCP ports, both described in [PROTOCOL.md](PROTOCOL.md):
 
@@ -149,6 +150,36 @@ damaged, and along a ride on a route.
 `SimPhone.pace_writes(interval_ms, per_event)` paces the phone's own writes
 like a connection interval; the sim's `--conn-interval-ms` paces only the
 device's notifications.
+
+## The mesh: a LoRa air
+
+`--lora` fits the radio, and the control channel is its air
+([PROTOCOL.md](PROTOCOL.md#the-lora-radio-and-its-air)). [client/otpsim/mesh.py](client/otpsim/mesh.py)
+is a Meshtastic codec written from Meshtastic's definitions rather than from
+`src/mesh_proto.cpp` (CommonCrypto AES, RFC 7748 X25519, AES-CCM, the
+protobuf wire format), so the device and it agreeing is an interoperability
+check. `VirtualNode` builds a stock node's frames (text, NodeInfo, position,
+acks, channel- or PKI-encrypted, any hop counts) and reads the device's;
+`Air([dev1, dev2])` relays between several sims (each with its own `--mac`).
+
+```python
+dev = SimDevice.start(args=["--lora"])
+alex = mesh.VirtualNode(0x1234abcd, "Alex", "ALX")
+dev.lora_rx(alex.nodeinfo()); dev.lora_rx(alex.text("hi"))
+frames, seq = dev.lora_tx()             # what the device sent
+alex.decode(frames[0]["data"])          # header + decrypted Data
+dev.lora(loss_pct=20, rssi=-118)        # a worse link
+```
+
+[tests/test_mesh.py](tests/test_mesh.py) covers hearing (signal, hops,
+names, positions, ages, 32-node and 48-message limits), keys (wrong key,
+private channels, PKI both ways, pinned keys), floods and acks, damaged
+frames, the transmitter (busy channel, full outbox), presets and channel
+changes, and a ride recorded meanwhile; [test_mesh_position.py](tests/test_mesh_position.py)
+the rider's own position (off by default, per channel, the 10 min / 100 m /
+hourly rules); [test_mesh_air.py](tests/test_mesh_air.py) two devices.
+The "Meshtastic wire format" CI job (tools/mesh_test) checks the codec's
+functions themselves.
 
 ## Writing tests that fail for the right reason
 
