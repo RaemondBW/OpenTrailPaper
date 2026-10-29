@@ -211,6 +211,30 @@ class SimDevice:
         """The radio link to the phone is lost (default: supervision timeout)."""
         self.cmd("ble_drop", reason=reason)
 
+    # -- mesh / LoRa radio (start with args=["--lora"]; see otpsim.mesh) ---------------------
+
+    def lora(self, **impairments):
+        """The radio's state and counters; any of loss_pct, crc_error_pct,
+        latency_ms, rssi, snr, busy (channel-activity detection says busy),
+        overrun (model the one-packet FIFO), seed set the link first."""
+        return self.cmd("lora", **impairments)["lora"]
+
+    def lora_rx(self, frame, **kw):
+        """Puts `frame` (bytes) on the air for this radio: by default sent on
+        the channel it is tuned to; freq_mhz/bw_khz/sf/cr/sync_word say
+        otherwise. rssi, snr, delay_ms, crc_error per frame. Returns the
+        answer (`lost`, `start_ms`, `end_ms` in device time)."""
+        return self.cmd("lora_rx", hex=bytes(frame).hex(), **kw)
+
+    def lora_tx(self, since=0):
+        """What the radio transmitted after `since` (a seq): (frames, seq).
+        Each frame: dict with seq, start_ms, end_ms, tuning, power_dbm, and
+        `data` (bytes)."""
+        r = self.cmd("lora_tx", since=since)
+        for f in r["frames"]:
+            f["data"] = bytes.fromhex(f["hex"])
+        return r["frames"], r["seq"]
+
     def log_seq(self):
         return self.cmd("seq")["seq"]
 

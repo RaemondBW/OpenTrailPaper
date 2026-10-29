@@ -164,6 +164,8 @@ class LinkClient:
     @staticmethod
     def _more(msg):
         b = body_name(msg)
+        if b in ("mesh_history", "mesh_nodes"):
+            return not getattr(msg, b).last
         if b not in ("file_list", "tile_list"):
             return False
         return not getattr(msg, b).last

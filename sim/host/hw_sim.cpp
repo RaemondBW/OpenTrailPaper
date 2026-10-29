@@ -1,5 +1,5 @@
 // Stand-ins for the board's hardware modules. Each keeps the module's
-// interface and reports the hardware as the sim has it: no LoRa radio, no
+// interface and reports the hardware as the sim has it: no
 // Qwiic sensors, no RTC chip, no USB stack (a host mounting the card is the
 // control channel's `usb`); power management and the
 // crash reporter are inert. The fuel gauge's reading is set by the control
@@ -79,23 +79,7 @@ bool seaLevelCalibrated() { return false; }
 void report(char* out, size_t n) { snprintf(out, n, "aux: none (sim)"); }
 }  // namespace aux_sensors
 
-namespace lora_radio {
-bool begin(const Config&) { return false; }
-bool ok() { return false; }
-float frequencyMHz() { return 0; }
-bool irqFired() { return false; }
-bool transmitting() { return false; }
-size_t read(uint8_t*, size_t, float&, float&) { return 0; }
-bool startSend(const uint8_t*, size_t) { return false; }
-void finishSend() {}
-void abortSend() {}
-void listen() {}
-bool channelBusy() { return false; }
-void sleep() {}
-float instantRssi() { return -120; }
-uint32_t airtimeMs(size_t len) { return (uint32_t)len * 8; }
-int lastError() { return -2; }
-}  // namespace lora_radio
+// lora_radio: sim/host/lora_sim.cpp (fitted with --lora).
 
 namespace smooth_epd {
 void selfTest() {}

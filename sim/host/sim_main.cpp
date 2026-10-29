@@ -63,6 +63,8 @@ void usage() {
             "  --sd-size-mb N         the card's capacity (default 32 GB); writes fail when it is full\n"
             "  --sd-cluster-kb N      its FAT cluster size (default 32 KB from 2 GB up, else 16 KB)\n"
             "otp-sim card-tool h3|fit ...   build card contents (sim/host/cardtool_sim.cpp)\n"
+            "  --lora                 an SX1262 LoRa radio is fitted (the mesh); its air is the control channel\n"
+            "  --mac AA:BB:CC:DD:EE:FF  the board's MAC (the mesh node number is bytes 2-5)\n"
             "  --quiet                don't echo the console to stdout\n"
             "  --no-stdin             don't read console commands from stdin\n");
 }
@@ -125,7 +127,13 @@ void setup() {
     diag::log("gps module: %s", gps_service::moduleName());
     ui_dashboard::bootStep("Mesh");
     const bool meshOk = mesh_service::begin();
-    ui_dashboard::bootDetailFor("Mesh", mesh_service::enabled() ? "no SX1262" : "off in settings");
+    if (!mesh_service::enabled())
+        ui_dashboard::bootDetailFor("Mesh", "off in settings");
+    else if (mesh_service::radioOk())
+        ui_dashboard::bootDetailFor("Mesh", "%s SF%u %.3f", mesh_service::channelName(),
+                                    mesh::preset(mesh_service::presetIndex()).sf, mesh_service::frequencyMHz());
+    else
+        ui_dashboard::bootDetailFor("Mesh", "no SX1262");
     ui_dashboard::bootStatus("Mesh", mesh_service::radioOk() || !mesh_service::enabled());
     ui_dashboard::bootStep("Qwiic");
     ui_dashboard::bootDetailFor("Qwiic", "none attached");
@@ -220,6 +228,15 @@ int main(int argc, char** argv) {
         else if (a == "--sd-latency-ms") sim::setSdLatency(atoi(next().c_str()));
         else if (a == "--sd-size-mb") sim::opts.sdSizeMb = strtoull(next().c_str(), nullptr, 10);
         else if (a == "--sd-cluster-kb") sim::opts.sdClusterKb = (uint32_t)atoi(next().c_str());
+        else if (a == "--lora") sim::opts.lora = true;
+        else if (a == "--mac") {
+            unsigned m[6];
+            if (sscanf(next().c_str(), "%x:%x:%x:%x:%x:%x", &m[0], &m[1], &m[2], &m[3], &m[4], &m[5]) != 6) {
+                usage();
+                return 1;
+            }
+            for (int k = 0; k < 6; ++k) sim::opts.mac[k] = (uint8_t)m[k];
+        }
         else if (a == "--quiet") sim::opts.quiet = true;
         else if (a == "--no-stdin") readStdin = false;
         else { usage(); return a == "--help" || a == "-h" ? 0 : 1; }

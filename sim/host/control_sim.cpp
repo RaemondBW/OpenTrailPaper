@@ -28,6 +28,7 @@
 
 extern SharedRideState g_state;
 std::string sensorCommand(const json::Value& r);   // sensors_sim.cpp
+std::string loraCommand(const json::Value& r);     // lora_sim.cpp (mesh radio)
 
 // ---- the log --------------------------------------------------------------------------
 
@@ -344,6 +345,8 @@ std::string handle(const json::Value& r) {
     if (cmd == "reboot") { std::thread([] { sim_clock::sleepMs(50); sim::reboot("control"); }).detach(); return ok(); }
     if (cmd == "quit") { std::thread([] { std::this_thread::sleep_for(std::chrono::milliseconds(50)); _exit(0); }).detach(); return ok(); }
     if (cmd == "sensor" || cmd == "sensor_remove") return sensorCommand(r);
+    // ---- mesh / LoRa radio (lora_sim.cpp) ----
+    if (cmd == "lora" || cmd == "lora_rx" || cmd == "lora_tx") return loraCommand(r);
     return "\"ok\":false,\"error\":" + json::esc("unknown cmd '" + cmd + "'");
 }
 
