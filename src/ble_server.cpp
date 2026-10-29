@@ -1504,7 +1504,13 @@ class ServerCb : public NimBLEServerCallbacks {
             reject(info, "pairing was not authenticated with the passkey");
             return;
         }
-        if (wasPaired && !linkPeerKnown) {
+        // A key refresh on an admitted link raises authentication-complete
+        // again. The phone that just paired over this link counts as paired
+        // now (its bond is the one phoneBonds counts) but still has
+        // linkPeerKnown false: the link already proved itself, so it is not
+        // a second phone (admit() then leaves the session alone).
+        const bool refresh = linkAdmitted && phoneConnected;
+        if (wasPaired && !linkPeerKnown && !refresh) {
             // A new bond made while paired — nothing above should let one
             // through, but if it happens, undo it.
             reject(info, "new bond while paired");

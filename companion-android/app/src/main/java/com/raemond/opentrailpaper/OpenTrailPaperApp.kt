@@ -1,7 +1,10 @@
 package com.raemond.opentrailpaper
 
 import android.app.Application
+import com.raemond.opentrailpaper.ble.AndroidRadio
 import com.raemond.opentrailpaper.ble.BleManager
+import com.raemond.opentrailpaper.ble.DebugRadio
+import com.raemond.opentrailpaper.map.DebugEndpoints
 import com.raemond.opentrailpaper.data.DeviceSettingsStore
 import com.raemond.opentrailpaper.data.Prefs
 import com.raemond.opentrailpaper.data.RideListingStore
@@ -27,6 +30,8 @@ class OpenTrailPaperApp : Application() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        // Debug builds can point map downloads at a stand-in CDN (sim/ANDROID.md).
+        DebugEndpoints.init(this)
         Prefs.init(this)
         DeviceSettingsStore.init(this)
         RideListingStore.init(this)
@@ -44,7 +49,8 @@ class OpenTrailPaperApp : Application() {
             osmdroidTileCache = osmdroidBasePath.resolve("tiles").apply { mkdirs() }
         }
 
-        ble = BleManager(this)
+        // Debug builds can point the link at the firmware simulator (DebugRadio).
+        ble = BleManager(this, DebugRadio.create(this) ?: AndroidRadio(this))
     }
 
     companion object {

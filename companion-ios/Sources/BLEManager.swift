@@ -602,8 +602,10 @@ final class BLEManager: NSObject, ObservableObject {
     private var tileBusyRetries = 0
     private var tilesMoreComing = false             // app still building tiles to enqueue
 
-    private var central: CBCentralManager!
-    private var peripheral: CBPeripheral?
+    /// CoreBluetooth, or in a DEBUG build launched with `-sim-ble` the
+    /// firmware simulator's link (SimRadio.swift). Same state machine on both.
+    private var central: (any RadioCentral)!
+    private var peripheral: (any RadioPeer)?
     private var settingsChar: CBCharacteristic?
     private var dashChar: CBCharacteristic?
     /// The device's dashboard layout, as the text of /config/dashboard.cfg —
@@ -826,7 +828,7 @@ final class BLEManager: NSObject, ObservableObject {
     /// nothing unpaired shows up we try ONE of them anyway: after a reinstall
     /// the app has forgotten the device but iOS still holds the bond, and the
     /// device would let us straight in.
-    private var pairedElsewhereSeen: [UUID: CBPeripheral] = [:]
+    private var pairedElsewhereSeen: [UUID: any RadioPeer] = [:]
     private var fallbackTask: Task<Void, Never>?
     /// The current connection is that one-off attempt.
     private var onFallbackAttempt = false
@@ -1233,6 +1235,12 @@ final class BLEManager: NSObject, ObservableObject {
     /// the first time this runs. Idempotent; skipped in the update demo.
     private func startCentral() {
         guard central == nil, !isDemoUpdate else { return }
+        #if DEBUG
+        if let sim = SimRadio.fromLaunchArguments(events: self) {
+            central = sim
+            return
+        }
+        #endif
         // A restore identifier lets iOS relaunch the app in the background for
         // the head unit's BLE events after it was terminated for memory while
         // a connection was pending or up — e.g. the device rebooting at the end
@@ -1438,31 +1446,31 @@ final class BLEManager: NSObject, ObservableObject {
             }
             p.delegate = self
             state = .connecting
-            central.connect(p)      // completes at once if iOS kept the link up
+            central.connectPeer(p)      // completes at once if iOS kept the link up
             return
         }
         // A system-held link means iOS holds a bond with that device — with no
         // device remembered (fresh install) that makes it ours; with one, only
         // ours counts.
         if peripheral == nil,
-           let p = central.retrieveConnectedPeripherals(withServices: [BikeUUID.service])
+           let p = central.retrieveConnectedPeers(withServices: [BikeUUID.service])
                .first(where: { !refusedIds.contains($0.identifier) && (pairedDeviceId == nil
                    ? !rejectedIds.contains($0.identifier) : $0.identifier == pairedDeviceId) }) {
             peripheral = p
             p.delegate = self
             state = .connecting
-            central.connect(p)
+            central.connectPeer(p)
             return
         }
         // Our device, known but not connected: a pending connect has no
         // timeout and fires the moment it is in range, whatever private
         // address the PHONE is on — no scan needed.
         if peripheral == nil, let saved = pairedDeviceId, !refusedIds.contains(saved),
-           let p = central.retrievePeripherals(withIdentifiers: [saved]).first {
+           let p = central.retrievePeers(withIdentifiers: [saved]).first {
             peripheral = p
             p.delegate = self
             state = .connecting
-            central.connect(p)
+            central.connectPeer(p)
             return
         }
         // Our device refused us: don't hunt for it, just listen for it to
@@ -1475,9 +1483,8 @@ final class BLEManager: NSObject, ObservableObject {
         // Duplicates while hunting for a first device: a device that was
         // paired-elsewhere when first seen must be noticed again the moment
         // its rider unpairs it (its advertisement flips).
-        central.scanForPeripherals(withServices: [BikeUUID.service], options: [
-            CBCentralManagerScanOptionAllowDuplicatesKey: pairedDeviceId == nil || !refusedIds.isEmpty,
-        ])
+        central.scan(for: [BikeUUID.service],
+                     allowDuplicates: pairedDeviceId == nil || !refusedIds.isEmpty)
         if pairedDeviceId == nil { armPairedFallback() }
     }
 
@@ -1491,7 +1498,7 @@ final class BLEManager: NSObject, ObservableObject {
         NSLog("[ble] foreground: reconnecting")
         p.delegate = self
         state = .connecting
-        central.connect(p)
+        central.connectPeer(p)
     }
 
     /// The rider's Connect / Scan button: the explicit retry that lifts a
@@ -1511,16 +1518,14 @@ final class BLEManager: NSObject, ObservableObject {
     private func watchRefused() {
         guard let central, central.state == .poweredOn else { return }
         state = .idle
-        central.scanForPeripherals(withServices: [BikeUUID.service], options: [
-            CBCentralManagerScanOptionAllowDuplicatesKey: true,
-        ])
+        central.scan(for: [BikeUUID.service], allowDuplicates: true)
     }
 
     /// The device turned this phone away (fixed pairing, firmware
     /// ble_server.cpp): it is paired with another phone, or with this one
     /// before iOS forgot it, and stays that way until the rider unpairs it on
     /// the device. Stop every automatic reconnect and say what to do.
-    private func refuse(_ p: CBPeripheral, iosKeysStale: Bool) {
+    private func refuse(_ p: any RadioPeer, iosKeysStale: Bool) {
         let id = p.identifier
         NSLog("[ble] refused by %@ (stale keys=%d, barren=%d)",
               id.uuidString, iosKeysStale ? 1 : 0, barrenConnects)
@@ -1539,7 +1544,7 @@ final class BLEManager: NSObject, ObservableObject {
     }
 
     func disconnect() {
-        if let p = peripheral { central?.cancelPeripheralConnection(p) }
+        if let p = peripheral { central?.cancelPeer(p) }
     }
 
     /// Manufacturer data [0xFFFF][0x4F][flags]: bit0 = paired to a phone.
@@ -1556,7 +1561,7 @@ final class BLEManager: NSObject, ObservableObject {
     private func armPairedFallback() {
         fallbackTask?.cancel()
         fallbackTask = Task { @MainActor [weak self] in
-            var found: (UUID, CBPeripheral)? = nil
+            var found: (UUID, any RadioPeer)? = nil
             while found == nil {
                 try? await Task.sleep(nanoseconds: 6_000_000_000)
                 guard let self, !Task.isCancelled, self.state == .scanning,
@@ -1571,7 +1576,7 @@ final class BLEManager: NSObject, ObservableObject {
             p.delegate = self
             self.state = .connecting
             self.central.stopScan()
-            self.central.connect(p)
+            self.central.connectPeer(p)
         }
     }
 
@@ -1650,11 +1655,11 @@ final class BLEManager: NSObject, ObservableObject {
         onFallbackAttempt = false
         if let p = peripheral, p.state == .connected {
             forgetting = true
-            central?.cancelPeripheralConnection(p)   // didDisconnect rescans
+            central?.cancelPeer(p)   // didDisconnect rescans
         } else {
             // Pending connect (device out of range): drop it here. A late
             // didDisconnect for it finds peripheral == nil and won't revive it.
-            if let p = peripheral { central?.cancelPeripheralConnection(p) }
+            if let p = peripheral { central?.cancelPeer(p) }
             peripheral = nil
             central?.stopScan()
             startScan()
@@ -4389,21 +4394,11 @@ extension BLEManager: CBCentralManagerDelegate {
         }
     }
 
+    // The CoreBluetooth callbacks below only hand over to the RadioEvents
+    // handlers (extension further down), which SimRadio calls too.
+
     nonisolated func centralManagerDidUpdateState(_ c: CBCentralManager) {
-        if isDemoUpdate || isDemoDash || isDemoLive { return }   // demo holds a fake connected state
-        MainActor.assumeIsolated {
-            bluetoothReady = (c.state == .poweredOn)
-            bluetoothPoweredOn = (c.state == .poweredOn)
-            // .unauthorized IS the refusal arriving; otherwise re-read, since
-            // the answer to our prompt lands here.
-            bluetoothPermission = c.state == .unauthorized
-                ? .denied : Self.state(of: CBCentralManager.authorization)
-            switch c.state {
-            case .poweredOn: startScan()
-            case .poweredOff: state = .poweredOff
-            default: state = .idle
-            }
-        }
+        MainActor.assumeIsolated { radioStateChanged(c.state) }
     }
 
     nonisolated func centralManager(_ c: CBCentralManager,
@@ -4411,52 +4406,100 @@ extension BLEManager: CBCentralManagerDelegate {
                                     advertisementData: [String: Any],
                                     rssi: NSNumber) {
         let pairedFlag = BLEManager.advertisesPaired(advertisementData)
-        MainActor.assumeIsolated {
-            if let pairedFlag { advPaired[p.identifier] = pairedFlag }
-            guard peripheral == nil else { return }
-            if refusedIds.contains(p.identifier) {
-                // Refused while paired, and now it says it's unpaired: the
-                // rider unpaired it on the device. One automatic try — it
-                // pairs with a code on the panel. Anything else waits for a tap.
-                guard pairedFlag == false,
-                      refusedWhilePaired.contains(p.identifier) else { return }
-                refusedIds.remove(p.identifier)
-                refusedWhilePaired.remove(p.identifier)
-                pairingIssue = nil
-            }
-            if let saved = pairedDeviceId {
-                // Fixed pairing: ours or nothing.
-                guard p.identifier == saved else { return }
-            } else {
-                // Looking for a first device: never one that turned us away
-                // this session, and not one that says it belongs to another
-                // phone — unless nothing else turns up (armPairedFallback).
-                if rejectedIds.contains(p.identifier) { return }
-                if pairedFlag == true {
-                    pairedElsewhereSeen[p.identifier] = p
-                    return
-                }
-            }
-            fallbackTask?.cancel()
-            peripheral = p
-            p.delegate = self
-            state = .connecting
-            c.stopScan()
-            c.connect(p)
-        }
+        MainActor.assumeIsolated { radioDidDiscover(p, paired: pairedFlag) }
     }
 
     nonisolated func centralManager(_ c: CBCentralManager,
                                     didConnect p: CBPeripheral) {
-        MainActor.assumeIsolated {
-            connectedAt = Date()
-            authenticatedSinceConnect = false
-            authFailedSinceConnect = false
-            linkSecuring = true
-            // Settings cache and offline edits are keyed by this identity.
-            setCurrentDevice(p.identifier.uuidString)
-            p.discoverServices([BikeUUID.service, LinkUUID.service])
+        MainActor.assumeIsolated { radioDidConnect(p) }
+    }
+
+    nonisolated func centralManager(_ c: CBCentralManager,
+                                    didFailToConnect p: CBPeripheral,
+                                    error: Error?) {
+        MainActor.assumeIsolated { radioDidFailToConnect(p, error: error) }
+    }
+
+    nonisolated func centralManager(_ c: CBCentralManager,
+                                    didDisconnectPeripheral p: CBPeripheral,
+                                    error: Error?) {
+        MainActor.assumeIsolated { radioDidDisconnect(p, error: error) }
+    }
+}
+
+/// The connection state machine: scan, connect, security, refusal, barren-
+/// connect counting and reconnect. Driven by CoreBluetooth (the delegate
+/// methods above) or, in DEBUG, by SimRadio; the decisions are the same.
+extension BLEManager: RadioEvents {
+    func radioStateChanged(_ cs: CBManagerState) {
+        if isDemoUpdate || isDemoDash || isDemoLive { return }   // demo holds a fake connected state
+        bluetoothReady = (cs == .poweredOn)
+        bluetoothPoweredOn = (cs == .poweredOn)
+        // .unauthorized IS the refusal arriving; otherwise re-read, since
+        // the answer to our prompt lands here.
+        bluetoothPermission = cs == .unauthorized
+            ? .denied : Self.state(of: CBCentralManager.authorization)
+        // Off (or reset, or no longer allowed): every link is gone and every
+        // peripheral object invalid, but CoreBluetooth calls no didDisconnect
+        // for them. End the connection here and let the peripheral go;
+        // poweredOn's startScan retrieves ours afresh. (.unknown is the
+        // state before the first update — a restored peripheral waits it out.)
+        if cs != .poweredOn, cs != .unknown, peripheral != nil {
+            NSLog("[ble] Bluetooth %d: ending the connection", cs.rawValue)
+            endConnection()
+            peripheral = nil
+            restoredPeripheral = false
+            forgetting = false
         }
+        switch cs {
+        case .poweredOn: startScan()
+        case .poweredOff: state = .poweredOff
+        default: state = .idle
+        }
+    }
+
+    func radioDidDiscover(_ p: any RadioPeer, paired pairedFlag: Bool?) {
+        if let pairedFlag { advPaired[p.identifier] = pairedFlag }
+        guard peripheral == nil else { return }
+        if refusedIds.contains(p.identifier) {
+            // Refused while paired, and now it says it's unpaired: the
+            // rider unpaired it on the device. One automatic try — it
+            // pairs with a code on the panel. Anything else waits for a tap.
+            guard pairedFlag == false,
+                  refusedWhilePaired.contains(p.identifier) else { return }
+            refusedIds.remove(p.identifier)
+            refusedWhilePaired.remove(p.identifier)
+            pairingIssue = nil
+        }
+        if let saved = pairedDeviceId {
+            // Fixed pairing: ours or nothing.
+            guard p.identifier == saved else { return }
+        } else {
+            // Looking for a first device: never one that turned us away
+            // this session, and not one that says it belongs to another
+            // phone — unless nothing else turns up (armPairedFallback).
+            if rejectedIds.contains(p.identifier) { return }
+            if pairedFlag == true {
+                pairedElsewhereSeen[p.identifier] = p
+                return
+            }
+        }
+        fallbackTask?.cancel()
+        peripheral = p
+        p.delegate = self
+        state = .connecting
+        central.stopScan()
+        central.connectPeer(p)
+    }
+
+    func radioDidConnect(_ p: any RadioPeer) {
+        connectedAt = Date()
+        authenticatedSinceConnect = false
+        authFailedSinceConnect = false
+        linkSecuring = true
+        // Settings cache and offline edits are keyed by this identity.
+        setCurrentDevice(p.identifier.uuidString)
+        p.discoverServices([BikeUUID.service, LinkUUID.service])
     }
 
     /// A connect that never came up. iOS reports stale pairing keys here too
@@ -4468,184 +4511,191 @@ extension BLEManager: CBCentralManagerDelegate {
     /// background failed its reconnects three times without the device ever
     /// seeing one, and the app then told the rider the device wasn't
     /// accepting this iPhone until it was force-quit (2026-10-26).
-    nonisolated func centralManager(_ c: CBCentralManager,
-                                    didFailToConnect p: CBPeripheral,
-                                    error: Error?) {
-        MainActor.assumeIsolated {
-            guard peripheral === p else { return }
-            linkSecuring = false
-            connectedAt = nil
-            let code = (error as? CBError)?.code
-            let ours = pairedDeviceId == p.identifier
-            NSLog("[ble] connect failed: %@ (ours=%d barren=%d)",
-                  error.map { "\($0)" } ?? "no error", ours ? 1 : 0, barrenConnects)
-            let stale = code == .peerRemovedPairingInformation ||
-                (code == .encryptionTimedOut && !ours)
-            if !ours { barrenConnects += 1 }
-            if stale || barrenConnects >= 3 {
-                refuse(p, iosKeysStale: stale)
-                peripheral = nil
-                startScan()
-                return
-            }
-            state = .connecting
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
-                guard let self, self.peripheral === p, p.state == .disconnected else { return }
-                c.connect(p)
-            }
+    func radioDidFailToConnect(_ p: any RadioPeer, error: Error?) {
+        guard peripheral === p else { return }
+        linkSecuring = false
+        connectedAt = nil
+        let code = (error as? CBError)?.code
+        let ours = pairedDeviceId == p.identifier
+        NSLog("[ble] connect failed: %@ (ours=%d barren=%d)",
+              error.map { "\($0)" } ?? "no error", ours ? 1 : 0, barrenConnects)
+        let stale = code == .peerRemovedPairingInformation ||
+            (code == .encryptionTimedOut && !ours)
+        if !ours { barrenConnects += 1 }
+        if stale || barrenConnects >= 3 {
+            refuse(p, iosKeysStale: stale)
+            peripheral = nil
+            startScan()
+            return
+        }
+        state = .connecting
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+            guard let self, self.peripheral === p, p.state == .disconnected else { return }
+            self.central.connectPeer(p)
         }
     }
 
-    nonisolated func centralManager(_ c: CBCentralManager,
-                                    didDisconnectPeripheral p: CBPeripheral,
-                                    error: Error?) {
-        MainActor.assumeIsolated {
-            settingsChar = nil; statusChar = nil; routeChar = nil; ridesChar = nil
-            sensorsChar = nil; mapChar = nil; otaChar = nil; meshChar = nil
-            dashChar = nil
-            // The link and everything on it (requests, timers, transfers) was
-            // this connection's; the feature state below winds down on its own.
-            link.reset()
-            linkOffered = false; legacyActive = false; legacyCharsKnown = false
-            liveTopicsSent = [.ride]
-            mapXfer = 0; dlXfer = 0; artXfer = 0
-            loadingLogs = false   // a list in flight died with the link
-            live.clear()
-            // The workout characteristic belongs to this link too; a stale one
-            // swallowed writes after a reconnect. The session state is the
-            // device's, so it is asked for again rather than shown stale.
-            workoutChar = nil
-            workoutStatus = WorkoutStatus()
-            workoutFetchForPage = false
-            workoutPageAwaitingList = ""; workoutPageGaveUp = ""
-            // The next device may be another one, or older firmware.
-            segmentsSupported = nil; deviceSegmentCount = nil; deviceSegmentVersion = 1
-            if let k = segmentAck { segmentAck = nil; k.resume(returning: false) }
-            // Pending edits stay cached; the next connect reads and merges.
-            resetSyncLinkState()
-            mediaChar = nil; mediaToneArt = false; mediaRemote = false   // the next device may be older firmware
-            mediaNotifySeen = false; mediaCapsAsked = false; mediaSubscribeRetries = 0
-            mediaAcks = []; artPumping = false; artPayload = Data(); artGen += 1
-            albumArt.linkDown()
-            updateAlbumArt()
-            // A half-received mesh stream must not be published on reconnect.
-            meshBuilding = []; meshNodesBuilding = []; meshPresetsBuilding = []
-            meshChannelsBuilding = []
-            stopLocationStream()   // no device to send the phone's position to
-            // If we disconnect mid-update: after the data is sent + commit
-            // requested, a disconnect is EXPECTED (the device reboots into the
-            // new firmware) — show "rebooting" and let the reconnect confirm the
-            // version. If we drop mid-download, the transfer failed.
-            if otaInProgress {
-                keepAwake(false)
-                if otaCommitSent {
-                    // Expected: the device reboots to flash. Wait for it to come
-                    // back and confirm the version; the watchdog covers a no-show.
-                    otaPhase = .installing
-                    otaMessage = "Installing — the device is restarting…"
-                    armOtaWatchdog(seconds: 150, failMessage: BLEManager.installWatchdogMsg)
-                } else {
-                    // Dropped mid-transfer — nothing was flashed.
-                    otaFinish(.failed, "Connection dropped mid-transfer. The device is unchanged — try again.")
-                }
-            }
-            if mapUploading { mapUploading = false; keepAwake(false)
-                              mapMessage = "Upload interrupted — try again" }
-            TransferCenter.shared.finish(Self.mapTransferId, success: false,
-                                         message: "Connection dropped")
-            TransferCenter.shared.finish(Self.routeTransferId, success: false,
-                                         message: "Connection dropped")
-            deviceSupportsPois = false      // re-learnt from the next 0x08 answer
-            deviceKeepsVersions = false     // and this from the next versioned list
-            if tilesUploading {
-                tileQueue = []
-                finishTileJob(message: "Interrupted — reconnect to resume")
-            }
-            status = DeviceStatus()
-            let admitted = authenticatedSinceConnect || sawStatusSinceConnect
-            // Was this the device turning us away? It drops a phone it won't
-            // have before any protected data: at once when it's paired and we
-            // aren't its phone, or when our pairing request arrives after iOS
-            // forgot it. Signals, strongest first: iOS saying the keys are
-            // gone; a protected request failing for lack of authentication;
-            // a quick drop from a device that advertises "paired"; and, for a
-            // device reached without seeing its advertisement, three barren
-            // connects in a row (so a reboot or a range drop doesn't cry wolf).
-            // OUR device advertises "paired" too — to us — so for it a single
-            // quick drop or a mid-handshake auth error is not enough: a radio
-            // drop mid-ride must keep reconnecting. It takes the stale-keys
-            // error or three barren connects.
-            NSLog("[ble] disconnected: %@ (admitted=%d)",
-                  error.map { "\($0)" } ?? "no error", admitted ? 1 : 0)
-            var refused = false
-            var iosKeysStale = false
-            if !admitted {
-                barrenConnects += 1
-                let code = (error as? CBError)?.code
-                iosKeysStale = code == .peerRemovedPairingInformation || code == .encryptionTimedOut
-                let quick = connectedAt.map { -$0.timeIntervalSinceNow < 8 } ?? false
-                let ours = pairedDeviceId == p.identifier
-                refused = iosKeysStale ||
-                    (!ours && authFailedSinceConnect) ||
-                    (!ours && quick && advPaired[p.identifier] == true) ||
-                    (barrenConnects >= 3 && !onFallbackAttempt)
-            } else {
-                barrenConnects = 0
-            }
-            sawStatusSinceConnect = false
-            authenticatedSinceConnect = false
-            authFailedSinceConnect = false
-            linkSecuring = false
-            connectedAt = nil
-            // Keep `rides` (the last-known list): the Rides tab keeps showing
-            // it while disconnected and through the re-check on reconnect.
-            ridesBuilding = []; loadingRides = false; ridesCheckedThisLink = false
-            // Nothing queued can proceed without a link, and a half-received
-            // file must not be mistaken for a complete one on reconnect.
-            if dlActive != nil || !dlQueue.isEmpty {
-                cancelAllTransfers("Connection dropped mid-download — try again")
-            }
-            deviceRoutes = []; loadingRoutes = false
-            lastUploadProgress = nil; routeSent = false; routeReceived = false
-            sensors = []; scanningSensors = false
+    func radioDidDisconnect(_ p: any RadioPeer, error: Error?) {
+        // Bluetooth went off: radioStateChanged ended this link and let the
+        // peripheral go. A late report of the same link changes nothing (and
+        // must not count as a barren connect).
+        if peripheral == nil, central.state != .poweredOn { return }
+        let admitted = authenticatedSinceConnect || sawStatusSinceConnect
+        let authFailed = authFailedSinceConnect
+        let quick = connectedAt.map { -$0.timeIntervalSinceNow < 8 } ?? false
+        endConnection()
+        // Was this the device turning us away? It drops a phone it won't
+        // have before any protected data: at once when it's paired and we
+        // aren't its phone, or when our pairing request arrives after iOS
+        // forgot it. Signals, strongest first: iOS saying the keys are
+        // gone; a protected request failing for lack of authentication;
+        // a quick drop from a device that advertises "paired"; and, for a
+        // device reached without seeing its advertisement, three barren
+        // connects in a row (so a reboot or a range drop doesn't cry wolf).
+        // OUR device advertises "paired" too — to us — so for it a single
+        // quick drop or a mid-handshake auth error is not enough: a radio
+        // drop mid-ride must keep reconnecting. It takes the stale-keys
+        // error or three barren connects.
+        NSLog("[ble] disconnected: %@ (admitted=%d)",
+              error.map { "\($0)" } ?? "no error", admitted ? 1 : 0)
+        var refused = false
+        var iosKeysStale = false
+        if !admitted {
+            barrenConnects += 1
+            let code = (error as? CBError)?.code
+            iosKeysStale = code == .peerRemovedPairingInformation || code == .encryptionTimedOut
+            let ours = pairedDeviceId == p.identifier
+            refused = iosKeysStale ||
+                (!ours && authFailed) ||
+                (!ours && quick && advPaired[p.identifier] == true) ||
+                (barrenConnects >= 3 && !onFallbackAttempt)
+        } else {
+            barrenConnects = 0
+        }
 
-            // Hand the peripheral straight back to CoreBluetooth instead of
-            // dropping it and re-scanning. connect() on a known peripheral has no
-            // timeout — CB reconnects the instant the device is reachable again,
-            // without a scan/discover/connect round trip. Re-scanning meant every
-            // brief drop cost seconds and a visible "connecting…" flap, which is
-            // what made the link look like it was cycling in and out while the
-            // app was foregrounded, and what made log downloads and map sends
-            // fail: they abort on disconnect and the retry raced the rescan.
-            //
-            // Except when the device is not (or no longer) ours to reconnect to:
-            // forgetDevice() dropped it, it was dropped already (peripheral nil),
-            // or it was the one-off try at a paired-elsewhere device and it
-            // turned us away — then say so and go back to looking.
-            if forgetting || peripheral == nil {
-                forgetting = false
-                peripheral = nil
-                startScan()
-            } else if refused {
-                // No reconnect: that would only be refused again (and older
-                // firmware answered with a pairing dialog — the loop).
-                onFallbackAttempt = false
-                refuse(p, iosKeysStale: iosKeysStale)
-                peripheral = nil
-                startScan()   // listens for it to unpair; never connects to it
-            } else if onFallbackAttempt && !admitted {
-                onFallbackAttempt = false
-                pairingIssue = .pairedElsewhere
-                peripheral = nil
-                startScan()
+        // Hand the peripheral straight back to CoreBluetooth instead of
+        // dropping it and re-scanning. connect() on a known peripheral has no
+        // timeout — CB reconnects the instant the device is reachable again,
+        // without a scan/discover/connect round trip. Re-scanning meant every
+        // brief drop cost seconds and a visible "connecting…" flap, which is
+        // what made the link look like it was cycling in and out while the
+        // app was foregrounded, and what made log downloads and map sends
+        // fail: they abort on disconnect and the retry raced the rescan.
+        //
+        // Except when the device is not (or no longer) ours to reconnect to:
+        // forgetDevice() dropped it, it was dropped already (peripheral nil),
+        // or it was the one-off try at a paired-elsewhere device and it
+        // turned us away — then say so and go back to looking.
+        if forgetting || peripheral == nil {
+            forgetting = false
+            peripheral = nil
+            startScan()
+        } else if refused {
+            // No reconnect: that would only be refused again (and older
+            // firmware answered with a pairing dialog — the loop).
+            onFallbackAttempt = false
+            refuse(p, iosKeysStale: iosKeysStale)
+            peripheral = nil
+            startScan()   // listens for it to unpair; never connects to it
+        } else if onFallbackAttempt && !admitted {
+            onFallbackAttempt = false
+            pairingIssue = .pairedElsewhere
+            peripheral = nil
+            startScan()
+        } else {
+            onFallbackAttempt = false
+            peripheral = p
+            p.delegate = self
+            state = .connecting
+            central.connectPeer(p)
+        }
+    }
+
+    /// Everything this connection set up ends with it: the link session, the
+    /// characteristics, the admission bookkeeping, transfers. Run on
+    /// didDisconnect, and by radioStateChanged when Bluetooth goes off —
+    /// CoreBluetooth reports no didDisconnect for the links that takes down,
+    /// and a stale session there left the app on "Scanning…" with the
+    /// peripheral still set, so nothing ever connected again.
+    private func endConnection() {
+        settingsChar = nil; statusChar = nil; routeChar = nil; ridesChar = nil
+        sensorsChar = nil; mapChar = nil; otaChar = nil; meshChar = nil
+        dashChar = nil
+        // The link and everything on it (requests, timers, transfers) was
+        // this connection's; the feature state below winds down on its own.
+        link.reset()
+        linkOffered = false; legacyActive = false; legacyCharsKnown = false
+        liveTopicsSent = [.ride]
+        mapXfer = 0; dlXfer = 0; artXfer = 0
+        loadingLogs = false   // a list in flight died with the link
+        live.clear()
+        // The workout characteristic belongs to this link too; a stale one
+        // swallowed writes after a reconnect. The session state is the
+        // device's, so it is asked for again rather than shown stale.
+        workoutChar = nil
+        workoutStatus = WorkoutStatus()
+        workoutFetchForPage = false
+        workoutPageAwaitingList = ""; workoutPageGaveUp = ""
+        // The next device may be another one, or older firmware.
+        segmentsSupported = nil; deviceSegmentCount = nil; deviceSegmentVersion = 1
+        if let k = segmentAck { segmentAck = nil; k.resume(returning: false) }
+        // Pending edits stay cached; the next connect reads and merges.
+        resetSyncLinkState()
+        mediaChar = nil; mediaToneArt = false; mediaRemote = false   // the next device may be older firmware
+        mediaNotifySeen = false; mediaCapsAsked = false; mediaSubscribeRetries = 0
+        mediaAcks = []; artPumping = false; artPayload = Data(); artGen += 1
+        albumArt.linkDown()
+        updateAlbumArt()
+        // A half-received mesh stream must not be published on reconnect.
+        meshBuilding = []; meshNodesBuilding = []; meshPresetsBuilding = []
+        meshChannelsBuilding = []
+        stopLocationStream()   // no device to send the phone's position to
+        // If we disconnect mid-update: after the data is sent + commit
+        // requested, a disconnect is EXPECTED (the device reboots into the
+        // new firmware) — show "rebooting" and let the reconnect confirm the
+        // version. If we drop mid-download, the transfer failed.
+        if otaInProgress {
+            keepAwake(false)
+            if otaCommitSent {
+                // Expected: the device reboots to flash. Wait for it to come
+                // back and confirm the version; the watchdog covers a no-show.
+                otaPhase = .installing
+                otaMessage = "Installing — the device is restarting…"
+                armOtaWatchdog(seconds: 150, failMessage: BLEManager.installWatchdogMsg)
             } else {
-                onFallbackAttempt = false
-                peripheral = p
-                p.delegate = self
-                state = .connecting
-                c.connect(p)
+                // Dropped mid-transfer — nothing was flashed.
+                otaFinish(.failed, "Connection dropped mid-transfer. The device is unchanged — try again.")
             }
         }
+        if mapUploading { mapUploading = false; keepAwake(false)
+                          mapMessage = "Upload interrupted — try again" }
+        TransferCenter.shared.finish(Self.mapTransferId, success: false,
+                                     message: "Connection dropped")
+        TransferCenter.shared.finish(Self.routeTransferId, success: false,
+                                     message: "Connection dropped")
+        deviceSupportsPois = false      // re-learnt from the next 0x08 answer
+        deviceKeepsVersions = false     // and this from the next versioned list
+        if tilesUploading {
+            tileQueue = []
+            finishTileJob(message: "Interrupted — reconnect to resume")
+        }
+        status = DeviceStatus()
+        sawStatusSinceConnect = false
+        authenticatedSinceConnect = false
+        authFailedSinceConnect = false
+        linkSecuring = false
+        connectedAt = nil
+        // Keep `rides` (the last-known list): the Rides tab keeps showing
+        // it while disconnected and through the re-check on reconnect.
+        ridesBuilding = []; loadingRides = false; ridesCheckedThisLink = false
+        // Nothing queued can proceed without a link, and a half-received
+        // file must not be mistaken for a complete one on reconnect.
+        if dlActive != nil || !dlQueue.isEmpty {
+            cancelAllTransfers("Connection dropped mid-download — try again")
+        }
+        deviceRoutes = []; loadingRoutes = false
+        lastUploadProgress = nil; routeSent = false; routeReceived = false
+        sensors = []; scanningSensors = false
     }
 }
 
@@ -4687,22 +4737,25 @@ extension BLEManager: CBPeripheralDelegate {
     /// services are dead; drop the live ones and rediscover, and discovery
     /// sets everything up again as on connect.
     nonisolated func peripheral(_ p: CBPeripheral, didModifyServices invalidated: [CBService]) {
-        MainActor.assumeIsolated {
-            NSLog("[link] services modified: %@", invalidated.map(\.uuid.uuidString).joined(separator: ","))
-            if invalidated.contains(where: { $0.uuid == LinkUUID.service }) {
-                // Same connection, same device session: the link keeps its
-                // requests, transfers and queues and only pauses writing until
-                // discovery hands it the new characteristics (no second Hello,
-                // which would make the device drop its session work). Before
-                // DeviceHello it simply starts over.
-                if !link.servicesInvalidated() { liveTopicsSent = [.ride] }
-            }
-            if invalidated.contains(where: { $0.uuid == BikeUUID.service }) {
-                legacyActive = false   // re-subscribed on rediscovery (if legacy)
-                legacyCharsKnown = false
-            }
-            p.discoverServices([BikeUUID.service, LinkUUID.service])
+        let uuids = invalidated.map(\.uuid)
+        MainActor.assumeIsolated { radioServicesModified(p, invalidated: uuids) }
+    }
+
+    func radioServicesModified(_ p: any RadioPeer, invalidated: [CBUUID]) {
+        NSLog("[link] services modified: %@", invalidated.map(\.uuidString).joined(separator: ","))
+        if invalidated.contains(LinkUUID.service) {
+            // Same connection, same device session: the link keeps its
+            // requests, transfers and queues and only pauses writing until
+            // discovery hands it the new characteristics (no second Hello,
+            // which would make the device drop its session work). Before
+            // DeviceHello it simply starts over.
+            if !link.servicesInvalidated() { liveTopicsSent = [.ride] }
         }
+        if invalidated.contains(BikeUUID.service) {
+            legacyActive = false   // re-subscribed on rediscovery (if legacy)
+            legacyCharsKnown = false
+        }
+        p.discoverServices([BikeUUID.service, LinkUUID.service])
     }
 
     nonisolated func peripheral(_ p: CBPeripheral, didDiscoverServices error: Error?) {
@@ -4718,14 +4771,23 @@ extension BLEManager: CBPeripheralDelegate {
             p.discoverCharacteristics([LinkUUID.rx, LinkUUID.tx], for: s)
         }
         let offered = services.contains { $0.uuid == LinkUUID.service }
-        MainActor.assumeIsolated {
-            linkOffered = offered
-            if !offered {
-                NSLog("[link] no link service: legacy protocol")
-                // Gone after a Service Changed: fail what waited on it.
-                link.serviceMissing()
-            }
+        MainActor.assumeIsolated { radioServicesDiscovered(p, linkOffered: offered) }
+    }
+
+    func radioServicesDiscovered(_ p: any RadioPeer, linkOffered offered: Bool) {
+        linkOffered = offered
+        if !offered {
+            NSLog("[link] no link service: legacy protocol")
+            // Gone after a Service Changed: fail what waited on it.
+            link.serviceMissing()
         }
+    }
+
+    /// The link's characteristics, from a radio other than CoreBluetooth
+    /// (whose discovery attaches them in didDiscoverCharacteristicsFor).
+    func radioLinkFound(_ p: any RadioPeer, transport: LinkTransport) {
+        setCurrentDevice(p.identifier.uuidString)
+        link.attach(transport)
     }
 
     nonisolated func peripheral(_ p: CBPeripheral,
@@ -4870,11 +4932,11 @@ extension BLEManager: CBPeripheralDelegate {
                                 didUpdateNotificationStateFor ch: CBCharacteristic,
                                 error: Error?) {
         MainActor.assumeIsolated {
-            noteAuthError(error)
             if ch.uuid == LinkUUID.tx {
-                link.notifyStateChanged(isNotifying: ch.isNotifying, error: error)
+                radioLinkNotifyState(isNotifying: ch.isNotifying, error: error)
                 return
             }
+            noteAuthError(error)
             if ch.uuid == BikeUUID.ota { queryDeviceFirmware() }
             if ch.uuid == BikeUUID.sensors, let p = peripheral {
                 p.writeValue(Data([0x05]), for: ch, type: .withResponse)   // one snapshot
@@ -4921,21 +4983,28 @@ extension BLEManager: CBPeripheralDelegate {
         }
     }
 
+    func radioLinkNotifyState(isNotifying: Bool, error: Error?) {
+        noteAuthError(error)
+        link.notifyStateChanged(isNotifying: isNotifying, error: error)
+    }
+
     // CoreBluetooth's send queue drained — push more firmware / map chunks.
     nonisolated func peripheralIsReady(toSendWriteWithoutResponse p: CBPeripheral) {
-        MainActor.assumeIsolated {
-            link.pump()
-            pumpOtaChunks()
-            pumpMapChunks()
-            pumpArtChunks()
-        }
+        MainActor.assumeIsolated { radioReadyToSend() }
+    }
+
+    func radioReadyToSend() {
+        link.pump()
+        pumpOtaChunks()
+        pumpMapChunks()
+        pumpArtChunks()
     }
 
     nonisolated func peripheral(_ p: CBPeripheral,
                                 didWriteValueFor ch: CBCharacteristic,
                                 error: Error?) {
         if ch.uuid == LinkUUID.rx {
-            if let error { MainActor.assumeIsolated { link.writeFailed(error); noteAuthError(error) } }
+            if let error { MainActor.assumeIsolated { radioLinkWriteFailed(error) } }
             return
         }
         if let error, ch.uuid == BikeUUID.workout {
@@ -4991,6 +5060,17 @@ extension BLEManager: CBPeripheralDelegate {
             default: break
             }
         }
+    }
+
+    func radioLinkWriteFailed(_ error: Error) {
+        link.writeFailed(error)
+        noteAuthError(error)
+    }
+
+    /// A TX notification (CoreBluetooth's arrive in didUpdateValueFor).
+    func radioLinkValue(_ data: Data) {
+        if !authenticatedSinceConnect { markAuthenticated() }
+        link.receive(data)
     }
 
     // MARK: - Album art (the device's MUSIC page)

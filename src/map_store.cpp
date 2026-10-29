@@ -451,23 +451,18 @@ const uint8_t* ensureTileLoaded(uint64_t cell, size_t& outLen, bool mayRead = tr
 // Interpolate elevation from a blob's ELV1 grid (appended after the tile data).
 // Returns NAN if the blob has no elevation block covering (lat, lon).
 float elevFromBlob(const uint8_t* b, size_t len, double lat, double lon) {
-    if (len < 36 || memcmp(b, "EBM2", 4) != 0) return NAN;
-    int32_t nx = rd<int32_t>(b + 28), ny = rd<int32_t>(b + 32);
-    const uint8_t* index = b + 36;
-    size_t maxEnd = 36 + (size_t)nx * ny * 8;      // end of the tile data
-    for (int k = 0; k < nx * ny; ++k) {
-        uint32_t off = rd<uint32_t>(index + (size_t)k * 8);
-        uint32_t l = rd<uint32_t>(index + (size_t)k * 8 + 4);
-        if (off && (size_t)off + l > maxEnd) maxEnd = (size_t)off + l;
-    }
-    if (maxEnd + 44 > len || memcmp(b + maxEnd, "ELV1", 4) != 0) return NAN;
+    // End of the tile data, read only from the parts of the index inside the
+    // blob (0: a header no reader can trust). This runs every few seconds on
+    // any screen with a fix, so a damaged tile under the rider must not crash.
+    const size_t maxEnd = map_tiles::tileDataEnd(b, len);
+    if (!maxEnd || len - maxEnd < 44 || memcmp(b + maxEnd, "ELV1", 4) != 0) return NAN;
     const uint8_t* p = b + maxEnd + 4;
     int32_t gw = rd<int32_t>(p), gh = rd<int32_t>(p + 4);
     double s = rd<double>(p + 8), w = rd<double>(p + 16);
     double n = rd<double>(p + 24), e = rd<double>(p + 32);
     const uint8_t* grid = p + 40;
     if (gw < 2 || gh < 2 || e <= w || n <= s) return NAN;
-    if (maxEnd + 44 + (size_t)gw * gh * 2 > len) return NAN;
+    if ((uint64_t)gw * (uint64_t)gh * 2 > (uint64_t)(len - maxEnd - 44)) return NAN;
 
     double fx = (lon - w) / (e - w) * (gw - 1);
     double fy = (lat - s) / (n - s) * (gh - 1);
@@ -674,8 +669,8 @@ static bool writeAll(const char* what, const char* path,
 
 bool saveAndActivate(const char* name, const uint8_t* data, size_t len) {
     MapGuard g;
-    if (len < 36 || memcmp(data, "EBM2", 4) != 0) {
-        diag::log("map save rejected: not EBM2 (%u bytes)", (unsigned)len);
+    if (!map_tiles::tileValid(data, len)) {
+        diag::log("map save rejected: not a valid EBM2 (%u bytes)", (unsigned)len);
         return false;
     }
     char path[80];
@@ -731,8 +726,12 @@ bool saveTile(const char* id, const uint8_t* data, size_t len, const char* versi
     // The same transfer carries a tile's .poi companion: told apart by its
     // magic, so the phone needs no new BLE opcode to send POIs on their own.
     const bool isPoi = map_tiles::poiFileValid(data, len);
-    if (!isPoi && (len < 36 || memcmp(data, "EBM2", 4) != 0)) {
-        diag::log("tile save rejected: not EBM2/EPOI (%u bytes)", (unsigned)len);
+    // A tile is checked whole, not just its magic: a header whose grid
+    // overruns the file was once stored and then crashed the map every time
+    // it opened there. Refused, the phone hears PARSE_ERROR and the card keeps
+    // whatever it had.
+    if (!isPoi && !map_tiles::tileValid(data, len)) {
+        diag::log("tile save rejected: not a valid EBM2/EPOI (%u bytes)", (unsigned)len);
         return false;
     }
     // Strip the ".ebm" the caller may have included, then split the id: the
