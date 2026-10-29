@@ -953,11 +953,22 @@ extension FirmwareSimTests {
         XCTAssertTrue(edit.waitForExistence(timeout: 10), "no Edit button on the Ride tab")
         expectation(for: NSPredicate(format: "isEnabled == true"), evaluatedWith: edit)
         waitForExpectations(timeout: 15)   // enabled once the device's layout is read
-        edit.tap()
+        // Editing shows Cancel in Edit's place. The tap is retried until it
+        // does: on a slow runner one made just after the location prompt went
+        // away has been seen to land nowhere (the Ride tab stayed as it was).
+        let cancel = button("Cancel")
+        for _ in 0..<3 where !cancel.exists {
+            if edit.exists { edit.tap() }
+            _ = cancel.waitForExistence(timeout: 3)
+        }
+        XCTAssertTrue(cancel.exists, "Edit never started editing")
         let mapTab = ridePageButton("Map")
         XCTAssertTrue(mapTab.waitForExistence(timeout: 5), "no MAP page in the strip")
-        mapTab.tap()
         let leftCell = button("Left cell")
+        for _ in 0..<3 where !leftCell.exists {
+            mapTab.tap()
+            _ = leftCell.waitForExistence(timeout: 3)
+        }
         XCTAssertTrue(leftCell.waitForExistence(timeout: 5), "the map page's data strip editor didn't show")
         leftCell.tap()
         pick(newLeftLabel, "the Left cell menu")
