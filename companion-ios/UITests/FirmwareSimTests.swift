@@ -782,3 +782,83 @@ final class FirmwareSimTests: XCTestCase {
         expect(!queries.isEmpty && queries.allSatisfy { $0 == "poi" }, "Overpass queries: \(queries)")
     }
 }
+
+// MARK: - routes (cov/nav)
+
+extension FirmwareSimTests {
+    /// A file on the device's card (`<OTP_SIM_DIR>/sd/<path>`).
+    private func cardData(_ path: String) -> Data? {
+        guard let d = SimEnv.deviceDir else { return nil }
+        return try? Data(contentsOf: d.appendingPathComponent("sd/" + path))
+    }
+
+    /// The `lat`/`lon` pairs of every `<trkpt>` in a GPX (enough for the
+    /// files these tests make and the app writes).
+    private func trackPoints(_ data: Data) -> [(Double, Double)] {
+        let s = String(decoding: data, as: UTF8.self)
+        let re = try! NSRegularExpression(pattern: #"<trkpt lat="([-0-9.]+)" lon="([-0-9.]+)""#)
+        return re.matches(in: s, range: NSRange(s.startIndex..., in: s)).compactMap { m in
+            guard let a = Range(m.range(at: 1), in: s), let b = Range(m.range(at: 2), in: s),
+                  let la = Double(s[a]), let lo = Double(s[b]) else { return nil }
+            return (la, lo)
+        }
+    }
+
+    /// Route → Import a route → GPX file → the Files picker → On My iPhone →
+    /// lost_lake_loop (sim/fixtures/routes, put there by run_ios_tests.sh) →
+    /// Send to device. The device must hold the track the file has — its 400
+    /// points, not the two waypoints the file lists ahead of it — under the
+    /// app's file name, loaded (an imported route has no turn cues, so no
+    /// NAVIGATE prompt) and as long as the file's track.
+    func test40_ImportedGpxRouteReachesTheDevice() throws {
+        executionTimeAllowance = 240
+        guard SimEnv.deviceDir != nil else { throw XCTSkip("needs OTP_SIM_DIR (run sim/run_ios_tests.sh)") }
+        launchConnected()
+        app.buttons["Route"].firstMatch.tap()
+        let importButton = app.buttons["Import a route"].firstMatch
+        XCTAssertTrue(importButton.waitForExistence(timeout: 10), "no Import a route button")
+        importButton.tap()
+        let gpxItem = app.buttons["GPX file"].firstMatch
+        XCTAssertTrue(gpxItem.waitForExistence(timeout: 5), "no GPX file in the import menu")
+        gpxItem.tap()
+
+        // The system document picker: Browse → On My iPhone → the file.
+        let file = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label BEGINSWITH 'lost_lake_loop'")).firstMatch
+        if !file.waitForExistence(timeout: 8) {
+            let browse = app.buttons["Browse"].firstMatch
+            if browse.waitForExistence(timeout: 5) { browse.tap() }
+            let onPhone = app.descendants(matching: .any)
+                .matching(NSPredicate(format: "label == 'On My iPhone'")).firstMatch
+            XCTAssertTrue(onPhone.waitForExistence(timeout: 10), "no On My iPhone in the picker")
+            onPhone.tap()
+        }
+        XCTAssertTrue(file.waitForExistence(timeout: 15), "lost_lake_loop.gpx not in the picker")
+        file.tap()
+
+        let send = app.buttons.matching(NSPredicate(format: "label ==[c] 'Send to device'")).firstMatch
+        if !send.waitForExistence(timeout: 15) {
+            print("FirmwareSimTests test40: after the picker\n\(app.debugDescription)")
+            XCTFail("no Send to device after the import")
+        }
+        send.tap()
+
+        let st = SimControl.waitStatus(timeout: 30) { s in
+            ((s["nav"] as? [String: Any])?["route"] as? Bool) == true
+        }
+        let nav = try XCTUnwrap(st?["nav"] as? [String: Any], "the device never loaded the route")
+        XCTAssertEqual(nav["pending"] as? Bool, false, "a NAVIGATE prompt with no cues")
+        XCTAssertTrue(app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label CONTAINS[c] 'by device'")).firstMatch.waitForExistence(timeout: 10),
+            "the app never said the device received the route")
+
+        let name = "lost_lake_loop.gpx"
+        let stored = try XCTUnwrap(cardData("routes/" + name), "no routes/\(name) on the card")
+        let sent = trackPoints(stored)
+        XCTAssertEqual(sent.count, 400, "the device got \(sent.count) points; the file's track has 400")
+        XCTAssertEqual(sent.first?.0 ?? 0, 45.7055, accuracy: 0.001, "the line starts at a waypoint")
+        // 399 legs of 15 m.
+        let km = nav["remaining_km"] as? Double ?? 0
+        XCTAssertEqual(km, 399 * 15 / 1000.0, accuracy: 0.05, "the device's route is \(km) km")
+    }
+}

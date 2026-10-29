@@ -109,6 +109,15 @@ xcrun simctl privacy "$UDID" grant location "$BUNDLE" 2>/dev/null || true
 CENTER=$(python3 -c 'import json,sys; c=json.load(open(sys.argv[1]))["center"]; print("%s,%s" % tuple(c))' "$FIXTURE/area.json" 2>/dev/null || true)
 [ -n "$CENTER" ] && xcrun simctl location "$UDID" set "$CENTER" 2>/dev/null || true
 
+# Route files in the simulator's Files app ("On My iPhone"), for the route
+# import test's document picker (sim/fixtures/routes).
+FILES=$(xcrun simctl get_app_container "$UDID" com.apple.DocumentsApp groups 2>/dev/null |
+    awk '$1 == "group.com.apple.FileProvider.LocalStorage" { $1 = ""; sub(/^ /, ""); print }')
+if [ -n "$FILES" ]; then
+    mkdir -p "$FILES/File Provider Storage"
+    cp sim/fixtures/routes/*.gpx "$FILES/File Provider Storage/"
+fi
+
 # The app's log ([ble], [link], [sim-ble] lines), for reading after a run.
 xcrun simctl spawn "$UDID" log stream --style compact \
     --predicate 'process == "OpenTrailPaper" AND (eventMessage CONTAINS "[ble]" OR eventMessage CONTAINS "[link]" OR eventMessage CONTAINS "[sim-ble]")' \

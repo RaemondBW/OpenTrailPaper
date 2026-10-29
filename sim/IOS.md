@@ -137,3 +137,13 @@ on its 4-minute allowance rather than an assertion. While the download runs,
 a thread watches the device and prints `FirmwareSimTests device watch: FAIL:
 …` to the log when a bad tile arrives, so the reason is in xcodebuild.log
 even then.
+
+### Routes
+
+`test40_ImportedGpxRouteReachesTheDevice`: Route → Import a route → GPX file
+→ the system document picker → On My iPhone → `lost_lake_loop.gpx` → Send to
+device. run_ios_tests.sh copies `sim/fixtures/routes/*.gpx` into the
+simulator's Files storage (the `group.com.apple.FileProvider.LocalStorage`
+container) before the run. The device must hold the file's 400 track points
+(not its waypoints) as `routes/lost_lake_loop.gpx`, loaded, 6 km long, and the
+app must say the device received it.
