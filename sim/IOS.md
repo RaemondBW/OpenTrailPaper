@@ -57,7 +57,13 @@ xcrun simctl launch <udid> com.raemond.opentrailpaper -didOnboard YES -sim-ble 1
 ```sh
 sim/run_ios_tests.sh                 # all of FirmwareSimTests
 sim/run_ios_tests.sh test03_BackgroundLinkLossReconnectsOnForeground
+OTP_IOS_TESTS="testW02_… testW03_…" sim/run_ios_tests.sh   # several, one run
 ```
+
+Repeating tests for flakiness: `OTP_XCODEBUILD_ARGS="-test-iterations 3
+-collect-test-diagnostics never"`. Without the second, xcodebuild has been
+seen to sit 10 minutes after the last test collecting the simulator's
+diagnostics ("Timed out after 600.0 seconds") before it exits.
 
 The script builds the sim if needed, starts a factory-fresh one (ports
 7920/7921) and the stand-in tile CDN (`sim/cdn/tile_cdn.py` on 7923, serving
@@ -137,3 +143,22 @@ on its 4-minute allowance rather than an assertion. While the download runs,
 a thread watches the device and prints `FirmwareSimTests device watch: FAIL:
 …` to the log when a bad tile arrives, so the reason is in xcodebuild.log
 even then.
+
+### Dashboard and workouts
+
+After the others (`testW…`), each able to run alone (a fresh app pairs):
+
+- `testW01_DashboardEditReachesTheDeviceAndTheAppFollowsIt`: Ride → Edit,
+  the map page's left cell changed and a page added from ADD NEW, Send: the
+  device's `dash` (status) has exactly that, `page_count` one more, and
+  `/config/dashboard.cfg` on the card is the same text. Then, with the app
+  closed, the card's config is edited and the device rebooted: the
+  relaunched app shows the device's pages, not its cached copy, and doesn't
+  push the cache back.
+- `testW02_WorkoutBuiltInTheAppRunsOnTheDevice`: Workouts → Create a
+  workout (renamed, a block added) → Send: the device has it loaded (console
+  `workout`: intervals, length, target at its FTP) and on the card; Start and
+  Stop in the session run and unload it on the device.
+- `testW03_CardWorkoutIsListedLoadedAndFollowed`: an .erg written to the
+  card's /workouts is listed as on the device, a tap loads it, a start on the
+  device shows as RUNNING in the app, and Stop unloads it.

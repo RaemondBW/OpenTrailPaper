@@ -782,3 +782,345 @@ final class FirmwareSimTests: XCTestCase {
         expect(!queries.isEmpty && queries.allSatisfy { $0 == "poi" }, "Overpass queries: \(queries)")
     }
 }
+
+// MARK: - Dashboard & workouts (cov/workouts)
+//
+// The Ride tab's in-place layout editor and the Workouts sheet, against the
+// device: what the rider does in the app is checked on the device (control
+// `status` "dash" / "page_count", console `workout`), and what the device
+// holds is checked in the app. Each test connects on its own (a fresh app
+// pairs), so any of them can run alone.
+
+extension FirmwareSimTests {
+    // MARK: helpers
+
+    /// The device's dashboard layout as it serializes it (dash_config::currentText).
+    fileprivate func deviceDash() -> String { ((try? SimControl.status())?["dash"] as? String) ?? "" }
+    fileprivate func pageCount(_ s: [String: Any]) -> Int { s["page_count"] as? Int ?? -1 }
+
+    /// The `page …` lines of a layout: the device's page cycle after page 0.
+    fileprivate static func pageLines(_ dash: String) -> [String] {
+        dash.split(separator: "\n").map(String.init).filter { $0 == "page" || $0.hasPrefix("page ") }
+    }
+    /// The map data strip's three fields (the `map a b c` line).
+    fileprivate static func mapFields(_ dash: String) -> [String] {
+        guard let l = dash.split(separator: "\n").first(where: { $0.hasPrefix("map ") }) else { return [] }
+        return l.split(separator: " ").dropFirst().map(String.init)
+    }
+
+    /// A file on the device's card (`<OTP_SIM_DIR>/sd/<path>`).
+    fileprivate func cardURL(_ path: String) throws -> URL {
+        guard let d = SimEnv.deviceDir else {
+            throw XCTSkip("OTP_SIM_DIR not set (run sim/run_ios_tests.sh)")
+        }
+        return d.appendingPathComponent("sd").appendingPathComponent(path)
+    }
+
+    /// Restarts the firmware (NVS and card kept) and waits for it to boot,
+    /// then turns the idle power-off back off (it resets on every boot).
+    fileprivate func rebootDevice(file: StaticString = #filePath, line: UInt = #line) throws {
+        try SimControl.call(["cmd": "reboot"])
+        // Back when the control port answers and the console takes commands
+        // again (setup() done).
+        Thread.sleep(forTimeInterval: 1)
+        let st = SimControl.waitStatus(timeout: 30) { _ in true }
+        XCTAssertNotNil(st, "the device never came back from the reboot", file: file, line: line)
+        let end = Date().addingTimeInterval(30)
+        var off = false
+        repeat {
+            let r = try? SimControl.call(["cmd": "console", "line": "autosleep off", "wait_ms": 300])
+            off = (r?["lines"] as? [String] ?? []).contains { $0.contains("autosleep: OFF") }
+            if !off { Thread.sleep(forTimeInterval: 0.5) }
+        } while !off && Date() < end
+        XCTAssertTrue(off, "the rebooted device never took 'autosleep off'", file: file, line: line)
+    }
+
+    /// The device's workout state, as its console prints it: "[workout] NAME:
+    /// ready, interval 1/N, target X W, e/t s", or "[workout] none loaded …".
+    fileprivate func deviceWorkout() -> String {
+        let r = try? SimControl.call(["cmd": "console", "line": "workout", "wait_ms": 300])
+        let lines = r?["lines"] as? [String] ?? []
+        return lines.last { $0.contains("[workout]") } ?? "(no [workout] line: \(lines))"
+    }
+    @discardableResult
+    fileprivate func waitWorkout(timeout: TimeInterval = 15, _ pred: (String) -> Bool) -> String? {
+        let end = Date().addingTimeInterval(timeout)
+        repeat {
+            let w = deviceWorkout()
+            if pred(w) { return w }
+            Thread.sleep(forTimeInterval: 0.5)
+        } while Date() < end
+        return nil
+    }
+
+    fileprivate func button(_ label: String) -> XCUIElement {
+        app.buttons.matching(NSPredicate(format: "label ==[c] %@", label)).firstMatch
+    }
+    /// Taps `label` in the menu just opened. The tap is retried while the
+    /// menu stays open: one made during the menu's opening animation (slowest
+    /// on a fresh app's first menu) has been seen to land nowhere.
+    fileprivate func pick(_ label: String, _ menu: String, file: StaticString = #filePath, line: UInt = #line) {
+        let option = button(label)
+        XCTAssertTrue(option.waitForExistence(timeout: 5), "no \(label) in \(menu)", file: file, line: line)
+        Thread.sleep(forTimeInterval: 0.5)
+        for _ in 0..<3 where option.exists {
+            option.tap()
+            let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: option)
+            if XCTWaiter.wait(for: [closed], timeout: 3) == .completed { return }
+        }
+    }
+    fileprivate func ridePageButton(_ name: String) -> XCUIElement { button("Dashboard page \(name)") }
+
+    /// The page kinds the add menu offers (RideView.addNewPage), as config
+    /// token and menu title, and the strip's name for each.
+    fileprivate static let addableKinds: [(token: String, menu: String, strip: String)] = [
+        ("stopwatch", "Stopwatch", "Stopwatch"), ("segment", "Segment", "Segment"),
+        ("music", "Music controls", "Music"), ("workout", "Workout", "Workout"),
+    ]
+
+    // MARK: W01. a layout edited in the app reaches the device, and the app shows the device's
+
+    /// Ride → Edit: the map page's left data cell changed and a page added
+    /// from ADD NEW, then Send. The device must hold exactly that layout
+    /// (its `map` line and the new `page` line, one more page in its cycle),
+    /// and keep it on the card. Then, with the app closed, the layout changes
+    /// on the device itself (the card's config edited, as a rider can over
+    /// USB, and a reboot): the relaunched app must show the device's layout,
+    /// not its own cached copy, and must not push that stale copy back.
+    func testW01_DashboardEditReachesTheDeviceAndTheAppFollowsIt() throws {
+        executionTimeAllowance = 240
+        launchConnected()
+        // A fresh app asks for location once connected; answered now, the
+        // prompt can't interrupt a menu later.
+        allowLocationIfAsked()
+        guard let st0 = SimControl.waitStatus(timeout: 10, { !($0["dash"] as? String ?? "").isEmpty }) else {
+            return XCTFail("status has no dash text")
+        }
+        let dash0 = st0["dash"] as? String ?? ""
+        let count0 = pageCount(st0)
+        let pages0 = Self.pageLines(dash0)
+        let absent = Self.addableKinds.filter { k in !pages0.contains { $0.hasPrefix("page \(k.token)") } }
+        guard absent.count >= 2 else { throw XCTSkip("the device already has every page kind: \(pages0)") }
+        let added = absent[0], swapped = absent[1]
+        let map0 = Self.mapFields(dash0)
+        XCTAssertEqual(map0.count, 3, "map line: \(dash0)")
+        // A field near the top of the menu: one far down (Clock) needs the
+        // menu scrolled, and a tap during that scroll has been seen to miss.
+        let (newLeft, newLeftLabel) = map0.first == "power" ? ("avgspeed", "Avg speed") : ("power", "Power")
+
+        // The edit, as the rider does it.
+        let edit = button("Edit dashboard")
+        XCTAssertTrue(edit.waitForExistence(timeout: 10), "no Edit button on the Ride tab")
+        expectation(for: NSPredicate(format: "isEnabled == true"), evaluatedWith: edit)
+        waitForExpectations(timeout: 15)   // enabled once the device's layout is read
+        edit.tap()
+        let mapTab = ridePageButton("Map")
+        XCTAssertTrue(mapTab.waitForExistence(timeout: 5), "no MAP page in the strip")
+        mapTab.tap()
+        let leftCell = button("Left cell")
+        XCTAssertTrue(leftCell.waitForExistence(timeout: 5), "the map page's data strip editor didn't show")
+        leftCell.tap()
+        pick(newLeftLabel, "the Left cell menu")
+
+        // The strip's + cell; the first tap can go to closing the cell menu.
+        let addCell = button("Add a page")
+        for _ in 0..<3 where !addCell.isSelected {
+            addCell.tap()
+            _ = XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "isSelected == true"),
+                                                               object: addCell)], timeout: 2)
+        }
+        let choose = app.buttons.matching(NSPredicate(format: "label CONTAINS[c] 'Choose a page'")).firstMatch
+        XCTAssertTrue(choose.waitForExistence(timeout: 5), "ADD NEW has no Choose a page menu")
+        choose.tap()
+        pick(added.menu, "the add menu")
+        XCTAssertTrue(ridePageButton(added.strip).waitForExistence(timeout: 5),
+                      "the strip doesn't show the added \(added.strip) page")
+
+        let send = app.buttons.matching(NSPredicate(format: "label ==[c] 'Send'")).firstMatch
+        XCTAssertTrue(send.waitForExistence(timeout: 5), "no Send button while editing")
+        send.tap()
+
+        // The device has it: the new page in its cycle and the new left cell.
+        let st1 = SimControl.waitStatus(timeout: 15) { s in
+            let d = s["dash"] as? String ?? ""
+            return Self.pageLines(d).contains("page \(added.token)") && Self.mapFields(d).first == newLeft
+        }
+        XCTAssertNotNil(st1, "the device never took the layout; it holds:\n\(deviceDash())")
+        let dash1 = st1?["dash"] as? String ?? ""
+        XCTAssertEqual(pageCount(st1 ?? [:]), count0 + 1, "page_count after adding \(added.token)")
+        XCTAssertEqual(Self.pageLines(dash1), pages0 + ["page \(added.token)"], "the device's page cycle")
+        XCTAssertEqual(Array(Self.mapFields(dash1).dropFirst()), Array(map0.dropFirst()),
+                       "only the left map cell was changed")
+        // The rest of page 0 is untouched.
+        func page0(_ d: String) -> [String] {
+            Array(d.split(separator: "\n").map(String.init)
+                .filter { !$0.hasPrefix("#") && !$0.hasPrefix("map ") }
+                .prefix { $0 != "page" && !$0.hasPrefix("page ") })
+        }
+        XCTAssertEqual(page0(dash1), page0(dash0), "page 0's fields changed")
+        // And the app: no longer syncing, the device's copy matches.
+        let syncing = app.staticTexts["Syncing layout"]
+        let gone = NSPredicate(format: "exists == false")
+        expectation(for: gone, evaluatedWith: syncing)
+        waitForExpectations(timeout: 15)
+
+        // Kept on the card: the file a rider edits over USB is the same layout.
+        let cfgURL = try cardURL("config/dashboard.cfg")
+        let onCard = try String(contentsOf: cfgURL, encoding: .utf8)
+        XCTAssertEqual(onCard, dash1, "/config/dashboard.cfg is not the layout the device runs")
+
+        // The device's layout changes behind the app's back.
+        app.terminate()
+        let edited = onCard.replacingOccurrences(of: "page \(added.token)\n", with: "page \(swapped.token)\n")
+        XCTAssertNotEqual(edited, onCard)
+        try edited.write(to: cfgURL, atomically: true, encoding: .utf8)
+        try rebootDevice()
+        let st2 = SimControl.waitStatus(timeout: 15) { Self.pageLines($0["dash"] as? String ?? "").contains("page \(swapped.token)") }
+        XCTAssertNotNil(st2, "the device didn't load the edited card config: \(deviceDash())")
+
+        launchConnected()
+        XCTAssertTrue(ridePageButton(swapped.strip).waitForExistence(timeout: 15),
+                      "the relaunched app doesn't show the device's \(swapped.strip) page")
+        XCTAssertFalse(ridePageButton(added.strip).exists,
+                       "the relaunched app still shows its cached \(added.strip) page")
+        // Give the app time to (wrongly) push its cached copy back.
+        Thread.sleep(forTimeInterval: 4)
+        let dash3 = deviceDash()
+        XCTAssertTrue(Self.pageLines(dash3).contains("page \(swapped.token)") &&
+                      !Self.pageLines(dash3).contains("page \(added.token)"),
+                      "the app overwrote the device's layout with its cache:\n\(dash3)")
+        XCTAssertEqual(Self.mapFields(dash3).first, newLeft)
+    }
+
+    // MARK: W02. a workout built in the app is loaded, started and unloaded on the device
+
+    /// Ride → Workouts → Create a workout: renamed, a threshold block added
+    /// (six blocks, 33 min), Send. The device has it loaded under its file
+    /// name, with the builder's blocks and the first one's target at its FTP;
+    /// the app's session shows it READY. Start from the app runs it on the
+    /// device (and the app says RUNNING); Stop unloads it.
+    func testW02_WorkoutBuiltInTheAppRunsOnTheDevice() throws {
+        executionTimeAllowance = 240
+        let st = launchConnected()
+        allowLocationIfAsked()
+        let ftp = (st["settings"] as? [String: Any])?["ftp"] as? Int ?? 0
+        XCTAssertGreaterThan(ftp, 0, "status has no settings.ftp")
+        if !(waitWorkout(timeout: 2) { $0.contains("none loaded") } != nil) {
+            try SimControl.call(["cmd": "console", "line": "workout stop", "wait_ms": 200])
+        }
+
+        let workouts = button("Workouts")
+        XCTAssertTrue(workouts.waitForExistence(timeout: 10), "no Workouts button on the Ride tab")
+        workouts.tap()
+        let create = app.buttons.matching(NSPredicate(format: "label CONTAINS 'Create a workout'")).firstMatch
+        XCTAssertTrue(create.waitForExistence(timeout: 10), "the Workouts sheet has no Create a workout")
+        create.tap()
+
+        let name = app.textFields.firstMatch
+        XCTAssertTrue(name.waitForExistence(timeout: 10), "the builder has no name field")
+        name.tap()
+        let old = (name.value as? String) ?? ""
+        name.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: old.count + 2) + "Sim Ladder W02")
+        XCTAssertEqual(name.value as? String, "Sim Ladder W02")
+        // (Not "Recovery": the Z1 blocks' rows are named that too.)
+        let addBlock = app.buttons.matching(NSPredicate(format: "label CONTAINS[c] 'Add block'")).firstMatch
+        XCTAssertTrue(addBlock.waitForExistence(timeout: 5), "no Add block button in the builder")
+        addBlock.tap()
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS '6 BLOCKS · 33 MIN'"))
+                        .firstMatch.waitForExistence(timeout: 5), "the builder didn't add the block")
+        let send = app.navigationBars.buttons["Send"]
+        XCTAssertTrue(send.waitForExistence(timeout: 5))
+        send.tap()
+
+        // The device: loaded, six intervals, 31 min, block 1 is Z2 (65% FTP).
+        let loaded = waitWorkout { $0.contains("SIM_LADDER_W02: ready") }
+        XCTAssertNotNil(loaded, "the device never loaded the workout: \(deviceWorkout())")
+        let w = loaded ?? ""
+        XCTAssertTrue(w.contains("interval 1/6"), w)
+        XCTAssertTrue(w.contains("/1980 s"), w)
+        let target = Int(w.components(separatedBy: "target ").last?.split(separator: " ").first ?? "") ?? -1
+        XCTAssertLessThanOrEqual(abs(target - ftp * 65 / 100), 1, "block 1's target at FTP \(ftp): \(w)")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: try cardURL("workouts/sim_ladder_w02.mrc").path),
+                      "the workout isn't on the card under its file name")
+
+        // The app's session: READY, then Start.
+        let list = app.collectionViews.firstMatch
+        XCTAssertTrue(list.staticTexts["READY"].waitForExistence(timeout: 10), "the session never showed READY")
+        let start = list.buttons["Start"]
+        XCTAssertTrue(start.waitForExistence(timeout: 5))
+        start.tap()
+        XCTAssertNotNil(waitWorkout { $0.contains("SIM_LADDER_W02: RUNNING") },
+                        "Start in the app didn't run the workout: \(deviceWorkout())")
+        XCTAssertTrue(list.staticTexts["RUNNING"].waitForExistence(timeout: 10), "the app never showed RUNNING")
+
+        // Stop: stopped and unloaded on the device, back to the picker in the app.
+        list.buttons["Stop"].tap()
+        XCTAssertNotNil(waitWorkout { $0.contains("none loaded") },
+                        "Stop in the app didn't unload the workout: \(deviceWorkout())")
+        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS 'Pick a workout'"))
+                        .firstMatch.waitForExistence(timeout: 10),
+                      "the app's session didn't end")
+    }
+
+    // MARK: W03. a workout on the card is listed, loaded from the app, and its session followed
+
+    /// An .erg dropped in /workouts on the card (as a rider does over USB)
+    /// appears in the app's list as on the device; tapping it loads it there.
+    /// Started from the device itself, the app's session follows (RUNNING);
+    /// Stop in the app unloads it.
+    func testW03_CardWorkoutIsListedLoadedAndFollowed() throws {
+        executionTimeAllowance = 240
+        let erg = """
+        [COURSE HEADER]
+        VERSION = 2
+        UNITS = ENGLISH
+        DESCRIPTION = Card Tempo
+        FILE NAME = card_tempo_w03.erg
+        MINUTES WATTS
+        [END COURSE HEADER]
+        [COURSE DATA]
+        0.00 150
+        5.00 150
+        5.00 220
+        15.00 220
+        15.00 120
+        20.00 120
+        [END COURSE DATA]
+
+        """
+        let file = try cardURL("workouts/card_tempo_w03.erg")
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try erg.write(to: file, atomically: true, encoding: .utf8)
+        launchConnected()
+        allowLocationIfAsked()
+        if waitWorkout(timeout: 2, { $0.contains("none loaded") }) == nil {
+            try SimControl.call(["cmd": "console", "line": "workout stop", "wait_ms": 200])
+        }
+
+        button("Workouts").tap()
+        let row = app.buttons.matching(NSPredicate(format: "label CONTAINS 'card_tempo_w03.erg'")).firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 15), "the card's workout isn't in the app's list")
+        XCTAssertTrue(row.label.contains("Device"), "the row doesn't say it is on the device: \(row.label)")
+        XCTAssertFalse(row.label.contains("Phone"), "the row says it is on the phone: \(row.label)")
+        row.tap()
+        let loaded = waitWorkout { $0.contains("CARD_TEMPO_W03: ready") }
+        XCTAssertNotNil(loaded, "tapping the row didn't load it on the device: \(deviceWorkout())")
+        XCTAssertTrue((loaded ?? "").contains("interval 1/3") && (loaded ?? "").contains("target 150 W") &&
+                      (loaded ?? "").contains("/1200 s"), loaded ?? "")
+        let list = app.collectionViews.firstMatch
+        XCTAssertTrue(list.staticTexts["READY"].waitForExistence(timeout: 10), "the app's session never showed READY")
+
+        // Started on the device (its START key, here its console): the app follows.
+        try SimControl.call(["cmd": "console", "line": "workout start", "wait_ms": 300])
+        XCTAssertNotNil(waitWorkout { $0.contains("CARD_TEMPO_W03: RUNNING") })
+        XCTAssertTrue(list.staticTexts["RUNNING"].waitForExistence(timeout: 10),
+                      "the app never showed the session the device started as RUNNING")
+        XCTAssertTrue(list.buttons["Pause"].waitForExistence(timeout: 5), "no Pause while running")
+
+        list.buttons["Stop"].tap()
+        XCTAssertNotNil(waitWorkout { $0.contains("none loaded") },
+                        "Stop in the app didn't unload the workout: \(deviceWorkout())")
+        // Still on the card, for next time.
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
+    }
+}
