@@ -123,6 +123,32 @@ struct PendingSyncHint: View {
     }
 }
 
+/// The device reports no usable SD card: rides don't record and map tiles have
+/// nowhere to go. Shown on the Ride tab and the Maps screen.
+struct SDCardNotice: View {
+    let state: SDCardState
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "sdcard")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(Palette.accent)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(state == .unreadable ? "Device can't read its SD card" : "No SD card in the device")
+                    .font(BarlowFont.text(15, .semibold)).foregroundStyle(Palette.ink)
+                Text(state == .unreadable
+                     ? "Reformat it as FAT32 (exFAT isn't supported). Until then rides aren't recorded and maps can't be sent."
+                     : "Insert a FAT32 microSD card. Until then rides aren't recorded and maps can't be sent.")
+                    .font(BarlowFont.text(13)).foregroundStyle(Palette.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Palette.accentWash, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+}
+
 // Full-width secondary action — PrimaryButton's pill, outlined rather than
 // filled, so an optional action reads as the same family but the eye still
 // lands on the primary one first (mirrors the Android SecondaryButton).
