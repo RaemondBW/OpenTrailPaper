@@ -1,6 +1,9 @@
 package com.raemond.opentrailpaper.ui
 
 import android.graphics.Bitmap
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -34,6 +37,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -85,22 +89,21 @@ fun RidesScreen(ble: BleManager) {
     var failedFile by remember { mutableStateOf<java.io.File?>(null) }
     var cachedNames by remember { mutableStateOf(ble.cachedRides()) }
 
-    // Always show the pre-synced (locally cached) rides; when connected, merge in
-    // the device's live list too. Mid-ride the device refuses to list the SD (it's
-    // busy recording), so the device list is empty then — the cached rides keep
-    // showing instead of the view going blank. Newest first.
-    val rides: List<RideFile> = remember(ble.rides, cachedNames, ble.state) {
-        if (ble.state != BleManager.ConnState.CONNECTED) {
-            cachedNames
-        } else {
-            val seen = HashSet<String>()
-            (ble.rides + cachedNames).filter { seen.add(it.name) }
-                .sortedByDescending { it.name }
-        }
+    // The device's last-known ride list (kept across disconnects and launches)
+    // merged with the rides cached on this phone, newest first. Shown the same
+    // way connected or not, and while the device is re-checked, so reconnecting
+    // never blanks or rebuilds the list — a completed check only adds new rides
+    // and drops ones the device no longer has (unless they're cached here).
+    val rides: List<RideFile> = remember(ble.rides, cachedNames) {
+        mergeRides(ble.rides, cachedNames)
     }
+    val checking = ble.state == BleManager.ConnState.CONNECTED && ble.loadingRides
 
+    // Once per link: coming back to the tab doesn't re-ask the device.
     LaunchedEffect(ble.state) {
-        if (ble.state == BleManager.ConnState.CONNECTED) ble.refreshRides()
+        if (ble.state == BleManager.ConnState.CONNECTED && !ble.loadingRides &&
+            !ble.ridesCheckedThisLink
+        ) ble.refreshRides()
     }
 
     // A finished download is both a new cache entry and, on iOS, the moment the
@@ -132,15 +135,13 @@ fun RidesScreen(ble: BleManager) {
     ) {
         RidesHeader(ble)
         if (ble.status.recording) InProgressBanner()
+        AnimatedVisibility(checking, enter = fadeIn(), exit = fadeOut()) { CheckingRow() }
         if (rides.isNotEmpty()) WeekSummary(rides, previews, ble.useMiles)
 
         when {
-            ble.state == BleManager.ConnState.CONNECTED && ble.loadingRides ->
-                Box(Modifier.fillMaxWidth().padding(top = 30.dp), Alignment.Center) {
-                    CircularProgressIndicator(color = Palette.accent)
-                }
-
-            rides.isEmpty() -> Card {
+            // With nothing cached yet, the checking row above stands in for the
+            // empty state until the device answers.
+            rides.isEmpty() -> if (!checking) Card {
                 Text(
                     when {
                         ble.status.recording -> "No synced rides yet"
@@ -169,7 +170,10 @@ fun RidesScreen(ble: BleManager) {
             }
 
             else -> {
-                rides.forEach { ride ->
+                // Keyed by name so a new ride at the top, or one dropping out,
+                // moves rows instead of recomposing each with its neighbour's
+                // state (and reloading its map).
+                rides.forEach { ride -> key(ride.name) {
                     val cached = ble.isCached(ride.name)
                     // Lazily decode cached rides off the main thread so the list
                     // shows thumbnails and stats without re-parsing every frame.
@@ -208,7 +212,7 @@ fun RidesScreen(ble: BleManager) {
                             cachedNames = ble.cachedRides()
                         },
                     )
-                }
+                } }
                 Text(
                     "Tap to preview & share · long-press to delete",
                     style = barlow(12.sp),
@@ -238,6 +242,30 @@ fun RidesScreen(ble: BleManager) {
     }
 }
 
+/**
+ * What the Rides tab lists: the device's last-known ride list merged with the
+ * rides cached on this phone, one entry per name (the device's entry wins),
+ * newest first. A ride the device no longer lists stays while it's cached.
+ */
+internal fun mergeRides(device: List<RideFile>, cached: List<RideFile>): List<RideFile> {
+    val seen = HashSet<String>()
+    return (device + cached).filter { seen.add(it.name) }.sortedByDescending { it.name }
+}
+
+// Inline status above the list while the device's ride list is being fetched —
+// the cached rides stay visible underneath it.
+@Composable
+private fun CheckingRow() {
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        CircularProgressIndicator(Modifier.size(14.dp), color = Palette.muted, strokeWidth = 2.dp)
+        Text("Checking for new rides…", style = barlow(13.sp, FontWeight.Medium), color = Palette.muted)
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun RidesHeader(ble: BleManager) {
@@ -247,15 +275,15 @@ private fun RidesHeader(ble: BleManager) {
     ) {
         Text("Rides", style = TypeScale.screenTitle, color = Palette.ink)
         Spacer(Modifier.weight(1f))
-        Text(
-            when {
-                ble.state != BleManager.ConnState.CONNECTED -> "Offline"
-                ble.loadingRides -> "Syncing…"
-                else -> "Synced"
-            },
-            style = barlow(13.sp, FontWeight.Medium),
-            color = Palette.muted,
-        )
+        // While the list is being checked the "Checking for new rides…" row
+        // says so; no second status here.
+        if (!(ble.state == BleManager.ConnState.CONNECTED && ble.loadingRides)) {
+            Text(
+                if (ble.state == BleManager.ConnState.CONNECTED) "Synced" else "Offline",
+                style = barlow(13.sp, FontWeight.Medium),
+                color = Palette.muted,
+            )
+        }
         Spacer(Modifier.size(8.dp))
         val connected = ble.state == BleManager.ConnState.CONNECTED
         Box(
@@ -507,7 +535,9 @@ fun RouteMapThumbnail(name: String, coords: List<LatLon>) {
         // Keyed on the size as well as the ride: a cached bitmap rendered for a
         // different width would be resampled, and a map resampled is a map with
         // unreadable street lines.
-        var bitmap by remember(name, wPx, hPx) { mutableStateOf<Bitmap?>(null) }
+        var bitmap by remember(name, wPx, hPx) {
+            mutableStateOf(MapSnapshotter.cached(name, wPx, hPx))
+        }
         LaunchedEffect(name, wPx, hPx) {
             if (wPx > 0 && hPx > 0) bitmap = MapSnapshotter.snapshot(name, coords, wPx, hPx)
         }
