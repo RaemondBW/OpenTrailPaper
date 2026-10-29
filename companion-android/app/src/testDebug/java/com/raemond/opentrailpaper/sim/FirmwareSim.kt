@@ -18,6 +18,8 @@ class FirmwareSim private constructor(
     val dir: File,
     val blePort: Int,
     val ctlPort: Int,
+    /** Extra otp-sim options (e.g. `--conn-interval-ms 300 --packets-per-event 1`), kept across [launch]es. */
+    val args: List<String> = emptyList(),
 ) : AutoCloseable {
     private var proc: Process? = null
     private var sock: Socket? = null
@@ -41,9 +43,12 @@ class FirmwareSim private constructor(
          * A free port can be taken by something else before otp-sim binds it;
          * then it exits with "can't listen", and we try again on new ports.
          */
-        fun start(dir: File = Files.createTempDirectory("otp-sim-android").toFile()): FirmwareSim {
+        fun start(
+            dir: File = Files.createTempDirectory("otp-sim-android").toFile(),
+            args: List<String> = emptyList(),
+        ): FirmwareSim {
             repeat(3) {
-                val sim = FirmwareSim(dir, freePort(), freePort())
+                val sim = FirmwareSim(dir, freePort(), freePort(), args)
                 try {
                     sim.launch()
                     return sim
@@ -52,14 +57,14 @@ class FirmwareSim private constructor(
                     if (!sim.consoleTail().contains("can't listen")) throw e
                 }
             }
-            return FirmwareSim(dir, freePort(), freePort()).also { it.launch() }
+            return FirmwareSim(dir, freePort(), freePort(), args).also { it.launch() }
         }
     }
 
     fun launch(bootTimeoutMs: Long = 60_000) {
         val bin = binary ?: error("sim/build/otp-sim not built")
         proc = ProcessBuilder(
-            bin.path, "--dir", dir.path, "--ble-port", "$blePort", "--ctl-port", "$ctlPort", "--no-stdin",
+            listOf(bin.path, "--dir", dir.path, "--ble-port", "$blePort", "--ctl-port", "$ctlPort", "--no-stdin") + args,
         ).redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.appendTo(consoleLog)).start()
         // Never outlive the test JVM, however it ends.
         proc?.let { p -> Runtime.getRuntime().addShutdownHook(Thread { p.destroyForcibly() }) }
@@ -91,6 +96,7 @@ class FirmwareSim private constructor(
             is Number -> req.addProperty(k, v)
             is Boolean -> req.addProperty(k, v)
             null -> Unit
+            is com.google.gson.JsonElement -> req.add(k, v)
             else -> req.addProperty(k, v.toString())
         }
         val w = writer ?: error("control channel not open")
