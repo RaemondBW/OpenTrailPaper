@@ -114,6 +114,31 @@ reads the device back with `sensor_state` / `media_state`:
 - `forgottenStrapLeavesTheSheetWithoutARefresh` is `@Ignore`d: a firmware bug
   (the FORGET answer still lists the strap connected) keeps it on the sheet.
 
+### Dashboard and settings
+
+`DashSettingsSimTest` drives the Dashboard editor's model (DashConfig /
+DashLayout, what DashboardEditorSheet hands `saveDashConfig`) and the
+Settings screen's `BleManager.updateX` setters (no Compose UI tests), and
+reads back what the device applied (control `status`: `dash`, `page_count`,
+`screen`, `settings`; `usbdrive` on the console). `FirmwareSim.reboot()`
+restarts the firmware (control `reboot`) and reattaches the control channel.
+
+- `richLayoutFromTheEditorIsWhatTheDeviceShows`: every page kind, the map
+  second, a 75 % bottom radar rail, half rows, a custom map strip: the device
+  holds the editor's bytes, seven pages, ShowPage(1) is the map.
+- `sentLayoutSurvivesADeviceRebootAndIsReadBack`,
+  `handEditedLayoutOnTheCardIsWhatTheAppShows`: read back on a new link;
+  the app's parse of a hand-written card file agrees with the device's.
+- `deviceTakesSevenContentPagesPlusTheMap` (DeviceHello.dash_max_pages),
+  `layoutWithNothingToDrawIsRefusedAndTheDeviceKeepsItsOwn` (PARSE_ERROR).
+- `everySettingReachesTheDeviceAndSurvivesAReboot`,
+  `outOfRangeSettingsShowWhatTheDeviceApplied` (FTP 9000 -> 500, wheel 100 ->
+  800, ...), `deviceSideEditsReachTheApp` (console `wheel`, `usbdrive`).
+- Known bugs, `@Ignore("BUG: ...")`: a refused layout stays pending
+  ("Syncing layout…", Ride-tab paging off); a layout over dash_max_text is
+  never sent nor reported; eight data pages on the card lose the map; a
+  compact card file over 2 KB once padded reaches the app cut off.
+
 ### The tile CDN override (debug builds)
 
 `files/otp-endpoints` (`map/DebugEndpoints.kt`, src/debug; the release copy

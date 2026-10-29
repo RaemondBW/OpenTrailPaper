@@ -21,6 +21,8 @@
 #include "sim.h"
 
 #include <atomic>
+#include <map>
+#include <mutex>
 
 extern SharedRideState g_state;
 
@@ -142,4 +144,21 @@ bool board_gauge_report(char* out, size_t n) {
 bool board_usb_power_present(bool& present) {
     present = g_charging.load();
     return true;
+}
+
+// ---- PWM outputs (cov/workouts) ---------------------------------------------------------
+// analogWrite() as the LEDC would take it: the duty is kept per pin, so a test
+// can read what the frontlight is actually driven at (status "backlight_pwm").
+namespace {
+std::mutex g_pwmM;
+std::map<int, int> g_pwm;
+}
+void analogWrite(int pin, int duty) {
+    std::lock_guard<std::mutex> lk(g_pwmM);
+    g_pwm[pin] = duty;
+}
+int sim::pinDuty(int pin) {
+    std::lock_guard<std::mutex> lk(g_pwmM);
+    auto it = g_pwm.find(pin);
+    return it == g_pwm.end() ? -1 : it->second;
 }

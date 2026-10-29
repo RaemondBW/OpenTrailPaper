@@ -12,6 +12,8 @@
 # OTP_SIM_RADIO_PORT / OTP_CDN_PORT (default 7920 / 7921 / 7922 / 7923),
 # OTP_CDN_FIXTURE (the CDN's directory, default sim/fixtures/appmaps),
 # OTP_DERIVED_DATA,
+# OTP_IOS_TESTS (space-separated test method names: runs those instead of
+# all, in one xcodebuild run, e.g. "testW01_… testW02_…"),
 # OTP_XCODEBUILD_ARGS (extra xcodebuild settings, e.g. CODE_SIGNING_ALLOWED=NO
 # on a runner with no signing certificate).
 set -eu
@@ -38,6 +40,11 @@ BUNDLE=com.raemond.opentrailpaper
 DD=${OTP_DERIVED_DATA:-$ROOT/sim/build/ios-dd}
 ONLY=OpenTrailPaperUITests/FirmwareSimTests
 [ $# -gt 0 ] && ONLY="$ONLY/$1"
+ONLY_ARGS="-only-testing:$ONLY"
+if [ -n "${OTP_IOS_TESTS:-}" ]; then
+    ONLY_ARGS=
+    for t in $OTP_IOS_TESTS; do ONLY_ARGS="$ONLY_ARGS -only-testing:OpenTrailPaperUITests/FirmwareSimTests/$t"; done
+fi
 
 # 1. The sim, rebuilt when the firmware or the sim's sources are newer.
 BIN=sim/build/otp-sim
@@ -131,7 +138,7 @@ xcodebuild test \
     -scheme OpenTrailPaper \
     -destination "id=$UDID" \
     -derivedDataPath "$DD" \
-    -only-testing:"$ONLY" \
+    $ONLY_ARGS \
     -test-timeouts-enabled YES \
     -resultBundlePath "$DIR/results.xcresult" \
     ${OTP_XCODEBUILD_ARGS:-} \

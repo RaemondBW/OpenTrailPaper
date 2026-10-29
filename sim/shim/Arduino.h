@@ -68,7 +68,7 @@ void digitalWrite(int pin, int v);
 int digitalRead(int pin);
 inline int analogRead(int) { return 0; }
 inline uint32_t analogReadMilliVolts(int) { return 0; }
-inline void analogWrite(int, int) {}
+void analogWrite(int pin, int duty);   // recorded per pin (sim::pinDuty)
 inline void attachInterrupt(int, void (*)(void), int) {}
 inline void detachInterrupt(int) {}
 inline long random(long hi) { return hi > 0 ? (long)(esp_random() % (uint32_t)hi) : 0; }

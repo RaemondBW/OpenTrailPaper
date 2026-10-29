@@ -268,6 +268,26 @@ class SimDevice:
                 raise TimeoutError("status never matched; last: %s" % json.dumps(st)[:800])
             time.sleep(interval)
 
+    # -- power (cov/workouts) ----------------------------------------------------------------
+
+    def powered_off(self):
+        """The device switched itself off (auto-sleep, SHUT DOWN): the sim
+        process has exited."""
+        return self.proc is not None and self.proc.poll() is not None
+
+    def wait_powered_off(self, timeout=30):
+        """Wait for the device to switch itself off. True if it did."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self.powered_off():
+                return True
+            time.sleep(0.1)
+        return self.powered_off()
+
+    def workout(self):
+        """The WORKOUT page's model (status "workout")."""
+        return self.status()["workout"]
+
     def reboot(self, timeout=30):
         seq = 0
         self.cmd("reboot")

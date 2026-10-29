@@ -151,7 +151,7 @@ jobs:
     name: Firmware sim (${{ matrix.part }})
     if: ${{ !startsWith(github.ref, 'refs/tags/android-v') }}
     runs-on: macos-26
-    # The suite split five ways to run side by side (~5 min each). A new
+    # The suite split into parts that run side by side (~5 min each). A new
     # test file has to be added to one of these lists to run in CI.
     strategy:
       fail-fast: false
@@ -169,6 +169,10 @@ jobs:
             tests: test_power.py
           - part: crashes and gps
             tests: test_crash_recovery.py test_gps_edges.py test_endurance.py
+          - part: workouts
+            tests: test_workouts.py
+          - part: dashboard and settings
+            tests: test_dashboard.py test_settings.py test_stopwatch.py
     env:
       OTP_SIM_TIME_SCALE: "3"   # wall-clock bounds in the tests, for a slower runner
     steps:

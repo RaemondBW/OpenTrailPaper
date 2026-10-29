@@ -189,6 +189,23 @@ ends the link with a supervision timeout but keeps advertising;
 `sensor_remove` takes it out of range altogether. Virtual sensors belong to
 the sim process: `reboot` re-execs it, so a test puts them back afterwards.
 
+Status blocks for workouts, the stopwatch and the frontlight (cov/workouts):
+
+- `workout`: the WORKOUT page's model (`workout_service::view`, as the link's
+  WorkoutStatus): `loaded`, `running`, `paused`, `done`, `name`, `segment`
+  (0-based), `segments`, `elapsed_s`, `total_s`, `segment_left_s`,
+  `target_w`, `next_w`, `ftp`, `pause_each`, and `picker` — the device-side
+  picker's cached list (`state` scanning / ready / no_card, `total`,
+  `loading`, `error`, and its first page's `rows`: `file`, `title`, `ok`,
+  `total_s`, `segments`).
+- `stopwatch`: the STOPWATCH page's clock: `running`, `elapsed_ms`, `laps`,
+  `lap_ms` (the lap in progress).
+- `backlight_pwm`: the frontlight's PWM duty (the last `analogWrite` on
+  BOARD_BL_EN; -1 before the first).
+
+A device that switches itself off (auto-sleep, SHUT DOWN) ends the process
+(`[sim] powered off: …`); `SimDevice.wait_powered_off()` waits for it.
+
 ## Command line
 
 `otp-sim --help` lists the options. Those about the card: `--sd DIR` (its
