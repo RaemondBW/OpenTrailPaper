@@ -4,6 +4,7 @@ import android.app.Application
 import com.raemond.opentrailpaper.ble.BleManager
 import com.raemond.opentrailpaper.data.DeviceSettingsStore
 import com.raemond.opentrailpaper.data.Prefs
+import com.raemond.opentrailpaper.data.RideNames
 import com.raemond.opentrailpaper.data.SyncAccounts
 import com.raemond.opentrailpaper.map.TileCache
 import com.raemond.opentrailpaper.transfer.TransferCenter
@@ -28,6 +29,7 @@ class OpenTrailPaperApp : Application() {
         Prefs.init(this)
         DeviceSettingsStore.init(this)
         SyncAccounts.init(this)
+        RideNames.init(this)
         TileCache.init(this)
         TransferCenter.init(this)
 
