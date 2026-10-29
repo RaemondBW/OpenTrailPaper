@@ -89,9 +89,9 @@ def line_track(lat, lon, km, bearing_deg=90, step_m=20):
 def start_ride(device, gps=True, speed_kmh=30):
     if gps:
         device.gps_track(line_track(37.77, -122.45, 10), speed_kmh=speed_kmh)
-        device.wait_status(lambda s: s["ride"]["gps_fix"] and s["ride"]["time_valid"], timeout=15)
+        device.wait_status(lambda s: s["ride"]["gps_fix"] and s["ride"]["time_valid"], timeout=15 * TIME_SCALE)
     device.button("boot")
-    device.wait_status(lambda s: s["ride"]["recording"], timeout=10)
+    device.wait_status(lambda s: s["ride"]["recording"], timeout=10 * TIME_SCALE)
 
 
 def save_ride(device):
