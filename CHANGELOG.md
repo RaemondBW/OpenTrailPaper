@@ -7,6 +7,10 @@ so write for the rider, newest version first, one `## vX.YY` heading each.
 
 ## v1.23
 
+- The GPS debug page no longer shows more satellites in use than in view.
+  The in-view count is refreshed every five seconds and the in-use count
+  every second, so for a moment after the sky changed (or right after the
+  GPS woke) the older number could be the smaller one.
 - The GPS module now talks to the device at 115200 baud instead of 9600, so
   each second's position update takes about 25 ms on the wire instead of
   300 ms and the device can sleep for the difference. Nothing is written
