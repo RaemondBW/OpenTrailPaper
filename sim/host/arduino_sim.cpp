@@ -43,10 +43,10 @@ extern "C" void esp_fill_random(void* buf, size_t len) {
     for (size_t i = 0; i < len; ++i) p[i] = (uint8_t)esp_random();
 }
 extern "C" int64_t esp_timer_get_time(void) { return (int64_t)sim_clock::micros64(); }
-extern "C" void esp_restart(void) { sim::reboot("esp_restart"); }
+extern "C" void esp_restart(void) { sim::reboot("esp_restart", ESP_RST_SW); }
 extern "C" void esp_deep_sleep_start(void) { sim::powerOff("deep sleep"); }
 void usb_persist_restart(restart_type_t mode) {
-    sim::reboot(mode == RESTART_BOOTLOADER ? "restart to bootloader" : "usb restart");
+    sim::reboot(mode == RESTART_BOOTLOADER ? "restart to bootloader" : "usb restart", ESP_RST_SW);
 }
 
 extern "C" const esp_app_desc_t* esp_ota_get_app_description(void) {

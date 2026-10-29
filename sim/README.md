@@ -33,8 +33,9 @@ card, NVS and NimBLE, and `sim/host/` for the hardware:
 | BLE sensors | virtual peripherals sending standard HR / Cycling Power / CSC / Varia radar packets, which the firmware's own sensor code scans for, pairs, decodes and loses |
 | The phone's GATT server (AMS, name) | provided by whatever connects as the phone |
 | OTA | the image lands in `<dir>/ota.bin`; the reboot re-execs the sim |
+| Resets, RTC memory | a panic, watchdog or brownout (`reset`), `esp_restart()` and the firmware's `abort()` re-exec the sim with `esp_reset_reason()` set and `RTC_NOINIT_ATTR` memory kept; deep sleep exits it and the next launch is the wake. The crash reporter (`crash_report.cpp`) is the firmware's own |
 | Fuel gauge | set from the control channel |
-| LoRa, Qwiic sensors, RTC chip, the USB stack itself, light sleep | absent (the firmware's "not fitted" paths) |
+| LoRa, Qwiic sensors, RTC chip, the USB stack itself, light sleep, Memfault | absent (the firmware's "not fitted" paths) |
 
 Two TCP ports, both described in [PROTOCOL.md](PROTOCOL.md):
 
@@ -146,6 +147,24 @@ the place the file puts it — per type and flag, across a cell edge, by zoom
 and layer, replaced, emptied and deleted, past the frame's 256-POI budget,
 damaged, and along a ride on a route.
 
+## Power and robustness
+
+[tests/test_power.py](tests/test_power.py) times the idle auto-off (ten
+minutes, to about a second of device time, with the clock running fast and
+slowing near the moment), what restarts its countdown (a tap, the keys,
+`autosleep on`) and what holds it off (a ride recording, riding, a phone, the
+stopwatch), the power dialog (CANCEL; SHUT DOWN mid-ride keeps a valid FIT
+and the next boot is clean), and the battery as the app sees it.
+[tests/test_crash_recovery.py](tests/test_crash_recovery.py) crashes,
+watchdogs and power-cuts the device mid-ride (CONTINUE, SAVE, DISCARD; the
+FIT valid and in order), checks the crash report each reset reason leaves on
+the card for the app (with the last log lines before it), its wait in NVS for
+a card and the queue through a crash loop, and a tile torn by a reset.
+[tests/test_gps_edges.py](tests/test_gps_edges.py) covers a tunnel, a fix
+that jumps across the map, line noise, a GPS week rollover and a ride across
+UTC midnight. [tests/test_endurance.py](tests/test_endurance.py) (slow) rides
+four hours watching memory.
+
 `SimPhone.pace_writes(interval_ms, per_event)` paces the phone's own writes
 like a connection interval; the sim's `--conn-interval-ms` paces only the
 device's notifications.
@@ -207,7 +226,14 @@ tests assert the console is clean of them:
   would refuse it), so a second central during a live phone link is always
   possible here.
 - Light sleep, BT modem sleep and power_mgmt.cpp aren't built: link drops
-  caused by sleep clocks are out of reach.
+  caused by sleep clocks are out of reach. Nor is the fuel gauge's own
+  behaviour: `battery` sets what it reads, and the firmware has no low-battery
+  action of its own to test (a flat battery is a `reset("brownout")`).
+- The GPS module loses its fix and track across a reset (its clock is kept).
+- NVS writes are atomic (a file written whole and renamed): a power cut can't
+  tear a setting, so settings writes under power loss aren't tested.
+- The heap is the host's malloc: `esp_get_free_heap_size()` is a constant, so
+  a leak shows only as the process's resident memory (`SimDevice.rss_kb()`).
 - Phone → device writes cost nothing unless the test paces them
   (`pace_writes`); BLE retransmissions and a full controller write queue
   aren't modelled.

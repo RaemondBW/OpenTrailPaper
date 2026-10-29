@@ -32,6 +32,10 @@
 #include "sim_clock.h"
 
 #include <mach-o/dyld.h>
+#include <mach-o/getsect.h>
+#include <mach-o/ldsyms.h>
+#include <fcntl.h>
+#include <signal.h>
 #include <sys/stat.h>
 #include <thread>
 #include <unistd.h>
@@ -67,6 +71,23 @@ void usage() {
             "  --no-stdin             don't read console commands from stdin\n");
 }
 
+// main.cpp's names for the reset reasons, word for word: crash reports carry them.
+const char* resetReasonStr(esp_reset_reason_t r) {
+    switch (r) {
+        case ESP_RST_POWERON:   return "power-on / power-loss";
+        case ESP_RST_EXT:       return "RST button";
+        case ESP_RST_SW:        return "software (OTA / restart)";
+        case ESP_RST_PANIC:     return "crash (panic)";
+        case ESP_RST_INT_WDT:   return "interrupt watchdog";
+        case ESP_RST_TASK_WDT:  return "task watchdog";
+        case ESP_RST_WDT:       return "watchdog";
+        case ESP_RST_DEEPSLEEP: return "wake from sleep";
+        case ESP_RST_BROWNOUT:  return "brownout";
+        case ESP_RST_SDIO:      return "sdio";
+        default:                return "unknown";
+    }
+}
+
 void mkdirs(const std::string& p) {
     for (size_t i = 1; i < p.size(); ++i)
         if (p[i] == '/') mkdir(p.substr(0, i).c_str(), 0755);
@@ -79,9 +100,9 @@ void setup() {
     Serial.println("\n[main] e-paper bike computer booting");
     diag::begin();
     esp_reset_reason_t rr = esp_reset_reason();
-    diag::log("boot firmware %s (sim)", FIRMWARE_VERSION);
+    diag::log("boot firmware %s (sim) (reset: %s [%d])", FIRMWARE_VERSION, resetReasonStr(rr), (int)rr);
     memfault_service::begin((int)rr);
-    crash_report::begin((int)rr, "sim", FIRMWARE_VERSION);
+    crash_report::begin((int)rr, resetReasonStr(rr), FIRMWARE_VERSION);
     g_state.begin();
     g_i2cMutex = xSemaphoreCreateMutex();
     g_sdMutex = xSemaphoreCreateRecursiveMutex();
@@ -172,9 +193,84 @@ void loop() {
 
 }  // namespace
 
-[[noreturn]] void sim::reboot(const char* why) {
+// ---- resets: the reset reason and RTC memory across a re-exec ------------------------
+//
+// <dir>/rtc_mem.bin holds what the next boot needs from the chip: the reset
+// reason and the RTC_NOINIT_ATTR section (esp_sim.h). Written just before a
+// reset or deep sleep, consumed by the next boot; absent = a power-on.
+namespace {
+int g_resetReason = ESP_RST_POWERON;
+constexpr char kRtcMagic[8] = {'O', 'T', 'P', 'R', 'T', 'C', '1', 0};
+
+uint8_t* rtcSection(size_t* n) {
+    unsigned long sz = 0;
+    uint8_t* p = getsectiondata(&_mh_execute_header, "__DATA", "__rtc_noinit", &sz);
+    *n = p ? (size_t)sz : 0;
+    return p;
+}
+std::string rtcPath() { return sim::opts.dir + "/rtc_mem.bin"; }
+
+// Plain write(2): also called from the SIGABRT handler.
+void saveRtc(int reason) {
+    std::string path = rtcPath();
+    if (reason == ESP_RST_POWERON) { unlink(path.c_str()); return; }
+    int fd = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) return;
+    size_t n = 0;
+    uint8_t* p = rtcSection(&n);
+    uint64_t len = n;
+    int32_t r = reason;
+    (void)!write(fd, kRtcMagic, sizeof kRtcMagic);
+    (void)!write(fd, &r, sizeof r);
+    (void)!write(fd, &len, sizeof len);
+    if (p && n) (void)!write(fd, p, n);
+    close(fd);
+}
+
+void restoreRtc() {
+    std::string path = rtcPath();
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return;
+    char magic[8];
+    int32_t r = 0;
+    uint64_t len = 0;
+    if (fread(magic, 1, 8, f) == 8 && !memcmp(magic, kRtcMagic, 8) && fread(&r, sizeof r, 1, f) == 1 &&
+        fread(&len, sizeof len, 1, f) == 1) {
+        g_resetReason = r;
+        size_t n = 0;
+        uint8_t* p = rtcSection(&n);
+        // A different build (OTA) may lay the section out differently: keep
+        // the reason, start RTC memory clean, as a new image's would read garbage.
+        if (p && len == n && fread(p, 1, n, f) != n) memset(p, 0, n);
+    }
+    fclose(f);
+    unlink(path.c_str());
+}
+
+// The firmware's abort() — `crash panic` on the console, a failed assert — is a
+// panic: the chip resets with ESP_RST_PANIC and RTC memory intact.
+void onAbort(int) { sim::reboot("panic: abort()", ESP_RST_PANIC); }
+}  // namespace
+
+extern "C" esp_reset_reason_t esp_reset_reason(void) { return (esp_reset_reason_t)g_resetReason; }
+int sim::resetReason() { return g_resetReason; }
+int sim::resetReasonByName(const std::string& n) {
+    if (n == "poweron") return ESP_RST_POWERON;
+    if (n == "ext") return ESP_RST_EXT;
+    if (n == "sw") return ESP_RST_SW;
+    if (n == "panic") return ESP_RST_PANIC;
+    if (n == "int_wdt") return ESP_RST_INT_WDT;
+    if (n == "task_wdt") return ESP_RST_TASK_WDT;
+    if (n == "wdt") return ESP_RST_WDT;
+    if (n == "brownout") return ESP_RST_BROWNOUT;
+    return -1;
+}
+
+[[noreturn]] void sim::reboot(const char* why, int resetReason) {
     consoleLine(std::string("[sim] reboot: ") + why);
     fflush(stdout);
+    saveRtc(resetReason);
+    gpsPersist();
     char path[4096];
     uint32_t n = sizeof path;
     if (_NSGetExecutablePath(path, &n) != 0) _exit(3);
@@ -190,6 +286,8 @@ void loop() {
 [[noreturn]] void sim::powerOff(const char* why) {
     consoleLine(std::string("[sim] powered off: ") + why);
     fflush(stdout);
+    saveRtc(ESP_RST_DEEPSLEEP);
+    gpsPersist();
     _exit(0);
 }
 
@@ -225,6 +323,8 @@ int main(int argc, char** argv) {
         else { usage(); return a == "--help" || a == "-h" ? 0 : 1; }
     }
     mkdirs(sim::opts.dir);
+    restoreRtc();
+    signal(SIGABRT, onAbort);
     if (!gpsBaud.empty()) {
         // Only on the first boot of this device directory: a reboot keeps
         // whatever baud the firmware left the module at.

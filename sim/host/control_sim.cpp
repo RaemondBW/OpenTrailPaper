@@ -227,7 +227,8 @@ std::string statusJson() {
       << ",\"cadence\":" << (s.cadenceConnected && s.cadenceRpm != 0xFF ? (int)s.cadenceRpm : -1)
       << ",\"battery\":" << (int)s.batteryPercent << ",\"route_active\":" << (s.routeActive ? "true" : "false")
       << ",\"radar_connected\":" << (s.radar.connected ? "true" : "false") << ",\"radar_targets\":" << (int)s.radar.count
-      << "},\"settings\":{\"ftp\":" << settings::ftpWatts() << ",\"tz_min\":" << settings::tzMinutes()
+      << "},\"reset_reason\":" << sim::resetReason()
+      << ",\"settings\":{\"ftp\":" << settings::ftpWatts() << ",\"tz_min\":" << settings::tzMinutes()
       << ",\"miles\":" << (settings::useMiles() ? "true" : "false") << ",\"clock24h\":" << (settings::clock24h() ? "true" : "false")
       << ",\"show_offline\":" << (settings::showOffline() ? "true" : "false") << ",\"auto_pause_s\":" << settings::autoPauseSec()
       << ",\"wheel_mm\":" << settings::wheelCircMm() << ",\"backlight\":" << settings::backlight()
@@ -350,6 +351,17 @@ std::string handle(const json::Value& r) {
     // -- sensors / radar / media inspection --
     if (cmd == "sensor_state") return sensorStateCommand(r);
     if (cmd == "media_state") return mediaStateCommand(r);
+    // ---- power and robustness ----------------------------------------------------------
+    if (cmd == "reset") {   // a crash, a watchdog, a brownout: reset with that reason
+        const int reason = sim::resetReasonByName(r.str("reason", "panic"));
+        if (reason < 0) return "\"ok\":false,\"error\":\"unknown reset reason\"";
+        std::string why = "control reset: " + r.str("reason", "panic");
+        std::thread([reason, why] { sim_clock::sleepMs(50); sim::reboot(why.c_str(), reason); }).detach();
+        return ok();
+    }
+    if (cmd == "gps_time") { sim::gpsSetUtc((int64_t)r.num("unix")); return ok(); }
+    if (cmd == "gps_raw") { sim::gpsRaw(r.str("data")); return ok(); }
+    if (cmd == "gps_paced") { sim::gpsPaced(r.boolean("on", true)); return ok(); }
     return "\"ok\":false,\"error\":" + json::esc("unknown cmd '" + cmd + "'");
 }
 

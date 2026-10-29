@@ -30,8 +30,10 @@ bool trackLoop = false;
 std::string cmdLine;
 int64_t utcBaseUs = 0;   // GPS time at sim boot (real UTC)
 uint32_t sentences = 0;
+bool paced = false;      // deliver sentence by sentence at the UART's byte rate
 
 std::string baudPath() { return sim::opts.dir + "/gps_baud.txt"; }
+std::string clockPath() { return sim::opts.dir + "/gps_clock.txt"; }
 
 uint8_t checksum(const std::string& body) {
     uint8_t c = 0;
@@ -132,6 +134,8 @@ void advance() {
 
 void tick() {
     std::string out;
+    std::vector<std::string> parts;
+    bool pace = false;
     {
         std::lock_guard<std::mutex> lk(m);
         if (fix) advance();
@@ -159,14 +163,25 @@ void tick() {
             rmc << "GNRMC," << hms << ",V,,,,,,," << date << ",,,N,V";
             gsa << "GNGSA,A,1,,,,,,,,,,,,,25.5,25.5,25.5,1";
         }
-        out = sentence(gga.str()) + sentence(rmc.str()) + sentence(gsa.str());
+        parts = {sentence(gga.str()), sentence(rmc.str()), sentence(gsa.str())};
         if (++sentences % 5 == 0) {
             std::ostringstream gsv;
             gsv << "GPGSV,1,1," << sats << ",01,45,090,38,02,30,180,35,03,60,270,40,04,20,045,30,0";
-            out += sentence(gsv.str());
+            parts.push_back(sentence(gsv.str()));
         }
+        pace = paced;
     }
-    deliver(out);
+    if (!pace) {
+        for (auto& p : parts) out += p;
+        deliver(out);
+        return;
+    }
+    // As the wire has them: each sentence lands after its bytes have crossed
+    // the UART (10 bits a byte), so the firmware can parse GGA before RMC exists.
+    for (auto& p : parts) {
+        sim_clock::sleepMs(std::max<uint32_t>(1, (uint32_t)(p.size() * 10000 / std::max<uint32_t>(moduleBaud, 1))));
+        deliver(p);
+    }
 }
 
 }  // namespace
@@ -182,6 +197,15 @@ void sim::gpsBegin() {
         timeKnown = !sim::opts.gpsCold;
         utcBaseUs = std::chrono::duration_cast<std::chrono::microseconds>(
                         std::chrono::system_clock::now().time_since_epoch()).count();
+        // The module's RTC runs on its backup supply across a reset of the
+        // ESP32: carry its clock on from where the last boot left it (plus
+        // the real time the reset took), so GPS time never steps backwards
+        // after a sped-up clock or a gps_time.
+        if (FILE* f = fopen(clockPath().c_str(), "r")) {
+            long long utcUs = 0, atRealUs = 0;
+            if (fscanf(f, "%lld %lld", &utcUs, &atRealUs) == 2 && utcUs > 0) utcBaseUs = utcUs + (utcBaseUs - atRealUs);
+            fclose(f);
+        }
     }
     // What the firmware writes to the module.
     Serial2.sink = [](const uint8_t* b, size_t n) {
@@ -235,4 +259,35 @@ std::string sim::gpsStatusJson() {
       << ",\"lon\":" << lon << ",\"speed_kmh\":" << speedKmh << ",\"track_left\":"
       << (track.empty() ? 0 : (int)(track.size() - trackIdx - 1)) << "}";
     return o.str();
+}
+
+// ---- power and robustness: the module's clock, raw bytes, wire pacing -------------------
+
+void sim::gpsSetUtc(int64_t unix) {
+    std::lock_guard<std::mutex> lk(m);
+    utcBaseUs = unix * 1000000 - (int64_t)sim_clock::micros64();
+}
+
+void sim::gpsRaw(const std::string& bytes) { deliver(bytes); }
+
+void sim::gpsPaced(bool on) {
+    std::lock_guard<std::mutex> lk(m);
+    paced = on;
+}
+
+// Called as the ESP32 resets or sleeps: the module's clock, for the next boot.
+void sim::gpsPersist() {
+    int64_t utc, real;
+    {
+        // try_lock: this also runs from the SIGABRT handler, which may have
+        // interrupted the module's own thread holding the lock.
+        std::unique_lock<std::mutex> lk(m, std::try_to_lock);
+        utc = utcBaseUs + (int64_t)sim_clock::micros64();
+        real = std::chrono::duration_cast<std::chrono::microseconds>(
+                   std::chrono::system_clock::now().time_since_epoch()).count();
+    }
+    if (FILE* f = fopen(clockPath().c_str(), "w")) {
+        fprintf(f, "%lld %lld\n", (long long)utc, (long long)real);
+        fclose(f);
+    }
 }

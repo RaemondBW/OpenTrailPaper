@@ -1,8 +1,8 @@
 // Stand-ins for the board's hardware modules. Each keeps the module's
 // interface and reports the hardware as the sim has it: no LoRa radio, no
 // Qwiic sensors, no RTC chip, no USB stack (a host mounting the card is the
-// control channel's `usb`); power management and the
-// crash reporter are inert. The fuel gauge's reading is set by the control
+// control channel's `usb`); power management is inert. The crash reporter is
+// the firmware's own (src/crash_report.cpp). The fuel gauge's reading is set by the control
 // channel (`battery`).
 #include <Arduino.h>
 
@@ -100,15 +100,6 @@ int lastError() { return -2; }
 namespace smooth_epd {
 void selfTest() {}
 }
-
-namespace crash_report {
-void begin(int, const char*, const char*) {}
-void tick() {}
-void onSdMounted(const char*) {}
-void recordLine(const char*, size_t) {}
-void requestTestPanic() { Serial.println("[crash] sim: test panic ignored"); }
-void requestStatus() { Serial.println("[crash] sim: no crash records"); }
-}  // namespace crash_report
 
 namespace gps_rx_guard {
 void begin() {}
