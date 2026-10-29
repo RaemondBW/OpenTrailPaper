@@ -26,14 +26,13 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DirectionsBike
 import androidx.compose.material.icons.filled.DragHandle
+import androidx.compose.material.icons.filled.Flag
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Timer
@@ -41,7 +40,6 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
@@ -60,7 +58,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
 import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onPlaced
@@ -181,6 +179,8 @@ fun DashboardEditorSheet(ble: BleManager, onDismiss: () -> Unit) {
                     when {
                         ble.pendingDashConfig == null ->
                             "Not connected · edits are saved and sync on the next connect"
+                        connected && ble.dashWaitingForDevice ->
+                            "Waiting for the device · it saves the layout once the ride stops recording"
                         connected -> "Syncing layout…"
                         else -> "Will sync when connected"
                     },
@@ -190,6 +190,7 @@ fun DashboardEditorSheet(ble: BleManager, onDismiss: () -> Unit) {
             PageCarousel(
                 useMiles = ble.useMiles,
                 config = config,
+                maxPages = ble.dashMaxPages,
                 pageIx = pageIx,
                 onSelect = { i ->
                     pageIx = i
@@ -223,6 +224,7 @@ fun DashboardEditorSheet(ble: BleManager, onDismiss: () -> Unit) {
                             DashConfig.PageKind.MUSIC -> DashConfig.Page.music()
                             DashConfig.PageKind.WORKOUT -> DashConfig.Page.workout()
                             DashConfig.PageKind.STOPWATCH -> DashConfig.Page.stopwatch()
+                            DashConfig.PageKind.SEGMENT -> DashConfig.Page.segment()
                             else -> DashConfig.Page.fields()
                         },
                     )
@@ -300,6 +302,42 @@ fun DashboardEditorSheet(ble: BleManager, onDismiss: () -> Unit) {
                         )
                     }
 
+                    page.isSegment -> Card {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Filled.Flag, contentDescription = null, tint = Palette.ink)
+                            Spacer(Modifier.size(8.dp))
+                            Text("Segment", style = TypeScale.bodyStrong, color = Palette.ink)
+                        }
+                        Text(
+                            "Live Strava segments. Sync your starred segments in Settings > " +
+                                "Accounts > Strava. Away from them the page shows the nearest " +
+                                "start within 5 km; ride through a start and it times the " +
+                                "effort against your PR, then shows your result. Efforts are " +
+                                "timed on any page. Needs device firmware v1.23 or newer.",
+                            style = TypeScale.body,
+                            color = Palette.muted,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                "Switch to this page when a segment starts",
+                                style = TypeScale.body, color = Palette.ink,
+                                modifier = Modifier.weight(1f),
+                            )
+                            EinkSwitch(
+                                checked = page.autoShow,
+                                onCheckedChange = { on ->
+                                    config = config.copy(
+                                        pages = config.pages.toMutableList().also {
+                                            it[pageIx] = page.copy(autoShow = on)
+                                        },
+                                    )
+                                    dirty = true
+                                },
+                            )
+                        }
+                    }
+
                     else -> Card {
                         Text("Fields", style = TypeScale.bodyStrong, color = Palette.ink)
                         Text(
@@ -346,6 +384,8 @@ fun DashboardEditorSheet(ble: BleManager, onDismiss: () -> Unit) {
 private fun PageCarousel(
     useMiles: Boolean,
     config: DashConfig,
+    /** Content pages the device holds (DeviceHello.dash_max_pages, else 4). */
+    maxPages: Int,
     pageIx: Int,
     onSelect: (Int) -> Unit,
     onRemove: (Int) -> Unit,
@@ -424,11 +464,12 @@ private fun PageCarousel(
             }
         }
 
-        if (config.contentPages < DashConfig.MAX_PAGES) {
+        if (config.contentPages < maxPages) {
             AddPageCard(
                 hasMusic = config.hasMusicPage,
                 hasWorkout = config.hasWorkoutPage,
                 hasStopwatch = config.hasStopwatchPage,
+                hasSegment = config.hasSegmentPage,
                 onAdd = onAdd,
             )
         }
@@ -451,11 +492,10 @@ private fun PageCard(
             Modifier
                 .padding(top = 9.dp, end = 9.dp)
                 .size(width = 124.dp, height = 206.dp)
-                .clip(RoundedCornerShape(8.dp))
                 .border(
                     border.dp,
                     if (selected) Palette.accent else Palette.hairline,
-                    RoundedCornerShape(8.dp),
+                    RectangleShape,
                 )
                 .clickable(onClick = onTap),
         ) {
@@ -473,6 +513,9 @@ private fun PageCard(
                 DashConfig.PageKind.STOPWATCH -> StopwatchPagePreview(
                     Modifier.fillMaxWidth().aspectRatio(540f / 960f),
                 )
+                DashConfig.PageKind.SEGMENT -> SegmentPagePreview(
+                    Modifier.fillMaxWidth().aspectRatio(540f / 960f),
+                )
                 DashConfig.PageKind.FIELDS -> DashPreview(
                     page.layout,
                     Modifier.fillMaxWidth().aspectRatio(DASH_PANEL_ASPECT),
@@ -487,13 +530,12 @@ private fun PageCard(
                 Modifier
                     .align(Alignment.TopEnd)
                     .size(24.dp)
-                    .clip(CircleShape)
                     .background(Color.White)
                     .clickable(onClick = onRemove),
                 contentAlignment = Alignment.Center,
             ) {
                 Box(
-                    Modifier.size(20.dp).clip(CircleShape).background(Color(0xFFE53935)),
+                    Modifier.size(20.dp).background(Palette.ink),
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(
@@ -514,6 +556,7 @@ private fun AddPageCard(
     hasMusic: Boolean,
     hasWorkout: Boolean,
     hasStopwatch: Boolean,
+    hasSegment: Boolean,
     onAdd: (DashConfig.PageKind) -> Unit,
 ) {
     var menu by remember { mutableStateOf(false) }
@@ -521,8 +564,7 @@ private fun AddPageCard(
         Column(
             Modifier
                 .size(width = 124.dp, height = 206.dp)
-                .clip(RoundedCornerShape(8.dp))
-                .border(1.5.dp, Palette.hairline, RoundedCornerShape(8.dp))
+                .border(1.5.dp, Palette.hairline)
                 .clickable { menu = true },
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
@@ -562,6 +604,13 @@ private fun AddPageCard(
                     text = { Text("Stopwatch", style = TypeScale.body) },
                     leadingIcon = { Icon(Icons.Filled.Timer, contentDescription = null) },
                     onClick = { menu = false; onAdd(DashConfig.PageKind.STOPWATCH) },
+                )
+            }
+            if (!hasSegment) {
+                DropdownMenuItem(
+                    text = { Text("Segment", style = TypeScale.body) },
+                    leadingIcon = { Icon(Icons.Filled.Flag, contentDescription = null) },
+                    onClick = { menu = false; onAdd(DashConfig.PageKind.SEGMENT) },
                 )
             }
         }

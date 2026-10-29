@@ -8,12 +8,26 @@ submitting.
 
 ## Unreleased
 
+- Live Strava segments: with Strava connected, Settings > Accounts has a
+  "Starred segments" line under it. Sync sends your starred ride segments
+  (up to 50) to the device, with your PR and the line and elevation of
+  each, and shows how many it holds. Add the SEGMENT page in the dashboard editor (Add a page >
+  Segment) to see the nearest one and race your PR on it; the page can
+  switch itself on when a segment starts. Needs firmware v1.23. Private
+  segments need the same fresh Strava sign-in as private routes. The
+  Android app has the same option.
+
 - Route: with Strava or RideWithGPS connected, import one of your saved
   routes (iOS: the download button on the Route map; Android: the file
   button). Pick it from the list, which shows each route's distance and
   climbing, and send it to the device like a GPX file. To see private
   Strava routes, disconnect and connect Strava again in Settings >
   Accounts; until you do, only public ones are listed.
+- Name a ride before uploading it: tapping Upload to Strava, Intervals.icu
+  or RideWithGPS asks for the activity name first, filled in with the
+  ride's current name. The new name is kept for that ride on this phone, so
+  the next upload starts from it and the ride list and ride page show it.
+  (iOS and Android.)
 - Dashboard editor: Add a page > Stopwatch puts the device's new STOPWATCH
   page in the Home-key cycle. It needs firmware v1.23. Older firmware
   leaves the page out, and the editor shows the layout the device kept.
@@ -27,6 +41,13 @@ submitting.
   don't reload. The header no longer shows a separate "Syncing…" label.
   Tapping a ride that isn't downloaded while disconnected now says to
   connect. The Android app does the same.
+- A notice on the Ride tab and the Maps screen says when the device has no
+  SD card, or one it can't read (reformat it as FAT32). Map downloads are
+  held until a card is in, instead of failing with "Some tiles failed".
+  Needs firmware v1.23; older firmware doesn't report the card. The
+  Android app has the same notice.
+- The list of hexes on the device is refreshed every time it connects, so
+  a new or swapped card no longer shows the old card's hexes as downloaded.
 
 ## 1.3 (build 17)
 

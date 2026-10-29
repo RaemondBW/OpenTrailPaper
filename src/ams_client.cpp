@@ -57,19 +57,36 @@ void onEntityUpdate(NimBLERemoteCharacteristic*, uint8_t* data, size_t len,
             case TRACK_ATTR_ARTIST: media::amsArtist(val); break;
             case TRACK_ATTR_ALBUM:  media::amsAlbum(val); break;
             case TRACK_ATTR_DURATION:
-                media::amsDuration((uint16_t)strtof(val, nullptr));
+            {
+                // "331.428" (seconds); empty or 0 for a live stream.
+                float d = strtof(val, nullptr);
+                media::amsDuration(d <= 0 ? 0 : d >= 65535 ? 65535
+                                                           : (uint16_t)(d + 0.5f));
+            }
                 break;
         }
     } else if (entity == ENTITY_PLAYER && attr == PLAYER_ATTR_PLAYBACK_INFO) {
         // "PlaybackState,PlaybackRate,ElapsedTime" — e.g. "1,1.0,143.5".
         // An empty value means no player at all.
+        // PlaybackState: 0 paused, 1 playing, 2 rewinding, 3 fast-forwarding.
+        // It is sent on a state change, a rate change or a seek — NOT as the
+        // track plays — so the elapsed time is advanced locally from here
+        // (MediaState::positionMs).
         if (!val[0]) { media::clear(); return; }
         int playState = atoi(val);
-        float elapsed = 0;
+        float rate = 1.0f, elapsed = 0;
         const char* c = strchr(val, ',');
-        if (c) c = strchr(c + 1, ',');
+        if (c) {
+            rate = strtof(c + 1, nullptr);
+            c = strchr(c + 1, ',');
+        }
         if (c) elapsed = strtof(c + 1, nullptr);
-        media::amsPlayback(playState == 1, (uint16_t)elapsed);
+        const bool moving = playState >= 1 && playState <= 3;
+        // A rate that didn't parse (or a playing state reporting 0) runs at
+        // normal speed; a rewind with a positive rate runs backwards.
+        if (moving && rate == 0.0f) rate = playState == 2 ? -1.0f : 1.0f;
+        if (playState == 2 && rate > 0) rate = -rate;
+        media::amsPlayback(moving, rate, elapsed);
     }
 }
 

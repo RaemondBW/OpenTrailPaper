@@ -109,16 +109,16 @@ struct RidesView: View, Equatable {
         let loaded = recent.compactMap { previews.preview(for: $0.name) }
         let dist = loaded.reduce(0.0) { $0 + $1.distanceKm }
         let time = loaded.reduce(0.0) { $0 + $1.duration }
-        return HStack(spacing: 0) {
+        // Separate boxes with gutters, like the device's data cells (DashPreview:
+        // margin 24 / gutter 12 on the panel). The screen's 16pt padding is the
+        // margin here, so the gutter is half that, keeping the device's ratio.
+        return HStack(spacing: 8) {
             summaryCell("This week", "\(recent.count)", recent.count == 1 ? "ride" : "rides")
-            Rectangle().fill(Palette.ink).frame(width: Rule.divider)
             summaryCell("Distance", String(format: "%.0f", Units.distance(dist, miles: useMiles)),
                         Units.distLabel(useMiles))
-            Rectangle().fill(Palette.ink).frame(width: Rule.divider)
             summaryCell("Time", hoursMinutes(time), "hours")
         }
         .fixedSize(horizontal: false, vertical: true)
-        .einkBorder()
     }
 
     private func summaryCell(_ label: String, _ value: String, _ unit: String) -> some View {
@@ -128,8 +128,9 @@ struct RidesView: View, Equatable {
                 .lineLimit(1).minimumScaleFactor(0.6)
             Text(unit).font(BarlowFont.text(12)).foregroundStyle(Palette.ink)
         }
-        .padding(.horizontal, 12).padding(.vertical, 10)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 10).padding(.vertical, 10)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        .einkBorder()
         .accessibilityElement(children: .combine)
     }
 
@@ -295,6 +296,7 @@ private struct RideRow: View {
     let onTap: () -> Void
     let onDelete: () -> Void
     @AppStorage(UnitPref.key) private var useMiles = false
+    @ObservedObject private var names = RideNames.shared
 
     var body: some View {
         Button(action: onTap) {
@@ -456,8 +458,10 @@ private struct RideRow: View {
         return String(format: "%d:%02d", m / 60, m % 60)
     }
 
-    // Human name like "Saturday afternoon ride" from the file's timestamp.
+    // The rider's name for it (renamed on upload), else a human name like
+    // "Saturday afternoon ride" from the file's timestamp.
     private var rideName: String {
+        if let n = names.names[ride.name] { return n }
         guard let d = RidesView.rideDate(ride.name) else { return ride.name }
         let wd = d.formatted(.dateTime.weekday(.wide))
         let h = Calendar.current.component(.hour, from: d)

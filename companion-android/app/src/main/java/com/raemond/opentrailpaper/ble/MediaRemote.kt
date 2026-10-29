@@ -16,7 +16,44 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
 import android.service.notification.NotificationListenerService
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.core.app.NotificationManagerCompat
+
+/**
+ * What this phone is playing, as the device's MUSIC page shows it — read by
+ * the Ride tab's copy of that page. [gray] is the cover as sent to the device
+ * (8-bit, [artSide] square), null when the item has none.
+ */
+data class PhoneTrack(
+    val title: String,
+    val artist: String,
+    val album: String,
+    val playing: Boolean,
+    /** Position at [updatedAtMs] (elapsedRealtime), and the playback speed. */
+    val positionMs: Long,
+    val updatedAtMs: Long,
+    val speed: Float,
+    val durationMs: Long,
+    val gray: ByteArray?,
+    val artSide: Int,
+) {
+    /** The position now, counted on from the last update while playing. */
+    fun positionAt(nowElapsedMs: Long): Long {
+        if (!playing) return positionMs
+        val p = positionMs + ((nowElapsedMs - updatedAtMs) * speed).toLong()
+        return if (durationMs > 0) p.coerceIn(0, durationMs) else p.coerceAtLeast(0)
+    }
+
+    override fun equals(other: Any?): Boolean =
+        other is PhoneTrack && title == other.title && artist == other.artist &&
+            album == other.album && playing == other.playing && positionMs == other.positionMs &&
+            updatedAtMs == other.updatedAtMs && speed == other.speed &&
+            durationMs == other.durationMs && gray === other.gray
+
+    override fun hashCode(): Int = (title + artist + album).hashCode() * 31 + positionMs.hashCode()
+}
 
 // Feeds the device's MUSIC page and answers its transport buttons.
 //
@@ -40,6 +77,10 @@ class MediaRemote(private val app: Application, private val ble: BleManager) {
     private var controller: MediaController? = null
     // The artwork last pushed, so a play/pause blip doesn't re-send ~90 KB.
     private var sentArtKey: String? = null
+    private var shownArt: ByteArray? = null
+
+    /** What is playing now (null: nothing, or the remote isn't running). */
+    var nowPlaying by mutableStateOf<PhoneTrack?>(null); private set
 
     /** Has the rider granted notification access (the getActiveSessions gate)? */
     val accessGranted: Boolean
@@ -64,6 +105,8 @@ class MediaRemote(private val app: Application, private val ble: BleManager) {
             detachController()
             runCatching { sessions.removeOnActiveSessionsChangedListener(sessionsChanged) }
             sentArtKey = null
+            shownArt = null
+            nowPlaying = null
             ble.sendMediaClear()
         }
     }
@@ -149,6 +192,8 @@ class MediaRemote(private val app: Application, private val ble: BleManager) {
         val meta = c?.metadata
         if (c == null || meta == null) {
             sentArtKey = null
+            shownArt = null
+            nowPlaying = null
             ble.sendMediaClear()
             return
         }
@@ -168,15 +213,28 @@ class MediaRemote(private val app: Application, private val ble: BleManager) {
         // that followed was never pushed at all.
         val artKey = "$title\u0000$artist\u0000$album"
         if (sentArtKey != artKey) {
-            val art = artOf(meta) ?: return
-            sentArtKey = artKey
-            // 300 px fits the device's 324 px frame; grayscale 8-bit is what
-            // its ditherer wants (BleManager may dither it here instead). No
-            // art on the item -> nothing sent; the device draws its vinyl
-            // placeholder.
-            val side = 300
-            ble.sendMediaArt(grayscaleBytes(art, side), side, side)
+            shownArt = null
+            val art = artOf(meta)
+            if (art != null) {
+                sentArtKey = artKey
+                // 300 px fits the device's 324 px frame; grayscale 8-bit is
+                // what its ditherer wants (BleManager may dither it here
+                // instead). No art on the item -> nothing sent; the device
+                // draws its vinyl placeholder.
+                val gray = grayscaleBytes(art, ART_SIDE)
+                shownArt = gray
+                ble.sendMediaArt(gray, ART_SIDE, ART_SIDE)
+            }
         }
+        nowPlaying = PhoneTrack(
+            title = title, artist = artist, album = album, playing = playing,
+            positionMs = state?.position ?: 0L,
+            updatedAtMs = state?.lastPositionUpdateTime ?: android.os.SystemClock.elapsedRealtime(),
+            speed = state?.playbackSpeed ?: 1f,
+            durationMs = meta.getLong(MediaMetadata.METADATA_KEY_DURATION).coerceAtLeast(0),
+            gray = shownArt,
+            artSide = ART_SIDE,
+        )
     }
 
     private fun artOf(meta: MediaMetadata): Bitmap? =
@@ -206,6 +264,8 @@ class MediaRemote(private val app: Application, private val ble: BleManager) {
     }
 
     private companion object {
+        const val ART_SIDE = 300
+
         /**
          * Tone curve applied before the art is sent (and so before either
          * ditherer sees it). The panel's greys are darker than a screen's and

@@ -42,4 +42,8 @@ bool applyText(const char* text, const char** reason);
 // Serialize the current layout, for the app to read back. Returns bytes written.
 size_t currentText(char* out, size_t cap);
 
+// Bumped each time the layout in use changes (boot load, an app's write), so
+// the phone link can push it to the app.
+uint32_t version();
+
 }  // namespace dash_config

@@ -1,7 +1,7 @@
 import SwiftUI
 import UIKit
 
-// The device's non-field pages — MUSIC, MAP, WORKOUT, STOPWATCH — drawn in the
+// The device's non-field pages — MUSIC, MAP, WORKOUT, STOPWATCH, SEGMENT — drawn in the
 // panel's own pixels (540 x 960, ui_render.h) and scaled once, the same idiom
 // as DashPreview. One renderer per page, used twice: the dashboard editor's
 // carousel cards (sample data, the defaults below) and the Ride tab's live
@@ -23,15 +23,21 @@ struct PanelStatus: Equatable {
 
 /// The firmware's faces, at the sizes their ascenders give: Arial_L/B for
 /// text, Impact_T/H for numbers. Drawn with the bundled Barlow / Barlow
-/// Condensed, the app's stand-ins for Arial and Impact.
+/// Condensed, the app's stand-ins for Arial and Impact. `digits(px)` is a
+/// value face sized like the firmware's vf_face_digit: its '0' is `px` panel
+/// pixels tall, for layouts whose columns are measured in those pixels.
 enum PanelFont {
     case arialL, arialB, impactT, impactH
+    case digits(CGFloat)
+
+    /// Barlow Condensed Bold's '0' ink height per point of size.
+    static let barlowDigitPerPt: CGFloat = 0.722
 
     var name: String {
         switch self {
         case .arialL: return "Barlow-Medium"
         case .arialB: return "Barlow-Bold"
-        case .impactT, .impactH: return "BarlowCondensed-Bold"
+        case .impactT, .impactH, .digits: return "BarlowCondensed-Bold"
         }
     }
     /// Point size whose cap height matches the device face's ascender.
@@ -41,12 +47,17 @@ enum PanelFont {
         case .arialB: return 27
         case .impactT: return 54
         case .impactH: return 160
+        case .digits(let px): return px / Self.barlowDigitPerPt
         }
     }
     func ui(_ k: CGFloat) -> UIFont {
         UIFont(name: name, size: size * k) ?? .systemFont(ofSize: size * k, weight: .bold)
     }
     func font(_ k: CGFloat) -> Font { .custom(name, fixedSize: size * k) }
+    /// `s`'s advance in panel pixels.
+    func width(_ s: String) -> CGFloat {
+        (s as NSString).size(withAttributes: [.font: ui(1)]).width
+    }
 }
 
 /// Text at a device-pixel baseline, aligned like epd text: left from `x`,
@@ -355,14 +366,17 @@ struct MusicPreview: View {
     /// The cover as the device draws it (pre-dithered to its five tones).
     var art: UIImage? = nil
     var playing = true
-    /// Position / length, when known. The AMS feed the device gets does not
-    /// reach the app, so the live page passes nil and the bar stays empty.
+    /// Position / length in seconds, when known: the live page passes the
+    /// device's own (the live stream's MUSIC record), nil leaves the bar empty.
     var progress: (pos: Int, dur: Int)? = (154, 331)
     /// Transport taps (0 prev, 1 play/pause, 2 next); nil = not interactive.
     /// `transportEnabled` false draws them but leaves them dead.
     var onTransport: ((Int) -> Void)? = nil
     var transportEnabled = true
     var transportHint: String? = nil
+    /// Volume taps (0 up, 1 down); nil = drawn but dead.
+    var onVolume: ((Int) -> Void)? = nil
+    var volumeHint: String? = nil
 
     var body: some View {
         DevicePanel(status: status, title: "MUSIC") { k in
@@ -395,6 +409,7 @@ struct MusicPreview: View {
                     }
                     .frame(width: 76 * k, height: 76 * k)
                     .offset(x: 462 * k, y: (140 + CGFloat(v) * 92) * k)
+                    .opacity(onTransport != nil && onVolume == nil ? 0.35 : 1)
                 }
 
                 if let t = track {
@@ -439,12 +454,15 @@ struct MusicPreview: View {
                                  label: ["Previous track", playing ? "Pause" : "Play", "Next track"][b],
                                  enabled: transportEnabled, hint: transportHint, k: k) { onTransport(b) }
                     }
-                    // Volume: no public iOS API sets it, and the device's own
-                    // AMS volume command isn't reachable from the app.
+                    // Volume: no public iOS API sets it, but the device can —
+                    // over AMS, the same command as its own +/- buttons.
                     ForEach(0..<2, id: \.self) { v in
                         PanelTap(x: 462, y: 140 + CGFloat(v) * 92, w: 76, h: 76,
-                                 label: v == 0 ? "Volume up" : "Volume down", enabled: false,
-                                 hint: "Use the phone's volume buttons", k: k) {}
+                                 label: v == 0 ? "Volume up" : "Volume down",
+                                 enabled: onVolume != nil,
+                                 hint: onVolume != nil ? nil
+                                    : volumeHint ?? "Use the phone's volume buttons",
+                                 k: k) { onVolume?(v) }
                     }
                 }
             }
@@ -474,49 +492,256 @@ extension ArtDither {
 
 // MARK: - STOPWATCH
 
-/// The device's STOPWATCH page (ui_render_stopwatch), no laps: the time across
-/// the middle, what it is doing, and START/PAUSE · RESET · LAP.
+/// What the STOPWATCH page draws once a lap is done (ui_render_stopwatch's
+/// lap layout): the total, the lap in progress with its averages, and the
+/// table of completed laps.
+struct StopwatchLapPage: Equatable {
+    var totalMs: UInt32
+    var running: Bool
+    /// The lap in progress: laps completed + 1.
+    var lapNumber: Int
+    var lapMs: UInt32
+    var lapSpeedKmh: Double?
+    var lapCadence: Int?
+    var lapPowerW: Int?
+    /// The metric columns (speed always; Stopwatch::showCadence/showPower).
+    var showCadence: Bool
+    var showPower: Bool
+    var useMiles = false
+    /// Completed laps, newest first, as many as the device's table shows.
+    /// nil: the firmware doesn't send them (no STOPWATCH_LAPS record).
+    var rows: [LiveFrame.StopwatchLaps.Lap]?
+}
+
+/// The device's STOPWATCH page (ui_render_stopwatch). No laps: the time
+/// across the middle, what it is doing, and START/PAUSE · RESET · LAP. With
+/// `lapPage`, the layout the device switches to after LAP.
 struct StopwatchPagePreview: View {
     var status: PanelStatus = .sample
     var time = "12:34"
     var state = "RUNNING"
     var running = true
+    /// The lap layout; nil = the no-laps one (time, state, note).
+    var lapPage: StopwatchLapPage? = nil
     /// A line under the state, for the Ride tab to say why it shows "--".
     var note: String? = nil
     /// false: the buttons are drawn greyed and do nothing (no BLE command).
     var controlsEnabled = true
+    /// The device's own enablement (Stopwatch::canReset / canLap): RESET only
+    /// while paused with time on the clock, LAP only while running. A button
+    /// the device would refuse is drawn light and does nothing, as on the glass.
+    var canReset: Bool? = nil
+    var canLap: Bool? = nil
+    /// Button taps (0 START/PAUSE, 1 RESET, 2 LAP); nil = not interactive.
+    var onControl: ((Int) -> Void)? = nil
+    /// Why the buttons are dead, for VoiceOver (with controlsEnabled false).
+    var controlsHint: String? = nil
+
+    private func enabled(_ i: Int) -> Bool {
+        switch i {
+        case 1: return canReset ?? !running
+        case 2: return canLap ?? running
+        default: return true
+        }
+    }
 
     var body: some View {
         DevicePanel(status: status, title: "STOPWATCH") { k in
             ZStack(alignment: .topLeading) {
-                Text(time).font(.custom("BarlowCondensed-Bold", fixedSize: 190 * k))
-                    .lineLimit(1).minimumScaleFactor(0.5)
-                    .frame(width: 540 * k)
-                    .offset(y: 250 * k)
-                PanelText(text: state, font: .arialB, x: 270, baseline: 530, align: .center, k: k)
-                if let note {
-                    PanelText(text: note, font: .arialL, x: 270, baseline: 570, align: .center,
-                              color: .black.opacity(0.6), k: k)
+                if let lapPage {
+                    StopwatchLapLayout(p: lapPage, k: k)
+                } else {
+                    Text(time).font(.custom("BarlowCondensed-Bold", fixedSize: 190 * k))
+                        .lineLimit(1).minimumScaleFactor(0.5)
+                        .frame(width: 540 * k)
+                        .offset(y: 250 * k)
+                    PanelText(text: state, font: .arialB, x: 270, baseline: 530, align: .center, k: k)
+                    if let note {
+                        PanelText(text: note, font: .arialL, x: 270, baseline: 570, align: .center,
+                                  color: .black.opacity(0.6), k: k)
+                    }
                 }
                 panelFill(0, 756, 540, 3, k: k)
                 ForEach(0..<3, id: \.self) { i in
                     let xs: [CGFloat] = [24, 240, 384]
                     let ws: [CGFloat] = [204, 132, 132]
+                    let on = enabled(i)
                     ZStack {
-                        Rectangle().strokeBorder(.black, lineWidth: max(1, (i == 1 && running ? 1 : 3) * k))
+                        Rectangle().strokeBorder(.black, lineWidth: max(1, (on ? 3 : 1) * k))
                         Text([running ? "PAUSE" : "START", "RESET", "LAP"][i])
                             .font(.custom("BarlowCondensed-Bold", fixedSize: 30 * k))
-                            .foregroundStyle(.black.opacity(i == 1 && running ? 0.35 : 1))
+                            .foregroundStyle(.black.opacity(on ? 1 : 0.35))
                     }
                     .frame(width: ws[i] * k, height: 156 * k)
                     .offset(x: xs[i] * k, y: 780 * k)
                     .opacity(controlsEnabled ? 1 : 0.35)
+                    .accessibilityHidden(onControl != nil)   // the PanelTap speaks for it
                     .accessibilityElement()
                     .accessibilityLabel([running ? "Pause" : "Start", "Reset", "Lap"][i])
                     .accessibilityAddTraits(.isButton)
-                    .accessibilityHint(controlsEnabled ? "" : "Only on the device")
+                    .accessibilityHint(controlsEnabled ? "" : controlsHint ?? "Only on the device")
+                }
+                if let onControl {
+                    ForEach(0..<3, id: \.self) { i in
+                        let xs: [CGFloat] = [24, 240, 384]
+                        let ws: [CGFloat] = [204, 132, 132]
+                        PanelTap(x: xs[i], y: 780, w: ws[i], h: 156,
+                                 label: [running ? "Pause" : "Start", "Reset", "Lap"][i],
+                                 enabled: controlsEnabled && enabled(i),
+                                 hint: controlsEnabled ? nil : controlsHint, k: k) { onControl(i) }
+                    }
                 }
             }
+        }
+    }
+
+    /// The running time (ui_render swFmt): MM:SS, H:MM:SS past the hour.
+    static func timeText(_ ms: UInt32) -> String {
+        let sec = Int(ms / 1000)
+        return sec >= 3600 ? String(format: "%d:%02d:%02d", sec / 3600, sec / 60 % 60, sec % 60)
+                           : String(format: "%02d:%02d", sec / 60, sec % 60)
+    }
+
+    /// A finished lap (swFmtLap): M:SS.t under the hour, H:MM:SS over.
+    static func lapText(_ ms: UInt32) -> String {
+        let sec = Int(ms / 1000)
+        return sec >= 3600 ? String(format: "%d:%02d:%02d", sec / 3600, sec / 60 % 60, sec % 60)
+                           : String(format: "%d:%02d.%d", sec / 60, sec % 60, Int(ms % 1000 / 100))
+    }
+}
+
+/// ui_render_stopwatch's lap layout, at its pixel positions: TOTAL at the
+/// top, the lap in progress, a rule, then the completed laps newest first
+/// (kSwRows rows of LAP, SPLIT and the metric columns).
+private struct StopwatchLapLayout: View {
+    let p: StopwatchLapPage
+    let k: CGFloat
+
+    // ui_render.cpp's lap geometry.
+    private static let listTop: CGFloat = 344     // kSwListTop
+    private static let rowTop: CGFloat = 384      // kSwRowTop
+    private static let rowH: CGFloat = 52         // kSwRowH
+    private static let rows = 7                   // kSwRows
+    private static let colsLeft: CGFloat = 72     // kSwColsLeft
+    private static let right: CGFloat = 516       // CONTENT_X + CONTENT_W
+    private static let avgLeft: CGFloat = 160     // kSwAvgLeft
+    private static let dark = Color.black.opacity(0.6)
+
+    private enum Metric { case speed, cadence, power }
+    private var metrics: [Metric] {
+        [.speed] + (p.showCadence ? [.cadence] : []) + (p.showPower ? [.power] : [])
+    }
+    private func unit(_ m: Metric) -> String {
+        switch m {
+        case .speed: return Units.speedLabel(p.useMiles).uppercased()
+        case .cadence: return "RPM"
+        case .power: return "W"
+        }
+    }
+    private func value(_ m: Metric, speed: Double?, cadence: Int?, power: Int?) -> String {
+        switch m {
+        case .speed: return speed.map { String(format: "%.1f", Units.speed($0, miles: p.useMiles)) } ?? "--"
+        case .cadence: return cadence.map(String.init) ?? "--"
+        case .power: return power.map(String.init) ?? "--"
+        }
+    }
+
+    // The device picks its faces by measuring Anton (its value font), so the
+    // app measures Anton too and gets the same choice; it draws them in
+    // Barlow Condensed at that digit height, like the other pages.
+    private static let antonDigitPerPt: CGFloat = 0.875
+    private static func antonWidth(_ s: String, px: CGFloat) -> CGFloat {
+        let f = UIFont(name: "Anton-Regular", size: px / antonDigitPerPt)
+            ?? PanelFont.digits(px).ui(1)
+        return (s as NSString).size(withAttributes: [.font: f]).width
+    }
+    /// swFace(elapsed, 95, CONTENT_W - 140): the ladder's largest face no
+    /// taller than 95 px whose widest time of this form fits.
+    private static func totalFace(_ ms: UInt32) -> CGFloat {
+        let sec = ms / 1000
+        let hint = sec >= 36000 ? "00:00:00" : sec >= 3600 ? "0:00:00" : "00:00"
+        let ladder: [CGFloat] = [219, 158, 120, 95, 81, 46]   // Impact_128 .. Impact_V
+        return ladder.first { $0 <= 95 && antonWidth(hint, px: $0) <= 492 - 140 } ?? 46
+    }
+    /// swRowFace: the largest of 38..22 px whose widest split fits a column.
+    private static func rowFace(step: CGFloat, hourLap: Bool) -> CGFloat {
+        let hint = hourLap ? "0:00:00" : "00:00.0"
+        let faces: [CGFloat] = [38, 34, 30, 26, 22]
+        return faces.first { antonWidth(hint, px: $0) <= step - 10 } ?? 22
+    }
+
+    var body: some View {
+        let right = Self.right
+        // --- Total, at the top: label pair left, digits flush right.
+        let tf = Self.totalFace(p.totalMs)
+        let totalBase = 64 + 24 + tf
+        PanelText(text: "TOTAL", font: .arialB, x: 24, baseline: totalBase - 30, k: k)
+        PanelText(text: p.running ? "RUNNING" : "PAUSED", font: .arialL, x: 24,
+                  baseline: totalBase, color: Self.dark, k: k)
+        PanelText(text: StopwatchPagePreview.timeText(p.totalMs), font: .digits(tf), x: right,
+                  baseline: totalBase, align: .right, k: k)
+
+        // --- The lap in progress: number, state, time (Impact_B), averages.
+        PanelText(text: "LAP \(p.lapNumber)", font: .arialB, x: 24, baseline: 254, k: k)
+        PanelText(text: p.running ? "IN PROGRESS" : "PAUSED", font: .arialL, x: 24,
+                  baseline: 284, color: Self.dark, k: k)
+        PanelText(text: StopwatchPagePreview.timeText(p.lapMs), font: .digits(81), x: right,
+                  baseline: 284, align: .right, k: k)
+        PanelText(text: "LAP AVERAGE", font: .arialL, x: 24, baseline: 328, color: Self.dark, k: k)
+        averages(left: Self.avgLeft, right: right, base: 328)
+        panelFill(0, Self.listTop, 540, 2, k: k)
+
+        // --- Completed laps, newest first.
+        let ms = metrics
+        let cols = 1 + ms.count
+        let step = ((right - Self.colsLeft) / CGFloat(cols)).rounded(.down)
+        let colRight = { (c: Int) -> CGFloat in
+            c == cols - 1 ? right : Self.colsLeft + step * CGFloat(c + 1)
+        }
+        let shown = Array((p.rows ?? []).prefix(Self.rows))
+        let rf = Self.rowFace(step: step, hourLap: shown.contains { $0.splitMs >= 3_600_000 })
+        let capBase = Self.rowTop - 12
+        PanelText(text: "LAP", font: .arialL, x: 24, baseline: capBase, color: Self.dark, k: k)
+        PanelText(text: "SPLIT", font: .arialL, x: colRight(0), baseline: capBase, align: .right,
+                  color: Self.dark, k: k)
+        ForEach(Array(ms.enumerated()), id: \.offset) { c, m in
+            PanelText(text: m == .power ? "WATTS" : unit(m), font: .arialL, x: colRight(c + 1),
+                      baseline: capBase, align: .right, color: Self.dark, k: k)
+        }
+        ForEach(Array(shown.enumerated()), id: \.offset) { r, lap in
+            let top = Self.rowTop + CGFloat(r) * Self.rowH
+            let base = top + ((Self.rowH + rf) / 2).rounded(.down)
+            panelFill(0, top, 540, 1, k: k)
+            PanelText(text: "\(lap.number)", font: .digits(rf), x: 24, baseline: base, k: k)
+            PanelText(text: StopwatchPagePreview.lapText(lap.splitMs), font: .digits(rf),
+                      x: colRight(0), baseline: base, align: .right, k: k)
+            ForEach(Array(ms.enumerated()), id: \.offset) { c, m in
+                PanelText(text: value(m, speed: lap.avgSpeedKmh, cadence: lap.avgCadence,
+                                      power: lap.avgPowerW),
+                          font: .digits(rf), x: colRight(c + 1), baseline: base, align: .right, k: k)
+            }
+        }
+        if p.rows == nil {
+            PanelText(text: "Update the device's firmware to see its laps here", font: .arialL,
+                      x: 270, baseline: Self.rowTop + 40, align: .center, color: Self.dark, k: k)
+        }
+    }
+
+    /// swAverages: each value + unit pair centred in an equal share of
+    /// [left, right], the value (Impact_T) right-aligned 6 px before its unit.
+    @ViewBuilder private func averages(left: CGFloat, right: CGFloat, base: CGFloat) -> some View {
+        let ms = metrics
+        let share = ((right - left) / CGFloat(ms.count)).rounded(.down)
+        ForEach(Array(ms.enumerated()), id: \.offset) { i, m in
+            let v = value(m, speed: p.lapSpeedKmh, cadence: p.lapCadence, power: p.lapPowerW)
+            let u = unit(m)
+            let uw = PanelFont.arialL.width(u)
+            let w = PanelFont.digits(30).width(v) + 6 + uw
+            let cx = left + share * CGFloat(i) + (share / 2).rounded(.down)
+            let r = (cx + w / 2).rounded(.down)
+            PanelText(text: v, font: .digits(30), x: r - uw - 6, baseline: base, align: .right, k: k)
+            PanelText(text: u, font: .arialL, x: r, baseline: base, align: .right,
+                      color: Self.dark, k: k)
         }
     }
 }
@@ -969,5 +1194,242 @@ struct WorkoutPagePreview: View {
     static func title(_ file: String) -> String {
         let stem = file.split(separator: ".").dropLast().joined(separator: ".")
         return (stem.isEmpty ? file : stem).replacingOccurrences(of: "_", with: " ")
+    }
+}
+
+// MARK: - SEGMENT
+
+/// What the SEGMENT page shows mid-effort (ui_render_segment's on-segment
+/// layout). Every value is optional: nil draws "--", as the device does for a
+/// reading it hasn't got.
+struct SegmentPageModel {
+    var name: String?
+    /// "2.1 KM · 6.4%", the map tile's right-hand header.
+    var detail: String?
+    /// The line in a north-up frame, 0...1 on both axes (y down).
+    var line: [CGPoint] = []
+    /// Heights along the segment, evenly spaced; empty = no profile.
+    var profile: [Double] = []
+    /// "68 - 200 M", the elevation tile's header.
+    var elevRange: String?
+    /// How far along, 0...1; nil = nothing ridden yet.
+    var done: Double?
+    var elapsedMs: UInt32?
+    /// Against PR pace; negative = ahead. nil = no PR (or no effort).
+    var deltaMs: Int32?
+    var powerW: Int?
+    var heartRate: Int?
+
+    /// The editor card: a made-up switchback climb part way up.
+    static let sample = SegmentPageModel(
+        name: "HAWK HILL CLIMB", detail: "2.1 KM · 6.4%",
+        line: [CGPoint(x: 0.18, y: 0.92), CGPoint(x: 0.42, y: 0.84), CGPoint(x: 0.66, y: 0.80),
+               CGPoint(x: 0.72, y: 0.66), CGPoint(x: 0.44, y: 0.58), CGPoint(x: 0.30, y: 0.46),
+               CGPoint(x: 0.52, y: 0.36), CGPoint(x: 0.76, y: 0.30), CGPoint(x: 0.70, y: 0.16),
+               CGPoint(x: 0.48, y: 0.08)],
+        profile: [68, 74, 83, 95, 104, 112, 126, 141, 150, 163, 178, 186, 194, 200],
+        elevRange: "68 - 200 M", done: 0.46, elapsedMs: 309_000, deltaMs: -11_000,
+        powerW: 247, heartRate: 156)
+
+    /// The Ride tab: the device doesn't stream its segment state, so every
+    /// tile reads "--".
+    static let placeholder = SegmentPageModel()
+}
+
+/// The device's SEGMENT page (ui_render_segment), on a segment: the map tile
+/// (ridden part thick, the rest dashed), the elevation tile (ridden part
+/// solid, the rest hatched), SEGMENT TIME and the PR delta (solid while
+/// ahead), then POWER and HEART RATE. Tiles at the firmware's rects: 24 px
+/// margins, 14 px gaps, 2 px borders, no footer.
+struct SegmentPagePreview: View {
+    var status: PanelStatus = .sample
+    var model: SegmentPageModel = .sample
+    /// A line under the map's "--", for the Ride tab to say why.
+    var note: String? = nil
+
+    private static let x: CGFloat = 24, w: CGFloat = 492, gap: CGFloat = 14
+    private static let half: CGFloat = (492 - 14) / 2   // 239
+
+    var body: some View {
+        DevicePanel(status: status) { k in
+            ZStack(alignment: .topLeading) {
+                mapTile(k)
+                elevationTile(k)
+                valueTile(Self.x, 644, Self.half, 166, label: "SEGMENT TIME",
+                          value: model.elapsedMs.map(Self.timeText) ?? "--", k: k)
+                deltaTile(k)
+                valueTile(Self.x, 824, Self.half, 112, label: "POWER",
+                          value: model.powerW.map(String.init) ?? "--", unit: "W", k: k)
+                valueTile(Self.x + Self.half + Self.gap, 824, Self.half, 112, label: "HEART RATE",
+                          value: model.heartRate.map(String.init) ?? "--", unit: "BPM", k: k)
+            }
+        }
+    }
+
+    // segLabel: the tracked caps label, its baseline 29 px under the tile top.
+    private func tileLabel(_ s: String, _ x: CGFloat, _ y: CGFloat, color: Color = .black,
+                           _ k: CGFloat) -> some View {
+        PanelText(text: s, font: .arialL, x: x + 16, baseline: y + 29, color: color, k: k)
+    }
+
+    private func mapTile(_ k: CGFloat) -> some View {
+        let r = CGRect(x: Self.x, y: 78, width: Self.w, height: 396)
+        let inner = r.insetBy(dx: 40, dy: 64)
+        let pts = model.line.map { CGPoint(x: (inner.minX + $0.x * inner.width) * k,
+                                           y: (inner.minY + $0.y * inner.height) * k) }
+        let split = splitLine(pts)
+        return ZStack(alignment: .topLeading) {
+            panelRect(r.minX, r.minY, r.width, r.height, k: k, line: 2)
+            PanelText(text: model.name ?? "--", font: .arialB, x: r.minX + 16, baseline: r.minY + 36,
+                      maxWidth: 300, k: k)
+            PanelText(text: model.detail ?? "", font: .arialL, x: r.maxX - 16, baseline: r.minY + 34,
+                      align: .right, k: k)
+            if pts.count >= 2 {
+                Path { p in p.addLines(split.rest) }
+                    .stroke(.black, style: StrokeStyle(lineWidth: 3 * k, lineCap: .round,
+                                                       dash: [7 * k, 7 * k]))
+                Path { p in p.addLines(split.done) }
+                    .stroke(.black, style: StrokeStyle(lineWidth: 8 * k, lineCap: .round, lineJoin: .round))
+                // Start: an open circle. Finish: a flag square.
+                Circle().strokeBorder(.black, lineWidth: 4 * k)
+                    .background(Circle().fill(panelPaper))
+                    .frame(width: 22 * k, height: 22 * k)
+                    .offset(x: pts[0].x - 11 * k, y: pts[0].y - 11 * k)
+                flag(k).offset(x: pts[pts.count - 1].x - 9 * k, y: pts[pts.count - 1].y - 9 * k)
+                if model.done != nil, let at = split.done.last {
+                    // The rider, in a white disc.
+                    Circle().fill(.black).frame(width: 40 * k, height: 40 * k)
+                        .overlay(Circle().fill(panelPaper).padding(3 * k))
+                        .overlay(Circle().fill(.black).padding(11 * k))
+                        .offset(x: at.x - 20 * k, y: at.y - 20 * k)
+                }
+            } else {
+                PanelText(text: "--", font: .digits(72), x: r.midX, baseline: r.midY + 36,
+                          align: .center, k: k)
+                if let note {
+                    PanelText(text: note, font: .arialL, x: r.midX, baseline: r.midY + 84,
+                              align: .center, color: .black.opacity(0.6), maxWidth: r.width - 32, k: k)
+                }
+            }
+        }
+    }
+
+    private func flag(_ k: CGFloat) -> some View {
+        let s = 18 * k
+        return ZStack(alignment: .topLeading) {
+            Rectangle().fill(panelPaper)
+            Rectangle().fill(.black).frame(width: s / 2, height: s / 2)
+            Rectangle().fill(.black).frame(width: s / 2, height: s / 2).offset(x: s / 2, y: s / 2)
+            Rectangle().strokeBorder(.black, lineWidth: 3 * k)
+        }
+        .frame(width: s, height: s)
+    }
+
+    /// The line cut at `done`, by length along it.
+    private func splitLine(_ pts: [CGPoint]) -> (done: [CGPoint], rest: [CGPoint]) {
+        guard pts.count >= 2, let f = model.done else { return ([], pts) }
+        var lens = [CGFloat](repeating: 0, count: pts.count)
+        for i in 1..<pts.count {
+            lens[i] = lens[i - 1] + hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y)
+        }
+        let at = lens[pts.count - 1] * CGFloat(min(max(f, 0), 1))
+        var done = [pts[0]]
+        var i = 1
+        while i < pts.count && lens[i] <= at { done.append(pts[i]); i += 1 }
+        guard i < pts.count else { return (done, []) }
+        let t = (at - lens[i - 1]) / max(lens[i] - lens[i - 1], 0.001)
+        let cut = CGPoint(x: pts[i - 1].x + t * (pts[i].x - pts[i - 1].x),
+                          y: pts[i - 1].y + t * (pts[i].y - pts[i - 1].y))
+        done.append(cut)
+        return (done, [cut] + pts[i...])
+    }
+
+    private func elevationTile(_ k: CGFloat) -> some View {
+        let r = CGRect(x: Self.x, y: 488, width: Self.w, height: 142)
+        let x0 = r.minX + 16, w = r.width - 32
+        let top = r.minY + 29 + 12, base = r.maxY - 12
+        let prof = model.profile
+        let lo = prof.min() ?? 0, hi = max(prof.max() ?? 1, lo + 20)
+        func pt(_ i: Int) -> CGPoint {
+            CGPoint(x: (x0 + w * CGFloat(i) / CGFloat(max(prof.count - 1, 1))) * k,
+                    y: (base - CGFloat((prof[i] - lo) / (hi - lo)) * (base - top)) * k)
+        }
+        let area = Path { p in
+            guard prof.count >= 2 else { return }
+            p.move(to: CGPoint(x: x0 * k, y: base * k))
+            for i in prof.indices { p.addLine(to: pt(i)) }
+            p.addLine(to: CGPoint(x: (x0 + w) * k, y: base * k))
+            p.closeSubpath()
+        }
+        let doneX = (x0 + w * CGFloat(min(max(model.done ?? 0, 0), 1))) * k
+        return ZStack(alignment: .topLeading) {
+            panelRect(r.minX, r.minY, r.width, r.height, k: k, line: 2)
+            tileLabel("ELEVATION", r.minX, r.minY, k)
+            PanelText(text: model.elevRange ?? "--", font: .arialL, x: r.maxX - 16,
+                      baseline: r.minY + 29, align: .right, k: k)
+            if prof.count >= 2 {
+                // The rest hatched at 45 degrees under a 3 px outline, the
+                // ridden part solid.
+                Hatch(spacing: 6 * k).stroke(.black, lineWidth: 2 * k)
+                    .frame(width: 540 * k, height: 960 * k)
+                    .mask(area.fill(.black))
+                area.fill(.black)
+                    .mask(Rectangle().frame(width: max(0, doneX), height: 960 * k)
+                        .frame(width: 540 * k, height: 960 * k, alignment: .topLeading))
+                Path { p in p.addLines(prof.indices.map(pt)) }.stroke(.black, lineWidth: 3 * k)
+                if model.done != nil {
+                    panelFill(doneX / k - 1, top - 6, 3, base - top + 6, k: k)
+                }
+            }
+            panelFill(x0, base, w, 2, k: k)
+        }
+    }
+
+    private func deltaTile(_ k: CGFloat) -> some View {
+        let x = Self.x + Self.half + Self.gap
+        guard let d = model.deltaMs else {
+            return valueTile(x, 644, Self.half, 166, label: "PR DELTA", value: "--", k: k)
+        }
+        let text = Self.deltaText(d)
+        let even = !(text.hasPrefix("+") || text.hasPrefix("-"))
+        return valueTile(x, 644, Self.half, 166,
+                         label: even ? "ON PR PACE" : d < 0 ? "AHEAD OF PR" : "BEHIND PR",
+                         value: text, inverted: !even && d < 0, k: k)
+    }
+
+    /// segValueTile: label top left, the value centred under it (with a unit,
+    /// sat 16 px off the bottom).
+    private func valueTile(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat,
+                           label text: String, value: String, unit: String? = nil,
+                           inverted: Bool = false, k: CGFloat) -> some View {
+        let fg: Color = inverted ? panelPaper : .black
+        let px: CGFloat = h >= 150 ? 72 : 48
+        let base = unit != nil ? y + h - 16 : ((y + 35 + y + h) / 2 + px / 2).rounded(.down)
+        let uw = unit.map { PanelFont.arialL.width($0) + 8 } ?? 0
+        let vw = PanelFont.digits(px).width(value)
+        let vx = x + (w - vw - uw) / 2
+        return ZStack(alignment: .topLeading) {
+            panelRect(x, y, w, h, k: k, line: 2, fill: inverted ? .black : .clear)
+            tileLabel(text, x, y, color: fg, k)
+            PanelText(text: value, font: .digits(px), x: vx, baseline: base, color: fg, k: k)
+            if let unit {
+                PanelText(text: unit, font: .arialL, x: vx + vw + 8, baseline: base - 6, color: fg, k: k)
+            }
+        }
+    }
+
+    /// segFmtTime: M:SS under the hour, H:MM:SS over.
+    static func timeText(_ ms: UInt32) -> String {
+        let s = Int(ms / 1000)
+        return s >= 3600 ? String(format: "%d:%02d:%02d", s / 3600, s / 60 % 60, s % 60)
+                         : String(format: "%d:%02d", s / 60, s % 60)
+    }
+
+    /// segFmtDelta: "+0:12" behind, "-0:08" ahead, "0:00" level.
+    static func deltaText(_ ms: Int32) -> String {
+        let sec = (Int(ms.magnitude) + 500) / 1000
+        let sign = sec == 0 ? "" : ms < 0 ? "-" : "+"
+        return sign + (sec >= 3600 ? String(format: "%d:%02d:%02d", sec / 3600, sec / 60 % 60, sec % 60)
+                                   : String(format: "%d:%02d", sec / 60, sec % 60))
     }
 }

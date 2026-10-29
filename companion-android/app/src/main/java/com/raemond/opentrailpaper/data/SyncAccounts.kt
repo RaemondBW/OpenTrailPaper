@@ -16,6 +16,7 @@ import com.google.firebase.appcheck.FirebaseAppCheck
 import com.google.firebase.appcheck.debug.DebugAppCheckProviderFactory
 import com.google.firebase.appcheck.playintegrity.PlayIntegrityAppCheckProviderFactory
 import com.raemond.opentrailpaper.BuildConfig
+import com.raemond.opentrailpaper.map.DebugEndpoints
 import com.raemond.opentrailpaper.transfer.TransferCenter
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.Dispatchers
@@ -61,8 +62,13 @@ object SyncAccounts {
         }
     }
 
-    /** Public address of the service, from BuildConfig (local.properties `sync.url` or CI). */
-    val serviceUrl: String? = BuildConfig.SYNC_SERVICE_URL.trim().takeIf { it.startsWith("http") }?.trimEnd('/')
+    /** Public address of the service, from BuildConfig (local.properties `sync.url` or CI); a debug build's stand-in (DebugEndpoints). */
+    val serviceUrl: String?
+        get() = (DebugEndpoints.syncServiceUrl ?: BuildConfig.SYNC_SERVICE_URL).trim().takeIf { it.startsWith("http") }?.trimEnd('/')
+
+    /** The providers' API origins; a debug build may point them at stand-ins (DebugEndpoints). */
+    private val strava: String get() = DebugEndpoints.stravaOrigin ?: "https://www.strava.com"
+    private val intervals: String get() = DebugEndpoints.intervalsOrigin ?: "https://intervals.icu"
     val isConfigured get() = serviceUrl != null
     const val CALLBACK_SCHEME = "opentrailpaper"
     const val RETURN_PATH_PREFIX = "/app/sync/"
@@ -227,7 +233,7 @@ object SyncAccounts {
             }
             Provider.INTERVALS -> runCatching {
                 withContext(Dispatchers.IO) {
-                    finish(open("https://intervals.icu/api/v1/disconnect-app", "DELETE", access))
+                    finish(open("$intervals/api/v1/disconnect-app", "DELETE", access))
                 }
             }
             Provider.RIDEWITHGPS -> Unit
@@ -331,7 +337,7 @@ object SyncAccounts {
             Provider.STRAVA -> {
                 val json = keeper.authorized { token ->
                     multipart(
-                        "https://www.strava.com/api/v3/uploads", token,
+                        "$strava/api/v3/uploads", token,
                         fields = mapOf("data_type" to "fit", "name" to name), file = file, progress = tid,
                     )
                 }
@@ -342,7 +348,7 @@ object SyncAccounts {
                 // Strava processes asynchronously: poll briefly for the activity id.
                 repeat(8) {
                     delay(1500)
-                    val st = keeper.authorized { token -> getJson("https://www.strava.com/api/v3/uploads/$id", token) }
+                    val st = keeper.authorized { token -> getJson("$strava/api/v3/uploads/$id", token) }
                     st.optString("error").takeIf { it.isNotEmpty() }?.let { throw SyncException(it) }
                     val act = st.optLong("activity_id", 0)
                     if (act != 0L) return@withContext "Uploaded: strava.com/activities/$act"
@@ -353,7 +359,7 @@ object SyncAccounts {
                 // Athlete "0" is the bearer's own athlete. device_name is what the
                 // activity shows as recorded on; external_id lets Intervals spot a
                 // re-upload of the same ride (it also matches by content).
-                val url = Uri.parse("https://intervals.icu/api/v1/athlete/0/activities").buildUpon()
+                val url = Uri.parse("$intervals/api/v1/athlete/0/activities").buildUpon()
                     .appendQueryParameter("name", name)
                     .appendQueryParameter("device_name", "OpenTrailPaper")
                     .appendQueryParameter("external_id", "otp-${file.name}")
@@ -394,7 +400,7 @@ object SyncAccounts {
                 val text = routeCall(p) {
                     keeper.authorized { token ->
                         getText(
-                            "https://www.strava.com/api/v3/athletes/$athlete/routes" +
+                            "$strava/api/v3/athletes/$athlete/routes" +
                                 "?page=$page&per_page=${CloudRoutes.STRAVA_PAGE_SIZE}",
                             token,
                         )
@@ -416,7 +422,7 @@ object SyncAccounts {
         val id = Uri.encode(route.id)
         when (p) {
             Provider.STRAVA -> routeCall(p) {
-                keeper.authorized { getText("https://www.strava.com/api/v3/routes/$id/export_gpx", it, accept = "application/gpx+xml") }
+                keeper.authorized { getText("$strava/api/v3/routes/$id/export_gpx", it, accept = "application/gpx+xml") }
             }
             Provider.RIDEWITHGPS -> {
                 val base = serviceUrl ?: throw SyncException("This build has no sync service configured.")
@@ -426,13 +432,67 @@ object SyncAccounts {
         }
     }
 
+    // --- segments --------------------------------------------------------------
+
+    /** Every starred segment (up to [StravaSegments.MAX_PAGES] pages), in Strava's order. */
+    suspend fun starredSegments(): List<StarredSegment> = withContext(Dispatchers.IO) {
+        val keeper = keepers[Provider.STRAVA]?.takeIf { isConnected(Provider.STRAVA) }
+            ?: throw SyncException("Connect Strava in Settings first.")
+        val out = ArrayList<StarredSegment>()
+        var page: Int? = 1
+        while (page != null && page <= StravaSegments.MAX_PAGES) {
+            val p = page
+            val text = try {
+                keeper.authorized {
+                    getText("$strava/api/v3/segments/starred?page=$p&per_page=${StravaSegments.PAGE_SIZE}", it)
+                }
+            } catch (e: SyncHttpException) {
+                if (e.code == 403) {
+                    throw SyncSignedOutException(
+                        "Strava did not allow reading segments with this sign-in. Disconnect and connect Strava again in Settings.",
+                    )
+                }
+                throw e
+            }
+            val parsed = StravaSegments.parseStarred(text, p)
+            out += parsed.segments
+            page = parsed.nextPage
+        }
+        out
+    }
+
+    /**
+     * One segment's full polyline (and the PR, from the detail's stats). Raw
+     * errors: the sync decides what a 404 (skip it) or a 429 (stop and send
+     * what it has) means for the set.
+     */
+    suspend fun segmentDetail(id: Long): Pair<String?, Int?> = withContext(Dispatchers.IO) {
+        val keeper = keepers[Provider.STRAVA]?.takeIf { isConnected(Provider.STRAVA) }
+            ?: throw SyncException("Connect Strava in Settings first.")
+        StravaSegments.parseDetail(keeper.authorized { getText("$strava/api/v3/segments/$id", it) })
+    }
+
+    /**
+     * One segment's line with its altitude (GET /segments/{id}/streams); null
+     * when Strava sent no usable latlng. Raw errors, like [segmentDetail].
+     */
+    suspend fun segmentStreams(id: Long): Pair<List<LatLon>, List<Double>?>? = withContext(Dispatchers.IO) {
+        val keeper = keepers[Provider.STRAVA]?.takeIf { isConnected(Provider.STRAVA) }
+            ?: throw SyncException("Connect Strava in Settings first.")
+        StravaSegments.parseStreams(
+            keeper.authorized {
+                getText("$strava/api/v3/segments/$id/streams?keys=latlng,altitude,distance&key_by_type=true", it)
+            },
+        )
+    }
+
     /**
      * Strava lists routes by athlete id. Kept from the sign-in since route
      * import; an account connected before that looks it up once (GET /athlete).
      */
     private suspend fun stravaAthleteId(keeper: TokenKeeper): Long {
         tokens[Provider.STRAVA]?.athleteId?.let { return it }
-        val me = routeCall(Provider.STRAVA) { keeper.authorized { getJson("https://www.strava.com/api/v3/athlete", it) } }
+        val me = routeCall(Provider.STRAVA) { keeper.authorized { getJson("$strava/api/v3/athlete", it) } }
         val id = me.optLong("id").takeIf { it > 0 } ?: throw SyncException("Strava did not say which athlete this is.")
         tokens[Provider.STRAVA]?.let { store(Provider.STRAVA, it.copy(athleteId = id)) }
         return id

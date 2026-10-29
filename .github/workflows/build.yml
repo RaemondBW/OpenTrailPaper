@@ -144,6 +144,144 @@ jobs:
       - name: Speed sensor host tests
         run: sh tools/wheel_speed_test/run_wheel_speed_test.sh
 
+  # The firmware itself, run on the host (sim/README.md): pairing, the phone
+  # link, sensors, rides, routes, OTA — driven end to end by sim/tests.
+  # macOS because the sim uses a few Darwin APIs (thread names, re-exec).
+  firmware-sim:
+    name: Firmware sim (${{ matrix.part }})
+    if: ${{ !startsWith(github.ref, 'refs/tags/android-v') }}
+    runs-on: macos-26
+    # The suite split into parts that run side by side (~5 min each). A new
+    # test file has to be added to one of these lists to run in CI.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - part: core
+            tests: test_boot.py test_link.py test_pairing.py test_rides.py test_resilience.py test_app_sync.py
+          - part: regressions
+            tests: test_regressions_gps.py test_regressions_link.py test_regressions_rides.py test_regressions_ui.py
+          - part: cards and maps
+            tests: test_cards.py test_maps.py test_pois.py
+          - part: sensors, radar and music
+            tests: test_sensors.py test_radar.py test_media.py
+          - part: power
+            tests: test_power.py
+          - part: crashes and gps
+            tests: test_crash_recovery.py test_gps_edges.py test_endurance.py
+          - part: workouts
+            tests: test_workouts.py
+          - part: dashboard and settings
+            tests: test_dashboard.py test_settings.py test_stopwatch.py
+          - part: navigation
+            tests: test_navigation.py
+          - part: segments
+            tests: test_segments.py
+          # The mesh on the sim's LoRa radio (--lora); tools/mesh_test is the codec.
+          - part: mesh
+            tests: test_mesh.py
+          - part: mesh position and air
+            tests: test_mesh_position.py test_mesh_air.py
+    env:
+      OTP_SIM_TIME_SCALE: "3"   # wall-clock bounds in the tests, for a slower runner
+    steps:
+      - uses: actions/checkout@v4
+      # TinyGPS++ and epdiy's headers, as the firmware build uses them.
+      - name: Clone LilyGO board support
+        run: |
+          git clone --depth 1 \
+            https://github.com/Xinyuan-LilyGO/T5S3-4.7-e-paper-PRO \
+            vendor/T5S3-4.7-e-paper-PRO
+      - name: Install protoc
+        run: brew install protobuf
+      - name: Build and test
+        run: sim/test.sh -q ${{ matrix.tests }}
+      - name: Keep the console logs and panels of failed tests
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sim-test-artifacts-${{ strategy.job-index }}
+          path: sim/build/test-artifacts
+
+  # The apps' own connection code against the firmware sim, through their
+  # debug-only SimRadio (sim/ANDROID.md, sim/IOS.md). On macOS because
+  # otp-sim is built with the Mac toolchain.
+  android-sim:
+    name: Android app vs firmware sim
+    if: ${{ !startsWith(github.ref, 'refs/tags/android-v') }}
+    runs-on: macos-26
+    env:
+      OTP_SIM_REQUIRED: "1"   # fail, don't skip, if otp-sim didn't build
+      OTP_SIM_TIME_SCALE: "3" # wall-clock bounds in the app-flow tests, for a slower runner
+    steps:
+      - uses: actions/checkout@v4
+      - name: Clone LilyGO board support
+        run: |
+          git clone --depth 1 \
+            https://github.com/Xinyuan-LilyGO/T5S3-4.7-e-paper-PRO \
+            vendor/T5S3-4.7-e-paper-PRO
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+      # The map tests download from the stand-in tile CDN (sim/cdn) and the
+      # upload tests go to CloudStandIn; make sure nothing can reach the real
+      # CDN, Overpass, Open-Meteo, Strava or Intervals.icu instead.
+      - name: Keep the map and upload tests off the network
+        run: |
+          printf '0.0.0.0 %s\n' tiles.opentrailpaper.com overpass-api.de overpass.private.coffee \
+            maps.mail.ru api.open-meteo.com www.strava.com intervals.icu | sudo tee -a /etc/hosts
+          sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder || true
+      # The runner image ships the Android SDK.
+      - name: Build the sim and run the tests
+        run: |
+          export ANDROID_HOME=${ANDROID_HOME:-$HOME/Library/Android/sdk}
+          sim/build.sh && sim/run_android_tests.sh
+      - name: Keep the test report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-sim-report
+          path: companion-android/app/build/reports/tests
+
+  # Not yet required: a UI test on a shared runner may be flaky until it has
+  # a track record. Make it blocking once it has stayed green.
+  ios-sim:
+    name: iOS app vs firmware sim
+    if: ${{ !startsWith(github.ref, 'refs/tags/android-v') }}
+    runs-on: macos-26
+    continue-on-error: true
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Clone LilyGO board support
+        run: |
+          git clone --depth 1 \
+            https://github.com/Xinyuan-LilyGO/T5S3-4.7-e-paper-PRO \
+            vendor/T5S3-4.7-e-paper-PRO
+      - name: Generate project
+        run: brew install xcodegen && (cd companion-ios && xcodegen generate)
+      # The map tests download from the stand-in tile CDN (sim/cdn); make
+      # sure nothing can reach the real CDN, Overpass or Open-Meteo instead.
+      - name: Keep the map tests off the network
+        run: |
+          printf '0.0.0.0 %s\n' tiles.opentrailpaper.com overpass-api.de overpass.private.coffee \
+            maps.mail.ru api.open-meteo.com | sudo tee -a /etc/hosts
+          sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder || true
+      # No signing certificate on a runner; the simulator doesn't need one.
+      - name: Build the sim and run the tests
+        env:
+          OTP_XCODEBUILD_ARGS: CODE_SIGNING_ALLOWED=NO
+          TMPDIR: ${{ runner.temp }}/
+        run: sim/build.sh && sim/run_ios_tests.sh
+      - name: Keep the sim, app and xcodebuild logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-sim-logs
+          path: ${{ runner.temp }}/otpsim-ios.*
+
   ios:
     name: Companion app (iOS)
     if: ${{ !startsWith(github.ref, 'refs/tags/android-v') }}

@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <NimBLEDevice.h>
+#include "nimble/nimble/host/services/gatt/include/services/gatt/ble_svc_gatt.h"
 #include <SD.h>
 #include <Update.h>
 #include <esp_heap_caps.h>
@@ -13,6 +14,7 @@
 #include "ride_recorder.h"
 #include "settings.h"
 #include "routes.h"
+#include "segments.h"
 #include "gps_service.h"
 #include "phone_motion.h"
 #include "speed_source.h"
@@ -31,6 +33,8 @@
 #include "dash_config.h"
 #include "mesh_service.h"
 #include "diag.h"
+#include "ble_shared.h"
+#include "link.h"
 
 namespace {
 
@@ -96,6 +100,10 @@ volatile bool relaxedSleepOk = true;
 volatile bool relaxedSleepOk = false;
 #endif
 volatile bool otaRebootPending = false;
+SemaphoreHandle_t sharedLocMutex = nullptr;
+volatile bool phoneClockSet = false;   // applyPhoneLocation set the system clock    // ble_shared::applyPhoneLocation
+SemaphoreHandle_t sharedTileMutex = nullptr;   // ble_shared::lockTileList
+SemaphoreHandle_t sharedDashMutex = nullptr;   // ble_shared::applyDash
 
 NimBLECharacteristic* settingsChr = nullptr;
 
@@ -142,36 +150,24 @@ class SettingsCb : public NimBLECharacteristicCallbacks {
             return;
         }
         if (v.size() >= 4) {
-            int16_t ftp = (int16_t)((uint8_t)v[0] | ((uint8_t)v[1] << 8));
-            int16_t tz = (int16_t)((uint8_t)v[2] | ((uint8_t)v[3] << 8));
-            settings::setFtpWatts(ftp);
-            settings::setTzMinutes(tz);
+            ble_shared::SettingsPatch p;
+            p.hasFtp = true;
+            p.ftpW = (int16_t)((uint8_t)v[0] | ((uint8_t)v[1] << 8));
+            p.hasTz = true;
+            p.tzMin = (int16_t)((uint8_t)v[2] | ((uint8_t)v[3] << 8));
             if (v.size() >= 6) {
-                settings::setUseMiles(v[4] != 0);
-                settings::setBacklight((uint8_t)v[5]);
+                p.hasMiles = true;
+                p.useMiles = v[4] != 0;
+                p.hasBacklight = true;
+                p.backlight = (uint8_t)v[5];
             }
-            if (v.size() >= 7) settings::setClock24h(v[6] != 0);
-            if (v.size() >= 8) {
-                settings::setUsbDrive(v[7] != 0);
-                usb_storage::setDriveEnabled(v[7] != 0);   // apply immediately
-            }
+            if (v.size() >= 7) { p.hasClock24 = true; p.clock24h = v[6] != 0; }
+            if (v.size() >= 8) { p.hasUsbDrive = true; p.usbDrive = v[7] != 0; }
             if (v.size() >= 10) {
-                const int mm = (uint8_t)v[8] | ((uint8_t)v[9] << 8);
-                // Out of range is refused (kept as is), not clamped: a typo of
-                // 210 mm must not become an 800 mm wheel.
-                if (!settings::setWheelCircMm(mm))
-                    Serial.printf("[srv] wheel circumference %d mm refused\n", mm);
+                p.hasWheel = true;
+                p.wheelMm = (uint8_t)v[8] | ((uint8_t)v[9] << 8);
             }
-            g_state.with([&](RideState& s) {
-                s.ftpW = (uint16_t)settings::ftpWatts();
-                s.tzMin = (int16_t)settings::tzMinutes();
-                s.useMiles = settings::useMiles();
-                s.clock24h = settings::clock24h();
-            });
-            Serial.printf("[srv] settings set: ftp=%d tz=%d miles=%d bl=%d wheel=%dmm\n",
-                          settings::ftpWatts(), settings::tzMinutes(),
-                          settings::useMiles(), settings::backlight(),
-                          settings::wheelCircMm());
+            ble_shared::applySettings(p);
         }
     }
 };
@@ -370,6 +366,17 @@ class MediaCb : public NimBLECharacteristicCallbacks {
 //                        [i16 h-accuracy m][u16 speed cm/s][u16 course 0.01 deg]
 //                      speed/course 0xFFFF = the phone has no valid value
 //                      (iOS reports -1 standing still; Android may lack them).
+//   [0x09] segments begin : the rider's starred Strava segments follow, one
+//                      blob (segment_match.h's format), replacing the set
+//   [0x0A] segments data  : blob bytes, appended in order
+//   [0x0B] segments end   : validate + store -> the device notifies
+//                      [0x25][1 accepted | 2 rejected][u16 count][u8 ver]
+//   [0x0C] segments query : the device notifies [0x25][0][u16 count]
+//                      (0xFFFF = no set yet). Every [0x25] carries a fifth
+//                      byte, the newest blob version the firmware reads
+//                      (2 = with elevation); absent means 1. Firmware before segments
+//                      ignores 0x09..0x0C and never answers, which is how the
+//                      app tells it needs an update.
 constexpr size_t ROUTE_MAX = 256 * 1024;  // 256 KB GPX cap (PSRAM)
 char* routeBuf = nullptr;
 size_t routeLen = 0;
@@ -384,6 +391,15 @@ char routeReqName[48];
 // BLE callback, so 0x05 stashes the outcome here and the server loop notifies.
 volatile bool routeTrackLoaded = false;   // did the last 0x03 track parse OK
 volatile int  pendingRouteAck  = 0;       // 0 none, 1 received-ok, 2 parse-failed
+
+// Starred-segment upload (0x09..0x0C). Buffered here, handed to segments::
+// in the server task (it writes the SD). segAck: 0 none, else the status
+// byte + 1 for the [0x25] notify (so 1 = query answer).
+uint8_t* segBuf = nullptr;
+volatile size_t segLen = 0;
+volatile bool segOverflow = false;
+volatile bool segSubmitPending = false;
+volatile int segAck = 0;
 
 class RouteCb : public NimBLECharacteristicCallbacks {
     void onWrite(NimBLECharacteristic* c, NimBLEConnInfo&) override {
@@ -430,6 +446,22 @@ class RouteCb : public NimBLECharacteristicCallbacks {
             Serial.printf("[srv] navigation ready: %d maneuvers\n",
                           routes::maneuverCount());
             pendingRouteAck = routeTrackLoaded ? 1 : 2;   // tell the phone
+        } else if (op == 0x09) {  // segments begin
+            if (!segBuf)
+                segBuf = (uint8_t*)heap_caps_malloc(seg::BLOB_MAX, MALLOC_CAP_SPIRAM);
+            segLen = 0;
+            segOverflow = false;
+        } else if (op == 0x0A) {  // segments data
+            if (segBuf && segLen + plen <= seg::BLOB_MAX) {
+                memcpy(segBuf + segLen, payload, plen);
+                segLen += plen;
+            } else {
+                segOverflow = true;
+            }
+        } else if (op == 0x0B) {  // segments end -> validate + store in the task
+            segSubmitPending = true;
+        } else if (op == 0x0C) {  // segments query
+            segAck = 1;
         } else if (op == 0x06) {  // list routes
             routeReq = RREQ_LIST;
         } else if (op == 0x07 && plen > 0) {  // delete route
@@ -439,55 +471,27 @@ class RouteCb : public NimBLECharacteristicCallbacks {
             routeReqName[n] = 0;
             routeReq = RREQ_DELETE;
         } else if (op == 0x08 && plen >= 8) {  // phone's live location
-            int32_t latE7, lonE7;
-            memcpy(&latE7, payload, 4);
-            memcpy(&lonE7, payload + 4, 4);
-            uint32_t utc = 0;
-            bool haveTime = false;
-            if (plen >= 12) { memcpy(&utc, payload + 8, 4); haveTime = utc > 1735689600UL; }
-            int16_t altM = 0;
-            bool haveAlt = false;
-            if (plen >= 14) { memcpy(&altM, payload + 12, 2); haveAlt = true; }
+            ble_shared::PhoneFix fx;
+            memcpy(&fx.latE7, payload, 4);
+            memcpy(&fx.lonE7, payload + 4, 4);
+            if (plen >= 12) { memcpy(&fx.utc, payload + 8, 4); fx.haveUtc = true; }
+            if (plen >= 14) { memcpy(&fx.altM, payload + 12, 2); fx.haveAlt = true; }
             // The app has always sent its horizontal accuracy here; we used to
             // stop parsing before it. The recorder needs it to decide whether a
             // phone position is good enough to go in the ride file.
-            int16_t accM = 0;
-            if (plen >= 16) memcpy(&accM, payload + 14, 2);
+            if (plen >= 16) memcpy(&fx.accM, payload + 14, 2);
             // Speed + course (newer apps). Absent or 0xFFFF: derive instead.
-            float phoneSpeedMs = NAN, phoneCourseDeg = NAN;
             if (plen >= 18) {
                 uint16_t v16;
                 memcpy(&v16, payload + 16, 2);
-                if (v16 != 0xFFFF) phoneSpeedMs = v16 / 100.0f;
+                if (v16 != 0xFFFF) fx.speedMs = v16 / 100.0f;
             }
             if (plen >= 20) {
                 uint16_t v16;
                 memcpy(&v16, payload + 18, 2);
-                if (v16 != 0xFFFF && v16 < 36000) phoneCourseDeg = v16 / 100.0f;
+                if (v16 != 0xFFFF && v16 < 36000) fx.courseDeg = v16 / 100.0f;
             }
-            double lat = latE7 / 1e7, lon = lonE7 / 1e7;
-            // Warm-start the receiver (throttled + no-fix-only inside the task).
-            gps_service::seedPosition(lat, lon, (time_t)utc, haveTime, 5000.0f);
-            settings::setLastPosition(lat, lon);
-            // Stash as the phone fallback fix (used when the device GPS is cold).
-            uint32_t nowMs = millis();
-            static phone_motion::Estimator motion;   // only this callback touches it
-            motion.update(lat, lon, accM > 0 ? (float)accM : 0.0f, nowMs,
-                          phoneSpeedMs, phoneCourseDeg);
-            g_state.with([&](RideState& st) {
-                st.phoneSpeedKmh = motion.speedKmh(nowMs);
-                st.phoneCourseValid = motion.courseValid();
-                st.phoneCourseDeg = motion.courseDeg();
-                st.phoneLat = lat;
-                st.phoneLon = lon;
-                if (haveAlt) st.phoneAltM = (float)altM;
-                st.phoneAccM = accM > 0 ? (float)accM : 0.0f;
-                st.phoneUtc = haveTime ? (time_t)utc : 0;
-                st.phoneFixValid = true;
-                st.phoneFixMs = nowMs;
-                // Speed/heading on the display while the phone is the source.
-                speed_source::publish(st, nowMs);
-            });
+            ble_shared::applyPhoneLocation(fx);
         }
     }
 };
@@ -952,26 +956,15 @@ void sendRideList() {
         notifyByte(0x1F);
         return;
     }
-    sdLock();
-    File dir = SD.open(RIDE_DIR);
-    if (!dir) { sdUnlock(); notifyByte(0x03); return; }
-    for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
-        if (!f.isDirectory()) {
-            const char* base = strrchr(f.name(), '/');
-            base = base ? base + 1 : f.name();
-            uint8_t pkt[64];
-            pkt[0] = 0x01;
-            uint32_t sz = f.size();
-            memcpy(pkt + 1, &sz, 4);
-            size_t nl = strlen(base);
-            if (nl > sizeof(pkt) - 5) nl = sizeof(pkt) - 5;
-            memcpy(pkt + 5, base, nl);
-            sendChunk(ridesChr, pkt, 5 + nl);
-        }
-        f.close();
-    }
-    dir.close();
-    sdUnlock();
+    ble_shared::listDir(ble_shared::Dir::Rides, [](const char* base, uint32_t sz, void*) {
+        uint8_t pkt[64];
+        pkt[0] = 0x01;
+        memcpy(pkt + 1, &sz, 4);
+        size_t nl = strlen(base);
+        if (nl > sizeof(pkt) - 5) nl = sizeof(pkt) - 5;
+        memcpy(pkt + 5, base, nl);
+        sendChunk(ridesChr, pkt, 5 + nl);
+    }, nullptr);
     notifyByte(0x03);
 }
 
@@ -1084,28 +1077,15 @@ void sendLogList() {
         return;
     }
     diag::flushToSD();                 // so today's file exists + is current
-    sdLock();
-    File dir = SD.open("/logs");
-    if (!dir) { sdUnlock(); notifyByte(0x31); return; }
-    for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
-        if (!f.isDirectory()) {
-            const char* base = strrchr(f.name(), '/');
-            base = base ? base + 1 : f.name();
-            if (strstr(base, ".log")) {
-                uint8_t pkt[64];
-                pkt[0] = 0x30;
-                uint32_t sz = f.size();
-                memcpy(pkt + 1, &sz, 4);
-                size_t nl = strlen(base);
-                if (nl > sizeof(pkt) - 5) nl = sizeof(pkt) - 5;
-                memcpy(pkt + 5, base, nl);
-                sendChunk(ridesChr, pkt, 5 + nl);
-            }
-        }
-        f.close();
-    }
-    dir.close();
-    sdUnlock();
+    ble_shared::listDir(ble_shared::Dir::Logs, [](const char* base, uint32_t sz, void*) {
+        uint8_t pkt[64];
+        pkt[0] = 0x30;
+        memcpy(pkt + 1, &sz, 4);
+        size_t nl = strlen(base);
+        if (nl > sizeof(pkt) - 5) nl = sizeof(pkt) - 5;
+        memcpy(pkt + 5, base, nl);
+        sendChunk(ridesChr, pkt, 5 + nl);
+    }, nullptr);
     notifyByte(0x31);
 }
 
@@ -1124,48 +1104,29 @@ void sendLogFile(const char* name) {
 
 void deleteRide(const char* name) {
     if (ride_recorder::isRecording()) { notifyByte(0x1F); return; }
-    char path[80];
-    snprintf(path, sizeof(path), RIDE_DIR "/%s", name);
-    sdLock();
-    SD.remove(path);
-    sdUnlock();
+    ble_shared::deleteRide(name);
     notifyByte(0x13);
-    Serial.printf("[srv] deleted ride %s\n", name);
 }
 
 void sendRouteList() {
     if (!ride_recorder::sdMounted()) { notifyByte(0x21); return; }
-    sdLock();
-    File dir = SD.open("/routes");
-    if (!dir) { sdUnlock(); notifyByte(0x21); return; }
-    for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
-        if (!f.isDirectory()) {
-            const char* base = strrchr(f.name(), '/');
-            base = base ? base + 1 : f.name();
-            uint8_t pkt[64];
-            pkt[0] = 0x20;
-            size_t nl = strlen(base);
-            if (nl > sizeof(pkt) - 1) nl = sizeof(pkt) - 1;
-            memcpy(pkt + 1, base, nl);
-            sendChunk(routeChr, pkt, 1 + nl);
-        }
-        f.close();
-    }
-    dir.close();
-    sdUnlock();
-    notifyByte2(0x21);
+    const bool opened = ble_shared::listDir(ble_shared::Dir::Routes,
+                                            [](const char* base, uint32_t, void*) {
+        uint8_t pkt[64];
+        pkt[0] = 0x20;
+        size_t nl = strlen(base);
+        if (nl > sizeof(pkt) - 1) nl = sizeof(pkt) - 1;
+        memcpy(pkt + 1, base, nl);
+        sendChunk(routeChr, pkt, 1 + nl);
+    }, nullptr);
+    // (A missing /routes has always answered on the rides characteristic.)
+    if (!opened) notifyByte(0x21);
+    else notifyByte2(0x21);
 }
 
 void deleteRoute(const char* name) {
-    char path[80];
-    snprintf(path, sizeof(path), "/routes/%s", name);
-    sdLock();
-    SD.remove(path);
-    sdUnlock();
-    // If the deleted route is the one currently loaded, drop it too.
-    if (strcmp(routes::activeName(), name) == 0) routes::clearRoute();
+    ble_shared::deleteRoute(name);
     notifyByte2(0x22);
-    Serial.printf("[srv] deleted route %s\n", name);
 }
 
 // Runs before queued work and from paced download sends, so a long stream
@@ -1272,26 +1233,16 @@ void sendWorkoutList() {
     uint8_t b = 0xB0;
     workoutChr->setValue(&b, 1);
     workoutChr->notify();
-    sdLock();
-    File dir = SD.open("/workouts");
-    if (dir) {
-        for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
-            if (f.isDirectory()) continue;
-            const char* base = strrchr(f.name(), '/');
-            base = base ? base + 1 : f.name();
-            if (base[0] == '.') continue;   // macOS AppleDouble noise
-            uint8_t buf[64];
-            buf[0] = 0xB1;
-            size_t n = strlen(base);
-            if (n > sizeof(buf) - 1) n = sizeof(buf) - 1;
-            memcpy(buf + 1, base, n);
-            workoutChr->setValue(buf, n + 1);
-            workoutChr->notify();
-            vTaskDelay(pdMS_TO_TICKS(15));   // pace notifies, same as rides
-        }
-        dir.close();
-    }
-    sdUnlock();
+    ble_shared::listDir(ble_shared::Dir::Workouts, [](const char* base, uint32_t, void*) {
+        uint8_t buf[64];
+        buf[0] = 0xB1;
+        size_t n = strlen(base);
+        if (n > sizeof(buf) - 1) n = sizeof(buf) - 1;
+        memcpy(buf + 1, base, n);
+        workoutChr->setValue(buf, n + 1);
+        workoutChr->notify();
+        vTaskDelay(pdMS_TO_TICKS(15));   // pace notifies, same as rides
+    }, nullptr);
     b = 0xB2;
     workoutChr->setValue(&b, 1);
     workoutChr->notify();
@@ -1332,341 +1283,66 @@ void saveUploadedWorkout() {
         workoutAck(false, "empty upload");
         return;
     }
-    char path[96];
-    snprintf(path, sizeof(path), "/workouts/%s", workoutReqName);
-    sdLock();
-    if (!SD.exists("/workouts")) SD.mkdir("/workouts");
-    File f = SD.open(path, FILE_WRITE);
-    bool ok = false;
-    if (f) {
-        ok = f.write((const uint8_t*)workoutUpBuf, workoutUpLen) == workoutUpLen;
-        f.close();
-    }
-    sdUnlock();
-    if (!ok) {
+    const char* reason = "";
+    const ble_shared::WorkoutSave r =
+        ble_shared::saveWorkout(workoutReqName, workoutUpBuf, workoutUpLen, &reason);
+    if (r == ble_shared::WorkoutSave::IoError) {
         workoutAck(false, "SD write failed");
         return;
     }
-    diag::log("workout: received %s (%u bytes) from the app", workoutReqName,
-              (unsigned)workoutUpLen);
-    const char* reason = "";
-    if (workout_service::load(workoutReqName, &reason))
-        workoutAck(true, workoutReqName);
-    else
-        workoutAck(false, reason);
+    if (r == ble_shared::WorkoutSave::Ok) workoutAck(true, workoutReqName);
+    else workoutAck(false, reason);
     workoutStatusDirty = true;
-    workout_service::requestListRefresh();   // the picker lists it next time
 }
 
 // ---------------------------------------------------------------------------
-// Live state stream ("UART" service). Protocol version 1.
-//
-// The status characteristic above is the always-on 1 Hz summary every app
-// version reads. This is the rest of what the device's pages draw, for the
-// app's Ride tab, which redraws those pages live: a Nordic-UART-shaped service
-// of its own, one characteristic each way.
-//
-//   SVC_LIVE    b1c51000-9e0f-4b7a-9c6d-1f2e3a4b5c6d
-//   CHR_LIVE_RX b1c51001-...  phone -> device, write / write-without-response
-//   CHR_LIVE_TX b1c51002-...  device -> phone, notify
-//
-// Same security as everything else: RX is WRITE_AUTHEN, the TX CCCD needs an
-// authenticated link (ble_pair_guard_harden covers every CCCD), and nothing is
-// sent unless the link is the admitted phone (phoneConnected).
-//
-// It costs nothing unless the app is LOOKING at it. The device streams only
-// while ALL of these hold, and goes back to idle (no snapshot, no notify) the
-// moment one doesn't:
-//   - the admitted phone is connected (a disconnect resets everything below),
-//   - it has notifications on for TX (unsubscribing stops the stream),
-//   - it wrote START within the last LIVE_TIMEOUT_MS (15 s). The app repeats
-//     START every 5 s as its keepalive while the Ride tab is on screen in the
-//     foreground, and writes STOP (and unsubscribes) when it leaves; an app
-//     suspended in the background can't send either, so the timeout ends it.
-// Streaming does NOT count as bulk traffic (no noteBulk): small 1 Hz notifies
-// ride the relaxed connection interval, so the link and its power policy are
-// the same with the Ride tab open as without.
-//
-// Phone -> device (RX):
-//   [0x01][ver]   START / keepalive. ver = the highest protocol version the
-//                 app parses (1). Starts the stream (a full frame goes out at
-//                 once) or extends it.
-//   [0x02]        STOP.
-//   Anything else is ignored, so a newer app's extra opcodes are harmless.
-//
-// Device -> phone (TX notify): a frame, all integers little-endian.
-//   [ver=1][seq u8] then records, each [type u8][len u8][body: len bytes].
-// Versioning: a parser skips record types it doesn't know (by len), reads the
-// fields it knows from the front of a body, and ignores bytes past them — new
-// fields are only ever appended, so v1 apps keep working. ver changes only for
-// a change that breaks that rule. A frame never splits a record; when the
-// records don't fit one notify (MTU - 3) they go in several frames with the
-// same seq. Below MTU 43 (the RIDE record alone needs 2 + 2 + 34 bytes) the
-// device doesn't stream and the app keeps to the status characteristic.
-//
-// Sent once a second, and at once (next BLE pass, ~100 ms) when the stopwatch
-// is started, paused, lapped or reset, or the device changes page.
-//
-//   0x00 HELLO (first frame of a stream)                         2 bytes
-//        u8 keepalive timeout s, u8 frame period in 0.1 s
-//   0x01 RIDE (always)                                          32 bytes
-//        u16 flags: b0 GPS fix, b1 recording, b2 auto-paused, b3 route active,
-//                   b4 charging, b5 HR live, b6 power live, b7 cadence live,
-//                   b8 speed from the wheel sensor, b9 grade valid,
-//                   b10 altitude valid, b11 altitude is barometric,
-//                   b12 radar connected, b13 radar live, b14 time valid
-//        u8 battery %, u8 satellites
-//        u16 speed 0.1 km/h
-//        u16 power W, u16 power 3 s W          (0xFFFF = no reading)
-//        u8 heart rate bpm, u8 cadence rpm     (0xFF = no reading)
-//        u32 ride distance m
-//        u32 ride time s (elapsed), u32 moving time s
-//        u16 climb m, i16 grade 0.1 %, i16 altitude m
-//        u16 route left 0.1 km
-//      "live" (b5..b7) is the dashboard's own test: linked AND a reading in
-//      the last 15 s. Avg speed is distance / moving time, as the device
-//      computes it, so it isn't sent.
-//   0x02 STOPWATCH (always)                                     19 bytes
-//        u8 flags: b0 running, b1 shows power, b2 shows cadence
-//        u32 elapsed ms (when the frame was built; the app counts on from it
-//            while running)
-//        u8 laps completed
-//        u32 lap in progress ms, u32 last completed lap's split ms (0 = none)
-//        u16 lap in progress avg speed 0.1 km/h (0xFFFF none)
-//        u16 lap in progress avg power W (0xFFFF none)
-//        u8 lap in progress avg cadence rpm (0xFF none)
-//   0x03 VIEW (always)                                           3 bytes
-//        u8 page index into the dashboard config (0xFF = not on a page:
-//           menu, settings, ride summary, ...), u8 page count,
-//        u8 screen: 0 a dashboard page, 1 the map, 2 something else
-//   0x04 POSITION (once the device has had a fix)               11 bytes
-//        i32 lat 1e-7 deg, i32 lon 1e-7 deg, u16 course 0.1 deg
-//        (0xFFFF = unknown), u8 flags: b0 fix is current
-//   0x05 RADAR (while a radar is connected)                 2 + n bytes
-//        u8 flags: b0 live, u8 n, n x u8 target distance m
-const char* SVC_LIVE    = "b1c51000-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
-const char* CHR_LIVE_RX = "b1c51001-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
-const char* CHR_LIVE_TX = "b1c51002-9e0f-4b7a-9c6d-1f2e3a4b5c6d";
-constexpr uint8_t  LIVE_PROTO = 1;
-constexpr uint32_t LIVE_TIMEOUT_MS = 15000;
-constexpr uint32_t LIVE_PERIOD_MS = 1000;
-constexpr uint16_t LIVE_MIN_MTU = 43;
+// What the app's Ride tab shows live. The phone link (link.cpp) streams it as
+// LiveFrames; this file only keeps the hand-off from the UI task, and the
+// stopwatch buttons going the other way. (The unreleased LIVE byte protocol
+// that used to live on b1c51001/b1c51002 is gone: those UUIDs are the link.)
 
-NimBLECharacteristic* liveTxChr = nullptr;
-volatile bool liveSubscribed = false;    // TX notifications on (CCCD)
-volatile bool liveStarted = false;       // START seen, keepalive not yet missed
-volatile uint32_t liveKeepaliveMs = 0;   // millis() of the last START
-volatile bool liveKick = false;          // send a frame on the next pass
-volatile bool liveHelloDue = false;
-uint8_t liveSeq = 0;
-uint32_t liveLastMs = 0;
-bool liveStreaming = false;              // BLE task's view, for the log lines
+// Service Changed, queued once per boot by the first admitted link.
+volatile bool gattChangedDue = false;
+uint32_t gattChangedDueMs = 0;              // BLE task's view, for the log lines
 
 // What only the UI task knows (the stopwatch, the page on screen), handed
 // over by publishLiveView() under a spinlock: the UI task never waits on BLE.
 portMUX_TYPE liveViewMux = portMUX_INITIALIZER_UNLOCKED;
 LiveView liveView;
-volatile bool liveViewChanged = false;
+std::atomic<uint8_t> liveViewChanges{0};   // ble_shared::LIVE_CHANGED_* bits
 
-void liveReset() {
-    liveSubscribed = false;
-    liveStarted = false;
-    liveKick = false;
-    liveHelloDue = false;
+// Stopwatch commands from the app, a few deep so two quick taps (START then
+// LAP) both land. Written by the link task, drained by the UI task
+// (takeStopwatchCommand) — the spinlock is the whole hand-off; neither side
+// touches the other's state.
+portMUX_TYPE liveSwMux = portMUX_INITIALIZER_UNLOCKED;
+constexpr uint8_t LIVE_SW_QUEUE = 4;
+uint8_t liveSwQueue[LIVE_SW_QUEUE];
+uint8_t liveSwHead = 0, liveSwCount = 0;
+
+void liveSwClear() {
+    portENTER_CRITICAL(&liveSwMux);
+    liveSwCount = 0;   // a gone phone's taps don't run later
+    portEXIT_CRITICAL(&liveSwMux);
 }
 
-class LiveRxCb : public NimBLECharacteristicCallbacks {
-    // Flags only: notifying from inside onWrite is what this file avoids.
-    void onWrite(NimBLECharacteristic* c, NimBLEConnInfo&) override {
-        std::string v = c->getValue();
-        if (v.empty() || !phoneConnected) return;
-        switch ((uint8_t)v[0]) {
-            case 0x01:
-                liveKeepaliveMs = millis();
-                liveStarted = true;
-                liveKick = true;
-                break;
-            case 0x02:
-                liveStarted = false;
-                break;
-            default: break;
-        }
+void liveSwPush(uint8_t op) {
+    portENTER_CRITICAL(&liveSwMux);
+    if (liveSwCount < LIVE_SW_QUEUE) {   // full: a burst past 4 is dropped
+        liveSwQueue[(liveSwHead + liveSwCount) % LIVE_SW_QUEUE] = op;
+        ++liveSwCount;
     }
-};
-
-class LiveTxCb : public NimBLECharacteristicCallbacks {
-    void onSubscribe(NimBLECharacteristic*, NimBLEConnInfo&, uint16_t subValue) override {
-        liveSubscribed = (subValue & 0x0001) != 0;
-        if (liveSubscribed) liveKick = true;
-    }
-};
-
-inline void put16(uint8_t* p, uint16_t v) { p[0] = v & 0xFF; p[1] = v >> 8; }
-inline void put32(uint8_t* p, uint32_t v) {
-    p[0] = v & 0xFF; p[1] = (v >> 8) & 0xFF; p[2] = (v >> 16) & 0xFF; p[3] = v >> 24;
-}
-inline uint16_t liveU16(double v) {
-    return v <= 0 ? 0 : v >= 65535 ? 65535 : (uint16_t)(v + 0.5);
-}
-inline uint16_t liveI16(double v) {
-    int16_t r = v <= -32768 ? -32768 : v >= 32767 ? 32767
-                                     : (int16_t)(v < 0 ? v - 0.5 : v + 0.5);
-    return (uint16_t)r;
+    portEXIT_CRITICAL(&liveSwMux);
 }
 
-// Every record, each [type][len][body], into `out`; returns the length.
-size_t buildLiveRecords(uint8_t* out, size_t cap, bool hello) {
-    RideState s = g_state.snapshot();
-    LiveView v;
-    portENTER_CRITICAL(&liveViewMux);
-    v = liveView;
-    portEXIT_CRITICAL(&liveViewMux);
-    const uint32_t now = millis();
-    radarExpire(s.radar, now);
-    // The dashboard's freshness rule (ui_dashboard: kSensorStaleMs).
-    constexpr uint32_t kStale = 15000;
-    const bool hrLive = s.hrConnected && now - s.hrMs <= kStale;
-    const bool pwLive = s.powerConnected && now - s.powerMs <= kStale;
-    const bool cadLive = s.cadenceConnected && now - s.cadenceMs <= kStale;
-    const bool routeOn = routes::active();
-    size_t n = 0;
-    auto rec = [&](uint8_t type, uint8_t len) -> uint8_t* {
-        if (n + 2 + len > cap) return nullptr;
-        out[n] = type;
-        out[n + 1] = len;
-        uint8_t* b = out + n + 2;
-        memset(b, 0, len);
-        n += 2 + len;
-        return b;
-    };
-    if (hello) {
-        if (uint8_t* b = rec(0x00, 2)) {
-            b[0] = LIVE_TIMEOUT_MS / 1000;
-            b[1] = LIVE_PERIOD_MS / 100;
-        }
+// BLE task, every pass. iOS caches a bonded device's GATT table; this tells a
+// phone paired before the link existed to look again.
+void serviceGattChanged() {
+    if (gattChangedDue && phoneConnected && (int32_t)(millis() - gattChangedDueMs) >= 0) {
+        gattChangedDue = false;
+        ble_svc_gatt_changed(0x0001, 0xFFFF);
+        diag::log("ble: service changed indicated (phone rediscovers)");
     }
-    if (uint8_t* b = rec(0x01, 32)) {
-        const bool altValid = s.baroValid || s.mapElevationValid;
-        uint16_t f = (s.gpsFix ? 1u << 0 : 0) | (s.recording ? 1u << 1 : 0) |
-                     (s.ridePaused ? 1u << 2 : 0) | (routeOn ? 1u << 3 : 0) |
-                     (s.charging ? 1u << 4 : 0) | (hrLive ? 1u << 5 : 0) |
-                     (pwLive ? 1u << 6 : 0) | (cadLive ? 1u << 7 : 0) |
-                     (s.speedSource == speed_source::SENSOR ? 1u << 8 : 0) |
-                     (s.gradeValid ? 1u << 9 : 0) | (altValid ? 1u << 10 : 0) |
-                     (s.baroValid ? 1u << 11 : 0) |
-                     (s.radar.connected ? 1u << 12 : 0) |
-                     (s.radar.live ? 1u << 13 : 0) | (s.timeValid ? 1u << 14 : 0);
-        put16(b + 0, f);
-        b[2] = s.batteryPercent;
-        b[3] = s.satellites;
-        put16(b + 4, liveU16(s.speedKmh * 10.0));
-        put16(b + 6, pwLive ? s.powerW : 0xFFFF);
-        put16(b + 8, pwLive ? s.power3sW : 0xFFFF);
-        b[10] = hrLive ? s.heartRateBpm : 0xFF;
-        b[11] = cadLive ? s.cadenceRpm : 0xFF;
-        put32(b + 12, s.distanceM <= 0 ? 0 : (uint32_t)(s.distanceM + 0.5));
-        put32(b + 16, s.elapsedS);
-        put32(b + 20, s.movingS);
-        put16(b + 24, liveU16(s.climbedM));
-        put16(b + 26, liveI16(s.gradeValid ? s.gradePercent * 10.0 : 0));
-        put16(b + 28, liveI16(s.baroValid ? s.baroAltM
-                              : s.mapElevationValid ? s.mapElevationM : 0));
-        put16(b + 30, routeOn ? liveU16(routes::remainingKm() * 10.0) : 0);
-    }
-    if (uint8_t* b = rec(0x02, 19)) {
-        const uint32_t el = v.swAccumMs + (v.swRunning ? now - v.swStartMs : 0);
-        b[0] = (v.swRunning ? 1 : 0) | (v.swShowPower ? 2 : 0) |
-               (v.swShowCadence ? 4 : 0);
-        put32(b + 1, el);
-        b[5] = v.swLaps;
-        put32(b + 6, el - v.swLastLapEndMs);
-        put32(b + 10, v.swLastSplitMs);
-        put16(b + 14, v.swLapSpeedDkmh);
-        put16(b + 16, v.swLapPowerW);
-        b[18] = v.swLapCadenceRpm;
-    }
-    if (uint8_t* b = rec(0x03, 3)) {
-        b[0] = v.page;
-        b[1] = v.pageCount;
-        b[2] = v.screen;
-    }
-    if (s.everHadFix) {
-        if (uint8_t* b = rec(0x04, 11)) {
-            put32(b + 0, (uint32_t)(int32_t)(s.latitude * 1e7));
-            put32(b + 4, (uint32_t)(int32_t)(s.longitude * 1e7));
-            put16(b + 8, s.gpsFix && s.speedKmh > 3.0f
-                             ? liveU16(s.courseDeg * 10.0) : 0xFFFF);
-            b[10] = s.gpsFix ? 1 : 0;
-        }
-    }
-    if (s.radar.connected) {
-        const uint8_t cnt = s.radar.count > RADAR_MAX_TARGETS
-                                ? RADAR_MAX_TARGETS : s.radar.count;
-        if (uint8_t* b = rec(0x05, 2 + cnt)) {
-            b[0] = s.radar.live ? 1 : 0;
-            b[1] = cnt;
-            for (int i = 0; i < cnt; ++i) b[2 + i] = s.radar.targets[i].distanceM;
-        }
-    }
-    return n;
-}
-
-// The records in as few notifies as the MTU allows, never splitting one.
-void sendLiveFrame(bool hello) {
-    uint8_t recs[160];
-    const size_t total = buildLiveRecords(recs, sizeof(recs), hello);
-    uint8_t pkt[sizeof(recs) + 2];
-    const size_t payload = negotiatedMTU > 3 ? negotiatedMTU - 3 : 20;
-    const size_t cap = payload < sizeof(pkt) ? payload : sizeof(pkt);
-    const uint8_t seq = liveSeq++;
-    size_t i = 0;
-    while (i < total) {
-        size_t len = 2;
-        pkt[0] = LIVE_PROTO;
-        pkt[1] = seq;
-        while (i < total) {
-            const size_t r = 2 + recs[i + 1];
-            if (len + r > cap) break;
-            memcpy(pkt + len, recs + i, r);
-            len += r;
-            i += r;
-        }
-        if (len == 2) return;   // a record alone outgrows the MTU
-        liveTxChr->setValue(pkt, len);
-        liveTxChr->notify();
-    }
-}
-
-// BLE task, every pass (~100 ms). Does nothing unless the app is watching.
-void serviceLive() {
-    if (!liveTxChr) return;
-    const uint32_t now = millis();
-    if (liveStarted && now - liveKeepaliveMs > LIVE_TIMEOUT_MS) {
-        liveStarted = false;
-        diag::log("ble live: keepalive missed — stream stopped");
-    }
-    const bool want = phoneConnected && liveSubscribed && liveStarted &&
-                      negotiatedMTU >= LIVE_MIN_MTU;
-    if (want != liveStreaming) {
-        liveStreaming = want;
-        diag::log("ble live: stream %s (MTU %u)", want ? "on" : "off",
-                  (unsigned)negotiatedMTU);
-        if (want) {
-            liveKick = true;
-            liveHelloDue = true;
-        }
-    }
-    if (!want) {
-        liveViewChanged = false;
-        return;
-    }
-    if (!liveKick && !liveViewChanged && now - liveLastMs < LIVE_PERIOD_MS) return;
-    liveKick = false;
-    liveViewChanged = false;
-    liveLastMs = now;
-    const bool hello = liveHelloDue;
-    liveHelloDue = false;
-    sendLiveFrame(hello);
 }
 
 class ServerCb : public NimBLEServerCallbacks {
@@ -1754,9 +1430,13 @@ class ServerCb : public NimBLEServerCallbacks {
     // get treated as one — the fast interval for the app's initial sync,
     // pushes, the status bar icon.
     void admit(NimBLEConnInfo& info, bool newPairing) {
+        // A key refresh on an admitted link raises another authentication-
+        // complete event; the link (and its phone-link session) carries on.
+        if (linkAdmitted && phoneConnected) return;
         linkAdmitted = true;
         phoneConnected = true;
         ++phoneConnectionEpoch;
+        phone_link::onAdmitted();   // a fresh link session (no Hello yet)
         noteBulk();
         requestPhoneInterval(info.getConnHandle(), false, "admitted");
         settings::setPhoneId(info.getIdAddress().toString().c_str());
@@ -1824,7 +1504,13 @@ class ServerCb : public NimBLEServerCallbacks {
             reject(info, "pairing was not authenticated with the passkey");
             return;
         }
-        if (wasPaired && !linkPeerKnown) {
+        // A key refresh on an admitted link raises authentication-complete
+        // again. The phone that just paired over this link counts as paired
+        // now (its bond is the one phoneBonds counts) but still has
+        // linkPeerKnown false: the link already proved itself, so it is not
+        // a second phone (admit() then leaves the session alone).
+        const bool refresh = linkAdmitted && phoneConnected;
+        if (wasPaired && !linkPeerKnown && !refresh) {
             // A new bond made while paired — nothing above should let one
             // through, but if it happens, undo it.
             reject(info, "new bond while paired");
@@ -1835,6 +1521,20 @@ class ServerCb : public NimBLEServerCallbacks {
         pairCode = 0;          // done — drop the code sheet
         admit(info, !linkPeerKnown);
         ams::onSecured(info.getConnHandle(), true);
+        // iOS caches a bonded device's GATT table and reuses it until told
+        // otherwise, so services a firmware update added (the live stream)
+        // stayed invisible to a phone paired before it. Once per boot — every
+        // update ends in one — tell the phone the whole table may have
+        // changed; it rediscovers (cheap) and finds what's there now.
+        // Sent from the BLE task a moment later, not here: this callback runs
+        // before NimBLE restores the bonded phone's subscriptions for the
+        // link, so an indication from here found nobody subscribed.
+        static bool gattChangedQueued = false;
+        if (!gattChangedQueued) {
+            gattChangedQueued = true;
+            gattChangedDueMs = millis() + 2000;
+            gattChangedDue = true;
+        }
     }
     void onConnParamsUpdate(NimBLEConnInfo& info) override {
         diag::log("ble interval negotiated: handle=%u interval=%.1fms latency=%u timeout=%ums",
@@ -1889,7 +1589,8 @@ class ServerCb : public NimBLEServerCallbacks {
         linkHandle = 0xFFFF;
         pairCode = 0;             // a refused or abandoned pairing's sheet goes too
         mediaTrackFeed = false;   // the next app must ask again
-        liveReset();              // and start its own live stream
+        liveSwClear();
+        phone_link::onDisconnected();   // link state is per connection
         if (refused) {
             // Refused while paired: expected, and already logged.
         } else if (!connEncrypted && millis() - connAtMs < 15000) {
@@ -1947,6 +1648,9 @@ char otaMd5[33] = "";
 volatile bool otaCommitPending = false;    // task should flash the buffer
 uint32_t otaStartMs = 0, otaCommitStartMs = 0;
 volatile uint32_t otaLastDataMs = 0;       // for the stalled-download timeout
+// The phone link's firmware upload, for the popup (ble_shared::setLinkUpdate).
+volatile int linkUpdPhase = 0;
+volatile uint32_t linkUpdGot = 0, linkUpdTotal = 0;
 
 void otaFreeBuf() {
     if (otaBuf) { heap_caps_free(otaBuf); otaBuf = nullptr; }
@@ -2088,6 +1792,9 @@ volatile bool poiListReq = false;
 volatile bool tileListVersions = false;  // the pending list asked for versions
 volatile bool poiListVersions = false;
 volatile bool mapLayersNotify = false;   // send [0xE0][mask] from the server task
+// A device-side layer edit: pushed on the link when this connection said
+// Hello, else as the [0xE0] notify above.
+volatile bool mapLayersPushDue = false;
 uint32_t mapStartMs = 0, mapLastProgress = 0;
 
 void mapNotify(const uint8_t* d, size_t n) {
@@ -2774,40 +2481,18 @@ void mapCommit() {
 // "<id>=<record>" — or the bare id where the device has none (saved before
 // this firmware, by an app that sends none, or changed over USB since).
 void sendTileList(bool poi = false, bool versions = false) {
-    // PSRAM, and sized to the whole index. At 512 in .bss this was both 12 KB of
-    // the internal RAM the display and BLE controller are short of, AND a silent
-    // truncation: a rider past 512 tiles kept being offered tiles the device
-    // already had, because the list the app dedups against stopped there.
-    constexpr int TILE_LIST_MAX = 4096;
-    static char (*ids)[24] = nullptr;
-    if (!ids) {
-        ids = (char(*)[24])heap_caps_malloc((size_t)TILE_LIST_MAX * 24,
-                                            MALLOC_CAP_SPIRAM);
-        if (!ids) { diag::log("tile list: no PSRAM for %d ids", TILE_LIST_MAX); return; }
-    }
-    // Only for a versioned list, so firmware talking to an older app never
-    // allocates them.
-    static uint32_t* sizes = nullptr;
-    static char (*vers)[tile_versions::VER_MAX] = nullptr;
-    if (versions && !sizes) {
-        sizes = (uint32_t*)heap_caps_malloc((size_t)TILE_LIST_MAX * 4, MALLOC_CAP_SPIRAM);
-        vers = (char(*)[tile_versions::VER_MAX])heap_caps_malloc(
-            (size_t)TILE_LIST_MAX * tile_versions::VER_MAX, MALLOC_CAP_SPIRAM);
-        if (!sizes || !vers) {
-            diag::log("tile list: no PSRAM for versions");
-            heap_caps_free(sizes); heap_caps_free(vers);
-            sizes = nullptr; vers = nullptr;
-        }
-    }
-    // Out of PSRAM: ids without records rather than no list at all. Still the
-    // flagged begin, so the app goes on sending records for the device to keep.
+    // Out of PSRAM for the records: ids without them rather than no list at
+    // all. Still the flagged begin, so the app goes on sending records for the
+    // device to keep.
     const bool flagged = versions;
-    if (!sizes) versions = false;
     uint32_t t0 = millis();
-    int n = map_store::listTileIds(ids, TILE_LIST_MAX, poi ? ".poi" : ".ebm",
-                                   versions ? sizes : nullptr);
+    ble_shared::TileListing tl;
+    if (!ble_shared::lockTileList(poi, versions, tl)) return;
+    const char (*ids)[24] = tl.ids;
+    const char (*vers)[24] = tl.vers;
+    const int n = tl.n;
+    versions = vers != nullptr;
     uint32_t walkMs = millis() - t0;
-    if (versions) map_store::tileVersions(ids, sizes, n, poi, vers);
 
     uint8_t begin[2] = {(uint8_t)(poi ? 0xD3 : 0xD0), 0x01};
     sendChunk(mapChr, begin, flagged ? 2 : 1);
@@ -2838,6 +2523,7 @@ void sendTileList(bool poi = false, bool versions = false) {
 
     uint8_t end = poi ? 0xD5 : 0xD2;
     sendChunk(mapChr, &end, 1);
+    ble_shared::unlockTileList();
     diag::log("%s list: %d ids sent%s (walk %ums, total %ums)", poi ? "poi" : "tile",
               n, versions ? " with versions" : "", walkMs, millis() - t0);
 }
@@ -2851,36 +2537,13 @@ void sendTileList(bool poi = false, bool versions = false) {
 void otaCommit() {
     uint32_t t0 = millis();
     otaPhase = 2;                        // "installing" popup while we write SD
-    bool ok = false;
-    if (otaBuf && otaBufLen > 0) {
-        sdLock();
-        SD.remove("/firmware.bin");
-        File f = SD.open("/firmware.bin", FILE_WRITE);
-        if (f) {
-            size_t wrote = 0;
-            while (wrote < otaBufLen) {
-                size_t chunk = otaBufLen - wrote < 8192 ? otaBufLen - wrote : 8192;
-                size_t w = f.write(otaBuf + wrote, chunk);
-                if (w != chunk) break;
-                wrote += w;
-                // Same reason as the tile writes in map_store: a firmware image
-                // is ~2 MB of uninterrupted SD work on this task, and the task
-                // watchdog does not care that it is making progress.
-                if ((wrote & 0x3FFF) == 0) vTaskDelay(1);
-            }
-            f.close();
-            ok = (wrote == otaBufLen);
-            if (!ok) SD.remove("/firmware.bin");
-        }
-        sdUnlock();
-    }
+    bool ok = otaBuf && otaBufLen > 0 && ble_shared::saveFirmwareImage(otaBuf, otaBufLen);
     otaFreeBuf();
     if (ok) {
         otaNotify1(0xA1);                // app: received + saved, device installing
         diag::log("ota saved to SD in %.1fs — rebooting to flash from SD",
                   (millis() - t0) / 1000.0f);
-        diag::flushToSD();
-        otaRebootPending = true;         // reboot -> applySdUpdate flashes it
+        ble_shared::rebootForUpdate();   // reboot -> applySdUpdate flashes it
     } else {
         otaPhase = 0;
         uint8_t e[2] = {0xAF, 0xE0};     // SD write failed
@@ -2890,6 +2553,11 @@ void otaCommit() {
 }
 
 void begin() {
+    // The legacy characteristics (NimBLE host task) and the link task share
+    // the feature code below; these guard the parts that keep static state.
+    sharedLocMutex = xSemaphoreCreateMutex();
+    sharedTileMutex = xSemaphoreCreateMutex();
+    sharedDashMutex = xSemaphoreCreateMutex();
     routeBuf = (char*)heap_caps_malloc(ROUTE_MAX, MALLOC_CAP_SPIRAM);
     NimBLEDevice::setMTU(247);   // ask for a large MTU for fast transfers
 
@@ -2973,15 +2641,10 @@ void begin() {
 
     svc->start();
 
-    // The live state stream, a service of its own (protocol above). Apps that
-    // predate it never look for it; firmware that predates it doesn't have
-    // it, and the app keeps to CHR_STATUS.
-    NimBLEService* liveSvc = server->createService(SVC_LIVE);
-    NimBLECharacteristic* liveRx = liveSvc->createCharacteristic(CHR_LIVE_RX, kW | kWNR);
-    liveRx->setCallbacks(new LiveRxCb());
-    liveTxChr = liveSvc->createCharacteristic(CHR_LIVE_TX, NIMBLE_PROPERTY::NOTIFY);
-    liveTxChr->setCallbacks(new LiveTxCb());
-    liveSvc->start();
+    // The phone link (docs/ble-link.md), a service of its own on the UUIDs
+    // the unreleased LIVE stream used. Apps that predate it never look for
+    // it, and keep to the characteristics above.
+    phone_link::begin(server, kW | kWNR);
 
     // Pairing state comes straight from the bond store, so a device updated
     // from before fixed pairing boots paired to whatever phone(s) it already
@@ -3017,7 +2680,7 @@ void notePhoneName(const char* utf8) {
 }
 
 void pushSettingsToPhone() { settingsDirty = true; }
-void pushMapLayersToPhone() { mapLayersNotify = true; }
+void pushMapLayersToPhone() { mapLayersPushDue = true; }
 void reportInterval() { intervalReportPending = true; }
 void requestFastInterval() { noteBulk(); intervalReportPending = true; }
 
@@ -3034,19 +2697,35 @@ void setRelaxedSleepExperiment(bool on) {
 
 void mediaCommand(unsigned char cmd) { mediaCmdPending = cmd; }
 
+std::atomic<int> showPageReq{-1};
+int takeShowPage() { return showPageReq.exchange(-1); }
+
+unsigned char takeStopwatchCommand() {
+    uint8_t op = 0;
+    portENTER_CRITICAL(&liveSwMux);
+    if (liveSwCount) {
+        op = liveSwQueue[liveSwHead];
+        liveSwHead = (liveSwHead + 1) % LIVE_SW_QUEUE;
+        --liveSwCount;
+    }
+    portEXIT_CRITICAL(&liveSwMux);
+    return op;
+}
+
 void publishLiveView(const LiveView& v) {
     portENTER_CRITICAL(&liveViewMux);
     // A change the app should see at once (not the running clock or the lap
     // averages, which the next 1 Hz frame carries anyway).
-    const bool changed = v.page != liveView.page || v.pageCount != liveView.pageCount ||
-                         v.screen != liveView.screen ||
-                         v.swRunning != liveView.swRunning ||
-                         v.swAccumMs != liveView.swAccumMs ||
-                         v.swStartMs != liveView.swStartMs ||
-                         v.swLaps != liveView.swLaps;
+    uint8_t changed = 0;
+    if (v.page != liveView.page || v.pageCount != liveView.pageCount ||
+        v.screen != liveView.screen)
+        changed |= ble_shared::LIVE_CHANGED_VIEW;
+    if (v.swRunning != liveView.swRunning || v.swAccumMs != liveView.swAccumMs ||
+        v.swStartMs != liveView.swStartMs || v.swLaps != liveView.swLaps)
+        changed |= ble_shared::LIVE_CHANGED_STOPWATCH;
     liveView = v;
     portEXIT_CRITICAL(&liveViewMux);
-    if (changed) liveViewChanged = true;
+    if (changed) liveViewChanges.fetch_or(changed);
 }
 
 unsigned int pairingCode() {
@@ -3062,12 +2741,20 @@ bool takeDashChanged() {
     return true;
 }
 
-bool updateInProgress() { return otaPhase != 0; }
+// The popup shows whichever update runs: the legacy OTA characteristic's, or
+// the link's TARGET_FIRMWARE upload (one at a time: each refuses while the
+// other is busy).
+bool updateInProgress() { return otaPhase != 0 || linkUpdPhase != 0; }
 int updatePercent() {
     if (otaPhase == 1) return otaBufCap ? (int)((uint64_t)otaBufLen * 100 / otaBufCap) : 0;
+    if (otaPhase == 0 && linkUpdPhase == 1)
+        return linkUpdTotal ? (int)((uint64_t)linkUpdGot * 100 / linkUpdTotal) : 0;
     return 100;   // installing
 }
-const char* updatePhase() { return otaPhase == 2 ? "Installing" : "Downloading"; }
+const char* updatePhase() {
+    const int ph = otaPhase ? otaPhase : linkUpdPhase;
+    return ph == 2 ? "Installing" : "Downloading";
+}
 
 void task(void*) {
     uint32_t lastStatus = 0;
@@ -3108,6 +2795,10 @@ void task(void*) {
             mediaArtPending = false;
             media::commitArt();
         }
+        // From here on, every PUSH goes on exactly one path: the link when this
+        // connection said Hello there, else the legacy characteristic. Answers
+        // to legacy writes stay on the legacy characteristics.
+        const bool viaLink = phone_link::active();
         static uint32_t trackSentVer = 0;
         if (mediaCapsPending) {
             mediaCapsPending = false;
@@ -3122,7 +2813,7 @@ void task(void*) {
         }
         // AMS delivers title, artist and album as separate updates; wait for a
         // quiet 300 ms so the app gets the whole track in one packet.
-        if (mediaTrackFeed && mediaChr && phoneConnected) {
+        if (mediaTrackFeed && mediaChr && phoneConnected && !viaLink) {
             uint32_t ver = media::amsTrackVersion();
             if (ver != 0 && ver != trackSentVer &&
                 millis() - media::amsTrackChangedMs() >= 300) {
@@ -3143,24 +2834,26 @@ void task(void*) {
             mediaCmdPending = 0;
             // AMS reaches every player and works with the app killed; the
             // app-notify path is the fallback when pairing was declined.
-            if (!ams::sendCommand(mc) && mediaChr && phoneConnected) {
-                uint8_t pkt[2] = {0xA0, mc};
-                mediaChr->setValue(pkt, 2);
-                mediaChr->notify();
+            if (!ams::sendCommand(mc) && phoneConnected) {
+                if (viaLink) {
+                    phone_link::pushMediaCommand(mc);
+                } else if (mediaChr) {
+                    uint8_t pkt[2] = {0xA0, mc};
+                    mediaChr->setValue(pkt, 2);
+                    mediaChr->notify();
+                }
             }
         }
         if (dashApplyPending && sdFree) {
             dashApplyPending = false;
             const char* reason = nullptr;
-            if (dash_config::applyText(dashPendingText, &reason)) {
-                dashDirty = true;            // repaint with the new layout
-            } else {
+            if (!ble_shared::applyDash(dashPendingText, &reason))
                 diag::log("dash: app layout rejected (%s)", reason ? reason : "?");
-            }
             // Notify what the device ACTUALLY holds, whether the write took or
             // not, so the app's editor cannot sit showing a layout that was
-            // rejected — and so a send that silently failed is visible.
-            if (dashChr) {
+            // rejected — and so a send that silently failed is visible. (A
+            // link app gets the new layout as a DashConfig push instead.)
+            if (dashChr && !viaLink) {
                 writeDashValue(dashChr);
                 // A notification carries at most MTU-3 bytes, and a multi-page
                 // config no longer fits — the app was receiving the first 244
@@ -3195,6 +2888,11 @@ void task(void*) {
             poiListReq = false;          // which tiles already have their POIs
             sendTileList(true, poiListVersions);
         }
+        if (mapLayersPushDue && phoneConnected) {   // device-side layer edit
+            mapLayersPushDue = false;
+            if (viaLink) phone_link::push(phone_link::PUSH_MAP_LAYERS);
+            else mapLayersNotify = true;
+        }
         if (mapLayersNotify && mapChr && phoneConnected) {
             mapLayersNotify = false;
             const uint16_t m = settings::mapLayers();
@@ -3207,8 +2905,12 @@ void task(void*) {
         }
         if (settingsDirty && settingsChr && phoneConnected) {   // device-side edit -> mirror to phone
             settingsDirty = false;
-            writeSettingsValue(settingsChr);
-            settingsChr->notify();
+            if (viaLink) {
+                phone_link::push(phone_link::PUSH_SETTINGS);
+            } else {
+                writeSettingsValue(settingsChr);
+                settingsChr->notify();
+            }
         }
         // Service pending ride/route requests (they read the SD) — but only when
         // a host computer isn't using the card; otherwise leave them queued.
@@ -3247,13 +2949,8 @@ void task(void*) {
             }
             if (workoutReq == WREQ_DELETE) {
                 workoutReq = WREQ_NONE;
-                char path[96];
-                snprintf(path, sizeof(path), "/workouts/%s", workoutReqName);
-                sdLock();
-                bool ok = SD.remove(path);
-                sdUnlock();
+                const bool ok = ble_shared::deleteWorkout(workoutReqName);
                 workoutAck(ok, ok ? "deleted" : "delete failed");
-                if (ok) workout_service::requestListRefresh();   // the picker
             } else if (workoutReq == WREQ_LOAD) {
                 workoutReq = WREQ_NONE;
                 const char* reason = "";
@@ -3270,6 +2967,14 @@ void task(void*) {
                 workoutListPending = false;
                 sendWorkoutList();
             }
+            if (segSubmitPending) {
+                segSubmitPending = false;
+                const char* err = "upload too large";
+                const bool ok = segBuf && !segOverflow &&
+                                segments::submit(segBuf, segLen, &err);
+                if (!ok) diag::log("segments: upload refused (%s)", err);
+                segAck = ok ? 2 : 3;
+            }
         }
         if (sensorReq == SREQ_LIST) {
             sensorReq = SREQ_NONE;
@@ -3280,6 +2985,17 @@ void task(void*) {
         if (routeChr && pendingRouteAck) {
             int a = pendingRouteAck; pendingRouteAck = 0;
             notifyByte2(a == 1 ? 0x23 : 0x24);
+        }
+        if (routeChr && segAck) {
+            const int a = segAck; segAck = 0;
+            const int n = segments::count();
+            const uint16_t c = n < 0 ? 0xFFFF : (uint16_t)n;
+            // The fifth byte: the newest blob version this firmware reads,
+            // so the app sends elevation (v2) only to firmware that takes it.
+            uint8_t pkt[5] = {0x25, (uint8_t)(a - 1), (uint8_t)(c & 0xFF),
+                              (uint8_t)(c >> 8), seg::BLOB_VERSION};
+            routeChr->setValue(pkt, sizeof(pkt));
+            routeChr->notify();
         }
         // Workout progress: pushed on any command, and each second while the
         // session clock runs so the app's screen counts down live. RAM only.
@@ -3295,7 +3011,9 @@ void task(void*) {
             }
             bool tick = workout_service::running() &&
                         millis() - lastWkStatus > 1000;
-            if (workoutChr && phoneConnected && (workoutStatusDirty || tick)) {
+            if (viaLink) {
+                workoutStatusDirty = false;   // the link task pushes its own
+            } else if (workoutChr && phoneConnected && (workoutStatusDirty || tick)) {
                 workoutStatusDirty = false;
                 lastWkStatus = millis();
                 sendWorkoutStatus();
@@ -3310,23 +3028,35 @@ void task(void*) {
             // phoneConnected first: takeChanged() CLEARS the flag, and consuming
             // it with nobody listening would throw the notification away.
             if (phoneConnected && mesh_service::takeChanged()) {
-                uint8_t b = 0x96;
-                meshNotify(&b, 1);
+                if (viaLink) {
+                    phone_link::push(phone_link::PUSH_MESH_CHANGED);
+                } else {
+                    uint8_t b = 0x96;
+                    meshNotify(&b, 1);
+                }
             }
             serviceMeshRequests();
         }
 
-        // The Ride tab's live stream: a no-op unless the app is watching.
-        serviceLive();
+        serviceGattChanged();
 
         vTaskDelay(pdMS_TO_TICKS(100));
         if (!statusChr || millis() - lastStatus < 1000) continue;
         lastStatus = millis();
 
+        // A clock the phone set keeps running off the system clock until GPS
+        // has a fix and its own time (see applyPhoneLocation).
+        if (phoneClockSet) {
+            g_state.with([](RideState& st) {
+                if (!st.gpsFix) { st.utc = time(nullptr); st.timeValid = true; }
+            });
+        }
+
         // While the app's sensor screen is open, push the list ~every 2 s so
         // discovered/connected changes show up live.
         static uint32_t lastSensorPush = 0;
-        if (sensorsStreaming && phoneConnected && millis() - lastSensorPush > 2000) {
+        if (sensorsStreaming && phoneConnected && !phone_link::active() &&
+            millis() - lastSensorPush > 2000) {
             lastSensorPush = millis();
             sendSensorList();
         }
@@ -3344,9 +3074,16 @@ void task(void*) {
         RideState s = g_state.snapshot();
         // { u8 flags, u8 battery, u8 sats, u8 hr, u16 power, u16 speed_x10,
         //   u16 remainingKm_x10 }
+        // flags: bit0 GPS fix, bit1 recording, bit2 route active, bit3 SD state
+        // reported (bits 4-5 are meaningful), bit4 no SD card, bit5 a card that
+        // will not mount (exFAT/unformatted). Bit 3 is what lets an app tell
+        // older firmware, which never sets bits 3-5, from "card is fine".
         uint8_t buf[10];
+        const uint8_t sd = ride_recorder::sdCardState();
         uint8_t flags = (s.gpsFix ? 1 : 0) | (s.recording ? 2 : 0) |
-                        (routes::active() ? 4 : 0);
+                        (routes::active() ? 4 : 0) | 8 |
+                        (sd == SD_CARD_NONE ? 16 : 0) |
+                        (sd == SD_CARD_UNREADABLE ? 32 : 0);
         buf[0] = flags;
         buf[1] = s.batteryPercent;
         buf[2] = s.satellites;
@@ -3361,10 +3098,272 @@ void task(void*) {
         statusChr->setValue(buf, sizeof(buf));
         // Admitted phone only: an unproven link may have subscribed (CCCDs
         // are open) but gets nothing pushed to it.
-        if (phoneConnected) statusChr->notify();
+        // A link app gets this as LiveFrame RIDE instead.
+        if (phoneConnected && !phone_link::active()) statusChr->notify();
 
 
     }
 }
 
 }  // namespace ble_server
+
+// ---------------------------------------------------------------------------
+// Shared with the phone link (ble_shared.h): one function per feature.
+
+namespace ble_shared {
+
+bool phoneAdmitted() { return phoneConnected; }
+uint16_t phoneHandle() { return linkHandle; }
+uint16_t mtu() { return negotiatedMTU; }
+void noteBulk() { ::noteBulk(); }
+bool sdFree() { return !ride_recorder::isRecording() && !usb_storage::hostActive(); }
+
+void applySettings(const SettingsPatch& p) {
+    if (p.hasFtp) settings::setFtpWatts(p.ftpW);
+    if (p.hasTz) settings::setTzMinutes(p.tzMin);
+    if (p.hasMiles) settings::setUseMiles(p.useMiles);
+    if (p.hasBacklight) settings::setBacklight(p.backlight);
+    if (p.hasClock24) settings::setClock24h(p.clock24h);
+    if (p.hasUsbDrive) {
+        settings::setUsbDrive(p.usbDrive);
+        usb_storage::setDriveEnabled(p.usbDrive);   // apply immediately
+    }
+    // Out of range is refused (kept as is), not clamped: a typo of 210 mm
+    // must not become an 800 mm wheel.
+    if (p.hasWheel && !settings::setWheelCircMm(p.wheelMm))
+        Serial.printf("[srv] wheel circumference %d mm refused\n", p.wheelMm);
+    g_state.with([&](RideState& s) {
+        s.ftpW = (uint16_t)settings::ftpWatts();
+        s.tzMin = (int16_t)settings::tzMinutes();
+        s.useMiles = settings::useMiles();
+        s.clock24h = settings::clock24h();
+    });
+    Serial.printf("[srv] settings set: ftp=%d tz=%d miles=%d bl=%d wheel=%dmm\n",
+                  settings::ftpWatts(), settings::tzMinutes(), settings::useMiles(),
+                  settings::backlight(), settings::wheelCircMm());
+}
+
+void applyPhoneLocation(const PhoneFix& f) {
+    const bool haveTime = f.haveUtc && f.utc > 1735689600UL;
+    const double lat = f.latE7 / 1e7, lon = f.lonE7 / 1e7;
+    // Warm-start the receiver (throttled + no-fix-only inside the task).
+    gps_service::seedPosition(lat, lon, (time_t)f.utc, haveTime, 5000.0f);
+    settings::setLastPosition(lat, lon);
+    // Stash as the phone fallback fix (used when the device GPS is cold). The
+    // estimator is shared by the legacy write (host task) and the link task.
+    if (sharedLocMutex) xSemaphoreTake(sharedLocMutex, portMAX_DELAY);
+    const uint32_t nowMs = millis();
+    static phone_motion::Estimator motion;
+    motion.update(lat, lon, f.accM > 0 ? (float)f.accM : 0.0f, nowMs, f.speedMs,
+                  f.courseDeg);
+    g_state.with([&](RideState& st) {
+        st.phoneSpeedKmh = motion.speedKmh(nowMs);
+        st.phoneCourseValid = motion.courseValid();
+        st.phoneCourseDeg = motion.courseDeg();
+        st.phoneLat = lat;
+        st.phoneLon = lon;
+        if (f.haveAlt) st.phoneAltM = (float)f.altM;
+        st.phoneAccM = f.accM > 0 ? (float)f.accM : 0.0f;
+        st.phoneUtc = haveTime ? (time_t)f.utc : 0;
+        st.phoneFixValid = true;
+        st.phoneFixMs = nowMs;
+        // Speed/heading on the display while the phone is the source.
+        speed_source::publish(st, nowMs);
+    });
+    if (sharedLocMutex) xSemaphoreGive(sharedLocMutex);
+    if (haveTime) applyPhoneTime((time_t)f.utc);
+}
+
+// The clock (status bar, CLOCK field) otherwise waits for GPS time, which a
+// unit indoors after a reboot may not get for a long while. The phone's network
+// time is as good: it comes with the link's Hello on every connection and with
+// each phone location. It sets the system clock, which the server task's 1 Hz
+// pass reads back into RideState, until GPS has a fix and takes over.
+void applyPhoneTime(time_t utc) {
+    if (utc < 1735689600) return;   // before 2025: not a real clock
+    bool noGpsFix = false;
+    g_state.with([&](RideState& st) {
+        noGpsFix = !st.gpsFix;
+        if (noGpsFix) { st.utc = utc; st.timeValid = true; }
+    });
+    if (!noGpsFix) return;
+    struct timeval tv = {utc, 0};
+    settimeofday(&tv, nullptr);
+    phoneClockSet = true;
+}
+
+bool legacyUpdateBusy() { return ble_server::otaPhase != 0; }
+
+void setLinkUpdate(int phase, uint32_t got, uint32_t total) {
+    ble_server::linkUpdGot = got;
+    ble_server::linkUpdTotal = total;
+    ble_server::linkUpdPhase = phase;
+}
+
+bool saveFirmwareImage(const uint8_t* img, size_t len) {
+    if (!img || !len) return false;
+    bool ok = false;
+    sdLock();
+    SD.remove("/firmware.bin");
+    File f = SD.open("/firmware.bin", FILE_WRITE);
+    if (f) {
+        size_t wrote = 0;
+        while (wrote < len) {
+            size_t chunk = len - wrote < 8192 ? len - wrote : 8192;
+            size_t w = f.write(img + wrote, chunk);
+            if (w != chunk) break;
+            wrote += w;
+            // Same reason as the tile writes in map_store: a firmware image
+            // is ~2 MB of uninterrupted SD work, and the task watchdog does
+            // not care that it is making progress.
+            if ((wrote & 0x3FFF) == 0) vTaskDelay(1);
+        }
+        f.close();
+        ok = (wrote == len);
+        if (!ok) SD.remove("/firmware.bin");
+    }
+    sdUnlock();
+    return ok;
+}
+
+void rebootForUpdate() {
+    diag::flushToSD();
+    otaRebootPending = true;   // the server task restarts; applySdUpdate flashes
+}
+
+bool listDir(Dir d, void (*cb)(const char* name, uint32_t size, void* ctx), void* ctx) {
+    const char* path = d == Dir::Rides ? RIDE_DIR
+                     : d == Dir::Logs ? "/logs"
+                     : d == Dir::Routes ? "/routes" : "/workouts";
+    sdLock();
+    File dir = SD.open(path);
+    if (!dir) { sdUnlock(); return false; }
+    for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
+        if (!f.isDirectory()) {
+            const char* base = strrchr(f.name(), '/');
+            base = base ? base + 1 : f.name();
+            bool want = true;
+            if (d == Dir::Logs) want = strstr(base, ".log") != nullptr;
+            if (d == Dir::Workouts) want = base[0] != '.';   // macOS AppleDouble noise
+            if (want) cb(base, (uint32_t)f.size(), ctx);
+        }
+        f.close();
+    }
+    dir.close();
+    sdUnlock();
+    return true;
+}
+
+static bool removeIn(const char* dir, const char* name) {
+    char path[96];
+    snprintf(path, sizeof(path), "%s/%s", dir, name);
+    sdLock();
+    const bool ok = SD.remove(path);
+    sdUnlock();
+    return ok;
+}
+
+bool deleteRide(const char* name) {
+    const bool ok = removeIn(RIDE_DIR, name);
+    Serial.printf("[srv] deleted ride %s\n", name);
+    return ok;
+}
+
+bool deleteRoute(const char* name) {
+    const bool ok = removeIn("/routes", name);
+    // If the deleted route is the one currently loaded, drop it too.
+    if (strcmp(routes::activeName(), name) == 0) routes::clearRoute();
+    Serial.printf("[srv] deleted route %s\n", name);
+    return ok;
+}
+
+bool deleteWorkout(const char* name) {
+    const bool ok = removeIn("/workouts", name);
+    if (ok) workout_service::requestListRefresh();   // the picker
+    return ok;
+}
+
+WorkoutSave saveWorkout(const char* name, const char* data, size_t len, const char** reason) {
+    char path[96];
+    snprintf(path, sizeof(path), "/workouts/%s", name);
+    sdLock();
+    if (!SD.exists("/workouts")) SD.mkdir("/workouts");
+    File f = SD.open(path, FILE_WRITE);
+    bool ok = false;
+    if (f) {
+        ok = f.write((const uint8_t*)data, len) == len;
+        f.close();
+    }
+    sdUnlock();
+    if (!ok) return WorkoutSave::IoError;
+    diag::log("workout: received %s (%u bytes) from the app", name, (unsigned)len);
+    const bool loaded = workout_service::load(name, reason);
+    workout_service::requestListRefresh();   // the picker lists it next time
+    return loaded ? WorkoutSave::Ok : WorkoutSave::LoadFailed;
+}
+
+bool lockTileList(bool poi, bool versions, TileListing& out) {
+    // PSRAM, and sized to the whole index. At 512 in .bss this was both 12 KB
+    // of the internal RAM the display and BLE controller are short of, AND a
+    // silent truncation: a rider past 512 tiles kept being offered tiles the
+    // device already had, because the list the app dedups against stopped.
+    constexpr int TILE_LIST_MAX = 4096;
+    static_assert(tile_versions::VER_MAX == 24, "TileListing.vers is char[24]");
+    if (sharedTileMutex) xSemaphoreTake(sharedTileMutex, portMAX_DELAY);
+    static char (*ids)[24] = nullptr;
+    if (!ids) {
+        ids = (char(*)[24])heap_caps_malloc((size_t)TILE_LIST_MAX * 24, MALLOC_CAP_SPIRAM);
+        if (!ids) {
+            diag::log("tile list: no PSRAM for %d ids", TILE_LIST_MAX);
+            if (sharedTileMutex) xSemaphoreGive(sharedTileMutex);
+            return false;
+        }
+    }
+    // Only for a versioned list, so firmware talking to an older app never
+    // allocates them.
+    static uint32_t* sizes = nullptr;
+    static char (*vers)[tile_versions::VER_MAX] = nullptr;
+    if (versions && !sizes) {
+        sizes = (uint32_t*)heap_caps_malloc((size_t)TILE_LIST_MAX * 4, MALLOC_CAP_SPIRAM);
+        vers = (char(*)[tile_versions::VER_MAX])heap_caps_malloc(
+            (size_t)TILE_LIST_MAX * tile_versions::VER_MAX, MALLOC_CAP_SPIRAM);
+        if (!sizes || !vers) {
+            diag::log("tile list: no PSRAM for versions");
+            heap_caps_free(sizes); heap_caps_free(vers);
+            sizes = nullptr; vers = nullptr;
+        }
+    }
+    if (!sizes) versions = false;
+    const int n = map_store::listTileIds(ids, TILE_LIST_MAX, poi ? ".poi" : ".ebm",
+                                         versions ? sizes : nullptr);
+    if (versions) map_store::tileVersions(ids, sizes, n, poi, vers);
+    out.ids = ids;
+    out.vers = versions ? vers : nullptr;
+    out.n = n;
+    return true;
+}
+
+void unlockTileList() {
+    if (sharedTileMutex) xSemaphoreGive(sharedTileMutex);
+}
+
+bool applyDash(const char* text, const char** reason) {
+    if (sharedDashMutex) xSemaphoreTake(sharedDashMutex, portMAX_DELAY);
+    const bool ok = dash_config::applyText(text, reason);
+    if (sharedDashMutex) xSemaphoreGive(sharedDashMutex);
+    if (ok) dashDirty = true;   // the UI task repaints with the new layout
+    return ok;
+}
+
+void readLiveView(ble_server::LiveView& out) {
+    portENTER_CRITICAL(&ble_server::liveViewMux);
+    out = ble_server::liveView;
+    portEXIT_CRITICAL(&ble_server::liveViewMux);
+}
+
+uint8_t takeLiveViewChanges() { return ble_server::liveViewChanges.exchange(0); }
+
+void queueStopwatch(uint8_t op) { ble_server::liveSwPush(op); }
+void queueShowPage(uint32_t page) { ble_server::showPageReq.store(page > 255 ? 255 : (int)page); }
+
+}  // namespace ble_shared

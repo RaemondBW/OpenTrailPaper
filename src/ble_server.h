@@ -81,9 +81,9 @@ void requestUnpair();
 void notePhoneName(const char* utf8);
 
 // What the device's pages show that only the UI task knows, for the app's live
-// stream (the "UART" service; protocol in ble_server.cpp). The UI task
-// publishes it every loop pass; the BLE task reads it only while the app's
-// Ride tab is streaming, and sends a frame at once when the page or the
+// Ride view (the phone link's LiveFrames, src/link.cpp). The UI task
+// publishes it every loop pass; the link task reads it while the app
+// subscribes to those topics, and sends a frame at once when the page or the
 // stopwatch's state (not its running time) changes.
 struct LiveView {
     unsigned char page = 0xFF;       // dash_config page on screen; 0xFF = none
@@ -100,8 +100,31 @@ struct LiveView {
     unsigned char swLapCadenceRpm = 0xFF;
     bool swShowPower = false;
     bool swShowCadence = false;
+    // The newest completed laps, newest first (row 0 = lap swLaps), as many
+    // as the page's table shows (LIVE_SW_ROWS = ui_render's kSwRows). Same
+    // encodings and sentinels as Stopwatch's own per-lap arrays.
+    static constexpr int LIVE_SW_ROWS = 7;
+    unsigned char swRows = 0;
+    unsigned long swRowSplitMs[LIVE_SW_ROWS] = {};
+    unsigned short swRowSpeedDkmh[LIVE_SW_ROWS] = {};   // 0xFFFF none
+    unsigned short swRowPowerW[LIVE_SW_ROWS] = {};      // 0xFFFF none
+    unsigned char swRowCadenceRpm[LIVE_SW_ROWS] = {};   // 0xFF none
 };
 void publishLiveView(const LiveView& v);
+
+// Stopwatch buttons pressed in the app (the link's StopwatchCommand). The link
+// task only queues them; the UI task takes them one at a time, oldest first,
+// and runs each exactly as the page's own tap (same canReset/canLap rules).
+// 0 = nothing queued.
+enum LiveStopwatchOp : unsigned char {
+    LIVE_SW_TOGGLE = 1,   // START <-> PAUSE
+    LIVE_SW_RESET = 2,    // only while paused with time on the clock
+    LIVE_SW_LAP = 3,      // only while running
+};
+unsigned char takeStopwatchCommand();
+// The dash slot the app last asked the panel to show (link ShowPage), or -1.
+// Taking it clears it; only the latest request counts.
+int takeShowPage();
 
 // Queue a media transport command (media_state.h MediaCmd) for the phone.
 // Called from the UI task; the server task sends the notify.

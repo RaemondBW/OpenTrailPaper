@@ -24,6 +24,14 @@ object BikeUuid {
     val cccd: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 }
 
+/** The phone link (docs/ble-link.md): one service, RX (phone -> device) and
+ *  TX (device -> phone notifications), carrying proto/link.proto messages. */
+object LinkUuid {
+    val service: UUID = UUID.fromString("B1C51000-9E0F-4B7A-9C6D-1F2E3A4B5C6D")
+    val rx: UUID = UUID.fromString("B1C51001-9E0F-4B7A-9C6D-1F2E3A4B5C6D")
+    val tx: UUID = UUID.fromString("B1C51002-9E0F-4B7A-9C6D-1F2E3A4B5C6D")
+}
+
 /**
  * A cycling sensor known to the head unit. kindsMask bits match the firmware's
  * ble_sensors::Kind: 1 HR, 2 power, 4 cadence, 8 radar, 16 speed. Cadence and
@@ -78,8 +86,24 @@ data class RideFile(val name: String, val size: Int)
 /** A per-day diagnostics log file on the device (/logs/YYYYMMDD.log). */
 data class LogFile(val name: String, val size: Int)
 
-/** Live status pushed by the device once a second. */
+/**
+ * The device's SD card, from status flag bits 3-5. Firmware from before it was
+ * reported never sets bit 3, so that reads as [UNKNOWN], not as a missing card.
+ */
+enum class SdCardState {
+    UNKNOWN, OK, MISSING, UNREADABLE;
+
+    /** No usable card: nothing records and map tiles have nowhere to go. */
+    val isProblem: Boolean get() = this == MISSING || this == UNREADABLE
+}
+
+/**
+ * Live status pushed by the device once a second. The first nine fields are
+ * the legacy STATUS packet; the rest only come over the phone link
+ * (LiveFrame.ride) and stay null on older firmware.
+ */
 data class DeviceStatus(
+    val sdCard: SdCardState = SdCardState.UNKNOWN,
     val gpsFix: Boolean = false,
     val recording: Boolean = false,
     val hasRoute: Boolean = false,
@@ -89,7 +113,24 @@ data class DeviceStatus(
     val power: Int? = null,
     val speedKmh: Double = 0.0,
     val remainingKm: Double = 0.0,
-)
+    val cadence: Int? = null,
+    val distanceM: Long? = null,
+    val elapsedSec: Long? = null,
+    val movingSec: Long? = null,
+    val climbM: Int? = null,
+    val autoPaused: Boolean = false,
+    val charging: Boolean = false,
+    val gradePct: Double? = null,
+    val altitudeM: Int? = null,
+) {
+    /** Ride average over moving time, when the device reports both. */
+    val avgSpeedKmh: Double?
+        get() {
+            val d = distanceM ?: return null
+            val t = movingSec ?: return null
+            return if (t > 0) d / 1000.0 / (t / 3600.0) else null
+        }
+}
 
 /**
  * How a system permission stands right now.

@@ -4,8 +4,8 @@ import MediaPlayer
 
 // The Ride tab is the head unit's live dashboard on the phone: the same pages,
 // laid out the way the device packs them (DashLayout), filled with what the
-// device streams over BLE: the live state stream (DeviceLive) while this tab
-// is up and the firmware has it, else the 1 Hz status characteristic. Fields
+// device streams over BLE: LiveFrames on the phone link (DeviceLive), with the
+// parts the page in view needs, else the 1 Hz status characteristic. Fields
 // neither carries, and everything while disconnected, read "--" — the last
 // known layout stays on screen.
 struct RideView: View {
@@ -19,6 +19,8 @@ struct RideView: View {
     @State private var editing = false
     @State private var draft = DashConfig(pages: [])
     @State private var confirmDiscard = false
+    /// Why the ADD NEW page couldn't add the one picked.
+    @State private var addError: String?
     @State private var showWorkouts = false
     @State private var pageIx = 0
 
@@ -64,7 +66,8 @@ struct RideView: View {
             }
             .sheet(isPresented: $showWorkouts) { WorkoutsView() }
             .onAppear {
-                ble.liveViewer(true)   // stream while this tab is up
+                ble.liveViewer(true)   // the page's topics while this tab is up
+                ble.liveTopicsInView(liveTopics)
                 ble.refreshSensors()
                 // The session may have changed on the device while this tab
                 // was away; ask rather than trust the last notify.
@@ -82,6 +85,9 @@ struct RideView: View {
             .onDisappear { ble.liveViewer(false) }
             .onChange(of: ble.state) { _, st in if st == .connected { ble.refreshSensors() } }
             .onChange(of: config.pages.count) { _, n in if pageIx > n { pageIx = 0 } }
+            .onChange(of: liveTopics) { _, t in ble.liveTopicsInView(t) }
+            // Paging here pages the panel too (not while editing a layout).
+            .onChange(of: pageIx) { _, i in if !editing && connected { ble.showDevicePage(i) } }
         }
     }
 
@@ -166,6 +172,7 @@ struct RideView: View {
             WarningBanner(title: "Bluetooth is off",
                           message: "Turn it on in Control Centre to connect.")
         }
+        if connected && ble.status.sdCard.isProblem { SDCardNotice(state: ble.status.sdCard) }
         if ble.dashTarget == nil {
             WarningBanner(title: "Default layout",
                           message: "Connect once to load your device's own dashboard pages.",
@@ -249,6 +256,7 @@ struct RideView: View {
         case .music: return "MUSIC"
         case .workout: return "WORKOUT"
         case .stopwatch: return "STOPWATCH"
+        case .segment: return "SEGMENT"
         }
     }
 
@@ -284,7 +292,7 @@ struct RideView: View {
     /// (now, or on the next connect) like an edit made in the editor.
     @ViewBuilder private var addNewPage: some View {
         let c = config
-        let full = c.contentPages >= DashConfig.maxPages
+        let full = c.contentPages >= DashConfig.devicePages
         VStack(spacing: 14) {
             Image(systemName: "plus")
                 .font(.system(size: 44, weight: .bold))
@@ -294,7 +302,10 @@ struct RideView: View {
                 if ble.dashTarget == nil {
                     Text("Connect once to load your device's pages, then add more here.")
                 } else if full {
-                    Text("The device holds \(DashConfig.maxPages) pages besides the map. Remove one in Edit to add another.")
+                    Text(DashConfig.devicePages < DashConfig.maxPages
+                         ? "This firmware holds \(DashConfig.devicePages) pages besides the map. Update the device's firmware for up to \(DashConfig.maxPages), or remove one in Edit."
+                         : "The device holds \(DashConfig.maxPages) pages besides the map. Remove one in Edit to add another.")
+
                 } else {
                     Menu {
                         Button { addPage(.newData) } label: { Label("Data page", systemImage: "rectangle.3.group") }
@@ -307,8 +318,14 @@ struct RideView: View {
                         if !c.hasStopwatchPage {
                             Button { addPage(.stopwatch) } label: { Label("Stopwatch", systemImage: "stopwatch") }
                         }
+                        if !c.hasSegmentPage {
+                            Button { addPage(.segment) } label: { Label("Segment", systemImage: "flag.checkered") }
+                        }
                     } label: {
                         BlockButtonLabel(title: "Choose a page", systemImage: "plus")
+                    }
+                    if let addError {
+                        Text(addError).padding(.top, 4)
                     }
                 }
             }
@@ -326,6 +343,15 @@ struct RideView: View {
     }
 
     private func addPage(_ p: DashConfig.Page) {
+        var next = editing ? draft : (ble.dashTarget ?? draft)
+        next.pages.append(p)
+        // The device hands the layout back in one GATT read (512 bytes at
+        // most); a bigger one would come back cut short.
+        guard next.configText.utf8.count <= DashConfig.maxTextBytes else {
+            addError = "Your pages are full of fields — the layout is at the size the device can send back. Remove a few fields or a page first."
+            return
+        }
+        addError = nil
         if editing {
             draft.pages.append(p)
             withAnimation { pageIx = draft.pages.count - 1 }
@@ -431,6 +457,15 @@ struct RideView: View {
         }
     }
 
+    /// `page segment` / `page segment manual` for the page being edited.
+    private var segmentAutoShow: Binding<Bool> {
+        Binding(get: { draft.pages.indices.contains(pageIx) ? draft.pages[pageIx].autoShow : true },
+                set: { v in
+                    guard draft.pages.indices.contains(pageIx) else { return }
+                    draft.pages[pageIx].autoShow = v
+                })
+    }
+
     /// What there is to set on a page that isn't laid out by hand.
     @ViewBuilder private func pageSettings(_ p: DashConfig.Page) -> some View {
         switch p.kind {
@@ -472,6 +507,18 @@ struct RideView: View {
                     .font(BarlowFont.text(13)).foregroundStyle(Palette.muted)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
+        case .segment:
+            Group {
+                VStack(alignment: .leading, spacing: 10) {
+                    Toggle(isOn: segmentAutoShow) {
+                        Text("Switch to this page when a segment starts")
+                            .font(BarlowFont.text(14, .semibold)).foregroundStyle(Palette.ink)
+                    }
+                    Text("Live Strava segments: sync your starred ones in Settings › Accounts › Strava. Efforts are timed on any page. Needs device firmware v1.23 or newer.")
+                        .font(BarlowFont.text(12.5)).foregroundStyle(Palette.muted)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
         case .fields:
             EmptyView()
         }
@@ -485,7 +532,9 @@ struct RideView: View {
                 DashPreview(layout: p?.layout ?? .deviceDefault,
                             liveText: { liveText($0, now: now) },
                             liveWatts: liveWatts,
-                            ftp: Double(ble.ftpWatts))
+                            ftp: Double(ble.ftpWatts),
+                            available: frame.map { f in { f.fieldAvailable($0) } },
+                            hidesUnavailable: frame?.showOffline == false)
                     .frame(width: 540 * k)
                     .offset(y: 64 * k)
             }
@@ -502,6 +551,29 @@ struct RideView: View {
                                actions: connected ? workoutActions : nil)
         case .stopwatch:
             stopwatchPage(status)
+        case .segment:
+            // The device doesn't stream its segment state: the page's tiles
+            // as it draws them, every value "--".
+            SegmentPagePreview(status: status, model: .placeholder,
+                               note: ble.deviceSegmentCount.map {
+                                   "\($0) starred segment\($0 == 1 ? "" : "s") on the device"
+                               } ?? "Live segment times show on the device")
+        }
+    }
+
+    /// What the device should stream for the page in view, besides RIDE
+    /// (always on): the stopwatch, the player, the map's position and view,
+    /// and radar where a tile shows it.
+    private var liveTopics: Set<LinkLiveTopic> {
+        let pages = config.pages
+        guard pageIx < pages.count else { return [] }
+        let p = pages[pageIx]
+        switch p.kind {
+        case .stopwatch: return [.stopwatch]
+        case .music: return [.music]
+        case .map: return config.mapFields.contains("radar") ? [.position, .view, .radar] : [.position, .view]
+        case .fields: return p.layout.items.contains { $0.field == "radar" } ? [.radar] : []
+        case .workout, .segment: return []
         }
     }
 
@@ -540,44 +612,46 @@ struct RideView: View {
     }
 
     /// The STOPWATCH page from the live stream: the device's clock, counted
-    /// on between frames while it runs, its state and the laps. The buttons
-    /// stay the device's own (greyed here). Without the stream (older
-    /// firmware) the page shows its layout with no time.
+    /// on between frames while it runs, its state and, once a lap is done,
+    /// the device's lap layout (total, lap in progress, the completed laps
+    /// from STOPWATCH_LAPS; the lap times count on with the total). START/PAUSE,
+    /// RESET and LAP drive the device's own clock ([0x10] on the live
+    /// service), enabled by its rules; the next frame redraws the page. On
+    /// firmware that streams but takes no commands they stay greyed, and
+    /// without the stream (older firmware) the page shows its layout with no
+    /// time.
     @ViewBuilder private func stopwatchPage(_ status: PanelStatus) -> some View {
-        if let sw = frame?.stopwatch {
+        if let f = frame, let sw = f.stopwatch {
+            let controls = f.takesStopwatchCommands
             TimelineView(.periodic(from: .now, by: sw.running ? 0.25 : 3600)) { ctx in
                 let ms = live.stopwatchElapsedMs(at: ctx.date) ?? sw.elapsedMs
                 let lapMs = sw.lapMs &+ (ms &- sw.elapsedMs)
                 StopwatchPagePreview(
-                    status: status, time: Self.stopwatchText(ms),
+                    status: status, time: StopwatchPagePreview.timeText(ms),
                     state: sw.running ? "RUNNING" : ms == 0 ? "READY" : "PAUSED",
                     running: sw.running,
-                    note: sw.laps == 0 ? nil
-                        : "LAP \(sw.laps + 1) · \(Self.stopwatchText(lapMs))"
-                          + (sw.lastSplitMs.map { " · LAST \(Self.lapText($0))" } ?? ""),
-                    controlsEnabled: false)
+                    lapPage: sw.laps == 0 ? nil : StopwatchLapPage(
+                        totalMs: ms, running: sw.running, lapNumber: sw.laps + 1, lapMs: lapMs,
+                        lapSpeedKmh: sw.lapAvgSpeedKmh, lapCadence: sw.lapAvgCadence,
+                        lapPowerW: sw.lapAvgPowerW,
+                        showCadence: f.stopwatchLaps?.showCadence ?? sw.showCadence,
+                        showPower: f.stopwatchLaps?.showPower ?? sw.showPower,
+                        useMiles: useMiles, rows: f.stopwatchLaps?.laps),
+                    controlsEnabled: controls,
+                    canReset: !sw.running && sw.elapsedMs > 0,
+                    canLap: sw.running && sw.laps < 99,
+                    onControl: { ble.stopwatchCommand(UInt8($0 + 1)) },
+                    controlsHint: "Update the device's firmware to use these from the app")
             }
         } else {
             StopwatchPagePreview(status: status, time: "--:--", state: "--", running: false,
                                  note: connected && !ble.liveSupported
                                     ? "Update the device's firmware to see its stopwatch here"
                                     : nil,
-                                 controlsEnabled: false)
+                                 controlsEnabled: false,
+                                 controlsHint: connected ? "Waiting for the device"
+                                                         : "Connect the device first")
         }
-    }
-
-    /// The device's stopwatch digits (ui_render swFmt): MM:SS, H:MM:SS past the hour.
-    static func stopwatchText(_ ms: UInt32) -> String {
-        let sec = Int(ms / 1000)
-        return sec >= 3600 ? String(format: "%d:%02d:%02d", sec / 3600, sec / 60 % 60, sec % 60)
-                           : String(format: "%02d:%02d", sec / 60, sec % 60)
-    }
-
-    /// A finished lap (swFmtLap): M:SS.t under the hour, H:MM:SS over.
-    static func lapText(_ ms: UInt32) -> String {
-        let sec = Int(ms / 1000)
-        return sec >= 3600 ? String(format: "%d:%02d:%02d", sec / 3600, sec / 60 % 60, sec % 60)
-                           : String(format: "%d:%02d.%d", sec / 60, sec % 60, Int(ms % 1000 / 100))
     }
 
     /// Ride and moving time as the device prints them (formatHms).
@@ -662,7 +736,9 @@ struct RideView: View {
         let elevUnit = Units.elevLabel(useMiles).uppercased()
         switch field {
         case "speed":
-            let v = live ? Units.speed(f?.speedKmh ?? s.speedKmh, miles: useMiles) : nil
+            // A frame's absent speed is "no reading"; the status's is 0.
+            let kmh = f.map(\.speedKmh) ?? s.speedKmh
+            let v = live ? kmh.map { Units.speed($0, miles: useMiles) } : nil
             return DashValue(text: one(v), unit: speedUnit)
         case "avgspeed":
             return DashValue(text: one(f.map { Units.speed($0.avgSpeedKmh, miles: useMiles) }), unit: speedUnit)
@@ -870,6 +946,8 @@ private struct LiveMapPage: View {
 /// the app sent it, dithered to the panel's tones.
 private struct LiveMusicPage: View {
     @EnvironmentObject var ble: BLEManager
+    /// The live stream: the device's player position (MUSIC record).
+    @EnvironmentObject var live: DeviceLive
     @ObservedObject var art: AlbumArtFeeder
     let status: PanelStatus
     @State private var image: UIImage?
@@ -883,28 +961,49 @@ private struct LiveMusicPage: View {
         // an app can only drive the Music app's own player, so the buttons
         // are live while the Music app is the one playing.
         let musicApp = player.nowPlayingItem != nil
+        // What the device knows of the player (AMS, via the live stream):
+        // play state and position for ANY app, which the phone can't see.
+        let music = ble.state == .connected ? live.frame?.music : nil
         // Firmware that relays remote commands over AMS drives any player;
-        // older firmware leaves the app only the Music app's own player.
-        let remote = ble.mediaRemote
-        MusicPreview(status: status, track: track,
-                     art: track != nil && art.cover?.key == track?.key ? image : nil,
-                     playing: musicApp ? player.playbackState == .playing : track != nil,
-                     progress: nil,
-                     onTransport: { b in
-                         if remote {
-                             ble.mediaCommand(b == 0 ? 3 : b == 1 ? 1 : 2)
-                         } else {
-                             switch b {
-                             case 0: player.skipToPreviousItem()
-                             case 1: player.playbackState == .playing ? player.pause() : player.play()
-                             default: player.skipToNextItem()
+        // older firmware leaves the app only the Music app's own player. A
+        // device whose AMS link is down (pairing declined) can't relay them
+        // either, so the Music app's player takes over when it is the one.
+        let remote = ble.mediaRemote && (music?.ams ?? true || !musicApp)
+        let playing = music.map { $0.present && $0.playing }
+            ?? (musicApp ? player.playbackState == .playing : track != nil)
+        // Counted on between frames while playing; a paused bar holds still.
+        TimelineView(.periodic(from: .now, by: music?.playing == true ? 0.5 : 3600)) { ctx in
+            let progress: (pos: Int, dur: Int)? = {
+                guard let m = music, let dur = m.durationMs,
+                      let pos = live.musicPositionMs(at: ctx.date) else { return nil }
+                return (Int(pos / 1000), Int((dur + 500) / 1000))
+            }()
+            MusicPreview(status: status, track: track,
+                         art: track != nil && art.cover?.key == track?.key ? image : nil,
+                         playing: playing,
+                         progress: progress,
+                         onTransport: { b in
+                             if remote {
+                                 ble.mediaCommand(b == 0 ? 3 : b == 1 ? 1 : 2)
+                             } else {
+                                 switch b {
+                                 case 0: player.skipToPreviousItem()
+                                 case 1: player.playbackState == .playing ? player.pause() : player.play()
+                                 default: player.skipToNextItem()
+                                 }
                              }
-                         }
-                         tick += 1
-                     },
-                     transportEnabled: remote || musicApp,
-                     transportHint: remote || musicApp ? nil
-                        : "Update the device's firmware to control other players from here")
+                             tick += 1
+                         },
+                         transportEnabled: remote || musicApp,
+                         transportHint: remote || musicApp ? nil
+                            : "Update the device's firmware to control other players from here",
+                         // Volume only goes through the device (AMS): iOS has
+                         // no API for an app to set the system volume.
+                         onVolume: remote ? { v in ble.mediaCommand(v == 0 ? 4 : 5) } : nil,
+                         volumeHint: ble.mediaRemote
+                            ? "The device's music link (AMS) is off: pair it in Bluetooth settings"
+                            : "Update the device's firmware, or use the phone's volume buttons")
+        }
             .id(tick)
             .task(id: art.cover?.key) {
                 guard let c = art.cover else { image = nil; return }
