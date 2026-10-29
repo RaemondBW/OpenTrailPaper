@@ -8,6 +8,12 @@ submitting.
 
 ## Unreleased
 
+- Route: with Strava or RideWithGPS connected, import one of your saved
+  routes (iOS: the download button on the Route map; Android: the file
+  button). Pick it from the list, which shows each route's distance and
+  climbing, and send it to the device like a GPX file. To see private
+  Strava routes, disconnect and connect Strava again in Settings >
+  Accounts; until you do, only public ones are listed.
 - Name a ride before uploading it: tapping Upload to Strava, Intervals.icu
   or RideWithGPS asks for the activity name first, filled in with the
   ride's current name. The new name is kept for that ride on this phone, so

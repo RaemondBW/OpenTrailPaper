@@ -44,6 +44,8 @@ struct SyncTokens: Codable, Equatable {
     var expiresAt: TimeInterval?     // unix seconds; nil = does not expire
     var athleteName: String?
     var athleteId: Int?
+    /// What the rider granted, as Strava reports it ("read,read_all,..."); nil = not reported.
+    var scope: String?
 
     /// Within `margin` seconds of expiry (or past it). Unix seconds throughout.
     func expiresWithin(_ margin: TimeInterval, now: TimeInterval = Date().timeIntervalSince1970) -> Bool {
@@ -282,6 +284,7 @@ final class SyncAccounts: NSObject, ObservableObject {
                 t.athleteName = a["name"] as? String
                 t.athleteId = (a["id"] as? NSNumber)?.intValue
             }
+            t.scope = json["scope"] as? String
             store(t, for: p)
         } catch {
             lastError = error.localizedDescription
@@ -482,6 +485,84 @@ final class SyncAccounts: NSObject, ObservableObject {
         }
     }
 
+    // MARK: routes
+
+    /// The accounts that have saved routes to import (Intervals.icu has none).
+    static let routeProviders: [SyncProvider] = [.strava, .ridewithgps]
+
+    /// One page (from 1) of the rider's saved routes. Strava straight from the
+    /// phone with the bearer token; RideWithGPS through the service, which adds
+    /// the API key. Both through `authorized`, so an expired token is refreshed
+    /// and a dead sign-in comes back as SyncError.signedOut.
+    func routes(_ p: SyncProvider, page: Int) async throws -> CloudRoutePage {
+        guard isConnected(p) else { throw SyncError.upload("Connect \(p.title) in Settings first.") }
+        switch p {
+        case .strava:
+            let athlete = try await stravaAthleteId()
+            let url = URL(string: "https://www.strava.com/api/v3/athletes/\(athlete)/routes?page=\(page)&per_page=\(CloudRoutes.stravaPageSize)")!
+            let data = try await routeCall(p) { try await self.authorizedGet(p, url) }
+            return CloudRoutes.parseStrava(data, page: page)
+        case .ridewithgps:
+            guard let base = Self.serviceURL else { throw SyncError.notConfigured }
+            var comps = URLComponents(url: base.appendingPathComponent("v1/rwgps/routes"), resolvingAgainstBaseURL: false)!
+            comps.queryItems = [URLQueryItem(name: "page", value: String(page))]
+            let data = try await routeCall(p) { try await self.authorizedGet(p, comps.url!) }
+            return CloudRoutes.parseRwgps(data)
+        case .intervals:
+            throw SyncError.upload("Intervals.icu has no saved routes.")
+        }
+    }
+
+    /// The route as GPX, for GPXImporter.
+    func routeGPX(_ p: SyncProvider, route: CloudRoute) async throws -> Data {
+        guard isConnected(p) else { throw SyncError.upload("Connect \(p.title) in Settings first.") }
+        let id = route.id.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? route.id
+        let url: URL
+        switch p {
+        case .strava: url = URL(string: "https://www.strava.com/api/v3/routes/\(id)/export_gpx")!
+        case .ridewithgps:
+            guard let base = Self.serviceURL else { throw SyncError.notConfigured }
+            url = base.appendingPathComponent("v1/rwgps/routes/\(id)/gpx")
+        case .intervals: throw SyncError.upload("Intervals.icu has no saved routes.")
+        }
+        return try await routeCall(p) { try await self.authorizedGet(p, url, accept: "application/gpx+xml") }
+    }
+
+    /// Strava lists routes by athlete id, which the sign-in reports; looked up
+    /// once (GET /athlete) if it did not.
+    private func stravaAthleteId() async throws -> Int {
+        if let id = tokens[.strava]?.athleteId { return id }
+        let data = try await routeCall(.strava) {
+            try await self.authorizedGet(.strava, URL(string: "https://www.strava.com/api/v3/athlete")!)
+        }
+        let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        guard let id = (json?["id"] as? NSNumber)?.intValue, id > 0 else {
+            throw SyncError.upload("Strava did not say which athlete this is.")
+        }
+        if var t = tokens[.strava] { t.athleteId = id; store(t, for: .strava) }
+        return id
+    }
+
+    private func authorizedGet(_ p: SyncProvider, _ url: URL, accept: String = "application/json") async throws -> Data {
+        try await authorized(p) { token in
+            var req = URLRequest(url: url)
+            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            return try await sendData(req, accept: accept)
+        }
+    }
+
+    /// Route-specific wording for what a provider's refusal means here.
+    private func routeCall<R>(_ p: SyncProvider, _ call: () async throws -> R) async throws -> R {
+        do {
+            return try await call()
+        } catch SyncError.http(403, _, _) {
+            // Strava's answer to a token without the scope a private route needs.
+            throw SyncError.upload("\(p.title) did not allow reading routes with this sign-in. Disconnect and connect \(p.title) again in Settings.")
+        } catch SyncError.http(404, _, _) {
+            throw SyncError.upload("That route is no longer on \(p.title).")
+        }
+    }
+
     // MARK: http
 
     private func post(_ path: String, json body: [String: Any]) async throws -> [String: Any] {
@@ -496,8 +577,14 @@ final class SyncAccounts: NSObject, ObservableObject {
     /// `progress` names a TransferCenter entry to report the request body's
     /// upload progress to.
     private func send(_ req: URLRequest, progress: String? = nil) async throws -> [String: Any] {
+        let data = try await sendData(req, progress: progress)
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+    }
+
+    /// The body of a 2xx answer as is; anything else thrown as SyncError.http.
+    private func sendData(_ req: URLRequest, progress: String? = nil, accept: String = "application/json") async throws -> Data {
         var req = req
-        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        req.setValue(accept, forHTTPHeaderField: "Accept")
         req.timeoutInterval = 60
         // Prove this is the app: only calls to our own service get the token.
         if let host = req.url?.host, host == Self.serviceURL?.host {
@@ -516,15 +603,15 @@ final class SyncAccounts: NSObject, ObservableObject {
             (data, resp) = try await URLSession.shared.data(for: req)
         }
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
-        let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
         guard (200..<300).contains(code) else {
+            let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
             let body = String(decoding: data, as: UTF8.self)
             let host = req.url?.host
             print("[sync] \(req.httpMethod ?? "GET") \(host ?? "")\(req.url?.path ?? ""): HTTP \(code) \(body.prefix(300))")
             throw SyncError.http(code, SyncErrors.describe(code: code, body: body, who: Self.who(host)),
                                  reason: json["reason"] as? String)
         }
-        return json
+        return data
     }
 
     /// Who answered, for error wording: our service, or a provider by name.
@@ -674,12 +761,12 @@ struct SyncAccountsCard: View {
     }
 }
 
-// MARK: - Upload buttons (ride page)
+// MARK: - Upload grid (ride page)
 
-/// One button per connected account. Tapping one first asks for the activity
-/// name, prefilled with the ride's current name (the rider's last rename, else
-/// `defaultName`), then uploads under it; all three services take the name
-/// with the file. The name is remembered for the ride (RideNames).
+/// One tile per connected account, side by side. Tapping one first asks for the
+/// activity name, prefilled with the ride's current name (the rider's last
+/// rename, else `defaultName`), then uploads under it; all three services take
+/// the name with the file. The name is remembered for the ride (RideNames).
 struct SyncUploadButtons: View {
     let fileURL: URL
     let defaultName: String
@@ -695,19 +782,18 @@ struct SyncUploadButtons: View {
     var body: some View {
         let connected = SyncProvider.allCases.filter { sync.isConnected($0) }
         if !connected.isEmpty {
-            VStack(spacing: 10) {
-                ForEach(connected) { p in
-                    PrimaryButton(title: uploading == p ? "Uploading to \(p.title)…" : "Upload to \(p.title)",
-                                  systemImage: "arrow.up.circle",
-                                  enabled: uploading == nil && status[p] == nil) {
-                        draft = names.name(for: file, default: defaultName)
-                        naming = p
-                    }
-                    if let s = status[p] {
-                        Text(s).font(.system(size: 12))
-                            .foregroundStyle(s.hasPrefix("Uploaded") ? Palette.good : Palette.accentDark)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Upload to").trackedLabel()
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10),
+                                         count: min(connected.count, 3)),
+                          spacing: 10) {
+                    ForEach(connected) { tile($0) }
+                }
+                // Full messages go under the grid; a tile only has room for a word.
+                ForEach(connected.filter { failed($0) }) { p in
+                    let s = status[p] ?? ""
+                    Text(s.contains(p.title) ? s : "\(p.title): \(s)").font(BarlowFont.text(12))
+                        .foregroundStyle(Palette.accentDark)
                 }
             }
             .alert(naming.map { "Upload to \($0.title)" } ?? "Upload",
@@ -724,13 +810,101 @@ struct SyncUploadButtons: View {
         }
     }
 
+    private func uploaded(_ p: SyncProvider) -> Bool { status[p]?.hasPrefix("Uploaded") == true }
+    private func failed(_ p: SyncProvider) -> Bool { status[p] != nil && !uploaded(p) }
+
+    private func tile(_ p: SyncProvider) -> some View {
+        Button {
+            draft = names.name(for: file, default: defaultName)
+            naming = p
+        } label: {
+            VStack(spacing: 8) {
+                ProviderLogo(provider: p, size: 44)
+                Text(p.title).font(BarlowFont.condensed(17, .semibold)).foregroundStyle(Palette.ink)
+                    .lineLimit(1).minimumScaleFactor(0.8)
+                HStack(spacing: 4) {
+                    if uploading == p {
+                        ProgressView().controlSize(.mini)
+                        Text("Uploading")
+                    } else if uploaded(p) {
+                        Image(systemName: "checkmark")
+                        Text("Uploaded")
+                    } else if failed(p) {
+                        Text("Try again")
+                    } else {
+                        Image(systemName: "arrow.up")
+                        Text("Upload")
+                    }
+                }
+                .font(BarlowFont.text(12, .semibold))
+                .foregroundStyle(uploaded(p) ? Palette.good : failed(p) ? Palette.accentDark : Palette.muted)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 14).padding(.horizontal, 8)
+            .background(Palette.surface)
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .strokeBorder(uploaded(p) ? Palette.good : Palette.hairline, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        // Not .disabled: that greys the logo, and a finished upload should read as done.
+        .allowsHitTesting(uploading == nil && !uploaded(p))
+        .opacity(uploading != nil && uploading != p ? 0.5 : 1)
+        .accessibilityLabel(uploaded(p) ? "Uploaded to \(p.title)" : "Upload to \(p.title)")
+    }
+
     private func upload(_ p: SyncProvider) {
         let name = names.rename(file, to: draft, default: defaultName)
         uploading = p
+        status[p] = nil
         Task {
             do { status[p] = try await sync.upload(fileURL, to: p, name: name) }
             catch { status[p] = error.localizedDescription }
             uploading = nil
         }
+    }
+}
+
+/// The service's logo as a rounded app-icon tile. Ride with GPS and
+/// intervals.icu use their published marks as-is (Ride with GPS asks for its
+/// colours to be left alone) on a light tile; Strava's chevrons sit on its orange.
+struct ProviderLogo: View {
+    let provider: SyncProvider
+    var size: CGFloat = 44
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: size * 0.27, style: .continuous)
+        shape.fill(provider == .strava ? Color(hex: 0xFC4C02) : .white)
+            .overlay(shape.strokeBorder(provider == .strava ? .clear : Palette.hairline, lineWidth: 1))
+            .frame(width: size, height: size)
+            .overlay(mark)
+            .accessibilityHidden(true)
+    }
+
+    @ViewBuilder private var mark: some View {
+        switch provider {
+        case .strava:
+            StravaMark().fill(.white).frame(width: size * 0.56, height: size * 0.56)
+        case .intervals:
+            Image("logo-intervals").resizable().scaledToFit().frame(width: size * 0.72)
+        case .ridewithgps:
+            Image("logo-rwgps").resizable().scaledToFit().frame(width: size * 0.74)
+        }
+    }
+}
+
+/// Strava's two chevrons, on a 24-unit grid.
+private struct StravaMark: Shape {
+    func path(in r: CGRect) -> Path {
+        let k = min(r.width, r.height) / 24
+        func pt(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: r.minX + x * k, y: r.minY + y * k) }
+        var p = Path()
+        p.addLines([pt(15.387, 17.944), pt(13.298, 13.828), pt(10.233, 13.828),
+                    pt(15.387, 24), pt(20.537, 13.828), pt(17.471, 13.828)])
+        p.closeSubpath()
+        p.addLines([pt(10.463, 8.229), pt(13.299, 13.827), pt(17.471, 13.827),
+                    pt(10.463, 0), pt(3.463, 13.828), pt(7.632, 13.828)])
+        p.closeSubpath()
+        return p
     }
 }

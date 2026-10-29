@@ -20,6 +20,10 @@
 //   POST /v1/rwgps/trips         (multipart, Bearer user token) [App Check] -> proxied
 //                                upload, the API key added here
 //   GET  /v1/rwgps/me            (Bearer user token) [App Check] -> the account
+//   GET  /v1/rwgps/routes?page=N (Bearer user token) [App Check] -> {routes:
+//                                [{id, name, distance, elevation_gain}], next_page}
+//   GET  /v1/rwgps/routes/:id/gpx (Bearer user token) [App Check] -> the route
+//                                as GPX, for the apps' route import
 //   GET  /.well-known/apple-app-site-association, /.well-known/assetlinks.json
 //
 // "Only my apps": two layers. [App Check] routes require a Firebase App Check
@@ -82,7 +86,10 @@ const PROVIDERS = {
         authorize: 'https://www.strava.com/oauth/authorize',
         token: 'https://www.strava.com/oauth/token',
         revoke: 'https://www.strava.com/oauth/deauthorize',
-        scope: 'read,activity:write',
+        // read_all: private routes (the apps' route import). With `read` alone
+        // Strava lists and exports only public ones. Changing this only
+        // reaches accounts connected afterwards: riders reconnect to get it.
+        scope: 'read,read_all,activity:write',
         title: 'Strava',
         refreshes: true,     // access tokens last 6 h; the refresh token may rotate
         clientId: () => env('STRAVA_CLIENT_ID'),
@@ -302,6 +309,60 @@ async function rwgpsCurrentUser(userToken) {
     // v1 wraps it as {user: {...}}; be lenient.
     const u = json.user || json;
     return { id: u.id, name: u.name || u.display_name || null };
+}
+
+/* GET on the RWGPS API with the key added. 401 and 404 come back as
+ * themselves with a readable message; anything else is upstreamError's. */
+async function rwgpsGet(userToken, path, what, notFound = 'RideWithGPS could not find that.') {
+    let r;
+    try {
+        r = await fetch(`${PROVIDERS.ridewithgps.api}${path}`, {
+            headers: rwgpsHeaders(userToken), signal: AbortSignal.timeout(30000),
+        });
+    } catch (e) {
+        throw upstreamError('ridewithgps', what, undefined, e.message);
+    }
+    const text = await r.text().catch(() => '');
+    if (r.status === 401) throw new HttpError(401, 'RideWithGPS no longer accepts this sign-in. Disconnect and connect RideWithGPS again.');
+    if (r.status === 404) throw new HttpError(404, notFound);
+    if (!r.ok) throw upstreamError('ridewithgps', what, r.status, text);
+    try { return JSON.parse(text); } catch { throw upstreamError('ridewithgps', `${what} (not JSON)`, r.status, text); }
+}
+
+/* One page of the user's saved routes, trimmed to what the route picker
+ * shows. RWGPS paginates (meta.pagination.next_page_url); distance and
+ * elevation_gain are metres. */
+async function rwgpsRoutes(userToken, page) {
+    const json = await rwgpsGet(userToken, `/routes.json?page=${page}`, 'route list');
+    const routes = (Array.isArray(json.routes) ? json.routes : []).map((r) => ({
+        id: r.id,
+        name: r.name || null,
+        distance: typeof r.distance === 'number' ? r.distance : null,
+        elevation_gain: typeof r.elevation_gain === 'number' ? r.elevation_gain : null,
+    })).filter((r) => r.id != null);
+    const pg = (json.meta && json.meta.pagination) || {};
+    const more = pg.next_page_url ? true : (pg.page_count ? page < Number(pg.page_count) : false);
+    return { routes, next_page: more ? page + 1 : null };
+}
+
+/* A route's track points (x = lon, y = lat, e = elevation) as GPX 1.1, so the
+ * apps feed it through the same importer as a file. */
+async function rwgpsRouteGpx(userToken, id) {
+    const json = await rwgpsGet(userToken, `/routes/${id}.json`, 'route', 'That route is no longer on RideWithGPS.');
+    const route = json.route || json;
+    const pts = Array.isArray(route.track_points) ? route.track_points : [];
+    const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    const out = ['<?xml version="1.0" encoding="UTF-8"?>\n',
+        '<gpx version="1.1" creator="OpenTrailPaper sync-auth" xmlns="http://www.topografix.com/GPX/1/1">\n',
+        `<trk><name>${esc(route.name || `RideWithGPS route ${id}`)}</name><trkseg>\n`];
+    for (const p of pts) {
+        const lat = Number(p.y), lon = Number(p.x);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+        const ele = Number.isFinite(Number(p.e)) && p.e != null ? `<ele>${Number(p.e).toFixed(1)}</ele>` : '';
+        out.push(`<trkpt lat="${lat.toFixed(6)}" lon="${lon.toFixed(6)}">${ele}</trkpt>\n`);
+    }
+    out.push('</trkseg></trk></gpx>\n');
+    return out.join('');
 }
 
 // ---- Firebase App Check -----------------------------------------------------
@@ -529,6 +590,10 @@ async function handle(req, res) {
             if (provider === 'strava') {
                 payload.refresh_token = tok.refresh_token;
                 payload.expires_at = tok.expires_at;
+                // What the rider actually granted (they can untick read_all);
+                // the apps use it to say why private routes are missing.
+                const granted = url.searchParams.get('scope');
+                if (granted) payload.scope = granted;
                 if (tok.athlete) payload.athlete = { id: tok.athlete.id, name: [tok.athlete.firstname, tok.athlete.lastname].filter(Boolean).join(' ') };
             } else if (provider === 'intervals') {
                 // Athlete ids are strings there ("i12345"); keep them verbatim.
@@ -573,6 +638,20 @@ async function handle(req, res) {
     if (m('GET', /^\/v1\/rwgps\/me$/)) {
         await requireApp(req);
         return send(res, 200, await rwgpsCurrentUser(bearer(req)));
+    }
+
+    if (m('GET', /^\/v1\/rwgps\/routes$/)) {
+        await requireApp(req);
+        const token = bearer(req);
+        const page = Math.max(1, Math.min(1000, parseInt(url.searchParams.get('page') || '1', 10) || 1));
+        return send(res, 200, await rwgpsRoutes(token, page));
+    }
+
+    if ((r = m('GET', /^\/v1\/rwgps\/routes\/(\d+)\/gpx$/))) {
+        await requireApp(req);
+        const gpx = await rwgpsRouteGpx(bearer(req), r[1]);
+        res.writeHead(200, { 'content-type': 'application/gpx+xml; charset=utf-8', 'cache-control': 'no-store' });
+        return res.end(gpx);
     }
 
     if (m('POST', /^\/v1\/rwgps\/trips$/)) {
