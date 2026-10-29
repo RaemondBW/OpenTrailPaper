@@ -150,6 +150,21 @@ damaged, and along a ride on a route.
 like a connection interval; the sim's `--conn-interval-ms` paces only the
 device's notifications.
 
+## Sensors, radar and music
+
+The virtual sensors (PROTOCOL.md, "Virtual sensors") send the standard
+packets with their optional fields, counters that can be set near a wrap or
+reset, and the radar's continuation packets; `sensor_state` reads back what
+the firmware made of them and `media_state` the MUSIC page's store. An iPhone
+with Apple Media Service is `SimPhone(...).offer_ams()`: the device's AMS
+client subscribes over the phone's own GATT server, `ams_track` /
+`ams_playback` send Entity Updates as iOS does, and `ams_commands()` lists the
+Remote Commands the device wrote. `otpsim.fit` reads a ride back record by
+record. Tests: [test_sensors.py](tests/test_sensors.py) (pairing on the panel
+and from the app, several straps, reboot, packet formats, wheel size and
+counter wraps, the speed source, dropouts on the glass and in the FIT),
+[test_radar.py](tests/test_radar.py), [test_media.py](tests/test_media.py).
+
 ## Writing tests that fail for the right reason
 
 A test that passes with the bug present proves nothing. When a test guards a

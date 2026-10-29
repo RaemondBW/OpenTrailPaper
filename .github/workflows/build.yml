@@ -163,6 +163,8 @@ jobs:
             tests: test_regressions_gps.py test_regressions_link.py test_regressions_rides.py test_regressions_ui.py
           - part: cards and maps
             tests: test_cards.py test_maps.py test_pois.py
+          - part: sensors, radar and music
+            tests: test_sensors.py test_radar.py test_media.py
     env:
       OTP_SIM_TIME_SCALE: "3"   # wall-clock bounds in the tests, for a slower runner
     steps:

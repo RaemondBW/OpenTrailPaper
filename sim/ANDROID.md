@@ -99,6 +99,21 @@ reference bytes:
   (`updateMapLayers`, the device's `settings.map_layers`) removes that icon
   and nothing else, and on brings it back.
 
+### Sensors and music
+
+`SensorsMediaSimTest` drives the Sensors sheet's and the music feed's
+BleManager calls against the sim's virtual sensors (PROTOCOL.md `sensor`) and
+reads the device back with `sensor_state` / `media_state`:
+
+- `sensorsSheetScansPairsAndForgetsAStrap`: the scan lists the strap by name
+  and kind, Pair connects it (the device's heart rate is the strap's), Forget
+  drops it and it stays off while in range.
+- `nowPlayingAndAlbumArtFromTheAppReachTheDevice`: no AMS on Android, so the
+  app is the MUSIC page's feed: its track, then its cover (tone-dithered on
+  the phone, ArtDither) land on the device; a clear empties the page.
+- `forgottenStrapLeavesTheSheetWithoutARefresh` is `@Ignore`d: a firmware bug
+  (the FORGET answer still lists the strap connected) keeps it on the sheet.
+
 ### The tile CDN override (debug builds)
 
 `files/otp-endpoints` (`map/DebugEndpoints.kt`, src/debug; the release copy

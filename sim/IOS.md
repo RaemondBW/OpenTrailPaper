@@ -123,6 +123,14 @@ XCTest's failure triage can hang on the Maps screen:
   builds it from the stand-in's Overpass answer, and the device holds the
   reference writer's bytes, recorded `phone:…`.
 
+### Sensors
+
+- `test40_SensorsSheetConnectsAndForgetsAStrap`: a virtual strap (control
+  `sensor`) is listed by the Settings → Sensors sheet's scan; Connect pairs it
+  and the device's heart rate (`sensor_state`) is the strap's; Forget drops
+  it, the device leaves it alone while it stays in range, and the sheet offers
+  it again.
+
 The fixture covers the area around the centre generously (±0.04° / ±0.05°),
 so the box, however the map frames it, gets only fixture hexes; a box outside
 it fails at once, naming the group index the screen looked up. The tests
