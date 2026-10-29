@@ -478,6 +478,17 @@ int main(int argc, char** argv) {
         clearWhite(fb.data());
         ui_render_map(empty, s, fb.data());
         emit("map_nomap.png");
+        // Same spot with no card: downloaded maps live on it, so the prompt
+        // says what is actually missing.
+        RideState ns = s;
+        ns.sdCard = SD_CARD_NONE;
+        clearWhite(fb.data());
+        ui_render_map(empty, ns, fb.data());
+        emit("map_no_sd.png");
+        ns.sdCard = SD_CARD_UNREADABLE;
+        clearWhite(fb.data());
+        ui_render_map(empty, ns, fb.data());
+        emit("map_sd_unreadable.png");
     }
 
     // Powered-off screen: full-screen map backdrop (max zoom-out) + plate
@@ -577,6 +588,12 @@ int main(int argc, char** argv) {
         clearWhite(fb.data());
         ui_render_dashboard(sb, false, dashDefaultLayout(), fb.data());
         emit("statusbar_24h.png");
+        // No SD card: the chip leads the cluster, ahead of the sensors, and
+        // still leaves the battery % clear with HR + PWR connected.
+        sb.sdCard = SD_CARD_NONE;
+        clearWhite(fb.data());
+        ui_render_dashboard(sb, false, dashDefaultLayout(), fb.data());
+        emit("statusbar_no_sd.png");
     }
 
     // Boot progress — mid-boot, and the failure case that matters most
@@ -609,9 +626,18 @@ int main(int argc, char** argv) {
         clearWhite(fb.data());
         ui_render_boot_screen("v0.91", steps, allOk, det, ms, 9, fb.data());
         emit("boot.png");
+        // The SD line carries what main.cpp stages for each failure: an empty
+        // slot, or a card that answered but would not mount (exFAT).
+        char badDet[9][28];
+        memcpy(badDet, det, sizeof(badDet));
+        snprintf(badDet[0], sizeof(badDet[0]), "No SD card");
         clearWhite(fb.data());
-        ui_render_boot_screen("v0.91", steps, sdBad, det, ms, 9, fb.data());
+        ui_render_boot_screen("v0.91", steps, sdBad, badDet, ms, 9, fb.data());
         emit("boot_sd_failed.png");
+        snprintf(badDet[0], sizeof(badDet[0]), "unreadable · FAT32?");
+        clearWhite(fb.data());
+        ui_render_boot_screen("v0.91", steps, sdBad, badDet, ms, 9, fb.data());
+        emit("boot_sd_unreadable.png");
         clearWhite(fb.data());
         ui_render_boot_screen("v0.91", steps, sdBusy, det, ms, 1, fb.data());
         emit("boot_sd_mounting.png");
@@ -637,6 +663,19 @@ int main(int argc, char** argv) {
     ui_render_menu(menu, fb.data());
     ui::statusBar(s, fb.data(), "MENU");
     emit("menu.png");
+
+    // No card: Start Ride says why it won't record, History and the footer
+    // already said "no SD card".
+    {
+        MenuInfo nm = menu;
+        nm.sdOk = false;
+        RideState ns = s;
+        ns.sdCard = SD_CARD_NONE;
+        clearWhite(fb.data());
+        ui_render_menu(nm, fb.data());
+        ui::statusBar(ns, fb.data(), "MENU");
+        emit("menu_no_sd.png");
+    }
 
     // The same menu during a recorded ride. The website walkthrough uses this
     // state after leaving sensor pairing so END RIDE can lead to the summary.
