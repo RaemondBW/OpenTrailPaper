@@ -147,6 +147,9 @@ Asynchronous events (log lines, when subscribed) come as `{"event":…}`.
 | `reboot` | — | restarts the firmware (NVS and card kept): a power cut — RTC memory lost, the next boot is a power-on |
 | `link_pace` | `interval_ms`, `packets`, `window` (each optional) | changes the phone link's pace live, as `--conn-interval-ms` / `--packets-per-event` / `--notify-window` set it at start (0 interval: unpaced); answers the values in force |
 | `segments` | — | the live Strava segments as the SEGMENT page sees them (ui_dashboard's matcher, via `host/tu/ui_dashboard.cpp`): `count` (accepted set, `-1` none), `loaded` (adopted by the UI task), `phase` (`idle`/`armed`/`active`/`done`/`abandoned`), `busy`, and `list` — per relevant segment `name`, `phase`, `elapsed_ms`, `done_m`, `len_m`, `pr_s`, `delta_ms` (+ behind PR pace; `null` with no PR), `new_pr`, `off_route`, `avg_power`, `avg_hr`, `nearest`, `nearest_m` |
+| `lora` | `loss_pct`, `crc_error_pct`, `latency_ms`, `rssi`, `snr`, `busy`, `overrun`, `seed` (all optional) | the LoRa radio (`--lora`, see below): sets the link's impairments, then reports `lora`: `fitted`, `up`, `mode` (off/sleep/standby/rx/tx), its tuning (`freq_mhz`, `bw_khz`, `sf`, `cr`, `sync_word`, `power_dbm`), the impairments, and counters — `queued`, `lost` (to `loss_pct`), `mistuned` (sent on another frequency/modem), `deaf` (arrived while it was asleep or transmitting), `overrun` (overwritten in the one-packet FIFO before it was read), `crc`, `read`, `tx`, `cad_busy`, `begins`, `tx_seq` — and for diagnosis `listening`, `deaf_spans` (recent [from, to] device-ms spans it was not receiving), `last_deaf_frame`, `now_ms`. With `airtime_len` N: just the time on air of N bytes at the current tuning |
+| `lora_rx` | `hex`; `rssi`, `snr`, `delay_ms`, `elapsed_ms`, `crc_error`; `freq_mhz`, `bw_khz`, `sf`, `cr`, `sync_word` | puts a raw frame (1–255 bytes, a Meshtastic packet as sent over the air) on the air for the radio, by default on the tuning it has now. It is on the air for its LoRa time on air after the link latency, and after any frame before it (frames don't overlap); `elapsed_ms`: it started that long ago. Answers `lost` (dropped by `loss_pct`), `start_ms`, `end_ms` (device time) |
+| `lora_tx` | `since` | frames the radio transmitted after sequence `since`, logged as each starts: `frames` [{`seq`, `start_ms`, `end_ms`, tuning, `power_dbm`, `aborted`, `hex`}], `seq` (the last), `now_ms` |
 | `quit` | — | exits the sim |
 | **power and robustness** | | |
 | `reset` | `reason` (`panic`, `task_wdt`, `int_wdt`, `wdt`, `brownout`, `sw`, `ext`) | the chip resets for that reason: `esp_reset_reason()` says so on the next boot and RTC memory (`RTC_NOINIT_ATTR`: the crash reporter's breadcrumbs, diag's storage trace) survives. Unflushed card writes are lost, as with `reboot` |
@@ -208,9 +211,30 @@ Status blocks for workouts, the stopwatch and the frontlight (cov/workouts):
 A device that switches itself off (auto-sleep, SHUT DOWN) ends the process
 (`[sim] powered off: …`); `SimDevice.wait_powered_off()` waits for it.
 
+### The LoRa radio and its air
+
+`--lora` fits the SX1262 (the mesh, `src/mesh_service.cpp`); without it the
+board has none, as before. `sim/host/lora_sim.cpp` implements `lora_radio.h`
+as the chip behaves: a transmission lasts its time on air (Semtech's formula)
+and DIO1 fires at its end; the radio is half-duplex (what ends while it
+transmits, sleeps or retunes is lost — `deaf`; after a transmission it receives again only when the firmware calls `listen()`/`finishSend()`, as the chip drops to standby at TxDone); a frame is heard only on the
+same frequency, bandwidth, spreading factor and sync word (the coding rate is
+in the LoRa header); the FIFO holds one packet, so one not read before the
+next arrives is overwritten (`overrun`, as continuous receive does on the
+chip); a damaged frame fires DIO1 and reads as nothing (`crc`). Channel-activity
+detection is busy while a frame is on the air or `busy` is set. Collisions
+between two senders are not modelled: frames queue one after another.
+
+The air is the control channel. A test is a virtual node (`lora_rx`) and a
+listener (`lora_tx`); `otpsim.mesh.Air` joins several sims by relaying each
+one's transmissions to the others' `lora_rx` as they start, with per-link
+loss/RSSI. `--mac` gives each sim its own MAC, i.e. its own mesh node number
+(bytes 2–5, little-endian, as Meshtastic derives it).
+
 ## Command line
 
-`otp-sim --help` lists the options. Those about the card: `--sd DIR` (its
+`otp-sim --help` lists the options. `--lora` fits the LoRa radio and
+`--mac AA:BB:CC:DD:EE:FF` sets the board's MAC (above). Those about the card: `--sd DIR` (its
 root, default `<dir>/sd`), `--sd-size-mb N` (capacity, default 32 GB),
 `--sd-cluster-kb N` (FAT cluster size), `--sd-latency-ms N` (device time per
 card call), `--sd-ready-ms N`, `--sd-crash-on-read PATH`.

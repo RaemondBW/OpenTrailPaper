@@ -21,6 +21,9 @@ struct Options {
     uint64_t sdSizeMb = 0;            // the card's capacity (0: 32 GB)
     uint32_t sdClusterKb = 0;         // FAT cluster size (0: as SD Formatter picks for the size)
     std::vector<std::string> argv;    // for reboot (re-exec)
+    // ---- mesh / LoRa (lora_sim.cpp) ----
+    bool lora = false;                // an SX1262 is fitted (--lora)
+    uint8_t mac[6] = {0x3c, 0x84, 0x27, 0x51, 0x4d, 0x00};   // efuse MAC (--mac): the mesh node number
 };
 extern Options opts;
 

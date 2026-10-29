@@ -177,6 +177,11 @@ jobs:
             tests: test_navigation.py
           - part: segments
             tests: test_segments.py
+          # The mesh on the sim's LoRa radio (--lora); tools/mesh_test is the codec.
+          - part: mesh
+            tests: test_mesh.py
+          - part: mesh position and air
+            tests: test_mesh_position.py test_mesh_air.py
     env:
       OTP_SIM_TIME_SCALE: "3"   # wall-clock bounds in the tests, for a slower runner
     steps:

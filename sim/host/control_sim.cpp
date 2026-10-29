@@ -34,6 +34,7 @@ std::string sensorCommand(const json::Value& r);   // sensors_sim.cpp
 // -- sensors / radar / media inspection (sensors_sim.cpp, media_sim.cpp) --
 std::string sensorStateCommand(const json::Value& r);
 std::string mediaStateCommand(const json::Value& r);
+std::string loraCommand(const json::Value& r);     // lora_sim.cpp (mesh radio)
 
 // ---- the log --------------------------------------------------------------------------
 
@@ -423,6 +424,8 @@ std::string handle(const json::Value& r) {
     // ---- segments (cov/nav) ----
     if (cmd == "segments") return ok("\"segments\":" + sim::segmentsJson());
     // ---- end segments ----
+    // ---- mesh / LoRa radio (lora_sim.cpp) ----
+    if (cmd == "lora" || cmd == "lora_rx" || cmd == "lora_tx") return loraCommand(r);
     return "\"ok\":false,\"error\":" + json::esc("unknown cmd '" + cmd + "'");
 }
 

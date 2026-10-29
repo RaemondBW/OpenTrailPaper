@@ -120,8 +120,9 @@ static inline esp_err_t esp_pm_dump_locks(void* f) { (void)f; return ESP_OK; }
 typedef bool (*skip_light_sleep_cb_t)(void);
 static inline esp_err_t esp_pm_register_skip_light_sleep_callback(skip_light_sleep_cb_t cb) { (void)cb; return ESP_OK; }
 
-static inline esp_err_t esp_efuse_mac_get_default(uint8_t* mac) {
-    static const uint8_t m[6] = {0x3c, 0x84, 0x27, 0x51, 0x4d, 0x00}; memcpy(mac, m, 6); return ESP_OK; }
+// The board's MAC; per instance (--mac), so several sims are distinct mesh nodes.
+void sim_efuse_mac(uint8_t* mac);
+static inline esp_err_t esp_efuse_mac_get_default(uint8_t* mac) { sim_efuse_mac(mac); return ESP_OK; }
 static inline esp_err_t esp_read_mac(uint8_t* mac, int type) { (void)type; return esp_efuse_mac_get_default(mac); }
 #define ESP_MAC_WIFI_STA 0
 #define ESP_MAC_BT 2

@@ -18,7 +18,7 @@ class FirmwareSim private constructor(
     val dir: File,
     val blePort: Int,
     val ctlPort: Int,
-    /** Extra otp-sim options (e.g. `--conn-interval-ms 300 --packets-per-event 1`), kept across [launch]es. */
+    /** Extra otp-sim options (e.g. `--lora`, `--conn-interval-ms 300 --packets-per-event 1`), kept across [launch]es. */
     val args: List<String> = emptyList(),
 ) : AutoCloseable {
     private var proc: Process? = null
@@ -183,6 +183,44 @@ class FirmwareSim private constructor(
 
     /** The radio link to the phone is lost (default: supervision timeout). */
     fun dropPhone(reason: Int = 0x08) { cmd("ble_drop", "reason" to reason) }
+
+    // ---- the LoRa radio (start with args = listOf("--lora"); see MeshAir) ----------------------
+
+    /** One frame the device's radio put on the air (control `lora_tx`). */
+    class LoraFrame(val seq: Long, val startMs: Long, val endMs: Long, val freqMhz: Double, val bytes: ByteArray)
+
+    /**
+     * Puts [frame] on the air for the device, on the channel it is tuned to;
+     * it arrives after its time on air. Returns the sim's answer (`lost`,
+     * `start_ms`, `end_ms` in device time).
+     */
+    fun loraRx(frame: ByteArray, rssi: Int? = null, snr: Int? = null): JsonObject =
+        cmd("lora_rx", "hex" to frame.joinToString("") { "%02x".format(it) }, "rssi" to rssi, "snr" to snr)
+
+    /**
+     * What the device transmitted after [since] (a seq), and the seq of the
+     * last one returned. The sim logs a transmission as it starts; only those
+     * finished (and re-armed for: the firmware's mesh task polls every
+     * 250 ms) are returned, so a test that answers one is not answering into
+     * a radio still transmitting. The rest come on a later call.
+     */
+    fun loraTx(since: Long = 0): Pair<List<LoraFrame>, Long> {
+        val r = cmd("lora_tx", "since" to since)
+        val now = r.get("now_ms").asLong
+        val frames = r.getAsJsonArray("frames").map { it.asJsonObject }
+            .takeWhile { it.get("end_ms").asLong + 300 <= now }
+            .map { o ->
+                val hex = o.get("hex").asString
+                LoraFrame(
+                    o.get("seq").asLong, o.get("start_ms").asLong, o.get("end_ms").asLong, o.get("freq_mhz").asDouble,
+                    ByteArray(hex.length / 2) { i -> hex.substring(2 * i, 2 * i + 2).toInt(16).toByte() },
+                )
+            }
+        return frames to (frames.lastOrNull()?.seq ?: since)
+    }
+
+    /** The radio's state and counters (control `lora`). */
+    fun lora(): JsonObject = cmd("lora").getAsJsonObject("lora")
 
     /** The device goes away entirely (powered off): nothing listens on its ports. */
     fun stop() {
