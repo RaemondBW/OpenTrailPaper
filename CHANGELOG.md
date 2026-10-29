@@ -7,6 +7,9 @@ so write for the rider, newest version first, one `## vX.YY` heading each.
 
 ## v1.23
 
+- Roads through parks are easier to follow on the map. Where a road or
+  cycleway crosses a park's striped fill it now has a thin white border, so
+  it reads as a clean line instead of disappearing into the stripes.
 - The GPS debug page no longer shows more satellites in use than in view.
   The in-view count is refreshed every five seconds and the in-use count
   every second, so for a moment after the sky changed (or right after the
