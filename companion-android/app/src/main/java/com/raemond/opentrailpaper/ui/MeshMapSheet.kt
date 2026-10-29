@@ -14,7 +14,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.windowInsetsPadding
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -97,8 +96,8 @@ fun MeshMapSheet(ble: BleManager, onDismiss: () -> Unit) {
                     Modifier
                         .align(Alignment.BottomCenter)
                         .padding(16.dp)
-                        .background(Palette.surface, RoundedCornerShape(20.dp))
-                        .border(1.dp, Palette.hairline, RoundedCornerShape(20.dp))
+                        .background(Palette.surface)
+                        .border(Rule.border, Palette.hairline)
                         .padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
@@ -127,8 +126,8 @@ private fun Pill(label: String, onClick: (() -> Unit)? = null) {
         style = condensed(18.sp, FontWeight.SemiBold),
         color = Palette.accent,
         modifier = Modifier
-            .background(Palette.surface, RoundedCornerShape(50))
-            .border(1.dp, Palette.hairline, RoundedCornerShape(50))
+            .background(Palette.surface)
+            .border(Rule.border, Palette.hairline)
             .let { if (onClick != null) it.clickable(onClick = onClick) else it }
             .padding(horizontal = 16.dp, vertical = 9.dp),
     )

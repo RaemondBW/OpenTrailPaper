@@ -41,6 +41,15 @@
 -dontwarn org.osmdroid.**
 
 # ---------------------------------------------------------------------------
+# protobuf-lite (the phone link, link/LinkClient.kt)
+# ---------------------------------------------------------------------------
+#
+# Lite messages describe their layout to the runtime by FIELD NAME (the
+# generated buildMessageInfo strings), and the runtime finds the fields
+# reflectively. Renamed or stripped fields decode as garbage or crash.
+-keep class * extends com.google.protobuf.GeneratedMessageLite { <fields>; }
+
+# ---------------------------------------------------------------------------
 # The rest is quieting warnings for optional dependencies that are not present
 # at runtime, which R8 reports as missing classes and would otherwise fail on.
 # ---------------------------------------------------------------------------

@@ -20,6 +20,8 @@ constexpr char CONFIG_PATH[] = "/config/dashboard.cfg";
 constexpr size_t TEXT_MAX = 2048;
 
 DashPages g_pages = dashDefaultPages();
+// Bumped whenever g_pages changes, so the phone link can push the layout.
+volatile uint32_t g_version = 0;
 
 bool writeFile(const char* text) {
     if (usb_storage::hostActive()) return false;   // the card is not ours
@@ -68,6 +70,7 @@ void begin() {
     DashPages parsed;
     if (dashParsePages(text, parsed)) {
         g_pages = parsed;
+        g_version = g_version + 1;
         diag::log("dash: layout loaded (%d page%s, %d fields on page 1)",
                   parsed.count, parsed.count == 1 ? "" : "s",
                   parsed.pages[0].layout.count);
@@ -104,7 +107,10 @@ bool applyText(const char* text, const char** reason) {
     static const char* kWriteFailed = "SD write failed";
     if (reason) *reason = nullptr;
 
-    DashPages parsed;
+    // Static: this runs on the BLE server task (4 KB stack), and eight
+    // pages of layout no longer belong on it.
+    static DashPages parsed;
+    parsed = DashPages();
     if (!dashParsePages(text, parsed)) {
         if (reason) *reason = kNoFields;
         return false;
@@ -114,6 +120,7 @@ bool applyText(const char* text, const char** reason) {
     // The write is retried at the next begin() only in the sense that a failed
     // save means the file still holds the previous layout — which is reported.
     g_pages = parsed;
+    g_version = g_version + 1;
     if (!writeFile(text)) {
         if (reason) *reason = kWriteFailed;
         return false;
@@ -122,6 +129,8 @@ bool applyText(const char* text, const char** reason) {
               parsed.count == 1 ? "" : "s");
     return true;
 }
+
+uint32_t version() { return g_version; }
 
 size_t currentText(char* out, size_t cap) {
     return dashSerializePages(g_pages, out, cap);

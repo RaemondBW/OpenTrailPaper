@@ -41,6 +41,7 @@ constexpr int MAX_PARK_POINTS = 24000;
 constexpr int MAX_PARK_POLYS = 512;
 // Cycling POIs (from each tile's .poi file). Dense downtown SF holds ~800 in
 // 7 tiles; the widest zoom that shows any (8 m/px) sees a ~4x8 km window.
+// Past it a frame keeps the most important and nearest (projectPoisInto).
 constexpr int MAX_POIS = 256;
 
 // The single "primary" blob used by the embedded map + route overlay path.
@@ -124,6 +125,17 @@ inline bool poiAtZoom(uint8_t type, float mpp) {
     return false;
 }
 
+// The order map_view drawPois draws (and culls) in: a repair stand, then
+// water, toilets, a shop. Lower is more important.
+inline int poiRank(uint8_t type) {
+    switch (type) {
+        case MAP_POI_REPAIR: return 0;
+        case MAP_POI_WATER: return 1;
+        case MAP_POI_TOILETS: return 2;
+        default: return 3;
+    }
+}
+
 }  // namespace
 
 namespace map_tiles {
@@ -142,8 +154,100 @@ static bool ensureScratch() {
            poiBuf;
 }
 
+// One sub-tile index entry: its bytes lie inside the blob, past the index, and
+// hold at least the u16 record count. Written so nothing can wrap: off + l in
+// uint32 (or a 32-bit size_t, on the board) is exactly how an offset near 4 GB
+// used to pass a bounds check.
+static inline bool entryInside(uint32_t off, uint32_t l, size_t indexEnd,
+                               size_t len) {
+    return off >= indexEnd && l >= 2 && l <= len && off <= len - l;
+}
+
+size_t tileIndexEnd(const uint8_t* b, size_t len) {
+    if (len < 36 || memcmp(b, "EBM2", 4) != 0) return 0;
+    const double lat0 = rd<double>(b + 4), lon0 = rd<double>(b + 12);
+    const double deg = rd<double>(b + 20);
+    const int32_t nx = rd<int32_t>(b + 28), ny = rd<int32_t>(b + 32);
+    // Written so NaN fails every test. The cell size divides the viewport into
+    // sub-tiles; zero or a denormal makes that range billions of cells wide.
+    if (!(lat0 >= -90.0 && lat0 <= 90.0 && lon0 >= -360.0 && lon0 <= 360.0 &&
+          deg >= 1e-6 && deg <= 10.0))
+        return 0;
+    if (nx <= 0 || ny <= 0) return 0;
+    const uint64_t cells = (uint64_t)nx * (uint64_t)ny;
+    if (cells > (len - 36) / 8) return 0;
+    return 36 + (size_t)cells * 8;
+}
+
+size_t tileDataEnd(const uint8_t* b, size_t len) {
+    const size_t idxEnd = tileIndexEnd(b, len);
+    if (!idxEnd) return 0;
+    size_t end = idxEnd;
+    for (size_t k = 36; k < idxEnd; k += 8) {
+        const uint32_t off = rd<uint32_t>(b + k), l = rd<uint32_t>(b + k + 4);
+        if (off && entryInside(off, l, idxEnd, len) && (size_t)off + l > end)
+            end = (size_t)off + l;
+    }
+    return end;
+}
+
+// A filled-polygon section (WTR2, PRK2) at `at`: its polygons all inside.
+// Returns where it ends, 0 if it runs past `len`.
+static size_t fillSectionEnd(const uint8_t* b, size_t at, size_t len) {
+    if (len - at < 6) return 0;
+    const uint16_t polys = rd<uint16_t>(b + at + 4);
+    size_t p = at + 6;
+    for (uint16_t i = 0; i < polys; ++i) {
+        if (len - p < 2) return 0;
+        const size_t bytes = (size_t)rd<uint16_t>(b + p) * 4;
+        p += 2;
+        if (bytes > len - p) return 0;
+        p += bytes;
+    }
+    return p;
+}
+
+bool tileValid(const uint8_t* b, size_t len) {
+    const size_t idxEnd = tileIndexEnd(b, len);
+    if (!idxEnd) return false;
+    for (size_t k = 36; k < idxEnd; k += 8) {
+        const uint32_t off = rd<uint32_t>(b + k), l = rd<uint32_t>(b + k + 4);
+        if (!off) continue;                          // an empty sub-tile
+        if (!entryInside(off, l, idxEnd, len)) return false;
+        // Every polyline record inside the entry; what follows the last one
+        // (the way-flag trailer, or nothing) is the reader's business.
+        size_t p = off + 2;
+        const size_t end = (size_t)off + l;
+        const uint16_t count = rd<uint16_t>(b + off);
+        for (uint16_t i = 0; i < count; ++i) {
+            if (end - p < 3) return false;
+            const size_t bytes = (size_t)rd<uint16_t>(b + p + 1) * 4;
+            p += 3;
+            if (bytes > end - p) return false;
+            p += bytes;
+        }
+    }
+    // The sections, where present, in the order the reader expects them.
+    size_t p = tileDataEnd(b, len);
+    if (len - p >= 4 && memcmp(b + p, "ELV1", 4) == 0) {
+        if (len - p < 44) return false;
+        const int32_t gw = rd<int32_t>(b + p + 4), gh = rd<int32_t>(b + p + 8);
+        if (gw < 0 || gh < 0 ||
+            (uint64_t)gw * (uint64_t)gh * 2 > (uint64_t)(len - p - 44))
+            return false;
+        p += 44 + (size_t)gw * gh * 2;
+    }
+    if (len - p >= 4 && memcmp(b + p, "WTR2", 4) == 0) {
+        if (!(p = fillSectionEnd(b, p, len))) return false;
+        if (len - p >= 4 && memcmp(b + p, "PRK2", 4) == 0 &&
+            !(p = fillSectionEnd(b, p, len)))
+            return false;
+    }
+    return true;
+}
+
 bool load(const uint8_t* data, size_t len) {
-    if (len < 36 || memcmp(data, "EBM2", 4) != 0) return false;
+    if (!tileIndexEnd(data, len)) return false;
     blob = data;
     blobLen = len;
     return ensureScratch();
@@ -205,7 +309,10 @@ void endProject(MapScreenData& out) {
 void projectBlobInto(const uint8_t* b, size_t bLen, double lat, double lon,
                      float metersPerPixel, int centerX, int centerY,
                      float rotateDeg) {
-    if (!pts || bLen < 36 || memcmp(b, "EBM2", 4) != 0) return;
+    // The header and the whole index inside the blob, or nothing is read: a
+    // grid bigger than the file sends every index read out of bounds.
+    const size_t idxEnd = pts ? tileIndexEnd(b, bLen) : 0;
+    if (!idxEnd) return;
 
     double gridLat0 = rd<double>(b + 4);
     double gridLon0 = rd<double>(b + 12);
@@ -236,19 +343,26 @@ void projectBlobInto(const uint8_t* b, size_t bLen, double lat, double lon,
     double py = (lat - gridLat0) * ky;
 
     double tileWm = tileDeg * kx, tileHm = tileDeg * ky;
-    int tx0 = (int)floor((px - halfWm) / tileWm);
-    int tx1 = (int)floor((px + halfWm) / tileWm);
-    int ty0 = (int)floor((py - halfHm) / tileHm);
-    int ty1 = (int)floor((py + halfHm) / tileHm);
+    // The sub-tiles in view, clamped to the grid while still doubles: a tile
+    // far away (or one with a nonsense origin) puts these far outside int.
+    const double fx0 = floor((px - halfWm) / tileWm), fx1 = floor((px + halfWm) / tileWm);
+    const double fy0 = floor((py - halfHm) / tileHm), fy1 = floor((py + halfHm) / tileHm);
+    int tx0 = 0, tx1 = -1, ty0 = 0, ty1 = -1;     // none, unless in view
+    if (fx1 >= 0 && fx0 < gridNx && fy1 >= 0 && fy0 < gridNy) {
+        tx0 = fx0 < 0 ? 0 : (int)fx0;
+        tx1 = fx1 >= gridNx ? gridNx - 1 : (int)fx1;
+        ty0 = fy0 < 0 ? 0 : (int)fy0;
+        ty1 = fy1 >= gridNy ? gridNy - 1 : (int)fy1;
+    }
 
     int usedPts = g_usedPts, usedPolys = g_usedPolys;
 
     for (int ty = ty0; ty <= ty1; ++ty) {
         for (int tx = tx0; tx <= tx1; ++tx) {
-            if (tx < 0 || tx >= gridNx || ty < 0 || ty >= gridNy) continue;
-            uint32_t off = rd<uint32_t>(indexBase + (ty * gridNx + tx) * 8);
-            uint32_t len = rd<uint32_t>(indexBase + (ty * gridNx + tx) * 8 + 4);
-            if (!off || off + len > bLen) continue;
+            const size_t k = (size_t)ty * gridNx + tx;
+            uint32_t off = rd<uint32_t>(indexBase + k * 8);
+            uint32_t len = rd<uint32_t>(indexBase + k * 8 + 4);
+            if (!off || !entryInside(off, len, idxEnd, bLen)) continue;
 
             // Tile origin relative to position, in screen px
             float originX = centerX + (float)((tx * tileWm - px) / metersPerPixel);
@@ -265,21 +379,22 @@ void projectBlobInto(const uint8_t* b, size_t bLen, double lat, double lon,
             // without one (every tile built before it) can never have.
             const uint8_t* wflags = nullptr;
             {
-                const uint8_t* h = p;
+                size_t h = 0, room = end - p;     // offsets: never past the end
                 uint16_t k = 0;
-                while (k < count && h + 3 <= end) {
-                    h += 3 + (size_t)rd<uint16_t>(h + 1) * 4;
+                while (k < count && room - h >= 3) {
+                    const size_t rec = 3 + (size_t)rd<uint16_t>(p + h + 1) * 4;
+                    if (rec > room - h) break;
+                    h += rec;
                     ++k;
                 }
-                if (k == count && h <= end && (size_t)(end - h) == count)
-                    wflags = h;
+                if (k == count && room - h == count) wflags = p + h;
             }
 
-            for (uint16_t i = 0; i < count && p + 3 <= end; ++i) {
+            for (uint16_t i = 0; i < count && end - p >= 3; ++i) {
                 uint8_t cls = *p;
                 uint16_t n = rd<uint16_t>(p + 1);
                 p += 3;
-                if (p + n * 4 > end) goto done;
+                if ((size_t)n * 4 > (size_t)(end - p)) goto done;
                 const uint8_t wf = wflags ? wflags[i] : 0;
 
                 // Dropping what this zoom sheds keeps the whole city inside
@@ -366,18 +481,17 @@ done:
     // Points are metres E/N of the tile origin (gridLat0/gridLon0), like roads
     // but relative to the tile corner instead of a sub-tile. Projected here and
     // filled (dithered) by the renderer under the roads.
-    size_t maxEnd = 36 + (size_t)gridNx * gridNy * 8;
-    for (int k = 0; k < gridNx * gridNy; ++k) {
-        uint32_t off = rd<uint32_t>(indexBase + (size_t)k * 8);
-        uint32_t l = rd<uint32_t>(indexBase + (size_t)k * 8 + 4);
-        if (off && (size_t)off + l > maxEnd) maxEnd = (size_t)off + l;
-    }
-    size_t wp = maxEnd;
-    if (wp + 44 <= bLen && memcmp(b + wp, "ELV1", 4) == 0) {
+    // Every length below is checked against what is LEFT of the blob, never
+    // by adding to an offset, so no field of a damaged tile can wrap one.
+    size_t wp = tileDataEnd(b, bLen);
+    if (bLen - wp >= 44 && memcmp(b + wp, "ELV1", 4) == 0) {
         int32_t gw = rd<int32_t>(b + wp + 4), gh = rd<int32_t>(b + wp + 8);
-        wp += 44 + (size_t)gw * gh * 2;   // skip the elevation block
+        if (gw < 0 || gh < 0 ||
+            (uint64_t)gw * (uint64_t)gh * 2 > (uint64_t)(bLen - wp - 44))
+            return;                           // an elevation block that cannot be
+        wp += 44 + (size_t)gw * gh * 2;       // skipped: nothing after it is found
     }
-    if (wp + 6 > bLen || memcmp(b + wp, "WTR2", 4) != 0) return;
+    if (bLen - wp < 6 || memcmp(b + wp, "WTR2", 4) != 0) return;
     const uint8_t* q = b + wp;
     const uint8_t* wend = b + bLen;
 
@@ -391,10 +505,10 @@ done:
                          MapFeatureClass cls, int& dropped, int& offscreen) {
         uint16_t polyCount = rd<uint16_t>(q + 4);
         q += 6;
-        for (int pi = 0; pi < polyCount && q + 2 <= wend; ++pi) {
+        for (int pi = 0; pi < polyCount && wend - q >= 2; ++pi) {
             uint16_t wn = rd<uint16_t>(q);
             q += 2;
-            if (q + (size_t)wn * 4 > wend) break;
+            if ((size_t)wn * 4 > (size_t)(wend - q)) break;
             const uint8_t* poly = q;
             q += (size_t)wn * 4;                 // always advance to next poly
             // Room is checked against what the ring COSTS AFTER decimation, not
@@ -469,7 +583,7 @@ done:
               g_stats.waterDropped, g_stats.waterOffscreen);
 
     // Parks (PRK2) follow the water section. Older tiles omit it — skip cleanly.
-    if (q + 6 <= wend && memcmp(q, "PRK2", 4) == 0) {
+    if (wend - q >= 6 && memcmp(q, "PRK2", 4) == 0) {
         parseFill(parkPts, parkPolys, g_usedParkPts, g_usedParkPolys,
                   MAX_PARK_POINTS, MAX_PARK_POLYS, MAP_PARK,
                   g_stats.parksDropped, g_stats.parksOffscreen);
@@ -477,7 +591,7 @@ done:
 
     // Extension sections: <magic><u32 length><payload>, skipped by length when
     // unknown so later additions never need another firmware to stay readable.
-    while (q + 8 <= wend) {
+    while (wend - q >= 8) {
         const uint32_t secLen = rd<uint32_t>(q + 4);
         const uint8_t* body = q + 8;
         if (secLen > (size_t)(wend - body)) break;   // truncated / not a section
@@ -512,8 +626,13 @@ bool poiFileValid(const uint8_t* b, size_t len) {
     if (len < POI_HEADER_LEN || memcmp(b, "EPOI", 4) != 0 || b[4] != 1) return false;
     const uint8_t recSize = b[5];
     const uint16_t count = rd<uint16_t>(b + 6);
-    return recSize >= 6 && POI_HEADER_LEN + (size_t)count * recSize <= len &&
-           rd<float>(b + 32) > 0 && rd<float>(b + 36) > 0;
+    // The origin and scales place every POI: a NaN or infinity there puts
+    // each one at a garbage pixel. Written so NaN fails.
+    const double lat0 = rd<double>(b + 16), lon0 = rd<double>(b + 24);
+    const float kx = rd<float>(b + 32), ky = rd<float>(b + 36);
+    return recSize >= 6 && (size_t)count * recSize <= len - POI_HEADER_LEN &&
+           lat0 >= -90.0 && lat0 <= 90.0 && lon0 >= -360.0 && lon0 <= 360.0 &&
+           kx > 0 && kx < 1e6f && ky > 0 && ky < 1e6f;
 }
 
 void projectPoisInto(const uint8_t* b, size_t len, double lat, double lon,
@@ -544,7 +663,7 @@ void projectPoisInto(const uint8_t* b, size_t len, double lat, double lon,
             sx = centerX + dx * rc - dy * rs;
             sy = centerY + dx * rs + dy * rc;
         }
-        if (sx < -16 || sx > 556 || sy < -16 || sy > 976) continue;
+        if (!(sx >= -16 && sx <= 556 && sy >= -16 && sy <= 976)) continue;
         const int ix = (int)lroundf(sx), iy = (int)lroundf(sy);
         // Builders store each POI in the one H3 cell containing it, so a
         // duplicate should not happen — but a builder that keeps the tile's
@@ -554,7 +673,30 @@ void projectPoisInto(const uint8_t* b, size_t len, double lat, double lon,
             dup = poiBuf[k].type == type && abs(poiBuf[k].x - ix) <= 1 &&
                   abs(poiBuf[k].y - iy) <= 1;
         if (dup) continue;
-        if (g_usedPois >= MAX_POIS) { g_stats.poisDropped++; continue; }
+        if (g_usedPois >= MAX_POIS) {
+            // Full. Keeping whichever came first kept the wrong ones: a file
+            // is sorted south to north, so in a crowded view everything north
+            // of the rider vanished — the tap ahead included — while toilets
+            // behind were kept. Keep what the rider needs instead: by draw
+            // priority, then nearest the rider. One pass over the buffer, and
+            // only once it is full (the duplicate test above costs as much).
+            g_stats.poisDropped++;
+            auto dist2 = [&](int x, int y) {
+                return (x - centerX) * (x - centerX) + (y - centerY) * (y - centerY);
+            };
+            int worst = 0, worstRank = -1, worstD = -1;
+            for (int k = 0; k < MAX_POIS; ++k) {
+                const int rk = poiRank(poiBuf[k].type);
+                const int dk = dist2(poiBuf[k].x, poiBuf[k].y);
+                if (rk > worstRank || (rk == worstRank && dk > worstD)) {
+                    worst = k; worstRank = rk; worstD = dk;
+                }
+            }
+            const int rank = poiRank(type);
+            if (rank < worstRank || (rank == worstRank && dist2(ix, iy) < worstD))
+                poiBuf[worst] = {(int16_t)ix, (int16_t)iy, type, r[1]};
+            continue;
+        }
         poiBuf[g_usedPois++] = {(int16_t)ix, (int16_t)iy, type, r[1]};
     }
 }

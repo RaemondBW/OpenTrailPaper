@@ -90,8 +90,9 @@ void dashNormalizeLayout(DashLayout& layout);
 //
 // The MAP is itself a page in the cycle (`page map`), movable like the rest —
 // there is always exactly one, the parser appends it when a config predates
-// its existence, and it can't be removed. 5 = 4 configurable pages + the map.
-constexpr int DASH_MAX_PAGES = 5;
+// its existence, and it can't be removed. 8 = 7 configurable pages + the map
+// (5 before; the live stream's HELLO caps b3 tells the app it may send 8).
+constexpr int DASH_MAX_PAGES = 8;
 
 enum DashPageKind : uint8_t {
     DP_FIELDS = 0,
@@ -102,11 +103,17 @@ enum DashPageKind : uint8_t {
     DP_STOPWATCH, // `page stopwatch` — the rider's own start/stop/reset clock
                   // (stopwatch.h). Optional, off unless added. Firmware
                   // before it drops the line like any unknown page kind.
+    DP_SEGMENT,   // `page segment` — live Strava segments (segment_match.h):
+                  // the nearest starred segment, then the effort against the
+                  // PR. `page segment manual` = never jump to it by itself.
 };
 
 struct DashPage {
     uint8_t kind = DP_FIELDS;   // DashPageKind
     DashLayout layout;          // empty unless kind == DP_FIELDS
+    // DP_SEGMENT only: false = `page segment manual`, the panel never
+    // switches to it when an effort starts.
+    bool autoShow = true;
 };
 
 struct DashPages {
@@ -131,7 +138,8 @@ const DashLayout& dashDefaultLayout();
 //     distance medium  half
 //
 // A line reading `page` starts a new page; `page music` adds the media-controls
-// page (likewise `page map`, `page workout`, `page stopwatch`). An unknown
+// page (likewise `page map`, `page workout`, `page stopwatch`,
+// `page segment [manual]`). An unknown
 // kind (`page <newer>`) parses as an empty field page and is dropped, which is
 // what lets a newer app's config load on older firmware. Text with no `page`
 // lines parses to exactly one page, so every config written before pages

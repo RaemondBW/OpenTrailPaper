@@ -1,10 +1,7 @@
 package com.raemond.opentrailpaper.ble
 
 import android.annotation.SuppressLint
-import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCharacteristic
-import android.bluetooth.BluetoothGattDescriptor
-import android.os.Build
 import java.util.ArrayDeque
 
 /**
@@ -48,10 +45,10 @@ class GattQueue(private val onIdle: () -> Unit = {}) {
 
     private val queue = ArrayDeque<Op>()
     private var current: Op? = null
-    private var gatt: BluetoothGatt? = null
+    private var gatt: RadioGatt? = null
 
     @Synchronized
-    fun attach(g: BluetoothGatt?) {
+    fun attach(g: RadioGatt?) {
         // An operation in flight on another (closed) BluetoothGatt never
         // reports back. Left as `current`, it would block every later enqueue
         // forever: the next session's MTU request and admission read never
@@ -64,7 +61,7 @@ class GattQueue(private val onIdle: () -> Unit = {}) {
 
     /** A new GATT session on [g]: start from an empty queue. */
     @Synchronized
-    fun reset(g: BluetoothGatt) {
+    fun reset(g: RadioGatt) {
         dropInFlight()
         queue.clear()
         gatt = g
@@ -103,9 +100,10 @@ class GattQueue(private val onIdle: () -> Unit = {}) {
             val op = queue.pollFirst() ?: run { onIdle(); return }
             current = op
             val issued = when (op) {
-                is Op.Write -> write(g, op)
+                is Op.Write -> g.writeCharacteristic(op.characteristic, op.value, op.writeType)
                 is Op.Read -> g.readCharacteristic(op.characteristic)
-                is Op.Notify -> notify(g, op)
+                // setCharacteristicNotification + the CCCD write (Radio.kt).
+                is Op.Notify -> g.setNotify(op.characteristic, op.enable)
                 is Op.Mtu -> g.requestMtu(op.size)
             }
             // A rejected issue never produces a callback, so unwind it here or
@@ -115,37 +113,6 @@ class GattQueue(private val onIdle: () -> Unit = {}) {
                 current = null
                 if (failed is Op.Write) failed.onWritten?.invoke(false)
             }
-        }
-    }
-
-    @Suppress("DEPRECATION")
-    private fun write(g: BluetoothGatt, op: Op.Write): Boolean =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            g.writeCharacteristic(op.characteristic, op.value, op.writeType) ==
-                BluetoothGatt.GATT_SUCCESS
-        } else {
-            op.characteristic.writeType = op.writeType
-            op.characteristic.value = op.value
-            g.writeCharacteristic(op.characteristic)
-        }
-
-    @Suppress("DEPRECATION")
-    private fun notify(g: BluetoothGatt, op: Op.Notify): Boolean {
-        if (!g.setCharacteristicNotification(op.characteristic, op.enable)) return false
-        // The local flag above only routes callbacks; the device is only told to
-        // send anything once its CCCD is written, and THAT write is what this
-        // operation waits on.
-        val cccd = op.characteristic.getDescriptor(BikeUuid.cccd) ?: return false
-        val value = if (op.enable) {
-            BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-        } else {
-            BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE
-        }
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            g.writeDescriptor(cccd, value) == BluetoothGatt.GATT_SUCCESS
-        } else {
-            cccd.value = value
-            g.writeDescriptor(cccd)
         }
     }
 }

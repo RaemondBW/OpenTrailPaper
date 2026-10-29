@@ -22,7 +22,6 @@ import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Error
@@ -31,7 +30,6 @@ import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.SaveAlt
 import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material.icons.automirrored.filled.ViewList
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -49,6 +47,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextAlign
@@ -225,7 +224,7 @@ private fun TopBar(step: Int, lastStep: Int, onSkip: () -> Unit) {
                         .size(width, 7.dp)
                         .background(
                             if (i == step) Palette.accent else Palette.hairline,
-                            RoundedCornerShape(50),
+                            RectangleShape,
                         ),
                 )
             }
@@ -451,12 +450,12 @@ private fun FeatureRow(f: Feature, selected: Boolean, onTap: () -> Unit) {
             .fillMaxWidth()
             .background(
                 if (selected) Palette.accentWash else Color.Transparent,
-                RoundedCornerShape(14.dp),
+                RectangleShape,
             )
             .border(
                 1.dp,
                 if (selected) Palette.accent.copy(alpha = 0.35f) else Color.Transparent,
-                RoundedCornerShape(14.dp),
+                RectangleShape,
             )
             .clickable(onClick = onTap)
             .padding(horizontal = 12.dp, vertical = 10.dp),
@@ -521,8 +520,8 @@ private fun PermissionPage(
 private fun Chip(text: String, icon: ImageVector, tint: Color) {
     Row(
         Modifier
-            .background(Palette.surface, RoundedCornerShape(14.dp))
-            .border(1.dp, Palette.hairline, RoundedCornerShape(14.dp))
+            .background(Palette.surface)
+            .border(Rule.border, Palette.hairline)
             .padding(horizontal = 16.dp, vertical = 12.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
@@ -555,26 +554,22 @@ private fun ConnectPage(ble: BleManager, active: Boolean) {
         note = {
             Row(
                 Modifier
-                    .background(Palette.surface, RoundedCornerShape(50))
-                    .border(1.dp, Palette.hairline, RoundedCornerShape(50))
+                    .background(Palette.surface)
+                    .border(Rule.border, Palette.hairline)
                     .padding(horizontal = 18.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 when (ble.state) {
                     BleManager.ConnState.CONNECTED -> Box(
-                        Modifier.size(10.dp).background(Palette.good, RoundedCornerShape(50)),
+                        Modifier.size(10.dp).background(Palette.good),
                     )
 
                     BleManager.ConnState.POWERED_OFF -> Box(
-                        Modifier.size(10.dp).background(Palette.faint, RoundedCornerShape(50)),
+                        Modifier.size(10.dp).background(Palette.faint),
                     )
 
-                    else -> CircularProgressIndicator(
-                        Modifier.size(14.dp),
-                        color = Palette.accent,
-                        strokeWidth = 2.dp,
-                    )
+                    else -> BlockSpinner()
                 }
                 Text(
                     when (ble.state) {

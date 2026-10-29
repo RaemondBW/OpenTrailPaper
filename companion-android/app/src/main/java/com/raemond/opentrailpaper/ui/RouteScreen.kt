@@ -1,5 +1,15 @@
 package com.raemond.opentrailpaper.ui
 
+import kotlin.math.roundToInt
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -14,24 +24,18 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
-import androidx.compose.material.icons.filled.FileOpen
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Signpost
 import androidx.compose.material.icons.automirrored.filled.Send
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
@@ -54,11 +58,8 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
@@ -250,88 +251,190 @@ fun RouteScreen(ble: BleManager) {
     // saved routes too; without, it is the file picker as before.
     val accounts = SyncAccounts.routeProviders.filter { SyncAccounts.isConnected(it) }
 
-    Box(Modifier.fillMaxSize().background(Palette.paper)) {
-        // Same map component as the Maps screen, but showing only the GAP hexes —
-        // the ground a planned route crosses that nothing covers. That is the
-        // question this page is for ("will I ride off my maps?"); ordinary
-        // coverage would just be noise over the route.
-        OsmMap(
-            modifier = Modifier
-                .fillMaxSize()
-                // A finger on the map is a finger off the search field: drop the
-                // keyboard. Watched in the initial pass because the MapView
-                // underneath consumes every touch it gets, and this must not
-                // stop it panning — it only listens, never consumes.
-                .pointerInput(Unit) {
-                    awaitEachGesture {
-                        awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
-                        focusManager.clearFocus()
-                        keyboard?.hide()
-                    }
-                },
-            outlines = gapHexes,
-            route = preview?.points,
-            destination = destination?.let { MapDestination(it.name, it.coordinate) },
-            camera = camera,
-            showUserLocation = ble.locationPermission.isGranted,
-            bottomInsetPx = cardHeightPx,
-            // Placed in the tools row below instead: bottom-right here is where
-            // this screen's round buttons are.
-            showAttribution = false,
-        )
-
-        // "Route" title pill, floated top-left.
-        Text(
-            "Route",
-            style = condensed(22.sp, FontWeight.Bold),
-            color = Palette.ink,
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .padding(16.dp)
-                .background(Palette.surface, RoundedCornerShape(50))
-                .border(1.dp, Palette.hairline, RoundedCornerShape(50))
-                .padding(horizontal = 16.dp, vertical = 9.dp),
-        )
-
-        Column(
-            Modifier
-                .align(Alignment.BottomCenter)
-                .onSizeChanged { cardHeightPx = it.height }
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            // Attribution at the left, buttons at the right, both sitting
-            // directly on the search field below.
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
-                Box(Modifier.weight(1f), contentAlignment = Alignment.BottomStart) {
-                    MapAttribution()
+    val onAddCues: (Preview) -> Unit = { p ->
+        derivingCues = true
+        error = null
+        scope.launch {
+            val set = Routing.cues(p.points)
+            derivingCues = false
+            // The rider can clear this route, or import another, while OSRM
+            // is still thinking. A slow request must not resurrect a route
+            // they dismissed — nor report its failure over whatever replaced it.
+            if (preview !== p) return@launch
+            when {
+                set == null ->
+                    error = "Couldn't fetch turn cues — check your connection"
+                // Not a failure: a path with no junctions in it has nothing to
+                // call out, and saying the network broke would send the rider
+                // chasing a fault that isn't there.
+                set.maneuvers.isEmpty() ->
+                    error = "This route has no turns to call out"
+                else -> {
+                    // Parked so a tab round-trip doesn't quietly cost a second
+                    // request for the same cues.
+                    RouteImport.noteCues(set)
+                    preview = p.copy(
+                        maneuvers = set.maneuvers,
+                        cuesTruncated = set.truncated,
+                    )
                 }
-                RoundMapButton(Icons.Filled.FileOpen, enabled = true) {
-                    if (accounts.isEmpty()) openFile() else importMenu = true
+            }
+        }
+    }
+    val onSend: (Preview) -> Unit = { p ->
+        val name = DeviceText.routeFileName(p.name)
+        ble.uploadRoute(
+            name = name,
+            gpx = GpxExporter.make(name, p.points),
+            maneuvers = p.maneuvers,
+        )
+    }
+    val onClear: () -> Unit = {
+        // The import outlives this screen, so clearing it here is not
+        // enough — it would come back on the next tab.
+        RouteImport.clear()
+        preview = null
+        destination = null
+        error = null
+        derivingCues = false
+    }
+    val onImport: () -> Unit = { if (accounts.isEmpty()) openFile() else importMenu = true }
+
+    Column(Modifier.fillMaxSize().background(Palette.paper)) {
+        // Ruled header: the device's saved routes and import.
+        ScreenHeader("Route") {
+            SquareIconButton(
+                Icons.Filled.Folder, "Routes on the device",
+                enabled = ble.state == BleManager.ConnState.CONNECTED,
+            ) {
+                ble.refreshRoutes()
+                showSaved = true
+            }
+            SquareIconButton(Icons.Filled.Add, "Import a route", onClick = onImport)
+        }
+
+        Box(Modifier.weight(1f).fillMaxWidth().clipToBounds()) {
+            // Same map component as the Maps screen, but showing only the GAP
+            // hexes — the ground a planned route crosses that nothing covers.
+            // That is the question this page is for ("will I ride off my
+            // maps?"); ordinary coverage would just be noise over the route.
+            OsmMap(
+                modifier = Modifier
+                    .fillMaxSize()
+                    // A finger on the map is a finger off the search field:
+                    // drop the keyboard. Watched in the initial pass because
+                    // the MapView underneath consumes every touch it gets, and
+                    // this must not stop it panning — it only listens.
+                    .pointerInput(Unit) {
+                        awaitEachGesture {
+                            awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                            focusManager.clearFocus()
+                            keyboard?.hide()
+                        }
+                    },
+                outlines = gapHexes,
+                route = preview?.points,
+                destination = destination?.let { MapDestination(it.name, it.coordinate) },
+                camera = camera,
+                showUserLocation = ble.locationPermission.isGranted,
+                showAttribution = false,
+            )
+            MapAttribution(Modifier.align(Alignment.BottomStart).padding(8.dp))
+
+            Row(
+                Modifier.fillMaxWidth().padding(12.dp),
+                verticalAlignment = Alignment.Top,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                val p = preview
+                if (p != null) {
+                    RouteNameBox(p, ble.useMiles, Modifier.weight(1f, fill = false), onClear)
                 }
-                Spacer(Modifier.size(10.dp))
-                RoundMapButton(Icons.Filled.MyLocation, enabled = true) {
+                Spacer(Modifier.weight(1f))
+                SquareIconButton(Icons.Filled.MyLocation, "Show my location") {
                     camera = here?.let { MapCamera.region(it, 0.05) } ?: MapCamera.followUser()
-                }
-                Spacer(Modifier.size(10.dp))
-                // Map downloads live in Settings — this page is for building and
-                // sending a route, and the map tool is device-content management.
-                RoundMapButton(
-                    Icons.Filled.Folder,
-                    enabled = ble.state == BleManager.ConnState.CONNECTED,
-                ) {
-                    ble.refreshRoutes()
-                    showSaved = true
                 }
             }
 
-            // Hidden while an imported route is up. Searching would build a
-            // different route and throw this one away, and the rider who just
-            // opened a file did not come here to type a destination — the
-            // card's clear button is the way back to searching. A route this
-            // screen built itself keeps the field: the query that produced it
-            // is still the obvious thing to edit.
-            if (preview?.imported != true) {
+            if (results.isNotEmpty() && preview == null) {
+                Box(Modifier.align(Alignment.BottomCenter).padding(12.dp)) {
+                    ResultsList(results) { place ->
+                        destination = place
+                        results = emptyList()
+                        ble.routeSent = false
+                        ble.routeReceived = false
+                        val from = here
+                        if (from == null) {
+                            error = "Waiting for your location — allow location to build a route"
+                            return@ResultsList
+                        }
+                        building = true
+                        scope.launch {
+                            val built = Routing.route(from, place.coordinate)
+                            building = false
+                            // The import button is live while this is in flight,
+                            // so an import can land first. A search tap only
+                            // starts from an empty preview: if one exists by now
+                            // the rider moved on, and their route must not be
+                            // overwritten by this one.
+                            if (preview != null) return@launch
+                            if (built == null) {
+                                error = "Couldn't build a route there"
+                            } else {
+                                preview = built.asPreview(place.name)
+                                built.bounds?.let { camera = MapCamera.box(it.paddedForDisplay()) }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Box(Modifier.fillMaxWidth().height(Rule.title).background(Palette.ink))
+
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .onSizeChanged { cardHeightPx = it.height }
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            val p = preview
+            if (building) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    BlockSpinner()
+                    Text("BUILDING ROUTE…", style = caps(12.sp), color = Palette.ink)
+                }
+            }
+            error?.let { WarningBanner("Route", message = it) }
+            if (p != null) {
+                RouteStatsBox(
+                    p, ble.useMiles,
+                    tiles = when {
+                        (EInkTileStore.ids + ble.deviceTileIds).isEmpty() -> "NONE"
+                        gapTiles.isEmpty() -> "READY"
+                        else -> "${gapTiles.size} GAPS"
+                    },
+                )
+                RouteExtras(
+                    cueCount = if (p.imported) p.maneuvers.size else null,
+                    derivingCues = derivingCues,
+                    mapGapCount = gapTiles.size,
+                    onAddCues = { onAddCues(p) },
+                    onDownloadMaps = {
+                        mapsSeed = gapTiles
+                        showMaps = true
+                    },
+                )
+                SendControls(
+                    progress = ble.lastUploadProgress,
+                    sent = ble.routeSent,
+                    received = ble.routeReceived,
+                    canSend = ble.state == BleManager.ConnState.CONNECTED,
+                ) { onSend(p) }
+            } else {
+                // Hidden while a route is up: a search would replace it, and
+                // the name box's clear button is the way back.
                 SearchField(
                     value = query,
                     onValueChange = { query = it },
@@ -347,126 +450,7 @@ fun RouteScreen(ble: BleManager) {
                     }
                 }
             }
-
-            if (results.isNotEmpty() && preview == null) {
-                ResultsList(results) { place ->
-                    destination = place
-                    results = emptyList()
-                    ble.routeSent = false
-                    ble.routeReceived = false
-                    val from = here
-                    if (from == null) {
-                        error = "Waiting for your location — allow location to build a route"
-                        return@ResultsList
-                    }
-                    building = true
-                    scope.launch {
-                        val built = Routing.route(from, place.coordinate)
-                        building = false
-                        // The file button is live while this is in flight, so an
-                        // import can land first. A search tap only starts from an
-                        // empty preview: if one exists by now the rider moved on,
-                        // and their route must not be overwritten by this one.
-                        if (preview != null) return@launch
-                        if (built == null) {
-                            error = "Couldn't build a route there"
-                        } else {
-                            preview = built.asPreview(place.name)
-                            built.bounds?.let { camera = MapCamera.box(it.paddedForDisplay()) }
-                        }
-                    }
-                }
-            }
-
-            if (building) {
-                Card {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    ) {
-                        CircularProgressIndicator(Modifier.size(20.dp), color = Palette.accent)
-                        Text("Building route…", style = TypeScale.body, color = Palette.muted)
-                    }
-                }
-            }
-
-            error?.let {
-                Card { Text(it, style = barlow(13.sp), color = Palette.accent) }
-            }
-
-            preview?.let { p ->
-                RouteSummaryCard(
-                    name = p.name,
-                    mode = p.mode,
-                    distanceKm = p.distanceMeters / 1000,
-                    minutes = p.minutes,
-                    imported = p.imported,
-                    source = p.source,
-                    climbMeters = p.climbMeters,
-                    cueCount = if (p.imported) p.maneuvers.size else null,
-                    cuesTruncated = p.cuesTruncated,
-                    derivingCues = derivingCues,
-                    mapGapCount = gapTiles.size,
-                    onDownloadMaps = {
-                        mapsSeed = gapTiles
-                        showMaps = true
-                    },
-                    progress = ble.lastUploadProgress,
-                    sent = ble.routeSent,
-                    received = ble.routeReceived,
-                    canSend = ble.state == BleManager.ConnState.CONNECTED,
-                    useMiles = ble.useMiles,
-                    onAddCues = {
-                        derivingCues = true
-                        error = null
-                        scope.launch {
-                            val set = Routing.cues(p.points)
-                            derivingCues = false
-                            // The rider can clear this route, or import another,
-                            // while OSRM is still thinking. A slow request must
-                            // not resurrect a route they dismissed — nor report
-                            // its failure over whatever replaced it.
-                            if (preview !== p) return@launch
-                            when {
-                                set == null ->
-                                    error = "Couldn't fetch turn cues — check your connection"
-                                // Not a failure: a path with no junctions in it
-                                // has nothing to call out, and saying the network
-                                // broke would send the rider chasing a fault
-                                // that isn't there.
-                                set.maneuvers.isEmpty() ->
-                                    error = "This route has no turns to call out"
-                                else -> {
-                                    // Parked so a tab round-trip doesn't quietly
-                                    // cost a second request for the same cues.
-                                    RouteImport.noteCues(set)
-                                    preview = p.copy(
-                                        maneuvers = set.maneuvers,
-                                        cuesTruncated = set.truncated,
-                                    )
-                                }
-                            }
-                        }
-                    },
-                    onSend = {
-                        val name = DeviceText.routeFileName(p.name)
-                        ble.uploadRoute(
-                            name = name,
-                            gpx = GpxExporter.make(name, p.points),
-                            maneuvers = p.maneuvers,
-                        )
-                    },
-                    onClear = {
-                        // The import outlives this screen, so clearing it here
-                        // is not enough — it would come back on the next tab.
-                        RouteImport.clear()
-                        preview = null
-                        destination = null
-                        error = null
-                        derivingCues = false
-                    },
-                )
-            }
+            BlockButton("Import from Strava · RWGPS · GPX", filled = false, expand = true, onClick = onImport)
         }
     }
 
@@ -561,29 +545,6 @@ private fun BoundingBox.paddedForDisplay(
 }
 
 @Composable
-private fun RoundMapButton(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    enabled: Boolean,
-    onClick: () -> Unit,
-) {
-    Box(
-        Modifier
-            .size(42.dp)
-            .background(Palette.surface, CircleShape)
-            .border(1.dp, Palette.hairline, CircleShape)
-            .clickable(enabled = enabled, onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(
-            icon,
-            contentDescription = null,
-            tint = if (enabled) Palette.accent else Palette.faint,
-            modifier = Modifier.size(18.dp),
-        )
-    }
-}
-
-@Composable
 private fun SearchField(
     value: String,
     onValueChange: (String) -> Unit,
@@ -597,12 +558,12 @@ private fun SearchField(
         onValueChange = onValueChange,
         modifier = Modifier
             .fillMaxWidth()
-            .background(Palette.surface, RoundedCornerShape(14.dp))
-            .border(1.dp, Palette.hairline, RoundedCornerShape(14.dp)),
+            .background(Palette.surface)
+            .einkBorder(),
         placeholder = { Text("Search destination", color = Palette.faint) },
         leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null, tint = Palette.muted) },
         trailingIcon = {
-            if (searching) CircularProgressIndicator(Modifier.size(18.dp), color = Palette.accent)
+            if (searching) BlockSpinner()
         },
         singleLine = true,
         // Searches fire on submit, never per keystroke: Nominatim is a shared
@@ -631,8 +592,8 @@ private fun ResultsList(results: List<Routing.Place>, onPick: (Routing.Place) ->
     Column(
         Modifier
             .fillMaxWidth()
-            .background(Palette.surface, RoundedCornerShape(14.dp))
-            .border(1.dp, Palette.hairline, RoundedCornerShape(14.dp)),
+            .background(Palette.surface)
+            .border(Rule.border, Palette.hairline),
     ) {
         results.take(4).forEachIndexed { i, item ->
             Column(
@@ -651,260 +612,159 @@ private fun ResultsList(results: List<Routing.Place>, onPick: (Routing.Place) ->
     }
 }
 
+/** The route's name and one line about it, boxed over the map's corner. */
 @Composable
-private fun RouteSummaryCard(
-    name: String,
-    mode: String,
-    distanceKm: Double,
-    minutes: Int?,
-    imported: Boolean,
-    source: String?,
-    climbMeters: Double?,
-    cueCount: Int?,
-    cuesTruncated: Boolean,
-    derivingCues: Boolean,
-    mapGapCount: Int,
-    onDownloadMaps: () -> Unit,
-    progress: Double?,
-    sent: Boolean,
-    received: Boolean,
-    canSend: Boolean,
-    useMiles: Boolean,
-    onAddCues: () -> Unit,
-    onSend: () -> Unit,
-    onClear: () -> Unit,
-) {
-    Card {
-        Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                // An import is somebody's planned route, so it leads with where it
-                // came from and reads its numbers as a grid; a route built here
-                // keeps the one-line summary under the destination it was built to.
-                if (imported && (source != null || mode.isNotEmpty())) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        source?.let {
-                            Text(
-                                "From $it".uppercase(),
-                                style = condensed(12.sp, FontWeight.SemiBold).copy(letterSpacing = 1.2.sp),
-                                color = Palette.accentDark,
-                                modifier = Modifier
-                                    .background(Palette.accentWash, RoundedCornerShape(50))
-                                    .padding(horizontal = 8.dp, vertical = 3.dp),
-                            )
-                        }
-                        if (mode.isNotEmpty()) ModeBadge(mode)
-                    }
-                }
-                Text(
-                    name,
-                    style = if (imported) condensed(26.sp, FontWeight.Bold) else TypeScale.title,
-                    color = Palette.ink,
-                    maxLines = if (imported) 2 else 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                if (!imported) {
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        if (mode.isNotEmpty()) ModeBadge(mode)
-                        Text(
-                            buildString {
-                                append(
-                                    String.format(
-                                        Locale.US,
-                                        "%.1f %s",
-                                        Units.distance(distanceKm, useMiles),
-                                        Units.distLabel(useMiles),
-                                    ),
-                                )
-                                // Only for a route we built: there is no honest
-                                // duration for a file somebody else planned.
-                                if (minutes != null) append(" · $minutes min")
-                            },
-                            style = TypeScale.body,
-                            color = Palette.muted,
-                        )
-                    }
+private fun RouteNameBox(p: Preview, useMiles: Boolean, modifier: Modifier, onClear: () -> Unit) {
+    Row(
+        modifier
+            .background(Palette.paper)
+            .einkBorder()
+            .padding(start = 10.dp, top = 6.dp, bottom = 6.dp, end = 2.dp),
+        verticalAlignment = Alignment.Top,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Column(Modifier.weight(1f, fill = false), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+            Text(
+                p.name.uppercase(), style = caps(14.sp), color = Palette.ink,
+                maxLines = 2, overflow = TextOverflow.Ellipsis,
+            )
+            val parts = buildList {
+                if (p.source != null) add("from ${p.source}") else if (p.mode.isNotEmpty()) add(p.mode.lowercase())
+                if (p.imported && p.mode.isNotEmpty() && p.source != null) add(p.mode.lowercase())
+                add(String.format(Locale.US, "%.1f %s", Units.distance(p.distanceMeters / 1000, useMiles), Units.distLabel(useMiles)))
+                p.climbMeters?.let { add("${Units.elevation(it, useMiles).roundToInt()} ${Units.elevLabel(useMiles)}") }
+                if (p.imported && p.maneuvers.isNotEmpty()) {
+                    add("${p.maneuvers.size} turns${if (p.cuesTruncated) " (capped)" else ""}")
                 }
             }
-            Box(
-                Modifier
-                    .size(44.dp)
-                    .background(Palette.paper, CircleShape)
-                    .border(1.dp, Palette.hairline, CircleShape)
-                    .clickable(onClick = onClear),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    Icons.Filled.Close, contentDescription = "Clear route", tint = Palette.muted,
-                    modifier = Modifier.size(18.dp),
-                )
-            }
+            Text(parts.joinToString(" · "), style = barlow(12.sp, FontWeight.SemiBold), color = Palette.ink, maxLines = 1)
         }
-        if (imported) {
-            Spacer(Modifier.size(12.dp))
-            StatGrid(
-                buildList {
-                    add(
-                        SummaryStat(
-                            String.format(Locale.US, "%.1f", Units.distance(distanceKm, useMiles)),
-                            Units.distLabel(useMiles), "Distance",
-                        ),
-                    )
-                    // Only an account reports climb; a file's elevations aren't
-                    // trusted for it, so a file shows distance alone.
-                    climbMeters?.let {
-                        add(
-                            SummaryStat(
-                                String.format(Locale.US, "%,.0f", Units.elevation(it, useMiles)),
-                                Units.elevLabel(useMiles), "Climb",
-                            ),
-                        )
-                    }
-                    if (cueCount != null && cueCount > 0) {
-                        add(SummaryStat("$cueCount", null, if (cuesTruncated) "Turns (capped)" else "Turns"))
-                    }
-                },
+        Box(
+            Modifier.size(32.dp).clickable(onClickLabel = "Clear route", onClick = onClear),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(Icons.Filled.Close, contentDescription = "Clear route", tint = Palette.ink, modifier = Modifier.size(16.dp))
+        }
+    }
+}
+
+/** Distance · climb (or riding time for a planned route) · map tiles. */
+@Composable
+private fun RouteStatsBox(p: Preview, useMiles: Boolean, tiles: String) {
+    Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min).einkBorder()) {
+        RouteStat(
+            "Distance",
+            String.format(Locale.US, "%.1f", Units.distance(p.distanceMeters / 1000, useMiles)),
+            Units.distLabel(useMiles), Modifier.weight(1f),
+        )
+        Box(Modifier.width(Rule.divider).fillMaxHeight().background(Palette.ink))
+        if (p.minutes != null) {
+            RouteStat("Time", "${p.minutes}", "min", Modifier.weight(1f))
+        } else {
+            RouteStat(
+                "Climb",
+                p.climbMeters?.let { "${Units.elevation(it, useMiles).roundToInt()}" } ?: "--",
+                Units.elevLabel(useMiles), Modifier.weight(1f),
             )
         }
-        // Imported routes arrive with no turn cues. Fetching them sends the
-        // shape of this route to a third party, so it is a thing the rider
-        // asks for — and the service is named under the button, in front of
-        // them before they tap, rather than buried in a dialog after.
-        if (cueCount == 0) {
-            Spacer(Modifier.size(12.dp))
-            if (derivingCues) {
-                Row(
-                    Modifier.fillMaxWidth().padding(vertical = 13.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.Center,
-                ) {
-                    CircularProgressIndicator(Modifier.size(18.dp), color = Palette.accent)
-                    Spacer(Modifier.size(12.dp))
-                    Text("Fetching turn cues…", style = barlow(13.sp), color = Palette.muted)
-                }
-            } else {
-                SecondaryButton(
-                    title = "Add turn cues",
-                    icon = Icons.Filled.Signpost,
-                    onClick = onAddCues,
-                )
+        Box(Modifier.width(Rule.divider).fillMaxHeight().background(Palette.ink))
+        RouteStat("Map tiles", tiles, "", Modifier.weight(1f))
+    }
+}
+
+@Composable
+private fun RouteStat(label: String, value: String, unit: String, modifier: Modifier) {
+    Column(modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
+        TrackedLabel(label)
+        Row(verticalAlignment = Alignment.Bottom) {
+            Text(value, style = anton(26.sp), color = Palette.ink, maxLines = 1, modifier = Modifier.alignByBaseline())
+            if (unit.isNotEmpty()) {
+                Spacer(Modifier.size(3.dp))
+                Text(unit.uppercase(), style = caps(11.sp, 0.sp), color = Palette.ink, modifier = Modifier.alignByBaseline())
+            }
+        }
+    }
+}
+
+/**
+ * Turn cues for an import (fetching them sends the route's shape to a third
+ * party, so it is asked for, and the service named under the button), and
+ * the route's map gaps, opened in the Maps tool with those gaps selected.
+ */
+@Composable
+private fun RouteExtras(
+    cueCount: Int?,
+    derivingCues: Boolean,
+    mapGapCount: Int,
+    onAddCues: () -> Unit,
+    onDownloadMaps: () -> Unit,
+) {
+    if (cueCount == 0) {
+        if (derivingCues) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                BlockSpinner()
+                Text("FETCHING TURN CUES…", style = caps(12.sp), color = Palette.ink)
+            }
+        } else {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                SecondaryButton(title = "Add turn cues", icon = Icons.Filled.Signpost, onClick = onAddCues)
                 Text(
-                    "Fetched from routing.openstreetmap.de",
-                    style = barlow(11.sp),
-                    color = Palette.faint,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 6.dp),
-                    textAlign = TextAlign.Center,
+                    "Fetched from routing.openstreetmap.de", style = barlow(11.sp), color = Palette.muted,
+                    modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center,
                 )
             }
         }
-        // The route crosses ground the head unit can't draw. Offering the fix
-        // here rather than only in Settings, because this is the screen where a
-        // rider finds out — the gap hexagons are already on the map behind this
-        // card. The download itself still belongs to the Maps tool; this only
-        // opens it with the route's own gaps already selected.
-        if (mapGapCount > 0) {
-            Spacer(Modifier.size(12.dp))
+    }
+    if (mapGapCount > 0) {
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             SecondaryButton(
                 title = "Download $mapGapCount map area${if (mapGapCount == 1) "" else "s"}",
                 icon = Icons.Filled.Download,
                 onClick = onDownloadMaps,
             )
             Text(
-                "This route crosses ground the device has no map for",
-                style = barlow(11.sp),
-                color = Palette.faint,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 6.dp),
-                textAlign = TextAlign.Center,
-            )
-        }
-        Spacer(Modifier.size(12.dp))
-        when {
-            progress != null -> {
-                Text("Sending to device…", style = barlow(12.sp), color = Palette.muted)
-                LinearProgressIndicator(
-                    progress = { progress.toFloat() },
-                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                    color = Palette.accent,
-                    trackColor = Palette.hairline,
-                )
-            }
-
-            sent -> Row(
-                Modifier.fillMaxWidth().padding(vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Icon(Icons.Filled.CheckCircle, contentDescription = null, tint = Palette.good)
-                // "Received" once the device confirms (0x23); until then (or on
-                // older firmware that never acks) show "Sent".
-                Text(
-                    if (received) "Received by device" else "Sent to device",
-                    style = TypeScale.body,
-                    color = Palette.good,
-                )
-                Spacer(Modifier.weight(1f))
-                TextButton(onClick = onSend, enabled = canSend) {
-                    Text("Send again", style = barlow(13.sp, FontWeight.SemiBold))
-                }
-            }
-
-            else -> PrimaryButton(
-                title = if (canSend) "Send to device" else "Connect to send",
-                icon = Icons.AutoMirrored.Filled.Send,
-                enabled = canSend,
-                onClick = onSend,
+                "This route crosses ground the device has no map for", style = barlow(11.sp), color = Palette.muted,
+                modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center,
             )
         }
     }
 }
 
+/** SEND TO DEVICE, its block progress, and the inverted ✓ once it's there. */
 @Composable
-private fun ModeBadge(mode: String) {
-    Text(
-        mode.uppercase(),
-        style = barlow(11.sp, FontWeight.Bold),
-        color = Color.White,
-        modifier = Modifier
-            .background(
-                if (mode == "Cycling") Palette.good else Palette.muted,
-                RoundedCornerShape(50),
-            )
-            .padding(horizontal = 7.dp, vertical = 3.dp),
-    )
-}
-
-private data class SummaryStat(val value: String, val unit: String?, val label: String)
-
-/** Two to a row: the number in the condensed face with its unit small beside it, the label under. */
-@Composable
-private fun StatGrid(stats: List<SummaryStat>) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        stats.chunked(2).forEach { row ->
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                row.forEach { s ->
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            buildAnnotatedString {
-                                append(s.value)
-                                s.unit?.let {
-                                    withStyle(SpanStyle(fontSize = 15.sp, color = Palette.muted)) { append(" $it") }
-                                }
-                            },
-                            style = condensed(26.sp, FontWeight.SemiBold),
-                            color = Palette.ink,
-                        )
-                        Text(s.label, style = barlow(13.sp), color = Palette.muted)
-                    }
-                }
-                if (row.size == 1) Spacer(Modifier.weight(1f))
-            }
+private fun SendControls(progress: Double?, sent: Boolean, received: Boolean, canSend: Boolean, onSend: () -> Unit) {
+    when {
+        progress != null -> Column(
+            Modifier.fillMaxWidth().heightIn(min = 52.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterVertically),
+        ) {
+            Text("SENDING TO DEVICE…", style = caps(12.sp), color = Palette.ink)
+            BlockProgressBar(progress.toFloat(), Modifier.fillMaxWidth(), segments = 12)
         }
+
+        sent -> Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            // "Received" once the device confirms; until then (or on older
+            // firmware that never acks) "Sent".
+            Box(
+                Modifier.weight(1f).fillMaxHeight().heightIn(min = 52.dp).background(Palette.ink),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    if (received) "✓ RECEIVED BY DEVICE" else "✓ SENT TO DEVICE",
+                    style = anton(18.sp).copy(letterSpacing = 1.5.sp), color = Palette.paper, maxLines = 1,
+                )
+            }
+            BlockButton(
+                "Again", filled = false, enabled = canSend, onClick = onSend,
+                modifier = Modifier.fillMaxHeight().semantics { contentDescription = "Send again" },
+            )
+        }
+
+        else -> PrimaryButton(
+            title = if (canSend) "Send to device" else "Connect to send",
+            enabled = canSend,
+            onClick = onSend,
+        )
     }
 }
 
@@ -916,7 +776,7 @@ private fun SavedRoutesSheet(ble: BleManager, onDismiss: () -> Unit) {
             ble.loadingRoutes -> Box(
                 Modifier.fillMaxSize(),
                 contentAlignment = Alignment.Center,
-            ) { CircularProgressIndicator(color = Palette.accent) }
+            ) { BlockSpinner() }
 
             ble.deviceRoutes.isEmpty() -> Box(
                 Modifier.fillMaxSize(),
