@@ -1,4 +1,5 @@
 #include "sim_clock.h"
+#include <algorithm>
 #include <atomic>
 #include <mutex>
 #include <thread>
@@ -37,7 +38,22 @@ std::chrono::nanoseconds realDuration(uint32_t ms) {
     return std::chrono::nanoseconds((int64_t)(ms * 1e6 / factor()));
 }
 
-void sleepMs(uint32_t ms) { std::this_thread::sleep_for(realDuration(ms)); }
+// A long sleep is taken in slices against the device clock, so a `speed`
+// change lands at once: a module ticking once a device-second (the GPS) must
+// not sit out a whole real second at the old rate after the clock is sped up
+// — at 10x that is ten device-seconds of silence, and the firmware reads it
+// as a lost fix.
+void sleepMs(uint32_t ms) {
+    if (ms < 50) { std::this_thread::sleep_for(realDuration(ms)); return; }
+    const uint64_t until = micros64() + (uint64_t)ms * 1000;
+    for (;;) {
+        const uint64_t now = micros64();
+        if (now >= until) return;
+        const uint32_t left = (uint32_t)((until - now + 999) / 1000);
+        std::this_thread::sleep_for(std::min<std::chrono::nanoseconds>(realDuration(left),
+                                                                       std::chrono::milliseconds(20)));
+    }
+}
 
 int64_t wallMicros() { return (int64_t)micros64() + wallOffsetUs.load(); }
 void setWallMicros(int64_t us) { wallOffsetUs = us - (int64_t)micros64(); }

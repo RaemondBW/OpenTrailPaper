@@ -78,6 +78,11 @@ std::string symbolName(void* addr);
 // Logs `line` the first time `key` is seen (the sim's own checks).
 void warnOnce(const std::string& key, const std::string& line);
 
+// --- PWM outputs (cov/workouts) ---
+// The last analogWrite() duty per pin (-1: never written): the frontlight's
+// PWM on BOARD_BL_EN is what the rider sees as the backlight.
+int pinDuty(int pin);
+
 [[noreturn]] void reboot(const char* why);
 [[noreturn]] void powerOff(const char* why);
 

@@ -10,6 +10,8 @@
 #include "ride_state.h"
 #include "routes.h"
 #include "settings.h"
+#include "config.h"
+#include "workout_service.h"
 #include "json.h"
 #include "sim.h"
 #include "sim_ble.h"
@@ -200,6 +202,43 @@ std::string sdJson(bool recount) {
     return o.str();
 }
 
+// ---- workouts, stopwatch, frontlight (cov/workouts) ------------------------------------
+// What the WORKOUT page and the STOPWATCH page are working from, and the
+// frontlight's PWM duty: so a test can follow a session without a phone.
+std::string workoutJson() {
+    WorkoutView w;
+    workout_service::view(w);
+    std::ostringstream o;
+    o << "{\"loaded\":" << (w.loaded ? "true" : "false") << ",\"running\":" << (w.running ? "true" : "false")
+      << ",\"paused\":" << (w.paused ? "true" : "false") << ",\"done\":" << (w.done ? "true" : "false")
+      << ",\"name\":" << json::esc(w.name) << ",\"segment\":" << w.segIdx << ",\"segments\":" << w.segCount
+      << ",\"elapsed_s\":" << w.elapsedSec << ",\"total_s\":" << w.totalSec
+      << ",\"segment_left_s\":" << w.segRemainSec << ",\"target_w\":" << w.targetW
+      << ",\"next_w\":" << w.nextW << ",\"ftp\":" << w.ftpW
+      << ",\"pause_each\":" << (settings::workoutPauseEachBlock() ? "true" : "false");
+    // The device-side picker's cached list, as its first page shows it.
+    static WorkoutPickPage p;   // control thread only; ~1.3 KB
+    workout_service::listPage(0, p);
+    static const char* const kStates[] = {"scanning", "ready", "no_card"};
+    o << ",\"picker\":{\"state\":\"" << (p.state < 3 ? kStates[p.state] : "?") << "\",\"total\":" << p.total
+      << ",\"loading\":" << json::esc(p.loading) << ",\"error\":" << json::esc(p.error) << ",\"rows\":[";
+    for (int i = 0; i < p.count; ++i)
+        o << (i ? "," : "") << "{\"file\":" << json::esc(p.rows[i].file) << ",\"title\":" << json::esc(p.rows[i].title)
+          << ",\"ok\":" << (p.rows[i].ok ? "true" : "false") << ",\"total_s\":" << p.rows[i].totalSec
+          << ",\"segments\":" << (int)p.rows[i].segCount << "}";
+    o << "]}}";
+    return o.str();
+}
+
+std::string stopwatchJson(const ble_server::LiveView& v) {
+    const uint32_t now = millis();
+    const uint32_t el = v.swAccumMs + (v.swRunning ? now - v.swStartMs : 0);
+    std::ostringstream o;
+    o << "{\"running\":" << (v.swRunning ? "true" : "false") << ",\"elapsed_ms\":" << el
+      << ",\"laps\":" << (int)v.swLaps << ",\"lap_ms\":" << (el - (v.swLaps ? v.swLastLapEndMs : 0)) << "}";
+    return o.str();
+}
+
 std::string statusJson() {
     RideState s = g_state.snapshot();
     ble_server::LiveView v;
@@ -234,7 +273,9 @@ std::string statusJson() {
       << ",\"sd_present\":" << (sim::sdPresent() ? "true" : "false")
       << ",\"sd\":" << sdJson(false)
       << ",\"gps\":" << sim::gpsStatusJson()
-      << ",\"ble\":" << sim::bleStatusJson() << "}";
+      << ",\"ble\":" << sim::bleStatusJson()
+      << ",\"workout\":" << workoutJson() << ",\"stopwatch\":" << stopwatchJson(v)
+      << ",\"backlight_pwm\":" << sim::pinDuty(BOARD_BL_EN) << "}";
     return o.str();
 }
 
