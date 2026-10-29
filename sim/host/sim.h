@@ -54,6 +54,15 @@ void gpsSet(double lat, double lon, double alt, double speedKmh, double course, 
 void gpsTrack(const std::vector<std::pair<double, double>>& pts, double speedKmh, bool loop);
 void gpsSilent(bool on);   // the module stops talking (loose connector, brownout)
 std::string gpsStatusJson();
+// What the module's clock says now (UTC seconds; it keeps counting from there):
+// a midnight rollover, a week-number rollover, a leap second.
+void gpsSetUtc(int64_t unix);
+// Bytes from the module as they are (bad checksums, torn sentences, noise).
+void gpsRaw(const std::string& bytes);
+// Each sentence lands after its bytes have crossed the UART, rather than a
+// second's batch at once.
+void gpsPaced(bool on);
+void gpsPersist();   // the module's clock across an ESP32 reset (its backup supply)
 void bleBegin();
 std::string bleStatusJson();
 void controlBegin();
@@ -78,7 +87,16 @@ std::string symbolName(void* addr);
 // Logs `line` the first time `key` is seen (the sim's own checks).
 void warnOnce(const std::string& key, const std::string& line);
 
-[[noreturn]] void reboot(const char* why);
+// ---- resets (power and robustness) ------------------------------------------------
+// A reset re-execs the sim. `resetReason` is the esp_reset_reason_t the next
+// boot sees (default 1, ESP_RST_POWERON: a power cut, RTC memory lost); any
+// other reason carries the RTC_NOINIT_ATTR variables across, as the chip's RTC
+// memory survives a panic, a watchdog, a brownout or esp_restart().
+[[noreturn]] void reboot(const char* why, int resetReason = 1);
+// Deep sleep: the process exits. The next launch of the same device directory
+// is the wake (ESP_RST_DEEPSLEEP, RTC memory kept).
 [[noreturn]] void powerOff(const char* why);
+int resetReason();                       // what this boot's esp_reset_reason() says
+int resetReasonByName(const std::string& name);   // "panic", "task_wdt", ... (-1: unknown)
 
 }  // namespace sim

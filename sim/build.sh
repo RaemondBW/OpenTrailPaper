@@ -25,7 +25,8 @@ CFLAGS="-std=gnu11 -g -O1 $WARN $INC $DEFS"
 FW_CPP="link settings dash_config dash_layout ui_dashboard ui_render vfont
   map_view map_tiles map_store routes segments ride_recorder fit_writer workout
   workout_service diag diag_sd media radar mesh_service mesh_proto mesh_crypto
-  gps_service ble_server ble_sensors ams_client"
+  gps_service ble_server ble_sensors ams_client
+  crash_report"
 FW_C="link_frame proto/link.pb"
 EXTRA_C="third_party/nanopb/pb_common third_party/nanopb/pb_encode third_party/nanopb/pb_decode
   companion-ios/Sources/H3/h3shim"

@@ -257,7 +257,7 @@ size_t File::read(uint8_t* b, size_t n) {
     CHECK_BUS("read", p_->cardPath.c_str());
     cardTime();
     if (!sim::opts.sdCrashOnRead.empty() && sim::opts.sdCrashOnRead == p_->cardPath)
-        sim::reboot("watchdog: --sd-crash-on-read");
+        sim::reboot("watchdog: --sd-crash-on-read", ESP_RST_INT_WDT);
     return fread(b, 1, n, p_->f);
 }
 void File::flush() { if (p_ && p_->f) fflush(p_->f); }

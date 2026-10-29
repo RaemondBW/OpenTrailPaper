@@ -27,7 +27,16 @@ static inline const char* esp_err_to_name(esp_err_t e) { (void)e; return e == ES
 
 #define IRAM_ATTR
 #define DRAM_ATTR
-#define RTC_NOINIT_ATTR
+// RTC slow memory that the bootloader leaves alone: it survives a panic, a
+// watchdog, a brownout, esp_restart() and deep sleep, but not a power cut. The
+// sim keeps these variables in one section and carries it across its own
+// resets (sim_main.cpp); a power-on (a fresh launch, control `reboot`) starts
+// it zeroed.
+#ifdef __APPLE__
+#define RTC_NOINIT_ATTR __attribute__((section("__DATA,__rtc_noinit")))
+#else
+#define RTC_NOINIT_ATTR __attribute__((section(".rtc_noinit")))
+#endif
 #define RTC_DATA_ATTR
 #define RTC_FAST_ATTR
 #define RTC_SLOW_ATTR
@@ -61,7 +70,9 @@ void esp_restart(void) __attribute__((noreturn));
 typedef enum { ESP_RST_UNKNOWN, ESP_RST_POWERON, ESP_RST_EXT, ESP_RST_SW, ESP_RST_PANIC,
                ESP_RST_INT_WDT, ESP_RST_TASK_WDT, ESP_RST_WDT, ESP_RST_DEEPSLEEP,
                ESP_RST_BROWNOUT, ESP_RST_SDIO, ESP_RST_USB, ESP_RST_JTAG } esp_reset_reason_t;
-static inline esp_reset_reason_t esp_reset_reason(void) { return ESP_RST_POWERON; }
+// Why the chip last reset: power-on, or what the sim reset with (control
+// `reset`, esp_restart, deep sleep, abort()). sim_main.cpp.
+esp_reset_reason_t esp_reset_reason(void);
 
 typedef enum { ESP_SLEEP_WAKEUP_UNDEFINED, ESP_SLEEP_WAKEUP_ALL, ESP_SLEEP_WAKEUP_EXT0,
                ESP_SLEEP_WAKEUP_EXT1, ESP_SLEEP_WAKEUP_TIMER, ESP_SLEEP_WAKEUP_TOUCHPAD,

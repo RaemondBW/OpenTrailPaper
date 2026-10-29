@@ -142,8 +142,26 @@ Asynchronous events (log lines, when subscribed) come as `{"event":…}`.
 | `log` | `since` | log lines after sequence number `since` |
 | `wait_log` | `pattern` (regex), `timeout_ms`, `since` | waits for a log line |
 | `subscribe_log` | `on` | streams log lines as events |
-| `reboot` | — | restarts the firmware (NVS and card kept) |
+| `reboot` | — | restarts the firmware (NVS and card kept): a power cut — RTC memory lost, the next boot is a power-on |
 | `quit` | — | exits the sim |
+| **power and robustness** | | |
+| `reset` | `reason` (`panic`, `task_wdt`, `int_wdt`, `wdt`, `brownout`, `sw`, `ext`) | the chip resets for that reason: `esp_reset_reason()` says so on the next boot and RTC memory (`RTC_NOINIT_ATTR`: the crash reporter's breadcrumbs, diag's storage trace) survives. Unflushed card writes are lost, as with `reboot` |
+| `gps_time` | `unix` | sets the GPS module's clock (UTC s); it keeps counting from there (a UTC midnight, a week-number rollover) |
+| `gps_raw` | `data` | puts bytes on the GPS UART as they are (noise, bad checksums, torn or made-up sentences); also while `gps_silent` |
+| `gps_paced` | `on` | the module's sentences arrive one by one, each after its bytes have crossed the UART, instead of as one batch a second |
+
+`status` carries `reset_reason`: this boot's `esp_reset_reason()` (1 power-on,
+3 software, 4 panic, 5 interrupt watchdog, 6 task watchdog, 7 watchdog,
+8 wake from deep sleep, 9 brownout).
+
+Resets in the sim: a reset re-execs it. `<dir>/rtc_mem.bin` carries the reset
+reason and the `RTC_NOINIT_ATTR` section across (absent: a power-on).
+`esp_restart()` is a software reset; the firmware's `abort()` (the console's
+`crashlog panic`, a failed assert) is a panic; `--sd-crash-on-read` an
+interrupt watchdog. Deep sleep exits the process, and the next launch of the
+same directory is the wake (`ESP_RST_DEEPSLEEP`). The GPS module's clock runs
+on across all of these (`<dir>/gps_clock.txt`, its backup supply); its fix and
+track do not, so a test sets them again after a reset.
 
 ## Command line
 

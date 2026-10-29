@@ -241,3 +241,62 @@ class SimDevice:
         time.sleep(0.3)
         self.reconnect_control(timeout)
         self.wait_log(r"boot: all tasks started", timeout=timeout, since=seq)
+
+    # -- power and robustness ---------------------------------------------------------------
+
+    def reset(self, reason="panic", timeout=30):
+        """The chip resets for `reason` — "panic", "task_wdt", "int_wdt",
+        "wdt", "brownout", "sw" or "ext" — and boots again. Unlike reboot()
+        (a power cut), RTC memory survives and esp_reset_reason() says why,
+        as the firmware's crash reporter expects. Unflushed card writes are
+        lost either way."""
+        self.cmd("reset", reason=reason)
+        time.sleep(0.3)
+        self.reconnect_control(timeout)
+        self.wait_log(r"boot: all tasks started", timeout=timeout, since=0)
+
+    @property
+    def running(self):
+        return self.proc is not None and self.proc.poll() is None
+
+    def wait_powered_off(self, timeout=30):
+        """Wait for the firmware to power the device off (deep sleep: the sim
+        exits). Raises TimeoutError if it is still on after `timeout` s."""
+        try:
+            self.proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            raise TimeoutError("still powered on after %.0f s" % timeout)
+        if self._sock:
+            try:
+                self._sock.close()
+            except Exception:
+                pass
+            self._sock = None
+        with open(self.log_path, "r", errors="replace") as f:
+            tail = f.read()[-4000:]
+        if "[sim] powered off" not in tail:
+            raise RuntimeError("otp-sim exited without powering off (see %s)" % self.log_path)
+
+    def power_on(self, boot_timeout=30):
+        """BOOT pressed on a powered-off device: the next boot of the same
+        device directory (a wake from deep sleep: NVS, card and RTC memory kept)."""
+        assert not self.running, "the device is still on"
+        self.launch(boot_timeout)
+
+    def gps_time(self, unix):
+        """Set the GPS module's clock (UTC seconds); it keeps counting from there."""
+        self.cmd("gps_time", unix=unix)
+
+    def gps_raw(self, data):
+        """Bytes from the GPS module as they are (str: NMEA text, noise)."""
+        self.cmd("gps_raw", data=data)
+
+    def gps_paced(self, on=True):
+        """The module's sentences arrive one at a time at the UART's byte rate
+        instead of as one batch a second."""
+        self.cmd("gps_paced", on=on)
+
+    def rss_kb(self):
+        """The sim process's resident memory, in KiB (a leak shows as growth)."""
+        out = subprocess.run(["ps", "-o", "rss=", "-p", str(self.proc.pid)], capture_output=True, text=True)
+        return int(out.stdout.strip() or 0)
