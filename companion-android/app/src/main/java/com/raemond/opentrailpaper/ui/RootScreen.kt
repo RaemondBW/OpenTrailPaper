@@ -3,8 +3,10 @@ package com.raemond.opentrailpaper.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Map
@@ -122,7 +124,12 @@ fun RootScreen(
             // needs the status bar kept clear.
             contentWindowInsets = WindowInsets.statusBars,
         ) { padding ->
-            Box(Modifier.padding(padding)) {
+            // The window doesn't resize for the keyboard (adjustResize under
+            // edge-to-edge only reports it), so the tab's content is shrunk to
+            // sit on top of it here, for every tab. consumeWindowInsets first:
+            // the tab bar's height is already padded off the bottom, and the
+            // keyboard covers the bar, so only the rest of it is added.
+            Box(Modifier.padding(padding).consumeWindowInsets(padding).imePadding()) {
                 when (tab) {
                     0 -> RideScreen(ble)
                     1 -> RouteScreen(ble)
@@ -143,7 +150,8 @@ fun RootScreen(
 
         // Every full-screen cover in the app is drawn here, above the tabs —
         // see Overlay.kt for why they are not windows.
-        OverlayHost(overlay)
+        // Above the keyboard too, so a cover's text field isn't left under it.
+        Box(Modifier.fillMaxSize().imePadding()) { OverlayHost(overlay) }
 
         // Fixed pairing: the device turned this phone away — say why from
         // whichever tab is up.
