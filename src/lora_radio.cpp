@@ -25,8 +25,12 @@ lora_radio::Config cfg;
 // transmitting at once, so `txInFlight` says which event the flag means.
 volatile bool dio1 = false;
 bool txInFlight = false;
+void (*irqHook)() = nullptr;
 
-void IRAM_ATTR onDio1() { dio1 = true; }
+void IRAM_ATTR onDio1() {
+    dio1 = true;
+    if (irqHook) irqHook();
+}
 
 // Symbol duration in microseconds at the configured spreading factor.
 float symbolUs() {
@@ -88,6 +92,7 @@ bool ok() { return radioOk; }
 float frequencyMHz() { return cfg.freqMHz; }
 int lastError() { return lastErr; }
 bool irqFired() { return dio1; }
+void onIrq(void (*fn)()) { irqHook = fn; }
 bool transmitting() { return txInFlight; }
 
 void listen() {

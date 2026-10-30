@@ -82,6 +82,9 @@ struct MapPoi {
 struct MapScreenData {
     const MapPolyline* features;
     int featureCount;
+    // Where the frame is centred, for the frame log (the sim tests wait for
+    // the frame drawn at a position, not just the next one).
+    double centerLat = 0, centerLon = 0;
 
     // Water bodies (from the tile WTR2 section), projected to screen; drawn as
     // a light dot-dithered fill under the roads.

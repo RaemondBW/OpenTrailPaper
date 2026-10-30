@@ -435,6 +435,49 @@ def test_a_direct_message_is_acked_once_with_a_reply_that_can_get_back(mesh):
     assert len(got) == 1 and got[0].to == mesh.num
 
 
+def test_a_direct_message_nobody_acknowledges_is_sent_three_times_then_fails(mesh):
+    """A DM lost on the air (a collision with the addressee's own
+    announcement is the usual way) is sent again — the identical bytes, a
+    few seconds apart, three sends in all: ReliableRouter's retransmission.
+    The tick stays "sent" meanwhile and turns FAILED only when the last send
+    too gets no ack."""
+    a = alex()
+    mesh.hear(a.nodeinfo(with_key=False))
+    mesh.drain()
+    pid = mesh.send("you there?", dest=ALEX).mesh_queued.packet_id
+    copies = [mesh.wait_sent(lambda h: h["id"] == pid, "the DM")]
+    for n in (2, 3):
+        again = mesh.wait_sent(lambda h: h["id"] == pid, "send %d of the DM" % n, timeout=12)
+        assert again["frame"] == copies[0]["frame"], "the resend was not the same bytes"
+        copies.append(again)
+    gaps = [y["tx"]["start_ms"] - x["tx"]["start_ms"] for x, y in zip(copies, copies[1:])]
+    assert all(4000 <= g <= 9000 for g in gaps), gaps
+
+    def status():
+        return {x.id: x.delivery for x in mesh.history()}[pid]
+    assert status() == pb.MESH_DELIVERY_SENT
+    mesh.dev_wait(lambda: status() == pb.MESH_DELIVERY_FAILED, "the message to be given up", timeout=12)
+    mesh.dev_sleep(3000)
+    assert [h for h in mesh.sent() if h["id"] == pid] == [], "sent a fourth time"
+
+
+def test_the_senders_own_resend_of_a_direct_message_is_acked_again(mesh):
+    """A second copy of a DM straight from its sender — hop counts untouched —
+    means our ack did not reach it, so it gets another. (A relay's copy does
+    not: the acked-once test above.) The message is still shown once."""
+    a = alex()
+    mesh.hear(a.nodeinfo(with_key=False))
+    mesh.drain()
+    pid = 0xD1EC7002
+    dm = a.text("still there?", dest=mesh.num, packet_id=pid, hop_limit=3, hop_start=3, want_ack=True)
+    for what in ("the ack", "the ack again"):
+        mesh.hear(dm)
+        mesh.drain()
+        ack = mesh.wait_sent(lambda h: is_port(h, M.PORT_ROUTING) and h["data"]["request_id"] == pid, what)
+        assert ack["dest"] == ALEX
+    assert len([x for x in mesh.history() if x.text == "still there?"]) == 1
+
+
 def test_an_ack_from_the_addressee_marks_the_riders_message_delivered(mesh):
     """The app's tick: a DM the phone sent is PENDING, then SENT once on the
     air, then ACKED when the addressee's routing ack (request_id = its
@@ -695,12 +738,6 @@ def test_a_full_outbox_refuses_the_next_message_instead_of_dropping_one(mesh):
     assert min(gaps) >= 1500, "frames closer than the 1.5 s politeness gap: %s" % gaps
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "BUG: the mesh task only notices a received packet when its 250 ms wait times out — lora_radio's DIO1 "
-    "ISR (onDio1) just sets a flag and never gives mesh_service's `wake` semaphore, though the comment on "
-    "`wake` says it does. The SX1262 holds one packet, so on the faster presets (ShortFast: ~40 ms on air) "
-    "a packet that arrives right behind another overwrites it before it is read: the rider never sees the "
-    "first message"))
 def test_back_to_back_packets_on_a_fast_preset_are_both_received(mesh):
     """Two riders answering at once on ShortFast: their packets follow each
     other on the channel within tens of milliseconds. Both messages must
@@ -717,11 +754,6 @@ def test_back_to_back_packets_on_a_fast_preset_are_both_received(mesh):
         "lost to overrun: %d" % mesh.dev.lora()["overrun"]
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "BUG: same root cause as above — nothing wakes the mesh task when DIO1 fires, so after a transmission "
-    "the radio sits in standby (not receiving) until the task's next 250 ms poll calls finishSend()/listen(). "
-    "A reply that starts within that window is never heard: an ack sent promptly by the addressee is lost and "
-    "the rider's DM stays at one tick (SENT) instead of ACKED; the device never retransmits it"))
 def test_an_ack_sent_straight_back_after_the_dm_is_heard(mesh):
     """The addressee answers as soon as it has the DM: its ack can start
     moments after the DM ends. The device must be listening by then."""

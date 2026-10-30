@@ -43,6 +43,7 @@
 #include <mutex>
 #include <random>
 #include <sstream>
+#include <thread>
 
 namespace {
 
@@ -111,6 +112,20 @@ struct Counters {
 } g_n;
 
 uint32_t now() { return sim_clock::millis(); }
+
+// DIO1. The chip raises it the moment a frame has finished going out or
+// coming in; here a thread sleeps on the device clock until then and calls
+// the hook, which (as on the board) does nothing but wake the mesh task. The
+// task then asks irqFired() what happened, exactly as it does on hardware.
+void (*g_irqHook)() = nullptr;
+void fireIrqAt(uint32_t atMs) {
+    if (!g_irqHook) return;
+    std::thread([atMs] {
+        const uint32_t t = now();
+        if ((int32_t)(atMs - t) > 0) sim_clock::sleepMs(atMs - t);
+        if (g_irqHook) g_irqHook();
+    }).detach();
+}
 
 uint32_t airtime(const Tune& t, size_t len) {
     if (t.sf <= 0 || t.bwKhz <= 0) return (uint32_t)len * 8;
@@ -233,6 +248,7 @@ bool begin(const Config& c) {
 bool ok() { return g_ok; }
 float frequencyMHz() { return g_cfg.freqMHz; }
 int lastError() { return g_ok ? 0 : -2; }
+void onIrq(void (*fn)()) { g_irqHook = fn; }
 
 bool irqFired() {
     std::lock_guard<std::recursive_mutex> lk(g_m);
@@ -283,6 +299,7 @@ bool startSend(const uint8_t* buf, size_t len) {
     // from the air is cut off (we stop listening now).
     g_txStart = now();
     g_txEnd = g_txStart + airtime(g_tune, len);
+    fireIrqAt(g_txEnd);
     // Logged as it starts, so the air can relay it while it is still going
     // out and other radios' channel-activity detection sees it.
     g_txLog.push_back(TxRecord{++g_txSeq, g_txStart, g_txEnd, g_tune, g_cfg.powerDbm, g_txFrame});
@@ -402,6 +419,7 @@ std::string loraCommand(const json::Value& r) {
         f.endMs = f.startMs + on;
         g_airFreeAt = f.endMs;
         o << "\"ok\":true,\"lost\":false,\"start_ms\":" << f.startMs << ",\"end_ms\":" << f.endMs;
+        fireIrqAt(f.endMs);
         g_air.push_back(std::move(f));
         return o.str();
     }
