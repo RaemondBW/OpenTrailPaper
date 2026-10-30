@@ -69,12 +69,18 @@ if [ ! -x "$BIN" ] || [ -n "$(find src sim/host sim/shim -newer "$BIN" -type f 2
     sim/build.sh
 fi
 
-for p in "$BLE" "$CTL" "$RADIO" "$CDN"; do
-    if lsof -nP -iTCP:"$p" -sTCP:LISTEN >/dev/null 2>&1; then
-        echo "port $p is in use (another otp-sim?); set OTP_SIM_*_PORT" >&2
-        exit 1
-    fi
-done
+# Nothing else may be listening on the sim's and the CDN's ports: a device
+# left over (a run of ours that gave up half-way, another otp-sim) would
+# answer the control port in place of the fresh one, which can't listen.
+ports_free() {
+    for p in "$BLE" "$CTL" "$RADIO" "$CDN"; do
+        if lsof -nP -iTCP:"$p" -sTCP:LISTEN >/dev/null 2>&1; then
+            echo "port $p is in use (another otp-sim?); set OTP_SIM_*_PORT" >&2
+            return 1
+        fi
+    done
+}
+ports_free || exit 1
 
 TOP=$(mktemp -d "${TMPDIR:-/tmp}/otpsim-ios.XXXXXX")
 
@@ -138,7 +144,8 @@ run_one() {
     mkdir -p "$DIR"
     LOG="$DIR/otp-sim.log"
 
-    # 2. A factory-fresh device.
+    # 2. A factory-fresh device, on ports nothing else answers.
+    ports_free || return 1
     "$BIN" --dir "$DIR/device" --ble-port "$BLE" --ctl-port "$CTL" --no-stdin --quiet >"$LOG" 2>&1 &
     SIM_PID=$!
     i=0
@@ -151,12 +158,23 @@ run_one() {
         fi
         sleep 0.2
     done
+    if ! kill -0 "$SIM_PID" 2>/dev/null; then
+        echo "otp-sim exited; log: $LOG" >&2
+        cat "$LOG" >&2
+        return 1
+    fi
     echo "== $1: otp-sim pid $SIM_PID: simble $BLE, control $CTL, state $DIR"
     # The firmware's idle auto-shutdown (10 min) would power the device off
     # while xcodebuild is still building on a slow runner.
     printf '{"cmd":"wait_log","pattern":"boot: all tasks started","since":0,"timeout_ms":30000}\n' |
         nc -w 31 127.0.0.1 "$CTL" | grep -q '"ok":true' || { echo "otp-sim did not finish booting" >&2; return 1; }
-    printf '{"cmd":"console","line":"autosleep off"}\n' | nc -w 3 127.0.0.1 "$CTL" | grep -q 'autosleep: OFF' ||
+    # The console answers on its own task: on a loaded runner (the simulator
+    # still settling after its boot) the reply can come after the console
+    # command's own half-second wait, so wait for it in the log.
+    SEQ=$(printf '{"cmd":"seq"}\n' | nc -w 3 127.0.0.1 "$CTL" | sed -n 's/.*"seq":\([0-9]*\).*/\1/p')
+    printf '{"cmd":"console","line":"autosleep off"}\n' | nc -w 3 127.0.0.1 "$CTL" >/dev/null
+    printf '{"cmd":"wait_log","pattern":"autosleep: OFF","since":%s,"timeout_ms":20000}\n' "${SEQ:-0}" |
+        nc -w 21 127.0.0.1 "$CTL" | grep -q '"ok":true' ||
         { echo "otp-sim did not take autosleep off" >&2; return 1; }
 
     # The stand-in tile CDN and Overpass: the map tests launch the app pointed at
@@ -215,7 +233,10 @@ run_one() {
 
 RC=0
 for run in $RUNS; do
+    # A run that gave up half-way (return 1) left its otp-sim, CDN and log
+    # stream running: stop them before the next run's device starts.
     run_one "$run" || RC=1
+    cleanup
 done
 echo "== logs: $TOP"
 exit "$RC"
