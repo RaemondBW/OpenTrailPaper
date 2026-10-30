@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <SD.h>
+#include <ff.h>
 #include <esp_heap_caps.h>
 #include <cmath>
 #include <cstring>
@@ -809,22 +810,38 @@ float elevationAt(double lat, double lon) {
 
 // The one call that still walks the card, because "what have you got?" cannot
 // be computed — the phone asks so it can skip re-sending tiles the device
-// already holds. Cheap by comparison with the old boot scan: this reads
-// directory NAMES only and never opens a tile, since the name is the id.
-// On demand, from the BLE server task, never on the boot path.
+// already holds. It reads directory entries only and never opens a tile, since
+// the name is the id. On demand, from the phone link, never on the boot path.
 // `ext` ".poi" lists the tiles that have a cycling-POI file instead.
+//
+// FatFs's own f_readdir, not File::openNextFile: that wraps every entry in a
+// File, which stat()s and fopen()s it by path, and each of those is a FatFs
+// search of the directory from the top — quadratic in the directory's size. At
+// the card's 4 MHz every byte of that is busy-waited, so on a card with ~200
+// tiles the walk ran for seconds on core 0 and the task watchdog reset the
+// device (Memfault dumps, Oct 2026: link task in SPI transfers inside
+// sendTileList, every time an app connected). Same drive lookup as
+// ride_recorder's listRides. And not under MapGuard: nothing here touches the
+// tile cache.
 int listTileIds(char out[][24], int maxOut, const char* ext, uint32_t* sizes) {
-    MapGuard g;
     int n = 0;
-    int seen = 0;
+    // Heap, not stack: FILINFO carries a 256-byte long-name buffer, and the
+    // link task's stack is not big. One for each directory level.
+    struct Walk { FF_DIR dir; FILINFO fi; };
+    Walk* w = (Walk*)heap_caps_malloc(2 * sizeof(Walk), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!w) w = (Walk*)malloc(2 * sizeof(Walk));
+    if (!w) return 0;
+    uint32_t since = millis();
     sdLock();
-    // Yield every so often. This walk is the one card operation left on a
-    // request path, it runs on the BLE server task, and it grows with the card:
-    // opening the Maps screen asks for it (refreshDeviceTiles), so at 150+ tiles
-    // it was seconds of uninterrupted SD work and the task watchdog reset the
-    // device before the reply was ever sent — which is why the log shows tile
-    // list requests simply stopping rather than failing.
-    auto breathe = [&]() { if ((++seen & 0x1F) == 0) vTaskDelay(1); };
+    // Never hold the card (and core 0) for long: the LoRa radio and the ride
+    // recorder share the bus, and core 0's idle task must run within 5 s.
+    auto breathe = [&]() {
+        if (millis() - since < 30) return;
+        sdUnlock();
+        vTaskDelay(pdMS_TO_TICKS(2));
+        sdLock();
+        since = millis();
+    };
     auto take = [&](const char* prefix, const char* base, uint32_t size) {
         if (n >= maxOut || !strstr(base, ext)) return;
         snprintf(out[n], 24, "%s%s", prefix, base);
@@ -832,39 +849,40 @@ int listTileIds(char out[][24], int maxOut, const char* ext, uint32_t* sizes) {
         if (sizes) sizes[n] = size;   // from the directory entry: no extra I/O
         n++;
     };
-    auto walk = [&](const char* path, const char* prefix) {
-        File d = SD.open(path);
-        if (!d) return;
-        for (File f = d.openNextFile(); f && n < maxOut; f = d.openNextFile()) {
-            if (!f.isDirectory()) {
-                const char* nm = f.name();
-                const char* base = strrchr(nm, '/');
-                take(prefix, base ? base + 1 : nm, (uint32_t)f.size());
-            }
-            f.close();
-            breathe();
-        }
-        d.close();
-    };
-    walk(TILE_DIR, "");                       // legacy flat cards
-    File d = SD.open(TILE_DIR);
-    if (d) {
-        for (File e = d.openNextFile(); e && n < maxOut; e = d.openNextFile()) {
-            if (e.isDirectory()) {
-                const char* nm = e.name();
-                const char* base = strrchr(nm, '/');
-                char sub[16], full[96];
-                snprintf(sub, sizeof(sub), "%s", base ? base + 1 : nm);
-                snprintf(full, sizeof(full), "%s/%s", TILE_DIR, sub);
-                e.close();
-                walk(full, strlen(sub) == TILE_PREFIX_LEN ? sub : "");
+    int drive = -1;
+    for (int drv = 0; drv < FF_VOLUMES && drive < 0; ++drv) {
+        char path[32];
+        snprintf(path, sizeof(path), "%d:%s", drv, TILE_DIR);
+        if (f_opendir(&w[0].dir, path) == FR_OK) drive = drv;
+    }
+    if (drive >= 0) {
+        // Flat tiles straight in TILE_DIR (legacy cards), and the prefix
+        // directories, each walked as it comes up.
+        while (n < maxOut && f_readdir(&w[0].dir, &w[0].fi) == FR_OK && w[0].fi.fname[0]) {
+            const char* name = w[0].fi.fname;
+            if (!(w[0].fi.fattrib & AM_DIR)) {
+                take("", name, (uint32_t)w[0].fi.fsize);
+                breathe();
                 continue;
             }
-            e.close();
+            char sub[16], path[64];
+            snprintf(sub, sizeof(sub), "%s", name);
+            snprintf(path, sizeof(path), "%d:%s/%s", drive, TILE_DIR, sub);
+            const char* prefix = strlen(sub) == TILE_PREFIX_LEN ? sub : "";
+            if (f_opendir(&w[1].dir, path) == FR_OK) {
+                while (n < maxOut && f_readdir(&w[1].dir, &w[1].fi) == FR_OK && w[1].fi.fname[0]) {
+                    if (!(w[1].fi.fattrib & AM_DIR))
+                        take(prefix, w[1].fi.fname, (uint32_t)w[1].fi.fsize);
+                    breathe();
+                }
+                f_closedir(&w[1].dir);
+            }
+            breathe();
         }
-        d.close();
+        f_closedir(&w[0].dir);
     }
     sdUnlock();
+    free(w);
     return n;
 }
 
