@@ -100,4 +100,50 @@ class MeshChannelUrlTest {
         assertEquals(32, b.size)
         assertTrue("two draws from the CSPRNG matched", !a.contentEquals(b))
     }
+
+    @Test
+    fun `the radio settings encode to Meshtastic's own default URL`() {
+        // https://meshtastic.org/e/#CgMSAQESBggBQANIAQ is what the official app
+        // shares for an unconfigured node: the default channel plus
+        // lora_config {use_preset, hop_limit 3, tx_enabled}, LongFast and no
+        // region being the zero values proto3 leaves out.
+        assertEquals(
+            "https://meshtastic.org/e/#CgMSAQESBggBQANIAQ",
+            MeshChannelUrl.url("", byteArrayOf(0x01), MeshChannelUrl.Radio("LongFast", null, 0)),
+        )
+        val back = MeshChannelUrl.parseInvite("https://meshtastic.org/e/#CgMSAQESBggBQANIAQ")
+        assertEquals(1, back.channels.size)
+        assertEquals(MeshChannelUrl.Radio("LongFast", null, 0), back.radio)
+    }
+
+    @Test
+    fun `speed, region and slot round-trip`() {
+        val radio = MeshChannelUrl.Radio("MediumFast", "US", 45)
+        val back = MeshChannelUrl.parseInvite(MeshChannelUrl.url("Trail", ByteArray(32), radio))
+        assertEquals("Trail", back.channels.single().name)
+        assertEquals(radio, back.radio)
+    }
+
+    @Test
+    fun `an invite without radio settings has none`() {
+        assertEquals(null, MeshChannelUrl.parseInvite("https://meshtastic.org/e/#CgMSAQE").radio)
+    }
+
+    @Test
+    fun `lora fields this app does not read are stepped over`() {
+        // lora_config {use_preset 1, frequency_offset (fixed32) 1.0f, modem_preset 4}
+        val lora = byteArrayOf(0x08, 0x01, 0x35, 0x00, 0x00, 0x80.toByte(), 0x3f, 0x10, 0x04)
+        val msg = byteArrayOf(0x0a, 0x03, 0x12, 0x01, 0x01, 0x12, lora.size.toByte()) + lora
+        val back = MeshChannelUrl.decodeInvite(msg)
+        assertEquals(1, back.channels.size)
+        assertEquals("MediumFast", back.radio?.preset)
+    }
+
+    @Test
+    fun `the automatic slot matches the firmware's frequencies`() {
+        // US, 250 kHz: 104 slots from 902.125 MHz. config.h: LongFast on
+        // 906.875 MHz, MediumFast on 913.125 — slots 19 and 44 counted from 0.
+        assertEquals(20, MeshChannelUrl.automaticSlot("LongFast", 250.0, 902.0, 928.0, 0.0))
+        assertEquals(45, MeshChannelUrl.automaticSlot("MediumFast", 250.0, 902.0, 928.0, 0.0))
+    }
 }

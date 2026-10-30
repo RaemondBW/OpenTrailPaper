@@ -81,6 +81,22 @@ targets:
   # Widget extension whose only job is the transfer Live Activity. It shares
   # nothing with the app but the ActivityAttributes type in Shared/ (ActivityKit
   # carries the state across), so no App Group is needed.
+  # Unit tests: pure logic hosted in the app, starting with the channel-share
+  # URL codec (MeshChannelURLTests), pinned against Meshtastic's own bytes.
+  OpenTrailPaperTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - Tests
+    dependencies:
+      - target: OpenTrailPaper
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.raemond.opentrailpaper.tests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/OpenTrailPaper.app/OpenTrailPaper
+        BUNDLE_LOADER: $(TEST_HOST)
+        TARGETED_DEVICE_FAMILY: "1"
   # UI tests: scroll smoothness of the tab screens (ScrollSmoothnessTests).
   OpenTrailPaperUITests:
     type: bundle.ui-testing
@@ -117,6 +133,7 @@ schemes:
     test:
       config: Debug
       targets:
+        - OpenTrailPaperTests
         - OpenTrailPaperUITests
     archive:
       config: Release
