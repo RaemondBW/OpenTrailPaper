@@ -56,7 +56,8 @@ class RideSyncSimTest : AppSimHarness() {
      * A ride the rider records and saves on the device shows up in the Rides
      * tab with the card's size, downloads byte for byte, and the app's
      * FitDecoder reads the numbers the device showed on its ride summary
-     * (distance, moving time, elapsed time) and a track along the road ridden.
+     * (distance, moving time), the elapsed time of the device's clock from
+     * start to SAVE, and a track along the road ridden.
      */
     @Test
     fun aRideRecordedOnTheDeviceDownloadsAndReadsAsTheDeviceSummarisedIt() {
@@ -64,7 +65,8 @@ class RideSyncSimTest : AppSimHarness() {
         ridesTabCheck(ble)
         assertTrue("a factory-fresh card has no rides: ${ble.rides}", ble.rides.isEmpty())
 
-        val summary = recordRideOnDevice(seconds = 120, kmh = 30.0, pump = { runFor(it) })
+        val rode = recordRideOnDevice(seconds = 120, kmh = 30.0, pump = { runFor(it) })
+        val summary = rode.summary
         val onCard = File(sd, "rides").listFiles()!!.filter { it.name.endsWith(".fit") }
         assertEquals("one ride on the card", 1, onCard.size)
         val ride = onCard.single()
@@ -83,17 +85,26 @@ class RideSyncSimTest : AppSimHarness() {
         val p = checkNotNull(FitDecoder.decode(bytes)) { "the ride doesn't decode" }
         val devKm = summary.get("distance_m").asDouble / 1000
         val devMoving = summary.get("moving_s").asDouble
-        val devElapsed = summary.get("elapsed_s").asDouble
+        val devTicks = summary.get("elapsed_s").asDouble
         // The moment between reading the device and its SAVE: a second or two.
         assertTrue("distance: app ${p.distanceKm} km, device $devKm km", abs(p.distanceKm - devKm) < 0.025)
         assertTrue("moving time: app ${p.movingTime} s, device $devMoving s", abs(p.movingTime - devMoving) <= 3.0)
-        // Elapsed comes from the records' GPS timestamps, which at the sim's 6x
-        // clock run a few percent apart from the device's own ride timer.
-        assertTrue("elapsed: app ${p.duration} s, device $devElapsed s", abs(p.duration - devElapsed) <= 3.0 + 0.06 * devElapsed)
+        // Elapsed is wall-clock: the span of the records' GPS timestamps, as
+        // the device's own session elapsed is its start-to-end clock span. It
+        // is checked against the device's clock around the ride's start and
+        // SAVE, not against the device's ride timer (elapsed_s), which counts
+        // recorder ticks and in the sim loses each tick's late wake-up times
+        // the 6x speed factor (DeviceRide). The first and last records fall
+        // within a tick (and a whole-second timestamp) of the start and SAVE.
+        println("elapsed: app ${p.duration} s, device clock ${rode.minClockSpanS}..${rode.maxClockSpanS} s, timer $devTicks s")
+        assertTrue(
+            "elapsed: app ${p.duration} s, device clock ${rode.minClockSpanS}..${rode.maxClockSpanS} s (timer $devTicks s)",
+            p.duration >= rode.minClockSpanS - 4 && p.duration <= rode.maxClockSpanS + 1,
+        )
         val avg = devKm / (devMoving / 3600)
         assertTrue("average speed: app ${p.avgSpeedKmh}, device $avg km/h", abs(p.avgSpeedKmh - avg) < 1.0)
         assertTrue("a 30 km/h ride has a top speed near 30: ${p.maxSpeedKmh}", p.maxSpeedKmh in 25.0..36.0)
-        assertTrue("a point a second or so: ${p.points.size}", p.points.size >= devElapsed * 0.8)
+        assertTrue("a point a timer second or so: ${p.points.size}", p.points.size >= devTicks * 0.8)
         // The track: east from 45.70 N, 121.52 W along the line the GPS rode.
         for (pt in p.points) {
             assertTrue("off the road: ${pt.coordinate}", abs(pt.coordinate.lat - 45.70) < 0.001)

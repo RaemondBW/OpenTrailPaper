@@ -254,20 +254,52 @@ abstract class AppSimHarness {
     }
 
     /**
-     * The rider records a ride on the device: a GPS track at [kmh], the BOOT
-     * key to start, [seconds] of device time (the device clock runs 6x),
-     * BOOT to stop and SAVE on the summary (at real time). [pump] keeps the
-     * phone side running meanwhile (the looper, when an app is connected).
-     * Returns the device's ride state just before SAVE: what it saves, give
-     * or take the moment between the two.
+     * A ride recorded on the device: [summary] is its ride state on the
+     * save / discard summary (what it saves, give or take the moment before
+     * SAVE). The ride's start and end on the device's own clock (the GPS time
+     * the FIT is stamped with, and the session's total_elapsed_time is the
+     * span of) are bracketed by the device's clock read either side of the
+     * BOOT press that started it and of the SAVE that ended it.
+     *
+     * Elapsed time is that clock span, not `summary.elapsed_s`: the device's
+     * ride timer counts its recorder's 1 s ticks, and a tick is a
+     * vTaskDelay(1000) taken after the tick's work, so every late wake-up is
+     * time the timer never counts. In the sim a late wake-up is the host's
+     * thread latency multiplied by the speed factor (6x while recording): a
+     * few percent of the ride on a fast Mac, 25-30 % on a loaded CI runner
+     * (120 timer seconds over 154 s of device clock).
      */
-    protected fun recordRideOnDevice(seconds: Int = 90, kmh: Double = 30.0, pump: (Long) -> Unit = { Thread.sleep(it) }): JsonObject {
+    data class DeviceRide(
+        val summary: JsonObject,
+        val clockBeforeStart: Long,
+        val clockAfterStart: Long,
+        val clockBeforeSave: Long,
+        val clockAfterSave: Long,
+    ) {
+        /** Fewest seconds of device clock the ride can have lasted. */
+        val minClockSpanS: Long get() = clockBeforeSave - clockAfterStart
+        /** Most seconds of device clock the ride can have lasted. */
+        val maxClockSpanS: Long get() = clockAfterSave - clockBeforeStart
+    }
+
+    /**
+     * The rider records a ride on the device: a GPS track at [kmh], the BOOT
+     * key to start, [seconds] of ride timer (the device clock runs 6x),
+     * BOOT to stop and SAVE on the summary. Start and stop are taken at real
+     * time, so the device-clock brackets around them stay a second or two
+     * wide however slow the host is. [pump] keeps the phone side running
+     * meanwhile (the looper, when an app is connected).
+     */
+    protected fun recordRideOnDevice(seconds: Int = 90, kmh: Double = 30.0, pump: (Long) -> Unit = { Thread.sleep(it) }): DeviceRide {
         sim.cmd("gps", "track" to lineTrack(45.70, -121.52, 3.0), "speed_kmh" to kmh)
         waitUntil("a GPS fix", 15_000, pump) { rideStatus().get("gps_fix").asBoolean }
-        sim.cmd("speed", "factor" to 6)
         try {
+            val beforeStart = sim.status().get("wall_unix").asLong
             sim.cmd("button", "name" to "boot")
-            waitUntil("recording", 10_000, pump) { rideStatus().get("recording").asBoolean }
+            var st = sim.status()
+            waitUntil("recording", 10_000, pump) { st = sim.status(); st.getAsJsonObject("ride").get("recording").asBoolean }
+            val afterStart = st.get("wall_unix").asLong
+            sim.cmd("speed", "factor" to 6)
             waitUntil("$seconds s of ride", (seconds * 1000L) / 3 + 20_000, pump) {
                 rideStatus().get("elapsed_s").asInt >= seconds
             }
@@ -276,11 +308,12 @@ abstract class AppSimHarness {
             // rider may resume), so the seconds between the two are in the file.
             sim.cmd("speed", "factor" to 1)
             sim.cmd("button", "name" to "boot")    // stop: the save / discard summary
-            waitUntil("the ride summary", 10_000, pump) { sim.status().get("screen").asString == "other" }
-            val summary = rideStatus()
+            waitUntil("the ride summary", 10_000, pump) { st = sim.status(); st.get("screen").asString == "other" }
+            val summary = st.getAsJsonObject("ride")
+            val beforeSave = st.get("wall_unix").asLong
             sim.cmd("tap", "x" to SAVE_X, "y" to SAVE_Y)
-            waitUntil("the ride saved", 20_000, pump) { !rideStatus().get("recording").asBoolean }
-            return summary
+            waitUntil("the ride saved", 20_000, pump) { st = sim.status(); !st.getAsJsonObject("ride").get("recording").asBoolean }
+            return DeviceRide(summary, beforeStart, afterStart, beforeSave, st.get("wall_unix").asLong)
         } finally {
             sim.cmd("speed", "factor" to 1)
         }

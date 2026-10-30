@@ -148,7 +148,10 @@ class SensorsMediaSimTest {
             ble.sensors.any { it.addr == addr && it.paired && it.connected }
         }
         assertEquals(addr, ble.connectedSensor(1)?.addr)
-        assertEquals(137, sensorState().get("hr_bpm").asInt)
+        // Connected comes before the strap's first measurement (it notifies
+        // once a second, as a real strap does): on a loaded host the list can
+        // say connected while the device has no heart rate yet (-1).
+        waitFor("the device's heart rate the strap's", 5_000) { sensorState().get("hr_bpm").asInt == 137 }
 
         ble.forgetSensor(addr)
         waitFor("the strap dropped", 10_000) {
