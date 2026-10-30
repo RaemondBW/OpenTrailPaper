@@ -97,6 +97,11 @@ struct RootView: View, Equatable {
     private var ble: BLEManager { unread.ble }
     @EnvironmentObject var appState: AppState
     @State private var tab = RootView.initialTab
+    /// The tab bar is drawn over the TabView, which rises with the keyboard,
+    /// so it would ride up on top of it (the selected cell's black block
+    /// showing just above the keys). Put away while typing, as the system
+    /// tab bar is.
+    @State private var keyboardUp = false
 
     init(ble: BLEManager) {
         _unread = StateObject(wrappedValue: BLEScope(ble) { $0.meshState.unread })
@@ -112,18 +117,26 @@ struct RootView: View, Equatable {
         TabView(selection: $tab) {
             // The live stream goes to the Ride tab only (see DeviceLive).
             RideView().environmentObject(ble.live)
-                .einkTabBarInset().tag(0).toolbar(.hidden, for: .tabBar)
-            RouteTab().einkTabBarInset().tag(1).toolbar(.hidden, for: .tabBar)
-            RidesTab().einkTabBarInset().tag(2).toolbar(.hidden, for: .tabBar)
-            MeshTab().einkTabBarInset().tag(3).toolbar(.hidden, for: .tabBar)
-            SettingsTab().einkTabBarInset().tag(4).toolbar(.hidden, for: .tabBar)
+                .einkTabBarInset(!keyboardUp).tag(0).toolbar(.hidden, for: .tabBar)
+            RouteTab().einkTabBarInset(!keyboardUp).tag(1).toolbar(.hidden, for: .tabBar)
+            RidesTab().einkTabBarInset(!keyboardUp).tag(2).toolbar(.hidden, for: .tabBar)
+            MeshTab().einkTabBarInset(!keyboardUp).tag(3).toolbar(.hidden, for: .tabBar)
+            SettingsTab().einkTabBarInset(!keyboardUp).tag(4).toolbar(.hidden, for: .tabBar)
         }
         // Drawn over the TabView; each tab insets its own content by the
         // bar's height (`einkTabBarInset`), since a TabView does not pass a
         // safe-area inset of its own on to its pages.
         .overlay(alignment: .bottom) {
-            EinkTabBar(selection: $tab, badges: [3: ble.meshState.unread])
-                .environmentObject(ble)
+            if !keyboardUp {
+                EinkTabBar(selection: $tab, badges: [3: ble.meshState.unread])
+                    .environmentObject(ble)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+            keyboardUp = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            keyboardUp = false
         }
         .toggleStyle(EinkToggleStyle())
         .fullScreenCover(isPresented: $appState.showTutorial) {
@@ -247,8 +260,8 @@ struct EinkTabBar: View {
 }
 
 extension View {
-    /// Keeps a tab's content clear of the overlaid EinkTabBar.
-    func einkTabBarInset() -> some View {
-        padding(.bottom, EinkTabBar.height)
+    /// Keeps a tab's content clear of the overlaid EinkTabBar, while it shows.
+    func einkTabBarInset(_ shown: Bool = true) -> some View {
+        padding(.bottom, shown ? EinkTabBar.height : 0)
     }
 }
