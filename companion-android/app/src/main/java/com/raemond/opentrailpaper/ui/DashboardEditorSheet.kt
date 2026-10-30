@@ -26,8 +26,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -42,10 +40,8 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -62,7 +58,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
 import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onPlaced
@@ -183,6 +179,8 @@ fun DashboardEditorSheet(ble: BleManager, onDismiss: () -> Unit) {
                     when {
                         ble.pendingDashConfig == null ->
                             "Not connected · edits are saved and sync on the next connect"
+                        connected && ble.dashWaitingForDevice ->
+                            "Waiting for the device · it saves the layout once the ride stops recording"
                         connected -> "Syncing layout…"
                         else -> "Will sync when connected"
                     },
@@ -192,6 +190,7 @@ fun DashboardEditorSheet(ble: BleManager, onDismiss: () -> Unit) {
             PageCarousel(
                 useMiles = ble.useMiles,
                 config = config,
+                maxPages = ble.dashMaxPages,
                 pageIx = pageIx,
                 onSelect = { i ->
                     pageIx = i
@@ -325,7 +324,7 @@ fun DashboardEditorSheet(ble: BleManager, onDismiss: () -> Unit) {
                                 style = TypeScale.body, color = Palette.ink,
                                 modifier = Modifier.weight(1f),
                             )
-                            Switch(
+                            EinkSwitch(
                                 checked = page.autoShow,
                                 onCheckedChange = { on ->
                                     config = config.copy(
@@ -385,6 +384,8 @@ fun DashboardEditorSheet(ble: BleManager, onDismiss: () -> Unit) {
 private fun PageCarousel(
     useMiles: Boolean,
     config: DashConfig,
+    /** Content pages the device holds (DeviceHello.dash_max_pages, else 4). */
+    maxPages: Int,
     pageIx: Int,
     onSelect: (Int) -> Unit,
     onRemove: (Int) -> Unit,
@@ -463,7 +464,7 @@ private fun PageCarousel(
             }
         }
 
-        if (config.contentPages < DashConfig.MAX_PAGES) {
+        if (config.contentPages < maxPages) {
             AddPageCard(
                 hasMusic = config.hasMusicPage,
                 hasWorkout = config.hasWorkoutPage,
@@ -491,11 +492,10 @@ private fun PageCard(
             Modifier
                 .padding(top = 9.dp, end = 9.dp)
                 .size(width = 124.dp, height = 206.dp)
-                .clip(RoundedCornerShape(8.dp))
                 .border(
                     border.dp,
                     if (selected) Palette.accent else Palette.hairline,
-                    RoundedCornerShape(8.dp),
+                    RectangleShape,
                 )
                 .clickable(onClick = onTap),
         ) {
@@ -530,13 +530,12 @@ private fun PageCard(
                 Modifier
                     .align(Alignment.TopEnd)
                     .size(24.dp)
-                    .clip(CircleShape)
                     .background(Color.White)
                     .clickable(onClick = onRemove),
                 contentAlignment = Alignment.Center,
             ) {
                 Box(
-                    Modifier.size(20.dp).clip(CircleShape).background(Color(0xFFE53935)),
+                    Modifier.size(20.dp).background(Palette.ink),
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(
@@ -565,8 +564,7 @@ private fun AddPageCard(
         Column(
             Modifier
                 .size(width = 124.dp, height = 206.dp)
-                .clip(RoundedCornerShape(8.dp))
-                .border(1.5.dp, Palette.hairline, RoundedCornerShape(8.dp))
+                .border(1.5.dp, Palette.hairline)
                 .clickable { menu = true },
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,

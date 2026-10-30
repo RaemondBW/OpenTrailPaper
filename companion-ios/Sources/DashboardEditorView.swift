@@ -117,13 +117,15 @@ struct DashboardEditorView: View {
         // drop delegates never saw the session. Out here the cards own their
         // own drags.
         VStack(spacing: 0) {
-            if ble.pendingDashConfig != nil || !connected {
-                PendingSyncHint(text: ble.pendingDashConfig != nil
-                                ? (connected ? "Syncing layout…" : "Will sync when connected")
-                                : "Not connected · edits are saved and sync on the next connect")
-                    .padding(.horizontal, 20)
-                    .padding(.top, 8)
-            }
+            // Always one line, its text changing in place: a hint that came
+            // and went with each Send pushed the whole editor down and back.
+            PendingSyncHint(text: ble.pendingDashConfig != nil
+                            ? (connected ? "Syncing layout…" : "Will sync when connected")
+                            : connected ? "Layout matches the device"
+                            : "Not connected · edits are saved and sync on the next connect")
+                .lineLimit(1).minimumScaleFactor(0.7)
+                .padding(.horizontal, 20)
+                .padding(.top, 8)
             carousel
             if config.pages.count > 1 {
                 Text("Tap a page to edit it · hold one, then drag it into place")
@@ -134,7 +136,7 @@ struct DashboardEditorView: View {
             }
             pageSections
         }
-        .background(Color(uiColor: .systemGroupedBackground))
+        .background(Palette.paper)
     }
 
     private var pageSections: some View {
@@ -233,7 +235,7 @@ struct DashboardEditorView: View {
                     ForEach(Array(config.pages.enumerated()), id: \.element.id) { i, page in
                         carouselCard(i).id(page.id.uuidString)
                     }
-                    if config.contentPages < DashConfig.maxPages {
+                    if config.contentPages < DashConfig.devicePages {
                         addCard(proxy).id("add")
                     }
                 }
@@ -266,15 +268,15 @@ struct DashboardEditorView: View {
             }
         }
         .frame(width: 124, height: 206)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .clipShape(Rectangle())
     }
 
     private func carouselCard(_ i: Int) -> some View {
         ZStack(alignment: .topTrailing) {
             cardFace(i)
             .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(pageIx == i ? Color.accentColor : Palette.hairline,
+                Rectangle()
+                    .stroke(pageIx == i ? Palette.ink : Palette.hairline,
                             lineWidth: pageIx == i ? 2.5 : 1))
             // The map can't be removed; the last remaining data/music page
             // can't either.
@@ -289,7 +291,7 @@ struct DashboardEditorView: View {
                     Image(systemName: "minus.circle.fill")
                         .font(.system(size: 22))
                         .symbolRenderingMode(.palette)
-                        .foregroundStyle(.white, .red)
+                        .foregroundStyle(.white, .black)
                         .background(Circle().fill(.white).padding(2))
                 }
                 .buttonStyle(.plain)
@@ -313,7 +315,7 @@ struct DashboardEditorView: View {
         // the custom-preview variant runs a different internal interaction
         // that broke the drop delegates — the card lifted beautifully and
         // could no longer be dropped anywhere.
-        .contentShape(.dragPreview, RoundedRectangle(cornerRadius: 8))
+        .contentShape(.dragPreview, Rectangle())
         .onDrag {
             draggedPage = config.pages[i].id
             return NSItemProvider(object: config.pages[i].id.uuidString as NSString)
@@ -372,7 +374,7 @@ struct DashboardEditorView: View {
             .foregroundStyle(Palette.muted)
             .frame(width: 124, height: 206)
             .background(
-                RoundedRectangle(cornerRadius: 8)
+                Rectangle()
                     .strokeBorder(Palette.hairline,
                                   style: StrokeStyle(lineWidth: 1.5, dash: [6, 5])))
         }
@@ -475,6 +477,18 @@ struct DashPreview: View {
     /// in two passes.
     var live: RideSim? = nil
 
+    /// The Ride tab's live panel: each field's text as the device would print
+    /// it right now ("--" for what the link doesn't carry), and the watts the
+    /// power zone bar fills by (nil = no reading, an empty bar) against `ftp`.
+    var liveText: ((String) -> String)? = nil
+    var liveWatts: ((String) -> Double?)? = nil
+    var ftp: Double = 250
+    /// The Ride tab's live panel: which fields have a source right now (nil =
+    /// all of them, as in the editor), and whether the ones without are left
+    /// off the page (the device's "Show offline" off) rather than greyed.
+    var available: ((String) -> Bool)? = nil
+    var hidesUnavailable = false
+
     // Device geometry (ui_render.h). Everything is computed in these units.
     // Not private: the page editor lays its drop targets over the same grid.
     let panelW: CGFloat = 540, panelH: CGFloat = 960
@@ -542,7 +556,23 @@ struct DashPreview: View {
 
     // MARK: layout — ui_render.cpp's packer, verbatim in device pixels
 
+    /// The layout the device packs: with "Show offline" off, a field whose
+    /// sensor is gone is dropped first, and its row partner widens to fill —
+    /// ui_render.cpp's filter. The vertical tile always stays.
+    private var shown: DashLayout {
+        guard hidesUnavailable, let available else { return layout }
+        return DashLayout(items: layout.items.filter { $0.vertical || available($0.field) })
+    }
+
+    /// Greyed out as the device greys a cell: its sensor is gone, or it has
+    /// no value to show.
+    private func isStale(_ field: String) -> Bool {
+        guard let available, field != "radar" else { return false }
+        return !available(field) || (liveText?(field) ?? "").hasPrefix("--")
+    }
+
     private func place() -> Placement {
+        let layout = shown
         let rows = layout.rows
         guard !rows.isEmpty else { return Placement(cells: [], rows: [], totalWeight: 1, railY: 0, railH: 0) }
         let weights = rows.map { $0.map(\.size.weight).max() ?? 1 }
@@ -648,6 +678,12 @@ struct DashPreview: View {
         ZStack(alignment: .topLeading) {
             Rectangle()
                 .strokeBorder(Color.black, lineWidth: rule * k)
+            if isStale(p.item.field) {
+                // The panel's 25% dot tone, under the caption and value.
+                Rectangle()
+                    .fill(ImagePaint(image: Self.dotTone, scale: k))
+                    .padding(rule * k)
+            }
 
             if p.item.field == "radar" {
                 radarSample(k: k, height: p.h)
@@ -674,6 +710,17 @@ struct DashPreview: View {
             }
         }
     }
+
+    /// ui_render's TONE_25: a 2 px dot on a 4 px pitch, in device pixels.
+    private static let dotTone: Image = {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let img = UIGraphicsImageRenderer(size: CGSize(width: 4, height: 4), format: format).image { ctx in
+            UIColor.black.setFill()
+            ctx.fill(CGRect(x: 0, y: 0, width: 2, height: 2))
+        }
+        return Image(uiImage: img)
+    }()
 
     private func radarSample(k: CGFloat, height: CGFloat) -> some View {
         let riderBottom: CGFloat = height < 600 ? 120 : 130
@@ -714,7 +761,7 @@ struct DashPreview: View {
     /// alone pushes it off-axis by half the unit's width.
     private func value(_ p: Placed, k: CGFloat) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 5 * k) {
-            Text(live?.text(for: p.item.field) ?? sample(p.item.field))
+            Text(liveText?(p.item.field) ?? live?.text(for: p.item.field) ?? sample(p.item.field))
                 .font(.custom("BarlowCondensed-Bold", size: p.value.cap / capRatio * k))
                 .lineLimit(1)
                 .minimumScaleFactor(0.5)
@@ -744,8 +791,14 @@ struct DashPreview: View {
     /// sample of 247 W sits at 99% of FTP, which is zone 4, so a static preview
     /// looks exactly as it always did.
     private func zone(_ field: String) -> Int {
-        let watts = live.map { field == "power" ? $0.power : $0.power3s } ?? 247
-        let pct = watts / 250 * 100
+        let watts: Double
+        if let liveWatts {
+            guard let w = liveWatts(field) else { return 0 }
+            watts = w
+        } else {
+            watts = live.map { field == "power" ? $0.power : $0.power3s } ?? 247
+        }
+        let pct = watts / max(ftp, 1) * 100
         switch pct {
         case ..<55:   return 1
         case ..<75:   return 2
@@ -811,419 +864,8 @@ struct DashPreview: View {
 }
 
 
-// Thumbnails of the device's MUSIC and MAP screens, same idiom as
-// DashPreview: device geometry (540x960) scaled by width, drawn with the same
-// content the panel shows so the carousel cards are honest previews.
-
-// Sample text shared by the two mock screens.
-private func previewPanelLabel(_ id: String) -> String {
-    id == "power3s" ? "POWER · 3S" : (DashField.named(id)?.label ?? id).uppercased()
-}
-
-private func previewSample(_ id: String) -> String {
-    switch id {
-    case "speed": return "32.4"
-    case "power3s", "power": return "247"
-    case "hr": return "156"
-    case "cadence": return "88"
-    case "distance": return "54.8"
-    case "ridetime", "movingtime": return "1:47"
-    case "climb": return "918"
-    case "grade": return "4.2"
-    case "altitude": return "112"
-    case "battery": return "76"
-    case "sats": return "11"
-    case "clock": return "14:25"
-    case "routeleft": return "12.4"
-    default: return "--"
-    }
-}
-
-/// Miniature of the device's workout page: countdown hero, reversed power
-/// band, session profile, block strips. Static — it's a card, not a sim.
-struct WorkoutPagePreview: View {
-    var body: some View {
-        GeometryReader { geo in
-            let k = geo.size.width / 540
-            ZStack(alignment: .topLeading) {
-                Text("14:25").font(.system(size: 30 * k, weight: .bold))
-                    .offset(x: 14 * k, y: 14 * k)
-                Text("76%").font(.system(size: 30 * k, weight: .bold))
-                    .offset(x: 440 * k, y: 14 * k)
-                Rectangle().fill(.black)
-                    .frame(width: 540 * k, height: 3 * k)
-                    .offset(y: 61 * k)
-
-                Text("BLOCK 3 OF 9").font(.system(size: 24 * k, weight: .bold))
-                    .offset(x: 24 * k, y: 90 * k)
-                Text("5:12").font(.system(size: 150 * k, weight: .black))
-                    .offset(x: 24 * k, y: 150 * k)
-                Text("LEFT").font(.system(size: 24 * k, weight: .bold))
-                    .offset(x: 440 * k, y: 290 * k)
-                Rectangle().stroke(.black, lineWidth: max(1, 2 * k))
-                    .frame(width: 492 * k, height: 20 * k)
-                    .offset(x: 24 * k, y: 352 * k)
-                Rectangle().fill(.black)
-                    .frame(width: 190 * k, height: 20 * k)
-                    .offset(x: 24 * k, y: 352 * k)
-
-                Rectangle().fill(.black)
-                    .frame(width: 540 * k, height: 132 * k)
-                    .offset(y: 392 * k)
-                Text("246").font(.system(size: 66 * k, weight: .black))
-                    .foregroundStyle(.white)
-                    .offset(x: 24 * k, y: 412 * k)
-                Text("IN RANGE").font(.system(size: 20 * k, weight: .bold))
-                    .foregroundStyle(.white)
-                    .offset(x: 380 * k, y: 400 * k)
-
-                // Session profile bars
-                ForEach(0..<9, id: \.self) { i in
-                    let hts: [CGFloat] = [50, 70, 110, 40, 110, 40, 124, 40, 34]
-                    let wds: [CGFloat] = [80, 40, 64, 24, 64, 24, 33, 24, 48]
-                    let xs: [CGFloat]  = [24, 106, 148, 214, 240, 306, 332, 367, 393]
-                    Rectangle()
-                        .fill(i == 4 ? Color.black : Color.black.opacity(i < 4 ? 0.45 : 0.18))
-                        .frame(width: wds[i] * k, height: hts[i] * k)
-                        .offset(x: xs[i] * k, y: (706 - hts[i]) * k)
-                }
-                Rectangle().fill(.black)
-                    .frame(width: 492 * k, height: 3 * k)
-                    .offset(x: 24 * k, y: 703 * k)
-
-                ForEach(0..<2, id: \.self) { i in
-                    Rectangle().stroke(.black, lineWidth: max(1, 2 * k))
-                        .frame(width: 240 * k, height: 104 * k)
-                        .offset(x: (24 + CGFloat(i) * 252) * k, y: 754 * k)
-                }
-                ForEach(0..<2, id: \.self) { i in
-                    ZStack {
-                        Rectangle().stroke(.black, lineWidth: max(1, 3 * k))
-                        Text(i == 0 ? "PAUSE" : "ALL BLOCKS")
-                            .font(.system(size: 20 * k, weight: .bold))
-                    }
-                    .frame(width: 240 * k, height: 80 * k)
-                    .offset(x: (24 + CGFloat(i) * 252) * k, y: 868 * k)
-                }
-            }
-            .foregroundStyle(.black)
-        }
-        .background(Color(hex: 0xF7F5EF))
-    }
-}
-
-/// Miniature of the device's STOPWATCH page (ui_render_stopwatch): the time
-/// across the middle, START/STOP and RESET along the footer.
-struct StopwatchPagePreview: View {
-    var body: some View {
-        GeometryReader { geo in
-            let k = geo.size.width / 540
-            ZStack(alignment: .topLeading) {
-                Text("14:25").font(.system(size: 30 * k, weight: .bold))
-                    .offset(x: 14 * k, y: 14 * k)
-                Text("STOPWATCH").font(.system(size: 22 * k, weight: .heavy))
-                    .kerning(4 * k)
-                    .frame(width: 540 * k)
-                    .offset(y: 18 * k)
-                Text("76%").font(.system(size: 30 * k, weight: .bold))
-                    .offset(x: 440 * k, y: 14 * k)
-                Rectangle().fill(.black)
-                    .frame(width: 540 * k, height: 3 * k)
-                    .offset(y: 61 * k)
-
-                Text("12:34").font(.system(size: 170 * k, weight: .black))
-                    .frame(width: 540 * k)
-                    .offset(y: 280 * k)
-                Text("RUNNING").font(.system(size: 20 * k, weight: .bold))
-                    .kerning(3 * k)
-                    .frame(width: 540 * k)
-                    .offset(y: 510 * k)
-
-                Rectangle().fill(.black)
-                    .frame(width: 540 * k, height: 3 * k)
-                    .offset(y: 756 * k)
-                // START/PAUSE, RESET (disabled while running), LAP.
-                ForEach(0..<3, id: \.self) { i in
-                    let xs: [CGFloat] = [24, 240, 384]
-                    let ws: [CGFloat] = [204, 132, 132]
-                    ZStack {
-                        Rectangle().stroke(.black, lineWidth: max(1, (i == 1 ? 1 : 3) * k))
-                        Text(["PAUSE", "RESET", "LAP"][i])
-                            .font(.system(size: 26 * k, weight: .heavy))
-                            .foregroundStyle(.black.opacity(i == 1 ? 0.35 : 1))
-                    }
-                    .frame(width: ws[i] * k, height: 156 * k)
-                    .offset(x: xs[i] * k, y: 780 * k)
-                }
-            }
-            .foregroundStyle(.black)
-        }
-        .background(Color(hex: 0xF7F5EF))
-    }
-}
-
-/// Miniature of the device's SEGMENT page (ui_render_segment) mid-effort:
-/// the name, the map of the line (ridden part thick), the elevation profile
-/// (ridden part solid), the time and the delta box (solid while ahead).
-struct SegmentPagePreview: View {
-    var body: some View {
-        GeometryReader { geo in
-            let k = geo.size.width / 540
-            ZStack(alignment: .topLeading) {
-                Text("14:25").font(.system(size: 30 * k, weight: .bold))
-                    .offset(x: 14 * k, y: 14 * k)
-                Text("SEGMENT").font(.system(size: 22 * k, weight: .heavy))
-                    .kerning(4 * k)
-                    .frame(width: 540 * k)
-                    .offset(y: 18 * k)
-                Text("76%").font(.system(size: 30 * k, weight: .bold))
-                    .offset(x: 440 * k, y: 14 * k)
-                Rectangle().fill(.black)
-                    .frame(width: 540 * k, height: 3 * k)
-                    .offset(y: 61 * k)
-                Text("HAWK HILL CLIMB").font(.system(size: 46 * k, weight: .black))
-                    .offset(x: 24 * k, y: 100 * k)
-                Rectangle().fill(.black)
-                    .frame(width: 540 * k, height: 2 * k)
-                    .offset(y: 198 * k)
-                // The map: the line, ridden part thick, the rest thin.
-                Rectangle().stroke(.black, lineWidth: max(1, 2 * k))
-                    .frame(width: 492 * k, height: 232 * k)
-                    .offset(x: 24 * k, y: 208 * k)
-                Path { p in
-                    p.move(to: CGPoint(x: 210 * k, y: 395 * k))
-                    p.addCurve(to: CGPoint(x: 230 * k, y: 320 * k), control1: CGPoint(x: 300 * k, y: 380 * k),
-                               control2: CGPoint(x: 290 * k, y: 330 * k))
-                    p.addCurve(to: CGPoint(x: 265 * k, y: 295 * k), control1: CGPoint(x: 200 * k, y: 300 * k),
-                               control2: CGPoint(x: 240 * k, y: 295 * k))
-                }
-                .stroke(.black, lineWidth: 7 * k)
-                Path { p in
-                    p.move(to: CGPoint(x: 265 * k, y: 295 * k))
-                    p.addCurve(to: CGPoint(x: 270 * k, y: 230 * k), control1: CGPoint(x: 330 * k, y: 290 * k),
-                               control2: CGPoint(x: 330 * k, y: 240 * k))
-                }
-                .stroke(.black, style: StrokeStyle(lineWidth: 2 * k, dash: [9 * k, 6 * k]))
-                Circle().fill(.black).frame(width: 20 * k, height: 20 * k)
-                    .offset(x: 255 * k, y: 285 * k)
-                // The profile: ridden part solid, the rest outlined.
-                Path { p in
-                    p.move(to: CGPoint(x: 24 * k, y: 566 * k))
-                    p.addLine(to: CGPoint(x: 160 * k, y: 525 * k))
-                    p.addLine(to: CGPoint(x: 272 * k, y: 518 * k))
-                    p.addLine(to: CGPoint(x: 272 * k, y: 566 * k))
-                    p.closeSubpath()
-                }
-                .fill(.black)
-                Path { p in
-                    p.move(to: CGPoint(x: 272 * k, y: 518 * k))
-                    p.addLine(to: CGPoint(x: 330 * k, y: 512 * k))
-                    p.addLine(to: CGPoint(x: 432 * k, y: 462 * k))
-                    p.addLine(to: CGPoint(x: 432 * k, y: 566 * k))
-                    p.addLine(to: CGPoint(x: 272 * k, y: 566 * k))
-                }
-                .fill(.black.opacity(0.3))
-                Rectangle().fill(.black)
-                    .frame(width: 540 * k, height: 2 * k)
-                    .offset(y: 580 * k)
-                Text("5:09").font(.system(size: 150 * k, weight: .black))
-                    .frame(width: 540 * k)
-                    .offset(y: 585 * k)
-                ZStack {
-                    Rectangle().fill(.black)
-                    Text("-0:11").font(.system(size: 70 * k, weight: .black))
-                        .foregroundStyle(.white)
-                        .frame(maxWidth: .infinity, alignment: .trailing)
-                        .padding(.trailing, 20 * k)
-                }
-                .frame(width: 492 * k, height: 104 * k)
-                .offset(x: 24 * k, y: 736 * k)
-                Text("819 M TO GO").font(.system(size: 30 * k, weight: .heavy))
-                    .offset(x: 24 * k, y: 860 * k)
-            }
-            .foregroundStyle(.black)
-        }
-        .background(Color(hex: 0xF7F5EF))
-    }
-}
-
-struct MusicPreview: View {
-    var body: some View {
-        GeometryReader { geo in
-            let k = geo.size.width / 540
-            ZStack(alignment: .topLeading) {
-                // Status band: clock, title, battery — as the device draws it.
-                Text("14:25").font(.system(size: 30 * k, weight: .bold))
-                    .offset(x: 14 * k, y: 14 * k)
-                Text("MUSIC").font(.system(size: 26 * k, weight: .heavy))
-                    .kerning(6 * k)
-                    .frame(width: 540 * k)
-                    .offset(y: 16 * k)
-                Text("76%").font(.system(size: 30 * k, weight: .bold))
-                    .offset(x: 440 * k, y: 14 * k)
-                Rectangle().fill(.black)
-                    .frame(width: 540 * k, height: 3 * k)
-                    .offset(y: 61 * k)
-
-                // Album art frame + vinyl placeholder
-                Rectangle().stroke(.black, lineWidth: max(1, 2 * k))
-                    .frame(width: 324 * k, height: 324 * k)
-                    .offset(x: 108 * k, y: 96 * k)
-                Circle().stroke(.black, lineWidth: max(1, 2 * k))
-                    .frame(width: 208 * k, height: 208 * k)
-                    .offset(x: (270 - 104) * k, y: (258 - 104) * k)
-                Circle().fill(.black)
-                    .frame(width: 68 * k, height: 68 * k)
-                    .offset(x: (270 - 34) * k, y: (258 - 34) * k)
-                Circle().fill(Color(hex: 0xF7F5EF))
-                    .frame(width: 24 * k, height: 24 * k)
-                    .offset(x: (270 - 12) * k, y: (258 - 12) * k)
-
-                // Volume stepper, zoom-button style
-                Text("VOL").font(.system(size: 20 * k, weight: .bold))
-                    .kerning(4 * k)
-                    .frame(width: 76 * k)
-                    .offset(x: 462 * k, y: 106 * k)
-                ForEach(0..<2, id: \.self) { v in
-                    ZStack {
-                        Rectangle().stroke(.black, lineWidth: max(1, 3 * k))
-                        Image(systemName: v == 0 ? "plus" : "minus")
-                            .font(.system(size: 34 * k, weight: .bold))
-                    }
-                    .frame(width: 76 * k, height: 76 * k)
-                    .offset(x: 462 * k, y: (140 + CGFloat(v) * 92) * k)
-                }
-
-                // Title / artist / album
-                Text("TURN YOUR LIGHTS DOWN LOW")
-                    .font(.system(size: 34 * k, weight: .heavy))
-                    .lineLimit(1).minimumScaleFactor(0.6)
-                    .frame(width: 492 * k)
-                    .offset(x: 24 * k, y: 470 * k)
-                Text("Bob Marley & The Wailers")
-                    .font(.system(size: 24 * k, weight: .semibold))
-                    .lineLimit(1)
-                    .frame(width: 492 * k)
-                    .offset(x: 24 * k, y: 530 * k)
-                Text("Exodus")
-                    .font(.system(size: 20 * k))
-                    .foregroundStyle(.black.opacity(0.6))
-                    .frame(width: 492 * k)
-                    .offset(x: 24 * k, y: 570 * k)
-
-                // Progress + times
-                Rectangle().stroke(.black, lineWidth: max(1, 2 * k))
-                    .frame(width: 492 * k, height: 14 * k)
-                    .offset(x: 24 * k, y: 640 * k)
-                Rectangle().fill(.black)
-                    .frame(width: 228 * k, height: 10 * k)
-                    .offset(x: 26 * k, y: 642 * k)
-                Text("2:34").font(.system(size: 20 * k))
-                    .offset(x: 24 * k, y: 668 * k)
-                Text("5:31").font(.system(size: 20 * k))
-                    .offset(x: 470 * k, y: 668 * k)
-
-                // Transport
-                ForEach(0..<3, id: \.self) { b in
-                    ZStack {
-                        Rectangle().stroke(.black, lineWidth: max(1, 2 * k))
-                        Image(systemName: ["backward.end.fill", "pause.fill",
-                                           "forward.end.fill"][b])
-                            .font(.system(size: 40 * k))
-                    }
-                    .frame(width: [140.0, 188.0, 140.0][b] * k, height: 120 * k)
-                    .offset(x: [24.0, 176.0, 376.0][b] * k, y: 780 * k)
-                }
-            }
-            .frame(width: geo.size.width, height: 960 * k, alignment: .topLeading)
-        }
-        .aspectRatio(540 / 960, contentMode: .fit)
-        .background(Color(hex: 0xF7F5EF))
-        .foregroundStyle(.black)
-    }
-}
-
-struct MapPagePreview: View {
-    var fields: [String] = ["speed", "distance", "ridetime"]
-
-    var body: some View {
-        GeometryReader { geo in
-            let k = geo.size.width / 540
-            ZStack(alignment: .topLeading) {
-                Rectangle().fill(.black)
-                    .frame(width: 540 * k, height: 3 * k)
-                    .offset(y: 61 * k)
-                // Street grid, slightly rotated, clipped to the map band
-                Group {
-                    ForEach(0..<4, id: \.self) { i in
-                        Rectangle().fill(.black.opacity(i == 1 ? 0.9 : 0.35))
-                            .frame(width: 700 * k, height: (i == 1 ? 7 : 3) * k)
-                            .rotationEffect(.degrees(18))
-                            .offset(x: -80 * k, y: (150 + CGFloat(i) * 150) * k)
-                    }
-                    ForEach(0..<3, id: \.self) { i in
-                        Rectangle().fill(.black.opacity(0.35))
-                            .frame(width: 3 * k, height: 700 * k)
-                            .rotationEffect(.degrees(18))
-                            .offset(x: (120 + CGFloat(i) * 160) * k, y: 80 * k)
-                    }
-                    // Position dot
-                    Circle().fill(.black)
-                        .frame(width: 26 * k, height: 26 * k)
-                        .offset(x: 257 * k, y: 420 * k)
-                    Circle().stroke(.black, lineWidth: max(1, 2 * k))
-                        .frame(width: 44 * k, height: 44 * k)
-                        .offset(x: 248 * k, y: 411 * k)
-                    // Zoom stack
-                    ForEach(0..<2, id: \.self) { v in
-                        ZStack {
-                            Rectangle().fill(Color(hex: 0xF7F5EF))
-                            Rectangle().stroke(.black, lineWidth: max(1, 3 * k))
-                            Image(systemName: v == 0 ? "plus" : "minus")
-                                .font(.system(size: 34 * k, weight: .bold))
-                        }
-                        .frame(width: 76 * k, height: 76 * k)
-                        .offset(x: 462 * k, y: (560 + CGFloat(v) * 80) * k)
-                    }
-                }
-                .mask(Rectangle()
-                    .frame(width: 540 * k, height: (810 - 64) * k)
-                    .offset(y: 64 * k))
-
-                // Data strip: the CONFIGURED fields, drawn like dash cells.
-                Rectangle().fill(.black)
-                    .frame(width: 540 * k, height: 3 * k)
-                    .offset(y: 810 * k)
-                ForEach(0..<3, id: \.self) { c in
-                    let id = c < fields.count ? fields[c] : "speed"
-                    ZStack(alignment: .topLeading) {
-                        // Boxed like the data pages' cells — same primitive,
-                        // same margins and gutters as the device draws.
-                        Rectangle().stroke(.black, lineWidth: max(1, 2 * k))
-                        Text(previewPanelLabel(id))
-                            .font(.system(size: 15 * k, weight: .bold))
-                            .kerning(2 * k)
-                            .lineLimit(1).minimumScaleFactor(0.5)
-                            .frame(width: 130 * k, alignment: .leading)
-                            .offset(x: 14 * k, y: 12 * k)
-                        Text(previewSample(id))
-                            .font(.system(size: 48 * k, weight: .heavy))
-                            .lineLimit(1).minimumScaleFactor(0.5)
-                            .frame(width: 156 * k, height: 123 * k)
-                    }
-                    .frame(width: 156 * k, height: 123 * k, alignment: .topLeading)
-                    .offset(x: (24 + CGFloat(c) * 168) * k, y: 825 * k)
-                }
-            }
-            .frame(width: geo.size.width, height: 960 * k, alignment: .topLeading)
-            .clipped()
-        }
-        .aspectRatio(540 / 960, contentMode: .fit)
-        .background(Color(hex: 0xF7F5EF))
-        .foregroundStyle(.black)
-    }
-}
-
+// Thumbnails of the device's MUSIC, MAP, WORKOUT, STOPWATCH and SEGMENT screens live
+// in DevicePages.swift, shared with the Ride tab's live copies of them.
 
 // Live reorder for the page carousel: as the lifted card crosses a neighbour,
 // the array moves under it (stable UUIDs keep the views coherent), and the

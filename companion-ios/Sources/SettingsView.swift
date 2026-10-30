@@ -41,9 +41,78 @@ enum PairingCopy {
         "The app stops connecting to this device and looks for one to pair with.\n\nTo pair the device with a different phone, also unpair it on the device (Menu › Paired Devices › Phone › Unpair). To pair this iPhone again later, first remove the old pairing: \(iosForgetSteps)"
 }
 
+/// Only what the Settings tab shows of the BLE manager (see BLEScope). Every
+/// BLE publish used to re-evaluate the whole Settings body — dozens of cards,
+/// UIKit steppers and pickers — mid-scroll, which made scrolling stutter.
+struct SettingsSnapshot: Equatable {
+    var state: BLEManager.ConnState
+    var otaPhase: BLEManager.OTAPhase
+    var otaInProgress: Bool
+    var otaProgress: Double
+    var otaMessage: String?
+    var deviceFirmware: String
+    var updateAvailable: Bool
+    var battery: Int
+    var pairedDeviceId: UUID?
+    var pairedDeviceName: String?
+    var bluetoothPermission: PermissionState
+    var bluetoothPoweredOn: Bool
+    var locationPermission: PermissionState
+    var settingsCache: DeviceSettingsCache
+    var settingsSyncNote: String?
+    var ftpWatts: Int, tzMinutes: Int, backlight: Int
+    var clock24h: Bool, usbDrive: Bool
+    var wheelCircMm: Int?
+    var sensors: [BikeSensor]
+    var deviceTiles: Int
+    var logFileURL: URL?
+    var deviceLogs: [LogFile]
+    var loadingLogs: Bool
+    var downloadingLog: Bool
+    var downloadingName: String?
+    var downloadProgress: Double
+    var queuedDownloads: [String]
+    var unpairNeedsIOSForget: Bool
+
+    @MainActor init(_ b: BLEManager) {
+        state = b.state; otaPhase = b.otaPhase; otaInProgress = b.otaInProgress
+        otaProgress = b.otaProgress; otaMessage = b.otaMessage
+        deviceFirmware = b.deviceFirmware; updateAvailable = b.updateAvailable
+        battery = b.status.battery
+        pairedDeviceId = b.pairedDeviceId; pairedDeviceName = b.pairedDeviceName
+        bluetoothPermission = b.bluetoothPermission; bluetoothPoweredOn = b.bluetoothPoweredOn
+        locationPermission = b.locationPermission
+        settingsCache = b.settingsCache; settingsSyncNote = b.settingsSyncNote
+        ftpWatts = b.ftpWatts; tzMinutes = b.tzMinutes; backlight = b.backlight
+        clock24h = b.clock24h; usbDrive = b.usbDrive; wheelCircMm = b.wheelCircMm
+        sensors = b.sensors; deviceTiles = b.deviceTileIds.count
+        logFileURL = b.logFileURL; deviceLogs = b.deviceLogs; loadingLogs = b.loadingLogs
+        downloadingLog = b.downloadingLog
+        // Ride downloads tick progress too; only a log's matters here.
+        downloadingName = b.downloadingLog ? b.downloadingName : nil
+        downloadProgress = b.downloadingLog ? b.downloadProgress : 0
+        queuedDownloads = b.queuedDownloads
+        unpairNeedsIOSForget = b.unpairNeedsIOSForget
+    }
+}
+
+/// The Settings tab: hands SettingsView the manager without observing it, so
+/// the tab's redraws come from its BLEScope alone.
+struct SettingsTab: View {
+    @EnvironmentObject private var ble: BLEManager
+    var body: some View { SettingsView(ble: ble).equatable() }
+}
+
 // Edit device settings (FTP, timezone) and push them over BLE.
-struct SettingsView: View {
-    @EnvironmentObject var ble: BLEManager
+struct SettingsView: View, Equatable {
+    @StateObject private var scope: BLEScope<SettingsSnapshot>
+    private var ble: BLEManager { scope.ble }
+
+    init(ble: BLEManager) { _scope = StateObject(wrappedValue: BLEScope(ble, SettingsSnapshot.init)) }
+
+    /// Same manager, same view: the parent's re-evaluations (every BLE
+    /// publish) stop here.
+    nonisolated static func == (a: SettingsView, b: SettingsView) -> Bool { true }
     @ObservedObject private var release = FirmwareRelease.shared
     @EnvironmentObject var appState: AppState
     @AppStorage(UnitPref.key) private var useMiles = false
@@ -57,129 +126,42 @@ struct SettingsView: View {
     @AppStorage("wheelRimBsd") private var wheelRimBsd = WheelSize.defaultRim
 
     var body: some View {
+        let _ = PerfMonitor.body("Settings")
         NavigationStack {
+            VStack(spacing: 0) {
+            // The sync state lives in the header, one line whose text changes
+            // in place. As a hint at the top of the list it appeared on every
+            // edit ("Syncing…") and vanished on the device's echo, shoving the
+            // whole page down and back up each time a setting changed.
+            ScreenHeader(title: "Settings") {
+                HStack(spacing: 6) {
+                    Image(systemName: ble.hasPendingSync ? "arrow.triangle.2.circlepath" : "checkmark")
+                        .font(.system(size: 10, weight: .bold))
+                    Text(syncLine)
+                        .font(BarlowFont.text(11, .bold)).tracking(1.5)
+                        .lineLimit(1).minimumScaleFactor(0.7)
+                }
+                .foregroundStyle(Palette.ink)
+                .accessibilityElement(children: .combine)
+            } trailing: { EmptyView() }
             ScrollViewReader { proxy in
             ScrollView {
                 VStack(spacing: 14) {
-                    HStack {
-                        Text("Settings").font(TypeScale.screenTitle)
-                            .foregroundStyle(Palette.ink)
-                        Spacer()
-                    }
-                    .padding(.top, 8)
-                    // Device settings stay editable offline (cached per device,
-                    // synced on the next connect); say when something is waiting.
-                    if ble.hasPendingSync {
-                        PendingSyncHint(text: ble.state == .connected
-                                        ? "Syncing with your OpenTrailPaper…"
-                                        : "Will sync when connected")
-                    }
                     if let note = ble.settingsSyncNote {
-                        Text(note).font(.system(size: 12)).foregroundStyle(Palette.muted)
+                        Text(note).font(BarlowFont.text(12)).foregroundStyle(Palette.muted)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
+                    pairedDeviceCard
                     // Keep the firmware card visible through the reboot/disconnect
                     // of an in-progress (or just-finished) update so its status
                     // doesn't vanish.
                     if ble.state == .connected || ble.otaInProgress
                         || ble.otaPhase == .failed || ble.otaPhase == .done { firmwareCard }
-                    if ble.state == .connected { sensorsCard } else { connectOnlyCard }
-                    pairedDeviceCard
-                    // Not gated on the connection, unlike sensors: picking an
-                    // area and fetching OSM works offline, and MapsView only
-                    // needs the link for the upload itself. It was reachable
-                    // with no connection from the Route page too, so gating it
-                    // here would be a quiet regression.
-                    mapsCard
+                    if ble.state != .connected { connectOnlyCard }
                     SyncAccountsCard()
-                    Card {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("Units").trackedLabel()
-                            Picker("Units", selection: Binding(
-                                get: { useMiles },
-                                set: { ble.setUseMiles($0) })) {
-                                Text("Metric (km)").tag(false)
-                                Text("Standard (mi)").tag(true)
-                            }
-                            .pickerStyle(.segmented)
-                        }
-                    }
-                    .id("units")
-
-                    // Shown offline too; hidden only for firmware known to lack them.
-                    if ble.supportsSetting(.clock24h) {
-                        Card {
-                            VStack(alignment: .leading, spacing: 10) {
-                                Text("Clock").trackedLabel()
-                                Picker("Clock", selection: Binding(
-                                    get: { ble.clock24h },
-                                    set: { ble.setClock24h($0) })) {
-                                    Text("24-hour").tag(true)
-                                    Text("12-hour").tag(false)
-                                }
-                                .pickerStyle(.segmented)
-                            }
-                        }
-                    }
-
-                    if ble.supportsSetting(.usbDrive) {
-                        Card {
-                            VStack(alignment: .leading, spacing: 6) {
-                                Toggle(isOn: Binding(get: { ble.usbDrive },
-                                                     set: { ble.setUsbDrive($0) })) {
-                                    Text("USB drive").trackedLabel()
-                                }
-                                Text(ble.usbDrive
-                                     ? "The SD mounts on a computer when plugged in. Turn off to keep the SD with the device (record/maps keep working while plugged in for power or serial)."
-                                     : "The SD stays with the device when plugged in. Turn on to copy maps, firmware, or logs from a computer.")
-                                    .font(.system(size: 12)).foregroundStyle(Palette.muted)
-                            }
-                        }
-                    }
-
-                    Card {
-                        Stepper(value: Binding(get: { ble.ftpWatts },
-                                               set: { ble.setFtp($0) }),
-                                in: 50...500, step: 5) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("FTP").trackedLabel()
-                                Text("\(ble.ftpWatts) W")
-                                    .font(TypeScale.value(30))
-                                    .foregroundStyle(Palette.ink)
-                            }
-                        }
-                    }
-
+                    deviceSection
                     if ble.state == .connected, let mm = ble.wheelCircMm {
                         wheelCard(mm)
-                    }
-
-                    Card {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("Timezone").trackedLabel()
-                            Text(tzLabel)
-                                .font(TypeScale.value(30))
-                                .foregroundStyle(Palette.ink)
-                            Stepper("Offset", value: Binding(get: { ble.tzMinutes },
-                                                             set: { ble.setTz($0) }),
-                                    in: -12*60...14*60, step: 30)
-                                .labelsHidden()
-                        }
-                    }
-
-                    Card {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("Backlight").trackedLabel()
-                            Picker("Backlight", selection: Binding(
-                                get: { ble.backlight },
-                                set: { ble.setBacklight($0) })) {
-                                Text("Off").tag(0)
-                                Text("Low").tag(1)
-                                Text("Med").tag(2)
-                                Text("Bright").tag(3)
-                            }
-                            .pickerStyle(.segmented)
-                        }
                     }
 
                     AlbumArtLookupCard(art: ble.albumArt)
@@ -211,11 +193,22 @@ struct SettingsView: View {
                         proxy.scrollTo("units", anchor: .top)
                     }
                 }
+                // Layout-stability check: flip the clock format a few seconds
+                // in, so frames before and after can be compared.
+                if ProcessInfo.processInfo.arguments.contains("-settings-flip") {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
+                        ble.setClock24h(!ble.clock24h)
+                        ble.setBacklight((ble.backlight + 1) % 4)
+                    }
+                }
+            }
             }
             }
             .background(Palette.paper.ignoresSafeArea())
             .navigationBarHidden(true)
-            .sheet(item: $ble.logFileURL) { url in DiagnosticsView(url: url) }
+            .sheet(item: Binding(get: { ble.logFileURL }, set: { ble.logFileURL = $0 })) { url in
+                DiagnosticsView(url: url)
+            }
             .sheet(isPresented: $showSensors) { SensorsView() }
             .sheet(isPresented: $showMaps) { MapsView() }
             .onAppear {
@@ -225,39 +218,50 @@ struct SettingsView: View {
         }
     }
 
-    // Fixed pairing: which OpenTrailPaper this iPhone owns, and the way out.
+    // The device: name, firmware and battery, an inverted CONNECTED chip —
+    // and, fixed pairing being what it is, the way out.
     @ViewBuilder private var pairedDeviceCard: some View {
-        Card {
+        let connected = ble.state == .connected
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 12) {
+                DeviceGlyph().frame(width: 40, height: 56).accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text((ble.pairedDeviceName ?? "OpenTrailPaper").uppercased())
+                        .font(BarlowFont.text(15, .bold)).tracking(2)
+                        .lineLimit(1).minimumScaleFactor(0.7)
+                    Text(deviceDetail).font(BarlowFont.text(13))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .foregroundStyle(Palette.ink)
+                Spacer(minLength: 4)
+                Tag(text: connected ? "Connected" : ble.pairedDeviceId == nil ? "No device" : "Offline",
+                    inverted: connected)
+            }
+            .padding(.horizontal, 14).padding(.vertical, 12)
+            .accessibilityElement(children: .combine)
+            GroupedDivider()
             VStack(alignment: .leading, spacing: 8) {
-                Text("Paired device").trackedLabel()
                 if ble.pairedDeviceId != nil {
-                    HStack(spacing: 8) {
-                        Image(systemName: "lock.fill")
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(ble.state == .connected ? Palette.good : Palette.muted)
-                        Text(ble.pairedDeviceName ?? "OpenTrailPaper")
-                            .font(BarlowFont.text(15, .semibold)).foregroundStyle(Palette.ink)
-                        Spacer()
-                        Text(ble.state == .connected ? "Connected" : "Not connected")
-                            .font(.system(size: 12)).foregroundStyle(Palette.muted)
-                    }
                     Text("The app only connects to this device, and the device only accepts this iPhone until it is unpaired on the device (Menu › Paired Devices › Phone).")
-                        .font(.system(size: 12)).foregroundStyle(Palette.muted)
+                        .font(BarlowFont.text(12)).foregroundStyle(Palette.muted)
                     Button(role: .destructive) { confirmForget = true } label: {
-                        Text(ble.state == .connected ? "Unpair This Device" : "Forget This Device")
-                            .font(BarlowFont.text(15, .semibold))
-                            .foregroundStyle(Palette.accent)
+                        Text((connected ? "Unpair This Device" : "Forget This Device").uppercased())
+                            .font(BarlowFont.text(12, .bold)).tracking(1.5)
+                            .foregroundStyle(Palette.ink)
+                            .frame(minHeight: 32)
                     }
                     .buttonStyle(.plain)
-                    .padding(.top, 2)
                 } else {
-                    Text(ble.state == .connected
+                    Text(connected
                          ? "Pairing with this OpenTrailPaper…"
                          : "No device yet. Turn your OpenTrailPaper on nearby — the first one that isn't paired with another phone connects. Type the 6-digit code from its screen into the iPhone's pairing prompt.")
-                        .font(.system(size: 12)).foregroundStyle(Palette.muted)
+                        .font(BarlowFont.text(12)).foregroundStyle(Palette.muted)
                 }
             }
+            .padding(.horizontal, 14).padding(.vertical, 10)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .einkBorder()
         .confirmationDialog(ble.state == .connected ? "Unpair this OpenTrailPaper?"
                                                     : "Forget this OpenTrailPaper?",
                             isPresented: $confirmForget, titleVisibility: .visible) {
@@ -270,11 +274,137 @@ struct SettingsView: View {
         } message: {
             Text(ble.state == .connected ? PairingCopy.unpairMessage : PairingCopy.forgetMessage)
         }
-        .alert("Unpaired", isPresented: $ble.unpairNeedsIOSForget) {
+        .alert("Unpaired", isPresented: Binding(get: { ble.unpairNeedsIOSForget },
+                                                set: { ble.unpairNeedsIOSForget = $0 })) {
             Button("OK", role: .cancel) {}
         } message: {
             Text(PairingCopy.afterUnpairMessage)
         }
+    }
+
+    /// Device settings stay editable offline (cached per device, synced on
+    /// the next connect); this says which state they are in.
+    private var syncLine: String {
+        let connected = ble.state == .connected
+        if ble.hasPendingSync { return connected ? "SYNCING WITH DEVICE…" : "WILL SYNC WHEN CONNECTED" }
+        return connected ? "IN SYNC WITH DEVICE" : "OFFLINE · CHANGES SYNC ON CONNECT"
+    }
+
+    private var deviceDetail: String {
+        if ble.state == .connected {
+            let fw = ble.deviceFirmware.isEmpty ? "" : "Firmware \(ble.deviceFirmware) · "
+            return fw + "battery \(ble.status.battery)%"
+        }
+        return ble.pairedDeviceId == nil ? "Not paired" : "Not connected"
+    }
+
+    /// DEVICE: the head unit's own settings as one bordered list, binary ones
+    /// as two-segment switches.
+    private var deviceSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            SettingsSectionHeader(title: "Device")
+            GroupedRows {
+                settingRow("Units") {
+                    SegmentedSwitch(options: [("km", false), ("mi", true)],
+                                    selection: Binding(get: { useMiles }, set: { ble.setUseMiles($0) }),
+                                    accessibilityName: "Units")
+                }
+                .id("units")
+                // Shown offline too; hidden only for firmware known to lack them.
+                if ble.supportsSetting(.clock24h) {
+                    GroupedDivider()
+                    settingRow("Clock") {
+                        SegmentedSwitch(options: [("24h", true), ("12h", false)],
+                                        selection: Binding(get: { ble.clock24h }, set: { ble.setClock24h($0) }),
+                                        accessibilityName: "Clock")
+                    }
+                }
+                GroupedDivider()
+                settingRow("Backlight") {
+                    SegmentedSwitch(options: [("Off", 0), ("Lo", 1), ("Med", 2), ("Max", 3)],
+                                    selection: Binding(get: { ble.backlight }, set: { ble.setBacklight($0) }),
+                                    accessibilityName: "Backlight")
+                }
+                if ble.supportsSetting(.usbDrive) {
+                    GroupedDivider()
+                    VStack(alignment: .leading, spacing: 4) {
+                        settingRow("USB drive", padded: false) {
+                            SegmentedSwitch(options: [("On", true), ("Off", false)],
+                                            selection: Binding(get: { ble.usbDrive }, set: { ble.setUsbDrive($0) }),
+                                            accessibilityName: "USB drive")
+                        }
+                        Text(ble.usbDrive
+                             ? "The SD mounts on a computer when plugged in. Turn off to keep the SD with the device (record/maps keep working while plugged in for power or serial)."
+                             : "The SD stays with the device when plugged in. Turn on to copy maps, firmware, or logs from a computer.")
+                            .font(BarlowFont.text(12)).foregroundStyle(Palette.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 10)
+                }
+                GroupedDivider()
+                settingRow("FTP") {
+                    HStack(spacing: 10) {
+                        Text("\(ble.ftpWatts) W").font(DisplayFont.anton(22))
+                        Stepper("FTP", value: Binding(get: { ble.ftpWatts }, set: { ble.setFtp($0) }),
+                                in: 50...500, step: 5)
+                            .labelsHidden()
+                    }
+                }
+                GroupedDivider()
+                settingRow("Timezone") {
+                    HStack(spacing: 10) {
+                        Text(tzLabel).font(DisplayFont.anton(22))
+                        Stepper("Timezone offset", value: Binding(get: { ble.tzMinutes }, set: { ble.setTz($0) }),
+                                in: -12*60...14*60, step: 30)
+                            .labelsHidden()
+                    }
+                }
+                if ble.state == .connected {
+                    GroupedDivider()
+                    linkRow("Sensors", sensorShort) { showSensors = true }
+                }
+                GroupedDivider()
+                linkRow("Maps on SD card", mapsShort) { showMaps = true }
+            }
+        }
+    }
+
+    private func settingRow<C: View>(_ title: String, padded: Bool = true,
+                                     @ViewBuilder control: () -> C) -> some View {
+        HStack(spacing: 10) {
+            Text(title).font(BarlowFont.text(15, .bold)).foregroundStyle(Palette.ink)
+            Spacer(minLength: 8)
+            control().fixedSize()
+        }
+        .padding(.horizontal, padded ? 12 : 0).padding(.vertical, padded ? 10 : 0)
+        .frame(minHeight: padded ? 50 : 0)
+    }
+
+    private func linkRow(_ title: String, _ detail: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Text(title).font(BarlowFont.text(15, .bold))
+                Spacer(minLength: 8)
+                Text(detail + " ›").font(BarlowFont.text(13, .semibold)).lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+            .foregroundStyle(Palette.ink)
+            .padding(.horizontal, 12).frame(minHeight: 50)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var sensorShort: String {
+        let connected = ble.sensors.filter { $0.connected }
+        if !connected.isEmpty { return connected.map(\.name).joined(separator: " · ") }
+        let paired = ble.sensors.filter { $0.paired }
+        return paired.isEmpty ? "Scan & pair" : "\(paired.count) saved"
+    }
+
+    private var mapsShort: String {
+        let n = ble.deviceTileIds.count
+        return n == 0 ? "Download" : "\(n) area\(n == 1 ? "" : "s")"
     }
 
     /// What needs the device's live answer and so waits for a connection:
@@ -296,34 +426,6 @@ struct SettingsView: View {
                 Spacer(minLength: 0)
             }
         }
-    }
-
-    @ViewBuilder private var mapsCard: some View {
-        Button { showMaps = true } label: {
-            Card {
-                HStack(spacing: 12) {
-                    Image(systemName: "map")
-                        .font(.system(size: 20, weight: .semibold)).foregroundStyle(Palette.accent)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Maps").trackedLabel()
-                        Text(mapsSummary)
-                            .font(BarlowFont.text(15, .semibold)).foregroundStyle(Palette.ink)
-                    }
-                    Spacer()
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 14, weight: .semibold)).foregroundStyle(Palette.muted)
-                }
-            }
-        }
-        .buttonStyle(.plain)
-    }
-
-    // deviceTileIds is cached in UserDefaults, so this still reads correctly
-    // while disconnected rather than claiming the device holds nothing.
-    private var mapsSummary: String {
-        let n = ble.deviceTileIds.count
-        if n == 0 { return "Download map areas to your device" }
-        return "\(n) area\(n == 1 ? "" : "s") on device"
     }
 
     /// Permissions, and how to fix the ones that are missing.
@@ -388,7 +490,7 @@ struct SettingsView: View {
                         .padding(.horizontal, 7).padding(.vertical, 3)
                         .background(state.isGranted ? Palette.good : Palette.accent)
                         .foregroundStyle(.white)
-                        .clipShape(Capsule())
+                        .clipShape(Rectangle())
                 }
                 Text(state.isGranted ? granted : missing)
                     .font(.system(size: 12)).foregroundStyle(Palette.muted)
@@ -436,36 +538,6 @@ struct SettingsView: View {
             }
         }
         .buttonStyle(.plain)
-    }
-
-    @ViewBuilder private var sensorsCard: some View {
-        Button { showSensors = true } label: {
-            Card {
-                HStack(spacing: 12) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Sensors").trackedLabel()
-                        Text(sensorSummary)
-                            .font(BarlowFont.text(15, .semibold)).foregroundStyle(Palette.ink)
-                    }
-                    Spacer()
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 14, weight: .semibold)).foregroundStyle(Palette.muted)
-                }
-            }
-        }
-        .buttonStyle(.plain)
-    }
-
-    private var sensorSummary: String {
-        let connected = ble.sensors.filter { $0.connected }
-        if !connected.isEmpty {
-            return connected.map { $0.name }.joined(separator: ", ") + " connected"
-        }
-        let paired = ble.sensors.filter { $0.paired }
-        if !paired.isEmpty {
-            return "\(paired.count) saved · none connected"
-        }
-        return "Scan & pair heart rate, power, cadence, radar"
     }
 
     @ViewBuilder private var diagnosticsCard: some View {
@@ -643,7 +715,7 @@ struct SettingsView: View {
                             .font(.system(size: 11, weight: .bold))
                             .padding(.horizontal, 8).padding(.vertical, 4)
                             .background(Palette.accent).foregroundStyle(.white)
-                            .clipShape(Capsule())
+                            .clipShape(Rectangle())
                     }
                 }
 
@@ -689,7 +761,7 @@ struct SettingsView: View {
                             .padding(10)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .background(Palette.paper,
-                                        in: RoundedRectangle(cornerRadius: 8))
+                                        in: Rectangle())
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
@@ -855,6 +927,25 @@ private struct AlbumArtLookupCard: View {
                 Text("For Spotify and other players, finds the cover in Apple's iTunes catalogue. This sends the playing song's title, artist and album to Apple.")
                     .font(.system(size: 13))
                     .foregroundStyle(Palette.muted)
+            }
+        }
+    }
+}
+
+/// The head unit, drawn the way the mockup draws it: a tall frame, a screen,
+/// a key.
+private struct DeviceGlyph: View {
+    var body: some View {
+        GeometryReader { g in
+            let w = g.size.width, h = g.size.height
+            ZStack(alignment: .topLeading) {
+                Rectangle().strokeBorder(Palette.ink, lineWidth: 3)
+                Rectangle().strokeBorder(Palette.ink, lineWidth: 1.5)
+                    .frame(width: w * 0.65, height: h * 0.54)
+                    .offset(x: w * 0.175, y: h * 0.14)
+                Rectangle().fill(Palette.ink)
+                    .frame(width: w * 0.3, height: h * 0.125)
+                    .offset(x: w * 0.175, y: h * 0.75)
             }
         }
     }

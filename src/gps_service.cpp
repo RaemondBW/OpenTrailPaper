@@ -25,31 +25,7 @@
 
 #define SerialGPS Serial2
 
-// Link rate for the CASIC/L76K module. 9600 is the module's power-on default
-// and what shipped through v1.22; 115200 shortens each 1 Hz NMEA burst ~12x
-// (~25 ms instead of ~300 ms for the lean profile), which is time the CPU
-// can spend in light sleep instead of holding it off for the RX guard.
-// Build-time: -DGPS_BAUD=115200 (platformio.ini, shipping env). The module is
-// always found at 9600 first and switched with PCAS01 at every boot, never
-// saved to its flash (no PCAS00), so a stock module stays stock and a rail
-// cut returns it to 9600. A warm ESP reset leaves the module at the new rate
-// (its RAM survives), so begin() probes the configured rate second.
-#ifndef GPS_BAUD
-#define GPS_BAUD 9600
-#endif
-static_assert(GPS_BAUD == 4800 || GPS_BAUD == 9600 || GPS_BAUD == 19200 || GPS_BAUD == 38400 ||
-              GPS_BAUD == 57600 || GPS_BAUD == 115200, "GPS_BAUD must be a PCAS01 rate");
-
 namespace {
-
-// PCAS01 <CMD> index for a baud rate (L76K protocol spec 2.3.1:
-// 0=4800 1=9600 2=19200 3=38400 4=57600 5=115200).
-constexpr int pcas01Index(uint32_t baud) {
-    switch (baud) {
-        case 4800: return 0; case 9600: return 1; case 19200: return 2;
-        case 38400: return 3; case 57600: return 4; default: return 5;
-    }
-}
 
 TinyGPSPlus gps;
 GpsSentenceAudit rxAudit;
@@ -210,19 +186,39 @@ void printSerialTelemetry() {
 #endif
 }
 
-bool waitForBytes(uint32_t timeoutMs) {
+// True once a whole NMEA sentence with a valid checksum arrives.
+bool waitForNmea(uint32_t timeoutMs) {
     uint32_t start = millis();
+    char line[96];
+    size_t n = 0;
     while (millis() - start < timeoutMs) {
-        if (SerialGPS.available()) {
-            while (SerialGPS.available()) SerialGPS.read();
-            return true;
+        while (SerialGPS.available()) {
+            char c = SerialGPS.read();
+            if (c == '$') { n = 0; line[n++] = c; continue; }
+            if (!n) continue;
+            if (c == '\r' || c == '\n') {
+                line[n] = 0;
+                const char* star = strchr(line, '*');
+                if (star && star - line > 1 && strlen(star) >= 3) {
+                    uint8_t ck = 0;
+                    for (const char* p = line + 1; p < star; ++p) ck ^= (uint8_t)*p;
+                    if (ck == (uint8_t)strtoul(star + 1, nullptr, 16)) return true;
+                }
+                n = 0;
+                continue;
+            }
+            if (n < sizeof(line) - 1) line[n++] = c; else n = 0;
         }
         delay(10);
     }
     return false;
 }
 
-// L76K modules talk PCAS at 9600; if that fails assume u-blox M10Q at 38400.
+// L76K modules talk PCAS; begin() finds the baud. Otherwise u-blox M10Q at 38400.
+// $PCAS01,5 = 115200.
+constexpr uint32_t L76K_BAUD = 115200;
+const char* const L76K_BAUD_CMD = "$PCAS01,5*19\r\n";
+
 void configureL76KOutput() {
 #ifdef PM_GPS_LEAN_NMEA
     const char* body = gps_output_profile::lean;
@@ -270,7 +266,7 @@ bool begin() {
     // between task polls and drop bytes mid-sentence — a dropped GGA/RMC costs a
     // whole second of fix confirmation. Must be set before begin().
     SerialGPS.setRxBufferSize(1024);
-    SerialGPS.begin(9600, SERIAL_8N1, BOARD_GPS_RXD, BOARD_GPS_TXD);
+    SerialGPS.begin(L76K_BAUD, SERIAL_8N1, BOARD_GPS_RXD, BOARD_GPS_TXD);
     // Preserve GPS pins on SDKs that enable GPIO isolation. This SDK already
     // has SLP_SEL clear; log registers so this is not mistaken for a proven fix.
     // Keeping XTAL/pins active alone does not guarantee UART RX through sleep.
@@ -295,66 +291,56 @@ bool begin() {
         }
     });
 #ifdef PM_GPS_EVENT_RX
-    // Arduino defaults to a one-byte FIFO threshold at 9600 baud. Batch
+    // Arduino defaults to a one-byte FIFO threshold. Batch
     // interrupts while retaining a short RX timeout for the end of a burst.
-    // The thresholds are in bytes / byte-times, so they scale with the link
-    // rate by themselves: 64 bytes is 67 ms of traffic at 9600 and 5.6 ms at
-    // 115200 (the 128-byte hardware FIFO then holds 11 ms); the 2-byte-time
-    // idle timeout is 2 ms / 170 us. The 1024-byte ring is 89 ms at 115200,
-    // several times the ~230-byte lean burst.
     bool fifoOk = SerialGPS.setRxFIFOFull(64);
     bool timeoutOk = SerialGPS.setRxTimeout(2);
-    diag::log("gps UART events: FIFO=64 timeout=2 symbols configured=%d/%d (link %u baud)",
-              fifoOk, timeoutOk, (unsigned)GPS_BAUD);
+    diag::log("gps UART events: FIFO=64 timeout=2 symbols configured=%d/%d", fifoOk, timeoutOk);
 #endif
     gps_rx_guard::begin();
     delay(100);
 
-    if (initL76K()) {
-        Serial.println("[gps] CASIC/L76K initialized @9600");
-        moduleDetected = true;
-        moduleKind = GPS_CASIC;
-#if GPS_BAUD != 9600
-        // Switch the link. PCAS01 takes effect immediately and lives in the
-        // module's RAM only (no PCAS00 save), so a power cut puts it back at
-        // 9600 where the probe above finds it. Verified by waiting for NMEA
-        // at the new rate; on failure the link stays at 9600 and says so.
-        {
-            char body[16];
-            snprintf(body, sizeof(body), "PCAS01,%d", pcas01Index(GPS_BAUD));
-            SerialGPS.printf("$%s*%02X\r\n", body, gps_output_profile::checksum(body));
-            SerialGPS.flush(true);   // let the command leave the TX FIFO at 9600
-            delay(100);
-            SerialGPS.updateBaudRate(GPS_BAUD);
-            while (SerialGPS.available()) SerialGPS.read();
-            if (waitForBytes(1500)) {
-                diag::log("gps link: PCAS01 -> %u baud (not saved to the module)", (unsigned)GPS_BAUD);
-            } else {
-                SerialGPS.updateBaudRate(9600);
-                diag::log("gps link: no data at %u baud after PCAS01; staying at 9600", (unsigned)GPS_BAUD);
-            }
+    // The L76K runs at 115200 (L76K_BAUD). It keeps its baud on its backup
+    // supply, so a new or reset module answers at its 9600 default, or at
+    // whatever it was last set to. Find it, move it to 115200 and save that.
+    static const uint32_t kL76KBauds[] = {L76K_BAUD, 9600, 38400, 57600, 19200, 4800};
+    for (uint32_t baud : kL76KBauds) {
+        if (baud != L76K_BAUD) {
+            SerialGPS.updateBaudRate(baud);
+            delay(50);
         }
-#endif
-        return true;
+        if (!initL76K()) continue;
+        if (baud == L76K_BAUD) {
+            Serial.printf("[gps] CASIC/L76K initialized @%lu\n", (unsigned long)baud);
+            moduleDetected = true;
+            moduleKind = GPS_CASIC;
+            return true;
+        }
+        diag::log("gps: L76K answered at %lu baud; switching to %lu",
+                  (unsigned long)baud, (unsigned long)L76K_BAUD);
+        SerialGPS.write(L76K_BAUD_CMD);
+        SerialGPS.flush();
+        delay(200);
+        SerialGPS.updateBaudRate(L76K_BAUD);
+        delay(200);
+        if (initL76K()) {
+            SerialGPS.write("$PCAS00*01\r\n");   // save to the module's flash
+            Serial.printf("[gps] CASIC/L76K found @%lu, moved to %lu\n",
+                          (unsigned long)baud, (unsigned long)L76K_BAUD);
+            moduleDetected = true;
+            moduleKind = GPS_CASIC;
+            return true;
+        }
+        diag::log("gps: L76K did not answer at %lu after the switch", (unsigned long)L76K_BAUD);
+        SerialGPS.updateBaudRate(baud);   // keep looking from where it was
+        delay(50);
     }
-#if GPS_BAUD != 9600
-    // Warm boot: the module kept the rate from the previous session (its RAM
-    // survives an ESP reset, only a rail cut clears it), so it did not answer
-    // at 9600. Probe the configured rate second.
-    SerialGPS.updateBaudRate(GPS_BAUD);
-    if (initL76K()) {
-        diag::log("gps link: CASIC/L76K already at %u baud (warm boot)", (unsigned)GPS_BAUD);
-        moduleDetected = true;
-        moduleKind = GPS_CASIC;
-        return true;
-    }
-    SerialGPS.updateBaudRate(9600);
-#endif
 
     // Not an L76K — try u-blox M10Q default baud rate. It streams NMEA out
-    // of the box, so just verify data is flowing.
+    // of the box; require a checksummed sentence, not just any byte, since a
+    // receiver at another baud also produces bytes here.
     SerialGPS.updateBaudRate(38400);
-    if (waitForBytes(2000)) {
+    if (waitForNmea(2000)) {
         Serial.println("[gps] u-blox M10Q detected @38400");
         moduleDetected = true;
         moduleKind = GPS_UBLOX;
@@ -362,7 +348,7 @@ bool begin() {
     }
 
     SerialGPS.updateBaudRate(9600);
-    if (waitForBytes(2000)) {
+    if (waitForNmea(2000)) {
         Serial.println("[gps] NMEA stream detected @9600");
         moduleDetected = true;
         return true;

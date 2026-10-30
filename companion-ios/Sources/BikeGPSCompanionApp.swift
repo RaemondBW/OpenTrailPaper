@@ -12,14 +12,18 @@ struct BikeGPSCompanionApp: App {
         // Up before any transfer: it ends Live Activities a killed run left
         // behind, and watches for the app leaving the foreground.
         TransferCenter.shared.runDemoIfRequested()
+        PerfMonitor.shared.start()
+        #if DEBUG
+        LinkSelfTest.runIfAsked()   // -link-selftest: the phone link against a simulated device
+        #endif
     }
 
     var body: some Scene {
         WindowGroup {
-            RootView()
+            RootView(ble: ble).equatable()
                 .environmentObject(ble)
                 .environmentObject(appState)
-                .tint(Palette.accent)
+                .tint(Palette.ink)
                 // The app is paper-and-ink by design (see Theme.swift): every
                 // Palette colour is a fixed light value. Left to follow a dark
                 // system appearance, the stock controls (segmented pickers,
@@ -84,28 +88,44 @@ final class AppState: ObservableObject {
     @Published var showTutorial: Bool = RootView.shouldOnboard
 }
 
-struct RootView: View {
-    @EnvironmentObject var ble: BLEManager
+struct RootView: View, Equatable {
+    // Not @EnvironmentObject: observing the whole manager re-ran this body —
+    // and re-laid-out every live tab under it — on each BLE publish (status
+    // alone is every second), which stuttered scrolling. Only the Mesh
+    // badge's count is watched here; see BLEScope.
+    @StateObject private var unread: BLEScope<Int>
+    private var ble: BLEManager { unread.ble }
     @EnvironmentObject var appState: AppState
     @State private var tab = RootView.initialTab
 
-    init() { RootView.configureAppearance() }
+    init(ble: BLEManager) {
+        _unread = StateObject(wrappedValue: BLEScope(ble) { $0.meshState.unread })
+        RootView.configureAppearance()
+    }
+    nonisolated static func == (a: RootView, b: RootView) -> Bool { true }
 
     var body: some View {
+        let _ = PerfMonitor.body("Root")
+        // The system tab bar can't be squared, inverted or ruled, so it is
+        // hidden and drawn here instead (EinkTabBar). TabView still owns the
+        // tabs, so each keeps its navigation and scroll state when switched.
         TabView(selection: $tab) {
-            RideView()
-                .tabItem { Label("Ride", systemImage: "speedometer") }.tag(0)
-            RouteView()
-                .tabItem { Label("Route", systemImage: "map") }.tag(1)
-            RidesView()
-                .tabItem { Label("Rides", systemImage: "list.bullet.rectangle") }.tag(2)
-            MeshView()
-                .tabItem { Label("Mesh", systemImage: "dot.radiowaves.left.and.right") }
-                .badge(ble.meshState.unread)
-                .tag(3)
-            SettingsView()
-                .tabItem { Label("Settings", systemImage: "slider.horizontal.3") }.tag(4)
+            // The live stream goes to the Ride tab only (see DeviceLive).
+            RideView().environmentObject(ble.live)
+                .einkTabBarInset().tag(0).toolbar(.hidden, for: .tabBar)
+            RouteTab().einkTabBarInset().tag(1).toolbar(.hidden, for: .tabBar)
+            RidesTab().einkTabBarInset().tag(2).toolbar(.hidden, for: .tabBar)
+            MeshTab().einkTabBarInset().tag(3).toolbar(.hidden, for: .tabBar)
+            SettingsTab().einkTabBarInset().tag(4).toolbar(.hidden, for: .tabBar)
         }
+        // Drawn over the TabView; each tab insets its own content by the
+        // bar's height (`einkTabBarInset`), since a TabView does not pass a
+        // safe-area inset of its own on to its pages.
+        .overlay(alignment: .bottom) {
+            EinkTabBar(selection: $tab, badges: [3: ble.meshState.unread])
+                .environmentObject(ble)
+        }
+        .toggleStyle(EinkToggleStyle())
         .fullScreenCover(isPresented: $appState.showTutorial) {
             OnboardingView {
                 UserDefaults.standard.set(true, forKey: BLEManager.onboardedKey)
@@ -115,33 +135,16 @@ struct RootView: View {
         }
     }
 
-    // Cream tab bar with a vermilion selected state and Barlow labels, matching
-    // the mockup. UIKit appearance because SwiftUI's TabView renders a UITabBar.
+    // Square black-and-white UIKit chrome (nav bars, segmented pickers…).
     static func configureAppearance() {
-        let paper = UIColor(Palette.paper)
-        let accent = UIColor(Palette.accent)
-        let muted = UIColor(Palette.muted)
-
+        EinkAppearance.apply()
+        // Kept for anything that still shows a system tab bar.
         let tab = UITabBarAppearance()
         tab.configureWithOpaqueBackground()
-        tab.backgroundColor = paper
-        tab.shadowColor = UIColor(Palette.hairline)
-        let labelFont = UIFont(name: "BarlowCondensed-SemiBold", size: 11) ?? .systemFont(ofSize: 11)
-        for item in [tab.stackedLayoutAppearance, tab.inlineLayoutAppearance, tab.compactInlineLayoutAppearance] {
-            item.normal.iconColor = muted
-            item.selected.iconColor = accent
-            item.normal.titleTextAttributes = [.foregroundColor: muted, .font: labelFont]
-            item.selected.titleTextAttributes = [.foregroundColor: accent, .font: labelFont]
-        }
+        tab.backgroundColor = .white
+        tab.shadowColor = .black
         UITabBar.appearance().standardAppearance = tab
         UITabBar.appearance().scrollEdgeAppearance = tab
-
-        let nav = UINavigationBarAppearance()
-        nav.configureWithOpaqueBackground()
-        nav.backgroundColor = paper
-        nav.shadowColor = .clear
-        UINavigationBar.appearance().standardAppearance = nav
-        UINavigationBar.appearance().scrollEdgeAppearance = nav
     }
 
     // Lets UI screenshots open a specific tab via a launch argument.
@@ -163,12 +166,89 @@ struct RootView: View {
         let a = ProcessInfo.processInfo.arguments
         if a.contains(where: { $0.hasPrefix("-onboarding") }) { return true }
         let demoFlags = ["-tab-route", "-tab-rides", "-tab-mesh", "-tab-settings",
-                         "-demo-route", "-demo-rides", "-demo-update", "-demo-dash",
+                         "-demo-route", "-demo-rides", "-demo-update", "-demo-dash", "-demo-live",
                          "-demo-mesh", "-demo-mesh-settings", "-demo-mesh-map",
                          "-demo-mesh-nodes", "-demo-mesh-channels",
                          "-demo-mesh-share", "-demo-mesh-off", "-demo-transfer",
                          "-demo-maps", "-demo-maps-coverage", "-demo-maps-layers"]
         if demoFlags.contains(where: a.contains) { return false }
         return !UserDefaults.standard.bool(forKey: BLEManager.onboardedKey)
+    }
+}
+
+/// The app's tab bar, drawn like the device's own chrome: a 3pt rule on top,
+/// square cells, CAPS labels, and the selected tab as a solid black cell.
+struct EinkTabBar: View {
+    static let height: CGFloat = Rule.title + 56
+    @Binding var selection: Int
+    var badges: [Int: Int] = [:]
+
+    private static let items: [(title: String, icon: String)] = [
+        ("Ride", "speedometer"),
+        ("Route", "map"),
+        ("Rides", "list.bullet.rectangle"),
+        ("Mesh", "dot.radiowaves.left.and.right"),
+        ("Settings", "slider.horizontal.3"),
+    ]
+
+    var body: some View {
+        // The bar runs down under the home indicator to the glass, and its
+        // icons and labels sit centred in all of it — not in the top 56pt
+        // with an empty band below.
+        GeometryReader { geo in
+            VStack(spacing: 0) {
+                Rectangle().fill(Palette.ink).frame(height: Rule.title)
+                HStack(spacing: 0) {
+                    ForEach(Array(Self.items.enumerated()), id: \.offset) { i, item in
+                        cell(i, item.title, item.icon)
+                    }
+                }
+                .frame(height: 56 + geo.safeAreaInsets.bottom)
+            }
+            .background(Palette.paper)
+            .ignoresSafeArea(edges: .bottom)
+        }
+        .frame(height: Self.height)
+    }
+
+    private func cell(_ i: Int, _ title: String, _ icon: String) -> some View {
+        let on = selection == i
+        let badge = badges[i] ?? 0
+        return Button { selection = i } label: {
+            VStack(spacing: 4) {
+                Image(systemName: icon)
+                    .font(.system(size: 19, weight: .bold))
+                    .frame(height: 22)
+                    .overlay(alignment: .topTrailing) {
+                        if badge > 0 {
+                            Text(badge > 99 ? "99+" : "\(badge)")
+                                .font(BarlowFont.text(10, .bold))
+                                .padding(.horizontal, 4).padding(.vertical, 1)
+                                .foregroundStyle(on ? Palette.ink : Palette.paper)
+                                .background(on ? Palette.paper : Palette.ink)
+                                .overlay(Rectangle().strokeBorder(on ? Palette.ink : Palette.paper, lineWidth: 1))
+                                .offset(x: 12, y: -6)
+                        }
+                    }
+                Text(title.uppercased())
+                    .font(.custom("Barlow-Bold", fixedSize: 11)).tracking(1.5)
+                    .lineLimit(1).minimumScaleFactor(0.7)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .foregroundStyle(on ? Palette.paper : Palette.ink)
+            .background(on ? Palette.ink : Palette.paper)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(badge > 0 ? "\(title), \(badge) unread" : title)
+        .accessibilityAddTraits(on ? [.isSelected, .isButton] : .isButton)
+        .accessibilityHint("Tab \(i + 1) of \(Self.items.count)")
+    }
+}
+
+extension View {
+    /// Keeps a tab's content clear of the overlaid EinkTabBar.
+    func einkTabBarInset() -> some View {
+        padding(.bottom, EinkTabBar.height)
     }
 }

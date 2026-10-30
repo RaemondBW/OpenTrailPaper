@@ -1359,13 +1359,14 @@ void renderMapScreen(const RideState& s, uint8_t* fb) {
     if (dbgTiming)
         diag::log("map: project=%lu draw=%lu polys=%d (tiles=%d base=%d) "
                   "cls[maj=%d pri=%d sec=%d ter=%d min=%d path=%d] ntiles=%d/%d%s "
-                  "mpp=%d",
+                  "mpp=%d pois=%d/%d",
                   (unsigned long)(m1 - m0), (unsigned long)(millis() - m1),
                   map.featureCount, map.tilePolys, map.featureCount - map.tilePolys,
                   map.clsCount[0], map.clsCount[1], map.clsCount[2], map.clsCount[3],
                   map.clsCount[4], map.clsCount[5],
                   map.projectedTiles, map.wantedTiles,
-                  map.partial ? " cut" : "", (int)mapMpp);
+                  map.partial ? " cut" : "", (int)mapMpp,
+                  map.poiCount, map_tiles::projectStats().poisDropped);
     drawNavBanner(fb);
     drawPauseBanner(s, fb);
 }
@@ -2961,6 +2962,87 @@ void task(void*) {
                     segReturnPage = -1;
                 }
             }
+
+            // Stopwatch buttons pressed in the app (the link's
+            // StopwatchCommand): queued by the link task, run here on the UI
+            // task exactly as the page's own taps, with the same enablement
+            // rules. Each one counts as the rider touching the device (keeps
+            // it awake, repaints the page now); the state change below makes
+            // the link task push a fresh LiveFrame on its next pass.
+            while (unsigned char op = ble_server::takeStopwatchCommand()) {
+                const uint32_t t = millis();
+                bool did = false;
+                if (op == ble_server::LIVE_SW_TOGGLE) {
+                    stopwatch.toggle(t);
+                    did = true;
+                } else if (op == ble_server::LIVE_SW_RESET) {
+                    did = stopwatch.canReset() && stopwatch.reset();
+                } else if (op == ble_server::LIVE_SW_LAP) {
+                    did = stopwatch.canLap() && stopwatch.lap(t);
+                }
+                if (did) noteActivity();
+            }
+
+            // A page the rider moved to in the app's view of the device:
+            // follow it, like the panel's own page button, but only from a
+            // page or the map — never over a menu, sheet, overlay or nav
+            // prompt. An out-of-range slot (a layout the app hasn't synced)
+            // is ignored.
+            {
+                const int want = ble_server::takeShowPage();
+                if (want >= 0 && want < dash_config::pageCount() &&
+                    (screen == SCREEN_DASH || screen == SCREEN_MAP) &&
+                    !powerOverlay && !routes::navPending()) {
+                    const int curSlot = screen == SCREEN_MAP ? mapSlot() : dashPage;
+                    if (want != curSlot) {
+                        dashPage = want;
+                        screen = dash_config::page(want).kind == DP_MAP ? SCREEN_MAP : SCREEN_DASH;
+                        segReturnPage = -1;   // the rider chose: no auto-return
+                        forceDraw = true;
+                    }
+                    noteActivity();
+                }
+            }
+
+            // The page on screen and the stopwatch, for the app's live view
+            // (the phone link's LiveFrames). A copy under a spinlock; the link
+            // task only reads it while the app subscribes to those topics.
+            ble_server::LiveView lv;
+            lv.pageCount = (unsigned char)dash_config::pageCount();
+            if (screen == SCREEN_DASH) {
+                lv.page = (unsigned char)dashPage;
+                lv.screen = 0;
+            } else if (screen == SCREEN_MAP) {
+                lv.page = (unsigned char)mapSlot();
+                lv.screen = 1;
+            }
+            lv.swRunning = stopwatch.running;
+            lv.swAccumMs = stopwatch.accumMs;
+            lv.swStartMs = stopwatch.startMs;
+            lv.swLaps = (unsigned char)stopwatch.lapCount;
+            if (stopwatch.lapCount > 0) {
+                lv.swLastLapEndMs = stopwatch.lapEndMs[stopwatch.lapCount - 1];
+                lv.swLastSplitMs = stopwatch.lapSplitMs(stopwatch.lapCount - 1);
+            }
+            const float swV = stopwatch.currentAvgSpeedKmh();
+            lv.swLapSpeedDkmh = swV < 0 ? 0xFFFF
+                                : (unsigned short)(swV * 10.0f > 65534 ? 65534 : swV * 10.0f + 0.5f);
+            const int swP = stopwatch.currentAvgPowerW();
+            lv.swLapPowerW = swP < 0 ? 0xFFFF : (unsigned short)(swP > 65534 ? 65534 : swP);
+            const int swC = stopwatch.currentAvgCadenceRpm();
+            lv.swLapCadenceRpm = swC < 0 ? 0xFF : (unsigned char)(swC > 254 ? 254 : swC);
+            lv.swShowPower = stopwatch.showPower();
+            lv.swShowCadence = stopwatch.showCadence();
+            for (int r = 0; r < ble_server::LiveView::LIVE_SW_ROWS &&
+                            stopwatch.lapCount - 1 - r >= 0; ++r) {
+                const int i = stopwatch.lapCount - 1 - r;
+                lv.swRowSplitMs[r] = stopwatch.lapSplitMs(i);
+                lv.swRowSpeedDkmh[r] = stopwatch.lapSpeedDkmh[i];
+                lv.swRowPowerW[r] = stopwatch.lapPowerW[i];
+                lv.swRowCadenceRpm[r] = stopwatch.lapCadenceRpm[i];
+                lv.swRows = (unsigned char)(r + 1);
+            }
+            ble_server::publishLiveView(lv);
         }
 
         // Auto-sleep after a quiet period to save battery — a bike computer
@@ -3285,12 +3367,12 @@ void task(void*) {
                         // Advance the position locally while playing — the
                         // phone only reports on state changes, and a frozen
                         // bar under a playing track reads as a hang.
+                        // Same position the app's live MUSIC record carries
+                        // (MediaState::positionMs), so the two bars agree.
                         MediaState m = media::get();
-                        if (m.present && m.playing && m.durSec > 0) {
-                            uint32_t adv = (millis() - m.posAtMs) / 1000;
-                            m.posSec = (m.posSec + adv > m.durSec)
-                                           ? m.durSec
-                                           : (uint16_t)(m.posSec + adv);
+                        if (m.present) {
+                            const uint32_t p = m.positionMs(millis()) / 1000;
+                            m.posSec = p > 0xFFFF ? 0xFFFF : (uint16_t)p;
                         }
                         ui_render_media(s, m, fb);
                     } else if (pg.kind == DP_WORKOUT) {

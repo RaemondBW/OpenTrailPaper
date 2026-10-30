@@ -36,6 +36,41 @@ enum SyncProvider: String, CaseIterable, Identifiable {
         case .ridewithgps: return "RideWithGPS"
         }
     }
+    /// The word on a ride's "✓ STRAVA" tag.
+    var shortTitle: String {
+        switch self {
+        case .strava: return "Strava"
+        case .intervals: return "Intervals"
+        case .ridewithgps: return "RWGPS"
+        }
+    }
+}
+
+/// Which services each ride has been uploaded to from this phone, by ride
+/// file name, so the Rides list can tag them and a ride page shows its tile
+/// as done after it is reopened. Kept as one JSON string in UserDefaults under
+/// `key`, which views watch with @AppStorage.
+enum UploadLog {
+    static let key = "rideUploads"
+
+    static func decode(_ raw: String) -> [String: [String]] {
+        (try? JSONDecoder().decode([String: [String]].self, from: Data(raw.utf8))) ?? [:]
+    }
+
+    static func providers(for name: String, raw: String? = nil) -> [SyncProvider] {
+        let all = decode(raw ?? UserDefaults.standard.string(forKey: key) ?? "")
+        return (all[name] ?? []).compactMap(SyncProvider.init(rawValue:))
+    }
+
+    static func record(_ p: SyncProvider, for name: String) {
+        var all = decode(UserDefaults.standard.string(forKey: key) ?? "")
+        var list = all[name] ?? []
+        if !list.contains(p.rawValue) { list.append(p.rawValue) }
+        all[name] = list
+        if let data = try? JSONEncoder().encode(all) {
+            UserDefaults.standard.set(String(decoding: data, as: UTF8.self), forKey: key)
+        }
+    }
 }
 
 struct SyncTokens: Codable, Equatable {
@@ -185,7 +220,15 @@ final class SyncAccounts: NSObject, ObservableObject {
         }
     }
 
-    func isConnected(_ p: SyncProvider) -> Bool { tokens[p] != nil }
+    func isConnected(_ p: SyncProvider) -> Bool { tokens[p] != nil || Self.demoConnected(p) }
+
+    /// Screenshot hook (`-demo-accounts`): Strava and intervals.icu read as
+    /// connected, and the bundled demo ride as already on Strava, so the
+    /// Accounts list and a ride's upload grid can be captured. Nothing is
+    /// stored and no request can succeed without real tokens.
+    static func demoConnected(_ p: SyncProvider) -> Bool {
+        ProcessInfo.processInfo.arguments.contains("-demo-accounts") && p != .ridewithgps
+    }
 
     // MARK: connect / disconnect
 
@@ -752,57 +795,82 @@ private extension Data {
 
 // MARK: - Settings card
 
+/// Settings › Accounts: one bordered row per service with its logo, then
+/// "Powered by Strava" under the group.
 struct SyncAccountsCard: View {
     @ObservedObject private var sync = SyncAccounts.shared
 
     var body: some View {
-        Card {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Accounts").trackedLabel()
-                if SyncAccounts.isConfigured {
-                    Text("Connect once, then upload rides from a ride's page. Only your own sign-in is kept, on this phone.")
-                        .font(.system(size: 12)).foregroundStyle(Palette.muted)
-                    ForEach(SyncProvider.allCases) { p in
+        VStack(alignment: .leading, spacing: 6) {
+            SettingsSectionHeader(title: "Accounts")
+            if SyncAccounts.isConfigured {
+                GroupedRows {
+                    ForEach(Array(SyncProvider.allCases.enumerated()), id: \.element) { i, p in
+                        if i > 0 { GroupedDivider() }
                         row(p)
                         if p == .strava && sync.isConnected(.strava) {
                             StravaSegmentsRow()
                         }
                     }
-                    if let e = sync.lastError {
-                        Text(e).font(.system(size: 12)).foregroundStyle(Palette.accentDark)
-                    }
-                } else {
+                }
+                Text("POWERED BY STRAVA")
+                    .font(BarlowFont.text(10, .bold)).tracking(2)
+                    .foregroundStyle(Palette.ink)
+                Text("Connect once, then upload rides from a ride's page. Only your own sign-in is kept, on this phone.")
+                    .font(BarlowFont.text(12)).foregroundStyle(Palette.muted)
+                if let e = sync.lastError {
+                    WarningBanner(title: "Account error", message: e)
+                }
+            } else {
+                Card(padding: 12) {
                     Text("Strava and RideWithGPS uploads need the sync service, which this build was not pointed at. The share button still works.")
-                        .font(.system(size: 12)).foregroundStyle(Palette.muted)
+                        .font(BarlowFont.text(13)).foregroundStyle(Palette.muted)
                 }
-                if SyncAccounts.isConfigured && !SyncAccounts.attested {
-                    Text("This build has no App Check identity, so the service will refuse it.")
-                        .font(.system(size: 12)).foregroundStyle(Palette.accentDark)
-                }
+            }
+            if SyncAccounts.isConfigured && !SyncAccounts.attested {
+                WarningBanner(title: "No App Check identity",
+                              message: "This build has no App Check identity, so the service will refuse it.")
             }
         }
     }
 
     @ViewBuilder private func row(_ p: SyncProvider) -> some View {
         HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(p.title).font(BarlowFont.text(15, .semibold)).foregroundStyle(Palette.ink)
-                Text(summary(p)).font(.system(size: 12)).foregroundStyle(Palette.muted)
+            ProviderLogo(provider: p, size: 32)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(p.title).font(BarlowFont.text(15, .bold)).foregroundStyle(Palette.ink)
+                Text(summary(p)).font(BarlowFont.text(12)).foregroundStyle(Palette.muted)
+                    .lineLimit(2)
             }
-            Spacer()
+            Spacer(minLength: 8)
             if sync.busy == p {
-                ProgressView()
+                BlockSpinner()
             } else if sync.isConnected(p) {
-                Button("Disconnect") { sync.disconnect(p) }
-                    .font(BarlowFont.text(14, .semibold)).foregroundStyle(Palette.muted)
+                Menu {
+                    Button("Disconnect \(p.title)", role: .destructive) { sync.disconnect(p) }
+                } label: {
+                    Text("✓ ON").font(BarlowFont.text(11, .bold)).tracking(1.5)
+                        .foregroundStyle(Palette.ink)
+                        .frame(minWidth: 44, minHeight: 44, alignment: .trailing)
+                }
+                .accessibilityLabel("\(p.title) connected. Disconnect")
             } else {
-                Button("Connect") { sync.connect(p) }
-                    .font(BarlowFont.text(14, .semibold)).foregroundStyle(Palette.accent)
+                Button { sync.connect(p) } label: {
+                    Text("CONNECT").font(BarlowFont.text(11, .bold)).tracking(1.5)
+                        .padding(.horizontal, 10).padding(.vertical, 6)
+                        .foregroundStyle(Palette.ink)
+                        .einkBorder()
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Connect \(p.title)")
             }
         }
+        .padding(.horizontal, 12).padding(.vertical, 10)
     }
 
     private func summary(_ p: SyncProvider) -> String {
+        if SyncAccounts.demoConnected(p) { return "Connected as Demo Rider" }
         guard let t = sync.tokens[p] else { return "Not connected" }
         return t.athleteName.map { "Connected as \($0)" } ?? "Connected"
     }
@@ -810,10 +878,11 @@ struct SyncAccountsCard: View {
 
 // MARK: - Upload grid (ride page)
 
-/// One tile per connected account, side by side. Tapping one first asks for the
-/// activity name, prefilled with the ride's current name (the rider's last
-/// rename, else `defaultName`), then uploads under it; all three services take
-/// the name with the file. The name is remembered for the ride (RideNames).
+/// One tile per connected account, side by side; tap a tile to upload. A
+/// finished upload turns its tile black. Above the tiles, the activity name the
+/// upload goes under, prefilled with the ride's current name (the rider's last
+/// rename, else `defaultName`); all three services take the name with the
+/// file. The name is remembered for the ride (RideNames).
 struct SyncUploadButtons: View {
     let fileURL: URL
     let defaultName: String
@@ -821,16 +890,18 @@ struct SyncUploadButtons: View {
     @ObservedObject private var names = RideNames.shared
     @State private var uploading: SyncProvider?
     @State private var status: [SyncProvider: String] = [:]
-    @State private var naming: SyncProvider?
     @State private var draft = ""
+    @FocusState private var editing: Bool
 
     private var file: String { fileURL.lastPathComponent }
 
     var body: some View {
         let connected = SyncProvider.allCases.filter { sync.isConnected($0) }
         if !connected.isEmpty {
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 8) {
+                nameField
                 Text("Upload to").trackedLabel()
+                    .padding(.top, 4)
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10),
                                          count: min(connected.count, 3)),
                           spacing: 10) {
@@ -839,21 +910,50 @@ struct SyncUploadButtons: View {
                 // Full messages go under the grid; a tile only has room for a word.
                 ForEach(connected.filter { failed($0) }) { p in
                     let s = status[p] ?? ""
-                    Text(s.contains(p.title) ? s : "\(p.title): \(s)").font(BarlowFont.text(12))
-                        .foregroundStyle(Palette.accentDark)
+                    Text(s.contains(p.title) ? s : "\(p.title): \(s)").font(BarlowFont.text(12, .semibold))
+                        .foregroundStyle(Palette.ink)
                 }
             }
-            .alert(naming.map { "Upload to \($0.title)" } ?? "Upload",
-                   isPresented: Binding(get: { naming != nil }, set: { if !$0 { naming = nil } }),
-                   presenting: naming) { p in
-                TextField(defaultName, text: $draft)
-                    .textInputAutocapitalization(.sentences)
-                    .submitLabel(.send)
-                Button("Cancel", role: .cancel) {}
-                Button("Upload") { upload(p) }
-            } message: { p in
-                Text("The ride's name on \(p.title). It is kept for this ride on this phone.")
+            .onAppear {
+                if ProcessInfo.processInfo.arguments.contains("-demo-accounts"),
+                   fileURL.lastPathComponent == "demo.fit" { status[.strava] = "Uploaded" }
+                // Uploaded earlier from this phone: show the tile as done.
+                for p in UploadLog.providers(for: fileURL.lastPathComponent) where status[p] == nil {
+                    status[p] = "Uploaded"
+                }
+                draft = names.name(for: file, default: defaultName)
             }
+        }
+    }
+
+    /// A bordered one-line field under a tracked label; the tiles upload
+    /// whatever it holds. Blank uploads under the default name.
+    private var nameField: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Activity name").trackedLabel()
+            HStack(spacing: 8) {
+                TextField(defaultName, text: $draft)
+                    .font(BarlowFont.text(16, .semibold))
+                    .foregroundStyle(Palette.ink)
+                    .textInputAutocapitalization(.sentences)
+                    .submitLabel(.done)
+                    .focused($editing)
+                    .onSubmit { names.rename(file, to: draft, default: defaultName) }
+                if !draft.isEmpty && editing {
+                    Button { draft = "" } label: {
+                        Image(systemName: "xmark").font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(Palette.ink)
+                            .frame(width: 28, height: 28)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Clear name")
+                }
+            }
+            .padding(.horizontal, 12).frame(minHeight: 44)
+            .background(Palette.paper)
+            .einkBorder()
+            .disabled(uploading != nil)
+            .accessibilityLabel("Activity name for uploads")
         }
     }
 
@@ -861,51 +961,51 @@ struct SyncUploadButtons: View {
     private func failed(_ p: SyncProvider) -> Bool { status[p] != nil && !uploaded(p) }
 
     private func tile(_ p: SyncProvider) -> some View {
-        Button {
-            draft = names.name(for: file, default: defaultName)
-            naming = p
-        } label: {
-            VStack(spacing: 8) {
-                ProviderLogo(provider: p, size: 44)
-                Text(p.title).font(BarlowFont.condensed(17, .semibold)).foregroundStyle(Palette.ink)
-                    .lineLimit(1).minimumScaleFactor(0.8)
-                HStack(spacing: 4) {
-                    if uploading == p {
-                        ProgressView().controlSize(.mini)
-                        Text("Uploading")
-                    } else if uploaded(p) {
-                        Image(systemName: "checkmark")
-                        Text("Uploaded")
-                    } else if failed(p) {
-                        Text("Try again")
-                    } else {
-                        Image(systemName: "arrow.up")
-                        Text("Upload")
-                    }
+        let done = uploaded(p)
+        let busy = uploading == p
+        return Button { upload(p) } label: {
+            VStack(spacing: 6) {
+                ProviderLogo(provider: p, size: 40)
+                Text(p.title).font(BarlowFont.text(13, .bold))
+                    .lineLimit(1).minimumScaleFactor(0.7)
+                Group {
+                    if busy { Text("UPLOADING…") }
+                    else if done { Text("✓ UPLOADED") }
+                    else if failed(p) { Text("TRY AGAIN") }
+                    else { Text("↑ UPLOAD") }
                 }
-                .font(BarlowFont.text(12, .semibold))
-                .foregroundStyle(uploaded(p) ? Palette.good : failed(p) ? Palette.accentDark : Palette.muted)
+                .font(BarlowFont.text(11, .bold)).tracking(1.5)
+                .lineLimit(1).minimumScaleFactor(0.7)
             }
+            .foregroundStyle(done ? Palette.paper : Palette.ink)
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 14).padding(.horizontal, 8)
-            .background(Palette.surface)
-            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .strokeBorder(uploaded(p) ? Palette.good : Palette.hairline, lineWidth: 1))
+            .padding(.vertical, 10).padding(.horizontal, 6)
+            .background {
+                if done { Palette.ink }
+                else if busy || failed(p) { HatchedBackground() }
+                else { Palette.paper }
+            }
+            .einkBorder()
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         // Not .disabled: that greys the logo, and a finished upload should read as done.
-        .allowsHitTesting(uploading == nil && !uploaded(p))
-        .opacity(uploading != nil && uploading != p ? 0.5 : 1)
-        .accessibilityLabel(uploaded(p) ? "Uploaded to \(p.title)" : "Upload to \(p.title)")
+        .allowsHitTesting(uploading == nil && !done)
+        .opacity(uploading != nil && !busy ? 0.5 : 1)
+        .accessibilityLabel(done ? "Uploaded to \(p.title)" : busy ? "Uploading to \(p.title)" : "Upload to \(p.title)")
     }
 
     private func upload(_ p: SyncProvider) {
+        editing = false
         let name = names.rename(file, to: draft, default: defaultName)
+        draft = name
         uploading = p
         status[p] = nil
         Task {
-            do { status[p] = try await sync.upload(fileURL, to: p, name: name) }
+            do {
+                status[p] = try await sync.upload(fileURL, to: p, name: name)
+                if uploaded(p) { UploadLog.record(p, for: fileURL.lastPathComponent) }
+            }
             catch { status[p] = error.localizedDescription }
             uploading = nil
         }
@@ -920,9 +1020,9 @@ struct ProviderLogo: View {
     var size: CGFloat = 44
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: size * 0.27, style: .continuous)
-        shape.fill(provider == .strava ? Color(hex: 0xFC4C02) : .white)
-            .overlay(shape.strokeBorder(provider == .strava ? .clear : Palette.hairline, lineWidth: 1))
+        let shape = Rectangle()
+        shape.fill(provider == .strava ? Palette.strava : .white)
+            .overlay(shape.strokeBorder(provider == .strava ? .clear : Palette.ink, lineWidth: 2))
             .frame(width: size, height: size)
             .overlay(mark)
             .accessibilityHidden(true)

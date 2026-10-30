@@ -291,8 +291,8 @@ data class DashConfig(
         }
     }
 
-    /** Configurable (non-map) pages the device accepts; the map page rides
-     * along on top of these (DASH_MAX_PAGES = 5 on the device). */
+    /** Configurable (non-map) pages. How many the device accepts is
+     * BleManager.dashMaxPages; the map page rides along on top. */
     val contentPages: Int get() = pages.count { !it.isMap }
 
     /** The first data page — what thumbnails show. */
@@ -349,7 +349,14 @@ data class DashConfig(
     override fun hashCode(): Int = configText.hashCode()
 
     companion object {
+        /** Content pages legacy firmware is offered (it says nothing about its limit). */
         const val MAX_PAGES = 4
+
+        /** The most content pages a config is read with: the device's own
+         *  DASH_MAX_PAGES (8) less the map. Link firmware states its limit in
+         *  DeviceHello.dash_max_pages; a config the device sends is never cut
+         *  below what it holds. */
+        const val PARSE_MAX_PAGES = 7
 
         /**
          * Parse the device's text: split into per-page chunks on `page` lines,
@@ -406,7 +413,9 @@ data class DashConfig(
             // A pre-map-page config: the map belongs at the end, where the old
             // fixed cycle put it.
             if (!sawMap) out.add(Page.map())
-            var pages = out.take(MAX_PAGES + 1)
+            // Up to PARSE_MAX_PAGES content pages, plus the map wherever it sits.
+            var content = 0
+            var pages = out.filter { it.isMap || ++content <= PARSE_MAX_PAGES }
             if (pages.none { it.isMap }) pages = pages + Page.map()
             return DashConfig(pages, strip)
         }

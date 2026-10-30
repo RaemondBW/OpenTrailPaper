@@ -1,5 +1,18 @@
 package com.raemond.opentrailpaper.ui
 
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.animation.animateContentSize
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -16,7 +29,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bluetooth
@@ -27,19 +39,14 @@ import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.automirrored.filled.HelpOutline
 import androidx.compose.material.icons.filled.LocationOn
-import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -51,6 +58,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -81,153 +89,80 @@ fun SettingsScreen(ble: BleManager, host: HostActions, onShowTutorial: () -> Uni
 
     LaunchedEffect(Unit) { FirmwareRelease.check() }
 
-    Column(
-        Modifier
-            .fillMaxSize()
-            .background(Palette.paper)
-            .verticalScroll(rememberScrollState())
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
-    ) {
-        Row(Modifier.fillMaxWidth().padding(top = 8.dp)) {
-            Text("Settings", style = TypeScale.screenTitle, color = Palette.ink)
-        }
-
-        // Device settings stay editable offline (cached per device, synced on
-        // the next connect); say when something is waiting.
-        if (ble.hasPendingSync) {
-            PendingSyncHint(
-                if (connected) "Syncing with your OpenTrailPaper…" else "Will sync when connected",
-            )
-        }
-        ble.settingsSyncNote?.let { Text(it, style = barlow(12.sp), color = Palette.muted) }
-
-        // Keep the firmware card visible through the reboot/disconnect of an
-        // in-progress (or just-finished) update so its status doesn't vanish.
-        if (connected || ble.otaInProgress ||
-            ble.otaPhase == BleManager.OtaPhase.FAILED ||
-            ble.otaPhase == BleManager.OtaPhase.DONE
-        ) {
-            FirmwareCard(ble) { confirmUpdate = true }
-        }
-
-        if (connected) {
-            NavCard("Sensors", sensorSummary(ble)) { showSensors = true }
-        } else {
-            ConnectOnlyCard()
-        }
-
-        PairedDeviceCard(ble, connected) { confirmForget = true }
-
-        // Not gated on the connection, unlike sensors: picking an area and
-        // fetching OSM works offline, and the Maps screen only needs the link for
-        // the upload itself.
-        NavCard("Maps", mapsSummary(ble), icon = Icons.Filled.Map) { showMaps = true }
-
-        AccountsCard(ble)
-
-        Card {
-            TrackedLabel("Units")
-            Spacer(Modifier.size(10.dp))
-            Segmented(
-                options = listOf("Metric (km)", "Standard (mi)"),
-                selected = if (ble.useMiles) 1 else 0,
-                onSelect = { ble.updateUseMiles(it == 1) },
-            )
-        }
-
-        // Shown offline too; hidden only for firmware known to lack them.
-        if (ble.supportsSetting(SettingField.CLOCK_24H)) {
-            Card {
-                TrackedLabel("Clock")
-                Spacer(Modifier.size(10.dp))
-                Segmented(
-                    options = listOf("24-hour", "12-hour"),
-                    selected = if (ble.clock24h) 0 else 1,
-                    onSelect = { ble.updateClock24h(it == 0) },
-                )
-            }
-        }
-
-        if (ble.supportsSetting(SettingField.USB_DRIVE)) {
-            Card {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    TrackedLabel("USB drive", Modifier.weight(1f))
-                    Switch(
-                        checked = ble.usbDrive,
-                        onCheckedChange = { ble.updateUsbDrive(it) },
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = Color.White,
-                            checkedTrackColor = Palette.accent,
-                        ),
+    Column(Modifier.fillMaxSize().background(Palette.paper)) {
+        // The sync state lives in the header, one line whose text changes in
+        // place, so editing a setting never shoves the page down and back.
+        ScreenHeader(
+            "Settings",
+            subtitle = {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Icon(
+                        if (ble.hasPendingSync) Icons.Filled.Sync else Icons.Filled.Check,
+                        contentDescription = null, tint = Palette.ink, modifier = Modifier.size(12.dp),
+                    )
+                    Text(
+                        when {
+                            ble.hasPendingSync && connected -> "SYNCING WITH DEVICE…"
+                            ble.hasPendingSync -> "WILL SYNC WHEN CONNECTED"
+                            connected -> "IN SYNC WITH DEVICE"
+                            else -> "OFFLINE · CHANGES SYNC ON CONNECT"
+                        },
+                        style = caps(11.sp, 1.5.sp), color = Palette.ink, maxLines = 1,
                     )
                 }
-                Text(
-                    if (ble.usbDrive) {
-                        "The SD mounts on a computer when plugged in. Turn off to keep the SD " +
-                            "with the device (record/maps keep working while plugged in for " +
-                            "power or serial)."
-                    } else {
-                        "The SD stays with the device when plugged in. Turn on to copy maps, " +
-                            "firmware, or logs from a computer."
-                    },
-                    style = barlow(12.sp),
-                    color = Palette.muted,
-                )
-            }
-        }
-
-        Card {
-            TrackedLabel("FTP")
-            Stepper(
-                value = "${ble.ftpWatts} W",
-                onDecrease = { ble.updateFtp((ble.ftpWatts - 5).coerceAtLeast(50)) },
-                onIncrease = { ble.updateFtp((ble.ftpWatts + 5).coerceAtMost(500)) },
-            )
-        }
-
-        val wheelMm = ble.wheelCircMm
-        if (connected && wheelMm != null) WheelSizeCard(ble, wheelMm)
-
-        Card {
-            TrackedLabel("Timezone")
-            Stepper(
-                value = tzLabel(ble.tzMinutes),
-                onDecrease = { ble.updateTz((ble.tzMinutes - 30).coerceAtLeast(-12 * 60)) },
-                onIncrease = { ble.updateTz((ble.tzMinutes + 30).coerceAtMost(14 * 60)) },
-            )
-        }
-
-        Card {
-            TrackedLabel("Backlight")
-            Spacer(Modifier.size(10.dp))
-            Segmented(
-                options = listOf("Off", "Low", "Med", "Bright"),
-                selected = ble.backlight.coerceIn(0, 3),
-                onSelect = { ble.updateBacklight(it) },
-            )
-        }
-
-        if (connected) DiagnosticsCard(ble)
-
-        PermissionsCard(ble, host)
-        NavCard("How it works", "Replay the intro tutorial", icon = Icons.AutoMirrored.Filled.HelpOutline) {
-            onShowTutorial()
-        }
-
-        Text(
-            when {
-                connected -> "Settings sync automatically with your OpenTrailPaper, both ways."
-                ble.settingsCache.device == null ->
-                    "Changes you make here are sent to your OpenTrailPaper when it first connects."
-                else -> "Showing your OpenTrailPaper's settings from the last connection. " +
-                    "Changes sync when it reconnects."
             },
-            style = barlow(13.sp),
-            color = Palette.muted,
-            modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
         )
-        Spacer(Modifier.size(8.dp))
+        Column(
+            Modifier
+                .weight(1f)
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            ble.settingsSyncNote?.let { Text(it, style = barlow(12.sp), color = Palette.muted) }
+
+            PairedDeviceCard(ble, connected) { confirmForget = true }
+
+            // Keep the firmware card visible through the reboot/disconnect of an
+            // in-progress (or just-finished) update so its status doesn't vanish.
+            if (connected || ble.otaInProgress ||
+                ble.otaPhase == BleManager.OtaPhase.FAILED ||
+                ble.otaPhase == BleManager.OtaPhase.DONE
+            ) {
+                FirmwareCard(ble) { confirmUpdate = true }
+            }
+
+            if (!connected) ConnectOnlyCard()
+
+            AccountsCard(ble)
+
+            DeviceSection(ble, connected, onSensors = { showSensors = true }, onMaps = { showMaps = true })
+
+            val wheelMm = ble.wheelCircMm
+            if (connected && wheelMm != null) WheelSizeCard(ble, wheelMm)
+
+            if (connected) DiagnosticsCard(ble)
+
+            PermissionsCard(ble, host)
+            NavCard("How it works", "Replay the intro tutorial", icon = Icons.AutoMirrored.Filled.HelpOutline) {
+                onShowTutorial()
+            }
+
+            Text(
+                when {
+                    connected -> "Settings sync automatically with your OpenTrailPaper, both ways."
+                    ble.settingsCache.device == null ->
+                        "Changes you make here are sent to your OpenTrailPaper when it first connects."
+                    else -> "Showing your OpenTrailPaper's settings from the last connection. " +
+                        "Changes sync when it reconnects."
+                },
+                style = barlow(13.sp),
+                color = Palette.muted,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+            )
+            Spacer(Modifier.size(8.dp))
+        }
     }
 
     if (showSensors) SensorsSheet(ble) { showSensors = false }
@@ -283,6 +218,126 @@ fun SettingsScreen(ble: BleManager, host: HostActions, onShowTutorial: () -> Uni
 // MARK: cards
 
 /**
+ * DEVICE: the head unit's own settings as one bordered list, binary ones as
+ * segmented switches, FTP and timezone as steppers, and the ways into
+ * sensors and maps.
+ */
+@Composable
+private fun DeviceSection(ble: BleManager, connected: Boolean, onSensors: () -> Unit, onMaps: () -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        SettingsSectionHeader("Device")
+        GroupedRows {
+            SettingRow("Units") {
+                SegmentedSwitch(listOf("km" to false, "mi" to true), ble.useMiles, accessibilityName = "Units") {
+                    ble.updateUseMiles(it)
+                }
+            }
+            // Shown offline too; hidden only for firmware known to lack them.
+            if (ble.supportsSetting(SettingField.CLOCK_24H)) {
+                GroupedDivider()
+                SettingRow("Clock") {
+                    SegmentedSwitch(listOf("24h" to true, "12h" to false), ble.clock24h, accessibilityName = "Clock") {
+                        ble.updateClock24h(it)
+                    }
+                }
+            }
+            GroupedDivider()
+            SettingRow("Backlight") {
+                SegmentedSwitch(
+                    listOf("Off" to 0, "Lo" to 1, "Med" to 2, "Max" to 3),
+                    ble.backlight.coerceIn(0, 3), accessibilityName = "Backlight",
+                ) { ble.updateBacklight(it) }
+            }
+            if (ble.supportsSetting(SettingField.USB_DRIVE)) {
+                GroupedDivider()
+                Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("USB drive", style = barlow(15.sp, FontWeight.Bold), color = Palette.ink, modifier = Modifier.weight(1f))
+                        EinkSwitch(checked = ble.usbDrive, onCheckedChange = { ble.updateUsbDrive(it) })
+                    }
+                    Text(
+                        if (ble.usbDrive) {
+                            "The SD mounts on a computer when plugged in. Turn off to keep the SD " +
+                                "with the device (record/maps keep working while plugged in for " +
+                                "power or serial)."
+                        } else {
+                            "The SD stays with the device when plugged in. Turn on to copy maps, " +
+                                "firmware, or logs from a computer."
+                        },
+                        style = barlow(12.sp),
+                        color = Palette.muted,
+                    )
+                }
+            }
+            GroupedDivider()
+            SettingRow("FTP") {
+                Stepper(
+                    value = "${ble.ftpWatts} W",
+                    onDecrease = { ble.updateFtp((ble.ftpWatts - 5).coerceAtLeast(50)) },
+                    onIncrease = { ble.updateFtp((ble.ftpWatts + 5).coerceAtMost(500)) },
+                )
+            }
+            GroupedDivider()
+            SettingRow("Timezone") {
+                Stepper(
+                    value = tzLabel(ble.tzMinutes),
+                    onDecrease = { ble.updateTz((ble.tzMinutes - 30).coerceAtLeast(-12 * 60)) },
+                    onIncrease = { ble.updateTz((ble.tzMinutes + 30).coerceAtMost(14 * 60)) },
+                )
+            }
+            if (connected) {
+                GroupedDivider()
+                LinkRow("Sensors", sensorShort(ble), onSensors)
+            }
+            GroupedDivider()
+            // Not gated on the connection: picking an area and fetching OSM works
+            // offline; only the upload needs the link.
+            LinkRow("Maps on SD card", mapsShort(ble), onMaps)
+        }
+    }
+}
+
+@Composable
+private fun SettingRow(title: String, control: @Composable () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 50.dp).padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Text(title, style = barlow(15.sp, FontWeight.Bold), color = Palette.ink, modifier = Modifier.weight(1f))
+        control()
+    }
+}
+
+@Composable
+private fun LinkRow(title: String, detail: String, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 50.dp)
+            .clickable(role = Role.Button, onClick = onClick)
+            .padding(horizontal = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Text(title, style = barlow(15.sp, FontWeight.Bold), color = Palette.ink, modifier = Modifier.weight(1f))
+        Text("$detail ›", style = barlow(13.sp, FontWeight.SemiBold), color = Palette.ink, maxLines = 1)
+    }
+}
+
+private fun sensorShort(ble: BleManager): String {
+    val connected = ble.sensors.filter { it.connected }
+    if (connected.isNotEmpty()) return connected.joinToString(" · ") { it.name }
+    val paired = ble.sensors.filter { it.paired }
+    return if (paired.isEmpty()) "Scan & pair" else "${paired.size} saved"
+}
+
+private fun mapsShort(ble: BleManager): String {
+    val n = ble.deviceTileIds.size
+    return if (n == 0) "Download" else "$n area${if (n == 1) "" else "s"}"
+}
+
+/**
  * What needs the device's live answer and so waits for a connection: sensor
  * scan/pairing, firmware updates and logs. (Mesh/LoRa says the same on its tab.)
  */
@@ -301,71 +356,86 @@ private fun ConnectOnlyCard() {
 }
 
 /**
- * Strava / RideWithGPS. Connect opens the provider's consent page in a Custom
- * Tab; the tokens come back through the app's URL scheme (SyncAccounts). What
- * the card shows is the account name the provider reported.
+ * Strava / intervals.icu / RideWithGPS. Connect opens the provider's consent
+ * page in a Custom Tab; the tokens come back through the app's URL scheme
+ * (SyncAccounts). Each row shows the account name the provider reported.
  */
 @Composable
 private fun AccountsCard(ble: BleManager) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    Card {
-        TrackedLabel("Accounts")
-        Spacer(Modifier.size(6.dp))
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        SettingsSectionHeader("Accounts")
         if (!SyncAccounts.isConfigured) {
-            Text(
-                "Strava and RideWithGPS uploads need the sync service, which this build was " +
-                    "not pointed at. The share button still works.",
-                style = barlow(12.sp), color = Palette.muted,
-            )
-            return@Card
+            Card(padding = 12.dp) {
+                Text(
+                    "Strava and RideWithGPS uploads need the sync service, which this build was " +
+                        "not pointed at. The share button still works.",
+                    style = barlow(13.sp), color = Palette.muted,
+                )
+            }
+            return@Column
         }
+        GroupedRows {
+            SyncAccounts.Provider.entries.forEachIndexed { i, p ->
+                if (i > 0) GroupedDivider()
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    ProviderLogo(p, 32.dp)
+                    Column(Modifier.weight(1f)) {
+                        Text(p.title, style = barlow(15.sp, FontWeight.Bold), color = Palette.ink)
+                        val t = SyncAccounts.tokens[p]
+                        Text(
+                            when {
+                                t == null -> "Not connected"
+                                t.athleteName != null -> "Connected as ${t.athleteName}"
+                                else -> "Connected"
+                            },
+                            style = barlow(12.sp), color = Palette.muted, maxLines = 2,
+                        )
+                    }
+                    when {
+                        SyncAccounts.busy == p -> BlockSpinner()
+                        SyncAccounts.isConnected(p) -> Text(
+                            "✓ ON · DISCONNECT", style = caps(11.sp, 1.5.sp), color = Palette.ink,
+                            modifier = Modifier
+                                .clickable(role = Role.Button, onClickLabel = "Disconnect ${p.title}") {
+                                    scope.launch { SyncAccounts.disconnect(p) }
+                                }
+                                .padding(vertical = 12.dp),
+                        )
+                        else -> Text(
+                            "CONNECT", style = caps(11.sp, 1.5.sp), color = Palette.ink,
+                            modifier = Modifier
+                                .einkBorder()
+                                .clickable(role = Role.Button, onClickLabel = "Connect ${p.title}") {
+                                    scope.launch { SyncAccounts.connect(context, p) }
+                                }
+                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                        )
+                    }
+                }
+                if (p == SyncAccounts.Provider.STRAVA && SyncAccounts.isConnected(p)) {
+                    GroupedDivider()
+                    StravaSegmentsRow(ble)
+                }
+            }
+        }
+        Text("POWERED BY STRAVA", style = caps(10.sp), color = Palette.ink)
         Text(
             "Connect once, then upload rides from a ride's page. Only your own sign-in is " +
                 "kept, on this phone.",
             style = barlow(12.sp), color = Palette.muted,
         )
-        for (p in SyncAccounts.Provider.entries) {
-            Spacer(Modifier.size(12.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text(p.title, style = TypeScale.bodyStrong, color = Palette.ink)
-                    val t = SyncAccounts.tokens[p]
-                    Text(
-                        when {
-                            t == null -> "Not connected"
-                            t.athleteName != null -> "Connected as ${t.athleteName}"
-                            else -> "Connected"
-                        },
-                        style = barlow(12.sp), color = Palette.muted,
-                    )
-                }
-                when {
-                    SyncAccounts.busy == p -> CircularProgressIndicator(
-                        Modifier.size(20.dp), color = Palette.accent, strokeWidth = 2.dp,
-                    )
-                    SyncAccounts.isConnected(p) -> TextButton(onClick = {
-                        scope.launch { SyncAccounts.disconnect(p) }
-                    }) { Text("Disconnect", style = barlow(14.sp), color = Palette.muted) }
-                    else -> TextButton(onClick = { scope.launch { SyncAccounts.connect(context, p) } }) {
-                        Text("Connect", style = barlow(14.sp), color = Palette.accent)
-                    }
-                }
-            }
-            if (p == SyncAccounts.Provider.STRAVA && SyncAccounts.isConnected(p)) {
-                StravaSegmentsRow(ble)
-            }
-        }
+        SyncAccounts.lastError?.let { WarningBanner("Account error", message = it) }
         if (!SyncAccounts.attested) {
-            Spacer(Modifier.size(8.dp))
-            Text(
-                "This build has no App Check identity, so the service will refuse it.",
-                style = barlow(12.sp), color = Palette.accentDark,
+            WarningBanner(
+                "No App Check identity",
+                message = "This build has no App Check identity, so the service will refuse it.",
             )
-        }
-        SyncAccounts.lastError?.let {
-            Spacer(Modifier.size(8.dp))
-            Text(it, style = barlow(12.sp), color = Palette.accentDark)
         }
     }
 }
@@ -385,10 +455,13 @@ private fun StravaSegmentsRow(ble: BleManager) {
         if (connected) ble.querySegments()
     }
     val canSync = connected && ble.segmentsSupported != false
-    Column(Modifier.padding(start = 12.dp, top = 8.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text("Starred segments", style = TypeScale.bodyStrong, color = Palette.ink)
+    Column(
+        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                TrackedLabel("Starred segments")
                 val summary = when {
                     !connected -> "Connect the device to sync them to its SEGMENT page."
                     ble.segmentsSupported == false -> "Needs device firmware v1.23 or newer."
@@ -409,18 +482,19 @@ private fun StravaSegmentsRow(ble: BleManager) {
                 Text(summary, style = barlow(12.sp), color = Palette.muted)
             }
             if (SegmentSync.busy) {
-                CircularProgressIndicator(Modifier.size(20.dp), color = Palette.accent, strokeWidth = 2.dp)
+                BlockSpinner()
             } else {
-                TextButton(
-                    onClick = { scope.launch { SegmentSync.sync(context, ble) } },
-                    enabled = canSync,
-                ) {
-                    Text("Sync", style = barlow(14.sp), color = if (canSync) Palette.accent else Palette.muted)
+                BlockButton("Sync", filled = true, enabled = canSync) {
+                    scope.launch { SegmentSync.sync(context, ble) }
                 }
             }
         }
         SegmentSync.status?.takeIf { SegmentSync.busy || SegmentSync.failed || connected }?.let {
-            Text(it, style = barlow(12.sp), color = if (SegmentSync.failed) Palette.accentDark else Palette.muted)
+            if (SegmentSync.failed) {
+                WarningBanner("Segment sync failed", message = it)
+            } else {
+                Text(it, style = barlow(12.sp), color = Palette.muted)
+            }
         }
         if (!CloudRoutes.stravaSeesPrivateRoutes(SyncAccounts.tokens[SyncAccounts.Provider.STRAVA]?.scope)) {
             Text(
@@ -428,68 +502,86 @@ private fun StravaSegmentsRow(ble: BleManager) {
                 style = barlow(12.sp), color = Palette.muted,
             )
         }
-        Text(
-            "Powered by Strava",
-            style = barlow(11.sp).copy(fontWeight = FontWeight.SemiBold),
-            color = Color(0xFFFC4C02),
-        )
     }
 }
 
 /** Fixed pairing: which OpenTrailPaper this phone owns, and the way out. */
 @Composable
 private fun PairedDeviceCard(ble: BleManager, connected: Boolean, onForget: () -> Unit) {
-    Card {
-        TrackedLabel("Paired device")
-        Spacer(Modifier.size(8.dp))
-        if (ble.pairedDeviceAddress != null) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    Icons.Filled.Bluetooth,
-                    contentDescription = null,
-                    tint = if (connected) Palette.good else Palette.muted,
-                    modifier = Modifier.size(18.dp),
-                )
-                Spacer(Modifier.size(8.dp))
+    val paired = ble.pairedDeviceAddress != null
+    Column(Modifier.fillMaxWidth().background(Palette.surface).einkBorder()) {
+        Row(
+            Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            DeviceGlyph(Modifier.size(40.dp, 56.dp))
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(
-                    ble.pairedDeviceName ?: "OpenTrailPaper",
-                    style = barlow(15.sp, FontWeight.SemiBold),
+                    (ble.pairedDeviceName ?: "OpenTrailPaper").uppercase(),
+                    style = caps(15.sp), color = Palette.ink, maxLines = 1,
+                )
+                Text(
+                    when {
+                        connected -> {
+                            val fw = if (ble.deviceFirmware.isEmpty()) "" else "Firmware ${ble.deviceFirmware} · "
+                            fw + "battery ${ble.status.battery}%"
+                        }
+                        !paired -> "Not paired"
+                        else -> "Not connected"
+                    },
+                    style = barlow(13.sp), color = Palette.ink,
+                )
+            }
+            Tag(
+                if (connected) "Connected" else if (!paired) "No device" else "Offline",
+                inverted = connected,
+            )
+        }
+        GroupedDivider()
+        Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (paired) {
+                Text(
+                    "The app only connects to this device, and the device only accepts this " +
+                        "phone until it is unpaired on the device (Menu › Paired Devices › Phone).",
+                    style = barlow(12.sp),
+                    color = Palette.muted,
+                )
+                Text(
+                    (if (connected) "Unpair this device" else "Forget this device").uppercase(),
+                    style = caps(12.sp, 1.5.sp),
                     color = Palette.ink,
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier
+                        .clickable(role = Role.Button, onClick = onForget)
+                        .padding(vertical = 8.dp),
                 )
+            } else {
                 Text(
-                    if (connected) "Connected" else "Not connected",
+                    if (connected) {
+                        "Pairing with this OpenTrailPaper…"
+                    } else {
+                        "No device yet. Turn your OpenTrailPaper on nearby — the first one that " +
+                            "isn't paired with another phone connects. Type the 6-digit code from " +
+                            "its screen into the pairing prompt."
+                    },
                     style = barlow(12.sp),
                     color = Palette.muted,
                 )
             }
-            Spacer(Modifier.size(6.dp))
-            Text(
-                "The app only connects to this device, and the device only accepts this " +
-                    "phone until it is unpaired on the device (Menu › Paired Devices › Phone).",
-                style = barlow(12.sp),
-                color = Palette.muted,
-            )
-            Spacer(Modifier.size(8.dp))
-            Text(
-                if (connected) "Unpair this device" else "Forget this device",
-                style = barlow(15.sp, FontWeight.SemiBold),
-                color = Palette.accent,
-                modifier = Modifier.clickable(onClick = onForget),
-            )
-        } else {
-            Text(
-                if (connected) {
-                    "Pairing with this OpenTrailPaper…"
-                } else {
-                    "No device yet. Turn your OpenTrailPaper on nearby — the first one that " +
-                        "isn't paired with another phone connects. Type the 6-digit code from " +
-                        "its screen into the pairing prompt."
-                },
-                style = barlow(12.sp),
-                color = Palette.muted,
-            )
         }
+    }
+}
+
+/** The head unit, drawn the way the mockup draws it: a tall frame, a screen, a key. */
+@Composable
+private fun DeviceGlyph(modifier: Modifier = Modifier) {
+    Canvas(modifier) {
+        val w = size.width
+        val h = size.height
+        val t = 3.dp.toPx()
+        drawRect(Palette.ink, Offset(t / 2, t / 2), Size(w - t, h - t), style = Stroke(t))
+        drawRect(Palette.ink, Offset(w * 0.175f, h * 0.14f), Size(w * 0.65f, h * 0.54f), style = Stroke(1.5.dp.toPx()))
+        drawRect(Palette.ink, Offset(w * 0.175f, h * 0.75f), Size(w * 0.3f, h * 0.125f))
     }
 }
 
@@ -595,22 +687,6 @@ private fun NavCard(
     }
 }
 
-private fun sensorSummary(ble: BleManager): String {
-    val connected = ble.sensors.filter { it.connected }
-    if (connected.isNotEmpty()) return connected.joinToString(", ") { it.name } + " connected"
-    val paired = ble.sensors.filter { it.paired }
-    if (paired.isNotEmpty()) return "${paired.size} saved · none connected"
-    return "Scan & pair heart rate, power, cadence, radar"
-}
-
-/** The cached device tile list means this still reads correctly while
- *  disconnected, rather than claiming the device holds nothing. */
-private fun mapsSummary(ble: BleManager): String {
-    val n = ble.deviceTileIds.size
-    if (n == 0) return "Download map areas to your device"
-    return "$n area${if (n == 1) "" else "s"} on device"
-}
-
 /**
  * Speed-sensor wheel size, worked out from the rim and the tyre width
  * ([WheelSize.circumference]); the device stores the result in mm. A size no
@@ -666,26 +742,28 @@ private fun WheelSizeCard(ble: BleManager, mm: Int) {
     }
 }
 
+/** The value in Anton, then two square bordered cells, − and +. */
 @Composable
 private fun Stepper(value: String, onDecrease: () -> Unit, onIncrease: () -> Unit) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(value, style = TypeScale.value(30.sp), color = Palette.ink, modifier = Modifier.weight(1f))
-        StepButton("−", onDecrease)
-        Spacer(Modifier.size(8.dp))
-        StepButton("+", onIncrease)
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text(value, style = anton(22.sp), color = Palette.ink, maxLines = 1)
+        Row(Modifier.height(IntrinsicSize.Min).einkBorder()) {
+            StepButton("−", "Decrease", onDecrease)
+            Box(Modifier.width(Rule.border).fillMaxHeight().background(Palette.ink))
+            StepButton("+", "Increase", onIncrease)
+        }
     }
 }
 
 @Composable
-private fun StepButton(label: String, onClick: () -> Unit) {
+private fun StepButton(label: String, description: String, onClick: () -> Unit) {
     Box(
         Modifier
-            .size(40.dp)
-            .background(Palette.paper, RoundedCornerShape(12.dp))
-            .clickable(onClick = onClick),
+            .size(44.dp, 36.dp)
+            .clickable(role = Role.Button, onClickLabel = description, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Text(label, style = condensed(22.sp, FontWeight.Bold), color = Palette.accent)
+        Text(label, style = barlow(20.sp, FontWeight.Bold), color = Palette.ink)
     }
 }
 
@@ -742,16 +820,7 @@ private fun FirmwareCard(ble: BleManager, onInstall: () -> Unit) {
                     color = Palette.muted,
                 )
             }
-            if (ble.updateAvailable) {
-                Text(
-                    "UPDATE",
-                    style = barlow(11.sp, FontWeight.Bold),
-                    color = Color.White,
-                    modifier = Modifier
-                        .background(Palette.accent, RoundedCornerShape(50))
-                        .padding(horizontal = 8.dp, vertical = 4.dp),
-                )
-            }
+            if (ble.updateAvailable) Tag("Update", inverted = true)
         }
         Spacer(Modifier.size(12.dp))
 
@@ -771,7 +840,7 @@ private fun FirmwareCard(ble: BleManager, onInstall: () -> Unit) {
                 Column(
                     Modifier
                         .fillMaxWidth()
-                        .background(Palette.paper, RoundedCornerShape(8.dp))
+                        .background(Palette.paper)
                         .clickable { expanded = !expanded }
                         .padding(10.dp)
                         .animateContentSize(),
@@ -852,12 +921,7 @@ private fun FirmwareCard(ble: BleManager, onInstall: () -> Unit) {
 
             downloadProgress != null -> {
                 Text("Downloading firmware…", style = barlow(12.sp), color = Palette.muted)
-                LinearProgressIndicator(
-                    progress = { downloadProgress.toFloat() },
-                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                    color = Palette.accent,
-                    trackColor = Palette.hairline,
-                )
+                BlockProgressBar(value = downloadProgress.toFloat(), modifier = Modifier.fillMaxWidth().padding(top = 4.dp))
             }
 
             ble.updateAvailable -> PrimaryButton(
@@ -890,7 +954,7 @@ private fun OtaProgress(ble: BleManager) {
             if (ble.otaPhase == BleManager.OtaPhase.SENDING) {
                 Icon(Icons.Filled.Download, contentDescription = null, tint = Palette.accent)
             } else {
-                CircularProgressIndicator(Modifier.size(20.dp), color = Palette.accent)
+                BlockSpinner()
             }
             Column {
                 Text(
@@ -913,12 +977,7 @@ private fun OtaProgress(ble: BleManager) {
             }
         }
         if (ble.otaPhase == BleManager.OtaPhase.SENDING) {
-            LinearProgressIndicator(
-                progress = { ble.otaProgress.toFloat() },
-                modifier = Modifier.fillMaxWidth(),
-                color = Palette.accent,
-                trackColor = Palette.hairline,
-            )
+            BlockProgressBar(value = ble.otaProgress.toFloat(), modifier = Modifier.fillMaxWidth())
             Text(
                 "${(ble.otaProgress * 100).toInt()}% sent",
                 style = barlow(11.sp),
@@ -977,12 +1036,7 @@ private fun DiagnosticsCard(ble: BleManager) {
                 style = barlow(12.sp),
                 color = Palette.muted,
             )
-            LinearProgressIndicator(
-                progress = { ble.downloadProgress.toFloat() },
-                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                color = Palette.accent,
-                trackColor = Palette.hairline,
-            )
+            BlockProgressBar(value = ble.downloadProgress.toFloat(), modifier = Modifier.fillMaxWidth().padding(top = 4.dp))
         } else {
             PrimaryButton("Download today's log", icon = Icons.Filled.Description) {
                 ble.downloadLog()
@@ -994,7 +1048,7 @@ private fun DiagnosticsCard(ble: BleManager) {
                     Text("Other days", style = TypeScale.bodyStrong, color = Palette.accent)
                 }
                 if (ble.loadingLogs) {
-                    CircularProgressIndicator(Modifier.size(16.dp), color = Palette.accent)
+                    BlockSpinner()
                 }
             }
             ble.deviceLogs.forEach { log ->
@@ -1125,7 +1179,7 @@ private fun PermissionRow(
                     modifier = Modifier
                         .background(
                             if (state.isGranted) Palette.good else Palette.accent,
-                            RoundedCornerShape(50),
+                            RectangleShape,
                         )
                         .padding(horizontal = 7.dp, vertical = 3.dp),
                 )

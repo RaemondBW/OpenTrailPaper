@@ -112,6 +112,9 @@ struct RideState {
     float    gradePercent = 0.0f;
     bool     gradeValid = false;
     float    climbedM = 0.0f;
+    // The SD card filled mid-ride: the ride keeps timing but its file stopped
+    // growing. The status bar says SD FULL.
+    bool     cardFull = false;
 
     // Loaded route progress, mirrored here (rather than read from routes::) so
     // the dashboard's ROUTE LEFT field stays renderable on the host preview
@@ -159,6 +162,7 @@ struct RideSummary {
     time_t   endUtc = 0;
     int16_t  tzMin = -420;
     bool     useMiles = false;
+    bool     cardFull = false;     // the SD card filled: the saved track ends early
 };
 
 // Metric <-> imperial display helpers. Host-safe (used by the preview harness

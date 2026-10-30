@@ -236,8 +236,7 @@ private struct MeshShareSheet: View {
                             .frame(maxWidth: 280)
                             .padding(16)
                             .background(Color.white)
-                            .clipShape(RoundedRectangle(cornerRadius: 18,
-                                                        style: .continuous))
+                            .clipShape(Rectangle())
                     }
                     Text(channel.displayName)
                         .font(TypeScale.title).foregroundStyle(Palette.ink)
@@ -262,8 +261,7 @@ private struct MeshShareSheet: View {
                             .frame(maxWidth: .infinity).padding(.vertical, 14)
                             .foregroundStyle(Palette.accentInk)
                             .background(Palette.accent)
-                            .clipShape(RoundedRectangle(cornerRadius: 26,
-                                                        style: .continuous))
+                            .clipShape(Rectangle())
                     }
                     Text("Treat it like a password: anyone who gets the code can read everything on the channel, including messages sent before they joined.")
                         .font(BarlowFont.text(13)).foregroundStyle(Palette.faint)

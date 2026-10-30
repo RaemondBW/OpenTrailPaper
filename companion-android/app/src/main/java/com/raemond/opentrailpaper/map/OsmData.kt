@@ -2,6 +2,7 @@ package com.raemond.opentrailpaper.map
 
 import com.google.gson.stream.JsonReader
 import com.google.gson.stream.JsonToken
+import java.io.IOException
 import java.io.InputStream
 import java.io.InputStreamReader
 
@@ -122,7 +123,16 @@ class OsmData(
             JsonReader(InputStreamReader(stream, Charsets.UTF_8)).use { reader ->
                 reader.beginObject()
                 while (reader.hasNext()) {
-                    if (reader.nextName() != "elements") {
+                    val name = reader.nextName()
+                    // A query that ran out of time or memory still answers 200,
+                    // with what it had (often nothing) and this remark. That is
+                    // not "nothing here": fail, so the caller retries or reports.
+                    if (name == "remark" && reader.peek() == JsonToken.STRING) {
+                        val remark = reader.nextString()
+                        if (remark.contains("runtime error")) throw IOException("Overpass: $remark")
+                        continue
+                    }
+                    if (name != "elements") {
                         reader.skipValue()
                         continue
                     }

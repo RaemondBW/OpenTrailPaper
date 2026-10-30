@@ -92,7 +92,7 @@ struct WorkoutsView: View {
                     Text(msg)
                         .font(TypeScale.body)
                         .padding(.horizontal, 14).padding(.vertical, 8)
-                        .background(.thinMaterial, in: Capsule())
+                        .background(.thinMaterial, in: Rectangle())
                         .padding(.bottom, 12)
                         .task {
                             try? await Task.sleep(nanoseconds: 2_500_000_000)
@@ -120,7 +120,7 @@ struct WorkoutsView: View {
                              : s.running ? "RUNNING"
                              : s.paused ? "PAUSED" : "READY")
                             .font(BarlowFont.text(12, .bold))
-                            .foregroundStyle(s.running ? .green : Palette.muted)
+                            .foregroundStyle(s.running ? Palette.ink : Palette.muted)
                     }
                     HStack {
                         Text("Block \(s.blockIndex + 1) of \(s.blockCount)")
@@ -184,10 +184,10 @@ struct WorkoutsView: View {
                 .frame(maxWidth: .infinity)
                 .frame(height: 40)
                 .background(prominent ? Palette.accent : .clear,
-                            in: RoundedRectangle(cornerRadius: 10))
+                            in: Rectangle())
                 .overlay {
                     if !prominent {
-                        RoundedRectangle(cornerRadius: 10)
+                        Rectangle()
                             .strokeBorder(Palette.hairline, lineWidth: 1.5)
                     }
                 }
@@ -272,7 +272,7 @@ struct WorkoutsView: View {
                                      : s.running ? "RUNNING"
                                      : s.paused ? "PAUSED" : "LOADED")
                                     .fontWeight(.bold)
-                                    .foregroundStyle(s.running ? .green : Palette.accent)
+                                    .foregroundStyle(s.running ? Palette.ink : Palette.accent)
                             }
                         }
                         .font(BarlowFont.text(12, .medium))
@@ -290,7 +290,7 @@ struct WorkoutsView: View {
                 Image(systemName: isLoaded(item.name)
                       ? "checkmark.circle.fill" : "arrow.up.circle")
                     .font(.system(size: 22))
-                    .foregroundStyle(isLoaded(item.name) ? .green : Palette.accent)
+                    .foregroundStyle(isLoaded(item.name) ? Palette.ink : Palette.accent)
             }
             .buttonStyle(.plain)
             .disabled(ble.state != .connected)
@@ -304,7 +304,7 @@ struct WorkoutsView: View {
                 if item.onDevice { ble.deleteWorkout(item.name) }
             } label: { Label("Delete", systemImage: "trash") }
             Button { edit(item) } label: { Label("Edit", systemImage: "pencil") }
-                .tint(.blue)
+                .tint(Palette.ink)
         }
     }
 
@@ -577,7 +577,7 @@ struct WorkoutBuilderView: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Palette.surface, in: RoundedRectangle(cornerRadius: 12))
+        .background(Palette.surface, in: Rectangle())
     }
 
     // The profile is a control: tap a bar to open that block's row. Height is
@@ -592,8 +592,7 @@ struct WorkoutBuilderView: View {
                 HStack(alignment: .bottom, spacing: 2) {
                     ForEach(blocks) { b in
                         let h = 14 + 56 * Double(b.pct) / Double(maxPct)
-                        UnevenRoundedRectangle(topLeadingRadius: 3,
-                                               topTrailingRadius: 3)
+                        Rectangle()
                             .fill(b.id == openId ? Palette.accent
                                   : b.pct >= 95 ? Palette.ink
                                   : Palette.hairline)
@@ -614,7 +613,7 @@ struct WorkoutBuilderView: View {
             .foregroundStyle(Palette.muted)
         }
         .padding(14)
-        .background(Palette.surface, in: RoundedRectangle(cornerRadius: 12))
+        .background(Palette.surface, in: Rectangle())
     }
 
     private var blockList: some View {
@@ -628,7 +627,7 @@ struct WorkoutBuilderView: View {
             }
         }
         .background(Palette.surface)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .clipShape(Rectangle())
     }
 
     private func blockRow(_ b: Binding<Block>) -> some View {
@@ -647,7 +646,7 @@ struct WorkoutBuilderView: View {
                         .font(BarlowFont.text(15, .semibold))
                         .frame(width: 42, height: 42)
                         .background(zd.pct >= 95 ? Palette.ink : Palette.paper,
-                                    in: RoundedRectangle(cornerRadius: 9))
+                                    in: Rectangle())
                         .foregroundStyle(zd.pct >= 95 ? .white : Palette.ink)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(zd.name)
@@ -686,7 +685,7 @@ struct WorkoutBuilderView: View {
                                     .frame(maxWidth: .infinity)
                                     .frame(height: 42)
                                     .background(z == block.zone ? Palette.ink : Palette.paper,
-                                                in: RoundedRectangle(cornerRadius: 9))
+                                                in: Rectangle())
                                     .foregroundStyle(z == block.zone ? .white : Palette.muted)
                             }
                             .buttonStyle(.plain)
@@ -705,7 +704,7 @@ struct WorkoutBuilderView: View {
                                 b.wrappedValue.minutes = min(60, block.minutes + 1)
                             }
                         }
-                        .background(Palette.paper, in: RoundedRectangle(cornerRadius: 10))
+                        .background(Palette.paper, in: Rectangle())
                         actionBtn("Copy", color: Palette.ink) {
                             if let i = blocks.firstIndex(where: { $0.id == block.id }) {
                                 let dup = Block(minutes: block.minutes,
@@ -728,7 +727,7 @@ struct WorkoutBuilderView: View {
         .background(isOpen ? Color.white : .clear)
         .overlay(alignment: .leading) {
             if isOpen {
-                UnevenRoundedRectangle(topLeadingRadius: 3, bottomLeadingRadius: 3)
+                Rectangle()
                     .fill(Palette.accent)
                     .frame(width: 5)
             }
@@ -752,7 +751,7 @@ struct WorkoutBuilderView: View {
                 .font(BarlowFont.text(14, .semibold))
                 .foregroundStyle(color)
                 .frame(width: 76, height: 44)
-                .overlay(RoundedRectangle(cornerRadius: 10)
+                .overlay(Rectangle()
                     .strokeBorder(color.opacity(0.6), lineWidth: 1.5))
         }
         .buttonStyle(.plain)
@@ -781,7 +780,7 @@ struct WorkoutBuilderView: View {
                 .foregroundStyle(Palette.ink)
                 .frame(maxWidth: .infinity)
                 .frame(height: 48)
-                .background(Palette.surface, in: RoundedRectangle(cornerRadius: 12))
+                .background(Palette.surface, in: Rectangle())
         }
         .buttonStyle(.plain)
     }

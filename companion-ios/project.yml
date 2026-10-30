@@ -35,6 +35,11 @@ packages:
   firebase-ios-sdk:
     url: https://github.com/firebase/firebase-ios-sdk
     from: 11.6.0
+  # Runtime for Link.pb.swift (the phone link, docs/ble-link.md). Pinned to the
+  # protoc-gen-swift version that generated it (tools/gen_proto.sh).
+  swift-protobuf:
+    url: https://github.com/apple/swift-protobuf
+    exactVersion: 1.39.0
 targets:
   OpenTrailPaper:
     type: application
@@ -46,6 +51,8 @@ targets:
     dependencies:
       - package: firebase-ios-sdk
         product: FirebaseAppCheck
+      - package: swift-protobuf
+        product: SwiftProtobuf
       # Draws the transfer Live Activity (Lock Screen + Dynamic Island).
       - target: TransferWidget
     entitlements:
@@ -74,6 +81,20 @@ targets:
   # Widget extension whose only job is the transfer Live Activity. It shares
   # nothing with the app but the ActivityAttributes type in Shared/ (ActivityKit
   # carries the state across), so no App Group is needed.
+  # UI tests: scroll smoothness of the tab screens (ScrollSmoothnessTests).
+  OpenTrailPaperUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - UITests
+    dependencies:
+      - target: OpenTrailPaper
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.raemond.opentrailpaper.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: OpenTrailPaper
+        TARGETED_DEVICE_FAMILY: "1"
   TransferWidget:
     type: app-extension
     platform: iOS
@@ -86,3 +107,16 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.raemond.opentrailpaper.TransferWidget
         TARGETED_DEVICE_FAMILY: "1"
         SKIP_INSTALL: YES
+schemes:
+  OpenTrailPaper:
+    build:
+      targets:
+        OpenTrailPaper: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - OpenTrailPaperUITests
+    archive:
+      config: Release

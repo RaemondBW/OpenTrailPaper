@@ -208,6 +208,11 @@ void statusBar(const RideState& s, uint8_t* fb, const char* title) {
         const char* label = s.sdCard == SD_CARD_UNREADABLE ? " · SD ERR" : " · NO SD";
         if (!title) text(&Arial_L, x, 40, label, fb);
         x += textWidth(&Arial_L, label);
+    } else if (s.recording && s.cardFull) {
+        // The card filled mid-ride: the timer runs on but nothing more reaches
+        // the ride file. Same place as NO SD, for the same reason.
+        if (!title) text(&Arial_L, x, 40, " · SD FULL", fb);
+        x += textWidth(&Arial_L, " · SD FULL");
     }
     // The "· HR" / "· PWR" labels only appear when connected, so they need no
     // extra checkmark — keeping them text-only frees room for the battery %.
@@ -1372,6 +1377,16 @@ void ui_render_summary(const RideSummary& r, uint8_t* fb, bool interrupted) {
     fitText(&Arial_B, buf, W - 2 * ui::MARGIN, line, sizeof(line));
     ui::text(&Arial_B, x, y + Arial_B.ascender, line, fb, EPD_DRAW_ALIGN_LEFT,
              ui::INK);
+
+    // SAVE still keeps the ride, up to where the card filled: say so before
+    // the rider picks, not after.
+    if (r.cardFull) {
+        y += Arial_B.ascender + 16;
+        fitText(&Arial_B, "SD card full: saved up to when it filled", W - 2 * ui::MARGIN,
+                line, sizeof(line));
+        ui::text(&Arial_B, x, y + Arial_B.ascender, line, fb, EPD_DRAW_ALIGN_LEFT,
+                 ui::INK);
+    }
 
     sheetButton(kSaveButton, "SAVE", true, fb);
     sheetButton(kDiscardButton, "DISCARD", false, fb);

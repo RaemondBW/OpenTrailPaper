@@ -4,6 +4,7 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
+    alias(libs.plugins.protobuf)
 }
 
 // Release signing, kept OUT of the repository.
@@ -148,9 +149,49 @@ android {
         // with to the OSM tile, routing and geocoding servers.
         buildConfig = true
     }
+    // The firmware-sim tests (src/testDebug, Robolectric) build the app's
+    // own Application, which reads its strings.
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+        // ...and build the app's H3 JNI library for the host JVM into
+        // sim/build/h3jni (sim/HostH3.kt), where H3Native's loadLibrary
+        // finds it. Prepended at run time, after AGP has set its own path.
+        unitTests.all { test ->
+            val h3 = rootProject.file("../sim/build/h3jni").path
+            test.doFirst {
+                val path = test.systemProperties["java.library.path"]?.toString()
+                test.systemProperty("java.library.path", if (path.isNullOrEmpty()) h3 else "$h3${File.pathSeparator}$path")
+            }
+        }
+    }
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
+    }
+    // The phone link's schema is the repository's one copy, proto/link.proto,
+    // shared with the firmware (nanopb) and iOS (swift-protobuf); Android
+    // generates its classes at build time (docs/ble-link.md). link.options is
+    // nanopb's, not protoc's.
+    sourceSets {
+        getByName("main") {
+            (this as ExtensionAware).extensions.configure<SourceDirectorySet>("proto") {
+                srcDir("../../proto")
+                include("**/*.proto")
+            }
+        }
+    }
+}
+
+protobuf {
+    protoc {
+        artifact = libs.protobuf.protoc.get().toString()
+    }
+    generateProtoTasks {
+        all().forEach { task ->
+            task.builtins {
+                create("java") { option("lite") }
+            }
         }
     }
 }
@@ -201,8 +242,16 @@ dependencies {
     // since the App Check / Custom Tabs artifacts raised it) refuses
     // registerForActivityResult next to a fragment older than 1.3.0.
     implementation(libs.androidx.fragment)
+    // The phone link (link/LinkClient.kt): lite runtime for the classes
+    // generated from proto/link.proto.
+    implementation(libs.protobuf.javalite)
     debugImplementation(libs.androidx.ui.tooling)
     // The byte formats shared with the firmware are pure Kotlin, so they are
     // testable on the JVM with no device and no network.
     testImplementation("junit:junit:4.13.2")
+    // Only for the firmware-sim tests (src/testDebug): they run the real
+    // BleManager, which needs Android's main looper, SharedPreferences and
+    // the android.bluetooth value classes on the JVM. The other unit tests
+    // stay plain JUnit.
+    testImplementation("org.robolectric:robolectric:4.14.1")
 }

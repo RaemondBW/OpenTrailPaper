@@ -55,7 +55,9 @@ void commitArt();
 void amsTitle(const char* title);     // a NEW title also drops the shown art
 void amsArtist(const char* artist);
 void amsAlbum(const char* album);
-void amsPlayback(bool playing, uint16_t posSec);
+// PlaybackInfo: playing (AMS state playing, rewinding or fast-forwarding),
+// its rate (1.0 normal, negative rewinding) and the elapsed time it reports.
+void amsPlayback(bool playing, float rate, float elapsedSec);
 void amsDuration(uint16_t durSec);
 // True within a grace window of the last AMS update.
 bool amsLive();

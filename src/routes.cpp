@@ -27,7 +27,7 @@ int progIdx = 0;
 float progAlongM = 0.0f;
 
 // Turn-by-turn maneuvers
-constexpr int MAX_MANEUVERS = 128;
+constexpr int MAX_MANEUVERS = routes::MAX_MANEUVERS;
 struct Maneuver {
     double lat, lon;
     char instr[routes::MANEUVER_TEXT];

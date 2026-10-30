@@ -251,9 +251,31 @@ struct DashConfig: Equatable {
     /// The map screen's 3-cell data strip (`map <f> <f> <f>` in the config).
     var mapFields: [String] = ["speed", "distance", "ridetime"]
 
-    /// Configurable (non-map) pages the device accepts; the map page rides
-    /// along on top of these (DASH_MAX_PAGES = 5 on the device).
-    static let maxPages = 4
+    /// The most configurable (non-map) pages any firmware holds; the map
+    /// rides along on top (DASH_MAX_PAGES = 8). Parsing keeps this many.
+    static let maxPages = 7
+    /// What THIS device holds besides the map: DeviceHello.dash_max_pages on
+    /// firmware with the phone link, else 4 — older firmware keeps the first
+    /// 5 pages it is sent and could lose the map. Remembered across launches.
+    static var devicePages: Int {
+        let n = UserDefaults.standard.integer(forKey: linkPagesKey)
+        return n > 0 ? min(n, maxPages) : 4
+    }
+    /// The layout text the device takes: DeviceHello.dash_max_text over the
+    /// link; on the legacy characteristic one GATT read tops out at 512 bytes.
+    static var maxTextBytes: Int {
+        let n = UserDefaults.standard.integer(forKey: linkTextKey)
+        return n > 0 ? n : 500
+    }
+    /// The connected device's limits from DeviceHello; nil, nil for firmware
+    /// without the link.
+    static func setDeviceLimits(pages: Int?, textBytes: Int?) {
+        let d = UserDefaults.standard
+        if let pages, pages > 0 { d.set(pages, forKey: linkPagesKey) } else { d.removeObject(forKey: linkPagesKey) }
+        if let textBytes, textBytes > 0 { d.set(textBytes, forKey: linkTextKey) } else { d.removeObject(forKey: linkTextKey) }
+    }
+    private static let linkPagesKey = "dashDeviceMaxPages"
+    private static let linkTextKey = "dashDeviceMaxText"
 
     var contentPages: Int { pages.filter { !$0.isMap }.count }
 

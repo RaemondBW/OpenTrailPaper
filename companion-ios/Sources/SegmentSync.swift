@@ -118,41 +118,58 @@ final class SegmentSync: ObservableObject {
 }
 
 /// The Strava row's segments line in Settings > Accounts: how many are on the
-/// device and the sync button. Shown only while Strava is connected.
+/// device, the Sync button and Strava's attribution. Shown only while Strava
+/// is connected, under its row in the same bordered group.
 struct StravaSegmentsRow: View {
     @EnvironmentObject var ble: BLEManager
     @ObservedObject private var sync = SegmentSync.shared
     @ObservedObject private var accounts = SyncAccounts.shared
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Starred segments").font(BarlowFont.text(14, .semibold)).foregroundStyle(Palette.ink)
-                    Text(summary).font(.system(size: 12)).foregroundStyle(Palette.muted)
-                }
-                Spacer()
-                if sync.busy {
-                    ProgressView()
-                } else {
-                    Button("Sync") { sync.sync(ble: ble) }
-                        .font(BarlowFont.text(14, .semibold))
-                        .foregroundStyle(canSync ? Palette.accent : Palette.muted)
+        VStack(alignment: .leading, spacing: 0) {
+            GroupedDivider()
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Starred segments").trackedLabel()
+                        Text(summary).font(BarlowFont.text(12)).foregroundStyle(Palette.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 8)
+                    if sync.busy {
+                        BlockSpinner()
+                            .frame(minWidth: 44, minHeight: 44)
+                            .accessibilityLabel("Syncing segments")
+                    } else {
+                        Button { sync.sync(ble: ble) } label: {
+                            BlockButtonLabel(title: "Sync", systemImage: "arrow.triangle.2.circlepath",
+                                             filled: canSync)
+                        }
+                        .buttonStyle(.plain)
                         .disabled(!canSync)
+                        .opacity(canSync ? 1 : 0.4)
+                        .accessibilityLabel("Sync starred segments to the device")
+                    }
                 }
+                if let s = sync.status, sync.busy || sync.failed || ble.state == .connected {
+                    if sync.failed {
+                        WarningBanner(title: "Segments not sent", message: s)
+                    } else {
+                        Text(s).font(BarlowFont.text(12, .medium)).foregroundStyle(Palette.ink)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                if !CloudRoutes.stravaSeesPrivateRoutes(accounts.tokens[.strava]?.scope) {
+                    Text("Private segments need a fresh sign-in: disconnect and connect Strava again.")
+                        .font(BarlowFont.text(12)).foregroundStyle(Palette.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Text("POWERED BY STRAVA")
+                    .font(BarlowFont.text(10, .bold)).tracking(2)
+                    .foregroundStyle(Palette.ink)
             }
-            if let s = sync.status, sync.busy || sync.failed || ble.state == .connected {
-                Text(s).font(.system(size: 12))
-                    .foregroundStyle(sync.failed ? Palette.accentDark : Palette.muted)
-            }
-            if !CloudRoutes.stravaSeesPrivateRoutes(accounts.tokens[.strava]?.scope) {
-                Text("Private segments need a fresh sign-in: disconnect and connect Strava again.")
-                    .font(.system(size: 12)).foregroundStyle(Palette.muted)
-            }
-            Text("Powered by Strava").font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(Color(hex: 0xFC4C02))
+            .padding(.horizontal, 12).padding(.vertical, 10)
         }
-        .padding(.leading, 12)
         .task(id: ble.state) {
             if ble.state == .connected { ble.querySegments() }
         }

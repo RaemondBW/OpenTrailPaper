@@ -44,6 +44,32 @@ import org.osmdroid.util.MapTileIndex
  */
 object MapStyle {
 
+    /**
+     * The e-ink look for every map in the app: no colour, and a little lifted
+     * so the ground reads as paper and the ink drawn over it (routes,
+     * coverage, markers) carries. Applied to the tiles only, never overlays.
+     * The iOS companion gets the same from MapKit's muted style plus a
+     * saturation blend.
+     */
+    fun einkMatrix(): android.graphics.ColorMatrix =
+        android.graphics.ColorMatrix().apply {
+            setSaturation(0f)
+            // Scale toward white by 15%: 0 -> 38, 255 -> 255.
+            postConcat(
+                android.graphics.ColorMatrix(
+                    floatArrayOf(
+                        0.85f, 0f, 0f, 0f, 38f,
+                        0f, 0.85f, 0f, 0f, 38f,
+                        0f, 0f, 0.85f, 0f, 38f,
+                        0f, 0f, 0f, 1f, 0f,
+                    ),
+                ),
+            )
+        }
+
+    fun einkFilter(): android.graphics.ColorMatrixColorFilter =
+        android.graphics.ColorMatrixColorFilter(einkMatrix())
+
     /** One basemap: where its tiles come from and how they are shaped. */
     interface Provider {
         /** Stable id; names the on-disk caches, so tiles from one provider are

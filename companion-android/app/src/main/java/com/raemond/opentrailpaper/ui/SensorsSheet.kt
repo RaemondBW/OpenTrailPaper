@@ -1,5 +1,6 @@
 package com.raemond.opentrailpaper.ui
 
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -10,7 +11,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bolt
@@ -18,7 +18,6 @@ import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Sensors
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Speed
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -96,7 +95,7 @@ fun SensorsSheet(ble: BleManager, onDismiss: () -> Unit) {
                 )
                 if (ble.scanningSensors) {
                     Spacer(Modifier.size(8.dp))
-                    CircularProgressIndicator(Modifier.size(14.dp), color = Palette.accent)
+                    BlockSpinner()
                 }
             }
             if (available.isEmpty()) {
@@ -126,7 +125,7 @@ private fun SensorRow(s: BikeSensor, ble: BleManager) {
             Box(
                 Modifier
                     .size(38.dp)
-                    .background(if (s.connected) Palette.accentWash else Palette.paper, CircleShape),
+                    .background(if (s.connected) Palette.accentWash else Palette.paper, RectangleShape),
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(

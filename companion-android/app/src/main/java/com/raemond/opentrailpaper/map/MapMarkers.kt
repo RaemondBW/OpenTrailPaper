@@ -39,7 +39,7 @@ object MapMarkers {
         canvas.drawCircle(c, c + 0.5f * density, 9f * density, paint)
         paint.color = Color.WHITE
         canvas.drawCircle(c, c, 8.5f * density, paint)
-        paint.color = LOCATION_BLUE
+        paint.color = LOCATION_INK
         canvas.drawCircle(c, c, 6f * density, paint)
         bitmap
     }
@@ -184,6 +184,6 @@ object MapMarkers {
         return Anchored(bitmap, pin.height / h)
     }
 
-    /** iOS's user-location blue, so the two companions agree on what a rider is. */
-    private val LOCATION_BLUE = Color.rgb(0x0A, 0x84, 0xFF)
+    /** The rider, in ink like everything else on the e-ink map. */
+    private val LOCATION_INK = Color.BLACK
 }

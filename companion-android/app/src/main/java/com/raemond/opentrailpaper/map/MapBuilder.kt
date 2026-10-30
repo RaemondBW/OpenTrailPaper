@@ -224,11 +224,12 @@ object MapBuilder {
         val body = ("data=" + URLEncoder.encode(query, "UTF-8")).toByteArray(Charsets.UTF_8)
         var lastStatus = 0
         var lastError: Exception? = null
-        val total = OVERPASS_ENDPOINTS.size * 2
+        val endpoints = MapEndpoints.overpass(OVERPASS_ENDPOINTS)
+        val total = endpoints.size * 2
 
         for (attempt in 0 until total) {
             currentCoroutineContext().ensureActive()
-            val urlStr = OVERPASS_ENDPOINTS[(startMirror + attempt) % OVERPASS_ENDPOINTS.size]
+            val urlStr = endpoints[(startMirror + attempt) % endpoints.size]
             val started = System.nanoTime()
             var bytes = 0L
             var status = -1

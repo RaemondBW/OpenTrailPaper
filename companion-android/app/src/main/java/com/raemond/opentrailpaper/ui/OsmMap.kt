@@ -6,7 +6,6 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.windowInsetsPadding
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -172,7 +171,10 @@ fun OsmMap(
             // Tiles that haven't arrived show paper rather than osmdroid's grey
             // graph-paper grid, so a map loading looks like a map, not a fault.
             overlayManager.tilesOverlay.loadingBackgroundColor = Palette.paper.toArgb()
-            overlayManager.tilesOverlay.loadingLineColor = Palette.hairline.toArgb()
+            overlayManager.tilesOverlay.loadingLineColor = Palette.paper.toArgb()
+            // Muted and desaturated, the e-ink look: the basemap in greys so
+            // the route, coverage and markers in ink are what reads.
+            overlayManager.tilesOverlay.setColorFilter(MapStyle.einkFilter())
             controller.setZoom(12.0)
         }
     }
@@ -186,6 +188,7 @@ fun OsmMap(
         TilesOverlay(MapTileProviderBasic(context, MapStyle.labels), context).apply {
             loadingBackgroundColor = android.graphics.Color.TRANSPARENT
             loadingLineColor = android.graphics.Color.TRANSPARENT
+            setColorFilter(MapStyle.einkFilter())
         }
     }
 
@@ -325,7 +328,7 @@ fun MapAttribution(modifier: Modifier = Modifier) {
         color = Palette.muted,
         maxLines = 1,
         modifier = modifier
-            .background(Palette.paper.copy(alpha = 0.72f), RoundedCornerShape(4.dp))
+            .background(Palette.paper.copy(alpha = 0.72f))
             .padding(horizontal = 5.dp, vertical = 2.dp),
     )
 }
@@ -435,13 +438,17 @@ private fun rebuildContent(
 
     // Last, so the route always sits on top of the coverage.
     if (route != null && route.size > 1) {
-        val line = Polyline(map)
-        line.setPoints(route.map { GeoPoint(it.lat, it.lon) })
-        line.outlinePaint.color = Palette.accent.toArgb()
-        line.outlinePaint.strokeWidth = 5f * density
-        line.outlinePaint.strokeCap = android.graphics.Paint.Cap.ROUND
-        line.outlinePaint.strokeJoin = android.graphics.Paint.Join.ROUND
-        add(line)
+        // Ink on a white casing, so the line holds up over any grey.
+        val points = route.map { GeoPoint(it.lat, it.lon) }
+        for ((color, width) in listOf(Palette.paper to 9f, Palette.ink to 5f)) {
+            val line = Polyline(map)
+            line.setPoints(points)
+            line.outlinePaint.color = color.toArgb()
+            line.outlinePaint.strokeWidth = width * density
+            line.outlinePaint.strokeCap = android.graphics.Paint.Cap.ROUND
+            line.outlinePaint.strokeJoin = android.graphics.Paint.Join.ROUND
+            add(line)
+        }
     }
 
     for (n in meshNodes) {
