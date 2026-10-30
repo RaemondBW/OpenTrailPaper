@@ -511,8 +511,11 @@ class LinkEdgeSimTest : AppSimHarness() {
         val text = ble.logFile!!.readText()
         assertTrue("the log has this phone's link: ${text.take(400)}", text.contains("phone link up") && text.contains("hello from Android app"))
         // pending.log holds what the device logged before it knew the date.
-        val stamp = java.text.SimpleDateFormat("yyyyMMdd", java.util.Locale.US).format(java.util.Date())
-        val today = ble.deviceLogs.firstOrNull { it.name == "$stamp.log" } ?: error("no $stamp.log in ${ble.deviceLogs}")
+        // Today's is the newest dated one: the device names it by its own
+        // local day (the phone's offset), which near midnight need not be
+        // this machine's date.
+        val today = ble.deviceLogs.firstOrNull { Regex("\\d{8}\\.log").matches(it.name) }
+            ?: error("no dated log in ${ble.deviceLogs}")
         ble.logFile = null
         ble.downloadLogFile(today.name)
         waitFor("${today.name} by name", 30_000) { ble.logFile != null && ble.downloadingName == null }
