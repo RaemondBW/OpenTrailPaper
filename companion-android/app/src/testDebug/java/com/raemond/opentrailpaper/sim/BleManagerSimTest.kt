@@ -204,7 +204,9 @@ class BleManagerSimTest {
         repeat(3) { i ->
             val upBefore = radio.linksUp.get()
             sim.dropPhone(0x08)
-            waitFor("drop #${i + 1} noticed", 5_000, neverNotRecognised(ble)) { ble.state != ConnState.CONNECTED }
+            // A new link (linksUp) only comes up once the app has seen the
+            // drop and reconnected; the gap can be a few ms, too short to
+            // catch the state outside CONNECTED by polling.
             waitFor("reconnect #${i + 1}", 20_000, neverNotRecognised(ble)) {
                 connectedOverLink(ble) && radio.linksUp.get() > upBefore
             }
@@ -392,7 +394,6 @@ class BleManagerSimTest {
         }
         val upBefore = radio.linksUp.get()
         sim.dropPhone(0x08)
-        waitFor("drop noticed", 5_000, neverBlank) { ble.state != ConnState.CONNECTED }
         waitFor("reconnect", 20_000, neverBlank) { connectedOverLink(ble) && radio.linksUp.get() > upBefore }
         // The Rides tab re-asks the device once per link.
         ble.refreshRides()

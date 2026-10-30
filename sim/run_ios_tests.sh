@@ -179,12 +179,13 @@ run_one() {
 
     # The stand-in tile CDN and Overpass: the map tests launch the app pointed at
     # it (-sim-tiles / -sim-overpass), so nothing reaches the internet.
-    python3 sim/cdn/tile_cdn.py --dir "$FIXTURE" --port "$CDN" >"$DIR/tile_cdn.log" 2>&1 &
+    python3 -u sim/cdn/tile_cdn.py --dir "$FIXTURE" --port "$CDN" >"$DIR/tile_cdn.log" 2>&1 &
     CDN_PID=$!
     i=0
+    # Python's start-up alone can take seconds on a loaded runner.
     until grep -q "listening" "$DIR/tile_cdn.log" 2>/dev/null; do
         i=$((i + 1))
-        if [ $i -gt 50 ] || ! kill -0 "$CDN_PID" 2>/dev/null; then
+        if [ $i -gt 300 ] || ! kill -0 "$CDN_PID" 2>/dev/null; then
             echo "tile_cdn.py did not come up" >&2
             cat "$DIR/tile_cdn.log" >&2
             return 1

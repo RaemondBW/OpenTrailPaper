@@ -496,7 +496,7 @@ def test_dms_with_a_node_whose_key_is_known_are_pki_encrypted_both_ways(mesh):
     eve = M.VirtualNode(0xEEEEEEEE, "Eve", "EVE")
     assert eve.decode(dm["frame"], pki_from=mesh.public_key)["data"] is None
 
-    mesh.hear(a.ack(mesh.num, pid, pki_to=mesh.public_key))
+    mesh.deliver(a.ack(mesh.num, pid, pki_to=mesh.public_key))
     mesh.hear(a.text("PKI reply", dest=mesh.num, pki_to=mesh.public_key, want_ack=True, packet_id=0x0F0F0F0F))
     mesh.drain()
     h = {x.text: x for x in mesh.history()}
@@ -525,7 +525,7 @@ def test_a_pki_dm_from_a_node_whose_key_the_device_lost_asks_for_it_and_then_get
     assert mesh.history() == []
     assert mesh.stats().rx_dropped == 2
 
-    mesh.hear(a.nodeinfo(dest=mesh.num))
+    mesh.deliver(a.nodeinfo(dest=mesh.num))
     mesh.hear(a.text("can you read this?", dest=mesh.num, pki_to=mesh.public_key, want_ack=True,
                      packet_id=0x0BAD0003))
     mesh.drain()
