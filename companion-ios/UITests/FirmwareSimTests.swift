@@ -1251,7 +1251,18 @@ extension FirmwareSimTests {
         XCTAssertEqual(sent.count, 400, "the device got \(sent.count) points; the file's track has 400")
         XCTAssertEqual(sent.first?.0 ?? 0, 45.7055, accuracy: 0.001, "the line starts at a waypoint")
         // 399 legs of 15 m.
+        var trackKm = 0.0
+        for (p, q) in zip(sent, sent.dropFirst()) {
+            let r = 6_371.0088, rad = Double.pi / 180
+            let dLat = (q.0 - p.0) * rad, dLon = (q.1 - p.1) * rad
+            let h = sin(dLat / 2) * sin(dLat / 2) + cos(p.0 * rad) * cos(q.0 * rad) * sin(dLon / 2) * sin(dLon / 2)
+            trackKm += 2 * r * asin(min(1, h.squareRoot()))
+        }
+        XCTAssertEqual(trackKm, 399 * 15 / 1000.0, accuracy: 0.05, "the device's route is \(trackKm) km")
+        // What's left is measured from the device's own GPS position, which the
+        // sim puts near the loop: on a slow runner the fix can land before the
+        // status is read, so only the whole route is an upper bound.
         let km = nav["remaining_km"] as? Double ?? 0
-        XCTAssertEqual(km, 399 * 15 / 1000.0, accuracy: 0.05, "the device's route is \(km) km")
+        XCTAssertTrue(km > 0 && km <= trackKm + 0.05, "\(km) km left of a \(trackKm) km route")
     }
 }

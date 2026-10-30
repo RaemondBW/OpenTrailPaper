@@ -32,15 +32,22 @@ def names(m):
 
 
 def test_two_riders_find_each_other_and_their_dms_are_end_to_end_encrypted(pair):
-    """Both switch the mesh on. Each one's first NodeInfo asks for replies,
-    so whichever comes up second still learns the first: within seconds
-    both node lists name the other. A DM then goes PKI-encrypted (each has
-    the other's key), arrives, and the sender's tick turns ACKED."""
+    """Both switch the mesh on, a moment apart, and each announces itself
+    (NodeInfo, 5 s after switching on) while the other is already listening:
+    within seconds both node lists name the other. A DM then goes
+    PKI-encrypted (each has the other's key), arrives, and the sender's tick
+    turns ACKED.
+
+    Not at the same instant: two announcements on the air together are lost
+    to each other (half-duplex), and neither then answers the other's request
+    for replies, having just sent its own NodeInfo (the 10 min reply gap,
+    NODEINFO_REPLY_GAP_MS, as stock Meshtastic does)."""
     a, b, air = pair
     assert (a.num, b.num) == (node_num_for(MAC_A), node_num_for(MAC_B))
     a.command(rename=pb.MeshRename(long_name="Ana on the Gravel", short_name="ANA"))
     b.command(rename=pb.MeshRename(long_name="Ben", short_name="BEN"))
     a.radio(True, announce=False)
+    a.dev_sleep(2500)
     b.radio(True, announce=False)
     a.dev_wait(lambda: names(a).get(b.num) == "Ben" and names(b).get(a.num) == "Ana on the Gravel",
                "both to know each other", timeout=30)

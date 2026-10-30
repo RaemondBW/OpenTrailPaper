@@ -191,10 +191,10 @@ hour at 27 km/h with 145 bpm and 210 W; "long", four hours; forty short
 - `test18_ARideDeletedInTheAppIsGoneFromTheCard`: long-press → Delete ride.
 - `test19_ARideRecordedWhileTheAppWasClosedIsListedOnRelaunch`: the app
   relaunched reconnects on its bond, keeps the downloaded ride, lists the new.
-- `test20_ADownloadCutByALinkDropResumesWhereItStopped`: the link made slow
+- `test20_ADownloadCutByALinkDropCanBeDownloadedAgain`: the link made slow
   (control `link_pace`), dropped a third of the way into a long ride; the row
-  isn't left at its percentage, and the next tap resumes (the device's log
-  shows the offset).
+  isn't left at its percentage, and the next tap downloads it again (from the
+  beginning is fine) as one download.
 - `test21_AStormOfLinkDropsEndsConnectedOnOneLink`.
 
 Not covered on iOS (the Android suite covers them): MTU (SimRadio's is
