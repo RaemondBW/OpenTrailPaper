@@ -22,6 +22,11 @@ struct MeshChannelsSheet: View {
     @State private var scanError: String? = nil
     @State private var confirmForget: MeshChannel? = nil
     @State private var joined: String? = nil
+    /// Appended to the "Joined" message: settings the code wanted that this
+    /// firmware does not have, so the radio could not follow them.
+    @State private var joinedNote = ""
+    /// A scanned channel waiting on the "switch radio?" question.
+    @State private var pendingJoin: PendingJoin? = nil
     /// Screenshot hook only: opens the invite sheet for the first private channel.
     var autoShareForDemo = false
 
@@ -98,7 +103,21 @@ struct MeshChannelsSheet: View {
                 get: { joined != nil }, set: { if !$0 { joined = nil } })) {
                 Button("OK", role: .cancel) { joined = nil }
             } message: {
-                Text("You are now on \(joined ?? ""). It may take a moment to appear while the device stores the key.")
+                Text("You are now on \(joined ?? ""). It may take a moment to appear while the device stores the key." + joinedNote)
+            }
+            .alert("Switch radio to match?", isPresented: Binding(
+                get: { pendingJoin != nil }, set: { if !$0 { pendingJoin = nil } })) {
+                Button("Switch and join") {
+                    if let p = pendingJoin { join(p, switchRadio: true) }
+                    pendingJoin = nil
+                }
+                Button("Join only") {
+                    if let p = pendingJoin { join(p, switchRadio: false) }
+                    pendingJoin = nil
+                }
+                Button("Cancel", role: .cancel) { pendingJoin = nil }
+            } message: {
+                Text(pendingJoin.map(switchMessage) ?? "")
             }
             .alert("Could not join", isPresented: Binding(
                 get: { scanError != nil }, set: { if !$0 { scanError = nil } })) {
@@ -190,8 +209,8 @@ struct MeshChannelsSheet: View {
 
     private func scanned(_ text: String) {
         scanning = false
-        let found = MeshChannelURL.parse(text)
-        guard let first = found.first else {
+        let share = MeshChannelURL.parse(text)
+        guard let first = share.channels.first else {
             scanError = "That code is not a Meshtastic channel."
             return
         }
@@ -203,25 +222,76 @@ struct MeshChannelsSheet: View {
             scanError = "All channel slots are in use. Forget one first."
             return
         }
-        // Imported as a PRIVATE channel, never as the primary: the primary sets
-        // the frequency, and taking someone else's would move this device off the
-        // mesh it is on. A shared channel works because both ends keep their own
-        // primary and add this one alongside it.
+        // Imported as a PRIVATE channel, never as the primary: both ends keep
+        // their own primary and add this one alongside it. What the primary used
+        // to decide — speed and frequency — comes from the code's radio settings
+        // instead, matched below only once the user says so.
         let name = first.name.isEmpty ? "Shared" : first.name
-        ble.setMeshPrivateChannel(index: slot, name: name, psk: first.psk)
-        selected = slot
-        joined = name
+        var p = PendingJoin(name: name, psk: first.psk, slot: slot)
+        if let radio = share.radio, ble.state == .connected, !ble.meshPresets.isEmpty {
+            let s = ble.meshState
+            p.match = MeshRadioMatch(radio, state: s, presets: ble.meshPresets,
+                                     regions: ble.meshRegions,
+                                     primaryName: s.channelFollowsPreset ? nil : s.channel)
+        }
+        if let m = p.match, !m.isEmpty {
+            pendingJoin = p
+        } else {
+            join(p, switchRadio: false)
+        }
     }
+
+    /// Order matters: the preset sets the bandwidth and the region the band, and
+    /// the slot only means something in both — so slot last, then the key.
+    private func join(_ p: PendingJoin, switchRadio: Bool) {
+        if switchRadio, let m = p.match {
+            if let preset = m.preset { ble.setMeshPreset(preset.index) }
+            if let region = m.region { ble.setMeshRegion(region.index) }
+            if let slot = m.slotOverride { ble.setMeshFreqSlot(slot) }
+        }
+        ble.setMeshPrivateChannel(index: p.slot, name: p.name, psk: p.psk)
+        selected = p.slot
+        let notes = p.match?.unsupported ?? []
+        joinedNote = notes.isEmpty ? "" : "\n\n" + notes.joined(separator: ". ") + "."
+        joined = p.name
+    }
+
+    private func switchMessage(_ p: PendingJoin) -> String {
+        var lines = [(p.match?.changes ?? []).joined(separator: " · ")]
+        if let notes = p.match?.unsupported, !notes.isEmpty {
+            lines.append(notes.joined(separator: ". ") + ".")
+        }
+        lines.append("Radios on different speeds or slots cannot hear each other at all, so the channel only works once you match. Switching moves this device off the public mesh it is on now.")
+        return lines.joined(separator: "\n\n")
+    }
+}
+
+/// A scanned channel and, if the code carried radio settings that differ from
+/// the device's, what matching them would change.
+private struct PendingJoin {
+    let name: String
+    let psk: Data
+    let slot: UInt8
+    var match: MeshRadioMatch? = nil
 }
 
 /// The QR someone else scans to join. Also shows the URL, because pasting a link
 /// into a message is often easier than getting two phones in front of each other.
 private struct MeshShareSheet: View {
+    @EnvironmentObject var ble: BLEManager
     @Environment(\.dismiss) private var dismiss
     let channel: MeshChannel
 
+    /// The device's speed, region and slot ride along, so whoever scans can get
+    /// onto the same frequency — a key alone is no use to a radio that cannot
+    /// hear this one.
+    private var radio: MeshRadioConfig? {
+        MeshRadioConfig(state: ble.meshState, presets: ble.meshPresets,
+                        regions: ble.meshRegions)
+    }
+
     private var shareURL: String {
-        MeshChannelURL.url(forChannelNamed: channel.name, psk: channel.psk)
+        MeshChannelURL.url(forChannelNamed: channel.name, psk: channel.psk, radio: radio)
     }
 
     var body: some View {
@@ -240,6 +310,10 @@ private struct MeshShareSheet: View {
                     }
                     Text(channel.displayName)
                         .font(TypeScale.title).foregroundStyle(Palette.ink)
+                    if let radio {
+                        Text(radio.summary)
+                            .font(BarlowFont.text(14)).foregroundStyle(Palette.muted)
+                    }
                     Text("Anyone who scans this joins the channel and can read its messages. It works in the official Meshtastic app too.")
                         .font(BarlowFont.text(14)).foregroundStyle(Palette.muted)
                         .multilineTextAlignment(.center)

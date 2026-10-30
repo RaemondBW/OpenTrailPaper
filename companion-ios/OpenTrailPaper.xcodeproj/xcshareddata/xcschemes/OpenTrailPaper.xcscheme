@@ -44,6 +44,17 @@
             parallelizable = "NO">
             <BuildableReference
                BuildableIdentifier = "primary"
+               BlueprintIdentifier = "425B841AC67A7C12F69ACF13"
+               BuildableName = "OpenTrailPaperTests.xctest"
+               BlueprintName = "OpenTrailPaperTests"
+               ReferencedContainer = "container:OpenTrailPaper.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
+         <TestableReference
+            skipped = "NO"
+            parallelizable = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
                BlueprintIdentifier = "BFC1E5A6F1D91C2B7DC81185"
                BuildableName = "OpenTrailPaperUITests.xctest"
                BlueprintName = "OpenTrailPaperUITests"
