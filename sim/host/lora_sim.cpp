@@ -108,7 +108,7 @@ std::mt19937 g_rng(1);
 // Counters.
 struct Counters {
     uint32_t queued = 0, heard = 0, lost = 0, mistuned = 0, deaf = 0, overrun = 0, crc = 0, read = 0, tx = 0,
-             cadBusy = 0, begins = 0;
+             cadBusy = 0, begins = 0, irqs = 0, turnMaxMs = 0, turnLastMs = 0;
 } g_n;
 
 uint32_t now() { return sim_clock::millis(); }
@@ -123,6 +123,7 @@ void fireIrqAt(uint32_t atMs) {
     std::thread([atMs] {
         const uint32_t t = now();
         if ((int32_t)(atMs - t) > 0) sim_clock::sleepMs(atMs - t);
+        g_n.irqs++;
         if (g_irqHook) g_irqHook();
     }).detach();
 }
@@ -329,6 +330,12 @@ void abortSend() {
 void listen() {
     std::lock_guard<std::recursive_mutex> lk(g_m);
     if (!g_ok) return;
+    // Turnaround: how long after our own frame ended the receiver came back.
+    if (g_mode == TX || (g_mode == STANDBY && g_txEnd && (int32_t)(now() - g_txEnd) >= 0 &&
+                         (int32_t)(now() - g_txEnd) < 5000)) {
+        g_n.turnLastMs = now() - g_txEnd;
+        if (g_n.turnLastMs > g_n.turnMaxMs) g_n.turnMaxMs = g_n.turnLastMs;
+    }
     sdLock();
     g_mode = RX;
     setListening(true);
@@ -460,7 +467,7 @@ std::string loraCommand(const json::Value& r) {
       << ",\"busy\":" << (g_busy ? "true" : "false") << ",\"in_flight\":" << g_air.size()
       << ",\"fifo\":" << (g_fifoFull ? "true" : "false") << ",\"queued\":" << g_n.queued << ",\"lost\":" << g_n.lost
       << ",\"mistuned\":" << g_n.mistuned << ",\"deaf\":" << g_n.deaf << ",\"overrun\":" << g_n.overrun
-      << ",\"crc\":" << g_n.crc << ",\"read\":" << g_n.read << ",\"tx\":" << g_n.tx << ",\"cad_busy\":" << g_n.cadBusy
+      << ",\"crc\":" << g_n.crc << ",\"read\":" << g_n.read << ",\"tx\":" << g_n.tx << ",\"cad_busy\":" << g_n.cadBusy << ",\"irqs\":" << g_n.irqs << ",\"turn_max_ms\":" << g_n.turnMaxMs << ",\"turn_last_ms\":" << g_n.turnLastMs
       << ",\"last_deaf_frame\":[" << g_lastDeaf.from << "," << g_lastDeaf.to << "],\"deaf_spans\":[";
     for (size_t i = 0; i < g_deaf.size(); ++i) o << (i ? "," : "") << "[" << g_deaf[i].from << "," << g_deaf[i].to << "]";
     o << "],\"now_ms\":" << now() << ",\"listening\":" << (g_listening ? "true" : "false")
