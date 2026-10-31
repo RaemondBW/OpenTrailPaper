@@ -47,7 +47,20 @@ final class FirmwareSimTests: XCTestCase {
                                  line: UInt = #line) -> [String: Any] {
         app.launchArguments += extra
         app.launch()
-        let st = SimControl.waitStatus(timeout: 30) { SimControl.phoneConnected($0) }
+        var st = SimControl.waitStatus(timeout: 30) { SimControl.phoneConnected($0) }
+        if st == nil {
+            // As in FirmwareSimAppFlowTests: on a loaded CI runner the app now
+            // and then comes up and never starts its link. Keep what it
+            // showed, then launch it once more.
+            print("FirmwareSimTests: no connection 30 s after launch; the app showed\n\(app.debugDescription)")
+            let shot = XCTAttachment(screenshot: app.screenshot())
+            shot.name = "not connected after launch"
+            shot.lifetime = .keepAlways
+            add(shot)
+            app.terminate()
+            app.launch()
+            st = SimControl.waitStatus(timeout: 30) { SimControl.phoneConnected($0) }
+        }
         XCTAssertNotNil(st, "device never saw the phone connect", file: file, line: line)
         XCTAssertTrue(connectedLabel.waitForExistence(timeout: 20), "app never showed CONNECTED",
                       file: file, line: line)
