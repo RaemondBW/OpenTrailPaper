@@ -124,6 +124,23 @@ time_t toUnix(int y, unsigned m, unsigned d, unsigned hh, unsigned mm, unsigned 
     return static_cast<time_t>(days) * 86400 + hh * 3600 + mm * 60 + ss;
 }
 
+// The receiver's date and time of day as one UTC epoch, with the day rollover
+// held together. The time comes with every GGA and RMC but the date only with
+// RMC, and the sentences arrive one at a time: for the milliseconds between
+// the new day's first GGA and its RMC the parser holds 00:00:00 against
+// yesterday's date, a day early. A record stamped then stepped back a day and
+// the next one forward again. When the time is newer than the date and the
+// pair reads a day behind the last answer, the date is stale: it is tomorrow.
+time_t gpsUnix() {
+    static time_t last = 0;
+    time_t u = toUnix(gps.date.year(), gps.date.month(), gps.date.day(),
+                      gps.time.hour(), gps.time.minute(), gps.time.second());
+    const long back = static_cast<long>(last - u);
+    if (gps.time.age() < gps.date.age() && back > 86400 - 60 && back < 86400 + 60) u += 86400;
+    last = u;
+    return u;
+}
+
 // Satellites in view: the GSV totals of the three constellations, but never
 // fewer than are in use. The lean output profile sends GSV only every fifth
 // fix while GGA (in use) comes every fix, so a sky that just filled in, or the
@@ -803,8 +820,7 @@ void task(void*) {
                 if (gps.satellites.isValid()) s.satellites = gps.satellites.value();
                 if (gps.date.isValid() && gps.time.isValid() && gps.date.year() >= 2025) {
                     s.timeValid = true;
-                    s.utc = toUnix(gps.date.year(), gps.date.month(), gps.date.day(),
-                                   gps.time.hour(), gps.time.minute(), gps.time.second());
+                    s.utc = gpsUnix();
                 }
                 // Arbitrate: a live wheel sensor beats this fix; with no fix
                 // of our own, speed and heading come from the phone (if it is
@@ -854,8 +870,7 @@ void task(void*) {
         if (gps.date.isValid() && gps.time.isValid() && gps.date.year() >= 2025 &&
             millis() - lastClockSet > 60000) {
             lastClockSet = millis();
-            time_t u = toUnix(gps.date.year(), gps.date.month(), gps.date.day(),
-                              gps.time.hour(), gps.time.minute(), gps.time.second());
+            time_t u = gpsUnix();
             struct timeval tv = {u, 0};
             settimeofday(&tv, nullptr);
             // Also push GPS time into the coin-cell RTC (every ~10 min), so it

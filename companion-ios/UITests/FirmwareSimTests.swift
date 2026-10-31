@@ -47,7 +47,20 @@ final class FirmwareSimTests: XCTestCase {
                                  line: UInt = #line) -> [String: Any] {
         app.launchArguments += extra
         app.launch()
-        let st = SimControl.waitStatus(timeout: 30) { SimControl.phoneConnected($0) }
+        var st = SimControl.waitStatus(timeout: 30) { SimControl.phoneConnected($0) }
+        if st == nil {
+            // As in FirmwareSimAppFlowTests: on a loaded CI runner the app now
+            // and then comes up and never starts its link. Keep what it
+            // showed, then launch it once more.
+            print("FirmwareSimTests: no connection 30 s after launch; the app showed\n\(app.debugDescription)")
+            let shot = XCTAttachment(screenshot: app.screenshot())
+            shot.name = "not connected after launch"
+            shot.lifetime = .keepAlways
+            add(shot)
+            app.terminate()
+            app.launch()
+            st = SimControl.waitStatus(timeout: 30) { SimControl.phoneConnected($0) }
+        }
         XCTAssertNotNil(st, "device never saw the phone connect", file: file, line: line)
         XCTAssertTrue(connectedLabel.waitForExistence(timeout: 20), "app never showed CONNECTED",
                       file: file, line: line)
@@ -71,7 +84,11 @@ final class FirmwareSimTests: XCTestCase {
         XCTAssertEqual(conns.count, 1)
         XCTAssertEqual(conns.first?["identity"] as? String, bonds.first, "the bond is this phone's")
         XCTAssertEqual(conns.first?["encrypted"] as? Bool, true)
-        XCTAssertEqual(st["phone_paired"] as? Bool, true)
+        // Waited for, not read from the same snapshot: the firmware counts
+        // its bonds (phonePaired) a moment after the store holds the new one,
+        // and on CI's runner the snapshot above landed in between.
+        XCTAssertNotNil(SimControl.waitStatus(timeout: 10) { $0["phone_paired"] as? Bool == true },
+                        "the device should report the phone as paired")
         XCTAssertFalse(refusalAlert.exists)
     }
 

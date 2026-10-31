@@ -67,6 +67,38 @@ def test_two_riders_find_each_other_and_their_dms_are_end_to_end_encrypted(pair)
     assert eve.decode(bytes.fromhex(dm[0]["hex"]))["data"] is None
 
 
+def test_a_dm_lost_on_the_air_arrives_on_the_resend(pair):
+    """A's first copy of a DM never reaches B — on a real air, a collision
+    with something B was sending. A sends it again a few seconds later, B
+    gets it once, and A's tick turns ACKED."""
+    a, b, air = pair
+    a.radio(True, announce=False)
+    a.dev_sleep(2500)
+    b.radio(True, announce=False)
+    a.dev_wait(lambda: b.num in names(a) and a.num in names(b), "both to know each other", timeout=30)
+
+    # Shape the air from inside its relay, so the first copy is dropped and
+    # the second delivered whatever the timing: the listener runs before
+    # the frame is relayed.
+    sent = {}
+    copies = []
+
+    def shape(src, f):
+        if src is a.dev and "id" in sent and bytes.fromhex(f["hex"])[8:12] == sent["id"].to_bytes(4, "little"):
+            copies.append(f)
+            air.links[(id(a.dev), id(b.dev))] = None if len(copies) == 1 else {}
+    air.listeners.append(shape)
+    q = a.send("Regroup at the gate", dest=b.num).mesh_queued.packet_id
+    sent["id"] = q
+
+    a.dev_wait(lambda: any(x.text == "Regroup at the gate" for x in b.history()), "B to get the resend",
+               timeout=25)
+    assert len(copies) == 2, "B got the message on copy %d" % len(copies)
+    a.dev_wait(lambda: {x.id: x.delivery for x in a.history()}[q] == pb.MESH_DELIVERY_ACKED,
+               "A's message to be acknowledged", timeout=20)
+    assert len([x for x in b.history() if x.text == "Regroup at the gate"]) == 1
+
+
 def test_riders_on_different_channels_do_not_hear_each_other_until_they_share_one(pair):
     """A private primary channel moves the frequency (and the key): a rider
     on "Hood River MTB" and one on the public default are on different
