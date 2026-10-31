@@ -738,15 +738,6 @@ def test_a_full_outbox_refuses_the_next_message_instead_of_dropping_one(mesh):
     assert min(gaps) >= 1500, "frames closer than the 1.5 s politeness gap: %s" % gaps
 
 
-def slow_clock(mesh, speed=0.1):
-    """For a test of the radio's turnaround (tens of ms on the board, where
-    the DIO1 interrupt wakes the mesh task in microseconds). The sim's clock
-    is real time, so a host thread that wakes late — a loaded CI runner — is
-    a late wake on the device too. Run slower, the host's latency is a small
-    part of the device's window again."""
-    mesh.dev.set_speed(speed)
-
-
 def turnaround(mesh):
     """For a failure message: interrupts fired, and how late (device ms) the
     receiver came back after our own frames — the number these tests are about."""
@@ -760,7 +751,6 @@ def test_back_to_back_packets_on_a_fast_preset_are_both_received(mesh):
     reach the rider."""
     mesh.command(preset=M.PRESET_ORDER.index("ShortFast"))
     mesh.dev_wait(lambda: mesh.dev.lora()["sf"] == 7 and mesh.dev.lora()["mode"] == "rx", "retune")
-    slow_clock(mesh)
     sf = M.Channel("ShortFast")
     for i in range(4):
         mesh.hear(alex(channel=sf).text("alex %d" % i))
@@ -777,7 +767,6 @@ def test_an_ack_sent_straight_back_after_the_dm_is_heard(mesh):
     a = alex()
     mesh.hear(a.nodeinfo(with_key=False))
     mesh.drain()
-    slow_clock(mesh)
     acked = []
     for i in range(3):
         pid = mesh.send("quick %d" % i, dest=ALEX).mesh_queued.packet_id
