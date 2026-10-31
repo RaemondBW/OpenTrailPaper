@@ -71,7 +71,11 @@ final class FirmwareSimTests: XCTestCase {
         XCTAssertEqual(conns.count, 1)
         XCTAssertEqual(conns.first?["identity"] as? String, bonds.first, "the bond is this phone's")
         XCTAssertEqual(conns.first?["encrypted"] as? Bool, true)
-        XCTAssertEqual(st["phone_paired"] as? Bool, true)
+        // Waited for, not read from the same snapshot: the firmware counts
+        // its bonds (phonePaired) a moment after the store holds the new one,
+        // and on CI's runner the snapshot above landed in between.
+        XCTAssertNotNil(SimControl.waitStatus(timeout: 10) { $0["phone_paired"] as? Bool == true },
+                        "the device should report the phone as paired")
         XCTAssertFalse(refusalAlert.exists)
     }
 
