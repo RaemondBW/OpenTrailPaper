@@ -102,6 +102,8 @@ interface RadioGattCallback {
     fun onDescriptorWrite(g: RadioGatt, d: BluetoothGattDescriptor, status: Int)
     fun onCharacteristicRead(g: RadioGatt, ch: BluetoothGattCharacteristic, value: ByteArray, status: Int)
     fun onCharacteristicChanged(g: RadioGatt, ch: BluetoothGattCharacteristic, value: ByteArray)
+    /** The device's GATT table changed (Service Changed; Android 12+ reports it). */
+    fun onServiceChanged(g: RadioGatt) {}
 }
 
 // ---- Android's stack -----------------------------------------------------------------------
@@ -290,5 +292,7 @@ private class AndroidGatt(override val device: AndroidDevice) : RadioGatt {
 
         override fun onCharacteristicChanged(g: BluetoothGatt, ch: BluetoothGattCharacteristic, value: ByteArray) =
             cb.onCharacteristicChanged(w(g), ch, value.copyOf())
+
+        override fun onServiceChanged(g: BluetoothGatt) = cb.onServiceChanged(w(g))
     }
 }

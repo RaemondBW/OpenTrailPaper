@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <NimBLEDevice.h>
 #include "nimble/nimble/host/services/gatt/include/services/gatt/ble_svc_gatt.h"
+#include <ff.h>
 #include <SD.h>
 #include <Update.h>
 #include <esp_heap_caps.h>
@@ -3231,27 +3232,50 @@ void rebootForUpdate() {
     otaRebootPending = true;   // the server task restarts; applySdUpdate flashes
 }
 
+// FatFs's own f_readdir (name and size from the directory entry), not
+// File::openNextFile, which stat()s and fopen()s every entry by path — a FatFs
+// search from the top of the directory each time, quadratic in its size and
+// busy-waited at the card's 4 MHz. /logs holds a file a day plus crash reports,
+// and listing it (the app's log download) or /rides held core 0 long enough for
+// the task watchdog to reset the device. See map_store::listTileIds.
 bool listDir(Dir d, void (*cb)(const char* name, uint32_t size, void* ctx), void* ctx) {
     const char* path = d == Dir::Rides ? RIDE_DIR
                      : d == Dir::Logs ? "/logs"
                      : d == Dir::Routes ? "/routes" : "/workouts";
+    auto want = [d](const char* base) {
+        if (d == Dir::Logs) return strstr(base, ".log") != nullptr;
+        if (d == Dir::Workouts) return base[0] != '.';   // macOS AppleDouble noise
+        return true;
+    };
+    struct Walk { FF_DIR dir; FILINFO fi; };   // FILINFO: a 256-byte name buffer
+    Walk* w = (Walk*)heap_caps_malloc(sizeof(Walk), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!w) w = (Walk*)malloc(sizeof(Walk));
+    if (!w) return false;
+    uint32_t since = millis();
     sdLock();
-    File dir = SD.open(path);
-    if (!dir) { sdUnlock(); return false; }
-    for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
-        if (!f.isDirectory()) {
-            const char* base = strrchr(f.name(), '/');
-            base = base ? base + 1 : f.name();
-            bool want = true;
-            if (d == Dir::Logs) want = strstr(base, ".log") != nullptr;
-            if (d == Dir::Workouts) want = base[0] != '.';   // macOS AppleDouble noise
-            if (want) cb(base, (uint32_t)f.size(), ctx);
-        }
-        f.close();
+    bool opened = false;
+    for (int drv = 0; drv < FF_VOLUMES && !opened; ++drv) {
+        char fpath[32];
+        snprintf(fpath, sizeof(fpath), "%d:%s", drv, path);
+        opened = f_opendir(&w->dir, fpath) == FR_OK;
     }
-    dir.close();
+    if (opened) {
+        while (f_readdir(&w->dir, &w->fi) == FR_OK && w->fi.fname[0]) {
+            if (!(w->fi.fattrib & AM_DIR) && want(w->fi.fname))
+                cb(w->fi.fname, (uint32_t)w->fi.fsize, ctx);
+            // Let the radio, the recorder and core 0's idle task in.
+            if (millis() - since >= 30) {
+                sdUnlock();
+                vTaskDelay(pdMS_TO_TICKS(2));
+                sdLock();
+                since = millis();
+            }
+        }
+        f_closedir(&w->dir);
+    }
     sdUnlock();
-    return true;
+    free(w);
+    return opened;
 }
 
 static bool removeIn(const char* dir, const char* name) {

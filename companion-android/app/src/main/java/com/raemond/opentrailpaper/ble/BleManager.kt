@@ -1214,7 +1214,29 @@ class BleManager(
         }
 
         override fun onServicesDiscovered(g: RadioGatt, statusCode: Int) {
-            main.post { bindCharacteristics(g) }
+            main.post {
+                if (servicesChanged) {
+                    servicesChanged = false
+                    if (rebindAfterServiceChanged(g)) return@post
+                }
+                bindCharacteristics(g)
+            }
+        }
+
+        // The device indicates Service Changed once per boot (so a firmware
+        // update's new services reach a phone that cached the old table), and
+        // usually just after this phone has subscribed. Android then drops its
+        // cached table: the characteristics bound on connect are dead and the
+        // device's notifications stop reaching the app — replies time out
+        // (sends look refused) and incoming mesh messages never show. Discover
+        // again and subscribe again, as iOS does (didModifyServices).
+        override fun onServiceChanged(g: RadioGatt) {
+            main.post {
+                if (gatt !== g) return@post
+                android.util.Log.i(LINK_TAG, "service changed: rediscovering")
+                servicesChanged = true
+                g.discoverServices()
+            }
         }
 
         override fun onCharacteristicWrite(
@@ -1288,6 +1310,31 @@ class BleManager(
         // connects. First-run users start it from the tutorial's Bluetooth step,
         // so the system prompt lands on that screen.
         if (Prefs.onboarded) startCentral()
+    }
+
+    /** Set by onServiceChanged until the rediscovery it asked for lands. */
+    private var servicesChanged = false
+
+    /**
+     * After a Service Changed on a link that has already said hello: same
+     * connection, same device session, so keep the link's requests and
+     * transfers, take the new characteristics and subscribe again — no second
+     * Hello (the device would drop its session work). Anything else (the
+     * handshake still running, legacy) starts over through bindCharacteristics.
+     */
+    private fun rebindAfterServiceChanged(g: RadioGatt): Boolean {
+        if (linkMode != LinkMode.LINK) return false
+        val ls = g.getService(LinkUuid.service) ?: return false
+        val rx = ls.getCharacteristic(LinkUuid.rx) ?: return false
+        val tx = ls.getCharacteristic(LinkUuid.tx) ?: return false
+        linkRx = rx
+        linkTx = tx
+        android.util.Log.i(LINK_TAG, "service changed: resubscribing TX")
+        queue.enqueue(GattQueue.Op.Notify(tx, true))
+        // Answers that came while unsubscribed were lost: ask again (queued
+        // behind the subscription, so the replies have somewhere to land).
+        deviceHello?.let(::onLinkReady)
+        return true
     }
 
     private fun bindCharacteristics(g: RadioGatt) {
@@ -1563,6 +1610,7 @@ class BleManager(
         deviceMediaTrack = null
         liveFrameFlow.value = null
         linkRx = null; linkTx = null
+        servicesChanged = false
         lastLinkMediaMeta = null
         settingsChar = null; statusChar = null; routeChar = null; ridesChar = null
         sensorsChar = null; mapChar = null; otaChar = null; dashChar = null
