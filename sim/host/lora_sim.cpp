@@ -43,6 +43,7 @@
 #include <mutex>
 #include <random>
 #include <sstream>
+#include <thread>
 
 namespace {
 
@@ -95,6 +96,8 @@ uint64_t g_txSeq = 0;
 // The FIFO: the one received frame waiting for read().
 bool g_fifoFull = false;
 RxFrame g_fifo;
+// Frames the firmware would already have read on the board. See irqModel().
+std::deque<RxFrame> g_held;
 
 // Impairments, set by `lora`.
 double g_lossPct = 0, g_crcPct = 0;
@@ -107,10 +110,26 @@ std::mt19937 g_rng(1);
 // Counters.
 struct Counters {
     uint32_t queued = 0, heard = 0, lost = 0, mistuned = 0, deaf = 0, overrun = 0, crc = 0, read = 0, tx = 0,
-             cadBusy = 0, begins = 0;
+             cadBusy = 0, begins = 0, irqs = 0, turnMaxMs = 0, turnLastMs = 0;
 } g_n;
 
 uint32_t now() { return sim_clock::millis(); }
+
+// DIO1. The chip raises it the moment a frame has finished going out or
+// coming in; here a thread sleeps on the device clock until then and calls
+// the hook, which (as on the board) does nothing but wake the mesh task. The
+// task then asks irqFired() what happened, exactly as it does on hardware.
+void (*g_irqHook)() = nullptr;
+bool irqModel() { return g_irqHook != nullptr; }
+void fireIrqAt(uint32_t atMs) {
+    if (!g_irqHook) return;
+    std::thread([atMs] {
+        const uint32_t t = now();
+        if ((int32_t)(atMs - t) > 0) sim_clock::sleepMs(atMs - t);
+        g_n.irqs++;
+        if (g_irqHook) g_irqHook();
+    }).detach();
+}
 
 uint32_t airtime(const Tune& t, size_t len) {
     if (t.sf <= 0 || t.bwKhz <= 0) return (uint32_t)len * 8;
@@ -123,12 +142,25 @@ uint32_t airtime(const Tune& t, size_t len) {
     return (uint32_t)((t.preamble + 4.25f + 8.0f + payloadSym) * tSym + 0.5f);
 }
 
-void setListening(bool on) {
+// What the firmware's interrupt buys it, modelled in device time. On the
+// board a firmware that wakes on DIO1 (it registered onIrq) re-arms the
+// receiver and reads a frame within microseconds of the interrupt. Here the
+// clock is real time, so the same wake costs a host thread hop — and on a
+// loaded CI runner that was measured at 130-410 ms, which a test of a 10 ms
+// turnaround then blames on the firmware. So with a hook registered, the
+// receiver counts as listening again from the instant our frame ended, and a
+// frame that lands before the last was read waits rather than overwriting
+// it. A firmware without the hook (the 250 ms poll this replaced) is modelled
+// exactly as before: deaf until it calls listen(), one frame of buffer.
+
+void setListening(bool on, uint32_t heardFrom = 0) {
     if (on == g_listening) return;
     g_listening = on;
     const uint32_t t = now();
     if (on) {
-        g_deaf.push_back({g_deafSince, t});
+        const uint32_t end = heardFrom && (int32_t)(t - heardFrom) > 0 &&
+                             (int32_t)(heardFrom - g_deafSince) >= 0 ? heardFrom : t;
+        g_deaf.push_back({g_deafSince, end});
         while (g_deaf.size() > 64) g_deaf.pop_front();
     } else {
         g_deafSince = t;
@@ -157,7 +189,8 @@ void settle() {
             g_lastDeaf = {f.startMs, f.endMs};
             continue;
         }
-        if (g_fifoFull && g_modelOverrun) g_n.overrun++;
+        if (g_fifoFull && irqModel()) g_held.push_back(std::move(g_fifo));
+        else if (g_fifoFull && g_modelOverrun) g_n.overrun++;
         g_fifo = std::move(f);
         g_fifoFull = true;
     }
@@ -222,6 +255,7 @@ bool begin(const Config& c) {
     g_ok = true;
     g_mode = STANDBY;
     g_fifoFull = false;
+    g_held.clear();
     g_n.begins++;
     sdUnlock();
     diag::log("lora: SX1262 up on %.4f MHz, SF%u BW%.0f CR4/%u, %d dBm", c.freqMHz, c.sf, c.bwKhz, c.cr,
@@ -233,6 +267,7 @@ bool begin(const Config& c) {
 bool ok() { return g_ok; }
 float frequencyMHz() { return g_cfg.freqMHz; }
 int lastError() { return g_ok ? 0 : -2; }
+void onIrq(void (*fn)()) { g_irqHook = fn; }
 
 bool irqFired() {
     std::lock_guard<std::recursive_mutex> lk(g_m);
@@ -240,7 +275,7 @@ bool irqFired() {
     if (g_mode == TX) return (int32_t)(now() - g_txEnd) >= 0;
     if (g_mode != RX) return false;
     settle();
-    return g_fifoFull;
+    return g_fifoFull || !g_held.empty();
 }
 
 bool transmitting() {
@@ -254,15 +289,18 @@ size_t read(uint8_t* buf, size_t cap, float& rssiDbm, float& snrDb) {
     sdLock();
     settle();
     size_t got = 0;
-    if (g_fifoFull) {
-        g_fifoFull = false;
-        if (g_fifo.crcBad) {
+    if (g_fifoFull || !g_held.empty()) {
+        // Oldest first: a held frame came before the one in the FIFO.
+        RxFrame f;
+        if (!g_held.empty()) { f = std::move(g_held.front()); g_held.pop_front(); }
+        else { f = std::move(g_fifo); g_fifoFull = false; }
+        if (f.crcBad) {
             g_n.crc++;
-        } else if (g_fifo.data.size() <= cap) {
-            memcpy(buf, g_fifo.data.data(), g_fifo.data.size());
-            got = g_fifo.data.size();
-            rssiDbm = g_fifo.rssi;
-            snrDb = g_fifo.snr;
+        } else if (f.data.size() <= cap) {
+            memcpy(buf, f.data.data(), f.data.size());
+            got = f.data.size();
+            rssiDbm = f.rssi;
+            snrDb = f.snr;
             g_n.read++;
         }
     }
@@ -283,6 +321,7 @@ bool startSend(const uint8_t* buf, size_t len) {
     // from the air is cut off (we stop listening now).
     g_txStart = now();
     g_txEnd = g_txStart + airtime(g_tune, len);
+    fireIrqAt(g_txEnd);
     // Logged as it starts, so the air can relay it while it is still going
     // out and other radios' channel-activity detection sees it.
     g_txLog.push_back(TxRecord{++g_txSeq, g_txStart, g_txEnd, g_tune, g_cfg.powerDbm, g_txFrame});
@@ -312,9 +351,16 @@ void abortSend() {
 void listen() {
     std::lock_guard<std::recursive_mutex> lk(g_m);
     if (!g_ok) return;
+    // Turnaround: how long after our own frame ended the receiver came back.
+    if (g_mode == TX || (g_mode == STANDBY && g_txEnd && (int32_t)(now() - g_txEnd) >= 0 &&
+                         (int32_t)(now() - g_txEnd) < 5000)) {
+        g_n.turnLastMs = now() - g_txEnd;
+        if (g_n.turnLastMs > g_n.turnMaxMs) g_n.turnMaxMs = g_n.turnLastMs;
+    }
     sdLock();
+    const bool fromTx = g_mode == TX;
     g_mode = RX;
-    setListening(true);
+    setListening(true, fromTx && irqModel() ? g_txEnd : 0);
     sdUnlock();
 }
 
@@ -342,6 +388,7 @@ void sleep() {
     g_mode = SLEEP;
     setListening(false);
     g_fifoFull = false;
+    g_held.clear();
     sdUnlock();
 }
 
@@ -402,6 +449,7 @@ std::string loraCommand(const json::Value& r) {
         f.endMs = f.startMs + on;
         g_airFreeAt = f.endMs;
         o << "\"ok\":true,\"lost\":false,\"start_ms\":" << f.startMs << ",\"end_ms\":" << f.endMs;
+        fireIrqAt(f.endMs);
         g_air.push_back(std::move(f));
         return o.str();
     }
@@ -442,7 +490,7 @@ std::string loraCommand(const json::Value& r) {
       << ",\"busy\":" << (g_busy ? "true" : "false") << ",\"in_flight\":" << g_air.size()
       << ",\"fifo\":" << (g_fifoFull ? "true" : "false") << ",\"queued\":" << g_n.queued << ",\"lost\":" << g_n.lost
       << ",\"mistuned\":" << g_n.mistuned << ",\"deaf\":" << g_n.deaf << ",\"overrun\":" << g_n.overrun
-      << ",\"crc\":" << g_n.crc << ",\"read\":" << g_n.read << ",\"tx\":" << g_n.tx << ",\"cad_busy\":" << g_n.cadBusy
+      << ",\"crc\":" << g_n.crc << ",\"read\":" << g_n.read << ",\"tx\":" << g_n.tx << ",\"cad_busy\":" << g_n.cadBusy << ",\"irqs\":" << g_n.irqs << ",\"turn_max_ms\":" << g_n.turnMaxMs << ",\"turn_last_ms\":" << g_n.turnLastMs
       << ",\"last_deaf_frame\":[" << g_lastDeaf.from << "," << g_lastDeaf.to << "],\"deaf_spans\":[";
     for (size_t i = 0; i < g_deaf.size(); ++i) o << (i ? "," : "") << "[" << g_deaf[i].from << "," << g_deaf[i].to << "]";
     o << "],\"now_ms\":" << now() << ",\"listening\":" << (g_listening ? "true" : "false")

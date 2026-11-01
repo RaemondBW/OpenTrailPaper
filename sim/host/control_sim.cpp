@@ -262,6 +262,7 @@ std::string statusJson() {
       << ",\"speed_kmh\":" << s.speedKmh << ",\"gps_fix\":" << (s.gpsFix ? "true" : "false")
       << ",\"lat\":" << s.latitude << ",\"lon\":" << s.longitude << ",\"sats\":" << (int)s.satellites
       << ",\"time_valid\":" << (s.timeValid ? "true" : "false")
+      << ",\"utc\":" << (long long)s.utc
       << ",\"card_full\":" << (s.cardFull ? "true" : "false")
       << ",\"hr\":" << (s.hrConnected ? (int)s.heartRateBpm : -1)
       << ",\"power\":" << (s.powerConnected && s.powerW != 0xFFFF ? (int)s.powerW : -1)

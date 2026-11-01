@@ -110,6 +110,33 @@ def wait_frame(device, since, pred=lambda f: True, timeout=10):
         time.sleep(0.2)
 
 
+FRAME_AT = re.compile(r" at=(-?\d+\.\d+),(-?\d+\.\d+)")
+
+
+def wait_painted(device, since, lat, lon, timeout=10):
+    """A complete map frame centred on (lat, lon), logged after `since`, once
+    it is on the glass. The frame line is logged before the panel is driven;
+    the paint logs "refresh:" after it, from the same task, and the next
+    frame line means that step is over too (an identical frame is not
+    painted). A screenshot taken before either shows the frame before — the
+    one for where the rider was, not where the test just put them."""
+    deadline = time.time() + timeout
+    while True:
+        lines = device.log(since)
+        at = None
+        for i, l in enumerate(lines):
+            f = parse_frame(l)
+            m = FRAME_AT.search(l)
+            if f and not f["cut"] and m and abs(float(m.group(1)) - lat) < 1e-4 and abs(float(m.group(2)) - lon) < 1e-4:
+                at = i
+                break
+        if at is not None and any("refresh:" in l or parse_frame(l) for l in lines[at + 1:]):
+            return parse_frame(lines[at])
+        if time.time() > deadline:
+            raise AssertionError("no painted map frame at %.5f,%.5f; last: %s" % (lat, lon, lines[-3:]))
+        time.sleep(0.1)
+
+
 def open_map(device, lat, lon):
     device.gps(lat, lon)
     device.wait_status(lambda s: s["ride"]["gps_fix"], timeout=10)
@@ -293,11 +320,10 @@ def test_riding_across_tile_boundaries_keeps_drawing(device, link, tmp_path):
     worst = []
     for i in range(21):
         lat, lon = along(i / 20.0)
+        seq = device.log_seq()
         device.gps(lat, lon)
         device.wait_status(lambda s: abs(s["ride"]["lon"] - lon) < 1e-5, timeout=10)
-        seq = device.log_seq()
-        wait_frame(device, seq)
-        time.sleep(0.3)
+        wait_painted(device, seq, lat, lon)
         g = glass(device, tmp_path, "step%02d" % i)
         assert not shows_no_map(g), "no map at %.5f,%.5f" % (lat, lon)
         hit, n = road_hits(g, lat, lon, classes=STREETS + (PATH,))

@@ -164,6 +164,14 @@
 // is the ceiling.
 //   https://bayme.sh/docs/getting-started/recommended-settings/
 #define MESH_HOP_LIMIT      6
+// A direct message that gets no acknowledgement is sent again — the identical
+// bytes — as Meshtastic's ReliableRouter does. A copy lost to a collision (two
+// riders who just met, both announcing, is the common one) would otherwise be
+// gone for good with the tick stuck on "sent". Three sends in all, a few
+// seconds apart (the ack alone is a second of air at LongFast), and then the
+// message is marked failed.
+#define MESH_DM_SENDS        3
+#define MESH_ACK_TIMEOUT_MS  5000
 // Sharing our own position on a channel (off unless the rider turns it on, per
 // channel). The thresholds follow the Bay Area Mesh's smart-position guidance —
 // "minimum 10 minutes" with a "100 to 130" metre trigger — because a position

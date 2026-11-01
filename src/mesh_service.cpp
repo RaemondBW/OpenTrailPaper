@@ -122,13 +122,22 @@ struct Outgoing {
     size_t   len = 0;
     uint32_t id = 0;
     bool     wantAck = false;
-    uint8_t  attempts = 0;
+    uint8_t  attempts = 0;   // clear-channel checks that found it busy
+    uint8_t  sends = 0;      // times it has been on the air
 };
 Outgoing outbox[OUTBOX_MAX];
 int outboxCount = 0;
 
+// The last frame sent that asked for an ack, kept to send again if none comes
+// (MESH_DM_SENDS, MESH_ACK_TIMEOUT_MS). One at a time: a rider's messages go
+// out in turn, and the next waits behind a retry rather than racing it.
+Outgoing unacked;
+bool     awaitingAck = false;
+uint32_t ackDeadlineMs = 0;
+
 // Set by the task while a frame is on the air.
 uint32_t txStartMs = 0;
+uint32_t txAirMs = 0;
 uint32_t txTimeoutMs = 0;
 uint32_t lastTxEndMs = 0;
 
@@ -488,6 +497,7 @@ uint32_t enqueue(uint32_t dest, uint8_t portnum, const uint8_t* payload,
     o.id = newPacketId();
     o.wantAck = wantAck;
     o.attempts = 0;
+    o.sends = 0;
 
     mesh::Header h;
     h.dest = dest;
@@ -664,6 +674,18 @@ void handleFrame(const uint8_t* frame, size_t len, float rssi, float snr) {
     }
     if (alreadySeen(h.sender, h.id)) {
         st.rxDuplicate++;
+        // The sender's own resend of a direct message we already have: our ack
+        // did not reach it, so it gets another (ReliableRouter's rule). Direct
+        // only — the hop counts untouched — so a relay's copy, which the
+        // acked-once rule is for, still gets nothing. A PKI message is acked
+        // on the primary, as its first copy was.
+        const int ackCh = h.channelHash == 0 ? 0 : ch;
+        if (h.dest == myNodeNum && h.wantAck && h.hopStart != 0 &&
+            h.hopStart == h.hopLimit && ackCh >= 0 && chans[ackCh].used) {
+            take();
+            queueAck(h.sender, h.id, (uint8_t)ackCh, responseHopLimit(h));
+            give();
+        }
         return;
     }
 
@@ -843,6 +865,7 @@ void handleFrame(const uint8_t* frame, size_t len, float rssi, float snr) {
                 diag::log("mesh: !%08x does not know our key — sent NodeInfo",
                           (unsigned)h.sender);
             }
+            if (awaitingAck && unacked.id == d.requestId) awaitingAck = false;
             for (int i = 0; i < msgCount; ++i) {
                 mesh_service::Message* m = &msgs[i];
                 if (m->outgoing && m->id == d.requestId) {
@@ -905,6 +928,13 @@ void popOutbox(uint8_t status) {
     take();
     if (outboxCount > 0) {
         const uint32_t id = outbox[0].id;
+        if (status == mesh_service::TX_SENT && outbox[0].wantAck) {
+            unacked = outbox[0];
+            unacked.sends++;
+            awaitingAck = true;
+            // Jittered, so two nodes whose copies collided do not collide again.
+            ackDeadlineMs = millis() + MESH_ACK_TIMEOUT_MS + esp_random() % 1000;
+        }
         for (int i = 1; i < outboxCount; ++i) outbox[i - 1] = outbox[i];
         outboxCount--;
         if (status == mesh_service::TX_SENT) st.tx++;
@@ -935,6 +965,33 @@ void serviceOutbox() {
             popOutbox(mesh_service::TX_FAILED);
         }
         return;
+    }
+
+    // No ack in time: the same bytes again, ahead of anything queued since —
+    // or, after the last allowed send, the message is given up.
+    if (awaitingAck && (int32_t)(millis() - ackDeadlineMs) >= 0) {
+        take();
+        awaitingAck = false;
+        if (unacked.sends < MESH_DM_SENDS && outboxCount < OUTBOX_MAX) {
+            for (int i = outboxCount; i > 0; --i) outbox[i] = outbox[i - 1];
+            outbox[0] = unacked;
+            outbox[0].attempts = 0;
+            outboxCount++;
+            diag::log("mesh: no ack for 0x%08x — sending again (%d of %d)",
+                      (unsigned)unacked.id, unacked.sends + 1, MESH_DM_SENDS);
+        } else {
+            for (int i = 0; i < msgCount; ++i) {
+                if (msgs[i].outgoing && msgs[i].id == unacked.id &&
+                    msgs[i].status == mesh_service::TX_SENT) {
+                    msgs[i].status = mesh_service::TX_FAILED;
+                    changed = true;
+                    break;
+                }
+            }
+            diag::log("mesh: no ack for 0x%08x after %d sends — giving up",
+                      (unsigned)unacked.id, unacked.sends);
+        }
+        give();
     }
 
     take();
@@ -976,9 +1033,10 @@ void serviceOutbox() {
 
     if (lora_radio::startSend(frame, len)) {
         txStartMs = millis();
+        txAirMs = lora_radio::airtimeMs(len);
         // Generous: twice the calculated air time plus a floor, so a slow module
         // is never mistaken for a stuck one.
-        txTimeoutMs = lora_radio::airtimeMs(len) * 2 + 1000;
+        txTimeoutMs = txAirMs * 2 + 1000;
     } else {
         popOutbox(mesh_service::TX_FAILED);
     }
@@ -988,9 +1046,19 @@ void serviceOutbox() {
 
 namespace mesh_service {
 
+// The DIO1 interrupt: a frame just finished going out or coming in. Wake the
+// task so it re-arms the receiver (or reads the frame) now rather than at the
+// next 250 ms poll.
+void IRAM_ATTR wakeFromIsr() {
+    BaseType_t woken = pdFALSE;
+    if (wake) xSemaphoreGiveFromISR(wake, &woken);
+    if (woken) portYIELD_FROM_ISR();
+}
+
 bool begin() {
     lock = xSemaphoreCreateMutex();
     wake = xSemaphoreCreateBinary();
+    lora_radio::onIrq(wakeFromIsr);
 
     msgs = (Message*)heap_caps_calloc(MESH_MSG_HISTORY, sizeof(Message),
                                       MALLOC_CAP_SPIRAM);
@@ -1111,7 +1179,18 @@ void task(void*) {
     for (;;) {
         // Blocks until the radio interrupt (or a queued message) wakes us, with a
         // 250 ms backstop for the outbox's own timers. Nothing here spins.
-        if (wake) xSemaphoreTake(wake, pdMS_TO_TICKS(250));
+        //
+        // While our own frame is on the air the wait ends with it anyway: the
+        // radio is deaf from the end of a transmission until listen() re-arms
+        // it, and the addressee's ack starts almost at once — a 250 ms gap
+        // there lost every ack that landed in it. The interrupt (wakeFromIsr)
+        // is what ends the wait; this is the backstop should it not fire.
+        uint32_t waitMs = 250;
+        if (lora_radio::transmitting()) {
+            const int32_t left = (int32_t)(txStartMs + txAirMs - millis());
+            waitMs = left <= 0 ? 2 : (left < 250 ? (uint32_t)left : 250);
+        }
+        if (wake) xSemaphoreTake(wake, pdMS_TO_TICKS(waitMs));
 
         applyPendingConfig();
 
@@ -1170,7 +1249,7 @@ void applyEnabled(bool on) {
         // radioOk() now reports what is true: the module is asleep, not listening.
         radioUp = false;
         take();
-        outboxCount = 0;      // nothing queued is going anywhere now
+        outboxCount = 0; awaitingAck = false;      // nothing queued is going anywhere now
         give();
     }
     diag::log("mesh: %s", on ? "enabled" : "disabled");
@@ -1371,7 +1450,7 @@ void applyPreset(uint8_t index) {
     applyChannel();          // re-derive the hash: the effective name may have moved
     take();
     // Anything queued was encrypted for a frame we are about to stop sending.
-    outboxCount = 0;
+    outboxCount = 0; awaitingAck = false;
     if (wasFollowing) {
         // A different channel, not merely a different speed: the neighbours and
         // messages belong to the one we just left.
@@ -1397,7 +1476,7 @@ void applyPreset(uint8_t index) {
 // messages belong to the old one, and anything queued was framed for it.
 void forgetMesh() {
     take();
-    outboxCount = 0;
+    outboxCount = 0; awaitingAck = false;
     msgCount = msgHead = unread = 0;
     nodeUsed = 0;
     memset(seen, 0, sizeof(seen));
@@ -1486,7 +1565,7 @@ void applyChannelChange(const char* name, uint8_t pskIndex) {
     take();
     msgCount = msgHead = unread = 0;
     nodeUsed = 0;
-    outboxCount = 0;
+    outboxCount = 0; awaitingAck = false;
     memset(seen, 0, sizeof(seen));
     changed = true;
     give();

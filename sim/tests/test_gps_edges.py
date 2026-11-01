@@ -185,6 +185,31 @@ def test_the_phone_clock_is_taken_when_the_gps_date_is_unbelievable(device):
     device.wait_status(lambda s: s["ride"]["recording"], timeout=5)
 
 
+def test_the_clock_never_reads_a_day_early_at_utc_midnight(device):
+    """The same rollover, watched on the device's clock directly rather than
+    through whichever records the recorder happened to take: between the new
+    day's first GGA and the RMC that brings its date, the parser holds
+    00:00:00 against yesterday's date, and the clock must not show it."""
+    device.gps_paced(True)
+    midnight = (int(time.time()) // 86400 + 1) * 86400
+    device.gps_time(midnight - 4)
+    device.gps(LAT, LON)
+    device.wait_status(lambda s: s["ride"]["time_valid"], timeout=15)
+    seen = []
+    deadline = time.time() + 60
+    while time.time() < deadline:
+        u = device.status()["ride"]["utc"]
+        if u < midnight - 4:            # the clock before gps_time took hold
+            continue
+        if not seen or u != seen[-1]:
+            seen.append(u)
+        if u >= midnight + 4:
+            break
+        time.sleep(0.01)
+    assert seen[0] < midnight <= seen[-1], (seen[0] - midnight, seen[-1] - midnight)
+    assert all(0 < b - a <= 3 for a, b in zip(seen, seen[1:])), [u - midnight for u in seen]
+
+
 def test_a_ride_across_utc_midnight_keeps_its_timestamps_in_order(device):
     """A ride through 00:00 UTC (late afternoon in the Americas, every
     evening ride there). With the sentences arriving one at a time, as the

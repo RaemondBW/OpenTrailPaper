@@ -36,6 +36,10 @@ float frequencyMHz();
 // Set by the DIO1 interrupt: a packet has been received (in RX mode) or the
 // transmission has finished (in TX mode).
 bool irqFired();
+// Called from the DIO1 interrupt (so: IRAM, and nothing but a semaphore give)
+// whenever the radio has finished sending or receiving. The sim's radio fires
+// it the same way, from a timer thread.
+void onIrq(void (*fn)());
 
 // True while a transmission is in flight.
 bool transmitting();

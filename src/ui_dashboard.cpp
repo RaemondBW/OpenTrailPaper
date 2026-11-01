@@ -1268,6 +1268,8 @@ void buildMapScreenData(const RideState& s, MapScreenData& map,
     } else {
         settings::lastPosition(lat, lon);
     }
+    map.centerLat = lat;
+    map.centerLon = lon;
     // The farewell frame is the one frame with no "next one".
     //
     // Every rule below exists because another frame is coming: draw only what
@@ -1359,14 +1361,15 @@ void renderMapScreen(const RideState& s, uint8_t* fb) {
     if (dbgTiming)
         diag::log("map: project=%lu draw=%lu polys=%d (tiles=%d base=%d) "
                   "cls[maj=%d pri=%d sec=%d ter=%d min=%d path=%d] ntiles=%d/%d%s "
-                  "mpp=%d pois=%d/%d",
+                  "mpp=%d pois=%d/%d at=%.5f,%.5f",
                   (unsigned long)(m1 - m0), (unsigned long)(millis() - m1),
                   map.featureCount, map.tilePolys, map.featureCount - map.tilePolys,
                   map.clsCount[0], map.clsCount[1], map.clsCount[2], map.clsCount[3],
                   map.clsCount[4], map.clsCount[5],
                   map.projectedTiles, map.wantedTiles,
                   map.partial ? " cut" : "", (int)mapMpp,
-                  map.poiCount, map_tiles::projectStats().poisDropped);
+                  map.poiCount, map_tiles::projectStats().poisDropped,
+                  map.centerLat, map.centerLon);
     drawNavBanner(fb);
     drawPauseBanner(s, fb);
 }
