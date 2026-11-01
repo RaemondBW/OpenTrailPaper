@@ -75,6 +75,7 @@
             android:exported="true"
             android:launchMode="singleTask"
             android:screenOrientation="portrait"
+            android:windowSoftInputMode="adjustResize"
             android:label="@string/app_name"
             android:theme="@style/Theme.OpenTrailPaper"
             tools:ignore="LockedOrientationActivity">
