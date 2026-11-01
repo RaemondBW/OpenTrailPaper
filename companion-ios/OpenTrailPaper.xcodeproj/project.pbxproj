@@ -24,6 +24,7 @@
 		292571D164EEF9C5316E8BAB /* linkedGeo.c in Sources */ = {isa = PBXBuildFile; fileRef = 878E3C8F7719672814B9A1C2 /* linkedGeo.c */; };
 		2A3194F4903302F4B2C27D19 /* polygon.c in Sources */ = {isa = PBXBuildFile; fileRef = 0CBC93C157DBF69D2E2C1823 /* polygon.c */; };
 		2D50FCD8D5DDF2010C20E161 /* RideView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4E83FB3A70437DD5D0F8629 /* RideView.swift */; };
+		301AB054177F29EFFFE54042 /* MeshChannelURLTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B919B82996F20757C6328B8 /* MeshChannelURLTests.swift */; };
 		324A54B5AD1AA094E1C7AF6A /* BLEScope.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5C3572179A8771316550E49 /* BLEScope.swift */; };
 		33C76F52DC53AF15753FE58B /* h3Index.c in Sources */ = {isa = PBXBuildFile; fileRef = 61E9FB68F94751F3E5B65B66 /* h3Index.c */; };
 		3468F65C046C1094771FB187 /* ScrollSmoothnessTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4535B7FCECE70B9CA5BF0840 /* ScrollSmoothnessTests.swift */; };
@@ -115,6 +116,13 @@
 			remoteGlobalIDString = BCF1C4E6A910A8A20A7A3381;
 			remoteInfo = TransferWidget;
 		};
+		7ED6A199441EE6D556243902 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 8BA9E00CC1259C370A1A3517 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = F0C3C01AB397A74EB43C57A5;
+			remoteInfo = OpenTrailPaper;
+		};
 		A9F2DAEC515544AE4A1DB1E6 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 8BA9E00CC1259C370A1A3517 /* Project object */;
@@ -167,6 +175,7 @@
 		336612AF0918144CAB1C1FCD /* DiagnosticsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsView.swift; sourceTree = "<group>"; };
 		36C9973B7C9E0A6EF2F31B32 /* MeshChannelsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshChannelsSheet.swift; sourceTree = "<group>"; };
 		37C3CA9775B956BC238BAA42 /* BikeGPSCompanionApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BikeGPSCompanionApp.swift; sourceTree = "<group>"; };
+		3B919B82996F20757C6328B8 /* MeshChannelURLTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshChannelURLTests.swift; sourceTree = "<group>"; };
 		403E838590B5304D34C70F23 /* mathExtensions.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = mathExtensions.h; sourceTree = "<group>"; };
 		42632703DAE05E73F934FFE1 /* Barlow-SemiBold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Barlow-SemiBold.ttf"; sourceTree = "<group>"; };
 		446F73388D9904723ABF6126 /* SimHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimHarness.swift; sourceTree = "<group>"; };
@@ -212,6 +221,7 @@
 		A26EB50B7E6CF1B4A63235CA /* RouteView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RouteView.swift; sourceTree = "<group>"; };
 		A5CBCC5E20270A3D4DF70257 /* coordijk.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = coordijk.c; sourceTree = "<group>"; };
 		A7C77C595BBAE5BCBD82A004 /* MapsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapsView.swift; sourceTree = "<group>"; };
+		A7E411828B33D9F878446C62 /* OpenTrailPaperTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = OpenTrailPaperTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		A97893E68863ECCF2D0D4400 /* BarlowCondensed-Medium.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "BarlowCondensed-Medium.ttf"; sourceTree = "<group>"; };
 		A9D6BB31E96DD85DBE9B68CA /* DashLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashLayout.swift; sourceTree = "<group>"; };
 		ABBED3B34B25D9BCAFA3FDB5 /* algos.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = algos.c; sourceTree = "<group>"; };
@@ -297,11 +307,20 @@
 			path = Shared;
 			sourceTree = "<group>";
 		};
+		15AA3808C6C2E4F322099153 /* Tests */ = {
+			isa = PBXGroup;
+			children = (
+				3B919B82996F20757C6328B8 /* MeshChannelURLTests.swift */,
+			);
+			path = Tests;
+			sourceTree = "<group>";
+		};
 		18CC695DF5F6C2584F4E3869 = {
 			isa = PBXGroup;
 			children = (
 				142C1C7BCE5E909DFC740915 /* Shared */,
 				AE187636AF6257DBD1A75F05 /* Sources */,
+				15AA3808C6C2E4F322099153 /* Tests */,
 				BDB3D9EDBB3314E41A35FDB3 /* TransferWidget */,
 				0C70B80E01FDC4F961994A3B /* UITests */,
 				50CE6737CF57F2CA89F9BC4F /* Products */,
@@ -312,6 +331,7 @@
 			isa = PBXGroup;
 			children = (
 				6AEE6D137CDDF2F463F27932 /* OpenTrailPaper.app */,
+				A7E411828B33D9F878446C62 /* OpenTrailPaperTests.xctest */,
 				2BE5CA5ECCADC362050EB10D /* OpenTrailPaperUITests.xctest */,
 				921C1E384F6ED732B31C24E3 /* TransferWidget.appex */,
 			);
@@ -483,6 +503,24 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		425B841AC67A7C12F69ACF13 /* OpenTrailPaperTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B04C04CF98632B2163F462F3 /* Build configuration list for PBXNativeTarget "OpenTrailPaperTests" */;
+			buildPhases = (
+				89220C60D7171490797A19A0 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				3F9D749EDF6686C810725DB0 /* PBXTargetDependency */,
+			);
+			name = OpenTrailPaperTests;
+			packageProductDependencies = (
+			);
+			productName = OpenTrailPaperTests;
+			productReference = A7E411828B33D9F878446C62 /* OpenTrailPaperTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 		BCF1C4E6A910A8A20A7A3381 /* TransferWidget */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 630FCEFD91B885C09D317E9B /* Build configuration list for PBXNativeTarget "TransferWidget" */;
@@ -551,6 +589,10 @@
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
+					425B841AC67A7C12F69ACF13 = {
+						DevelopmentTeam = G5JFC849XY;
+						ProvisioningStyle = Automatic;
+					};
 					BCF1C4E6A910A8A20A7A3381 = {
 						DevelopmentTeam = G5JFC849XY;
 						ProvisioningStyle = Automatic;
@@ -585,6 +627,7 @@
 			projectRoot = "";
 			targets = (
 				F0C3C01AB397A74EB43C57A5 /* OpenTrailPaper */,
+				425B841AC67A7C12F69ACF13 /* OpenTrailPaperTests */,
 				BFC1E5A6F1D91C2B7DC81185 /* OpenTrailPaperUITests */,
 				BCF1C4E6A910A8A20A7A3381 /* TransferWidget */,
 			);
@@ -714,6 +757,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		89220C60D7171490797A19A0 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				301AB054177F29EFFFE54042 /* MeshChannelURLTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		9FD1A789218E1C9CCCAC836C /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -732,6 +783,11 @@
 			isa = PBXTargetDependency;
 			target = F0C3C01AB397A74EB43C57A5 /* OpenTrailPaper */;
 			targetProxy = A9F2DAEC515544AE4A1DB1E6 /* PBXContainerItemProxy */;
+		};
+		3F9D749EDF6686C810725DB0 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = F0C3C01AB397A74EB43C57A5 /* OpenTrailPaper */;
+			targetProxy = 7ED6A199441EE6D556243902 /* PBXContainerItemProxy */;
 		};
 		DCE567E21A682A403AB54795 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
@@ -872,6 +928,23 @@
 			};
 			name = Debug;
 		};
+		6391910C5FE26ADF7C95F56F /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.raemond.opentrailpaper.tests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/OpenTrailPaper.app/OpenTrailPaper";
+			};
+			name = Debug;
+		};
 		6C6F2443A957B3DC1062BB18 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -955,6 +1028,23 @@
 			};
 			name = Debug;
 		};
+		A96950E7F6DF77540BD96CC9 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.raemond.opentrailpaper.tests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/OpenTrailPaper.app/OpenTrailPaper";
+			};
+			name = Release;
+		};
 		C1A940DE7864D95C7611F8CE /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -1020,6 +1110,15 @@
 			buildConfigurations = (
 				99CA272EA5BB124C74D2EA20 /* Debug */,
 				FC935D457FC6906AD02199A0 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		B04C04CF98632B2163F462F3 /* Build configuration list for PBXNativeTarget "OpenTrailPaperTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				6391910C5FE26ADF7C95F56F /* Debug */,
+				A96950E7F6DF77540BD96CC9 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;

@@ -70,6 +70,7 @@ fun MeshChannelsSheet(
     var error by remember { mutableStateOf<String?>(null) }
     var joined by remember { mutableStateOf<String?>(null) }
     var confirmForget by remember { mutableStateOf<MeshChannel?>(null) }
+    var matchRadio by remember { mutableStateOf<RadioMatch?>(null) }
 
     fun create() {
         val slot = ble.firstFreeMeshChannel ?: return
@@ -91,9 +92,17 @@ fun MeshChannelsSheet(
         sharing = MeshChannel(slot, name, hash = 0, psk = key, sharesLocation = false)
     }
 
+    fun join(name: String, psk: ByteArray) {
+        val slot = ble.firstFreeMeshChannel ?: return
+        ble.setMeshPrivateChannel(slot, name, psk)
+        onSelect(slot)
+        joined = name
+    }
+
     fun scanned(text: String) {
         scanning = false
-        val first = MeshChannelUrl.parse(text).firstOrNull()
+        val invite = MeshChannelUrl.parseInvite(text)
+        val first = invite.channels.firstOrNull()
         if (first == null) {
             error = "That code is not a Meshtastic channel."
             return
@@ -102,19 +111,19 @@ fun MeshChannelsSheet(
             error = "That channel has no encryption key, so it would not be private."
             return
         }
-        val slot = ble.firstFreeMeshChannel
-        if (slot == null) {
+        if (ble.firstFreeMeshChannel == null) {
             error = "All channel slots are in use. Forget one first."
             return
         }
-        // Imported as a PRIVATE channel, never as the primary: the primary sets
-        // the frequency, and taking someone else's would move this device off the
-        // mesh it is on. A shared channel works because both ends keep their own
-        // primary and add this one alongside it.
+        // Imported as a PRIVATE channel, never as the primary: this device keeps
+        // its own primary and adds this one alongside it. What the primary
+        // decided — the speed and the frequency — comes from the code's radio
+        // settings instead, and only with the rider's say-so, since matching
+        // them moves this device off the mesh it is on.
         val name = first.name.ifEmpty { "Shared" }
-        ble.setMeshPrivateChannel(slot, name, first.psk)
-        onSelect(slot)
-        joined = name
+        val match = invite.radio?.let { radioMatch(ble, it) }
+        if (match == null || match.changes.isEmpty()) join(name, first.psk)
+        else matchRadio = match.copy(name = name, psk = first.psk)
     }
 
     FullScreenSheet(title = "Channels", onDismiss = onDismiss) {
@@ -198,9 +207,9 @@ fun MeshChannelsSheet(
                         color = Palette.muted,
                     )
                     Text(
-                        "Both people must also be on the same public channel — that " +
-                            "is what sets the frequency you are both listening on. If " +
-                            "a code does not work, check you are both on " +
+                        "Both people must also be on the same speed and frequency " +
+                            "slot. A code carries this device's, and scanning one " +
+                            "offers to switch to match. You are on " +
                             "${ble.meshState.channel}.",
                         style = barlow(14.sp),
                         color = Palette.muted,
@@ -211,7 +220,37 @@ fun MeshChannelsSheet(
         }
     }
 
-    sharing?.let { c -> MeshShareSheet(c) { sharing = null } }
+    sharing?.let { c -> MeshShareSheet(c, sharedRadio(ble)) { sharing = null } }
+
+    matchRadio?.let { m ->
+        AlertDialog(
+            onDismissRequest = { matchRadio = null },
+            title = { Text("Switch radio to match?") },
+            text = {
+                Text(
+                    "This channel's code is set up for a different radio:\n\n" +
+                        m.changes.joinToString("\n") +
+                        "\n\nDevices on a different speed or slot cannot hear each " +
+                        "other at all. Switching also moves you off the public mesh " +
+                        "you are on now.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    matchRadio = null
+                    m.apply(ble)
+                    join(m.name, m.psk)
+                }) { Text("Switch and join") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    matchRadio = null
+                    join(m.name, m.psk)
+                }) { Text("Join only") }
+            },
+            containerColor = Palette.surface,
+        )
+    }
 
     if (scanning) {
         FullScreenSheet(
@@ -357,11 +396,11 @@ private fun ChannelCard(
  * into a message is often easier than getting two phones in front of each other.
  */
 @Composable
-private fun MeshShareSheet(channel: MeshChannel, onDismiss: () -> Unit) {
+private fun MeshShareSheet(channel: MeshChannel, radio: MeshChannelUrl.Radio?, onDismiss: () -> Unit) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
-    val shareUrl = remember(channel) {
-        MeshChannelUrl.url(channel.name, channel.psk)
+    val shareUrl = remember(channel, radio) {
+        MeshChannelUrl.url(channel.name, channel.psk, radio)
     }
     val qr = remember(shareUrl) { MeshChannelUrl.qrBitmap(shareUrl) }
 
@@ -388,6 +427,14 @@ private fun MeshShareSheet(channel: MeshChannel, onDismiss: () -> Unit) {
                 )
             }
             Text(channel.displayName, style = TypeScale.title, color = Palette.ink)
+            radio?.let { r ->
+                Text(
+                    listOfNotNull(r.preset, r.region, r.slot.takeIf { it > 0 }?.let { "slot $it" })
+                        .joinToString(" · "),
+                    style = barlow(14.sp, FontWeight.SemiBold),
+                    color = Palette.ink,
+                )
+            }
             Text(
                 "Anyone who scans this joins the channel and can read its messages. " +
                     "It works in the official Meshtastic app too.",
@@ -427,4 +474,85 @@ private fun MeshShareSheet(channel: MeshChannel, onDismiss: () -> Unit) {
             Spacer(Modifier.size(8.dp))
         }
     }
+}
+
+/**
+ * This device's radio, as an invite carries it: the preset and region by name
+ * and the slot it is actually on. Null until the presets have streamed in, and
+ * then the invite goes out with the channel alone, as it always used to.
+ */
+private fun sharedRadio(ble: BleManager): MeshChannelUrl.Radio? {
+    val st = ble.meshState
+    val preset = ble.meshPresets.firstOrNull { it.index == st.presetIndex } ?: return null
+    val region = st.regionIndex?.let { i -> ble.meshRegions.firstOrNull { it.index == i } }
+    return MeshChannelUrl.Radio(preset.name, region?.name, st.activeSlot ?: 0)
+}
+
+/** What scanning a code would change on this device's radio, and how to do it. */
+private data class RadioMatch(
+    val changes: List<String>,
+    val preset: Int?,
+    val region: Int?,
+    val slot: Int?,
+    val name: String = "",
+    val psk: ByteArray = ByteArray(0),
+) {
+    fun apply(ble: BleManager) {
+        // Preset and region first: they decide the band the slot is cut from.
+        preset?.let(ble::setMeshPreset)
+        region?.let(ble::setMeshRegion)
+        slot?.let(ble::setMeshFreqSlot)
+    }
+}
+
+private fun radioMatch(ble: BleManager, want: MeshChannelUrl.Radio): RadioMatch {
+    val st = ble.meshState
+    val changes = ArrayList<String>()
+    val curPreset = ble.meshPresets.firstOrNull { it.index == st.presetIndex }
+    val curRegion = st.regionIndex?.let { i -> ble.meshRegions.firstOrNull { it.index == i } }
+
+    var preset: Int? = null
+    var newPreset = curPreset
+    if (want.preset != null && curPreset != null && !want.preset.equals(curPreset.name, true)) {
+        val p = ble.meshPresets.firstOrNull { it.name.equals(want.preset, true) }
+        if (p == null) {
+            changes += "Speed: ${want.preset} (this device can't use it — staying on ${curPreset.name})"
+        } else {
+            changes += "Speed: ${curPreset.name} → ${p.name}"
+            preset = p.index
+            newPreset = p
+        }
+    }
+
+    var region: Int? = null
+    var newRegion = curRegion
+    if (want.region != null && curRegion != null && !want.region.equals(curRegion.name, true)) {
+        val r = ble.meshRegions.firstOrNull { it.name.equals(want.region, true) }
+        if (r == null) {
+            changes += "Region: ${want.region} (this device can't use it — staying on ${curRegion.name})"
+        } else {
+            changes += "Region: ${curRegion.name} → ${r.name}"
+            region = r.index
+            newRegion = r
+        }
+    }
+
+    // The slot this device will be on once preset and region match, left
+    // automatic where that already is the code's slot, so it keeps following
+    // the preset as a stock node does.
+    var slot: Int? = null
+    if (want.slot > 0 && newPreset != null && newRegion != null) {
+        val primary = if (st.channelFollowsPreset) newPreset.name else st.channel
+        val auto = MeshChannelUrl.automaticSlot(
+            primary, newPreset.bandwidthKhz,
+            newRegion.startHz / 1e6, newRegion.endHz / 1e6, newRegion.spacingHz / 1e6,
+        )
+        val pinned = st.slotOverride ?: 0
+        val target = if (want.slot == auto) 0 else want.slot
+        // An older firmware can't pin a slot: it gets the preset's automatic one.
+        if (st.slotOverride != null && target != pinned) slot = target
+        val now = st.activeSlot ?: (if (pinned == 0) auto else pinned)
+        if (now != want.slot) changes += "Slot: $now → ${want.slot}"
+    }
+    return RadioMatch(changes, preset, region, slot)
 }
