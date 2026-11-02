@@ -99,7 +99,7 @@ function makeBuilder(store, emuData, demOpts, elevation) {
       const poi = buildPoi(poiResponse([]), { s: t.s, w: t.w, n: t.n, e: t.e, cell: t.id, contains: () => true });
       return { ebm: null, poi, ms: performance.now() - t0, ways, coast: 0, sea: true };
     }
-    const ebm = buildAppTile(json, rings, grid, t);
+    const ebm = buildAppTile(json, rings, grid, t, { names: process.env.OTP_TILE_NAMES === "1" });
     const poi = buildPoi(poiResponse(pois), { s: t.s, w: t.w, n: t.n, e: t.e, cell: t.id, contains: () => true });
     return { ebm, poi, ms: performance.now() - t0, ways, coast: coastWays.length };
   };
@@ -236,6 +236,7 @@ const USAGE = `usage:
                      (--regions regions.json | --bbox s,w,n,e) [--strip-dir <dir>]
   border phase — the border/deferred cells of the given regions, from strips:
     build_region.mjs --phase border --strip-dir <dir> --out <dir> [--todo <region,…>]
+  env OTP_TILE_NAMES=1 also writes street names (NAM1) into every tile.
   common: [--prev-dir <old fragments>] [--dem-cache <dir>] [--no-elevation]
           [--workers N] [--cells id,…] [--tmp <dir>] [--source-url <url>]
   <out>/upload.txt lists the object keys that are new or changed vs --prev-dir.`;

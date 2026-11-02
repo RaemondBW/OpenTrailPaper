@@ -18,7 +18,7 @@
 //
 // Keep in step with MapBuilder.swift / MapBuilder.kt; tools/tiles/test/
 // equivalence.sh compares this against the Swift code itself.
-import { buildEbm, decimate, isPark, regionSeaPolygons, TILE_DEG, SIMPLIFY_M } from "../../docs/mapgen.js";
+import { buildEbm, decimate, extensionSections, isPark, regionSeaPolygons, TILE_DEG, SIMPLIFY_M } from "../../docs/mapgen.js";
 
 export const ELEVATION_GRID = 20;   // MapBuilder.elevationGrid
 
@@ -222,15 +222,22 @@ export function seaRingsFor(chains, t) {
 //   elevation — int16[400] or null (the app ships a tile without ELV1 when
 //               Open-Meteo fails)
 // Returns the bytes, or null when the app would drop the tile as empty.
-export function buildAppTile(mapJson, seaRings, elevation, t) {
+// `names`: also write the street names (NAM1, after PRK2) — not something the
+// apps write yet, so off for the equivalence tests.
+export function buildAppTile(mapJson, seaRings, elevation, t, { names = false } = {}) {
   const { s, w, n, e } = t;
-  const ebm = buildEbm(mapJson, { s, w, n, e });
+  const ebm = buildEbm(mapJson, { s, w, n, e, names });
   const out = new Bytes();
   out.push(ebm.subarray(0, roadsEnd(ebm)));
   elevationSection(out, elevation, s, w, n, e);
   const { water, parks } = fillWays(mapJson);
   waterSection(out, water, seaRings, s, w, n, e);
   parkSection(out, parks, s, w, n, e);
+  // An empty-road tile stays empty: names alone never keep a tile.
   const bytes = out.toUint8Array();
+  if (names && bytes.length > headerOnly(s, w, n, e)) {
+    out.push(extensionSections(ebm));
+    return out.toUint8Array();
+  }
   return bytes.length <= headerOnly(s, w, n, e) ? null : bytes;
 }

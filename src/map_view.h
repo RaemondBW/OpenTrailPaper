@@ -31,11 +31,19 @@ enum : uint8_t {
     MAP_WF_BIKE_LANE = 0x08,    // painted lane / track along a road
 };
 
+// Street names (the tile's NAM1 section) are read and drawn only this far in:
+// at the closest zoom a street is wide enough to label without the labels
+// burying the map.
+constexpr float MAP_NAMES_MAX_MPP = 1.0f;
+constexpr uint16_t MAP_NO_NAME = 0xFFFF;
+constexpr int MAP_NAME_STRIDE = 33;   // one name in MapScreenData::names, NUL included
+
 struct MapPolyline {
     MapFeatureClass cls;
     uint8_t flags;       // MAP_WF_* (0 for fills and for tiles without flags)
     const int16_t* pts;  // x0,y0,x1,y1,... screen px (portrait 540x960)
     int pointCount;
+    uint16_t name = MAP_NO_NAME;   // index into MapScreenData::names
 };
 
 // Cycling POIs (the per-tile .poi file). Type ids and flag bits are the on-file
@@ -100,6 +108,12 @@ struct MapScreenData {
     // filtered for the zoom. Drawn as small icons over the roads.
     const MapPoi* pois = nullptr;
     int poiCount = 0;
+
+    // Street names of the features in view, MAP_NAME_STRIDE bytes apiece, one
+    // entry per distinct name (MapPolyline::name). Only filled at
+    // MAP_NAMES_MAX_MPP and closer.
+    const char* names = nullptr;
+    int nameCount = 0;
 
     // Which cycling layers to draw (MAP_LAYER_* bits).
     uint16_t layers = MAP_LAYERS_ALL;
@@ -183,6 +197,9 @@ void ui_map_draw_zoom_button(bool zoomIn, bool pressed, uint8_t* fb);
 // water/park dithered fills — the dense-dark regions where DU ghosting settles.
 // Null until the first map render. The settle-clean flashes exactly these bytes.
 const uint8_t* ui_map_dither_mask();
+
+// Street-name labels the last map frame drew (diagnostics: the frame log).
+int ui_map_labels_drawn();
 
 void ui_render_map(const MapScreenData& map, const RideState& s, uint8_t* fb);
 

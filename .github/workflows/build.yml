@@ -162,7 +162,7 @@ jobs:
           - part: regressions
             tests: test_regressions_gps.py test_regressions_link.py test_regressions_rides.py test_regressions_ui.py
           - part: cards and maps
-            tests: test_cards.py test_maps.py test_pois.py
+            tests: test_cards.py test_maps.py test_pois.py test_map_names.py
           - part: sensors, radar and music
             tests: test_sensors.py test_radar.py test_media.py
           - part: power

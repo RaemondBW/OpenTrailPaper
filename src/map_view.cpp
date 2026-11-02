@@ -6,6 +6,7 @@
 #include <esp_heap_caps.h>
 
 #include "epdiy.h"
+#include "epd_compat.h"
 #include "ride_state.h"
 #include "routes.h"
 #include "map_store.h"
@@ -488,6 +489,143 @@ uint16_t poiLayerBit(uint8_t type) {
     return 0;
 }
 
+// Street names, at the closest zoom only (MAP_NAMES_MAX_MPP). Each name once,
+// upright on a white chip over the longest stretch of that street on the
+// glass, tried at its middle and then further along either way. Bigger roads
+// pick first, then longer stretches. A chip never sits across another road —
+// on a north-south street that would put its name over the east-west one it
+// crosses, and read as that one's — nor over another label, the rider or the
+// chrome drawn over the map afterwards; one with nowhere clear is left off
+// rather than squeezed in. Upright, not along the road: the panel has no rotated text,
+// and upright reads at a glance whichever way the map is turned.
+int s_labelsDrawn = 0;
+
+void drawStreetNames(const MapScreenData& map, uint8_t* fb) {
+    s_labelsDrawn = 0;
+    if (map.metersPerPixel > MAP_NAMES_MAX_MPP || map.nameCount <= 0) return;
+    const int top = MAP_TOP + (map.navBannerVisible ? 138 : 0);
+    // Static: the UI task's stack is 8 KB.
+    struct Run { int16_t x0, y0, x1, y1; int16_t len; uint8_t cls; };
+    static Run best[256];
+    const int names = map.nameCount < 256 ? map.nameCount : 256;
+    for (int i = 0; i < names; ++i) best[i] = {0, 0, 0, 0, 0, 255};
+    // Segment a + t(d) clipped to a box (Liang-Barsky): false if it misses.
+    auto clip = [](float ax, float ay, float dx, float dy, float x0, float y0,
+                   float x1, float y1, float& t0, float& t1) {
+        t0 = 0;
+        t1 = 1;
+        const float pq[4][2] = {{-dx, ax - x0}, {dx, x1 - ax},
+                                {-dy, ay - y0}, {dy, y1 - ay}};
+        for (const auto& e : pq) {
+            if (e[0] == 0) { if (e[1] < 0) return false; continue; }
+            const float r = e[1] / e[0];
+            if (e[0] < 0) { if (r > t1) return false; if (r > t0) t0 = r; }
+            else          { if (r < t0) return false; if (r < t1) t1 = r; }
+        }
+        return true;
+    };
+    // The longest stretch of each name on the map.
+    const float cx0 = 8, cx1 = 540 - 8, cy0 = top + 8, cy1 = MAP_BOTTOM - 8;
+    for (int i = 0; i < map.featureCount; ++i) {
+        const MapPolyline& f = map.features[i];
+        if (f.name >= names) continue;
+        for (int j = 0; j + 1 < f.pointCount; ++j) {
+            float ax = f.pts[j * 2], ay = f.pts[j * 2 + 1];
+            float dx = f.pts[j * 2 + 2] - ax, dy = f.pts[j * 2 + 3] - ay;
+            float t0, t1;
+            if (!clip(ax, ay, dx, dy, cx0, cy0, cx1, cy1, t0, t1)) continue;
+            const float len = (t1 - t0) * sqrtf(dx * dx + dy * dy);
+            Run& b = best[f.name];
+            if (len <= b.len) continue;
+            b = {(int16_t)(ax + dx * t0), (int16_t)(ay + dy * t0),
+                 (int16_t)(ax + dx * t1), (int16_t)(ay + dy * t1),
+                 (int16_t)len, (uint8_t)f.cls};
+        }
+    }
+    // Placement order: road class, then length.
+    static uint8_t order[256];
+    int n = 0;
+    for (int i = 0; i < names; ++i)
+        if (best[i].len >= 24) order[n++] = (uint8_t)i;
+    for (int i = 1; i < n; ++i) {
+        const uint8_t v = order[i];
+        int j = i;
+        while (j > 0 && (best[order[j - 1]].cls > best[v].cls ||
+                         (best[order[j - 1]].cls == best[v].cls &&
+                          best[order[j - 1]].len < best[v].len))) {
+            order[j] = order[j - 1];
+            --j;
+        }
+        order[j] = v;
+    }
+
+    const int compY = mapCompassCy(map.navBannerVisible);
+    constexpr int kMaxLabels = 16;
+    EpdRect placed[kMaxLabels];
+    int placedN = 0;
+    auto clear = [&](const EpdRect& r) {
+        if (r.x < 4 || r.x + r.width > 540 - 4 || r.y < top + 4 ||
+            r.y + r.height > MAP_BOTTOM - 4) return false;
+        auto hits = [&](int x, int y, int w, int h) {
+            return r.x < x + w && x < r.x + r.width && r.y < y + h && y < r.y + r.height;
+        };
+        if (hits(map.riderX - 36, map.riderY - 36, 72, 72)) return false;
+        if (hits(kMapCompass.cx - 32, compY - 32, 64, 64)) return false;
+        if (hits(kMapZoom.zoomX - 6, kMapZoom.layersY - 6, kMapZoom.size + 12,
+                 kMapZoom.zoomOutY + kMapZoom.size - kMapZoom.layersY + 12)) return false;
+        if (hits(0, MAP_BOTTOM - 56, 196, 56)) return false;          // scale bar
+        for (int k = 0; k < map.poiCount; ++k)                        // drawn over
+            if (hits(map.pois[k].x - 16, map.pois[k].y - 16, 32, 32)) return false;
+        for (int k = 0; k < placedN; ++k)
+            if (hits(placed[k].x - 6, placed[k].y - 4, placed[k].width + 12,
+                     placed[k].height + 8)) return false;
+        return true;
+    };
+    // Does any road other than `self` run under the chip? Paths without a
+    // name are let through: a chip may cover a footpath, not a street.
+    auto overRoad = [&](const EpdRect& r, int self) {
+        const float x0 = r.x - 2, y0 = r.y - 2;
+        const float x1 = r.x + r.width + 2, y1 = r.y + r.height + 2;
+        for (int i = 0; i < map.featureCount; ++i) {
+            const MapPolyline& f = map.features[i];
+            if (f.name == self || (f.cls == MAP_PATH && f.name >= names)) continue;
+            for (int j = 0; j + 1 < f.pointCount; ++j) {
+                const float ax = f.pts[j * 2], ay = f.pts[j * 2 + 1];
+                float t0, t1;
+                if (clip(ax, ay, f.pts[j * 2 + 2] - ax, f.pts[j * 2 + 3] - ay,
+                         x0, y0, x1, y1, t0, t1)) return true;
+            }
+        }
+        return false;
+    };
+    const int capH = epdc_digit_height(&Arial_B);
+    for (int o = 0; o < n && placedN < kMaxLabels; ++o) {
+        const Run& b = best[order[o]];
+        const char* name = map.names + order[o] * MAP_NAME_STRIDE;
+        const int w = ui::textWidth(&Arial_B, name) + 10, h = capH + 10;
+        // An upright label on a street running across the screen lies along
+        // it, so it still reads as that street where it covers a side street:
+        // when no clear spot is found, one of those may take a crossing.
+        const bool across = abs(b.y1 - b.y0) * 3 < abs(b.x1 - b.x0);
+        bool done = false;
+        for (int pass = 0; pass < (across ? 2 : 1) && !done; ++pass) {
+            for (float t : {0.5f, 0.38f, 0.62f, 0.26f, 0.74f, 0.14f, 0.86f}) {
+                const int mx = b.x0 + (int)((b.x1 - b.x0) * t);
+                const int my = b.y0 + (int)((b.y1 - b.y0) * t);
+                const EpdRect r = {mx - w / 2, my - h / 2, w, h};
+                if (!clear(r) || (pass == 0 && overRoad(r, order[o]))) continue;
+                epd_fill_rect(r, 0xFF, fb);
+                ui::text(&Arial_B, r.x + 5, r.y + 5 + capH, name, fb,
+                         EPD_DRAW_ALIGN_LEFT, 0x00);
+                placed[placedN++] = r;
+                s_labelsDrawn++;
+                done = true;
+                break;
+            }
+        }
+    }
+}
+
 void drawPois(const MapScreenData& map, uint8_t* fb) {
     if (!map.pois || map.poiCount <= 0) return;
     static const uint8_t order[] = {MAP_POI_REPAIR, MAP_POI_WATER,
@@ -723,6 +861,8 @@ uint16_t ui_map_layer_bit(int row) {
 // Null until the first map render. Used by the ghost settle-clean.
 const uint8_t* ui_map_dither_mask() { return s_ditherMask; }
 
+int ui_map_labels_drawn() { return s_labelsDrawn; }
+
 void ui_render_map_features(const MapScreenData& map, const RideState& s,
                             uint8_t* fb) {
     (void)s;
@@ -822,6 +962,9 @@ void ui_render_map_features(const MapScreenData& map, const RideState& s,
                          {14, 0x00, 26, 16}, fb);
         }
     }
+
+    // Names over the roads and route, under the POIs.
+    drawStreetNames(map, fb);
 
     // POIs over the route: a water stop next to the line being ridden is
     // exactly the one that must not disappear under it.

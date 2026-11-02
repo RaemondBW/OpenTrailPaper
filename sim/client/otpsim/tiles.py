@@ -95,6 +95,44 @@ def install_on_card(sd_root, tiles, ext=".ebm"):
             f.write(t[1])
 
 
+# -- street names -----------------------------------------------------------------------
+
+def with_names(data, name_of):
+    """The tile with a NAM1 street-name section appended (docs/mapgen.js has
+    the layout). `name_of(sub, i, cls)` names polyline i of sub-tile `sub`
+    (index order), or returns None to leave it unnamed."""
+    e = Ebm(data)
+    names, lists = {}, {}
+    for k in range(e.nx * e.ny):
+        off, ln = struct.unpack_from("<II", data, 36 + k * 8)
+        if not off:
+            continue
+        (count,) = struct.unpack_from("<H", data, off)
+        p, row = off + 2, []
+        for i in range(count):
+            cls, n = data[p], struct.unpack_from("<H", data, p + 1)[0]
+            p += 3 + n * 4
+            nm = name_of(k, i, cls)
+            if nm:
+                names.setdefault(nm, len(names))
+            row.append(names[nm] if nm else 0xFFFF)
+        if any(v != 0xFFFF for v in row):
+            lists[k] = row
+    body = struct.pack("<H", len(names))
+    for nm in names:
+        body += struct.pack("<B", len(nm)) + nm.encode("ascii")
+    at = len(body) + e.nx * e.ny * 4
+    table, tail = b"", b""
+    for k in range(e.nx * e.ny):
+        if k in lists:
+            table += struct.pack("<I", at + len(tail))
+            tail += struct.pack("<%dH" % len(lists[k]), *lists[k])
+        else:
+            table += struct.pack("<I", 0)
+    body += table + tail
+    return data + b"NAM1" + struct.pack("<I", len(body)) + body
+
+
 # -- reading .ebm ----------------------------------------------------------------------
 
 class Ebm:
