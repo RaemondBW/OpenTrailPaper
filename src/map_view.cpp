@@ -489,17 +489,38 @@ uint16_t poiLayerBit(uint8_t type) {
     return 0;
 }
 
-// Street names, at the closest zoom only (MAP_NAMES_MAX_MPP). Each name once,
-// upright on a white chip over the longest stretch of that street on the
-// glass, tried at its middle and then further along either way. Bigger roads
-// pick first, then longer stretches. A chip never sits across another road —
-// on a north-south street that would put its name over the east-west one it
-// crosses, and read as that one's — nor over another label, the rider or the
-// chrome drawn over the map afterwards; one with nowhere clear is left off
-// rather than squeezed in. Upright, not along the road: the panel has no rotated text,
-// and upright reads at a glance whichever way the map is turned.
+// Text turned to read bottom to top, its baseline down column x from y up.
+// Drawn by switching the panel to the landscape rotation a quarter turn from
+// the portrait the map is in, for the one string: there that column is a row,
+// and (x, y) portrait is (959 - y, x) landscape for either pair. Any other
+// rotation falls back to level text.
+void textUp(const EpdFont* font, int x, int y, const char* str, uint8_t* fb) {
+    const EpdRotation rot = epd_get_rotation();
+    const EpdRotation side = rot == EPD_ROT_PORTRAIT ? EPD_ROT_LANDSCAPE
+                           : rot == EPD_ROT_INVERTED_PORTRAIT ? EPD_ROT_INVERTED_LANDSCAPE
+                           : rot;
+    if (side == rot) {
+        ui::text(font, x, y, str, fb, EPD_DRAW_ALIGN_LEFT, 0x00);
+        return;
+    }
+    epd_set_rotation(side);
+    ui::text(font, epd_rotated_display_width() - 1 - y, x, str, fb,
+             EPD_DRAW_ALIGN_LEFT, 0x00);
+    epd_set_rotation(rot);
+}
+
 int s_labelsDrawn = 0;
 
+// Street names, at the closest zoom only (MAP_NAMES_MAX_MPP). Each name once,
+// on a white chip at the longest stretch of that street on the glass, tried
+// at its middle and then further along either way. Bigger roads pick first,
+// then longer stretches. A street running across the screen gets a level
+// label on the road; one running up it gets its name turned to read bottom
+// to top, beside the road. A chip never sits across another road — on a
+// level label over a north-south street that would put its name over the
+// east-west one it crosses, and read as that one's — nor over another label,
+// the rider or the chrome drawn over the map afterwards; one with nowhere
+// clear is left off rather than squeezed in.
 void drawStreetNames(const MapScreenData& map, uint8_t* fb) {
     s_labelsDrawn = 0;
     if (map.metersPerPixel > MAP_NAMES_MAX_MPP || map.nameCount <= 0) return;
@@ -584,8 +605,9 @@ void drawStreetNames(const MapScreenData& map, uint8_t* fb) {
     // Does any road other than `self` run under the chip? Paths without a
     // name are let through: a chip may cover a footpath, not a street.
     auto overRoad = [&](const EpdRect& r, int self) {
-        const float x0 = r.x - 2, y0 = r.y - 2;
-        const float x1 = r.x + r.width + 2, y1 = r.y + r.height + 2;
+        // Centre lines, so a little margin for the width of the stroke.
+        const float x0 = r.x - 4, y0 = r.y - 4;
+        const float x1 = r.x + r.width + 4, y1 = r.y + r.height + 4;
         for (int i = 0; i < map.featureCount; ++i) {
             const MapPolyline& f = map.features[i];
             if (f.name == self || (f.cls == MAP_PATH && f.name >= names)) continue;
@@ -603,24 +625,38 @@ void drawStreetNames(const MapScreenData& map, uint8_t* fb) {
         const Run& b = best[order[o]];
         const char* name = map.names + order[o] * MAP_NAME_STRIDE;
         const int w = ui::textWidth(&Arial_B, name) + 10, h = capH + 10;
-        // An upright label on a street running across the screen lies along
+        // A street running up the screen is labelled the same way: its name
+        // turned to read bottom to top, beside the road rather than on it, so
+        // neither its own line nor a crossing street runs through the text.
+        const bool upright = abs(b.x1 - b.x0) * 2 <= abs(b.y1 - b.y0);
+        // A level label on a street running across the screen lies along
         // it, so it still reads as that street where it covers a side street:
         // when no clear spot is found, one of those may take a crossing.
         const bool across = abs(b.y1 - b.y0) * 3 < abs(b.x1 - b.x0);
+        const int half = styleFor((MapFeatureClass)b.cls, map.metersPerPixel).width / 2;
         bool done = false;
         for (int pass = 0; pass < (across ? 2 : 1) && !done; ++pass) {
             for (float t : {0.5f, 0.38f, 0.62f, 0.26f, 0.74f, 0.14f, 0.86f}) {
                 const int mx = b.x0 + (int)((b.x1 - b.x0) * t);
                 const int my = b.y0 + (int)((b.y1 - b.y0) * t);
-                const EpdRect r = {mx - w / 2, my - h / 2, w, h};
-                if (!clear(r) || (pass == 0 && overRoad(r, order[o]))) continue;
-                epd_fill_rect(r, 0xFF, fb);
-                ui::text(&Arial_B, r.x + 5, r.y + 5 + capH, name, fb,
-                         EPD_DRAW_ALIGN_LEFT, 0x00);
-                placed[placedN++] = r;
-                s_labelsDrawn++;
-                done = true;
-                break;
+                for (int side = 0; side < (upright ? 2 : 1) && !done; ++side) {
+                    // Turned, the chip is h wide and w tall, off to one side.
+                    const EpdRect r =
+                        upright ? EpdRect{side ? mx - half - 4 - h : mx + half + 4,
+                                          my - w / 2, h, w}
+                                : EpdRect{mx - w / 2, my - h / 2, w, h};
+                    if (!clear(r)) continue;
+                    if (upright ? overRoad(r, -1)
+                                : pass == 0 && overRoad(r, order[o])) continue;
+                    epd_fill_rect(r, 0xFF, fb);
+                    if (upright) textUp(&Arial_B, r.x + 5 + capH, r.y + r.height - 5, name, fb);
+                    else ui::text(&Arial_B, r.x + 5, r.y + 5 + capH, name, fb,
+                                  EPD_DRAW_ALIGN_LEFT, 0x00);
+                    placed[placedN++] = r;
+                    s_labelsDrawn++;
+                    done = true;
+                }
+                if (done) break;
             }
         }
     }

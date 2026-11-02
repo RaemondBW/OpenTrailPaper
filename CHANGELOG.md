@@ -9,8 +9,9 @@ so write for the rider, newest version first, one `## vX.YY` heading each.
 
 - Street names on the map. Zoomed all the way in, each street in view is
   labelled once, so you can read the name of the next cross street at a
-  glance. Labels stay off the roads they don't belong to, the buttons and
-  your own marker. They need maps that include names, which newly built
+  glance. Streets running up the screen have their names turned to match,
+  beside the road. Labels stay off the roads they don't belong to, the
+  buttons and your own marker. They need maps that include names, which newly built
   maps will.
 - Bike lanes are much easier to see on the map. A road with a painted lane
   or track now has a bold dashed line along each side, as thick as the road
