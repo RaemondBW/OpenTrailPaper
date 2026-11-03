@@ -12,6 +12,8 @@ void begin();
 
 int ftpWatts();
 // Structured workout: hold at every block boundary until resumed.
+bool panelScan();
+void setPanelScan(bool on);
 bool workoutPauseEachBlock();
 void setWorkoutPauseEachBlock(bool on);
 void setFtpWatts(int w);

@@ -73,6 +73,12 @@ bool hasTile(const char* id);
 // actually covers (lat, lon). False => the map screen has nothing to draw here
 // and should show a "download this area" prompt.
 bool coversPosition(double lat, double lon);
+// Changes whenever a tile or POI file does, so anything derived from them can tell
+// it is out of date.
+uint32_t generation();
+// Every tile a north-up view at this zoom wants is on the card, so it has no blank
+// ground in it. Reads no tile data.
+bool coversView(double lat, double lon, float metersPerPixel);
 
 // Terrain elevation (metres) at (lat, lon), interpolated from the DEM grid
 // baked into the covering tile (ELV1 block). NAN if no tile/elevation covers

@@ -140,12 +140,18 @@ constexpr int PRESENCE_N = 256;
 struct CellPresence { uint64_t cell; bool present; };
 CellPresence g_presence[PRESENCE_N] = {};
 
+// Every change to what is on the card comes through one of these two, which makes this
+// the one place that can say anything drawn from the old tiles is out of date.
+volatile uint32_t g_generation = 0;
+
 void forgetPresence(uint64_t cell) {
     CellPresence& e = g_presence[(size_t)(cell % PRESENCE_N)];
     if (e.cell == cell) e = {};
+    g_generation = g_generation + 1;
 }
 void forgetAllPresence() {
     for (int i = 0; i < PRESENCE_N; ++i) g_presence[i] = {};
+    g_generation = g_generation + 1;
 }
 
 bool tileExists(uint64_t cell) {
@@ -202,7 +208,12 @@ constexpr int CACHE_N = MAP_TILE_BUDGET;
 size_t cacheBudget() {
     static size_t budget = 0;
     if (budget) return budget;
-    constexpr size_t kReserve = 2560u * 1024;   // OTA staging + headroom
+    // Left free beside the cache. Not room for an OTA: both paths that stage one call
+    // releaseCache() first, and that is what gives it its contiguous block. This was
+    // 2.5 MB when PSRAM had little else in it. Now the panel scan and map layers need
+    // their share, and holding this much back left the cache at its floor, where every
+    // wide view streams from the card.
+    constexpr size_t kReserve = 1100u * 1024;
     constexpr size_t kCeiling = 4096u * 1024;
     constexpr size_t kFloor   = 512u * 1024;
     const size_t freeNow = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
@@ -788,6 +799,20 @@ bool hasTile(const char* id) {
     if (char* dot = strstr(bare, ".ebm")) *dot = 0;
     uint64_t cell = h3_from_id(bare);
     return cell && tileExists(cell);
+}
+
+uint32_t generation() { return g_generation; }
+
+bool coversView(double lat, double lon, float metersPerPixel) {
+    MapGuard g;
+    static uint64_t sel[MAP_TILE_BUDGET];
+    int wanted = 0;
+    const int n = mapSelectCells(lat, lon, metersPerPixel, 0.0f, MAP_TILE_BUDGET, sel, &wanted);
+    if (wanted > n) return false;
+    for (int i = 0; i < n; ++i) {
+        if (!tileExists(sel[i])) return false;
+    }
+    return n > 0;
 }
 
 bool coversPosition(double lat, double lon) {

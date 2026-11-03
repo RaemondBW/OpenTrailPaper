@@ -392,9 +392,14 @@ def test_riding_a_route_counts_down_to_each_turn_in_order(device, link):
         ds = [d for _, d in mine]
         assert all(b <= a + 1 for a, b in zip(ds, ds[1:])), "%s: the countdown went up: %s" % (text, ds)
         if nxt[1]:
-            handover = min(a for a, t, _ in seen if t == nxt[1])
             # Past by 20 m (routes.cpp kManeuverPastM), seen at the next fix (10 m on).
-            assert m - 10 <= handover <= m + 35, "%s at %.0f m handed over at %.0f m" % (text, m, handover)
+            # Bounded by what was seen of each cue, not by the first poll that
+            # caught the next one: at 50 m a second a poll that stalls on a slow
+            # runner skips a fix, which moved that first sighting 10 m on.
+            early = min(a for a, t, _ in seen if t == nxt[1])
+            late = max(a for a, _ in mine)
+            assert early >= m - 10, "%s at %.0f m handed over at %.0f m" % (text, m, early)
+            assert late <= m + 35, "%s at %.0f m was still up at %.0f m" % (text, m, late)
 
 
 # An out-and-back: 1 km east on the north side of the road, a U-turn, and back

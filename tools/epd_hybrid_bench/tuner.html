@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>E-paper Tuner</title>
+<style>
+:root {
+  --paper: #efece4; --card: #f8f6f0; --ink: #23221f; --soft: #6c6a62; --line: #d6d2c6;
+  --accent: #2a5d8a; --accent-ink: #fff; --good: #2f7a4a; --warn: #a8641a; --bad: #a83a2c;
+  --log: #1f1f1d; --log-ink: #d8d6cc;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #1b1b19; --card: #252523; --ink: #ecebe4; --soft: #a3a198; --line: #3a3936;
+    --accent: #7db4e3; --accent-ink: #10202e; --good: #6cc48c; --warn: #e0a85c; --bad: #ee8877;
+    --log: #111110; --log-ink: #cfcdc4;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--paper); color: var(--ink);
+  font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+header { display: flex; align-items: center; gap: 16px; padding: 14px 20px;
+  border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+h1 { font-size: 18px; margin: 0; }
+h2 { font-size: 13px; margin: 0 0 10px; color: var(--soft); text-transform: uppercase;
+  letter-spacing: .05em; font-weight: 600; }
+#link { font-size: 13px; color: var(--soft); }
+#link b { font-weight: 600; }
+.dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+  background: var(--bad); margin-right: 6px; }
+.dot.on { background: var(--good); }
+.dot.busy { background: var(--warn); }
+main { display: grid; grid-template-columns: minmax(300px, 400px) minmax(0, 1fr); gap: 16px;
+  padding: 16px 20px; max-width: 1400px; margin: 0 auto; }
+@media (max-width: 860px) { main { grid-template-columns: 1fr; } }
+section { background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+  padding: 14px; margin-bottom: 16px; }
+label { display: block; }
+.modes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+button { font: inherit; border: 1px solid var(--line); background: var(--paper); color: var(--ink);
+  border-radius: 6px; padding: 7px 10px; cursor: pointer; }
+button:hover:not(:disabled) { border-color: var(--soft); }
+button:disabled { opacity: .5; cursor: default; }
+button:focus-visible, input:focus-visible, textarea:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 1px; }
+.modes button[aria-pressed=true] { background: var(--accent); color: var(--accent-ink);
+  border-color: var(--accent); font-weight: 600; }
+#modeNote { font-size: 13px; color: var(--soft); margin: 10px 0 0; }
+.knob { margin-bottom: 12px; }
+.knob .row { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }
+.knob .name { font-weight: 600; }
+.knob output { font-variant-numeric: tabular-nums; font-size: 14px; }
+.knob input[type=range] { width: 100%; margin: 4px 0 0; accent-color: var(--accent); }
+.knob .hint { font-size: 12.5px; color: var(--soft); }
+.checks { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px 10px; margin-bottom: 8px; }
+.checks label { display: flex; gap: 6px; align-items: center; }
+.sub { font-size: 13px; color: var(--soft); margin: 8px 0 4px; }
+.actions { display: flex; gap: 8px; position: sticky; bottom: 0; background: var(--card); padding: 8px 0; }
+@media (min-width: 861px) {
+  main > div:last-child { position: sticky; top: 16px; align-self: start;
+    max-height: calc(100vh - 32px); overflow-y: auto; }
+}
+#go { flex: 1; background: var(--accent); color: var(--accent-ink); border-color: var(--accent);
+  font-weight: 600; padding: 10px; }
+#stop { padding: 10px 16px; }
+#plan { font-size: 13px; color: var(--soft); margin-top: 8px; }
+#now { font-weight: 600; margin-bottom: 6px; min-height: 22px; }
+.tablewrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 13.5px; font-variant-numeric: tabular-nums; }
+th { text-align: left; color: var(--soft); font-weight: 600; }
+th, td { padding: 4px 10px 4px 0; border-bottom: 1px solid var(--line); white-space: nowrap; }
+td.num, th.num { text-align: right; }
+.ok { color: var(--good); } .slow { color: var(--warn); }
+pre { background: var(--log); color: var(--log-ink); margin: 0; padding: 10px; border-radius: 6px;
+  height: 200px; overflow: auto; font: 12px/1.45 ui-monospace, Menlo, monospace; white-space: pre-wrap; }
+.run { border-top: 1px solid var(--line); padding: 10px 0; }
+.run:first-child { border-top: 0; padding-top: 0; }
+.run .top { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; align-items: center; }
+.run .title { font-weight: 600; }
+.run .knobs { font-size: 12.5px; color: var(--soft); margin: 2px 0 6px; }
+.stars button { border: 0; background: none; padding: 0 2px; font-size: 19px; color: var(--line); }
+.stars button.on { color: var(--warn); }
+.run textarea { width: 100%; font: inherit; font-size: 13.5px; background: var(--paper); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 6px; padding: 6px; resize: vertical; min-height: 34px; margin-top: 6px; }
+.empty { color: var(--soft); font-size: 14px; }
+.spread { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.spread h2 { margin: 0; }
+small.btn { font-size: 12.5px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>E-paper Tuner</h1>
+  <span id="link"><span class="dot" id="dot"></span><b id="linkText">Connecting</b></span>
+</header>
+<main>
+  <div>
+    <section>
+      <h2>Update mode</h2>
+      <div class="modes" id="modes"></div>
+      <p id="modeNote"></p>
+    </section>
+    <section>
+      <h2>Knobs for this mode</h2>
+      <div id="knobs"></div>
+    </section>
+    <section>
+      <h2>What to run</h2>
+      <div class="sub">Test clip, each section followed by a test card</div>
+      <div class="checks" id="sections"></div>
+      <div class="sub">Scenes, each left on the panel afterwards</div>
+      <div class="checks" id="scenes"></div>
+      <div id="runKnobs"></div>
+      <div class="actions">
+        <button id="go">Run test</button>
+        <button id="stop" disabled>Stop</button>
+      </div>
+      <div id="plan"></div>
+    </section>
+  </div>
+  <div>
+    <section>
+      <div id="now">Idle</div>
+      <div class="tablewrap"><table id="results"></table></div>
+      <div class="sub" style="margin-top:10px">Board output</div>
+      <pre id="log" tabindex="0" aria-label="Board output"></pre>
+    </section>
+    <section>
+      <div class="spread">
+        <h2>Your runs</h2>
+        <small class="btn"><button id="export">Copy as text</button></small>
+      </div>
+      <div id="runs"></div>
+    </section>
+  </div>
+</main>
+<script>
+const SECTIONS = {ball: 'ball', text: 'text', pan: 'pan', plasma: 'plasma', strobe: 'strobe', cuts: 'cuts'};
+const SCENES = {digits: 'digits', pan: 'map pan', trail: 'trail', flip: 'flip'};
+const SCENE_HZ = {digits: 2, pan: 8, trail: 2, flip: 3};
+
+const KNOBS = {
+  paced:   {name: 'Pass period', unit: 'ms', scale: 1000, min: 6, max: 20, step: .5, value: 10,
+            hint: 'Higher drives each pass longer. This is what cleaned up FAST.'},
+  rowextra: {name: 'Extra charge per row', unit: 'µs', min: 0, max: 12, step: 1, value: 0,
+            hint: 'Holds each row longer so its pixels charge further. Keep the row loop under the pass period.'},
+  period:  {name: 'Pass period', unit: 'ms', scale: 1000, min: 6, max: 20, step: .5, value: 10,
+            hint: 'Time between latches, on this scan loop.'},
+  strict:  {name: 'Drive passes', unit: '', min: 3, max: 16, step: 1, value: 7,
+            hint: 'More reaches further towards black and white, and takes longer.'},
+  erase:   {name: 'Erase priming passes', unit: '', min: 0, max: 6, step: 1, value: 2,
+            hint: 'Darkens a black pixel this many passes first, then adds the same to its whiten run. For ghosts when black goes to white. DC-balanced. Each pass adds 20 ms to a frame.'},
+  topup:   {name: 'Top-up passes', unit: '', min: 0, max: 8, step: 1, value: 3,
+            hint: 'Extra drive for unchanged pixels beside a change. Not DC-balanced.'},
+  fast:    {name: 'Drive passes', unit: '', min: 3, max: 16, step: 1, value: 8,
+            hint: 'Length of the fast black and white drive.'},
+  k:       {name: 'Settle passes', unit: ' + same', min: 1, max: 8, step: 1, value: 3,
+            hint: 'Length of the cleaning train, each way.'},
+  settle:  {name: 'Settle delay', unit: 'ms', min: 300, max: 5000, step: 100, value: 1500,
+            hint: 'How long a pixel must be still before it is cleaned.'},
+  longgap: {name: 'Gap between passes', unit: 'ms', scale: 1000, min: 0, max: 6, step: .5, value: 0,
+            hint: '13 passes with this gap after each.'},
+};
+
+const MODES = {
+  paced:    {label: 'Paced', knobs: ['paced', 'rowextra'], note: 'The driver’s FAST at a steady pass period. Best result so far for its cost.'},
+  topup:    {label: 'Top-up', knobs: ['period', 'strict', 'erase', 'topup'], note: 'Also evens out unchanged pixels beside a change. Aimed at the ghosts on digit corners and line crossings. Runs on the test engine, so it is slower. Not DC-balanced, so a grey cast could build up over time.'},
+  strict:   {label: 'Strict', knobs: ['period', 'strict', 'erase'], note: 'Test engine, one frame at a time, every frame drawn.'},
+  batch:    {label: 'Batch', knobs: ['period', 'fast', 'erase'], note: 'Test engine, one frame at a time. Skips frames when it cannot keep up.'},
+  hybrid:   {label: 'Hybrid', knobs: ['period', 'fast', 'k', 'settle'], note: 'The Modos-style engine: overlapping updates, cancellation and settle. Leaves strong ghosts after fast reversals.'},
+  nosettle: {label: 'No settle', knobs: ['period', 'fast'], note: 'Hybrid without the settle step.'},
+  long:     {label: 'Long', knobs: ['longgap'], note: 'The driver’s NORMAL train with the gap shortened.'},
+  fast:     {label: 'Fast', knobs: [], note: 'The driver’s FAST, unpaced. No knobs.'},
+  shipping: {label: 'Shipping', knobs: [], note: 'What the firmware does today. No knobs.'},
+};
+
+const RUN_KNOBS = {
+  hz:     {name: 'Frame rate, clip', unit: ' Hz', min: 1, max: 30, step: 1, value: 12, hint: 'Requested rate. Paced holds about 12.'},
+  frames: {name: 'Frames per section', unit: '', min: 0, max: 60, step: 5, value: 0, hint: '0 plays everything. Lower it for a quicker run.', zero: 'all'},
+  hold:   {name: 'Test card hold', unit: ' s', scale: 1000, min: .5, max: 6, step: .5, value: 2.5, hint: 'How long each card stays up.'},
+  look:   {name: 'Pause between scenes', unit: ' s', scale: 1, min: 0, max: 20, step: 1, value: 6, hint: 'Time to look at a last frame before the next test clears it.'},
+};
+
+const $ = id => document.getElementById(id);
+const store = {
+  get(k, d) { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+};
+
+let mode = store.get('mode', 'paced');
+const values = Object.assign(
+  Object.fromEntries(Object.entries({...KNOBS, ...RUN_KNOBS}).map(([k, v]) => [k, v.value])),
+  store.get('values', {}));
+const picked = store.get('picked', {sections: ['ball'], scenes: ['digits', 'trail']});
+let runs = store.get('runs', []);
+let current = null, since = 0, wasBusy = false, stopped = false, nextId = Date.now();
+
+function knobHtml(key, def) {
+  return `<div class="knob"><label for="k-${key}"><span class="row"><span class="name">${def.name}</span>
+    <output id="o-${key}"></output></span></label>
+    <input type="range" id="k-${key}" min="${def.min}" max="${def.max}" step="${def.step}" value="${values[key]}">
+    <div class="hint">${def.hint}</div></div>`;
+}
+function showValue(key, def) {
+  const v = values[key];
+  $('o-' + key).textContent = (def.zero && v == 0) ? def.zero : `${v}${def.unit.startsWith(' ') || !def.unit ? def.unit : ' ' + def.unit}`;
+}
+function bind(key, def) {
+  const el = $('k-' + key);
+  showValue(key, def);
+  el.addEventListener('input', () => {
+    values[key] = Number(el.value);
+    store.set('values', values);
+    showValue(key, def);
+    renderPlan();
+  });
+}
+function renderModes() {
+  $('modes').innerHTML = Object.entries(MODES).map(([k, m]) =>
+    `<button data-mode="${k}" aria-pressed="${k === mode}">${m.label}</button>`).join('');
+  $('modeNote').textContent = MODES[mode].note;
+  const list = MODES[mode].knobs;
+  $('knobs').innerHTML = list.length ? list.map(k => knobHtml(k, KNOBS[k])).join('')
+    : '<div class="empty">This mode has nothing to tune.</div>';
+  list.forEach(k => bind(k, KNOBS[k]));
+  renderPlan();
+}
+$('modes').addEventListener('click', e => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  mode = b.dataset.mode;
+  store.set('mode', mode);
+  renderModes();
+});
+function renderChecks(id, list, group) {
+  $(id).innerHTML = Object.entries(list).map(([k, label]) =>
+    `<label><input type="checkbox" data-k="${k}" ${picked[group].includes(k) ? 'checked' : ''}>${label}</label>`).join('');
+  $(id).addEventListener('change', () => {
+    picked[group] = [...$(id).querySelectorAll('input:checked')].map(i => i.dataset.k);
+    store.set('picked', picked);
+    renderPlan();
+  });
+}
+function commands() {
+  const out = [];
+  if (picked.sections.length) out.push(`video ${mode} ${values.hz} ${picked.sections.join(',')}`);
+  for (const s of picked.scenes) out.push(`run ${s} ${mode} ${SCENE_HZ[s]}`);
+  return out;
+}
+function boardKnobs() {
+  const out = {frames: values.frames, hold: values.hold * 1000};
+  for (const k of MODES[mode].knobs) out[k] = values[k] * (KNOBS[k].scale || 1);
+  return out;
+}
+function renderPlan() {
+  const c = commands();
+  $('go').disabled = !c.length || wasBusy;
+  $('plan').textContent = c.length ? `${c.length} test${c.length > 1 ? 's' : ''}: ${c.join(', ')}` : 'Pick at least one section or scene.';
+}
+function knobSummary(r) {
+  const parts = MODES[r.mode].knobs.map(k => `${KNOBS[k].name.toLowerCase()} ${r.values[k]}${KNOBS[k].unit ? ' ' + KNOBS[k].unit.trim() : ''}`);
+  parts.push(`${r.values.hz} Hz clip`);
+  return parts.join(', ');
+}
+
+$('go').addEventListener('click', async () => {
+  const body = {knobs: boardKnobs(), commands: commands(), look: values.look};
+  stopped = false;
+  const res = await fetch('/api/run', {method: 'POST', body: JSON.stringify(body)});
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}));
+    $('now').textContent = e.error === 'no board' ? 'No board connected' : e.error === 'busy' ? 'Board is busy' : 'Could not start';
+    return;
+  }
+  current = {id: nextId++, when: new Date().toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'}),
+             mode, values: {...values}, what: [...picked.sections, ...picked.scenes.map(s => s + ' scene')],
+             results: [], rating: 0, note: ''};
+  runs.unshift(current);
+  store.set('runs', runs.slice(0, 50));
+  renderResults(); renderRuns();
+});
+$('stop').addEventListener('click', () => { stopped = true; fetch('/api/stop', {method: 'POST'}); });
+
+function parseLine(t) {
+  if (!current) return;
+  const kv = s => Object.fromEntries(s.split(' ').filter(x => x.includes('=')).map(x => x.split('=')));
+  let m;
+  if (t.startsWith('[result] ')) {
+    const r = kv(t);
+    current.results.push({name: r.section, took: +r.took_ms, want: +r.want_ms, late: +r.late,
+                          frames: r.accepted ? `${r.accepted}/${r.posted}` : (r.cycles ?? ''),
+                          slowest: r.slowest_pass_us ? +r.slowest_pass_us : null,
+                          scan: +r.scan_us || null});
+  } else if ((m = t.match(/^\[bench\] (\w+) \/ \w+:/))) {
+    current.scene = m[1];
+    $('now').textContent = `Running ${m[1]}`;
+  } else if ((m = t.match(/^\[video\] \w+ \/ (\w+):/))) {
+    $('now').textContent = `Running ${m[1]}`;
+  } else if ((m = t.match(/^\[bench\] took (\d+) ms, wanted (\d+); (\d+) frames late/))) {
+    current.results.push({name: (current.scene || 'scene') + ' scene', took: +m[1], want: +m[2], late: +m[3], frames: '', slowest: null});
+  } else if (t.includes('look for ghosts')) {
+    $('now').textContent = 'Last frame is on the panel';
+  } else return;
+  renderResults();
+}
+function renderResults() {
+  const rows = current ? current.results : [];
+  $('results').innerHTML = rows.length ? `<thead><tr><th>Test</th><th class="num">Took</th><th class="num">Target</th>
+    <th class="num">Late frames</th><th class="num">Drawn</th><th class="num">Row loop</th><th class="num">Slowest pass</th></tr></thead><tbody>` +
+    rows.map(r => {
+      const cls = r.took <= r.want * 1.03 ? 'ok' : 'slow';
+      return `<tr><td>${r.name}</td><td class="num ${cls}">${(r.took / 1000).toFixed(2)} s</td>
+        <td class="num">${(r.want / 1000).toFixed(2)} s</td><td class="num">${r.late}</td><td class="num">${r.frames}</td>
+        <td class="num">${r.scan ? (r.scan / 1000).toFixed(1) + ' ms' : ''}</td>
+        <td class="num">${r.slowest ? (r.slowest / 1000).toFixed(0) + ' ms' : ''}</td></tr>`;
+    }).join('') + '</tbody>' : '';
+}
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+function renderRuns() {
+  if (!runs.length) { $('runs').innerHTML = '<div class="empty">Runs you make appear here, so you can rate how they looked and go back to the best settings.</div>'; return; }
+  $('runs').innerHTML = runs.map(r => `<div class="run" data-id="${r.id}">
+    <div class="top"><span class="title">${esc(MODES[r.mode].label)} · ${esc(r.when)}</span>
+      <span class="stars" role="group" aria-label="Rating">${[1,2,3,4,5].map(n =>
+        `<button data-star="${n}" class="${n <= r.rating ? 'on' : ''}" aria-label="${n} of 5">★</button>`).join('')}</span></div>
+    <div class="knobs">${esc(knobSummary(r))} · ${esc(r.what.join(', '))}</div>
+    <button data-load>Use these settings</button>
+    <textarea placeholder="What did you see on the panel?" aria-label="Notes">${esc(r.note)}</textarea></div>`).join('');
+}
+$('runs').addEventListener('click', e => {
+  const el = e.target.closest('.run');
+  if (!el) return;
+  const r = runs.find(x => x.id == el.dataset.id);
+  if (e.target.dataset.star) { r.rating = +e.target.dataset.star; store.set('runs', runs); renderRuns(); }
+  if ('load' in e.target.dataset) { mode = r.mode; Object.assign(values, r.values); store.set('mode', mode); store.set('values', values); renderModes(); renderRunKnobs(); }
+});
+$('runs').addEventListener('input', e => {
+  if (e.target.tagName !== 'TEXTAREA') return;
+  const r = runs.find(x => x.id == e.target.closest('.run').dataset.id);
+  r.note = e.target.value;
+  store.set('runs', runs);
+});
+$('export').addEventListener('click', async () => {
+  const text = runs.map(r => `${MODES[r.mode].label}, ${r.when}: ${knobSummary(r)}; ${r.what.join(', ')}; rating ${r.rating || 'none'}/5; ${r.note || 'no notes'}`).join('\n');
+  try { await navigator.clipboard.writeText(text); $('export').textContent = 'Copied'; } catch { $('export').textContent = 'Could not copy'; }
+  setTimeout(() => $('export').textContent = 'Copy as text', 1500);
+});
+function renderRunKnobs() {
+  $('runKnobs').innerHTML = Object.entries(RUN_KNOBS).map(([k, d]) => knobHtml(k, d)).join('');
+  Object.entries(RUN_KNOBS).forEach(([k, d]) => bind(k, d));
+}
+
+async function poll() {
+  try {
+    const s = await (await fetch('/api/status?since=' + since)).json();
+    since = s.next;
+    if (s.lines.length) {
+      const log = $('log');
+      const atEnd = log.scrollHeight - log.scrollTop - log.clientHeight < 30;
+      log.textContent = (log.textContent + s.lines.join('\n') + '\n').slice(-20000);
+      if (atEnd) log.scrollTop = log.scrollHeight;
+      s.lines.forEach(parseLine);
+    }
+    $('dot').className = 'dot' + (s.connected ? (s.busy ? ' busy' : ' on') : '');
+    $('linkText').textContent = s.connected ? (s.busy ? 'Running' : 'Connected') : 'No board found';
+    $('go').textContent = s.busy && s.tests > 1 ? `Running test ${Math.max(s.test, 1)} of ${s.tests}`
+                        : s.busy ? 'Running' : 'Run test';
+    if (s.looking > 0) $('now').textContent = `Last frame is on the panel. Next test in ${Math.ceil(s.looking)} s`;
+    if (wasBusy && !s.busy) {
+      if (current) store.set('runs', runs.slice(0, 50));
+      $('now').textContent = stopped ? 'Stopped' : 'Finished. Last frame is on the panel';
+    }
+    wasBusy = s.busy;
+    $('stop').disabled = !s.busy;
+    renderPlan();
+  } catch {
+    $('dot').className = 'dot';
+    $('linkText').textContent = 'Tuner server stopped';
+  }
+  setTimeout(poll, 300);
+}
+
+renderChecks('sections', SECTIONS, 'sections');
+renderChecks('scenes', SCENES, 'scenes');
+renderRunKnobs();
+renderModes();
+renderRuns();
+poll();
+</script>
+</body>
+</html>

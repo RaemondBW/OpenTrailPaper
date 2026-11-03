@@ -790,20 +790,25 @@ uint16_t ui_map_layer_bit(int row) {
 // Null until the first map render. Used by the ghost settle-clean.
 const uint8_t* ui_map_dither_mask() { return s_ditherMask; }
 
-void ui_render_map_features(const MapScreenData& map, const RideState& s,
-                            uint8_t* fb) {
-    (void)s;
+bool ui_render_map_base(const MapScreenData& map, uint8_t* fb, bool (*keepGoing)()) {
+    // Checked every few items: a single road is far too quick to be worth asking
+    // about, and a full frame of them is seconds with a finger waiting.
+    const auto cancelled = [keepGoing](int i) {
+        return keepGoing && (i & 15) == 0 && !keepGoing();
+    };
     // Map features: parks + water under roads, all in grays. Parks (hatch) are
     // the base layer, then water (dots) over them, then trails, then roads in
     // tier order on top. Rail/transit removed by request.
-    // mask=true records the dithered fills so the settle-clean flashes exactly
-    // those (where DU ghosting settles), not the whole viewport.
+    // mask=true records the water, so a zoom can scrub exactly that: its dots stay
+    // black from frame to frame and show the old roads, and nothing else needs it.
     ditherMaskReset();
     memset(s_parkGrid, 0, sizeof(s_parkGrid));
     for (int i = 0; i < map.parkCount; ++i) {
-        fillDitheredPolygon(map.parks[i].pts, map.parks[i].pointCount, fb, FILL_HATCH, true);
+        if (cancelled(i)) return false;
+        fillDitheredPolygon(map.parks[i].pts, map.parks[i].pointCount, fb, FILL_HATCH, false);
     }
     for (int i = 0; i < map.waterCount; ++i) {
+        if (cancelled(i)) return false;
         fillDitheredPolygon(map.water[i].pts, map.water[i].pointCount, fb, FILL_DOTS, true);
     }
     // Park casings: every way's white border goes down before any road or bike
@@ -815,6 +820,7 @@ void ui_render_map_features(const MapScreenData& map, const RideState& s,
     if (map.parkCount > 0) {
         const bool infra = (map.layers & MAP_LAYER_CYCLEWAYS) != 0;
         for (int i = 0; i < map.featureCount; ++i) {
+            if (cancelled(i)) return false;
             const MapPolyline& f = map.features[i];
             int w = styleFor(f.cls, map.metersPerPixel).width;
             if (f.cls == MAP_PATH)
@@ -866,6 +872,7 @@ void ui_render_map_features(const MapScreenData& map, const RideState& s,
     for (MapFeatureClass cls : order) {
         const Style st = styleFor(cls, map.metersPerPixel);
         for (int i = 0; i < map.featureCount; ++i) {
+            if (cancelled(i)) return false;
             const MapPolyline& f = map.features[i];
             if (f.cls != cls) continue;
             // With the layer off, cycleways and laned roads draw in their own
@@ -876,7 +883,12 @@ void ui_render_map_features(const MapScreenData& map, const RideState& s,
             drawPolyline(f.pts, f.pointCount, cycleway ? cyclewayStyle : st, fb);
         }
     }
+    return true;
+}
 
+namespace {
+// What goes over the base layer, redrawn on every frame.
+void renderMapTop(const MapScreenData& map, uint8_t* fb) {
     // Route: 14 px black; ridden part solid, ahead dashed (design 1f)
     if (map.route && map.routePointCount > 1) {
         int ridden = map.riddenPointCount;
@@ -896,13 +908,25 @@ void ui_render_map_features(const MapScreenData& map, const RideState& s,
 
     drawRider(map.riderX, map.riderY, map.headingDeg, fb);
 }
+}  // namespace
 
-void ui_render_map(const MapScreenData& map, const RideState& s, uint8_t* fb) {
+void ui_render_map_features(const MapScreenData& map, const RideState& s, uint8_t* fb) {
+    (void)s;
+    ui_render_map_base(map, fb);
+    renderMapTop(map, fb);
+}
+
+void ui_render_map(const MapScreenData& map, const RideState& s, uint8_t* fb,
+                   bool baseDrawn, void (*onBase)(const uint8_t* fb)) {
     const int W = epd_rotated_display_width();
     const int H = epd_rotated_display_height();
     char buf[32];
 
-    ui_render_map_features(map, s, fb);
+    if (!baseDrawn) {
+        ui_render_map_base(map, fb);
+        if (onBase) onBase(fb);
+    }
+    renderMapTop(map, fb);
     drawScaleBar(map.metersPerPixel, s.useMiles, fb);
     // The turn banner occupies the top of the map, exactly where the compass
     // lives (compass spans y 78..146; the banner runs to y 202), so the north

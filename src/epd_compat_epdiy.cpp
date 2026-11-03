@@ -65,6 +65,13 @@ void epdc_paint() {
 // must not sleep mid-drive (shutdownDevice) can be backend-agnostic.
 void epdc_paint_wait() {}
 
+bool epdc_scan_enable(bool) { return false; }
+bool epdc_scan_enabled() { return false; }
+bool epdc_scan_tune(int, int) { return false; }
+void epdc_scan_report() {}
+void epdc_clear_rects(const EpdRect*, int) {}
+void epdc_scrub_bits(const uint8_t*) {}
+
 // Already down — this backend powers the rails on and off around every paint
 // (above), which is why the deep-sleep drain the EPD_Painter port introduced was
 // never a problem here. Kept so the shutdown path can stay backend-agnostic.
