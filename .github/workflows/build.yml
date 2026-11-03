@@ -182,6 +182,8 @@ jobs:
             tests: test_mesh.py
           - part: mesh position and air
             tests: test_mesh_position.py test_mesh_air.py
+          - part: mesh group
+            tests: test_mesh_group.py
     env:
       OTP_SIM_TIME_SCALE: "3"   # wall-clock bounds in the tests, for a slower runner
     steps:

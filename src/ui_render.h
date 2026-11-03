@@ -432,3 +432,9 @@ void ui_render_nav_banner(const char* instruction, float distanceM,
 // both apply): pause glyph, "AUTO-PAUSED", tap-to-resume hint. Static by
 // design so a paused screen stops costing panel refreshes.
 void ui_render_pause_banner(uint8_t* fb);
+
+// A text that just arrived on a private mesh channel, briefly, in the same
+// band: speech-bubble glyph, "SENDER · CHANNEL", then the message over up to
+// two lines (cut with an ellipsis past that).
+void ui_render_mesh_notice(const char* from, const char* channel,
+                           const char* text, uint8_t* fb);

@@ -87,6 +87,17 @@ struct MapPoi {
     uint8_t flags;   // MAP_PF_*
 };
 
+// Another rider on one of our private mesh channels, where they last said they
+// were. Off-screen ones are kept (offscreen = true, x/y pinned to the map's
+// edge on the line from the rider) so the map can point the way to them.
+struct MapPeer {
+    int16_t x, y;            // screen px
+    bool    stale;           // older than MESH_MAP_FRESH_MS: dashed ring
+    bool    offscreen;       // pinned to the edge, pointing their way
+    char    initials[3];     // first two letters of the name, in the ring
+    char    label[16];       // the distance, when off screen
+};
+
 struct MapScreenData {
     const MapPolyline* features;
     int featureCount;
@@ -114,6 +125,10 @@ struct MapScreenData {
     // MAP_NAMES_MAX_MPP and closer.
     const char* names = nullptr;
     int nameCount = 0;
+
+    // Riders sharing their position on a private mesh channel.
+    const MapPeer* peers = nullptr;
+    int peerCount = 0;
 
     // Which cycling layers to draw (MAP_LAYER_* bits).
     uint16_t layers = MAP_LAYERS_ALL;

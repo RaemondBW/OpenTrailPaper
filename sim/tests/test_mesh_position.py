@@ -163,3 +163,55 @@ def test_replacing_the_channel_a_rider_shares_with_does_not_carry_the_sharing_ov
     mesh.dev.set_speed(1)
     leaked = positions(mesh)
     assert leaked == [], "position broadcast on the public channel %d times" % len(leaked)
+
+
+def phone_fix(mesh_, lat, lon):
+    """One location from the app's stream (link PhoneLocation)."""
+    mesh_.link.tell(location=pb.PhoneLocation(lat_e7=int(lat * 1e7), lon_e7=int(lon * 1e7), accuracy_m=8))
+
+
+def test_without_a_fix_of_its_own_the_device_shares_the_phones_position(mesh):
+    """Indoors, or before the receiver warms up, the device has no fix but
+    the phone in the rider's pocket does and is sending it over the link.
+    That is a real position, so it is shared; the satellites count stays 0
+    because none of the device's own were used."""
+    mesh.dev.gps(*HOOD_RIVER, fix=False, sats=0)
+    lat, lon = metres_north(*HOOD_RIVER, 300)
+    phone_fix(mesh, lat, lon)
+    share(mesh)
+    p = mesh.wait_sent(lambda h: is_port(h, M.PORT_POSITION), "the phone's position")
+    pos = M.decode_position(p["data"]["payload"])
+    assert abs(pos["lat"] - lat) < 2e-7 and abs(pos["lon"] - lon) < 2e-7
+    assert pos["sats"] == 0
+
+
+def test_a_message_on_a_channel_sharing_location_carries_where_the_rider_is(mesh):
+    """Each message to a group the rider shares with goes out with their
+    position just ahead of it, inside the ten minute minimum too, so the
+    group sees where the message came from. A message on a channel without
+    sharing carries none."""
+    key = bytes(range(16, 32))
+    mesh.set_private(1, "Group Ride", key)
+    lat, lon = HOOD_RIVER
+    mesh.dev.gps(lat, lon, sats=9)
+    mesh.dev.wait_status(lambda s: s["ride"]["gps_fix"], timeout=10)
+    share(mesh, index=1)
+    mesh.wait_sent(lambda h: is_port(h, M.PORT_POSITION), "the first position")
+    mesh.drain()
+
+    mesh.dev.gps(*metres_north(lat, lon, 40), sats=9)   # under the 100 m trigger
+    mesh.dev.wait_status(lambda s: abs(s["ride"]["lat"] - (lat + 40 / 111320.0)) < 1e-6, timeout=10)
+    mesh.send("at the cafe", channel=1)
+    text = mesh.wait_sent(lambda h: is_port(h, M.PORT_TEXT), "the message")
+    sent = mesh.sent(since=0)
+    group = M.Channel("Group Ride", key).hash
+    pos = [h for h in sent if is_port(h, M.PORT_POSITION) and h["channel"] == group]
+    assert len(pos) == 2, "no position with the message"
+    assert pos[-1]["tx"]["start_ms"] <= text["tx"]["start_ms"], "position should go out before the text"
+    assert abs(M.decode_position(pos[-1]["data"]["payload"])["lat"] - (lat + 40 / 111320.0)) < 2e-6
+
+    mesh.send("hello everyone", channel=0)
+    mesh.wait_sent(lambda h: is_port(h, M.PORT_TEXT) and h["channel"] == M.Channel().hash, "the public message")
+    mesh.drain()
+    assert len([h for h in mesh.sent(since=0) if is_port(h, M.PORT_POSITION)]) == 2, \
+        "a position went out with a message on a channel that does not share"

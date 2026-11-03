@@ -7,6 +7,20 @@ so write for the rider, newest version first, one `## vX.YY` heading each.
 
 ## v1.23
 
+- Riders on your private mesh channels show on the map. When someone in
+  the group shares their location, they appear as a circle with the
+  first two letters of their name. The circle turns dashed once their position is 20 minutes
+  old and disappears after 90. Someone off the edge of the screen stays at
+  the edge, with a large pointer toward them and how far away they are.
+  Positions on the public channel stay off the map, and leaving a channel
+  removes its riders.
+- Sharing your location now works without a GPS fix on the device: it
+  uses the phone's position instead. Each message you send to a channel
+  you share with also carries where you are.
+- Messages on a private channel pop up on the ride screens. The sender,
+  channel and message show in the top band for ten seconds; tap it to
+  dismiss it sooner. A turn coming up within 200 m keeps the band, so the
+  directions aren't hidden. Public channel messages don't pop up.
 - Street names on the map. Zoomed all the way in, each street in view is
   labelled once, so you can read the name of the next cross street at a
   glance. Streets running up the screen have their names turned to match,

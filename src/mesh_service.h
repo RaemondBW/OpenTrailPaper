@@ -71,6 +71,7 @@ struct Node {
     double   longitude = 0;
     int32_t  altitudeM = 0;
     uint32_t positionMs = 0;    // millis() when it arrived, for staleness
+    uint8_t  positionChannel = 0;  // slot it came in on; 0 = the public channel
     uint8_t  satsInView = 0;
     uint8_t  precisionBits = 32;   // < 32 = the sender blurred it deliberately
 
@@ -228,6 +229,21 @@ bool nodeName(uint32_t num, char* out, size_t cap);
 
 int unreadCount();
 void markAllRead();
+
+// The latest text to arrive on a private channel, for the on-device popup.
+// Only private channels: the public one is strangers within radio range, and
+// popping every one of their messages over the ride screens would bury them.
+// seq counts these from boot, so a reader notices a new one by the number
+// changing; false (and seq 0) until the first arrives.
+struct Notice {
+    uint32_t seq = 0;
+    uint32_t ms = 0;             // millis() when it arrived
+    uint8_t  channel = 0;
+    char     channelName[16] = {};
+    char     from[40] = {};      // long name, else short name, else !xxxxxxxx
+    char     text[mesh::MAX_TEXT_LEN + 1] = {};
+};
+bool latestNotice(Notice& out);
 
 // True once (and cleared) when a message has arrived or a send changed state, so
 // the BLE server can push it to the phone without polling the whole list.
