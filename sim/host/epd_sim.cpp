@@ -46,6 +46,14 @@ void epdc_clear(int) {
     std::fill(g_glass.begin(), g_glass.end(), 0xFF);
 }
 void epdc_clear_dirty(int) { ++g_scrubs; }
+// No panel scan here, the same as the epdiy backend: the glass is a frame copy, so
+// there are no waveforms for it to change.
+bool epdc_scan_enable(bool) { return false; }
+bool epdc_scan_enabled() { return false; }
+bool epdc_scan_tune(int, int) { return false; }
+void epdc_scan_report() {}
+void epdc_clear_rects(const EpdRect*, int) {}
+void epdc_scrub_bits(const uint8_t*) {}
 int epdc_grey_levels() { return 16; }
 
 uint8_t* sim::framebuffer() { return g_fb.data(); }

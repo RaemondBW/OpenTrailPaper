@@ -497,6 +497,7 @@ EpdRect epd_get_string_rect(const EpdFont* font, const char* string, int x, int 
 #include "EPD_Painter.h"
 
 #include "config.h"
+#include "epd_scan.h"
 #include "i2c_bus.h"
 #include "diag.h"
 
@@ -755,9 +756,48 @@ void panelHoldArm() {
 }
 }  // namespace
 
+static EpdScan* g_scan = nullptr;
+static bool g_scanOn = false;
+
+// The rest of the driver's entry points read the screenbuffer or take over the panel,
+// so what has been posted goes out first. Far past the longest frame, and bounded so
+// nothing here can turn into a hang.
+static void scanFinish() {
+    if (g_scan && !g_scan->waitIdle(2000)) Serial.println("[epdc] scan did not finish in 2 s");
+}
+
+bool epdc_scan_enable(bool on) {
+    if (!g_painter) return false;
+    if (on && !g_scan) {
+        static EpdScan scan(*g_painter);
+        if (!scan.begin()) {
+            Serial.println("[epdc] panel scan unavailable, staying on the driver");
+            return false;
+        }
+        g_scan = &scan;
+    }
+    scanFinish();
+    g_scanOn = on;
+    return true;
+}
+
+bool epdc_scan_enabled() { return g_scanOn; }
+
+bool epdc_scan_tune(int drivePasses, int prime) {
+    return g_scan && g_scan->tune(drivePasses, prime);
+}
+
+void epdc_scan_report() {
+    if (g_scan) g_scan->report();
+}
+
 void epdc_paint() {
     if (!g_painter) return;
     panelHoldArm();
+    if (g_scanOn) {
+        g_scan->post(g_fb4, g_lut);
+        return;
+    }
     PAINT_TRACE("expand enter");
     expandLevels();
     PAINT_TRACE("expand done, paint enter");
@@ -768,6 +808,10 @@ void epdc_paint() {
 void epdc_clear_dirty(int tolerance) {
     if (!g_painter) return;
     panelHoldArm();
+    scanFinish();
+    // The primed erase first, then the driver's scrub finds those rectangles white
+    // and spends its passes on the kick, the one drive unchanged pixels ever get.
+    if (g_scanOn) g_scan->eraseDirty(g_fb4, g_lut, tolerance);
     // clearDirtyAreas() compacts this frame into the driver's paintbuffer to
     // diff it against the screenbuffer, then whitens the rectangles that differ.
     // It does NOT paint the new content — paint() recompacts the same frame, so
@@ -776,8 +820,36 @@ void epdc_clear_dirty(int tolerance) {
     g_painter->clearDirtyAreas(g_levels, tolerance, EPD_Painter::ClearMode::SOFT);
 }
 
+void epdc_scrub_bits(const uint8_t* bits) {
+    if (!g_painter || !g_scanOn || !bits) return;
+    panelHoldArm();
+    scanFinish();
+    g_scan->eraseBits(bits);
+}
+
+void epdc_clear_rects(const EpdRect* rects, int count) {
+    if (!g_painter || !g_scanOn || count <= 0) return;
+    constexpr int kMaxRects = 16;
+    EPD_Painter::Rect native[kMaxRects];
+    int n = 0;
+    for (int i = 0; i < count && n < kMaxRects; ++i) {
+        int ax, ay, bx, by;
+        const EpdRect& r = rects[i];
+        if (!rotateToNative(r.x, r.y, ax, ay) ||
+            !rotateToNative(r.x + r.width - 1, r.y + r.height - 1, bx, by)) continue;
+        const int x0 = ax < bx ? ax : bx, y0 = ay < by ? ay : by;
+        const int x1 = ax < bx ? bx : ax, y1 = ay < by ? by : ay;
+        native[n++] = {(int16_t)x0, (int16_t)y0, (int16_t)(x1 - x0 + 1), (int16_t)(y1 - y0 + 1)};
+    }
+    if (!n) return;
+    panelHoldArm();
+    scanFinish();
+    g_painter->clear(native, n, EPD_Painter::ClearMode::HARD);
+}
+
 void epdc_paint_wait() {
     if (!g_painter) return;
+    scanFinish();
     // paintIdle() is paintStage == 0, i.e. the paint task has finished driving
     // and gone back to waiting. Bounded so a wedged driver can never turn a
     // power-off into a hang — a truncated farewell screen beats a device that
@@ -930,6 +1002,7 @@ void epdc_clear(int passes) {
     if (!g_painter) return;
     if (passes < 1) passes = 1;
     panelHoldArm();
+    scanFinish();
     for (int i = 0; i < passes; ++i) {
 #ifdef EPDC_BOOT_WAIT
         // BRING-UP TRACE. EPD_Painter::clear() contains two unbounded waits: a

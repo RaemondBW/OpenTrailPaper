@@ -32,6 +32,7 @@ uint16_t mapLayerMask = 0x003F;   // MAP_LAYERS_ALL: every cycling layer on
 int autoPause = 10;
 int wheelMm = wheel_speed::kDefaultCircMm;   // wheel speed sensor circumference
 bool wkPauseStep = false;
+bool panelScanOn = false;   // paint through epd_scan.cpp, not the driver's path
 // Per kind, a ';'-separated list of paired addresses, most recent first (max
 // SENSOR_MAX_PAIRED). Stored under the same NVS key as the old single address,
 // which parses as a one-entry list — no migration.
@@ -86,6 +87,7 @@ void begin() {
     mapLayerMask = prefs.getUShort("maplayers", 0x003F);
     autoPause = prefs.getInt("apause", 10);
     wkPauseStep = prefs.getBool("wkpstep", false);
+    panelScanOn = prefs.getBool("pscan", false);
     for (int k = 0; k < ble_sensors::KIND_COUNT; ++k) {
         prefs.getString(KEYS[k], addrs[k], sizeof(addrs[k]));
         prefs.getString(NAME_KEYS[k], names[k], sizeof(names[k]));
@@ -127,6 +129,12 @@ int ftpWatts() { return ftp; }
 void setFtpWatts(int w) {
     ftp = constrain(w, 50, 500);
     prefs.putInt("ftp", ftp);
+}
+
+bool panelScan() { return panelScanOn; }
+void setPanelScan(bool on) {
+    panelScanOn = on;
+    prefs.putBool("pscan", on);
 }
 
 bool workoutPauseEachBlock() { return wkPauseStep; }

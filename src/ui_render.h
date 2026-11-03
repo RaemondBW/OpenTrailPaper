@@ -215,6 +215,11 @@ const char* dashSizingHint(uint8_t field);
 // inactive. Same problem the map transition already scrubs for.
 bool ui_render_dashboard_toned();
 
+// The greyed-out cells of the frame just drawn, in screen coordinates. Album art
+// counts as toned above but has no rectangle here.
+constexpr int ui_render_kMaxTonedRects = 12;
+int ui_render_dashboard_toned_rects(const EpdRect** rects);
+
 // Ride summary (design 1g) with SAVE RIDE / DISCARD touch targets.
 extern const EpdRect kResumeButton;
 extern const EpdRect kSaveButton;

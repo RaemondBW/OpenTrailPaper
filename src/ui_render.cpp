@@ -27,6 +27,14 @@
 //   Impact_H  hero       = drop's impact_128     (cap 95)
 #include "vfont_faces.h"
 
+// Where this frame's greyed-out cells are, for ui_render_dashboard_toned_rects().
+static EpdRect g_tonedRects[ui_render_kMaxTonedRects];
+static int g_tonedCount = 0;
+
+static void noteToned(const EpdRect& r) {
+    if (g_tonedCount < ui_render_kMaxTonedRects) g_tonedRects[g_tonedCount++] = r;
+}
+
 // Summary footer touch targets (design 1g: two 100+ px tall actions)
 // BUTTON — h 96, three across the content column with a 12 px gutter:
 // (492 - 2*12) / 3 = 156. Hit rects are the drawn rects here, both past the
@@ -350,9 +358,11 @@ void cell(const EpdRect& r, const char* labelStr, const char* value,
     // on top of it in ink. The dot (25%, 4 px pitch) rather than the scanline —
     // the scanline is dense enough to bury a caption at this size, and the point
     // is to read as inactive, not as damaged.
-    if (stale)
-        fillTone({r.x + RULE, r.y + RULE, r.width - 2 * RULE, r.height - 2 * RULE},
-                 TONE_25, fb);
+    if (stale) {
+        const EpdRect tone = {r.x + RULE, r.y + RULE, r.width - 2 * RULE, r.height - 2 * RULE};
+        fillTone(tone, TONE_25, fb);
+        noteToned(tone);
+    }
     const bool toneValue = false;
 
     const int lx = r.x + CELL_PAD;
@@ -634,8 +644,11 @@ void heroCell(const EpdRect& r, const char* labelStr, const char* value,
     // most authoritative number on the panel looking live. Tone first, content
     // over the top. The zone bar needs no special case: with no power it
     // computes zone 0 and draws seven empty outlines.
-    if (stale)
-        fillTone({r.x + 2, r.y + 2, r.width - 4, r.height - 4}, ui::TONE_25, fb);
+    if (stale) {
+        const EpdRect tone = {r.x + 2, r.y + 2, r.width - 4, r.height - 4};
+        fillTone(tone, ui::TONE_25, fb);
+        noteToned(tone);
+    }
 
     char buf[32];
     snprintf(buf, sizeof(buf), "%s", value);
@@ -920,6 +933,7 @@ void ui_render_dashboard(const RideState& s, bool navActive,
     const int H = epd_rotated_display_height();
     char buf[32];
     g_dashToned = false;
+    g_tonedCount = 0;
 
     ui::statusBar(s, fb);
 
@@ -1110,6 +1124,11 @@ void ui_render_dashboard(const RideState& s, bool navActive,
 
 bool ui_render_dashboard_toned() { return g_dashToned; }
 
+int ui_render_dashboard_toned_rects(const EpdRect** rects) {
+    *rects = g_tonedRects;
+    return g_tonedCount;
+}
+
 void ui_render_pairing(uint32_t code, uint8_t* fb) {
     const int W = epd_rotated_display_width();
     // A centred card over the live screen — same double-border language as the
@@ -1216,6 +1235,7 @@ void fmtClockSec(char* out, size_t cap, int sec) {
 
 void ui_render_media(const RideState& s, const MediaState& m, uint8_t* fb) {
     g_dashToned = false;   // set below when grey art lands on the glass
+    g_tonedCount = 0;
     // Untitled bar: the album art says "music" better than a label could,
     // and the untitled bar keeps the HR/PWR/PAUSED chips.
     ui::statusBar(s, fb);
@@ -3083,6 +3103,7 @@ void swAverages(const Stopwatch& sw, const SwMetrics& ms, bool miles, int left,
 void ui_render_stopwatch(const RideState& s, const Stopwatch& sw, uint32_t now,
                          uint8_t* fb) {
     g_dashToned = false;
+    g_tonedCount = 0;
     ui::statusBar(s, fb, "STOPWATCH");
 
     const int W = epd_rotated_display_width();
@@ -3844,6 +3865,7 @@ void segDone(const RideState& s, const seg::View& v, const seg::Segment* sg,
 
 void ui_render_segment(const RideState& s, const seg::View& v, uint8_t* fb) {
     g_dashToned = false;
+    g_tonedCount = 0;
     // No title: the bar as the ride pages wear it, clock and phone, the
     // GPS / sensor / pause chips, battery.
     ui::statusBar(s, fb);
