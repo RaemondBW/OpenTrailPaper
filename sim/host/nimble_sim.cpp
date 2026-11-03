@@ -259,9 +259,7 @@ void endConn(const std::shared_ptr<Conn>& c, uint8_t hciReason, bool local) {
         std::lock_guard<std::mutex> lk(g_connsM);
         g_conns.erase(c->handle);
     }
-    if (c->peerClient && c->peerClient->peer_) {
-        c->peerClient->peer_ = nullptr;
-    }
+    if (c->peerClient) c->peerClient->peer_ = nullptr;
     if (local) c->send(D_DISCONNECTED, u16(hciReason));
     c->closeAfterFlush();
     {
@@ -1062,13 +1060,13 @@ bool NimBLEClient::connect(const NimBLEAddress& address, bool, bool, bool) {
 }
 
 bool NimBLEClient::disconnect(uint8_t reason) {
-    if (!peer_) return false;
+    simble::SimPeripheral* p = peer_.exchange(nullptr);
+    if (!p) return false;
     {
         std::lock_guard<std::mutex> lk(simble::peripheralsMutex());
-        peer_->client = nullptr;
-        for (auto& c : peer_->chars) if (c->subscriber && c->subscriber->client_ == this) c->subscriber = nullptr;
+        p->client = nullptr;
+        for (auto& c : p->chars) if (c->subscriber && c->subscriber->client_ == this) c->subscriber = nullptr;
     }
-    peer_ = nullptr;
     if (cb_) {
         auto* cb = cb_;
         auto* self = this;
@@ -1081,12 +1079,13 @@ bool NimBLEClient::disconnect(uint8_t reason) {
 bool NimBLEClient::isConnected() const { return peer_ != nullptr; }
 
 NimBLERemoteService* NimBLEClient::getService(const NimBLEUUID& uuid) {
-    if (!peer_) return nullptr;
+    simble::SimPeripheral* p = peer();
+    if (!p) return nullptr;
     for (auto* s : services_) if (s->uuid_ == uuid) return s;
     bool any = false;
     {
         std::lock_guard<std::mutex> lk(simble::peripheralsMutex());
-        for (auto& c : peer_->chars) if (c->svc == uuid) any = true;
+        for (auto& c : p->chars) if (c->svc == uuid) any = true;
     }
     if (!any) return nullptr;
     auto* s = new NimBLERemoteService();
@@ -1113,11 +1112,12 @@ NimBLEConnInfo NimBLEClient::getConnInfo() const {
 
 NimBLERemoteCharacteristic* NimBLERemoteService::getCharacteristic(const NimBLEUUID& uuid) const {
     for (auto* c : chars_) if (c->getUUID() == uuid) return c;
-    if (!client_ || !client_->peer_) return nullptr;
+    simble::SimPeripheral* p = client_ ? client_->peer() : nullptr;
+    if (!p) return nullptr;
     std::shared_ptr<simble::SimRemoteChar> found;
     {
         std::lock_guard<std::mutex> lk(simble::peripheralsMutex());
-        found = client_->peer_->find(uuid_, uuid);
+        found = p->find(uuid_, uuid);
     }
     if (!found) return nullptr;
     auto* rc = new NimBLERemoteCharacteristic();
@@ -1140,10 +1140,11 @@ bool NimBLERemoteCharacteristic::canNotify() const { return chr_ && (chr_->props
 bool NimBLERemoteCharacteristic::canIndicate() const { return chr_ && (chr_->props & NIMBLE_PROPERTY::INDICATE); }
 
 NimBLEAttValue NimBLERemoteCharacteristic::readValue(time_t*) {
-    if (!chr_ || !client_ || !client_->peer_) return NimBLEAttValue();
-    if (client_->peer_->phoneHandle != BLE_HS_CONN_HANDLE_NONE) {
+    simble::SimPeripheral* p = client_ ? client_->peer() : nullptr;
+    if (!chr_ || !p) return NimBLEAttValue();
+    if (p->phoneHandle != BLE_HS_CONN_HANDLE_NONE) {
         std::vector<uint8_t> v;
-        if (simble::phoneRead(client_->peer_->phoneHandle, chr_->svc, chr_->uuid, v))
+        if (simble::phoneRead(p->phoneHandle, chr_->svc, chr_->uuid, v))
             return NimBLEAttValue(v.data(), v.size());
         return NimBLEAttValue();
     }
@@ -1152,9 +1153,10 @@ NimBLEAttValue NimBLERemoteCharacteristic::readValue(time_t*) {
 }
 
 bool NimBLERemoteCharacteristic::writeValue(const uint8_t* d, size_t n, bool) {
-    if (!chr_ || !client_ || !client_->peer_) return false;
-    if (client_->peer_->phoneHandle != BLE_HS_CONN_HANDLE_NONE) {
-        simble::phoneWrite(client_->peer_->phoneHandle, chr_->svc, chr_->uuid, d, n);
+    simble::SimPeripheral* p = client_ ? client_->peer() : nullptr;
+    if (!chr_ || !p) return false;
+    if (p->phoneHandle != BLE_HS_CONN_HANDLE_NONE) {
+        simble::phoneWrite(p->phoneHandle, chr_->svc, chr_->uuid, d, n);
         return true;
     }
     std::lock_guard<std::mutex> lk(simble::peripheralsMutex());
@@ -1163,14 +1165,15 @@ bool NimBLERemoteCharacteristic::writeValue(const uint8_t* d, size_t n, bool) {
 }
 
 bool NimBLERemoteCharacteristic::subscribe(bool notifications, const notify_callback cb, bool) const {
-    if (!chr_ || !client_ || !client_->peer_) return false;
+    simble::SimPeripheral* p = client_ ? client_->peer() : nullptr;
+    if (!chr_ || !p) return false;
     cb_ = cb;
     {
         std::lock_guard<std::mutex> lk(simble::peripheralsMutex());
         chr_->subscriber = const_cast<NimBLERemoteCharacteristic*>(this);
     }
-    if (client_->peer_->phoneHandle != BLE_HS_CONN_HANDLE_NONE)
-        simble::phoneSubscribe(client_->peer_->phoneHandle, chr_->svc, chr_->uuid, notifications ? 1 : 2);
+    if (p->phoneHandle != BLE_HS_CONN_HANDLE_NONE)
+        simble::phoneSubscribe(p->phoneHandle, chr_->svc, chr_->uuid, notifications ? 1 : 2);
     return true;
 }
 
@@ -1180,7 +1183,8 @@ bool NimBLERemoteCharacteristic::unsubscribe(bool) const {
         std::lock_guard<std::mutex> lk(simble::peripheralsMutex());
         if (chr_->subscriber == this) chr_->subscriber = nullptr;
     }
-    if (client_ && client_->peer_ && client_->peer_->phoneHandle != BLE_HS_CONN_HANDLE_NONE)
-        simble::phoneSubscribe(client_->peer_->phoneHandle, chr_->svc, chr_->uuid, 0);
+    simble::SimPeripheral* p = client_ ? client_->peer() : nullptr;
+    if (p && p->phoneHandle != BLE_HS_CONN_HANDLE_NONE)
+        simble::phoneSubscribe(p->phoneHandle, chr_->svc, chr_->uuid, 0);
     return true;
 }
