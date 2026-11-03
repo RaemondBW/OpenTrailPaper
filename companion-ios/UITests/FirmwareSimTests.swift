@@ -915,12 +915,16 @@ extension FirmwareSimTests {
     }
     /// Taps `label` in the menu just opened. The tap is retried while the
     /// menu stays open: one made during the menu's opening animation (slowest
-    /// on a fresh app's first menu) has been seen to land nowhere.
+    /// on a fresh app's first menu) has been seen to land nowhere. Mid
+    /// animation the option can also be there but not yet hittable, and a tap
+    /// then fails the test outright, so each tap waits for that first.
     fileprivate func pick(_ label: String, _ menu: String, file: StaticString = #filePath, line: UInt = #line) {
         let option = button(label)
         XCTAssertTrue(option.waitForExistence(timeout: 5), "no \(label) in \(menu)", file: file, line: line)
         Thread.sleep(forTimeInterval: 0.5)
         for _ in 0..<3 where option.exists {
+            let hittable = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == true"), object: option)
+            guard XCTWaiter.wait(for: [hittable], timeout: 5) == .completed else { continue }
             option.tap()
             let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: option)
             if XCTWaiter.wait(for: [closed], timeout: 3) == .completed { return }
