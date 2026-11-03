@@ -6,6 +6,7 @@
 #include <Update.h>
 #include <Wire.h>
 #include "epd_compat.h"
+#include "map_base_cache.h"
 #include <TouchDrvGT911.hpp>
 
 #include "config.h"
@@ -99,6 +100,33 @@ bool mapFullPass = false;
 // from the tap until a COMPLETE map frame has been drawn.
 int zoomHeld = 0;
 bool mapTrackUp = false;
+float mapTestHeading = -1.0f;   // console `heading`: stands in for the real one
+
+MapBaseCache mapCache;
+bool mapCacheOn = true;
+bool mapCacheAllocated = false;
+MapBaseKey mapViewKey;              // the view on screen
+uint32_t mapStillSince = 0;         // when it last moved
+uint32_t mapPrerenderNotBefore = 0;
+uint32_t mapCacheHits = 0, mapCacheMisses = 0, mapPrerenders = 0, mapPrerendersCut = 0;
+// How long the view must hold before the zooms either side are worth rendering. While
+// riding it never gets here, which is the point: those frames would go unused.
+constexpr uint32_t kMapStillMs = 3000;
+constexpr uint32_t kMapPrerenderRetryMs = 5000;
+// A cached layer is four things, one after the other. The base layer's pixels at one
+// bit each: it is pure black and white, and PSRAM spent here comes straight out of the
+// tile cache, which is what wide views live on. What the tile pass found, so a frame
+// that skips it still reports the same map. Its POIs, which go on top of the base but
+// come out of that pass too. And where its water is.
+constexpr int kMapCachePois = 512;
+struct MapLayerFacts {
+    int32_t poiCount, features, tilePolys, projectedTiles, wantedTiles, parks, waters;
+    decltype(MapScreenData::clsCount) classes;
+};
+const uint8_t* mapFrameBase = nullptr;   // this frame's cached layer, if it has one
+const uint8_t* mapFrameWater = nullptr;  // and where its water is, for a zoom's scrub
+uint8_t* mapPrerenderFb = nullptr;       // a full framebuffer to prerender into
+uint8_t* mapLayerBeingKept = nullptr;
 
 // The workout page's ALL BLOCKS list: open/closed and which page of eight
 // rows is showing. UI state, not workout state — closing it changes nothing
@@ -323,6 +351,45 @@ void radioRailOffProbe() {
 }
 }  // namespace
 
+// The map the device leaves on the glass when it powers off. Logs what it got, because
+// this frame is the one nobody can watch being built.
+void renderFarewell(uint8_t* fb) {
+    memset(fb, 0xFF, fbSize);
+    mapMpp = 32.0f;   // max zoom-out (1/2/4/8/16/32 m per px)
+    // Always north-up for the farewell. This image sits on the glass for
+    // days; rotated to whatever heading the last fix happened to have, it is
+    // unreadable as a map of where the bike is. (Deep sleep follows
+    // immediately, so mutating the live setting here is harmless.)
+    mapTrackUp = false;
+    RideState s = g_state.snapshot();
+    // Save the last known position on the way down, so the next boot's
+    // GPS warm-start seed is as fresh as possible.
+    if (s.everHadFix) settings::setLastPosition(s.latitude, s.longitude);
+    MapScreenData map = {};
+    const uint32_t t0 = millis();
+    buildMapScreenData(s, map, /*finalFrame=*/true);
+    // The widest zoom only suits a card that has that much map. Past what was
+    // downloaded it is blank paper, with the map a patch in the middle, and this frame
+    // stays up for days. So go in to the widest view the card can fill. A card with
+    // nothing that fills any view keeps the widest, since that shows the most it has.
+    if (map.projectedTiles < map.wantedTiles) {
+        for (float mpp = 16.0f; mpp >= 2.0f; mpp /= 2.0f) {
+            if (!map_store::coversView(map.centerLat, map.centerLon, mpp)) continue;
+            mapMpp = mpp;
+            map = {};
+            buildMapScreenData(s, map, /*finalFrame=*/true);
+            break;
+        }
+    }
+    const uint32_t t1 = millis();
+    ui_render_map_features(map, s, fb);
+    diag::log("farewell: %d m/px project=%lu draw=%lu tiles=%d/%d polys=%d water=%d parks=%d%s%s at=%.5f,%.5f",
+              (int)mapMpp, (unsigned long)(t1 - t0), (unsigned long)(millis() - t1), map.projectedTiles,
+              map.wantedTiles, map.featureCount, map.waterCount, map.parkCount,
+              map.partial ? " CUT" : "", map.hasMap ? "" : " NOMAP", map.centerLat, map.centerLon);
+    ui_render_shutdown_screen(fb);
+}
+
 void shutdownDevice(uint8_t* fb, const char* reason) {
     // Hold light sleep off for the whole shutdown, and never release it.
     //
@@ -357,23 +424,7 @@ void shutdownDevice(uint8_t* fb, const char* reason) {
     // Full-screen map backdrop (last known position) with a POWERED OFF plate.
     // Force the widest zoom so the farewell shows the broadest area overview
     // (we're deep-sleeping right after, so mutating mapMpp is harmless).
-    memset(fb, 0xFF, fbSize);
-    {
-        mapMpp = 32.0f;   // max zoom-out (1/2/4/8/16/32 m per px)
-        // Always north-up for the farewell. This image sits on the glass for
-        // days; rotated to whatever heading the last fix happened to have, it is
-        // unreadable as a map of where the bike is. (Deep sleep follows
-        // immediately, so mutating the live setting here is harmless.)
-        mapTrackUp = false;
-        RideState s = g_state.snapshot();
-        // Save the last known position on the way down, so the next boot's
-        // GPS warm-start seed is as fresh as possible.
-        if (s.everHadFix) settings::setLastPosition(s.latitude, s.longitude);
-        MapScreenData map = {};
-        buildMapScreenData(s, map, /*finalFrame=*/true);
-        ui_render_map_features(map, s, fb);
-    }
-    ui_render_shutdown_screen(fb);
+    renderFarewell(fb);
     if (shadowFb) memcpy(shadowFb, fb, fbSize);
     // The shutdown screen has to survive on the glass for days with no power, so
     // it gets the one place a HARD clear is genuinely worth its cost: scrub to
@@ -578,6 +629,11 @@ void noteActivity() {
 // still leaving an unchanged half-screen alone.
 constexpr int kDirtyClearTolerance = 24 * 960;
 
+// Set for one refresh() when greyed-out cells are arriving on the glass.
+bool hardClearToned = false;
+// Set for one refresh() when a zoom needs its water scrubbed: where that water is.
+const uint8_t* scrubBits = nullptr;
+
 bool refresh(bool screenChanged, bool fastInPage, bool listFast,
              bool forceClean = false, bool gc16 = false, bool fullFlash = false) {
     // screenChanged/fastInPage/listFast/forceClean/gc16 each selected an epdiy
@@ -617,6 +673,16 @@ bool refresh(bool screenChanged, bool fastInPage, bool listFast,
     // on the way out, not when the power sheet opens over it, and not on the
     // 1 Hz map redraws.
     if (fullFlash) epdc_clear_dirty(kDirtyClearTolerance);
+    if (hardClearToned) {
+        const EpdRect* rects = nullptr;
+        const int count = ui_render_dashboard_toned_rects(&rects);
+        epdc_clear_rects(rects, count);
+        hardClearToned = false;
+    }
+    if (scrubBits) {
+        epdc_scrub_bits(scrubBits);
+        scrubBits = nullptr;
+    }
     epdc_paint();
 
     if (dbgTiming)
@@ -1364,6 +1430,90 @@ void buildMapPeers(double lat, double lon, float rot, bool useMiles,
     map.peerCount = count;
 }
 
+MapBaseKey mapKeyFor(const MapScreenData& map) {
+    MapBaseKey k;
+    k.lat = map.centerLat;
+    k.lon = map.centerLon;
+    k.mpp = map.metersPerPixel;
+    k.rotDeg = map.northDeg;
+    k.layers = map.layers;
+    k.tiles = map_store::generation();
+    k.hasMap = map.hasMap;
+    return k;
+}
+
+void mapCacheAllocate() {
+    if (mapCacheAllocated) return;
+    mapCacheAllocated = true;
+    const size_t bytes = fbSize / 4 + sizeof(MapLayerFacts) + kMapCachePois * sizeof(MapPoi) +
+                         fbSize / 8;
+    for (int i = 0; i < MapBaseCache::kSlots; ++i)
+        mapCache.attach(i, (uint8_t*)heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM));
+    mapPrerenderFb = (uint8_t*)heap_caps_malloc(fbSize, MALLOC_CAP_SPIRAM);
+}
+
+MapLayerFacts* cachedFacts(const uint8_t* layer) { return (MapLayerFacts*)(layer + fbSize / 4); }
+MapPoi* cachedPois(const uint8_t* layer) {
+    return (MapPoi*)(layer + fbSize / 4 + sizeof(MapLayerFacts));
+}
+
+// Four framebuffer bytes, so eight pixels, to one byte and back. White is 1.
+void mapLayerPack(const uint8_t* fb, uint8_t* layer) {
+    for (size_t i = 0; i < fbSize / 4; ++i) {
+        uint8_t bits = 0;
+        for (int b = 0; b < 4; ++b) {
+            const uint8_t px = fb[i * 4 + b];
+            bits |= (uint8_t)(((px & 0x80) ? 2 : 0) | ((px & 0x08) ? 1 : 0)) << (2 * b);
+        }
+        layer[i] = bits;
+    }
+}
+
+void mapLayerExpand(const uint8_t* layer, uint8_t* fb) {
+    static uint32_t table[256];
+    if (!table[0xFF]) {
+        for (int v = 0; v < 256; ++v) {
+            uint8_t out[4];
+            for (int b = 0; b < 4; ++b) {
+                const int two = (v >> (2 * b)) & 3;
+                out[b] = (uint8_t)(((two & 2) ? 0xF0 : 0) | ((two & 1) ? 0x0F : 0));
+            }
+            memcpy(&table[v], out, 4);
+        }
+    }
+    uint32_t* words = (uint32_t*)fb;
+    for (size_t i = 0; i < fbSize / 4; ++i) words[i] = table[layer[i]];
+}
+
+void mapLayerKeep(const uint8_t* fb) { mapLayerPack(fb, mapLayerBeingKept); }
+
+uint8_t* cachedWater(const uint8_t* layer) {
+    return (uint8_t*)cachedPois(layer) + kMapCachePois * sizeof(MapPoi);
+}
+
+// What a stored layer needs besides its pixels. Call straight after drawing it.
+void mapCacheKeepExtras(uint8_t* layer, const MapScreenData& map) {
+    const int n = map.poiCount < kMapCachePois ? map.poiCount : kMapCachePois;
+    if (n) memcpy(cachedPois(layer), map.pois, n * sizeof(MapPoi));
+    MapLayerFacts* facts = cachedFacts(layer);
+    facts->poiCount = n;
+    facts->features = map.featureCount;
+    facts->tilePolys = map.tilePolys;
+    facts->projectedTiles = map.projectedTiles;
+    facts->wantedTiles = map.wantedTiles;
+    facts->parks = map.parkCount;
+    facts->waters = map.waterCount;
+    memcpy(facts->classes, map.clsCount, sizeof(facts->classes));
+
+    uint8_t* bits = cachedWater(layer);
+    memset(bits, 0, fbSize / 8);
+    if (const uint8_t* mask = ui_map_dither_mask()) {
+        for (size_t i = 0; i < fbSize; ++i) {
+            if (mask[i]) bits[i >> 3] |= (uint8_t)(1 << (i & 7));
+        }
+    }
+}
+
 void buildMapScreenData(const RideState& s, MapScreenData& map,
                         bool finalFrame) {
     map.riderX = 270;
@@ -1376,7 +1526,8 @@ void buildMapScreenData(const RideState& s, MapScreenData& map,
     // light. The compass has no such problem and is used below 5 km/h, if one
     // is fitted and has finished calibrating.
     const bool useCompass = s.compassValid && s.speedKmh < 5.0f;
-    const float heading = useCompass ? s.compassDeg : s.courseDeg;
+    const float heading = mapTestHeading >= 0.0f ? mapTestHeading
+                                                 : useCompass ? s.compassDeg : s.courseDeg;
     float rot = mapTrackUp ? -heading : 0.0f;
     map.headingDeg = mapTrackUp ? 0.0f : heading;
     map.northDeg = rot;
@@ -1426,13 +1577,38 @@ void buildMapScreenData(const RideState& s, MapScreenData& map,
     // a power-off must not hang, and tiles come nearest-first, so a deadline
     // costs the far edge rather than the middle.
     static uint32_t frameDeadline;
-    frameDeadline = millis() + 4000;
-    map_store::renderInto(lat, lon, mapMpp, map.riderX, map.riderY, rot, map,
-                          finalFrame
-                              ? []() -> bool { return millis() < frameDeadline; }
-                              : []() -> bool { return !touchIrq && !touchWasDown; },
-                          /*cachedOnly=*/finalFrame ? false : !mapFullPass);
+    // 12 s, not the 4 it was: the widest view is about 2 MB, and the card manages about
+    // 400 KB/s, so a cold one takes 5 s and 4 s left only the tiles around the rider.
+    frameDeadline = millis() + 12000;
     map.hasMap = map_store::coversPosition(lat, lon);
+
+    // With this view's base layer already finished, the tiles have nothing left to
+    // give: skip them. Reading them here would be worse than wasted, because the
+    // zooms prerendered either side push this view's tiles out of RAM, and a frame
+    // that needs none of them would spend seconds on the card fetching them back.
+    mapFrameBase = nullptr;
+    if (mapCacheOn && !finalFrame) {
+        mapCacheAllocate();
+        mapFrameBase = mapCache.find(mapKeyFor(map), millis());
+    }
+    if (mapFrameBase) {
+        const MapLayerFacts* facts = cachedFacts(mapFrameBase);
+        map.pois = cachedPois(mapFrameBase);
+        map.poiCount = facts->poiCount;
+        map.featureCount = facts->features;
+        map.tilePolys = facts->tilePolys;
+        map.projectedTiles = facts->projectedTiles;
+        map.wantedTiles = facts->wantedTiles;
+        map.parkCount = facts->parks;
+        map.waterCount = facts->waters;
+        memcpy(map.clsCount, facts->classes, sizeof(facts->classes));
+    } else {
+        map_store::renderInto(lat, lon, mapMpp, map.riderX, map.riderY, rot, map,
+                              finalFrame
+                                  ? []() -> bool { return millis() < frameDeadline; }
+                                  : []() -> bool { return !touchIrq && !touchWasDown; },
+                              /*cachedOnly=*/finalFrame ? false : !mapFullPass);
+    }
 
     if (routes::active() && routeScreenPts) {
         int n = routes::pointCount();
@@ -1454,6 +1630,38 @@ void buildMapScreenData(const RideState& s, MapScreenData& map,
     // Not on the farewell frame: that one stays on the glass for days, long
     // after anyone is still where it would show them.
     if (!finalFrame) buildMapPeers(lat, lon, rot, s.useMiles, map);
+}
+
+// The map frame's base layer, from the cache if it can be, kept for next time if not.
+void renderMapWithCache(const MapScreenData& map, const RideState& s, uint8_t* fb) {
+    const uint32_t now = millis();
+    const MapBaseKey key = mapKeyFor(map);
+    if (!mapSameView(key, mapViewKey)) {
+        mapViewKey = key;
+        mapStillSince = now;
+    }
+    if (!mapCacheOn) {
+        ui_render_map(map, s, fb);
+        return;
+    }
+    mapFrameWater = nullptr;
+    if (mapFrameBase) {
+        mapCacheHits++;
+        mapFrameWater = cachedWater(mapFrameBase);
+        mapLayerExpand(mapFrameBase, fb);
+        ui_render_map(map, s, fb, /*baseDrawn=*/true);
+        return;
+    }
+    mapCacheMisses++;
+    // A partial frame is missing tiles, so it is not worth keeping.
+    uint8_t* save = map.partial ? nullptr : mapCache.claim(now);
+    mapLayerBeingKept = save;
+    ui_render_map(map, s, fb, false, save ? mapLayerKeep : nullptr);
+    if (save) {
+        mapCacheKeepExtras(save, map);
+        mapCache.commit(save, key, now);
+        mapFrameWater = cachedWater(save);
+    }
 }
 
 void renderMapScreen(const RideState& s, uint8_t* fb) {
@@ -1481,7 +1689,7 @@ void renderMapScreen(const RideState& s, uint8_t* fb) {
         if (dbgTiming) diag::log("map: frame dropped for a touch");
         return;
     }
-    ui_render_map(map, s, fb);
+    renderMapWithCache(map, s, fb);
     // ui_render_map redraws the buttons unpressed, so re-assert the held one on
     // top of it. Released only once the frame is complete — a partial frame
     // means tiles are still coming.
@@ -1518,6 +1726,143 @@ void renderMapScreen(const RideState& s, uint8_t* fb) {
     drawNavBanner(fb);
     drawPauseBanner(s, fb);
     drawMeshNotice(fb);
+}
+
+// With the view holding still and nothing else to do, render one zoom either side, one
+// per call, so a tap only has to put it on the panel. Runs in the UI task's idle time and
+// gives way to a finger, which is checked all the way through.
+void mapPrerenderStep() {
+    if (!mapCacheOn || screen != SCREEN_MAP || powerOverlay || routes::navPending() ||
+        zoomHeld) return;
+    const uint32_t now = millis();
+    if (now - mapStillSince < kMapStillMs || (int32_t)(now - mapPrerenderNotBefore) < 0) return;
+    if (touchIrq || touchWasDown) return;
+
+    for (const float mpp : {mapMpp / 2.0f, mapMpp * 2.0f}) {
+        if (mpp < 1.0f || mpp > 32.0f) continue;
+        MapBaseKey want = mapViewKey;
+        want.mpp = mpp;
+        if (mapCache.find(want, now)) continue;
+        if (!mapPrerenderFb) return;
+
+        const float liveMpp = mapMpp;
+        const bool liveFullPass = mapFullPass;
+        mapMpp = mpp;
+        mapFullPass = true;      // this one may read the card, and has the time to
+        MapScreenData map = {};
+        const RideState s = g_state.snapshot();
+        buildMapScreenData(s, map);
+        mapMpp = liveMpp;
+        mapFullPass = liveFullPass;
+
+        // The bike can have moved since mapViewKey, onto a layer that is already kept.
+        // That frame has its counts but no features, so there is nothing here to draw.
+        if (mapFrameBase) return;
+        // Only now: a claim gives up a slot's layer, and that is worth doing for a
+        // frame that is going to be drawn.
+        uint8_t* px = mapCache.claim(millis());
+        if (!px) return;
+
+        memset(mapPrerenderFb, 0xFF, fbSize);
+        const bool done = !map.partial && ui_render_map_base(
+            map, mapPrerenderFb, []() -> bool { return !touchIrq && !touchWasDown; });
+        if (done) {
+            mapLayerPack(mapPrerenderFb, px);
+            mapCacheKeepExtras(px, map);
+            mapCache.commit(px, mapKeyFor(map), millis());
+            mapPrerenders++;
+        } else {
+            mapPrerendersCut++;
+            mapPrerenderNotBefore = millis() + kMapPrerenderRetryMs;
+        }
+        return;
+    }
+}
+
+// One full map frame through the cache, as the UI task would make it.
+void mapTestFrame(const RideState& s, MapScreenData& map, uint8_t* fb) {
+    map = {};
+    for (int i = 0; i < 3; ++i) map.stripFields[i] = dash_config::mapField(i);
+    memset(fb, 0xFF, fbSize);
+    mapFullPass = true;
+    buildMapScreenData(s, map);
+    renderMapWithCache(map, s, fb);
+    vTaskDelay(1);
+}
+
+// Console `maptest`: for each heading in track-up, a frame drawn from scratch must match
+// the one drawn from its cached layer byte for byte, a turn within tolerance must reuse
+// the layer, and one past it must not. Runs at the current zoom, on real tiles.
+void mapSelfTest() {
+    mapCacheAllocate();
+    uint8_t* fresh = epdc_framebuffer();
+    uint8_t* cached = mapPrerenderFb;
+    if (!mapCacheOn || !cached) {
+        Serial.println("[maptest] needs mapcache on");
+        return;
+    }
+    const bool liveTrackUp = mapTrackUp;
+    const float liveHeading = mapTestHeading;
+    mapTrackUp = true;
+    const RideState s = g_state.snapshot();
+    MapScreenData map = {};
+    int failed = 0;
+    for (const float heading : {0.f, 1.f, 30.f, 45.f, 89.f, 90.f, 135.f, 180.f, 225.f, 270.f,
+                                315.f, 359.f}) {
+        mapCache.clear();
+        mapTestHeading = heading;
+        const uint32_t t0 = millis();
+        mapTestFrame(s, map, fresh);
+        const uint32_t freshMs = millis() - t0;
+        const bool cold = mapFrameBase == nullptr;
+        const bool partial = map.partial;
+        const int tiles = map.projectedTiles, wanted = map.wantedTiles;
+
+        const uint32_t t1 = millis();
+        mapTestFrame(s, map, cached);
+        const uint32_t cachedMs = millis() - t1;
+        const bool sameHit = mapFrameBase != nullptr;
+        size_t differ = 0;
+        for (size_t i = 0; i < fbSize; ++i) differ += fresh[i] != cached[i];
+
+        // 360 is not a heading anything produces, but wrapping past north must still hit.
+        mapTestHeading = fmodf(heading + 1.0f, 360.0f);
+        mapTestFrame(s, map, cached);
+        const bool nearHit = mapFrameBase != nullptr;
+        mapTestHeading = fmodf(heading + 3.0f, 360.0f);
+        mapTestFrame(s, map, cached);
+        const bool farHit = mapFrameBase != nullptr;
+
+        const bool ok = cold && !partial && sameHit && differ == 0 && nearHit && !farHit;
+        failed += !ok;
+        Serial.printf("[maptest] %s heading %3.0f: tiles %d/%d, %lu ms fresh, %lu ms cached, "
+                      "%u bytes differ, +1 deg %s, +3 deg %s%s\n",
+                      ok ? "ok  " : "FAIL", heading, tiles, wanted, (unsigned long)freshMs,
+                      (unsigned long)cachedMs, (unsigned)differ, nearHit ? "reused" : "redrawn",
+                      farHit ? "reused" : "redrawn", partial ? " PARTIAL" : "");
+    }
+    mapTrackUp = liveTrackUp;
+    mapTestHeading = liveHeading;
+    mapFullPass = false;
+    mapCache.clear();
+    forceDraw = true;
+    Serial.printf("[maptest] %s at %d m/px\n", failed ? "FAILED" : "all passed", (int)mapMpp);
+}
+
+// Console `farewell`: the power-off screen without the power-off, held for a look.
+void farewellTest() {
+    const float liveMpp = mapMpp;
+    const bool liveTrackUp = mapTrackUp;
+    uint8_t* fb = epdc_framebuffer();
+    renderFarewell(fb);
+    if (shadowFb) memcpy(shadowFb, fb, fbSize);
+    epdc_clear();
+    epdc_paint();
+    epdc_paint_wait();
+    vTaskDelay(pdMS_TO_TICKS(30000));
+    mapMpp = liveMpp;
+    mapTrackUp = liveTrackUp;
+    forceDraw = true;
 }
 
 // Turn-by-turn banner across the top, shown on the map AND the dashboard while
@@ -1844,6 +2189,8 @@ bool beginPanel() {
 
     EPDC_STEP("panel up");
 
+    if (settings::panelScan()) epdc_scan_enable(true);
+
     // Backlight — level set in Settings, applied here at boot.
     pinMode(BOARD_BL_EN, OUTPUT);
     applyBacklight(settings::backlight());
@@ -2035,6 +2382,9 @@ bool begin() {
     // Hand the panel over to the dashboard: further bootStatus() calls no-op,
     // and the task's first refresh() paints the real UI over the boot screen.
     bootScreenLive = false;
+    // The boot screen has sat there for seconds, in greys, and shows through a scrub.
+    // A boot already flashes, so one more costs nothing.
+    if (epdc_scan_enabled()) epdc_clear();
     return true;
 }
 
@@ -2618,6 +2968,52 @@ static void runConsoleLine(char* line) {
         }
         if (arg && !strcasecmp(arg, "fast")) ble_server::requestFastInterval();
         else ble_server::reportInterval();
+    } else if (!strcasecmp(cmd, "maptest")) {
+        mapSelfTest();
+    } else if (!strcasecmp(cmd, "farewell")) {
+        farewellTest();
+    } else if (!strcasecmp(cmd, "trackup")) {
+        if (arg) mapTrackUp = !strcasecmp(arg, "on");
+        forceDraw = true;
+        Serial.printf("[trackup] %s\n", mapTrackUp ? "on" : "off");
+    } else if (!strcasecmp(cmd, "heading")) {
+        mapTestHeading = arg && strcasecmp(arg, "off") ? atof(arg) : -1.0f;
+        forceDraw = true;
+        Serial.printf("[heading] %.0f\n", mapTestHeading);
+    } else if (!strcasecmp(cmd, "mapcache")) {
+        if (arg) {
+            if (strcasecmp(arg, "on") && strcasecmp(arg, "off")) {
+                Serial.println("[cmd] mapcache [on|off]");
+                return;
+            }
+            mapCacheOn = !strcasecmp(arg, "on");
+            if (!mapCacheOn) mapCache.clear();
+        }
+        Serial.printf("[mapcache] %s; %u hits, %u misses, %u prerendered, %u cut short; "
+                      "PSRAM free %u KB, largest block %u KB\n",
+                      mapCacheOn ? "on" : "off", (unsigned)mapCacheHits,
+                      (unsigned)mapCacheMisses, (unsigned)mapPrerenders,
+                      (unsigned)mapPrerendersCut,
+                      (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024),
+                      (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) / 1024));
+    } else if (!strcasecmp(cmd, "panelscan")) {
+        if (arg && !strcasecmp(arg, "tune")) {
+            const char* drive = strtok(nullptr, " \t");
+            const char* prime = strtok(nullptr, " \t");
+            if (!drive || !prime || !epdc_scan_tune(atoi(drive), atoi(prime))) {
+                Serial.println("[cmd] panelscan tune <draw passes> <erase prime>, with scan on");
+                return;
+            }
+        } else if (arg) {
+            if (strcasecmp(arg, "on") && strcasecmp(arg, "off")) {
+                Serial.println("[cmd] panelscan [on|off|tune <draw> <prime>]");
+                return;
+            }
+            const bool on = !strcasecmp(arg, "on");
+            if (epdc_scan_enable(on)) settings::setPanelScan(on);
+        }
+        Serial.printf("[panelscan] %s\n", epdc_scan_enabled() ? "on" : "off");
+        epdc_scan_report();
     } else if (!strcasecmp(cmd, "autosleep")) {
         if (arg) {
             if (strtok(nullptr, " \t") ||
@@ -3808,16 +4204,36 @@ void task(void*) {
             const bool bandCleared = prevBand && !bandDrawnThisFrame;
             prevBand = bandDrawnThisFrame;
 
-            refresh(screenChanged, fastInPage, listFast, wantClean,
-                    navPromptAppearing,
-                    mapTransition || tonedTransition || dashPageFlip ||
-                        bandCleared);
+            hardClearToned = tonedTransition;
+            // Only changed pixels are driven, so what stays black between two screens
+            // keeps its old history and shows inside anything solid on the new one:
+            // settings toggles in the start button, for one. A scrub takes every pixel
+            // in the changed area through white, so on the scan path any change of
+            // screen earns one, not just the transitions listed above.
+            const bool scanScrub = epdc_scan_enabled() && screen != prevScreen;
+            // A zoom replaces the whole map without changing screen, and the water's
+            // dots that stay black show the old roads. Only the water needs it, so only
+            // the water gets it: the rest of the map changes in place. Done with once a
+            // frame that knows where its water is has gone out, since a touch can drop
+            // the frame that carried the zoom and a partial one has no layer to ask.
+            static float scrubbedMpp = 0.0f;
+            const bool zoomed = screen == SCREEN_MAP && mapMpp != scrubbedMpp;
+            scrubBits = zoomed && epdc_scan_enabled() ? mapFrameWater : nullptr;
+            const bool scrubbing = scrubBits != nullptr;
+            const bool painted = refresh(screenChanged, fastInPage, listFast, wantClean,
+                                         navPromptAppearing,
+                                         mapTransition || tonedTransition || dashPageFlip ||
+                                             bandCleared || scanScrub);
+            if (painted && scrubbing) scrubbedMpp = mapMpp;
+            scrubBits = nullptr;
         }
 
         // The epdiy path managed panel rails by hand here — poweron before an
         // update, and a 1.5 s keep-alive so successive taps skipped the ~36 ms
         // power-up. EPD_Painter owns its rails around each paint, so there is
         // nothing to release.
+
+        mapPrerenderStep();
 
         // Block until an input interrupt or a redraw request, with a fallback
         // tick that still satisfies the slowest thing the loop owes anyone (the

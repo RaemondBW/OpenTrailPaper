@@ -60,6 +60,14 @@ void epdc_paint();
 // No-op on the epdiy backend, whose epd_hl_update_screen() already blocks.
 void epdc_paint_wait();
 
+// Paint through src/epd_scan.cpp instead of the driver's paint path. Takes effect from
+// the next frame, in either direction. Refuses, and stays off, if the panel layer has
+// no tables for it or the memory is not there. No-ops on the epdiy backend.
+bool epdc_scan_enable(bool on);
+bool epdc_scan_enabled();
+bool epdc_scan_tune(int drivePasses, int prime);
+void epdc_scan_report();
+
 // Cut the panel's high-voltage rails (VPOS/VNEG/VGH/VGL/VCOM) before deep sleep.
 //
 // Without this the TPS65185 keeps generating rails for the whole sleep. The
@@ -144,6 +152,19 @@ void epdc_clear(int passes = 1);
 // Falls back to a whole-panel clear on the epdiy backend, which has no
 // dirty-rect machinery.
 void epdc_clear_dirty(int tolerance = 0);
+
+// A hard clear of just these rectangles, in rotated (UI) coordinates, for use straight
+// after epdc_clear_dirty(), before the paint. Every pixel in them is driven whatever
+// it held, so what was on the glass before cannot show through what is drawn next. A
+// fine tone needs this: its dots sample old content pixel by pixel, and a dot that
+// lands on a pixel with a different history shows. Flashes those rectangles.
+// Panel scan only, and a no-op otherwise.
+void epdc_clear_rects(const EpdRect* rects, int count);
+
+// Scrub an exact shape instead of rectangles: bit n of `bits` is byte n of the
+// framebuffer. Those pixels go to white and the next paint draws them from there, and
+// nothing else on the panel is touched. Panel scan only, and a no-op otherwise.
+void epdc_scrub_bits(const uint8_t* bits);
 
 // Number of grey levels the driver is currently using (4 by default). Exposed
 // so the UI can decide between real greys and screentones.

@@ -208,15 +208,23 @@ extern const MapTouchZones kMapZoom;
 // away; the full redraw then restores it.
 void ui_map_draw_zoom_button(bool zoomIn, bool pressed, uint8_t* fb);
 
-// Native-fb-aligned mask (1 byte/fb-byte, 1 = covered) of the current map frame's
-// water/park dithered fills — the dense-dark regions where DU ghosting settles.
-// Null until the first map render. The settle-clean flashes exactly these bytes.
+// Native-fb-aligned mask (1 byte/fb-byte, 1 = covered) of the water in the base layer
+// last drawn. Null until the first one.
 const uint8_t* ui_map_dither_mask();
 
 // Street-name labels the last map frame drew (diagnostics: the frame log).
 int ui_map_labels_drawn();
 
-void ui_render_map(const MapScreenData& map, const RideState& s, uint8_t* fb);
+// `baseDrawn`: fb already holds this view's base layer (see ui_render_map_base).
+// `onBase`: if set, called with fb as soon as the base layer is on it, to keep a copy.
+void ui_render_map(const MapScreenData& map, const RideState& s, uint8_t* fb,
+                   bool baseDrawn = false, void (*onBase)(const uint8_t* fb) = nullptr);
+
+// The slow part of a map frame on its own: fills and roads, onto a white fb, with no
+// route, POIs, rider or chrome, none of which depend on it. Stops early and returns
+// false if `keepGoing` (optional) says so, leaving fb unfinished.
+bool ui_render_map_base(const MapScreenData& map, uint8_t* fb,
+                        bool (*keepGoing)() = nullptr);
 
 // Just the map (features + route + rider), full-screen, no chrome. Used as the
 // backdrop behind the powered-off screen.
