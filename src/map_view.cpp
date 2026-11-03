@@ -6,6 +6,7 @@
 #include <esp_heap_caps.h>
 
 #include "epdiy.h"
+#include "epd_compat.h"
 #include "ride_state.h"
 #include "routes.h"
 #include "map_store.h"
@@ -533,6 +534,72 @@ void drawPois(const MapScreenData& map, uint8_t* fb) {
     }
 }
 
+// Other riders from a private mesh channel: a black dot ringed in white so it
+// reads over roads and fills alike, hollow once their fix is getting old, with
+// their short name beside it on a white chip. One who is off the edge of the
+// map is a small arrow at the edge pointing their way, so the rider can tell
+// which way the group went without zooming out to find them.
+void drawPeers(const MapScreenData& map, uint8_t* fb) {
+    constexpr int R = 26;      // ring outside radius
+    constexpr int RING = 4;    // and its weight
+    for (int i = 0; i < map.peerCount; ++i) {
+        const MapPeer& p = map.peers[i];
+        float ux = 0, uy = 0;
+        if (p.offscreen) {
+            const float dx = p.x - map.riderX, dy = p.y - map.riderY;
+            const float len = sqrtf(dx * dx + dy * dy);
+            if (len < 1) continue;
+            ux = dx / len;
+            uy = dy / len;
+        }
+        // Off the screen the ring becomes a pin: a broad black point out of
+        // it toward them, twice as long as the ring is wide, so which way reads at a
+        // glance and never as a road or the compass needle.
+        auto pin = [&](int tipR, int halfW, uint8_t c) {
+            const int tx = p.x + lroundf(ux * tipR), ty = p.y + lroundf(uy * tipR);
+            const int lx = p.x - lroundf(uy * halfW), ly = p.y + lroundf(ux * halfW);
+            const int rx = p.x + lroundf(uy * halfW), ry = p.y - lroundf(ux * halfW);
+            epd_fill_triangle(tx, ty, lx, ly, rx, ry, c, fb);
+        };
+        // White under it first, so roads don't run through the marker.
+        epd_fill_circle(p.x, p.y, R + 3, 0xFF, fb);
+        if (p.offscreen) pin(3 * R + 6, R + 3, 0xFF);
+        if (p.offscreen) pin(3 * R, R, 0x00);
+        if (p.stale) {
+            // Not heard from for a while: the ring dashed, where they WERE.
+            for (int a = 0; a < 360; a += 2) {
+                if ((a / 20) % 2) continue;
+                const float r = a * (float)M_PI / 180.0f;
+                for (int d = R - RING + 1; d <= R; ++d)
+                    epd_draw_pixel(p.x + lroundf(cosf(r) * d),
+                                   p.y + lroundf(sinf(r) * d), 0x00, fb);
+            }
+        } else {
+            epd_fill_circle(p.x, p.y, R, 0x00, fb);
+        }
+        epd_fill_circle(p.x, p.y, R - RING, 0xFF, fb);
+        // Two letters at the size one used to be, a step down for a wide
+        // pair ("Mw") so they stay inside the ring.
+        const EpdFont* f = &ArialBold_14;
+        if (ui::textWidth(f, p.initials) > 2 * (R - RING) - 4) f = &Arial_B;
+        ui::text(f, p.x, p.y + epdc_digit_height(f) / 2, p.initials, fb,
+                 EPD_DRAW_ALIGN_CENTER, 0x00);
+        if (!p.label[0]) continue;
+        // The distance on a chip beside it, on whichever side has room and
+        // is not where the pointer goes.
+        const int tw = ui::textWidth(&Arial_B, p.label);
+        const int gap = R + 8;
+        bool left = p.x + gap + tw + 12 > 540 || ux > 0.3f;
+        if (left && p.x - gap - tw - 12 < 0) left = false;
+        const int cx = left ? p.x - gap - tw - 12 : p.x + gap;
+        epd_fill_rect({cx, p.y - 16, tw + 12, 32}, 0xFF, fb);
+        for (int k = 0; k < 2; ++k)
+            epd_draw_rect({cx + k, p.y - 16 + k, tw + 12 - 2 * k, 32 - 2 * k}, 0x00, fb);
+        ui::text(&Arial_B, cx + 6, p.y + epdc_digit_height(&Arial_B) / 2,
+                 p.label, fb, EPD_DRAW_ALIGN_LEFT, 0x00);
+    }
+}
+
 void drawRider(int x, int y, float headingDeg, uint8_t* fb) {
     float rad = (headingDeg - 90.0f) * (float)M_PI / 180.0f;
     float c = cosf(rad), s = sinf(rad);
@@ -868,6 +935,10 @@ void ui_render_map(const MapScreenData& map, const RideState& s, uint8_t* fb) {
         ui::text(&Arial_L, W / 2, by + 70, sub, fb, EPD_DRAW_ALIGN_CENTER,
                  0x00);
     }
+
+    // Over the NO MAP box: where the group is matters most when there is no
+    // map to read, and the edge arrows sit in the box's rows.
+    drawPeers(map, fb);
 
     // Label when the map is centered on the phone's position (device GPS cold).
     // No background box by request — just the text.

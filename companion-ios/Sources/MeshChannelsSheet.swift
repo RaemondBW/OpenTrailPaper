@@ -158,20 +158,9 @@ struct MeshChannelsSheet: View {
                      ? "Sets the frequency for every channel · \(c.keyDescription)"
                      : "\(c.keyDescription) · channel byte 0x\(String(format: "%02x", c.hash))")
                     .font(BarlowFont.text(14)).foregroundStyle(Palette.muted)
-                Toggle(isOn: Binding(
-                    get: { c.sharesLocation },
-                    set: { ble.setMeshShareLocation(index: c.index, on: $0) })) {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text("Share my location here")
-                            .font(BarlowFont.text(15)).foregroundStyle(Palette.ink)
-                        Text(c.isPrimary
-                             ? "This channel is public — everyone in radio range could read it"
-                             : "Only people holding this channel's key can read it")
-                            .font(BarlowFont.text(12))
-                            .foregroundStyle(c.isPrimary ? Palette.accent : Palette.muted)
-                    }
+                MeshShareLocationToggle(channel: c, title: "Share my location here") {
+                    ble.setMeshShareLocation(index: c.index, on: $0)
                 }
-                .tint(Palette.accent)
 
                 HStack(spacing: 18) {
                     Button("Read this one") { selected = c.index; dismiss() }
@@ -351,5 +340,56 @@ private struct MeshShareSheet: View {
                 ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } }
             }
         }
+    }
+}
+
+/// The per-channel "share my location" switch. One view for both places it
+/// appears — the channel's card in the Channels sheet and the top of a private
+/// channel's conversation — so the two can never disagree about what it says.
+/// The state is read from the live channel the device reported, not held here,
+/// so flipping it in one place shows up in the other.
+struct MeshShareLocationToggle: View {
+    let channel: MeshChannel
+    var title = "Share my location"
+    /// Show the location pin before the label (the compact chat-row form).
+    var showsIcon = false
+    let onChange: (Bool) -> Void
+
+    /// The device's cadence (src/config.h MESH_POS_*): one as soon as there is a
+    /// fix, then no more often than every 10 minutes and only after moving 100 m,
+    /// plus an hourly re-send while parked.
+    static let cadence =
+        "Sent once you have a GPS fix, then every 10 min while you move and hourly when stopped"
+    static let keyHolders = "Only people with this channel's key see it"
+    static let publicWarning =
+        "This channel is public — everyone in radio range could read it"
+
+    private var caption: String {
+        if channel.isPrimary { return Self.publicWarning }
+        return channel.sharesLocation ? Self.cadence : Self.keyHolders
+    }
+
+    var body: some View {
+        Toggle(isOn: Binding(get: { channel.sharesLocation }, set: onChange)) {
+            HStack(spacing: 8) {
+                if showsIcon {
+                    Image(systemName: channel.sharesLocation
+                          ? "location.fill" : "location")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(channel.sharesLocation ? Palette.accent
+                                                                : Palette.muted)
+                }
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title)
+                        .font(BarlowFont.text(15)).foregroundStyle(Palette.ink)
+                    Text(caption)
+                        .font(BarlowFont.text(12))
+                        .foregroundStyle(channel.isPrimary ? Palette.accent : Palette.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .tint(Palette.accent)
+        .accessibilityIdentifier("mesh-share-location")
     }
 }

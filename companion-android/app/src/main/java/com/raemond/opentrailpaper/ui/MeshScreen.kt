@@ -175,6 +175,23 @@ fun MeshScreen(ble: BleManager) {
                     onSelect = { channel = it },
                     onManage = { showChannels = true },
                 )
+                // One tap from the conversation instead of buried in the
+                // Channels sheet; reads the live channel list, so it stays in
+                // step with the sheet.
+                if (currentChannel != null &&
+                    showsShareLocationInThread(currentChannel, direct = recipientNum != null)
+                ) {
+                    MeshShareLocationToggle(
+                        channel = currentChannel,
+                        onCheckedChange = { ble.setMeshShareLocation(currentChannel.index, it) },
+                        showIcon = true,
+                        modifier = Modifier
+                            .padding(start = 16.dp, end = 16.dp, bottom = 10.dp)
+                            .background(Palette.surface, RectangleShape)
+                            .border(1.dp, Palette.hairline, RectangleShape)
+                            .padding(horizontal = 14.dp, vertical = 8.dp),
+                    )
+                }
                 Thread(
                     messages = messages,
                     isPrivate = currentChannel?.isPrivate == true,

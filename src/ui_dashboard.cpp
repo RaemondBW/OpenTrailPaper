@@ -172,7 +172,30 @@ const EpdRect kNavBanner = {0, ui::STATUS_H, 540, 138};
 // overlay leaving the glass needs its ghost cleared.
 void drawNavBanner(uint8_t* fb, float onlyWithinM = 0);
 void drawPauseBanner(const RideState& s, uint8_t* fb);
+void drawMeshNotice(uint8_t* fb);
 bool bandDrawnThisFrame = false;
+
+// The private-channel message popup (mesh_service::latestNotice). Up from
+// arrival for MESH_NOTICE_MS, or until tapped; noticeSeq is the last one
+// shown, so each message pops up once.
+mesh_service::Notice notice;
+uint32_t noticeSeq = 0;
+bool noticeUp = false;
+uint32_t noticeUntilMs = 0;
+// A turn this close keeps the band: the message can wait ten seconds, the
+// turn cannot.
+constexpr float kNoticeYieldsToTurnM = 200.0f;
+bool meshNoticeShown() {
+    if (!noticeUp) return false;
+    if (routes::navActive()) {
+        char instr[routes::MANEUVER_TEXT];
+        float dist = 0;
+        if (routes::nextTurn(instr, sizeof(instr), dist) &&
+            dist <= kNoticeYieldsToTurnM)
+            return false;
+    }
+    return true;
+}
 void buildMapScreenData(const RideState& s, MapScreenData& map,
                         bool finalFrame = false);
 
@@ -793,6 +816,15 @@ void handleTap(int x, int y) {
     // rider is most likely to hit by accident — and it threw away the thing they
     // probably wanted, which is to see what is coming up. Navigation is ended
     // from the menu instead.
+    // A message popup over the band is dismissed by tapping it, ahead of what
+    // the band would otherwise do underneath (directions, resume).
+    if (meshNoticeShown() && inRect(kNavBanner, x, y) &&
+        (screen == SCREEN_DASH || screen == SCREEN_MAP)) {
+        noticeUp = false;
+        noteActivity();
+        return;
+    }
+
     if (routes::navActive() && inRect(kNavBanner, x, y) &&
         (screen == SCREEN_DASH || screen == SCREEN_MAP)) {
         directionsFrom = screen;
@@ -1225,6 +1257,113 @@ void handlePowerTap(int x, int y) {
     }
 }
 
+// The letters in a rider's map marker: the first two of their name, "Al" for
+// Alex, so two riders sharing an initial still read apart. A name nobody set
+// ("OpenTrail 1a2b", "Meshtastic 1a2b") would give everyone the same letters,
+// so those fall back to the short name, which is unique-ish by default.
+static void peerInitials(const mesh_service::Node& nd, char out[3]) {
+    const char* name = nd.longName;
+    if (!strncmp(name, "OpenTrail ", 10) || !strncmp(name, "Meshtastic ", 11))
+        name = "";
+    for (const char* src : {name, (const char*)nd.shortName}) {
+        int n = 0;
+        for (const char* c = src; *c && n < 2; ++c) {
+            if (!isalnum((unsigned char)*c)) continue;
+            out[n] = n ? (char)tolower((unsigned char)*c) : (char)toupper((unsigned char)*c);
+            ++n;
+        }
+        out[n] = 0;
+        if (n) return;
+    }
+    snprintf(out, 3, "?");
+}
+
+// Riders on our private mesh channels who have told us where they are (see
+// MapPeer). Public-channel positions are left off: those are strangers, and a
+// busy public mesh would cover the map in them.
+void buildMapPeers(double lat, double lon, float rot, bool useMiles,
+                   MapScreenData& map) {
+    static MapPeer peers[16];
+    int count = 0;
+    const uint32_t now = millis();
+    const int n = mesh_service::nodeCount();
+    for (int i = 0; i < n && count < (int)(sizeof(peers) / sizeof(peers[0])); ++i) {
+        mesh_service::Node nd;
+        if (!mesh_service::nodeAt(i, nd)) break;
+        if (!nd.hasPosition || nd.positionChannel == 0) continue;
+        const uint32_t age = now - nd.positionMs;
+        if (age > MESH_MAP_MAX_AGE_MS) continue;
+
+        // Project at a scale that cannot overflow the int16 screen coordinates
+        // — a rider 50 km off at 2 m/px is 25,000 px away. Only the direction
+        // matters once they are off the screen, and that survives the rescale.
+        const double dy = (nd.latitude - lat) * 111320.0;
+        const double dx = (nd.longitude - lon) * 111320.0 * cos(lat * M_PI / 180.0);
+        const float distM = (float)sqrt(dx * dx + dy * dy);
+        const float mpp = distM / mapMpp > 8000.0f ? distM / 8000.0f : mapMpp;
+        int16_t x, y;
+        map_tiles::geoToScreen(nd.latitude, nd.longitude, lat, lon, mpp,
+                               map.riderX, map.riderY, rot, x, y);
+
+        // Inside the map with room for the marker, clear of the top band when
+        // something is drawn in it; otherwise pinned further in, so the
+        // pointer reaching out of it toward them stays on the glass too.
+        const int bandBottom = ui::STATUS_H + (map.navBannerVisible ? 138 : 0);
+        MapPeer& p = peers[count];
+        p.offscreen = x < 24 || x > 540 - 24 || y < bandBottom + 24 ||
+                      y > ui::MAP_STRIP_TOP - 24;
+        const int left = 84, right = 540 - 84;
+        const int top = bandBottom + 84, bottom = ui::MAP_STRIP_TOP - 84;
+        if (p.offscreen) {
+            const float vx = x - map.riderX, vy = y - map.riderY;
+            float t = 1.0f;
+            if (vx > 0) t = fminf(t, (right - map.riderX) / vx);
+            if (vx < 0) t = fminf(t, (left - map.riderX) / vx);
+            if (vy > 0) t = fminf(t, (bottom - map.riderY) / vy);
+            if (vy < 0) t = fminf(t, (top - map.riderY) / vy);
+            // Slide in along the same line until it is clear of the chrome
+            // drawn over the map edge (compass, zoom column, scale bar), so the
+            // marker is neither buried nor mistaken for the compass needle.
+            const int compY = mapCompassCy(map.navBannerVisible);
+            auto underChrome = [&](float px, float py) {
+                const float cdx = px - kMapCompass.cx, cdy = py - compY;
+                const float cr = kMapCompass.r + 30;
+                if (cdx * cdx + cdy * cdy < cr * cr) return true;
+                if (px > kMapZoom.zoomX - 50 && py > kMapZoom.layersY - 50 &&
+                    py < kMapZoom.zoomOutY + kMapZoom.size + 50) return true;
+                if (px < 190 + 50 && py > ui::MAP_STRIP_TOP - 48 - 50) return true;
+                return false;
+            };
+            // In 4 px steps along the line, no nearer the rider than 80 px.
+            const float len = sqrtf(vx * vx + vy * vy);
+            const float edge = t;
+            for (float k = edge; k * len > 80.0f; k -= 4.0f / len) {
+                t = k;
+                // The marker and the tip of its pointer (78 px further out).
+                const float cx = map.riderX + vx * k, cy = map.riderY + vy * k;
+                if (!underChrome(cx, cy) &&
+                    !underChrome(cx + vx / len * 78, cy + vy / len * 78)) break;
+            }
+            x = (int16_t)(map.riderX + vx * t);
+            y = (int16_t)(map.riderY + vy * t);
+        }
+        p.x = x;
+        p.y = y;
+        p.stale = age > MESH_MAP_FRESH_MS;
+        peerInitials(nd, p.initials);
+        // Off the screen, how far: which way AND whether it is a wait at the
+        // next corner or a ride to catch up.
+        p.label[0] = 0;
+        if (p.offscreen) {
+            units::navDist(p.label, sizeof(p.label), distM, useMiles);
+            for (char* c = p.label; *c; ++c) *c = (char)toupper((unsigned char)*c);
+        }
+        count++;
+    }
+    map.peers = peers;
+    map.peerCount = count;
+}
+
 void buildMapScreenData(const RideState& s, MapScreenData& map,
                         bool finalFrame) {
     map.riderX = 270;
@@ -1245,7 +1384,8 @@ void buildMapScreenData(const RideState& s, MapScreenData& map,
     // Tell the map renderer to drop the compass below the turn banner when one
     // is drawn over the top of the viewport. The pause banner sits in the same
     // band, so it displaces the compass the same way.
-    map.navBannerVisible = routes::navActive() || s.ridePaused;
+    map.navBannerVisible = routes::navActive() || s.ridePaused ||
+                           meshNoticeShown();
     map.metersPerPixel = mapMpp;
     map.layers = settings::mapLayers();
 
@@ -1310,6 +1450,10 @@ void buildMapScreenData(const RideState& s, MapScreenData& map,
         map.showRemaining = true;
         map.remainingKm = routes::remainingKm();
     }
+
+    // Not on the farewell frame: that one stays on the glass for days, long
+    // after anyone is still where it would show them.
+    if (!finalFrame) buildMapPeers(lat, lon, rot, s.useMiles, map);
 }
 
 void renderMapScreen(const RideState& s, uint8_t* fb) {
@@ -1361,7 +1505,7 @@ void renderMapScreen(const RideState& s, uint8_t* fb) {
     if (dbgTiming)
         diag::log("map: project=%lu draw=%lu polys=%d (tiles=%d base=%d) "
                   "cls[maj=%d pri=%d sec=%d ter=%d min=%d path=%d] ntiles=%d/%d%s "
-                  "mpp=%d pois=%d/%d at=%.5f,%.5f",
+                  "mpp=%d pois=%d/%d at=%.5f,%.5f peers=%d",
                   (unsigned long)(m1 - m0), (unsigned long)(millis() - m1),
                   map.featureCount, map.tilePolys, map.featureCount - map.tilePolys,
                   map.clsCount[0], map.clsCount[1], map.clsCount[2], map.clsCount[3],
@@ -1369,9 +1513,10 @@ void renderMapScreen(const RideState& s, uint8_t* fb) {
                   map.projectedTiles, map.wantedTiles,
                   map.partial ? " cut" : "", (int)mapMpp,
                   map.poiCount, map_tiles::projectStats().poisDropped,
-                  map.centerLat, map.centerLon);
+                  map.centerLat, map.centerLon, map.peerCount);
     drawNavBanner(fb);
     drawPauseBanner(s, fb);
+    drawMeshNotice(fb);
 }
 
 // Turn-by-turn banner across the top, shown on the map AND the dashboard while
@@ -1398,6 +1543,14 @@ void drawNavBanner(uint8_t* fb, float onlyWithinM) {
 void drawPauseBanner(const RideState& s, uint8_t* fb) {
     if (routes::navActive() || !s.ridePaused) return;
     ui_render_pause_banner(fb);
+    bandDrawnThisFrame = true;
+}
+
+// A private-channel message, over whatever else is in the band for its ten
+// seconds (except a turn that is close — see meshNoticeShown).
+void drawMeshNotice(uint8_t* fb) {
+    if (!meshNoticeShown()) return;
+    ui_render_mesh_notice(notice.from, notice.channelName, notice.text, fb);
     bandDrawnThisFrame = true;
 }
 
@@ -3271,6 +3424,23 @@ void task(void*) {
             }
         }
 
+        // A private-channel message pops up on its arrival and goes again
+        // after MESH_NOTICE_MS; both ends are a repaint.
+        {
+            mesh_service::Notice n;
+            if (mesh_service::latestNotice(n) && n.seq != noticeSeq) {
+                noticeSeq = n.seq;
+                notice = n;
+                noticeUp = true;
+                noticeUntilMs = millis() + MESH_NOTICE_MS;
+                forceDraw = true;
+                diag::log("ui: mesh notice from %s on %s", n.from, n.channelName);
+            } else if (noticeUp && (int32_t)(millis() - noticeUntilMs) >= 0) {
+                noticeUp = false;
+                forceDraw = true;
+            }
+        }
+
         bool navPrompt = routes::navPending();
         if (navPrompt && !lastNavPrompt) navPromptShownAt = millis();
         static int lastDashPage = 0;
@@ -3415,10 +3585,11 @@ void task(void*) {
                         segSelectedView(millis(), v, list, n);
                         ui_render_segment(s, v, fb);
                     } else {
-                        // Compact hero whenever a banner (turn OR pause) owns
+                        // Compact hero whenever a banner (turn, pause or message) owns
                         // the band, so no field hides underneath it.
                         ui_render_dashboard(s,
-                                            routes::navActive() || s.ridePaused,
+                                            routes::navActive() || s.ridePaused ||
+                                                meshNoticeShown(),
                                             pg.layout, fb);
                     }
                     // Field pages carry the banners as fixtures; music,
@@ -3432,6 +3603,7 @@ void task(void*) {
                                            pg.kind == DP_SEGMENT;
                     drawNavBanner(fb, densePage ? 500.0f : 0);
                     if (pg.kind == DP_FIELDS) drawPauseBanner(s, fb);
+                    drawMeshNotice(fb);
                     break;
                 }
                 case SCREEN_MAP: renderMapScreen(s, fb); break;

@@ -94,11 +94,14 @@ class SimPhone:
         with self._wlock:
             self.sock.sendall(f)
 
-    def _read_loop(self):
+    def _read_loop(self, sock, rsp):
+        # This link's own socket and queue: a test can connect again as soon as
+        # _gone is set, and connect() replaces both, so reading them from self
+        # here would hand this link's end to the next one.
         buf = b""
         try:
             while True:
-                d = self.sock.recv(65536)
+                d = sock.recv(65536)
                 if not d:
                     break
                 buf += d
@@ -108,14 +111,15 @@ class SimPhone:
                         break
                     t, body = buf[2], buf[3:2 + n]
                     buf = buf[2 + n:]
-                    self._frame(t, body)
+                    self._frame(t, body, rsp)
         except OSError:
             pass
-        self.connected = False
-        self._gone.set()
-        self._rsp.put(None)
+        rsp.put(None)
+        if sock is self.sock:
+            self.connected = False
+            self._gone.set()
 
-    def _frame(self, t, b):
+    def _frame(self, t, b, rsp):
         if t == D_NOTIFY:
             u = ustr(b[:16])
             data = bytes(b[16:])
@@ -147,7 +151,7 @@ class SimPhone:
         elif t == D_PEER_WRITE:
             self.peer_writes.put((ustr(b[0:16]), ustr(b[16:32]), bytes(b[32:])))
         else:
-            self._rsp.put((t, bytes(b)))
+            rsp.put((t, bytes(b)))
 
     def _wait(self, types, timeout=5.0):
         deadline = time.time() + timeout
@@ -183,7 +187,7 @@ class SimPhone:
         self.service_changed.clear()
         self.security = None
         self.disconnect_reason = None
-        self._reader = threading.Thread(target=self._read_loop, daemon=True)
+        self._reader = threading.Thread(target=self._read_loop, args=(self.sock, self._rsp), daemon=True)
         self._reader.start()
         flags = (1 if self.bonded else 0) | (2 if pair else 0) | (4 if auto_passkey else 0) | (8 if stale_keys else 0)
         ident = bytes(int(x, 16) for x in self.identity.split(":"))
@@ -306,7 +310,7 @@ class SimPhone:
         a socket that never sends CONNECT. None while not advertising."""
         p = SimPhone(port)
         p.sock = socket.create_connection(("127.0.0.1", port), timeout=timeout)
-        p._reader = threading.Thread(target=p._read_loop, daemon=True)
+        p._reader = threading.Thread(target=p._read_loop, args=(p.sock, p._rsp), daemon=True)
         p._reader.start()
         try:
             adv = p.advertisement()

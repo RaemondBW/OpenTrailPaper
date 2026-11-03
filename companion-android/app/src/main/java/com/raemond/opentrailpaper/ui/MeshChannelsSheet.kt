@@ -17,7 +17,9 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.outlined.LocationOn
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -352,24 +354,11 @@ private fun ChannelCard(
             color = Palette.muted,
         )
         Spacer(Modifier.size(8.dp))
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text("Share my location here", style = barlow(15.sp), color = Palette.ink)
-                Text(
-                    if (channel.isPrimary) {
-                        "This channel is public — everyone in radio range could read it"
-                    } else {
-                        "Only people holding this channel's key can read it"
-                    },
-                    style = barlow(12.sp),
-                    color = if (channel.isPrimary) Palette.accent else Palette.muted,
-                )
-            }
-            EinkSwitch(
-                checked = channel.sharesLocation,
-                onCheckedChange = onShareLocation,
-            )
-        }
+        MeshShareLocationToggle(
+            channel = channel,
+            title = "Share my location here",
+            onCheckedChange = onShareLocation,
+        )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             TextButton(onClick = onRead) {
                 Text("Read this one", style = condensed(17.sp, FontWeight.SemiBold),
@@ -555,4 +544,68 @@ private fun radioMatch(ble: BleManager, want: MeshChannelUrl.Radio): RadioMatch 
         if (now != want.slot) changes += "Slot: $now → ${want.slot}"
     }
     return RadioMatch(changes, preset, region, slot)
+}
+
+/** What the device does with a shared position (src/config.h MESH_POS_*): one as
+ *  soon as there is a fix, then no more often than every 10 minutes and only after
+ *  moving 100 m, plus an hourly re-send while parked. */
+internal const val SHARE_LOCATION_CADENCE =
+    "Sent once you have a GPS fix, then every 10 min while you move and hourly when stopped"
+internal const val SHARE_LOCATION_KEY_HOLDERS = "Only people with this channel's key see it"
+internal const val SHARE_LOCATION_PUBLIC =
+    "This channel is public — everyone in radio range could read it"
+
+/** The line under the switch: a warning on the public channel, otherwise who can
+ *  see it (off) or how often it goes out (on). */
+internal fun shareLocationCaption(channel: MeshChannel): String = when {
+    channel.isPrimary -> SHARE_LOCATION_PUBLIC
+    channel.sharesLocation -> SHARE_LOCATION_CADENCE
+    else -> SHARE_LOCATION_KEY_HOLDERS
+}
+
+/** Whether a conversation gets the switch at its top: only a private channel's
+ *  whole-channel thread. Not the public channel (that deserves the Channels
+ *  sheet's warning) and not a direct thread (positions go to the channel). */
+internal fun showsShareLocationInThread(channel: MeshChannel?, direct: Boolean): Boolean =
+    !direct && channel != null && !channel.isPrimary && channel.isPrivate
+
+/**
+ * The per-channel "share my location" switch. One composable for both places it
+ * appears — the channel's card in the Channels sheet and the top of a private
+ * channel's conversation — so the two cannot disagree. The state comes from the
+ * live channel the device reported, not held here, so flipping it in one place
+ * shows in the other.
+ */
+@Composable
+internal fun MeshShareLocationToggle(
+    channel: MeshChannel,
+    onCheckedChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+    title: String = "Share my location",
+    showIcon: Boolean = false,
+) {
+    Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        if (showIcon) {
+            Icon(
+                if (channel.sharesLocation) Icons.Filled.LocationOn else Icons.Outlined.LocationOn,
+                contentDescription = null,
+                tint = if (channel.sharesLocation) Palette.accent else Palette.muted,
+                modifier = Modifier.size(18.dp),
+            )
+            Spacer(Modifier.size(8.dp))
+        }
+        Column(Modifier.weight(1f)) {
+            Text(title, style = barlow(15.sp), color = Palette.ink)
+            Text(
+                shareLocationCaption(channel),
+                style = barlow(12.sp),
+                color = if (channel.isPrimary) Palette.accent else Palette.muted,
+            )
+        }
+        Spacer(Modifier.size(8.dp))
+        EinkSwitch(
+            checked = channel.sharesLocation,
+            onCheckedChange = onCheckedChange,
+        )
+    }
 }

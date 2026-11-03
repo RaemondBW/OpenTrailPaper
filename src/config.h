@@ -185,6 +185,18 @@
 // Re-send even when parked, so somebody who has just joined the channel can see
 // where you are without waiting for you to move.
 #define MESH_POS_HEARTBEAT_MS    (60UL * 60UL * 1000UL)
+// Without a fix of its own the device shares the phone's position instead, if
+// the phone sent one this recently.
+#define MESH_POS_PHONE_MAX_AGE_MS (2UL * 60UL * 1000UL)
+// Where the rest of a private channel's riders are, on the device map. Their
+// positions come at the same 10 minute / hourly pace as ours, so a dot stays
+// solid for two update intervals, then turns hollow (still where they were last
+// heard, but not where they are), and is dropped once it has missed the hourly
+// heartbeat too — by then it says nothing useful about where they are.
+#define MESH_MAP_FRESH_MS        (20UL * 60UL * 1000UL)
+#define MESH_MAP_MAX_AGE_MS      (90UL * 60UL * 1000UL)
+// A text on a private channel pops up over the ride screens for this long.
+#define MESH_NOTICE_MS           10000UL
 
 // How many received/sent messages the device keeps for the phone to pull.
 #define MESH_MSG_HISTORY    48

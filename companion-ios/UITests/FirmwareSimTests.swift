@@ -1009,9 +1009,12 @@ extension FirmwareSimTests {
         send.tap()
 
         // The device has it: the new page in its cycle and the new left cell.
+        // page_count comes from the UI task's next pass, which can trail the layout
+        // itself on a slow runner, so it is waited for along with it.
         let st1 = SimControl.waitStatus(timeout: 15) { s in
             let d = s["dash"] as? String ?? ""
-            return Self.pageLines(d).contains("page \(added.token)") && Self.mapFields(d).first == newLeft
+            return Self.pageLines(d).contains("page \(added.token)") && Self.mapFields(d).first == newLeft &&
+                self.pageCount(s) == count0 + 1
         }
         XCTAssertNotNil(st1, "the device never took the layout; it holds:\n\(deviceDash())")
         let dash1 = st1?["dash"] as? String ?? ""

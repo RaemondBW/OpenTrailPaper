@@ -79,6 +79,7 @@ struct MeshView: View, Equatable {
                     // tappable too — that is most of the screen in a short
                     // thread, and it is where a thumb naturally lands.
                     channelBar
+                    shareLocationRow
                     thread
                         .contentShape(Rectangle())
                         .onTapGesture { composerFocused = false }
@@ -119,6 +120,8 @@ struct MeshView: View, Equatable {
                 if args.contains("-demo-mesh-settings") { showSettings = true }
                 if args.contains("-demo-mesh-map") { showNodeMap = true }
                 if args.contains("-demo-mesh-nodes") { showNodes = true }
+                // The private channel's own thread, with its location switch.
+                if args.contains("-demo-mesh-group") { channel = 1 }
                 if args.contains("-demo-mesh-channels") ||
                    args.contains("-demo-mesh-share") { showChannels = true }
                 return
@@ -248,6 +251,24 @@ struct MeshView: View, Equatable {
             }
             .padding(.trailing, 16)
             }
+            .padding(.bottom, 10)
+        }
+    }
+
+    /// The location switch for the private channel being read, so turning it
+    /// on is one tap from the conversation rather than buried in the Channels
+    /// sheet. Not on the public channel (sharing there broadcasts to everyone in
+    /// range, which deserves the sheet's warning) and not in a direct thread
+    /// (positions go to the whole channel, not to one node).
+    @ViewBuilder private var shareLocationRow: some View {
+        if recipientNum == nil, let c = currentChannel, !c.isPrimary, c.isPrivate {
+            MeshShareLocationToggle(channel: c, showsIcon: true) {
+                ble.setMeshShareLocation(index: c.index, on: $0)
+            }
+            .padding(.horizontal, 14).padding(.vertical, 8)
+            .background(Palette.surface)
+            .overlay(Rectangle().strokeBorder(Palette.hairline, lineWidth: 1))
+            .padding(.horizontal, 16)
             .padding(.bottom, 10)
         }
     }
