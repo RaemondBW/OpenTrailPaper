@@ -182,7 +182,7 @@ struct RootView: View, Equatable {
                          "-demo-route", "-demo-rides", "-demo-update", "-demo-dash", "-demo-live",
                          "-demo-mesh", "-demo-mesh-settings", "-demo-mesh-map",
                          "-demo-mesh-nodes", "-demo-mesh-channels",
-                         "-demo-mesh-share", "-demo-mesh-off", "-demo-transfer",
+                         "-demo-mesh-share", "-demo-mesh-off", "-demo-mesh-group", "-demo-transfer",
                          "-demo-maps", "-demo-maps-coverage", "-demo-maps-layers"]
         if demoFlags.contains(where: a.contains) { return false }
         return !UserDefaults.standard.bool(forKey: BLEManager.onboardedKey)

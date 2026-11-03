@@ -2396,6 +2396,65 @@ void ui_render_pause_banner(uint8_t* fb) {
              EPD_DRAW_ALIGN_LEFT, 0xFF);
 }
 
+void ui_render_mesh_notice(const char* from, const char* channel,
+                           const char* text, uint8_t* fb) {
+    // The band the rider already reads as "the device is telling you
+    // something" (turn, pause). Static while it is up, so it costs one paint
+    // arriving and one leaving.
+    const int W = epd_rotated_display_width();
+    const int top = ui::STATUS_H;
+    epd_fill_rect({0, top, W, 138}, 0x00, fb);
+
+    // Speech bubble: a rounded body and a tail, white on the band.
+    const int bx = 36, by = top + 40, bw = 48, bh = 34, r = 8;
+    epd_fill_rect({bx + r, by, bw - 2 * r, bh}, 0xFF, fb);
+    epd_fill_rect({bx, by + r, bw, bh - 2 * r}, 0xFF, fb);
+    epd_fill_circle(bx + r, by + r, r, 0xFF, fb);
+    epd_fill_circle(bx + bw - r - 1, by + r, r, 0xFF, fb);
+    epd_fill_circle(bx + r, by + bh - r - 1, r, 0xFF, fb);
+    epd_fill_circle(bx + bw - r - 1, by + bh - r - 1, r, 0xFF, fb);
+    epd_fill_triangle(bx + 10, by + bh - 1, bx + 24, by + bh - 1, bx + 8,
+                      by + bh + 14, 0xFF, fb);
+
+    const int textX = 104;
+    const int textW = W - textX - ui::MARGIN;
+
+    char head[80], fromU[40], chanU[16], line[96];
+    upperCopy(fromU, sizeof(fromU), from);
+    upperCopy(chanU, sizeof(chanU), channel);
+    snprintf(head, sizeof(head), "%s · %s", fromU, chanU);
+    fitText(&Arial_L, head, textW, line, sizeof(line));
+    ui::text(&Arial_L, textX, top + 34, line, fb, EPD_DRAW_ALIGN_LEFT, 0xFF);
+
+    // The message: first line breaks at the last space that fits, the rest
+    // is fitted (with an ellipsis) onto the second.
+    char l1[96] = "", l2[96] = "";
+    const size_t n = strlen(text);
+    if (ui::textWidth(&Arial_B, text) <= textW) {
+        snprintf(l1, sizeof(l1), "%s", text);
+    } else {
+        size_t cut = 0, fit = 0;
+        for (size_t i = 0; i < n && i + 1 < sizeof(l1); ++i) {
+            char probe[96];
+            memcpy(probe, text, i + 1);
+            probe[i + 1] = 0;
+            if (ui::textWidth(&Arial_B, probe) > textW) break;
+            fit = i + 1;
+            if (text[i] == ' ') cut = i;
+        }
+        if (!cut) cut = fit;                       // one long word: hard break
+        // Never split a UTF-8 sequence across the two lines.
+        while (cut > 0 && ((uint8_t)text[cut] & 0xC0) == 0x80) cut--;
+        snprintf(l1, sizeof(l1), "%.*s", (int)cut, text);
+        const char* rest = text + cut;
+        while (*rest == ' ') rest++;
+        fitText(&Arial_B, rest, textW, l2, sizeof(l2));
+    }
+    ui::text(&Arial_B, textX, top + 80, l1, fb, EPD_DRAW_ALIGN_LEFT, 0xFF);
+    if (l2[0])
+        ui::text(&Arial_B, textX, top + 120, l2, fb, EPD_DRAW_ALIGN_LEFT, 0xFF);
+}
+
 // --- Workout page ------------------------------------------------------------
 // The Zwift-style trainer view, in e-paper terms: the current 3 s power huge,
 // the target under it, a full-width ADD/EASE banner that flips to inverse video

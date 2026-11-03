@@ -208,6 +208,9 @@ bool posEverSent = false;
 double lastPosLat = 0, lastPosLon = 0;
 uint32_t lastPosMs = 0;
 
+// The last private-channel text, for the on-device popup (latestNotice()).
+mesh_service::Notice notice;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -601,52 +604,72 @@ float metresBetween(double lat1, double lon1, double lat2, double lon2) {
     return (float)sqrt(dLat * dLat + dLon * dLon);
 }
 
+// Where we are, for sharing: the device's own fix, or the phone's when the device
+// has none yet (indoors, or a cold receiver) and the phone has sent one lately.
+// No fix, no claim — a stale or invented position sent to people who are using it
+// to find each other is worse than sending nothing.
+bool ownPosition(mesh::Position& p) {
+    const RideState s = g_state.snapshot();
+    if (s.gpsFix) {
+        p.latitude = s.latitude;
+        p.longitude = s.longitude;
+        p.altitudeM = (int32_t)s.altitudeM;
+        p.satsInView = s.satellites;
+    } else if (s.phoneFixValid && millis() - s.phoneFixMs < MESH_POS_PHONE_MAX_AGE_MS) {
+        p.latitude = s.phoneLat;
+        p.longitude = s.phoneLon;
+        p.altitudeM = (int32_t)s.phoneAltM;
+        p.satsInView = 0;
+    } else {
+        return false;
+    }
+    p.utc = nowUtc();
+    return true;
+}
+
+// Queues our position on channel `ch`. Caller holds the lock.
+bool queuePositionLocked(const mesh::Position& p, uint8_t ch) {
+    uint8_t buf[64];
+    const size_t n = mesh::encodePosition(p, buf, sizeof(buf));
+    return n && enqueue(BROADCAST_ADDR, mesh::PORT_POSITION, buf, n, ch, TxOpts());
+}
+
+void notePositionSent(const mesh::Position& p) {
+    lastPosLat = p.latitude;
+    lastPosLon = p.longitude;
+    lastPosMs = millis();
+    posEverSent = true;
+}
+
 // Broadcasts our position on every channel that asked for it, if the triggers say
 // so. Called from the task; takes the lock itself.
 void servicePositionShare() {
     if (!posMask) return;
 
-    const RideState s = g_state.snapshot();
-    // No fix, no claim. Sending a stale or invented position to people who are
-    // using it to find each other is worse than sending nothing.
-    if (!s.gpsFix) return;
+    mesh::Position p;
+    if (!ownPosition(p)) return;
 
     const uint32_t now = millis();
     const bool moved = posEverSent &&
-                       metresBetween(lastPosLat, lastPosLon, s.latitude,
-                                     s.longitude) >= MESH_POS_MIN_MOVE_M;
+                       metresBetween(lastPosLat, lastPosLon, p.latitude,
+                                     p.longitude) >= MESH_POS_MIN_MOVE_M;
     const bool interval = !posEverSent ||
                           (now - lastPosMs >= MESH_POS_MIN_INTERVAL_MS && moved);
     const bool heartbeat = posEverSent && (now - lastPosMs >= MESH_POS_HEARTBEAT_MS);
     if (!interval && !heartbeat) return;
 
-    mesh::Position p;
-    p.latitude = s.latitude;
-    p.longitude = s.longitude;
-    p.altitudeM = (int32_t)s.altitudeM;
-    p.utc = nowUtc();
-    p.satsInView = s.satellites;
-
-    uint8_t buf[64];
-    const size_t n = mesh::encodePosition(p, buf, sizeof(buf));
-    if (!n) return;
-
     int sent = 0;
     take();
     for (int i = 0; i < mesh::MAX_CHANNELS; ++i) {
         if (!(posMask & (1 << i)) || !chans[i].used) continue;
-        if (enqueue(BROADCAST_ADDR, mesh::PORT_POSITION, buf, n, (uint8_t)i,
-                    TxOpts())) sent++;
+        if (queuePositionLocked(p, (uint8_t)i)) sent++;
     }
     give();
     if (!sent) return;                       // outbox full; try again next tick
 
-    lastPosLat = s.latitude;
-    lastPosLon = s.longitude;
-    lastPosMs = now;
-    posEverSent = true;
-    diag::log("mesh: shared position %.5f,%.5f on %d channel%s", s.latitude,
-              s.longitude, sent, sent == 1 ? "" : "s");
+    notePositionSent(p);
+    diag::log("mesh: shared position %.5f,%.5f on %d channel%s", p.latitude,
+              p.longitude, sent, sent == 1 ? "" : "s");
 }
 
 // ---------------------------------------------------------------------------
@@ -788,6 +811,21 @@ void handleFrame(const uint8_t* frame, size_t len, float rssi, float snr) {
         memcpy(m->text, d.payload, tn);
         m->text[tn] = 0;
         unread++;
+        if (ch != 0) {
+            notice.seq++;
+            notice.ms = m->ms;
+            notice.channel = (uint8_t)ch;
+            snprintf(notice.channelName, sizeof(notice.channelName), "%s",
+                     chans[ch].name);
+            if (n->longName[0])
+                snprintf(notice.from, sizeof(notice.from), "%s", n->longName);
+            else if (n->shortName[0])
+                snprintf(notice.from, sizeof(notice.from), "%s", n->shortName);
+            else
+                snprintf(notice.from, sizeof(notice.from), "!%08x",
+                         (unsigned)h.sender);
+            memcpy(notice.text, m->text, sizeof(notice.text));
+        }
         diag::log("mesh: msg from !%08x %s '%s' (%d dBm, %d hop%s): %.60s",
                   (unsigned)h.sender, pki ? "PKI DM, ack on" : "on",
                   chans[ch].name, (int)rssi, hops, hops == 1 ? "" : "s", m->text);
@@ -880,8 +918,9 @@ void handleFrame(const uint8_t* frame, size_t len, float rssi, float snr) {
         break;
     }
     case mesh::PORT_POSITION: {
-        // Decoded but never sent: we show where other people are, and do not tell
-        // the mesh where we are (docs/meshtastic.md).
+        // Shown in the app's node list and, for a private channel, on the device
+        // map. Only the channel it came in on is kept, not one per channel: a
+        // node sharing with two of our channels sends the same fix on both.
         mesh::Position pos;
         if (mesh::decodePosition(d.payload, d.payloadLen, pos) && pos.valid) {
             n->hasPosition = true;
@@ -891,6 +930,7 @@ void handleFrame(const uint8_t* frame, size_t len, float rssi, float snr) {
             n->satsInView = pos.satsInView;
             n->precisionBits = pos.precisionBits;
             n->positionMs = millis();
+            n->positionChannel = (uint8_t)ch;
             changed = true;
         }
         break;
@@ -1329,6 +1369,12 @@ void applyPrivateChannel(uint8_t index, const char* name, const uint8_t* psk,
                          size_t pskLen, bool remove) {
     if (index == 0 || index >= mesh::MAX_CHANNELS) return;
     take();
+    // Positions heard on the old channel leave the device map with it, whether
+    // it is forgotten or replaced: they were shared with that group's key.
+    for (int i = 0; i < nodeUsed; ++i) {
+        if (nodes[i].hasPosition && nodes[i].positionChannel == index)
+            nodes[i].hasPosition = false;
+    }
     if (remove) {
         // Drop the messages that arrived on it too — leaving them readable after
         // the key is gone would be a surprising kind of "deleted".
@@ -1585,6 +1631,9 @@ uint32_t queueText(uint32_t dest, const char* text, uint8_t channel) {
     if (channel >= mesh::MAX_CHANNELS) return 0;
     size_t n = strnlen(text, mesh::MAX_TEXT_LEN + 1);
     if (n > mesh::MAX_TEXT_LEN) n = mesh::MAX_TEXT_LEN;
+    // Read before the lock: the ride state has a lock of its own.
+    mesh::Position pos;
+    const bool havePos = ownPosition(pos);
 
     take();
     TxOpts o;
@@ -1599,8 +1648,20 @@ uint32_t queueText(uint32_t dest, const char* text, uint8_t channel) {
         o.pkiKey = pkiKeyFor(dest);
         askKey = !o.pkiKey && nodeInfoGapOk(NODEINFO_DIRECT_GAP_MS);
     }
+    // A message on a channel we share our location with carries where we are:
+    // the position goes out just ahead of the text, so the dot is on the
+    // others' maps by the time they read it. Meshtastic has no field for a
+    // position inside a text, so it is its own packet, as stock nodes send it.
+    bool posQueued = false;
+    if (havePos && (posMask & (1 << channel)) && chans[channel].used)
+        posQueued = queuePositionLocked(pos, channel);
     const uint32_t id = enqueue(dest, mesh::PORT_TEXT, (const uint8_t*)text, n,
                                 channel, o);
+    if (posQueued) {
+        notePositionSent(pos);
+        diag::log("mesh: position %.5f,%.5f with the message on channel %u",
+                  pos.latitude, pos.longitude, (unsigned)channel);
+    }
     if (id && askKey) queueNodeInfo(dest, channel, true);
     if (id) {
         Message* m = pushMessage();
@@ -1680,6 +1741,13 @@ bool nodeName(uint32_t num, char* out, size_t cap) {
 
 int unreadCount() { return unread; }
 void markAllRead() { unread = 0; }
+
+bool latestNotice(Notice& out) {
+    take();
+    out = notice;
+    give();
+    return out.seq != 0;
+}
 
 bool takeChanged() {
     take();
