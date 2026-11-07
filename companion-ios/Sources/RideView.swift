@@ -487,6 +487,7 @@ struct RideView: View {
                                                  filled: false, expand: true)
                             }
                             .accessibilityLabel(["Left cell", "Middle cell", "Right cell"][slot])
+                            .accessibilityValue(DashField.named(draft.mapFields[slot])?.label ?? "--")
                         }
                     }
                     Text("The three cells under the map. While navigating, Route left takes the right cell unless one already shows it.")

@@ -929,6 +929,13 @@ extension FirmwareSimTests {
             let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: option)
             if XCTWaiter.wait(for: [closed], timeout: 3) == .completed { return }
         }
+        // On a slow runner the open menu's items have been seen never to turn
+        // hittable, and the menu then stayed open over the screen. A tap at the
+        // item's own point still picks it.
+        guard option.exists else { return }
+        option.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: option)
+        _ = XCTWaiter.wait(for: [closed], timeout: 3)
     }
     fileprivate func ridePageButton(_ name: String) -> XCUIElement { button("Dashboard page \(name)") }
 
@@ -991,8 +998,12 @@ extension FirmwareSimTests {
             _ = leftCell.waitForExistence(timeout: 3)
         }
         XCTAssertTrue(leftCell.waitForExistence(timeout: 5), "the map page's data strip editor didn't show")
-        leftCell.tap()
-        pick(newLeftLabel, "the Left cell menu")
+        // The cell shows the field it holds; a pick that didn't take is tried again.
+        for _ in 0..<3 where leftCell.value as? String != newLeftLabel {
+            leftCell.tap()
+            pick(newLeftLabel, "the Left cell menu")
+        }
+        XCTAssertEqual(leftCell.value as? String, newLeftLabel, "the Left cell didn't take \(newLeftLabel)")
 
         // The strip's + cell; the first tap can go to closing the cell menu.
         let addCell = button("Add a page")
