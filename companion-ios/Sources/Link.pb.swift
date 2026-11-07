@@ -2957,7 +2957,7 @@ nonisolated struct LinkMapLayers: Sendable {
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
-  /// b0 bike routes, b1 cycleways & lanes, b2 water, b3 toilets, b4 repair, b5 bike shops
+  /// b0 bike routes, b1 cycleways & lanes, b2 water, b3 toilets, b4 repair, b5 bike shops, b6 street names
   var mask: UInt32 = 0
 
   var unknownFields = SwiftProtobuf.UnknownStorage()

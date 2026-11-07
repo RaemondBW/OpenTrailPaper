@@ -466,12 +466,12 @@ final class BLEManager: NSObject, ObservableObject {
 
     // MARK: device map layers (map characteristic 0x09 get / 0x0A set,
     // device answers [0xE0][u16 mask]). Bits: 0 bike routes, 1 cycleways &
-    // lanes, 2 water, 3 toilets, 4 repair stations, 5 bike shops (src/map_view.h
+    // lanes, 2 water, 3 toilets, 4 repair stations, 5 bike shops, 6 street names (src/map_view.h
     // MAP_LAYER_*). Kept per device: the last mask seen, whether that device
     // answers at all, and an edit made while disconnected (sent on the next
     // connect; last write wins).
     /// The device's map-layer mask as this app last knew it (live when connected).
-    @Published var mapLayers: UInt16 = 0x3F
+    @Published var mapLayers: UInt16 = 0x7F
     /// The device (or, disconnected, the last one) has firmware with map layers.
     @Published var mapLayersSupported = false
     private var mapLayersCache: [String: Int] =
@@ -487,7 +487,7 @@ final class BLEManager: NSObject, ObservableObject {
     private func loadMapLayersState() {
         guard let k = layersDeviceKey else { return }
         UserDefaults.standard.set(k, forKey: "mapLayersLastDevice")
-        mapLayers = UInt16(truncatingIfNeeded: mapLayersPending[k] ?? mapLayersCache[k] ?? 0x3F)
+        mapLayers = UInt16(truncatingIfNeeded: mapLayersPending[k] ?? mapLayersCache[k] ?? 0x7F)
         mapLayersSupported = mapLayersSeen[k] ?? false
     }
     private func saveMapLayersState() {
@@ -910,7 +910,7 @@ final class BLEManager: NSObject, ObservableObject {
         state = .connected
         deviceSupportsPois = true
         mapLayersSupported = true
-        mapLayers = 0x3F & ~0x22   // cycleways and shops off, to show both states
+        mapLayers = 0x7F & ~0x22   // cycleways and shops off, to show both states
         deviceTileIds = Set(onDevice)
         flaggedTileIds = Set(current)
         devicePoiIds = Set(withPois)

@@ -1017,7 +1017,7 @@ private struct TileInspectorSheet: View {
 }
 
 /// The switches for what the DEVICE's map draws — bike-route bands, cycleways
-/// and lanes, and each POI type. Applied as soon as they change when the
+/// and lanes, each POI type, and street names. Applied as soon as they change when the
 /// device is connected; otherwise shown as last known and sent on reconnect.
 struct DeviceMapLayersSheet: View {
     @EnvironmentObject var ble: BLEManager
@@ -1029,6 +1029,7 @@ struct DeviceMapLayersSheet: View {
         (0x08, "Toilets", "Restroom icons", "figure.stand.dress.line.vertical.figure"),
         (0x10, "Repair stations", "Self-service repair stands", "wrench.adjustable.fill"),
         (0x20, "Bike shops", "Bicycle shop icons", "storefront"),
+        (0x40, "Street names", "Names along the streets, zoomed all the way in", "character.textbox"),
     ]
 
     var body: some View {

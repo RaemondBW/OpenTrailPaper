@@ -31,7 +31,7 @@ from test_maps import TILES, alive, glass, listed, moved, open_map, over_usb, pa
 MANIFEST = fixture_manifest()
 NAMES = {WATER: "water", TOILETS: "toilets", REPAIR: "repair", BIKE_SHOP: "bike shop"}
 LAYER = {WATER: 1 << 2, TOILETS: 1 << 3, REPAIR: 1 << 4, BIKE_SHOP: 1 << 5}
-ALL_LAYERS = 0x3F
+ALL_LAYERS = 0x7F
 
 # map_view.cpp drawPois: icon radius, the rider marker's clear zone, chrome.
 POI_R = 12

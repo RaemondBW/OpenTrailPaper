@@ -620,7 +620,7 @@ message SensorList {
 message GetMapLayers {}
 
 message MapLayers {
-  uint32 mask = 1;   // b0 bike routes, b1 cycleways & lanes, b2 water, b3 toilets, b4 repair, b5 bike shops
+  uint32 mask = 1;   // b0 bike routes, b1 cycleways & lanes, b2 water, b3 toilets, b4 repair, b5 bike shops, b6 street names
 }
 
 message GetDash {}

@@ -77,7 +77,7 @@ enum : uint8_t {
 
 // Cycling layers the rider can switch off (settings::mapLayers(), the device's
 // MAP LAYERS screen, BLE opcode 0x0A on the map characteristic). A render-time
-// filter only: tiles are parsed and cached the same either way. Bits 6-15 are
+// filter only: tiles are parsed and cached the same either way. Bits 7-15 are
 // reserved and kept as sent, so a newer app's bits survive an older firmware.
 enum : uint16_t {
     MAP_LAYER_BIKE_ROUTES = 1 << 0,   // grey route bands
@@ -86,9 +86,10 @@ enum : uint16_t {
     MAP_LAYER_TOILETS = 1 << 3,
     MAP_LAYER_REPAIR = 1 << 4,
     MAP_LAYER_BIKE_SHOPS = 1 << 5,
-    MAP_LAYERS_ALL = 0x003F,
+    MAP_LAYER_STREET_NAMES = 1 << 6,  // labels at the closest zoom (MAP_NAMES_MAX_MPP)
+    MAP_LAYERS_ALL = 0x007F,
 };
-constexpr int kMapLayerCount = 6;
+constexpr int kMapLayerCount = 7;
 
 struct MapPoi {
     int16_t x, y;    // screen px

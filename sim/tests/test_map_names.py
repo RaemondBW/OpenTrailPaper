@@ -10,6 +10,7 @@ here by class (otpsim.tiles.with_names), so the count of distinct names in
 view is known."""
 import re
 
+from otpsim import pb
 from otpsim.tiles import with_names
 from test_maps import CENTRE, CENTRE_H3, POIS, TILES, alive, open_map, parse_frame, send_region
 
@@ -105,3 +106,49 @@ def test_a_damaged_name_section_is_ignored_not_trusted(device, link):
     device.console("zoom in")
     assert names_at(device, seq, 1) == (0, 0)
     alive(device)
+
+
+STREET_NAMES = 1 << 6
+ALL_LAYERS = 0x7F
+NAMES_ROW_Y = 64 + 6 * 108 + 54    # MAP LAYERS screen, row 6 (map_view.cpp kLayerRows)
+
+
+def test_the_street_names_layer_turns_them_off_and_back_on(device, link):
+    send_region(link, region(with_names(centre_tile(), by_class)), POIS)
+    seq = open_map(device, *CENTRE)
+    device.console("zoom in")
+    on = names_at(device, seq, 1)
+    assert on[0] >= 1, on
+
+    seq = device.log_seq()
+    r = link.request(set_map_layers=pb.MapLayers(mask=ALL_LAYERS & ~STREET_NAMES))
+    assert r.map_layers.mask == ALL_LAYERS & ~STREET_NAMES, r
+    # Still read from the tiles; only the drawing is switched off.
+    assert names_at(device, seq, 1) == (0, on[1])
+
+    seq = device.log_seq()
+    link.request(set_map_layers=pb.MapLayers(mask=ALL_LAYERS))
+    assert names_at(device, seq, 1) == on
+
+
+def test_the_map_layers_screen_has_a_street_names_switch(device):
+    assert device.status()["settings"]["map_layers"] == ALL_LAYERS
+    before = device.status()["paints"]
+    device.console("screen layers")
+    device.wait_status(lambda s: s["paints"] > before, timeout=5)
+    device.tap(400, NAMES_ROW_Y)
+    device.wait_status(lambda s: s["settings"]["map_layers"] == ALL_LAYERS & ~STREET_NAMES, timeout=5)
+    device.tap(400, NAMES_ROW_Y)
+    device.wait_status(lambda s: s["settings"]["map_layers"] == ALL_LAYERS, timeout=5)
+
+
+def test_layers_saved_before_street_names_existed_keep_them_on(device):
+    """A mask from firmware without the layer (key "maplayers", bit 6 never
+    set) carries over with street names on and every other choice kept."""
+    import os
+    import struct
+    d = os.path.join(device.dir, "nvs", "bike")
+    with open(os.path.join(d, "maplayers"), "wb") as f:
+        f.write(struct.pack("<H", 0x3F & ~0x04))    # water turned off
+    device.reboot()
+    assert device.status()["settings"]["map_layers"] == ALL_LAYERS & ~0x04

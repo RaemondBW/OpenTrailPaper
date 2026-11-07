@@ -522,6 +522,7 @@ int s_labelsDrawn = 0;
 // the rider or the chrome drawn over the map afterwards; one with nowhere
 // clear is left off rather than squeezed in.
 int placeStreetNames(const MapScreenData& map, MapLabel* out) {
+    if (!(map.layers & MAP_LAYER_STREET_NAMES)) return 0;
     if (map.metersPerPixel > MAP_NAMES_MAX_MPP || map.nameCount <= 0) return 0;
     const int top = MAP_TOP + (map.navBannerVisible ? 138 : 0);
     // Static: the UI task's stack is 8 KB.
@@ -918,6 +919,7 @@ const LayerRow kLayerRows[kMapLayerCount] = {
     {MAP_LAYER_TOILETS, "TOILETS"},
     {MAP_LAYER_REPAIR, "REPAIR STATIONS"},
     {MAP_LAYER_BIKE_SHOPS, "BIKE SHOPS"},
+    {MAP_LAYER_STREET_NAMES, "STREET NAMES"},
 };
 constexpr int kSampleCx = 24 + 16 + 30;   // CONTENT_X + CELL_PAD + half a sample
 constexpr int kLabelX = 24 + 16 + 76;     // text starts right of the sample
@@ -936,6 +938,16 @@ void drawLayerSample(int row, int cx, int cy, uint8_t* fb) {
             int16_t road[4] = {(int16_t)(cx - 28), (int16_t)(cy + 9), (int16_t)(cx + 28), (int16_t)(cy + 9)};
             drawBikeLanes(road, 2, 2, fb);
             thickSegment(cx - 28, cy + 9, cx + 28, cy + 9, 2, ROAD_INK, fb);
+            break;
+        }
+        case 6: {   // a street with its name on it
+            thickSegment(cx - 30, cy, cx + 30, cy, 3, ROAD_INK, fb);
+            const char* name = "Elm";
+            const int capH = epdc_digit_height(&Arial_B);
+            const int w = ui::textWidth(&Arial_B, name) + 10, h = capH + 10;
+            epd_fill_rect({cx - w / 2, cy - h / 2, w, h}, 0xFF, fb);
+            ui::text(&Arial_B, cx - w / 2 + 5, cy - h / 2 + 5 + capH, name, fb,
+                     EPD_DRAW_ALIGN_LEFT, 0x00);
             break;
         }
         default: {

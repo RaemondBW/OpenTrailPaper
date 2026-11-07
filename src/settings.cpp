@@ -26,7 +26,7 @@ bool usbDrv = true;  // true = expose SD as USB drive when plugged into a host
 // device should show the layout the rider configured, gaps and all, rather
 // than a silently re-packed one that hides which sensors are missing.
 bool showOff = true;
-uint16_t mapLayerMask = 0x003F;   // MAP_LAYERS_ALL: every cycling layer on
+uint16_t mapLayerMask = 0x007F;   // MAP_LAYERS_ALL: every cycling layer on
 // Seconds of no movement (power, cadence, wheel and GPS all quiet) before the
 // ride timer auto-pauses. 0 disables auto-pause entirely.
 int autoPause = 10;
@@ -84,7 +84,11 @@ void begin() {
     // keeps the SD (logs/recording) when plugged in.
     usbDrv = prefs.getBool("usbdrv2", false);
     showOff = prefs.getBool("showoff", true);
-    mapLayerMask = prefs.getUShort("maplayers", 0x003F);
+    // Key bumped to maplayers2 with street names (bit 6): a mask stored before
+    // there were any never turned them off, so it carries over with them on.
+    mapLayerMask = prefs.isKey("maplayers2")
+                       ? prefs.getUShort("maplayers2", 0x007F)
+                       : prefs.getUShort("maplayers", 0x003F) | 0x0040;
     autoPause = prefs.getInt("apause", 10);
     wkPauseStep = prefs.getBool("wkpstep", false);
     panelScanOn = prefs.getBool("pscan", false);
@@ -194,7 +198,7 @@ uint16_t mapLayers() { return mapLayerMask; }
 void setMapLayers(uint16_t mask) {
     if (mask == mapLayerMask) return;
     mapLayerMask = mask;
-    prefs.putUShort("maplayers", mapLayerMask);
+    prefs.putUShort("maplayers2", mapLayerMask);
 }
 void setShowOffline(bool on) {
     showOff = on;
