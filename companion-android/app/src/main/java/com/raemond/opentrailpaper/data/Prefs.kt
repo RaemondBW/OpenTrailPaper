@@ -33,6 +33,11 @@ object Prefs {
         get() = sp.getBoolean(KEY_MILES, false)
         set(v) = sp.edit().putBoolean(KEY_MILES, v).apply()
 
+    /** FirmwareRelease.Channel name the rider follows: "STABLE" or "NIGHTLY". */
+    var firmwareChannel: String
+        get() = sp.getString("firmwareChannel", "STABLE") ?: "STABLE"
+        set(v) = sp.edit().putString("firmwareChannel", v).apply()
+
     var onboarded: Boolean
         get() = sp.getBoolean(KEY_ONBOARDED, false)
         set(v) = sp.edit().putBoolean(KEY_ONBOARDED, v).apply()

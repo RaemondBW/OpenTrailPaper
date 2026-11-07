@@ -68,7 +68,13 @@
 // older version invites a tap that silently replaces it with mainline firmware —
 // which is exactly what happened once. Keep this in step with main's version
 // while the branch is unmerged; on merge it goes back to being the real version.
+//
+// A nightly build (CI, a push to main that doesn't bump this) overrides it with
+// -DFIRMWARE_VERSION="v1.23-nightly.<commit>", so the apps can tell it from the
+// stable release and from the nightly before it. Bump this to release stable.
+#ifndef FIRMWARE_VERSION
 #define FIRMWARE_VERSION    "v1.23"
+#endif
 
 // Interrupt watchdog budget, in place of the framework's 300 ms. Light sleep
 // stalls core 0 for the whole sleep call, and with sensor links up a call can

@@ -8,6 +8,10 @@ submitting.
 
 ## Unreleased
 
+- Settings > Firmware has a Stable / Nightly switch. Nightly installs the
+  newest device firmware as soon as it's built, before it has had the
+  testing a stable release gets; switch back to Stable to reinstall the
+  stable release.
 - Live Strava segments: with Strava connected, Settings > Accounts has a
   "Starred segments" line under it. Sync sends your starred ride segments
   (up to 50) to the device, with your PR and the line and elevation of

@@ -690,7 +690,20 @@ struct SettingsView: View, Equatable {
     @ViewBuilder private var firmwareCard: some View {
         Card {
             VStack(alignment: .leading, spacing: 12) {
-                Text("Firmware").trackedLabel()
+                HStack {
+                    Text("Firmware").trackedLabel()
+                    Spacer()
+                    SegmentedSwitch(options: [("Stable", FirmwareRelease.Channel.stable),
+                                              ("Nightly", FirmwareRelease.Channel.nightly)],
+                                    selection: Binding(get: { release.channel },
+                                                       set: { release.setChannel($0) }),
+                                    accessibilityName: "Firmware channel")
+                }
+                if release.channel == .nightly {
+                    Text("Nightly builds have the newest changes as soon as they're made, with less testing than a stable release. Switch back to Stable any time to reinstall it.")
+                        .font(.system(size: 12)).foregroundStyle(Palette.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Device: \(ble.deviceFirmware.isEmpty ? "…" : ble.deviceFirmware)")
@@ -699,7 +712,7 @@ struct SettingsView: View, Equatable {
                         // the installed app — shipping firmware no longer means
                         // shipping an app build.
                         if let r = release.latest {
-                            Text("Latest: \(r.tag)")
+                            Text("\(release.channel == .nightly ? "Nightly" : "Stable"): \(r.tag)")
                                 .font(.system(size: 12)).foregroundStyle(Palette.muted)
                         } else if release.checking {
                             Text("Checking GitHub…")
