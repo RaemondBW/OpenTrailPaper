@@ -451,6 +451,18 @@ over Web Serial in Chrome/Edge. You still need to enter download mode by hand
 there (BOOT + RESET, or send `bootloader` from a serial console first), but it
 resets into the new firmware on its own when the flash finishes.
 
+### Firmware releases
+
+CI publishes two channels from `main`, and the apps (Settings > Firmware) and
+the site's flasher let the rider pick one:
+
+- **Stable**: one release per `FIRMWARE_VERSION`. To release, bump it in
+  `src/config.h` and finish that version's section of `CHANGELOG.md` (its
+  release notes) in the same push. Later pushes leave the release alone.
+- **Nightly**: the `nightly` prerelease, rebuilt by every other push to `main`
+  as `v1.23-nightly.<commit>`. Its notes are the changelog's newest section
+  while that version is still unreleased.
+
 ### iOS companion
 
 Requires Xcode 16+ and [XcodeGen](https://github.com/yonaskolb/XcodeGen)

@@ -65,8 +65,56 @@ jobs:
       - name: Verify shipping battery configuration
         run: python3 tools/power_test/check_shipping_config.py
 
+      # Two channels come out of main. A push that bumps FIRMWARE_VERSION (no
+      # release of that version yet) is a stable release, and the nightly moves
+      # to the same build. Any other push is a nightly only, built with the
+      # commit in its version ("v1.23-nightly.81dbf91") so the apps can tell it
+      # from the stable release and from the nightly before it. Stable therefore
+      # only changes on purpose, the way an app release does.
+      - name: Read firmware version
+        id: ver
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v=$(sed -n 's/.*FIRMWARE_VERSION[[:space:]]*"\([^"]*\)".*/\1/p' src/config.h)
+          [ -n "$v" ] || { echo "::error::no FIRMWARE_VERSION in src/config.h"; exit 1; }
+          echo "stable=$v" >> "$GITHUB_OUTPUT"
+          channel=none
+          version=$v
+          if [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF" = refs/heads/main ]; then
+            # 404 is the only answer that means "release it": anything else
+            # (rate limit, outage) must not be taken as a new stable version.
+            code=$(curl -s -o /dev/null -w '%{http_code}' \
+                     -H "Authorization: Bearer $GH_TOKEN" \
+                     "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/$v")
+            case "$code" in
+              404) channel=stable ;;
+              200) channel=nightly; version="$v-nightly.${GITHUB_SHA::7}" ;;
+              *) echo "::error::GitHub answered $code for release $v"; exit 1 ;;
+            esac
+          fi
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "stable $v, building $version ($channel)"
+
       - name: Build
-        run: pio run
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          STABLE: ${{ steps.ver.outputs.stable }}
+        run: |
+          if [ "$VERSION" != "$STABLE" ]; then
+            export PLATFORMIO_BUILD_FLAGS="-DFIRMWARE_VERSION='\"$VERSION\"'"
+          fi
+          pio run
+
+      # The apps compare this string to the release's, so a build that came
+      # out with the wrong one would be offered as an update forever.
+      - name: Verify the firmware carries its version
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          grep -aq "$VERSION" .pio/build/t5s3-painter/firmware.bin || {
+            echo "::error::firmware.bin does not contain $VERSION"; exit 1; }
 
       # Prove the binary that ships actually contains power management — the
       # overlay silently not taking (wrong cache, changed package layout) would
@@ -92,40 +140,78 @@ jobs:
             .pio/build/t5s3-painter/firmware.elf
           if-no-files-found: error
 
-      # Publish firmware.bin to a GitHub Release so the web flasher can fetch it
-      # (Actions artifacts need auth and expire; Releases are public + permanent).
-      # One release per FIRMWARE_VERSION, refreshed on every push to main.
-      - name: Read firmware version
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        id: ver
-        run: |
-          v=$(sed -n 's/.*FIRMWARE_VERSION[[:space:]]*"\([^"]*\)".*/\1/p' src/config.h)
-          echo "version=$v" >> "$GITHUB_OUTPUT"
-
+      # Publish firmware.bin to GitHub Releases so the apps and the web flasher
+      # can fetch it (Actions artifacts need auth and expire; Releases are
+      # public + permanent). Stable: one release per FIRMWARE_VERSION, made by
+      # the push that bumps it and left alone after that. Nightly: one moving
+      # "nightly" prerelease, refreshed by every push to main. Prerelease keeps
+      # it out of /releases/latest, which is what the stable channel reads.
+      #
       # The release body is this version's CHANGELOG.md section — the app shows
       # it as "What's new" when offering the update, so the changelog IS the
       # user-facing release notes. A missing section still publishes (with a
-      # placeholder) rather than blocking the release.
+      # placeholder) rather than blocking the release. A nightly's notes are the
+      # newest section when it is still to be released (a heading other than
+      # the stable version's), after a line saying what a nightly is.
       - name: Extract release notes
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: steps.ver.outputs.channel != 'none'
+        env:
+          STABLE: ${{ steps.ver.outputs.stable }}
+          VERSION: ${{ steps.ver.outputs.version }}
         run: |
-          v="${{ steps.ver.outputs.version }}"
-          awk -v ver="## $v" '$0 == ver {on=1; next} on && /^## / {exit} on' \
-            CHANGELOG.md | sed -e '/./,$!d' > relnotes.md
-          if [ ! -s relnotes.md ]; then
-            echo "Firmware $v." > relnotes.md
-          fi
-          printf '\nBuilt from %s. Flash it from the app (Settings > Firmware), the project site, or drop firmware.bin on the SD card.\n' "$GITHUB_SHA" >> relnotes.md
+          section() {
+            awk -v ver="$1" '$0 == ver {on=1; next} on && /^## / {exit} on' \
+              CHANGELOG.md | sed -e '/./,$!d'
+          }
+          section "## $STABLE" > relnotes.md
+          [ -s relnotes.md ] || echo "Firmware $STABLE." > relnotes.md
+          built=$(printf '\nBuilt from %s. Flash it from the app (Settings > Firmware), the project site, or drop firmware.bin on the SD card.\n' "$GITHUB_SHA")
 
-      - name: Publish firmware release
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+          if [ "$VERSION" = "$STABLE" ]; then
+            cp relnotes.md nightly.md
+          else
+            next=$(grep -m1 '^## ' CHANGELOG.md)
+            {
+              echo "Nightly build of the newest code, after the stable $STABLE. It has had less testing than a stable release; switch back to Stable in the app to return to $STABLE."
+              echo
+              if [ -n "$next" ] && [ "$next" != "## $STABLE" ]; then
+                section "$next"
+              fi
+            } > nightly.md
+          fi
+          echo "$built" >> relnotes.md
+          echo "$built" >> nightly.md
+
+      - name: Publish stable release
+        if: steps.ver.outputs.channel == 'stable'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.ver.outputs.version }}
-          name: Firmware ${{ steps.ver.outputs.version }}
+          tag_name: ${{ steps.ver.outputs.stable }}
+          name: Firmware ${{ steps.ver.outputs.stable }}
           body_path: relnotes.md
           files: .pio/build/t5s3-painter/firmware.bin
           fail_on_unmatched_files: true
+
+      # The apps read the nightly's version from its title ("Firmware
+      # v1.23-nightly.81dbf91"), since its tag never changes. The binary goes up
+      # before the title moves, so a title never names a binary that isn't there.
+      - name: Publish nightly
+        if: steps.ver.outputs.channel != 'none'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          git tag -f nightly "$GITHUB_SHA"
+          git push -f origin refs/tags/nightly
+          bin=.pio/build/t5s3-painter/firmware.bin
+          if gh release view nightly >/dev/null 2>&1; then
+            gh release upload nightly "$bin" --clobber
+            gh release edit nightly --prerelease --title "Firmware $VERSION" \
+              --notes-file nightly.md
+          else
+            gh release create nightly "$bin" --prerelease --target "$GITHUB_SHA" \
+              --title "Firmware $VERSION" --notes-file nightly.md
+          fi
 
   # The Meshtastic codec is the one part of the firmware whose bugs are invisible
   # on hardware — a wrongly tuned or wrongly keyed node just hears nothing — so

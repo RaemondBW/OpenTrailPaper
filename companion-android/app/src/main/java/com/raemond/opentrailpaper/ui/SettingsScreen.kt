@@ -798,7 +798,27 @@ private fun whatsNew(body: String): String {
 @Composable
 private fun FirmwareCard(ble: BleManager, onInstall: () -> Unit) {
     Card {
-        TrackedLabel("Firmware")
+        val channelScope = rememberCoroutineScope()
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            TrackedLabel("Firmware")
+            Spacer(Modifier.weight(1f))
+            SegmentedSwitch(
+                listOf("Stable" to FirmwareRelease.Channel.STABLE, "Nightly" to FirmwareRelease.Channel.NIGHTLY),
+                FirmwareRelease.channel,
+                accessibilityName = "Firmware channel",
+            ) {
+                if (FirmwareRelease.setChannel(it)) channelScope.launch { FirmwareRelease.check() }
+            }
+        }
+        if (FirmwareRelease.channel == FirmwareRelease.Channel.NIGHTLY) {
+            Spacer(Modifier.size(8.dp))
+            Text(
+                "Nightly builds have the newest changes as soon as they're made, with less " +
+                    "testing than a stable release. Switch back to Stable any time to reinstall it.",
+                style = barlow(12.sp),
+                color = Palette.muted,
+            )
+        }
         Spacer(Modifier.size(10.dp))
         Row(verticalAlignment = Alignment.Top) {
             Column(Modifier.weight(1f)) {
@@ -812,7 +832,8 @@ private fun FirmwareCard(ble: BleManager, onInstall: () -> Unit) {
                 val release = FirmwareRelease.latest
                 Text(
                     when {
-                        release != null -> "Latest: ${release.tag}"
+                        release != null -> (if (FirmwareRelease.channel == FirmwareRelease.Channel.NIGHTLY)
+                            "Nightly" else "Stable") + ": ${release.tag}"
                         FirmwareRelease.checking -> "Checking GitHub…"
                         else -> FirmwareRelease.error ?: "Latest: unknown"
                     },
