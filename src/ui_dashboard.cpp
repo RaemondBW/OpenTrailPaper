@@ -117,10 +117,12 @@ constexpr uint32_t kMapPrerenderRetryMs = 5000;
 // bit each: it is pure black and white, and PSRAM spent here comes straight out of the
 // tile cache, which is what wide views live on. What the tile pass found, so a frame
 // that skips it still reports the same map. Its POIs, which go on top of the base but
-// come out of that pass too. And where its water is.
+// come out of that pass too. Where its water is. And its street names, placed: the
+// features they are placed against come out of the tile pass as well.
 constexpr int kMapCachePois = 512;
 struct MapLayerFacts {
-    int32_t poiCount, features, tilePolys, projectedTiles, wantedTiles, parks, waters;
+    int32_t poiCount, features, tilePolys, projectedTiles, wantedTiles, parks, waters,
+        names, labels;
     decltype(MapScreenData::clsCount) classes;
 };
 const uint8_t* mapFrameBase = nullptr;   // this frame's cached layer, if it has one
@@ -1446,7 +1448,7 @@ void mapCacheAllocate() {
     if (mapCacheAllocated) return;
     mapCacheAllocated = true;
     const size_t bytes = fbSize / 4 + sizeof(MapLayerFacts) + kMapCachePois * sizeof(MapPoi) +
-                         fbSize / 8;
+                         fbSize / 8 + MAP_MAX_LABELS * sizeof(MapLabel);
     for (int i = 0; i < MapBaseCache::kSlots; ++i)
         mapCache.attach(i, (uint8_t*)heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM));
     mapPrerenderFb = (uint8_t*)heap_caps_malloc(fbSize, MALLOC_CAP_SPIRAM);
@@ -1491,6 +1493,10 @@ uint8_t* cachedWater(const uint8_t* layer) {
     return (uint8_t*)cachedPois(layer) + kMapCachePois * sizeof(MapPoi);
 }
 
+MapLabel* cachedLabels(const uint8_t* layer) {
+    return (MapLabel*)(cachedWater(layer) + fbSize / 8);
+}
+
 // What a stored layer needs besides its pixels. Call straight after drawing it.
 void mapCacheKeepExtras(uint8_t* layer, const MapScreenData& map) {
     const int n = map.poiCount < kMapCachePois ? map.poiCount : kMapCachePois;
@@ -1504,6 +1510,8 @@ void mapCacheKeepExtras(uint8_t* layer, const MapScreenData& map) {
     facts->parks = map.parkCount;
     facts->waters = map.waterCount;
     memcpy(facts->classes, map.clsCount, sizeof(facts->classes));
+    facts->names = map.nameCount;
+    facts->labels = ui_map_place_street_names(map, cachedLabels(layer));
 
     uint8_t* bits = cachedWater(layer);
     memset(bits, 0, fbSize / 8);
@@ -1602,6 +1610,9 @@ void buildMapScreenData(const RideState& s, MapScreenData& map,
         map.parkCount = facts->parks;
         map.waterCount = facts->waters;
         memcpy(map.clsCount, facts->classes, sizeof(facts->classes));
+        map.nameCount = facts->names;
+        map.labels = cachedLabels(mapFrameBase);
+        map.labelCount = facts->labels;
     } else {
         map_store::renderInto(lat, lon, mapMpp, map.riderX, map.riderY, rot, map,
                               finalFrame

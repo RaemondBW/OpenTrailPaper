@@ -38,6 +38,15 @@ constexpr float MAP_NAMES_MAX_MPP = 1.0f;
 constexpr uint16_t MAP_NO_NAME = 0xFFFF;
 constexpr int MAP_NAME_STRIDE = 33;   // one name in MapScreenData::names, NUL included
 
+// A street name as placed on a frame: its white chip, and the name on it,
+// turned to read bottom to top when `upright`.
+struct MapLabel {
+    int16_t x, y, w, h;
+    bool upright;
+    char text[MAP_NAME_STRIDE];
+};
+constexpr int MAP_MAX_LABELS = 16;
+
 struct MapPolyline {
     MapFeatureClass cls;
     uint8_t flags;       // MAP_WF_* (0 for fills and for tiles without flags)
@@ -125,6 +134,12 @@ struct MapScreenData {
     // MAP_NAMES_MAX_MPP and closer.
     const char* names = nullptr;
     int nameCount = 0;
+
+    // Those names already placed, by a cached base layer: a frame drawn from
+    // one has no features to place them against. Null places them from
+    // features and names.
+    const MapLabel* labels = nullptr;
+    int labelCount = 0;
 
     // Riders sharing their position on a private mesh channel.
     const MapPeer* peers = nullptr;
@@ -214,6 +229,10 @@ const uint8_t* ui_map_dither_mask();
 
 // Street-name labels the last map frame drew (diagnostics: the frame log).
 int ui_map_labels_drawn();
+
+// Place this view's street names, as a frame of it would draw them, into `out`
+// (MAP_MAX_LABELS); returns how many. For a cached base layer to keep.
+int ui_map_place_street_names(const MapScreenData& map, MapLabel* out);
 
 // `baseDrawn`: fb already holds this view's base layer (see ui_render_map_base).
 // `onBase`: if set, called with fb as soon as the base layer is on it, to keep a copy.

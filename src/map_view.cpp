@@ -521,9 +521,8 @@ int s_labelsDrawn = 0;
 // east-west one it crosses, and read as that one's — nor over another label,
 // the rider or the chrome drawn over the map afterwards; one with nowhere
 // clear is left off rather than squeezed in.
-void drawStreetNames(const MapScreenData& map, uint8_t* fb) {
-    s_labelsDrawn = 0;
-    if (map.metersPerPixel > MAP_NAMES_MAX_MPP || map.nameCount <= 0) return;
+int placeStreetNames(const MapScreenData& map, MapLabel* out) {
+    if (map.metersPerPixel > MAP_NAMES_MAX_MPP || map.nameCount <= 0) return 0;
     const int top = MAP_TOP + (map.navBannerVisible ? 138 : 0);
     // Static: the UI task's stack is 8 KB.
     struct Run { int16_t x0, y0, x1, y1; int16_t len; uint8_t cls; };
@@ -581,8 +580,7 @@ void drawStreetNames(const MapScreenData& map, uint8_t* fb) {
     }
 
     const int compY = mapCompassCy(map.navBannerVisible);
-    constexpr int kMaxLabels = 16;
-    EpdRect placed[kMaxLabels];
+    EpdRect placed[MAP_MAX_LABELS];
     int placedN = 0;
     auto clear = [&](const EpdRect& r) {
         if (r.x < 4 || r.x + r.width > 540 - 4 || r.y < top + 4 ||
@@ -621,7 +619,7 @@ void drawStreetNames(const MapScreenData& map, uint8_t* fb) {
         return false;
     };
     const int capH = epdc_digit_height(&Arial_B);
-    for (int o = 0; o < n && placedN < kMaxLabels; ++o) {
+    for (int o = 0; o < n && placedN < MAP_MAX_LABELS; ++o) {
         const Run& b = best[order[o]];
         const char* name = map.names + order[o] * MAP_NAME_STRIDE;
         const int w = ui::textWidth(&Arial_B, name) + 10, h = capH + 10;
@@ -648,17 +646,45 @@ void drawStreetNames(const MapScreenData& map, uint8_t* fb) {
                     if (!clear(r)) continue;
                     if (upright ? overRoad(r, -1)
                                 : pass == 0 && overRoad(r, order[o])) continue;
-                    epd_fill_rect(r, 0xFF, fb);
-                    if (upright) textUp(&Arial_B, r.x + 5 + capH, r.y + r.height - 5, name, fb);
-                    else ui::text(&Arial_B, r.x + 5, r.y + 5 + capH, name, fb,
-                                  EPD_DRAW_ALIGN_LEFT, 0x00);
+                    MapLabel& l = out[placedN];
+                    l = {(int16_t)r.x, (int16_t)r.y, (int16_t)r.width,
+                         (int16_t)r.height, upright, {}};
+                    strncpy(l.text, name, MAP_NAME_STRIDE - 1);
                     placed[placedN++] = r;
-                    s_labelsDrawn++;
                     done = true;
                 }
                 if (done) break;
             }
         }
+    }
+    return placedN;
+}
+
+// The labels a cached base layer kept, or placed now from the features. A
+// banner that has come up since they were placed takes the ones under it, and
+// the compass it pushes down with them.
+void drawStreetNames(const MapScreenData& map, uint8_t* fb) {
+    static MapLabel fresh[MAP_MAX_LABELS];
+    const MapLabel* labels = map.labels;
+    int n = map.labelCount;
+    if (!labels) {
+        n = placeStreetNames(map, fresh);
+        labels = fresh;
+    }
+    s_labelsDrawn = 0;
+    const int top = MAP_TOP + (map.navBannerVisible ? 138 : 0);
+    const int compY = mapCompassCy(map.navBannerVisible);
+    const int capH = epdc_digit_height(&Arial_B);
+    for (int i = 0; i < n; ++i) {
+        const MapLabel& l = labels[i];
+        if (l.y < top + 4) continue;
+        if (l.x < kMapCompass.cx + 32 && kMapCompass.cx - 32 < l.x + l.w &&
+            l.y < compY + 32 && compY - 32 < l.y + l.h) continue;
+        epd_fill_rect({l.x, l.y, l.w, l.h}, 0xFF, fb);
+        if (l.upright) textUp(&Arial_B, l.x + 5 + capH, l.y + l.h - 5, l.text, fb);
+        else ui::text(&Arial_B, l.x + 5, l.y + 5 + capH, l.text, fb,
+                      EPD_DRAW_ALIGN_LEFT, 0x00);
+        s_labelsDrawn++;
     }
 }
 
@@ -964,6 +990,10 @@ uint16_t ui_map_layer_bit(int row) {
 const uint8_t* ui_map_dither_mask() { return s_ditherMask; }
 
 int ui_map_labels_drawn() { return s_labelsDrawn; }
+
+int ui_map_place_street_names(const MapScreenData& map, MapLabel* out) {
+    return placeStreetNames(map, out);
+}
 
 bool ui_render_map_base(const MapScreenData& map, uint8_t* fb, bool (*keepGoing)()) {
     // Checked every few items: a single road is far too quick to be worth asking

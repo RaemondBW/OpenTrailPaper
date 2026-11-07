@@ -62,6 +62,31 @@ def test_street_names_are_drawn_at_the_closest_zoom_only(device, link):
     assert names_at(device, seq, 2) == (0, 0)
 
 
+def cache_hits(device):
+    line = next(l for l in device.console("mapcache") if "[mapcache]" in l)
+    return int(re.search(r"(\d+) hits", line).group(1))
+
+
+def test_names_stay_on_a_view_drawn_from_its_cached_base_layer(device, link):
+    """A frame drawn from a kept base layer reads no tiles, so it has no
+    features to place names against: the layer keeps them placed. They used to
+    show on the first frame and be gone from the next."""
+    send_region(link, region(with_names(centre_tile(), by_class)), POIS)
+    seq = open_map(device, *CENTRE)
+    device.console("zoom in")
+    first = names_at(device, seq, 1)
+    assert first[0] >= 1, first
+
+    hits = cache_hits(device)
+    seq = device.log_seq()
+    device.console("screen dash")
+    device.wait_status(lambda s: s["screen"] == "dash", timeout=5)
+    device.console("screen map")
+    device.wait_status(lambda s: s["screen"] == "map", timeout=5)
+    assert names_at(device, seq, 1) == first
+    assert cache_hits(device) > hits, "the map was redrawn, not taken from the cache"
+
+
 def test_a_tile_without_names_draws_none(device, link):
     send_region(link, TILES, POIS)
     seq = open_map(device, *CENTRE)
