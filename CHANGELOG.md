@@ -37,6 +37,12 @@ so write for the rider, newest version first, one `## vX.YY` heading each.
 - Roads through parks are easier to follow on the map. Where a road or
   cycleway crosses a park's striped fill it now has a thin white border, so
   it reads as a clean line instead of disappearing into the stripes.
+- The map is much faster. A view that is already drawn is kept, so the
+  map no longer redraws every road each second: a parked map frame takes
+  about 80 ms instead of 0.4 to 1.5 s. Hold the map still for a few seconds
+  and the next zoom in and out are drawn ahead, so a tap on + or − lands
+  almost at once. The map shown when the device switches off uses the
+  widest zoom your downloaded maps fill, instead of a mostly blank one.
 - The GPS debug page no longer shows more satellites in use than in view.
   The in-view count is refreshed every five seconds and the in-use count
   every second, so for a moment after the sky changed (or right after the
@@ -83,6 +89,28 @@ so write for the rider, newest version first, one `## vX.YY` heading each.
   switches itself on when an effort starts and goes back afterwards; the
   dashboard editor can turn that off. The device's times come from its own
   GPS and can differ from Strava's by a second or two.
+- A new, faster connection to the app. With an updated app, the Ride tab
+  shows the device's own pages live, and paging there pages the device
+  too. The stopwatch can be started, paused, lapped and reset from the
+  phone, and the app's music buttons control whatever is playing (Spotify
+  and the like, not only Apple Music), through the device.
+- The dashboard holds up to 7 pages plus the map, up from 4.
+- The clock shows the right time straight after a restart indoors. Until
+  GPS has a fix, the device takes the time from the connected phone
+  instead of showing --:--.
+- Fixed the device restarting a few seconds after the app connects. With
+  a lot of map tiles on the card, listing them for the app took long enough
+  to trip the device's watchdog.
+- A ride that fills the SD card is now saved as a valid ride, and the
+  device tells you the card is full. Before, it said "ride saved" for a
+  file that was cut off and could not be read.
+- A damaged map tile is refused when it is sent, instead of crashing the
+  device as soon as you ride onto it.
+- The app sees every ride on the card, newest first. On a card with more
+  than 512 rides, the newest ones, including the one just recorded, used
+  to be missing from the list.
+- Fixed a phone being unpaired moments after pairing, when the
+  connection refreshed its keys.
 
 ## v1.22
 
