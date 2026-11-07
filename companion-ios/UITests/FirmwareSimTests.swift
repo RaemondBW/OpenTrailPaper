@@ -695,7 +695,7 @@ final class FirmwareSimTests: XCTestCase {
             throw XCTSkip("needs test10's POIs on the device")
         }
         func layers(_ s: [String: Any]?) -> Int? { (s?["settings"] as? [String: Any])?["map_layers"] as? Int }
-        expectEqual(layers(try? SimControl.status()), 0x3F, "all of the device's map layers should start on")
+        expectEqual(layers(try? SimControl.status()), 0x7F, "all of the device's map layers should start on")
         try fixAtTheCentre(area)
         let on = try deviceMap("device-water-on")
 
@@ -723,9 +723,9 @@ final class FirmwareSimTests: XCTestCase {
             }
             return false
         }
-        let wentOff = flip(to: 0x3B)
+        let wentOff = flip(to: 0x7B)
         let off = try deviceMap("device-water-off")
-        let cameBack = flip(to: 0x3F)
+        let cameBack = flip(to: 0x7F)
         let back = try deviceMap("device-water-back")
         app.terminate()
 
