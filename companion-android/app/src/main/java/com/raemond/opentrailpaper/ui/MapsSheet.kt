@@ -605,6 +605,7 @@ private fun DeviceMapLayersDialog(ble: BleManager, onDismiss: () -> Unit) {
         Triple(0x08, "Toilets", "Restroom icons"),
         Triple(0x10, "Repair stations", "Self-service repair stands"),
         Triple(0x20, "Bike shops", "Bicycle shop icons"),
+        Triple(0x40, "Street names", "Names along the streets, zoomed all the way in"),
     )
     AlertDialog(
         onDismissRequest = onDismiss,

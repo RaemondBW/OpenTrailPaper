@@ -21,8 +21,16 @@
 //     polylineCount bytes, one u8 flags per polyline in order (WAY_* below).
 //     Older firmware reads `polylineCount` records and never looks past them.
 //     Written only for sub-tiles where some polyline has a non-zero flag.
-//   * Reserved: extension sections after PRK2, <4-byte magic><u32 byteLength>
-//     <payload>, which new firmware skips by length. None is defined yet.
+//   * Extension sections after PRK2, <4-byte magic><u32 byteLength>
+//     <payload>, which firmware skips by length when it does not know them.
+//   * NAM1 (street names, written with `names: true`): payload
+//       u16 nameCount, nameCount x { u8 length, ASCII bytes } (streetName()),
+//       u32 offset[nx*ny]: where in the payload each sub-tile's list starts,
+//           0 for a sub-tile with no named polyline,
+//       per listed sub-tile: polylineCount x u16 name index, 0xFFFF = none,
+//           in the sub-tile's polyline order.
+//     Firmware before it skips the section; firmware with it draws the names
+//     at its closest zoom (src/map_view.cpp drawStreetNames).
 //   * POIs are NOT in the map: buildPoi() writes a separate <h3>.poi next to
 //     each <h3>.ebm, so POIs can be fetched, cached and sent on their own.
 //
@@ -542,10 +550,92 @@ export function headerOnlySize(s, w, n, e, tileDeg = TILE_DEG) {
   return 36 + nx * ny * 8;
 }
 
+// A street's name as the panel draws it: `name`, else `ref` ("I 84"), in the
+// ASCII the device fonts have (accents folded, anything else dropped), with
+// the usual suffix and direction words shortened so it fits on a label, cut at
+// a word to 32 bytes. "" for a way with neither.
+const STREET_ABBR = {
+  Street: "St", Avenue: "Ave", Road: "Rd", Drive: "Dr", Boulevard: "Blvd",
+  Lane: "Ln", Court: "Ct", Place: "Pl", Terrace: "Ter", Highway: "Hwy",
+  Parkway: "Pkwy", Circle: "Cir", Square: "Sq", Expressway: "Expy",
+  Freeway: "Fwy", Mountain: "Mtn", Saint: "St", Fort: "Ft",
+};
+const STREET_DIR = { North: "N", South: "S", East: "E", West: "W",
+  Northeast: "NE", Northwest: "NW", Southeast: "SE", Southwest: "SW" };
+export function streetName(tags) {
+  let s = (tags.name || tags.ref || "").normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/ß/g, "ss").replace(/[Ææ]/g, "ae").replace(/[Øø]/g, "o")
+    .replace(/[Łł]/g, "l").replace(/[Đđ]/g, "d")
+    .replace(/[^\x20-\x7e]/g, "").replace(/\s+/g, " ").trim();
+  if (!s) return "";
+  const words = s.split(" ");
+  const out = words.map((w, i) => {
+    if (STREET_ABBR[w] && i > 0) return STREET_ABBR[w];
+    // A direction only as the first or last word of a longer name: "North
+    // Shore Rd" is a road called North Shore.
+    if (STREET_DIR[w] && words.length > 2 && (i === 0 || i === words.length - 1)) return STREET_DIR[w];
+    return w;
+  });
+  s = out.join(" ");
+  while (s.length > 32 && s.includes(" ")) s = s.slice(0, s.lastIndexOf(" "));
+  return s.slice(0, 32);
+}
+
+// The NAM1 section for a finished tile map (see the format notes at the top),
+// or nothing when no polyline has a name.
+function nameSection(tiles, nx, ny) {
+  const index = new Map();   // name -> its index
+  for (const polys of tiles.values()) {
+    for (const p of polys) if (p[3] && !index.has(p[3]) && index.size < 0xffff) index.set(p[3], index.size);
+  }
+  const sec = new ByteWriter();
+  if (!index.size) return sec;
+  const body = new ByteWriter();
+  body.u16(index.size);
+  for (const name of index.keys()) { body.u8(name.length); body.ascii(name); }
+  const tableAt = body.length;
+  let at = tableAt + nx * ny * 4;
+  const offsets = [], lists = [];
+  for (let k = 0; k < nx * ny; k++) {
+    const polys = tiles.get(k);
+    if (!polys || !polys.some((p) => p[3])) { offsets.push(0); continue; }
+    offsets.push(at);
+    const n = Math.min(polys.length, 0xffff);
+    for (let i = 0; i < n; i++) lists.push(polys[i][3] && index.has(polys[i][3]) ? index.get(polys[i][3]) : 0xffff);
+    at += n * 2;
+  }
+  for (const o of offsets) body.u32(o);
+  for (const v of lists) body.u16(v);
+  sec.ascii("NAM1");
+  sec.u32(body.length);
+  sec.concat(body);
+  return sec;
+}
+
+// The extension sections after PRK2 in a buildEbm() result, for a writer that
+// lays the earlier sections out itself (tools/tiles/apptile.mjs).
+export function extensionSections(b) {
+  const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  const nx = dv.getInt32(28, true), ny = dv.getInt32(32, true);
+  let p = 36 + nx * ny * 8;
+  for (let k = 0; k < nx * ny; k++) {
+    const off = dv.getUint32(36 + k * 8, true), len = dv.getUint32(40 + k * 8, true);
+    if (off && off + len > p) p = off + len;
+  }
+  for (const magic of ["WTR2", "PRK2"]) {
+    if (String.fromCharCode(b[p], b[p + 1], b[p + 2], b[p + 3]) !== magic) break;
+    const count = dv.getUint16(p + 4, true);
+    p += 6;
+    for (let i = 0; i < count; i++) p += 2 + dv.getUint16(p, true) * 4;
+  }
+  return b.subarray(p);
+}
+
 // Encode an already-fetched Overpass JSON object into an .ebm Uint8Array.
 // `cycling: false` writes the pre-extension format byte-for-byte (no way-flag
 // trailers) — for comparing against the other generators.
-export function buildEbm(json, { s, w, n, e, tileDeg = TILE_DEG, simplifyM = SIMPLIFY_M, cycling = true }) {
+export function buildEbm(json, { s, w, n, e, tileDeg = TILE_DEG, simplifyM = SIMPLIFY_M, cycling = true, names = false }) {
   const nodes = new Map();
   const ways = [];
   const waterWays = []; // node-id lists for natural=water polygons
@@ -576,7 +666,7 @@ export function buildEbm(json, { s, w, n, e, tileDeg = TILE_DEG, simplifyM = SIM
       let cls = classify(tags);
       const lvl = routeLevel.get(el.id) || 0;
       if (cls == null && lvl) cls = classifyRouteMember(tags);
-      if (cls != null) ways.push([cls, el.nodes, cycling ? wayFlags(tags, lvl) : 0]);
+      if (cls != null) ways.push([cls, el.nodes, cycling ? wayFlags(tags, lvl) : 0, names ? streetName(tags) : ""]);
       else if (tags.natural === "water") waterWays.push(el.nodes);
       else if (tags.natural === "coastline") coastWays.push(el.nodes);
       else if (isPark(tags)) parkWays.push(el.nodes);
@@ -599,7 +689,7 @@ export function buildEbm(json, { s, w, n, e, tileDeg = TILE_DEG, simplifyM = SIM
 
   const tileOf = (p) => [Math.floor(p[0] / tileWm), Math.floor(p[1] / tileHm)];
 
-  const emit = (tx, ty, cls, run, flags) => {
+  const emit = (tx, ty, cls, run, flags, name) => {
     if (run.length < 2 || tx < 0 || tx >= nx || ty < 0 || ty >= ny) return;
     const ox = tx * tileWm, oy = ty * tileHm;
     const pts = [];
@@ -613,11 +703,11 @@ export function buildEbm(json, { s, w, n, e, tileDeg = TILE_DEG, simplifyM = SIM
     if (pts.length >= 2) {
       const key = ty * nx + tx;
       if (!tiles.has(key)) tiles.set(key, []);
-      tiles.get(key).push([cls, pts, flags]);
+      tiles.get(key).push([cls, pts, flags, name]);
     }
   };
 
-  for (const [cls, nids, flags] of ways) {
+  for (const [cls, nids, flags, name] of ways) {
     const pts = [];
     for (const id of nids) { const p = nodes.get(id); if (p) pts.push(p); }
     if (pts.length < 2) continue;
@@ -630,12 +720,12 @@ export function buildEbm(json, { s, w, n, e, tileDeg = TILE_DEG, simplifyM = SIM
       const t = tileOf(p);
       run.push(p);
       if (t[0] !== cur[0] || t[1] !== cur[1]) {
-        emit(cur[0], cur[1], cls, run, flags);
+        emit(cur[0], cur[1], cls, run, flags, name);
         run = [run[run.length - 2], p];
         cur = t;
       }
     }
-    emit(cur[0], cur[1], cls, run, flags);
+    emit(cur[0], cur[1], cls, run, flags, name);
   }
 
   // Water polygons (natural=water) -> WTR2 section. Points are metres E/N of
@@ -749,6 +839,7 @@ export function buildEbm(json, { s, w, n, e, tileDeg = TILE_DEG, simplifyM = SIM
     for (const [x, y] of poly) { out.i16(x); out.i16(y); }
   }
 
+  if (names) out.concat(nameSection(tiles, nx, ny));
   return out.toUint8Array();
 }
 

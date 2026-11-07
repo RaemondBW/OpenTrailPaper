@@ -798,14 +798,17 @@ def test_changing_channel_forgets_the_old_mesh_but_power_changes_do_not(mesh):
     mesh.command(tx_power_dbm=10)
     mesh.dev_wait(lambda: mesh.state().tx_power_dbm == 10, "power applied")
     assert len(mesh.nodes()) == 1 and len(mesh.history()) == 1
-    assert mesh.dev.lora()["power_dbm"] == 10
+    # The setting is stored first and the radio restarted with it after
+    # (mesh_service.cpp applyTxPower), so the radio can trail the state.
+    mesh.dev_wait(lambda: mesh.dev.lora()["power_dbm"] == 10, "the radio to take the new power")
     mesh.command(primary=pb.MeshPrimary(name="Velo Club", key_index=1))
     # The answer comes before the mesh task applies it; the device then says
     # "changed" and the app asks again.
     mesh.dev_wait(lambda: mesh.state().channel_name == "Velo Club" and not mesh.nodes() and not mesh.history(),
                   "the old channel's nodes and messages to go")
     stock = M.tune_for("LongFast", channel="Velo Club")
-    assert mesh.dev.lora()["freq_mhz"] == pytest.approx(stock["freq_mhz"], abs=1e-3)
+    mesh.dev_wait(lambda: mesh.dev.lora()["freq_mhz"] == pytest.approx(stock["freq_mhz"], abs=1e-3),
+                  "the radio to retune to the new channel's slot")
     mesh.hear(alex(channel=M.Channel("Velo Club")).text("on the club channel"), **stock)
     mesh.drain()
     assert [x.text for x in mesh.history()] == ["on the club channel"]

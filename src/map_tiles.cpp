@@ -43,6 +43,10 @@ constexpr int MAX_PARK_POLYS = 512;
 // 7 tiles; the widest zoom that shows any (8 m/px) sees a ~4x8 km window.
 // Past it a frame keeps the most important and nearest (projectPoisInto).
 constexpr int MAX_POIS = 256;
+// Street names (NAM1). A frame at 1 m/px sees a few dozen streets; a city
+// tile names a few thousand, of which only those in view are copied out.
+constexpr int MAX_FRAME_NAMES = 256;
+constexpr int MAX_TILE_NAMES = 8192;
 
 // The single "primary" blob used by the embedded map + route overlay path.
 const uint8_t* blob = nullptr;
@@ -55,6 +59,10 @@ MapPolyline* waterPolys = nullptr;
 int16_t* parkPts = nullptr;
 MapPolyline* parkPolys = nullptr;
 MapPoi* poiBuf = nullptr;
+char* frameNames = nullptr;       // MAX_FRAME_NAMES x MAP_NAME_STRIDE
+uint32_t* tileNameOff = nullptr;  // per tile name: its offset in the blob
+uint16_t* tileNameSlot = nullptr; // per tile name: its frameNames slot, or none
+int g_usedNames = 0;
 
 // Shared append cursors across a multi-tile frame (map_store drives these
 // via beginProject / projectBlobInto / endProject).
@@ -149,9 +157,12 @@ static bool ensureScratch() {
         parkPts = (int16_t*)bigAlloc(MAX_PARK_POINTS * 2 * sizeof(int16_t));
         parkPolys = (MapPolyline*)bigAlloc(MAX_PARK_POLYS * sizeof(MapPolyline));
         poiBuf = (MapPoi*)bigAlloc(MAX_POIS * sizeof(MapPoi));
+        frameNames = (char*)bigAlloc(MAX_FRAME_NAMES * MAP_NAME_STRIDE);
+        tileNameOff = (uint32_t*)bigAlloc(MAX_TILE_NAMES * sizeof(uint32_t));
+        tileNameSlot = (uint16_t*)bigAlloc(MAX_TILE_NAMES * sizeof(uint16_t));
     }
     return pts && polys && waterPts && waterPolys && parkPts && parkPolys &&
-           poiBuf;
+           poiBuf && frameNames && tileNameOff && tileNameSlot;
 }
 
 // One sub-tile index entry: its bytes lie inside the blob, past the index, and
@@ -205,6 +216,38 @@ static size_t fillSectionEnd(const uint8_t* b, size_t at, size_t len) {
         p += bytes;
     }
     return p;
+}
+
+// An extension section (after PRK2: <magic><u32 length><payload>) by its
+// magic. Walks past the road data, ELV1, WTR2 and PRK2 by their headers, so
+// it costs a hop per fill polygon, not a read of any geometry.
+static const uint8_t* findSection(const uint8_t* b, size_t len,
+                                  const char magic[4], size_t& secLen) {
+    size_t p = tileDataEnd(b, len);
+    if (!p) return nullptr;
+    if (len - p >= 44 && memcmp(b + p, "ELV1", 4) == 0) {
+        const int32_t gw = rd<int32_t>(b + p + 4), gh = rd<int32_t>(b + p + 8);
+        if (gw < 0 || gh < 0 ||
+            (uint64_t)gw * (uint64_t)gh * 2 > (uint64_t)(len - p - 44))
+            return nullptr;
+        p += 44 + (size_t)gw * gh * 2;
+    }
+    // Sections follow PRK2, which follows WTR2; no water, nothing after it.
+    if (len - p < 6 || memcmp(b + p, "WTR2", 4) != 0) return nullptr;
+    if (!(p = fillSectionEnd(b, p, len))) return nullptr;
+    if (len - p >= 6 && memcmp(b + p, "PRK2", 4) == 0 &&
+        !(p = fillSectionEnd(b, p, len)))
+        return nullptr;
+    while (len - p >= 8) {
+        const uint32_t l = rd<uint32_t>(b + p + 4);
+        if (l > len - p - 8) return nullptr;
+        if (memcmp(b + p, magic, 4) == 0) {
+            secLen = l;
+            return b + p + 8;
+        }
+        p += 8 + l;
+    }
+    return nullptr;
 }
 
 bool tileValid(const uint8_t* b, size_t len) {
@@ -265,6 +308,9 @@ void beginProject(MapScreenData& out) {
     out.parkCount = 0;
     out.pois = poiBuf;
     out.poiCount = 0;
+    out.names = frameNames;
+    out.nameCount = 0;
+    g_usedNames = 0;
     g_usedPois = 0;
     g_usedPts = 0;
     g_usedPolys = 0;
@@ -301,6 +347,7 @@ void endProject(MapScreenData& out) {
     out.waterCount = g_usedWaterPolys;
     out.parkCount = g_usedParkPolys;
     out.poiCount = g_usedPois;
+    out.nameCount = g_usedNames;
 }
 
 // Project a single EBM1 blob (with its own grid header) into the shared
@@ -357,6 +404,56 @@ void projectBlobInto(const uint8_t* b, size_t bLen, double lat, double lon,
 
     int usedPts = g_usedPts, usedPolys = g_usedPolys;
 
+    // Street names (NAM1, docs/mapgen.js), only at a zoom that draws them:
+    //   u16 nameCount, nameCount x { u8 length, bytes },
+    //   u32 offset[nx*ny] into the payload of each sub-tile's list (0 none),
+    //   per listed sub-tile: polylineCount x u16 name index (0xFFFF none).
+    // A name is copied out the first time a polyline in view uses it, and
+    // one already copied from another tile is shared, so a street crossing
+    // a tile edge is still one street.
+    const uint8_t* nam = nullptr;
+    const uint8_t* namTable = nullptr;
+    size_t namLen = 0;
+    int tileNames = 0;
+    if (metersPerPixel <= MAP_NAMES_MAX_MPP &&
+        (nam = findSection(b, bLen, "NAM1", namLen)) && namLen >= 2) {
+        const int total = rd<uint16_t>(nam);
+        size_t q = 2;
+        int i = 0;
+        for (; i < total && q < namLen; ++i) {
+            const size_t l = nam[q];
+            if (l > namLen - q - 1) break;
+            if (i < MAX_TILE_NAMES) {
+                tileNameOff[i] = (uint32_t)q;
+                tileNameSlot[i] = MAP_NO_NAME;
+            }
+            q += 1 + l;
+        }
+        if (i == total && (uint64_t)gridNx * gridNy * 4 <= namLen - q) {
+            namTable = nam + q;
+            tileNames = total < MAX_TILE_NAMES ? total : MAX_TILE_NAMES;
+        }
+    }
+    auto nameSlot = [&](uint16_t idx) -> uint16_t {
+        if (idx >= tileNames) return MAP_NO_NAME;
+        if (tileNameSlot[idx] != MAP_NO_NAME) return tileNameSlot[idx];
+        char name[MAP_NAME_STRIDE];
+        const uint8_t* src = nam + tileNameOff[idx];
+        const size_t l = src[0] < MAP_NAME_STRIDE - 1 ? src[0] : MAP_NAME_STRIDE - 1;
+        memcpy(name, src + 1, l);
+        name[l] = 0;
+        if (!l) return MAP_NO_NAME;
+        int slot = 0;
+        while (slot < g_usedNames && strcmp(frameNames + slot * MAP_NAME_STRIDE, name))
+            ++slot;
+        if (slot == g_usedNames) {
+            if (g_usedNames == MAX_FRAME_NAMES) return MAP_NO_NAME;
+            memcpy(frameNames + slot * MAP_NAME_STRIDE, name, l + 1);
+            ++g_usedNames;
+        }
+        return tileNameSlot[idx] = (uint16_t)slot;
+    };
+
     for (int ty = ty0; ty <= ty1; ++ty) {
         for (int tx = tx0; tx <= tx1; ++tx) {
             const size_t k = (size_t)ty * gridNx + tx;
@@ -372,6 +469,12 @@ void projectBlobInto(const uint8_t* b, size_t bLen, double lat, double lon,
             const uint8_t* end = p + len;
             uint16_t count = rd<uint16_t>(p);
             p += 2;
+
+            const uint8_t* subNames = nullptr;
+            if (namTable) {
+                const uint32_t o = rd<uint32_t>(namTable + k * 4);
+                if (o && o <= namLen && (namLen - o) / 2 >= count) subNames = nam + o;
+            }
 
             // Way-flag trailer: exactly `count` bytes after the last polyline
             // (docs/mapgen.js). Found by hopping the record headers — no point
@@ -467,6 +570,8 @@ void projectBlobInto(const uint8_t* b, size_t bLen, double lat, double lon,
                 polys[usedPolys].flags = wf;
                 polys[usedPolys].pts = dst;
                 polys[usedPolys].pointCount = kept;
+                polys[usedPolys].name =
+                    subNames ? nameSlot(rd<uint16_t>(subNames + i * 2)) : MAP_NO_NAME;
                 usedPolys++;
                 usedPts += kept;
                 if (cls < 7) g_clsKept[cls]++;
@@ -572,6 +677,7 @@ done:
                 dstPolys[usedPolys].flags = 0;
                 dstPolys[usedPolys].pts = dst;
                 dstPolys[usedPolys].pointCount = kept;
+                dstPolys[usedPolys].name = MAP_NO_NAME;
                 usedPolys++;
                 usedPts += kept;
             }
@@ -595,9 +701,9 @@ done:
         const uint32_t secLen = rd<uint32_t>(q + 4);
         const uint8_t* body = q + 8;
         if (secLen > (size_t)(wend - body)) break;   // truncated / not a section
-        // No section is defined yet: cycling POIs live in a separate .poi
-        // file per tile (projectPoisInto), not in the map. This loop only
-        // keeps future sections skippable.
+        // NAM1 (street names) is read up front, with the roads. Cycling POIs
+        // live in a separate .poi file per tile (projectPoisInto), not in
+        // the map. This loop keeps every other section skippable.
         q = body + secLen;
     }
 }

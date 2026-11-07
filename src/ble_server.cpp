@@ -1760,7 +1760,7 @@ class OtaCb : public NimBLECharacteristicCallbacks {
 //   map-layers reply: [0xE0][u16 mask LE] — to 0x09, to 0x0A (the mask now in
 //   force), and unasked after an edit on the device. Bits: MAP_LAYER_* in
 //   map_view.h (0 bike routes, 1 cycleways & lanes, 2 water, 3 toilets,
-//   4 repair, 5 bike shops). Firmware without layers never answers, which is
+//   4 repair, 5 bike shops, 6 street names). Firmware without layers never answers, which is
 //   how the app knows to hide its switches. Kept OUT of the settings payload
 //   on purpose: this is self-describing and needs no payload version.
 //   device notifies: [0xB0] ready, [0xB1] saved, [0xB4][u32 received], [0xBF][err]

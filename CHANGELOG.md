@@ -21,6 +21,13 @@ so write for the rider, newest version first, one `## vX.YY` heading each.
   channel and message show in the top band for ten seconds; tap it to
   dismiss it sooner. A turn coming up within 200 m keeps the band, so the
   directions aren't hidden. Public channel messages don't pop up.
+- Street names on the map. Zoomed all the way in, each street in view is
+  labelled once, so you can read the name of the next cross street at a
+  glance. Streets running up the screen have their names turned to match,
+  beside the road. Labels stay off the roads they don't belong to, the
+  buttons and your own marker. They need maps that include names, which newly built
+  maps will. Street names have their own switch under map layers, on the
+  device and in the app, and start out on.
 - Bike lanes are much easier to see on the map. A road with a painted lane
   or track now has a bold dashed line along each side, as thick as the road
   line itself. Before, it had a faint dotted line that was close to

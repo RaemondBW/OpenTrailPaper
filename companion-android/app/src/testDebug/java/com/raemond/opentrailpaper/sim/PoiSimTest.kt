@@ -261,7 +261,7 @@ class PoiSimTest : MapSimHarness() {
         // the fixture's water point, 150 m north, is drawn at about (270, 355).
         sim.cmd("gps", "lat" to lat, "lon" to lon, "fix" to true, "sats" to 9, "course" to 0, "speed_kmh" to 0)
         val all = ble.mapLayers
-        assertEquals("all layers on", 0x3F, all and 0x3F)
+        assertEquals("all layers on", 0x7F, all and 0x7F)
         val on = mapScreenshot("water-on")
 
         ble.updateMapLayers(all and WATER.inv())

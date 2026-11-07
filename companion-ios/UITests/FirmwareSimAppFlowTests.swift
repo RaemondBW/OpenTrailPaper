@@ -255,10 +255,21 @@ final class FirmwareSimAppFlowTests: XCTestCase {
         let r = row(victim.name)
         XCTAssertTrue(r.waitForExistence(timeout: 10))
         // On a loaded runner the context menu can take a while, or the press
-        // can land while the list is still settling: press again once.
+        // can land while the list is still settling: press again once. It has
+        // also landed as a tap, which downloads the ride and opens it over the
+        // list; then the row is back only once that ride is closed. Deleting
+        // the ride drops the phone's copy too, so nothing of it is left over.
         let delete = app.buttons["Delete ride"]
         r.press(forDuration: 1.2)
-        if !delete.waitForExistence(timeout: 10) { r.press(forDuration: 1.5) }
+        if !delete.waitForExistence(timeout: 10) {
+            let back = app.buttons["Back to rides"]
+            if back.exists || !r.exists {
+                XCTAssertTrue(back.waitForExistence(timeout: 60), "the press opened the ride, which never finished opening")
+                back.tap()
+                XCTAssertTrue(r.waitForExistence(timeout: 10), "the ride's row didn't come back after closing it")
+            }
+            r.press(forDuration: 1.5)
+        }
         XCTAssertTrue(delete.waitForExistence(timeout: 15), "no Delete ride in the row's menu")
         delete.tap()
         let gone = Date().addingTimeInterval(10)

@@ -108,7 +108,10 @@ def test_position_updates_follow_the_ten_minute_and_100_m_rule_with_an_hourly_he
     beat = positions(mesh)
     dev.set_speed(1)
     assert len(beat) == 1
-    assert 60 * MIN - 2000 <= beat[0]["tx"]["start_ms"] - t1 <= 62 * MIN
+    # The hour runs from when the last one was queued; t1 is when it went on the
+    # air, which is the mesh task's next pass. At 200x a runner that holds that
+    # task up for 25 ms of wall time makes it 5 s of device time (CI: 4.7 s).
+    assert 60 * MIN - 10000 <= beat[0]["tx"]["start_ms"] - t1 <= 62 * MIN
 
 
 def test_sharing_on_a_private_channel_stays_off_the_public_one(mesh):

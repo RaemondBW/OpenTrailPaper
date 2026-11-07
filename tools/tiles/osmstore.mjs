@@ -21,6 +21,9 @@ const KEEP_KEYS = new Set([
   "natural", "leisure", "landuse", "amenity", "man_made", "drinking_water", "shop",
   "access", "fee", "seasonal", "route", "network",
 ]);
+// Street names (docs/mapgen.js NAM1) only when asked for (OTP_TILE_NAMES=1):
+// every street has its own, so they undo most of the tag-set interning above.
+if (process.env.OTP_TILE_NAMES === "1") { KEEP_KEYS.add("name"); KEEP_KEYS.add("ref"); }
 const keepKey = (k) => KEEP_KEYS.has(k) || k.startsWith("service:bicycle:");
 
 // ---- the Overpass predicates (companion-ios MapBuilder.query / poiQuery) ----

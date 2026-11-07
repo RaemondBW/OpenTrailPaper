@@ -31,11 +31,28 @@ enum : uint8_t {
     MAP_WF_BIKE_LANE = 0x08,    // painted lane / track along a road
 };
 
+// Street names (the tile's NAM1 section) are read and drawn only this far in:
+// at the closest zoom a street is wide enough to label without the labels
+// burying the map.
+constexpr float MAP_NAMES_MAX_MPP = 1.0f;
+constexpr uint16_t MAP_NO_NAME = 0xFFFF;
+constexpr int MAP_NAME_STRIDE = 33;   // one name in MapScreenData::names, NUL included
+
+// A street name as placed on a frame: its white chip, and the name on it,
+// turned to read bottom to top when `upright`.
+struct MapLabel {
+    int16_t x, y, w, h;
+    bool upright;
+    char text[MAP_NAME_STRIDE];
+};
+constexpr int MAP_MAX_LABELS = 16;
+
 struct MapPolyline {
     MapFeatureClass cls;
     uint8_t flags;       // MAP_WF_* (0 for fills and for tiles without flags)
     const int16_t* pts;  // x0,y0,x1,y1,... screen px (portrait 540x960)
     int pointCount;
+    uint16_t name = MAP_NO_NAME;   // index into MapScreenData::names
 };
 
 // Cycling POIs (the per-tile .poi file). Type ids and flag bits are the on-file
@@ -60,7 +77,7 @@ enum : uint8_t {
 
 // Cycling layers the rider can switch off (settings::mapLayers(), the device's
 // MAP LAYERS screen, BLE opcode 0x0A on the map characteristic). A render-time
-// filter only: tiles are parsed and cached the same either way. Bits 6-15 are
+// filter only: tiles are parsed and cached the same either way. Bits 7-15 are
 // reserved and kept as sent, so a newer app's bits survive an older firmware.
 enum : uint16_t {
     MAP_LAYER_BIKE_ROUTES = 1 << 0,   // grey route bands
@@ -69,9 +86,10 @@ enum : uint16_t {
     MAP_LAYER_TOILETS = 1 << 3,
     MAP_LAYER_REPAIR = 1 << 4,
     MAP_LAYER_BIKE_SHOPS = 1 << 5,
-    MAP_LAYERS_ALL = 0x003F,
+    MAP_LAYER_STREET_NAMES = 1 << 6,  // labels at the closest zoom (MAP_NAMES_MAX_MPP)
+    MAP_LAYERS_ALL = 0x007F,
 };
-constexpr int kMapLayerCount = 6;
+constexpr int kMapLayerCount = 7;
 
 struct MapPoi {
     int16_t x, y;    // screen px
@@ -111,6 +129,18 @@ struct MapScreenData {
     // filtered for the zoom. Drawn as small icons over the roads.
     const MapPoi* pois = nullptr;
     int poiCount = 0;
+
+    // Street names of the features in view, MAP_NAME_STRIDE bytes apiece, one
+    // entry per distinct name (MapPolyline::name). Only filled at
+    // MAP_NAMES_MAX_MPP and closer.
+    const char* names = nullptr;
+    int nameCount = 0;
+
+    // Those names already placed, by a cached base layer: a frame drawn from
+    // one has no features to place them against. Null places them from
+    // features and names.
+    const MapLabel* labels = nullptr;
+    int labelCount = 0;
 
     // Riders sharing their position on a private mesh channel.
     const MapPeer* peers = nullptr;
@@ -197,6 +227,13 @@ void ui_map_draw_zoom_button(bool zoomIn, bool pressed, uint8_t* fb);
 // Native-fb-aligned mask (1 byte/fb-byte, 1 = covered) of the water in the base layer
 // last drawn. Null until the first one.
 const uint8_t* ui_map_dither_mask();
+
+// Street-name labels the last map frame drew (diagnostics: the frame log).
+int ui_map_labels_drawn();
+
+// Place this view's street names, as a frame of it would draw them, into `out`
+// (MAP_MAX_LABELS); returns how many. For a cached base layer to keep.
+int ui_map_place_street_names(const MapScreenData& map, MapLabel* out);
 
 // `baseDrawn`: fb already holds this view's base layer (see ui_render_map_base).
 // `onBase`: if set, called with fb as soon as the base layer is on it, to keep a copy.

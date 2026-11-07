@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 #include <mutex>
+#include <atomic>
 #include <functional>
 
 #define CONFIG_BT_ENABLED 1
@@ -392,7 +393,10 @@ public:
     // sim
     NimBLEClientCallbacks* cb_ = nullptr;
     NimBLEAddress addr_;
-    simble::SimPeripheral* peer_ = nullptr;
+    // Cleared by the BLE host task when the link ends, while the firmware's
+    // own tasks may be using the client: read it once (peer()) and use that.
+    std::atomic<simble::SimPeripheral*> peer_{nullptr};
+    simble::SimPeripheral* peer() const { return peer_.load(); }
     uint16_t handle_ = BLE_HS_CONN_HANDLE_NONE;
     std::vector<NimBLERemoteService*> services_;
 };

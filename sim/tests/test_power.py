@@ -20,7 +20,10 @@ from test_rides import SAVE_BUTTON, line_track
 LAT, LON = 37.77, -122.45
 SHUT_DOWN = (24 + 246, 700 + 48)     # ui_render.cpp kPowerShutdown centre
 CANCEL = (24 + 246, 816 + 48)        # kPowerCancel centre
-TOLERANCE_S = 30                     # the UI loop's pass at a fast clock, the poll's resolution
+# The UI loop's pass at a fast clock and the poll's resolution, and the switch-off
+# itself: run_to times the last moment the device answered, which comes after the
+# farewell frame, the radios going off and the SD flush (about 12 s of device time).
+TOLERANCE_S = 45
 
 
 def assert_switched_off_after_idle(off, since):

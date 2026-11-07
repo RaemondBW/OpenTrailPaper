@@ -346,7 +346,7 @@ function init() {
         await new Promise((r) => setTimeout(r, 0));
         for (let ci = 0; ci < rest.length; ci++) {
           const c = rest[ci];
-          const ebm = buildEbm(json, { s: c.s, w: c.w, n: c.n, e: c.e });
+          const ebm = buildEbm(json, { s: c.s, w: c.w, n: c.n, e: c.e, names: true });
           if (ebmHasContent(ebm)) {
             files.push({ name: tilePath(c.id), data: ebm });
             tileCount++;

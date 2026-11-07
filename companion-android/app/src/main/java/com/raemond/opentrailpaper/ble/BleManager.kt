@@ -240,12 +240,12 @@ class BleManager(
 
     // Device map layers (map characteristic 0x09 get / 0x0A set; the device
     // answers [0xE0][u16 mask]). Bits: 0 bike routes, 1 cycleways & lanes,
-    // 2 water, 3 toilets, 4 repair stations, 5 bike shops (src/map_view.h
+    // 2 water, 3 toilets, 4 repair stations, 5 bike shops, 6 street names (src/map_view.h
     // MAP_LAYER_*). Kept per device: the last mask seen, whether that device
     // answers at all, and an edit made while disconnected (sent on the next
     // connect; last write wins).
     /** The device's map-layer mask as this app last knew it (live when connected). */
-    var mapLayers by mutableStateOf(0x3F); private set
+    var mapLayers by mutableStateOf(0x7F); private set
     /** The device (or, disconnected, the last one) has firmware with map layers. */
     var mapLayersSupported by mutableStateOf(false); private set
 
@@ -255,7 +255,7 @@ class BleManager(
     private fun loadMapLayersState() {
         val k = layersDeviceKey() ?: return
         Prefs.mapLayersLastDevice = k
-        mapLayers = (Prefs.mapLayersPending[k] ?: Prefs.mapLayersByDevice[k] ?: 0x3FL).toInt()
+        mapLayers = (Prefs.mapLayersPending[k] ?: Prefs.mapLayersByDevice[k] ?: 0x7FL).toInt()
         mapLayersSupported = k in Prefs.mapLayersSupported
     }
 

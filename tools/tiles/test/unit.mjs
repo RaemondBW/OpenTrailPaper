@@ -4,13 +4,13 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { assembleCoastline } from "../../../docs/mapgen.js";
+import { assembleCoastline, buildEbm, extensionSections, streetName } from "../../../docs/mapgen.js";
 import { assembleCoastlineFast } from "../coastline.mjs";
 import { Region, bboxGeometry } from "../poly.mjs";
 import { merge } from "../merge_index.mjs";
 import { resume } from "../resume.mjs";
 import { writeStrip, loadStrips, boxFilter } from "../strip.mjs";
-import { swiftRound, clipToBox } from "../apptile.mjs";
+import { swiftRound, clipToBox, buildAppTile } from "../apptile.mjs";
 
 let n = 0;
 const test = async (name, fn) => { await fn(); n++; console.log(`ok - ${name}`); };
@@ -181,6 +181,73 @@ await test("strips: round trip, version wins, levels merge, box filter", async (
   assert.equal(store.pois.length, 1);
   assert.equal(store.pois[0].tags.amenity, "drinking_water");
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+await test("streetName folds to ASCII, shortens suffixes, cuts at a word", () => {
+  assert.equal(streetName({ name: "Northeast Broadway Street" }), "NE Broadway St");
+  assert.equal(streetName({ name: "North Shore Road" }), "N Shore Rd");
+  assert.equal(streetName({ name: "Avenue Road" }), "Avenue Rd");
+  assert.equal(streetName({ name: "Calle José Martí" }), "Calle Jose Marti");
+  assert.equal(streetName({ name: "Straße der Einheit" }), "Strasse der Einheit");
+  assert.equal(streetName({ ref: "I 84" }), "I 84");
+  assert.equal(streetName({ name: "東京" }), "");
+  assert.equal(streetName({}), "");
+  const long = streetName({ name: "The Extremely Long Scenic Columbia River Gorge Highway" });
+  assert.ok(long.length <= 32 && !long.endsWith(" "), long);
+});
+
+await test("NAM1 names every polyline in sub-tile order; nothing else changes", () => {
+  // Two named streets crossing a sub-tile edge, one unnamed path.
+  const json = { elements: [
+    { type: "node", id: 1, lat: 45.701, lon: -121.539 }, { type: "node", id: 2, lat: 45.701, lon: -121.501 },
+    { type: "node", id: 3, lat: 45.705, lon: -121.52 }, { type: "node", id: 4, lat: 45.71, lon: -121.52 },
+    { type: "node", id: 5, lat: 45.702, lon: -121.53 }, { type: "node", id: 6, lat: 45.703, lon: -121.528 },
+    { type: "way", id: 10, nodes: [1, 2], tags: { highway: "residential", name: "Oak Street" } },
+    { type: "way", id: 11, nodes: [3, 4], tags: { highway: "primary", ref: "OR 35" } },
+    { type: "way", id: 12, nodes: [5, 6], tags: { highway: "footway" } },
+  ] };
+  const box = { s: 45.69, w: -121.55, n: 45.72, e: -121.49 };
+  const plain = buildEbm(json, box), named = buildEbm(json, { ...box, names: true });
+  // Everything before the section is the tile without names, byte for byte.
+  assert.deepEqual(named.subarray(0, plain.length), plain);
+  const sec = extensionSections(named);
+  assert.equal(String.fromCharCode(...sec.subarray(0, 4)), "NAM1");
+  const dv = new DataView(sec.buffer, sec.byteOffset, sec.byteLength);
+  assert.equal(dv.getUint32(4, true), sec.length - 8);
+  const body = 8, count = dv.getUint16(body, true);
+  let p = body + 2;
+  const names = [];
+  for (let i = 0; i < count; i++) { const l = sec[p]; names.push(String.fromCharCode(...sec.subarray(p + 1, p + 1 + l))); p += 1 + l; }
+  assert.deepEqual(names.sort(), ["OR 35", "Oak St"]);
+  // Walk every sub-tile: its list has one entry per polyline.
+  const t = new DataView(plain.buffer, plain.byteOffset, plain.byteLength);
+  const nx = t.getInt32(28, true), ny = t.getInt32(32, true);
+  let lists = 0, unnamed = 0, named2 = 0;
+  for (let k = 0; k < nx * ny; k++) {
+    const off = t.getUint32(36 + k * 8, true);
+    const o = dv.getUint32(p + k * 4, true);
+    if (!off) { assert.equal(o, 0); continue; }
+    if (!o) continue;
+    lists++;
+    const polys = t.getUint16(off, true);
+    for (let i = 0; i < polys; i++) {
+      const v = dv.getUint16(body + o + i * 2, true);
+      if (v === 0xffff) unnamed++; else { assert.ok(v < count); named2++; }
+    }
+  }
+  assert.ok(lists >= 2, "the street crossing the edge is named on both sides");
+  assert.ok(named2 >= 3 && unnamed >= 1, `${named2} named, ${unnamed} unnamed`);
+});
+
+await test("buildAppTile puts NAM1 after PRK2 only when asked", () => {
+  const json = { elements: [
+    { type: "node", id: 1, lat: 45.701, lon: -121.539 }, { type: "node", id: 2, lat: 45.701, lon: -121.501 },
+    { type: "way", id: 10, nodes: [1, 2], tags: { highway: "residential", name: "Oak Street" } },
+  ] };
+  const t = { id: "x", s: 45.69, w: -121.55, n: 45.72, e: -121.49 };
+  const plain = buildAppTile(json, [], null, t), named = buildAppTile(json, [], null, t, { names: true });
+  assert.deepEqual(named.subarray(0, plain.length), plain);
+  assert.equal(String.fromCharCode(...named.subarray(plain.length, plain.length + 4)), "NAM1");
 });
 
 console.log(`${n} tests passed`);

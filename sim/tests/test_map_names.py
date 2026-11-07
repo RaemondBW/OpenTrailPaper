@@ -1,0 +1,154 @@
+"""Street names on the device map: the tile's NAM1 section (layout in
+docs/mapgen.js, writer buildEbm `names: true`), read with the roads
+(map_tiles projectBlobInto) and drawn as upright labels at the closest zoom
+only (map_view drawStreetNames, MAP_NAMES_MAX_MPP = 1 m/px). The `timing`
+console switch logs every map frame with `names=<labels drawn>/<names in
+view>`.
+
+The tiles are the real Hood River ones (sim/fixtures/tiles) with names added
+here by class (otpsim.tiles.with_names), so the count of distinct names in
+view is known."""
+import re
+
+from otpsim import pb
+from otpsim.tiles import with_names
+from test_maps import CENTRE, CENTRE_H3, POIS, TILES, alive, open_map, parse_frame, send_region
+
+NAMES = re.compile(r" names=(\d+)/(\d+)")
+BY_CLASS = {0: "Interstate 84", 1: "Oak St", 2: "State St", 3: "May St", 4: "Elm Ave"}
+
+
+def by_class(sub, i, cls):
+    return BY_CLASS.get(cls)
+
+
+def region(centre):
+    """The fixture region with the centre tile swapped for `centre`."""
+    return [(h, centre if h == CENTRE_H3 else d, v + "-n" if h == CENTRE_H3 else v) for h, d, v in TILES]
+
+
+def names_at(device, since, mpp, timeout=20):
+    """(labels drawn, names in view) of the first complete frame at `mpp`
+    logged after `since`."""
+    import time
+    deadline = time.time() + timeout
+    while True:
+        for l in device.log(since):
+            f, m = parse_frame(l), NAMES.search(l)
+            if f and m and not f["cut"] and f["mpp"] == mpp:
+                return int(m.group(1)), int(m.group(2))
+        if time.time() > deadline:
+            raise AssertionError("no complete frame at %d m/px" % mpp)
+        time.sleep(0.2)
+
+
+def centre_tile():
+    return next(d for h, d, _ in TILES if h == CENTRE_H3)
+
+
+def test_street_names_are_drawn_at_the_closest_zoom_only(device, link):
+    send_region(link, region(with_names(centre_tile(), by_class)), POIS)
+    seq = open_map(device, *CENTRE)
+    assert names_at(device, seq, 2) == (0, 0), "names read or drawn at 2 m/px"
+
+    seq = device.log_seq()
+    device.console("zoom in")
+    labels, names = names_at(device, seq, 1)
+    # Downtown at 1 m/px has primary, tertiary and minor roads in view.
+    assert 3 <= names <= len(BY_CLASS), names
+    assert 1 <= labels <= names, (labels, names)
+
+    seq = device.log_seq()
+    device.console("zoom out")
+    assert names_at(device, seq, 2) == (0, 0)
+
+
+def cache_hits(device):
+    line = next(l for l in device.console("mapcache") if "[mapcache]" in l)
+    return int(re.search(r"(\d+) hits", line).group(1))
+
+
+def test_names_stay_on_a_view_drawn_from_its_cached_base_layer(device, link):
+    """A frame drawn from a kept base layer reads no tiles, so it has no
+    features to place names against: the layer keeps them placed. They used to
+    show on the first frame and be gone from the next."""
+    send_region(link, region(with_names(centre_tile(), by_class)), POIS)
+    seq = open_map(device, *CENTRE)
+    device.console("zoom in")
+    first = names_at(device, seq, 1)
+    assert first[0] >= 1, first
+
+    hits = cache_hits(device)
+    seq = device.log_seq()
+    device.console("screen dash")
+    device.wait_status(lambda s: s["screen"] == "dash", timeout=5)
+    device.console("screen map")
+    device.wait_status(lambda s: s["screen"] == "map", timeout=5)
+    assert names_at(device, seq, 1) == first
+    assert cache_hits(device) > hits, "the map was redrawn, not taken from the cache"
+
+
+def test_a_tile_without_names_draws_none(device, link):
+    send_region(link, TILES, POIS)
+    seq = open_map(device, *CENTRE)
+    device.console("zoom in")
+    assert names_at(device, seq, 1) == (0, 0)
+
+
+def test_a_damaged_name_section_is_ignored_not_trusted(device, link):
+    named = with_names(centre_tile(), by_class)
+    at = named.rindex(b"NAM1") + 8
+    # More names claimed than the section holds: every length read would run
+    # off its end.
+    damaged = named[:at] + b"\xff\xff" + named[at + 2:]
+    send_region(link, region(damaged), POIS)
+    seq = open_map(device, *CENTRE)
+    device.console("zoom in")
+    assert names_at(device, seq, 1) == (0, 0)
+    alive(device)
+
+
+STREET_NAMES = 1 << 6
+ALL_LAYERS = 0x7F
+NAMES_ROW_Y = 64 + 6 * 108 + 54    # MAP LAYERS screen, row 6 (map_view.cpp kLayerRows)
+
+
+def test_the_street_names_layer_turns_them_off_and_back_on(device, link):
+    send_region(link, region(with_names(centre_tile(), by_class)), POIS)
+    seq = open_map(device, *CENTRE)
+    device.console("zoom in")
+    on = names_at(device, seq, 1)
+    assert on[0] >= 1, on
+
+    seq = device.log_seq()
+    r = link.request(set_map_layers=pb.MapLayers(mask=ALL_LAYERS & ~STREET_NAMES))
+    assert r.map_layers.mask == ALL_LAYERS & ~STREET_NAMES, r
+    # Still read from the tiles; only the drawing is switched off.
+    assert names_at(device, seq, 1) == (0, on[1])
+
+    seq = device.log_seq()
+    link.request(set_map_layers=pb.MapLayers(mask=ALL_LAYERS))
+    assert names_at(device, seq, 1) == on
+
+
+def test_the_map_layers_screen_has_a_street_names_switch(device):
+    assert device.status()["settings"]["map_layers"] == ALL_LAYERS
+    before = device.status()["paints"]
+    device.console("screen layers")
+    device.wait_status(lambda s: s["paints"] > before, timeout=5)
+    device.tap(400, NAMES_ROW_Y)
+    device.wait_status(lambda s: s["settings"]["map_layers"] == ALL_LAYERS & ~STREET_NAMES, timeout=5)
+    device.tap(400, NAMES_ROW_Y)
+    device.wait_status(lambda s: s["settings"]["map_layers"] == ALL_LAYERS, timeout=5)
+
+
+def test_layers_saved_before_street_names_existed_keep_them_on(device):
+    """A mask from firmware without the layer (key "maplayers", bit 6 never
+    set) carries over with street names on and every other choice kept."""
+    import os
+    import struct
+    d = os.path.join(device.dir, "nvs", "bike")
+    with open(os.path.join(d, "maplayers"), "wb") as f:
+        f.write(struct.pack("<H", 0x3F & ~0x04))    # water turned off
+    device.reboot()
+    assert device.status()["settings"]["map_layers"] == ALL_LAYERS & ~0x04
