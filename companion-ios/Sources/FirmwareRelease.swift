@@ -20,13 +20,23 @@ import Foundation
 final class FirmwareRelease: ObservableObject {
     static let shared = FirmwareRelease()
 
+    /// Which releases the rider follows. Stable is the newest version release
+    /// (`/releases/latest`); nightly is the moving "nightly" prerelease CI
+    /// rebuilds on every push to main: newer code, less tested.
+    enum Channel: String, CaseIterable {
+        case stable, nightly
+    }
+
     struct Release: Equatable {
-        let tag: String          // "v1.05"
+        let tag: String          // the version it carries: "v1.05", "v1.23-nightly.81dbf91"
         let assetURL: URL        // firmware.bin download
         let size: Int
         let notes: String
     }
 
+    static let channelKey = "firmwareChannel"
+    @Published private(set) var channel: Channel =
+        Channel(rawValue: UserDefaults.standard.string(forKey: channelKey) ?? "") ?? .stable
     @Published private(set) var latest: Release?
     @Published private(set) var checking = false
     @Published private(set) var error: String?
@@ -35,29 +45,57 @@ final class FirmwareRelease: ObservableObject {
 
     private let repo = "RaemondBW/OpenTrailPaper"
     private var cached: (tag: String, data: Data)?
+    /// The channel changed while a check was out; its answer is for the old one.
+    private var recheck = false
 
-    /// Ask GitHub what the newest release is. Cheap (one JSON request) and safe
-    /// to call on every appearance of the firmware screen.
+    /// Follow `c` from now on. What the other channel offered is dropped at
+    /// once, so Install can never fetch a release from the channel just left.
+    func setChannel(_ c: Channel) {
+        guard c != channel else { return }
+        channel = c
+        UserDefaults.standard.set(c.rawValue, forKey: Self.channelKey)
+        latest = nil
+        error = nil
+        if checking { recheck = true } else { Task { await check() } }
+    }
+
+    /// The version a release carries. A version release is tagged with it; the
+    /// nightly's tag never moves, so CI titles it "Firmware <version>".
+    nonisolated static func version(tag: String, name: String) -> String {
+        guard tag == "nightly" else { return tag }
+        let prefix = "Firmware "
+        return name.hasPrefix(prefix) ? String(name.dropFirst(prefix.count)) : name
+    }
+
+    /// Ask GitHub what the newest release on the channel is. Cheap (one JSON
+    /// request) and safe to call on every appearance of the firmware screen.
     func check() async {
         guard !checking else { return }
         checking = true
         error = nil
-        defer { checking = false }
+        defer {
+            checking = false
+            if recheck { recheck = false; Task { await check() } }
+        }
 
-        let url = URL(string: "https://api.github.com/repos/\(repo)/releases/latest")!
+        let ch = channel
+        let path = ch == .nightly ? "releases/tags/nightly" : "releases/latest"
+        let url = URL(string: "https://api.github.com/repos/\(repo)/\(path)")!
         var req = URLRequest(url: url)
         req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         req.timeoutInterval = 15
 
         do {
             let (data, resp) = try await URLSession.shared.data(for: req)
+            guard ch == channel else { return }
             guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
                 // 403 here is nearly always the unauthenticated rate limit
                 // (60/hour/IP), which is worth naming rather than reporting as
                 // a generic failure.
                 let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
                 error = code == 403 ? "GitHub rate limit — try again shortly"
-                                    : "Couldn't reach GitHub (\(code))"
+                      : code == 404 && ch == .nightly ? "No nightly build yet"
+                      : "Couldn't reach GitHub (\(code))"
                 return
             }
             guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -70,11 +108,12 @@ final class FirmwareRelease: ObservableObject {
                 error = "That release has no firmware.bin"
                 return
             }
-            latest = Release(tag: tag, assetURL: assetURL,
+            latest = Release(tag: Self.version(tag: tag, name: obj["name"] as? String ?? ""),
+                             assetURL: assetURL,
                              size: bin["size"] as? Int ?? 0,
                              notes: (obj["body"] as? String) ?? "")
         } catch {
-            self.error = "Couldn't reach GitHub"
+            if ch == channel { self.error = "Couldn't reach GitHub" }
         }
     }
 

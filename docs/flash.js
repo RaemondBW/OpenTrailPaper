@@ -19,7 +19,7 @@ const versionSelect = $("version-select");
 
 // CI publishes firmware.bin per version; the Pages build bundles them into
 // firmware/ alongside this site (see loadReleases).
-let releases = []; // [{ tag, url }]
+let releases = []; // [{ tag, version, nightly, url }]
 
 // Firmware is served from THIS site (firmware/<tag>/firmware.bin), not from the
 // GitHub Release asset URL.
@@ -36,7 +36,10 @@ async function loadReleases() {
   try {
     const res = await fetch("firmware/index.json", { cache: "no-cache" });
     if (!res.ok) throw new Error("HTTP " + res.status);
-    releases = await res.json();
+    // Newest stable first (the default), then the nightly, then older stables.
+    const all = await res.json();
+    const stable = all.filter((r) => !r.nightly);
+    releases = [...stable.slice(0, 1), ...all.filter((r) => r.nightly), ...stable.slice(1)];
     versionSelect.innerHTML = "";
     if (releases.length === 0) {
       versionSelect.innerHTML = '<option value="">No CI releases available yet</option>';
@@ -45,7 +48,9 @@ async function loadReleases() {
     releases.forEach((r, i) => {
       const o = document.createElement("option");
       o.value = String(i);
-      o.textContent = r.tag + (i === 0 ? "  (latest)" : "");
+      o.textContent = r.nightly
+        ? `Nightly ${r.version || ""}  (newest code, less tested)`
+        : r.tag + (r === stable[0] ? "  (latest stable)" : "");
       versionSelect.appendChild(o);
     });
   } catch (e) {
@@ -187,9 +192,10 @@ flashBtn.addEventListener("click", async () => {
     return;
   }
   try {
-    setStatus(`Downloading firmware ${rel.tag}…`, "");
+    const label = rel.nightly ? rel.version || "nightly" : rel.tag;
+    setStatus(`Downloading firmware ${label}…`, "");
     const data = await fetchReleaseBin(rel.url);
-    fileArray.push({ data, address: 0x10000, name: `firmware.bin (${rel.tag})` });
+    fileArray.push({ data, address: 0x10000, name: `firmware.bin (${label})` });
   } catch (e) {
     console.error(e);
     log("Download error: " + (e?.message || e));

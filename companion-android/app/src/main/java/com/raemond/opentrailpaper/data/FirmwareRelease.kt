@@ -26,13 +26,24 @@ import java.net.URL
  */
 object FirmwareRelease {
 
+    /**
+     * Which releases the rider follows. Stable is the newest version release
+     * (`/releases/latest`); nightly is the moving "nightly" prerelease CI
+     * rebuilds on every push to main: newer code, less tested.
+     */
+    enum class Channel { STABLE, NIGHTLY }
+
     data class Release(
-        val tag: String,          // "v1.05"
+        val tag: String,          // the version it carries: "v1.05", "v1.23-nightly.81dbf91"
         val assetUrl: String,     // firmware.bin download
         val size: Int,
         val notes: String,
     )
 
+    // Prefs is unset only in a unit test that never started the app: stable.
+    var channel by mutableStateOf(
+        runCatching { Channel.valueOf(Prefs.firmwareChannel) }.getOrDefault(Channel.STABLE)
+    ); private set
     var latest by mutableStateOf<Release?>(null); private set
     var checking by mutableStateOf(false); private set
     var error by mutableStateOf<String?>(null); private set
@@ -42,18 +53,44 @@ object FirmwareRelease {
 
     private const val REPO = "RaemondBW/OpenTrailPaper"
     private var cached: Pair<String, ByteArray>? = null
+    /** The channel changed while a check was out; its answer is for the old one. */
+    private var recheck = false
 
     /**
-     * Ask GitHub what the newest release is. Cheap (one JSON request) and safe
-     * to call on every appearance of the firmware screen.
+     * Follow [c] from now on. What the other channel offered is dropped at
+     * once, so Install can never fetch a release from the channel just left.
+     * Returns false when a check is already out (it re-checks when done).
+     */
+    fun setChannel(c: Channel): Boolean {
+        if (c == channel) return false
+        channel = c
+        runCatching { Prefs.firmwareChannel = c.name }
+        latest = null
+        error = null
+        if (checking) recheck = true
+        return !checking
+    }
+
+    /**
+     * The version a release carries. A version release is tagged with it; the
+     * nightly's tag never moves, so CI titles it "Firmware <version>".
+     */
+    fun version(tag: String, name: String): String =
+        if (tag != "nightly") tag else name.removePrefix("Firmware ")
+
+    /**
+     * Ask GitHub what the newest release on the channel is. Cheap (one JSON
+     * request) and safe to call on every appearance of the firmware screen.
      */
     suspend fun check() {
         if (checking) return
         checking = true
         error = null
+        val ch = channel
+        val path = if (ch == Channel.NIGHTLY) "releases/tags/nightly" else "releases/latest"
         try {
             val result = withContext(Dispatchers.IO) {
-                val conn = (URL("https://api.github.com/repos/$REPO/releases/latest")
+                val conn = (URL("https://api.github.com/repos/$REPO/$path")
                     .openConnection() as HttpURLConnection).apply {
                     setRequestProperty("Accept", "application/vnd.github+json")
                     setRequestProperty("User-Agent", "OpenTrailPaper-Android")
@@ -69,15 +106,16 @@ object FirmwareRelease {
                 }
             }
 
+            if (ch != channel) return
             result.onFailure { e ->
                 // 403 here is nearly always the unauthenticated rate limit
                 // (60/hour/IP), which is worth naming rather than reporting as a
                 // generic failure.
                 val code = (e as? HttpError)?.code ?: 0
-                error = if (code == 403) {
-                    "GitHub rate limit — try again shortly"
-                } else {
-                    "Couldn't reach GitHub ($code)"
+                error = when {
+                    code == 403 -> "GitHub rate limit — try again shortly"
+                    code == 404 && ch == Channel.NIGHTLY -> "No nightly build yet"
+                    else -> "Couldn't reach GitHub ($code)"
                 }
             }.onSuccess { body ->
                 val obj = JSONObject(body)
@@ -90,16 +128,23 @@ object FirmwareRelease {
                         if (a.optString("name") != "firmware.bin") continue
                         val url = a.optString("browser_download_url")
                         if (url.isEmpty()) continue
-                        found = Release(tag, url, a.optInt("size", 0), obj.optString("body"))
+                        found = Release(
+                            version(tag, obj.optString("name")), url,
+                            a.optInt("size", 0), obj.optString("body"),
+                        )
                         break
                     }
                 }
                 if (found == null) error = "That release has no firmware.bin" else latest = found
             }
         } catch (_: Exception) {
-            error = "Couldn't reach GitHub"
+            if (ch == channel) error = "Couldn't reach GitHub"
         } finally {
             checking = false
+            if (recheck) {
+                recheck = false
+                check()
+            }
         }
     }
 
