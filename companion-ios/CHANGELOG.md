@@ -6,8 +6,31 @@ written for the rider. The current version's section is the source for the
 App Store "What's New" text — paste it (minus build-only entries) when
 submitting.
 
-## Unreleased
+## 1.4 (build 18)
 
+- A new look: black ink on white paper, like the device's own screen.
+  Square tiles and buttons, bold capitals for titles and numbers, and a
+  new tab bar. The Android app has the same design.
+- The Ride tab shows the device's own pages, live: each page in the strip
+  is a copy of what the device is showing, with its real speed, power,
+  heart rate, battery and the rest, and paging there pages the device too.
+  The WORKOUT page shows the workout running on the device, or its list of
+  workouts to load one. The MUSIC page shows what's playing.
+- The stopwatch can be started, paused, lapped and reset from the phone,
+  and the music buttons (including volume and the position bar) work with
+  whatever app is playing, not only Apple Music. Needs firmware v1.23.
+- A faster, steadier connection to the device: everything now goes over
+  one channel, with bigger transfers and checks that a firmware update or
+  map arrived whole. Older firmware still works the old way.
+- Mesh: a private channel's share code now carries the radio settings
+  (speed, region and slot), so everyone who joins ends up on the same
+  frequency. Scanning a code whose settings differ from your device's
+  offers to switch to them. The stock Meshtastic app reads the same code.
+- Mesh: a "Share my location" switch at the top of a private channel's
+  conversation. Riders who share appear on the device's map (firmware
+  v1.23).
+- Mesh: the message box stays right on top of the keyboard.
+- Map layers have a Street names switch (firmware v1.23).
 - Settings > Firmware has a Stable / Nightly switch. Nightly installs the
   newest device firmware as soon as it's built, before it has had the
   testing a stable release gets; switch back to Stable to reinstall the
@@ -52,6 +75,9 @@ submitting.
   Android app has the same notice.
 - The list of hexes on the device is refreshed every time it connects, so
   a new or swapped card no longer shows the old card's hexes as downloaded.
+- Android: after the device restarted, the app could stop getting replies
+  (mesh sends said "outbox is full") until it was reopened. It now picks
+  the connection back up by itself.
 
 ## 1.3 (build 17)
 
