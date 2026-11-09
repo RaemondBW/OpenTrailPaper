@@ -290,7 +290,8 @@ It runs **only when started by hand** (*Actions* → *Pre-built map tiles* → *
 - `only`: a subset of Geofabrik ids;
 - `jobs`;
 - `resume_run`: earlier run ids, newest first, comma-separated (a resume of a resume lists both). Redoes only the jobs whose newest result failed (plus border jobs that read a rebuilt interior job), with today's code, the newest run's plan, and each reused job's strips from the run that built them — so it must start within 2 days of that run, while the strips are kept. The merge is partial: everything else stays as published (`tools/tiles/resume.mjs`);
-- `dry_run`.
+- `dry_run`;
+- `names` (on by default): street names in every tile (the NAM1 section, `OTP_TILE_NAMES=1`). Firmware v1.23 draws them at the closest zoom; older firmware skips the section. Turning it on or off changes every tile's hash, so that run re-uploads the whole planet and riders see every downloaded hex as having an update.
 
 Every step is `tools/tiles/pipeline.sh`, which also runs locally.
 
