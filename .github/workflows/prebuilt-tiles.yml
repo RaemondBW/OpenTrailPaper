@@ -230,6 +230,10 @@ jobs:
           pattern: frags-*
           path: work/frags
       - name: Index, meta, deletions
+        # The merge holds every published cell's record (~7.4 M) at once,
+        # past node's default ~4 GB heap; the runner has 16 GB.
+        env:
+          NODE_OPTIONS: --max-old-space-size=12288
         run: tools/tiles/pipeline.sh merge work
       - name: Summary
         run: |
