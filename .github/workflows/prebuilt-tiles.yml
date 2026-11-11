@@ -35,6 +35,10 @@ on:
         description: "Build but upload nothing"
         type: boolean
         default: false
+      names:
+        description: "Street names in the tiles (NAM1, shown by firmware v1.23+)"
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -50,6 +54,7 @@ env:
   R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
   R2_BUCKET: ${{ secrets.R2_BUCKET }}
   DRY_RUN: ${{ (inputs.dry_run || secrets.R2_BUCKET == '') && '1' || '' }}
+  OTP_TILE_NAMES: ${{ inputs.names && '1' || '' }}
 
 jobs:
   plan:
@@ -225,6 +230,10 @@ jobs:
           pattern: frags-*
           path: work/frags
       - name: Index, meta, deletions
+        # The merge holds every published cell's record (~7.4 M) at once,
+        # past node's default ~4 GB heap; the runner has 16 GB.
+        env:
+          NODE_OPTIONS: --max-old-space-size=12288
         run: tools/tiles/pipeline.sh merge work
       - name: Summary
         run: |
