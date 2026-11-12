@@ -341,7 +341,7 @@ object SyncAccounts {
                         fields = mapOf("data_type" to "fit", "name" to name), file = file, progress = tid,
                     )
                 }
-                json.optString("error").takeIf { it.isNotEmpty() }?.let { throw SyncException(it) }
+                json.stravaError()?.let { throw SyncException(it) }
                 val id = json.optLong("id", 0)
                 if (id == 0L) return@withContext "Uploaded to Strava."
                 TransferCenter.update(tid, detail = "Processing on Strava…", indeterminate = true)
@@ -349,7 +349,7 @@ object SyncAccounts {
                 repeat(8) {
                     delay(1500)
                     val st = keeper.authorized { token -> getJson("$strava/api/v3/uploads/$id", token) }
-                    st.optString("error").takeIf { it.isNotEmpty() }?.let { throw SyncException(it) }
+                    st.stravaError()?.let { throw SyncException(it) }
                     val act = st.optLong("activity_id", 0)
                     if (act != 0L) return@withContext "Uploaded: strava.com/activities/$act"
                 }
@@ -624,3 +624,10 @@ object SyncAccounts {
         return Base64.encodeToString(b, Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP)
     }
 }
+
+/**
+ * Strava's upload `error`, or null while all is well. Strava sends the field
+ * as JSON null, which org.json's optString turns into the string "null".
+ */
+private fun JSONObject.stravaError(): String? =
+    if (isNull("error")) null else optString("error").takeIf { it.isNotEmpty() }
