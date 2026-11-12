@@ -74,8 +74,8 @@ android {
         targetSdk = 36
         // Kept in step with companion-ios/project.yml (MARKETING_VERSION /
         // CURRENT_PROJECT_VERSION), so the two companions read as one release.
-        versionCode = 18
-        versionName = "1.4"
+        versionCode = 19
+        versionName = "1.4.1"
 
         buildConfigField("String", "CARTO_KEY", "\"${cartoKey.trim()}\"")
         buildConfigField("String", "SYNC_SERVICE_URL", "\"$syncUrl\"")
