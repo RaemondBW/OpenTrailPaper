@@ -436,17 +436,22 @@ section .sub { color: var(--ink-soft); font-size: 1.06rem; margin: 0 0 40px; max
   .app-shot { flex: none; width: 240px; }
 }
 .app-shot { margin: 0; }
-/* iPhone 17 Pro: titanium frame, thin uniform bezel, Dynamic Island */
+/* iPhone 17 Pro: thin titanium band, black bezel, Dynamic Island */
 .iphone {
   position: relative; width: 100%; max-width: 232px; margin: 0 auto;
-  padding: 9px; border-radius: 46px;
-  background: linear-gradient(150deg, #e4e5e8, #b8bcc2 45%, #cfd2d7);
-  box-shadow: 0 20px 44px rgba(20, 20, 20, 0.22),
-              inset 0 0 0 1.5px rgba(255, 255, 255, 0.45),
-              inset 0 0 2px 2.5px rgba(0, 0, 0, 0.12);
+  padding: 6px; border: 3px solid transparent; border-radius: 40px;
+  background: linear-gradient(#0b0b0c, #0b0b0c) padding-box,
+              linear-gradient(150deg, #e4e5e8, #a9adb4 45%, #d3d6db) border-box;
+  box-shadow: 0 20px 44px rgba(20, 20, 20, 0.22);
 }
 .iphone img {
-  display: block; width: 100%; height: auto; border-radius: 38px; background: #000;
+  display: block; width: 100%; height: auto; border-radius: 31px; background: #000;
+}
+/* Island: 125 × 37 pt on a 402 pt wide screen, 11 pt from the top */
+.iphone::after {
+  content: ""; position: absolute; left: 50%; transform: translateX(-50%);
+  top: calc(6px + 1.26%); width: calc((100% - 12px) * 0.311);
+  aspect-ratio: 125 / 37; border-radius: 999px; background: #000;
 }
 .app-shot figcaption { margin-top: 20px; font-size: 0.95rem; color: var(--ink-soft); line-height: 1.55; }
 .app-shot figcaption strong {
