@@ -16,7 +16,6 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
-import org.junit.Ignore
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -111,12 +110,6 @@ class UploadSimTest : AppSimHarness() {
      * where it is. Strava's answers carry its nullable fields as null
      * (`"error": null` while all is well).
      */
-    @Ignore(
-        "BUG: Android reads Strava's upload answer {\"error\":null,...} as an error: SyncAccounts.performUpload " +
-            "checks json.optString(\"error\").takeIf { it.isNotEmpty() }, and Android's org.json returns the " +
-            "string \"null\" for a JSON null, so every successful Strava upload is reported to the rider as " +
-            "failed with the message \"null\" (and its poll the same) — SyncAccounts.kt, Provider.STRAVA branch",
-    )
     @Test
     fun aDeviceRideUploadsToStravaByteForByte() {
         val (file, bytes) = downloadedRide()
